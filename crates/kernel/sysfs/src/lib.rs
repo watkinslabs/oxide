@@ -31,16 +31,12 @@ pub mod input;
 pub mod kobject;
 pub mod net_stats;
 pub mod root;
+pub mod tty;
 
 pub use root::{register, register_dir, sys_root, SYSFS_FSID};
 
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
-
-#[cfg(target_arch = "aarch64")]
-const SERIAL_TTY_MAJOR: u32 = 204;
-#[cfg(not(target_arch = "aarch64"))]
-const SERIAL_TTY_MAJOR: u32 = 4;
 
 // sysfs perm conventions (Linux): dirs r-xr-xr-x, attr files r--r--r--,
 // writable attrs (`uevent`) rw-r--r--, symlinks rwxrwxrwx.
@@ -48,27 +44,6 @@ pub(crate) const DIR_PERM: u16 = 0o555;
 pub(crate) const RO_PERM:  u16 = 0o444;
 pub(crate) const RW_PERM:  u16 = 0o644;
 pub(crate) const LNK_PERM: u16 = 0o777;
-
-const TTY_DEVICES: &[(&str, u32, u32)] = &[
-    ("console", 5, 1),
-    ("tty",     5, 0),
-    ("tty0",    4, 0),
-    ("ttyS0",   SERIAL_TTY_MAJOR, 64),
-];
-
-fn tty_dev(name: &str) -> Option<(u32, u32)> {
-    TTY_DEVICES.iter()
-        .find(|(n, _, _)| *n == name)
-        .map(|(_, maj, min)| (*maj, *min))
-}
-
-fn emit_tty_uevent(action: &str, name: &str, major: u32, minor: u32) {
-    let devpath = alloc::format!("/devices/virtual/tty/{}", name);
-    let devname = alloc::format!("DEVNAME={}", name);
-    let maj = alloc::format!("MAJOR={}", major);
-    let min = alloc::format!("MINOR={}", minor);
-    ::netlink::emit_uevent_with_env(action, &devpath, "tty", &[&devname, &maj, &min]);
-}
 
 /// Windowed copy of `body[off..]` into `buf` (the shared sysfs attr read). # C: O(n)
 pub(crate) fn read_window(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
@@ -106,128 +81,6 @@ fn lookup_net_ifindex(name: &str) -> u32 {
 #[cfg(not(target_os = "oxide-kernel"))]
 fn lookup_net_ifindex(_name: &str) -> u32 {
     0
-}
-
-// ---- /sys/class/tty (directory of symlinks) -------------------------------
-
-/// `/sys/class/tty` directory. Entries are symlinks to the canonical virtual
-/// tty device directories, matching Linux's class-device layout.
-struct SysClassTtyOps;
-impl InodeOps for SysClassTtyOps {
-    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        if tty_dev(name).is_none() { return Err(VfsError::Enoent); }
-        let mut target = String::from("../../devices/virtual/tty/");
-        target.push_str(name);
-        Ok(make_symlink_inode(target.into_bytes()))
-    }
-}
-impl FileOps for SysClassTtyOps {
-    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < TTY_DEVICES.len() {
-            let next = idx as u64 + 1;
-            let name = TTY_DEVICES[idx].0;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
-    }
-}
-fn make_sys_class_tty_inode() -> InodeRef {
-    InodeBuilder::new(0x5101_0001, mk_mode(FileType::Directory, DIR_PERM),
-        Arc::new(SysClassTtyOps), Arc::new(SysClassTtyOps)).build()
-}
-
-// ---- /sys/devices/virtual/tty (directory of device dirs) ------------------
-
-/// `/sys/devices/virtual/tty` directory.
-struct SysDevicesVirtualTtyOps;
-impl InodeOps for SysDevicesVirtualTtyOps {
-    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let (major, minor) = tty_dev(name).ok_or(VfsError::Enoent)?;
-        Ok(make_tty_device_inode(String::from(name), major, minor))
-    }
-}
-impl FileOps for SysDevicesVirtualTtyOps {
-    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < TTY_DEVICES.len() {
-            let next = idx as u64 + 1;
-            let name = TTY_DEVICES[idx].0;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
-    }
-}
-fn make_sys_devices_virtual_tty_inode() -> InodeRef {
-    InodeBuilder::new(0x5101_0002, mk_mode(FileType::Directory, DIR_PERM),
-        Arc::new(SysDevicesVirtualTtyOps), Arc::new(SysDevicesVirtualTtyOps)).build()
-}
-
-// ---- /sys/devices/virtual/tty/<name> (per-device dir) ---------------------
-
-struct TtyDeviceData { name: String, major: u32, minor: u32 }
-
-struct TtyDeviceOps;
-impl InodeOps for TtyDeviceOps {
-    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let d = inode.private::<TtyDeviceData>().ok_or(VfsError::Einval)?;
-        match name {
-            "dev" => {
-                let body = alloc::format!("{}:{}\n", d.major, d.minor).into_bytes();
-                Ok(make_body_inode(body, 0x5101_2000 + d.minor as Ino))
-            }
-            "uevent" => Ok(make_tty_uevent_inode(d.name.clone(), d.major, d.minor)),
-            _ => Err(VfsError::Enoent),
-        }
-    }
-}
-impl FileOps for TtyDeviceOps {
-    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const ENTRIES: &[&str] = &["dev", "uevent"];
-        let mut idx = ctx.pos as usize;
-        while idx < ENTRIES.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(ENTRIES[idx], ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
-    }
-}
-fn make_tty_device_inode(name: String, major: u32, minor: u32) -> InodeRef {
-    InodeBuilder::new(0x5101_1000 + minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
-        Arc::new(TtyDeviceOps), Arc::new(TtyDeviceOps))
-        .private(Arc::new(TtyDeviceData { name, major, minor }))
-        .build()
-}
-
-// ---- /sys/devices/virtual/tty/<name>/uevent (rw attr) ---------------------
-
-struct TtyUeventData { name: String, major: u32, minor: u32 }
-
-struct TtyUeventFileOps;
-impl FileOps for TtyUeventFileOps {
-    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = inode.private::<TtyUeventData>().ok_or(VfsError::Einval)?;
-        let body = alloc::format!(
-            "MAJOR={}\nMINOR={}\nDEVNAME={}\n", d.major, d.minor, d.name).into_bytes();
-        Ok(read_window(&body, off, buf))
-    }
-    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
-        let d = inode.private::<TtyUeventData>().ok_or(VfsError::Einval)?;
-        emit_tty_uevent(uevent_action(b), &d.name, d.major, d.minor);
-        Ok(b.len())
-    }
-}
-fn make_tty_uevent_inode(name: String, major: u32, minor: u32) -> InodeRef {
-    InodeBuilder::new(0x5101_3000 + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
-        default_inode_ops(), Arc::new(TtyUeventFileOps))
-        .private(Arc::new(TtyUeventData { name, major, minor }))
-        .build()
 }
 
 // ---- /sys/class/net (directory of symlinks) -------------------------------
@@ -562,8 +415,8 @@ pub fn init() {
     register_dir("/sys/kernel/debug");
     register("/sys/class/net", make_sys_class_net_inode());
     register("/sys/devices/virtual/net", make_sys_devices_virtual_net_inode());
-    register("/sys/class/tty", make_sys_class_tty_inode());
-    register("/sys/devices/virtual/tty", make_sys_devices_virtual_tty_inode());
+    register("/sys/class/tty", tty::make_sys_class_tty_inode());
+    register("/sys/devices/virtual/tty", tty::make_sys_devices_virtual_tty_inode());
     bus::init();
     block::init();
     char_class::init();
