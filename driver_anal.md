@@ -578,16 +578,18 @@ That means driver binding is currently descriptive, not causal. The device is al
 
 ### Device publication
 
-`device_add()` currently does:
+`device_add()` now does the Linux-visible publication order:
 
 1. `register_device()`
-2. sysfs hook fires
-3. sysfs hook emits add uevent
-4. devtmpfs hook creates `/dev` node
+2. devtmpfs hook creates `/dev` node
+3. sysfs hook fires
+4. sysfs hook emits add uevent
 
-This order is wrong for Linux-visible behavior. Userspace can process an add uevent before the matching `/dev` node exists.
+That fixes the earlier `/dev`-after-uevent race for model-owned devices.
 
-Also, many real devices still use `register_device()` instead of `device_add()`, so they enter the model without devtmpfs linkage.
+The remaining problem is that some real devices still bypass authoritative
+model binding and publication, so direct probe paths can still initialize
+hardware before the model owns the lifecycle.
 
 ### Runtime state
 
@@ -600,7 +602,8 @@ Several drivers still use singleton global state:
   proof is still missing
 - virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
 - virtio-vsock: keyed transport records, but a singleton upper protocol endpoint
-- virtio-snd: keyed transport records, but a singleton upper sound card
+- virtio-snd: keyed transport records with EVENTQ drained per transport, but a
+  singleton upper sound card/PCM/control ABI
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
 
@@ -978,10 +981,11 @@ Priority:
 
 1. virtio-net
 2. virtio-gpu
-3. virtio-snd
+3. sound core per-card state for virtio-snd
 4. virtio-vsock
 5. UARTs
-6. live proof for virtio-input, virtio-rng, NVMe, and AHCI
+6. live proof for virtio-input, virtio-rng, NVMe, AHCI, and multi-device
+   virtio-snd transport installs
 
 Acceptance:
 
@@ -1035,7 +1039,7 @@ all derive from real registries, not duplicated hard-coded publication paths.
 
 1. Make `drv::bind` a real fallible operation that calls `Driver::probe`.
 2. Add `drv::unbind` and call `Driver::remove`.
-3. Fix `device_add` ordering so devtmpfs exists before add uevent.
+3. Remove direct probe/publication paths that still bypass model-owned binding.
 4. Add remove uevents to `device_del`.
 5. Pick one driver as the first migration target. Best candidate: virtio-blk, because it has clear visible acceptance through `/dev/vda`, `/sys/block/vda`, mount, and `lsblk`.
 6. After virtio-blk, migrate virtio-net or virtio-input. virtio-net tests netdev/rtnetlink; virtio-input tests class devices and graphical login dependencies.
