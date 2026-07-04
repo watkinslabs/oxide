@@ -159,7 +159,10 @@ test-pass claims.
   resource during its own install path.
 - Virtio-blk has per-device records, unregisters disks on remove, freezes new
   I/O, waits for its single in-flight request owner, resets the device, and
-  returns child-owned bounce allocation when safe.
+  returns child-owned bounce allocation when safe. Its child API is keyed by
+  the packed parent device key, and the dead pci-boot `virtio_blk_cfg`
+  pass-through has been removed so block install/remove/shutdown go directly
+  through the child driver.
 - NVMe and AHCI now bind through model probes and keep typed block-device state;
   remove unregisters disks, quiesces hardware state, and returns queue/bounce
   frames. Their BAR mappings are owned and dropped on probe failure/remove.

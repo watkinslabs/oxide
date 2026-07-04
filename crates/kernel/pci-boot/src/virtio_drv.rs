@@ -434,11 +434,12 @@ impl drv::Driver for VirtioBlkDrv {
             return Err(drv::Error::ProbeFailed);
         }
         let resources = p.resources(&[p.q0_resource()]);
-        let idx = super::virtio_blk_cfg::register_blk(
-            d.bdf.bus, d.bdf.device, d.bdf.function,
+        let device_key = bdf_word(d.bdf);
+        let idx = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
+            device_key,
             resources,
-            p.drv_features,
-        );
+            drv_features: p.drv_features,
+        });
         if idx == 0 {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
@@ -449,14 +450,15 @@ impl drv::Driver for VirtioBlkDrv {
 
     fn remove(&self, dev: &drv::Device) {
         if let Some(bdf) = pci_parent_bdf(dev) {
-            let _ = super::virtio_blk_cfg::remove_blk(bdf.bus, bdf.device, bdf.function);
-            unpublish_transport_mmio(bdf_word(bdf));
+            let device_key = bdf_word(bdf);
+            let _ = drv_virtio_blk::modern::remove_blk(device_key);
+            unpublish_transport_mmio(device_key);
         }
     }
 
     fn shutdown(&self, dev: &drv::Device) {
         if let Some(bdf) = pci_parent_bdf(dev) {
-            let _ = super::virtio_blk_cfg::shutdown_blk(bdf.bus, bdf.device, bdf.function);
+            let _ = drv_virtio_blk::modern::shutdown_blk(bdf_word(bdf));
         }
     }
 }
