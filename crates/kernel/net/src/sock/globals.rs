@@ -70,5 +70,3 @@ pub fn alloc_ephemeral_port6() -> Result<u16, NetError> {
     }
     Err(NetError::Eaddrinuse)
 }
-
-/// Per-AF_INET-socket variant.

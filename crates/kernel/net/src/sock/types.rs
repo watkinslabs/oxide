@@ -1,5 +1,7 @@
 use super::*;
 
+/// Per-AF_INET-socket variant.
+pub enum SockKind {
     /// SOCK_DGRAM — bound port managed via NetStack's UDP map.
     Udp,
     /// SOCK_STREAM after `socket()` but before `listen()`/`connect()`/

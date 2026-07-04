@@ -176,3 +176,5 @@ pub fn clone_global_arc() -> Option<Arc<AddressSpace>> {
 /// Returns 0 if `init` hasn't run.
 /// # C: O(1)
 pub fn hhdm_offset() -> u64 {
+    HHDM_OFFSET.load(Ordering::Acquire)
+}

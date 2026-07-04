@@ -374,38 +374,38 @@ impl VirtioProbeState {
     }
 }
 
-pub(super) struct VirtioPciProbeTrace {
-    pub(super) cmd_orig: u16,
-    pub(super) cmd_new: u16,
-    pub(super) cfg_va: u64,
-    pub(super) dev_features: u64,
-    pub(super) drv_features: u64,
-    pub(super) post_status: u32,
-    pub(super) features_ok: bool,
-    pub(super) msix_cfg: u16,
-    pub(super) num_queues: u16,
-    pub(super) queues: [(u16, u16); virtio::MAX_RESOURCE_QUEUES],
-    pub(super) queues_len: usize,
-    pub(super) queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
-    pub(super) final_status: u8,
-    pub(super) post_notify_status: u8,
-    pub(super) avail_idx_posted: u16,
-    pub(super) used_idx_observed: u16,
-    pub(super) isr_status: u8,
+pub(crate) struct VirtioPciProbeTrace {
+    pub(crate) cmd_orig: u16,
+    pub(crate) cmd_new: u16,
+    pub(crate) cfg_va: u64,
+    pub(crate) dev_features: u64,
+    pub(crate) drv_features: u64,
+    pub(crate) post_status: u32,
+    pub(crate) features_ok: bool,
+    pub(crate) msix_cfg: u16,
+    pub(crate) num_queues: u16,
+    pub(crate) queues: [(u16, u16); virtio::MAX_RESOURCE_QUEUES],
+    pub(crate) queues_len: usize,
+    pub(crate) queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
+    pub(crate) final_status: u8,
+    pub(crate) post_notify_status: u8,
+    pub(crate) avail_idx_posted: u16,
+    pub(crate) used_idx_observed: u16,
+    pub(crate) isr_status: u8,
 }
 
-pub(super) struct VirtioProbe {
+pub(crate) struct VirtioProbe {
     pub(super) bdf_word: u32,
     mappings: TransportMappings,
     msix: Vec<MsixBinding>,
-    pub(super) child_facts: virtio::VirtioChildProbeFacts,
-    pub(super) trace: VirtioPciProbeTrace,
+    pub(crate) child_facts: virtio::VirtioChildProbeFacts,
+    pub(crate) trace: VirtioPciProbeTrace,
     pub(super) cfg_va: u64,
     owned_frames: virtio::VirtioProbeOwnedFrames,
 }
 
 impl VirtioProbe {
-    pub(super) fn child_resources(
+    pub(crate) fn child_resources(
         &self,
         requirements: virtio::VirtioChildRequirements,
     ) -> Option<virtio::VirtioResources> {
@@ -420,7 +420,7 @@ impl VirtioProbe {
         self.mappings.unmap_all();
     }
 
-    pub(super) fn release_failed_child(&mut self) {
+    pub(crate) fn release_failed_child(&mut self) {
         self.release_failed_transport();
     }
 }

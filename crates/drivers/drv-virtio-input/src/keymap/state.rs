@@ -47,6 +47,15 @@ impl Mods {
     }
 }
 
+impl core::ops::BitOr for Mods {
+    type Output = Self;
+
+    /// # C: O(1)
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
 /// Runtime keymap. Each slot stores a Unicode codepoint (0 = no
 /// mapping); `translate()` UTF-8-encodes on output. This lets
 /// non-ASCII locales (DE umlauts, ES ñ, FR accents, …) ride the

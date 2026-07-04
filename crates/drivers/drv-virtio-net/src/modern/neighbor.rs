@@ -11,6 +11,20 @@ fn ndp_lookup_for_device(device_key: DeviceKey, next_hop: net::Ipv6Addr) -> Opti
     super::netdev::net_runtime_for(device_key).and_then(|runtime| runtime.ndp.lookup(next_hop))
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn ndp_insert_for_device(device_key: DeviceKey, ip: net::Ipv6Addr, mac: net::MacAddr) {
+    if let Some(iface) = super::registered_iface_for(device_key) {
+        net::sock::stack().ndp_insert(iface, ip, mac);
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn ndp_insert_for_device(device_key: DeviceKey, ip: net::Ipv6Addr, mac: net::MacAddr) {
+    if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
+        runtime.ndp.insert(ip, mac);
+    }
+}
+
 fn solicited_node_multicast(ip: net::Ipv6Addr) -> net::Ipv6Addr {
     let mut out = [0u8; 16];
     out[0] = 0xff;
@@ -122,7 +136,6 @@ fn resolve_ipv6_next_hop_mac(
     }
 }
 
-#[cfg(not(target_os = "oxide-kernel"))]
 pub(super) fn learn_ndp_from_ipv6(device_key: DeviceKey, l3: &[u8]) {
     let Ok(hdr) = net::ipv6::Ipv6Hdr::parse(l3) else {
         return;
@@ -138,28 +151,25 @@ pub(super) fn learn_ndp_from_ipv6(device_key: DeviceKey, l3: &[u8]) {
     if payload.is_empty() {
         return;
     }
-    let Some(runtime) = super::netdev::net_runtime_for(device_key) else {
-        return;
-    };
     match payload[0] {
         t if t == net::ndp::NDP_NS => {
             if let Ok(msg) = net::ndp::NdpMsg::parse(payload, hdr.src, hdr.dst) {
                 if let Some(mac) = msg.lladdr {
-                    runtime.ndp.insert(hdr.src, mac);
+                    ndp_insert_for_device(device_key, hdr.src, mac);
                 }
             }
         }
         t if t == net::ndp::NDP_NA => {
             if let Ok(msg) = net::ndp::NdpMsg::parse(payload, hdr.src, hdr.dst) {
                 if let Some(mac) = msg.lladdr {
-                    runtime.ndp.insert(msg.target, mac);
+                    ndp_insert_for_device(device_key, msg.target, mac);
                 }
             }
         }
         t if t == net::ndp::NDP_RA => {
             if let Ok(ra) = net::ndp::RouterAdvertisement::parse(payload, hdr.src, hdr.dst) {
                 if let Some(mac) = ra.source_lladdr {
-                    runtime.ndp.insert(hdr.src, mac);
+                    ndp_insert_for_device(device_key, hdr.src, mac);
                 }
             }
         }

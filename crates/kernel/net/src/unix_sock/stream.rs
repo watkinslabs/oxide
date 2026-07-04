@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
@@ -30,8 +30,8 @@ pub struct UnixPair {
     pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     /// SCM_RIGHTS bursts queued by writes on each direction.
-    pub a_to_b_fds: Spinlock<VecDeque<alloc::vec::Vec<vfs::File>>, UnixLockClass>,
-    pub b_to_a_fds: Spinlock<VecDeque<alloc::vec::Vec<vfs::File>>, UnixLockClass>,
+    pub a_to_b_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
+    pub b_to_a_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
     /// Peer credentials per end (`SO_PEERCRED`).
     pub cred_a: EndCred,
     pub cred_b: EndCred,
@@ -83,7 +83,7 @@ impl UnixPair {
     /// Queue a SCM_RIGHTS burst from `end` for the peer to pick up
     /// on its next recvmsg-with-cmsg.
     /// # C: O(1)
-    pub fn push_fds(&self, end: UnixEnd, fds: alloc::vec::Vec<vfs::File>) {
+    pub fn push_fds(&self, end: UnixEnd, fds: alloc::vec::Vec<Arc<vfs::File>>) {
         if fds.is_empty() {
             return;
         }
@@ -97,7 +97,7 @@ impl UnixPair {
     /// Pop the next SCM_RIGHTS burst queued for the reader at `end`.
     /// `end == A` consumes from b_to_a_fds. Returns empty when none.
     /// # C: O(1)
-    pub fn pop_fds(&self, end: UnixEnd) -> alloc::vec::Vec<vfs::File> {
+    pub fn pop_fds(&self, end: UnixEnd) -> alloc::vec::Vec<Arc<vfs::File>> {
         let mut g = match end {
             UnixEnd::A => self.b_to_a_fds.lock(),
             UnixEnd::B => self.a_to_b_fds.lock(),
