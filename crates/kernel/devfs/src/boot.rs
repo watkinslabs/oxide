@@ -9,16 +9,16 @@ use alloc::sync::Arc;
 use vfs::InodeRef;
 use crate::register;
 
-/// Self-register a mem-class pseudo-device through `drv::device_add` (D27):
-/// pushes a `drv::Device` (bus/dev_class "mem", addr/devname `name`) into the
+/// Self-register a pseudo character device through `drv::device_add` (D27):
+/// pushes a `drv::Device` (bus/dev_class `class`, addr/devname `name`) into the
 /// device registry and fires the devtmpfs hook → `/dev/<name>` minted from the
 /// `factory` (preserving the exact bespoke inode). `dt` is the `(major, minor)`
 /// metadata. # C: O(1) amortised
-fn add_mem_dev(name: &str, dt: (u32, u32), factory: drv::NodeFactory) {
+fn add_pseudo_dev(class: &'static str, name: &str, dt: (u32, u32), factory: drv::NodeFactory) {
     use alloc::string::String;
     drv::device_add(Arc::new(
-        drv::Device::new("mem", String::from(name), 0, 0, 0)
-            .with_devnode("mem", String::from(name), Some(dt))
+        drv::Device::new(class, String::from(name), 0, 0, 0)
+            .with_devnode(class, String::from(name), Some(dt))
             .with_node_factory(factory)));
 }
 
@@ -39,26 +39,20 @@ pub fn populate_defaults() {
     // is also register_dir'd by `devpts::init`; idempotent. /dev/shm above.
     crate::register_dir("/dev/mqueue");
     crate::register_dir("/dev/pts");
-    // device-model Stage C (D27): the standard mem char devices self-register
-    // through `drv::device_add` (dev_class "mem") so ONE registration drives the
-    // device model + /dev. `node_factory` mints the EXACT bespoke inode each used
-    // before (same ino, fops, rdev) — byte-identical /dev. bus "mem" is ignored
-    // by the pci/virtio /sys synthesis (no spurious /sys entry). dev_t is the
-    // standard mem major/minor metadata. NOTE: /dev/urandom keeps the shared
-    // /dev/random inode (rdev 1:8) as before; Linux assigns urandom 1:9 — that
-    // pre-existing quirk is preserved here (conservative: identical /dev), not
-    // "fixed", to avoid changing a node's identity in this migration.
-    add_mem_dev("null", (1, 3),  Arc::new(|| crate::misc::make_null_inode()));
-    add_mem_dev("kmsg", (1, 11), Arc::new(|| crate::misc::make_kmsg_inode()));
-    add_mem_dev("zero", (1, 5),  Arc::new(|| crate::misc::make_zero_inode()));
-    add_mem_dev("full", (1, 7),  Arc::new(|| crate::misc::make_full_inode()));
-    let rand = crate::misc::make_random_inode();
-    let rand2 = Arc::clone(&rand);
-    add_mem_dev("random",  (1, 8), Arc::new(move || Arc::clone(&rand)));
-    add_mem_dev("urandom", (1, 8), Arc::new(move || Arc::clone(&rand2)));
-    // /dev/autofs (misc 10:235) keeps its direct registration: it is not a mem
-    // device and is handled with the misc class elsewhere.
-    register("/dev/autofs",  crate::misc::make_autofs_inode());
+    // device-model Stage C (D27): built-in pseudo char devices self-register
+    // through `drv::device_add` so ONE registration drives the device model +
+    // /dev. `node_factory` mints the bespoke inode with the correct fops/rdev.
+    // bus "mem"/"misc" is ignored by pci/virtio sysfs synthesis. dev_t is the
+    // standard mem major/minor metadata. Linux exposes random as 1:8 and
+    // urandom as 1:9, so publish separate device identities even though both
+    // use the same random file implementation.
+    add_pseudo_dev("mem", "null", (1, 3),  Arc::new(|| crate::misc::make_null_inode()));
+    add_pseudo_dev("mem", "kmsg", (1, 11), Arc::new(|| crate::misc::make_kmsg_inode()));
+    add_pseudo_dev("mem", "zero", (1, 5),  Arc::new(|| crate::misc::make_zero_inode()));
+    add_pseudo_dev("mem", "full", (1, 7),  Arc::new(|| crate::misc::make_full_inode()));
+    add_pseudo_dev("mem", "random",  (1, 8), Arc::new(|| crate::misc::make_random_inode()));
+    add_pseudo_dev("mem", "urandom", (1, 9), Arc::new(|| crate::misc::make_urandom_inode()));
+    add_pseudo_dev("misc", "autofs", (10, 235), Arc::new(|| crate::misc::make_autofs_inode()));
     let sym = |target: &'static [u8], ino: u64| -> InodeRef {
         crate::misc::make_symlink_inode(target, ino)
     };

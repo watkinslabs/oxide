@@ -356,9 +356,11 @@ test-pass claims.
   virtio-blk, virtio-input, virtio-gpu, virtio-rng, virtio-vsock, virtio-net,
   and virtio-snd, but there is no systematic devres/resource-stack mechanism
   or fault-injection proof after every step.
-- Devtmpfs publication is model-owned for many real nodes, including block,
-  DRM, fbdev, input, RNG, and sound, but the branch still needs an audit for
-  all direct runtime `devfs::register` users.
+- Devtmpfs publication is model-owned for real hardware-backed nodes,
+  including block, DRM, fbdev, input, RNG, sound, console/tty, and boot pseudo
+  char devices. The remaining direct `devfs::register` users are fixed
+  namespace entries, devpts allocation, coredump artifacts, or other
+  non-hardware pseudo-files rather than driver-owned device nodes.
 - Sysfs exposes more Linux-shaped bus state, including `/sys/dev/char`,
   `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
   but class-device topology and repeated bind/unbind/remove/readd behavior are
@@ -843,9 +845,13 @@ Missing or weak:
 
 The issue is not that sysfs is synthesized. The issue is that the synthesized model does not yet expose Linux's required state transitions and links.
 
-### 11. Device nodes are not all model-owned
+### 11. Device nodes must stay model-owned
 
-Some nodes are created through `device_add`, some through direct `devfs::register`, and some through subsystem-specific registration. This makes it hard to guarantee:
+Hardware-backed and real character/block device nodes now need to stay on the
+`device_add`/class-device path. The remaining direct `devfs::register` users
+are fixed pseudo-files, mountpoint underlay directories, devpts dynamic slave
+entries, and coredump artifacts. Reintroducing driver-owned nodes through
+direct devfs registration would make it hard to guarantee:
 
 - correct `rdev`
 - correct `/sys/dev/char`
@@ -853,7 +859,9 @@ Some nodes are created through `device_add`, some through direct `devfs::registe
 - correct uevents
 - correct teardown
 
-The long-term rule should be: a device node belongs to a registered device object or a registered class device object. Direct `devfs::register` should be limited to fixed pseudo-devices and early boot exceptions.
+The rule is: a device node belongs to a registered device object or a
+registered class device object. Direct `devfs::register` is limited to fixed
+pseudo-devices, non-device pseudo-files, and early boot namespace exceptions.
 
 ### 12. Driver ownership boundaries are blurred
 

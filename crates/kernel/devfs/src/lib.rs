@@ -245,11 +245,12 @@ mod fs_tests {
         crate::boot::populate_defaults();
         for (path, rdev) in [
             ("/dev/null", 0x0103u32), ("/dev/zero", 0x0105), ("/dev/full", 0x0107),
-            ("/dev/kmsg", 0x010b), ("/dev/random", 0x0108), ("/dev/urandom", 0x0108),
+            ("/dev/kmsg", 0x010b), ("/dev/random", 0x0108), ("/dev/urandom", 0x0109),
+            ("/dev/autofs", 0x0aec),
         ] {
             let i = lookup(path).unwrap_or_else(|| panic!("{} minted", path));
             assert_eq!(i.file_type(), vfs::FileType::CharDev, "{} is a char device", path);
-            assert_eq!(i.rdev(), rdev, "{} carries its mem rdev", path);
+            assert_eq!(i.rdev(), rdev, "{} carries its Linux rdev", path);
         }
     }
 
@@ -275,8 +276,8 @@ mod fs_tests {
         let mut actor = Collect(&mut names);
         let mut ctx = vfs::DirContext::new(0, &mut actor);
         dev.readdir(&mut ctx).expect("readdir /dev");
-        // mem char devices + kmsg (device_add), autofs (register), the std fd
-        // symlinks (register), and the mount-point dirs (register_dir).
+        // mem/misc char devices + kmsg (device_add), the std fd symlinks
+        // (register), and the mount-point dirs (register_dir).
         for want in ["null", "zero", "full", "kmsg", "random", "urandom", "autofs",
                      "stdin", "stdout", "stderr", "fd", "shm", "mqueue", "pts"] {
             assert!(names.iter().any(|n| n == want), "/dev/{} present, got {:?}", want, names);
