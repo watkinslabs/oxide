@@ -60,6 +60,11 @@ test-pass claims.
   IDs are not mixed into the modern cap-based path.
 - Virtio-pci creates child `virtio` devices through `device_add` and child
   virtio drivers bind through the model.
+- Virtio child model-driver declarations have been split out of the
+  virtio-pci transport module into a dedicated `pci-boot::virtio_child`
+  module. They still call back into the boot virtio-pci transport for now, but
+  the PCI transport file no longer owns every child `drv::Driver`
+  declaration.
 - Virtio-pci owns persistent transport MMIO mappings, MSI-X state, and vring
   frame publication/teardown records for successful child probes.
 - Virtio-pci MSI-X state is now carried as an owned optional binding instead
@@ -335,9 +340,11 @@ test-pass claims.
   plans now use shared `virtio::VirtioTransportProfile` and
   `virtio::VirtioQueuePlan`; resource publication for child probes now goes
   through `VirtioProbe::child_resources` using those requirements instead of
-  per-child q0/q1/q2/q3 lists in the PCI glue. The next step is to split the
-  remaining child-driver probe entrypoints themselves out from the PCI
-  execution machinery and behind a real virtio bus/core boundary.
+  per-child q0/q1/q2/q3 lists in the PCI glue. Virtio child model-driver
+  declarations now live in a separate `pci-boot::virtio_child` module instead
+  of the virtio-pci transport module. The next step is to replace the remaining
+  boot transport callback dependency between `virtio_child` and `virtio_drv`
+  with a real virtio bus/core interface.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
