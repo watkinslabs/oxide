@@ -896,6 +896,56 @@ impl VirtioTransportProbeResult {
     }
 }
 
+/// Transport-owned frame list prepared during probe and either transferred to
+/// the live transport record or released on child probe failure.
+///
+/// Keeping this as one owner avoids per-child conditional cleanup paths: if
+/// the transport allocated a frame and child probe did not publish, the failed
+/// probe owns releasing it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct VirtioProbeOwnedFrames {
+    vring_frames: Vec<u64>,
+    payload_frames: [u64; 2],
+}
+
+impl VirtioProbeOwnedFrames {
+    /// # C: O(MAX_RESOURCE_QUEUES)
+    pub fn from_probe_result(result: &VirtioTransportProbeResult) -> Self {
+        Self {
+            vring_frames: result.vring_frames(),
+            payload_frames: result.net_payload_frames(),
+        }
+    }
+
+    /// Drain every frame still owned by the failed transport probe.
+    /// # C: O(N_frames)
+    pub fn take_all(&mut self) -> Vec<u64> {
+        let mut frames = core::mem::take(&mut self.vring_frames);
+        for frame in core::mem::take(&mut self.payload_frames) {
+            push_unique_frame(&mut frames, frame);
+        }
+        frames
+    }
+
+    /// Drain only the vring frames for publication into the live transport
+    /// record. Payload buffers are handed to the child driver runtime through
+    /// child probe facts and must not be transport-owned after publish.
+    /// # C: O(1)
+    pub fn take_vring_frames(&mut self) -> Vec<u64> {
+        core::mem::take(&mut self.vring_frames)
+    }
+
+    /// # C: O(1)
+    pub const fn payload_frames(&self) -> [u64; 2] {
+        self.payload_frames
+    }
+
+    /// # C: O(1)
+    pub fn is_empty(&self) -> bool {
+        self.vring_frames.is_empty() && self.payload_frames == [0, 0]
+    }
+}
+
 /// # C: O(N)
 pub fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
     if frame != 0 && !frames.iter().any(|existing| *existing == frame) {
@@ -1551,5 +1601,70 @@ mod tests {
             alloc::vec![0x1000, 0x2000, 0x3000, 0x5000, 0x6000, 0x7000]
         );
         assert_eq!(result.net_payload_frames(), [0x9000, 0xa000]);
+    }
+
+    #[test]
+    fn owned_probe_frames_drain_all_failed_probe_resources_once() {
+        let mut queues = core::array::from_fn(|index| {
+            VirtQueueResource::new(index as u16, 0, 0, 0, 0, 0, 0)
+        });
+        queues[0] = VirtQueueResource {
+            index:      0,
+            size:       8,
+            desc_pa:    0x1000,
+            driver_pa:  0x2000,
+            device_pa:  0x3000,
+            notify_va:  0x4000,
+            notify_off: 2,
+        };
+        queues[1] = VirtQueueResource {
+            index:      1,
+            size:       8,
+            desc_pa:    0x1000,
+            driver_pa:  0x5000,
+            device_pa:  0x6000,
+            notify_va:  0x7000,
+            notify_off: 4,
+        };
+        let result = VirtioTransportProbeResult::new(
+            0x20,
+            0x55,
+            crate::VIRTIO_STATUS_DRIVER_OK,
+            0x10,
+            0x30,
+            queues,
+            VirtioNetBootPayloads::new(0x6000, 64, 0x8000),
+        );
+        let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result);
+
+        assert_eq!(
+            owned.take_all(),
+            alloc::vec![0x1000, 0x2000, 0x3000, 0x5000, 0x6000, 0x8000]
+        );
+        assert!(owned.is_empty());
+        assert!(owned.take_all().is_empty());
+    }
+
+    #[test]
+    fn owned_probe_frames_publish_only_transfers_vring_frames() {
+        let mut queues = core::array::from_fn(|index| {
+            VirtQueueResource::new(index as u16, 0, 0, 0, 0, 0, 0)
+        });
+        queues[0] = VALID_Q0;
+        let result = VirtioTransportProbeResult::new(
+            0x20,
+            0x55,
+            crate::VIRTIO_STATUS_DRIVER_OK,
+            0x10,
+            0x30,
+            queues,
+            VirtioNetBootPayloads::new(0x9000, 64, 0xa000),
+        );
+        let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result);
+
+        assert_eq!(owned.take_vring_frames(), alloc::vec![0x1000, 0x2000, 0x3000]);
+        assert_eq!(owned.payload_frames(), [0x9000, 0xa000]);
+        assert_eq!(owned.take_all(), alloc::vec![0x9000, 0xa000]);
+        assert!(owned.is_empty());
     }
 }

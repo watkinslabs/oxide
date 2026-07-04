@@ -176,6 +176,11 @@ test-pass claims.
   both successful publish and failed-probe release, so explicit child-probe
   errors and session drop cannot double-release the same prepared transport
   state. Hosted virtio tests cover the idempotent ownership transfer.
+- Shared `virtio::VirtioProbeOwnedFrames` now owns the frame ledger for a
+  prepared child probe. The PCI-backed transport publishes only vring frames
+  into the live transport record after success; failed child probes drain every
+  still-owned frame, including net boot payload frames, without child-type
+  conditional cleanup.
 - Shared `virtio::run_child_remove` and `virtio::run_child_shutdown` now own
   the transport-neutral child remove/shutdown sequencing for a stable
   `VirtioChildDeviceKey`: child remove runs before transport unpublish, while
@@ -517,8 +522,9 @@ test-pass claims.
   virtio-core/bus split instead of living in `virtio_drv.rs`.
 - Probe failure unwind is better for concrete cases, especially NVMe, AHCI,
   virtio-blk, virtio-input, virtio-gpu, virtio-rng, virtio-vsock, virtio-net,
-  and virtio-snd, but there is no systematic devres/resource-stack mechanism
-  or fault-injection proof after every step.
+  and virtio-snd. Virtio failed-probe frame ownership is now centralized in a
+  transport-owned frame ledger, but there is still no general devres stack or
+  fault-injection proof after every step.
 - Devtmpfs publication is model-owned for real hardware-backed nodes,
   including block, DRM, fbdev, input, RNG, sound, console/tty, and boot pseudo
   char devices. The remaining direct `devfs::register` users are fixed
@@ -678,8 +684,11 @@ test-pass claims.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
-  `VirtioProbe` instead of ad-hoc per-device wrappers. MSI-X q0 vector policy
-  is now explicit, including function-mask handling and table-entry validation.
+  `VirtioProbe` instead of ad-hoc per-device wrappers. `VirtioProbe` now drains
+  a single transport-owned frame ledger on child failure, so net boot payload
+  frames cannot be leaked by a child-requirement mismatch. MSI-X q0 vector
+  policy is now explicit, including function-mask handling and table-entry
+  validation.
   Transport-owned MSI-X binding lifetime now handles multiple entries, and
   extra queue plans now resolve declared IRQ callbacks into queue-indexed
   MSI-X table entries before common-cfg queue programming. Virtio-snd now

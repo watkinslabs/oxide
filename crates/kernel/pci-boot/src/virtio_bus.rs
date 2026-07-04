@@ -56,8 +56,7 @@ impl virtio::VirtioChildTransportSession for VirtioChildSession {
 
     fn release_failed_child(&mut self) {
         if self.transport_lease.take() {
-            self.probe
-                .release_failed_child(self.profile.child_requirements);
+            self.probe.release_failed_child();
         }
     }
 
