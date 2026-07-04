@@ -205,9 +205,6 @@ impl drv::Driver for VirtioGpuDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if drv_virtio_gpu::is_present() {
-            return Err(drv::Error::Busy);
-        }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::gpu(None))
             .ok_or(drv::Error::ProbeFailed)?;
@@ -343,9 +340,6 @@ impl drv::Driver for VirtioNetDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if drv_virtio_net::modern::is_modern_present() {
-            return Err(drv::Error::Busy);
-        }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::net(Some(drv_virtio_net::modern::raise_rx)))
@@ -546,9 +540,6 @@ impl drv::Driver for VirtioVsockDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if drv_virtio_vsock::present() {
-            return Err(drv::Error::Busy);
-        }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::vsock(Some(drv_virtio_vsock::raise_rx)))
@@ -613,9 +604,6 @@ impl drv::Driver for VirtioSndDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if drv_virtio_snd::present() {
-            return Err(drv::Error::Busy);
-        }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
         let device_key = bdf_word(d.bdf);
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::snd(None))
