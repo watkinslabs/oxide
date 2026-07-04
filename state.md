@@ -1,59 +1,47 @@
 # state.md — session handoff
 
 ## Headline
-Multiple greeter-blocking bugs FOUND + FIXED this session (all measured,
-committed, boot-verified on branch B318, pushed). The chain now gets much
-further: logind's `/sys` works, seat0 is created, coldplug succeeds, udevd
-processes devices, and **card0's uevent now reaches udevd** (grp1=1 at t=6.1).
-Still `CAN_GRAPHICAL=0` — the NEW frontier is that udevd processes PCI/platform
-devices (107×, a re-processing loop → boot slowdown) but does NOT complete the
-VIRTUAL devices (drm card0 / block / input): no `/run/udev/data/c226:0` db and
-no master-of-seat tag is ever written, so seat0 never becomes graphical.
+7 greeter-blocking kernel bugs FOUND + FIXED this session (measured, committed,
+boot-verified, branch B318 pushed). The ENTIRE kernel seat/graphics/udev chain
+now works: **`CAN_GRAPHICAL=1` achieved** (seat0 graphical, card0 tagged
+master-of-seat, GPU detected via 61-gdm.rules -> `gdm-machine-has-hardware-gpu`).
+Greeter still doesn't render — two REMAINING issues, both now measured:
+ (1) `CAN_GRAPHICAL=1` is INTERMITTENT (~1-in-several boots; a race in card0
+     coldplug tagging — most boots get =0).
+ (2) gnome-shell (the greeter session) NEVER launches even when CanGraphical=1;
+     gdm starts but forks no greeter. Plus NAMESPACE failures (accounts-daemon:
+     `Failed to set up mount namespacing: /run/systemd/seats: No such file or
+     directory` — for a path that DOES exist; smells like ANOTHER mount-ns
+     visibility bug, same class as the mnt_root fix), missing `/usr/bin/plymouth`
+     (non-fatal), and a missing `path_id` udev builtin (71-seat.rules:75).
+Boot is also ~4.5 min now (udevd does real coldplug work — each device slow).
 
 ## Fixes landed this session (branch B318, PR #2338, all pushed)
-- 6caec86e fix(sysfs): block/input `uevent` WRITABLE + emit → coldplug (udevadm
-  trigger) no longer fails EROFS; udevd now receives device uevents.
-- 21b4368e fix(sysfs): drm device_add uevent DEVPATH → devices/virtual/drm/<card>
-- 3a477d2b fix(vfs): identify a mount by `mnt_root` not `sb.s_root`  ← seat0
+- eb225e9a fix(kernfs): implement `rename` -> /dev (devtmpfs) supports udevd's
+  atomic symlink-via-rename; udevd completes device workers -> master-of-seat
+  tag -> **CAN_GRAPHICAL=1**.  <- the breakthrough
+- 6caec86e fix(sysfs): block/input `uevent` WRITABLE + emit -> coldplug no longer
+  EROFS; udevd receives device uevents.
+- 21b4368e fix(sysfs): drm device_add uevent DEVPATH -> devices/virtual/drm/<card>
+- 3a477d2b fix(vfs): identify a mount by `mnt_root` not `sb.s_root`  <- seat0
 - 8e81fd93 fix(vfs): d_drop must not unhash a mounted dentry (D_MOUNTED guard)
-- 18200270 fix(sysfs): /sys/dev/char/226:0 → devices/virtual/drm/card0
+- 18200270 fix(sysfs): /sys/dev/char/226:0 -> devices/virtual/drm/card0
 - crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs — 5 hosted tests (pass).
 
-## NEXT frontier — `/dev` (devfs) is not writable, so udevd aborts on any
-## device WITH a /dev node (card0, vda, input)  [START HERE — likely THE fix]
-MEASURED end-to-end:
-- card0's uevent IS delivered to udevd: `add@/devices/virtual/drm/card0 grp1=1`
-  at t=6.12 (coldplug; udevd's group-1 socket up since t=3.98). NOT a delivery
-  problem anymore.
-- Kernel emits ~51 uevents (41 add / 10 change), ~3 per device — NO loop (the
-  107 db writes were ~2×/event, the normal fopen_temporary+rename pattern; boot
-  slowdown is just udevd doing real coldplug work now).
-- udevd writes dbs for pci/virtio/platform (which have NO /dev node) but ZERO
-  for the VIRTUAL devices drm/block/input (which DO have /dev nodes). Worker log:
-    `Failed to create symlink '/dev/char/226:128' → '/dev/dri/renderD128':
-     Read-only file system`
-    `Device node /dev/dri/renderD128 is missing, skipping handling`
-    `Failed to open block device /dev/vda: No such device or address` (ENXIO)
-- ROOT CAUSE: **devfs (`crates/kernel/devfs/src/lib.rs:191`) returns `Erofs`
-  from the trait for create/symlink** — our `/dev` is a synthetic near-read-only
-  tree, NOT a writable devtmpfs. udevd's `update_devnode` (udev-event.c:264,
-  which runs BEFORE `device_tag_index`:436 and `device_update_db`:451) tries to
-  create `/dev/char/<maj:min>` symlinks and ABORTS EROFS → the worker never
-  reaches the master-of-seat tag / db write. Devices without /dev nodes skip
-  update_devnode and complete fine — exactly the measured discriminator.
-
-THE FIX (next session): make `/dev` support udevd's node management — creating
-subdirs (`/dev/char`, `/dev/block`, `/dev/disk/by-*`, `/dev/dri/by-path`) and
-symlinks/nodes in them, like a real devtmpfs. Options: (a) back `/dev` with a
-writable tmpfs overlay for udevd-created entries while the kernel keeps
-device-add nodes; (b) implement `symlink_child`/`create_child`/`mkdir` on the
-devfs dir inodes (currently they default to Erofs). Also fix: `/dev/dri/
-renderD128` node is MISSING (drm::node::register should mint it — verify), and
-`/dev/vda` open returns ENXIO (block node major/minor vs registered driver).
-Once /dev is writable, the virtual-device workers finish → master-of-seat tag →
-seat0 CanGraphical → gdm greeter. THEN the live cooked-uevent path (COOKTRACE=0,
-measured broken earlier) may be a final fix for live (non-coldplug) attach.
-drm.rs:114 subsystem symlink is 3 `../` (should be 4) — basename still "drm", non-fatal.
+## NEXT frontier — greeter session doesn't launch  [START HERE]
+1. gnome-shell never spawns. Even in a CAN_GRAPHICAL=1 boot, gdm starts but
+   forks no greeter (`grep gnome-shell` = 0). Measure: does gdm try to exec
+   gnome-shell / gdm-session-worker / Xorg and fail? (unconditional execve-ENOENT
+   trace at 059_execve.rs:75 — was used this session, gated behind debug-boot).
+   STRONG candidate: the NAMESPACE failures. `/run/systemd/seats: No such file or
+   directory` for a path that DOES exist (seat0 is created) => the service's
+   sandbox mount-ns can't SEE it. Same class as the /sys mnt_root bug just fixed.
+   Measure: does `/run/systemd/seats` resolve in the failing service's ns vs
+   globally? (fsid + exe probe, the method that cracked /sys). If it's a ns
+   visibility bug, fixing it likely unblocks BOTH accounts-daemon AND the greeter.
+2. CanGraphical intermittent. card0's coldplug tag is racy — measure across N
+   boots whether `/run/udev/tags/master-of-seat/c226:0` is written each time.
+3. Image/userspace: missing `/usr/bin/plymouth`, missing `path_id` udev builtin.
 
 ## What was THE bug (measured end-to-end, not guessed)
 `containing_mount_id → parent_by_dentry → visible_mnt_id_of_root_dentry /
