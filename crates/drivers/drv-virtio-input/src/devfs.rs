@@ -5,7 +5,7 @@
 // real virtio config-space capability bitmaps (drv::VirtioInputDev).
 
 use alloc::sync::Arc;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, POLL_IN, POLL_OUT,
+use vfs::{File, FileType, Ino, Inode, InodeRef, KResult, VfsError, POLL_IN, POLL_OUT,
           InodeBuilder, FileOps, default_inode_ops, mk_mode, PollSubscribers};
 use sync::{Spinlock, TaskList as NodesLockClass};
 
@@ -31,6 +31,36 @@ static EVDEV_NODES: Spinlock<[Option<InodeRef>; MAX_EVDEV], NodesLockClass>
 static EVDEV_DEVICES: Spinlock<[Option<Arc<drv::Device>>; MAX_EVDEV], NodesLockClass>
     = Spinlock::new([const { None }; MAX_EVDEV]);
 
+/// `EVIOCGRAB` owner per evdev id. Value is the open `File` address; zero means
+/// ungrabbed. Linux evdev grabs are per open file description, not per inode.
+static EVDEV_GRABS: Spinlock<[usize; MAX_EVDEV], NodesLockClass> =
+    Spinlock::new([0; MAX_EVDEV]);
+
+const EVDEV_FILE_REVOKED: u64 = 1 << 0;
+
+fn file_token(file: &File) -> usize {
+    file as *const File as usize
+}
+
+fn evdev_id(inode: &Inode) -> Option<u32> {
+    inode.private::<EvdevData>().map(|d| d.id)
+}
+
+fn grabbed_by_other(id: u32, token: usize) -> bool {
+    let owner = EVDEV_GRABS.lock()[(id as usize).min(MAX_EVDEV - 1)];
+    owner != 0 && owner != token
+}
+
+fn release_grab(id: u32, token: usize) {
+    let slot = (id as usize).min(MAX_EVDEV - 1);
+    let mut grabs = EVDEV_GRABS.lock();
+    if grabs[slot] == token {
+        grabs[slot] = 0;
+        crate::evdev_queue::queue(id).waiters.wake_one();
+        notify_evdev_subs(id);
+    }
+}
+
 /// `file_operations` for an evdev node — read pops 24-byte `input_event`
 /// records from the device queue keyed by the `id` in `i_private`; poll
 /// reports POLLIN only when a record is queued.
@@ -41,18 +71,51 @@ impl FileOps for EvdevFileOps {
     /// pushes the next event. Reads of less than one record return 0.
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         use crate::evdev_queue::INPUT_EVENT_BYTES;
-        let id = match inode.private::<EvdevData>() { Some(d) => d.id, None => return Ok(0) };
+        let id = match evdev_id(inode) { Some(id) => id, None => return Ok(0) };
         if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
         // SAFETY: caller is the running task on this CPU; read_blocking parks safely via WaitList and reschedules.
         let n = unsafe { crate::evdev_queue::queue(id).read_blocking(buf) };
         Ok(n)
     }
 
+    fn read_file(&self, file: &File, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        use crate::evdev_queue::INPUT_EVENT_BYTES;
+        let id = match evdev_id(file.inode()) { Some(id) => id, None => return Ok(0) };
+        if file.private_data() & EVDEV_FILE_REVOKED != 0 { return Err(VfsError::Enodev); }
+        if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
+        let token = file_token(file);
+        loop {
+            if !grabbed_by_other(id, token) {
+                // SAFETY: caller is the running task on this CPU; read_blocking parks safely via WaitList and reschedules.
+                return Ok(unsafe { crate::evdev_queue::queue(id).read_blocking(buf) });
+            }
+            // SAFETY: caller is running task; preempt-off; same wait discipline
+            // as `EvdevQueue::read_blocking`, but waiting for grab release.
+            unsafe { crate::evdev_queue::queue(id).waiters.park(); }
+            #[cfg(target_os = "oxide-kernel")]
+            unsafe { sched::live::schedule::schedule(); }
+            #[cfg(test)]
+            return Err(VfsError::Eagain);
+        }
+    }
+
     /// Non-blocking variant per O_NONBLOCK.
     fn read_nonblock(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         use crate::evdev_queue::INPUT_EVENT_BYTES;
-        let id = match inode.private::<EvdevData>() { Some(d) => d.id, None => return Ok(0) };
+        let id = match evdev_id(inode) { Some(id) => id, None => return Ok(0) };
         if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
+        match crate::evdev_queue::queue(id).try_pop_bytes(buf) {
+            Some(n) => Ok(n),
+            None    => Err(VfsError::Eagain),
+        }
+    }
+
+    fn read_nonblock_file(&self, file: &File, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        use crate::evdev_queue::INPUT_EVENT_BYTES;
+        let id = match evdev_id(file.inode()) { Some(id) => id, None => return Ok(0) };
+        if file.private_data() & EVDEV_FILE_REVOKED != 0 { return Err(VfsError::Enodev); }
+        if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
+        if grabbed_by_other(id, file_token(file)) { return Err(VfsError::Eagain); }
         match crate::evdev_queue::queue(id).try_pop_bytes(buf) {
             Some(n) => Ok(n),
             None    => Err(VfsError::Eagain),
@@ -66,9 +129,25 @@ impl FileOps for EvdevFileOps {
     /// result against the caller's requested events, so a `poll(POLLIN)`
     /// blocks until the drain pushes the next event. # C: O(1)
     fn poll(&self, inode: &Inode) -> u32 {
-        let id = match inode.private::<EvdevData>() { Some(d) => d.id, None => return POLL_OUT };
+        let id = match evdev_id(inode) { Some(id) => id, None => return POLL_OUT };
         if crate::evdev_queue::queue(id).is_empty() { POLL_OUT }
         else { POLL_IN | POLL_OUT }
+    }
+
+    fn poll_open_file(&self, file: &File) -> u32 {
+        if file.private_data() & EVDEV_FILE_REVOKED != 0 { return POLL_OUT | vfs::POLL_HUP; }
+        let id = match evdev_id(file.inode()) { Some(id) => id, None => return POLL_OUT };
+        if grabbed_by_other(id, file_token(file)) || crate::evdev_queue::queue(id).is_empty() {
+            POLL_OUT
+        } else {
+            POLL_IN | POLL_OUT
+        }
+    }
+
+    fn on_release_file(&self, file: &File) {
+        if let Some(id) = evdev_id(file.inode()) {
+            release_grab(id, file_token(file));
+        }
     }
 }
 
@@ -125,31 +204,85 @@ unsafe fn uzero(arg: u64, cap: usize) -> i64 {
     cap as i64
 }
 
+fn err(errno: syscall::errno::Errno) -> i64 {
+    -(errno.as_i32() as i64)
+}
+
+fn valid_user_range(arg: u64, bytes: u64) -> bool {
+    arg != 0
+        && arg < hal::USER_VA_END
+        && arg
+            .checked_add(bytes)
+            .is_some_and(|end| end <= hal::USER_VA_END)
+}
+
+/// Read one Linux `int` from an ioctl user pointer.
+/// # SAFETY: `arg..arg+4` was validated as a user range by the caller.
+unsafe fn uread_i32(arg: u64) -> i32 {
+    let mut b = [0u8; 4];
+    for (i, slot) in b.iter_mut().enumerate() {
+        // SAFETY: per fn contract; each byte lies inside the validated range.
+        *slot = unsafe { core::ptr::read_volatile((arg + i as u64) as *const u8) };
+    }
+    i32::from_le_bytes(b)
+}
+
 /// EVIOC* ioctl handler. Returns `Some(rv)` when the request is recognised;
 /// `None` to let the generic CharDev path run. Answers identification +
 /// capability queries from the device's real virtio config-space record.
 /// # C: O(1)
-pub fn handle_evdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
+pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
+    let inode: &InodeRef = file.inode();
     let ino = inode.ino();
     if (ino & !0xFF) != EVDEV_INO_BASE || (ino & 0xFF) == 0 { return None; }
     use syscall::errno::Errno;
     if ioc_type(req) != b'E' as u64 as u32 { return None; }
     let nr = ioc_nr(req);
 
-    // EVIOCSCLOCKID / EVIOCGRAB / EVIOCREVOKE — state-changing, no readback.
-    // Ack so libinput/X11 grab logic proceeds (single-reader model).
     const EVIOCGRAB_NR:     u32 = 0x90;
     const EVIOCREVOKE_NR:   u32 = 0x91;
     const EVIOCSCLOCKID_NR: u32 = 0xa0;
-    if nr == EVIOCGRAB_NR || nr == EVIOCREVOKE_NR || nr == EVIOCSCLOCKID_NR {
+    const CLOCK_MONOTONIC:  i32 = 1;
+    if nr == EVIOCSCLOCKID_NR {
+        if !valid_user_range(arg, 4) {
+            return Some(err(Errno::Efault));
+        }
+        // SAFETY: `arg..arg+4` was validated above.
+        let clock_id = unsafe { uread_i32(arg) };
+        return Some(if clock_id == CLOCK_MONOTONIC {
+            0
+        } else {
+            err(Errno::Einval)
+        });
+    }
+    let evdev_id = ((ino & 0xFF) - 1) as u32;
+    if nr == EVIOCGRAB_NR {
+        let token = file_token(file);
+        let slot = (evdev_id as usize).min(MAX_EVDEV - 1);
+        if arg != 0 {
+            let mut grabs = EVDEV_GRABS.lock();
+            return Some(if grabs[slot] == 0 || grabs[slot] == token {
+                grabs[slot] = token;
+                0
+            } else {
+                err(Errno::Ebusy)
+            });
+        }
+        release_grab(evdev_id, token);
+        return Some(0);
+    }
+    if nr == EVIOCREVOKE_NR {
+        if arg != 0 {
+            file.set_private_data(file.private_data() | EVDEV_FILE_REVOKED);
+            release_grab(evdev_id, file_token(file));
+        }
         return Some(0);
     }
 
-    if arg == 0 || arg >= hal::USER_VA_END {
-        return Some(-(Errno::Efault.as_i32() as i64));
+    if !valid_user_range(arg, 1) {
+        return Some(err(Errno::Efault));
     }
     let size = ioc_size(req);
-    let evdev_id = ((ino & 0xFF) - 1) as u32;
     let dev = crate::device(evdev_id);
 
     // SAFETY: arg validated in [1, USER_VA_END); each uwrite/uzero bounds its
@@ -223,7 +356,7 @@ pub fn handle_evdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             }
             uwrite(arg, &b, size.max(24))
         }
-        _ => return Some(-(Errno::Enotty.as_i32() as i64)),
+        _ => return Some(err(Errno::Enotty)),
     } };
     Some(rv)
 }
@@ -270,6 +403,7 @@ pub fn unregister_node(id: u32) -> bool {
     }
     let slot = id as usize;
     EVDEV_NODES.lock()[slot] = None;
+    EVDEV_GRABS.lock()[slot] = 0;
     let dev = EVDEV_DEVICES.lock()[slot].take();
     if let Some(dev) = dev {
         drv::device_del(&dev);
@@ -283,6 +417,16 @@ pub fn unregister_node(id: u32) -> bool {
 mod tests {
     use super::*;
     use alloc::string::String;
+    use vfs::{Dentry, OpenFlags};
+
+    fn test_file(id: u32) -> Arc<File> {
+        let inode = make_evdev_inode(id);
+        File::new(
+            inode.clone(),
+            Dentry::new_anon(inode),
+            OpenFlags::O_RDONLY | OpenFlags::O_NONBLOCK,
+        )
+    }
 
     #[test]
     fn register_node_is_idempotent_without_republishing() {
@@ -357,5 +501,67 @@ mod tests {
         drv::device_del(&conflict);
         assert!(register_node(id));
         assert!(unregister_node(id));
+    }
+
+    #[test]
+    fn evdev_clockid_ioctl_accepts_only_monotonic_clock() {
+        let file = test_file(0);
+        let mut monotonic = 1i32;
+        let mut realtime = 0i32;
+        assert_eq!(
+            handle_evdev_ioctl(&file, 0x400445a0, (&mut monotonic as *mut i32) as u64),
+            Some(0)
+        );
+        assert_eq!(
+            handle_evdev_ioctl(&file, 0x400445a0, (&mut realtime as *mut i32) as u64),
+            Some(-(syscall::errno::Errno::Einval.as_i32() as i64))
+        );
+        assert_eq!(
+            handle_evdev_ioctl(&file, 0x400445a0, 0),
+            Some(-(syscall::errno::Errno::Efault.as_i32() as i64))
+        );
+    }
+
+    #[test]
+    fn evdev_grab_is_per_open_file_description() {
+        let owner = test_file(1);
+        let other = test_file(1);
+
+        assert_eq!(handle_evdev_ioctl(&owner, crate::EVIOCGRAB, 1), Some(0));
+        assert_eq!(
+            handle_evdev_ioctl(&other, crate::EVIOCGRAB, 1),
+            Some(-(syscall::errno::Errno::Ebusy.as_i32() as i64))
+        );
+
+        crate::evdev_queue::push_event(1, crate::EV_KEY, 30, 1);
+        assert_eq!(owner.poll() & POLL_IN, POLL_IN);
+        assert_eq!(other.poll() & POLL_IN, 0);
+
+        let mut buf = [0u8; crate::evdev_queue::INPUT_EVENT_BYTES];
+        assert_eq!(other.read(&mut buf).err(), Some(VfsError::Eagain));
+        assert_eq!(owner.read(&mut buf).unwrap(), buf.len());
+
+        assert_eq!(handle_evdev_ioctl(&owner, crate::EVIOCGRAB, 0), Some(0));
+        assert_eq!(handle_evdev_ioctl(&other, crate::EVIOCGRAB, 1), Some(0));
+        assert_eq!(handle_evdev_ioctl(&other, crate::EVIOCGRAB, 0), Some(0));
+    }
+
+    #[test]
+    fn evdev_grab_is_released_on_last_close() {
+        let owner = test_file(2);
+        let other = test_file(2);
+        assert_eq!(handle_evdev_ioctl(&owner, crate::EVIOCGRAB, 1), Some(0));
+        drop(owner);
+        assert_eq!(handle_evdev_ioctl(&other, crate::EVIOCGRAB, 1), Some(0));
+        assert_eq!(handle_evdev_ioctl(&other, crate::EVIOCGRAB, 0), Some(0));
+    }
+
+    #[test]
+    fn evdev_revoke_disables_current_open_file() {
+        let file = test_file(3);
+        assert_eq!(handle_evdev_ioctl(&file, crate::EVIOCREVOKE, 1), Some(0));
+        assert_eq!(file.poll() & vfs::POLL_HUP, vfs::POLL_HUP);
+        let mut buf = [0u8; crate::evdev_queue::INPUT_EVENT_BYTES];
+        assert_eq!(file.read(&mut buf).err(), Some(VfsError::Enodev));
     }
 }

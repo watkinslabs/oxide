@@ -445,6 +445,14 @@ test-pass claims.
   the same `/devices/virtual/input/eventN` sysfs path that the input class
   actually publishes, so libinput/udev metadata no longer points at a dead
   pre-model topology.
+  Evdev now handles `EVIOCGRAB` as Linux per-open-file state: grabs are keyed to
+  the open `File`, competing grabs fail with `EBUSY`, non-owners do not drain or
+  poll events while another client owns the grab, and last close releases the
+  grab. `EVIOCSCLOCKID` now validates the requested userspace clock id instead
+  of blindly acknowledging it, and `EVIOCREVOKE` marks the current open file
+  revoked so later reads fail with `ENODEV`. VFS read/poll/release dispatch now
+  has file-aware hooks so this lives in the same layer Linux uses
+  (`struct file`/`file_operations`) rather than in inode-global shortcuts.
 - Virtio-gpu remove is keyed to the owning virtio child key and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed child key.

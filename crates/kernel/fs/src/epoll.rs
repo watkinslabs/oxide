@@ -414,7 +414,7 @@ fn scan_once(ep: &Arc<EpollData>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: 
             // poll_file passes the per-fd read cursor so append-only streams
             // (/dev/kmsg) report POLL_IN only with unread data — the default
             // always-ready poll() busy-loops journald's epoll otherwise.
-            let ready = f.inode().poll_file(f.pos()) & e.events;
+            let ready = f.poll() & e.events;
             if e.events & EPOLLET != 0 {
                 // Drop edges that went not-ready so a later re-ready re-fires.
                 e.et_seen &= ready;
