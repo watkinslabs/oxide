@@ -92,8 +92,8 @@ impl VirtioPciTransport {
         publish_transport_mmio(p);
     }
 
-    pub(super) fn unpublish_key(self, bdf: u32) {
-        unpublish_transport_mmio(bdf);
+    pub(super) fn unpublish_key(self, device_key: virtio::VirtioChildDeviceKey) {
+        unpublish_transport_mmio(device_key.raw());
     }
 }
 

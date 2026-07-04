@@ -96,7 +96,7 @@ pub(super) fn parent_key(dev: &drv::Device) -> Option<virtio::VirtioChildDeviceK
 }
 
 pub(super) fn unpublish_transport(device_key: virtio::VirtioChildDeviceKey) {
-    virtio_drv::VirtioPciTransport.unpublish_key(device_key.raw());
+    virtio_drv::VirtioPciTransport.unpublish_key(device_key);
 }
 
 fn pci_device_from_child(dev: &drv::Device) -> Option<pci::PciDevice> {

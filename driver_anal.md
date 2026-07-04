@@ -556,9 +556,10 @@ test-pass claims.
   teardown/failure, but full bridge, multi-bus, resource assignment, and PCI
   runtime semantics remain incomplete.
 - Central shutdown dispatch exists, and the main storage, virtio, serial, and
-  PS/2 keyboard devices now have hardware-specific quiesce paths. Remaining
-  default no-op shutdowns still need an audit across any less-common PCI,
-  platform, or test-only model drivers.
+  PS/2 keyboard devices now have hardware-specific quiesce paths. A current
+  source audit shows the remaining default no-op `Driver::shutdown` users are
+  test-only model drivers; production model drivers registered on this branch
+  have explicit shutdown callbacks.
 
 ## Open work
 
@@ -625,9 +626,12 @@ test-pass claims.
   routing, neighbor-cache ownership, hot-remove, shutdown, and hosted keyed
   tests. `drv-virtio-snd` now consumes it directly for install, context
   identity, hot-remove, shutdown, PCM-info scan, and event-handler teardown,
-  while converting to raw only at the sound-core owner-key boundary. The
-  remaining GPU child-driver API still needs the same typed-key conversion
-  where it currently forces the PCI-backed wrapper to call `.raw()`. Shared
+  while converting to raw only at the sound-core owner-key boundary.
+  `drv-virtio-gpu` now consumes it directly for install, device-table identity,
+  hot-remove, shutdown, scanout teardown, and probe-failure scanout unwind. The
+  PCI-backed virtio bus wrapper no longer unwraps child keys for GPU or
+  transport unpublish; raw conversion for unpublish is isolated inside the PCI
+  transport backend where the current BDF-derived table key lives. Shared
   `virtio::run_child_probe` now
   owns child-probe publish/unwind ordering, so the PCI-backed wrapper no
   longer hand-codes successful transport publication versus failed child-probe
