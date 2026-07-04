@@ -315,6 +315,11 @@ pub fn install_device(bdf: u32, resources: virtio::VirtioResources) -> Option<u3
             || (dev.ev_bits[(EV_ABS / 8) as usize] & (1 << (EV_ABS % 8))) != 0;
     }
     install(dev);
+    #[cfg(target_os = "oxide-kernel")]
+    if !devfs::register_node(evdev_id) {
+        let _ = remove_device(bdf);
+        return None;
+    }
     Some(evdev_id)
 }
 
@@ -327,6 +332,8 @@ pub fn remove_device(bdf: u32) -> Option<u32> {
         let idx = g.iter().position(|d| d.bdf == bdf)?;
         g.remove(idx).evdev_id
     };
+    #[cfg(target_os = "oxide-kernel")]
+    let _ = devfs::unregister_node(evdev_id);
     Some(evdev_id)
 }
 
@@ -452,11 +459,6 @@ mod tests {
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod devfs;
-// pci-boot's virtio-input probe calls these at the crate root; they live in the
-// devfs submodule. Re-export so `drv_virtio_input::{register,unregister}_node`
-// resolve (origin/main build fix).
-#[cfg(target_os = "oxide-kernel")]
-pub use devfs::{register_node, unregister_node};
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod drain;
