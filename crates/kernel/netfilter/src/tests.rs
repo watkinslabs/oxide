@@ -1,3 +1,7 @@
+use alloc::string::String;
+use alloc::vec::Vec;
+use sync::{Socket as SockLockClass, Spinlock};
+
 use super::*;
 
     // Count-based tests below assert on whole-store snapshots of shared global

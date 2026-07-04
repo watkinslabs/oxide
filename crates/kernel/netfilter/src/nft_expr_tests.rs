@@ -38,7 +38,6 @@ use super::*;
         nla_nested(&mut out, NFTA_LIST_ELEM, &expr);
         out
     }
-
     #[test]
     fn parse_immediate_drop_round_trip() {
         let bytes = build_immediate_drop();
