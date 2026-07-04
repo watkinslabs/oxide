@@ -1,7 +1,6 @@
 // Modern virtio-pci transport bring-up. Split from pci_boot/mod.rs.
 // klog calls gated under debug_boot! per R06.
 
-use super::map_mmio_pages;
 use super::virtio_qsetup::{ProgrammedQueues, QueueRing};
 use super::virtio_transport::{
     bind_msix_vector, disable_pci_command, kick_queue_notify, publish_transport_record,
@@ -840,6 +839,14 @@ impl VirtioProbeState {
         }
     }
 
+    fn read_isr_status(
+        &mut self,
+        isr_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+    ) -> u8 {
+        self.mappings.read_isr_status(isr_cap, bars)
+    }
+
     fn map_planned_extra_notifies(
         &mut self,
         queue_plans: &[Option<virtio::VirtioQueuePlan>; 3],
@@ -1371,34 +1378,8 @@ fn virtio_init_arch(
         0
     };
 
-    //: locate ISR cap, map its BAR page, and read the ISR byte
-    // post-kick. Per Virtio 1.2 §4.1.4.5: ISR is a 1-byte read-to-clear
-    // register; bit 0 = queue interrupt, bit 1 = config-change
-    // interrupt. With MSI-X unbound the device would normally route via
-    // INTx; we're not catching those yet but the ISR poll lets us see
-    // whether the device attempted notification.
     let isr_status = if avail_idx_posted > 0 {
-        if let Some(isr_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG) {
-            let ibar_pa = match bars[isr_cap.bar as usize] {
-                pci::Bar::Mem32 { base, .. } => base as u64,
-                pci::Bar::Mem64 { base, .. } => base,
-                _ => 0,
-            };
-            if ibar_pa != 0 {
-                let isr_pa = ibar_pa + isr_cap.offset as u64;
-                let i_page_pa = isr_pa & !0xFFF;
-                let i_page_off = isr_pa - i_page_pa;
-                // SAFETY: ISR BAR PA decoded from device cap; bump VA private.
-                let i_va = unsafe { map_mmio_pages(i_page_pa, 1) };
-                let isr_va = i_va + i_page_off;
-                // SAFETY: isr_va Device-attr; aligned u8 read clears it.
-                let status = unsafe { core::ptr::read_volatile(isr_va as *const u8) };
-                // SAFETY: this was a temporary one-page ISR mapping used only
-                // for the read-to-clear observation above.
-                unsafe { mmio_map::unmap_pages(i_va, 1); }
-                status
-            } else { 0 }
-        } else { 0 }
+        state.read_isr_status(vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(), &bars)
     } else { 0 };
 
     //: read used.idx after the kick.

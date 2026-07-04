@@ -56,6 +56,27 @@ impl TransportMappings {
         let n_page_off = nfy_pa - n_page_pa;
         self.map_page(n_page_pa) + n_page_off
     }
+
+    pub(super) fn read_isr_status(
+        &mut self,
+        isr_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+    ) -> u8 {
+        let Some(isr_cap) = isr_cap else {
+            return 0;
+        };
+        let Some(ibar_pa) = bars.get(isr_cap.bar as usize).and_then(|bar| bar.mem_base()) else {
+            return 0;
+        };
+        let isr_pa = ibar_pa + isr_cap.offset as u64;
+        let page_pa = isr_pa & !0xFFF;
+        let page_off = isr_pa - page_pa;
+        let isr_va = self.map_page(page_pa) + page_off;
+        // SAFETY: isr_va is decoded from the virtio-pci ISR capability and
+        // mapped as Device memory by the transport mapping owner. The ISR byte
+        // is a read-to-clear u8 register.
+        unsafe { core::ptr::read_volatile(isr_va as *const u8) }
+    }
 }
 
 pub(super) fn kick_queue_notify(notify_va: u64, queue_index: u16) -> bool {
