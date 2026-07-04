@@ -155,7 +155,7 @@ impl Default for CapBitmap { fn default() -> Self { Self { bits: [0u8; 96] } } }
 
 #[derive(Clone)]
 pub struct VirtioInputDev {
-    pub bdf:        u32,
+    pub device_key: virtio::VirtioChildDeviceKey,
     pub evdev_id:   u32,
     /// Device class: a pointer (mouse/tablet — advertises EV_REL/EV_ABS) vs
     /// a keyboard. Only keyboard-class devices feed the console keyboard
@@ -247,20 +247,23 @@ unsafe fn cfg_payload(cfg_va: u64, dst: &mut [u8]) -> usize {
 /// bitmaps from config space (the Linux virtio_input.c probe sequence,
 /// docs/46§5) and register it. Returns the assigned evdev id.
 /// # C: O(abs axes) config round-trips
-pub fn install_device(bdf: u32, resources: virtio::VirtioResources) -> Option<u32> {
+pub fn install_device(
+    device_key: virtio::VirtioChildDeviceKey,
+    resources: virtio::VirtioResources,
+) -> Option<u32> {
     let cfg_va = resources.device_cfg_va;
     if cfg_va == 0 {
         return None;
     }
     let evdev_id = {
         let g = DEVICES.lock();
-        if g.iter().any(|d| d.bdf == bdf) {
+        if g.iter().any(|d| d.device_key == device_key) {
             return None;
         }
         lowest_free_evdev_id(&g)?
     };
     let mut dev = VirtioInputDev {
-        bdf, evdev_id, is_pointer: false,
+        device_key, evdev_id, is_pointer: false,
         name: [0; 128], name_len: 0, serial: [0; 128], serial_len: 0,
         ids: VirtioInputDevIds::default(),
         ev_bits: [0; 32],
@@ -335,19 +338,19 @@ pub fn install_device(bdf: u32, resources: virtio::VirtioResources) -> Option<u3
     install(dev);
     #[cfg(target_os = "oxide-kernel")]
     if !devfs::register_node(evdev_id) {
-        let _ = remove_device(bdf);
+        let _ = remove_device(device_key);
         return None;
     }
     Some(evdev_id)
 }
 
-/// Remove the virtio-input identity/capability record for a BDF.
+/// Remove the virtio-input identity/capability record for a child device key.
 /// Returns the evdev id that was assigned to that device.
 /// # C: O(N)
-pub fn remove_device(bdf: u32) -> Option<u32> {
+pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
     let evdev_id = {
         let mut g = DEVICES.lock();
-        let idx = g.iter().position(|d| d.bdf == bdf)?;
+        let idx = g.iter().position(|d| d.device_key == device_key)?;
         g.remove(idx).evdev_id
     };
     #[cfg(target_os = "oxide-kernel")]
@@ -355,10 +358,14 @@ pub fn remove_device(bdf: u32) -> Option<u32> {
     Some(evdev_id)
 }
 
-/// Return the evdev id assigned to a BDF without unregistering it.
+/// Return the evdev id assigned to a child device key without unregistering it.
 /// # C: O(N)
-pub fn evdev_id_for_bdf(bdf: u32) -> Option<u32> {
-    DEVICES.lock().iter().find(|d| d.bdf == bdf).map(|d| d.evdev_id)
+pub fn evdev_id_for_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+    DEVICES
+        .lock()
+        .iter()
+        .find(|d| d.device_key == device_key)
+        .map(|d| d.evdev_id)
 }
 
 /// Snapshot the friendly name for `evdev_id` if installed.
@@ -414,6 +421,30 @@ pub fn dispatch_ioctl(evdev_id: u32, req: u64, _arg: u64) -> Option<i64> {
 mod tests {
     use super::*;
 
+    fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_raw(raw)
+    }
+
+    fn test_dev(device_key: virtio::VirtioChildDeviceKey, evdev_id: u32) -> VirtioInputDev {
+        VirtioInputDev {
+            device_key,
+            evdev_id,
+            is_pointer: false,
+            name:       [0; 128],
+            name_len:   0,
+            serial:     [0; 128],
+            serial_len: 0,
+            ids:        VirtioInputDevIds::default(),
+            ev_bits:    [0; 32],
+            key_bits:   CapBitmap::default(),
+            rel_bits:   CapBitmap::default(),
+            abs_bits:   CapBitmap::default(),
+            led_bits:   CapBitmap::default(),
+            abs_info:   [None; 64],
+            prop_bits:  [0; 4],
+        }
+    }
+
     #[test]
     fn event_layout() {
         // virtio_input_event = 8 bytes (type + code + value)
@@ -436,24 +467,22 @@ mod tests {
     fn install_count_roundtrip() {
         DEVICES.lock().clear();
         assert_eq!(count(), 0);
-        install(VirtioInputDev {
-            bdf:        0,
-            evdev_id:   0,
-            is_pointer: false,
-            name:       [0; 128],
-            name_len:   0,
-            serial:     [0; 128],
-            serial_len: 0,
-            ids:        VirtioInputDevIds::default(),
-            ev_bits:    [0; 32],
-            key_bits:   CapBitmap::default(),
-            rel_bits:   CapBitmap::default(),
-            abs_bits:   CapBitmap::default(),
-            led_bits:   CapBitmap::default(),
-            abs_info:   [None; 64],
-            prop_bits:  [0; 4],
-        });
+        install(test_dev(key(0), 0));
         assert_eq!(count(), 1);
+        DEVICES.lock().clear();
+    }
+
+    #[test]
+    fn lookup_and_remove_use_typed_child_key() {
+        DEVICES.lock().clear();
+        install(test_dev(key(0x0010_0000), 3));
+        install(test_dev(key(0x0020_0000), 4));
+
+        assert_eq!(evdev_id_for_device(key(0x0010_0000)), Some(3));
+        assert_eq!(remove_device(key(0x0010_0000)), Some(3));
+        assert_eq!(evdev_id_for_device(key(0x0010_0000)), None);
+        assert_eq!(evdev_id_for_device(key(0x0020_0000)), Some(4));
+
         DEVICES.lock().clear();
     }
 
