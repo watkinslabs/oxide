@@ -329,9 +329,10 @@ mod tests {
         ADDED.lock().clear();
         REMOVED.lock().clear();
         let _ = unregister_card(0x10);
-        ops::clear();
+        let _ = ops::clear(0x10);
 
-        ops::register(&TEST_OPS);
+        assert!(reserve_card(0x10));
+        assert!(ops::register(0x10, &TEST_OPS));
         assert!(register_card(0x10));
         assert_eq!(owner(), Some(0x10));
         assert!(register_card(0x10), "same-owner register is idempotent");
@@ -367,7 +368,8 @@ mod tests {
         assert!(!unregister_card(0x10));
         assert_eq!(REMOVED.lock().len(), SOUND_NODES.len(), "second unregister is idempotent");
         assert_eq!(owner(), None);
-        ops::clear();
+        assert!(ops::ops().is_none(), "ops must not be visible after owner release");
+        let _ = ops::clear(0x10);
     }
 
     #[test]
@@ -380,15 +382,16 @@ mod tests {
         REMOVED.lock().clear();
         let _ = unregister_card(0x10);
         let _ = unregister_card(0x20);
-        ops::clear();
+        let _ = ops::clear(0x10);
 
         assert!(reserve_card(0x10));
         assert_eq!(owner(), Some(0x10));
         assert!(reserve_card(0x10), "same-owner reservation is idempotent");
         assert!(!reserve_card(0x20), "second owner is rejected before publication");
         assert_eq!(ADDED.lock().len(), 0, "reservation must not publish nodes");
+        assert!(!ops::register(0x20, &TEST_OPS), "wrong owner cannot publish ops");
 
-        ops::register(&TEST_OPS);
+        assert!(ops::register(0x10, &TEST_OPS));
         assert!(register_card(0x10));
         assert_eq!(ADDED.lock().len(), SOUND_NODES.len());
         assert!(!register_card(0x20));
@@ -396,6 +399,7 @@ mod tests {
         assert!(unregister_card(0x10));
         REMOVE_EXPECTED_OWNER.store(NO_CARD_OWNER, Ordering::Release);
         assert_eq!(owner(), None);
-        ops::clear();
+        assert!(ops::ops().is_none(), "ops must not be visible after owner release");
+        assert!(ops::clear(0x10));
     }
 }

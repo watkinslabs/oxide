@@ -25,18 +25,41 @@ pub struct SoundOps {
     pub pcm_recv: fn(&mut [u8]) -> usize,
 }
 
-static OPS: Spinlock<Option<&'static SoundOps>, OpsLockClass> = Spinlock::new(None);
-
-pub fn register(ops: &'static SoundOps) {
-    *OPS.lock() = Some(ops);
+#[derive(Copy, Clone)]
+struct OpsBinding {
+    owner: u32,
+    ops: &'static SoundOps,
 }
 
-pub fn clear() {
-    *OPS.lock() = None;
+static OPS: Spinlock<Option<OpsBinding>, OpsLockClass> = Spinlock::new(None);
+
+pub fn register(owner: u32, ops: &'static SoundOps) -> bool {
+    if crate::owner() != Some(owner) {
+        return false;
+    }
+    *OPS.lock() = Some(OpsBinding { owner, ops });
+    true
+}
+
+pub fn clear(owner: u32) -> bool {
+    let mut guard = OPS.lock();
+    let Some(binding) = *guard else {
+        return false;
+    };
+    if binding.owner != owner {
+        return false;
+    }
+    *guard = None;
+    true
 }
 
 pub fn ops() -> Option<&'static SoundOps> {
-    *OPS.lock()
+    let binding = (*OPS.lock())?;
+    if crate::owner() == Some(binding.owner) {
+        Some(binding.ops)
+    } else {
+        None
+    }
 }
 
 pub fn config() -> Option<(u32, u32, u32, u32)> {

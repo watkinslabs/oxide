@@ -465,7 +465,10 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
             return None;
         }
     };
-    sound::ops::register(&SOUND_OPS);
+    if !sound::ops::register(p.device_key, &SOUND_OPS) {
+        let _ = uninstall(p.device_key);
+        return None;
+    }
     if !sound::register_card(p.device_key) {
         let _ = uninstall(p.device_key);
         return None;
@@ -484,7 +487,7 @@ pub fn uninstall(device_key: u32) -> bool {
         let _ = softirq::clear_handler(softirq::Slot::SndEvent);
     }
     if sound::unregister_card(device_key) {
-        sound::ops::clear();
+        let _ = sound::ops::clear(device_key);
     }
     stop_reset_free(ctx);
     true

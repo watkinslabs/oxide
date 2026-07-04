@@ -640,10 +640,10 @@ Several drivers still use singleton global state:
   owner-keyed shutdown quiesce that clears TX before queue state is freed; RX
   protocol dispatch now rejects packets not addressed to the published guest
   CID, but the upper protocol endpoint is still singleton
-- virtio-snd: keyed transport records with EVENTQ drained per transport and an
-  owner-keyed global sound card reserved before transport allocation/publish,
-  with card ownership held until ALSA/OSS child nodes are removed, but still a
-  singleton upper PCM/control ABI
+- virtio-snd: keyed transport records with EVENTQ drained per transport, an
+  owner-keyed ops table, and an owner-keyed global sound card reserved before
+  transport allocation/publish, with card ownership held until ALSA/OSS child
+  nodes are removed, but still a singleton upper PCM/control ABI
 - UART drivers: global `PRESENT` and base state; RX interrupt delivery now has
   an explicit quiesce gate cleared before shutdown/remove masks hardware
 - PS/2 keyboard: global present/poll state; IRQ1 delivery now has an explicit
