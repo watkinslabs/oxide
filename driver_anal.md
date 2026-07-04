@@ -478,9 +478,11 @@ test-pass claims.
   inode tag, routes card-backed ioctls through the matching backend slot, and
   builds `/sys/class/drm` plus `/sys/devices/virtual/drm` from live DRM
   `drv::try_device_add` records instead of a static card0 table. Virtio-gpu
-  registers DRM card devices with their real virtio child model parent, so the
-  DRM sysfs `device` link resolves back to the owning bus device instead of
-  being virtual-only.
+  registers DRM card devices with their real virtio child model parent, and
+  sysfs now places parented DRM minors under the owning device
+  (`/sys/devices/virtio/<dev>/drm/cardN`) with `/sys/class/drm` and
+  `/sys/dev/char/226:N` pointing at that canonical kobject instead of leaving
+  GPU cards under `/sys/devices/virtual/drm`.
   Scanout backing state is also a BDF-keyed table now. DRM SETCRTC/PAGE_FLIP
   runtime hooks, scanout ownership, last-close restore, and flip-event queues
   are keyed by DRM card id and routed to the owning virtio-gpu BDF. DRM dumb

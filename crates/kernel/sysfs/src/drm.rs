@@ -11,13 +11,16 @@
 //
 // Tree:
 //   /sys/class/drm/                          (dir of symlinks)
-//     cardN        -> ../../devices/virtual/drm/cardN
-//     renderD128+N -> ../../devices/virtual/drm/renderD128+N
+//     cardN        -> ../../devices/<parent>/drm/cardN
+//                  -> ../../devices/virtual/drm/cardN when parentless
+//     renderD128+N -> ../../devices/<parent>/drm/renderD128+N
 //                    (only when a DRM driver publishes a real render minor)
 //   /sys/devices/virtual/drm/<name>/         (per-minor dir)
 //     dev                                     "226:<minor>\n"
 //     uevent                                  MAJOR=/MINOR=/DEVNAME=/DEVTYPE=
 //     subsystem    -> ../../../class/drm      (so udev reads SUBSYSTEM=drm)
+//   /sys/devices/<parent>/<addr>/drm/<name>/ (parented DRM minors)
+//     dev, uevent, subsystem, device          Linux class-device layout
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -70,6 +73,29 @@ fn minor_of(name: &str) -> Option<DrmMinor> {
     drm_minors().into_iter().find(|m| m.name == name)
 }
 
+fn unparented_minors() -> Vec<DrmMinor> {
+    drm_minors()
+        .into_iter()
+        .filter(|m| m.parent_bus.is_none() || m.parent_addr.is_none())
+        .collect()
+}
+
+fn parented_minors(parent_bus: &str, parent_addr: &str) -> Vec<DrmMinor> {
+    drm_minors()
+        .into_iter()
+        .filter(|m| {
+            m.parent_bus == Some(parent_bus)
+                && m.parent_addr.as_deref() == Some(parent_addr)
+        })
+        .collect()
+}
+
+fn minor_of_parent(parent_bus: &str, parent_addr: &str, name: &str) -> Option<DrmMinor> {
+    parented_minors(parent_bus, parent_addr)
+        .into_iter()
+        .find(|m| m.name == name)
+}
+
 fn parent_root_leaf(bus: &str) -> &'static str {
     match bus {
         "pci" => "pci0000:00",
@@ -80,13 +106,50 @@ fn parent_root_leaf(bus: &str) -> &'static str {
     }
 }
 
-fn parent_device_target(minor: &DrmMinor) -> Option<Vec<u8>> {
-    Some(alloc::format!(
-        "../../../{}/{}",
-        parent_root_leaf(minor.parent_bus?),
-        minor.parent_addr.as_deref()?,
-    )
-    .into_bytes())
+fn drm_device_path(minor: &DrmMinor) -> String {
+    if let (Some(parent_bus), Some(parent_addr)) =
+        (minor.parent_bus, minor.parent_addr.as_deref())
+    {
+        alloc::format!(
+            "devices/{}/{}/drm/{}",
+            parent_root_leaf(parent_bus),
+            parent_addr,
+            minor.name
+        )
+    } else {
+        alloc::format!("devices/virtual/drm/{}", minor.name)
+    }
+}
+
+pub(crate) fn dev_index_target(dev: &drv::Device) -> Option<Vec<u8>> {
+    if dev.dev_class != "drm" {
+        return None;
+    }
+    let Some((DRM_MAJOR, minor)) = dev.dev_t else {
+        return None;
+    };
+    let minor = drm_minors().into_iter().find(|m| m.minor == minor)?;
+    Some(alloc::format!("../../{}", drm_device_path(&minor)).into_bytes())
+}
+
+pub(crate) fn has_parented_minors(parent_bus: &str, parent_addr: &str) -> bool {
+    !parented_minors(parent_bus, parent_addr).is_empty()
+}
+
+fn device_link_target(minor: &DrmMinor) -> Option<Vec<u8>> {
+    if minor.parent_bus.is_some() && minor.parent_addr.is_some() {
+        Some(b"../..".to_vec())
+    } else {
+        None
+    }
+}
+
+fn subsystem_target(minor: &DrmMinor) -> Vec<u8> {
+    if minor.parent_bus.is_some() && minor.parent_addr.is_some() {
+        b"../../../../class/drm".to_vec()
+    } else {
+        b"../../../class/drm".to_vec()
+    }
 }
 
 // ---- /sys/class/drm (directory of symlinks) -------------------------------
@@ -94,10 +157,10 @@ fn parent_device_target(minor: &DrmMinor) -> Option<Vec<u8>> {
 struct SysClassDrmOps;
 impl InodeOps for SysClassDrmOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        if minor_of(name).is_none() { return Err(VfsError::Enoent); }
-        let mut target = String::from("../../devices/virtual/drm/");
-        target.push_str(name);
-        Ok(make_symlink_inode(target.into_bytes()))
+        let minor = minor_of(name).ok_or(VfsError::Enoent)?;
+        Ok(make_symlink_inode(
+            alloc::format!("../../{}", drm_device_path(&minor)).into_bytes(),
+        ))
     }
 }
 impl FileOps for SysClassDrmOps {
@@ -124,13 +187,16 @@ fn make_sys_class_drm_inode() -> InodeRef {
 struct SysDevicesVirtualDrmOps;
 impl InodeOps for SysDevicesVirtualDrmOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let minor = minor_of(name).ok_or(VfsError::Enoent)?;
+        let minor = unparented_minors()
+            .into_iter()
+            .find(|m| m.name == name)
+            .ok_or(VfsError::Enoent)?;
         Ok(make_drm_device_inode(minor))
     }
 }
 impl FileOps for SysDevicesVirtualDrmOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let minors = drm_minors();
+        let minors = unparented_minors();
         let mut idx = ctx.pos as usize;
         while idx < minors.len() {
             let next = idx as u64 + 1;
@@ -145,6 +211,44 @@ impl FileOps for SysDevicesVirtualDrmOps {
 fn make_sys_devices_virtual_drm_inode() -> InodeRef {
     InodeBuilder::new(0x5104_0002, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysDevicesVirtualDrmOps), Arc::new(SysDevicesVirtualDrmOps)).build()
+}
+
+// ---- /sys/devices/<parent>/<addr>/drm (parented DRM minor directory) -------
+
+struct ParentDrmData {
+    parent_bus: &'static str,
+    parent_addr: String,
+}
+
+struct ParentDrmOps;
+impl InodeOps for ParentDrmOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<ParentDrmData>().ok_or(VfsError::Einval)?;
+        let minor = minor_of_parent(d.parent_bus, &d.parent_addr, name).ok_or(VfsError::Enoent)?;
+        Ok(make_drm_device_inode(minor))
+    }
+}
+impl FileOps for ParentDrmOps {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let d = inode.private::<ParentDrmData>().ok_or(VfsError::Einval)?;
+        let minors = parented_minors(d.parent_bus, &d.parent_addr);
+        let mut idx = ctx.pos as usize;
+        while idx < minors.len() {
+            let next = idx as u64 + 1;
+            let name = minors[idx].name.as_str();
+            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
+            idx += 1;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn make_parent_drm_inode(parent_bus: &'static str, parent_addr: String) -> InodeRef {
+    InodeBuilder::new(0x5104_0003, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(ParentDrmOps), Arc::new(ParentDrmOps))
+        .private(Arc::new(ParentDrmData { parent_bus, parent_addr }))
+        .build()
 }
 
 // ---- /sys/devices/virtual/drm/<name> (per-minor dir) ----------------------
@@ -166,9 +270,9 @@ impl InodeOps for DrmDeviceOps {
                 d.minor.devtype,
             )),
             // `subsystem` symlink is what makes udev read SUBSYSTEM=="drm".
-            "subsystem" => Ok(make_symlink_inode(b"../../../class/drm".to_vec())),
+            "subsystem" => Ok(make_symlink_inode(subsystem_target(&d.minor))),
             "device" => Ok(make_symlink_inode(
-                parent_device_target(&d.minor).ok_or(VfsError::Enoent)?,
+                device_link_target(&d.minor).ok_or(VfsError::Enoent)?,
             )),
             _ => Err(VfsError::Enoent),
         }
@@ -182,7 +286,7 @@ impl FileOps for DrmDeviceOps {
         ];
         let d = inode.private::<DrmDeviceData>().ok_or(VfsError::Einval)?;
         let mut entries: Vec<(&str, FileType)> = BASE_ENTRIES.to_vec();
-        if parent_device_target(&d.minor).is_some() {
+        if device_link_target(&d.minor).is_some() {
             entries.push(("device", FileType::Symlink));
         }
         let mut idx = ctx.pos as usize;
@@ -206,6 +310,21 @@ fn make_drm_device_inode(minor: DrmMinor) -> InodeRef {
 // ---- /sys/devices/virtual/drm/<name>/uevent (rw attr) ---------------------
 
 struct DrmUeventData { name: String, minor: u32, devtype: &'static str }
+impl DrmUeventData {
+    fn devpath(&self) -> String {
+        let minor = drm_minors()
+            .into_iter()
+            .find(|m| m.name == self.name && m.minor == self.minor)
+            .unwrap_or(DrmMinor {
+                name: self.name.clone(),
+                minor: self.minor,
+                devtype: self.devtype,
+                parent_bus: None,
+                parent_addr: None,
+            });
+        alloc::format!("/{}", drm_device_path(&minor))
+    }
+}
 
 struct DrmUeventFileOps;
 impl FileOps for DrmUeventFileOps {
@@ -218,7 +337,7 @@ impl FileOps for DrmUeventFileOps {
     }
     fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
         let d = inode.private::<DrmUeventData>().ok_or(VfsError::Einval)?;
-        let devpath = alloc::format!("/devices/virtual/drm/{}", d.name);
+        let devpath = d.devpath();
         let devname = alloc::format!("DEVNAME=dri/{}", d.name);
         let maj = alloc::format!("MAJOR={}", DRM_MAJOR);
         let min = alloc::format!("MINOR={}", d.minor);
@@ -297,16 +416,28 @@ mod tests {
         ))
         .expect("test drm registration");
 
-        let devices = make_sys_devices_virtual_drm_inode();
-        let card_dir = devices.lookup("card43").expect("card43 sysfs dir");
-        let device = card_dir.lookup("device").expect("parent device link");
+        let class = make_sys_class_drm_inode();
+        let class_link = class.lookup("card43").expect("card43 class link");
         assert_eq!(
-            device.readlink().expect("readlink"),
-            b"../../../virtio/virtio-gpu-parent0".to_vec()
+            class_link.readlink().expect("readlink"),
+            b"../../devices/virtio/virtio-gpu-parent0/drm/card43".to_vec()
+        );
+
+        let devices = make_sys_devices_virtual_drm_inode();
+        assert_eq!(devices.lookup("card43").err(), Some(VfsError::Enoent));
+
+        let parent_drm = make_parent_drm_inode("virtio", String::from("virtio-gpu-parent0"));
+        let card_dir = parent_drm.lookup("card43").expect("card43 parented sysfs dir");
+        let device = card_dir.lookup("device").expect("parent device link");
+        assert_eq!(device.readlink().expect("readlink"), b"../..".to_vec());
+        let subsystem = card_dir.lookup("subsystem").expect("subsystem link");
+        assert_eq!(
+            subsystem.readlink().expect("readlink"),
+            b"../../../../class/drm".to_vec()
         );
 
         drv::device_del(&card);
         drv::device_del(&parent);
-        assert_eq!(devices.lookup("card43").err(), Some(VfsError::Enoent));
+        assert_eq!(parent_drm.lookup("card43").err(), Some(VfsError::Enoent));
     }
 }

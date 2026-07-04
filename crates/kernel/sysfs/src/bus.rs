@@ -267,6 +267,9 @@ impl InodeOps for DeviceDirOps {
             let t = alloc::format!("../../{}/{}", dev_root_leaf(parent_bus), parent_addr);
             return Ok(make_link_inode(t.into_bytes()));
         }
+        if name == "drm" && crate::drm::has_parented_minors(data.bus, &data.addr) {
+            return Ok(crate::drm::make_parent_drm_inode(data.bus, data.addr.clone()));
+        }
         if name == "dev" {
             if dev.dev_t.is_none() { return Err(VfsError::Enoent); }
             let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
@@ -314,6 +317,9 @@ impl FileOps for DeviceDirOps {
         entries.push(("subsystem", FileType::Symlink));
         if has_parent {
             entries.push(("parent", FileType::Symlink));
+        }
+        if crate::drm::has_parented_minors(data.bus, &data.addr) {
+            entries.push(("drm", FileType::Directory));
         }
         if bound {
             entries.push(("driver", FileType::Symlink));
@@ -421,6 +427,9 @@ fn find_dev_by_index(kind: DevIndexKind, name: &str) -> Option<Arc<drv::Device>>
 }
 
 fn dev_index_target(dev: &drv::Device) -> Vec<u8> {
+    if let Some(target) = crate::drm::dev_index_target(dev) {
+        return target;
+    }
     alloc::format!("../../{}/{}", dev_root_canon(dev.bus), dev.addr).into_bytes()
 }
 
@@ -1093,6 +1102,40 @@ mod tests {
         assert_eq!(index.lookup("29:8").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("13:88").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("226:88").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn sys_dev_char_indexes_parented_drm_under_parent_device() {
+        let parent = Arc::new(drv::Device::new(
+            "virtio",
+            String::from("sysfs-gpu-parent0"),
+            0x1af4,
+            16,
+            0,
+        ));
+        let drm = Arc::new(
+            drv::Device::new("drm", String::from("card89"), 0, 0, 0)
+                .with_parent("virtio", String::from("sysfs-gpu-parent0"))
+                .with_devnode("drm", String::from("dri/card89"), Some((226, 89))),
+        );
+        drv::try_device_add(Arc::clone(&parent)).expect("test parent registration");
+        drv::try_device_add(Arc::clone(&drm)).expect("test drm registration");
+
+        let parent_dir = make_devices_root_inode("virtio")
+            .lookup("sysfs-gpu-parent0")
+            .expect("parent device dir");
+        let drm_dir = parent_dir.lookup("drm").expect("parent drm child dir");
+        assert!(drm_dir.lookup("card89").is_ok());
+
+        let index = make_sys_dev_index_inode(DevIndexKind::Char);
+        let drm_link = index.lookup("226:89").expect("drm char index link");
+        assert_eq!(
+            drm_link.readlink().expect("readlink"),
+            b"../../devices/virtio/sysfs-gpu-parent0/drm/card89".to_vec());
+
+        drv::device_del(&drm);
+        drv::device_del(&parent);
+        assert_eq!(index.lookup("226:89").err(), Some(VfsError::Enoent));
     }
 
     #[test]
