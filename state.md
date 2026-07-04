@@ -19,28 +19,40 @@ no master-of-seat tag is ever written, so seat0 never becomes graphical.
 - 18200270 fix(sysfs): /sys/dev/char/226:0 → devices/virtual/drm/card0
 - crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs — 5 hosted tests (pass).
 
-## NEXT frontier — udevd doesn't complete VIRTUAL devices  [START HERE]
-MEASURED (probe: any openat under /run/udev/data|tags with a write flag, + emit
-grp1 for drm):
-- card0's uevent IS emitted+delivered: `add@/devices/virtual/drm/card0 grp1=1`
-  at t=6.121 (coldplug, udevd's group-1 socket up since t=3.98).
-- udevd writes 107 `.#+pci:...` + 2 `.#+platform:...` db files — but ZERO for
-  block/input/drm/virtual, and ZERO tag writes. So it processes PCI/platform,
-  never completes card0 (no `/run/udev/data/c226:0`, no master-of-seat tag).
-- 107 writes for a handful of PCI functions ⇒ a RE-PROCESSING LOOP (likely the
-  `bind_device_cb` "change" uevent re-triggering process→bind→change), which is
-  also why the boot is ~3–4× slower (reaches graphical ~150s vs ~43s).
-Candidates to MEASURE next:
-1. Does udevd spawn a worker for card0's event and does it FAIL/exit? Check
-   `[EXIT] exe=...udev...` + recent-syscall ring right after t=6.1.
-2. Is card0's RAW uevent well-formed enough for udevd to build the sd_device
-   (ACTION/DEVPATH/SUBSYSTEM/MAJOR/MINOR/DEVNAME)? drm.rs write emits all; verify
-   udevd's from-uevent device build succeeds (a missing key drops it silently).
-3. The PCI re-process loop: is `bind_device_cb`/driver-bind emitting "change"
-   in a cycle? If udevd is saturated looping on PCI, card0's queued event may
-   just never get a worker. Fix the loop first — it may unblock everything.
-Also still latent: the LIVE cooked-uevent path (udevd→logind monitor) measured
-broken earlier (COOKTRACE=0) — needed for live attach once card0 is tagged.
+## NEXT frontier — `/dev` (devfs) is not writable, so udevd aborts on any
+## device WITH a /dev node (card0, vda, input)  [START HERE — likely THE fix]
+MEASURED end-to-end:
+- card0's uevent IS delivered to udevd: `add@/devices/virtual/drm/card0 grp1=1`
+  at t=6.12 (coldplug; udevd's group-1 socket up since t=3.98). NOT a delivery
+  problem anymore.
+- Kernel emits ~51 uevents (41 add / 10 change), ~3 per device — NO loop (the
+  107 db writes were ~2×/event, the normal fopen_temporary+rename pattern; boot
+  slowdown is just udevd doing real coldplug work now).
+- udevd writes dbs for pci/virtio/platform (which have NO /dev node) but ZERO
+  for the VIRTUAL devices drm/block/input (which DO have /dev nodes). Worker log:
+    `Failed to create symlink '/dev/char/226:128' → '/dev/dri/renderD128':
+     Read-only file system`
+    `Device node /dev/dri/renderD128 is missing, skipping handling`
+    `Failed to open block device /dev/vda: No such device or address` (ENXIO)
+- ROOT CAUSE: **devfs (`crates/kernel/devfs/src/lib.rs:191`) returns `Erofs`
+  from the trait for create/symlink** — our `/dev` is a synthetic near-read-only
+  tree, NOT a writable devtmpfs. udevd's `update_devnode` (udev-event.c:264,
+  which runs BEFORE `device_tag_index`:436 and `device_update_db`:451) tries to
+  create `/dev/char/<maj:min>` symlinks and ABORTS EROFS → the worker never
+  reaches the master-of-seat tag / db write. Devices without /dev nodes skip
+  update_devnode and complete fine — exactly the measured discriminator.
+
+THE FIX (next session): make `/dev` support udevd's node management — creating
+subdirs (`/dev/char`, `/dev/block`, `/dev/disk/by-*`, `/dev/dri/by-path`) and
+symlinks/nodes in them, like a real devtmpfs. Options: (a) back `/dev` with a
+writable tmpfs overlay for udevd-created entries while the kernel keeps
+device-add nodes; (b) implement `symlink_child`/`create_child`/`mkdir` on the
+devfs dir inodes (currently they default to Erofs). Also fix: `/dev/dri/
+renderD128` node is MISSING (drm::node::register should mint it — verify), and
+`/dev/vda` open returns ENXIO (block node major/minor vs registered driver).
+Once /dev is writable, the virtual-device workers finish → master-of-seat tag →
+seat0 CanGraphical → gdm greeter. THEN the live cooked-uevent path (COOKTRACE=0,
+measured broken earlier) may be a final fix for live (non-coldplug) attach.
 drm.rs:114 subsystem symlink is 3 `../` (should be 4) — basename still "drm", non-fatal.
 
 ## What was THE bug (measured end-to-end, not guessed)
