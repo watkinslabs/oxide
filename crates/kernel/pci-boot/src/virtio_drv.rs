@@ -1,11 +1,10 @@
 // Modern virtio-pci transport bring-up. Split from pci_boot/mod.rs.
 // klog calls gated under debug_boot! per R06.
 
-use super::virtio_qsetup::{ProgrammedQueues, QueueRing};
 use super::virtio_transport::{
     bind_msix_vector, disable_pci_command, kick_queue_notify, publish_transport_record,
-    release_failed_probe, release_msix_bindings, unpublish_transport_record, MsixBinding,
-    TransportMappings,
+    program_queue_set, release_failed_probe, release_msix_bindings, unpublish_transport_record,
+    MsixBinding, ProgrammedQueues, QueueRing, TransportMappings,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -788,12 +787,7 @@ impl VirtioProbeState {
             profile.extra_queues
         };
         let programmed_queues = if negotiated.features_ok {
-            super::virtio_qsetup::program_queue_set(
-                self.cfg_va,
-                hhdm,
-                q0_msix_vec,
-                &extra_queues,
-            )
+            program_queue_set(self.cfg_va, hhdm, q0_msix_vec, &extra_queues)
         } else {
             None
         };
@@ -1274,7 +1268,7 @@ fn virtio_init_arch(
     let mut state = VirtioProbeState::new(bdf, mappings, cfg_va, device_cfg_va);
 
     // Per-arch HHDM offset, hoisted once for all queue programming. The
-    // virtio core (virtio_qsetup) programs EVERY virtqueue uniformly:
+    // virtio core programs EVERY virtqueue uniformly through the transport:
     // q0 for all devices, q1 for net/vsock TX or snd EVENTQ, and q2/q3 for
     // multi-queue devices such as virtio-snd.
     let hhdm = {
