@@ -131,9 +131,9 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
                 Ipv4Addr::LOOPBACK
             } else {
                 let bound_iface = bound_iface(sock)?;
-                STACK.routes.lookup(dst_ip)
+                stack().routes.lookup(dst_ip)
                     .and_then(|r| r.src_hint)
-                    .or_else(|| iface_primary_ip(bound_iface.or_else(|| STACK.routes.lookup(dst_ip).map(|r| r.iface))))
+                    .or_else(|| iface_primary_ip(bound_iface.or_else(|| stack().routes.lookup(dst_ip).map(|r| r.iface))))
                     .unwrap_or(Ipv4Addr::LOOPBACK)
             };
             let entry = stack().tcp_connect_ip_bound(
