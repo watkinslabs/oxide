@@ -5,6 +5,7 @@
 //! child probe logic.
 
 use alloc::vec::Vec;
+use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 
 struct MappedTransportPage {
     page_pa: u64,
@@ -78,6 +79,16 @@ pub(super) struct MsixBinding {
     pub(super) queue_vector: u16,
 }
 
+struct TransportRecord {
+    bdf: u32,
+    _mappings: TransportMappings,
+    vring_frames: Vec<u64>,
+    msix: Vec<MsixBinding>,
+}
+
+static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
+    Spinlock::new(Vec::new());
+
 pub(super) fn bind_msix_vector(
     d: &pci::PciDevice,
     caps: &pci::heapless_caps::CapVec,
@@ -139,6 +150,102 @@ pub(super) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBindin
     let bindings = core::mem::take(bindings);
     for binding in bindings {
         release_msix_binding(bdf, binding);
+    }
+}
+
+pub(super) fn publish_transport_record(
+    bdf: u32,
+    mappings: TransportMappings,
+    vring_frames: Vec<u64>,
+    msix: Vec<MsixBinding>,
+) {
+    let rec = TransportRecord {
+        bdf,
+        _mappings: mappings,
+        vring_frames,
+        msix,
+    };
+    let mut records = TRANSPORT_MMIO.lock();
+    if let Some(idx) = records.iter().position(|old| old.bdf == bdf) {
+        let old = records.remove(idx);
+        release_transport_record(old);
+    }
+    records.push(rec);
+}
+
+pub(super) fn unpublish_transport_record(bdf: u32) {
+    let rec = {
+        let mut records = TRANSPORT_MMIO.lock();
+        records
+            .iter()
+            .position(|rec| rec.bdf == bdf)
+            .map(|idx| records.remove(idx))
+    };
+    if let Some(rec) = rec {
+        release_transport_record(rec);
+    }
+}
+
+fn release_transport_record(rec: TransportRecord) {
+    let bdf = bdf_from_word(rec.bdf);
+    for binding in rec.msix {
+        release_msix_binding(bdf, binding);
+    }
+    disable_pci_command(bdf);
+    for frame in rec.vring_frames.iter().copied() {
+        if frame == 0 {
+            continue;
+        }
+        // SAFETY: these frames were allocated and programmed by the virtio-pci
+        // transport for the child device. Child remove resets/quiesces the
+        // device before unpublishing this transport record.
+        unsafe {
+            pmm::setup::free_one_frame(frame);
+        }
+    }
+}
+
+pub(super) fn release_failed_probe(cfg_va: u64, frames: &[u64]) {
+    virtio::reset_device(cfg_va);
+    for frame in frames.iter().copied() {
+        if frame == 0 {
+            continue;
+        }
+        // SAFETY: non-zero frames passed here were allocated by the failed
+        // virtio probe and have not been retained by runtime driver state.
+        unsafe {
+            pmm::setup::free_one_frame(frame);
+        }
+    }
+}
+
+pub(super) fn disable_pci_command(bdf: pci::Bdf) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        let cur = pci::read_command(&r, bdf);
+        let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
+        if restored != cur {
+            pci::write_command(&r, bdf, restored);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+            let cur = pci::read_command(&r, bdf);
+            let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
+            if restored != cur {
+                pci::write_command(&r, bdf, restored);
+            }
+        }
+    }
+}
+
+fn bdf_from_word(word: u32) -> pci::Bdf {
+    pci::Bdf {
+        bus: ((word >> 16) & 0xFF) as u8,
+        device: ((word >> 8) & 0xFF) as u8,
+        function: (word & 0xFF) as u8,
     }
 }
 
