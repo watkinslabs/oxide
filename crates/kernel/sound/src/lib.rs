@@ -712,6 +712,10 @@ mod tests {
         assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
 
         assert_eq!(pcm::handle(owner, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(pcm::handle(owner, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(pcm::handle(owner, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(capture::handle(owner, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(capture::handle(owner, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
 
         let _ = pcm::unregister_card(owner);
         let _ = capture::unregister_card(owner);

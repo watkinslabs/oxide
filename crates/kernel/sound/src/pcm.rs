@@ -282,7 +282,7 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => write_int(arg, SNDRV_PCM_VERSION),
         PCM_INFO => pcm_info(owner, arg),
-        PCM_TSTAMP | PCM_TTSTAMP => 0,
+        PCM_TSTAMP | PCM_TTSTAMP => err(Errno::Enotty),
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) {
             Some(b) => refine(owner, &b, false), None => err(Errno::Efault),
         },

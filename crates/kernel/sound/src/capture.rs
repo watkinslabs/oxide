@@ -88,7 +88,7 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => match UserBuf::new(arg, 4) { Some(b) => { b.w32(0, SNDRV_PCM_VERSION); 0 } None => err(Errno::Efault) },
         PCM_INFO => pcm_info(owner, arg),
-        PCM_TSTAMP | PCM_TTSTAMP => 0,
+        PCM_TSTAMP | PCM_TTSTAMP => err(Errno::Enotty),
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, false), None => err(Errno::Efault) },
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, true), None => err(Errno::Efault) },
         PCM_HW_FREE => {
