@@ -334,6 +334,60 @@ pub fn build_queue_resources(
     })
 }
 
+/// Transport observations needed to assemble the completed runtime handoff.
+///
+/// Concrete transports still own hardware actions such as mapping notify
+/// windows, kicking queues, sampling ISR state, and allocating boot buffers.
+/// Shared virtio owns converting those observations into child-visible queue
+/// resources and transport-neutral boot payload descriptors.
+pub struct VirtioRuntimeHandoffInput<'a> {
+    pub scanned_queues: &'a [(u16, u16); MAX_RESOURCE_QUEUES],
+    pub scanned_len: usize,
+    pub programmed_queues: Option<&'a ProgrammedQueues>,
+    pub planned_notify_mappings: VirtioQueueNotifyMappings,
+    pub q0_notify_va: u64,
+    pub q1_notify_va: u64,
+    pub post_notify_status: u8,
+    pub avail_idx_posted: u16,
+    pub used_idx_observed: u16,
+    pub isr_status: u8,
+    pub net_boot_payloads: VirtioNetBootPayloads,
+}
+
+/// Transport-neutral facts handed from completed transport bring-up to the
+/// child publication and trace paths.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioRuntimeHandoff {
+    pub queue_resources: [VirtQueueResource; MAX_RESOURCE_QUEUES],
+    pub post_notify_status: u8,
+    pub avail_idx_posted: u16,
+    pub used_idx_observed: u16,
+    pub isr_status: u8,
+    pub net_boot_payloads: VirtioNetBootPayloads,
+}
+
+/// Assemble the final runtime handoff from transport-provided observations.
+/// # C: O(MAX_RESOURCE_QUEUES * N_scanned)
+pub fn build_runtime_handoff(input: VirtioRuntimeHandoffInput<'_>) -> VirtioRuntimeHandoff {
+    let mut notify_mappings = input.planned_notify_mappings;
+    notify_mappings.set(0, input.q0_notify_va);
+    notify_mappings.set(1, input.q1_notify_va);
+
+    VirtioRuntimeHandoff {
+        queue_resources: build_queue_resources(
+            input.scanned_queues,
+            input.scanned_len,
+            input.programmed_queues,
+            &notify_mappings,
+        ),
+        post_notify_status: input.post_notify_status,
+        avail_idx_posted: input.avail_idx_posted,
+        used_idx_observed: input.used_idx_observed,
+        isr_status: input.isr_status,
+        net_boot_payloads: input.net_boot_payloads,
+    }
+}
+
 /// Resolve notify mappings requested by child queue plans.
 ///
 /// The concrete transport owns converting a programmed queue's
@@ -857,6 +911,72 @@ mod tests {
         assert_eq!(resources[3].size, 16);
         assert_eq!(resources[3].notify_va, 0x3000);
         assert_eq!(resources[2].size, 0);
+    }
+
+    #[test]
+    fn build_runtime_handoff_applies_final_notify_observations() {
+        let programmed = ProgrammedQueues::from_test_parts(
+            QueueRing {
+                desc_pa: 0x1000,
+                driver_pa: 0x2000,
+                device_pa: 0x3000,
+                notify_off: 4,
+                size: 8,
+            },
+            core::array::from_fn(|index| {
+                if index == 1 {
+                    Some(QueueRing {
+                        desc_pa: 0x4000,
+                        driver_pa: 0x5000,
+                        device_pa: 0x6000,
+                        notify_off: 8,
+                        size: 16,
+                    })
+                } else {
+                    None
+                }
+            }),
+        );
+        let scanned = [
+            (0, 8),
+            (1, 16),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+        ];
+        let mut planned = VirtioQueueNotifyMappings::new();
+        planned.set(1, 0x1111);
+
+        let handoff = build_runtime_handoff(VirtioRuntimeHandoffInput {
+            scanned_queues: &scanned,
+            scanned_len: 2,
+            programmed_queues: Some(&programmed),
+            planned_notify_mappings: planned,
+            q0_notify_va: 0xaaa0,
+            q1_notify_va: 0xbbb0,
+            post_notify_status: crate::VIRTIO_STATUS_DRIVER_OK,
+            avail_idx_posted: 1,
+            used_idx_observed: 2,
+            isr_status: 3,
+            net_boot_payloads: VirtioNetBootPayloads::new(0x7000, 64, 0x8000),
+        });
+
+        assert_eq!(handoff.queue_resources[0].size, 8);
+        assert_eq!(handoff.queue_resources[0].notify_va, 0xaaa0);
+        assert_eq!(handoff.queue_resources[1].size, 16);
+        assert_eq!(handoff.queue_resources[1].notify_va, 0xbbb0);
+        assert_eq!(handoff.queue_resources[1].desc_pa, 0x4000);
+        assert_eq!(handoff.post_notify_status, crate::VIRTIO_STATUS_DRIVER_OK);
+        assert_eq!(handoff.avail_idx_posted, 1);
+        assert_eq!(handoff.used_idx_observed, 2);
+        assert_eq!(handoff.isr_status, 3);
+        assert_eq!(
+            handoff.net_boot_payloads,
+            VirtioNetBootPayloads::new(0x7000, 64, 0x8000)
+        );
     }
 
     #[test]

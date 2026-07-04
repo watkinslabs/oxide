@@ -180,17 +180,6 @@ struct VirtioProbeState {
     msix: Vec<MsixBinding>,
 }
 
-struct VirtioRuntimeHandoff {
-    queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
-    post_notify_status: u8,
-    avail_idx_posted: u16,
-    used_idx_observed: u16,
-    isr_status: u8,
-    rx0_buf_pa: u64,
-    rx0_buf_len: u16,
-    tx0_buf_pa: u64,
-}
-
 #[derive(Clone, Copy)]
 struct VirtioPciRuntime {
     hhdm: u64,
@@ -313,11 +302,7 @@ impl VirtioPciAcquisition {
             state.cfg_va,
             state.device_cfg_va,
             handoff.queue_resources,
-            virtio::VirtioNetBootPayloads::new(
-                handoff.rx0_buf_pa,
-                handoff.rx0_buf_len,
-                handoff.tx0_buf_pa,
-            ),
+            handoff.net_boot_payloads,
         );
         let trace = VirtioPciProbeTrace {
             cmd_orig: self.cmd_orig,
@@ -514,7 +499,7 @@ impl VirtioProbeState {
         notify_cap: Option<&virtio::VirtioPciCap>,
         isr_cap: Option<&virtio::VirtioPciCap>,
         bars: &[pci::Bar; 6],
-    ) -> VirtioRuntimeHandoff {
+    ) -> virtio::VirtioRuntimeHandoff {
         let q0_ring = programmed_queues.and_then(|p| p.queue(0));
         let q1_ring = programmed_queues.and_then(|p| p.queue(1));
         let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
@@ -554,12 +539,6 @@ impl VirtioProbeState {
             0
         };
 
-        let mut notify_mappings = planned_notify_mappings;
-        notify_mappings.set(0, q0_notify_va);
-        notify_mappings.set(1, q1_notify_va);
-        let queue_resources =
-            virtio::build_queue_resources(queues, queues_len, programmed_queues, &notify_mappings);
-
         let isr_status = if net_rx_boot.avail_idx_posted > 0 {
             self.read_isr_status(isr_cap, bars)
         } else {
@@ -571,16 +550,23 @@ impl VirtioProbeState {
             0
         };
 
-        VirtioRuntimeHandoff {
-            queue_resources,
+        virtio::build_runtime_handoff(virtio::VirtioRuntimeHandoffInput {
+            scanned_queues: queues,
+            scanned_len: queues_len,
+            programmed_queues,
+            planned_notify_mappings,
+            q0_notify_va,
+            q1_notify_va,
             post_notify_status,
             avail_idx_posted: net_rx_boot.avail_idx_posted,
             used_idx_observed,
             isr_status,
-            rx0_buf_pa: net_rx_boot.buf_pa,
-            rx0_buf_len: net_rx_boot.buf_len,
-            tx0_buf_pa,
-        }
+            net_boot_payloads: virtio::VirtioNetBootPayloads::new(
+                net_rx_boot.buf_pa,
+                net_rx_boot.buf_len,
+                tx0_buf_pa,
+            ),
+        })
     }
 
     fn finish(

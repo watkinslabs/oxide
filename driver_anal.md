@@ -209,6 +209,11 @@ test-pass claims.
   still maps/kicks hardware notify windows, but no longer owns the generic
   queue-resource handoff builder or the child queue-plan policy for resolving
   persistent planned notify mappings.
+- Shared virtio now owns final runtime handoff assembly through
+  `VirtioRuntimeHandoff`: final notify mappings, child-visible queue resource
+  records, net boot payload descriptors, and q0 kick/ISR/used-ring trace facts
+  are built from transport-provided observations instead of PCI-local resource
+  structs.
 - Shared `virtio::VirtioTransportProbeResult` now owns the transport-neutral
   completed-probe result: child-facing facts, child resource state assembly,
   vring cleanup frame extraction, and net boot payload frame extraction. The
@@ -509,10 +514,12 @@ test-pass claims.
   now use shared `virtio::VirtioTransportProfile` and
   `virtio::VirtioQueuePlan`; resource publication for child probes now uses
   shared readiness/resource assembly instead of per-child q0/q1/q2/q3 lists in
-  the PCI glue, and child-owned transport-profile declarations keep feature,
-  queue, and child IRQ policy in the child driver crates. Virtio child model-driver
-  declarations now live in a separate `pci-boot::virtio_child` module instead
-  of the virtio-pci transport module, and child probes now use the shared
+  the PCI glue; final runtime handoff assembly now uses shared
+  `virtio::VirtioRuntimeHandoff` instead of a PCI-local resource struct; and
+  child-owned transport-profile declarations keep feature, queue, and child
+  IRQ policy in the child driver crates. Virtio child model-driver declarations
+  now live in a separate `pci-boot::virtio_child` module instead of the
+  virtio-pci transport module, and child probes now use the shared
   `virtio::VirtioChildTransportSession` trait implemented by
   `pci-boot::virtio_bus::VirtioChildSession` instead of importing
   `virtio_drv` transport helpers directly. The PCI-backed session now carries
