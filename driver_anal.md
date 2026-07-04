@@ -403,7 +403,10 @@ test-pass claims.
   `/dev/input/eventN` through model-owned devices, generates
   `/proc/bus/input/devices` from live input state, and clears its event-queue
   bottom half when the last queue is removed. Shutdown now calls an explicit
-  event-queue quiesce path instead of the hot-remove-named helper.
+  event-queue quiesce path instead of the hot-remove-named helper. Hot-remove
+  and shutdown now address event-queue drain state by the owning virtio child
+  key directly, so missing input metadata cannot strand queue buffers or the
+  shared input bottom-half handler.
 - Virtio-gpu remove is keyed to the owning virtio child key and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed child key.
@@ -648,7 +651,8 @@ test-pass claims.
   current PCI-backed implementation derives that key from its BDF location and
   `drv-virtio-rng` now consumes that typed key directly for install, remove,
   shutdown, and probe-time direct entropy reads. `drv-virtio-input` now also
-  consumes that typed key directly for install, remove, and evdev lookup.
+  consumes that typed key directly for install, event-queue runtime identity,
+  remove, shutdown, and evdev lookup.
   `drv-virtio-vsock` now consumes it directly for install, remove, shutdown,
   context lookup, and RX preposting, while converting to raw only at the
   `net::vsock` owner-key boundary. `drv-virtio-blk` now consumes the typed key
