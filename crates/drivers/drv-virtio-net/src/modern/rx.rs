@@ -1,0 +1,406 @@
+use core::sync::atomic::Ordering;
+
+use super::{
+    DeviceKey,
+    ARP_GC_TIMER_ID,
+    SOFTIRQ_INSTALLED,
+    VIRTIO_NET_HDR_LEN,
+};
+use sync::{Spinlock, TaskList as DriverLockClass};
+
+#[derive(Clone, Copy)]
+struct RxRuntime {
+    device_key: DeviceKey,
+    iface: net::NetIfaceId,
+    ip: [u8; 4],
+}
+
+static RX_RUNTIMES: Spinlock<alloc::vec::Vec<RxRuntime>, DriverLockClass> =
+    Spinlock::new(alloc::vec::Vec::new());
+
+/// Stash the iface id + IPv4 used by the RX softirq handler. Layout
+/// is keyed by owning transport so RX drains cannot silently route through
+/// whichever virtio-net device happens to be globally installed.
+/// # C: O(1)
+pub fn set_softirq_iface(device_key: DeviceKey, id: net::NetIfaceId, ip: [u8; 4]) {
+    let mut runtimes = RX_RUNTIMES.lock();
+    if let Some(runtime) = runtimes
+        .iter_mut()
+        .find(|runtime| runtime.device_key == device_key)
+    {
+        runtime.iface = id;
+        runtime.ip = ip;
+        return;
+    }
+    runtimes.push(RxRuntime { device_key, iface: id, ip });
+}
+
+/// Install runtime RX resources owned by this net driver: iface identity for
+/// the bottom half, ARP-GC timer, and NetRx softirq handler. IPv4 address
+/// state is filled later by the net address-change hook.
+/// # C: O(1)
+pub fn install_rx_runtime(device_key: DeviceKey, id: net::NetIfaceId) {
+    set_softirq_iface(device_key, id, [0, 0, 0, 0]);
+    register_timers();
+    install_rx_softirq_handler();
+}
+
+/// Install this driver's RX bottom-half handler. The handler belongs to the
+/// virtio-net device lifetime, not to boot or the transport layer.
+/// # C: O(1)
+pub fn install_rx_softirq_handler() {
+    if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
+        #[cfg(target_os = "oxide-kernel")]
+        softirq::set_handler(softirq::Slot::NetRx, rx_drain_softirq);
+    }
+}
+
+/// Remove this driver's RX bottom-half handler and discard queued stale RX
+/// work. Called after the device is reset during remove.
+/// # C: O(NCPU)
+pub fn uninstall_rx_softirq_handler() {
+    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
+        #[cfg(target_os = "oxide-kernel")]
+        let _ = softirq::clear_handler(softirq::Slot::NetRx);
+    }
+}
+
+pub(super) fn release_rx_shared_runtime_if_last(last_runtime: bool) {
+    if last_runtime {
+        uninstall_rx_softirq_handler();
+        unregister_timers();
+    }
+}
+
+/// F138: update only the IP slot for the named iface.
+/// # C: O(1)
+pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
+    let mut runtimes = RX_RUNTIMES.lock();
+    let Some(runtime) = runtimes
+        .iter_mut()
+        .find(|runtime| runtime.iface.raw() == id.raw())
+    else { return false; };
+    runtime.ip = ip;
+    true
+}
+
+pub(super) fn clear_rx_runtime() {
+    RX_RUNTIMES.lock().clear();
+}
+
+pub(super) fn remove_rx_runtime_for(device_key: DeviceKey) -> Option<bool> {
+    let mut runtimes = RX_RUNTIMES.lock();
+    let Some(pos) = runtimes
+        .iter()
+        .position(|runtime| runtime.device_key == device_key)
+    else { return None; };
+    runtimes.remove(pos);
+    Some(runtimes.is_empty())
+}
+
+pub(super) fn rx_runtime_empty() -> bool {
+    RX_RUNTIMES.lock().is_empty()
+}
+
+/// Softirq slot handler. Drains pending RX into the net stack.
+/// Bails fast when no iface stashed (boot ordering) or RX queue empty
+/// (poll_into_stack returns 0 in either case).
+/// # C: O(rx_drain)
+#[cfg(target_os = "oxide-kernel")]
+pub fn rx_drain_softirq() {
+    let runtimes = RX_RUNTIMES.lock().clone();
+    for runtime in runtimes {
+        let _ = poll_into_stack_for(runtime.device_key, runtime.iface, runtime.ip);
+    }
+}
+
+/// Raise the virtio-net RX softirq from device IRQ context. Actual ring walking
+/// belongs to `rx_drain_softirq`, which runs as the NetRx bottom half.
+/// # C: O(1)
+pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
+
+// -------- F59-13: poll RX into the kernel net stack -------------------
+//
+// `poll_into_stack_for(device_key, iface)` drains one device once and dispatches each
+// frame: ARP → arp_cache (with a synchronous reply if it's a
+// request for `our_ip`); IPv4 → strip eth header + hand to
+// `stack.deliver_rx(iface, l3)`. Intended call site is a periodic
+// kthread or per-tick hook; v1 invokes it once at boot for a
+// diagnostic line, replacing the explicit ARP+ICMP probes once the
+// stack is fully wired (F59-14+). Returns frames consumed.
+/// # C: O(N used * frame_len)
+#[cfg(target_os = "oxide-kernel")]
+pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
+    let our_mac = match super::mac_for(device_key) { Some(m) => m, None => return 0 };
+    let stack = net::sock::stack();
+    rx_poll_for(device_key, |f: &[u8]| {
+        if f.len() < 14 { return; }
+        let et = ((f[12] as u16) << 8) | (f[13] as u16);
+        // F137: tap full L2 frame to AF_PACKET sockets bound on this
+        // iface. Done before ARP/IP demux so dhcpcd (ETH_P_ALL) sees
+        // every frame regardless of whether the kernel stack also
+        // consumes it.
+        net::sock::deliver_packet_rx(iface, f);
+        match et {
+            0x0806 => {
+                if f.len() < 14 + 28 { return; }
+                if let Ok(arp) = net::arp::ArpPkt::parse(&f[14..14 + 28]) {
+                    if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
+                        runtime.arp.insert(arp.sender_ip, arp.sender_mac);
+                    }
+                    if arp.opcode == net::arp::ARP_OP_REQUEST
+                        && arp.target_ip.octets() == our_ip
+                    {
+                        let reply_body = net::arp::build_reply(
+                            &arp, net::MacAddr(our_mac),
+                        );
+                        let mut frame = alloc::vec![0u8; 14 + reply_body.len()];
+                        net::ethernet::EthHdr::write_to(
+                            arp.sender_mac, net::MacAddr(our_mac),
+                            net::eth_p::ARP, &mut frame[..14],
+                        );
+                        frame[14..].copy_from_slice(&reply_body);
+                        let _ = super::tx::tx_frame_for(device_key, &frame);
+                    }
+                }
+            }
+            0x0800 => {
+                // F149: snoop incoming IPv4 frames — every (src_ip,
+                // src_mac) is a valid arp cache entry; pre-populates
+                // the entry for the gateway after the first inbound
+                // reply, so subsequent xmits can resolve.
+                if f.len() >= 14 + 20 {
+                    let mut src_ip = [0u8; 4];
+                    src_ip.copy_from_slice(&f[14 + 12 .. 14 + 16]);
+                    let mut src_mac = [0u8; 6];
+                    src_mac.copy_from_slice(&f[6..12]);
+                    if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
+                        runtime.arp.insert(
+                            net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
+                            net::MacAddr(src_mac),
+                        );
+                    }
+                }
+                let _ = stack.deliver_rx(iface, &f[14..]);
+            }
+            0x86dd => {
+                // F180: IPv6. Hand the L3 payload to the stack's
+                // IPv6 path; minimum-viable demux handles ICMPv6
+                // echo + graceful drop for unbound L4 destinations.
+                let _ = stack.deliver_rx_ipv6(iface, &f[14..]);
+            }
+            _ => {}
+        }
+    })
+}
+
+pub(super) fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr> {
+    RX_RUNTIMES
+        .lock()
+        .iter()
+        .find(|runtime| runtime.device_key == device_key)
+        .map(|runtime| net::Ipv4Addr::from_u32(u32::from_be_bytes(runtime.ip)))
+}
+
+// -------- F59-02: RX poll on the modern transport ----------------------
+//
+// Drains queue-0 used-ring entries the device wrote since the last call, hands
+// each frame body (Ethernet header + payload, virtio_net_hdr stripped) to `cb`, and re-publishes the completed
+// descriptor ID onto the avail ring so the device can fill that buffer again.
+// After a non-zero drain we kick the RX queue notify window so the device knows
+// the avail-ring advanced.
+//
+// Cursors live in the per-device runtime record and are incremented only inside
+// rx_poll while holding the virtio-net device-table lock.
+
+/// Drain pending RX completions for the named transport and invoke `cb` for each frame body
+/// (Ethernet header + payload, virtio_net_hdr stripped). Re-publishes
+/// the same descriptor on each pass and kicks the device once if any
+/// frame was delivered.
+///
+/// Returns frames delivered. Returns 0 if the device isn't initialized
+/// or the device hasn't advanced its used.idx since the last call.
+///
+/// # C: O(frames_in_flight)
+/// # Lk: takes the virtio-net device-table lock across ring read + avail publish, drops it
+///       before invoking cb. Required so cb's downstream (e.g. the TCP
+///       stack emitting an ACK via tx_frame_for) can re-take the lock
+///       without UP self-deadlock. Frames are copied out before unlock
+///       so the device can safely overwrite RX buffers once republished.
+pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
+    let runtime = super::netdev::net_runtime_for(device_key);
+    let mut g = super::MODERN_DEVS.lock();
+    let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {
+        return 0;
+    };
+    if !s.rxq.is_runtime_valid() || s.rx_bufs.is_empty() {
+        return 0;
+    }
+
+    let hhdm = s.hhdm;
+    if hhdm == 0 { return 0; }
+
+    let used_va  = hhdm.wrapping_add(s.rxq.device_pa);
+    let avail_va = hhdm.wrapping_add(s.rxq.driver_pa);
+
+    // SAFETY: HHDM-mapped device-written used ring; aligned u16 load
+    // at offset +2 (idx field). Ordering::Acquire pairs with the
+    // device's store of used.idx after writing the ring entry per
+    // Virtio 1.2 §2.6.8.
+    let dev_used_idx = unsafe {
+        core::ptr::read_volatile((used_va + 2) as *const u16)
+    };
+    core::sync::atomic::fence(Ordering::Acquire);
+    let mut last = s.rx_last_used;
+    if dev_used_idx == last { return 0; }
+
+    let rxq_size = s.rxq.size as usize;
+    let mut delivered = 0usize;
+    let mut repost_ids: alloc::vec::Vec<u16> = alloc::vec::Vec::new();
+    // Collect frame copies under the lock so we can safely drop the
+    // lock before invoking cb (cb's TCP-stack path may re-take it via
+    // tx_frame when emitting an ACK — UP spinlock self-deadlock).
+    let mut frames: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    while last != dev_used_idx {
+        let slot = (last as usize) % rxq_size;
+        // used.ring[slot] = { u32 id; u32 len; } at +4 + slot*8.
+        // SAFETY: device populated this slot before bumping used.idx;
+        // the Acquire fence above orders the read after the index check.
+        let (id, frame_total) = unsafe {
+            let base = used_va + 4 + (slot as u64) * 8;
+            (
+                core::ptr::read_volatile(base as *const u32),
+                core::ptr::read_volatile((base + 4) as *const u32),
+            )
+        };
+        last = last.wrapping_add(1);
+
+        let rx_buf = s
+            .rx_bufs
+            .iter()
+            .find(|buf| buf.desc_id as u32 == id)
+            .copied();
+        if let Some(rx_buf) = rx_buf {
+            repost_ids.push(rx_buf.desc_id);
+        }
+        if rx_buf
+            .map(|buf| {
+                (frame_total as usize) >= VIRTIO_NET_HDR_LEN
+                    && (frame_total as usize) <= buf.len as usize
+            })
+            .unwrap_or(false)
+        {
+            let rx_buf = rx_buf.expect("rx buffer was validated above");
+            let body_len = frame_total as usize - VIRTIO_NET_HDR_LEN;
+            let buf_va = hhdm.wrapping_add(rx_buf.pa);
+            // SAFETY: RX buffer is HHDM-mapped, owned by this driver
+            // under the virtio-net device-table lock; the device finished writing
+            // before publishing used.ring per Virtio 1.2 §2.6.8. Copy
+            // out so we can release the lock before cb runs.
+            let body = unsafe {
+                core::slice::from_raw_parts(
+                    (buf_va + VIRTIO_NET_HDR_LEN as u64) as *const u8,
+                    body_len,
+                )
+            };
+            // Linux rx accounting: count the L2 ethernet frame (the
+            // virtio_net_hdr is excluded from rx_bytes). A frame shorter
+            // than a minimum ethernet header is a runt → rx_errors; the
+            // (id!=0 / oversized) else-branch below is a dropped frame.
+            if body_len >= 14 {
+                if let Some(runtime) = runtime.as_ref() {
+                    runtime.rx_packets.fetch_add(1, Ordering::Relaxed);
+                    runtime.rx_bytes.fetch_add(body_len as u64, Ordering::Relaxed);
+                }
+            } else {
+                if let Some(runtime) = runtime.as_ref() {
+                    runtime.rx_errors.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            frames.push(body.to_vec());
+            delivered += 1;
+        } else {
+            // Device wrote a slot we didn't publish, or a frame too
+            // short to even hold the virtio_net_hdr, or one larger than
+            // the buffer — dropped, not delivered upward.
+            if let Some(runtime) = runtime.as_ref() {
+                runtime.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    s.rx_last_used = last;
+
+    // Re-publish completed descriptor IDs so the device sees fresh slots.
+    // avail.ring lives at +4 (u16 entries).
+    let mut next_avail = s.rx_next_avail;
+    let mut reposted = false;
+    for id in repost_ids {
+        let pub_slot = (next_avail as usize) % rxq_size;
+        // SAFETY: HHDM-mapped avail ring, exclusive under the virtio-net device-table lock.
+        unsafe {
+            core::ptr::write_volatile(
+                (avail_va + 4 + (pub_slot as u64) * 2) as *mut u16,
+                id,
+            );
+        }
+        next_avail = next_avail.wrapping_add(1);
+        reposted = true;
+    }
+    if reposted {
+        core::sync::atomic::fence(Ordering::Release);
+        // SAFETY: avail.idx is u16 at +2 of the avail ring frame; HHDM-mapped exclusive under the virtio-net device-table lock; device reads after the fence.
+        unsafe {
+            core::ptr::write_volatile((avail_va + 2) as *mut u16, next_avail);
+        }
+        core::sync::atomic::fence(Ordering::Release);
+        s.rx_next_avail = next_avail;
+        // Kick: u16 queue index 0 to the per-queue notify VA. Modern
+        // notify is MMIO; the boot probe has already mapped this VA
+        // Device-attr (no-cache, no-reorder).
+        // SAFETY: rxq.notify_va is Device-attr-mapped during DRIVER_OK; aligned u16 store of the RX queue index.
+        unsafe {
+            core::ptr::write_volatile(s.rxq.notify_va as *mut u16, s.rxq.index);
+        }
+    }
+    // Drop the device-table lock before invoking cb — cb may call tx_frame
+    // (e.g. TCP stack emitting an ACK from deliver_rx) which re-acquires
+    // the same lock. UP spinlock would deadlock if we held it here.
+    drop(g);
+    for f in frames {
+        cb(&f);
+    }
+    delivered
+}
+
+/// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
+/// # C: O(N entries)
+fn arp_gc_timer(now_ns: u64) {
+    let runtimes = super::netdev::NET_RUNTIMES.lock().clone();
+    for runtime in runtimes {
+        runtime.arp.gc(now_ns);
+    }
+}
+
+/// Register this device driver's periodic timers (ARP GC).
+/// # C: O(1)
+pub fn register_timers() {
+    if ARP_GC_TIMER_ID.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let id = timer::register_periodic(100_000_000, arp_gc_timer);
+    if ARP_GC_TIMER_ID
+        .compare_exchange(0, id.raw(), Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        let _ = timer::unregister_periodic(id);
+    }
+}
+
+/// Unregister this device driver's periodic timers during remove.
+/// # C: O(N registered timers)
+pub fn unregister_timers() {
+    let raw = ARP_GC_TIMER_ID.swap(0, Ordering::AcqRel);
+    if let Some(id) = timer::TimerId::from_raw(raw) {
+        let _ = timer::unregister_periodic(id);
+    }
+}
