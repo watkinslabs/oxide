@@ -24,6 +24,7 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 mod virtio_drv;
 mod virtio_qsetup;
 mod virtio_trace;
+mod virtio_transport;
 
 /// Monotonic virtio-bus sequence (`virtioN` naming) assigned in
 /// enumeration order, mirroring Linux's virtio-pci registration.
