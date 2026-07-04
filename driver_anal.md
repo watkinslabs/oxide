@@ -81,9 +81,9 @@ test-pass claims.
   `graphics` character devices now also publish Linux-style
   `/sys/class/<class>` symlinks and `/sys/devices/virtual/<class>/<name>`
   device directories, so `/sys/dev/char` resolves to a real device object for
-  pseudo, misc, ALSA/OSS, and fbdev char devices. Model-backed virtual
-  input, DRM, and character class devices now expose a `device` symlink when
-  the class device has a real parent in the driver model.
+  pseudo, misc, ALSA/OSS, fbdev, input, and DRM char devices. Model-backed
+  virtual input, DRM, and character class devices now expose a `device`
+  symlink when the class device has a real parent in the driver model.
 - The stale procfs-era static `/sys/class/misc/autofs` registration has been
   removed; autofs sysfs state now comes from the model-owned misc device and
   exposes the same `10:235` dev_t as `/dev/autofs`.
@@ -534,9 +534,10 @@ test-pass claims.
   non-hardware pseudo-files rather than driver-owned device nodes.
 - Sysfs exposes more Linux-shaped bus state, including `/sys/dev/char`,
   `/sys/dev/block`, parent/subsystem links, class-device `device` links for
-  model-parented input/DRM/virtual character devices, and model-backed
-  bind/unbind attrs, but repeated bind/unbind/remove/readd behavior is not
-  proven across all subsystems.
+  model-parented input/DRM/virtual character devices, virtual root mappings
+  for block/input/DRM reverse-dev indexes, and model-backed bind/unbind attrs,
+  but repeated bind/unbind/remove/readd behavior is not proven across all
+  subsystems.
 - Block, NVMe, AHCI, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
