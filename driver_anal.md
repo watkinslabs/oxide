@@ -509,7 +509,10 @@ test-pass claims.
   still has one explicit foreground console owner. Dumb-buffer mmap now pins
   the DRM object through a file-backed shared VMA and PMM object refs, so
   DESTROY_DUMB/card unregister cannot return pages while userspace VMAs can
-  still fault them.
+  still fault them. MODE_MAP_DUMB offsets are high-tagged DRM cookies with a
+  non-overlapping handle field, and mmap rejects zero handles, low-bit offsets,
+  and out-of-layout bits instead of truncating malformed cookies into another
+  handle.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
