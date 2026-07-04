@@ -97,7 +97,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
                     // POLLIN only when its VT ring holds bytes. (F146: same
                     // POLL_IN/OUT/HUP bit layout as POLLIN/OUT/HUP; POSIX
                     // POLLHUP/ERR/NVAL always reported — see POLL_ALWAYS.)
-                    let mask = file.inode().poll() as i16;
+                    let mask = file.poll() as i16;
                     revents = mask & (events | POLL_ALWAYS);
                 }
             }

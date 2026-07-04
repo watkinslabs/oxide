@@ -96,7 +96,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         return ::fs::perf::handle_perf_ioctl(file.inode(), req, arg);
     }
     // evdev ioctls.
-    if let Some(rv) = drv_virtio_input::devfs::handle_evdev_ioctl(file.inode(), req, arg) {
+    if let Some(rv) = drv_virtio_input::devfs::handle_evdev_ioctl(&file, req, arg) {
         return rv;
     }
     // DRM/render fd ioctls.
