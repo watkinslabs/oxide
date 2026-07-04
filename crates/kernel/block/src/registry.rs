@@ -64,8 +64,8 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
         index
     }; // release TABLE before firing the device-model hooks (avoids holding the
        // registry lock across the devtmpfs /dev-node insertion).
-    // device-model Stage C (D27): publish the disk as a `drv::device_add` block
-    // device so ONE registration mints the `/dev/<name>` block node (devtmpfs)
+    // device-model Stage C (D27): publish the disk as a `drv::try_device_add`
+    // block device so ONE registration mints the `/dev/<name>` block node (devtmpfs)
     // alongside the existing `/sys/block/<name>` synthesis (which already reads
     // this registry). bus "block" is ignored by the pci/virtio /sys synthesis,
     // so the disk is NOT double-listed under /sys/bus; the real virtio-blk PCI
@@ -304,9 +304,10 @@ mod sysfs_format_tests {
     fn register_rolls_back_disk_table_when_model_publication_conflicts() {
         use crate::blockdev::MemDisk;
         use sync::TaskList;
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("block", String::from("vdconflict"), 0, 0, 0)
-                .with_devnode("block", String::from("vdconflict"), Some((254, 77)))));
+                .with_devnode("block", String::from("vdconflict"), Some((254, 77)))))
+            .expect("conflict device registration");
         let dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
 
         assert_eq!(register("vdconflict", dev), 0);

@@ -57,7 +57,7 @@ pub struct Device {
     /// match/bind the device, and normal ID-table matching is bypassed.
     pub driver_override: Spinlock<Option<String>, DriverListClass>,
     // --- /dev-node (devtmpfs) fields --------------------------------------
-    // Populated by devices brought up via `device_add`. `class` (PCI class,
+    // Populated by devices brought up via `try_device_add`. `class` (PCI class,
     // above) is distinct from `dev_class` (the devtmpfs class string), hence
     // the different name.
     /// devtmpfs class: `"block"`/`"tty"`/`"mem"`/`"input"`/… (`""` = no node).
@@ -231,19 +231,6 @@ pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
     if let Some(h) = *SYSFS_HOOK.lock() { h(&d); }
     attach_device_to_registered_drivers(&d);
     Ok(d)
-}
-
-/// Infallible convenience wrapper for callers whose enumeration path has
-/// already guaranteed a unique bus address. Duplicate registration is a kernel
-/// model bug, so fail immediately instead of publishing two devices with one
-/// identity.
-/// # C: O(N_devices)
-pub fn device_add(d: Arc<Device>) -> Arc<Device> {
-    match try_device_add(d) {
-        Ok(d) => d,
-        Err(crate::Error::Busy) => panic!("duplicate device registration"),
-        Err(e) => panic!("device_add failed: {:?}", e),
-    }
 }
 
 /// Symmetric teardown (Linux `device_del`): first detach any bound driver so
@@ -533,6 +520,10 @@ mod tests {
         }
     }
     static DUPLICATE_REGISTER_DRV: DuplicateRegisterDrv = DuplicateRegisterDrv;
+
+    fn device_add(d: Arc<Device>) -> Arc<Device> {
+        try_device_add(d).expect("test device registration")
+    }
 
     #[test]
     fn addr_formatting_pci() {

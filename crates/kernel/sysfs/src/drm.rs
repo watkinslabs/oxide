@@ -7,7 +7,7 @@
 // gdm never launches a greeter.
 //
 // Mirrors the `/sys/class/input` pattern: DRM minors are synthesised from live
-// `drv::device_add` records whose devtmpfs class is "drm".
+// `drv::try_device_add` records whose devtmpfs class is "drm".
 //
 // Tree:
 //   /sys/class/drm/                          (dir of symlinks)
@@ -212,10 +212,11 @@ mod tests {
     use alloc::sync::Arc;
 
     fn drm_dev(addr: &str, name: &str, minor: u32) -> Arc<drv::Device> {
-        drv::device_add(Arc::new(
+        drv::try_device_add(Arc::new(
             drv::Device::new("drm", String::from(addr), 0, 0, 0)
                 .with_devnode("drm", String::from(name), Some((DRM_MAJOR, minor))),
         ))
+        .expect("test device registration")
     }
 
     #[test]

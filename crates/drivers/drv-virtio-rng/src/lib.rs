@@ -451,10 +451,11 @@ mod tests {
             registry.records.clear();
             registry.active_bdf = Some(0x0010_0000);
         }
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
                 .with_devnode("misc", String::from("hwrng"), Some((10, 183))),
-        ));
+        ))
+        .expect("conflict device registration");
         let candidate = Arc::new(
             drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
                 .with_devnode("misc", String::from("hwrng"), Some((10, 183))),

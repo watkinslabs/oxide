@@ -321,10 +321,11 @@ mod tests {
         let idx = 0x7ffd;
         let _ = unregister_node(idx);
         let addr = alloc::format!("fb{idx}");
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("graphics", addr.clone(), 0, 0, idx)
                 .with_devnode("graphics", addr.clone(), Some((29, idx))),
-        ));
+        ))
+        .expect("conflict device registration");
 
         assert!(!register_node(idx));
         assert!(!FB_DEVICES.lock().iter().any(|(id, _)| *id == idx));

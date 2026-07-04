@@ -1,6 +1,6 @@
 // Model-backed virtual character classes for Linux character devices.
 //
-// These devices are published through drv::device_add, so sysfs must expose the
+// These devices are published through drv::try_device_add, so sysfs must expose the
 // matching class-device topology:
 //   /sys/class/<class>/<name> -> ../../devices/virtual/<class>/<name>
 //   /sys/devices/virtual/<class>/<name>/{dev,uevent,subsystem}
@@ -259,7 +259,7 @@ mod tests {
             drv::Device::new(class, String::from(addr), 0, 0, 0)
                 .with_devnode(class, String::from(devname), Some(dt)),
         );
-        drv::device_add(Arc::clone(&dev));
+        drv::try_device_add(Arc::clone(&dev)).expect("test device registration");
         dev
     }
 

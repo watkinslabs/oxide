@@ -59,7 +59,7 @@ pub fn try_populate_defaults() -> drv::KResult<()> {
     crate::register_dir("/dev/mqueue");
     crate::register_dir("/dev/pts");
     // device-model Stage C (D27): built-in pseudo char devices self-register
-    // through `drv::device_add` so ONE registration drives the device model +
+    // through `drv::try_device_add` so ONE registration drives the device model +
     // /dev. `node_factory` mints the bespoke inode with the correct fops/rdev.
     // bus "mem"/"misc" is ignored by pci/virtio sysfs synthesis. dev_t is the
     // standard mem major/minor metadata. Linux exposes random as 1:8 and

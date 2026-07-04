@@ -557,9 +557,10 @@ mod tests {
         let _ = ops::clear(0x20);
         let _ = ops::clear(0x30);
 
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("sound", String::from("pcmC0D0p"), 0, 0, MINOR_PCM_P as u32)
-                .with_devnode("sound", String::from("snd/pcmC0D0p"), Some((116, 16)))));
+                .with_devnode("sound", String::from("snd/pcmC0D0p"), Some((116, 16)))))
+            .expect("conflict device registration");
         ADDED.lock().clear();
         REMOVED.lock().clear();
 

@@ -388,12 +388,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // debug-zerotrap: give the [ZEROTRAP] logger a current-tid getter.
         hal::zerotrap::set_tid_hook(zerotrap_tid);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
-        // device-model Stage C: wire the devtmpfs side of `drv::device_add`
+        // device-model Stage C: wire the devtmpfs side of `drv::try_device_add`
         // BEFORE the built-in /dev registrants run below (console/mem/drm/fbdev
-        // self-register via `device_add` now, D27). The /sys side (set_sysfs_hook)
-        // stays wired just before PCI enumeration — these early pseudo-devices
-        // carry a non-pci/non-virtio bus that the /sys synthesis ignores, so the
-        // devtmpfs hook is the only one they need at this phase.
+        // self-register via fallible model publication now, D27). The /sys side
+        // (set_sysfs_hook) stays wired just before PCI enumeration — these early
+        // pseudo-devices carry a non-pci/non-virtio bus that the /sys synthesis
+        // ignores, so the devtmpfs hook is the only one they need at this phase.
         drv::set_devtmpfs_hook(devfs::add_device_node);
         drv::set_devtmpfs_del_hook(devfs::del_device_node);
         // Publish cmdline before /dev/console registers so the node follows
@@ -614,17 +614,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     let _ = unsafe { drv::init() };
     power::set_driver_shutdown_hook(drv::shutdown_all);
     // drivers-plan D1a: wire the drv model's sysfs-publish hooks BEFORE
-    // PCI enumeration so each `drv::device_add` during enumeration publishes
+    // PCI enumeration so each `drv::try_device_add` during enumeration publishes
     // its `/sys/bus/<bus>/devices/<addr>` entry as it lands.
     drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
     drv::set_sysfs_remove_hook(crate::sysfs::bus::remove_device_cb);
     drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
     drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
-    // device-model Stage B: the devtmpfs side of `drv::device_add` is wired
+    // device-model Stage B: the devtmpfs side of `drv::try_device_add` is wired
     // EARLY (just after `devfs::set_current_hooks`, above) so the built-in
-    // /dev registrants that now self-register via `device_add` (console/mem/
-    // drm/fbdev, Stage C) mint their nodes at boot. The /sys-publish hooks here
-    // still precede PCI enumeration so each bus device's `/sys/bus/<bus>/
+    // /dev registrants that now self-register via fallible model publication
+    // (console/mem/drm/fbdev, Stage C) mint their nodes at boot. The
+    // /sys-publish hooks here still precede PCI enumeration so each bus device's `/sys/bus/<bus>/
     // devices/<addr>` entry lands as it is enumerated.
     // Hardware bus drivers bind through the drv model during enumeration;
     // the old flat BDF probe registry path has been removed.

@@ -28,18 +28,19 @@ test-pass claims.
 
 - The old flat `DriverEntry` / `probe_all(bdf)` implementation path is gone
   from the live driver path.
-- `drv::Device`, `drv::Driver`, `device_add`, `device_del`, `bind`,
+- `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`,
   `bind_addr`, and `unbind` are the authoritative model path in
   `crates/drivers/drv/src/model.rs`.
 - The public `drv::auto_bind` escape hatch has been removed; automatic
-  attachment is internal to `device_add` and `register_driver`, while explicit
-  binds go through the sysfs driver `bind` control path.
+  attachment is internal to `try_device_add` and `register_driver`, while
+  explicit binds go through the sysfs driver `bind` control path.
 - PCI enumeration creates `pci` model devices with BAR resources through
-  `device_add`; NVMe, AHCI, and virtio-pci are registered as model drivers and
-  attach through the driver core rather than an enumeration-local bind call.
+  fallible model publication; NVMe, AHCI, and virtio-pci are registered as
+  model drivers and attach through the driver core rather than an
+  enumeration-local bind call.
 - PCI model-device publication is now fallible and idempotent at the bus
   boundary: a repeated enumeration reuses the matching existing `(pci, addr)`
-  device instead of panicking through `device_add`, while identity mismatches
+  device instead of panicking through publication, while identity mismatches
   are not rebound as if they were the same function.
 - Model binding rejects already-bound devices, verifies bus/driver matching,
   calls `Driver::probe`, records the binding only after success, and leaves the
@@ -66,8 +67,9 @@ test-pass claims.
   virtio-blk, virtio-input, virtio-gpu, virtio-rng, virtio-vsock,
   virtio-net, virtio-snd, 8250, PL011, and i8042 keyboard paths without
   reusing hot-remove publication teardown.
-- Public `register_device` bypasses have been removed from the driver model;
-  `device_add` is the intended publication entry.
+- Public `register_device` bypasses and the infallible public `device_add`
+  wrapper have been removed from the driver model; `try_device_add` is the
+  intended publication entry.
 - Sysfs bus-driver controls are backed by the model path for bind/unbind, with
   driver links, `driver_override`, `modalias`, PCI `resource`, and model-derived
   uevent environment coverage improved on this branch. Model devices with
@@ -92,12 +94,16 @@ test-pass claims.
   `try_device_add` handling instead of the infallible convenience wrapper;
   matching existing platform identities are reused, while real conflicts are
   reported at the boot boundary.
+- The public driver-core publication API no longer exports an infallible
+  `device_add` wrapper. Production and cross-crate callers must handle
+  `try_device_add` errors explicitly; only drv's private unit-test helper keeps
+  the short name.
 - PCI capability dumping is read-only again for MSI-X; MSI-X programming for
   virtio devices belongs to the virtio-pci transport probe/remove path.
 - The virtio-pci transport accepts modern virtio PCI IDs only. Transitional
   IDs are not mixed into the modern cap-based path.
-- Virtio-pci creates child `virtio` devices through `device_add` and child
-  virtio drivers bind through the model.
+- Virtio-pci creates child `virtio` devices through fallible model publication,
+  and child virtio drivers bind through the model.
 - Virtio child model-driver declarations have been split out of the
   virtio-pci transport module into a dedicated `pci-boot::virtio_child`
   module. The PCI transport file no longer owns every child `drv::Driver`
@@ -300,7 +306,7 @@ test-pass claims.
   (`/dev/dri/cardN`, `/dev/dri/renderD128+N`), encodes the card id in the DRM
   inode tag, routes card-backed ioctls through the matching backend slot, and
   builds `/sys/class/drm` plus `/sys/devices/virtual/drm` from live DRM
-  `drv::device_add` records instead of a static card0 table.
+  `drv::try_device_add` records instead of a static card0 table.
   Scanout backing state is also a BDF-keyed table now. DRM SETCRTC/PAGE_FLIP
   runtime hooks, scanout ownership, last-close restore, and flip-event queues
   are keyed by DRM card id and routed to the owning virtio-gpu BDF. DRM dumb
@@ -564,8 +570,8 @@ Complete:
 
 - Authoritative model-level bind/probe/remove state.
 - Central model-level shutdown dispatch from reboot/poweroff/halt.
-- PCI device publication through `device_add`, with driver attachment owned by
-  the driver core.
+- PCI device publication through `try_device_add`, with driver attachment owned
+  by the driver core.
 - Modern-only virtio-pci matching.
 - Virtio transport ownership for persistent MMIO, MSI-X, and successful-probe
   vring records.

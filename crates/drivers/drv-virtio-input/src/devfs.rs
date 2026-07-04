@@ -27,7 +27,7 @@ static EVDEV_NODES: Spinlock<[Option<InodeRef>; MAX_EVDEV], NodesLockClass>
 
 /// `id -> drv::Device` for model-owned evdev publication. The node itself is
 /// still bespoke, but `/dev/input/eventN` is minted and removed by
-/// `drv::device_add` / `drv::device_del` through the devtmpfs hook.
+/// `drv::try_device_add` / `drv::device_del` through the devtmpfs hook.
 static EVDEV_DEVICES: Spinlock<[Option<Arc<drv::Device>>; MAX_EVDEV], NodesLockClass>
     = Spinlock::new([const { None }; MAX_EVDEV]);
 
@@ -306,9 +306,10 @@ mod tests {
         let id = (MAX_EVDEV - 2) as u32;
         let _ = unregister_node(id);
         let addr = alloc::format!("event{id}");
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("input", String::from(addr.as_str()), 0, 0, id)
-                .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))));
+                .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))))
+            .expect("conflict device registration");
 
         assert!(!register_node(id));
         assert!(EVDEV_DEVICES.lock()[id as usize].is_none());
