@@ -28,15 +28,10 @@ impl drv::Driver for VirtioPciDrv {
         let Some(vdev_id) = virtio::modern_device_id(d.device_id) else {
             return Err(drv::Error::NoMatch);
         };
-        let virtio_dev = drv::try_device_add(Arc::new(
+        drv::try_device_add(Arc::new(
             drv::Device::new("virtio", vaddr, d.vendor_id, vdev_id, 0)
                 .with_parent("pci", dev.addr.clone()),
         ))?;
-
-        // A PCI virtio transport may bind before the device-specific virtio
-        // driver exists, or the child probe may fail independently. The child
-        // remains an unbound virtio device in the model in both cases.
-        let _ = drv::auto_bind(&virtio_dev);
         Ok(())
     }
 

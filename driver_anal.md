@@ -31,8 +31,9 @@ test-pass claims.
 - `drv::Device`, `drv::Driver`, `device_add`, `device_del`, `bind`,
   `auto_bind`, and `unbind` are the authoritative model path in
   `crates/drivers/drv/src/model.rs`.
-- PCI enumeration creates `pci` model devices with BAR resources and calls
-  `drv::auto_bind`; NVMe, AHCI, and virtio-pci are registered as model drivers.
+- PCI enumeration creates `pci` model devices with BAR resources through
+  `device_add`; NVMe, AHCI, and virtio-pci are registered as model drivers and
+  attach through the driver core rather than an enumeration-local bind call.
 - PCI model-device publication is now fallible and idempotent at the bus
   boundary: a repeated enumeration reuses the matching existing `(pci, addr)`
   device instead of panicking through `device_add`, while identity mismatches
@@ -541,7 +542,8 @@ Complete:
 
 - Authoritative model-level bind/probe/remove state.
 - Central model-level shutdown dispatch from reboot/poweroff/halt.
-- PCI device publication through `device_add` plus `auto_bind`.
+- PCI device publication through `device_add`, with driver attachment owned by
+  the driver core.
 - Modern-only virtio-pci matching.
 - Virtio transport ownership for persistent MMIO, MSI-X, and successful-probe
   vring records.
@@ -636,10 +638,11 @@ That means driver binding is currently descriptive, not causal. The device is al
 
 `device_add()` now does the Linux-visible publication order:
 
-1. `register_device()`
-2. devtmpfs hook creates `/dev` node
-3. sysfs hook fires
-4. sysfs hook emits add uevent
+1. reject duplicate `(bus, addr)` identities before publication
+2. insert the device into the model registry
+3. devtmpfs hook creates any `/dev` node
+4. sysfs hook fires and emits the add uevent
+5. attach an already-registered matching driver through the model
 
 That fixes the earlier `/dev`-after-uevent race for model-owned devices.
 
