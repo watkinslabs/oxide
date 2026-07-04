@@ -309,7 +309,7 @@ impl VirtioChildOps for VirtioSndOps {
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
-        let device_key = session.device_key().raw();
+        let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -343,11 +343,11 @@ impl VirtioChildOps for VirtioSndOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_snd::uninstall(device_key.raw());
+        let _ = drv_virtio_snd::uninstall(device_key);
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_snd::shutdown(device_key.raw());
+        let _ = drv_virtio_snd::shutdown(device_key);
     }
 }
 static VIRTIO_SND_DRV: VirtioChildDriver<VirtioSndOps> = VirtioChildDriver::new();

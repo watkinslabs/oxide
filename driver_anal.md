@@ -157,6 +157,10 @@ test-pass claims.
   routing, neighbor-cache ownership, hot-remove, shutdown, and hosted keyed
   tests. The PCI-backed child wrapper no longer converts net child keys into
   raw PCI-shaped integers.
+- `drv-virtio-snd` now accepts and stores `VirtioChildDeviceKey` for install,
+  context identity, hot-remove, shutdown, PCM-info scan, and event-handler
+  teardown. Its raw conversion is isolated at the sound-core owner-key
+  interface instead of the PCI-backed child wrapper.
 - Shared `virtio::run_child_probe` now owns the transport-neutral child probe
   lifecycle: run child install, publish transport state only after success, and
   release failed-probe resources on child error. The PCI-backed child model
@@ -611,9 +615,11 @@ test-pass claims.
   publication helpers. `drv-virtio-net` now consumes it directly for modern
   init, transport state identity, netdev registration tables, TX/RX runtime
   routing, neighbor-cache ownership, hot-remove, shutdown, and hosted keyed
-  tests. The remaining GPU and sound
-  child-driver APIs still need the same typed-key conversion where they
-  currently force the PCI-backed wrapper to call `.raw()`. Shared
+  tests. `drv-virtio-snd` now consumes it directly for install, context
+  identity, hot-remove, shutdown, PCM-info scan, and event-handler teardown,
+  while converting to raw only at the sound-core owner-key boundary. The
+  remaining GPU child-driver API still needs the same typed-key conversion
+  where it currently forces the PCI-backed wrapper to call `.raw()`. Shared
   `virtio::run_child_probe` now
   owns child-probe publish/unwind ordering, so the PCI-backed wrapper no
   longer hand-codes successful transport publication versus failed child-probe
