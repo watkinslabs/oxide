@@ -15,11 +15,11 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 77% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 78% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 40% complete.
+  hotplug, fault injection, and multi-device coverage: about 41% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -93,12 +93,12 @@ test-pass claims.
   old boot-probe default IPv4 policy is gone; the RX path learns IPv4 state
   from normal address configuration hooks. Virtio-net install/remove is now
   keyed to the owning parent BDF, so a remove for another device cannot clear
-  the installed transport. TX/RX queue cursors now live in the installed
-  device state, the TX primitive has a BDF-keyed entry point, and the published
-  `NetDev` now carries its owning device key instead of rediscovering the
-  singleton transport for every transmit. The RX softirq runtime is also keyed
-  to the owning transport, so softirq drains, ARP replies, and ARP/NDP neighbor
-  solicitations transmit through the device that owns the registered netdev.
+  another transport. TX/RX queue cursors now live in keyed installed-device
+  records, the TX primitive has a BDF-keyed entry point, and the published
+  `NetDev` carries its owning device key. Registered iface ownership and RX
+  softirq runtime state are keyed tables too, so softirq drains, ARP replies,
+  and ARP/NDP neighbor solicitations transmit through the device that owns the
+  registered netdev.
 - Virtio-vsock remove is keyed to the owning parent BDF and clears its
   `VsockRx` bottom half only for the installed transport. The upper
   `net::vsock` layer is still a single global guest-CID/TX-hook protocol
@@ -156,9 +156,10 @@ test-pass claims.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
-  provider. Virtio-net teardown, transmit ownership, and RX softirq routing are
-  BDF-owned, but the installed transport is still a singleton and it still needs
-  a real per-net-device table plus per-iface neighbor/runtime state.
+  provider. Virtio-net transport, registered-iface, TX, and RX softirq runtime
+  state are now BDF-owned keyed tables, but it still needs per-netdev visible
+  naming/stat isolation, per-iface neighbor-cache state, and live multi-device
+  bind/unbind proof.
   Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device is still
   singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its
@@ -189,9 +190,10 @@ test-pass claims.
   queue programming, config harvest, MSI-X setup, and failure release helpers
   still need to move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
-  the hardware class should support multiple instances: virtio-net still needs
-  a full multi-netdev runtime table after its BDF-owned teardown fix; virtio-gpu
-  still needs a real multi-card/scanout table after its BDF-owned teardown fix;
+  the hardware class should support multiple instances: virtio-net now has
+  keyed transport and RX runtime tables but still needs per-iface cache/naming
+  cleanup and live loop proof; virtio-gpu still needs a real multi-card/scanout
+  table after its BDF-owned teardown fix;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
   are still the other main offenders.
 - Add explicit fault-injection coverage for probe failure after each allocation,
@@ -326,7 +328,8 @@ Also, many real devices still use `register_device()` instead of `device_add()`,
 Several drivers use singleton global state:
 
 - virtio-gpu: single `DEV: Option<VirtioGpuDev>`
-- virtio-net modern: single `MODERN_DEV`
+- virtio-net modern: keyed device/runtime tables, but global neighbor cache and
+  `eth0` naming remain incomplete
 - virtio-rng: single `CTX`
 - virtio-vsock: single `CTX`
 - virtio-snd: single `CTX`

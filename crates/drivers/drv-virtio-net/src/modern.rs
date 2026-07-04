@@ -59,11 +59,11 @@ pub struct ModernNetState {
     pub rx_next_avail: u16,
 }
 
-static MODERN_DEV: Spinlock<Option<ModernNetState>, DriverLockClass> =
-    Spinlock::new(None);
-static MODERN_PRESENT: AtomicBool = AtomicBool::new(false);
+static MODERN_DEVS: Spinlock<alloc::vec::Vec<ModernNetState>, DriverLockClass> =
+    Spinlock::new(alloc::vec::Vec::new());
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
-static REGISTERED_NETDEV: AtomicU64 = AtomicU64::new(0);
+static REGISTERED_NETDEVS: Spinlock<alloc::vec::Vec<(u32, net::NetIfaceId)>, DriverLockClass> =
+    Spinlock::new(alloc::vec::Vec::new());
 static ARP_GC_TIMER_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Stash modern virtio-net runtime state for later RX/TX drivers.
@@ -114,12 +114,11 @@ pub fn init_modern(
         rx_last_used: 0,
         rx_next_avail: 1,
     };
-    let mut g = MODERN_DEV.lock();
-    if g.is_some() {
+    let mut g = MODERN_DEVS.lock();
+    if g.iter().any(|installed| installed.device_key == device_key) {
         return false;
     }
-    *g = Some(state);
-    MODERN_PRESENT.store(true, Ordering::Release);
+    g.push(state);
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-net-modern ");
@@ -157,23 +156,28 @@ pub fn init_modern(
 /// with the queue/device state it drains.
 /// # C: O(NCPU)
 pub fn uninstall_modern(device_key: u32) -> bool {
-    let state = {
-        let mut guard = MODERN_DEV.lock();
-        match guard.as_ref() {
-            Some(state) if state.device_key == device_key => guard.take(),
-            _ => None,
+    let (state, last_device) = {
+        let mut guard = MODERN_DEVS.lock();
+        let pos = guard.iter().position(|state| state.device_key == device_key);
+        match pos {
+            Some(pos) => {
+                let state = guard.remove(pos);
+                (Some(state), guard.is_empty())
+            }
+            None => (None, false),
         }
     };
     let state = match state {
         Some(state) => state,
         None => return false,
     };
-    #[cfg(target_os = "oxide-kernel")]
-    uninstall_rx_softirq_handler();
-    MODERN_PRESENT.store(false, Ordering::Release);
-    REGISTERED_NETDEV.store(0, Ordering::Release);
-    clear_rx_runtime();
-    unregister_timers();
+    if last_device {
+        #[cfg(target_os = "oxide-kernel")]
+        uninstall_rx_softirq_handler();
+        unregister_timers();
+    }
+    remove_registered_iface(device_key);
+    clear_rx_runtime_for(device_key);
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
         // probe; device_status is an 8-bit register at offset 0x14.
@@ -191,22 +195,27 @@ pub fn uninstall_modern(device_key: u32) -> bool {
 /// but make TX/RX paths fail closed and stop all device/runtime activity.
 /// # C: O(NCPU)
 pub fn shutdown_modern(device_key: u32) -> bool {
-    let state = {
-        let mut guard = MODERN_DEV.lock();
-        match guard.as_ref() {
-            Some(state) if state.device_key == device_key => guard.take(),
-            _ => None,
+    let (state, last_device) = {
+        let mut guard = MODERN_DEVS.lock();
+        let pos = guard.iter().position(|state| state.device_key == device_key);
+        match pos {
+            Some(pos) => {
+                let state = guard.remove(pos);
+                (Some(state), guard.is_empty())
+            }
+            None => (None, false),
         }
     };
     let state = match state {
         Some(state) => state,
         None => return false,
     };
-    #[cfg(target_os = "oxide-kernel")]
-    uninstall_rx_softirq_handler();
-    MODERN_PRESENT.store(false, Ordering::Release);
-    clear_rx_runtime();
-    unregister_timers();
+    if last_device {
+        #[cfg(target_os = "oxide-kernel")]
+        uninstall_rx_softirq_handler();
+        unregister_timers();
+    }
+    clear_rx_runtime_for(device_key);
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
         // probe; device_status is an 8-bit register at offset 0x14.
@@ -228,41 +237,63 @@ fn free_frame(pa: u64) {
 }
 
 /// Remember the net stack ifindex registered for this transport.
-/// Encoding is `(device_key + 1) << 32 | iface_id`, because zero means none.
 /// # C: O(1)
 fn set_registered_iface(device_key: u32, id: net::NetIfaceId) {
-    let encoded = ((device_key as u64 + 1) << 32) | id.raw() as u64;
-    REGISTERED_NETDEV.store(encoded, Ordering::Release);
+    let mut registered = REGISTERED_NETDEVS.lock();
+    if let Some((_, iface)) = registered
+        .iter_mut()
+        .find(|(registered_key, _)| *registered_key == device_key)
+    {
+        *iface = id;
+        return;
+    }
+    registered.push((device_key, id));
 }
 
 /// Registered net stack ifindex, if any.
 /// # C: O(1)
 pub fn registered_iface() -> Option<net::NetIfaceId> {
-    let raw = (REGISTERED_NETDEV.load(Ordering::Acquire) & 0xFFFF_FFFF) as u32;
-    if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
+    REGISTERED_NETDEVS
+        .lock()
+        .first()
+        .map(|(_, iface)| *iface)
 }
 
 /// Registered ifindex for the named device key, if it owns the published netdev.
 /// # C: O(1)
 pub fn registered_iface_for(device_key: u32) -> Option<net::NetIfaceId> {
-    let encoded = REGISTERED_NETDEV.load(Ordering::Acquire);
-    if encoded == 0 {
-        return None;
-    }
-    let encoded_key = ((encoded >> 32) - 1) as u32;
-    if encoded_key != device_key {
-        return None;
-    }
-    let raw = encoded as u32;
-    if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) }
+    REGISTERED_NETDEVS
+        .lock()
+        .iter()
+        .find(|(registered_key, _)| *registered_key == device_key)
+        .map(|(_, iface)| *iface)
+}
+
+fn remove_registered_iface(device_key: u32) -> Option<net::NetIfaceId> {
+    let mut registered = REGISTERED_NETDEVS.lock();
+    let pos = registered
+        .iter()
+        .position(|(registered_key, _)| *registered_key == device_key)?;
+    Some(registered.remove(pos).1)
 }
 
 /// Read-only accessor for the device MAC. Returns `None` until
 /// `init_modern` has run with `mac_valid=true`.
-/// # C: O(1) under MODERN_DEV.lock()
+/// # C: O(N devices) under device-table lock
 pub fn mac() -> Option<[u8; 6]> {
-    let g = MODERN_DEV.lock();
-    g.and_then(|s| if s.mac_valid { Some(s.mac) } else { None })
+    MODERN_DEVS
+        .lock()
+        .iter()
+        .find(|state| state.mac_valid)
+        .map(|state| state.mac)
+}
+
+pub fn mac_for(device_key: u32) -> Option<[u8; 6]> {
+    MODERN_DEVS
+        .lock()
+        .iter()
+        .find(|state| state.device_key == device_key && state.mac_valid)
+        .map(|state| state.mac)
 }
 
 // -------- F59-05: TX on the modern transport ---------------------------
@@ -305,7 +336,7 @@ pub enum TxOutcome {
 }
 
 fn installed_device_key() -> Option<u32> {
-    MODERN_DEV.lock().as_ref().map(|s| s.device_key)
+    MODERN_DEVS.lock().first().map(|s| s.device_key)
 }
 
 /// Send one frame out the named modern virtio-net transmit queue. Writes
@@ -319,19 +350,15 @@ fn installed_device_key() -> Option<u32> {
 /// `used.idx` advance — distinct from `Err(_)` which means we
 /// couldn't even attempt the post.
 ///
-/// # C: O(1) under MODERN_DEV.lock()
-/// # Lk: takes MODERN_DEV across MMIO writes; no callbacks.
+/// # C: O(N devices) under device-table lock
+/// # Lk: takes the virtio-net device-table lock across MMIO writes; no callbacks.
 pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
-    if !MODERN_PRESENT.load(Ordering::Acquire) {
-        return Err(TxErr::NotPresent);
-    }
     if body.len() > TX_MAX_BODY {
         return Err(TxErr::TooLarge);
     }
-    let mut g = MODERN_DEV.lock();
-    let s = match g.as_mut() {
-        Some(s) if s.device_key == device_key => s,
-        _ => return Err(TxErr::NotPresent),
+    let mut g = MODERN_DEVS.lock();
+    let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {
+        return Err(TxErr::NotPresent);
     };
     if s.tx0_buf_pa == 0 || !s.txq.is_runtime_valid() {
         return Err(TxErr::NoBuf);
@@ -349,7 +376,7 @@ pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
     // buffer. Use byte writes via volatile to avoid relying on memcpy
     // ordering; total len fits in one PMM page.
     let total_len = (VIRTIO_NET_HDR_LEN + body.len()) as u32;
-    // SAFETY: HHDM-mapped freshly-owned scratch frame; bytes 0..total_len stay within the 4 KiB page; single CPU under MODERN_DEV.lock.
+    // SAFETY: HHDM-mapped freshly-owned scratch frame; bytes 0..total_len stay within the 4 KiB page; single CPU under the virtio-net device-table lock.
     unsafe {
         for i in 0..VIRTIO_NET_HDR_LEN {
             core::ptr::write_volatile((buf_va + i as u64) as *mut u8, 0);
@@ -364,7 +391,7 @@ pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
 
     // Update q1 descriptor 0: { addr=tx_buf_pa; len=total_len; flags=0 }.
     // Layout: u64 addr at +0; u32 len at +8; u16 flags at +12; u16 next at +14.
-    // SAFETY: HHDM-mapped queue-1 descriptor table owned by driver under MODERN_DEV.lock; aligned u64+u32+u16 stores within the desc-0 slot.
+    // SAFETY: HHDM-mapped queue-1 descriptor table owned by driver under the virtio-net device-table lock; aligned u64+u32+u16 stores within the desc-0 slot.
     unsafe {
         core::ptr::write_volatile(desc_va as *mut u64, s.tx0_buf_pa);
         core::ptr::write_volatile((desc_va + 8)  as *mut u32, total_len);
@@ -423,7 +450,7 @@ pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
     Ok(TxOutcome::Timeout)
 }
 
-/// Current single-installed-device entry point. New internal users should pass
+/// Compatibility entry point for legacy callers. New internal users should pass
 /// the owning BDF key to `tx_frame_for`.
 pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
     let Some(device_key) = installed_device_key() else {
@@ -456,7 +483,7 @@ pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
-    let our_mac = match mac() { Some(m) => m, None => return 0 };
+    let our_mac = match mac_for(device_key) { Some(m) => m, None => return 0 };
     let stack = net::sock::stack();
     rx_poll_for(device_key, |f: &[u8]| {
         if f.len() < 14 { return; }
@@ -528,7 +555,7 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
 // RX delivery into the stack arrives in F59-12; today this struct
 // only supports xmit + identity (name/mac/mtu/stats). Stats counters
 // live as AtomicU64 since xmit may be called from soft-IRQ context
-// where MODERN_DEV.lock is already held.
+// where the virtio-net device-table lock is already held.
 
 pub struct VirtioNetDev {
     device_key: u32,
@@ -555,11 +582,10 @@ impl VirtioNetDev {
     /// # C: O(1)
     pub fn new_for(device_key: u32) -> Option<alloc::sync::Arc<Self>> {
         let m = {
-            let g = MODERN_DEV.lock();
-            let state = g.as_ref()?;
-            if state.device_key != device_key || !state.mac_valid {
-                return None;
-            }
+            let g = MODERN_DEVS.lock();
+            let state = g
+                .iter()
+                .find(|state| state.device_key == device_key && state.mac_valid)?;
             state.mac
         };
         Some(alloc::sync::Arc::new(Self {
@@ -602,7 +628,7 @@ pub fn unregister_netdev(device_key: u32) -> bool {
     };
     let removed = net::sock::stack().unregister_iface(id);
     if removed {
-        REGISTERED_NETDEV.store(0, Ordering::Release);
+        let _ = remove_registered_iface(device_key);
     }
     removed
 }
@@ -708,21 +734,30 @@ pub fn arp_cache() -> &'static net::arp::ArpCache {
     g.unwrap()
 }
 
-/// Snapshot of the registered modern device (None until init_modern).
-/// # C: O(1) under MODERN_DEV.lock()
-pub fn modern_state() -> Option<ModernNetState> { *MODERN_DEV.lock() }
+/// Snapshot of the first registered modern device, if any.
+/// # C: O(1) under device-table lock
+pub fn modern_state() -> Option<ModernNetState> {
+    MODERN_DEVS.lock().first().copied()
+}
+
+/// Snapshot of the named modern device, if installed.
+/// # C: O(N devices)
+pub fn modern_state_for(device_key: u32) -> Option<ModernNetState> {
+    MODERN_DEVS
+        .lock()
+        .iter()
+        .find(|state| state.device_key == device_key)
+        .copied()
+}
 
 /// True once `init_modern` has been called with a valid state.
 /// # C: O(1)
-pub fn is_modern_present() -> bool { MODERN_PRESENT.load(Ordering::Acquire) }
+pub fn is_modern_present() -> bool { !MODERN_DEVS.lock().is_empty() }
 
 /// True iff the named virtio-net transport owns the installed runtime state.
 /// # C: O(1)
 pub fn is_modern_present_for(device_key: u32) -> bool {
-    MODERN_DEV.lock()
-        .as_ref()
-        .map(|state| state.device_key == device_key)
-        .unwrap_or(false)
+    modern_state_for(device_key).is_some()
 }
 
 // ---- F87: softirq RX handler ----------------------------------------
@@ -742,18 +777,24 @@ struct RxRuntime {
     ip: [u8; 4],
 }
 
-static RX_RUNTIME: Spinlock<Option<RxRuntime>, DriverLockClass> = Spinlock::new(None);
+static RX_RUNTIMES: Spinlock<alloc::vec::Vec<RxRuntime>, DriverLockClass> =
+    Spinlock::new(alloc::vec::Vec::new());
 
 /// Stash the iface id + IPv4 used by the RX softirq handler. Layout
 /// is keyed by owning transport so RX drains cannot silently route through
 /// whichever virtio-net device happens to be globally installed.
 /// # C: O(1)
 pub fn set_softirq_iface(device_key: u32, id: net::NetIfaceId, ip: [u8; 4]) {
-    *RX_RUNTIME.lock() = Some(RxRuntime {
-        device_key,
-        iface: id,
-        ip,
-    });
+    let mut runtimes = RX_RUNTIMES.lock();
+    if let Some(runtime) = runtimes
+        .iter_mut()
+        .find(|runtime| runtime.device_key == device_key)
+    {
+        runtime.iface = id;
+        runtime.ip = ip;
+        return;
+    }
+    runtimes.push(RxRuntime { device_key, iface: id, ip });
 }
 
 /// Install runtime RX resources owned by this net driver: iface identity for
@@ -793,8 +834,8 @@ pub fn uninstall_rx_softirq_handler() {
 /// queries from the host's slirp NAT.
 /// # C: O(1)
 pub fn set_softirq_ip(ip: [u8; 4]) {
-    let mut runtime = RX_RUNTIME.lock();
-    if let Some(runtime) = runtime.as_mut() {
+    let mut runtimes = RX_RUNTIMES.lock();
+    if let Some(runtime) = runtimes.first_mut() {
         runtime.ip = ip;
     }
 }
@@ -802,13 +843,11 @@ pub fn set_softirq_ip(ip: [u8; 4]) {
 /// F138: update only the IP slot for the named iface.
 /// # C: O(1)
 pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
-    let mut runtime = RX_RUNTIME.lock();
-    let Some(runtime) = runtime.as_mut() else {
-        return false;
-    };
-    if runtime.iface.raw() != id.raw() {
-        return false;
-    }
+    let mut runtimes = RX_RUNTIMES.lock();
+    let Some(runtime) = runtimes
+        .iter_mut()
+        .find(|runtime| runtime.iface.raw() == id.raw())
+    else { return false; };
     runtime.ip = ip;
     true
 }
@@ -817,9 +856,9 @@ pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
 /// Used by siocsifaddr to decide whether to update the IP slot.
 /// # C: O(1)
 pub fn softirq_iface_id() -> u32 {
-    RX_RUNTIME
+    RX_RUNTIMES
         .lock()
-        .as_ref()
+        .first()
         .map(|runtime| runtime.iface.raw())
         .unwrap_or(0)
 }
@@ -827,11 +866,21 @@ pub fn softirq_iface_id() -> u32 {
 /// Owning device key for the current RX softirq runtime, if installed.
 /// # C: O(1)
 pub fn softirq_device_key() -> Option<u32> {
-    RX_RUNTIME.lock().as_ref().map(|runtime| runtime.device_key)
+    RX_RUNTIMES.lock().first().map(|runtime| runtime.device_key)
 }
 
 fn clear_rx_runtime() {
-    *RX_RUNTIME.lock() = None;
+    RX_RUNTIMES.lock().clear();
+}
+
+fn clear_rx_runtime_for(device_key: u32) -> bool {
+    let mut runtimes = RX_RUNTIMES.lock();
+    let Some(pos) = runtimes
+        .iter()
+        .position(|runtime| runtime.device_key == device_key)
+    else { return false; };
+    runtimes.remove(pos);
+    true
 }
 
 /// Softirq slot handler. Drains pending RX into the net stack.
@@ -840,10 +889,10 @@ fn clear_rx_runtime() {
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
 pub fn rx_drain_softirq() {
-    let Some(runtime) = RX_RUNTIME.lock().as_ref().copied() else {
-        return;
-    };
-    let _ = poll_into_stack_for(runtime.device_key, runtime.iface, runtime.ip);
+    let runtimes = RX_RUNTIMES.lock().clone();
+    for runtime in runtimes {
+        let _ = poll_into_stack_for(runtime.device_key, runtime.iface, runtime.ip);
+    }
 }
 
 /// Raise the virtio-net RX softirq from device IRQ context. Actual ring walking
@@ -877,7 +926,7 @@ fn resolve_next_hop_mac(
         return Some(m);
     }
     // Cache miss — fire an ARP request so the next call resolves.
-    if let Some(our_ip) = first_iface_ip() {
+    if let Some(our_ip) = first_iface_ip_for(device_key) {
         let req = net::arp::build_request(
             net::MacAddr(src_mac), our_ip, next_hop_ip,
         );
@@ -994,16 +1043,13 @@ mod ndp_tests {
         }
     }
 
-    #[test]
-    fn init_modern_rejects_second_device_without_overwrite() {
-        let _ = uninstall_modern(1);
-        {
-            let mut g = MODERN_DEV.lock();
-            *g = Some(state(1));
-        }
-        MODERN_PRESENT.store(true, Ordering::Release);
-        assert!(!uninstall_modern(2));
-        assert!(is_modern_present_for(1));
+    fn clear_test_state() {
+        MODERN_DEVS.lock().clear();
+        REGISTERED_NETDEVS.lock().clear();
+        clear_rx_runtime();
+    }
+
+    fn resources() -> virtio::VirtioResources {
         let mut resources = virtio::VirtioResources::new(1, 1);
         resources.set_queue(virtio::VirtQueueResource {
             index: 0,
@@ -1023,9 +1069,28 @@ mod ndp_tests {
             notify_va: 8,
             notify_off: 0,
         });
-        assert!(!init_modern(
+        resources
+    }
+
+    #[test]
+    fn init_modern_accepts_distinct_devices_and_rejects_duplicate_key() {
+        clear_test_state();
+        assert!(init_modern(
+            1,
+            resources(),
+            1,
+            1,
+            0,
+            9,
+            2048,
+            [0x02, 0, 0, 0, 0, 1],
+            true,
+            10
+        ));
+        assert!(is_modern_present_for(1));
+        assert!(init_modern(
             2,
-            resources,
+            resources(),
             2,
             1,
             0,
@@ -1035,24 +1100,55 @@ mod ndp_tests {
             true,
             10
         ));
-        assert_eq!(modern_state().unwrap().bus, 1);
-        {
-            let _ = MODERN_DEV.lock().take();
-        }
-        MODERN_PRESENT.store(false, Ordering::Release);
+        assert_eq!(modern_state_for(1).unwrap().bus, 1);
+        assert_eq!(modern_state_for(2).unwrap().bus, 2);
+        assert!(!init_modern(
+            2,
+            resources(),
+            2,
+            1,
+            0,
+            9,
+            2048,
+            [0x02, 0, 0, 0, 0, 2],
+            true,
+            10
+        ));
+        MODERN_DEVS.lock().clear();
         assert!(modern_state().is_none());
     }
 
     #[test]
+    fn uninstall_modern_removes_only_named_device() {
+        clear_test_state();
+        {
+            let mut devices = MODERN_DEVS.lock();
+            devices.push(state(1));
+            devices.push(state(2));
+        }
+        set_registered_iface(1, net::NetIfaceId::from_raw(77));
+        set_registered_iface(2, net::NetIfaceId::from_raw(88));
+        set_softirq_iface(1, net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        set_softirq_iface(2, net::NetIfaceId::from_raw(88), [10, 0, 0, 2]);
+
+        assert!(uninstall_modern(1));
+        assert!(!is_modern_present_for(1));
+        assert!(is_modern_present_for(2));
+        assert!(registered_iface_for(1).is_none());
+        assert_eq!(registered_iface_for(2).unwrap().raw(), 88);
+        assert!(set_softirq_ip_for_iface(net::NetIfaceId::from_raw(88), [10, 0, 0, 3]));
+        assert_eq!(first_iface_ip_for(2), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+
+        assert!(uninstall_modern(2));
+        assert!(!is_modern_present());
+    }
+
+    #[test]
     fn shutdown_modern_quiesces_transport_without_forgetting_iface() {
-        let _ = uninstall_modern(1);
+        clear_test_state();
         set_registered_iface(1, net::NetIfaceId::from_raw(77));
         set_softirq_iface(1, net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
-        {
-            let mut g = MODERN_DEV.lock();
-            *g = Some(state(1));
-        }
-        MODERN_PRESENT.store(true, Ordering::Release);
+        MODERN_DEVS.lock().push(state(1));
 
         assert!(shutdown_modern(1));
         assert!(!is_modern_present());
@@ -1062,18 +1158,21 @@ mod ndp_tests {
         assert_eq!(softirq_iface_id(), 0);
         assert!(softirq_device_key().is_none());
         assert!(matches!(tx_frame_for(1, &[0; 14]), Err(TxErr::NotPresent)));
-
-        REGISTERED_NETDEV.store(0, Ordering::Release);
     }
 
     #[test]
     fn registered_iface_is_keyed_by_device() {
-        REGISTERED_NETDEV.store(0, Ordering::Release);
+        REGISTERED_NETDEVS.lock().clear();
         set_registered_iface(0x0012_0304, net::NetIfaceId::from_raw(9));
         assert_eq!(registered_iface().unwrap().raw(), 9);
         assert_eq!(registered_iface_for(0x0012_0304).unwrap().raw(), 9);
         assert!(registered_iface_for(0x0012_0305).is_none());
-        REGISTERED_NETDEV.store(0, Ordering::Release);
+        set_registered_iface(0x0012_0305, net::NetIfaceId::from_raw(10));
+        assert_eq!(registered_iface_for(0x0012_0305).unwrap().raw(), 10);
+        assert_eq!(remove_registered_iface(0x0012_0304).unwrap().raw(), 9);
+        assert!(registered_iface_for(0x0012_0304).is_none());
+        assert_eq!(registered_iface_for(0x0012_0305).unwrap().raw(), 10);
+        REGISTERED_NETDEVS.lock().clear();
     }
 
     #[test]
@@ -1116,9 +1215,17 @@ mod ndp_tests {
 /// to 0.0.0.0 when the iface is unconfigured.
 /// # C: O(1)
 fn first_iface_ip() -> Option<net::Ipv4Addr> {
-    RX_RUNTIME
+    RX_RUNTIMES
         .lock()
-        .as_ref()
+        .first()
+        .map(|runtime| net::Ipv4Addr::from_u32(u32::from_be_bytes(runtime.ip)))
+}
+
+fn first_iface_ip_for(device_key: u32) -> Option<net::Ipv4Addr> {
+    RX_RUNTIMES
+        .lock()
+        .iter()
+        .find(|runtime| runtime.device_key == device_key)
         .map(|runtime| net::Ipv4Addr::from_u32(u32::from_be_bytes(runtime.ip)))
 }
 
@@ -1132,10 +1239,8 @@ fn first_iface_ip() -> Option<net::Ipv4Addr> {
 // drain we kick the RX queue notify window so the device knows the avail-ring
 // advanced.
 //
-// Cursors live as atomics so rx_poll callers don't have to hold any
-// kernel state; the spinlock protects MODERN_DEV but the cursors are
-// driver-private and incremented only inside rx_poll, so a relaxed
-// load + release-store is enough.
+// Cursors live in the per-device runtime record and are incremented only inside
+// rx_poll while holding the virtio-net device-table lock.
 
 /// Drain pending RX completions and invoke `cb` for each frame body
 /// (Ethernet header + payload, virtio_net_hdr stripped). Re-publishes
@@ -1146,7 +1251,7 @@ fn first_iface_ip() -> Option<net::Ipv4Addr> {
 /// or the device hasn't advanced its used.idx since the last call.
 ///
 /// # C: O(frames_in_flight)
-/// # Lk: takes MODERN_DEV across ring read + avail publish, drops it
+/// # Lk: takes the virtio-net device-table lock across ring read + avail publish, drops it
 ///       before invoking cb. Required so cb's downstream (e.g. the TCP
 ///       stack emitting an ACK via tx_frame) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
@@ -1159,11 +1264,9 @@ pub fn rx_poll<F: FnMut(&[u8])>(cb: F) -> usize {
 }
 
 pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
-    if !MODERN_PRESENT.load(Ordering::Acquire) { return 0; }
-    let mut g = MODERN_DEV.lock();
-    let s = match g.as_mut() {
-        Some(s) if s.device_key == device_key => s,
-        _ => return 0,
+    let mut g = MODERN_DEVS.lock();
+    let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {
+        return 0;
     };
     if !s.rxq.is_runtime_valid() || s.rx0_buf_pa == 0 || s.rx0_buf_len == 0 {
         return 0;
@@ -1217,7 +1320,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
         {
             let body_len = frame_total as usize - VIRTIO_NET_HDR_LEN;
             // SAFETY: rx0 buffer is HHDM-mapped, owned by this driver
-            // under MODERN_DEV.lock(); the device finished writing
+            // under the virtio-net device-table lock; the device finished writing
             // before publishing used.ring per Virtio 1.2 §2.6.8. Copy
             // out so we can release the lock before cb runs.
             let body = unsafe {
@@ -1252,7 +1355,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
     let mut next_avail = s.rx_next_avail;
     for _ in 0..delivered {
         let pub_slot = (next_avail as usize) % rxq_size;
-        // SAFETY: HHDM-mapped avail ring, exclusive under MODERN_DEV.lock.
+        // SAFETY: HHDM-mapped avail ring, exclusive under the virtio-net device-table lock.
         unsafe {
             core::ptr::write_volatile(
                 (avail_va + 4 + (pub_slot as u64) * 2) as *mut u16,
@@ -1263,7 +1366,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
     }
     if delivered > 0 {
         core::sync::atomic::fence(Ordering::Release);
-        // SAFETY: avail.idx is u16 at +2 of the avail ring frame; HHDM-mapped exclusive under MODERN_DEV.lock; device reads after the fence.
+        // SAFETY: avail.idx is u16 at +2 of the avail ring frame; HHDM-mapped exclusive under the virtio-net device-table lock; device reads after the fence.
         unsafe {
             core::ptr::write_volatile((avail_va + 2) as *mut u16, next_avail);
         }
@@ -1277,7 +1380,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
             core::ptr::write_volatile(s.rxq.notify_va as *mut u16, s.rxq.index);
         }
     }
-    // Drop MODERN_DEV.lock() before invoking cb — cb may call tx_frame
+    // Drop the device-table lock before invoking cb — cb may call tx_frame
     // (e.g. TCP stack emitting an ACK from deliver_rx) which re-acquires
     // the same lock. UP spinlock would deadlock if we held it here.
     drop(g);
