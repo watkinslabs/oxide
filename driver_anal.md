@@ -561,10 +561,11 @@ test-pass claims.
   char devices. The remaining direct `devfs::register` users are fixed
   namespace entries, devpts allocation, coredump artifacts, or other
   non-hardware pseudo-files rather than driver-owned device nodes.
-- Driver-owned devnode registries for evdev, fbdev, and DRM card/render nodes
-  now have hosted remove/readd loop proofs: unregister removes the model
-  device(s), re-register recreates exactly one owned model device per node, and
-  registry slots do not remain stuck after normal remove.
+- Driver-owned devnode registries for block, evdev, fbdev, and DRM card/render
+  nodes now have hosted remove/readd loop proofs: unregister removes the model
+  device(s), re-register recreates exactly one owned model device per node,
+  block `dev_t` lookup disappears and returns with the disk, and registry slots
+  do not remain stuck after normal remove.
 - Sysfs exposes more Linux-shaped bus state, including `/sys/dev/char`,
   `/sys/dev/block`, parent/subsystem links, class-device `device` links for
   model-parented input/DRM/virtual character devices, virtual root mappings
@@ -783,8 +784,9 @@ test-pass claims.
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
   block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2 paths. Hosted
-  driver-owned devnode remove/readd loops now cover evdev, fbdev, and DRM
-  node registries, but they are not a substitute for QEMU hotplug/rebind proof.
+  driver-owned devnode remove/readd loops now cover block, evdev, fbdev, and
+  DRM node registries, but they are not a substitute for QEMU hotplug/rebind
+  proof.
 - Finish Linux-visible sysfs/devtmpfs/class contracts, including the remaining
   class parent relationships and stable add/remove/change uevent behavior
   across rebind beyond the current driver-core remove-order, sysfs
