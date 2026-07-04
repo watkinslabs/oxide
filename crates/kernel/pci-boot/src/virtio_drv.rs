@@ -45,10 +45,27 @@ impl drv::Driver for VirtioPciDrv {
     }
 
     fn remove(&self, dev: &drv::Device) {
-        for child in drv::devices() {
-            if virtio::virtio_child_has_parent(&child.bus, child.parent(), "pci", &dev.addr) {
-                drv::device_del(&child);
+        let children: Vec<Arc<drv::Device>> = drv::devices()
+            .into_iter()
+            .filter(|child| virtio::virtio_child_has_parent(&child.bus, child.parent(), "pci", &dev.addr))
+            .collect();
+        let mut bdfs: Vec<u32> = Vec::new();
+        if let Some(parent_bdf) = parse_pci_addr(&dev.addr) {
+            bdfs.push(bdf_word(parent_bdf));
+        }
+        for child in children {
+            if let Some((_, parent_addr)) = child.parent() {
+                if let Some(parent_bdf) = parse_pci_addr(&parent_addr) {
+                    bdfs.push(bdf_word(parent_bdf));
+                }
             }
+            drv::device_del(&child);
+        }
+
+        bdfs.sort_unstable();
+        bdfs.dedup();
+        for bdf_word in bdfs {
+            unpublish_transport_mmio(bdf_word);
         }
     }
 
