@@ -3,7 +3,7 @@
 Date: 2026-07-04
 
 Current active item: `>>> ACTIVE >>>` row on branch
-`B002-single-machine-desktop-proof`.
+`B326-userspace-seat-driver-proof`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -22,8 +22,8 @@ Status legend:
 | Status | Branch | Description |
 |---|---|---|
 | SOURCE OK | B001-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
-| >>> ACTIVE >>> VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
-| NOT DONE | TBD | QEMU/userspace proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, uevent delivery, `/run/udev`, and seat state. |
+| VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
+| >>> ACTIVE >>> BLOCKED | B326-userspace-seat-driver-proof | QEMU/userspace proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, uevent delivery, `/run/udev`, and seat state. |
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
 | SOURCE OK |  | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
 | SOURCE OK |  | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |

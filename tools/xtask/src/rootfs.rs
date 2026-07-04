@@ -220,6 +220,56 @@ ExecStart=/bin/driver_path_smoke.sh
         dbg("mkdir /usr/lib/systemd/system/default.target.wants")?;
         dbg("symlink /usr/lib/systemd/system/default.target.wants/driver-path-smoke.service ../driver-path-smoke.service")?;
     }
+    if std::env::var_os("OXIDE_USERSPACE_SEAT_SMOKE").is_some() {
+        let sh = repo.join("target/userspace_seat_smoke.sh");
+        std::fs::write(&sh,
+b"#!/bin/sh
+set -eu
+fail=0
+check_file() { if [ -e \"$1\" ]; then echo \"userspace_seat_smoke: PASS $1\"; else echo \"userspace_seat_smoke: FAIL missing $1\"; fail=1; fi; }
+check_grep() { if [ -f \"$1\" ] && grep -q \"$2\" \"$1\"; then echo \"userspace_seat_smoke: PASS $1 has $2\"; else echo \"userspace_seat_smoke: FAIL $1 lacks $2\"; fail=1; fi; }
+echo userspace_seat_smoke: START
+/bin/fbdev_probe
+/bin/drm_probe
+/bin/sysblock_probe
+/bin/snd_probe
+/bin/rtlink_probe
+check_file /run/udev
+check_file /run/udev/data/c226:0
+check_grep /run/udev/data/c226:0 G:master-of-seat
+check_file /run/udev/tags/master-of-seat/c226:0
+check_file /run/systemd/seats/seat0
+check_grep /run/systemd/seats/seat0 CAN_GRAPHICAL=1
+check_file /usr/bin/udevadm
+check_file /lib/systemd/systemd-udevd
+check_file /usr/bin/loginctl
+check_file /lib/systemd/systemd-logind
+if [ \"$fail\" -eq 0 ]; then echo userspace_seat_smoke: PASS; else echo userspace_seat_smoke: FAIL; fi
+exit \"$fail\"
+").map_err(|_| 1u8)?;
+        let svc = repo.join("target/userspace-seat-smoke.service");
+        std::fs::write(&svc,
+b"[Unit]
+Description=B326 userspace seat smoke
+DefaultDependencies=no
+Before=console-getty.service serial-getty-ttyS0.service
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+ExecStart=/bin/userspace_seat_smoke.sh
+").map_err(|_| 1u8)?;
+        put(&sh, "/bin/userspace_seat_smoke.sh")?;
+        dbg("sif /bin/userspace_seat_smoke.sh mode 0100755")?;
+        dbg("mkdir /usr/lib/systemd")?;
+        dbg("mkdir /usr/lib/systemd/system")?;
+        put(&svc, "/usr/lib/systemd/system/userspace-seat-smoke.service")?;
+        dbg("sif /usr/lib/systemd/system/userspace-seat-smoke.service mode 0100644")?;
+        dbg("mkdir /usr/lib/systemd/system/default.target.wants")?;
+        dbg("symlink /usr/lib/systemd/system/default.target.wants/userspace-seat-smoke.service ../userspace-seat-smoke.service")?;
+    }
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
     put(&user("sigframe_probe"), "/bin/sigframe_probe")?;
