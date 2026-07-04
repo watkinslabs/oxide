@@ -298,6 +298,8 @@ fn dev_root_canon(bus: &str) -> &'static str {
         "input" => "devices/virtual/input",
         "mem" => "devices/virtual/mem",
         "misc" => "devices/virtual/misc",
+        "sound" => "devices/virtual/sound",
+        "graphics" => "devices/virtual/graphics",
         _ => "devices/platform",
     }
 }
@@ -309,6 +311,8 @@ fn dev_root_leaf(bus: &str) -> &'static str {
         "platform" => "platform",
         "mem" => "virtual/mem",
         "misc" => "virtual/misc",
+        "sound" => "virtual/sound",
+        "graphics" => "virtual/graphics",
         _ => "platform",
     }
 }
@@ -780,15 +784,23 @@ mod tests {
     }
 
     #[test]
-    fn sys_dev_char_indexes_virtual_mem_and_misc_devices() {
+    fn sys_dev_char_indexes_virtual_char_class_devices() {
         let mem = Arc::new(
             drv::Device::new("mem", String::from("sysfs-random-test"), 0, 0, 0)
                 .with_devnode("mem", String::from("random-test"), Some((1, 8))));
         let misc = Arc::new(
             drv::Device::new("misc", String::from("sysfs-autofs-test"), 0, 0, 0)
                 .with_devnode("misc", String::from("autofs-test"), Some((10, 235))));
+        let sound = Arc::new(
+            drv::Device::new("sound", String::from("controlC8"), 0, 0, 0)
+                .with_devnode("sound", String::from("snd/controlC8"), Some((116, 256))));
+        let graphics = Arc::new(
+            drv::Device::new("graphics", String::from("fb8"), 0, 0, 0)
+                .with_devnode("graphics", String::from("fb8"), Some((29, 8))));
         drv::device_add(Arc::clone(&mem));
         drv::device_add(Arc::clone(&misc));
+        drv::device_add(Arc::clone(&sound));
+        drv::device_add(Arc::clone(&graphics));
 
         let index = make_sys_dev_index_inode(DevIndexKind::Char);
         let mem_link = index.lookup("1:8").expect("mem char index link");
@@ -799,10 +811,22 @@ mod tests {
         assert_eq!(
             misc_link.readlink().expect("readlink"),
             b"../../devices/virtual/misc/sysfs-autofs-test".to_vec());
+        let sound_link = index.lookup("116:256").expect("sound char index link");
+        assert_eq!(
+            sound_link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC8".to_vec());
+        let graphics_link = index.lookup("29:8").expect("graphics char index link");
+        assert_eq!(
+            graphics_link.readlink().expect("readlink"),
+            b"../../devices/virtual/graphics/fb8".to_vec());
 
         drv::device_del(&mem);
         drv::device_del(&misc);
+        drv::device_del(&sound);
+        drv::device_del(&graphics);
         assert_eq!(index.lookup("1:8").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("10:235").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("116:256").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("29:8").err(), Some(VfsError::Enoent));
     }
 }
