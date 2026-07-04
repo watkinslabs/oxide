@@ -401,7 +401,7 @@ impl drv::Driver for VirtioNetDrv {
             }
             None => {
                 let _ = drv_virtio_net::modern::uninstall_modern(device_key);
-                unmap_probe_mmio(&mut p);
+                release_after_child_uninstall_failed_probe(&mut p);
                 Err(drv::Error::ProbeFailed)
             }
         }
@@ -987,6 +987,10 @@ fn release_q0_after_failed_probe(p: &mut VirtioProbe) {
 fn release_net_after_failed_probe(p: &mut VirtioProbe) {
     let payload_frames = [p.rx0_buf_pa, p.tx0_buf_pa];
     release_failed_probe_frames(p, &payload_frames);
+}
+
+fn release_after_child_uninstall_failed_probe(p: &mut VirtioProbe) {
+    release_failed_probe_frames(p, &[]);
 }
 
 fn release_vsock_after_failed_probe(p: &mut VirtioProbe) {

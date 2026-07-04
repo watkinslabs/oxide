@@ -106,6 +106,10 @@ test-pass claims.
 - Failed virtio child probes now release transport vring frames through the
   probe's recorded queue state instead of per-driver hand-written q0/q1/q2/q3
   frame lists; child-owned payload frames are passed as explicit extras.
+- Virtio-net's late netdev registration failure now unwinds through the
+  transport failed-probe release path after the child runtime is uninstalled,
+  so transport-owned vring frames are reset/freed instead of only unmapping
+  probe MMIO.
 - Virtio-blk no longer has PCI-transport-owned block config harvest. The
   virtio-pci path maps the device config as a generic resource, and the
   virtio-blk child driver reads capacity/block-size during its own probe.
@@ -256,9 +260,11 @@ test-pass claims.
   config windows, MSI-X, and notify lifetime through finalization/state
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
-  Transport-level feature/q0 failure now sets FAILED. Device feature policy,
-  complete MSI-X setup policy, child-probe failure unwind, and fault-injection
-  proof still need to move behind a fuller `VirtioPciTransport` boundary.
+  Transport-level feature/q0 failure now sets FAILED. One late virtio-net
+  child-unwind leak has been fixed. Device feature policy, complete MSI-X
+  setup policy, remaining child-probe failure unwind audit, and
+  fault-injection proof still need to move behind a fuller
+  `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
