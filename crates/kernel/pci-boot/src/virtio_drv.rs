@@ -59,7 +59,6 @@ struct VirtioProbeProfile {
     msix0_handler: Option<fn()>,
     extra_queues: [Option<QueuePlan>; 3],
     needs_q1_tx_warmup: bool,
-    needs_input_cfg: bool,
 }
 
 impl VirtioProbeProfile {
@@ -73,7 +72,6 @@ impl VirtioProbeProfile {
             msix0_handler,
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
-            needs_input_cfg: false,
         }
     }
 
@@ -83,7 +81,6 @@ impl VirtioProbeProfile {
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: true,
-            needs_input_cfg: false,
         }
     }
 
@@ -93,7 +90,6 @@ impl VirtioProbeProfile {
             msix0_handler,
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
-            needs_input_cfg: true,
         }
     }
 
@@ -103,7 +99,6 @@ impl VirtioProbeProfile {
             msix0_handler,
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
-            needs_input_cfg: false,
         }
     }
 
@@ -117,7 +112,6 @@ impl VirtioProbeProfile {
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: false,
-            needs_input_cfg: false,
         }
     }
 
@@ -131,7 +125,6 @@ impl VirtioProbeProfile {
                 None,
             ],
             needs_q1_tx_warmup: false,
-            needs_input_cfg: false,
         }
     }
 
@@ -292,7 +285,7 @@ impl drv::Driver for VirtioInputDrv {
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
             || p.cfg_va == 0
-            || p.input_cfg_va == 0
+            || p.device_cfg_va == 0
             || p.q0_desc_pa == 0
             || p.q0_driver_pa == 0
             || p.q0_device_pa == 0
@@ -303,7 +296,8 @@ impl drv::Driver for VirtioInputDrv {
             return Err(drv::Error::ProbeFailed);
         }
         let bdf_word = bdf_word(d.bdf);
-        let evdev_id = match unsafe { drv_virtio_input::install_device(bdf_word, p.input_cfg_va) } {
+        let resources = p.resources(&[p.q0_resource()]);
+        let evdev_id = match drv_virtio_input::install_device(bdf_word, resources) {
             Some(id) => id,
             None => {
                 release_q0_after_failed_probe(&mut p);
@@ -315,7 +309,6 @@ impl drv::Driver for VirtioInputDrv {
             release_q0_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
         }
-        let resources = p.resources(&[p.q0_resource()]);
         let installed = drv_virtio_input::drain::install_eventq(evdev_id, resources);
         if installed.is_err() {
             let _ = drv_virtio_input::unregister_node(evdev_id);
@@ -1215,7 +1208,6 @@ pub(super) struct VirtioProbe {
     pub(super) snd_q3_notify_va: u64,
     pub(super) snd_q3_notify_off: u16,
     pub(super) snd_q3_size:      u16,
-    pub(super) input_cfg_va:     u64,
 }
 
 fn virtio_hhdm_offset() -> u64 {
@@ -1795,24 +1787,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         }
     }
 
-    let mut input_cfg_va_local: u64 = 0;
-    if profile.needs_input_cfg {
-        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
-            let dbar_pa = match bars[devcfg_cap.bar as usize] {
-                pci::Bar::Mem32 { base, .. } => base as u64,
-                pci::Bar::Mem64 { base, .. } => base,
-                _ => 0,
-            };
-            if dbar_pa != 0 {
-                let d_pa = dbar_pa + devcfg_cap.offset as u64;
-                let d_page_pa = d_pa & !0xFFF;
-                let d_va = mappings.map_page(d_page_pa);
-                input_cfg_va_local = d_va + (d_pa - d_page_pa);
-            }
-        }
-    }
-
-
     //: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
         let hhdm = {
@@ -1882,6 +1856,5 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         snd_q3_notify_va: snd_q3_notify_va_local,
         snd_q3_notify_off: snd_q3_notify_off_local,
         snd_q3_size:      snd_q3_size_local,
-        input_cfg_va:     input_cfg_va_local,
     })
 }
