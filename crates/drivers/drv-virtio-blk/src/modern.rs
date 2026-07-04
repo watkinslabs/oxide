@@ -634,15 +634,56 @@ impl BlockDevice for BlkState {
 }
 
 /// Boot-probe handoff: the persistent ring addresses + device-cfg the
-/// probe harvested. `pci_boot::virtio_drv` fills this after DRIVER_OK.
+/// transport mapped. This driver reads the block device config itself after
+/// DRIVER_OK.
 #[derive(Copy, Clone)]
 pub struct BlkInit {
     pub bus:      u8,
     pub device:   u8,
     pub function: u8,
     pub resources: virtio::VirtioResources,
-    pub capacity:     u64,
-    pub blk_size:     u32,
+    pub drv_features: u64,
+}
+
+#[derive(Copy, Clone)]
+struct BlkDeviceConfig {
+    capacity: u64,
+    blk_size: u32,
+}
+
+fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> Option<BlkDeviceConfig> {
+    let cfg = resources.device_cfg_va;
+    if cfg == 0 {
+        return None;
+    }
+
+    let mut capb = [0u8; 8];
+    for i in 0..8 {
+        // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
+        // virtio-blk config window kept alive for this device lifetime.
+        capb[i] = unsafe { core::ptr::read_volatile((cfg + i as u64) as *const u8) };
+    }
+    let capacity = u64::from_le_bytes(capb);
+
+    let mut blk_size = blk::VIRTIO_BLK_SECTOR_BYTES;
+    if drv_features & virtio::VIRTIO_BLK_F_BLK_SIZE != 0 {
+        let mut bsb = [0u8; 4];
+        for i in 0..4 {
+            // SAFETY: offset 20 is `blk_size` in `virtio_blk_config`; the
+            // mapped config page covers this fixed field.
+            bsb[i] = unsafe {
+                core::ptr::read_volatile(
+                    (cfg + virtio::BLK_CFG_OFF_BLK_SIZE + i as u64) as *const u8,
+                )
+            };
+        }
+        let bs = u32::from_le_bytes(bsb);
+        if bs != 0 {
+            blk_size = bs;
+        }
+    }
+
+    Some(BlkDeviceConfig { capacity, blk_size })
 }
 
 /// Linux-style registry name for the `index`-th (0-based) registered
@@ -668,6 +709,9 @@ pub fn init_blk(init: BlkInit) -> u32 {
     if !init.resources.common_cfg_valid() {
         return 0;
     }
+    let Some(device_cfg) = read_device_config(init.resources, init.drv_features) else {
+        return 0;
+    };
     if DEVICES.lock().iter().any(|d| same_bdf(d, init.bus, init.device, init.function)) {
         return 0;
     }
@@ -691,7 +735,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     }
     // Validate / clamp blk_size: must be ≥512 and a multiple of 512,
     // else the sector-run math (bs/512, capacity conversion) truncates.
-    let blk_size = blk::validate_blk_size(init.blk_size);
+    let blk_size = blk::validate_blk_size(device_cfg.blk_size);
 
     // Seed avail/used shadows from the live used.idx. The boot probe no
     // longer issues a throwaway request, so on QEMU this reads 0 — but
@@ -711,7 +755,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let mut state = BlkState {
         cfg_va:       init.resources.cfg_va,
         requestq,
-        capacity:     init.capacity,
+        capacity:     device_cfg.capacity,
         blk_size,
         serial:       [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
@@ -774,7 +818,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
         klog::write_raw(b".");
         klog::write_dec_u64(init.function as u64);
         klog::write_raw(b" cap_sec=");
-        klog::write_dec_u64(init.capacity);
+        klog::write_dec_u64(device_cfg.capacity);
         klog::write_raw(b" blk_size=");
         klog::write_dec_u64(blk_size as u64);
         klog::write_raw(b" idx=");

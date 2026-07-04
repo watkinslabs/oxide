@@ -15,11 +15,11 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 82% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 83% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 45% complete.
+  hotplug, fault injection, and multi-device coverage: about 46% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -66,11 +66,16 @@ test-pass claims.
   `VirtQueueResource`, with queue lookup validation centralized through
   `require_queue`. Child probes now build those resources through one
   transport-owned helper path instead of rebuilding queue handoff state in each
-  child glue path.
+  child glue path. The resource object now also carries the generic
+  transport-mapped `DEVICE_CFG` window, so child drivers can parse their own
+  device-specific config.
 - Virtio extra queue setup is now described by a transport queue plan instead
   of hard-coded `needs_q1` / `needs_q2` / `needs_q3` dispatch in the virtio-pci
   probe path. The common queue programming still lives in pci-boot, but queue
   selection is now data-driven and uses one helper path for q1/q2/q3.
+- Virtio-blk no longer has PCI-transport-owned block config harvest. The
+  virtio-pci path maps the device config as a generic resource, and the
+  virtio-blk child driver reads capacity/block-size during its own probe.
 - Virtio-blk has per-device records, unregisters disks on remove, freezes new
   I/O, waits for its single in-flight request owner, resets the device, and
   returns child-owned bounce allocation when safe.
@@ -143,8 +148,9 @@ test-pass claims.
   device-specific setup policy still lives in bus/transport helper code instead
   of clean per-driver or per-bus abstractions.
 - Virtio child probing is model-driven and child resource handoff is more
-  centralized, and extra queue setup is now data-driven, but common virtio
-  transport, feature negotiation, config harvest, and child policy remain too
+  centralized, and extra queue setup is now data-driven. Virtio-blk config
+  parsing has moved into the child driver, but common virtio transport, feature
+  negotiation, remaining config harvest, and child policy remain too
   concentrated in `crates/kernel/pci-boot/src/virtio_drv.rs`.
 - Virtio IRQ callback ownership has moved in the right direction, and queue
   selection no longer uses per-queue special-case booleans, but feature
@@ -195,9 +201,11 @@ test-pass claims.
   `pci-boot/src/virtio_drv.rs`. The desired shape is: PCI driver binds the
   virtio-pci function, virtio-pci creates virtio bus devices, common virtio core
   owns feature/queue transport mechanics, and child drivers bind by virtio
-  device ID. Resource handoff is now centralized, but feature negotiation,
-  queue programming, config harvest, MSI-X setup, and failure release helpers
-  still need to move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
+  device ID. Resource handoff is now centralized and carries the common
+  `DEVICE_CFG` window; virtio-blk config parsing has moved into the child
+  driver. Feature negotiation, queue programming, remaining config harvest,
+  MSI-X setup, and failure release helpers still need to move behind a
+  `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and

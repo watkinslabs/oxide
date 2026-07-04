@@ -47,9 +47,10 @@ impl VirtQueueResource {
 /// Common transport state and the programmed queues visible to a child driver.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct VirtioResources {
-    pub cfg_va: u64,
-    pub hhdm:   u64,
-    queues:     [Option<VirtQueueResource>; MAX_RESOURCE_QUEUES],
+    pub cfg_va:        u64,
+    pub device_cfg_va: u64,
+    pub hhdm:          u64,
+    queues:            [Option<VirtQueueResource>; MAX_RESOURCE_QUEUES],
 }
 
 impl VirtioResources {
@@ -57,9 +58,17 @@ impl VirtioResources {
     pub const fn new(cfg_va: u64, hhdm: u64) -> Self {
         Self {
             cfg_va,
+            device_cfg_va: 0,
             hhdm,
             queues: [None; MAX_RESOURCE_QUEUES],
         }
+    }
+
+    /// Attach the transport-mapped device-specific config window.
+    /// # C: O(1)
+    pub const fn with_device_cfg_va(mut self, device_cfg_va: u64) -> Self {
+        self.device_cfg_va = device_cfg_va;
+        self
     }
 
     /// Build a resource set from the transport's programmed queue list.
