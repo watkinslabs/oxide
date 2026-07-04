@@ -28,6 +28,12 @@ pub use resources::{
     VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_MSI_NO_VECTOR,
 };
 
+pub mod common_cfg;
+pub use common_cfg::{
+    negotiate_features, read_status, reset_device, scan_queue_sizes, set_driver_ok, set_failed,
+    FeatureNegotiation,
+};
+
 pub mod queue;
 pub use queue::{
     Desc, AvailRing, UsedElem, UsedRing, VirtQueue,

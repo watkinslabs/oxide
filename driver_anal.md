@@ -87,8 +87,10 @@ test-pass claims.
   requirements are no longer pci-boot-local structs.
 - Modern virtio common-cfg reset/status transitions, feature negotiation,
   FEATURES_OK validation, DRIVER_OK publication, and queue-size scanning now
-  live in the shared virtio queue/setup helper instead of being open-coded in
-  the virtio-pci probe body.
+  live in the shared `virtio::common_cfg` helper instead of being open-coded
+  in the virtio-pci probe body. PMM-backed queue memory programming still
+  lives in pci-boot until the transport resource allocator boundary is split
+  out.
 - Mandatory q0 plus planned extra virtqueue programming now uses a shared
   queue-set helper, so the virtio-pci probe body no longer hand-rolls q1/q2/q3
   programming loops. Queue notify VA lookup and queue notify writes now go
@@ -310,17 +312,20 @@ test-pass claims.
   device ID. Resource handoff is now centralized and carries the common
   `DEVICE_CFG` window; virtio-blk, virtio-vsock, virtio-snd, virtio-input,
   and virtio-net config parsing have moved into their child drivers. The
-  common-cfg status/reset/feature/queue-size register protocol, planned queue
-  programming, notify VA/kick mechanics, and net RX/TX boot-buffer mechanics
-  have moved into shared helpers. A first `VirtioProbeState` owns mappings,
-  config windows, MSI-X, and notify lifetime through finalization/state
-  methods, including planned q2/q3 notify mapping and explicit q1 mapping.
-  Common transport bring-up ordering also now goes through `VirtioProbeState`.
+  common-cfg status/reset/feature/queue-size register protocol now lives in
+  shared `virtio::common_cfg`; planned queue programming, notify VA/kick
+  mechanics, and net RX/TX boot-buffer mechanics have moved into shared
+  helpers. A first `VirtioProbeState` owns mappings, config windows, MSI-X,
+  and notify lifetime through finalization/state methods, including planned
+  q2/q3 notify mapping and explicit q1 mapping. Common transport bring-up
+  ordering also now goes through `VirtioProbeState`.
   Child readiness validation is centralized in `VirtioProbe` and described by
   shared `virtio::VirtioChildRequirements`; child transport profiles and queue
   plans now use shared `virtio::VirtioTransportProfile` and
-  `virtio::VirtioQueuePlan`. The next step is to move the remaining PCI
-  execution/state machinery behind a real virtio transport/core boundary.
+  `virtio::VirtioQueuePlan`. The next step is to move PMM-backed queue
+  allocation/programming, notify/ISR handling, MSI-X ownership, mapping, and
+  unwind out from the remaining PCI execution/state machinery and behind a
+  real virtio transport/core boundary.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
