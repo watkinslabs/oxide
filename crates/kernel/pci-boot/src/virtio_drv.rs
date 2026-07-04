@@ -60,7 +60,6 @@ struct VirtioProbeProfile {
     extra_queues: [Option<QueuePlan>; 3],
     needs_q1_tx_warmup: bool,
     needs_input_cfg: bool,
-    needs_blk_cfg: bool,
     needs_vsock_cfg: bool,
     needs_snd_cfg: bool,
 }
@@ -77,7 +76,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_blk_cfg: false,
             needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
@@ -90,7 +88,6 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: true,
             needs_input_cfg: false,
-            needs_blk_cfg: false,
             needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
@@ -103,7 +100,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: true,
-            needs_blk_cfg: false,
             needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
@@ -116,7 +112,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_blk_cfg: true,
             needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
@@ -133,7 +128,6 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_blk_cfg: false,
             needs_vsock_cfg: true,
             needs_snd_cfg: false,
         }
@@ -150,7 +144,6 @@ impl VirtioProbeProfile {
             ],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_blk_cfg: false,
             needs_vsock_cfg: false,
             needs_snd_cfg: true,
         }
@@ -490,7 +483,7 @@ impl drv::Driver for VirtioBlkDrv {
             || p.q0_device_pa == 0
             || p.q0_notify_va == 0
             || p.q0_size == 0
-            || !p.blk_cfg_valid
+            || p.device_cfg_va == 0
         {
             release_q0_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
@@ -499,8 +492,7 @@ impl drv::Driver for VirtioBlkDrv {
         let idx = super::virtio_blk_cfg::register_blk(
             d.bdf.bus, d.bdf.device, d.bdf.function,
             resources,
-            p.blk_capacity,
-            p.blk_blk_size,
+            p.drv_features,
         );
         if idx == 0 {
             release_q0_after_failed_probe(&mut p);
@@ -1194,6 +1186,7 @@ pub(super) struct VirtioProbe {
     pub(super) cmd_orig: u16,
     pub(super) cmd_new:  u16,
     pub(super) cfg_va:   u64,
+    pub(super) device_cfg_va: u64,
     pub(super) dev_features: u64,
     pub(super) drv_features: u64,
     pub(super) post_status: u32,
@@ -1225,11 +1218,6 @@ pub(super) struct VirtioProbe {
     pub(super) mac:       [u8; 6],
     pub(super) mac_valid: bool,
     pub(super) tx0_buf_pa: u64,
-    // virtio-blk device-cfg harvest: capacity (512B sectors) + block
-    // size. Valid iff blk_cfg_valid. Serial read by the engine via GET_ID.
-    pub(super) blk_capacity: u64,
-    pub(super) blk_blk_size: u32,
-    pub(super) blk_cfg_valid: bool,
     // D3.3: virtio-vsock guest CID (device-cfg offset 0, le64).
     pub(super) vsock_cid: u64,
     pub(super) vsock_cid_valid: bool,
@@ -1271,6 +1259,7 @@ fn virtio_hhdm_offset() -> u64 {
 impl VirtioProbe {
     fn resources(&self, queues: &[virtio::VirtQueueResource]) -> virtio::VirtioResources {
         virtio::VirtioResources::from_queues(self.cfg_va, virtio_hhdm_offset(), queues)
+            .with_device_cfg_va(self.device_cfg_va)
     }
 
     fn q0_resource(&self) -> virtio::VirtQueueResource {
@@ -1383,6 +1372,23 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     // SAFETY: BAR PA decoded from device BAR reg; bump VA is exclusive.
     let base_va = mappings.map_page(page_pa);
     let cfg_va = base_va + page_off;
+    let device_cfg_va = match vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
+        Some(devcfg) => {
+            let dbar_pa = match bars[devcfg.bar as usize] {
+                pci::Bar::Mem32 { base, .. } => base as u64,
+                pci::Bar::Mem64 { base, .. } => base,
+                _ => 0,
+            };
+            if dbar_pa == 0 {
+                0
+            } else {
+                let d_pa = dbar_pa + devcfg.offset as u64;
+                let d_page_pa = d_pa & !0xFFF;
+                mappings.map_page(d_page_pa) + (d_pa - d_page_pa)
+            }
+        }
+        None => 0,
+    };
 
     // u32 volatile R/W over the Device-attr MMIO window.
     let r32 = |off: u64| -> u32 {
@@ -1834,19 +1840,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         }
     }
 
-    let mut blk_capacity_local: u64 = 0;
-    let mut blk_blk_size_local: u32 = virtio::VIRTIO_BLK_SECTOR_BYTES;
-    let mut blk_cfg_valid_local: bool = false;
-    if profile.needs_blk_cfg {
-        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
-            let (cap, bs, valid) =
-                super::virtio_blk_cfg::harvest(&devcfg_cap, &bars, drv_features);
-            blk_capacity_local = cap;
-            blk_blk_size_local = bs;
-            blk_cfg_valid_local = valid;
-        }
-    }
-
     // F454: harvest virtio_snd_config (docs/58§4): le32 jacks/streams/
     // chmaps/controls at device-cfg offset 0. Same window pattern as MAC.
     let mut snd_jacks_local: u32 = 0;
@@ -1909,6 +1902,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
         cmd_new:  (cmd_new  & 0xFFFF) as u16,
         cfg_va,
+        device_cfg_va,
         dev_features,
         drv_features,
         post_status,
@@ -1940,9 +1934,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         mac:       mac_local,
         mac_valid: mac_valid_local,
         tx0_buf_pa: tx0_buf_pa_local,
-        blk_capacity:  blk_capacity_local,
-        blk_blk_size:  blk_blk_size_local,
-        blk_cfg_valid: blk_cfg_valid_local,
         vsock_cid:       vsock_cid_local,
         vsock_cid_valid: vsock_cid_valid_local,
         snd_jacks:     snd_jacks_local,
