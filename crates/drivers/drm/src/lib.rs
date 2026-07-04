@@ -492,7 +492,16 @@ pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
             (g.len() - 1) as u32
         }
     };
-    node::register(card_id);
+    if !node::register(card_id) {
+        let mut g = CARDS.lock();
+        if let Some(slot) = g.get_mut(card_id as usize) {
+            *slot = None;
+        }
+        while matches!(g.last(), Some(None)) {
+            g.pop();
+        }
+        return u32::MAX;
+    }
     card_id
 }
 
@@ -745,6 +754,25 @@ mod tests {
         assert!(unregister(idx2));
         assert_eq!(card_count(), 0);
         assert_eq!(node::registered_card_ids(), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn register_rolls_back_card_slot_when_node_publication_fails() {
+        CARDS.lock().clear();
+        node::unregister_all();
+        let conflict = drv::device_add(Arc::new(
+            drv::Device::new("drm", alloc::string::String::from("dri/card0"), 0, 0, 0)
+                .with_devnode("drm", alloc::string::String::from("dri/card0"), Some((226, 0))),
+        ));
+
+        assert_eq!(register(Arc::new(DummyDrv)), u32::MAX);
+        assert_eq!(card_count(), 0);
+        assert_eq!(node::registered_card_ids(), Vec::<u32>::new());
+
+        drv::device_del(&conflict);
+        let idx = register(Arc::new(DummyDrv));
+        assert_eq!(idx, 0);
+        assert!(unregister(idx));
     }
 }
 

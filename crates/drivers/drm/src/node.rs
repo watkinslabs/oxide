@@ -179,41 +179,48 @@ fn make_render_inode(card_id: u32) -> vfs::InodeRef {
 /// each used before, so the /dev node is byte-identical; `dt` is the standard
 /// `(major,minor)` metadata. bus == `class` (`drm`) is ignored by the pci/virtio
 /// /sys synthesis, so no spurious /sys entry appears. # C: O(1)
-fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) -> Arc<drv::Device> {
+fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) -> Option<Arc<drv::Device>> {
     use alloc::string::String;
-    drv::device_add(Arc::new(
+    drv::try_device_add(Arc::new(
         drv::Device::new(class, String::from(name), 0, 0, 0)
             .with_devnode(class, String::from(name), Some(dt))
-            .with_node_factory(factory)))
+            .with_node_factory(factory),
+    )).ok()
 }
 
 /// Register DRM card/render nodes for a stable DRM card id.
 /// # C: O(1)
-pub fn register(card_id: u32) {
+pub fn register(card_id: u32) -> bool {
     let mut nodes = DRM_NODES.lock();
     let idx = card_id as usize;
     if nodes.len() <= idx {
         nodes.resize_with(idx + 1, || None);
     }
     if nodes[idx].is_some() {
-        return;
+        return false;
     }
     let card_name = format!("dri/card{}", card_id);
     let render_minor = 128u32.checked_add(card_id).expect("DRM render minor overflow");
     let render_name = format!("dri/renderD{}", render_minor);
-    let card = add_node(
+    let Some(card) = add_node(
         &card_name,
         "drm",
         (226, card_id),
         Arc::new(move || make_card_inode(card_id)),
-    );
-    let render = add_node(
+    ) else {
+        return false;
+    };
+    let Some(render) = add_node(
         &render_name,
         "drm",
         (226, render_minor),
         Arc::new(move || make_render_inode(card_id)),
-    );
+    ) else {
+        drv::device_del(&card);
+        return false;
+    };
     nodes[idx] = Some(DrmNodePair { card, render });
+    true
 }
 
 /// Remove DRM card/render nodes for a stable DRM card id.
@@ -257,6 +264,63 @@ pub fn registered_card_ids() -> Vec<u32> {
         .enumerate()
         .filter_map(|(idx, pair)| pair.as_ref().map(|_| idx as u32))
         .collect()
+}
+
+#[cfg(test)]
+mod node_publication_tests {
+    use super::*;
+
+    #[test]
+    fn register_rejects_duplicate_card_id_without_republishing() {
+        let card_id = 0x7ff0;
+        unregister(card_id);
+
+        assert!(register(card_id));
+        assert!(!register(card_id));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "drm" && d.addr == format!("dri/card{card_id}"))
+                .count(),
+            1
+        );
+
+        unregister(card_id);
+    }
+
+    #[test]
+    fn register_rolls_back_card_node_when_render_publication_conflicts() {
+        let card_id = 0x7ff1;
+        unregister(card_id);
+        let card_name = format!("dri/card{card_id}");
+        let render_minor = 128 + card_id;
+        let render_name = format!("dri/renderD{render_minor}");
+        let conflict = drv::device_add(Arc::new(
+            drv::Device::new("drm", render_name.clone(), 0, 0, 0)
+                .with_devnode("drm", render_name.clone(), Some((226, render_minor))),
+        ));
+
+        assert!(!register(card_id));
+        assert!(!registered_card_ids().contains(&card_id));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "drm" && d.addr == card_name)
+                .count(),
+            0
+        );
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "drm" && d.addr == render_name)
+                .count(),
+            1
+        );
+
+        drv::device_del(&conflict);
+        assert!(register(card_id));
+        unregister(card_id);
+    }
 }
 
 /// mmap backing for a DRM card inode (offset-keyed). Legacy raw lookup used
