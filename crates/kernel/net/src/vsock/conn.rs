@@ -265,6 +265,37 @@ impl VsockTable {
         });
     }
 
+    /// Remove the listener owned by `(owner, port)` and discard pending accepts.
+    /// Called when the listening AF_VSOCK fd is closed.
+    /// # C: O(N listeners + N pending + N conns)
+    pub fn remove_listener(&self, owner: u32, port: u32) -> bool {
+        let mut pending = Vec::new();
+        let removed = {
+            let mut g = self.listeners.lock();
+            let before = g.len();
+            for l in g.iter().filter(|l| l.owner == owner && l.local_port == port) {
+                let mut backlog = l.backlog.lock();
+                while let Some(k) = backlog.pop_front() {
+                    pending.push(k);
+                }
+                #[cfg(target_os = "oxide-kernel")]
+                l.accept_waiters.wake_all();
+            }
+            g.retain(|l| !(l.owner == owner && l.local_port == port));
+            before != g.len()
+        };
+        if !pending.is_empty() {
+            let mut conns = self.conns.lock();
+            for c in conns.iter().filter(|c| pending.iter().any(|k| c.key() == *k)) {
+                *c.st.lock() = VsockState::Closed;
+                #[cfg(target_os = "oxide-kernel")]
+                c.waiters.wake_all();
+            }
+            conns.retain(|c| !pending.iter().any(|k| c.key() == *k));
+        }
+        removed
+    }
+
     /// True iff `port` has an exact owner listener or a wildcard listener.
     /// # C: O(N listeners)
     pub fn is_listening(&self, owner: u32, port: u32) -> bool {

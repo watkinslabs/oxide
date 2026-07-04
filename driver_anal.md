@@ -488,7 +488,9 @@ test-pass claims.
   `sockaddr_vm.svm_cid` by resolving it to the owning live endpoint; bound
   connect/listen/accept paths carry that owner, listener backlogs are keyed by
   `(owner, port)`, and `VMADDR_CID_ANY` remains the wildcard compatibility
-  route.
+  route. AF_VSOCK socket close now removes listener state, drops pending
+  accept backlog connections, and closes connected records instead of leaving
+  global protocol-table state behind.
   Remove/shutdown now remove or quiesce the owner-keyed protocol endpoint even
   when the primary transport context is already gone.
 - Virtio-rng now keeps per-child-key records, seeds from the just-bound device,
@@ -575,9 +577,11 @@ test-pass claims.
   helpers are now BDF-keyed instead of selecting the first installed GPU.
   fbdev flush/blank hooks are per-fb records keyed to the owning BDF, while
   fbcon remains a single foreground console bound to an explicit owner.
-  Virtio-vsock's upper protocol endpoint records are now owner-keyed, while
-  the compatibility AF_VSOCK socket path still selects one primary endpoint
-  for unspecified connects. Virtio-snd now keys ALSA card publication,
+  Virtio-vsock's upper protocol endpoint records are now owner-keyed, CID-bound
+  socket paths select the matching live endpoint, listener/connection close
+  paths release protocol-table state, and the compatibility AF_VSOCK socket
+  path still selects one primary endpoint for unspecified connects. Virtio-snd
+  now keys ALSA card publication,
   playback/capture/OSS substream runtime state, and ops routing to the owning
   transport, publishing `controlC<N>`/`pcmC<N>D0*` nodes with stable card
   numbers instead of selecting the first installed context. It still needs
@@ -919,8 +923,9 @@ Several drivers still use singleton global state:
   owner's connections/backlog entries, RX protocol dispatch carries the
   transport owner key, quiesced endpoints are not advertised as live primary
   endpoints, AF_VSOCK bind/connect/listen/accept can select a specific live
-  endpoint by local CID, and duplicate owner or guest-CID publication is
-  rejected
+  endpoint by local CID, listener socket close drops listener/backlog state,
+  connected socket close removes the connection record, and duplicate owner or
+  guest-CID publication is rejected
 - virtio-snd: keyed transport records with EVENTQ drained per transport,
   owner-keyed EVENTQ counters/last-event snapshots, owner-keyed ops,
   owner-keyed ALSA card records, per-card
