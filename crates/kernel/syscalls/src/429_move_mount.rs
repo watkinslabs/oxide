@@ -115,7 +115,10 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     let from_vp = match crate::pathresolve::resolve_path(&from, false) {
         Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
     };
-    match vfs::mount::move_mount_by_id(from_vp.mnt_id, &target_d) {
+    // Destination mount id from the walk: disambiguates a `to` sitting in a bind
+    // mount (shared dentries defeat `parent_by_dentry`). Falls back to `target_d`.
+    let to_mnt = crate::pathresolve::resolve_path(&target, false).map(|p| p.mnt_id);
+    match vfs::mount::move_mount_by_id_to(from_vp.mnt_id, to_mnt, &target_d) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),
