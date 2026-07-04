@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 62% complete.
+  hotplug, fault injection, and multi-device coverage: about 63% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -389,7 +389,9 @@ test-pass claims.
   instead of being hand-mapped in `virtio_init_arch`. PCI config-space
   acquisition, virtio cap decode, BAR decode, and MEM/BUS_MASTER enable now
   live in `VirtioPciAcquisition`, leaving the main probe path closer to
-  transport acquisition followed by virtio bring-up.
+  transport acquisition followed by virtio bring-up. The old `virtio_init_arch`
+  free helper is gone; child probe now enters through `VirtioPciTransport` and
+  the acquired PCI transport object drives the final probe sequence.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
