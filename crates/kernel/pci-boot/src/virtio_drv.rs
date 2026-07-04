@@ -759,22 +759,25 @@ struct MsixBinding {
 
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
 
-fn bind_virtio_msix0(
+fn bind_virtio_msix_vector(
     d: &pci::PciDevice,
     caps: &pci::heapless_caps::CapVec,
     bars: &[pci::Bar; 6],
     mappings: &mut TransportMappings,
+    queue_vector: u16,
     handler: fn(),
 ) -> Option<MsixBinding> {
     let c = caps.find(pci::CAP_ID_MSIX)?;
     let m = decode_msix_cap_arch(d.bdf, c.cfg_off)?;
-    if m.table_size == 0 {
+    if queue_vector >= m.table_size {
         return None;
     }
     let tbar_pa = bars.get(m.table_bir as usize).and_then(|b| b.mem_base())?;
-    let tbl_pa = tbar_pa + m.table_offset as u64;
-    let page_pa = tbl_pa & !0xFFF;
-    let page_off = tbl_pa - page_pa;
+    let entry_pa = tbar_pa
+        .wrapping_add(m.table_offset as u64)
+        .wrapping_add((queue_vector as u64) * 16);
+    let page_pa = entry_pa & !0xFFF;
+    let page_off = entry_pa - page_pa;
 
     let (id, msg_addr, msg_data) = alloc_msi_message()?;
     if !register_msi_handler(id, handler) {
@@ -784,8 +787,9 @@ fn bind_virtio_msix0(
     let base_va = mappings.map_page(page_pa);
     let entry_va = base_va + page_off;
 
-    // SAFETY: entry_va is entry 0 of the mapped MSI-X table page. Each field
-    // is naturally aligned within the 16-byte MSI-X table entry.
+    // SAFETY: entry_va addresses the requested 16-byte MSI-X table entry. The
+    // entry index was validated against the decoded table size, and each field
+    // is naturally aligned within the MSI-X entry.
     unsafe {
         core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & 0xFFFF_FFFF) as u32);
         core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
@@ -797,7 +801,7 @@ fn bind_virtio_msix0(
         id,
         entry_va,
         cap_off: c.cfg_off,
-        queue_vector: VIRTIO_MSIX_Q0_VECTOR,
+        queue_vector,
     })
 }
 
@@ -1208,7 +1212,14 @@ impl VirtioProbeState {
             return None;
         };
         if self.msix.is_none() {
-            self.msix = bind_virtio_msix0(d, caps, bars, &mut self.mappings, handler);
+            self.msix = bind_virtio_msix_vector(
+                d,
+                caps,
+                bars,
+                &mut self.mappings,
+                VIRTIO_MSIX_Q0_VECTOR,
+                handler,
+            );
         }
         self.msix.as_ref().map(|binding| binding.queue_vector)
     }

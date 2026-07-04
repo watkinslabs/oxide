@@ -128,7 +128,9 @@ test-pass claims.
 - Virtio-pci MSI-X setup now names the virtio `NO_VECTOR` sentinel, records the
   q0 queue vector in the MSI-X binding, and clears the MSI-X function mask when
   enabling the programmed table entry instead of relying on an implicit
-  entry-0 convention.
+  entry-0 convention. The binding helper now accepts a requested MSI-X table
+  entry and validates it against the decoded table size, so q0 is just the
+  first policy user rather than a hardcoded special case.
 - Virtio-vsock no longer has PCI-transport-owned guest-CID harvest. The
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
   resource during install.
@@ -280,9 +282,9 @@ test-pass claims.
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
   `VirtioProbe` instead of ad-hoc per-device wrappers. MSI-X q0 vector policy
-  is now explicit, including function-mask handling. Complete multi-vector
-  MSI-X setup policy, remaining child-probe failure unwind audit, and
-  fault-injection proof still need to move behind a fuller
+  is now explicit, including function-mask handling and table-entry validation.
+  Complete multi-vector MSI-X setup policy, remaining child-probe failure
+  unwind audit, and fault-injection proof still need to move behind a fuller
   `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
