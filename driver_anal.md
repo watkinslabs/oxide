@@ -12,14 +12,33 @@ a statement about any other branch until these changes are committed and merged.
 This branch has moved the kernel substantially away from the old boot-probe
 shape, but it is not a Linux-complete driver model yet.
 
+Immediate priority order, as of 2026-07-04:
+
+1. Clean up remaining driver-model/publication misplacements that affect
+   userspace discovery. GNOME, systemd, udev, logind, libinput, Mesa, and ALSA
+   must see real model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and
+   uevent state. Do not add userspace-policy shortcuts in the kernel to hide
+   missing driver/sysfs behavior.
+2. Finish the single-machine desktop path: one virtio GPU, one input stack,
+   one sound card, one root disk, and one network device. Multi-GPU,
+   multi-card, and broad hotplug loops are future work unless they expose a
+   bug in the single-device path.
+3. Prove the actual GNOME-visible contract in QEMU/userspace: DRM/fbdev nodes,
+   evdev nodes, ALSA nodes, block and net discovery, uevent delivery, and the
+   `/run/udev`/seat state that makes the graphical session start.
+4. Only after that path is usable, expand fault-injection, hotplug stress, and
+   multi-device hardening.
+
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 82% complete.
 - Concrete driver probe/remove/shutdown cleanup: about 85% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 70%
   complete.
+- GNOME-usable single-device desktop driver path: about 60% complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 66% complete.
+  hotplug, fault injection, and multi-device coverage: about 66% complete, but
+  multi-device coverage is not the immediate priority.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
