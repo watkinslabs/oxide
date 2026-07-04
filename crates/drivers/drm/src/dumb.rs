@@ -1,10 +1,9 @@
 // D5b-1 DRM dumb buffers + ADDFB2 (offscreen half). Real, no façade:
 //   - MODE_CREATE_DUMB allocates contiguous physical pages via the PMM
 //     buddy and tracks them in a DRM-card-owned handle table.
-//   - MODE_MAP_DUMB returns a DRM mmap cookie; node::mmap_backing maps
-//     the handle's PA range straight into the process (VmaBacking::
-//     PhysRange) — the same path /dev/fb0 uses.
-//   - MODE_DESTROY_DUMB frees the pages once no FB references them.
+//   - MODE_MAP_DUMB returns a DRM mmap cookie; mmap pins are tracked as
+//     object refs so backing pages cannot be freed while a VMA can fault them.
+//   - MODE_DESTROY_DUMB frees the pages once no FB or mmap references them.
 //   - MODE_ADDFB2 / MODE_ADDFB build a metadata-only FB object that
 //     bumps the dumb handle refcount (NO virtio-gpu resource — that's
 //     D5b-2 SETCRTC).
@@ -163,6 +162,8 @@ pub struct DumbBuf {
     pub pitch:  u32,
     pub bpp:    u32,
     pub refcnt: u32,   // open handle refs + FB refs
+    pub mmap_refs: u32,
+    pub deleted: bool,
 }
 
 /// An FB object: metadata referencing up to 4 dumb handles.
@@ -193,10 +194,10 @@ impl DumbTables {
 
     /// Find a buffer by card id + handle. # C: O(n)
     pub fn find_buf(&self, card_id: u32, h: u32) -> Option<&DumbBuf> {
-        self.bufs.iter().find(|b| b.card_id == card_id && b.handle == h)
+        self.bufs.iter().find(|b| b.card_id == card_id && b.handle == h && !b.deleted)
     }
     fn find_buf_mut(&mut self, card_id: u32, h: u32) -> Option<&mut DumbBuf> {
-        self.bufs.iter_mut().find(|b| b.card_id == card_id && b.handle == h)
+        self.bufs.iter_mut().find(|b| b.card_id == card_id && b.handle == h && !b.deleted)
     }
 
     /// Find an FB by card id + FB id. # C: O(n)
@@ -221,22 +222,72 @@ impl DumbTables {
         } else { None }
     }
 
-    /// Remove all FB objects and buffers owned by `card_id`, returning the
-    /// buffer pages to free after the lock is dropped. # C: O(n)
+    /// Pin a buffer for a userspace mmap VMA. # C: O(n)
+    pub fn pin_mmap(&mut self, card_id: u32, h: u32) -> Option<DumbMmapPin> {
+        let b = self.find_buf_mut(card_id, h)?;
+        b.refcnt = b.refcnt.saturating_add(1);
+        b.mmap_refs = b.mmap_refs.saturating_add(1);
+        Some(DumbMmapPin { card_id, handle: h, pa: b.pa, size: b.size })
+    }
+
+    /// Drop one userspace mmap VMA pin. Deleted buffers remain searchable here
+    /// so their final VMA can release the backing after card unregister.
+    /// # C: O(n)
+    pub fn unpin_mmap(&mut self, card_id: u32, h: u32) -> Option<(u64, u8)> {
+        let idx = self.bufs.iter().position(|b| b.card_id == card_id && b.handle == h)?;
+        if self.bufs[idx].mmap_refs > 0 { self.bufs[idx].mmap_refs -= 1; }
+        if self.bufs[idx].refcnt > 0 { self.bufs[idx].refcnt -= 1; }
+        if self.bufs[idx].refcnt == 0 {
+            let b = self.bufs.remove(idx);
+            Some((b.pa, b.order))
+        } else { None }
+    }
+
+    /// Remove all live FB objects and handles owned by `card_id`, returning
+    /// buffer pages whose last non-VMA reference dropped. VMA-pinned buffers
+    /// are marked deleted and stay until `unpin_mmap`.
+    /// # C: O(n)
     pub fn remove_card(&mut self, card_id: u32) -> Vec<(u64, u8)> {
-        self.fbs.retain(|fb| fb.card_id != card_id);
         let mut freed = Vec::new();
+        let mut fb_idx = 0usize;
+        while fb_idx < self.fbs.len() {
+            if self.fbs[fb_idx].card_id != card_id {
+                fb_idx += 1;
+                continue;
+            }
+            let fb = self.fbs.remove(fb_idx);
+            for &h in fb.handles.iter() {
+                if h != 0 {
+                    if let Some(f) = self.unref_handle(card_id, h) { freed.push(f); }
+                }
+            }
+        }
         let mut idx = 0usize;
         while idx < self.bufs.len() {
             if self.bufs[idx].card_id == card_id {
-                let b = self.bufs.remove(idx);
-                freed.push((b.pa, b.order));
+                self.bufs[idx].deleted = true;
+                let non_mmap_refs = self.bufs[idx].refcnt.saturating_sub(self.bufs[idx].mmap_refs);
+                self.bufs[idx].refcnt = self.bufs[idx].refcnt.saturating_sub(non_mmap_refs);
+                if self.bufs[idx].refcnt == 0 {
+                    let b = self.bufs.remove(idx);
+                    freed.push((b.pa, b.order));
+                } else {
+                    idx += 1;
+                }
             } else {
                 idx += 1;
             }
         }
         freed
     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DumbMmapPin {
+    pub card_id: u32,
+    pub handle:  u32,
+    pub pa:      u64,
+    pub size:    u64,
 }
 
 pub static TABLES: Spinlock<DumbTables, DumbLockClass> = Spinlock::new(DumbTables::new());
@@ -271,11 +322,12 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     let pitch = match dumb_pitch(req.width, req.bpp) { Some(p) => p, None => return einval() };
     let size  = match dumb_size(pitch, req.height) { Some(s) if s > 0 => s, _ => return einval() };
     let order = order_for_bytes(size);
-    let pa = match pmm::setup::alloc_contig(pmm::Order(order)) { Some(p) => p, None => return enomem() };
+    let pa = match pmm::setup::alloc_contig_object(pmm::Order(order)) { Some(p) => p, None => return enomem() };
     let handle = alloc_dumb_handle();
     TABLES.lock().insert_buf(DumbBuf {
         card_id, handle, pa, size, order,
         w: req.width, h: req.height, pitch, bpp: req.bpp, refcnt: 1,
+        mmap_refs: 0, deleted: false,
     });
     req.handle = handle;
     req.pitch  = pitch;
@@ -397,15 +449,31 @@ pub fn rmfb(card_id: u32, arg: u64) -> i64 {
 /// allocator owns the run as one block, freed at its allocation order.
 /// # C: O(1)
 fn free_buf_pages(pa: u64, order: u8) {
-    // SAFETY: `pa` is the base PA the PMM buddy returned from
-    // alloc_contig(Order(order)); the DRM object table has dropped the last
-    // tracked buffer/FB reference. Full GEM mmap VMA ref tracking is still a
-    // separate lifecycle gap, so callers must only reach this for objects the
-    // current table model owns.
+    // SAFETY: each page in this run was allocated through
+    // alloc_contig_object(Order(order)) with one object ref. Dropping that ref
+    // is safe even while VMA PTE refs still exist; the PMM returns a page only
+    // after the last VMA mapping also drops.
     unsafe {
         let frames = 1u64 << order;
-        for i in 0..frames { pmm::setup::free_one_frame(pa + i * 4096); }
+        for i in 0..frames {
+            pmm::setup::dec_object_ref_and_maybe_free_frame(pa + i * 4096);
+        }
     }
+}
+
+/// Pin a DRM dumb buffer for a userspace mmap VMA. The returned pin carries
+/// the stable physical range; `unpin_mmap` must be called when the VMA drops.
+/// # C: O(n)
+pub fn pin_mmap(card_id: u32, cookie: u64) -> Option<DumbMmapPin> {
+    let h = handle_of_cookie(cookie)?;
+    TABLES.lock().pin_mmap(card_id, h)
+}
+
+/// Drop a previously acquired mmap pin.
+/// # C: O(n)
+pub fn unpin_mmap(pin: DumbMmapPin) {
+    let freed = TABLES.lock().unpin_mmap(pin.card_id, pin.handle);
+    if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
 }
 
 /// mmap backing for a DRM card inode: cookie (the MAP_DUMB offset)
@@ -505,7 +573,7 @@ mod tests {
     fn table_insert_lookup_ref_unref() {
         let mut t = DumbTables::new();
         t.insert_buf(DumbBuf { card_id: 0, handle: 1, pa: 0x10_0000, size: 4096, order: 0,
-            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1 });
+            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1, mmap_refs: 0, deleted: false });
         assert!(t.find_buf(0, 1).is_some());
         assert!(t.find_buf(1, 1).is_none());
         assert!(t.find_buf(0, 2).is_none());
@@ -537,9 +605,9 @@ mod tests {
     fn card_state_isolated() {
         let mut t = DumbTables::new();
         t.insert_buf(DumbBuf { card_id: 0, handle: 1, pa: 0x10_0000, size: 4096, order: 0,
-            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1 });
+            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1, mmap_refs: 0, deleted: false });
         t.insert_buf(DumbBuf { card_id: 1, handle: 1, pa: 0x20_0000, size: 4096, order: 0,
-            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1 });
+            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1, mmap_refs: 0, deleted: false });
         t.fbs.push(FbObj { card_id: 0, fb_id: 7, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
             handles: [1, 0, 0, 0], pitches: [16, 0, 0, 0], offsets: [0; 4] });
         assert_eq!(t.find_buf(0, 1).unwrap().pa, 0x10_0000);
@@ -549,5 +617,26 @@ mod tests {
         assert!(t.find_buf(0, 1).is_none());
         assert!(t.find_buf(1, 1).is_some());
         assert!(t.find_fb(0, 7).is_none());
+    }
+
+    #[test]
+    fn mmap_pin_survives_card_remove_until_unpin() {
+        let mut t = DumbTables::new();
+        t.insert_buf(DumbBuf { card_id: 0, handle: 1, pa: 0x10_0000, size: 4096, order: 0,
+            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1, mmap_refs: 0, deleted: false });
+        let pin = t.pin_mmap(0, 1).unwrap();
+        assert_eq!(pin.pa, 0x10_0000);
+        assert_eq!(t.find_buf(0, 1).unwrap().refcnt, 2);
+        assert_eq!(t.find_buf(0, 1).unwrap().mmap_refs, 1);
+
+        assert_eq!(t.remove_card(0), Vec::<(u64, u8)>::new());
+        assert!(t.find_buf(0, 1).is_none());
+        assert_eq!(t.bufs.len(), 1);
+        assert!(t.bufs[0].deleted);
+        assert_eq!(t.bufs[0].refcnt, 1);
+        assert_eq!(t.bufs[0].mmap_refs, 1);
+
+        assert_eq!(t.unpin_mmap(0, 1), Some((0x10_0000, 0)));
+        assert!(t.bufs.is_empty());
     }
 }

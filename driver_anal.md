@@ -272,7 +272,9 @@ test-pass claims.
   table state. fbdev flush/blank operations are now stored on each `/dev/fbN`
   record and call back into the owning virtio-gpu BDF instead of a global
   display hook; fbcon publication still has one explicit foreground console
-  owner. Full GEM mmap VMA lifetime tracking still needs a separate fix.
+  owner. Dumb-buffer mmap now pins the DRM object through a file-backed shared
+  VMA and PMM object refs, so DESTROY_DUMB/card unregister cannot return pages
+  while userspace VMAs can still fault them.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
@@ -473,8 +475,7 @@ test-pass claims.
   loop proof and broader multi-NIC validation; virtio-gpu now has per-card DRM
   card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
-  fbdev flush/blank dispatch; it still needs full GEM mmap VMA lifetime
-  tracking;
+  fbdev flush/blank dispatch, and dumb-buffer mmap VMA lifetime pins;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
   are still main offenders. AHCI and NVMe still need live multi-controller
   proof, but they no longer use process-wide installed-controller slots.
@@ -616,8 +617,9 @@ Several drivers still use singleton global state:
 - virtio-gpu: per-BDF installed device and scanout records; per-card DRM
   nodes, ioctl backend routing, runtime scanout hooks, scanout owner tokens,
   flip-event queues, dumb-buffer/FB object lookup, and per-fb owner-keyed
-  fbdev flush/blank dispatch; fbcon has one explicit foreground console owner,
-  and GEM mmap VMA lifetime tracking is still incomplete
+  fbdev flush/blank dispatch; dumb-buffer mmap lifetime is pinned through
+  shared VMA backing and PMM object refs; fbcon has one explicit foreground
+  console owner
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
   is stack-owned and keyed by interface in kernel builds; boot route/RS seeding
   now iterates the registered virtio-net iface snapshot instead of using only
