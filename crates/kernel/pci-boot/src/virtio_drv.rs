@@ -923,6 +923,12 @@ fn unmap_transport_record(rec: TransportRecord) {
     }
 }
 
+fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
+    if frame != 0 && !frames.iter().any(|existing| *existing == frame) {
+        frames.push(frame);
+    }
+}
+
 fn transport_vring_frames(p: &VirtioProbe) -> Vec<u64> {
     let mut frames = Vec::new();
     for frame in [
@@ -939,9 +945,7 @@ fn transport_vring_frames(p: &VirtioProbe) -> Vec<u64> {
         p.snd_q3_driver_pa,
         p.snd_q3_device_pa,
     ] {
-        if frame != 0 && !frames.iter().any(|existing| *existing == frame) {
-            frames.push(frame);
-        }
+        push_unique_frame(&mut frames, frame);
     }
     frames
 }
@@ -965,63 +969,30 @@ fn unmap_probe_mmio(p: &mut VirtioProbe) {
     p.mappings.unmap_all();
 }
 
-fn release_q0_after_failed_probe(p: &mut VirtioProbe) {
-    release_gpu_transport(p.cfg_va, p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa);
+fn release_failed_probe_frames(p: &mut VirtioProbe, payload_frames: &[u64]) {
+    let mut frames = transport_vring_frames(p);
+    for frame in payload_frames.iter().copied() {
+        push_unique_frame(&mut frames, frame);
+    }
+    release_virtio_transport(p.cfg_va, &frames);
     unmap_probe_mmio(p);
+}
+
+fn release_q0_after_failed_probe(p: &mut VirtioProbe) {
+    release_failed_probe_frames(p, &[]);
 }
 
 fn release_net_after_failed_probe(p: &mut VirtioProbe) {
-    release_virtio_transport(
-        p.cfg_va,
-        &[
-            p.q0_desc_pa,
-            p.q0_driver_pa,
-            p.q0_device_pa,
-            p.q1_desc_pa,
-            p.q1_driver_pa,
-            p.q1_device_pa,
-            p.rx0_buf_pa,
-            p.tx0_buf_pa,
-        ],
-    );
-    unmap_probe_mmio(p);
+    let payload_frames = [p.rx0_buf_pa, p.tx0_buf_pa];
+    release_failed_probe_frames(p, &payload_frames);
 }
 
 fn release_vsock_after_failed_probe(p: &mut VirtioProbe) {
-    release_virtio_transport(
-        p.cfg_va,
-        &[
-            p.q0_desc_pa,
-            p.q0_driver_pa,
-            p.q0_device_pa,
-            p.q1_desc_pa,
-            p.q1_driver_pa,
-            p.q1_device_pa,
-        ],
-    );
-    unmap_probe_mmio(p);
+    release_failed_probe_frames(p, &[]);
 }
 
 fn release_snd_after_failed_probe(p: &mut VirtioProbe) {
-    release_virtio_transport(
-        p.cfg_va,
-        &[
-            p.q0_desc_pa,
-            p.q0_driver_pa,
-            p.q0_device_pa,
-            p.snd_q2_desc_pa,
-            p.snd_q2_driver_pa,
-            p.snd_q2_device_pa,
-            p.snd_q3_desc_pa,
-            p.snd_q3_driver_pa,
-            p.snd_q3_device_pa,
-        ],
-    );
-    unmap_probe_mmio(p);
-}
-
-fn release_gpu_transport(cfg_va: u64, q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64) {
-    release_virtio_transport(cfg_va, &[q0_desc_pa, q0_driver_pa, q0_device_pa]);
+    release_failed_probe_frames(p, &[]);
 }
 
 fn release_virtio_transport(cfg_va: u64, frames: &[u64]) {
