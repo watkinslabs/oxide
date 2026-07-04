@@ -419,10 +419,10 @@ unsafe fn submit_raw(
 // ---- Persistent scanout state for ongoing fbcon flush (B07) ------
 // After setup_scanout succeeds, save the context so the kernel-side fbcon
 // driver can push klog text to the FB via transfer + flush after boot.
-// Contexts are keyed by owning parent BDF. The current DRM/fbcon/fbdev node
-// layer still exposes one console scanout, so those global hooks operate on
-// the primary entry (the first successfully installed scanout) while remove
-// and shutdown target the exact BDF.
+// Contexts are keyed by owning parent BDF. DRM KMS hooks are registered per
+// card/BDF, while the current fbcon/fbdev/VT helper layer still exposes one
+// console scanout and therefore operates on the primary installed scanout.
+// Remove and shutdown target the exact BDF-owned context.
 
 use sync::{TaskList as DriverLockClass, Spinlock};
 
@@ -609,11 +609,23 @@ pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
 /// # C: O(1)
 pub fn scanout_ready() -> bool { !CTX.lock().is_empty() }
 
+/// True iff the BDF-owned scanout context is installed.
+/// # C: O(N)
+pub fn scanout_ready_for_bdf(bdf: u32) -> bool {
+    CTX.lock().iter().any(|ctx| ctx.bdf == bdf)
+}
+
 /// Read back the scanout dimensions. Used by the kernel's fbcon
 /// klog wiring to size its Console.
 /// # C: O(1)
 pub fn dimensions() -> Option<(u32, u32)> {
     CTX.lock().first().map(|c| (c.w, c.h))
+}
+
+/// Read back the scanout dimensions for a BDF-owned context.
+/// # C: O(N)
+pub fn dimensions_for_bdf(bdf: u32) -> Option<(u32, u32)> {
+    CTX.lock().iter().find(|c| c.bdf == bdf).map(|c| (c.w, c.h))
 }
 
 /// The scanout framebuffer as `(base_pa, fb_va, bytes, pitch, w, h)` for the
@@ -656,10 +668,10 @@ pub fn publish_console_scanout(bdf: u32) {
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unpublish_console_scanout(bdf: u32) {
-    let (fb_base, clear_scanout_ops) = {
+    let fb_base = {
         let ctxs = CTX.lock();
         match ctxs.first() {
-            Some(ctx) if ctx.bdf == bdf => (ctx.fb_va - ctx.hhdm, ctxs.len() == 1),
+            Some(ctx) if ctx.bdf == bdf => ctx.fb_va - ctx.hhdm,
             _ => return,
         }
     };
@@ -670,9 +682,6 @@ pub fn unpublish_console_scanout(bdf: u32) {
     fbdev::clear_flush_hook();
     fbdev::clear_wait_hooks();
     let _ = fbdev::unregister_by_base(fb_base);
-    if clear_scanout_ops {
-        drm::node::clear_scanout_ops();
-    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -698,9 +707,9 @@ fn monotonic_now_ns() -> u64 {
 
 // ============================================================
 // D5b-2 runtime KMS scanout API (the drm crate calls these via the
-// hook registered in `register_drm_hooks`). All honest-fail (return
-// false/None) if no primary scanout exists — i.e. QEMU was launched
-// without virtio-gpu, so SETCRTC must -EINVAL upstream.
+// hook registered in `register_drm_hooks`). The DRM-facing hooks are keyed by
+// card/BDF and honest-fail (return false/None) if that card's scanout context
+// does not exist, so SETCRTC must -EINVAL upstream.
 //
 // CONSOLE SAFETY: the boot fbcon framebuffer is res_id 1 and stays
 // allocated+attached for the whole boot. SETCRTC creates a NEW res_id
@@ -718,16 +727,17 @@ pub const BOOT_SCANOUT_RES_ID: u32 = 1;
 static NEXT_RUNTIME_RES_ID: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(2);
 
-/// The boot fbcon scanout resource id (= 1). # C: O(1)
-pub fn boot_scanout_res_id() -> u32 { BOOT_SCANOUT_RES_ID }
+/// The BDF argument is accepted for the per-card DRM hook shape; the boot
+/// console resource id is fixed within each virtio-gpu instance.
+pub fn boot_scanout_res_id_for_bdf(_bdf: u32) -> u32 { BOOT_SCANOUT_RES_ID }
 
 /// Run an encode closure as one CTRLQ command + poll used. Mirrors the
-/// boot `submit_one` but takes the queue context from the installed
-/// primary scanout. `false` if no scanout or the round-trip times out / NAKs.
+/// boot `submit_one` but takes the queue context from the BDF-owned scanout.
+/// `false` if no scanout or the round-trip times out / NAKs.
 /// # C: O(1) submit + host-side O(work).
-fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
+fn submit_ctrl_for_bdf<F: Fn(&mut [u8]) -> usize>(bdf: u32, encode: F) -> bool {
     let g = CTX.lock();
-    let ctx = match g.first() { Some(c) => c, None => return false };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return false };
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     // SAFETY: cmd_buf is the HHDM-mapped 4 KiB scratch frame setup_scanout installed; q0 descriptor/avail/used/notify VAs are the exact ones the boot path validated; we hold the CTX lock so we are the sole writer for this submit; the encode closure writes < 0x100 bytes into the per-call request slice.
     let ok = unsafe {
@@ -745,19 +755,20 @@ fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
 /// contiguous physical buffer (`pa`, `w*h*4` bytes). Issues
 /// RESOURCE_CREATE_2D + RESOURCE_ATTACH_BACKING (one mem-entry over the
 /// whole contiguous run). Returns the new res_id, or `None` if no
-/// primary scanout context or a command failed. The buffer's PA must be a single
-/// contiguous run (DRM dumb buffers are alloc_contig). # C: O(1) submits.
-pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
-    if !scanout_ready() { return None; }
+/// requested BDF's scanout context or a command failed. The buffer's PA must
+/// be a single contiguous run (DRM dumb buffers are alloc_contig).
+/// # C: O(1) submits.
+pub fn create_scanout_from_pa_for_bdf(bdf: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
+    if !scanout_ready_for_bdf(bdf) { return None; }
     let fmt = crate::drm_fourcc_to_virtio(fmt_drm)?;
     if w == 0 || h == 0 { return None; }
     let bytes = (w as u64) * (h as u64) * 4;
     if bytes == 0 || bytes > u32::MAX as u64 { return None; }
     let res_id = NEXT_RUNTIME_RES_ID.fetch_add(1, Ordering::AcqRel);
-    if !submit_ctrl(|b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {
         return None;
     }
-    if !submit_ctrl(|b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
         return None;
     }
     Some(res_id)
@@ -765,12 +776,13 @@ pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u
 
 /// Switch scanout 0 to `res_id` and make its pixels visible:
 /// SET_SCANOUT(0, res_id, 0,0,w,h) + TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
-/// `false` if no primary scanout or a command failed. # C: O(1) submits.
-pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
-    if !scanout_ready() || w == 0 || h == 0 { return false; }
-    if !submit_ctrl(|b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
-    if !submit_ctrl(|b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
-    if !submit_ctrl(|b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
+/// `false` if the requested BDF has no scanout or a command failed.
+/// # C: O(1) submits.
+pub fn set_scanout_for_bdf(bdf: u32, res_id: u32, w: u32, h: u32) -> bool {
+    if !scanout_ready_for_bdf(bdf) || w == 0 || h == 0 { return false; }
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
+    if !submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
     true
 }
 
@@ -780,10 +792,11 @@ pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
 /// SET_SCANOUT back to res_id 1 over the boot dimensions + flush, then
 /// `fbcon::force_repaint()` re-blits the live VT into res_id 1's backing
 /// (via fbcon_flush_pixels) so the next flush shows real content.
-/// `false` if no primary scanout. # C: O(1) submits + O(cols*rows) repaint.
-pub fn restore_console_scanout() -> bool {
-    let (w, h) = match dimensions() { Some(d) => d, None => return false };
-    let ok = set_scanout(BOOT_SCANOUT_RES_ID, w, h);
+/// `false` if the requested BDF has no scanout.
+/// # C: O(1) submits + O(cols*rows) repaint.
+pub fn restore_console_scanout_for_bdf(bdf: u32) -> bool {
+    let (w, h) = match dimensions_for_bdf(bdf) { Some(d) => d, None => return false };
+    let ok = set_scanout_for_bdf(bdf, BOOT_SCANOUT_RES_ID, w, h);
     // Bring the console content back: force_repaint marks the fg VT
     // dirty + raises the flush softirq, which calls fbcon_flush_pixels
     // → writes res_id 1's backing + transfer/flush.
@@ -795,13 +808,18 @@ pub fn restore_console_scanout() -> bool {
 /// core. Called once from `install_with_drm` so SETCRTC/PAGE_FLIP can
 /// drive the scanout without a crate dependency cycle (drm cannot
 /// depend on this crate; this crate depends on drm). # C: O(1)
-pub fn register_drm_hooks() {
-    drm::node::set_scanout_ops(drm::node::ScanoutOps {
-        create_from_pa: create_scanout_from_pa,
-        set_scanout,
-        restore_console: restore_console_scanout,
-        boot_res_id: boot_scanout_res_id,
+pub fn register_drm_hooks(card_id: u32, bdf: u32) {
+    drm::node::set_scanout_ops(card_id, drm::node::ScanoutOps {
+        driver_key: bdf,
+        create_from_pa: create_scanout_from_pa_for_bdf,
+        set_scanout: set_scanout_for_bdf,
+        restore_console: restore_console_scanout_for_bdf,
+        boot_res_id: boot_scanout_res_id_for_bdf,
     });
+}
+
+pub fn unregister_drm_hooks(card_id: u32) {
+    drm::node::clear_scanout_ops(card_id);
 }
 
 /// Push the CURRENT framebuffer contents to the host display

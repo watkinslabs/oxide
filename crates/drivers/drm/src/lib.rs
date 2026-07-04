@@ -531,6 +531,7 @@ pub fn unregister(card_id: u32) -> bool {
         g.pop();
     }
     drop(g);
+    crtc::clear_card_state(card_id);
     node::unregister(card_id);
     true
 }

@@ -26,25 +26,25 @@ use sync::{Spinlock, TaskList as OpsLockClass};
 // Runtime scanout backend hook (filled by drv-virtio-gpu at install)
 // ============================================================
 
-/// The runtime scanout operations the DRM core calls for SETCRTC /
-/// PAGE_FLIP. Filled by `drv-virtio-gpu::post_init::register_drm_hooks`
-/// at device install. The DRM crate cannot depend on the virtio-gpu
-/// crate (that crate depends on us), so the binding is a function-pointer
-/// table installed at runtime. `None` until a GPU is installed → SETCRTC
-/// honest-fails -EINVAL.
+/// Runtime scanout operations the DRM core calls for SETCRTC/PAGE_FLIP.
+/// Filled by `drv-virtio-gpu::post_init::register_drm_hooks` per DRM card at
+/// device install. The DRM crate cannot depend on the virtio-gpu crate, so the
+/// binding is a function-pointer table plus an opaque driver key.
 #[derive(Copy, Clone)]
 pub struct ScanoutOps {
+    /// Driver-owned runtime key, currently the owning virtio-gpu parent BDF.
+    pub driver_key: u32,
     /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
-    pub create_from_pa: fn(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
+    pub create_from_pa: fn(driver_key: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
     /// Switch scanout 0 to `res_id` + transfer + flush.
-    pub set_scanout: fn(res_id: u32, w: u32, h: u32) -> bool,
+    pub set_scanout: fn(driver_key: u32, res_id: u32, w: u32, h: u32) -> bool,
     /// Restore the boot fbcon scanout + repaint the console.
-    pub restore_console: fn() -> bool,
+    pub restore_console: fn(driver_key: u32) -> bool,
     /// The boot fbcon scanout resource id.
-    pub boot_res_id: fn() -> u32,
+    pub boot_res_id: fn(driver_key: u32) -> u32,
 }
 
-static SCANOUT_OPS: Spinlock<Option<ScanoutOps>, OpsLockClass> = Spinlock::new(None);
+static SCANOUT_OPS: Spinlock<Vec<Option<ScanoutOps>>, OpsLockClass> = Spinlock::new(Vec::new());
 
 struct DrmNodePair {
     card: Arc<drv::Device>,
@@ -53,17 +53,34 @@ struct DrmNodePair {
 
 static DRM_NODES: Spinlock<Vec<Option<DrmNodePair>>, OpsLockClass> = Spinlock::new(Vec::new());
 
-/// Install the runtime scanout backend (called once at GPU install).
-/// # C: O(1)
-pub fn set_scanout_ops(ops: ScanoutOps) { *SCANOUT_OPS.lock() = Some(ops); }
+/// Install the runtime scanout backend for a stable DRM card id.
+/// # C: O(N) only when extending the sparse card table.
+pub fn set_scanout_ops(card_id: u32, ops: ScanoutOps) {
+    let mut g = SCANOUT_OPS.lock();
+    let idx = card_id as usize;
+    if g.len() <= idx {
+        g.resize_with(idx + 1, || None);
+    }
+    g[idx] = Some(ops);
+}
 
-/// Remove the runtime scanout backend during GPU teardown.
-/// # C: O(1)
-pub fn clear_scanout_ops() { *SCANOUT_OPS.lock() = None; }
+/// Remove the runtime scanout backend for a stable DRM card id.
+/// # C: O(N) only when trimming trailing empty slots.
+pub fn clear_scanout_ops(card_id: u32) {
+    let mut g = SCANOUT_OPS.lock();
+    if let Some(slot) = g.get_mut(card_id as usize) {
+        *slot = None;
+    }
+    while matches!(g.last(), Some(None)) {
+        g.pop();
+    }
+}
 
-/// Snapshot the runtime scanout backend, or `None` if no GPU installed.
+/// Snapshot the runtime scanout backend for a stable DRM card id.
 /// # C: O(1)
-pub fn scanout_ops() -> Option<ScanoutOps> { *SCANOUT_OPS.lock() }
+pub fn scanout_ops(card_id: u32) -> Option<ScanoutOps> {
+    SCANOUT_OPS.lock().get(card_id as usize).and_then(|slot| *slot)
+}
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
 #[repr(C)]
@@ -92,7 +109,7 @@ const DRM_INO_CARD_MASK: vfs::Ino = 0x0000_0000_FFFF_FFFF;
 const DRM_CARD_INO: vfs::Ino = 0x4452_4D43_0000_0000;
 const DRM_RENDER_INO: vfs::Ino = 0x4452_4D52_0000_0000;
 
-/// `file_operations` for `/dev/dri/card0`: read drains queued KMS events,
+/// `file_operations` for `/dev/dri/cardN`: read drains queued KMS events,
 /// write is a no-op sink, last-close restores the boot fbcon scanout.
 struct DrmCardFileOps;
 impl vfs::FileOps for DrmCardFileOps {
@@ -100,19 +117,28 @@ impl vfs::FileOps for DrmCardFileOps {
     /// completions) as `drm_event_vblank` records — Linux `drm_read`.
     /// 0 bytes when no event is pending (libdrm polls then reads).
     /// # C: O(events)
-    fn read(&self, _inode: &vfs::Inode, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
-        Ok(crate::crtc::drain_events(b))
+    fn read(&self, inode: &vfs::Inode, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
+        let Some((_, card_id)) = drm_inode_parts_raw(inode.ino()) else {
+            return Ok(0);
+        };
+        Ok(crate::crtc::drain_events(card_id, b))
     }
     fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
     /// Last-close: if a KMS client took the scanout via SETCRTC and is
     /// now closing its card fd, restore the boot fbcon scanout + repaint
     /// the console so the fb console (and getty) come back. A normal
-    /// boot never opens card0 → this never fires → console untouched.
+    /// boot never opens a card node, so this never fires and the console
+    /// stays untouched.
     /// MUST NOT panic or block. # C: O(1) + O(scanout repaint).
-    fn on_release(&self, _inode: &vfs::Inode) {
-        if crate::crtc::owner() != 0 {
-            if let Some(ops) = scanout_ops() { (ops.restore_console)(); }
-            crate::crtc::clear_owner();
+    fn on_release(&self, inode: &vfs::Inode) {
+        let Some((_, card_id)) = drm_inode_parts_raw(inode.ino()) else {
+            return;
+        };
+        if crate::crtc::owner(card_id) != 0 {
+            if let Some(ops) = scanout_ops(card_id) {
+                (ops.restore_console)(ops.driver_key);
+            }
+            crate::crtc::clear_owner(card_id);
         }
     }
 }
@@ -124,13 +150,16 @@ impl vfs::FileOps for DrmSinkFileOps {
     fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
 }
 
-fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> {
-    let ino = inode.ino();
+fn drm_inode_parts_raw(ino: vfs::Ino) -> Option<(vfs::Ino, u32)> {
     let tag = ino & DRM_INO_TAG_MASK;
     if tag != DRM_CARD_INO && tag != DRM_RENDER_INO {
         return None;
     }
     Some((tag, (ino & DRM_INO_CARD_MASK) as u32))
+}
+
+fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> {
+    drm_inode_parts_raw(inode.ino())
 }
 
 /// Build a `/dev/dri/cardN` inode (`S_IFCHR|0o666`, card tag, card f_op).
@@ -415,14 +444,14 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         DRM_IOCTL_MODE_SETCRTC => {
             let token = Arc::as_ptr(inode) as *const () as u64;
             match driver.as_ref() {
-                Some(d) => Some(crate::crtc::set_crtc(d, arg, token)),
+                Some(d) => Some(crate::crtc::set_crtc(card_id, d, arg, token)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
         DRM_IOCTL_MODE_PAGE_FLIP => {
             let token = Arc::as_ptr(inode) as *const () as u64;
             match driver.as_ref() {
-                Some(d) => Some(crate::crtc::page_flip(d, arg, token)),
+                Some(d) => Some(crate::crtc::page_flip(card_id, d, arg, token)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
