@@ -430,7 +430,9 @@ pub fn bind_addr(bus: &str, addr: &str, driver_name: &'static str) -> KResult<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use core::sync::atomic::AtomicU32;
+    use sync::Spinlock as TestLock;
 
     struct FakeDrv;
     impl Driver for FakeDrv {
@@ -570,6 +572,39 @@ mod tests {
     }
     static UNREGISTER_DRV: UnregisterDrv = UnregisterDrv;
 
+    static DEVICE_DEL_ORDER: TestLock<Vec<&'static str>, DriverListClass> = TestLock::new(Vec::new());
+    static DEVICE_DEL_ORDER_ACTIVE: AtomicU32 = AtomicU32::new(0);
+    struct DeviceDelOrderDrv;
+    impl Driver for DeviceDelOrderDrv {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "device-del-order-test" }
+        fn matches(&self, dev: &Device) -> bool { dev.device_id == 0x6203 }
+        fn remove(&self, _dev: &Device) {
+            DEVICE_DEL_ORDER.lock().push("driver-remove");
+        }
+    }
+    static DEVICE_DEL_ORDER_DRV: DeviceDelOrderDrv = DeviceDelOrderDrv;
+
+    fn device_del_order_sysfs_remove(dev: &Device) {
+        if DEVICE_DEL_ORDER_ACTIVE.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        assert_eq!(dev.bound(), None);
+        assert!(devices().iter().any(|d| d.bus == dev.bus && d.addr == dev.addr));
+        assert_eq!(&*DEVICE_DEL_ORDER.lock(), &["driver-remove"]);
+        DEVICE_DEL_ORDER.lock().push("sysfs-remove");
+    }
+
+    fn device_del_order_devtmpfs_del(name: &str) {
+        if DEVICE_DEL_ORDER_ACTIVE.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        assert_eq!(name, "device-del-order-node");
+        assert_eq!(&*DEVICE_DEL_ORDER.lock(), &["driver-remove", "sysfs-remove"]);
+        DEVICE_DEL_ORDER.lock().push("devtmpfs-del");
+        DEVICE_DEL_ORDER_ACTIVE.store(0, Ordering::Release);
+    }
+
     fn device_add(d: Arc<Device>) -> Arc<Device> {
         try_device_add(d).expect("test device registration")
     }
@@ -704,6 +739,27 @@ mod tests {
 
         device_del(&d);
         assert_eq!(REMOVE_HITS.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn device_del_orders_remove_event_and_devtmpfs_teardown() {
+        DEVICE_DEL_ORDER.lock().clear();
+        DEVICE_DEL_ORDER_ACTIVE.store(1, Ordering::Release);
+        set_sysfs_remove_hook(device_del_order_sysfs_remove);
+        set_devtmpfs_del_hook(device_del_order_devtmpfs_del);
+        register_driver(&DEVICE_DEL_ORDER_DRV);
+        let d = device_add(Arc::new(
+            Device::new("platform", String::from("device-del-order0"), 0, 0x6203, 0)
+                .with_devnode("misc", String::from("device-del-order-node"), Some((10, 251)))));
+
+        assert_eq!(d.bound(), Some("device-del-order-test"));
+        device_del(&d);
+
+        assert_eq!(
+            &*DEVICE_DEL_ORDER.lock(),
+            &["driver-remove", "sysfs-remove", "devtmpfs-del"]
+        );
+        assert!(!devices().iter().any(|dev| Arc::ptr_eq(dev, &d)));
     }
 
     #[test]
