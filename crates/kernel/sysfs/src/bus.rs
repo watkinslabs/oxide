@@ -733,9 +733,9 @@ mod tests {
         let root = make_bus_drivers_inode("platform");
         let dir = root.lookup("sysfs-bind-test").expect("driver dir");
         let bind = dir.lookup("bind").expect("bind attr");
-        assert_eq!(bind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
         assert_eq!(dev.bound(), Some("sysfs-bind-test"));
         assert_eq!(BIND_PROBES.load(Ordering::Acquire), 1);
+        assert_eq!(bind.write(0, b"sysfs-bind-dev0\n").err(), Some(VfsError::Ebusy));
         assert!(dir.lookup("sysfs-bind-dev0").is_ok(), "driver dir exposes bound device symlink");
 
         let unbind = dir.lookup("unbind").expect("unbind attr");
@@ -743,6 +743,11 @@ mod tests {
         assert_eq!(dev.bound(), None);
         assert_eq!(BIND_REMOVES.load(Ordering::Acquire), 1);
         assert_eq!(dir.lookup("sysfs-bind-dev0").err(), Some(VfsError::Enoent));
+
+        assert_eq!(bind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
+        assert_eq!(dev.bound(), Some("sysfs-bind-test"));
+        assert_eq!(BIND_PROBES.load(Ordering::Acquire), 2);
+        assert!(dir.lookup("sysfs-bind-dev0").is_ok(), "driver dir exposes rebound device symlink");
     }
 
     #[test]

@@ -14,9 +14,9 @@ shape, but it is not a Linux-complete driver model yet.
 
 Estimated branch-local status:
 
-- Driver-core lifecycle cleanup: about 80% complete.
+- Driver-core lifecycle cleanup: about 82% complete.
 - Concrete driver probe/remove/shutdown cleanup: about 85% complete.
-- Device publication through model-owned sysfs/devtmpfs/class state: about 67%
+- Device publication through model-owned sysfs/devtmpfs/class state: about 70%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
   hotplug, fault injection, and multi-device coverage: about 66% complete.
@@ -44,6 +44,10 @@ test-pass claims.
   existing unbound matching devices on that bus, matching Linux's
   driver-register-then-driver-attach behavior instead of requiring a separate
   enumeration pass to retry binding.
+- Model device publication now also attaches a newly added device to already
+  registered matching drivers after devtmpfs/sysfs publication, so both
+  driver-register and device-add orderings probe through the driver model
+  instead of requiring call-site bind work.
 - Model unbind calls `Driver::remove` before clearing the binding.
 - `device_del` unbinds first, emits remove while the object is still visible,
   removes devtmpfs state, and then drops the device from the registry.

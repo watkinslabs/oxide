@@ -207,12 +207,13 @@ pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 
 /// Fallible unified device registration (Linux `device_add`). ONE call
 /// publishes a device to BOTH `/sys` and `/dev` from a single registration:
-///   1. push to the registry so sysfs can resolve the object;
-///   2. if the device declares a `/dev` node (`devname.is_some()`), fire
+///   1. reject duplicate `(bus, addr)` identities before publishing anything;
+///   2. push to the registry so sysfs can resolve the object;
+///   3. if the device declares a `/dev` node (`devname.is_some()`), fire
 ///      `DEVTMPFS_HOOK` so devtmpfs mints `/dev/<devname>`;
-///   3. fire `SYSFS_HOOK`, which emits the Linux `add` uevent only after the
+///   4. fire `SYSFS_HOOK`, which emits the Linux `add` uevent only after the
 ///      devtmpfs node is visible;
-///   4. reject duplicate `(bus, addr)` identities before publishing anything.
+///   5. attach any already-registered matching driver after publication.
 ///
 /// Deliberate oxide design (do NOT "fix" into Linux kset/kobject trees): `/sys`
 /// directories are SYNTHESISED on demand from this registry by the sysfs crate
@@ -228,6 +229,7 @@ pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
         if let Some(h) = *DEVTMPFS_HOOK.lock() { h(d.dev_class, &name, d.dev_t, d.node_factory.clone()); }
     }
     if let Some(h) = *SYSFS_HOOK.lock() { h(&d); }
+    attach_device_to_registered_drivers(&d);
     Ok(d)
 }
 
@@ -338,6 +340,16 @@ fn attach_driver_to_existing_devices(driver: &'static dyn Driver) {
             continue;
         }
         let _ = bind(&dev, driver.name());
+    }
+}
+
+fn attach_device_to_registered_drivers(dev: &Arc<Device>) {
+    let drivers: Vec<&'static dyn Driver> = MODEL_DRIVERS.lock().clone();
+    for driver in drivers {
+        if dev.bound().is_some() || !driver_matches_device(driver, dev) {
+            continue;
+        }
+        let _ = bind(dev, driver.name());
     }
 }
 
@@ -566,8 +578,6 @@ mod tests {
         let d = device_add(Arc::new(Device::new(
             "pci", alloc::string::String::from("0000:00:09.0"), 0x1AF4, 0x1042, 0x010000)));
         register_driver(&FAKE);
-        assert!(d.bound().is_none());
-        assert_eq!(bind(&d, "fake-virtio-blk"), Ok(()));
         assert_eq!(d.bound(), Some("fake-virtio-blk"));
         assert_eq!(bind(&d, "fake-virtio-blk"), Err(crate::Error::AlreadyBound));
         assert!(devices().iter().any(|x| x.addr == "0000:00:09.0"));
@@ -587,13 +597,13 @@ mod tests {
     fn driver_override_controls_matching_and_bind() {
         register_driver(&FAKE);
         register_driver(&OVERRIDE);
-        let d = device_add(Arc::new(Device::new(
-            "pci", alloc::string::String::from("0000:00:0e.0"), 0x1AF4, 0x1042, 0)));
+        let d = Arc::new(Device::new(
+            "pci", alloc::string::String::from("0000:00:0e.0"), 0x1AF4, 0x1042, 0));
         d.set_driver_override(Some(String::from("override-only")));
+        let d = device_add(d);
         assert_eq!(match_driver(&d), Some("override-only"));
-        assert_eq!(bind(&d, "fake-virtio-blk"), Err(crate::Error::NoMatch));
-        assert_eq!(bind(&d, "override-only"), Ok(()));
         assert_eq!(d.bound(), Some("override-only"));
+        assert_eq!(bind(&d, "fake-virtio-blk"), Err(crate::Error::AlreadyBound));
     }
 
     #[test]
@@ -601,8 +611,8 @@ mod tests {
         register_driver(&FAKE);
         let d = device_add(Arc::new(Device::new(
             "pci", alloc::string::String::from("0000:00:0d.0"), 0x1AF4, 0x1042, 0)));
-        assert_eq!(auto_bind(&d), Ok(()));
         assert_eq!(d.bound(), Some("fake-virtio-blk"));
+        assert_eq!(auto_bind(&d), Err(crate::Error::AlreadyBound));
     }
 
     #[test]
@@ -629,7 +639,6 @@ mod tests {
         let d = device_add(Arc::new(Device::new(
             "platform", String::from("duplicate-register-test0"), 0, 0x6201, 0)));
 
-        assert_eq!(auto_bind(&d), Ok(()));
         assert_eq!(d.bound(), Some("duplicate-register-test"));
         assert_eq!(DUP_REGISTER_PROBES.load(Ordering::Acquire), 1);
         assert_eq!(unbind(&d), Ok(()));
@@ -649,13 +658,15 @@ mod tests {
         let d = device_add(Arc::new(Device::new(
             "pci", String::from("0000:00:13.0"), 0x1234, 0xf00d, 0)));
 
-        assert_eq!(bind(&d, "failing-probe"), Err(crate::Error::ProbeFailed));
         assert!(d.bound().is_none());
         assert_eq!(FAIL_PROBES.load(Ordering::Acquire), 1);
-
         assert_eq!(bind(&d, "failing-probe"), Err(crate::Error::ProbeFailed));
         assert!(d.bound().is_none());
         assert_eq!(FAIL_PROBES.load(Ordering::Acquire), 2);
+
+        assert_eq!(bind(&d, "failing-probe"), Err(crate::Error::ProbeFailed));
+        assert!(d.bound().is_none());
+        assert_eq!(FAIL_PROBES.load(Ordering::Acquire), 3);
     }
 
     #[test]
@@ -665,9 +676,11 @@ mod tests {
         let d = device_add(Arc::new(Device::new(
             "pci", String::from("0000:00:14.0"), 0x1234, 0xf00e, 0)));
 
-        assert_eq!(auto_bind(&d), Err(crate::Error::ProbeFailed));
         assert!(d.bound().is_none());
         assert_eq!(AUTO_FAIL_PROBES.load(Ordering::Acquire), 1);
+        assert_eq!(auto_bind(&d), Err(crate::Error::ProbeFailed));
+        assert!(d.bound().is_none());
+        assert_eq!(AUTO_FAIL_PROBES.load(Ordering::Acquire), 2);
     }
 
     #[test]
@@ -676,7 +689,7 @@ mod tests {
         register_driver(&REMOVE_DRV);
         let d = device_add(Arc::new(Device::new(
             "pci", String::from("0000:00:11.0"), 0x1234, 0x7777, 0)));
-        assert_eq!(bind(&d, "remove-test"), Ok(()));
+        assert_eq!(d.bound(), Some("remove-test"));
 
         device_del(&d);
         assert_eq!(REMOVE_HITS.load(Ordering::Acquire), 1);
@@ -716,6 +729,8 @@ mod tests {
         register_driver(&LOOP_LIFECYCLE_DRV);
         let d = device_add(Arc::new(Device::new(
             "platform", String::from("loop-lifecycle-test0"), 0, 0x51fe, 0)));
+        assert_eq!(d.bound(), Some("loop-lifecycle-test"));
+        assert_eq!(unbind(&d), Ok(()));
 
         for i in 1..=16 {
             assert_eq!(bind(&d, "loop-lifecycle-test"), Ok(()));
@@ -723,8 +738,8 @@ mod tests {
             assert_eq!(bind(&d, "loop-lifecycle-test"), Err(crate::Error::AlreadyBound));
             assert_eq!(unbind(&d), Ok(()));
             assert_eq!(d.bound(), None);
-            assert_eq!(LOOP_PROBES.load(Ordering::Acquire), i);
-            assert_eq!(LOOP_REMOVES.load(Ordering::Acquire), i);
+            assert_eq!(LOOP_PROBES.load(Ordering::Acquire), i + 1);
+            assert_eq!(LOOP_REMOVES.load(Ordering::Acquire), i + 1);
         }
 
         device_del(&d);
@@ -740,7 +755,6 @@ mod tests {
             let d = try_device_add(Arc::new(Device::new(
                 "platform", String::from("readd-lifecycle-test0"), 0, 0x51ff, 0)))
                 .unwrap();
-            assert_eq!(bind(&d, "readd-lifecycle-test"), Ok(()));
             assert_eq!(d.bound(), Some("readd-lifecycle-test"));
 
             device_del(&d);
@@ -775,8 +789,8 @@ mod tests {
             "pci", String::from("0000:00:15.0"), 0x1234, 0x7779, 0)));
         let second = device_add(Arc::new(Device::new(
             "pci", String::from("0000:00:16.0"), 0x1234, 0x7779, 0)));
-        assert_eq!(bind(&first, "ordered-shutdown-test"), Ok(()));
-        assert_eq!(bind(&second, "ordered-shutdown-test"), Ok(()));
+        assert_eq!(first.bound(), Some("ordered-shutdown-test"));
+        assert_eq!(second.bound(), Some("ordered-shutdown-test"));
 
         shutdown_all();
 
@@ -802,7 +816,6 @@ mod tests {
         let d = device_add(Arc::new(Device::new(
             "pci", String::from("0000:00:12.0"), 0x1234, 0x7777, 0)));
 
-        assert_eq!(bind(&d, "remove-test"), Ok(()));
         assert_eq!(d.bound(), Some("remove-test"));
         assert_eq!(unbind(&d), Ok(()));
         assert_eq!(d.bound(), None);
@@ -826,8 +839,8 @@ mod tests {
             "platform", String::from("test0"), 0, 0, 0)));
         let pci = device_add(Arc::new(Device::new(
             "pci", String::from("0000:00:0f.0"), 0, 0, 0)));
-        assert_eq!(bind(&platform, "platform-test"), Ok(()));
         assert_eq!(platform.bound(), Some("platform-test"));
+        assert_eq!(bind(&platform, "platform-test"), Err(crate::Error::AlreadyBound));
         assert_eq!(bind(&pci, "platform-test"), Err(crate::Error::NotFound));
     }
 
