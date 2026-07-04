@@ -161,6 +161,9 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
     let local_port = h.dst_port;
     let peer_cid   = h.src_cid;
     let peer_port  = h.src_port;
+    if !driver_up() || local_cid != guest_cid() {
+        return;
+    }
 
     match h.op {
         VIRTIO_VSOCK_OP_REQUEST => {

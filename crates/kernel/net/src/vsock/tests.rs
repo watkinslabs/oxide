@@ -4,56 +4,88 @@
 // (tools/boot-smoke-vsock.sh), not here.
 
 use super::*;
+use std::sync::Mutex;
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn tx_ok(_frame: &[u8]) -> bool { true }
+
+fn cleanup_driver_state() {
+    let owner = driver_owner();
+    if owner != 0 {
+        let _ = driver_uninstall(owner);
+        let _ = driver_cancel_reserved(owner);
+    }
+}
+
+fn with_vsock_state<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = TEST_LOCK.lock().unwrap();
+    cleanup_driver_state();
+    let out = f();
+    cleanup_driver_state();
+    out
+}
+
+fn with_driver<T>(owner: u32, guest_cid: u64, f: impl FnOnce() -> T) -> T {
+    with_vsock_state(|| {
+        assert!(driver_install(owner, guest_cid, tx_ok));
+        let out = f();
+        assert!(driver_uninstall(owner));
+        out
+    })
+}
 
 #[test]
 fn driver_reservation_is_not_live_until_publish() {
-    assert!(driver_reserve(7));
-    assert!(!driver_up());
-    assert_eq!(guest_cid(), 0);
-    assert_eq!(driver_owner(), 7);
-    assert!(!driver_reserve(8));
-    assert!(!driver_cancel_reserved(8));
-    assert!(driver_cancel_reserved(7));
-    assert!(!driver_up());
-    assert_eq!(driver_owner(), 0);
+    with_vsock_state(|| {
+        assert!(driver_reserve(7));
+        assert!(!driver_up());
+        assert_eq!(guest_cid(), 0);
+        assert_eq!(driver_owner(), 7);
+        assert!(!driver_reserve(8));
+        assert!(!driver_cancel_reserved(8));
+        assert!(driver_cancel_reserved(7));
+        assert!(!driver_up());
+        assert_eq!(driver_owner(), 0);
+    });
 }
 
 #[test]
 fn driver_endpoint_uninstall_is_owner_keyed() {
-    fn tx_ok(_frame: &[u8]) -> bool { true }
-
-    assert!(driver_install(11, 3, tx_ok));
-    assert!(driver_up());
-    assert_eq!(guest_cid(), 3);
-    assert_eq!(driver_owner(), 11);
-    assert!(!driver_uninstall(12));
-    assert!(driver_up());
-    assert_eq!(guest_cid(), 3);
-    assert!(driver_uninstall(11));
-    assert!(!driver_up());
-    assert_eq!(guest_cid(), 0);
-    assert_eq!(driver_owner(), 0);
+    with_vsock_state(|| {
+        assert!(driver_install(11, 3, tx_ok));
+        assert!(driver_up());
+        assert_eq!(guest_cid(), 3);
+        assert_eq!(driver_owner(), 11);
+        assert!(!driver_uninstall(12));
+        assert!(driver_up());
+        assert_eq!(guest_cid(), 3);
+        assert!(driver_uninstall(11));
+        assert!(!driver_up());
+        assert_eq!(guest_cid(), 0);
+        assert_eq!(driver_owner(), 0);
+    });
 }
 
 #[test]
 fn driver_quiesce_stops_tx_but_keeps_owner_reserved() {
-    fn tx_ok(_frame: &[u8]) -> bool { true }
+    with_vsock_state(|| {
+        assert!(driver_install(21, 9, tx_ok));
+        assert!(driver_up());
+        assert_eq!(guest_cid(), 9);
+        assert_eq!(driver_owner(), 21);
+        assert!(!driver_quiesce(22));
+        assert!(driver_up());
+        assert_eq!(guest_cid(), 9);
 
-    assert!(driver_install(21, 9, tx_ok));
-    assert!(driver_up());
-    assert_eq!(guest_cid(), 9);
-    assert_eq!(driver_owner(), 21);
-    assert!(!driver_quiesce(22));
-    assert!(driver_up());
-    assert_eq!(guest_cid(), 9);
-
-    assert!(driver_quiesce(21));
-    assert!(!driver_up());
-    assert_eq!(guest_cid(), 0);
-    assert_eq!(driver_owner(), 21);
-    assert!(!driver_reserve(22));
-    assert!(driver_cancel_reserved(21));
-    assert_eq!(driver_owner(), 0);
+        assert!(driver_quiesce(21));
+        assert!(!driver_up());
+        assert_eq!(guest_cid(), 0);
+        assert_eq!(driver_owner(), 21);
+        assert!(!driver_reserve(22));
+        assert!(driver_cancel_reserved(21));
+        assert_eq!(driver_owner(), 0);
+    });
 }
 
 #[test]
@@ -100,21 +132,21 @@ fn build_request_header() {
 
 #[test]
 fn parse_response_promotes_state() {
-    // No driver TX hook installed in host tests → tx() is a no-op,
-    // but deliver_rx still drives state transitions on the table.
-    let c = alloc::sync::Arc::new(
-        VsockConn::new(3, 2000, 2, 1234, VsockState::Connecting));
-    TABLE.insert(c.clone());
-    let resp = VsockHdr {
-        src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2000,
-        len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
-        op: VIRTIO_VSOCK_OP_RESPONSE, flags: 0,
-        buf_alloc: 4096, fwd_cnt: 0,
-    };
-    deliver_rx(&resp, &[]);
-    assert_eq!(*c.st.lock(), VsockState::Connected);
-    assert_eq!(c.credit.lock().peer_buf_alloc, 4096);
-    TABLE.remove(c.key());
+    with_driver(31, 3, || {
+        let c = alloc::sync::Arc::new(
+            VsockConn::new(3, 2000, 2, 1234, VsockState::Connecting));
+        TABLE.insert(c.clone());
+        let resp = VsockHdr {
+            src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2000,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_RESPONSE, flags: 0,
+            buf_alloc: 4096, fwd_cnt: 0,
+        };
+        deliver_rx(&resp, &[]);
+        assert_eq!(*c.st.lock(), VsockState::Connected);
+        assert_eq!(c.credit.lock().peer_buf_alloc, 4096);
+        TABLE.remove(c.key());
+    });
 }
 
 #[test]
@@ -136,86 +168,110 @@ fn credit_update_math() {
 
 #[test]
 fn rw_buffers_payload_and_recv_drains() {
-    let c = alloc::sync::Arc::new(
-        VsockConn::new(3, 2001, 2, 1234, VsockState::Connected));
-    TABLE.insert(c.clone());
-    let payload = b"oxide-vsock-ping";
-    let rw = VsockHdr {
-        src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2001,
-        len: payload.len() as u32, typ: VIRTIO_VSOCK_TYPE_STREAM,
-        op: VIRTIO_VSOCK_OP_RW, flags: 0, buf_alloc: 4096, fwd_cnt: 0,
-    };
-    deliver_rx(&rw, payload);
-    let mut buf = [0u8; 32];
-    let n = recv(&c, &mut buf).unwrap();
-    assert_eq!(n, payload.len());
-    assert_eq!(&buf[..n], payload);
-    // fwd_cnt bumped by what we consumed.
-    assert_eq!(c.credit.lock().fwd_cnt, payload.len() as u32);
-    TABLE.remove(c.key());
+    with_driver(32, 3, || {
+        let c = alloc::sync::Arc::new(
+            VsockConn::new(3, 2001, 2, 1234, VsockState::Connected));
+        TABLE.insert(c.clone());
+        let payload = b"oxide-vsock-ping";
+        let rw = VsockHdr {
+            src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2001,
+            len: payload.len() as u32, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_RW, flags: 0, buf_alloc: 4096, fwd_cnt: 0,
+        };
+        deliver_rx(&rw, payload);
+        let mut buf = [0u8; 32];
+        let n = recv(&c, &mut buf).unwrap();
+        assert_eq!(n, payload.len());
+        assert_eq!(&buf[..n], payload);
+        // fwd_cnt bumped by what we consumed.
+        assert_eq!(c.credit.lock().fwd_cnt, payload.len() as u32);
+        TABLE.remove(c.key());
+    });
 }
 
 #[test]
 fn shutdown_then_eof() {
-    let c = alloc::sync::Arc::new(
-        VsockConn::new(3, 2002, 2, 1234, VsockState::Connected));
-    TABLE.insert(c.clone());
-    let sh = VsockHdr {
-        src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2002,
-        len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
-        op: VIRTIO_VSOCK_OP_SHUTDOWN,
-        flags: VIRTIO_VSOCK_SHUTDOWN_SEND, buf_alloc: 0, fwd_cnt: 0,
-    };
-    deliver_rx(&sh, &[]);
-    assert_eq!(*c.st.lock(), VsockState::RcvShutdown);
-    // recv on an empty RcvShutdown conn = EOF (Ok(0)).
-    let mut buf = [0u8; 8];
-    assert_eq!(recv(&c, &mut buf).unwrap(), 0);
-    TABLE.remove(c.key());
+    with_driver(33, 3, || {
+        let c = alloc::sync::Arc::new(
+            VsockConn::new(3, 2002, 2, 1234, VsockState::Connected));
+        TABLE.insert(c.clone());
+        let sh = VsockHdr {
+            src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2002,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_SHUTDOWN,
+            flags: VIRTIO_VSOCK_SHUTDOWN_SEND, buf_alloc: 0, fwd_cnt: 0,
+        };
+        deliver_rx(&sh, &[]);
+        assert_eq!(*c.st.lock(), VsockState::RcvShutdown);
+        // recv on an empty RcvShutdown conn = EOF (Ok(0)).
+        let mut buf = [0u8; 8];
+        assert_eq!(recv(&c, &mut buf).unwrap(), 0);
+        TABLE.remove(c.key());
+    });
 }
 
 #[test]
 fn rst_closes_connection() {
-    let c = alloc::sync::Arc::new(
-        VsockConn::new(3, 2003, 2, 1234, VsockState::Connected));
-    TABLE.insert(c.clone());
-    let rst = VsockHdr {
-        src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2003,
-        len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
-        op: VIRTIO_VSOCK_OP_RST, flags: 0, buf_alloc: 0, fwd_cnt: 0,
-    };
-    deliver_rx(&rst, &[]);
-    assert_eq!(*c.st.lock(), VsockState::Closed);
-    TABLE.remove(c.key());
+    with_driver(34, 3, || {
+        let c = alloc::sync::Arc::new(
+            VsockConn::new(3, 2003, 2, 1234, VsockState::Connected));
+        TABLE.insert(c.clone());
+        let rst = VsockHdr {
+            src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2003,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_RST, flags: 0, buf_alloc: 0, fwd_cnt: 0,
+        };
+        deliver_rx(&rst, &[]);
+        assert_eq!(*c.st.lock(), VsockState::Closed);
+        TABLE.remove(c.key());
+    });
 }
 
 #[test]
 fn send_blocked_when_no_peer_credit() {
-    let c = VsockConn::new(3, 2004, 2, 1234, VsockState::Connected);
-    // peer_buf_alloc stays 0 → no credit → Eagain.
-    assert_eq!(send(&c, b"data"), Err(crate::NetError::Eagain));
-    // Open a window and it sends (tx hook is no-op so returns Eio in
-    // host build — assert credit gate, not the wire).
-    c.credit.lock().observe_peer(1024, 0);
-    // tx() returns false (no driver) → Eio; the gate let it through.
-    assert_eq!(send(&c, b"data"), Err(crate::NetError::Eio));
+    with_vsock_state(|| {
+        let c = VsockConn::new(3, 2004, 2, 1234, VsockState::Connected);
+        // peer_buf_alloc stays 0 → no credit → Eagain.
+        assert_eq!(send(&c, b"data"), Err(crate::NetError::Eagain));
+        // Open a window and it sends (tx hook is a no-op because no driver is
+        // installed here) — assert credit gate, not the wire.
+        c.credit.lock().observe_peer(1024, 0);
+        // tx() returns false (no driver) → Eio; the gate let it through.
+        assert_eq!(send(&c, b"data"), Err(crate::NetError::Eio));
+    });
 }
 
 #[test]
 fn listener_request_queues_accept() {
-    TABLE.add_listener(5555);
-    let req = VsockHdr {
-        src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 5555,
-        len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
-        op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
-    };
-    deliver_rx(&req, &[]);
-    let k = TABLE.pop_accept(5555).expect("accept queued");
-    assert_eq!(k.peer_cid, 2);
-    assert_eq!(k.peer_port, 4444);
-    assert_eq!(k.local_port, 5555);
-    let conn = TABLE.find(k).expect("conn inserted");
-    assert_eq!(*conn.st.lock(), VsockState::Connected);
-    assert_eq!(conn.credit.lock().peer_buf_alloc, 8192);
-    TABLE.remove(k);
+    with_driver(35, 3, || {
+        TABLE.add_listener(5555);
+        let req = VsockHdr {
+            src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 5555,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
+        };
+        deliver_rx(&req, &[]);
+        let k = TABLE.pop_accept(5555).expect("accept queued");
+        assert_eq!(k.peer_cid, 2);
+        assert_eq!(k.peer_port, 4444);
+        assert_eq!(k.local_port, 5555);
+        let conn = TABLE.find(k).expect("conn inserted");
+        assert_eq!(*conn.st.lock(), VsockState::Connected);
+        assert_eq!(conn.credit.lock().peer_buf_alloc, 8192);
+        TABLE.remove(k);
+    });
+}
+
+#[test]
+fn rx_for_wrong_guest_cid_is_dropped() {
+    with_driver(36, 3, || {
+        TABLE.add_listener(6666);
+        let req = VsockHdr {
+            src_cid: 2, dst_cid: 99, src_port: 4444, dst_port: 6666,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
+        };
+        deliver_rx(&req, &[]);
+        assert!(TABLE.pop_accept(6666).is_none());
+    });
 }
