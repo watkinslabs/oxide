@@ -2,7 +2,7 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::map_mmio_pages;
-use super::virtio_qsetup::{ProgrammedQueues, QueuePlan, QueueRing};
+use super::virtio_qsetup::{FeatureNegotiation, ProgrammedQueues, QueuePlan, QueueRing};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as VirtioTransportLockClass};
@@ -1195,6 +1195,14 @@ struct PlannedNotifyMappings {
     q3: u64,
 }
 
+struct VirtioTransportBringup {
+    negotiated: FeatureNegotiation,
+    queues: [(u16, u16); 8],
+    queues_len: usize,
+    programmed_queues: Option<ProgrammedQueues>,
+    final_status: u8,
+}
+
 impl VirtioProbeState {
     fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
         Self {
@@ -1218,6 +1226,46 @@ impl VirtioProbeState {
         };
         self.msix = bind_virtio_msix0(d, caps, bars, &mut self.mappings, handler);
         self.msix.is_some()
+    }
+
+    fn negotiate_and_program(
+        &mut self,
+        d: &pci::PciDevice,
+        caps: &pci::heapless_caps::CapVec,
+        bars: &[pci::Bar; 6],
+        profile: VirtioProbeProfile,
+        hhdm: u64,
+    ) -> VirtioTransportBringup {
+        let negotiated = super::virtio_qsetup::negotiate_features(self.cfg_va, profile.drv_features);
+        let (queues, queues_len) =
+            super::virtio_qsetup::scan_queue_sizes(self.cfg_va, negotiated.num_queues);
+
+        let msix_bound = negotiated.features_ok
+            && self.bind_msix0(d, caps, bars, profile.msix0_handler);
+        let q0_msix_vec = if msix_bound { 0 } else { 0xFFFF };
+        let programmed_queues = if negotiated.features_ok {
+            super::virtio_qsetup::program_queue_set(
+                self.cfg_va,
+                hhdm,
+                q0_msix_vec,
+                &profile.extra_queues,
+            )
+        } else {
+            None
+        };
+        let final_status = if programmed_queues.is_some() {
+            super::virtio_qsetup::set_driver_ok(self.cfg_va)
+        } else {
+            negotiated.post_status as u8
+        };
+
+        VirtioTransportBringup {
+            negotiated,
+            queues,
+            queues_len,
+            programmed_queues,
+            final_status,
+        }
     }
 
     fn map_notify(
@@ -1592,15 +1640,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     };
     let mut state = VirtioProbeState::new(bdf, mappings, cfg_va, device_cfg_va);
 
-    let negotiated = super::virtio_qsetup::negotiate_features(state.cfg_va, profile.drv_features);
-    let dev_features = negotiated.dev_features;
-    let drv_features = negotiated.drv_features;
-    let post_status = negotiated.post_status;
-    let features_ok = negotiated.features_ok;
-    let msix_cfg = negotiated.msix_cfg;
-    let num_queues = negotiated.num_queues;
-    let (queues, queues_len) = super::virtio_qsetup::scan_queue_sizes(state.cfg_va, num_queues);
-
     // Per-arch HHDM offset, hoisted once for all queue programming. The
     // virtio core (virtio_qsetup) programs EVERY virtqueue uniformly —
     // q0 (all devices) + q1 (net/vsock TX) here, q2/q3 for multi-queue
@@ -1611,37 +1650,30 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::mmu_ops::hhdm_offset() }
     };
+    let bringup = state.negotiate_and_program(d, &caps, &bars, profile, hhdm);
+    let dev_features = bringup.negotiated.dev_features;
+    let drv_features = bringup.negotiated.drv_features;
+    let post_status = bringup.negotiated.post_status;
+    let features_ok = bringup.negotiated.features_ok;
+    let msix_cfg = bringup.negotiated.msix_cfg;
+    let num_queues = bringup.negotiated.num_queues;
+    let queues = bringup.queues;
+    let queues_len = bringup.queues_len;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let notify_cap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
-    let msix_bound = features_ok && state.bind_msix0(d, &caps, &bars, profile.msix0_handler);
-    let q0_msix_vec = if msix_bound { 0 } else { 0xFFFF };
-    let programmed_queues = if features_ok {
-        super::virtio_qsetup::program_queue_set(
-            state.cfg_va,
-            hhdm,
-            q0_msix_vec,
-            &profile.extra_queues,
-        )
-    } else {
-        None
-    };
     let extra_notify_mappings = state.map_planned_extra_notifies(
         &profile.extra_queues,
-        programmed_queues.as_ref(),
+        bringup.programmed_queues.as_ref(),
         notify_cap.as_ref(),
         &bars,
     );
     let snd_q2_notify_va_local = extra_notify_mappings.q2;
     let snd_q3_notify_va_local = extra_notify_mappings.q3;
-    let final_status = if programmed_queues.is_some() {
-        super::virtio_qsetup::set_driver_ok(state.cfg_va)
-    } else {
-        post_status as u8
-    };
-    let q0_ring = programmed_queues.as_ref().map(|p| p.q0);
-    let q1_ring = programmed_queues.as_ref().and_then(|p| p.extra_queue(1));
-    let q2_ring = programmed_queues.as_ref().and_then(|p| p.extra_queue(2));
-    let q3_ring = programmed_queues.as_ref().and_then(|p| p.extra_queue(3));
+    let final_status = bringup.final_status;
+    let q0_ring = bringup.programmed_queues.as_ref().map(|p| p.q0);
+    let q1_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(1));
+    let q2_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(2));
+    let q3_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(3));
     let q0_desc_pa = q0_ring.map(|q| q.desc_pa).unwrap_or(0);
     let q0_driver_pa = q0_ring.map(|q| q.driver_pa).unwrap_or(0);
     let q0_device_pa = q0_ring.map(|q| q.device_pa).unwrap_or(0);
