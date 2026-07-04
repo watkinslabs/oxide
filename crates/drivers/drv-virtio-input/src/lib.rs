@@ -457,13 +457,13 @@ mod tests {
 }
 
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod devfs;
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod drain;
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod evdev_queue;
 
 pub mod keymap;
