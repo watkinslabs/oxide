@@ -874,6 +874,38 @@ mod tests {
     }
 
     #[test]
+    fn device_del_emits_remove_uevent_before_model_disappears() {
+        use netlink::{proto, NetlinkSocket};
+
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+        drv::set_sysfs_remove_hook(remove_device_cb);
+
+        let dev = Arc::new(drv::Device::new(
+            "platform",
+            String::from("sysfs-remove-uevent0"),
+            0,
+            0,
+            0,
+        ));
+        drv::try_device_add(Arc::clone(&dev)).expect("test device registration");
+
+        drv::device_del(&dev);
+
+        let removed = listener.dequeue().expect("remove uevent");
+        assert!(uevent_has_entry(&removed, b"ACTION=remove"));
+        assert!(uevent_has_entry(
+            &removed,
+            b"DEVPATH=/devices/platform/sysfs-remove-uevent0"
+        ));
+        assert!(uevent_has_entry(&removed, b"SUBSYSTEM=platform"));
+        assert!(!drv::devices()
+            .iter()
+            .any(|registered| Arc::ptr_eq(registered, &dev)));
+    }
+
+    #[test]
     fn driver_unregister_removes_sysfs_driver_dir_and_unbinds_devices() {
         BIND_REMOVES.store(0, Ordering::Release);
         drv::register_driver(&SYSFS_UNREGISTER_DRIVER);
