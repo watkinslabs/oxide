@@ -11,6 +11,12 @@ use crate::devfs::shared::{
 };
 use crate::evdev_queue::MAX_EVDEV;
 
+#[cfg(target_os = "oxide-kernel")]
+fn refresh_events() { crate::drain::poll_all(); }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn refresh_events() {}
+
 /// `file_operations` for an evdev node.
 struct EvdevFileOps;
 
@@ -24,6 +30,7 @@ impl FileOps for EvdevFileOps {
         if buf.len() < INPUT_EVENT_BYTES {
             return Ok(0);
         }
+        refresh_events();
         let n = unsafe { crate::evdev_queue::queue(id).read_blocking(buf) };
         Ok(n)
     }
@@ -42,6 +49,7 @@ impl FileOps for EvdevFileOps {
         }
         let token = file_token(file);
         loop {
+            refresh_events();
             if !grabbed_by_other(id, token) {
                 return Ok(unsafe { crate::evdev_queue::queue(id).read_blocking(buf) });
             }
@@ -64,6 +72,7 @@ impl FileOps for EvdevFileOps {
         if buf.len() < INPUT_EVENT_BYTES {
             return Ok(0);
         }
+        refresh_events();
         match crate::evdev_queue::queue(id).try_pop_bytes(buf) {
             Some(n) => Ok(n),
             None => Err(VfsError::Eagain),
@@ -85,6 +94,7 @@ impl FileOps for EvdevFileOps {
         if grabbed_by_other(id, file_token(file)) {
             return Err(VfsError::Eagain);
         }
+        refresh_events();
         match crate::evdev_queue::queue(id).try_pop_bytes(buf) {
             Some(n) => Ok(n),
             None => Err(VfsError::Eagain),
@@ -100,6 +110,7 @@ impl FileOps for EvdevFileOps {
             Some(id) => id,
             None => return POLL_OUT,
         };
+        refresh_events();
         if crate::evdev_queue::queue(id).is_empty() {
             POLL_OUT
         } else {
@@ -115,6 +126,7 @@ impl FileOps for EvdevFileOps {
             Some(id) => id,
             None => return POLL_OUT,
         };
+        refresh_events();
         if grabbed_by_other(id, file_token(file)) || crate::evdev_queue::queue(id).is_empty() {
             POLL_OUT
         } else {
