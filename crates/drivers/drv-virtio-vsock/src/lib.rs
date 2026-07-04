@@ -3,8 +3,8 @@
 // q1=TX (guest→device), q2=event (config changes — OPTIONAL for STREAM,
 // not used here). The boot probe (`pci_boot::virtio_drv`) performs the
 // generic bring-up (reset -> FEATURES_OK -> q0/q1 desc/driver/device PA
-// program + DRIVER_OK) and hands typed virtqueue resources plus the
-// guest CID (read from device-cfg offset 0) to `install`.
+// program + DRIVER_OK) and hands typed virtqueue resources to `install`.
+// This driver reads the guest CID from its device-cfg window.
 //
 // This driver owns the ring DMA only. The protocol (connection setup,
 // OP_RW data, credit, teardown) + the AF_VSOCK socket object live in
@@ -73,12 +73,24 @@ pub fn present_for(device_key: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// Install the q0(RX)+q1(TX) ring context. Reserves the upper vsock endpoint
-/// before allocating transport frames, allocates RX/TX bounce frames, pre-posts
-/// RX on q0 + kicks, then publishes the guest CID + TX hook into `net::vsock`.
-/// Returns false if HHDM/ring PAs are missing, the upper endpoint is busy, or
-/// no frames are available. # C: O(RX_RING_BUFS)
-pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u64) -> bool {
+fn read_guest_cid(resources: virtio::VirtioResources) -> Option<u64> {
+    let cfg = resources.device_cfg_va;
+    if cfg == 0 {
+        return None;
+    }
+    // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
+    // virtio-vsock config window kept alive for this device lifetime. The
+    // guest CID is the le64 field at offset 0.
+    Some(unsafe { core::ptr::read_volatile(cfg as *const u64) })
+}
+
+/// Install the q0(RX)+q1(TX) ring context. Reads the guest CID from the
+/// device-cfg resource, reserves the upper vsock endpoint before allocating
+/// transport frames, allocates RX/TX bounce frames, pre-posts RX on q0 + kicks,
+/// then publishes the guest CID + TX hook into `net::vsock`. Returns false if
+/// HHDM/ring PAs/config are missing, the upper endpoint is busy, or no frames
+/// are available. # C: O(RX_RING_BUFS)
+pub fn install(device_key: u32, resources: virtio::VirtioResources) -> bool {
     let Some(rxq) = resources.require_queue(0) else {
         return false;
     };
@@ -88,6 +100,9 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources, guest_cid: u
     if !resources.common_cfg_valid() {
         return false;
     }
+    let Some(guest_cid) = read_guest_cid(resources) else {
+        return false;
+    };
     if CTX.lock().is_some() {
         return false;
     }
