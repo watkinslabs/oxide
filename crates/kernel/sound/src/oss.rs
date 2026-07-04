@@ -177,10 +177,21 @@ pub fn write(owner: u32, buf: &[u8]) -> usize {
 pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
+    let dir = (req >> 30) & 0x3;
+    const IOC_WRITE: u64 = 1;
 
     if is_mixer || group == b'M' as u64 {
-        // Master level reads → 75/75; writes accepted (no real mixer element).
-        if let Some(b) = UserBuf::new(arg, 4) { b.w32(0, 75 | (75 << 8)); }
+        let b = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
+        if (dir & IOC_WRITE) != 0 {
+            let packed = b.r32(0);
+            if !crate::control::set_mixer_level(owner, packed) {
+                return err(Errno::Enodev);
+            }
+        }
+        let Some(level) = crate::control::mixer_level(owner) else {
+            return err(Errno::Enodev);
+        };
+        b.w32(0, level);
         return 0;
     }
     if group != b'P' as u64 { return err(Errno::Enotty); }
