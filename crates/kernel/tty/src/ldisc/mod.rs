@@ -22,7 +22,7 @@
 // lflag/cc indices, TERMIOS_BYTES, default_termios) — not duplicated.
 
 pub mod n_tty;
-pub use n_tty::{vmin_vtime_decision, NTty, VmtDecision};
+pub use n_tty::{flow_action, vmin_vtime_decision, FlowAction, NTty, VmtDecision, VTIME_TENTH_NS};
 
 /// Poll-mask bits the ldisc reports (Linux uapi `POLLIN`/`POLLOUT`).
 /// Typed so callers (the tty core's `poll`) never open-code `1`/`4`.
