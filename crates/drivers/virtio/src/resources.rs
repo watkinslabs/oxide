@@ -3,7 +3,7 @@
 //! live with the transport until every child driver is converted to managed
 //! resources.
 
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec::Vec};
 
 use crate::{ProgrammedQueues, QueueRing};
 
@@ -12,6 +12,55 @@ pub const VIRTIO_CHILD_BUS: &str = "virtio";
 
 /// Virtio vendor ID used by virtio child model devices.
 pub const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
+
+/// Driver-model class used for synthetic virtio child devices.
+pub const VIRTIO_CHILD_CLASS: u32 = 0;
+
+/// Transport-neutral identity for a model-published virtio child device.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VirtioChildModelIdentity {
+    pub bus: &'static str,
+    pub addr: String,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class: u32,
+}
+
+impl VirtioChildModelIdentity {
+    /// # C: O(1)
+    pub fn modern_from_pci(pci_vendor_id: u16, pci_device_id: u16, index: u32) -> Option<Self> {
+        Some(Self {
+            bus: VIRTIO_CHILD_BUS,
+            addr: virtio_child_addr(index),
+            vendor_id: pci_vendor_id,
+            device_id: crate::modern_device_id(pci_device_id)?,
+            class: VIRTIO_CHILD_CLASS,
+        })
+    }
+}
+
+/// Bus address for a model-published virtio child.
+/// # C: O(log10(index))
+pub fn virtio_child_addr(index: u32) -> String {
+    format!("virtio{}", index)
+}
+
+/// True iff a model device is a virtio child of `parent_bus:parent_addr`.
+/// # C: O(parent_addr.len())
+pub fn virtio_child_has_parent(
+    child_bus: &str,
+    child_parent: Option<(&str, &str)>,
+    parent_bus: &str,
+    parent_addr: &str,
+) -> bool {
+    if child_bus != VIRTIO_CHILD_BUS {
+        return false;
+    }
+    let Some((actual_parent_bus, actual_parent_addr)) = child_parent else {
+        return false;
+    };
+    actual_parent_bus == parent_bus && actual_parent_addr == parent_addr
+}
 
 /// Model-driver identity for a virtio child driver. Child drivers own these
 /// descriptors; the virtio bus wrapper uses them for driver/device matching.
@@ -875,6 +924,52 @@ mod tests {
         assert!(!id.matches_device("pci", VIRTIO_VENDOR_ID, 42));
         assert!(!id.matches_device(VIRTIO_CHILD_BUS, 0x1234, 42));
         assert!(!id.matches_device(VIRTIO_CHILD_BUS, VIRTIO_VENDOR_ID, 43));
+    }
+
+    #[test]
+    fn child_model_identity_maps_modern_pci_device() {
+        let child = VirtioChildModelIdentity::modern_from_pci(0x1AF4, 0x1041, 2)
+            .expect("modern virtio block id");
+
+        assert_eq!(child.bus, VIRTIO_CHILD_BUS);
+        assert_eq!(child.addr, "virtio2");
+        assert_eq!(child.vendor_id, 0x1AF4);
+        assert_eq!(child.device_id, 1);
+        assert_eq!(child.class, VIRTIO_CHILD_CLASS);
+    }
+
+    #[test]
+    fn child_model_identity_rejects_non_modern_pci_device() {
+        assert!(VirtioChildModelIdentity::modern_from_pci(0x1AF4, 0x1000, 0).is_none());
+        assert!(VirtioChildModelIdentity::modern_from_pci(0x1AF4, 0x9999, 0).is_none());
+    }
+
+    #[test]
+    fn child_parent_match_requires_virtio_bus_and_matching_parent() {
+        assert!(virtio_child_has_parent(
+            VIRTIO_CHILD_BUS,
+            Some(("pci", "0000:00:01.0")),
+            "pci",
+            "0000:00:01.0",
+        ));
+        assert!(!virtio_child_has_parent(
+            "pci",
+            Some(("pci", "0000:00:01.0")),
+            "pci",
+            "0000:00:01.0",
+        ));
+        assert!(!virtio_child_has_parent(
+            VIRTIO_CHILD_BUS,
+            Some(("pci", "0000:00:02.0")),
+            "pci",
+            "0000:00:01.0",
+        ));
+        assert!(!virtio_child_has_parent(
+            VIRTIO_CHILD_BUS,
+            None,
+            "pci",
+            "0000:00:01.0",
+        ));
     }
 
     const VALID_Q0: VirtQueueResource = VirtQueueResource {

@@ -126,6 +126,12 @@ test-pass claims.
   through `VirtioChildDriverId`; each child driver exports its own descriptor,
   and the PCI-backed child wrapper consumes those descriptors instead of
   open-coding virtio bus/vendor/device matching in the glue.
+- Shared `virtio` now also owns the transport-neutral child model-device
+  identity contract: child bus name, synthetic `virtioN` address construction,
+  modern PCI ID to virtio child ID conversion, child class, and parent-link
+  matching. The virtio-pci model driver consumes that shared identity object
+  for child publication/removal instead of open-coding virtio child addresses,
+  device IDs, and PCI-parent scans in the transport glue.
 - Shared `virtio` now owns a transport-neutral
   `VirtioChildTransportSession` contract plus child location and net
   boot-payload descriptors. The current boot PCI-backed implementation lives
@@ -553,7 +559,11 @@ test-pass claims.
   of living as literals in the PCI-backed bus glue. The shared
   `virtio::VirtioChildDriverId` descriptor now owns virtio child
   bus/vendor/device matching, with descriptors exported by the child driver
-  crates and consumed by the wrapper. The PCI-backed session now
+  crates and consumed by the wrapper. Shared `virtio` also owns virtio child
+  model-device identity, synthetic child address construction, modern PCI ID
+  conversion, and parent-link matching; virtio-pci consumes that helper for
+  child model-device publication/removal instead of keeping those identity
+  rules in PCI transport code. The PCI-backed session now
   carries an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
   publish, and unpublish helpers are private to that transport module. The
   shared `virtio::VirtioChildResourceState` now owns child readiness/resource

@@ -24,12 +24,21 @@ impl drv::Driver for VirtioPciDrv {
             return Err(drv::Error::NoMatch);
         }
 
-        let vaddr = alloc::format!("virtio{}", super::virtio_seq());
-        let Some(vdev_id) = virtio::modern_device_id(d.device_id) else {
+        let Some(child) = virtio::VirtioChildModelIdentity::modern_from_pci(
+            d.vendor_id,
+            d.device_id,
+            super::virtio_seq(),
+        ) else {
             return Err(drv::Error::NoMatch);
         };
         drv::try_device_add(Arc::new(
-            drv::Device::new("virtio", vaddr, d.vendor_id, vdev_id, 0)
+            drv::Device::new(
+                child.bus,
+                child.addr,
+                child.vendor_id,
+                child.device_id,
+                child.class,
+            )
                 .with_parent("pci", dev.addr.clone()),
         ))?;
         Ok(())
@@ -37,14 +46,9 @@ impl drv::Driver for VirtioPciDrv {
 
     fn remove(&self, dev: &drv::Device) {
         for child in drv::devices() {
-            if child.bus != "virtio" {
-                continue;
+            if virtio::virtio_child_has_parent(&child.bus, child.parent(), "pci", &dev.addr) {
+                drv::device_del(&child);
             }
-            let Some((parent_bus, parent_addr)) = child.parent() else { continue };
-            if parent_bus != "pci" || parent_addr != dev.addr {
-                continue;
-            }
-            drv::device_del(&child);
         }
     }
 
