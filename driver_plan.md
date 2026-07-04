@@ -18,7 +18,7 @@ Status legend:
 
 | Status | Branch | Description |
 |---|---|---|
-| IN AUDIT | B001-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
+| SOURCE OK | B001-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
 | NOT DONE | TBD | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
 | NOT DONE | TBD | QEMU/userspace proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, uevent delivery, `/run/udev`, and seat state. |
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
