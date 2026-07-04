@@ -182,6 +182,7 @@ pub fn notify_evdev_subs(id: u32) {
 #[inline] fn ioc_nr(req: u64)   -> u32 { (req & 0xFF) as u32 }
 #[inline] fn ioc_type(req: u64) -> u32 { ((req >> 8) & 0xFF) as u32 }
 #[inline] fn ioc_size(req: u64) -> usize { ((req >> 16) & 0x3FFF) as usize }
+#[inline] fn ioc_dir(req: u64)  -> u32 { ((req >> 30) & 0x3) as u32 }
 
 /// Copy `src` (capped at the ioctl's declared size) into the user buffer at
 /// `arg`. Returns the byte count (Linux EVIOCG* convention).
@@ -227,6 +228,17 @@ unsafe fn uread_i32(arg: u64) -> i32 {
     i32::from_le_bytes(b)
 }
 
+/// Read one Linux `unsigned int` from an ioctl user pointer.
+/// # SAFETY: `arg..arg+4` was validated as a user range by the caller.
+unsafe fn uread_u32(arg: u64) -> u32 {
+    let mut b = [0u8; 4];
+    for (i, slot) in b.iter_mut().enumerate() {
+        // SAFETY: per fn contract; each byte lies inside the validated range.
+        *slot = unsafe { core::ptr::read_volatile((arg + i as u64) as *const u8) };
+    }
+    u32::from_le_bytes(b)
+}
+
 /// EVIOC* ioctl handler. Returns `Some(rv)` when the request is recognised;
 /// `None` to let the generic CharDev path run. Answers identification +
 /// capability queries from the device's real virtio config-space record.
@@ -242,7 +254,10 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     const EVIOCGRAB_NR:     u32 = 0x90;
     const EVIOCREVOKE_NR:   u32 = 0x91;
     const EVIOCSCLOCKID_NR: u32 = 0xa0;
+    const EVIOCREP_NR:      u32 = 0x03;
     const CLOCK_MONOTONIC:  i32 = 1;
+    const IOC_WRITE:        u32 = 1;
+    const IOC_READ:         u32 = 2;
     if nr == EVIOCSCLOCKID_NR {
         if !valid_user_range(arg, 4) {
             return Some(err(Errno::Efault));
@@ -256,6 +271,31 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         });
     }
     let evdev_id = ((ino & 0xFF) - 1) as u32;
+    if nr == EVIOCREP_NR {
+        if !valid_user_range(arg, 8) {
+            return Some(err(Errno::Efault));
+        }
+        match ioc_dir(req) {
+            IOC_READ => {
+                let repeat = crate::repeat(evdev_id).unwrap_or(crate::DEFAULT_REPEAT);
+                let mut b = [0u8; 8];
+                b[0..4].copy_from_slice(&repeat[0].to_le_bytes());
+                b[4..8].copy_from_slice(&repeat[1].to_le_bytes());
+                // SAFETY: `arg..arg+8` was validated above.
+                return Some(unsafe { uwrite(arg, &b, 8) });
+            }
+            IOC_WRITE => {
+                // SAFETY: both words lie inside the validated `arg..arg+8`.
+                let delay = unsafe { uread_u32(arg) };
+                let period = unsafe { uread_u32(arg + 4) };
+                if !crate::set_repeat(evdev_id, [delay, period]) {
+                    return Some(err(Errno::Enodev));
+                }
+                return Some(0);
+            }
+            _ => return Some(err(Errno::Enotty)),
+        }
+    }
     if nr == EVIOCGRAB_NR {
         let token = file_token(file);
         let slot = (evdev_id as usize).min(MAX_EVDEV - 1);
@@ -428,6 +468,27 @@ mod tests {
         )
     }
 
+    fn test_dev(id: u32) -> crate::VirtioInputDev {
+        crate::VirtioInputDev {
+            device_key: virtio::VirtioChildDeviceKey::from_raw(0x7000_0000 + id),
+            evdev_id: id,
+            is_pointer: false,
+            name: [0; 128],
+            name_len: 0,
+            serial: [0; 128],
+            serial_len: 0,
+            ids: crate::VirtioInputDevIds::default(),
+            ev_bits: [0; 32],
+            key_bits: crate::CapBitmap::default(),
+            rel_bits: crate::CapBitmap::default(),
+            abs_bits: crate::CapBitmap::default(),
+            led_bits: crate::CapBitmap::default(),
+            abs_info: [None; 64],
+            prop_bits: [0; 4],
+            repeat: crate::DEFAULT_REPEAT,
+        }
+    }
+
     #[test]
     fn register_node_is_idempotent_without_republishing() {
         let id = (MAX_EVDEV - 1) as u32;
@@ -520,6 +581,33 @@ mod tests {
             handle_evdev_ioctl(&file, 0x400445a0, 0),
             Some(-(syscall::errno::Errno::Efault.as_i32() as i64))
         );
+    }
+
+    #[test]
+    fn evdev_repeat_ioctl_round_trips_real_device_state() {
+        let id = 4;
+        let key = virtio::VirtioChildDeviceKey::from_raw(0x7000_0000 + id);
+        let _ = crate::remove_device(key);
+        crate::install(test_dev(id));
+        let file = test_file(id);
+        let mut repeat = [300u32, 45u32];
+
+        assert_eq!(
+            handle_evdev_ioctl(&file, crate::EVIOCSREP, repeat.as_mut_ptr() as u64),
+            Some(0)
+        );
+        repeat = [0, 0];
+        assert_eq!(
+            handle_evdev_ioctl(&file, crate::EVIOCGREP, repeat.as_mut_ptr() as u64),
+            Some(8)
+        );
+        assert_eq!(repeat, [300, 45]);
+        assert_eq!(
+            handle_evdev_ioctl(&file, crate::EVIOCSREP, 0),
+            Some(-(syscall::errno::Errno::Efault.as_i32() as i64))
+        );
+
+        assert_eq!(crate::remove_device(key), Some(id));
     }
 
     #[test]

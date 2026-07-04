@@ -452,7 +452,10 @@ test-pass claims.
   of blindly acknowledging it, and `EVIOCREVOKE` marks the current open file
   revoked so later reads fail with `ENODEV`. VFS read/poll/release dispatch now
   has file-aware hooks so this lives in the same layer Linux uses
-  (`struct file`/`file_operations`) rather than in inode-global shortcuts.
+  (`struct file`/`file_operations`) rather than in inode-global shortcuts. The
+  obsolete crate-level EVIOC recognizer that returned success without doing the
+  operation is gone; `EVIOCGREP`/`EVIOCSREP` are now implemented in the real
+  evdev file ioctl handler and round-trip per-device repeat delay/period state.
 - Virtio-gpu remove is keyed to the owning virtio child key and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed child key.
