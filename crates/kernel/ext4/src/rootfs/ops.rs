@@ -4,9 +4,13 @@
 
 use alloc::sync::Arc;
 
+mod mountfs;
+
 use block::types::InodeId;
 use super::inode::{build_file_inode, build_stat_inode, ext4_file_ino, ext4_wrap_ino};
 use super::state::RootfsState;
+
+pub use mountfs::{Ext4Mount, Ext4SuperOps};
 
 /// ext4 dirent `file_type` byte for an inode's `S_IFMT` (Linux
 /// `ext4_type_by_mode` / `fs/ext4/dir.c`). Used by the atomic
@@ -357,168 +361,4 @@ fn split_parent_and_name(path: &[u8]) -> Option<(&[u8], &[u8])> {
     let name   = &path[pos + 1..];
     if name.is_empty() { return None; }
     Some((parent, name))
-}
-
-/// `super_operations` for an ext4 mount (Linux `ext4_statfs`): live on-disk
-/// block/inode accounting read from the per-mount `RootfsState`. Installed as
-/// the SB's `s_op` by `FileSystem::super_ops`, replacing the generic
-/// `FsBackedSuperOps` (which reported only `f_type`/`f_bsize`).
-pub struct Ext4SuperOps { st: Arc<RootfsState> }
-
-impl Ext4SuperOps {
-    /// # C: O(1)
-    pub fn new(st: Arc<RootfsState>) -> Self { Self { st } }
-}
-
-impl vfs::SuperOps for Ext4SuperOps {
-    /// Report this mount's real totals (parsed superblock) + live free
-    /// counters (`state_free_blocks`/`state_free_inodes`, which mirror
-    /// `s_free_blocks_count`/`s_free_inodes_count`). `f_fsid` is left 0 →
-    /// `SuperBlock::statfs` fills it from `s_dev`. # C: O(1)
-    fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> {
-        let m = &self.st.mount;
-        let free_blocks = m.state_free_blocks();
-        let free_inodes = m.state_free_inodes() as u64;
-        Ok(vfs::SbStatFs {
-            f_type:   crate::EXT4_SUPER_MAGIC as u64,
-            f_bsize:  m.sb.block_size,
-            f_blocks: m.sb.blocks_count_lo as u64,
-            f_bfree:  free_blocks,
-            f_bavail: free_blocks,
-            f_files:  m.sb.inodes_count as u64,
-            f_ffree:  free_inodes,
-            f_fsid:   0,
-            f_flags:  0, // per-MOUNT ST_* filled at the syscall layer (calculate_f_flags)
-        })
-    }
-
-    /// `sync_fs` (Linux `ext4_sync_fs`): the journal commits each
-    /// `run_journaled` transaction synchronously, so there is no open
-    /// transaction to force — push any pending tx, then barrier the backing
-    /// device so committed metadata is durable. # C: O(1) + 1 device flush
-    fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
-        self.st.mount.flush_pending_tx().map_err(|_| vfs::VfsError::Eio)?;
-        self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
-        Ok(())
-    }
-
-    /// `freeze_fs` (Linux `ext4_freeze`, FIFREEZE): writers are already
-    /// blocked by the VFS `freeze_super` (B155); flush + barrier the journal
-    /// to leave a consistent on-disk image, then mark the mount frozen so a
-    /// double freeze is rejected at the VFS layer. # C: O(1) + 1 device flush
-    fn freeze_fs(&self) -> vfs::KResult<()> {
-        self.sync_fs(true)?;
-        self.st.frozen.store(true, core::sync::atomic::Ordering::Release);
-        Ok(())
-    }
-
-    /// `thaw_fs`/`unfreeze_fs` (Linux `ext4_unfreeze`, FITHAW): resume normal
-    /// operation. # C: O(1)
-    fn thaw_fs(&self) -> vfs::KResult<()> {
-        self.st.frozen.store(false, core::sync::atomic::Ordering::Release);
-        Ok(())
-    }
-}
-
-/// FileSystem instance over a single, non-root ext4 mount. Carries its
-/// own `RootfsState`; all methods route through `self.st` — the
-/// de-singletonised counterpart to the root `Ext4RootfsFs`. Built via
-/// `Ext4Mount::open`; boot wiring (kmain) adopts it in a later stage.
-pub struct Ext4Mount {
-    pub(super) st: Arc<RootfsState>,
-    /// [D6] The backing block device's stable `dev_t` (glibc/`new_encode_dev`
-    /// wire form), when the mount source resolved to a registered disk
-    /// (`lookup_bdev`/by-name). `None` when the source has no resolvable dev_t —
-    /// the rootfs/home binds by virtio serial BEFORE /dev naming settles, so its
-    /// disk index is not cleanly available; that mount keeps a fresh anon SB
-    /// (`dev_id() == None`) rather than mis-keying an `sget` share.
-    dev_t: Option<u64>,
-}
-
-impl Ext4Mount {
-    /// Open `dev` as an independent ext4 mount instance with NO stable dev_t
-    /// (`dev_id() == None` ⇒ a fresh per-mount anon SuperBlock). Boot rootfs/home
-    /// + fixtures use this. # C: O(N_groups + 1024)
-    pub fn open(dev: Arc<dyn block::BlockDevice>) -> block::types::KResult<Arc<Self>> {
-        Self::open_with_dev(dev, None)
-    }
-    /// [D6] Open `dev` carrying its stable block `dev_t` (`Some` ⇒ `dev_id()`
-    /// reports it, so the mount engine keys the `SuperBlock` on `sget`: two mounts
-    /// of the same device share ONE SB with the real `major:minor` `s_dev`).
-    /// # C: O(N_groups + 1024)
-    pub fn open_with_dev(dev: Arc<dyn block::BlockDevice>, dev_t: Option<u64>)
-        -> block::types::KResult<Arc<Self>> {
-        let st = RootfsState::open(dev)?;
-        Ok(Arc::new(Self { st, dev_t }))
-    }
-    /// Borrow this instance's per-mount state (tests / introspection).
-    /// # C: O(1)
-    pub fn state(&self) -> &Arc<RootfsState> { &self.st }
-}
-
-impl vfs::fs::FileSystem for Ext4Mount {
-    fn name(&self) -> &str { "ext4" }
-    fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
-    /// ext4 is block-device backed (Linux `FS_REQUIRES_DEV`): drives the D23
-    /// new-mount-API source check + `/proc/filesystems` (no `nodev`). # C: O(1)
-    fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
-    /// [D6] The backing device `dev_t` (Linux `get_tree_bdev`'s bdev key) when
-    /// the source resolved to a registered disk — so the mount engine SHARES one
-    /// `SuperBlock` across mounts of the same device via `sget`, with the real
-    /// `major:minor` as `s_dev` (`/proc/self/mountinfo`, `st_dev`). `None` (anon
-    /// SB) when the source has no resolvable dev_t (serial-bound rootfs). # C: O(1)
-    fn dev_id(&self) -> Option<u64> { self.dev_t }
-    /// On-disk `s_blocksize` (`1024 << s_log_block_size`). # C: O(1)
-    fn block_size(&self) -> u32 { self.st.mount.sb.block_size }
-    /// Install live ext4 statfs accounting as this SB's `s_op`. # C: O(1)
-    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> {
-        Some(Arc::new(Ext4SuperOps::new(self.st.clone())))
-    }
-    fn root(&self) -> Option<vfs::InodeRef> { self.st.wrap_any_ino(2) }
-    /// Back-stamp the SB into this mount's own state (Linux `s_fs_info ↔ sb`).
-    /// # C: O(1)
-    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) { self.st.set_sb(sb); }
-    fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        self.st.create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
-    }
-    fn create_anonymous(&self, dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        self.st.create_anonymous_at(dir.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enospc)
-    }
-    fn unlink(&self, path: &str) -> vfs::fs::KResult<()> { self.st.unlink_at(path.as_bytes()) }
-    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
-        self.st.link_at(target.as_bytes(), link.as_bytes())
-    }
-    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        let ino = ext4_file_ino(&inode).ok_or(vfs::VfsError::Exdev)?;
-        self.st.link_inode_at(ino, link.as_bytes())
-    }
-    fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        self.st.rename_at(from.as_bytes(), to.as_bytes())
-    }
-    /// ext4-native ATOMIC `RENAME_EXCHANGE` (overrides the generic non-atomic
-    /// 3-step default): one journaled dirent swap. # C: O(N parent entries) + 1 tx
-    fn exchange(&self, a: &str, b: &str) -> vfs::fs::KResult<()> {
-        self.st.exchange_at(a.as_bytes(), b.as_bytes())
-    }
-    /// ext4-native ATOMIC `RENAME_WHITEOUT` (overrides the generic two-step
-    /// default): one journaled rename + whiteout-chardev placement.
-    /// # C: O(N parent entries) + 1 tx
-    fn whiteout(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        self.st.whiteout_at(from.as_bytes(), to.as_bytes())
-    }
-}
-
-impl core::ops::Drop for Ext4Mount {
-    /// On unmount, reclaim any still-orphan O_TMPFILE inodes whose last
-    /// fd already closed but whose free was deferred — bounded by this
-    /// mount's own orphan set, never the root's.
-    /// # C: O(N orphans)
-    fn drop(&mut self) {
-        let orphans: alloc::vec::Vec<u32> = self.st.orphans.lock().drain(..).collect();
-        for ino in orphans {
-            if let Ok(inode) = self.st.mount.read_inode(ino) {
-                if inode.links_count == 0 { let _ = self.st.mount.free_orphan_inode(ino); }
-            }
-        }
-    }
 }
