@@ -16,10 +16,10 @@ Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
 - Concrete driver probe/remove/shutdown cleanup: about 85% complete.
-- Device publication through model-owned sysfs/devtmpfs/class state: about 65%
+- Device publication through model-owned sysfs/devtmpfs/class state: about 67%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 65% complete.
+  hotplug, fault injection, and multi-device coverage: about 66% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -33,6 +33,10 @@ test-pass claims.
   `crates/drivers/drv/src/model.rs`.
 - PCI enumeration creates `pci` model devices with BAR resources and calls
   `drv::auto_bind`; NVMe, AHCI, and virtio-pci are registered as model drivers.
+- PCI model-device publication is now fallible and idempotent at the bus
+  boundary: a repeated enumeration reuses the matching existing `(pci, addr)`
+  device instead of panicking through `device_add`, while identity mismatches
+  are not rebound as if they were the same function.
 - Model binding rejects already-bound devices, verifies bus/driver matching,
   calls `Driver::probe`, records the binding only after success, and leaves the
   device unbound when probe fails.
@@ -406,10 +410,11 @@ test-pass claims.
 - QEMU-visible runtime bind/unbind/rebind proof is incomplete. Host/unit tests
   cover pieces of the model and selected drivers, but this is not a hotplug
   certification.
-- PCI enumeration/lifecycle is still shallow: simple QEMU devices work, and
-  bound AHCI/NVMe/virtio paths now clear MEM/BUS_MASTER on teardown/failure,
-  but full bridge, multi-bus, resource assignment, and PCI runtime semantics
-  remain incomplete.
+- PCI enumeration/lifecycle is still shallow: simple QEMU devices work, PCI
+  model-device publication no longer panics on repeated enumeration of the
+  same function, and bound AHCI/NVMe/virtio paths now clear MEM/BUS_MASTER on
+  teardown/failure, but full bridge, multi-bus, resource assignment, and PCI
+  runtime semantics remain incomplete.
 - Central shutdown dispatch exists, and the main storage, virtio, serial, and
   PS/2 keyboard devices now have hardware-specific quiesce paths. Remaining
   default no-op shutdowns still need an audit across any less-common PCI,
