@@ -231,15 +231,11 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 /// the virtio device, and frees RX/TX payload frames.
 /// # C: O(N conns + RX_BUFS)
 pub fn uninstall(device_key: u32) -> bool {
-    let mut ctx = {
-        let mut g = CTX.lock();
-        let Some(pos) = g.iter().position(|ctx| ctx.device_key == device_key) else {
-            return false;
-        };
-        g.remove(pos)
+    let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
+        return false;
     };
-    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
-        let _ = softirq::clear_handler(softirq::Slot::VsockRx);
+    if empty_after {
+        clear_rx_softirq_handler();
     }
     let _ = net::vsock::driver_uninstall(device_key);
     // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
@@ -267,15 +263,11 @@ pub fn shutdown(device_key: u32) -> bool {
     if !net::vsock::driver_quiesce(device_key) {
         return false;
     }
-    let mut ctx = {
-        let mut g = CTX.lock();
-        let Some(pos) = g.iter().position(|ctx| ctx.device_key == device_key) else {
-            return false;
-        };
-        g.remove(pos)
+    let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
+        return false;
     };
-    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
-        let _ = softirq::clear_handler(softirq::Slot::VsockRx);
+    if empty_after {
+        clear_rx_softirq_handler();
     }
     // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
     unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
@@ -286,6 +278,20 @@ pub fn shutdown(device_key: u32) -> bool {
         unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
     }
     true
+}
+
+fn remove_ctx(device_key: u32) -> Option<(Ctx, bool)> {
+    let mut g = CTX.lock();
+    let pos = g.iter().position(|ctx| ctx.device_key == device_key)?;
+    let ctx = g.remove(pos);
+    let empty_after = g.is_empty();
+    Some((ctx, empty_after))
+}
+
+fn clear_rx_softirq_handler() {
+    if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
+        let _ = softirq::clear_handler(softirq::Slot::VsockRx);
+    }
 }
 
 /// Guest CID accessor (0 if no device). # C: O(1)
@@ -385,3 +391,87 @@ pub fn rx_drain_softirq() {
 /// should use `raise_rx()` so the ring walk happens in softirq context.
 /// Returns the number of packets delivered. # C: O(packets drained)
 pub fn rx_drain() -> usize { rx::drain() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
+
+    fn queue(index: u16) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource {
+            index,
+            size: 8,
+            desc_pa: 0,
+            driver_pa: 0,
+            device_pa: 0,
+            notify_va: 0,
+            notify_off: 0,
+        }
+    }
+
+    fn ctx(device_key: u32) -> Ctx {
+        Ctx {
+            device_key,
+            cfg_va: 0,
+            hhdm: 0,
+            guest_cid: device_key as u64,
+            rxq: queue(0),
+            txq: queue(1),
+            rx_avail_idx: 0,
+            rx_used_seen: 0,
+            rx_bufs: [0; RX_RING_BUFS],
+            tx_avail_idx: 0,
+            tx_used_seen: 0,
+            tx_buf_pa: 0,
+        }
+    }
+
+    fn clear_ctxs() {
+        CTX.lock().clear();
+    }
+
+    #[test]
+    fn removing_one_vsock_context_keeps_shared_softirq_owned() {
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        {
+            let mut ctxs = CTX.lock();
+            ctxs.push(ctx(0x0010_0000));
+            ctxs.push(ctx(0x0020_0000));
+        }
+
+        let Some((removed, empty_after)) = remove_ctx(0x0010_0000) else {
+            panic!("expected first context removal");
+        };
+        assert_eq!(removed.device_key, 0x0010_0000);
+        assert!(!empty_after);
+        assert!(present_for(0x0020_0000));
+        clear_ctxs();
+    }
+
+    #[test]
+    fn removing_last_vsock_context_releases_shared_softirq_owner() {
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        CTX.lock().push(ctx(0x0010_0000));
+
+        let Some((removed, empty_after)) = remove_ctx(0x0010_0000) else {
+            panic!("expected last context removal");
+        };
+        assert_eq!(removed.device_key, 0x0010_0000);
+        assert!(empty_after);
+        assert!(!present());
+    }
+
+    #[test]
+    fn missing_vsock_context_removal_leaves_live_contexts() {
+        let _guard = TEST_LOCK.lock();
+        clear_ctxs();
+        CTX.lock().push(ctx(0x0020_0000));
+
+        assert!(remove_ctx(0x0010_0000).is_none());
+        assert!(present_for(0x0020_0000));
+        clear_ctxs();
+    }
+}
