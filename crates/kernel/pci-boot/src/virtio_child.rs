@@ -4,27 +4,81 @@
 //! driver binding out of the PCI transport module is the next step toward a
 //! real virtio bus/core split.
 
-use super::virtio_bus::{
-    bdf_word, parent_bdf, parent_key, unpublish_transport, VirtioChildSession,
-};
+use super::virtio_bus::{parent_key, unpublish_transport, VirtioChildSession};
 use alloc::sync::Arc;
+use core::marker::PhantomData;
 use virtio::VirtioChildTransportSession;
 
-struct VirtioGpuDrv;
-impl drv::Driver for VirtioGpuDrv {
+trait VirtioChildOps: Sync {
+    const NAME: &'static str;
+    const DEVICE_ID: u16;
+
+    fn profile() -> virtio::VirtioTransportProfile;
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()>;
+    fn remove_child(device_key: u32);
+    fn shutdown_child(device_key: u32);
+}
+
+struct VirtioChildDriver<O> {
+    _ops: PhantomData<O>,
+}
+
+impl<O> VirtioChildDriver<O> {
+    const fn new() -> Self {
+        Self { _ops: PhantomData }
+    }
+}
+
+impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
     fn bus(&self) -> &'static str { "virtio" }
 
-    fn name(&self) -> &'static str { "virtio-gpu" }
+    fn name(&self) -> &'static str { O::NAME }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 16
+        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == O::DEVICE_ID
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session = VirtioChildSession::begin(dev, drv_virtio_gpu::transport_profile())?;
+        let mut session = VirtioChildSession::begin(dev, O::profile())?;
+        match O::probe_child(&mut session) {
+            Ok(()) => {
+                session.publish();
+                Ok(())
+            }
+            Err(e) => {
+                session.release_failed_child();
+                Err(e)
+            }
+        }
+    }
+
+    fn remove(&self, dev: &drv::Device) {
+        if let Some(device_key) = parent_key(dev) {
+            O::remove_child(device_key);
+            unpublish_transport(device_key);
+        }
+    }
+
+    fn shutdown(&self, dev: &drv::Device) {
+        if let Some(device_key) = parent_key(dev) {
+            O::shutdown_child(device_key);
+        }
+    }
+}
+
+struct VirtioGpuOps;
+impl VirtioChildOps for VirtioGpuOps {
+    const NAME: &'static str = "virtio-gpu";
+    const DEVICE_ID: u16 = 16;
+
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_gpu::transport_profile()
+    }
+
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let location = session.location();
         let Some(resources) = session.child_resources() else {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         };
         let ok = drv_virtio_gpu::post_init::get_display_info(
             location.bus,
@@ -34,107 +88,91 @@ impl drv::Driver for VirtioGpuDrv {
             resources,
         );
         if !ok {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
             klog::write_hex_u64(session.drv_features());
             klog::write_raw(b"\n");
         }
-        session.publish();
         Ok(())
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        let Some(bdf) = parent_bdf(dev) else { return };
-        let bdf_word = bdf_word(bdf);
-        if drv_virtio_gpu::uninstall(bdf_word).is_some() {
-            let _ = drv_virtio_gpu::post_init::uninstall_scanout(bdf_word);
+    fn remove_child(device_key: u32) {
+        if drv_virtio_gpu::uninstall(device_key).is_some() {
+            let _ = drv_virtio_gpu::post_init::uninstall_scanout(device_key);
         }
-        unpublish_transport(bdf_word);
     }
 
-    fn shutdown(&self, dev: &drv::Device) {
-        let Some(bdf) = parent_bdf(dev) else { return };
-        let _ = drv_virtio_gpu::shutdown(bdf_word(bdf));
+    fn shutdown_child(device_key: u32) {
+        let _ = drv_virtio_gpu::shutdown(device_key);
     }
 }
-static VIRTIO_GPU_DRV: VirtioGpuDrv = VirtioGpuDrv;
+static VIRTIO_GPU_DRV: VirtioChildDriver<VirtioGpuOps> = VirtioChildDriver::new();
 
-struct VirtioInputDrv;
-impl drv::Driver for VirtioInputDrv {
-    fn bus(&self) -> &'static str { "virtio" }
+struct VirtioInputOps;
+impl VirtioChildOps for VirtioInputOps {
+    const NAME: &'static str = "virtio-input";
+    const DEVICE_ID: u16 = 18;
 
-    fn name(&self) -> &'static str { "virtio-input" }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 18
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_input::transport_profile()
     }
 
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session = VirtioChildSession::begin(dev, drv_virtio_input::transport_profile())?;
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let bdf_word = session.device_key();
         let Some(resources) = session.child_resources() else {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         };
         let evdev_id = match drv_virtio_input::install_device(bdf_word, resources) {
             Some(id) => id,
             None => {
-                return session.fail();
+                return Err(drv::Error::ProbeFailed);
             }
         };
         let installed = drv_virtio_input::drain::install_eventq(evdev_id, resources);
         if installed.is_err() {
             let _ = drv_virtio_input::remove_device(bdf_word);
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
             klog::write_dec_u64(evdev_id as u64);
             klog::write_raw(if drv_virtio_input::is_pointer(evdev_id) { b" pointer\n" } else { b" keyboard\n" });
         }
-        session.publish();
         Ok(())
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        let Some(bdf) = parent_bdf(dev) else { return };
-        let bdf_word = bdf_word(bdf);
-        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(bdf_word) {
+    fn remove_child(device_key: u32) {
+        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(device_key) {
             let _ = drv_virtio_input::drain::uninstall_eventq(evdev_id);
-            let _ = drv_virtio_input::remove_device(bdf_word);
+            let _ = drv_virtio_input::remove_device(device_key);
         }
-        unpublish_transport(bdf_word);
     }
 
-    fn shutdown(&self, dev: &drv::Device) {
-        let Some(bdf) = parent_bdf(dev) else { return };
-        let bdf_word = bdf_word(bdf);
-        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(bdf_word) {
+    fn shutdown_child(device_key: u32) {
+        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_bdf(device_key) {
             let _ = drv_virtio_input::drain::shutdown_eventq(evdev_id);
         }
     }
 }
-static VIRTIO_INPUT_DRV: VirtioInputDrv = VirtioInputDrv;
+static VIRTIO_INPUT_DRV: VirtioChildDriver<VirtioInputOps> = VirtioChildDriver::new();
 
-struct VirtioNetDrv;
-impl drv::Driver for VirtioNetDrv {
-    fn bus(&self) -> &'static str { "virtio" }
+struct VirtioNetOps;
+impl VirtioChildOps for VirtioNetOps {
+    const NAME: &'static str = "virtio-net";
+    const DEVICE_ID: u16 = 1;
 
-    fn name(&self) -> &'static str { "virtio-net" }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 1
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_net::modern::transport_profile()
     }
 
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session =
-            VirtioChildSession::begin(dev, drv_virtio_net::modern::transport_profile())?;
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let location = session.location();
         let device_key = session.device_key();
         let payloads = session.net_boot_payloads();
         let Some(resources) = session.child_resources() else {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         };
         if !drv_virtio_net::modern::init_modern(
             device_key,
@@ -146,44 +184,35 @@ impl drv::Driver for VirtioNetDrv {
             payloads.rx_buf_len,
             payloads.tx_buf_pa,
         ) {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         }
-        session.publish();
         Ok(())
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            if drv_virtio_net::modern::is_modern_present_for(device_key) {
-                let _ = drv_virtio_net::modern::uninstall_modern(device_key);
-            }
-            unpublish_transport(device_key);
+    fn remove_child(device_key: u32) {
+        if drv_virtio_net::modern::is_modern_present_for(device_key) {
+            let _ = drv_virtio_net::modern::uninstall_modern(device_key);
         }
     }
 
-    fn shutdown(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            let _ = drv_virtio_net::modern::shutdown_modern(device_key);
-        }
+    fn shutdown_child(device_key: u32) {
+        let _ = drv_virtio_net::modern::shutdown_modern(device_key);
     }
 }
-static VIRTIO_NET_DRV: VirtioNetDrv = VirtioNetDrv;
+static VIRTIO_NET_DRV: VirtioChildDriver<VirtioNetOps> = VirtioChildDriver::new();
 
-struct VirtioBlkDrv;
-impl drv::Driver for VirtioBlkDrv {
-    fn bus(&self) -> &'static str { "virtio" }
+struct VirtioBlkOps;
+impl VirtioChildOps for VirtioBlkOps {
+    const NAME: &'static str = "virtio-blk";
+    const DEVICE_ID: u16 = 2;
 
-    fn name(&self) -> &'static str { "virtio-blk" }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 2
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_blk::modern::transport_profile()
     }
 
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session =
-            VirtioChildSession::begin(dev, drv_virtio_blk::modern::transport_profile())?;
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         };
         let device_key = session.device_key();
         let idx = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
@@ -192,47 +221,39 @@ impl drv::Driver for VirtioBlkDrv {
             drv_features: session.drv_features(),
         });
         if idx == 0 {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         }
-        session.publish();
         Ok(())
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            let _ = drv_virtio_blk::modern::remove_blk(device_key);
-            unpublish_transport(device_key);
-        }
+    fn remove_child(device_key: u32) {
+        let _ = drv_virtio_blk::modern::remove_blk(device_key);
     }
 
-    fn shutdown(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            let _ = drv_virtio_blk::modern::shutdown_blk(device_key);
-        }
+    fn shutdown_child(device_key: u32) {
+        let _ = drv_virtio_blk::modern::shutdown_blk(device_key);
     }
 }
-static VIRTIO_BLK_DRV: VirtioBlkDrv = VirtioBlkDrv;
+static VIRTIO_BLK_DRV: VirtioChildDriver<VirtioBlkOps> = VirtioChildDriver::new();
 
-struct VirtioRngDrv;
-impl drv::Driver for VirtioRngDrv {
-    fn bus(&self) -> &'static str { "virtio" }
+struct VirtioRngOps;
+impl VirtioChildOps for VirtioRngOps {
+    const NAME: &'static str = "virtio-rng";
+    const DEVICE_ID: u16 = 4;
 
-    fn name(&self) -> &'static str { "virtio-rng" }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 4
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_rng::transport_profile()
     }
 
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session = VirtioChildSession::begin(dev, drv_virtio_rng::transport_profile())?;
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         };
         let bdf_word = session.device_key();
         match drv_virtio_rng::install(bdf_word, resources) {
             Some(()) => {}
             None => {
-                return session.fail();
+                return Err(drv::Error::ProbeFailed);
             }
         }
 
@@ -240,7 +261,7 @@ impl drv::Driver for VirtioRngDrv {
         let n = drv_virtio_rng::fill_from_bdf(bdf_word, &mut seed);
         if n == 0 {
             let _ = drv_virtio_rng::uninstall(bdf_word);
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         }
         devfs::misc::add_entropy(&seed[..n]);
         debug_boot! {
@@ -248,89 +269,75 @@ impl drv::Driver for VirtioRngDrv {
             klog::write_dec_u64(n as u64);
             klog::write_raw(b" bytes\n");
         }
-        session.publish();
         Ok(())
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            let _ = drv_virtio_rng::uninstall(device_key);
-            unpublish_transport(device_key);
-        }
+    fn remove_child(device_key: u32) {
+        let _ = drv_virtio_rng::uninstall(device_key);
     }
 
-    fn shutdown(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            let _ = drv_virtio_rng::shutdown(device_key);
-        }
+    fn shutdown_child(device_key: u32) {
+        let _ = drv_virtio_rng::shutdown(device_key);
     }
 }
-static VIRTIO_RNG_DRV: VirtioRngDrv = VirtioRngDrv;
+static VIRTIO_RNG_DRV: VirtioChildDriver<VirtioRngOps> = VirtioChildDriver::new();
 
-struct VirtioVsockDrv;
-impl drv::Driver for VirtioVsockDrv {
-    fn bus(&self) -> &'static str { "virtio" }
+struct VirtioVsockOps;
+impl VirtioChildOps for VirtioVsockOps {
+    const NAME: &'static str = "virtio-vsock";
+    const DEVICE_ID: u16 = 19;
 
-    fn name(&self) -> &'static str { "virtio-vsock" }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 19
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_vsock::transport_profile()
     }
 
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session = VirtioChildSession::begin(dev, drv_virtio_vsock::transport_profile())?;
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         };
         if !drv_virtio_vsock::install(device_key, resources) {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-vsock installed cid=");
             klog::write_dec_u64(drv_virtio_vsock::guest_cid());
             klog::write_raw(b"\n");
         }
-        session.publish();
         Ok(())
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        let Some(device_key) = parent_key(dev) else { return };
+    fn remove_child(device_key: u32) {
         let _ = drv_virtio_vsock::uninstall(device_key);
-        unpublish_transport(device_key);
     }
 
-    fn shutdown(&self, dev: &drv::Device) {
-        let Some(device_key) = parent_key(dev) else { return };
+    fn shutdown_child(device_key: u32) {
         let _ = drv_virtio_vsock::shutdown(device_key);
     }
 }
-static VIRTIO_VSOCK_DRV: VirtioVsockDrv = VirtioVsockDrv;
+static VIRTIO_VSOCK_DRV: VirtioChildDriver<VirtioVsockOps> = VirtioChildDriver::new();
 
-struct VirtioSndDrv;
-impl drv::Driver for VirtioSndDrv {
-    fn bus(&self) -> &'static str { "virtio" }
+struct VirtioSndOps;
+impl VirtioChildOps for VirtioSndOps {
+    const NAME: &'static str = "virtio-snd";
+    const DEVICE_ID: u16 = 25;
 
-    fn name(&self) -> &'static str { "virtio-snd" }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == 25
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_snd::transport_profile()
     }
 
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let mut session = VirtioChildSession::begin(dev, drv_virtio_snd::transport_profile())?;
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let location = session.location();
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
-            return session.fail();
+            return Err(drv::Error::ProbeFailed);
         };
         let sp = match drv_virtio_snd::install(drv_virtio_snd::SndInstall {
             device_key,
             resources,
         }) {
             Some(sp) => sp,
-            None => return session.fail(),
+            None => return Err(drv::Error::ProbeFailed),
         };
         #[cfg(not(feature = "debug-boot"))]
         let _ = &location;
@@ -351,24 +358,18 @@ impl drv::Driver for VirtioSndDrv {
             klog::write_dec_u64(beep_diag as u64);
             klog::write_raw(b"\n");
         }
-        session.publish();
         Ok(())
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            let _ = drv_virtio_snd::uninstall(device_key);
-            unpublish_transport(device_key);
-        }
+    fn remove_child(device_key: u32) {
+        let _ = drv_virtio_snd::uninstall(device_key);
     }
 
-    fn shutdown(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            let _ = drv_virtio_snd::shutdown(device_key);
-        }
+    fn shutdown_child(device_key: u32) {
+        let _ = drv_virtio_snd::shutdown(device_key);
     }
 }
-static VIRTIO_SND_DRV: VirtioSndDrv = VirtioSndDrv;
+static VIRTIO_SND_DRV: VirtioChildDriver<VirtioSndOps> = VirtioChildDriver::new();
 
 /// Register virtio child drivers whose bring-up is owned by `Driver::probe`.
 /// # C: O(N_drivers)
