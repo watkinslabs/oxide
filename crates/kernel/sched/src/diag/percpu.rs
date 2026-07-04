@@ -118,7 +118,7 @@ fn report_stall(x: u32, age_ns: u64, me: u32) {
     klog::write_raw(b") last: tid=");
     klog::write_dec_u64(HB_TID[x as usize].load(Ordering::Relaxed) as u64);
     klog::write_raw(b" syscall=");
-    super::emit_syscall(HB_SYS[x as usize].load(Ordering::Relaxed));
+    super::format::emit_syscall(HB_SYS[x as usize].load(Ordering::Relaxed));
     klog::write_raw(b" nr_running=");
     klog::write_dec_u64(HB_RUN[x as usize].load(Ordering::Relaxed) as u64);
     klog::write_raw(b"\n");
@@ -162,7 +162,7 @@ pub fn dump_cpus() {
         klog::write_raw(b"     ");
         klog::write_dec_u64(HB_TID[x].load(Ordering::Relaxed) as u64);
         klog::write_raw(b"  ");
-        super::emit_syscall(HB_SYS[x].load(Ordering::Relaxed));
+        super::format::emit_syscall(HB_SYS[x].load(Ordering::Relaxed));
         klog::write_raw(b"  ");
         klog::write_dec_u64(HB_RUN[x].load(Ordering::Relaxed) as u64);
         klog::write_raw(b"\n");
