@@ -103,7 +103,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = fbdev::devfs::handle_fbdev_ioctl(file.inode(), req, arg) {
         return rv;
     }
-    if let Some(rv) = drm::node::handle_drm_ioctl(file.inode(), req, arg) {
+    if let Some(rv) = drm::node::handle_drm_ioctl(&file, req, arg) {
         return rv;
     }
     // ALSA /dev/snd/* + OSS /dev/dsp,/dev/mixer — the `sound` ALSA core.

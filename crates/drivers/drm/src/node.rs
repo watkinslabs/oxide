@@ -21,6 +21,7 @@ use crate::{
 };
 
 use sync::{Spinlock, TaskList as OpsLockClass};
+use vfs::File;
 
 // ============================================================
 // Runtime scanout backend hook (filled by drv-virtio-gpu at install)
@@ -52,6 +53,12 @@ struct DrmNodePair {
 }
 
 static DRM_NODES: Spinlock<Vec<Option<DrmNodePair>>, OpsLockClass> = Spinlock::new(Vec::new());
+static MASTER_OWNERS: Spinlock<Vec<u64>, OpsLockClass> = Spinlock::new(Vec::new());
+static FILE_MAGICS: Spinlock<Vec<(u64, u32)>, OpsLockClass> = Spinlock::new(Vec::new());
+static AUTHORIZED_MAGICS: Spinlock<Vec<(u32, u32)>, OpsLockClass> = Spinlock::new(Vec::new());
+static NEXT_MAGIC: Spinlock<u32, OpsLockClass> = Spinlock::new(1);
+
+const DRM_FILE_CAP_ATOMIC: u64 = 1 << crate::DRM_CLIENT_CAP_ATOMIC;
 
 /// Install the runtime scanout backend for a stable DRM card id.
 /// # C: O(N) only when extending the sparse card table.
@@ -80,6 +87,101 @@ pub fn clear_scanout_ops(card_id: u32) {
 /// # C: O(1)
 pub fn scanout_ops(card_id: u32) -> Option<ScanoutOps> {
     SCANOUT_OPS.lock().get(card_id as usize).and_then(|slot| *slot)
+}
+
+fn file_token(file: &File) -> u64 {
+    file as *const File as usize as u64
+}
+
+fn file_magic(file: &File) -> u32 {
+    let token = file_token(file);
+    let mut magics = FILE_MAGICS.lock();
+    if let Some((_, magic)) = magics.iter().find(|(t, _)| *t == token) {
+        return *magic;
+    }
+    let mut next = NEXT_MAGIC.lock();
+    let magic = *next;
+    *next = next.wrapping_add(1).max(1);
+    magics.push((token, magic));
+    magic
+}
+
+fn release_file_magic(token: u64) {
+    let magic = {
+        let mut magics = FILE_MAGICS.lock();
+        magics
+            .iter()
+            .position(|(t, _)| *t == token)
+            .map(|pos| magics.remove(pos).1)
+    };
+    if let Some(magic) = magic {
+        AUTHORIZED_MAGICS.lock().retain(|(_, m)| *m != magic);
+    }
+}
+
+fn authorize_magic(card_id: u32, magic: u32) {
+    let mut auth = AUTHORIZED_MAGICS.lock();
+    if auth.iter().all(|(card, m)| *card != card_id || *m != magic) {
+        auth.push((card_id, magic));
+    }
+}
+
+fn master_owner(card_id: u32) -> u64 {
+    MASTER_OWNERS.lock().get(card_id as usize).copied().unwrap_or(0)
+}
+
+fn set_master_owner(card_id: u32, token: u64) -> i64 {
+    use syscall::errno::Errno;
+    if token == 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut owners = MASTER_OWNERS.lock();
+    let idx = card_id as usize;
+    if owners.len() <= idx {
+        owners.resize(idx + 1, 0);
+    }
+    if owners[idx] == 0 || owners[idx] == token {
+        owners[idx] = token;
+        0
+    } else {
+        -(Errno::Ebusy.as_i32() as i64)
+    }
+}
+
+fn drop_master_owner(card_id: u32, token: u64) -> i64 {
+    use syscall::errno::Errno;
+    let mut owners = MASTER_OWNERS.lock();
+    let Some(owner) = owners.get_mut(card_id as usize) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    if *owner == token {
+        *owner = 0;
+        0
+    } else {
+        -(Errno::Einval.as_i32() as i64)
+    }
+}
+
+fn clear_master_owner(card_id: u32) {
+    if let Some(owner) = MASTER_OWNERS.lock().get_mut(card_id as usize) {
+        *owner = 0;
+    }
+}
+
+fn release_master_owner(card_id: u32, token: u64) {
+    if let Some(owner) = MASTER_OWNERS.lock().get_mut(card_id as usize) {
+        if *owner == token {
+            *owner = 0;
+        }
+    }
+}
+
+fn is_master(card_id: u32, token: u64) -> bool {
+    token != 0 && master_owner(card_id) == token
+}
+
+fn client_cap_atomic(file: &File) -> bool {
+    (file.private_data() & DRM_FILE_CAP_ATOMIC) != 0
 }
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
@@ -130,11 +232,14 @@ impl vfs::FileOps for DrmCardFileOps {
     /// boot never opens a card node, so this never fires and the console
     /// stays untouched.
     /// MUST NOT panic or block. # C: O(1) + O(scanout repaint).
-    fn on_release(&self, inode: &vfs::Inode) {
-        let Some((_, card_id)) = drm_inode_parts_raw(inode.ino()) else {
+    fn on_release_file(&self, file: &File) {
+        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
             return;
         };
-        if crate::crtc::owner(card_id) != 0 {
+        let token = file_token(file);
+        release_master_owner(card_id, token);
+        release_file_magic(token);
+        if crate::crtc::is_owner(card_id, token) {
             if let Some(ops) = scanout_ops(card_id) {
                 (ops.restore_console)(ops.driver_key);
             }
@@ -148,6 +253,9 @@ struct DrmSinkFileOps;
 impl vfs::FileOps for DrmSinkFileOps {
     fn read(&self, _inode: &vfs::Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
     fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+    fn on_release_file(&self, file: &File) {
+        release_file_magic(file_token(file));
+    }
 }
 
 fn drm_inode_parts_raw(ino: vfs::Ino) -> Option<(vfs::Ino, u32)> {
@@ -164,6 +272,10 @@ fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> {
 
 fn ioctl_takes_user_ptr(req: u64) -> bool {
     !matches!(req, DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER)
+}
+
+fn valid_user_range(arg: u64, len: u64) -> bool {
+    arg != 0 && arg.checked_add(len).is_some_and(|end| end <= hal::USER_VA_END)
 }
 
 /// Build a `/dev/dri/cardN` inode (`S_IFCHR|0o666`, card tag, card f_op).
@@ -239,6 +351,8 @@ pub fn unregister(card_id: u32) {
         pair
     };
     if let Some(pair) = pair {
+        clear_master_owner(card_id);
+        AUTHORIZED_MAGICS.lock().retain(|(card, _)| *card != card_id);
         drv::device_del(&pair.render);
         drv::device_del(&pair.card);
     }
@@ -259,6 +373,10 @@ pub fn unregister_all() {
         drv::device_del(&pair.render);
         drv::device_del(&pair.card);
     }
+    MASTER_OWNERS.lock().clear();
+    FILE_MAGICS.lock().clear();
+    AUTHORIZED_MAGICS.lock().clear();
+    *NEXT_MAGIC.lock() = 1;
 }
 
 #[cfg(test)]
@@ -273,6 +391,12 @@ pub fn registered_card_ids() -> Vec<u32> {
 #[cfg(test)]
 mod node_publication_tests {
     use super::*;
+    use vfs::{Dentry, File, OpenFlags};
+
+    fn open_file(inode: vfs::InodeRef) -> Arc<File> {
+        let dentry = Dentry::new_anon(Arc::clone(&inode));
+        File::new(inode, dentry, OpenFlags::O_RDWR)
+    }
 
     #[test]
     fn register_rejects_duplicate_card_id_without_republishing() {
@@ -372,7 +496,7 @@ mod node_publication_tests {
     fn render_node_rejects_master_only_ioctls() {
         use syscall::errno::Errno;
 
-        let render = make_render_inode(0);
+        let render = open_file(make_render_inode(0));
         assert_eq!(
             handle_drm_ioctl(&render, DRM_IOCTL_MODE_SETCRTC, 1),
             Some(-(Errno::Eacces.as_i32() as i64))
@@ -385,9 +509,92 @@ mod node_publication_tests {
 
     #[test]
     fn card_master_ioctls_do_not_require_user_pointer() {
-        let card = make_card_inode(0);
+        let card = open_file(make_card_inode(0));
         assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_SET_MASTER, 0), Some(0));
         assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_DROP_MASTER, 0), Some(0));
+    }
+
+    #[test]
+    fn drm_master_is_owned_by_open_file_description() {
+        use syscall::errno::Errno;
+
+        clear_master_owner(0);
+        let owner = open_file(make_card_inode(0));
+        let other = open_file(make_card_inode(0));
+
+        assert_eq!(handle_drm_ioctl(&owner, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        assert_eq!(handle_drm_ioctl(&owner, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        assert_eq!(
+            handle_drm_ioctl(&other, DRM_IOCTL_SET_MASTER, 0),
+            Some(-(Errno::Ebusy.as_i32() as i64))
+        );
+        assert_eq!(
+            handle_drm_ioctl(&other, DRM_IOCTL_DROP_MASTER, 0),
+            Some(-(Errno::Einval.as_i32() as i64))
+        );
+        assert_eq!(handle_drm_ioctl(&owner, DRM_IOCTL_DROP_MASTER, 0), Some(0));
+        assert_eq!(handle_drm_ioctl(&other, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        clear_master_owner(0);
+    }
+
+    #[test]
+    fn drm_atomic_requires_master_and_client_cap() {
+        use syscall::errno::Errno;
+
+        clear_master_owner(0);
+        let card = open_file(make_card_inode(0));
+        let mut atomic = [0u8; 56];
+        atomic[0..4].copy_from_slice(&DRM_MODE_ATOMIC_TEST_ONLY.to_le_bytes());
+        let atomic_arg = atomic.as_mut_ptr() as u64;
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, atomic_arg),
+            Some(-(Errno::Einval.as_i32() as i64))
+        );
+
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, atomic_arg),
+            Some(-(Errno::Einval.as_i32() as i64))
+        );
+
+        let mut cap = [crate::DRM_CLIENT_CAP_ATOMIC, 1u64];
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_SET_CLIENT_CAP, cap.as_mut_ptr() as u64),
+            Some(0)
+        );
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, atomic_arg),
+            Some(0)
+        );
+        clear_master_owner(0);
+    }
+
+    #[test]
+    fn drm_auth_magic_requires_master_and_records_requested_magic() {
+        use syscall::errno::Errno;
+
+        unregister_all();
+        let master = open_file(make_card_inode(0));
+        let client = open_file(make_card_inode(0));
+        let mut magic = 0u32;
+
+        assert_eq!(
+            handle_drm_ioctl(&client, DRM_IOCTL_GET_MAGIC, (&mut magic as *mut u32) as u64),
+            Some(0)
+        );
+        assert_ne!(magic, 0);
+        assert_eq!(
+            handle_drm_ioctl(&client, DRM_IOCTL_AUTH_MAGIC, (&mut magic as *mut u32) as u64),
+            Some(-(Errno::Eacces.as_i32() as i64))
+        );
+
+        assert_eq!(handle_drm_ioctl(&master, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        assert_eq!(
+            handle_drm_ioctl(&master, DRM_IOCTL_AUTH_MAGIC, (&mut magic as *mut u32) as u64),
+            Some(0)
+        );
+        assert!(AUTHORIZED_MAGICS.lock().iter().any(|(card, m)| *card == 0 && *m == magic));
+        unregister_all();
     }
 }
 
@@ -409,7 +616,8 @@ pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dum
 /// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller
 /// falls back to the generic CharDev path).
 /// # C: O(1)
-pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
+pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
+    let inode = file.inode();
     let (tag, card_id) = drm_inode_parts(inode)?;
     use syscall::errno::Errno;
     if tag == DRM_RENDER_INO && crate::is_master_only(req) {
@@ -418,6 +626,7 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
     if ioctl_takes_user_ptr(req) && (arg == 0 || arg >= hal::USER_VA_END) {
         return Some(-(Errno::Efault.as_i32() as i64));
     }
+    let token = file_token(file);
     let driver = crate::card(card_id);
     match req {
         DRM_IOCTL_VERSION => {
@@ -525,27 +734,64 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             }
         }
         DRM_IOCTL_SET_CLIENT_CAP => {
+            if !valid_user_range(arg, 16) {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
             // struct drm_set_client_cap { capability u64; value u64; }
-            // Accept any cap; we don't track per-fd state yet. Mesa /
-            // Wayland clients set DRM_CLIENT_CAP_{STEREO_3D,
-            // UNIVERSAL_PLANES,ATOMIC,ASPECT_RATIO,WRITEBACK_CONNECTORS}
-            // here. Returning 0 means "honored"; real enforcement
-            // hangs off per-fd state in a follow-up.
+            // SAFETY: arg..arg+16 was validated above.
+            let capability = unsafe { core::ptr::read_volatile(arg as *const u64) };
+            // SAFETY: same validated struct, second u64.
+            let value = unsafe { core::ptr::read_volatile((arg + 8) as *const u64) };
+            if value > 1 {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
+            let bit = match capability {
+                crate::DRM_CLIENT_CAP_STEREO_3D
+                | crate::DRM_CLIENT_CAP_UNIVERSAL_PLANES
+                | crate::DRM_CLIENT_CAP_ATOMIC
+                | crate::DRM_CLIENT_CAP_ASPECT_RATIO
+                | crate::DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
+                | crate::DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => 1u64 << capability,
+                _ => return Some(-(Errno::Einval.as_i32() as i64)),
+            };
+            let mut state = file.private_data();
+            if value != 0 {
+                state |= bit;
+            } else {
+                state &= !bit;
+            }
+            file.set_private_data(state);
             Some(0)
         }
-        DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER => {
-            // Master arbitration is moot when there's exactly one
-            // KMS client (the compositor). Return 0 so logind /
-            // weston-launch are happy.
+        DRM_IOCTL_SET_MASTER => Some(set_master_owner(card_id, token)),
+        DRM_IOCTL_DROP_MASTER => Some(drop_master_owner(card_id, token)),
+        DRM_IOCTL_GET_MAGIC => {
+            if !valid_user_range(arg, 4) {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            // SAFETY: arg..arg+4 was validated above; drm_auth is one u32.
+            unsafe { core::ptr::write_volatile(arg as *mut u32, file_magic(file)); }
             Some(0)
         }
-        DRM_IOCTL_AUTH_MAGIC | DRM_IOCTL_GET_MAGIC => {
-            // Render-node authentication scheme. v1 ships a single
-            // unified card node — Auth is implicit. Return 0; magic
-            // value 0 is harmless because we never check it.
+        DRM_IOCTL_AUTH_MAGIC => {
+            if !valid_user_range(arg, 4) {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            // SAFETY: arg..arg+4 was validated above; drm_auth is one u32.
+            let magic = unsafe { core::ptr::read_volatile(arg as *const u32) };
+            authorize_magic(card_id, magic);
             Some(0)
         }
         DRM_IOCTL_MODE_ATOMIC => {
+            if !valid_user_range(arg, 56) {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            if !is_master(card_id, token) || !client_cap_atomic(file) {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
             // struct drm_mode_atomic: 56 B. Field 0 = flags u32,
             // field 1 = count_objs u32. v1 admits two cases:
             //   - TEST_ONLY with count_objs == 0 → return 0 (no-op
@@ -576,18 +822,22 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         DRM_IOCTL_MODE_ADDFB        => Some(crate::dumb::addfb(card_id, arg)),
         DRM_IOCTL_MODE_RMFB         => Some(crate::dumb::rmfb(card_id, arg)),
         // ---- D5b-2 SETCRTC / PAGE_FLIP (real scanout) ----
-        // Token = the card inode pointer used by the current open path to
-        // identify the KMS owner for this card. Card required (no GPU →
-        // set_crtc honest-fails EINVAL).
+        // Token = the open file description, matching Linux's file-scoped
+        // DRM master/KMS ownership. Card required (no GPU → set_crtc
+        // honest-fails EINVAL).
         DRM_IOCTL_MODE_SETCRTC => {
-            let token = Arc::as_ptr(inode) as *const () as u64;
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
             match driver.as_ref() {
                 Some(d) => Some(crate::crtc::set_crtc(card_id, d, arg, token)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
         DRM_IOCTL_MODE_PAGE_FLIP => {
-            let token = Arc::as_ptr(inode) as *const () as u64;
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
             match driver.as_ref() {
                 Some(d) => Some(crate::crtc::page_flip(card_id, d, arg, token)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),

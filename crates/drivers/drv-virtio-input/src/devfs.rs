@@ -254,7 +254,6 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     const EVIOCGRAB_NR:     u32 = 0x90;
     const EVIOCREVOKE_NR:   u32 = 0x91;
     const EVIOCSCLOCKID_NR: u32 = 0xa0;
-    const EVIOCREP_NR:      u32 = 0x03;
     const CLOCK_MONOTONIC:  i32 = 1;
     const IOC_WRITE:        u32 = 1;
     const IOC_READ:         u32 = 2;
@@ -271,7 +270,7 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         });
     }
     let evdev_id = ((ino & 0xFF) - 1) as u32;
-    if nr == EVIOCREP_NR {
+    if nr == crate::EVIOCREP_NR as u32 {
         if !valid_user_range(arg, 8) {
             return Some(err(Errno::Efault));
         }

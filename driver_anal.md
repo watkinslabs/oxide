@@ -477,7 +477,13 @@ test-pass claims.
   buffers and FB metadata are now card-owned too: CREATE/MAP/DESTROY/ADDFB/RMFB,
   mmap cookie lookup, and SETCRTC/PAGE_FLIP FB resolution all require the
   matching card id, and DRM unregister drops that card's CRTC and dumb-buffer
-  table state. fbdev flush/blank operations are now stored on each `/dev/fbN`
+  table state. DRM master state now follows the open file description instead
+  of the inode: SET_MASTER arbitrates one master per card, DROP_MASTER only
+  releases the owning file, last-close releases master ownership, SETCRTC,
+  PAGE_FLIP, and atomic commits require the active master, and SET_CLIENT_CAP
+  updates per-file capability bits. GET_MAGIC/AUTH_MAGIC now allocate, return,
+  and authorize real per-open-file DRM magic values from the card file handler
+  instead of returning unconditional success. fbdev flush/blank operations are now stored on each `/dev/fbN`
   record and call back into the owning virtio-gpu BDF instead of a global
   display hook; virtio-gpu scanout context now records the exact published
   fbdev index and unpublishes by that owner token instead of searching by
