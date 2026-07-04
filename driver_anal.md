@@ -273,10 +273,11 @@ test-pass claims.
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
-  child-unwind leak has been fixed, and active virtio child feature policy has
-  moved to child drivers. Complete MSI-X setup policy, remaining
-  child-probe failure unwind audit, and fault-injection proof still need to
-  move behind a fuller `VirtioPciTransport` boundary.
+  child-unwind leak has been fixed, active virtio child feature policy has
+  moved to child drivers, and failed-probe transport release is now owned by
+  `VirtioProbe` instead of ad-hoc per-device wrappers. Complete MSI-X setup
+  policy, remaining child-probe failure unwind audit, and fault-injection proof
+  still need to move behind a fuller `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
