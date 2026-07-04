@@ -880,7 +880,7 @@ mod tests {
         let dev = platform_device("sysfs-bind-uevent0");
         drv::register_driver(&SYSFS_BIND_UEVENT_DRIVER);
 
-        let bound = listener.dequeue().expect("bind change uevent");
+        let (bound, _src) = listener.dequeue().expect("bind change uevent");
         assert!(uevent_has_entry(&bound, b"ACTION=change"));
         assert!(uevent_has_entry(&bound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
         assert!(uevent_has_entry(&bound, b"SUBSYSTEM=platform"));
@@ -892,7 +892,7 @@ mod tests {
         let unbind = dir.lookup("unbind").expect("unbind attr");
         assert_eq!(unbind.write(0, b"sysfs-bind-uevent0\n"), Ok("sysfs-bind-uevent0\n".len()));
 
-        let unbound = listener.dequeue().expect("unbind change uevent");
+        let (unbound, _src) = listener.dequeue().expect("unbind change uevent");
         assert!(uevent_has_entry(&unbound, b"ACTION=change"));
         assert!(uevent_has_entry(&unbound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
         assert!(uevent_has_entry(&unbound, b"SUBSYSTEM=platform"));
@@ -914,7 +914,7 @@ mod tests {
 
         let dev = platform_device("sysfs-add-uevent0");
 
-        let added = listener.dequeue().expect("add uevent");
+        let (added, _src) = listener.dequeue().expect("add uevent");
         assert!(uevent_has_entry(&added, b"ACTION=add"));
         assert!(uevent_has_entry(&added, b"DEVPATH=/devices/platform/sysfs-add-uevent0"));
         assert!(uevent_has_entry(&added, b"SUBSYSTEM=platform"));
@@ -947,7 +947,7 @@ mod tests {
 
         drv::device_del(&dev);
 
-        let removed = listener.dequeue().expect("remove uevent");
+        let (removed, _src) = listener.dequeue().expect("remove uevent");
         assert!(uevent_has_entry(&removed, b"ACTION=remove"));
         assert!(uevent_has_entry(
             &removed,
