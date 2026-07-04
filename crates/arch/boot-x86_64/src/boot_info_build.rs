@@ -47,6 +47,14 @@ unsafe impl Sync for KernelStack {}
 #[cfg(target_os = "oxide-kernel")]
 static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; STACK_SIZE]));
 
+/// One-past-the-end pointer for the boot stack installed by `_start`.
+/// # SAFETY: caller must run on the single-CPU boot path before scheduler init.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) unsafe fn kernel_stack_top() -> *mut u8 {
+    // SAFETY: KERNEL_STACK is boot-owned and STACK_SIZE is exactly its byte length.
+    unsafe { (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE) }
+}
+
 /// Storage for `BootInfo`'s memmap slice — populated from Limine's
 /// memmap response by `_start_rust` before `kernel_main` runs.
 /// `MemmapStorage` lives in `.bss` so the cost is N entries × 24 B
@@ -84,7 +92,7 @@ static CMDLINE_STORAGE: CmdlineStorage =
 /// # SAFETY: called once from the boot path before any procfs read
 /// can race; `CMDLINE_STORAGE` is a 'static slot.
 /// # C: O(cmdline_len)
-unsafe fn capture_cmdline() {
+pub(crate) unsafe fn capture_cmdline() {
     // GRUB/multiboot2 path: copy the cmdline from the MB2 boot-command-
     // line tag (type 1) instead of the Limine executable-file response.
     #[cfg(target_os = "oxide-kernel")]
@@ -175,7 +183,7 @@ unsafe fn capture_cmdline() {
 /// written real response pointers or left them null; the `seed` /
 /// `boot_ns` slots are zero until ACPI / RTC bring-up populates them.
 /// # C: O(min(entry_count, MAX_BOOT_REGIONS))
-unsafe fn build_boot_info() -> BootInfo {
+pub(crate) unsafe fn build_boot_info() -> BootInfo {
     // GRUB/multiboot2 path: parse the MB2 info struct instead of Limine
     // responses. Keyed on the bootloader magic the trampoline saved.
     #[cfg(target_os = "oxide-kernel")]

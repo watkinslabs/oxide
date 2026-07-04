@@ -124,9 +124,9 @@ pub(super) fn qemu_run_aarch64_grub(
         "-boot", "d",
         "-semihosting-config", "enable=on,target=native",
         "-drive", root_drive.as_str(),
-        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root",
+        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
         "-drive", home_drive.as_str(),
-        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home",
+        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
         "-netdev", netdev.as_str(),
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // virtio-gpu scanout + keyboard for the graphical console (fbcon

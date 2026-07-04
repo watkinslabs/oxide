@@ -25,7 +25,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
 
 /// aarch64 execve body. See x86_64 doc for the contract.
 /// # C: O(argv+envp+ELF segments)
-pub(crate) fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 {
+pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::{MmuOps, UserVirtAddr};
     use vmm::{AddressSpace, VmaBacking, VmaProt};

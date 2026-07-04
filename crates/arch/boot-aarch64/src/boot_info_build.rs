@@ -52,6 +52,14 @@ unsafe impl Sync for KernelStack {}
 #[cfg(target_os = "oxide-kernel")]
 static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; STACK_SIZE]));
 
+/// One-past-the-end pointer for the boot stack installed by `_start`.
+/// # SAFETY: caller must run on the single-CPU boot path before scheduler init.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) unsafe fn kernel_stack_top() -> *mut u8 {
+    // SAFETY: KERNEL_STACK is boot-owned and STACK_SIZE is exactly its byte length.
+    unsafe { (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE) }
+}
+
 /// DTB physical address as handed to us in `x0` (U-Boot `booti` /
 /// QEMU `-kernel`) or recovered from the EFI config table by the
 /// trampoline's EFI stub (GRUB `linux` / UEFI). Stored by `_start`
@@ -78,7 +86,7 @@ static CMDLINE_STORAGE: CmdlineStorage =
 /// is a single-writer 'static slot.
 /// # C: O(dtb_struct_size)
 #[cfg(target_os = "oxide-kernel")]
-unsafe fn capture_cmdline_from_dtb() {
+pub(crate) unsafe fn capture_cmdline_from_dtb() {
     // If something already populated the cmdline, leave it alone.
     if !cmdline::get().is_empty() { return; }
     let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
@@ -341,7 +349,7 @@ unsafe fn dtb_totalsize(pa: u64) -> u64 {
 /// `_start` from the bootloader-provided x0 register.
 /// # C: O(dtb)
 #[cfg(target_os = "oxide-kernel")]
-unsafe fn build_boot_info() -> BootInfo {
+pub(crate) unsafe fn build_boot_info() -> BootInfo {
     // SAFETY: stub returns an owned BootInfo with a static empty
     // memmap; build_selfboot_memmap overlays HHDM + memmap.
     let mut info = unsafe { stub_boot_info() };
@@ -370,7 +378,7 @@ unsafe fn build_boot_info() -> BootInfo {
 /// boot-owned static.
 /// # C: O(dtb)
 #[cfg(target_os = "oxide-kernel")]
-unsafe fn publish_psci_ap_params() {
+pub(crate) unsafe fn publish_psci_ap_params() {
     extern "C" {
         static _sb_ap_l0: u8;
         static _sb_ttbr0_l0: u8;

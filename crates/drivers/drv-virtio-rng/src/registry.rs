@@ -190,7 +190,10 @@ pub(crate) fn find_handle(device_key: virtio::VirtioChildDeviceKey) -> Option<Rn
 pub(crate) fn promote_active_locked(
     registry: &mut RngRegistry,
 ) -> Option<(virtio::VirtioChildDeviceKey, Arc<drv::Device>)> {
-    let next = registry.records.iter().find(|record| !record.lock().shutdown)?;
+    let Some(next) = registry.records.iter().find(|record| !record.lock().shutdown) else {
+        registry.active_key = None;
+        return None;
+    };
     let next = next.lock();
     registry.active_key = Some(next.device_key);
     Some((next.device_key, Arc::clone(&next.hwrng_dev)))

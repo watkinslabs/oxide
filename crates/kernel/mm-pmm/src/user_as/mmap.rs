@@ -178,10 +178,3 @@ pub fn glue_mmap(
         Err(_)   => Err(-(Errno::Enomem.as_i32() as i64)),
     }
 }
-
-/// F128: drop every mapped page in `[addr, addr+len)` WITHOUT
-/// touching the VMA(s) that cover the range. Mirrors Linux
-/// `MADV_DONTNEED` — anonymous pages refault as zero on next
-/// access; file pages refault from the file. Refcount-aware:
-/// uses `rmap_aware_dec_and_maybe_free` so COW-shared frames
-/// don't get yanked from the peer.

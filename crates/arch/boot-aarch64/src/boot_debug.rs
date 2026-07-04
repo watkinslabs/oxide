@@ -1,4 +1,9 @@
-use crate::pl011;
+#[cfg(feature = "debug-boot")]
+use crate::pl011::{Pl011, PL011_VIRT_BASE};
+#[cfg(feature = "debug-boot")]
+use klog::Uart;
+#[cfg(feature = "debug-boot")]
+use sync::{Spinlock, Tty as UartClass};
 #[cfg(target_os = "oxide-kernel")]
 mod semihost {
     /// ARM semihosting putc per ARMv8 semihosting spec §5.5
@@ -43,7 +48,7 @@ static BOOT_UART: Spinlock<Pl011, UartClass>
 /// stdout — same channel `-serial stdio` lands on.
 /// # C: O(len)
 #[cfg(feature = "debug-boot")]
-fn boot_emit(bytes: &[u8]) {
+pub(crate) fn boot_emit(bytes: &[u8]) {
     #[cfg(target_os = "oxide-kernel")]
     {
         for &b in bytes {
@@ -61,7 +66,7 @@ fn boot_emit(bytes: &[u8]) {
 /// with the x86 path: any IRQ-context klog (timer, fault, panic) needs
 /// the IRQ-off window to avoid deadlock against a kernel-mode holder.
 #[cfg(feature = "debug-boot")]
-fn boot_emit_pl011(bytes: &[u8]) {
+pub(crate) fn boot_emit_pl011(bytes: &[u8]) {
     let mut g = BOOT_UART.lock_irqsave::<hal_aarch64::ArmIrqGate>();
     g.write_bytes(bytes);
 }
@@ -69,7 +74,7 @@ fn boot_emit_pl011(bytes: &[u8]) {
 /// klog clock thunk — surfaces `ArmTimerOps::monotonic_ns` as the
 /// `klog::ClockFn` after `set_cntfrq_khz` calibration.
 /// # C: O(1)
-fn now_ns_aarch64() -> u64 {
+pub(crate) fn now_ns_aarch64() -> u64 {
     use hal::TimerOps;
     hal_aarch64::ArmTimerOps::monotonic_ns().0
 }
@@ -78,7 +83,7 @@ fn now_ns_aarch64() -> u64 {
 /// control registers the boot trampoline programmed before handoff.
 /// # C: O(1)
 #[cfg(feature = "debug-boot")]
-fn log_cpu_info() {
+pub(crate) fn log_cpu_info() {
     let m = hal_aarch64::midr_el1();
     klog::write_raw(b"[INFO]  midr_el1=");
     klog::write_hex_u64(m);
@@ -94,4 +99,3 @@ fn log_cpu_info() {
     klog::write_hex_u64(hal_aarch64::read_ttbr1_el1());
     klog::write_raw(b"\n");
 }
-

@@ -53,7 +53,7 @@ fn resolve_procfs_fallback(abs: &str) -> Option<vfs::VfsPath> {
     if rest.is_empty() { return None; }
     let mut inode = procfs::static_files::proc_root() as vfs::InodeRef;
     let fs = Arc::new(procfs::fs_impl::ProcfsFs) as Arc<dyn FileSystem>;
-    let sb = vfs::SuperBlock::for_backend(fs, fs, Some(inode.clone()), 0, String::from("procfs-fallback"));
+    let sb = vfs::SuperBlock::for_backend(fs, Some(inode.clone()), 0, String::from("procfs-fallback"));
     let mut dentry = vfs::d_make_root(inode.clone(), &sb);
     for comp in rest.split('/').filter(|c| !c.is_empty()) {
         let child = match vfs::d_lookup(&dentry, comp) {

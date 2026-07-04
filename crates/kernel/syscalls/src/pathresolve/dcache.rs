@@ -1,10 +1,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
-
-use super::lookup::{mount_dentry, resolve_path};
-
 pub use super::lookup::mount_dentry;
+use super::lookup::resolve_path;
 
 /// # C: O(components)
 pub fn d_delete_path(abs: &str) {
@@ -67,8 +64,9 @@ pub fn d_move_path(from_abs: &str, to_abs: &str) {
     if let Some(old) = to_pd.cached_child(tname).or_else(|| vfs::d_lookup(&to_pd, tname)) {
         vfs::d_drop(&old);
     }
-    match from_pd.cached_child(fname).or_else(|| vfs::d_lookup(&from_pd, fname)) {
-        Some(child) => vfs::d_move(&child, &to_pd, tname),
-        None => from_pd.forget_child(fname),
+    if let Some(child) = from_pd.cached_child(fname).or_else(|| vfs::d_lookup(&from_pd, fname)) {
+        let _ = vfs::d_move(&child, &to_pd, tname);
+    } else {
+        from_pd.forget_child(fname);
     }
 }

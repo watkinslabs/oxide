@@ -1,4 +1,5 @@
 use super::*;
+use super::fault::do_handle;
 
 #[cfg(target_arch = "x86_64")]
 pub fn prefault_stack(as_: &AddressSpace, top: u64, len: u64) {

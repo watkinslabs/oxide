@@ -155,7 +155,3 @@ pub fn classify_arm_abort(esr: u64, far: u64) -> Option<FaultKind> {
         Some(FaultKind::Protection { access })
     }
 }
-
-/// Per-arch fault handler installed by `kernel_main`. v1 handles
-/// only `NotPresent` on Anonymous + KernelBytes VMAs (demand-paging
-/// path). Returns true if the fault was resolved (caller retries

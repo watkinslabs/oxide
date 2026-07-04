@@ -70,10 +70,10 @@ impl drv::Driver for VirtioPciDrv {
 static VIRTIO_PCI_DRV: VirtioPciDrv = VirtioPciDrv;
 
 #[derive(Copy, Clone, Default)]
-pub(super) struct VirtioPciTransport;
+pub(crate) struct VirtioPciTransport;
 
 impl VirtioPciTransport {
-    pub(super) fn probe_child(
+    pub(crate) fn probe_child(
         self,
         d: &pci::PciDevice,
         profile: virtio::VirtioTransportProfile,
@@ -84,18 +84,18 @@ impl VirtioPciTransport {
         super::probe::VirtioPciAcquisition::acquire(d.bdf)?.probe_child(d, profile)
     }
 
-    pub(super) fn publish(self, p: &mut VirtioProbe) {
+    pub(crate) fn publish(self, p: &mut VirtioProbe) {
         publish_transport_mmio(p);
     }
 
-    pub(super) fn unpublish_key(self, device_key: virtio::VirtioChildDeviceKey) {
+    pub(crate) fn unpublish_key(self, device_key: virtio::VirtioChildDeviceKey) {
         unpublish_transport_mmio(device_key.raw());
     }
 }
 
 /// Register virtio drivers whose bring-up is owned by `Driver::probe`.
 /// # C: O(N_drivers)
-pub(super) fn register_model_drivers() {
+pub(crate) fn register_model_drivers() {
     drv::register_driver(&VIRTIO_PCI_DRV);
     super::super::virtio_child::register_model_drivers();
 }

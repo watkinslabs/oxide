@@ -119,7 +119,7 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 /// otherwise.
 /// F158: NotPresent faults try MAP_GROWSDOWN stack auto-extension
 /// before falling through to the normal demand-page path.
-fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
+pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
     // DIAG (debug-atexit): sentinel-frame re-verify on every fault entry —
@@ -307,8 +307,3 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
         _ => false,
     }
 }
-
-/// Wrap `AddressSpace::mmap` for `kernel_mmap` syscall glue: takes
-/// the Linux mmap arg shape, returns `(va, errno)`. Supports both
-/// `MAP_ANONYMOUS` and file-backed mmap; the caller (syscall glue)
-/// resolves `fd` to a `Arc<dyn FileBacking>` and passes it in.

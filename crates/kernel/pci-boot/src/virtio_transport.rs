@@ -9,9 +9,9 @@ use alloc::vec::Vec;
 
 mod msix;
 
-pub(super) use msix::{
+pub(crate) use msix::{
     MsixBinding, bind_msix_vector, disable_pci_command, publish_transport_record,
-    release_failed_probe, release_msix_binding, release_msix_bindings, unpublish_transport_record,
+    release_failed_probe, release_msix_bindings, unpublish_transport_record,
 };
 pub(super) use virtio::{ProgrammedQueues, QueueRing};
 
