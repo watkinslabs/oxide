@@ -259,15 +259,19 @@ pub fn registered_card_ids() -> Vec<u32> {
         .collect()
 }
 
-/// mmap backing for a DRM card inode (offset-keyed). The `offset` is
-/// the cookie returned by MODE_MAP_DUMB; it selects which dumb buffer's
-/// contiguous PA range to map straight into the process (VmaBacking::
-/// PhysRange — same path as /dev/fb0). Returns `None` when `inode` is
-/// not the DRM card, or the cookie/handle is unknown — caller then
-/// falls through to fbdev / file-backing. # C: O(n)
+/// mmap backing for a DRM card inode (offset-keyed). Legacy raw lookup used
+/// by tests/diagnostics; production mmap should prefer `pin_mmap_backing` so
+/// VMA lifetime pins the dumb buffer. # C: O(n)
 pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
     let Some((DRM_CARD_INO, card_id)) = drm_inode_parts(inode) else { return None; };
     crate::dumb::mmap_backing(card_id, offset)
+}
+
+/// Pin a DRM dumb buffer for a userspace VMA. The returned pin owns a mmap ref
+/// until `dumb::unpin_mmap` is called by the VMA backing's Drop path. # C: O(n)
+pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dumb::DumbMmapPin> {
+    let Some((DRM_CARD_INO, card_id)) = drm_inode_parts(inode) else { return None; };
+    crate::dumb::pin_mmap(card_id, offset)
 }
 
 /// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller

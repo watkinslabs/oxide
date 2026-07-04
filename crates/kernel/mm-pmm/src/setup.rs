@@ -969,6 +969,27 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
     p.alloc(order).ok().map(|pfn| pfn.0 * 4096)
 }
 
+/// Allocate a contiguous physical run owned by a kernel object. Each page in
+/// the run starts with one non-PTE object reference and zero mapcount, so user
+/// mappings can safely call `inc_ref` per installed PTE and object teardown can
+/// call `dec_object_ref_and_maybe_free_frame` per page.
+/// # C: O(2^order)
+pub fn alloc_contig_object(order: crate::Order) -> Option<u64> {
+    let p = pmm_static()?;
+    let pa = p.alloc(order).ok().map(|pfn| pfn.0 * 4096)?;
+    if let Some(meta) = page_meta() {
+        let frames = 1u64 << order.0;
+        for i in 0..frames {
+            let pfn = hal::Pfn((pa / 4096) + i);
+            if let Some(m) = meta.get(pfn) {
+                m.refcount.store(1, Ordering::Release);
+                m.mapcount.store(0, Ordering::Release);
+            }
+        }
+    }
+    Some(pa)
+}
+
 /// Free a contiguous physical region previously returned by `alloc_contig`
 /// with the same `order`.
 ///
