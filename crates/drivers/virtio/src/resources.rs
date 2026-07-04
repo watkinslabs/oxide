@@ -224,15 +224,33 @@ impl VirtioQueuePlan {
     }
 }
 
+/// Optional early payloads a child driver can request from the transport
+/// before normal runtime ownership takes over.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VirtioEarlyPayloadPolicy {
+    None,
+    Net,
+}
+
+impl VirtioEarlyPayloadPolicy {
+    /// # C: O(1)
+    pub const fn is_net(self) -> bool {
+        match self {
+            Self::None => false,
+            Self::Net => true,
+        }
+    }
+}
+
 /// Child-declared transport profile consumed by virtio transports. Device
-/// drivers own feature policy and queue requirements; transports execute the
-/// common status/feature/queue protocol and publish validated resources.
+/// drivers own feature policy, queue requirements, and any early boot payload
+/// contract; transports execute those policies through concrete hardware ops.
 #[derive(Copy, Clone)]
 pub struct VirtioTransportProfile {
     pub drv_features: u64,
     pub msix0_handler: Option<fn()>,
     pub queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
-    pub needs_net_boot_buffers: bool,
+    pub early_payload_policy: VirtioEarlyPayloadPolicy,
     pub child_requirements: VirtioChildRequirements,
 }
 
@@ -242,14 +260,14 @@ impl VirtioTransportProfile {
         drv_features: u64,
         msix0_handler: Option<fn()>,
         queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
-        needs_net_boot_buffers: bool,
+        early_payload_policy: VirtioEarlyPayloadPolicy,
         child_requirements: VirtioChildRequirements,
     ) -> Self {
         Self {
             drv_features,
             msix0_handler,
             queue_plans,
-            needs_net_boot_buffers,
+            early_payload_policy,
             child_requirements,
         }
     }
@@ -260,7 +278,7 @@ impl VirtioTransportProfile {
             drv_features,
             msix0_handler,
             [None, None, None, None, None, None, None, None],
-            false,
+            VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0(),
         )
     }
@@ -271,7 +289,7 @@ impl VirtioTransportProfile {
             drv_features,
             msix0_handler,
             [None, None, None, None, None, None, None, None],
-            false,
+            VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_device_cfg(),
         )
     }
@@ -291,7 +309,7 @@ impl VirtioTransportProfile {
                 None,
                 None,
             ],
-            true,
+            VirtioEarlyPayloadPolicy::Net,
             VirtioChildRequirements::net(),
         )
     }
@@ -311,7 +329,7 @@ impl VirtioTransportProfile {
                 None,
                 None,
             ],
-            false,
+            VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_q1_device_cfg(),
         )
     }
@@ -335,7 +353,7 @@ impl VirtioTransportProfile {
                 None,
                 None,
             ],
-            false,
+            VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::snd(),
         )
     }
@@ -1483,7 +1501,7 @@ mod tests {
     fn transport_profiles_describe_child_queue_policy() {
         let net = VirtioTransportProfile::net(0x55, None);
         assert_eq!(net.drv_features, 0x55);
-        assert!(net.needs_net_boot_buffers);
+        assert_eq!(net.early_payload_policy, VirtioEarlyPayloadPolicy::Net);
         assert_eq!(net.queue_plans[1].map(|q| q.index), Some(1));
         assert!(net.queue_plans[1].map(|q| q.map_notify).unwrap_or(false));
         assert!(net.child_requirements.needs_net_boot_payloads);
@@ -1495,6 +1513,7 @@ mod tests {
         assert_eq!(snd.queue_plans[3].map(|q| q.index), Some(3));
         assert!(snd.queue_plans[1].map(|q| q.map_notify).unwrap_or(false));
         assert!(snd.queue_plans[2].map(|q| q.map_notify).unwrap_or(false));
+        assert_eq!(snd.early_payload_policy, VirtioEarlyPayloadPolicy::None);
         assert!(snd.child_requirements.needs_device_cfg);
     }
 
