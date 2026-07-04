@@ -1,83 +1,79 @@
 # state.md — session handoff
 
 ## Headline
-Kernel boots to graphical.target + gdm; **greeter still not rendered.** The
-greeter blocker is now precisely specced, not guessed: see
-**`docs/60-udev-kernel-contract.md`** (merged #2332) — the full kernel↔udev
-requirements checklist R01–R31 with status + an end-to-end acceptance gate (§11).
+GNOME greeter still not rendered. This session TRACED the blocker end-to-end to a
+single fact and narrowed the mechanism, but did NOT land the fix. Root-cause
+graph (artifact): the greeter chain + logind's ns-14 mount tree.
 
-## The day's arc (READ THIS)
-1. The #2330 driver merge broke the BUILD and dropped transitional virtio-blk →
-   kernel panicked at 2.3s. `xtask artifacts` silently re-exported the stale
-   kernel.elf, so hours of "udev/logind broken" debugging ran against DEAD
-   kernels — false conclusions. (Memory: [[stale-artifacts-mask-kernel-bugs]].)
-2. Repaired: #2331 (compile), oxide-images `disable-legacy=on` (modern virtio-blk
-   the refactored kernel binds). Kernel boots again.
-3. Wrote doc 60 (the udev contract) to stop the whack-a-mole.
+## THE bulletproof fact
+`systemd-logind`'s own `openat(/sys, "dev")` returns **ENOENT**. Therefore:
+`sd_device_new_from_device_id("c226:0")` fails → card0 never attached to a seat →
+`/run/systemd/seats/seat0` never created → seat0 not CanGraphical → gdm greeter
+child exits code 1 → no greeter. Every step above is observed in real boots, not
+inferred. Everything UPSTREAM works: card0 IS tagged master-of-seat, the tag dir
+`/run/udev/tags/master-of-seat/c226:0` is present and readable at logind-enumerate
+time, logind's getdents returns `c226:0`.
 
-## Merged this session (kernel main): #2324–#2329, #2331, #2333
-udev RECEIVE + PROCESS path is DONE (R01–R09,R20,R24–R29): SCM_CREDENTIALS
-(#2327 — THE key fix), MSG_PEEK/TRUNC, nl_groups, poll-wake, sendmsg coalesce
-(#2329), pidfd poll (#2326), /proc/<pid>/fd (#2328), af_unix listener poll_subs
-(#2333, R22). Result: `/run/udev/data/c226:0` gets `G:master-of-seat`.
-oxide-images (local, no remote): `c1e9021` virtio-blk disable-legacy=on.
+## Mechanism — strong but CAVEATED (measurement suspect)
+Boot-side traces showed logind's `/sys` resolving to fsid `0x1` (ext4 underlay),
+NOT sysfs (`0x0102199400000002`) — i.e. the sysfs mount not crossed in logind's
+sandbox namespace. Observed ns-14 tree: sysfs mnts 403/404 parented to a `bind`
+sandbox root (397), keyed on the live `/sys` dentry `0x825e8718`; the walk rooted
+on ext4 (381) whose `/sys` mount (384) is keyed on a DIFFERENT dentry
+`0x80f78fd0`. `__lookup_mnt` keys strictly on `(parent_mnt_id, dentry_ptr)` →
+miss → `/sys` = empty ext4 dir.
 
-## LIVE greeter blocker (doc 60 R21 + R30/R31)
-- **R30/R31 (the greeter gate):** logind does NOT create `/run/systemd/seats/seat0`
-  → seat0 not CanGraphical → gdm launches no greeter. logind IS functional (owns
-  `org.freedesktop.login1` = `:1.9`; earlier "activatable" was a bad-boot
-  artifact). It just never attaches card0. `/run/udev/tags/` is absent (udevd
-  writes /run/udev/data but not the tag index). UNKNOWN whether systemd 257 needs
-  /run/udev/tags/ or reads tags from /run/udev/data/ — VERIFY against systemd
-  source before implementing.
-- **R21 (introspection blocker):** `udevadm settle/info/trigger` time out (udevd
-  control socket). #2333 may help (targeted listener wake); re-test. Fixing this
-  unblocks `udevadm info /dev/dri/card0` (see TAGS) + `udevadm trigger` to diagnose R30.
+**BUT** (docs/CLAUDE lesson 4 — clean repro contradicts boot → suspect the
+measurement): faithful HOSTED repros of the systemd sequence ALL PASS, so either
+the exact trigger is unmodeled OR the boot-side `resolve()`/`resolve_path()`
+traces measured the INIT-ns view (global root provider), not logind's real
+`task->root`. Only logind's own ENOENT is unimpeachable.
 
-## udev-compliance build-out (doc 60) — IN PROGRESS
-Grounded code audit found real gaps beyond the greeter path (user: "get udev
-compliant first"). Fixed + verified:
-- **#2335 block device-model** — block uevents pointed DEVPATH at a nonexistent
-  /sys path (dev_root_canon block → devices/platform) so udevd processed NO
-  disk. Now /sys/devices/virtual/block/<name> + /sys/class/block + subsystem
-  symlink + DEVTYPE=disk; DEVPATH resolves. Boot-verified (root mounts, systemd up).
-- **#2336 input device-model** — same systematic bug: /dev/input/eventN emitted
-  DEVPATH=/devices/platform/event0 (nonexistent). New sysfs::input:
-  /sys/class/input + /sys/devices/virtual/input + subsystem symlink;
-  dev_root_canon("input")→devices/virtual/input. Boot-verified.
-- ROOT PATTERN: `sysfs::bus::dev_root_canon` sends every non-pci/virtio/platform
-  bus to a FAKE /sys path (`_ => devices/platform`). Fixed per-subsystem for
-  block+input; a GENERIC /sys/devices/virtual/<subsys> + /sys/class/<subsys>
-  synthesis would cover the rest (sound/graphics/misc/…) in one pass.
-- KEY DISTINCTION: the greeter gate is NOT the block/input device model. card0
-  (drm) ALREADY works — it's tagged master-of-seat in /run/udev/data. The greeter
-  needs logind to ATTACH the already-tagged card0 (R30/R31), which is downstream
-  of the (working) drm device model. block/input compliance is real but does not
-  render the greeter.
-Remaining compliance gaps (doc 60 §6.3a), NOT yet done:
-- block `/sys/.../uevent` still RO → R12 coldplug-write (systemd-udev-trigger)
-  fails EACCES; add SysfsOps::store re-emit (initial device_add add-uevent
-  already covers processing, so lower priority).
-- `/sys/class/` still missing input/backlight/leds/sound/hidraw/misc/graphics —
-  each needs a class dir + the device's subsystem symlink to target it.
-- R21 udevd control socket (udevadm settle/info/trigger hang) — #2333 didn't fix.
-- R30/R31 logind seat attach (the greeter gate) — /run/udev/tags absent.
-- R13 /sys/kernel/uevent_seqnum (legacy; modern udevd likely doesn't need it).
+## First task next session — RESOLVE THE CAVEAT
+1. Add a boot trace that resolves `/sys` (and `/sys/dev`) using logind's ACTUAL
+   `current()->root` dentry + its mount ns — NOT `pathresolve::resolve()` (which
+   may use the global root provider). This confirms/refutes "logind's /sys = ext4
+   underlay." That single measurement decides the fix direction.
+2. IF confirmed (sysfs not crossed in logind's ns): extend the hosted repro
+   `crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs` (4 tests, all PASS
+   today) with the missing wrinkle until one goes RED — candidates in priority:
+   the RO bind-remount pass systemd runs (`ProtectSystem=strict` bind-remounts
+   every mount ro), a `d_drop`-driven re-creation of the `/sys` mountpoint dentry
+   that orphans the mount keyed on the old pointer, or ProtectControlGroups/
+   ProtectKernelTunables overmounts. Fix is then in `vfs::mount` (rebuild_ns_index
+   / follow_mount_down `__lookup_mnt`) or the dentry lifetime, against the red test.
+3. IF refuted (logind's /sys IS sysfs): the ENOENT is a `/sys/dev`-specific
+   negative-dentry / op_lookup issue — re-open that thread (op_lookup never
+   missed "dev"; raw PseudoDir had dev+dev/char; a cached negative shadowed it).
 
-## First task next session
-`git checkout main && git pull`. Work doc 60 R21→R30/R31. Concretely:
-1. Verify #2333 fixed udevadm control (boot, `udevadm settle`; needs a clean boot —
-   see [[boot-intermittency-and-debugfs-gotchas]], boots are ~50% flaky, re-run).
-2. If udevadm works: `udevadm info /dev/dri/card0` — does it show TAGS=master-of-seat
-   and is the device in logind's view? `loginctl seat-status seat0`.
-3. Determine (systemd 257 source) how logind enumerates master-of-seat: /run/udev/tags/
-   vs /run/udev/data/. Fix whichever the kernel/udev-flow breaks.
-4. Also audit doc 60 R10–R19 (per-subsystem uevent keys + sysfs attrs).
+## Landed this session (branch B318, PR pending)
+- **`crates/kernel/sysfs/src/bus.rs` `dev_index_target`** — real correctness fix:
+  `/sys/dev/char/226:0` pointed at dangling `devices/platform/dri/card0`
+  (dev_root_canon fallthrough); now `devices/virtual/drm/card0` (the dir
+  sysfs::drm actually builds). Needed for the drm device-id chase once the mount
+  bug is fixed; does NOT by itself render the greeter (blocked upstream by the
+  /sys resolution).
+- **`crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs`** — 4 hosted regression
+  tests for sysfs reachability across sandbox relocation (copy_mnt_ns + rbind +
+  MS_MOVE/pivot + stacked fresh sysfs + shared→slave prop). All PASS — they are
+  the scaffold to EXTEND into a red repro per step 2.
 
-## Diagnosis harness (USE — ends the thrash)
-- Inject oxdiag oneshot on a FRESH never-booted img via ONE `debugfs -w -f cmdfile`
-  session (dumps to /dev/ttyS0 at graphical.target). NEVER debugfs-edit a booted
-  (dirty) metadata_csum img — corrupts it. Boots are flaky: loop boot 2-3× until
-  `grep -c OXDIAG_START` ≥1. Unit must NOT have a `Wants=`+`WantedBy=` cycle.
-- sudo/loop-mount are BLOCKED in the sandbox. Rootfs `/` is uid-1000 (harmless).
-- Ledger metadata/index.md: B next=315(→used by #2333? verify), D next=119.
+## Diagnostic tooling (all reverted — do not re-add blindly)
+This session added ~14 files of klog traces (TAGOPEN/DEVIDX/DRMOPEN/NSTREE/
+DDELETE/SYSDEVMISS…) to pin the chain, then reverted them. The winning probes
+were: (a) dump a sysfs dir's entries INLINE on open (bypasses getdents/absolute_
+path fragility), (b) log `current()->exe_path` to identify the process, (c) dump
+the ns mount tree with `(mnt_id, parent_id, fs, mountpoint dptr)` and compare to
+the walk's dentry ptr. Re-derive from those, don't re-add all 14.
+
+## Boot harness
+`bash <scratchpad>/boot.sh <log> 90` — kills stale qemu, boots live-gnome ISO,
+serial→log. Build: `cd ../oxide-images && make kernel ARCH=x86_64 && cd ../kernel
+&& cargo run -q -p xtask -- artifacts --arch x86_64 && cd ../oxide-images &&
+cargo run -q -p imagectl -- build-boot --profile live-gnome --arch x86_64`.
+STALE-ARTIFACT TRAP: a compile FAIL still lets `xtask artifacts` export the
+last-good kernel → you boot a stale binary. Always confirm the build `Finished`
+line before trusting a boot.
+
+## Ledger
+metadata/index.md: B next=318 (used here → bump to 319), D next=120, F next=650.
