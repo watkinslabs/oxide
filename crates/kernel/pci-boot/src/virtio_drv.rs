@@ -202,6 +202,18 @@ struct VirtioTransportBringup {
     final_status: u8,
 }
 
+struct VirtioRuntimeHandoff {
+    queue_resources: [virtio::VirtQueueResource; 4],
+    q0_notify_va: u64,
+    post_notify_status: u8,
+    avail_idx_posted: u16,
+    used_idx_observed: u16,
+    isr_status: u8,
+    rx0_buf_pa: u64,
+    rx0_buf_len: u16,
+    tx0_buf_pa: u64,
+}
+
 impl VirtioProbeState {
     fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
         Self {
@@ -420,6 +432,102 @@ impl VirtioProbeState {
                 let Some(ring) = q1_ring else { return 0 };
                 self.map_notify(notify_cap, bars, ring.notify_off)
             }
+        }
+    }
+
+    fn runtime_handoff(
+        &mut self,
+        profile: virtio::VirtioTransportProfile,
+        hhdm: u64,
+        final_status: u8,
+        queues: &[(u16, u16); 8],
+        queues_len: usize,
+        programmed_queues: Option<&ProgrammedQueues>,
+        notify_cap: Option<&virtio::VirtioPciCap>,
+        isr_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+    ) -> VirtioRuntimeHandoff {
+        let q0_ring = programmed_queues.map(|p| p.q0);
+        let q1_ring = programmed_queues.and_then(|p| p.extra_queue(1));
+        let q2_ring = programmed_queues.and_then(|p| p.extra_queue(2));
+        let q3_ring = programmed_queues.and_then(|p| p.extra_queue(3));
+        let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
+
+        let extra_notify_mappings =
+            self.map_planned_extra_notifies(&profile.extra_queues, programmed_queues, notify_cap, bars);
+
+        let net_rx_boot = if profile.needs_net_boot_buffers
+            && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        {
+            post_net_rx_boot_buffer(hhdm, q0_ring)
+        } else {
+            NetRxBootBuffer::default()
+        };
+
+        let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
+            && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        {
+            self.kick_queue_and_observe_status(notify_cap, bars, q0_notify_off, 0, final_status)
+        } else {
+            (0u64, final_status)
+        };
+
+        let q1_notify_va = self.map_q1_notify(
+            profile.q1_notify_policy,
+            q1_ring,
+            final_status,
+            notify_cap,
+            bars,
+        );
+        let tx0_buf_pa = if matches!(
+            profile.q1_notify_policy,
+            virtio::VirtioQ1NotifyPolicy::NetBootTx
+        )
+            && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        {
+            alloc_net_tx_boot_buffer(hhdm, q1_ring, q1_notify_va)
+        } else {
+            0
+        };
+
+        let queue_resources = [
+            queue_resource(
+                0,
+                q0_ring,
+                scanned_queue_size(queues, queues_len, 0),
+                q0_notify_va,
+            ),
+            queue_resource(
+                1,
+                q1_ring,
+                scanned_queue_size(queues, queues_len, 1),
+                q1_notify_va,
+            ),
+            queue_resource(2, q2_ring, 0, extra_notify_mappings.q2),
+            queue_resource(3, q3_ring, 0, extra_notify_mappings.q3),
+        ];
+
+        let isr_status = if net_rx_boot.avail_idx_posted > 0 {
+            self.read_isr_status(isr_cap, bars)
+        } else {
+            0
+        };
+        let used_idx_observed = if net_rx_boot.avail_idx_posted > 0 {
+            read_queue_used_idx(hhdm, q0_ring)
+        } else {
+            0
+        };
+
+        VirtioRuntimeHandoff {
+            queue_resources,
+            q0_notify_va,
+            post_notify_status,
+            avail_idx_posted: net_rx_boot.avail_idx_posted,
+            used_idx_observed,
+            isr_status,
+            rx0_buf_pa: net_rx_boot.buf_pa,
+            rx0_buf_len: net_rx_boot.buf_len,
+            tx0_buf_pa,
         }
     }
 
@@ -739,80 +847,18 @@ fn virtio_init_arch(
     let queues = bringup.queues;
     let queues_len = bringup.queues_len;
     let notify_cap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
-    let extra_notify_mappings = state.map_planned_extra_notifies(
-        &profile.extra_queues,
+    let final_status = bringup.final_status;
+    let runtime = state.runtime_handoff(
+        profile,
+        hhdm,
+        final_status,
+        &queues,
+        queues_len,
         bringup.programmed_queues.as_ref(),
         notify_cap.as_ref(),
+        vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(),
         &bars,
     );
-    let snd_q2_notify_va_local = extra_notify_mappings.q2;
-    let snd_q3_notify_va_local = extra_notify_mappings.q3;
-    let final_status = bringup.final_status;
-    let q0_ring = bringup.programmed_queues.as_ref().map(|p| p.q0);
-    let q1_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(1));
-    let q2_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(2));
-    let q3_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(3));
-    let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
-    let net_rx_boot = if profile.needs_net_boot_buffers
-        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-    {
-        post_net_rx_boot_buffer(hhdm, q0_ring)
-    } else {
-        NetRxBootBuffer::default()
-    };
-    let avail_idx_posted = net_rx_boot.avail_idx_posted;
-    let rx0_buf_pa_local = net_rx_boot.buf_pa;
-    let rx0_buf_len_local = net_rx_boot.buf_len;
-
-    let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
-        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-    {
-        state.kick_queue_and_observe_status(notify_cap.as_ref(), &bars, q0_notify_off, 0, final_status)
-    } else {
-        (0u64, final_status)
-    };
-
-    let q1_notify_va_local = state.map_q1_notify(
-        profile.q1_notify_policy,
-        q1_ring,
-        final_status,
-        notify_cap.as_ref(),
-        &bars,
-    );
-    let tx0_buf_pa_local = if matches!(
-        profile.q1_notify_policy,
-        virtio::VirtioQ1NotifyPolicy::NetBootTx
-    )
-        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-    {
-        alloc_net_tx_boot_buffer(hhdm, q1_ring, q1_notify_va_local)
-    } else {
-        0
-    };
-    let queue_resources = [
-        queue_resource(
-            0,
-            q0_ring,
-            scanned_queue_size(&queues, queues_len, 0),
-            q0_notify_va,
-        ),
-        queue_resource(
-            1,
-            q1_ring,
-            scanned_queue_size(&queues, queues_len, 1),
-            q1_notify_va_local,
-        ),
-        queue_resource(2, q2_ring, 0, snd_q2_notify_va_local),
-        queue_resource(3, q3_ring, 0, snd_q3_notify_va_local),
-    ];
-
-    let isr_status = if avail_idx_posted > 0 {
-        state.read_isr_status(vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(), &bars)
-    } else { 0 };
-
-    let used_idx_observed = if avail_idx_posted > 0 {
-        read_queue_used_idx(hhdm, q0_ring)
-    } else { 0 };
 
     Some(state.finish(VirtioProbeResult {
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
@@ -825,15 +871,15 @@ fn virtio_init_arch(
         num_queues,
         queues,
         queues_len,
-        queue_resources,
+        queue_resources: runtime.queue_resources,
         final_status,
-        q0_notify_va,
-        post_notify_status,
-        avail_idx_posted,
-        used_idx_observed,
-        isr_status,
-        rx0_buf_pa:  rx0_buf_pa_local,
-        rx0_buf_len: rx0_buf_len_local,
-        tx0_buf_pa: tx0_buf_pa_local,
+        q0_notify_va: runtime.q0_notify_va,
+        post_notify_status: runtime.post_notify_status,
+        avail_idx_posted: runtime.avail_idx_posted,
+        used_idx_observed: runtime.used_idx_observed,
+        isr_status: runtime.isr_status,
+        rx0_buf_pa: runtime.rx0_buf_pa,
+        rx0_buf_len: runtime.rx0_buf_len,
+        tx0_buf_pa: runtime.tx0_buf_pa,
     }))
 }
