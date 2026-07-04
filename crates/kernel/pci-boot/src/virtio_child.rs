@@ -13,7 +13,7 @@ trait VirtioChildOps: Sync {
     const DRIVER_ID: virtio::VirtioChildDriverId;
 
     fn profile() -> virtio::VirtioTransportProfile;
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()>;
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()>;
     fn remove_child(device_key: u32);
     fn shutdown_child(device_key: u32);
 }
@@ -73,7 +73,7 @@ impl VirtioChildOps for VirtioGpuOps {
         drv_virtio_gpu::transport_profile()
     }
 
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -116,7 +116,7 @@ impl VirtioChildOps for VirtioInputOps {
         drv_virtio_input::transport_profile()
     }
 
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let bdf_word = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -163,7 +163,7 @@ impl VirtioChildOps for VirtioNetOps {
         drv_virtio_net::modern::transport_profile()
     }
 
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
         let device_key = session.device_key();
         let payloads = session.net_boot_payloads();
@@ -205,7 +205,7 @@ impl VirtioChildOps for VirtioBlkOps {
         drv_virtio_blk::modern::transport_profile()
     }
 
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -239,7 +239,7 @@ impl VirtioChildOps for VirtioRngOps {
         drv_virtio_rng::transport_profile()
     }
 
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -284,7 +284,7 @@ impl VirtioChildOps for VirtioVsockOps {
         drv_virtio_vsock::transport_profile()
     }
 
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -318,7 +318,7 @@ impl VirtioChildOps for VirtioSndOps {
         drv_virtio_snd::transport_profile()
     }
 
-    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {

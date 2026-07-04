@@ -130,8 +130,8 @@ test-pass claims.
   `VirtioChildTransportSession` contract plus child location and net
   boot-payload descriptors. The current boot PCI-backed implementation lives
   in `pci-boot::virtio_bus::VirtioChildSession`, and child probes consume the
-  shared session trait instead of importing `virtio_drv` transport helpers
-  directly.
+  shared session trait instead of importing `virtio_drv` transport helpers or
+  naming the PCI-backed session type directly.
 - The PCI-backed child session now carries an explicit
   `virtio_drv::VirtioPciTransport` backend. Child-session transport bring-up,
   publish, and unpublish calls go through that backend object; the raw
@@ -544,7 +544,8 @@ test-pass claims.
   virtio-pci transport module, and child probes now use the shared
   `virtio::VirtioChildTransportSession` trait implemented by
   `pci-boot::virtio_bus::VirtioChildSession` instead of importing
-  `virtio_drv` transport helpers directly. That child module now uses one
+  `virtio_drv` transport helpers directly; per-child probe callbacks no
+  longer name the PCI-backed session type. That child module now uses one
   generic `VirtioChildDriver` wrapper for model-driver matching, session
   lifetime, failed-probe release, publish, unpublish, and shutdown key lookup,
   leaving per-child ops focused on device policy. Child virtio device IDs are
