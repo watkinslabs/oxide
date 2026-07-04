@@ -201,7 +201,8 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     let netdev_removed = unregister_netdev(device_key);
     let registered_removed = remove_registered_iface(device_key).is_some();
     let runtime_removed = remove_net_runtime(device_key).is_some();
-    let rx_runtime_removed = clear_rx_runtime_for(device_key);
+    let rx_runtime_empty_after = remove_rx_runtime_for(device_key);
+    let rx_runtime_removed = rx_runtime_empty_after.is_some();
     let (state, last_device) = {
         let mut guard = MODERN_DEVS.lock();
         let pos = guard.iter().position(|state| state.device_key == device_key);
@@ -215,12 +216,13 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     };
     let state = match state {
         Some(state) => state,
-        None => return netdev_removed || registered_removed || runtime_removed || rx_runtime_removed,
+        None => {
+            release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or(false));
+            return netdev_removed || registered_removed || runtime_removed || rx_runtime_removed;
+        }
     };
     if last_device {
-        #[cfg(target_os = "oxide-kernel")]
-        uninstall_rx_softirq_handler();
-        unregister_timers();
+        release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(rx_runtime_empty));
     }
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
@@ -254,12 +256,10 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
         Some(state) => state,
         None => return false,
     };
+    let rx_runtime_empty_after = remove_rx_runtime_for(device_key);
     if last_device {
-        #[cfg(target_os = "oxide-kernel")]
-        uninstall_rx_softirq_handler();
-        unregister_timers();
+        release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(rx_runtime_empty));
     }
-    clear_rx_runtime_for(device_key);
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
         // probe; device_status is an 8-bit register at offset 0x14.
@@ -848,16 +848,15 @@ pub fn set_softirq_iface(device_key: DeviceKey, id: net::NetIfaceId, ip: [u8; 4]
 pub fn install_rx_runtime(device_key: DeviceKey, id: net::NetIfaceId) {
     set_softirq_iface(device_key, id, [0, 0, 0, 0]);
     register_timers();
-    #[cfg(target_os = "oxide-kernel")]
     install_rx_softirq_handler();
 }
 
 /// Install this driver's RX bottom-half handler. The handler belongs to the
 /// virtio-net device lifetime, not to boot or the transport layer.
 /// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
 pub fn install_rx_softirq_handler() {
     if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
+        #[cfg(target_os = "oxide-kernel")]
         softirq::set_handler(softirq::Slot::NetRx, rx_drain_softirq);
     }
 }
@@ -865,10 +864,17 @@ pub fn install_rx_softirq_handler() {
 /// Remove this driver's RX bottom-half handler and discard queued stale RX
 /// work. Called after the device is reset during remove.
 /// # C: O(NCPU)
-#[cfg(target_os = "oxide-kernel")]
 pub fn uninstall_rx_softirq_handler() {
     if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
+        #[cfg(target_os = "oxide-kernel")]
         let _ = softirq::clear_handler(softirq::Slot::NetRx);
+    }
+}
+
+fn release_rx_shared_runtime_if_last(last_runtime: bool) {
+    if last_runtime {
+        uninstall_rx_softirq_handler();
+        unregister_timers();
     }
 }
 
@@ -888,14 +894,18 @@ fn clear_rx_runtime() {
     RX_RUNTIMES.lock().clear();
 }
 
-fn clear_rx_runtime_for(device_key: DeviceKey) -> bool {
+fn remove_rx_runtime_for(device_key: DeviceKey) -> Option<bool> {
     let mut runtimes = RX_RUNTIMES.lock();
     let Some(pos) = runtimes
         .iter()
         .position(|runtime| runtime.device_key == device_key)
-    else { return false; };
+    else { return None; };
     runtimes.remove(pos);
-    true
+    Some(runtimes.is_empty())
+}
+
+fn rx_runtime_empty() -> bool {
+    RX_RUNTIMES.lock().is_empty()
 }
 
 /// Softirq slot handler. Drains pending RX into the net stack.
@@ -1135,6 +1145,8 @@ mod ndp_tests {
         REGISTERED_NETDEVS.lock().clear();
         NET_RUNTIMES.lock().clear();
         clear_rx_runtime();
+        uninstall_rx_softirq_handler();
+        unregister_timers();
     }
 
     fn resources_with_mac(mac: &'static [u8; 6]) -> virtio::VirtioResources {
@@ -1414,6 +1426,42 @@ mod ndp_tests {
         assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
         clear_rx_runtime();
         assert!(first_iface_ip_for(key(0x0012_0304)).is_none());
+    }
+
+    #[test]
+    fn removing_one_rx_runtime_keeps_shared_softirq_owned() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        install_rx_softirq_handler();
+        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        set_softirq_iface(key(2), net::NetIfaceId::from_raw(88), [10, 0, 0, 2]);
+
+        let empty_after_first = remove_rx_runtime_for(key(1))
+            .expect("expected first RX runtime removal");
+        assert!(!empty_after_first);
+        release_rx_shared_runtime_if_last(empty_after_first);
+        assert!(SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+        assert!(first_iface_ip_for(key(2)).is_some());
+
+        let empty_after_last = remove_rx_runtime_for(key(2))
+            .expect("expected last RX runtime removal");
+        assert!(empty_after_last);
+        release_rx_shared_runtime_if_last(empty_after_last);
+        assert!(!SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+        clear_test_state();
+    }
+
+    #[test]
+    fn uninstall_without_primary_state_releases_last_rx_runtime() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        install_rx_softirq_handler();
+        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+
+        assert!(uninstall_modern(key(1)));
+        assert!(!SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+        assert!(first_iface_ip_for(key(1)).is_none());
+        clear_test_state();
     }
 
     #[test]
