@@ -149,7 +149,8 @@ test-pass claims.
 - Shared `virtio::ProgrammedQueues` now exposes indexed queue lookup, and
   virtio-pci resource handoff assembles child-visible queue resources over the
   shared resource queue count instead of expanding q2/q3 resource locals in
-  pci-boot.
+  pci-boot. Planned notify mappings use the same shared queue count and
+  indexed programmed-queue lookup.
 - Child probe readiness checks for DRIVER_OK, required queue indexes, device
   config, and net boot payloads now go through shared
   `virtio::VirtioChildRequirements` evaluated by

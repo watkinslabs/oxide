@@ -193,7 +193,7 @@ struct VirtioProbeState {
 
 #[derive(Default)]
 struct PlannedNotifyMappings {
-    by_queue: [u64; 4],
+    by_queue: [u64; virtio::MAX_RESOURCE_QUEUES],
 }
 
 impl PlannedNotifyMappings {
@@ -576,7 +576,7 @@ impl VirtioProbeState {
             if !queue.map_notify {
                 continue;
             }
-            let Some(ring) = programmed.extra_queue(queue.index) else {
+            let Some(ring) = programmed.queue(queue.index) else {
                 continue;
             };
             let notify_va = self.map_notify(notify_cap, bars, ring.notify_off);
