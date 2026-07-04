@@ -35,9 +35,10 @@ pub enum VsockState {
     Closed,
 }
 
-/// One vsock STREAM connection. Keyed in the table by the 4-tuple
+/// One vsock STREAM connection. Keyed in the table by owner plus the 4-tuple
 /// (local_cid, local_port, peer_cid, peer_port). # C: O(1)
 pub struct VsockConn {
+    pub owner:      u32,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
@@ -95,9 +96,10 @@ impl Credit {
 
 impl VsockConn {
     /// New connection in `st`. # C: O(1)
-    pub fn new(local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
+    pub fn new(owner: u32, local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
                st: VsockState) -> Self {
         VsockConn {
+            owner,
             local_cid, local_port, peer_cid, peer_port,
             st: Spinlock::new(st),
             rx: Spinlock::new(VecDeque::new()),
@@ -128,15 +130,17 @@ impl VsockConn {
     /// Match key for the table. # C: O(1)
     pub fn key(&self) -> ConnKey {
         ConnKey {
+            owner: self.owner,
             local_cid: self.local_cid, local_port: self.local_port,
             peer_cid: self.peer_cid, peer_port: self.peer_port,
         }
     }
 }
 
-/// 4-tuple connection key. # C: O(1)
+/// Owner-keyed 4-tuple connection key. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ConnKey {
+    pub owner:      u32,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
@@ -193,11 +197,11 @@ impl VsockTable {
     /// Look up by the *local* 2-tuple regardless of peer — used by the
     /// RX dispatcher which keys on (dst_cid, dst_port, src_cid, src_port)
     /// of the incoming packet. # C: O(N conns)
-    pub fn find_for_rx(&self, local_cid: u64, local_port: u32,
+    pub fn find_for_rx(&self, owner: u32, local_cid: u64, local_port: u32,
                        peer_cid: u64, peer_port: u32)
         -> Option<alloc::sync::Arc<VsockConn>>
     {
-        self.find(ConnKey { local_cid, local_port, peer_cid, peer_port })
+        self.find(ConnKey { owner, local_cid, local_port, peer_cid, peer_port })
     }
 
     /// Remove a connection by key. # C: O(N conns)

@@ -30,10 +30,10 @@ static GUEST_CID: AtomicU64 = AtomicU64::new(0);
 static DRIVER_UP: AtomicBool = AtomicBool::new(false);
 static DRIVER_OWNER: AtomicU32 = AtomicU32::new(0);
 
-/// TX hook: hand a fully-encoded header + payload to the driver, which
-/// builds a TX descriptor, kicks q1, and polls the used ring. Returns
-/// true if the frame went out. # C: O(payload)
-pub type TxFn = fn(&[u8]) -> bool;
+/// TX hook: hand an owning device key plus a fully-encoded header + payload to
+/// the driver, which builds a TX descriptor, kicks q1, and polls the used ring.
+/// Returns true if the frame went out. # C: O(payload)
+pub type TxFn = fn(u32, &[u8]) -> bool;
 static TX_HOOK: AtomicU64 = AtomicU64::new(0);
 
 /// Reserve the singleton protocol endpoint before the transport allocates and
@@ -123,31 +123,54 @@ pub fn driver_quiesce(owner: u32) -> bool {
 /// Our guest CID (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 { GUEST_CID.load(Ordering::Acquire) }
 
+/// Guest CID for a specific owning driver instance. # C: O(1)
+pub fn guest_cid_for(owner: u32) -> u64 {
+    if DRIVER_OWNER.load(Ordering::Acquire) == owner {
+        GUEST_CID.load(Ordering::Acquire)
+    } else {
+        0
+    }
+}
+
 /// Owning driver instance for the installed endpoint, or 0 if none. # C: O(1)
 pub fn driver_owner() -> u32 { DRIVER_OWNER.load(Ordering::Acquire) }
 
 /// True iff a virtio-vsock device is installed and usable. # C: O(1)
 pub fn driver_up() -> bool { TX_HOOK.load(Ordering::Acquire) != 0 }
 
-/// Emit one packet via the driver TX hook. False if no driver. # C: O(len)
-pub fn tx(hdr: &VsockHdr, payload: &[u8]) -> bool {
+/// True iff `owner` owns an installed and usable virtio-vsock endpoint.
+/// # C: O(1)
+pub fn driver_up_for(owner: u32) -> bool {
+    owner != 0 && DRIVER_OWNER.load(Ordering::Acquire) == owner && TX_HOOK.load(Ordering::Acquire) != 0
+}
+
+/// Emit one packet via the owning driver's TX hook. False if no driver.
+/// # C: O(len)
+pub fn tx_for(owner: u32, hdr: &VsockHdr, payload: &[u8]) -> bool {
     let raw = TX_HOOK.load(Ordering::Acquire);
-    if raw == 0 { return false; }
-    // SAFETY: TX_HOOK only ever stores a `TxFn` (fn(&[u8]) -> bool) via the
-    // driver publish path; the transmute reconstructs that exact fn pointer
-    // shape, matching the install-site type. No other writer exists.
+    if raw == 0 || DRIVER_OWNER.load(Ordering::Acquire) != owner {
+        return false;
+    }
+    // SAFETY: TX_HOOK only ever stores a `TxFn` (fn(u32, &[u8]) -> bool) via
+    // the driver publish path; the transmute reconstructs that exact fn
+    // pointer shape, matching the install-site type. No other writer exists.
     let f: TxFn = unsafe { core::mem::transmute(raw as usize) };
     let mut frame = Vec::with_capacity(VSOCK_HDR_LEN + payload.len());
     frame.extend_from_slice(&hdr.encode());
     frame.extend_from_slice(payload);
-    f(&frame)
+    f(owner, &frame)
+}
+
+/// Emit one packet via the installed endpoint. False if no driver. # C: O(len)
+pub fn tx(hdr: &VsockHdr, payload: &[u8]) -> bool {
+    tx_for(DRIVER_OWNER.load(Ordering::Acquire), hdr, payload)
 }
 
 /// Send a credit-update so the peer learns our fresh fwd_cnt after we
 /// drained RX into userspace. # C: O(1)
 fn send_credit_update(c: &VsockConn) {
     let h = c.make_hdr(VIRTIO_VSOCK_OP_CREDIT_UPDATE, 0, 0);
-    let _ = tx(&h, &[]);
+    let _ = tx_for(c.owner, &h, &[]);
 }
 
 /// Dispatch one fully-received inbound packet (header + `payload`) onto
@@ -155,13 +178,13 @@ fn send_credit_update(c: &VsockConn) {
 /// All credit fields in every inbound header are folded into our peer
 /// view (virtio 1.2 §5.10.6.3: every packet carries live credit).
 /// # C: O(N conns)
-pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
+pub fn deliver_rx_from(owner: u32, h: &VsockHdr, payload: &[u8]) {
     // The packet's dst is us; src is the peer.
     let local_cid  = h.dst_cid;
     let local_port = h.dst_port;
     let peer_cid   = h.src_cid;
     let peer_port  = h.src_port;
-    if !driver_up() || local_cid != guest_cid() {
+    if !driver_up_for(owner) || local_cid != guest_cid_for(owner) {
         return;
     }
 
@@ -171,12 +194,12 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
             // dst port; reply OP_RESPONSE and queue for accept(). Else RST.
             if TABLE.is_listening(local_port) {
                 let c = alloc::sync::Arc::new(VsockConn::new(
-                    local_cid, local_port, peer_cid, peer_port,
+                    owner, local_cid, local_port, peer_cid, peer_port,
                     VsockState::Connected));
                 c.credit.lock().observe_peer(h.buf_alloc, h.fwd_cnt);
                 let resp = c.make_hdr(VIRTIO_VSOCK_OP_RESPONSE, 0, 0);
                 TABLE.insert(c.clone());
-                let _ = tx(&resp, &[]);
+                let _ = tx_for(owner, &resp, &[]);
                 TABLE.queue_accept(local_port, c.key());
             } else {
                 let rst = VsockHdr {
@@ -186,14 +209,14 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
                     op: VIRTIO_VSOCK_OP_RST, flags: 0,
                     buf_alloc: 0, fwd_cnt: 0,
                 };
-                let _ = tx(&rst, &[]);
+                let _ = tx_for(owner, &rst, &[]);
             }
             return;
         }
         _ => {}
     }
 
-    let Some(c) = TABLE.find_for_rx(local_cid, local_port, peer_cid, peer_port)
+    let Some(c) = TABLE.find_for_rx(owner, local_cid, local_port, peer_cid, peer_port)
         else {
             // Unknown connection (except RST which we ignore) → RST it.
             if h.op != VIRTIO_VSOCK_OP_RST {
@@ -204,7 +227,7 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
                     op: VIRTIO_VSOCK_OP_RST, flags: 0,
                     buf_alloc: 0, fwd_cnt: 0,
                 };
-                let _ = tx(&rst, &[]);
+                let _ = tx_for(owner, &rst, &[]);
             }
             return;
         };
@@ -245,6 +268,11 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
     c.waiters.wake_all();
 }
 
+/// Dispatch one inbound packet for the installed endpoint. # C: O(N conns)
+pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
+    deliver_rx_from(DRIVER_OWNER.load(Ordering::Acquire), h, payload)
+}
+
 /// Client connect: allocate a local port, register the connection, send
 /// OP_REQUEST, and (kernel) park until OP_RESPONSE / RST. Returns the
 /// connection on success. # C: O(RTT)
@@ -255,7 +283,7 @@ pub fn connect(peer_cid: u64, peer_port: u32)
     let local_cid = guest_cid();
     let local_port = TABLE.alloc_port();
     let c = alloc::sync::Arc::new(VsockConn::new(
-        local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
+        driver_owner(), local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
     TABLE.insert(c.clone());
     let req = c.make_hdr(VIRTIO_VSOCK_OP_REQUEST, 0, 0);
     if !tx(&req, &[]) {
@@ -306,7 +334,7 @@ pub fn send(c: &VsockConn, buf: &[u8]) -> Result<usize, NetError> {
     const MAX_RW_PAYLOAD: usize = 0x1000 - VSOCK_HDR_LEN;
     let n = buf.len().min(avail).min(MAX_RW_PAYLOAD);
     let h = c.make_hdr(VIRTIO_VSOCK_OP_RW, n as u32, 0);
-    if !tx(&h, &buf[..n]) { return Err(NetError::Eio); }
+    if !tx_for(c.owner, &h, &buf[..n]) { return Err(NetError::Eio); }
     {
         let mut cr = c.credit.lock();
         cr.tx_cnt = cr.tx_cnt.wrapping_add(n as u32);
@@ -351,9 +379,9 @@ pub fn close(c: &VsockConn) {
     if matches!(was, VsockState::Connected | VsockState::RcvShutdown) {
         let sh = c.make_hdr(VIRTIO_VSOCK_OP_SHUTDOWN, 0,
             VIRTIO_VSOCK_SHUTDOWN_RCV | VIRTIO_VSOCK_SHUTDOWN_SEND);
-        let _ = tx(&sh, &[]);
+        let _ = tx_for(c.owner, &sh, &[]);
         let rst = c.make_hdr(VIRTIO_VSOCK_OP_RST, 0, 0);
-        let _ = tx(&rst, &[]);
+        let _ = tx_for(c.owner, &rst, &[]);
     }
     *c.st.lock() = VsockState::Closed;
     TABLE.remove(c.key());
