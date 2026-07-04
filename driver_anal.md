@@ -853,7 +853,10 @@ test-pass claims.
   backend failures instead of updating runtime state after a failed device
   command, PAUSE is rejected until a real pause operation is supported, and
   SYNC_PTR no longer fabricates hardware progress from a userspace appl_ptr
-  update; only completed I/O advances the stored hw_ptr.
+  update; only completed I/O advances the stored hw_ptr. The virtio-snd
+  backend now also returns the actual STOP/RELEASE command result during
+  reconfiguration and HW_FREE, leaving stream state unchanged when the device
+  rejects release.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
