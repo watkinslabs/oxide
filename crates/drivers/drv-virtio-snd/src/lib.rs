@@ -329,6 +329,32 @@ pub fn eventq_state() -> Option<(u16, u16, u16)> {
     })
 }
 
+struct SoundCardReservation {
+    owner: u32,
+    active: bool,
+}
+
+impl SoundCardReservation {
+    fn reserve(owner: u32) -> Option<Self> {
+        if !sound::reserve_card(owner) {
+            return None;
+        }
+        Some(Self { owner, active: true })
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for SoundCardReservation {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = sound::unregister_card(self.owner);
+        }
+    }
+}
+
 /// Install the virtio-snd queue state for one device. Called once after
 /// DRIVER_OK + queue setup. Reads the device config, requires CONTROLQ and
 /// EVENTQ, allocates the control scratch frame, then queries the PCM stream
@@ -348,6 +374,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     if CTX.lock().iter().any(|ctx| ctx.device_key == p.device_key) {
         return None;
     }
+    let mut card_reservation = SoundCardReservation::reserve(p.device_key)?;
     if eventq.size == 0 || eventq.size > MAX_EVENTQ_DESCS {
         return None;
     }
@@ -443,6 +470,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         let _ = uninstall(p.device_key);
         return None;
     }
+    card_reservation.disarm();
     Some(SndProbe { streams: device_cfg.streams, out, input })
 }
 

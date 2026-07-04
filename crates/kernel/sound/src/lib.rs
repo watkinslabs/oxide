@@ -192,9 +192,14 @@ pub fn register_card(owner: u32) -> bool {
     if ops::ops().is_none() {
         return false;
     }
-    match CARD_OWNER.compare_exchange(NO_CARD_OWNER, owner, Ordering::AcqRel, Ordering::Acquire) {
-        Ok(_) => {}
-        Err(current) => return current == owner,
+    if !reserve_card(owner) {
+        return false;
+    }
+    {
+        let registered = CARD_NODES.lock();
+        if !registered.is_empty() {
+            return true;
+        }
     }
     devfs::register_dir("/dev/snd");
     let mut published = Vec::new();
@@ -203,6 +208,20 @@ pub fn register_card(owner: u32) -> bool {
     }
     *CARD_NODES.lock() = published;
     true
+}
+
+/// Reserve the singleton card number before the transport probe allocates or
+/// publishes any user-visible state. The current sound ABI has only card 0;
+/// a second transport must fail before queue state escapes into the runtime.
+/// # C: O(1)
+pub fn reserve_card(owner: u32) -> bool {
+    if owner == NO_CARD_OWNER {
+        return false;
+    }
+    match CARD_OWNER.compare_exchange(NO_CARD_OWNER, owner, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => true,
+        Err(current) => current == owner,
+    }
 }
 
 /// Device key that owns the published global sound card.
@@ -323,6 +342,31 @@ mod tests {
 
         assert!(!unregister_card(0x10));
         assert_eq!(REMOVED.lock().len(), SOUND_NODES.len(), "second unregister is idempotent");
+        assert_eq!(owner(), None);
+        ops::clear();
+    }
+
+    #[test]
+    fn card_reservation_rejects_second_owner_before_publication() {
+        drv::set_devtmpfs_hook(add_hook);
+        drv::set_devtmpfs_del_hook(del_hook);
+        ADDED.lock().clear();
+        REMOVED.lock().clear();
+        let _ = unregister_card(0x10);
+        let _ = unregister_card(0x20);
+        ops::clear();
+
+        assert!(reserve_card(0x10));
+        assert_eq!(owner(), Some(0x10));
+        assert!(reserve_card(0x10), "same-owner reservation is idempotent");
+        assert!(!reserve_card(0x20), "second owner is rejected before publication");
+        assert_eq!(ADDED.lock().len(), 0, "reservation must not publish nodes");
+
+        ops::register(&TEST_OPS);
+        assert!(register_card(0x10));
+        assert_eq!(ADDED.lock().len(), SOUND_NODES.len());
+        assert!(!register_card(0x20));
+        assert!(unregister_card(0x10));
         assert_eq!(owner(), None);
         ops::clear();
     }
