@@ -20,6 +20,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Detected COM I/O base (x86 port). 0 ⇒ no UART bound.
 static BASE: AtomicU64 = AtomicU64::new(0);
 static PRESENT: AtomicBool = AtomicBool::new(false);
+static RX_ENABLED: AtomicBool = AtomicBool::new(false);
 static BSP_APIC: AtomicU64 = AtomicU64::new(0);
 static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
 static IRQ_VEC: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +32,12 @@ static DELIVER: AtomicU64 = AtomicU64::new(0);
 /// True once a 16550 UART has been detected + registered by `init`.
 /// # C: O(1)
 pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
+
+/// True while runtime RX interrupt delivery is allowed. Shutdown clears this
+/// before masking hardware so a late/spurious vector cannot drain bytes after
+/// terminal quiesce starts.
+/// # C: O(1)
+pub fn rx_enabled() -> bool { RX_ENABLED.load(Ordering::Acquire) }
 
 /// Install boot-probe parameters used when the drv core calls
 /// `Uart16550Drv::probe`.
@@ -129,6 +136,7 @@ mod imp {
     /// COM RX interrupt handler — drains the FIFO into `dlv`.
     /// # C: O(bytes pending)
     pub fn rx_isr(dlv: fn(u8)) {
+        if !super::rx_enabled() { return; }
         let b = base(); if b == 0 { return; }
         let mut n = 0;
         while n < 64 {
@@ -188,6 +196,7 @@ mod imp {
                 // Unmask UART RX-data-available (IER bit0).
                 // SAFETY: IER write at CPL=0 to the detected COM base.
                 unsafe { outb(port + IER, 0x01); }
+                RX_ENABLED.store(true, Ordering::Release);
             }
         }
         true
@@ -197,6 +206,7 @@ mod imp {
     /// # SAFETY: called by driver-core remove; no concurrent probe/remove.
     /// # C: O(1)
     pub(super) unsafe fn remove() {
+        RX_ENABLED.store(false, Ordering::Release);
         let port = BASE.load(Ordering::Acquire) as u16;
         if port != 0 {
             // SAFETY: IER write at CPL=0 to the detected COM base disables RX interrupts.
@@ -220,6 +230,7 @@ mod imp {
     /// # SAFETY: called by driver-core shutdown; no concurrent probe/remove.
     /// # C: O(1)
     pub(super) unsafe fn shutdown() {
+        RX_ENABLED.store(false, Ordering::Release);
         let port = BASE.load(Ordering::Acquire) as u16;
         if port != 0 {
             // SAFETY: IER write at CPL=0 to the detected COM base disables RX interrupts.
