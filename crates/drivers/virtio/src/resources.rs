@@ -402,6 +402,105 @@ impl VirtioNetBootPayloads {
     }
 }
 
+/// Transport-neutral state used to decide whether a completed transport
+/// bring-up can hand resources to a virtio child driver.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioChildResourceState {
+    pub final_status: u8,
+    pub cfg_va: u64,
+    pub device_cfg_va: u64,
+    pub hhdm: u64,
+    pub net_boot_payloads: VirtioNetBootPayloads,
+    queues: [Option<VirtQueueResource>; MAX_RESOURCE_QUEUES],
+}
+
+impl VirtioChildResourceState {
+    /// # C: O(1)
+    pub const fn new(final_status: u8, cfg_va: u64, hhdm: u64) -> Self {
+        Self {
+            final_status,
+            cfg_va,
+            device_cfg_va: 0,
+            hhdm,
+            net_boot_payloads: VirtioNetBootPayloads::new(0, 0, 0),
+            queues: [None; MAX_RESOURCE_QUEUES],
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn with_device_cfg_va(mut self, device_cfg_va: u64) -> Self {
+        self.device_cfg_va = device_cfg_va;
+        self
+    }
+
+    /// # C: O(1)
+    pub const fn with_net_boot_payloads(mut self, payloads: VirtioNetBootPayloads) -> Self {
+        self.net_boot_payloads = payloads;
+        self
+    }
+
+    /// # C: O(1)
+    pub fn set_queue(&mut self, queue: VirtQueueResource) {
+        let index = queue.index as usize;
+        if index < MAX_RESOURCE_QUEUES {
+            self.queues[index] = Some(queue);
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn queue(&self, index: u16) -> Option<VirtQueueResource> {
+        let index = index as usize;
+        if index < MAX_RESOURCE_QUEUES {
+            self.queues[index]
+        } else {
+            None
+        }
+    }
+
+    /// # C: O(N_required)
+    pub fn ready_for_child(&self, requirements: VirtioChildRequirements) -> bool {
+        if (self.final_status & crate::VIRTIO_STATUS_DRIVER_OK) == 0 || self.cfg_va == 0 {
+            return false;
+        }
+        if requirements.needs_device_cfg && self.device_cfg_va == 0 {
+            return false;
+        }
+        if requirements.needs_net_boot_payloads && !self.net_boot_payloads.is_present() {
+            return false;
+        }
+        for (index, required) in requirements.required_queues.iter().copied().enumerate() {
+            if !required {
+                continue;
+            }
+            let Some(queue) = self.queue(index as u16) else {
+                return false;
+            };
+            if queue.index != index as u16 || !queue.is_runtime_valid() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// # C: O(N_required)
+    pub fn resources_for_child(
+        &self,
+        requirements: VirtioChildRequirements,
+    ) -> Option<VirtioResources> {
+        if !self.ready_for_child(requirements) {
+            return None;
+        }
+        let mut resources =
+            VirtioResources::new(self.cfg_va, self.hhdm).with_device_cfg_va(self.device_cfg_va);
+        for (index, required) in requirements.required_queues.iter().copied().enumerate() {
+            if required {
+                resources.set_queue(self.queue(index as u16)?);
+            }
+        }
+        Some(resources)
+    }
+}
+
 /// Common child-facing session contract implemented by concrete virtio
 /// transports. Child drivers consume this shape; transport backends own how
 /// bring-up, IRQ/vector binding, MMIO lifetime, and failed-probe release are
@@ -536,5 +635,40 @@ mod tests {
 
         let payloads = VirtioNetBootPayloads::new(0x1000, 64, 0x2000);
         assert!(payloads.is_present());
+    }
+
+    #[test]
+    fn child_resource_state_builds_required_resources() {
+        let mut state =
+            VirtioChildResourceState::new(crate::VIRTIO_STATUS_DRIVER_OK, 0x10, 0x20)
+                .with_device_cfg_va(0x30);
+        state.set_queue(VALID_Q0);
+
+        let resources = state
+            .resources_for_child(VirtioChildRequirements::q0_device_cfg())
+            .unwrap();
+
+        assert_eq!(resources.cfg_va, 0x10);
+        assert_eq!(resources.device_cfg_va, 0x30);
+        assert_eq!(resources.require_queue(0), Some(VALID_Q0));
+    }
+
+    #[test]
+    fn child_resource_state_rejects_not_ready_transport() {
+        let mut state = VirtioChildResourceState::new(0, 0x10, 0x20);
+        state.set_queue(VALID_Q0);
+        assert!(!state.ready_for_child(VirtioChildRequirements::q0()));
+
+        let state = VirtioChildResourceState::new(crate::VIRTIO_STATUS_DRIVER_OK, 0x10, 0x20);
+        assert!(!state.ready_for_child(VirtioChildRequirements::q0()));
+
+        let mut state =
+            VirtioChildResourceState::new(crate::VIRTIO_STATUS_DRIVER_OK, 0x10, 0x20);
+        state.set_queue(VALID_Q0);
+        assert!(!state.ready_for_child(VirtioChildRequirements::q0_device_cfg()));
+        assert!(!state.ready_for_child(VirtioChildRequirements::net()));
+
+        let state = state.with_net_boot_payloads(VirtioNetBootPayloads::new(0x1000, 64, 0x2000));
+        assert!(!state.ready_for_child(VirtioChildRequirements::net()));
     }
 }

@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 54% complete.
+  hotplug, fault injection, and multi-device coverage: about 55% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -76,6 +76,11 @@ test-pass claims.
   publish, and unpublish calls go through that backend object; the raw
   virtio-pci probe/publish/unpublish helpers are private to the transport
   module.
+- Shared `virtio::VirtioChildResourceState` now owns the transport-neutral
+  child readiness and resource-publication policy: DRIVER_OK presence, common
+  config presence, required queue validity, optional device config, and
+  optional net boot payloads. The PCI backend supplies concrete q0-q3 resource
+  descriptors and payload addresses, but no longer owns the readiness policy.
 - Virtio-pci owns persistent transport MMIO mappings, MSI-X state, and vring
   frame publication/teardown records for successful child probes.
 - Virtio-pci MSI-X state is now carried as an owned optional binding instead
@@ -346,12 +351,13 @@ test-pass claims.
   finalization/state methods, including planned q2/q3 notify mapping and
   explicit q1 mapping. Common transport bring-up ordering also now goes through
   `VirtioProbeState`.
-  Child readiness validation is centralized in `VirtioProbe` and described by
-  shared `virtio::VirtioChildRequirements`; child transport profiles and queue
-  plans now use shared `virtio::VirtioTransportProfile` and
-  `virtio::VirtioQueuePlan`; resource publication for child probes now goes
-  through `VirtioProbe::child_resources` using those requirements instead of
-  per-child q0/q1/q2/q3 lists in the PCI glue. Virtio child model-driver
+  Child readiness validation is described by shared
+  `virtio::VirtioChildRequirements` and evaluated by
+  `virtio::VirtioChildResourceState`; child transport profiles and queue plans
+  now use shared `virtio::VirtioTransportProfile` and
+  `virtio::VirtioQueuePlan`; resource publication for child probes now uses
+  shared readiness/resource assembly instead of per-child q0/q1/q2/q3 lists in
+  the PCI glue. Virtio child model-driver
   declarations now live in a separate `pci-boot::virtio_child` module instead
   of the virtio-pci transport module, and child probes now use the shared
   `virtio::VirtioChildTransportSession` trait implemented by
@@ -359,9 +365,10 @@ test-pass claims.
   `virtio_drv` transport helpers directly. The PCI-backed session now carries
   an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
   publish, and unpublish helpers are private to that transport module. The
-  next step is to move more of the backend's probe-result/resource assembly
-  into shared virtio-core lifecycle helpers so shared virtio core owns the
-  child probe lifecycle across transports.
+  shared `virtio::VirtioChildResourceState` now owns child readiness/resource
+  publication checks across transports. The next step is to move more of the
+  backend's probe-result shape into shared virtio-core lifecycle helpers so
+  shared virtio core owns the child probe lifecycle across transports.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by

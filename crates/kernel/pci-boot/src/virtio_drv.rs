@@ -596,51 +596,24 @@ impl VirtioProbe {
         }
     }
 
-    fn child_queues_ready(&self, requirements: virtio::VirtioChildRequirements) -> bool {
-        for (index, required) in requirements.required_queues.iter().copied().enumerate() {
-            if !required {
-                continue;
-            }
-            let Some(queue) = self.queue_resource(index as u16) else {
-                return false;
-            };
-            if !queue.is_runtime_valid() {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn net_payloads_ready(&self) -> bool {
-        self.rx0_buf_pa != 0 && self.rx0_buf_len != 0 && self.tx0_buf_pa != 0
-    }
-
-    fn ready_for_child(&self, requirements: virtio::VirtioChildRequirements) -> bool {
-        (self.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
-            && self.cfg_va != 0
-            && self.child_queues_ready(requirements)
-            && (!requirements.needs_device_cfg || self.device_cfg_va != 0)
-            && (!requirements.needs_net_boot_payloads || self.net_payloads_ready())
-    }
-
     pub(super) fn child_resources(
         &self,
         requirements: virtio::VirtioChildRequirements,
     ) -> Option<virtio::VirtioResources> {
-        if !self.ready_for_child(requirements) {
-            return None;
-        }
-
-        let mut resources =
-            virtio::VirtioResources::new(self.cfg_va, virtio_hhdm_offset())
-                .with_device_cfg_va(self.device_cfg_va);
-        for (index, required) in requirements.required_queues.iter().copied().enumerate() {
-            if !required {
-                continue;
+        let mut state =
+            virtio::VirtioChildResourceState::new(self.final_status, self.cfg_va, virtio_hhdm_offset())
+                .with_device_cfg_va(self.device_cfg_va)
+                .with_net_boot_payloads(virtio::VirtioNetBootPayloads::new(
+                    self.rx0_buf_pa,
+                    self.rx0_buf_len,
+                    self.tx0_buf_pa,
+                ));
+        for index in 0..virtio::MAX_RESOURCE_QUEUES {
+            if let Some(queue) = self.queue_resource(index as u16) {
+                state.set_queue(queue);
             }
-            resources.set_queue(self.queue_resource(index as u16)?);
         }
-        Some(resources)
+        state.resources_for_child(requirements)
     }
 
     fn transport_vring_frames(&self) -> Vec<u64> {
