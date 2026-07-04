@@ -719,7 +719,7 @@ mod tests {
 
     fn platform_device(addr: &str) -> Arc<drv::Device> {
         let d = Arc::new(drv::Device::new("platform", String::from(addr), 0, 0, 0));
-        drv::device_add(Arc::clone(&d));
+        drv::try_device_add(Arc::clone(&d)).expect("test device registration");
         d
     }
 
@@ -768,7 +768,7 @@ mod tests {
         let dev = Arc::new(
             drv::Device::new("virtio", String::from("sysfs-dev-index0"), 0, 2, 0)
                 .with_devnode("block", String::from("vdt"), Some((254, 42))));
-        drv::device_add(Arc::clone(&dev));
+        drv::try_device_add(Arc::clone(&dev)).expect("test device registration");
 
         let devices = make_devices_root_inode("virtio");
         let dir = devices.lookup("sysfs-dev-index0").expect("device dir");
@@ -802,10 +802,10 @@ mod tests {
         let graphics = Arc::new(
             drv::Device::new("graphics", String::from("fb8"), 0, 0, 0)
                 .with_devnode("graphics", String::from("fb8"), Some((29, 8))));
-        drv::device_add(Arc::clone(&mem));
-        drv::device_add(Arc::clone(&misc));
-        drv::device_add(Arc::clone(&sound));
-        drv::device_add(Arc::clone(&graphics));
+        drv::try_device_add(Arc::clone(&mem)).expect("test mem registration");
+        drv::try_device_add(Arc::clone(&misc)).expect("test misc registration");
+        drv::try_device_add(Arc::clone(&sound)).expect("test sound registration");
+        drv::try_device_add(Arc::clone(&graphics)).expect("test graphics registration");
 
         let index = make_sys_dev_index_inode(DevIndexKind::Char);
         let mem_link = index.lookup("1:8").expect("mem char index link");

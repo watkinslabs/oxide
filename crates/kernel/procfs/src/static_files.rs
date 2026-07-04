@@ -171,7 +171,7 @@ pub fn register_static_files() {
     );
     // Dynamic sysfs class/device trees are registered by sysfs::init below.
     // Device-model owned nodes such as /sys/class/misc/autofs must come from
-    // drv::device_add, not static procfs-era registrations.
+    // drv::try_device_add, not static procfs-era registrations.
     // /sys/class/net dynamic — readdir walks the live netdev registry,
     // lookup synthesises per-iface attribute files from the NetDev trait
     // (address/mtu/operstate/type/flags/carrier/speed/duplex/ifindex/...).

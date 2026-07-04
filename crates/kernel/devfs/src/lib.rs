@@ -116,7 +116,7 @@ pub type NodeFactory = alloc::sync::Arc<dyn Fn() -> InodeRef + Send + Sync>;
 /// base avoids collision with the boot pseudo-device inos (`0x2000_00xx`).
 static DEVNODE_INO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0x3000_0000);
 
-/// Mint a `/dev` node for a `drv::device_add` device (the `DEVTMPFS_HOOK`
+/// Mint a `/dev` node for a `drv::try_device_add` device (the `DEVTMPFS_HOOK`
 /// target). `name` is the `/dev`-relative path (`"vda"`, `"input/event0"`); the
 /// node lands at `/dev/<name>`. With a `factory` the device supplies its own
 /// inode (bespoke `FileOps`); otherwise a plain char/block node is synthesised
@@ -236,7 +236,7 @@ mod fs_tests {
     }
 
     /// Stage C (D27): `populate_defaults` now self-registers the mem char
-    /// devices via `drv::device_add`. With the devtmpfs hook wired (as kmain
+    /// devices via `drv::try_device_add`. With the devtmpfs hook wired (as kmain
     /// does at boot), the exact bespoke nodes appear at `/dev/<name>` with the
     /// right `CharDev` type + rdev — byte-identical to the old direct register.
     #[test]
@@ -278,10 +278,11 @@ mod fs_tests {
         {
             drv::device_del(&dev);
         }
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("mem", String::from("null"), 0, 0, 0)
                 .with_devnode("mem", String::from("null"), Some((1, 99))),
-        ));
+        ))
+        .expect("conflict device registration");
 
         assert_eq!(crate::boot::try_populate_defaults(), Err(drv::Error::Busy));
         assert_eq!(

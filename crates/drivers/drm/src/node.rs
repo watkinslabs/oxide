@@ -174,7 +174,7 @@ fn make_render_inode(card_id: u32) -> vfs::InodeRef {
                            vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
 
-/// Self-register a DRM `/dev` node through `drv::device_add` (D27): the
+/// Self-register a DRM `/dev` node through `drv::try_device_add` (D27): the
 /// `node_factory` mints the EXACT bespoke inode (custom `FileOps`, routing tag)
 /// each used before, so the /dev node is byte-identical; `dt` is the standard
 /// `(major,minor)` metadata. bus == `class` (`drm`) is ignored by the pci/virtio
@@ -295,10 +295,11 @@ mod node_publication_tests {
         let card_name = format!("dri/card{card_id}");
         let render_minor = 128 + card_id;
         let render_name = format!("dri/renderD{render_minor}");
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("drm", render_name.clone(), 0, 0, 0)
                 .with_devnode("drm", render_name.clone(), Some((226, render_minor))),
-        ));
+        ))
+        .expect("conflict device registration");
 
         assert!(!register(card_id));
         assert!(!registered_card_ids().contains(&card_id));

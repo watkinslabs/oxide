@@ -760,10 +760,11 @@ mod tests {
     fn register_rolls_back_card_slot_when_node_publication_fails() {
         CARDS.lock().clear();
         node::unregister_all();
-        let conflict = drv::device_add(Arc::new(
+        let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("drm", alloc::string::String::from("dri/card0"), 0, 0, 0)
                 .with_devnode("drm", alloc::string::String::from("dri/card0"), Some((226, 0))),
-        ));
+        ))
+        .expect("conflict device registration");
 
         assert_eq!(register(Arc::new(DummyDrv)), u32::MAX);
         assert_eq!(card_count(), 0);
