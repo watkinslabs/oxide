@@ -3,6 +3,8 @@ use alloc::{format, sync::Arc, vec::Vec};
 use sync::{Spinlock, TaskList as OpsLockClass};
 use vfs::File;
 
+use crate::uapi::{DRM_MAJOR, DRM_NODE_MODE};
+
 use super::auth::{
     clear_authorized_for_card, clear_master_owner, file_token, release_file_magic,
     release_master_owner,
@@ -97,15 +99,15 @@ pub(super) fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> 
     drm_inode_parts_raw(inode.ino())
 }
 
-/// Build a `/dev/dri/cardN` inode (`S_IFCHR|0o666`, card tag, card f_op).
+/// Build a `/dev/dri/cardN` inode (`S_IFCHR|DRM_NODE_MODE`, card tag, card f_op).
 /// # C: O(1)
 pub(super) fn make_card_inode(card_id: u32) -> vfs::InodeRef {
-    vfs::InodeBuilder::new(DRM_CARD_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+    vfs::InodeBuilder::new(DRM_CARD_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
                            vfs::default_inode_ops(), Arc::new(DrmCardFileOps)).build()
 }
 /// Build a `/dev/dri/renderD128+N` inode (sink f_op). # C: O(1)
 pub(super) fn make_render_inode(card_id: u32) -> vfs::InodeRef {
-    vfs::InodeBuilder::new(DRM_RENDER_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+    vfs::InodeBuilder::new(DRM_RENDER_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
                            vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
 }
 
@@ -146,7 +148,7 @@ pub fn register(card_id: u32, parent: Option<(&'static str, alloc::string::Strin
     let Some(card) = add_node(
         &card_name,
         "drm",
-        (226, card_id),
+        (DRM_MAJOR, card_id),
         Arc::new(move || make_card_inode(card_id)),
         parent,
     ) else {

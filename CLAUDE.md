@@ -48,7 +48,7 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 
 ## File length cap (`docs/08§7`)
 
-- Hard cap: **1000 lines** per `.rs` or `.md` file. CI fail above. Applies to `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`).
+- Hard cap: **1000 lines** per `.rs` or `.md` file. CI fail above. Applies to our source in `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`, `vendor/**`, and `vendors/**`). Imported third-party vendor code is not subject to line caps.
 - Soft target: **500 lines**. Above 500 → consider splitting at next touch.
 - Split big files into submodules: Rust `mod foo; foo/{a.rs,b.rs}`; markdown into sister docs cross-referenced via `<doc>§<sec>`.
 - Tests count toward the cap — split `tests.rs` into `tests/<feature>.rs` once it grows.
