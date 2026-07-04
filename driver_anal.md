@@ -441,7 +441,10 @@ test-pass claims.
   event-queue quiesce path instead of the hot-remove-named helper. Hot-remove
   and shutdown now address event-queue drain state by the owning virtio child
   key directly, so missing input metadata cannot strand queue buffers or the
-  shared input bottom-half handler.
+  shared input bottom-half handler. `/proc/bus/input/devices` now advertises
+  the same `/devices/virtual/input/eventN` sysfs path that the input class
+  actually publishes, so libinput/udev metadata no longer points at a dead
+  pre-model topology.
 - Virtio-gpu remove is keyed to the owning virtio child key and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed child key.
