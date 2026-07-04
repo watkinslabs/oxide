@@ -46,7 +46,7 @@ fn choose_primary_locked(endpoints: &[Endpoint]) -> u32 {
 
 fn refresh_primary_locked(endpoints: &[Endpoint]) {
     let current = PRIMARY_OWNER.load(Ordering::Acquire);
-    if current != 0 && endpoints.iter().any(|e| e.owner == current) {
+    if current != 0 && endpoints.iter().any(|e| e.owner == current && e.tx.is_some()) {
         return;
     }
     PRIMARY_OWNER.store(choose_primary_locked(endpoints), Ordering::Release);
@@ -144,6 +144,7 @@ pub fn driver_quiesce(owner: u32) -> bool {
     };
     endpoint.tx = None;
     endpoint.guest_cid = 0;
+    refresh_primary_locked(&endpoints);
     TABLE.close_owner(owner);
     true
 }
@@ -164,10 +165,14 @@ pub fn guest_cid_for(owner: u32) -> u64 {
 pub fn driver_owner() -> u32 {
     let endpoints = ENDPOINTS.lock();
     let primary = PRIMARY_OWNER.load(Ordering::Acquire);
-    if primary != 0 && endpoints.iter().any(|e| e.owner == primary) {
+    if primary != 0 && endpoints.iter().any(|e| e.owner == primary && e.tx.is_some()) {
         return primary;
     }
-    choose_primary_locked(&endpoints)
+    endpoints
+        .iter()
+        .find(|endpoint| endpoint.tx.is_some())
+        .map(|endpoint| endpoint.owner)
+        .unwrap_or(0)
 }
 
 /// True iff a virtio-vsock device is installed and usable. # C: O(1)
