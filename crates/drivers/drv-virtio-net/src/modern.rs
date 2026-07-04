@@ -21,6 +21,16 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 /// to 12 with `num_buffers` (mandatory in modern transport).
 const VIRTIO_NET_HDR_LEN: usize = 12;
 
+const WANTED_FEATURES: u64 =
+    virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
+
+/// Feature policy for the modern virtio-net child driver. The PCI transport
+/// executes the common-cfg negotiation, but the child driver owns which
+/// device-specific bits it needs for its runtime model.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
+
 /// Persistent runtime state for one modern virtio-net device. Queue resources
 /// reference VAs/PAs already programmed into the device by the transport
 /// probe. `bus`/`device`/`function` mirror the PCI BDF for log lines and

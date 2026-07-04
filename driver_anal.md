@@ -113,6 +113,9 @@ test-pass claims.
 - Virtio-blk no longer has PCI-transport-owned block config harvest. The
   virtio-pci path maps the device config as a generic resource, and the
   virtio-blk child driver reads capacity/block-size during its own probe.
+- Virtio-net's device-specific wanted feature mask now lives in the
+  virtio-net child driver; virtio-pci still executes common-cfg negotiation
+  but no longer carries the net MAC/STATUS feature policy itself.
 - Virtio-vsock no longer has PCI-transport-owned guest-CID harvest. The
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
   resource during install.
@@ -261,8 +264,9 @@ test-pass claims.
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
-  child-unwind leak has been fixed. Device feature policy, complete MSI-X
-  setup policy, remaining child-probe failure unwind audit, and
+  child-unwind leak has been fixed, and virtio-net feature policy has moved
+  to its child driver. Remaining device feature policy, complete MSI-X setup
+  policy, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller
   `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
