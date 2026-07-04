@@ -903,6 +903,46 @@ pub fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
     }
 }
 
+/// One-shot ownership marker for transport state prepared during child probe.
+/// The holder must either publish the prepared transport state or release it;
+/// `take` makes that ownership transfer idempotent across explicit error
+/// paths and session drop.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioProbeLease {
+    live: bool,
+}
+
+impl VirtioProbeLease {
+    /// # C: O(1)
+    pub const fn live() -> Self {
+        Self { live: true }
+    }
+
+    /// # C: O(1)
+    pub const fn empty() -> Self {
+        Self { live: false }
+    }
+
+    /// # C: O(1)
+    pub const fn is_live(self) -> bool {
+        self.live
+    }
+
+    /// Consume the outstanding lease once.
+    /// # C: O(1)
+    pub fn take(&mut self) -> bool {
+        let was_live = self.live;
+        self.live = false;
+        was_live
+    }
+}
+
+impl Default for VirtioProbeLease {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 /// Common child-facing session contract implemented by concrete virtio
 /// transports. Child drivers consume this shape; transport backends own how
 /// bring-up, IRQ/vector binding, MMIO lifetime, and failed-probe release are
@@ -1050,6 +1090,24 @@ mod tests {
 
         assert_eq!(key.raw(), 0x0012_0304);
         assert_eq!(VirtioChildDeviceKey::from_raw(0x0012_0304), key);
+    }
+
+    #[test]
+    fn probe_lease_take_is_idempotent() {
+        let mut lease = VirtioProbeLease::live();
+
+        assert!(lease.is_live());
+        assert!(lease.take());
+        assert!(!lease.is_live());
+        assert!(!lease.take());
+    }
+
+    #[test]
+    fn default_probe_lease_is_empty() {
+        let mut lease = VirtioProbeLease::default();
+
+        assert!(!lease.is_live());
+        assert!(!lease.take());
     }
 
     #[derive(Default)]

@@ -171,6 +171,11 @@ test-pass claims.
   release failed-probe resources on child error. The PCI-backed child model
   wrapper delegates that ordering to shared virtio instead of open-coding
   publish/unwind around `VirtioChildSession`.
+- Shared `virtio::VirtioProbeLease` now owns the one-shot transport-state
+  lease used during child probe. The PCI-backed session uses that lease for
+  both successful publish and failed-probe release, so explicit child-probe
+  errors and session drop cannot double-release the same prepared transport
+  state. Hosted virtio tests cover the idempotent ownership transfer.
 - Shared `virtio::run_child_remove` and `virtio::run_child_shutdown` now own
   the transport-neutral child remove/shutdown sequencing for a stable
   `VirtioChildDeviceKey`: child remove runs before transport unpublish, while
