@@ -148,8 +148,13 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
     if assets.is_dir() { walk(repo, &assets, &mut entries); }
 
     // xtask rootfs staging-logic sources.
-    for src in &["tools/xtask/src/rootfs.rs", "tools/xtask/src/rootfs_disks.rs",
-                 "tools/xtask/src/rootfs_lists.rs", "tools/xtask/src/l2_deps.rs",
+    for src in &["tools/xtask/src/rootfs.rs",
+                 "tools/xtask/src/rootfs/build.rs",
+                 "tools/xtask/src/rootfs/stage_system.rs",
+                 "tools/xtask/src/rootfs/stage_tools.rs",
+                 "tools/xtask/src/rootfs_disks.rs",
+                 "tools/xtask/src/rootfs_lists.rs",
+                 "tools/xtask/src/l2_deps.rs",
                  "tools/xtask/src/rootfs_dynprobe.rs"] {
         push_file(repo, &repo.join(src), &mut entries);
     }
