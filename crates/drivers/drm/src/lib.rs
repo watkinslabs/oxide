@@ -474,18 +474,24 @@ fn write_dec(out: &mut [u8], mut v: u32) -> usize {
 // Card registry
 // ============================================================
 
-static CARDS: Spinlock<Vec<Arc<dyn DrmDriver>>, DriverLockClass>
+static CARDS: Spinlock<Vec<Option<Arc<dyn DrmDriver>>>, DriverLockClass>
     = Spinlock::new(Vec::new());
 static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 
-/// Register a per-device backend. Returns the card index (0 ⇒ card0).
-/// # C: O(1)
+/// Register a per-device backend. Returns a stable card slot (0 ⇒ card0).
+/// # C: O(N) to reuse a vacant slot, O(1) append when none exists.
 pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
     let mut g = CARDS.lock();
-    if g.is_empty() {
+    if g.iter().all(|slot| slot.is_none()) {
         node::register();
     }
-    g.push(driver);
+    for (idx, slot) in g.iter_mut().enumerate() {
+        if slot.is_none() {
+            *slot = Some(driver);
+            return idx as u32;
+        }
+    }
+    g.push(Some(driver));
     (g.len() - 1) as u32
 }
 
@@ -497,8 +503,13 @@ pub fn unregister(card_id: u32) -> bool {
     if idx >= g.len() {
         return false;
     }
-    g.remove(idx);
-    let empty = g.is_empty();
+    if g[idx].take().is_none() {
+        return false;
+    }
+    while matches!(g.last(), Some(None)) {
+        g.pop();
+    }
+    let empty = g.iter().all(|slot| slot.is_none());
     drop(g);
     if empty {
         node::unregister();
@@ -507,14 +518,14 @@ pub fn unregister(card_id: u32) -> bool {
 }
 
 /// Snapshot of registered cards.
-/// # C: O(1)
+/// # C: O(N)
 pub fn cards() -> Vec<Arc<dyn DrmDriver>> {
-    CARDS.lock().clone()
+    CARDS.lock().iter().filter_map(|slot| slot.as_ref().cloned()).collect()
 }
 
 /// Return the count of registered cards.
-/// # C: O(1)
-pub fn card_count() -> usize { CARDS.lock().len() }
+/// # C: O(N)
+pub fn card_count() -> usize { CARDS.lock().iter().filter(|slot| slot.is_some()).count() }
 
 /// Allocate a fresh per-fd handle id (GEM handle, syncobj handle, etc.)
 /// # C: O(1)
@@ -699,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn register_increments_card_count() {
+    fn register_uses_stable_card_slots() {
         CARDS.lock().clear();
         node::unregister();
         let idx = register(Arc::new(DummyDrv));
@@ -707,8 +718,13 @@ mod tests {
         assert_eq!(card_count(), 1);
         let idx2 = register(Arc::new(DummyDrv));
         assert_eq!(idx2, 1);
-        assert!(unregister(idx2));
         assert!(unregister(idx));
+        assert_eq!(card_count(), 1);
+        assert!(!unregister(idx));
+        let idx3 = register(Arc::new(DummyDrv));
+        assert_eq!(idx3, 0);
+        assert!(unregister(idx));
+        assert!(unregister(idx2));
         assert_eq!(card_count(), 0);
     }
 }

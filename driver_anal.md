@@ -255,8 +255,9 @@ test-pass claims.
 - Virtio-gpu remove is keyed to the owning parent BDF and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed probe's BDF.
-  DRM publication now happens only after the singleton GPU device slot admits
-  the device, so a second GPU cannot publish then roll back a stray DRM card.
+  Installed virtio-gpu device state is now a per-BDF table, duplicate BDF
+  install is rejected before publication, and DRM card IDs are stable slots
+  so unregistering one card does not renumber the remaining devices.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
@@ -357,8 +358,9 @@ test-pass claims.
   are now BDF/interface-owned keyed records, and the core net stack's NDP table
   is keyed by interface. Virtio-net still needs live multi-device bind/unbind
   proof.
-  Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device is still
-  singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
+  Virtio-gpu installed device state and DRM backend records are BDF-owned, but
+  the scanout/console runtime is still singleton. Virtio-vsock's upper protocol
+  layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its
   singleton protocol endpoint before allocation and fails a second transport
   cleanly instead of replacing the installed transport.
@@ -451,7 +453,7 @@ test-pass claims.
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
   stack-owned interface-scoped IPv6 NDP lookup, but virtio-net still needs live
   loop proof and broader multi-NIC validation; virtio-gpu still needs a real
-  multi-card/scanout table after its BDF-owned teardown fix;
+  BDF/card-aware scanout table after its per-BDF install fix;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
   are still main offenders. AHCI and NVMe still need live multi-controller
   proof, but they no longer use process-wide installed-controller slots.
@@ -588,7 +590,8 @@ Also, many real devices still use `register_device()` instead of `device_add()`,
 
 Several drivers still use singleton global state:
 
-- virtio-gpu: single `DEV: Option<VirtioGpuDev>`
+- virtio-gpu: per-BDF installed device records, but singleton scanout/console
+  runtime hooks
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
   is stack-owned and keyed by interface in kernel builds, but live multi-NIC
   proof is still missing
@@ -603,7 +606,8 @@ Some subsystems are per-device already or closer to it:
 - block registry stores multiple disks
 - NVMe stores per-BDF controller records and publishes unique `nvmeXn1` disks
 - AHCI stores per-BDF controller records and publishes unique `sdX` disks
-- DRM core can register multiple DRM drivers/cards in principle
+- DRM core uses stable per-card backend slots and can keep multiple DRM
+  backends registered in principle
 - fbdev has a registry
 - input has per-device event records, but some procfs metadata still needs
   broader live multi-device proof
