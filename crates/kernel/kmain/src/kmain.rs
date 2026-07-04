@@ -426,15 +426,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         let dev = drv::device_add(alloc::sync::Arc::new(drv::Device::new(
             "platform", alloc::string::String::from("serial0"), 0, 0, 0)));
         drv::register_driver(uart_drv);
-        if drv::bind(&dev, drv::Driver::name(uart_drv)).is_ok() {
+        if dev.bound() == Some(drv::Driver::name(uart_drv)) {
             klog::set_byte_sink(drv_serial::emit);
         }
     }
 
     // Real i8042 PS/2 keyboard (x86 only — no i8042 on the arm boards).
-    // Register the platform device + driver, then bind so Driver::probe
-    // brings up the controller and resets/identifies the keyboard. Decoded
-    // scancodes feed the SAME input pipeline as virtio-input
+    // Register the platform device + driver; driver-core attachment runs
+    // Driver::probe, which brings up the controller and resets/identifies the
+    // keyboard. Decoded scancodes feed the SAME input pipeline as virtio-input
     // (drv_virtio_input::drain::handle_key_event). The i8042 driver owns IRQ1
     // setup/teardown in probe/remove. A serial-only box with no PS/2 leaves
     // platform/i8042 unbound.
@@ -442,10 +442,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         let ps2_drv = drv_ps2_keyboard::driver();
         drv_ps2_keyboard::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
-        let dev = drv::device_add(alloc::sync::Arc::new(drv::Device::new(
+        drv::device_add(alloc::sync::Arc::new(drv::Device::new(
             "platform", alloc::string::String::from("i8042"), 0, 0, 0)));
         drv::register_driver(ps2_drv);
-        let _ = drv::bind(&dev, drv::Driver::name(ps2_drv));
     }
 
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
