@@ -1122,8 +1122,13 @@ pub fn pcm_hw_params(owner: u32, rate: u8, format: u8, channels: u8,
     // SET_PARAMS requires a released stream (spec §5.14): if a prior session
     // left it PREPARED/RUNNING, STOP+RELEASE first so re-config is robust.
     if ctx.pcm_state == PcmState::Prepared || ctx.pcm_state == PcmState::Running {
-        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream);
-        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+        if pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream) != Some(VIRTIO_SND_S_OK) {
+            return false;
+        }
+        if pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream) != Some(VIRTIO_SND_S_OK) {
+            return false;
+        }
+        ctx.pcm_state = PcmState::Idle;
     }
     if pcm_set_params(ctx, stream, buffer_bytes, period_bytes, ch, format, rate)
         != Some(VIRTIO_SND_S_OK) { return false; }
@@ -1166,7 +1171,9 @@ pub fn pcm_hw_free(owner: u32) -> bool {
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.pcm_state == PcmState::Idle { return true; }
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
-    let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+    if pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream) != Some(VIRTIO_SND_S_OK) {
+        return false;
+    }
     ctx.pcm_state = PcmState::Idle;
     true
 }
@@ -1309,8 +1316,13 @@ pub fn cap_hw_params(owner: u32, rate: u8, format: u8, channels: u8,
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
     let ch = channels.clamp(1, 2);
     if ctx.cap_state == PcmState::Prepared || ctx.cap_state == PcmState::Running {
-        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream);
-        let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+        if pcm_ctl(ctx, VIRTIO_SND_R_PCM_STOP, stream) != Some(VIRTIO_SND_S_OK) {
+            return false;
+        }
+        if pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream) != Some(VIRTIO_SND_S_OK) {
+            return false;
+        }
+        ctx.cap_state = PcmState::Idle;
     }
     if pcm_set_params(ctx, stream, buffer_bytes, period_bytes, ch, format, rate)
         != Some(VIRTIO_SND_S_OK) { return false; }
@@ -1348,7 +1360,9 @@ pub fn cap_hw_free(owner: u32) -> bool {
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.cap_state == PcmState::Idle { return true; }
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
-    let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
+    if pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream) != Some(VIRTIO_SND_S_OK) {
+        return false;
+    }
     ctx.cap_state = PcmState::Idle;
     true
 }
