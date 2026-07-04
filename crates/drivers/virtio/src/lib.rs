@@ -31,7 +31,8 @@ pub use resources::{
     VirtioTransportProbeResult, VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES,
     VIRTIO_CHILD_BUS, VIRTIO_CHILD_CLASS, VIRTIO_MSI_NO_VECTOR, VIRTIO_VENDOR_ID,
     build_queue_resources, build_runtime_handoff, push_unique_frame, virtio_child_addr,
-    virtio_child_has_parent, resolve_planned_notify_mappings, run_child_probe,
+    virtio_child_has_parent, resolve_planned_notify_mappings, run_child_probe, run_child_remove,
+    run_child_shutdown,
 };
 
 pub mod common_cfg;

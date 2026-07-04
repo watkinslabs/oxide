@@ -142,6 +142,11 @@ test-pass claims.
   release failed-probe resources on child error. The PCI-backed child model
   wrapper delegates that ordering to shared virtio instead of open-coding
   publish/unwind around `VirtioChildSession`.
+- Shared `virtio::run_child_remove` and `virtio::run_child_shutdown` now own
+  the transport-neutral child remove/shutdown sequencing for a stable
+  `VirtioChildDeviceKey`: child remove runs before transport unpublish, while
+  shutdown dispatch receives the same typed key without forcing the generic
+  wrapper back to raw PCI-shaped integers.
 - Shared `virtio` now owns a transport-neutral
   `VirtioChildTransportSession` contract plus child location and net
   boot-payload descriptors. The current boot PCI-backed implementation lives
@@ -579,7 +584,9 @@ test-pass claims.
   converts to raw only at legacy child-driver API calls. Shared
   `virtio::run_child_probe` now owns child-probe publish/unwind ordering, so
   the PCI-backed wrapper no longer hand-codes successful transport publication
-  versus failed child-probe release. The PCI-backed session now carries an
+  versus failed child-probe release. Shared `virtio::run_child_remove` and
+  `virtio::run_child_shutdown` also own remove-before-unpublish and shutdown
+  dispatch ordering for typed child keys. The PCI-backed session now carries an
   explicit `virtio_drv::VirtioPciTransport` backend, and raw probe, publish,
   and unpublish helpers are private to that transport module. The
   shared `virtio::VirtioChildResourceState` now owns child readiness/resource
