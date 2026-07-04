@@ -34,6 +34,9 @@ struct Oss {
     rate: u8,
     format: u8,
     channels: u8,
+    subdivision: u8,
+    fragshift: u8,
+    maxfrags: u16,
     running: bool,
     cap_running: bool,
 }
@@ -42,7 +45,17 @@ static OSS: Spinlock<Vec<Oss>, L> = Spinlock::new(Vec::new());
 
 fn initial(owner: u32) -> Oss {
     let (rate, format, channels) = initial_params(owner);
-    Oss { owner, rate, format, channels, running: false, cap_running: false }
+    Oss {
+        owner,
+        rate,
+        format,
+        channels,
+        subdivision: 0,
+        fragshift: 0,
+        maxfrags: 2,
+        running: false,
+        cap_running: false,
+    }
 }
 
 pub(crate) fn register_card(owner: u32) {
@@ -149,6 +162,89 @@ fn initial_params(owner: u32) -> (u8, u8, u8) {
     (rate, format, channels)
 }
 
+fn fragment_geometry(o: &Oss) -> Option<(u32, u32)> {
+    let period = if o.fragshift != 0 {
+        1u32.checked_shl(o.fragshift as u32)?
+    } else {
+        let base = crate::ops::period_bytes(o.owner) as u32;
+        let divisor = if o.subdivision == 0 { 1 } else { o.subdivision as u32 };
+        (base / divisor).max(1)
+    };
+    let maxfrags = u32::from(o.maxfrags.max(2));
+    Some((period, maxfrags))
+}
+
+fn oss_period_buffer(owner: u32) -> Option<(u32, u32)> {
+    let guard = OSS.lock();
+    let o = guard.iter().find(|o| o.owner == owner)?;
+    let (period, maxfrags) = fragment_geometry(o)?;
+    Some((period, period.checked_mul(maxfrags)?))
+}
+
+fn set_subdivision(owner: u32, subdivision: u32) -> i64 {
+    if subdivision == 0 {
+        let guard = OSS.lock();
+        let Some(o) = guard.iter().find(|o| o.owner == owner) else {
+            return err(Errno::Enodev);
+        };
+        return i64::from(if o.subdivision == 0 { 1 } else { o.subdivision as u32 });
+    }
+    if !matches!(subdivision, 1 | 2 | 4 | 8 | 16) {
+        return err(Errno::Einval);
+    }
+    {
+        let guard = OSS.lock();
+        let Some(o) = guard.iter().find(|o| o.owner == owner) else {
+            return err(Errno::Enodev);
+        };
+        if o.subdivision != 0 || o.fragshift != 0 {
+            return err(Errno::Einval);
+        }
+    }
+    if !reset(owner) {
+        return err(Errno::Eio);
+    }
+    let mut guard = OSS.lock();
+    let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
+        return err(Errno::Enodev);
+    };
+    o.subdivision = subdivision as u8;
+    i64::from(subdivision)
+}
+
+fn set_fragment(owner: u32, val: u32) -> i64 {
+    let mut fragshift = (val & 0xffff) as u8;
+    if fragshift >= 25 {
+        return err(Errno::Einval);
+    }
+    if fragshift < 4 {
+        fragshift = 4;
+    }
+    let mut maxfrags = ((val >> 16) & 0xffff) as u16;
+    if maxfrags < 2 {
+        maxfrags = 2;
+    }
+    {
+        let guard = OSS.lock();
+        let Some(o) = guard.iter().find(|o| o.owner == owner) else {
+            return err(Errno::Enodev);
+        };
+        if o.subdivision != 0 || o.fragshift != 0 {
+            return err(Errno::Einval);
+        }
+    }
+    if !reset(owner) {
+        return err(Errno::Eio);
+    }
+    let mut guard = OSS.lock();
+    let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
+        return err(Errno::Enodev);
+    };
+    o.fragshift = fragshift;
+    o.maxfrags = maxfrags;
+    0
+}
+
 /// Stop + release both directions and disarm, so the next I/O re-applies
 /// params (SNDCTL_DSP_RESET / a param change).
 fn reset(owner: u32) -> bool {
@@ -191,8 +287,8 @@ pub fn read(owner: u32, buf: &mut [u8]) -> usize {
         (o.rate, o.format, o.channels, o.cap_running)
     };
     if !cap_running {
-        let period = crate::ops::period_bytes(owner) as u32;
-        if !crate::ops::cap_hw_params(owner, rate, fmt, ch, period, period * 2) { return 0; }
+        let Some((period, buffer)) = oss_period_buffer(owner) else { return 0; };
+        if !crate::ops::cap_hw_params(owner, rate, fmt, ch, period, buffer) { return 0; }
         if !crate::ops::cap_prepare(owner) { return 0; }
         if !crate::ops::cap_trigger(owner, true) { return 0; }
         let mut guard = OSS.lock();
@@ -217,8 +313,8 @@ pub fn write(owner: u32, buf: &[u8]) -> usize {
         (o.rate, o.format, o.channels, o.running)
     };
     if !running {
-        let period = crate::ops::period_bytes(owner) as u32;
-        if !crate::ops::pcm_hw_params(owner, rate, fmt, ch, period, period * 2) { return 0; }
+        let Some((period, buffer)) = oss_period_buffer(owner) else { return 0; };
+        if !crate::ops::pcm_hw_params(owner, rate, fmt, ch, period, buffer) { return 0; }
         if !crate::ops::pcm_prepare(owner) { return 0; }
         if !crate::ops::pcm_trigger(owner, true) { return 0; }
         let mut guard = OSS.lock();
@@ -297,7 +393,8 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
             0
         }
         4 => { if UserBuf::new(arg, 4).is_none() { return err(Errno::Efault); }   // GETBLKSIZE
-               wi(arg, crate::ops::period_bytes(owner) as u32); 0 }
+               let Some((period, _)) = oss_period_buffer(owner) else { return err(Errno::Enodev); };
+               wi(arg, period); 0 }
         5 => {                                                       // SETFMT
             let a = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
             if a == 0 {
@@ -353,12 +450,32 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
                 wi(arg, formats_to_afmt(formats)); 0 }
         12 | 13 => {                                                 // GET[OI]SPACE
             let b = match UserBuf::new(arg, 16) { Some(b) => b, None => return err(Errno::Efault) };
-            let frag = crate::ops::period_bytes(owner) as u32;
-            b.w32(0, 2); b.w32(4, 2); b.w32(8, frag); b.w32(12, 2 * frag);
+            let Some((frag, maxfrags)) = ({
+                let guard = OSS.lock();
+                guard.iter().find(|o| o.owner == owner).and_then(fragment_geometry)
+            }) else {
+                return err(Errno::Enodev);
+            };
+            let Some(bytes) = maxfrags.checked_mul(frag) else {
+                return err(Errno::Einval);
+            };
+            b.w32(0, maxfrags); b.w32(4, maxfrags); b.w32(8, frag); b.w32(12, bytes);
             0
         }
         15 => { if UserBuf::new(arg, 4).is_none() { return err(Errno::Efault); } wi(arg, 0); 0 } // GETCAPS
-        10 | 14 => 0,                                                // SUBDIVIDE / SETFRAGMENT
+        10 => {                                                      // SUBDIVIDE
+            let subdivide = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
+            let res = set_subdivision(owner, subdivide);
+            if res < 0 {
+                return res;
+            }
+            wi(arg, res as u32);
+            0
+        }
+        14 => {                                                      // SETFRAGMENT
+            let fragment = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
+            set_fragment(owner, fragment)
+        }
         _ => err(Errno::Enotty),
     }
 }
@@ -366,15 +483,24 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicU32, Ordering};
 
     fn cfg(_owner: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
     fn caps(_owner: u32) -> crate::ops::Caps { Some((1 << V_S16, 1 << 6, 1, 2)) }
     fn period(_owner: u32) -> usize { 2048 }
     fn hw_params(_owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+    fn hw_params_record(_owner: u32, _rate: u8, _format: u8, _channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
+        LAST_PERIOD.store(period_bytes, Ordering::SeqCst);
+        LAST_BUFFER.store(buffer_bytes, Ordering::SeqCst);
+        true
+    }
     fn yes(_owner: u32) -> bool { true }
     fn start_only(_owner: u32, start: bool) -> bool { start }
     fn submit(_owner: u32, b: &[u8]) -> usize { b.len() }
     fn recv(_owner: u32, b: &mut [u8]) -> usize { b.len() }
+
+    static LAST_PERIOD: AtomicU32 = AtomicU32::new(0);
+    static LAST_BUFFER: AtomicU32 = AtomicU32::new(0);
 
     static STOP_FAIL_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
         config: cfg,
@@ -387,6 +513,23 @@ mod tests {
         pcm_hw_free: yes,
         pcm_submit: submit,
         cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: start_only,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    static GEOM_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
+        config: cfg,
+        pcm_caps: caps,
+        cap_caps: caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params_record,
+        pcm_prepare: yes,
+        pcm_trigger: start_only,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params_record,
         cap_prepare: yes,
         cap_trigger: start_only,
         cap_hw_free: yes,
@@ -439,6 +582,95 @@ mod tests {
             assert!(o.running);
             assert_eq!(o.rate, 6);
         }
+
+        unregister_card(owner);
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+    }
+
+    #[test]
+    fn fragment_ioctl_sets_backend_period_and_space_geometry() {
+        let owner = 0x7101;
+        unregister_card(owner);
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+        LAST_PERIOD.store(0, Ordering::SeqCst);
+        LAST_BUFFER.store(0, Ordering::SeqCst);
+
+        assert!(crate::reserve_card(owner));
+        assert!(crate::ops::register(owner, &GEOM_OPS));
+        register_card(owner);
+
+        let setfragment_req = (1u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 14;
+        let getblksize_req = (2u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 4;
+        let getospace_req = (2u64 << 30) | (16u64 << 16) | ((b'P' as u64) << 8) | 12;
+        let subdivide_req = (3u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 10;
+
+        let mut fragment = (4u32 << 16) | 10;
+        assert_eq!(handle(owner, false, setfragment_req, (&mut fragment as *mut u32) as u64), 0);
+
+        let mut block = 0u32;
+        assert_eq!(handle(owner, false, getblksize_req, (&mut block as *mut u32) as u64), 0);
+        assert_eq!(block, 1024);
+
+        let mut space = [0u32; 4];
+        assert_eq!(handle(owner, false, getospace_req, space.as_mut_ptr() as u64), 0);
+        assert_eq!(space, [4, 4, 1024, 4096]);
+
+        let bytes = [0x33u8; 16];
+        assert_eq!(write(owner, &bytes), bytes.len());
+        assert_eq!(LAST_PERIOD.load(Ordering::SeqCst), 1024);
+        assert_eq!(LAST_BUFFER.load(Ordering::SeqCst), 4096);
+
+        let mut subdivide = 2u32;
+        assert_eq!(
+            handle(owner, false, subdivide_req, (&mut subdivide as *mut u32) as u64),
+            test_err(Errno::Einval)
+        );
+
+        unregister_card(owner);
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+    }
+
+    #[test]
+    fn subdivide_ioctl_updates_fragment_size_once() {
+        let owner = 0x7102;
+        unregister_card(owner);
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+        LAST_PERIOD.store(0, Ordering::SeqCst);
+        LAST_BUFFER.store(0, Ordering::SeqCst);
+
+        assert!(crate::reserve_card(owner));
+        assert!(crate::ops::register(owner, &GEOM_OPS));
+        register_card(owner);
+
+        let subdivide_req = (3u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 10;
+        let getblksize_req = (2u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 4;
+
+        let mut subdivide = 0u32;
+        assert_eq!(handle(owner, false, subdivide_req, (&mut subdivide as *mut u32) as u64), 0);
+        assert_eq!(subdivide, 1);
+
+        subdivide = 4;
+        assert_eq!(handle(owner, false, subdivide_req, (&mut subdivide as *mut u32) as u64), 0);
+        assert_eq!(subdivide, 4);
+
+        let mut block = 0u32;
+        assert_eq!(handle(owner, false, getblksize_req, (&mut block as *mut u32) as u64), 0);
+        assert_eq!(block, 512);
+
+        let bytes = [0x44u8; 16];
+        assert_eq!(write(owner, &bytes), bytes.len());
+        assert_eq!(LAST_PERIOD.load(Ordering::SeqCst), 512);
+        assert_eq!(LAST_BUFFER.load(Ordering::SeqCst), 1024);
+
+        subdivide = 2;
+        assert_eq!(
+            handle(owner, false, subdivide_req, (&mut subdivide as *mut u32) as u64),
+            test_err(Errno::Einval)
+        );
 
         unregister_card(owner);
         let _ = crate::ops::clear(owner);
