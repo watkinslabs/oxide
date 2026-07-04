@@ -112,7 +112,7 @@ impl VirtioProbeProfile {
 
     const fn block(msix0_handler: Option<fn()>) -> Self {
         Self {
-            drv_features: Self::VERSION_ONLY,
+            drv_features: drv_virtio_blk::modern::wanted_features(),
             msix0_handler,
             extra_queues: [None, None, None],
             q1_notify_policy: Q1NotifyPolicy::None,

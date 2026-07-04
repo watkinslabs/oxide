@@ -131,6 +131,15 @@ const IO_SPIN_BUDGET: u64 = 200_000;
 #[cfg(not(target_os = "oxide-kernel"))]
 const IO_FALLBACK_SPINS: u64 = 50_000_000;
 
+const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE;
+
+/// Feature policy for the modern virtio-blk child driver. The PCI transport
+/// executes common-cfg negotiation; this driver owns the block-specific bits
+/// that affect its config parsing and runtime geometry.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
+
 /// Bounce-frame layout. Three disjoint regions inside one contiguous
 /// PMM allocation so the device's separate descriptors never alias and
 /// the data descriptor addresses one physically-contiguous run:
