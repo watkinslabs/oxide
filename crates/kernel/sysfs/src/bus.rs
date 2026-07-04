@@ -774,6 +774,14 @@ mod tests {
     }
     static SYSFS_BIND_UEVENT_DRIVER: SysfsBindUeventDriver = SysfsBindUeventDriver;
 
+    struct SysfsAddUeventDriver;
+    impl drv::Driver for SysfsAddUeventDriver {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "sysfs-add-uevent-test" }
+        fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-add-uevent0" }
+    }
+    static SYSFS_ADD_UEVENT_DRIVER: SysfsAddUeventDriver = SysfsAddUeventDriver;
+
     struct RejectDriver;
     impl drv::Driver for RejectDriver {
         fn bus(&self) -> &'static str { "platform" }
@@ -874,12 +882,37 @@ mod tests {
     }
 
     #[test]
+    fn device_add_uevent_includes_initial_bound_driver_state() {
+        use netlink::{proto, NetlinkSocket};
+
+        drv::set_sysfs_hook(publish_device_cb);
+        drv::register_driver(&SYSFS_ADD_UEVENT_DRIVER);
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+
+        let dev = platform_device("sysfs-add-uevent0");
+
+        let added = listener.dequeue().expect("add uevent");
+        assert!(uevent_has_entry(&added, b"ACTION=add"));
+        assert!(uevent_has_entry(&added, b"DEVPATH=/devices/platform/sysfs-add-uevent0"));
+        assert!(uevent_has_entry(&added, b"SUBSYSTEM=platform"));
+        assert!(uevent_has_entry(&added, b"DRIVER=sysfs-add-uevent-test"));
+        assert_eq!(dev.bound(), Some("sysfs-add-uevent-test"));
+
+        drv::device_del(&dev);
+    }
+
+    #[test]
     fn device_del_emits_remove_uevent_before_model_disappears() {
         use netlink::{proto, NetlinkSocket};
+
+        fn no_add_uevent(_dev: &drv::Device) {}
 
         let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
         listener.set_group_mask(1);
         netlink::register_uevent_listener(&listener);
+        drv::set_sysfs_hook(no_add_uevent);
         drv::set_sysfs_remove_hook(remove_device_cb);
 
         let dev = Arc::new(drv::Device::new(
