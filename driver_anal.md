@@ -397,9 +397,9 @@ test-pass claims.
   the device model's BDF.
   AHCI publication is also now per PCI function: successful probes allocate
   Linux-style `sdX` names, record the bound BDF key, reject duplicate binds
-  before HBA bring-up, and route remove/shutdown through the device model's BDF.
-  AHCI does not publish a fake shared serial; IDENTIFY serial decode still
-  needs to be plumbed before it can provide a proper by-id label.
+  before HBA bring-up, route remove/shutdown through the device model's BDF,
+  and publish the ATA IDENTIFY serial into the block registry for by-serial
+  lookup instead of using a fake shared identity.
 - Virtio-input supports multiple input device records, publishes
   `/dev/input/eventN` through model-owned devices, generates
   `/proc/bus/input/devices` from live input state, and clears its event-queue
