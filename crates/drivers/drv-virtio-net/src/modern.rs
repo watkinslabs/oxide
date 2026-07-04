@@ -278,19 +278,6 @@ fn set_registered_iface(device_key: u32, id: net::NetIfaceId) {
     registered.push((device_key, id));
 }
 
-/// First registered net stack ifindex, if any.
-///
-/// Compatibility helper for legacy single-NIC tests. Production callers that
-/// need to act on installed devices should use `registered_ifaces()`.
-/// # C: O(1)
-#[cfg(test)]
-pub fn registered_iface() -> Option<net::NetIfaceId> {
-    REGISTERED_NETDEVS
-        .lock()
-        .first()
-        .map(|(_, iface)| *iface)
-}
-
 /// Snapshot of every registered virtio-net device and its net stack ifindex.
 /// # C: O(N)
 pub fn registered_ifaces() -> alloc::vec::Vec<(u32, net::NetIfaceId)> {
@@ -370,10 +357,6 @@ pub enum TxOutcome {
     /// avail-side state is consistent (caller can reissue) but
     /// the kick may not have been processed.
     Timeout,
-}
-
-fn installed_device_key() -> Option<u32> {
-    MODERN_DEVS.lock().first().map(|s| s.device_key)
 }
 
 /// Send one frame out the named modern virtio-net transmit queue. Writes
@@ -486,36 +469,15 @@ pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
     Ok(TxOutcome::Timeout)
 }
 
-/// Compatibility entry point for legacy callers. New internal users should pass
-/// the owning BDF key to `tx_frame_for`.
-pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
-    let Some(device_key) = installed_device_key() else {
-        return Err(TxErr::NotPresent);
-    };
-    tx_frame_for(device_key, body)
-}
-
 // -------- F59-13: poll RX into the kernel net stack -------------------
 //
-// `poll_into_stack(iface)` drains rx_poll once and dispatches each
+// `poll_into_stack_for(device_key, iface)` drains one device once and dispatches each
 // frame: ARP → arp_cache (with a synchronous reply if it's a
 // request for `our_ip`); IPv4 → strip eth header + hand to
 // `stack.deliver_rx(iface, l3)`. Intended call site is a periodic
 // kthread or per-tick hook; v1 invokes it once at boot for a
 // diagnostic line, replacing the explicit ARP+ICMP probes once the
 // stack is fully wired (F59-14+). Returns frames consumed.
-
-/// Drain pending RX frames into the kernel net stack. ARP requests
-/// for `our_ip` get a synchronous reply through the same device. Returns the
-/// number of frames consumed.
-/// # C: O(rx_drain)
-#[cfg(target_os = "oxide-kernel")]
-pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
-    let Some(device_key) = softirq_device_key() else {
-        return 0;
-    };
-    poll_into_stack_for(device_key, iface, our_ip)
-}
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
@@ -806,12 +768,6 @@ impl net::NetDev for VirtioNetDev {
 
 // -------- F59-10: per-device ARP cache --------------------------------
 
-/// Snapshot of the first registered modern device, if any.
-/// # C: O(1) under device-table lock
-pub fn modern_state() -> Option<ModernNetState> {
-    MODERN_DEVS.lock().first().copied()
-}
-
 /// Snapshot of the named modern device, if installed.
 /// # C: O(N devices)
 pub fn modern_state_for(device_key: u32) -> Option<ModernNetState> {
@@ -900,17 +856,6 @@ pub fn uninstall_rx_softirq_handler() {
     }
 }
 
-/// F138: update the first installed IP slot (preserves iface id).
-/// Compatibility helper for older single-NIC callers; keyed updates should
-/// use `set_softirq_ip_for_iface`.
-/// # C: O(1)
-pub fn set_softirq_ip(ip: [u8; 4]) {
-    let mut runtimes = RX_RUNTIMES.lock();
-    if let Some(runtime) = runtimes.first_mut() {
-        runtime.ip = ip;
-    }
-}
-
 /// F138: update only the IP slot for the named iface.
 /// # C: O(1)
 pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
@@ -921,24 +866,6 @@ pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
     else { return false; };
     runtime.ip = ip;
     true
-}
-
-/// F138: read the first stashed iface id (0 = none yet).
-/// Compatibility helper for older single-NIC callers.
-/// # C: O(1)
-pub fn softirq_iface_id() -> u32 {
-    RX_RUNTIMES
-        .lock()
-        .first()
-        .map(|runtime| runtime.iface.raw())
-        .unwrap_or(0)
-}
-
-/// Owning device key for the first RX softirq runtime, if installed.
-/// Compatibility helper for older single-NIC callers.
-/// # C: O(1)
-pub fn softirq_device_key() -> Option<u32> {
-    RX_RUNTIMES.lock().first().map(|runtime| runtime.device_key)
 }
 
 fn clear_rx_runtime() {
@@ -1255,7 +1182,7 @@ mod ndp_tests {
             10
         ));
         MODERN_DEVS.lock().clear();
-        assert!(modern_state().is_none());
+        assert!(!is_modern_present());
     }
 
     #[test]
@@ -1294,11 +1221,10 @@ mod ndp_tests {
 
         assert!(shutdown_modern(1));
         assert!(!is_modern_present());
-        assert!(modern_state().is_none());
+        assert!(modern_state_for(1).is_none());
         assert_eq!(registered_iface_for(1).unwrap().raw(), 77);
         assert!(registered_iface_for(2).is_none());
-        assert_eq!(softirq_iface_id(), 0);
-        assert!(softirq_device_key().is_none());
+        assert!(first_iface_ip_for(1).is_none());
         assert!(matches!(tx_frame_for(1, &[0; 14]), Err(TxErr::NotPresent)));
     }
 
@@ -1307,7 +1233,6 @@ mod ndp_tests {
         let _guard = TEST_STATE_LOCK.lock();
         REGISTERED_NETDEVS.lock().clear();
         set_registered_iface(0x0012_0304, net::NetIfaceId::from_raw(9));
-        assert_eq!(registered_iface().unwrap().raw(), 9);
         assert_eq!(registered_iface_for(0x0012_0304).unwrap().raw(), 9);
         assert!(registered_iface_for(0x0012_0305).is_none());
         set_registered_iface(0x0012_0305, net::NetIfaceId::from_raw(10));
@@ -1449,15 +1374,13 @@ mod ndp_tests {
         let _guard = TEST_STATE_LOCK.lock();
         clear_rx_runtime();
         set_softirq_iface(0x0012_0304, net::NetIfaceId::from_raw(9), [10, 0, 0, 2]);
-        assert_eq!(softirq_device_key(), Some(0x0012_0304));
-        assert_eq!(softirq_iface_id(), 9);
+        assert_eq!(first_iface_ip_for(0x0012_0304), Some(net::Ipv4Addr::new(10, 0, 0, 2)));
         assert!(set_softirq_ip_for_iface(net::NetIfaceId::from_raw(9), [10, 0, 0, 3]));
-        assert_eq!(first_iface_ip(), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        assert_eq!(first_iface_ip_for(0x0012_0304), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
         assert!(!set_softirq_ip_for_iface(net::NetIfaceId::from_raw(10), [10, 0, 0, 4]));
-        assert_eq!(first_iface_ip(), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        assert_eq!(first_iface_ip_for(0x0012_0304), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
         clear_rx_runtime();
-        assert_eq!(softirq_iface_id(), 0);
-        assert!(softirq_device_key().is_none());
+        assert!(first_iface_ip_for(0x0012_0304).is_none());
     }
 
     #[test]
@@ -1482,17 +1405,6 @@ mod ndp_tests {
     }
 }
 
-/// Find any local iface's IPv4 address (used as the ARP sender_ip).
-/// Reads the stashed `our_ip` slot the rx softirq uses, falling back
-/// to 0.0.0.0 when the iface is unconfigured.
-/// # C: O(1)
-fn first_iface_ip() -> Option<net::Ipv4Addr> {
-    RX_RUNTIMES
-        .lock()
-        .first()
-        .map(|runtime| net::Ipv4Addr::from_u32(u32::from_be_bytes(runtime.ip)))
-}
-
 fn first_iface_ip_for(device_key: u32) -> Option<net::Ipv4Addr> {
     RX_RUNTIMES
         .lock()
@@ -1514,7 +1426,7 @@ fn first_iface_ip_for(device_key: u32) -> Option<net::Ipv4Addr> {
 // Cursors live in the per-device runtime record and are incremented only inside
 // rx_poll while holding the virtio-net device-table lock.
 
-/// Drain pending RX completions and invoke `cb` for each frame body
+/// Drain pending RX completions for the named transport and invoke `cb` for each frame body
 /// (Ethernet header + payload, virtio_net_hdr stripped). Re-publishes
 /// the same descriptor on each pass and kicks the device once if any
 /// frame was delivered.
@@ -1525,16 +1437,9 @@ fn first_iface_ip_for(device_key: u32) -> Option<net::Ipv4Addr> {
 /// # C: O(frames_in_flight)
 /// # Lk: takes the virtio-net device-table lock across ring read + avail publish, drops it
 ///       before invoking cb. Required so cb's downstream (e.g. the TCP
-///       stack emitting an ACK via tx_frame) can re-take the lock
+///       stack emitting an ACK via tx_frame_for) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
 ///       so the device can safely overwrite rx0_buf once republished.
-pub fn rx_poll<F: FnMut(&[u8])>(cb: F) -> usize {
-    let Some(device_key) = softirq_device_key() else {
-        return 0;
-    };
-    rx_poll_for(device_key, cb)
-}
-
 pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
     let runtime = net_runtime_for(device_key);
     let mut g = MODERN_DEVS.lock();
