@@ -26,6 +26,8 @@ const CFG_DRIVER_FEATURE:        u64 = 0x0C; // u32
 const CFG_MSIX_CONFIG_NUMQ:      u64 = 0x10; // u16 msix_config + u16 num_queues
 const CFG_DEVICE_STATUS:         u64 = 0x14; // u8
 
+pub(super) const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
+
 #[derive(Clone, Copy)]
 pub(super) struct QueuePlan {
     pub(super) index: u16,
