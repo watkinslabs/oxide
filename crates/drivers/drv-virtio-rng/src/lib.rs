@@ -23,6 +23,9 @@ use core::sync::atomic::Ordering;
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+/// Virtio device ID for entropy devices.
+pub const VIRTIO_ID_RNG: u16 = 4;
+
 /// Bounded spin budget for one entropy completion. virtio-rng completes a
 /// requestq fill near-instantly on QEMU; this is generous headroom and
 /// matches the gpu/blk poll style. Named, not a magic literal.

@@ -9,7 +9,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -702,12 +702,6 @@ pub fn shutdown(bdf: u32) -> bool {
     }
     true
 }
-
-// AtomicPtr is referenced for future per-device queue notify pointers
-// once the queue plumbing moves into this crate; keep the import live
-// by aliasing it as a private no-op type marker.
-#[allow(dead_code)]
-type _NotifyMarker = AtomicPtr<()>;
 
 /// Default driver feature set (everything `45§3` advertises).
 /// # C: O(1)

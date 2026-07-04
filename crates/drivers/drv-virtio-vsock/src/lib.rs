@@ -25,6 +25,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+/// Virtio device ID for vsock transports.
+pub const VIRTIO_ID_VSOCK: u16 = 19;
+
 /// Number of RX buffers pre-posted on q0. Each buffer is one 4 KiB
 /// frame holding a virtio_vsock_hdr + payload. # C: O(1)
 pub const RX_RING_BUFS: usize = 8;

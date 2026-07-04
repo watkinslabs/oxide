@@ -118,6 +118,10 @@ test-pass claims.
   transport publish, parent-key remove unpublish, and shutdown key lookup are
   centralized; per-child code supplies only profile, install, remove, and
   shutdown policy.
+- Virtio child device IDs for net, block, RNG, vsock, sound, input, and GPU
+  are now supplied by the child driver crates instead of being hard-coded in
+  the PCI-backed virtio child bus glue. The virtio-gpu placeholder notify
+  pointer marker was removed rather than preserving unused future-plumbing.
 - Shared `virtio` now owns a transport-neutral
   `VirtioChildTransportSession` contract plus child location and net
   boot-payload descriptors. The current boot PCI-backed implementation lives
@@ -531,7 +535,9 @@ test-pass claims.
   `virtio_drv` transport helpers directly. That child module now uses one
   generic `VirtioChildDriver` wrapper for model-driver matching, session
   lifetime, failed-probe release, publish, unpublish, and shutdown key lookup,
-  leaving per-child ops focused on device policy. The PCI-backed session now
+  leaving per-child ops focused on device policy. Child virtio device IDs are
+  now exported by the child driver crates and consumed by that wrapper instead
+  of living as literals in the PCI-backed bus glue. The PCI-backed session now
   carries an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
   publish, and unpublish helpers are private to that transport module. The
   shared `virtio::VirtioChildResourceState` now owns child readiness/resource

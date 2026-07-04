@@ -35,6 +35,9 @@ use sched::live::wait_list::WaitList;
 use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
 use virtio::blk;
 
+/// Virtio device ID for block devices.
+pub const VIRTIO_ID_BLOCK: u16 = 2;
+
 /// Global wait list every blk sleeper parks on. One shared list (rather
 /// than per-device) keeps the tick waker trivial: a wake re-runs all
 /// sleepers, each re-checks its own used.idx / busy condition and
