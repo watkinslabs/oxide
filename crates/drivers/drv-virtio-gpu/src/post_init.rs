@@ -4,7 +4,7 @@
 
 
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 struct ProbeCommandBuffer {
     pa: u64,
@@ -442,6 +442,15 @@ struct ScanoutCtx {
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
+const NO_CONSOLE_OWNER: u32 = u32::MAX;
+static CONSOLE_OWNER_BDF: AtomicU32 = AtomicU32::new(NO_CONSOLE_OWNER);
+
+fn console_owner_bdf() -> Option<u32> {
+    match CONSOLE_OWNER_BDF.load(Ordering::Acquire) {
+        NO_CONSOLE_OWNER => None,
+        bdf => Some(bdf),
+    }
+}
 
 /// Copy `pixels` into the live framebuffer, then issue
 /// transfer_to_host_2d + resource_flush so the host repaints the
@@ -450,7 +459,8 @@ static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new(
 /// # C: O(fb_bytes) copy + O(1) per submit.
 pub fn fbcon_flush_pixels(pixels: &[u8]) {
     let g = CTX.lock();
-    let ctx = match g.first() { Some(c) => c, None => return };
+    let owner = match console_owner_bdf() { Some(bdf) => bdf, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == owner) { Some(c) => c, None => return };
     let n = (ctx.fb_bytes as usize).min(pixels.len());
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded copy of n ≤ fb_bytes; CPL=0 writes through HHDM mapping.
     unsafe {
@@ -479,9 +489,9 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
 /// power path on a virtual GPU, so this is image-level blanking — the real,
 /// observable effect — NOT a panel power-down. No-op pre-setup.
 /// # C: O(fb_bytes) clear + O(1) submits.
-pub fn blank_scanout() {
+pub fn blank_scanout_for_bdf(bdf: u32) {
     let g = CTX.lock();
-    let ctx = match g.first() { Some(c) => c, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return };
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded zero of the whole backing; CPL=0 writes through the HHDM mapping.
     hal::zerotrap::trap((ctx.fb_va as *mut u8) as *const u8, (ctx.fb_bytes as usize) as usize);
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
@@ -501,7 +511,11 @@ pub fn blank_scanout() {
 /// Unblank: repaint the live console into the scanout and flush. Delegates to
 /// `fbcon::force_repaint` (re-blits every cell of the fg VT, raises the flush
 /// softirq). The FBIOBLANK(UNBLANK) restore path. # C: O(cols*rows) repaint.
-pub fn unblank_scanout() { fbcon::kernel::force_repaint(); }
+pub fn unblank_scanout_for_bdf(bdf: u32) {
+    if console_owner_bdf() == Some(bdf) {
+        fbcon::kernel::force_repaint();
+    }
+}
 
 /// Install the scanout context for later flushes. Called once from
 /// `setup_scanout` after the resource is created and attached.
@@ -619,7 +633,8 @@ pub fn scanout_ready_for_bdf(bdf: u32) -> bool {
 /// klog wiring to size its Console.
 /// # C: O(1)
 pub fn dimensions() -> Option<(u32, u32)> {
-    CTX.lock().first().map(|c| (c.w, c.h))
+    let owner = console_owner_bdf()?;
+    dimensions_for_bdf(owner)
 }
 
 /// Read back the scanout dimensions for a BDF-owned context.
@@ -633,8 +648,15 @@ pub fn dimensions_for_bdf(bdf: u32) -> Option<(u32, u32)> {
 /// userspace mmaps; `fb_va` is its HHDM kernel VA (for read/write); `pitch` =
 /// `w*4` (BGRA32). `None` before scanout setup. # C: O(1)
 pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
+    let owner = console_owner_bdf()?;
+    framebuffer_for_bdf(owner)
+}
+
+/// The scanout framebuffer for a BDF-owned context.
+/// # C: O(N)
+pub fn framebuffer_for_bdf(bdf: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
     let g = CTX.lock();
-    let c = g.first()?;
+    let c = g.iter().find(|ctx| ctx.bdf == bdf)?;
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
 
@@ -645,15 +667,22 @@ pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn publish_console_scanout(bdf: u32) {
-    let Some((w, h)) = dimensions() else { return };
-    if CTX.lock().first().map(|ctx| ctx.bdf) != Some(bdf) {
+    let Some((w, h)) = dimensions_for_bdf(bdf) else { return };
+    if CONSOLE_OWNER_BDF
+        .compare_exchange(NO_CONSOLE_OWNER, bdf, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return;
     }
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
-    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer() {
-        fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
-        fbdev::set_flush_hook(flush_scanout);
-        fbdev::set_blank_hooks(blank_scanout, unblank_scanout);
+    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer_for_bdf(bdf) {
+        let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
+        let _ = fbdev::set_ops(idx, fbdev::FbOps {
+            driver_key: bdf,
+            flush: flush_scanout_for_bdf,
+            blank: blank_scanout_for_bdf,
+            unblank: unblank_scanout_for_bdf,
+        });
         fbdev::set_yield_hook(fbdev_vsync_yield);
         fbdev::set_now_hook(monotonic_now_ns);
     }
@@ -670,18 +699,20 @@ pub fn publish_console_scanout(bdf: u32) {
 pub fn unpublish_console_scanout(bdf: u32) {
     let fb_base = {
         let ctxs = CTX.lock();
-        match ctxs.first() {
+        match ctxs.iter().find(|ctx| ctx.bdf == bdf) {
             Some(ctx) if ctx.bdf == bdf => ctx.fb_va - ctx.hhdm,
             _ => return,
         }
     };
+    if console_owner_bdf() != Some(bdf) {
+        return;
+    }
     klog::clear_aux_sink();
     tty::live::clear_vt_mode_queries();
     fbcon::kernel::kernel_unregister();
-    fbdev::clear_blank_hooks();
-    fbdev::clear_flush_hook();
     fbdev::clear_wait_hooks();
     let _ = fbdev::unregister_by_base(fb_base);
+    CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -827,9 +858,9 @@ pub fn unregister_drm_hooks(card_id: u32) {
 /// path: userspace wrote the mmap'd scanout directly (or via write()), this
 /// makes those pixels visible (Linux fb pan/defio flush). No-op pre-setup.
 /// # C: O(1) submits (+ host-side O(w*h) transfer).
-pub fn flush_scanout() {
+pub fn flush_scanout_for_bdf(bdf: u32) {
     let g = CTX.lock();
-    let ctx = match g.first() { Some(c) => c, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return };
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
     // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.

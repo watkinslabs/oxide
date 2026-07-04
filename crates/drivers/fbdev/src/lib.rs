@@ -214,9 +214,20 @@ pub struct FbDev {
     /// format). Linux fbcon writes these via FBIOPUTCMAP to recolour the 16
     /// console colours on a truecolor fb.
     pub pseudo_palette: [u32; 16],
+    /// Driver-owned display operations for this fbdev instance. The key is
+    /// opaque to fbdev and is passed back to the owning driver.
+    pub ops:          Option<FbOps>,
 }
 
 static FBS: Spinlock<Vec<FbDev>, DriverLockClass> = Spinlock::new(Vec::new());
+
+#[derive(Copy, Clone)]
+pub struct FbOps {
+    pub driver_key: u32,
+    pub flush:      fn(u32),
+    pub blank:      fn(u32),
+    pub unblank:    fn(u32),
+}
 
 const INVALID_FB_INDEX: u32 = u32::MAX;
 
@@ -248,22 +259,39 @@ fn publish_or_unwind(idx: u32) -> Option<u32> {
     Some(idx)
 }
 
-/// Display-flush hook (`transfer_to_host_2d + resource_flush`) provided by
-/// the GPU driver — makes pixels written to the mmap'd/written scanout
-/// visible. Registered at boot; `None` keeps writes invisible (no panic).
-static FLUSH_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
+/// Register display operations for one fbdev instance.
+/// # C: O(N)
+pub fn set_ops(idx: u32, ops: FbOps) -> bool {
+    let mut g = FBS.lock();
+    let Some(fb) = g.iter_mut().find(|f| f.idx == idx) else {
+        return false;
+    };
+    fb.ops = Some(ops);
+    true
+}
 
-/// Register the display-flush hook (boot wiring, once).
-/// # C: O(1)
-pub fn set_flush_hook(f: fn()) { *FLUSH_HOOK.lock() = Some(f); }
+/// Clear display operations for one fbdev instance.
+/// # C: O(N)
+pub fn clear_ops(idx: u32) -> bool {
+    let mut g = FBS.lock();
+    let Some(fb) = g.iter_mut().find(|f| f.idx == idx) else {
+        return false;
+    };
+    fb.ops = None;
+    true
+}
 
-/// Clear the display-flush hook during driver teardown.
-/// # C: O(1)
-pub fn clear_flush_hook() { *FLUSH_HOOK.lock() = None; }
+fn ops_of(idx: u32) -> Option<FbOps> {
+    FBS.lock().iter().find(|f| f.idx == idx).and_then(|f| f.ops)
+}
 
-/// Push written pixels to the display via the registered flush hook.
-/// # C: O(1) + host transfer.
-pub fn flush() { if let Some(f) = *FLUSH_HOOK.lock() { f(); } }
+/// Push written pixels for `/dev/fb<idx>` to the display via that fb's
+/// registered owner hook. # C: O(N) + host transfer.
+pub fn flush(idx: u32) {
+    if let Some(ops) = ops_of(idx) {
+        (ops.flush)(ops.driver_key);
+    }
+}
 
 // ============================================================
 // Pseudo-vblank source + WAITFORVSYNC wait plumbing
@@ -404,7 +432,7 @@ pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32,
         g.push(FbDev {
             idx, var, fix, base_pa, fb_va, fb_bytes,
             card_id: 0, crtc_id: 0, fb_id: 0, dumb_handle: 0,
-            blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
+            blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16], ops: None,
         });
         idx
     };
@@ -460,7 +488,7 @@ pub fn register(card_id: u32, crtc_id: u32, var: FbVarScreeninfo, fix: FbFixScre
         g.push(FbDev {
             idx, var, fix, base_pa: 0, fb_va: 0, fb_bytes: 0,
             card_id, crtc_id, fb_id: 0, dumb_handle: 0,
-            blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16],
+            blank: FB_BLANK_UNBLANK, pseudo_palette: [0; 16], ops: None,
         });
         idx
     };
@@ -524,31 +552,6 @@ pub fn palette_at(idx: u32, i: usize) -> Option<u32> {
     FBS.lock().iter().find(|f| f.idx == idx).map(|f| f.pseudo_palette[i])
 }
 
-// ============================================================
-// Blank action hooks (clear scanout to black / restore the console).
-// We have no DPMS hardware power path, but we CAN make blanking
-// observable by clearing the displayed image to black and re-painting
-// it on unblank — the real user-visible effect. Registered at boot.
-// ============================================================
-
-/// Clear the displayed scanout to black (blank). `None` ⇒ no GPU path.
-static BLANK_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
-/// Repaint the live console (unblank). `None` ⇒ no GPU path.
-static UNBLANK_HOOK: Spinlock<Option<fn()>, DriverLockClass> = Spinlock::new(None);
-
-/// Register the blank/unblank display hooks (boot wiring, once). # C: O(1)
-pub fn set_blank_hooks(blank: fn(), unblank: fn()) {
-    *BLANK_HOOK.lock() = Some(blank);
-    *UNBLANK_HOOK.lock() = Some(unblank);
-}
-
-/// Clear blank/unblank hooks during framebuffer driver teardown.
-/// # C: O(1)
-pub fn clear_blank_hooks() {
-    *BLANK_HOOK.lock() = None;
-    *UNBLANK_HOOK.lock() = None;
-}
-
 /// Apply a blank-level transition for `/dev/fb<idx>`: store the level, then
 /// (level ≥ NORMAL) clear the displayed image to black, or (UNBLANK) repaint
 /// the console. Returns the prior level. Honest: no real DPMS power-down — the
@@ -556,14 +559,30 @@ pub fn clear_blank_hooks() {
 pub fn apply_blank(idx: u32, level: u32) {
     let prev = blank_of(idx).unwrap_or(FB_BLANK_UNBLANK);
     set_blank(idx, level);
+    let ops = ops_of(idx);
     if level == FB_BLANK_UNBLANK {
-        if prev != FB_BLANK_UNBLANK { if let Some(f) = *UNBLANK_HOOK.lock() { f(); } }
-    } else if let Some(f) = *BLANK_HOOK.lock() { f(); }
+        if prev != FB_BLANK_UNBLANK {
+            if let Some(ops) = ops {
+                (ops.unblank)(ops.driver_key);
+            }
+        }
+    } else if let Some(ops) = ops {
+        (ops.blank)(ops.driver_key);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
+    static LAST_FLUSH: AtomicU32 = AtomicU32::new(u32::MAX);
+    static LAST_BLANK: AtomicU32 = AtomicU32::new(u32::MAX);
+    static LAST_UNBLANK: AtomicU32 = AtomicU32::new(u32::MAX);
+
+    fn record_flush(key: u32) { LAST_FLUSH.store(key, AtomicOrdering::SeqCst); }
+    fn record_blank(key: u32) { LAST_BLANK.store(key, AtomicOrdering::SeqCst); }
+    fn record_unblank(key: u32) { LAST_UNBLANK.store(key, AtomicOrdering::SeqCst); }
 
     #[test]
     fn fb_var_default_bgra32() {
@@ -716,6 +735,46 @@ mod tests {
         assert_eq!(idx, 0);
         assert_eq!(count(), 1);
         assert_eq!(var_of(0).unwrap().xres, 800);
+        FBS.lock().clear();
+    }
+
+    #[test]
+    fn fb_ops_are_per_instance() {
+        FBS.lock().clear();
+        LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
+        LAST_BLANK.store(u32::MAX, AtomicOrdering::SeqCst);
+        LAST_UNBLANK.store(u32::MAX, AtomicOrdering::SeqCst);
+
+        let bytes = 16u64;
+        let fb0 = init_scanout(0x1000, 0xffff_8000_0000_1000, bytes, 16, 1, 1);
+        let fb1 = init_scanout(0x2000, 0xffff_8000_0000_2000, bytes, 16, 1, 1);
+        assert_ne!(fb0, fb1);
+        assert!(set_ops(fb0, FbOps {
+            driver_key: 11,
+            flush: record_flush,
+            blank: record_blank,
+            unblank: record_unblank,
+        }));
+        assert!(set_ops(fb1, FbOps {
+            driver_key: 22,
+            flush: record_flush,
+            blank: record_blank,
+            unblank: record_unblank,
+        }));
+
+        flush(fb1);
+        assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), 22);
+        apply_blank(fb0, FB_BLANK_NORMAL);
+        assert_eq!(LAST_BLANK.load(AtomicOrdering::SeqCst), 11);
+        apply_blank(fb1, FB_BLANK_NORMAL);
+        assert_eq!(LAST_BLANK.load(AtomicOrdering::SeqCst), 22);
+        apply_blank(fb1, FB_BLANK_UNBLANK);
+        assert_eq!(LAST_UNBLANK.load(AtomicOrdering::SeqCst), 22);
+
+        assert!(clear_ops(fb1));
+        LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
+        flush(fb1);
+        assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), u32::MAX);
         FBS.lock().clear();
     }
 }

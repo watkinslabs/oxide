@@ -269,9 +269,10 @@ test-pass claims.
   buffers and FB metadata are now card-owned too: CREATE/MAP/DESTROY/ADDFB/RMFB,
   mmap cookie lookup, and SETCRTC/PAGE_FLIP FB resolution all require the
   matching card id, and DRM unregister drops that card's CRTC and dumb-buffer
-  table state. The remaining visible primary path is fbcon/fbdev/VT helper
-  publication and the fbdev flush/blank/wait hooks; full GEM mmap VMA lifetime
-  tracking still needs a separate fix.
+  table state. fbdev flush/blank operations are now stored on each `/dev/fbN`
+  record and call back into the owning virtio-gpu BDF instead of a global
+  display hook; fbcon publication still has one explicit foreground console
+  owner. Full GEM mmap VMA lifetime tracking still needs a separate fix.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
@@ -375,8 +376,9 @@ test-pass claims.
   Virtio-gpu installed device state, DRM backend records, DRM card/render
   nodes, DRM ioctl backend routing, scanout backing records, DRM runtime
   scanout hooks, scanout owner tokens, flip-event queues, and dumb-buffer/FB
-  object lookup are BDF/card owned, but the visible console/fbdev helper hooks
-  still target the primary scanout. Virtio-vsock's upper protocol layer and virtio-snd's upper
+  object lookup are BDF/card owned. fbdev flush/blank hooks are per-fb records
+  keyed to the owning BDF, while fbcon remains a single foreground console
+  bound to an explicit owner. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its
   singleton protocol endpoint before allocation and fails a second transport
   cleanly instead of replacing the installed transport.
@@ -470,9 +472,9 @@ test-pass claims.
   stack-owned interface-scoped IPv6 NDP lookup, but virtio-net still needs live
   loop proof and broader multi-NIC validation; virtio-gpu now has per-card DRM
   card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
-  state, flip events, and dumb-buffer/FB object lookup, but still needs fbdev
-  and console routing on top of its BDF-keyed scanout table plus full GEM mmap
-  VMA lifetime tracking;
+  state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
+  fbdev flush/blank dispatch; it still needs full GEM mmap VMA lifetime
+  tracking;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
   are still main offenders. AHCI and NVMe still need live multi-controller
   proof, but they no longer use process-wide installed-controller slots.
@@ -613,9 +615,9 @@ Several drivers still use singleton global state:
 
 - virtio-gpu: per-BDF installed device and scanout records; per-card DRM
   nodes, ioctl backend routing, runtime scanout hooks, scanout owner tokens,
-  flip-event queues, and dumb-buffer/FB object lookup; singleton primary
-  console/fbdev helper hooks remain, and GEM mmap VMA lifetime tracking is
-  still incomplete
+  flip-event queues, dumb-buffer/FB object lookup, and per-fb owner-keyed
+  fbdev flush/blank dispatch; fbcon has one explicit foreground console owner,
+  and GEM mmap VMA lifetime tracking is still incomplete
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
   is stack-owned and keyed by interface in kernel builds; boot route/RS seeding
   now iterates the registered virtio-net iface snapshot instead of using only
