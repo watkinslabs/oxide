@@ -1,530 +1,74 @@
 // x86_64 HAL impls per docs/20.
 //
-// Scope landed: IrqGate (RFLAGS save + `cli` / RFLAGS restore) per
-// `06§3.1`. Halt + mmio_barrier per `20§4`. Larger CpuOps surface
-// (per-CPU base, current_cpu) lands once the per-CPU primitive does.
-//
-// Asm is gated `#[cfg(all(target_arch="x86_64", target_os="oxide-kernel"))]`
-// so the same source file compiles cleanly on:
-//   - kernel target (`*-unknown-oxide-kernel`): real asm.
-//   - host (`cargo test --workspace`): no-op fallback.
-// This keeps the workspace one-build-graph without sidestepping the
-// "no static mut" / "no dyn HAL" / "no extern crate std" rules.
+// Crate root is the manifest/export surface. Architecture code lives in
+// submodules grouped by CPU, IRQ, timer, descriptor, and memory-management role.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
-use hal::{CpuOps, Nanos, TimerOps};
-use sync::IrqGate;
-
 mod context;
+mod cpu;
 mod cpuid;
 mod fault;
 mod fpu;
 mod gdt;
 mod idt;
 pub mod ioapic;
-mod syscall;
-mod tss;
 mod irq;
+mod irq_gate;
 mod mmu;
 pub mod mmu_ops;
 pub mod pci;
 mod pt_regs;
 mod regs;
 mod signal;
+mod syscall;
+mod timer;
+mod tss;
 pub mod vmm;
-pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor, family_model as cpuid_family_model};
+
+pub use context::{ContextX86_64, ForkRegs};
+pub use cpu::{get_user_fs_base, halt, mmio_barrier, set_user_fs_base, X86CpuOps};
+pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, vendor as cpuid_vendor};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
-pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-pub use regs::{set_data_watchpoint, read_clear_dr6};
 pub use fault::{
-    install_fault_handler, install_user_trap_hook, vector_stub_addr,
-    current_fault_frame, current_fault_gprs,
-    FaultFrame, FaultGprs, FaultHandler, UserTrapHook,
+    current_fault_frame, current_fault_gprs, install_fault_handler, install_user_trap_hook,
+    vector_stub_addr, FaultFrame, FaultGprs, FaultHandler, UserTrapHook,
+};
+pub use fpu::{
+    fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES,
+};
+pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, USER_CS, USER_DS};
+pub use idt::{
+    install_default as install_default_idt, install_ist_gates, load_idtr_for_ap, IdtEntry,
+    IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS,
 };
 pub use irq::{
-    irq_stub_addr,
-    VEC_MSI, VEC_RESCHED, VEC_TIMER, VEC_TLB_SHOOTDOWN,
-    VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN,
+    irq_stub_addr, VEC_MSI, VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN,
+    VEC_RESCHED, VEC_TIMER, VEC_TLB_SHOOTDOWN,
 };
-pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};
-pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, USER_CS, USER_DS};
-pub use tss::{install_tss, install_tss_for_cpu, set_rsp0, setup_ist_stacks, tss_base_addr, Tss64, TSS_SEL, IST_STACK_BYTES};
-pub use syscall::{install_syscall_msrs, current_user_frame, current_user_full_frame, current_kstack_top, set_syscall_kstack, init_percpu_syscall_kstack, boot_syscall_kstack_top};
-pub use signal::{build_signal_frame, restore_signal_frame};
-pub use idt::{install_default as install_default_idt, install_ist_gates, load_idtr_for_ap, IdtEntry, IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS};
-pub use context::{ContextX86_64, ForkRegs};
+pub use irq_gate::X86IrqGate;
 pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteFlags, PteX86_64, PtIndices,
     ENTRIES_PER_TABLE, PD_SHIFT, PDPT_SHIFT, PML4_SHIFT, PT_SHIFT, PTE_PHYS_MASK,
 };
 pub use pt_regs::{oxide_dispatch_from_pt_regs_x86_64, PtRegsX86_64};
-
-/// IRQ gate: save RFLAGS + clear IF (`cli`) on disable; restore RFLAGS
-/// (which restores IF) on restore. Pairs with `Spinlock::lock_irqsave`
-/// per `06§3.1`.
-pub struct X86IrqGate;
-
-impl IrqGate for X86IrqGate {
-    /// # SAFETY: hardware-state mutation on this CPU; the returned
-    /// flags must be paired with a single `restore` call before any
-    /// other code path expects IRQs in their pre-disable state.
-    /// # C: O(1)
-    unsafe fn save_disable() -> u64 {
-        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-        {
-            let flags: u64;
-            // SAFETY: pushfq + cli is the canonical save+disable
-            // sequence on x86_64 per Intel SDM Vol. 2 + AMD APM.
-            unsafe {
-                core::arch::asm!(
-                    "pushfq",
-                    "pop {f}",
-                    "cli",
-                    f = out(reg) flags,
-                    options(nomem, preserves_flags),
-                );
-            }
-            flags
-        }
-        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-        { 0 }
-    }
-
-    /// # SAFETY: restores RFLAGS from caller-provided word that came
-    /// from the matching `save_disable` invocation.
-    /// # C: O(1)
-    unsafe fn restore(flags: u64) {
-        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-        {
-            // SAFETY: popfq writes IF + other RFLAGS bits from the
-            // saved word; legal on any privilege level for kernel.
-            unsafe {
-                core::arch::asm!(
-                    "push {f}",
-                    "popfq",
-                    f = in(reg) flags,
-                    options(nomem),
-                );
-            }
-        }
-        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-        { let _ = flags; }
-    }
-}
-
-/// Write IA32_FS_BASE MSR (0xC000_0100) — the per-thread FS-segment
-/// base used by user-space TLS (`fs:0x...`). Single-CPU v1; the
-/// caller (typically `sys_arch_prctl(ARCH_SET_FS, va)`) owns the
-/// invariant that the value is a valid user VA.
-///
-/// # SAFETY: `wrmsr` is privileged at CPL=0; `va` becomes the next
-/// user-mode FS_BASE on this CPU. Caller validates `va` is canonical
-/// and below `USER_VA_END` if user-supplied.
-/// # C: O(1)
-/// # Ctx: syscall context, IRQs off (FMASK clears IF on entry)
-pub unsafe fn set_user_fs_base(va: u64) {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let lo = va as u32;
-        let hi = (va >> 32) as u32;
-        // SAFETY: `wrmsr` is a privileged write; ECX selects
-        // IA32_FS_BASE (0xC000_0100). No memory effect; only changes
-        // the architectural FS_BASE register.
-        unsafe {
-            core::arch::asm!(
-                "wrmsr",
-                in("ecx") 0xC000_0100u32,
-                in("eax") lo,
-                in("edx") hi,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { let _ = va; }
-}
-
-/// Read IA32_FS_BASE MSR (0xC000_0100). Inverse of `set_user_fs_base`;
-/// `arch_prctl(ARCH_GET_FS, &out)` plumbs through this.
-/// # SAFETY: `rdmsr` is privileged at CPL=0; reads only.
-/// # C: O(1)
-pub unsafe fn get_user_fs_base() -> u64 {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let lo: u32; let hi: u32;
-        // SAFETY: rdmsr is privileged; ECX selects IA32_FS_BASE; no memory effect.
-        unsafe {
-            core::arch::asm!(
-                "rdmsr",
-                in("ecx") 0xC000_0100u32,
-                out("eax") lo, out("edx") hi,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-        ((hi as u64) << 32) | (lo as u64)
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { 0 }
-}
-
-/// Halt this CPU until the next IRQ. `hlt` per `20§4`. On host fallback,
-/// returns immediately so hosted unit tests can exercise call sites.
-/// # C: O(1)
-/// # Ctx: idle path
-pub fn halt() {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        // SAFETY: `hlt` is a privileged instruction; in kernel mode
-        // (CPL=0) it parks the core until the next IRQ — no memory
-        // effects beyond architectural state.
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)) };
-    }
-}
-
-/// Memory barrier ordering MMIO writes per `06§2`.
-/// # C: O(1)
-pub fn mmio_barrier() {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        // SAFETY: `mfence` is unprivileged; orders all loads + stores
-        // before any subsequent loads + stores per Intel SDM 8.2.5.
-        unsafe { core::arch::asm!("mfence", options(nomem, nostack, preserves_flags)) };
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    {
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CpuOps (`20§7`)
-// ---------------------------------------------------------------------------
-
-/// `current_cpu` reads `gs:0` — the per-CPU area's first word holds
-/// `cpu_id`. Boot path (kernel's `_start`) writes `GS_BASE` via
-/// `set_percpu_base` after carving the area out of the BSS per-CPU
-/// table. Until SMP support lands, `cpu_count` returns 1 and the
-/// boot CPU writes `cpu_id = 0` so the read returns 0 even when the
-/// HAL is wired up.
-pub struct X86CpuOps;
-
-impl CpuOps for X86CpuOps {
-    /// x86_64 userspace detects features via the `CPUID` instruction
-    /// directly (glibc/musl ignore `AT_HWCAP` here), so advertise 0.
-    /// # C: O(1)
-    fn cpu_hwcap() -> u64 { 0 }
-
-    /// # C: O(1)
-    fn current_cpu() -> u32 {
-        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-        {
-            let id: u32;
-            // SAFETY: `mov %gs:0, %eax` reads the 32-bit word at
-            // `GS_BASE + 0`. Boot path guarantees GS_BASE is set
-            // (see `set_percpu_base`) and that offset 0 of the
-            // per-CPU area holds the CPU id.
-            unsafe {
-                core::arch::asm!(
-                    "mov {id:e}, gs:[0]",
-                    id = out(reg) id,
-                    options(nomem, nostack, preserves_flags),
-                );
-            }
-            id
-        }
-        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-        { 0 }
-    }
-
-    /// v1 single-CPU; SMP enumeration lands with the APIC bring-up.
-    /// # C: O(1)
-    fn cpu_count() -> u32 { 1 }
-
-    /// # C: O(1)
-    fn halt() { halt(); }
-
-    /// # C: O(1)
-    fn mmio_barrier() { mmio_barrier(); }
-
-    /// # SAFETY: caller asserts `base` points to a valid per-CPU
-    /// area whose first word is the cpu_id.
-    /// # C: O(1)
-    unsafe fn set_percpu_base(base: *mut u8) {
-        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-        {
-            // SAFETY: `wrgsbase` writes the GS base register from the
-            // caller-supplied pointer. Requires CR4.FSGSBASE = 1, which
-            // boot enables before the first call. Kernel-only insn.
-            unsafe {
-                core::arch::asm!(
-                    "wrgsbase {b}",
-                    b = in(reg) base,
-                    options(nomem, nostack, preserves_flags),
-                );
-            }
-        }
-        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-        { let _ = base; }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TimerOps (`20§12`)
-// ---------------------------------------------------------------------------
-
-/// TSC frequency in kHz, set by boot calibration (`23§3`). Zero means
-/// "not yet calibrated"; `monotonic_ns` returns 0 in that window so
-/// callers don't divide by zero.
-static TSC_KHZ: AtomicU32 = AtomicU32::new(0);
-
-/// Boot-time hook: stash the TSC frequency in kHz. Calibration code
-/// (`23§3`) calls this once `freq` is known.
-/// # C: O(1)
-pub fn set_tsc_khz(freq: u32) {
-    TSC_KHZ.store(freq, Ordering::Relaxed);
-}
-
-/// Read TSC. Pure rdtsc — boot-time CR4.TSC handling lands when the
-/// kernel starts allowing user CPL=3 reads (see `20§12`).
-fn rdtsc() -> u64 {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let lo: u32; let hi: u32;
-        // SAFETY: `rdtsc` is unprivileged at CPL=0, returns the
-        // 64-bit TSC across edx:eax. No memory effects.
-        unsafe {
-            core::arch::asm!(
-                "rdtsc",
-                lateout("eax") lo, lateout("edx") hi,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-        ((hi as u64) << 32) | (lo as u64)
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    {
-        // Host fallback: a monotonic counter so test sequences see a
-        // strictly-non-decreasing `monotonic_ns` if a freq is set.
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        n as u64
-    }
-}
-
-/// Read legacy I/O port `p` (8-bit). # SAFETY: caller asserts `p` is a
-/// real, side-effect-tolerable port (PIT 0x42/0x43, port-B 0x61).
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-unsafe fn pio_in8(p: u16) -> u8 {
-    let v: u8;
-    // SAFETY: single 8-bit port read; caller asserts `p` is a real port.
-    unsafe {
-        core::arch::asm!("in al, dx", out("al") v, in("dx") p,
-            options(nomem, nostack, preserves_flags));
-    }
-    v
-}
-
-/// Write legacy I/O port `p` (8-bit). # SAFETY: as `pio_in8`.
+pub use regs::{read_clear_dr6, set_data_watchpoint};
+pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
+pub use signal::{build_signal_frame, restore_signal_frame};
+pub use syscall::{
+    boot_syscall_kstack_top, current_kstack_top, current_user_frame, current_user_full_frame,
+    init_percpu_syscall_kstack, install_syscall_msrs, set_syscall_kstack,
+};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-unsafe fn pio_out8(p: u16, v: u8) {
-    // SAFETY: single 8-bit port write; caller asserts `p` is a real port.
-    unsafe {
-        core::arch::asm!("out dx, al", in("dx") p, in("al") v,
-            options(nomem, nostack, preserves_flags));
-    }
-}
-
-/// Read the legacy CMOS/RTC wall clock (ports 0x70 index / 0x71 data) and
-/// return seconds since the Unix epoch. Used to initialise CLOCK_REALTIME at
-/// boot (Linux `read_persistent_clock64` / `mach_get_cmos_time`). Without it
-/// the wall clock starts at 1970, so PAM/shadow account checks see every
-/// account's password date as "in the future" and TLS/timers/mtimes are wrong.
-/// QEMU presents the host time here. Returns 0 if the year reads implausibly.
-/// # C: O(1) (a bounded UIP spin)
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-pub fn read_rtc_unix_secs() -> u64 {
-    // SAFETY: legacy CMOS RTC index/data ports; side-effect-tolerable byte reads.
-    unsafe {
-        let rd = |r: u8| -> u8 { pio_out8(0x70, r); pio_in8(0x71) };
-        // Wait out an update-in-progress for a torn-read-free snapshot (bounded).
-        let mut spins = 0u32;
-        while rd(0x0A) & 0x80 != 0 { spins += 1; if spins > 2_000_000 { break; } }
-        let statusb = rd(0x0B);
-        let (mut sec, mut min, mut hour) = (rd(0x00), rd(0x02), rd(0x04));
-        let (mut day, mut mon, mut yr) = (rd(0x07), rd(0x08), rd(0x09));
-        let mut cent = rd(0x32);
-        let is_bcd = (statusb & 0x04) == 0;
-        let is_12h = (statusb & 0x02) == 0;
-        let pm = is_12h && (hour & 0x80) != 0;
-        hour &= 0x7F;
-        if is_bcd {
-            let c = |v: u8| (v & 0x0F) + ((v >> 4) * 10);
-            sec = c(sec); min = c(min); hour = c(hour);
-            day = c(day); mon = c(mon); yr = c(yr);
-            cent = if cent != 0 { c(cent) } else { 0 };
-        }
-        let mut hour = hour as u64;
-        if is_12h { if pm && hour != 12 { hour += 12; } else if !pm && hour == 12 { hour = 0; } }
-        let year: u64 = if cent >= 19 { cent as u64 * 100 + yr as u64 }
-                        else { 2000 + yr as u64 };
-        if !(1971..=2200).contains(&year) { return 0; }
-        // days_from_civil (Hinnant): days since 1970-01-01.
-        let m = mon as u64;
-        let y = if m <= 2 { year - 1 } else { year };
-        let era = y / 400;
-        let yoe = y - era * 400;
-        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as u64 - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        let days = era * 146097 + doe - 719468;
-        days * 86400 + hour * 3600 + min as u64 * 60 + sec as u64
-    }
-}
-
-/// Calibrate the TSC frequency in kHz against PIT channel 2 — the
-/// standard one-shot gate method (Linux `pit_calibrate_tsc`, `23§3`).
-/// Programs channel 2 in mode 0 for the full 65535-tick (~54.9 ms)
-/// window, brackets it with `rdtsc`, and derives
-/// `kHz = tsc_delta * PIT_HZ / count / 1000`. Replaces the boot
-/// hard-coded 2.4 GHz so CLOCK_MONOTONIC tracks real wall-clock (under
-/// KVM the host TSC rate; the hard-coded guess broke systemd's
-/// deadline math). Returns 0 if the count never elapses (caller keeps
-/// a fallback).
-/// # SAFETY: boot-only, single-CPU, IRQs masked. Legacy PIT (0x42/0x43)
-/// + port-B (0x61) are always present on PC-class (q35) machines; the
-/// speaker bit is forced off so no audible side effect.
-/// # C: O(1) — one ~55 ms PIT gate window, bounded spin.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-pub unsafe fn calibrate_tsc_khz() -> u32 {
-    const PIT_HZ: u64 = 1_193_182;
-    const COUNT:  u16 = 0xFFFF; // ~54.925 ms
-    // SAFETY: boot-only single-CPU; legacy PIT (0x42/0x43) + port-B (0x61)
-    // always present on q35; speaker-data bit forced off (no sound).
-    unsafe {
-        // Port-B (0x61): clear speaker-data (bit1), set timer-2 gate (bit0).
-        let p61 = (pio_in8(0x61) & !0x02) | 0x01;
-        pio_out8(0x61, p61);
-        // Channel 2, lobyte+hibyte, mode 0 (interrupt-on-terminal-count),
-        // binary counting: 0b1011_0000 = 0xB0.
-        pio_out8(0x43, 0xB0);
-        pio_out8(0x42, (COUNT & 0xFF) as u8);
-        pio_out8(0x42, (COUNT >> 8) as u8);    // loading count starts mode-0
-        let start = rdtsc();
-        // Mode 0 drives OUT (port-B bit5) high when the count reaches 0.
-        // Bound the spin so a non-counting PIT can't hang boot.
-        let mut guard: u64 = 0;
-        while pio_in8(0x61) & 0x20 == 0 {
-            guard += 1;
-            if guard > 1_000_000_000 { return 0; }
-        }
-        let delta = rdtsc().wrapping_sub(start);
-        (delta.saturating_mul(PIT_HZ) / COUNT as u64 / 1000) as u32
-    }
-}
-
-pub struct X86TimerOps;
-
-impl TimerOps for X86TimerOps {
-    /// # C: O(1)
-    fn monotonic_ns() -> Nanos {
-        let khz = TSC_KHZ.load(Ordering::Relaxed) as u64;
-        if khz == 0 { return Nanos(0); }
-        // tsc * 1_000_000 / khz — keeps the multiply within u64 for
-        // any TSC < 2^44 cycles (~488 days at 4 GHz).
-        let tsc = rdtsc();
-        Nanos(tsc.saturating_mul(1_000_000) / khz)
-    }
-
-    /// # SAFETY: writes `IA32_TSC_DEADLINE` MSR via `wrmsr`; caller
-    /// owns LVT timer setup per `23§4` (one-shot, vector pre-bound).
-    /// # C: O(1)
-    unsafe fn set_oneshot(_deadline_ns: Nanos) {
-        // TSC-deadline LVT programming lands with the APIC bring-up
-        // in `22§3`. Trait shape exists so consumers compile.
-    }
-
-    /// # C: O(1)
-    fn freq_khz() -> u32 { TSC_KHZ.load(Ordering::Relaxed) }
-}
+pub use timer::{calibrate_tsc_khz, read_rtc_unix_secs};
+pub use timer::{set_tsc_khz, X86TimerOps};
+pub use tss::{
+    install_tss, install_tss_for_cpu, set_rsp0, setup_ist_stacks, tss_base_addr, Tss64,
+    TSS_SEL, IST_STACK_BYTES,
+};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sync::{Buddy, Spinlock};
-
-    #[test]
-    fn irqgate_noop_on_host() {
-        // Host build: save_disable returns 0; restore is a no-op.
-        // SAFETY: hosted test entry; arch-asm path is cfg'd out so this
-        // exercises only the no-op fallback per the cfg gates above.
-        let f = unsafe { X86IrqGate::save_disable() };
-        assert_eq!(f, 0);
-        // SAFETY: hosted test; restore path is no-op on this target.
-        unsafe { X86IrqGate::restore(f) };
-    }
-
-    #[test]
-    fn lock_irqsave_works_with_x86_gate() {
-        let s: Spinlock<u32, Buddy> = Spinlock::new(0);
-        let mut g = s.lock_irqsave::<X86IrqGate>();
-        *g = 7;
-        drop(g);
-        assert_eq!(*s.lock(), 7);
-    }
-
-    #[test]
-    fn mmio_barrier_compiles_and_runs() {
-        mmio_barrier();
-    }
-
-    #[test]
-    fn halt_compiles_on_host_no_panic() {
-        // Host build: halt is a no-op, returns immediately.
-        halt();
-    }
-
-    #[test]
-    fn x86_cpuops_host_fallback_returns_cpu_zero() {
-        // Host build: current_cpu reads a stub; cpu_count is 1 by spec.
-        assert_eq!(X86CpuOps::current_cpu(), 0);
-        assert_eq!(X86CpuOps::cpu_count(),    1);
-    }
-
-    #[test]
-    fn x86_cpuops_set_percpu_base_compiles_on_host() {
-        let mut buf = [0u8; 64];
-        // SAFETY: host-only; the asm path is cfg'd out, so this just
-        // exercises the no-op fallback. The buffer outlives the call.
-        unsafe { X86CpuOps::set_percpu_base(buf.as_mut_ptr()) };
-    }
-
-    #[test]
-    fn x86_timer_returns_zero_until_calibrated() {
-        // TSC_KHZ defaults to 0 across tests in this suite; the host
-        // counter increments but the result is `tsc * 1e6 / 0` which
-        // we short-circuit to 0.
-        let pre = X86TimerOps::freq_khz();
-        if pre == 0 {
-            assert_eq!(X86TimerOps::monotonic_ns(), Nanos(0));
-        }
-    }
-
-    #[test]
-    fn x86_timer_after_set_tsc_khz_is_nonzero() {
-        // Host fallback: rdtsc returns a strictly-increasing counter,
-        // so once a freq is set, monotonic_ns advances.
-        set_tsc_khz(1_000_000); // 1 GHz
-        assert_eq!(X86TimerOps::freq_khz(), 1_000_000);
-        let a = X86TimerOps::monotonic_ns();
-        let b = X86TimerOps::monotonic_ns();
-        assert!(b.0 >= a.0, "monotonic_ns must be non-decreasing");
-        // Reset for sibling tests.
-        set_tsc_khz(0);
-    }
-}
-
+mod tests;
