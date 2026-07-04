@@ -268,10 +268,14 @@ pub fn register_node(idx: u32) -> bool {
     if FB_DEVICES.lock().iter().any(|(id, _)| *id == idx) {
         return false;
     }
-    let dev = drv::device_add(Arc::new(
+    let dev = match drv::try_device_add(Arc::new(
         drv::Device::new("graphics", alloc::format!("fb{idx}"), 0, 0, idx)
             .with_devnode("graphics", alloc::format!("fb{idx}"), Some((29, idx)))
-            .with_node_factory(Arc::new(move || make_fb_inode(idx)))));
+            .with_node_factory(Arc::new(move || make_fb_inode(idx))),
+    )) {
+        Ok(dev) => dev,
+        Err(_) => return false,
+    };
     FB_DEVICES.lock().push((idx, dev));
     true
 }
@@ -288,4 +292,52 @@ pub fn unregister_node(idx: u32) -> bool {
     };
     drv::device_del(&dev);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_node_is_idempotent_without_republishing() {
+        let idx = 0x7ffe;
+        let _ = unregister_node(idx);
+
+        assert!(register_node(idx));
+        assert!(!register_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == alloc::format!("fb{idx}"))
+                .count(),
+            1
+        );
+
+        assert!(unregister_node(idx));
+    }
+
+    #[test]
+    fn register_node_leaves_slot_free_when_model_publication_conflicts() {
+        let idx = 0x7ffd;
+        let _ = unregister_node(idx);
+        let addr = alloc::format!("fb{idx}");
+        let conflict = drv::device_add(Arc::new(
+            drv::Device::new("graphics", addr.clone(), 0, 0, idx)
+                .with_devnode("graphics", addr.clone(), Some((29, idx))),
+        ));
+
+        assert!(!register_node(idx));
+        assert!(!FB_DEVICES.lock().iter().any(|(id, _)| *id == idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            1
+        );
+
+        drv::device_del(&conflict);
+        assert!(register_node(idx));
+        assert!(unregister_node(idx));
+    }
 }
