@@ -26,6 +26,12 @@ use virtio::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
 /// Virtio device ID for sound devices.
 pub const VIRTIO_ID_SOUND: u16 = 25;
 
+type DeviceKey = virtio::VirtioChildDeviceKey;
+
+fn sound_owner(device_key: DeviceKey) -> u32 {
+    device_key.raw()
+}
+
 /// Driver-model identity for virtio-snd child binding.
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-snd", VIRTIO_ID_SOUND);
@@ -102,8 +108,8 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 /// boot probe already programmed. One in-flight control request at a time,
 /// serialised by the `Spinlock` around the whole request body.
 struct Ctx {
-    /// Owning PCI transport BDF packed as bus:device:function.
-    device_key: u32,
+    /// Owning virtio child identity supplied by the transport bus.
+    device_key: DeviceKey,
     controlq: virtio::VirtQueueResource,
     hhdm:     u64,
     /// virtio common-cfg MMIO window. A harmless read of device_status
@@ -214,7 +220,7 @@ static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
 /// Transport → driver handoff: the CONTROLQ/EVENTQ rings and optional PCM
 /// rings the transport programmed.
 pub struct SndInstall {
-    pub device_key: u32,
+    pub device_key: DeviceKey,
     pub resources: virtio::VirtioResources,
 }
 
@@ -319,7 +325,7 @@ pub fn present() -> bool { !CTX.lock().is_empty() }
 
 /// True iff the named virtio-snd transport is installed.
 /// # C: O(installed transports)
-pub fn present_for(device_key: u32) -> bool {
+pub fn present_for(device_key: DeviceKey) -> bool {
     CTX.lock()
         .iter()
         .any(|ctx| ctx.device_key == device_key)
@@ -388,7 +394,8 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     if CTX.lock().iter().any(|ctx| ctx.device_key == p.device_key) {
         return None;
     }
-    let mut card_reservation = SoundCardReservation::reserve(p.device_key)?;
+    let owner = sound_owner(p.device_key);
+    let mut card_reservation = SoundCardReservation::reserve(owner)?;
     if eventq.size == 0 || eventq.size > MAX_EVENTQ_DESCS {
         return None;
     }
@@ -478,11 +485,11 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
             return None;
         }
     };
-    if !sound::ops::register(p.device_key, &SOUND_OPS) {
+    if !sound::ops::register(owner, &SOUND_OPS) {
         let _ = uninstall(p.device_key);
         return None;
     }
-    if !sound::register_card(p.device_key) {
+    if !sound::register_card(owner) {
         let _ = uninstall(p.device_key);
         return None;
     }
@@ -492,18 +499,19 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
 
 /// Stop streams, reset the virtio device, and release all queue/scratch frames
 /// owned by the matching installed transport. # C: O(CONTROLQ)
-pub fn uninstall(device_key: u32) -> bool {
+pub fn uninstall(device_key: DeviceKey) -> bool {
     let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
         return false;
     };
-    if sound::unregister_card(device_key) {
-        let _ = sound::ops::clear(device_key);
+    let owner = sound_owner(device_key);
+    if sound::unregister_card(owner) {
+        let _ = sound::ops::clear(owner);
     }
     stop_reset_free(ctx);
     true
 }
 
-fn remove_ctx(device_key: u32) -> Option<(Ctx, bool)> {
+fn remove_ctx(device_key: DeviceKey) -> Option<(Ctx, bool)> {
     let mut guard = CTX.lock();
     let idx = guard.iter().position(|ctx| ctx.device_key == device_key)?;
     let ctx = guard.remove(idx);
@@ -522,18 +530,18 @@ fn active_ctx(ctxs: &[Ctx]) -> Option<&Ctx> {
 }
 
 fn active_ctx_mut_for(ctxs: &mut [Ctx], owner: u32) -> Option<&mut Ctx> {
-    ctxs.iter_mut().find(|ctx| ctx.device_key == owner)
+    ctxs.iter_mut().find(|ctx| sound_owner(ctx.device_key) == owner)
 }
 
 fn active_ctx_for(ctxs: &[Ctx], owner: u32) -> Option<&Ctx> {
-    ctxs.iter().find(|ctx| ctx.device_key == owner)
+    ctxs.iter().find(|ctx| sound_owner(ctx.device_key) == owner)
 }
 
 /// Quiesce the installed virtio-snd transport for reboot/poweroff without
 /// unregistering the sound card or clearing sound ops. Publication remains
 /// visible for the terminal transition; subsequent ops see no live transport.
 /// # C: O(CONTROLQ)
-pub fn shutdown(device_key: u32) -> bool {
+pub fn shutdown(device_key: DeviceKey) -> bool {
     let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
         return false;
     };
@@ -541,7 +549,7 @@ pub fn shutdown(device_key: u32) -> bool {
     true
 }
 
-fn remove_ctx_and_release_event_handler(device_key: u32) -> Option<Ctx> {
+fn remove_ctx_and_release_event_handler(device_key: DeviceKey) -> Option<Ctx> {
     let (ctx, empty_after) = remove_ctx(device_key)?;
     if empty_after {
         let _ = softirq::clear_handler(softirq::Slot::SndEvent);
@@ -688,7 +696,7 @@ fn free_frame(pa: u64) {
 /// `direction` byte. Returns None on transport/status error so probe can
 /// reset the device and free child-owned DMA pages before publication.
 /// # C: O(streams)
-fn pcm_info_scan(device_key: u32) -> Option<(u32, u32)> {
+fn pcm_info_scan(device_key: DeviceKey) -> Option<(u32, u32)> {
     let mut g = CTX.lock();
     let ctx = g.iter_mut().find(|ctx| ctx.device_key == device_key)?;
     let count = ctx.streams;
@@ -1329,6 +1337,10 @@ mod tests {
     static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
     static TEST_EVENT_CALLS: AtomicU64 = AtomicU64::new(0);
 
+    const fn key(raw: u32) -> DeviceKey {
+        DeviceKey::from_raw(raw)
+    }
+
     fn test_event_handler() {
         TEST_EVENT_CALLS.fetch_add(1, Ordering::Relaxed);
     }
@@ -1345,7 +1357,7 @@ mod tests {
         }
     }
 
-    fn ctx(device_key: u32) -> Ctx {
+    fn ctx(device_key: DeviceKey) -> Ctx {
         Ctx {
             device_key,
             controlq: queue(0),
@@ -1404,19 +1416,19 @@ mod tests {
         reset_test_state();
         {
             let mut ctxs = CTX.lock();
-            ctxs.push(ctx(0x0010_0000));
-            ctxs.push(ctx(0x0020_0000));
+            ctxs.push(ctx(key(0x0010_0000)));
+            ctxs.push(ctx(key(0x0020_0000)));
         }
         softirq::set_handler(softirq::Slot::SndEvent, test_event_handler);
 
-        let removed = remove_ctx_and_release_event_handler(0x0010_0000)
+        let removed = remove_ctx_and_release_event_handler(key(0x0010_0000))
             .expect("expected first context removal");
-        assert_eq!(removed.device_key, 0x0010_0000);
+        assert_eq!(removed.device_key, key(0x0010_0000));
         softirq::raise(softirq::Slot::SndEvent);
         // SAFETY: hosted unit test owns the SndEvent slot under TEST_LOCK.
         unsafe { softirq::run_pending(); }
         assert_eq!(TEST_EVENT_CALLS.load(Ordering::Relaxed), 1);
-        assert!(present_for(0x0020_0000));
+        assert!(present_for(key(0x0020_0000)));
         reset_test_state();
     }
 
@@ -1424,12 +1436,12 @@ mod tests {
     fn removing_last_snd_context_clears_event_softirq() {
         let _guard = TEST_LOCK.lock();
         reset_test_state();
-        CTX.lock().push(ctx(0x0010_0000));
+        CTX.lock().push(ctx(key(0x0010_0000)));
         softirq::set_handler(softirq::Slot::SndEvent, test_event_handler);
 
-        let removed = remove_ctx_and_release_event_handler(0x0010_0000)
+        let removed = remove_ctx_and_release_event_handler(key(0x0010_0000))
             .expect("expected last context removal");
-        assert_eq!(removed.device_key, 0x0010_0000);
+        assert_eq!(removed.device_key, key(0x0010_0000));
         softirq::raise(softirq::Slot::SndEvent);
         // SAFETY: hosted unit test owns the SndEvent slot under TEST_LOCK.
         unsafe { softirq::run_pending(); }
