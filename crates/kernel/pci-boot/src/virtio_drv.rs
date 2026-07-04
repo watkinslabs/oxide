@@ -217,6 +217,49 @@ struct VirtioRuntimeHandoff {
     tx0_buf_pa: u64,
 }
 
+#[derive(Clone, Copy)]
+struct VirtioPciRuntime {
+    hhdm: u64,
+}
+
+impl VirtioPciRuntime {
+    fn current() -> Self {
+        Self {
+            hhdm: {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    hal_x86_64::mmu_ops::hhdm_offset()
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    hal_aarch64::mmu_ops::hhdm_offset()
+                }
+            },
+        }
+    }
+
+    fn program_queue_set(
+        self,
+        cfg_va: u64,
+        q0_msix_vec: u16,
+        extra_queues: &[Option<virtio::VirtioQueuePlan>; 3],
+    ) -> Option<ProgrammedQueues> {
+        program_queue_set(cfg_va, self.hhdm, q0_msix_vec, extra_queues)
+    }
+
+    fn post_net_rx_boot_buffer(self, q0_ring: Option<QueueRing>) -> NetRxBootBuffer {
+        post_net_rx_boot_buffer(self.hhdm, q0_ring)
+    }
+
+    fn alloc_net_tx_boot_buffer(self, q1_ring: Option<QueueRing>, q1_notify_va: u64) -> u64 {
+        alloc_net_tx_boot_buffer(self.hhdm, q1_ring, q1_notify_va)
+    }
+
+    fn read_queue_used_idx(self, q0_ring: Option<QueueRing>) -> u16 {
+        read_queue_used_idx(self.hhdm, q0_ring)
+    }
+}
+
 struct VirtioPciAcquisition {
     caps: pci::heapless_caps::CapVec,
     vcaps: virtio::pci::heapless_v::VCapVec,
@@ -264,18 +307,9 @@ impl VirtioPciAcquisition {
     ) -> Option<VirtioProbe> {
         let bdf = d.bdf;
         let mut state = VirtioProbeState::from_caps(bdf, &self.vcaps, &self.bars)?;
+        let runtime = VirtioPciRuntime::current();
 
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            {
-                hal_x86_64::mmu_ops::hhdm_offset()
-            }
-            #[cfg(target_arch = "aarch64")]
-            {
-                hal_aarch64::mmu_ops::hhdm_offset()
-            }
-        };
-        let bringup = state.negotiate_and_program(d, &self.caps, &self.bars, profile, hhdm);
+        let bringup = state.negotiate_and_program(d, &self.caps, &self.bars, profile, runtime);
         let dev_features = bringup.negotiated.dev_features;
         let drv_features = bringup.negotiated.drv_features;
         let post_status = bringup.negotiated.post_status;
@@ -286,9 +320,9 @@ impl VirtioPciAcquisition {
         let queues_len = bringup.queues_len;
         let notify_cap = self.vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
         let final_status = bringup.final_status;
-        let runtime = state.runtime_handoff(
+        let handoff = state.runtime_handoff(
             profile,
-            hhdm,
+            runtime,
             final_status,
             &queues,
             queues_len,
@@ -301,6 +335,7 @@ impl VirtioPciAcquisition {
         Some(state.finish(VirtioProbeResult {
             cmd_orig: self.cmd_orig,
             cmd_new: self.cmd_new,
+            hhdm: runtime.hhdm,
             dev_features,
             drv_features,
             post_status,
@@ -309,16 +344,16 @@ impl VirtioPciAcquisition {
             num_queues,
             queues,
             queues_len,
-            queue_resources: runtime.queue_resources,
+            queue_resources: handoff.queue_resources,
             final_status,
-            q0_notify_va: runtime.q0_notify_va,
-            post_notify_status: runtime.post_notify_status,
-            avail_idx_posted: runtime.avail_idx_posted,
-            used_idx_observed: runtime.used_idx_observed,
-            isr_status: runtime.isr_status,
-            rx0_buf_pa: runtime.rx0_buf_pa,
-            rx0_buf_len: runtime.rx0_buf_len,
-            tx0_buf_pa: runtime.tx0_buf_pa,
+            q0_notify_va: handoff.q0_notify_va,
+            post_notify_status: handoff.post_notify_status,
+            avail_idx_posted: handoff.avail_idx_posted,
+            used_idx_observed: handoff.used_idx_observed,
+            isr_status: handoff.isr_status,
+            rx0_buf_pa: handoff.rx0_buf_pa,
+            rx0_buf_len: handoff.rx0_buf_len,
+            tx0_buf_pa: handoff.tx0_buf_pa,
         }))
     }
 }
@@ -419,7 +454,7 @@ impl VirtioProbeState {
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
         profile: virtio::VirtioTransportProfile,
-        hhdm: u64,
+        runtime: VirtioPciRuntime,
     ) -> VirtioTransportBringup {
         let negotiated = virtio::negotiate_features(self.cfg_va, profile.drv_features);
         let (queues, queues_len) = virtio::scan_queue_sizes(self.cfg_va, negotiated.num_queues);
@@ -436,7 +471,7 @@ impl VirtioProbeState {
             profile.extra_queues
         };
         let programmed_queues = if negotiated.features_ok {
-            program_queue_set(self.cfg_va, hhdm, q0_msix_vec, &extra_queues)
+            runtime.program_queue_set(self.cfg_va, q0_msix_vec, &extra_queues)
         } else {
             None
         };
@@ -566,7 +601,7 @@ impl VirtioProbeState {
     fn runtime_handoff(
         &mut self,
         profile: virtio::VirtioTransportProfile,
-        hhdm: u64,
+        runtime: VirtioPciRuntime,
         final_status: u8,
         queues: &[(u16, u16); 8],
         queues_len: usize,
@@ -587,7 +622,7 @@ impl VirtioProbeState {
         let net_rx_boot = if profile.needs_net_boot_buffers
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         {
-            post_net_rx_boot_buffer(hhdm, q0_ring)
+            runtime.post_net_rx_boot_buffer(q0_ring)
         } else {
             NetRxBootBuffer::default()
         };
@@ -613,7 +648,7 @@ impl VirtioProbeState {
         )
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         {
-            alloc_net_tx_boot_buffer(hhdm, q1_ring, q1_notify_va)
+            runtime.alloc_net_tx_boot_buffer(q1_ring, q1_notify_va)
         } else {
             0
         };
@@ -641,7 +676,7 @@ impl VirtioProbeState {
             0
         };
         let used_idx_observed = if net_rx_boot.avail_idx_posted > 0 {
-            read_queue_used_idx(hhdm, q0_ring)
+            runtime.read_queue_used_idx(q0_ring)
         } else {
             0
         };
@@ -680,6 +715,7 @@ impl VirtioProbeState {
 struct VirtioProbeResult {
     cmd_orig: u16,
     cmd_new: u16,
+    hhdm: u64,
     dev_features: u64,
     drv_features: u64,
     post_status: u32,
@@ -749,7 +785,7 @@ impl VirtioProbeResult {
 
     fn child_facts(&self, cfg_va: u64, device_cfg_va: u64) -> virtio::VirtioChildProbeFacts {
         let mut resources =
-            virtio::VirtioChildResourceState::new(self.final_status, cfg_va, virtio_hhdm_offset())
+            virtio::VirtioChildResourceState::new(self.final_status, cfg_va, self.hhdm)
                 .with_device_cfg_va(device_cfg_va)
                 .with_net_boot_payloads(virtio::VirtioNetBootPayloads::new(
                     self.rx0_buf_pa,
@@ -798,17 +834,6 @@ pub(super) struct VirtioProbe {
     pub(super) cfg_va: u64,
     vring_frames: Vec<u64>,
     net_payload_frames: [u64; 2],
-}
-
-fn virtio_hhdm_offset() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        hal_x86_64::mmu_ops::hhdm_offset()
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        hal_aarch64::mmu_ops::hhdm_offset()
-    }
 }
 
 impl VirtioProbe {

@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 63% complete.
+  hotplug, fault injection, and multi-device coverage: about 64% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -138,6 +138,11 @@ test-pass claims.
   DRIVER_OK publication into one transport bring-up result. The probe body
   records the result and handles child-specific resource publication rather
   than sequencing the common transport protocol directly.
+- Virtio-pci runtime HHDM context now lives in an explicit
+  `VirtioPciRuntime` value. Queue programming, net boot-buffer
+  posting/allocation, used-ring sampling, and child resource facts consume the
+  same transport runtime context instead of recomputing or passing raw HHDM
+  offsets through unrelated probe code.
 - Child probe readiness checks for DRIVER_OK, required queue indexes, device
   config, and net boot payloads now go through shared
   `virtio::VirtioChildRequirements` evaluated by
