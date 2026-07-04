@@ -186,25 +186,28 @@ const BOUNCE_ORDER: u8 = 6;
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 
 struct BlkRecord {
-    device_key: u32,
+    device_key: virtio::VirtioChildDeviceKey,
     name:     String,
     state:    Arc<BlkState>,
 }
 
 static DEVICES: Spinlock<Vec<BlkRecord>, DriverLockClass> = Spinlock::new(Vec::new());
 
-fn bdf_key(bus: u8, device: u8, function: u8) -> u32 {
-    (bus as u32) << 16 | (device as u32) << 8 | (function as u32)
+#[cfg(test)]
+fn child_key(bus: u8, device: u8, function: u8) -> virtio::VirtioChildDeviceKey {
+    virtio::VirtioChildDeviceKey::from_raw(
+        (bus as u32) << 16 | (device as u32) << 8 | (function as u32),
+    )
 }
 
 #[cfg(feature = "debug-boot")]
-fn key_bus(key: u32) -> u8 { ((key >> 16) & 0xff) as u8 }
+fn key_bus(key: virtio::VirtioChildDeviceKey) -> u8 { ((key.raw() >> 16) & 0xff) as u8 }
 #[cfg(feature = "debug-boot")]
-fn key_device(key: u32) -> u8 { ((key >> 8) & 0xff) as u8 }
+fn key_device(key: virtio::VirtioChildDeviceKey) -> u8 { ((key.raw() >> 8) & 0xff) as u8 }
 #[cfg(feature = "debug-boot")]
-fn key_function(key: u32) -> u8 { (key & 0xff) as u8 }
+fn key_function(key: virtio::VirtioChildDeviceKey) -> u8 { (key.raw() & 0xff) as u8 }
 
-fn same_device(rec: &BlkRecord, device_key: u32) -> bool {
+fn same_device(rec: &BlkRecord, device_key: virtio::VirtioChildDeviceKey) -> bool {
     rec.device_key == device_key
 }
 
@@ -674,7 +677,7 @@ impl BlockDevice for BlkState {
 /// DRIVER_OK.
 #[derive(Copy, Clone)]
 pub struct BlkInit {
-    pub device_key: u32,
+    pub device_key: virtio::VirtioChildDeviceKey,
     pub resources: virtio::VirtioResources,
     pub drv_features: u64,
 }
@@ -864,7 +867,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
 /// unregisters the block disk, and drops this driver's per-device record.
 /// Existing filesystem references keep their Arc alive but see EIO.
 /// # C: O(N_virtio_blk + N_disks + N_devices)
-pub fn remove_blk(device_key: u32) -> bool {
+pub fn remove_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let rec = {
         let mut devices = DEVICES.lock();
         match devices.iter().position(|d| same_device(d, device_key)) {
@@ -880,7 +883,7 @@ pub fn remove_blk(device_key: u32) -> bool {
 /// unregistering block/devtmpfs/sysfs publication. Used by reboot/poweroff,
 /// not hot-unplug.
 /// # C: O(N_virtio_blk + shutdown)
-pub fn shutdown_blk(device_key: u32) -> bool {
+pub fn shutdown_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let state = {
         DEVICES.lock()
             .iter()
@@ -894,7 +897,7 @@ pub fn shutdown_blk(device_key: u32) -> bool {
 
 #[cfg(test)]
 pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str) -> u32 {
-    let device_key = bdf_key(bus, device, function);
+    let device_key = child_key(bus, device, function);
     if DEVICES.lock().iter().any(|d| same_device(d, device_key)) {
         return 0;
     }
@@ -929,5 +932,5 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
 
 #[cfg(test)]
 pub(crate) fn test_has_record(bus: u8, device: u8, function: u8) -> bool {
-    DEVICES.lock().iter().any(|d| same_device(d, bdf_key(bus, device, function)))
+    DEVICES.lock().iter().any(|d| same_device(d, child_key(bus, device, function)))
 }

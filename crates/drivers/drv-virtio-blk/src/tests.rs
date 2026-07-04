@@ -15,10 +15,17 @@ use std::format;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use block::{BlockError, BlockRequest};
+use virtio::VirtioChildDeviceKey;
 use virtio::blk;
 use virtio::queue::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
 
 static TEST_DISK_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+fn child_key(bus: u8, device: u8, function: u8) -> VirtioChildDeviceKey {
+    VirtioChildDeviceKey::from_raw(
+        ((bus as u32) << 16) | ((device as u32) << 8) | function as u32,
+    )
+}
 
 // ---- header encode ----------------------------------------------------
 
@@ -233,7 +240,7 @@ fn remove_blk_unregisters_block_disk_and_device_node() {
     let bus = 0xf0;
     let device = (seq as u8).wrapping_add(1);
     let function = 0;
-    let device_key = ((bus as u32) << 16) | ((device as u32) << 8) | function as u32;
+    let device_key = child_key(bus, device, function);
 
     assert_eq!(crate::modern::test_publish_record(bus, device, function, &name), 1);
     assert!(crate::modern::test_has_record(bus, device, function));
@@ -269,7 +276,7 @@ fn shutdown_blk_quiesces_without_unregistering_publication() {
     let bus = 0xe0;
     let device = (seq as u8).wrapping_add(1);
     let function = 0;
-    let device_key = ((bus as u32) << 16) | ((device as u32) << 8) | function as u32;
+    let device_key = child_key(bus, device, function);
 
     assert_eq!(crate::modern::test_publish_record(bus, device, function, &name), 1);
     assert!(crate::modern::test_has_record(bus, device, function));
