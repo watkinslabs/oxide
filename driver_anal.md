@@ -150,7 +150,10 @@ test-pass claims.
   drained-event diagnostics.
 - Virtio-input no longer has PCI-transport-owned input config VA handoff. The
   input child driver reads identity and capability data from the generic
-  `DEVICE_CFG` resource during its own install path.
+  `DEVICE_CFG` resource during its own install path. It now also owns
+  `/dev/input/eventN` publication and removal from the child install/remove
+  path instead of having the virtio-pci glue reach into the evdev devtmpfs
+  helper.
 - Virtio-net no longer has PCI-transport-owned MAC config harvest. The
   virtio-net child driver reads its MAC address from the generic `DEVICE_CFG`
   resource during its own install path.
