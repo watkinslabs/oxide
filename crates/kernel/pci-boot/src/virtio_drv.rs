@@ -134,7 +134,7 @@ impl VirtioProbeProfile {
             drv_features: drv_virtio_snd::wanted_features(),
             msix0_handler,
             extra_queues: [
-                Some(QueuePlan::new(1, None, false)),
+                Some(QueuePlan::new(1, Some(drv_virtio_snd::raise_event), false)),
                 Some(QueuePlan::new(2, None, true)),
                 Some(QueuePlan::new(3, None, true)),
             ],

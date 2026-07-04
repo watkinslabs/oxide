@@ -389,6 +389,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "pmm",
+ "softirq",
  "sound",
  "sync",
  "virtio",
