@@ -296,6 +296,7 @@ fn dev_root_canon(bus: &str) -> &'static str {
         // /sys<DEVPATH>/uevent → ENOENT and never processes the disk.
         "block" => "devices/virtual/block",
         "input" => "devices/virtual/input",
+        "drm" => "devices/virtual/drm",
         "mem" => "devices/virtual/mem",
         "misc" => "devices/virtual/misc",
         "sound" => "devices/virtual/sound",
@@ -309,6 +310,9 @@ fn dev_root_leaf(bus: &str) -> &'static str {
         "pci" => "pci0000:00",
         "virtio" => "virtio",
         "platform" => "platform",
+        "block" => "virtual/block",
+        "input" => "virtual/input",
+        "drm" => "virtual/drm",
         "mem" => "virtual/mem",
         "misc" => "virtual/misc",
         "sound" => "virtual/sound",
@@ -831,10 +835,18 @@ mod tests {
         let graphics = Arc::new(
             drv::Device::new("graphics", String::from("fb8"), 0, 0, 0)
                 .with_devnode("graphics", String::from("fb8"), Some((29, 8))));
+        let input = Arc::new(
+            drv::Device::new("input", String::from("event-sysdev8"), 0, 0, 0)
+                .with_devnode("input", String::from("input/event-sysdev8"), Some((13, 88))));
+        let drm = Arc::new(
+            drv::Device::new("drm", String::from("card88"), 0, 0, 0)
+                .with_devnode("drm", String::from("dri/card88"), Some((226, 88))));
         drv::try_device_add(Arc::clone(&mem)).expect("test mem registration");
         drv::try_device_add(Arc::clone(&misc)).expect("test misc registration");
         drv::try_device_add(Arc::clone(&sound)).expect("test sound registration");
         drv::try_device_add(Arc::clone(&graphics)).expect("test graphics registration");
+        drv::try_device_add(Arc::clone(&input)).expect("test input registration");
+        drv::try_device_add(Arc::clone(&drm)).expect("test drm registration");
 
         let index = make_sys_dev_index_inode(DevIndexKind::Char);
         let mem_link = index.lookup("1:8").expect("mem char index link");
@@ -853,14 +865,26 @@ mod tests {
         assert_eq!(
             graphics_link.readlink().expect("readlink"),
             b"../../devices/virtual/graphics/fb8".to_vec());
+        let input_link = index.lookup("13:88").expect("input char index link");
+        assert_eq!(
+            input_link.readlink().expect("readlink"),
+            b"../../devices/virtual/input/event-sysdev8".to_vec());
+        let drm_link = index.lookup("226:88").expect("drm char index link");
+        assert_eq!(
+            drm_link.readlink().expect("readlink"),
+            b"../../devices/virtual/drm/card88".to_vec());
 
         drv::device_del(&mem);
         drv::device_del(&misc);
         drv::device_del(&sound);
         drv::device_del(&graphics);
+        drv::device_del(&input);
+        drv::device_del(&drm);
         assert_eq!(index.lookup("1:8").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("10:235").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("116:256").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("29:8").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("13:88").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("226:88").err(), Some(VfsError::Enoent));
     }
 }
