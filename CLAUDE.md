@@ -48,8 +48,8 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 
 ## File length cap (`docs/08§7`)
 
-- Hard cap: **1000 lines** per `.rs` or `.md` file. CI fail above. Applies to our source in `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`, `vendor/**`, and `vendors/**`). Imported third-party vendor code is not subject to line caps.
-- Split trigger: **500 lines**. Above 500 is not a suggestion: split the file into focused child modules before continuing feature work in that area. The parent file remains a manifest, not a place to park the excess code.
+- Cutoff: **500 lines** per `.rs` code file. At 500, stop adding implementation to that file and split it into focused child modules/files before continuing work in that area. This is mandatory, not advisory. The parent file remains a manifest, not a place to park excess code.
+- Error cap: **1000 lines** per `.rs` or `.md` file. CI/spec-lint fails above this. Applies to our source in `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`, `vendor/**`, and `vendors/**`). Imported third-party vendor code is not subject to line caps.
 - Split big files into submodules: Rust `mod foo; foo/{a.rs,b.rs}`; markdown into sister docs cross-referenced via `<doc>§<sec>`.
 - Tests count toward the cap — split `tests.rs` into `tests/<feature>.rs` once it grows.
 - Parent module files are manifests: keep a short `Module manifest` comment near the top that names each child module and its owned responsibility. The parent coordinates/re-exports; it must not contain implementation logic, tests, long impl blocks, dispatch bodies, policy, backend translation, or helper piles.
