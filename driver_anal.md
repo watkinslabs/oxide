@@ -686,6 +686,10 @@ test-pass claims.
   is published through `try_device_add`, partial publication rolls back already
   visible nodes in reverse order, and failed publication clears card ops and
   substream runtime state before probe can report success.
+  Sound card-number reservation is now separate from published-card teardown:
+  failed virtio-snd probe paths cancel only unpublished reservations, while
+  `sound::unregister_card` owns published ALSA/OSS node removal, substream
+  unregister, and sound-ops clearing for the removed owner.
   Higher-level sound event interpretation/publication, remaining child-probe
   failure unwind audit, and fault-injection proof still need to move behind a
   fuller `VirtioPciTransport` boundary.
