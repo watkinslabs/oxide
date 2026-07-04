@@ -624,6 +624,10 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
         bdf,
     });
     let card_id = drm::register(drm_dev);
+    if card_id == u32::MAX {
+        let _ = uninstall(bdf);
+        return Err(Error::NoDevice);
+    }
 
     let mut devices = DEVICES.lock();
     match devices.iter_mut().find(|dev| dev.bdf == bdf) {
