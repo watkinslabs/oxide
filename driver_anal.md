@@ -365,9 +365,12 @@ test-pass claims.
   fbdev index and unpublishes by that owner token instead of searching by
   framebuffer base address. Console/fbdev publication is transactional around
   that stored index, so failed fbdev publication releases console ownership
-  before global fbcon/klog/tty hooks are installed. fbcon publication still
-  has one explicit foreground console owner. Dumb-buffer mmap now pins the DRM
-  object through a file-backed shared VMA and PMM object refs, so
+  before global fbcon/klog/tty hooks are installed. Shutdown quiesces the
+  scanout context in place and resets the device without dropping fbdev
+  publication or framebuffer allocation metadata, so a later remove can still
+  consume the correct owner token and free the backing. fbcon publication
+  still has one explicit foreground console owner. Dumb-buffer mmap now pins
+  the DRM object through a file-backed shared VMA and PMM object refs, so
   DESTROY_DUMB/card unregister cannot return pages
   while userspace VMAs can still fault them.
   The display-info probe command buffer and scanout framebuffer run are now
