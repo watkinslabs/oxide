@@ -105,6 +105,7 @@ mod tests {
             led_bits: crate::CapBitmap::default(),
             abs_info: [None; 64],
             prop_bits: [0; 4],
+            repeat: crate::DEFAULT_REPEAT,
         };
         let name = b"QEMU \"Tablet\"";
         dev.name[..name.len()].copy_from_slice(name);

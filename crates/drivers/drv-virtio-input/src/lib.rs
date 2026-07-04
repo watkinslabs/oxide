@@ -102,12 +102,19 @@ pub const EVIOCGBIT_BASE_NR: u8 = 0x20;
 // EVIOCGABS(axis)   → nr = 0x40 + axis (axis in 0..0x3f).
 pub const EVIOCGABS_BASE_NR: u8 = 0x40;
 // EVIOCSREP / EVIOCSFF / EVIOCRMFF / EVIOCGRAB / EVIOCREVOKE:
+pub const EVIOCGREP:    u64 = 0x80084503;
 pub const EVIOCSREP:    u64 = 0x40084503;
 pub const EVIOCSFF:     u64 = 0x402c4580;
 pub const EVIOCRMFF:    u64 = 0x40044581;
 pub const EVIOCGRAB:    u64 = 0x40044590;
 pub const EVIOCREVOKE:  u64 = 0x40044591;
 pub const EVIOCGEFFECTS:u64 = 0x80044584;
+
+/// Linux input core's default keyboard repeat delay, in milliseconds.
+pub const DEFAULT_REP_DELAY_MS: u32 = 250;
+/// Linux input core's default keyboard repeat period, in milliseconds.
+pub const DEFAULT_REP_PERIOD_MS: u32 = 33;
+pub const DEFAULT_REPEAT: [u32; 2] = [DEFAULT_REP_DELAY_MS, DEFAULT_REP_PERIOD_MS];
 
 // ============================================================
 // Wire structs
@@ -174,6 +181,9 @@ pub struct VirtioInputDev {
     pub led_bits:   CapBitmap,
     pub abs_info:   [Option<VirtioInputAbsInfo>; 64],
     pub prop_bits:  [u8; 4],      // INPUT_PROP_* device properties
+    /// Linux EV_REP settings exposed through EVIOCGREP/EVIOCSREP.
+    /// Index 0 is REP_DELAY (ms), index 1 is REP_PERIOD (ms).
+    pub repeat:     [u32; 2],
 }
 
 // ============================================================
@@ -273,6 +283,7 @@ pub fn install_device(
         led_bits: CapBitmap::default(),
         abs_info: [None; 64],
         prop_bits: [0; 4],
+        repeat: DEFAULT_REPEAT,
     };
     // SAFETY: cfg_va valid per fn contract; the config protocol is a series
     // of select/subsel writes + size/payload reads with no other effect.
@@ -381,40 +392,28 @@ pub fn device(evdev_id: u32) -> Option<VirtioInputDev> {
     DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).cloned()
 }
 
+/// Current EV_REP delay/period for `evdev_id`.
+/// # C: O(N)
+pub fn repeat(evdev_id: u32) -> Option<[u32; 2]> {
+    DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).map(|d| d.repeat)
+}
+
+/// Set EV_REP delay/period for `evdev_id`.
+/// # C: O(N)
+pub fn set_repeat(evdev_id: u32, repeat: [u32; 2]) -> bool {
+    let mut devs = DEVICES.lock();
+    let Some(dev) = devs.iter_mut().find(|d| d.evdev_id == evdev_id) else {
+        return false;
+    };
+    dev.repeat = repeat;
+    true
+}
+
 /// True iff `evdev_id` is a pointer (mouse/tablet). Drives the drain's
 /// console-keyboard gating: pointer devices don't feed the console.
 /// Unknown ids default to keyboard-class (false). # C: O(N)
 pub fn is_pointer(evdev_id: u32) -> bool {
     DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).map_or(false, |d| d.is_pointer)
-}
-
-/// Dispatch an EVIOC* ioctl. Returns `Some(rv)` if recognised.
-/// Matches by `(group=='E', cmd_nr)` so variable-length ioctls
-/// (`EVIOCGNAME(len)`, `EVIOCGBIT(ev, len)`, `EVIOCGABS(axis)`)
-/// dispatch the same as fixed-size ones.
-/// # C: O(1)
-pub fn dispatch_ioctl(evdev_id: u32, req: u64, _arg: u64) -> Option<i64> {
-    let group = ((req >> 8) & 0xFF) as u8;
-    if group != EVIOC_GROUP { return None; }
-    let nr = (req & 0xFF) as u8;
-    let _ = evdev_id;
-    // Acknowledge known nr values; the kernel ioctl-glue path
-    // performs the actual user-buffer writeback per `46§7`. This
-    // table is the per-driver intercept point for future hotplug
-    // + grab arbitration.
-    match nr {
-        0x01 => Some(0),                    // EVIOCGVERSION
-        0x02 => Some(0),                    // EVIOCGID
-        0x03 => Some(0),                    // EVIOCSREP
-        EVIOCGNAME_NR | EVIOCGUNIQ_NR | EVIOCGPROP_NR
-        | EVIOCGKEY_NR | EVIOCGLED_NR | EVIOCGSND_NR | EVIOCGSW_NR => Some(0),
-        n if n >= EVIOCGBIT_BASE_NR
-             && n < EVIOCGBIT_BASE_NR.saturating_add(0x1f) => Some(0),
-        n if n >= EVIOCGABS_BASE_NR
-             && n < EVIOCGABS_BASE_NR.saturating_add(0x3f) => Some(0),
-        0x80 | 0x81 | 0x84 | 0x90 | 0x91 => Some(0),  // EVIOCSFF/RMFF/EFFECTS/GRAB/REVOKE
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -442,6 +441,7 @@ mod tests {
             led_bits:   CapBitmap::default(),
             abs_info:   [None; 64],
             prop_bits:  [0; 4],
+            repeat:     DEFAULT_REPEAT,
         }
     }
 
@@ -487,19 +487,14 @@ mod tests {
     }
 
     #[test]
-    fn ioctl_dispatch_recognises_evdev_group() {
-        // EVIOCGVERSION = 0x80044501. Group 'E' = 0x45 at byte 1.
-        assert!(matches!(dispatch_ioctl(0, EVIOCGVERSION, 0), Some(_)));
-        // Unknown group returns None.
-        assert_eq!(dispatch_ioctl(0, 0x80044001, 0), None);
-    }
-
-    #[test]
-    fn ioctl_dispatch_handles_evdev_bit_range() {
-        // EVIOCGBIT(EV_KEY, 96) = _IOR('E', 0x20+EV_KEY=0x21, 96) — encoded.
-        // group='E' at byte 1; nr=0x21 at byte 0; size=96 at byte 2..3.
-        let req = 0x80604521u64;
-        assert!(matches!(dispatch_ioctl(0, req, 0), Some(_)));
+    fn repeat_state_is_keyed_by_evdev_device() {
+        DEVICES.lock().clear();
+        install(test_dev(key(0x0010_0000), 3));
+        assert_eq!(repeat(3), Some(DEFAULT_REPEAT));
+        assert!(set_repeat(3, [400, 40]));
+        assert_eq!(repeat(3), Some([400, 40]));
+        assert_eq!(repeat(4), None);
+        DEVICES.lock().clear();
     }
 }
 
