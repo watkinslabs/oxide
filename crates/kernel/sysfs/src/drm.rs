@@ -34,6 +34,8 @@ struct DrmMinor {
     name: String,
     minor: u32,
     devtype: &'static str,
+    parent_bus: Option<&'static str>,
+    parent_addr: Option<String>,
 }
 
 /// Snapshot DRM minors from the authoritative device model.
@@ -55,6 +57,8 @@ fn drm_minors() -> Vec<DrmMinor> {
             name: String::from(leaf),
             minor,
             devtype: "drm_minor",
+            parent_bus: dev.parent_bus,
+            parent_addr: dev.parent_addr.clone(),
         });
     }
     minors.sort_by(|a, b| a.minor.cmp(&b.minor).then_with(|| a.name.cmp(&b.name)));
@@ -63,6 +67,25 @@ fn drm_minors() -> Vec<DrmMinor> {
 
 fn minor_of(name: &str) -> Option<DrmMinor> {
     drm_minors().into_iter().find(|m| m.name == name)
+}
+
+fn parent_root_leaf(bus: &str) -> &'static str {
+    match bus {
+        "pci" => "pci0000:00",
+        "virtio" => "virtio",
+        "platform" => "platform",
+        "drm" => "virtual/drm",
+        _ => "platform",
+    }
+}
+
+fn parent_device_target(minor: &DrmMinor) -> Option<Vec<u8>> {
+    Some(alloc::format!(
+        "../../../{}/{}",
+        parent_root_leaf(minor.parent_bus?),
+        minor.parent_addr.as_deref()?,
+    )
+    .into_bytes())
 }
 
 // ---- /sys/class/drm (directory of symlinks) -------------------------------
@@ -101,7 +124,7 @@ struct SysDevicesVirtualDrmOps;
 impl InodeOps for SysDevicesVirtualDrmOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         let minor = minor_of(name).ok_or(VfsError::Enoent)?;
-        Ok(make_drm_device_inode(minor.name, minor.minor, minor.devtype))
+        Ok(make_drm_device_inode(minor))
     }
 }
 impl FileOps for SysDevicesVirtualDrmOps {
@@ -125,7 +148,7 @@ fn make_sys_devices_virtual_drm_inode() -> InodeRef {
 
 // ---- /sys/devices/virtual/drm/<name> (per-minor dir) ----------------------
 
-struct DrmDeviceData { name: String, minor: u32, devtype: &'static str }
+struct DrmDeviceData { minor: DrmMinor }
 
 struct DrmDeviceOps;
 impl InodeOps for DrmDeviceOps {
@@ -133,26 +156,38 @@ impl InodeOps for DrmDeviceOps {
         let d = inode.private::<DrmDeviceData>().ok_or(VfsError::Einval)?;
         match name {
             "dev" => {
-                let body = alloc::format!("{}:{}\n", DRM_MAJOR, d.minor).into_bytes();
-                Ok(make_body_inode(body, 0x5104_2000 + d.minor as Ino))
+                let body = alloc::format!("{}:{}\n", DRM_MAJOR, d.minor.minor).into_bytes();
+                Ok(make_body_inode(body, 0x5104_2000 + d.minor.minor as Ino))
             }
-            "uevent" => Ok(make_drm_uevent_inode(d.name.clone(), d.minor, d.devtype)),
+            "uevent" => Ok(make_drm_uevent_inode(
+                d.minor.name.clone(),
+                d.minor.minor,
+                d.minor.devtype,
+            )),
             // `subsystem` symlink is what makes udev read SUBSYSTEM=="drm".
             "subsystem" => Ok(make_symlink_inode(b"../../../class/drm".to_vec())),
+            "device" => Ok(make_symlink_inode(
+                parent_device_target(&d.minor).ok_or(VfsError::Enoent)?,
+            )),
             _ => Err(VfsError::Enoent),
         }
     }
 }
 impl FileOps for DrmDeviceOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const ENTRIES: &[(&str, FileType)] = &[
+        const BASE_ENTRIES: &[(&str, FileType)] = &[
             ("dev", FileType::Regular), ("uevent", FileType::Regular),
             ("subsystem", FileType::Symlink),
         ];
+        let d = inode.private::<DrmDeviceData>().ok_or(VfsError::Einval)?;
+        let mut entries: Vec<(&str, FileType)> = BASE_ENTRIES.to_vec();
+        if parent_device_target(&d.minor).is_some() {
+            entries.push(("device", FileType::Symlink));
+        }
         let mut idx = ctx.pos as usize;
-        while idx < ENTRIES.len() {
+        while idx < entries.len() {
             let next = idx as u64 + 1;
-            let (nm, ft) = ENTRIES[idx];
+            let (nm, ft) = entries[idx];
             let ino = inode.lookup(nm).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(nm, ino, ft, next) { return Ok(()); }
             idx += 1;
@@ -160,10 +195,10 @@ impl FileOps for DrmDeviceOps {
         Ok(())
     }
 }
-fn make_drm_device_inode(name: String, minor: u32, devtype: &'static str) -> InodeRef {
-    InodeBuilder::new(0x5104_1000 + minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
+fn make_drm_device_inode(minor: DrmMinor) -> InodeRef {
+    InodeBuilder::new(0x5104_1000 + minor.minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(DrmDeviceOps), Arc::new(DrmDeviceOps))
-        .private(Arc::new(DrmDeviceData { name, minor, devtype }))
+        .private(Arc::new(DrmDeviceData { minor }))
         .build()
 }
 
@@ -242,5 +277,35 @@ mod tests {
 
         drv::device_del(&render);
         drv::device_del(&card);
+    }
+
+    #[test]
+    fn drm_class_device_links_to_model_parent_when_present() {
+        let parent = Arc::new(drv::Device::new(
+            "virtio",
+            String::from("virtio-gpu-parent0"),
+            0x1af4,
+            16,
+            0,
+        ));
+        drv::try_device_add(Arc::clone(&parent)).expect("test parent registration");
+        let card = drv::try_device_add(Arc::new(
+            drv::Device::new("drm", String::from("sysfs-drm-card43"), 0, 0, 0)
+                .with_parent("virtio", String::from("virtio-gpu-parent0"))
+                .with_devnode("drm", String::from("dri/card43"), Some((DRM_MAJOR, 43))),
+        ))
+        .expect("test drm registration");
+
+        let devices = make_sys_devices_virtual_drm_inode();
+        let card_dir = devices.lookup("card43").expect("card43 sysfs dir");
+        let device = card_dir.lookup("device").expect("parent device link");
+        assert_eq!(
+            device.readlink().expect("readlink"),
+            b"../../../virtio/virtio-gpu-parent0".to_vec()
+        );
+
+        drv::device_del(&card);
+        drv::device_del(&parent);
+        assert_eq!(devices.lookup("card43").err(), Some(VfsError::Enoent));
     }
 }
