@@ -297,7 +297,7 @@ mod tests {
         let dir = root.lookup("event-trigger0").expect("input device dir");
         let uevent = dir.lookup("uevent").expect("uevent attr");
         assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
-        let msg = listener.dequeue().expect("uevent message");
+        let (msg, _src) = listener.dequeue().expect("uevent message");
         assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
         assert!(msg.windows(b"DEVPATH=/devices/virtual/input/event-trigger0".len()).any(|w| w == b"DEVPATH=/devices/virtual/input/event-trigger0"));
         assert!(msg.windows(b"SUBSYSTEM=input".len()).any(|w| w == b"SUBSYSTEM=input"));
