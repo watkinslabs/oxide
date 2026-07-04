@@ -209,14 +209,7 @@ impl drv::Driver for VirtioGpuDrv {
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::gpu(None))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
-            || p.cfg_va == 0
-            || p.q0_desc_pa == 0
-            || p.q0_driver_pa == 0
-            || p.q0_device_pa == 0
-            || p.q0_notify_va == 0
-            || p.q0_size == 0
-        {
+        if !p.ready_for_child(false, false, false) {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -273,15 +266,7 @@ impl drv::Driver for VirtioInputDrv {
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::input(Some(drv_virtio_input::drain::raise_drain)))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
-            || p.cfg_va == 0
-            || p.device_cfg_va == 0
-            || p.q0_desc_pa == 0
-            || p.q0_driver_pa == 0
-            || p.q0_device_pa == 0
-            || p.q0_notify_va == 0
-            || p.q0_size == 0
-        {
+        if !p.ready_for_child(false, true, false) {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -345,21 +330,7 @@ impl drv::Driver for VirtioNetDrv {
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::net(Some(drv_virtio_net::modern::raise_rx)))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
-            || p.q0_desc_pa == 0
-            || p.q0_driver_pa == 0
-            || p.q0_device_pa == 0
-            || p.q1_desc_pa == 0
-            || p.q1_driver_pa == 0
-            || p.q1_device_pa == 0
-            || p.q0_notify_va == 0
-            || p.q1_notify_va == 0
-            || p.q0_size == 0
-            || p.q1_size == 0
-            || p.rx0_buf_pa == 0
-            || p.rx0_buf_len == 0
-            || p.tx0_buf_pa == 0
-        {
+        if !p.ready_for_child(true, false, true) {
             p.release_failed_transport_with_net_payloads();
             return Err(drv::Error::ProbeFailed);
         }
@@ -416,14 +387,7 @@ impl drv::Driver for VirtioBlkDrv {
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::block(Some(drv_virtio_blk::modern::wake_completions)))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
-            || p.q0_desc_pa == 0
-            || p.q0_driver_pa == 0
-            || p.q0_device_pa == 0
-            || p.q0_notify_va == 0
-            || p.q0_size == 0
-            || p.device_cfg_va == 0
-        {
+        if !p.ready_for_child(false, true, false) {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -473,14 +437,7 @@ impl drv::Driver for VirtioRngDrv {
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::rng(None))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
-            || p.cfg_va == 0
-            || p.q0_desc_pa == 0
-            || p.q0_driver_pa == 0
-            || p.q0_device_pa == 0
-            || p.q0_notify_va == 0
-            || p.q0_size == 0
-        {
+        if !p.ready_for_child(false, false, false) {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -545,20 +502,7 @@ impl drv::Driver for VirtioVsockDrv {
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::vsock(Some(drv_virtio_vsock::raise_rx)))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
-            || p.cfg_va == 0
-            || p.q0_desc_pa == 0
-            || p.q0_driver_pa == 0
-            || p.q0_device_pa == 0
-            || p.q0_notify_va == 0
-            || p.q0_size == 0
-            || p.q1_desc_pa == 0
-            || p.q1_driver_pa == 0
-            || p.q1_device_pa == 0
-            || p.q1_notify_va == 0
-            || p.q1_size == 0
-            || p.device_cfg_va == 0
-        {
+        if !p.ready_for_child(true, true, false) {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -609,20 +553,7 @@ impl drv::Driver for VirtioSndDrv {
         let mut p = virtio_init_arch(&d, VirtioProbeProfile::snd(None))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
-        if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
-            || p.cfg_va == 0
-            || p.q0_desc_pa == 0
-            || p.q0_driver_pa == 0
-            || p.q0_device_pa == 0
-            || p.q0_notify_va == 0
-            || p.q0_size == 0
-            || p.q1_desc_pa == 0
-            || p.q1_driver_pa == 0
-            || p.q1_device_pa == 0
-            || p.q1_notify_va == 0
-            || p.q1_size == 0
-            || p.device_cfg_va == 0
-        {
+        if !p.ready_for_child(true, true, false) {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -1492,6 +1423,40 @@ fn virtio_hhdm_offset() -> u64 {
 }
 
 impl VirtioProbe {
+    fn q0_ready(&self) -> bool {
+        self.q0_desc_pa != 0
+            && self.q0_driver_pa != 0
+            && self.q0_device_pa != 0
+            && self.q0_notify_va != 0
+            && self.q0_size != 0
+    }
+
+    fn q1_ready(&self) -> bool {
+        self.q1_desc_pa != 0
+            && self.q1_driver_pa != 0
+            && self.q1_device_pa != 0
+            && self.q1_notify_va != 0
+            && self.q1_size != 0
+    }
+
+    fn net_payloads_ready(&self) -> bool {
+        self.rx0_buf_pa != 0 && self.rx0_buf_len != 0 && self.tx0_buf_pa != 0
+    }
+
+    fn ready_for_child(
+        &self,
+        needs_q1: bool,
+        needs_device_cfg: bool,
+        needs_net_payloads: bool,
+    ) -> bool {
+        (self.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+            && self.cfg_va != 0
+            && self.q0_ready()
+            && (!needs_q1 || self.q1_ready())
+            && (!needs_device_cfg || self.device_cfg_va != 0)
+            && (!needs_net_payloads || self.net_payloads_ready())
+    }
+
     fn transport_vring_frames(&self) -> Vec<u64> {
         let mut frames = Vec::new();
         for frame in [
