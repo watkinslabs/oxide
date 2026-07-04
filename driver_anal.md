@@ -385,11 +385,11 @@ test-pass claims.
   fbcon remains a single foreground console bound to an explicit owner.
   Virtio-vsock's upper protocol endpoint records are now owner-keyed, while
   the compatibility AF_VSOCK socket path still selects one primary endpoint
-  for unspecified connects. Virtio-snd's upper sound-card layer still retains
-  singleton limits; virtio-snd now keys the published global sound card to the
-  owning transport and routes PCM/control
-  ops through that owner instead of selecting the first installed context, but
-  it still needs a real per-card ALSA/PCM/control ABI for multiple sound cards.
+  for unspecified connects. Virtio-snd now keys the published global sound
+  card and ALSA playback/capture/OSS substream runtime state to the owning
+  transport and routes PCM/control ops through that owner instead of selecting
+  the first installed context, but it still publishes only card0 and needs a
+  real per-card ALSA/PCM/control node ABI for multiple sound cards.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
@@ -484,7 +484,8 @@ test-pass claims.
   fbdev flush/blank dispatch, and dumb-buffer mmap VMA lifetime pins;
   virtio-vsock now has owner-keyed endpoint records but still needs explicit
   socket/device selection beyond the primary compatibility route; virtio-snd's
-  single-card PCM/control ABI remains a main offender. AHCI and NVMe still need live
+  ALSA playback/capture/OSS substream runtime state is owner-keyed, but its
+  single-card PCM/control node ABI remains a main offender. AHCI and NVMe still need live
   multi-controller proof, but they no longer use process-wide
   installed-controller slots.
 - Add explicit fault-injection coverage for probe failure after each allocation,

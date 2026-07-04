@@ -414,4 +414,54 @@ mod tests {
         assert!(ops::ops().is_none(), "ops must not be visible after owner release");
         assert!(ops::clear(0x10));
     }
+
+    #[test]
+    fn substream_runtime_state_is_owner_keyed() {
+        let _guard = test_guard();
+
+        pcm::unregister_card(0x10);
+        pcm::unregister_card(0x20);
+        capture::unregister_card(0x10);
+        capture::unregister_card(0x20);
+        oss::unregister_card(0x10);
+        oss::unregister_card(0x20);
+
+        pcm::register_card(0x10);
+        pcm::register_card(0x20);
+        pcm::register_card(0x10);
+        capture::register_card(0x10);
+        capture::register_card(0x20);
+        capture::register_card(0x10);
+        oss::register_card(0x10);
+        oss::register_card(0x20);
+        oss::register_card(0x10);
+
+        assert_eq!(pcm::registered_count(), 2);
+        assert!(pcm::has_card(0x10));
+        assert!(pcm::has_card(0x20));
+        assert_eq!(capture::registered_count(), 2);
+        assert!(capture::has_card(0x10));
+        assert!(capture::has_card(0x20));
+        assert_eq!(oss::registered_count(), 2);
+        assert!(oss::has_card(0x10));
+        assert!(oss::has_card(0x20));
+
+        pcm::unregister_card(0x10);
+        capture::unregister_card(0x10);
+        oss::unregister_card(0x10);
+
+        assert_eq!(pcm::registered_count(), 1);
+        assert!(!pcm::has_card(0x10));
+        assert!(pcm::has_card(0x20));
+        assert_eq!(capture::registered_count(), 1);
+        assert!(!capture::has_card(0x10));
+        assert!(capture::has_card(0x20));
+        assert_eq!(oss::registered_count(), 1);
+        assert!(!oss::has_card(0x10));
+        assert!(oss::has_card(0x20));
+
+        pcm::unregister_card(0x20);
+        capture::unregister_card(0x20);
+        oss::unregister_card(0x20);
+    }
 }

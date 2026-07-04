@@ -4,6 +4,7 @@
 // write(2) lazily applies hw_params→prepare→trigger then transfers; the
 // SNDCTL_DSP_* ioctls set rate/format/channels and report buffer geometry.
 
+use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as L};
 use syscall::errno::Errno;
 
@@ -36,22 +37,33 @@ struct Oss {
     cap_running: bool,
 }
 
-static OSS: Spinlock<Option<Oss>, L> = Spinlock::new(None);
+static OSS: Spinlock<Vec<Oss>, L> = Spinlock::new(Vec::new());
 
 fn initial(owner: u32) -> Oss {
     Oss { owner, rate: 6 /*44100*/, format: V_S16, channels: 2, running: false, cap_running: false }
 }
 
 pub(crate) fn register_card(owner: u32) {
-    *OSS.lock() = Some(initial(owner));
+    let mut guard = OSS.lock();
+    if !guard.iter().any(|o| o.owner == owner) {
+        guard.push(initial(owner));
+    }
 }
 
 pub(crate) fn unregister_card(owner: u32) {
     reset(owner);
     let mut guard = OSS.lock();
-    if guard.as_ref().map(|o| o.owner == owner).unwrap_or(false) {
-        *guard = None;
-    }
+    guard.retain(|o| o.owner != owner);
+}
+
+#[cfg(test)]
+pub(crate) fn registered_count() -> usize {
+    OSS.lock().len()
+}
+
+#[cfg(test)]
+pub(crate) fn has_card(owner: u32) -> bool {
+    OSS.lock().iter().any(|o| o.owner == owner)
 }
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -88,8 +100,8 @@ fn rate_enum_to_hz(e: u8) -> u32 {
 /// params (SNDCTL_DSP_RESET / a param change).
 fn reset(owner: u32) {
     let (running, cap_running) = {
-        let mut o = OSS.lock();
-        let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+        let mut guard = OSS.lock();
+        let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
             return;
         };
         let running = o.running;
@@ -114,8 +126,8 @@ fn reset(owner: u32) {
 pub fn read(owner: u32, buf: &mut [u8]) -> usize {
     if buf.is_empty() { return 0; }
     let (rate, fmt, ch, cap_running) = {
-        let o = OSS.lock();
-        let Some(o) = o.as_ref().filter(|o| o.owner == owner) else {
+        let guard = OSS.lock();
+        let Some(o) = guard.iter().find(|o| o.owner == owner) else {
             return 0;
         };
         (o.rate, o.format, o.channels, o.cap_running)
@@ -125,8 +137,8 @@ pub fn read(owner: u32, buf: &mut [u8]) -> usize {
         if !crate::ops::cap_hw_params(owner, rate, fmt, ch, period, period * 2) { return 0; }
         if !crate::ops::cap_prepare(owner) { return 0; }
         if !crate::ops::cap_trigger(owner, true) { return 0; }
-        let mut o = OSS.lock();
-        let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+        let mut guard = OSS.lock();
+        let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
             return 0;
         };
         o.cap_running = true;
@@ -140,8 +152,8 @@ pub fn read(owner: u32, buf: &mut [u8]) -> usize {
 pub fn write(owner: u32, buf: &[u8]) -> usize {
     if buf.is_empty() { return 0; }
     let (rate, fmt, ch, running) = {
-        let o = OSS.lock();
-        let Some(o) = o.as_ref().filter(|o| o.owner == owner) else {
+        let guard = OSS.lock();
+        let Some(o) = guard.iter().find(|o| o.owner == owner) else {
             return 0;
         };
         (o.rate, o.format, o.channels, o.running)
@@ -151,8 +163,8 @@ pub fn write(owner: u32, buf: &[u8]) -> usize {
         if !crate::ops::pcm_hw_params(owner, rate, fmt, ch, period, period * 2) { return 0; }
         if !crate::ops::pcm_prepare(owner) { return 0; }
         if !crate::ops::pcm_trigger(owner, true) { return 0; }
-        let mut o = OSS.lock();
-        let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+        let mut guard = OSS.lock();
+        let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
             return 0;
         };
         o.running = true;
@@ -184,8 +196,8 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
             let e = hz_to_rate_enum(hz);
             reset(owner);
             {
-                let mut o = OSS.lock();
-                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                let mut guard = OSS.lock();
+                let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
                     return err(Errno::Enodev);
                 };
                 o.rate = e;
@@ -198,8 +210,8 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
             reset(owner);
             let channels = if st != 0 { 2 } else { 1 };
             {
-                let mut o = OSS.lock();
-                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                let mut guard = OSS.lock();
+                let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
                     return err(Errno::Enodev);
                 };
                 o.channels = channels;
@@ -212,8 +224,8 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
         5 => {                                                       // SETFMT
             let a = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
             if a == 0 {
-                let o = OSS.lock();
-                let Some(o) = o.as_ref().filter(|o| o.owner == owner) else {
+                let guard = OSS.lock();
+                let Some(o) = guard.iter().find(|o| o.owner == owner) else {
                     return err(Errno::Enodev);
                 };
                 wi(arg, virtio_to_afmt(o.format));
@@ -222,8 +234,8 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
             reset(owner);
             let format = afmt_to_virtio(a);
             {
-                let mut o = OSS.lock();
-                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                let mut guard = OSS.lock();
+                let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
                     return err(Errno::Enodev);
                 };
                 o.format = format;
@@ -236,8 +248,8 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
             reset(owner);
             let channels = n.clamp(1, 2) as u8;
             {
-                let mut o = OSS.lock();
-                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                let mut guard = OSS.lock();
+                let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
                     return err(Errno::Enodev);
                 };
                 o.channels = channels;
