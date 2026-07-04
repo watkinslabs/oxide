@@ -99,9 +99,11 @@ test-pass claims.
   DRIVER_OK publication into one transport bring-up result. The probe body
   records the result and handles child-specific resource publication rather
   than sequencing the common transport protocol directly.
-- Child probe readiness checks for DRIVER_OK, q0, required q1, device config,
-  and net boot payloads now go through `VirtioProbe::ready_for_child` instead
-  of per-driver open-coded guards.
+- Child probe readiness checks for DRIVER_OK, required queue indexes, device
+  config, and net boot payloads now go through typed
+  `VirtioChildRequirements` evaluated by `VirtioProbe::ready_for_child`
+  instead of per-driver open-coded guards. Virtio-snd now requires all four of
+  its transport queues before child install.
 - Virtio common-cfg now has an explicit FAILED status helper, and virtio-pci
   transport bring-up marks the device FAILED when FEATURES_OK is rejected or
   mandatory q0 programming fails instead of leaving the device in a partial
@@ -308,9 +310,9 @@ test-pass claims.
   config windows, MSI-X, and notify lifetime through finalization/state
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
-  Child readiness validation is centralized in `VirtioProbe`, but the
-  requirement profile is still passed as booleans and should become typed
-  transport/child requirements.
+  Child readiness validation is centralized in `VirtioProbe` and described by
+  typed `VirtioChildRequirements`; the next step is to move that profile out
+  of pci-boot and into a real virtio transport/core boundary.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
