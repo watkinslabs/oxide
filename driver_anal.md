@@ -94,6 +94,11 @@ test-pass claims.
   boot-buffer posting/allocation now uses helper calls. Net/vsock q1 notify
   policy is explicit in the probe profile and q1 notify mapping goes through
   `VirtioProbeState`.
+- Virtio-pci `VirtioProbeState` now owns the ordering that ties feature
+  negotiation, queue-size scanning, MSI-X binding, queue programming, and
+  DRIVER_OK publication into one transport bring-up result. The probe body
+  records the result and handles child-specific resource publication rather
+  than sequencing the common transport protocol directly.
 - Failed virtio child probes now release transport vring frames through the
   probe's recorded queue state instead of per-driver hand-written q0/q1/q2/q3
   frame lists; child-owned payload frames are passed as explicit extras.
@@ -246,9 +251,10 @@ test-pass claims.
   have moved into shared helpers. A first `VirtioProbeState` owns mappings,
   config windows, MSI-X, and notify lifetime through finalization/state
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
-  Feature policy, complete MSI-X setup policy, and full failure-unwind proof
-  still need to move behind a fuller
-  `VirtioPciTransport`/`VirtioProbeState` boundary.
+  Common transport bring-up ordering also now goes through `VirtioProbeState`.
+  Device feature policy, complete MSI-X setup policy, and full
+  failure-unwind proof still need to move behind a fuller
+  `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
