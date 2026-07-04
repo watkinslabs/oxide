@@ -216,6 +216,8 @@ test-pass claims.
   a sound softirq, recycles used descriptors back onto avail, and tracks raw
   drained-event diagnostics. The dead pci-boot `virtio_snd_cfg` pass-through
   has been removed, so sound install goes directly through the child driver.
+  Its probe scratch/event/TX/RX frames are now owned as one probe-frame set
+  until the installed sound context takes teardown ownership.
 - Virtio-input no longer has PCI-transport-owned input config VA handoff. The
   input child driver reads identity and capability data from the generic
   `DEVICE_CFG` resource during its own install path. It now also owns
