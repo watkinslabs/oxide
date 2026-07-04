@@ -2,7 +2,7 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::map_mmio_pages;
-use super::virtio_qsetup::{FeatureNegotiation, ProgrammedQueues, QueueRing};
+use super::virtio_qsetup::{ProgrammedQueues, QueueRing};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as VirtioTransportLockClass};
@@ -782,7 +782,7 @@ fn unpublish_transport_mmio(bdf: u32) {
 }
 
 fn release_virtio_transport(cfg_va: u64, frames: &[u64]) {
-    super::virtio_qsetup::reset_device(cfg_va);
+    virtio::reset_device(cfg_va);
     for frame in frames.iter().copied() {
         if frame == 0 {
             continue;
@@ -980,7 +980,7 @@ struct PlannedNotifyMappings {
 }
 
 struct VirtioTransportBringup {
-    negotiated: FeatureNegotiation,
+    negotiated: virtio::FeatureNegotiation,
     queues: [(u16, u16); 8],
     queues_len: usize,
     programmed_queues: Option<ProgrammedQueues>,
@@ -1066,9 +1066,8 @@ impl VirtioProbeState {
         profile: virtio::VirtioTransportProfile,
         hhdm: u64,
     ) -> VirtioTransportBringup {
-        let negotiated = super::virtio_qsetup::negotiate_features(self.cfg_va, profile.drv_features);
-        let (queues, queues_len) =
-            super::virtio_qsetup::scan_queue_sizes(self.cfg_va, negotiated.num_queues);
+        let negotiated = virtio::negotiate_features(self.cfg_va, profile.drv_features);
+        let (queues, queues_len) = virtio::scan_queue_sizes(self.cfg_va, negotiated.num_queues);
 
         let q0_msix_vec = if negotiated.features_ok {
             self.bind_msix0(d, caps, bars, profile.msix0_handler)
@@ -1092,11 +1091,11 @@ impl VirtioProbeState {
             None
         };
         let final_status = if !negotiated.features_ok {
-            super::virtio_qsetup::set_failed(self.cfg_va)
+            virtio::set_failed(self.cfg_va)
         } else if programmed_queues.is_some() {
-            super::virtio_qsetup::set_driver_ok(self.cfg_va)
+            virtio::set_driver_ok(self.cfg_va)
         } else {
-            super::virtio_qsetup::set_failed(self.cfg_va)
+            virtio::set_failed(self.cfg_va)
         };
 
         VirtioTransportBringup {
@@ -1630,7 +1629,7 @@ fn virtio_init_arch(
             // (QEMU user-net delivers nothing without packets, so used.idx
             // will normally stay 0).
             for _ in 0..1_000_000 { core::hint::spin_loop(); }
-            let st = super::virtio_qsetup::read_status(state.cfg_va);
+            let st = virtio::read_status(state.cfg_va);
             (kick_va, st)
         } else {
             (0u64, final_status)
