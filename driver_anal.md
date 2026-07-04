@@ -67,8 +67,9 @@ test-pass claims.
   and disables MSI-X before dropping PCI memory decoding.
 - Virtio-pci probe ownership has started moving behind an explicit
   `VirtioProbeState`: transport mappings, common/device config windows, and
-  MSI-X binding are now consumed through probe-state finalization instead of
-  being copied into `VirtioProbe` from loose locals.
+  MSI-X binding are now consumed through probe-state finalization, and notify
+  VA mapping/kick operations go through probe-state methods instead of direct
+  mapping mutation from the main probe body.
 - The shared virtio resource handoff exists through `VirtioResources` and
   `VirtQueueResource`, with queue lookup validation centralized through
   `require_queue`. Child probes now build those resources through one
@@ -88,8 +89,8 @@ test-pass claims.
   queue-set helper, so the virtio-pci probe body no longer hand-rolls q1/q2/q3
   programming loops. Queue notify VA lookup and queue notify writes now go
   through transport helper calls. The old virtio-net probe-time dummy TX kick
-  is gone; net boot-buffer posting/allocation now uses helper calls. Notify
-  lifetime policy still remains in the probe body.
+  is gone; net boot-buffer posting/allocation now uses helper calls. Per-device
+  notify mapping policy still remains in the probe body.
 - Failed virtio child probes now release transport vring frames through the
   probe's recorded queue state instead of per-driver hand-written q0/q1/q2/q3
   frame lists; child-owned payload frames are passed as explicit extras.
@@ -240,10 +241,10 @@ test-pass claims.
   common-cfg status/reset/feature/queue-size register protocol, planned queue
   programming, notify VA/kick mechanics, and net RX/TX boot-buffer mechanics
   have moved into shared helpers. A first `VirtioProbeState` owns mappings,
-  config windows, and MSI-X through finalization, but feature policy, notify
-  lifetime policy, complete MSI-X setup policy, and full failure-unwind proof
-  still need to move behind a fuller `VirtioPciTransport`/`VirtioProbeState`
-  boundary.
+  config windows, MSI-X, and notify lifetime through finalization/state
+  methods, but feature policy, per-device notify policy, complete MSI-X setup
+  policy, and full failure-unwind proof still need to move behind a fuller
+  `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
