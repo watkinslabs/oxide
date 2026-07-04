@@ -816,7 +816,10 @@ test-pass claims.
   virtio CTL table is present: `controlC<N>` now exposes static Linux master
   playback volume/switch elements with real ELEM_LIST/INFO/READ/WRITE state,
   and OSS mixer ioctls route through the same owner-keyed state that is removed
-  with the card.
+  with the card. `SNDRV_CTL_IOCTL_PCM_INFO` now reports both playback and
+  capture streams for device 0 when the owning virtio-snd driver registered
+  those stream directions, and virtio-snd caps helpers return no caps when the
+  scanned stream direction is absent instead of advertising an empty stream.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
