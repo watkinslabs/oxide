@@ -225,6 +225,25 @@ impl VirtioProbeState {
         }
     }
 
+    fn from_caps(
+        bdf: pci::Bdf,
+        vcaps: &virtio::pci::heapless_v::VCapVec,
+        bars: &[pci::Bar; 6],
+    ) -> Option<Self> {
+        let mut mappings = TransportMappings::default();
+        let Some(common) = vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG) else {
+            return abandon_probe_transport(bdf, &mut mappings);
+        };
+        let Some(cfg_va) = map_cap_window(&mut mappings, common, bars) else {
+            return abandon_probe_transport(bdf, &mut mappings);
+        };
+        let device_cfg_va = vcaps
+            .find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG)
+            .and_then(|devcfg| map_cap_window(&mut mappings, devcfg, bars))
+            .unwrap_or(0);
+        Some(Self::new(bdf, mappings, cfg_va, device_cfg_va))
+    }
+
     fn bind_msix_queue(
         &mut self,
         d: &pci::PciDevice,
@@ -744,6 +763,22 @@ fn queue_resource(
     )
 }
 
+fn map_cap_window(
+    mappings: &mut TransportMappings,
+    cap: virtio::VirtioPciCap,
+    bars: &[pci::Bar; 6],
+) -> Option<u64> {
+    let bar_pa = match bars.get(cap.bar as usize)? {
+        pci::Bar::Mem32 { base, .. } => *base as u64,
+        pci::Bar::Mem64 { base, .. } => *base,
+        _ => return None,
+    };
+    let cap_pa = bar_pa.checked_add(cap.offset as u64)?;
+    let page_pa = cap_pa & !0xFFF;
+    let page_off = cap_pa - page_pa;
+    Some(mappings.map_page(page_pa) + page_off)
+}
+
 /// Drive one modern virtio-pci device through FEATURES_OK and
 /// scan its queue layout. Returns Some(probe) on success.
 /// # SAFETY: caller is the boot path; PMM ready; single-CPU; IRQs masked.
@@ -754,7 +789,6 @@ fn virtio_init_arch(
 ) -> Option<VirtioProbe> {
     if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
     let bdf = d.bdf;
-    let mut mappings = TransportMappings::default();
     // Re-walk caps + decode virtio cfgs + decode BARs.
     let (caps, vcaps, bars) = {
         #[cfg(target_arch = "x86_64")]
@@ -792,40 +826,7 @@ fn virtio_init_arch(
     };
     let cmd_new = (cmd_orig & 0xFFFF) | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
 
-    // Locate COMMON cfg + map the BAR page.
-    let common = match vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG) {
-        Some(common) => common,
-        None => return abandon_probe_transport(bdf, &mut mappings),
-    };
-    let bar_pa = match bars[common.bar as usize] {
-        pci::Bar::Mem32 { base, .. } => base as u64,
-        pci::Bar::Mem64 { base, .. } => base,
-        _ => return abandon_probe_transport(bdf, &mut mappings),
-    };
-    let common_pa = bar_pa + common.offset as u64;
-    let page_pa = common_pa & !0xFFF;
-    let page_off = (common_pa - page_pa) as u64;
-    // SAFETY: BAR PA decoded from device BAR reg; bump VA is exclusive.
-    let base_va = mappings.map_page(page_pa);
-    let cfg_va = base_va + page_off;
-    let device_cfg_va = match vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
-        Some(devcfg) => {
-            let dbar_pa = match bars[devcfg.bar as usize] {
-                pci::Bar::Mem32 { base, .. } => base as u64,
-                pci::Bar::Mem64 { base, .. } => base,
-                _ => 0,
-            };
-            if dbar_pa == 0 {
-                0
-            } else {
-                let d_pa = dbar_pa + devcfg.offset as u64;
-                let d_page_pa = d_pa & !0xFFF;
-                mappings.map_page(d_page_pa) + (d_pa - d_page_pa)
-            }
-        }
-        None => 0,
-    };
-    let mut state = VirtioProbeState::new(bdf, mappings, cfg_va, device_cfg_va);
+    let mut state = VirtioProbeState::from_caps(bdf, &vcaps, &bars)?;
 
     // Per-arch HHDM offset, hoisted once for all queue programming. The
     // virtio core programs EVERY virtqueue uniformly through the transport:
