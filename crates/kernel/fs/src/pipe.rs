@@ -27,6 +27,8 @@ use sync::{Spinlock, Tty as TtyClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, PollSubscribers, default_inode_ops, mk_mode};
 
+mod smoke;
+
 /// Hosted-test stand-in: WaitList only exists under the live
 /// scheduler. On hosted unit-test builds the pipe inode still
 /// needs `park`/`wake_all` symbols to compile, but those code
@@ -81,47 +83,7 @@ impl PipeBuf {
 /// # SAFETY: caller is the boot path; PMM up; single-CPU pre-init.
 /// # C: O(N_bytes)
 pub fn smoke_test() {
-    use hal::kassert;
-
-    // Pipe round-trip: write 5 bytes → read 5 bytes back.
-    let pipe = make_pipe_inode();
-    let pd = pipe_data(&pipe).expect("pipe data");
-    pd.writers.store(1, core::sync::atomic::Ordering::Release);
-    pd.readers.store(1, core::sync::atomic::Ordering::Release);
-    let n = pipe.write(0, b"hello").expect("pipe.write");
-    kassert!(n == 5, "pipe write len");
-    let mut buf = [0u8; 8];
-    let n = pipe.read(0, &mut buf).expect("pipe.read");
-    kassert!(n == 5, "pipe read len");
-    kassert!(&buf[..5] == b"hello", "pipe round-trip body");
-    // Drained pipe with active write-side: read_nonblock = EAGAIN.
-    // (Blocking read would park; smoke test exercises the
-    // non-blocking surface for the empty-but-writers-alive case.)
-    let r = pipe.read_nonblock(0, &mut buf);
-    kassert!(matches!(r, Err(vfs::VfsError::Eagain)), "pipe drained = EAGAIN");
-    // Drop the writer → next read returns Ok(0) (true EOF).
-    pd.writers.store(0, core::sync::atomic::Ordering::Release);
-    let n = pipe.read(0, &mut buf).expect("pipe.read post-writer-close");
-    kassert!(n == 0, "pipe EOF after writers=0");
-    // Write to pipe with no readers: Epipe.
-    pd.readers.store(0, core::sync::atomic::Ordering::Release);
-    let r = pipe.write(0, b"x");
-    kassert!(matches!(r, Err(vfs::VfsError::Epipe)), "pipe write w/o readers = EPIPE");
-
-    // Eventfd round-trip: write 0x1234 → read swaps to 0,
-    // returns prior value as 8-byte LE.
-    let evt = make_eventfd_inode(0);
-    let n = evt.write(0, &0x1234u64.to_ne_bytes()).expect("evt.write");
-    kassert!(n == 8, "evt write len");
-    let mut ev = [0u8; 8];
-    let n = evt.read(0, &mut ev).expect("evt.read");
-    kassert!(n == 8, "evt read len");
-    kassert!(u64::from_ne_bytes(ev) == 0x1234, "evt counter round-trip");
-
-    #[cfg(feature = "debug-boot")]
-    {
-        klog::write_raw(b"[INFO]  pipe-evt-smoke: ok\n");
-    }
+    smoke::smoke_test();
 }
 
 /// `Inode`-backed eventfd counter per `24§3` + Linux eventfd(2).
