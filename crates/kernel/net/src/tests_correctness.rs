@@ -260,7 +260,6 @@ fn f180c_na_populates_ndp_cache() {
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::NdpMsg;
-    use crate::icmpv6::IPPROTO_ICMPV6;
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
     let target = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,2]);
@@ -272,8 +271,35 @@ fn f180c_na_populates_ndp_cache() {
     h.write_to(&mut frame[..IPV6_HDR_LEN]);
     frame[IPV6_HDR_LEN..].copy_from_slice(&na);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
-    assert_eq!(stack.ndp.lookup(target), Some(neighbor_mac),
-        "NA target_lladdr must populate NdpCache");
+    assert_eq!(stack.ndp_lookup(id, target), Some(neighbor_mac),
+        "NA target_lladdr must populate the iface-scoped NDP cache");
+}
+
+#[test]
+fn f180c_ndp_cache_is_scoped_by_iface() {
+    use crate::addr::{Ipv6Addr, MacAddr};
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::ndp::NdpMsg;
+
+    let stack = NetStack::new();
+    let (id1, _lo1) = stack.register_loopback();
+    let (id2, _lo2) = stack.register_loopback();
+    let target = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,2]);
+    let dst = Ipv6Addr::LOOPBACK;
+    let mac1 = MacAddr([0x02,0,0,0,0,1]);
+    let mac2 = MacAddr([0x02,0,0,0,0,2]);
+
+    for (id, mac) in [(id1, mac1), (id2, mac2)] {
+        let na = NdpMsg::build_na(target, dst, mac, target, 0);
+        let mut frame = alloc::vec![0u8; IPV6_HDR_LEN + na.len()];
+        Ipv6Hdr::build(target, dst, IpProto::Icmpv6, na.len() as u16)
+            .write_to(&mut frame[..IPV6_HDR_LEN]);
+        frame[IPV6_HDR_LEN..].copy_from_slice(&na);
+        stack.deliver_rx_ipv6(id, &frame).unwrap();
+    }
+
+    assert_eq!(stack.ndp_lookup(id1, target), Some(mac1));
+    assert_eq!(stack.ndp_lookup(id2, target), Some(mac2));
 }
 
 #[test]
@@ -281,7 +307,6 @@ fn f180c_ns_for_owned_addr_emits_na() {
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::{NdpMsg, NDP_NA};
-    use crate::icmpv6::IPPROTO_ICMPV6;
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let our_addr = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,1]);
@@ -296,7 +321,7 @@ fn f180c_ns_for_owned_addr_emits_na() {
     frame[IPV6_HDR_LEN..].copy_from_slice(&ns);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
     // Source-lladdr from the NS should land in the cache.
-    assert_eq!(stack.ndp.lookup(peer), Some(peer_mac));
+    assert_eq!(stack.ndp_lookup(id, peer), Some(peer_mac));
     // And lo should have a frame queued — the NA reply.
     let reply = lo.rx_pop().expect("NS for owned addr must produce NA");
     let parsed = Ipv6Hdr::parse(reply.data()).unwrap();
@@ -310,7 +335,6 @@ fn f180c_ns_for_unowned_addr_silent() {
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::NdpMsg;
-    use crate::icmpv6::IPPROTO_ICMPV6;
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let unowned = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,9]);
@@ -538,7 +562,7 @@ fn ipv6_router_advertisement_installs_slaac_addr_and_routes() {
 
     let expected = Ipv6Addr::from_segments([0x2001,0xdb8,0x77,0,0x0200,0x00ff,0xfe00,0x0000]);
     assert!(stack.v6_addr_owned_by(id, expected), "SLAAC address should be bound");
-    assert_eq!(stack.ndp.lookup(router), Some(router_mac));
+    assert_eq!(stack.ndp_lookup(id, router), Some(router_mac));
 
     let onlink = stack.routes6.lookup(expected).expect("on-link prefix route");
     assert_eq!(onlink.iface, id);

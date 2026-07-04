@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as StackLockClass};
 
-use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
+use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, MacAddr, NetIfaceId};
 use crate::icmp::{self, ICMP_TYPE_ECHO_REQUEST};
 use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN, push_ipv4_header};
 use crate::loopback::LoopbackDev;
@@ -256,8 +256,8 @@ pub struct NetStack {
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
     pub(crate) next_isn: Spinlock<u32, StackLockClass>,
-    /// F180c: global NDP cache (ip → MAC).
-    pub ndp: crate::ndp::NdpCache,
+    /// F180c: IPv6 neighbor cache keyed by ingress/egress interface.
+    pub(crate) ndp: Spinlock<BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>, StackLockClass>,
     /// F195: IPv4 reassembly table.
     pub ipv4_reasm: crate::ipv4_reasm::ReasmTable,
     /// IPv6 Fragment extension reassembly table.
@@ -279,7 +279,7 @@ impl NetStack {
             tcp_listens: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(0x1000_0000),
-            ndp:        crate::ndp::NdpCache::new(),
+            ndp:        Spinlock::new(BTreeMap::new()),
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
@@ -312,6 +312,18 @@ impl NetStack {
     pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool { self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| a.addr == ip)).unwrap_or(false) }
     /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)
     pub(crate) fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> { self.v6_addrs.lock().get(&iface).and_then(|v| v.first().map(|a| a.addr)) }
+
+    /// Learn or update an IPv6 neighbor binding scoped to `iface`.
+    /// # C: O(log N)
+    pub fn ndp_insert(&self, iface: NetIfaceId, ip: Ipv6Addr, mac: MacAddr) {
+        self.ndp.lock().insert((iface, ip), mac);
+    }
+
+    /// Lookup an IPv6 neighbor binding scoped to `iface`.
+    /// # C: O(log N)
+    pub fn ndp_lookup(&self, iface: NetIfaceId, ip: Ipv6Addr) -> Option<MacAddr> {
+        self.ndp.lock().get(&(iface, ip)).copied()
+    }
 
     /// Boot-time wiring: create + register a loopback netdev,
     /// add canonical loopback routes through it. Returns

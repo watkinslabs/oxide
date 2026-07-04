@@ -296,7 +296,7 @@ impl NetStack {
                 // and ship it back. Source-lladdr in the NS populates
                 // the cache too (peer is talking to us).
                 if let Ok(msg) = crate::ndp::NdpMsg::parse(payload, src, dst) {
-                    if let Some(mac) = msg.lladdr { self.ndp.insert(src, mac); }
+                    if let Some(mac) = msg.lladdr { self.ndp_insert(iface, src, mac); }
                     if self.v6_addr_owned_by(iface, msg.target) {
                         let our_mac = self.ifaces.lookup(iface)
                             .map(|d| d.mac()).unwrap_or(crate::addr::MacAddr::ZERO);
@@ -312,7 +312,7 @@ impl NetStack {
                 // v6 xmit on this neighbor can fill the Ethernet dst.
                 if let Ok(msg) = crate::ndp::NdpMsg::parse(payload, src, dst) {
                     if let Some(mac) = msg.lladdr {
-                        self.ndp.insert(msg.target, mac);
+                        self.ndp_insert(iface, msg.target, mac);
                     }
                 }
             }
@@ -360,7 +360,7 @@ impl NetStack {
         ra: &crate::ndp::RouterAdvertisement,
     ) {
         if let Some(mac) = ra.source_lladdr {
-            self.ndp.insert(router, mac);
+            self.ndp_insert(iface, router, mac);
         }
 
         let our_mac = match self.ifaces.lookup(iface) {
