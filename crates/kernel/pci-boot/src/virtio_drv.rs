@@ -139,16 +139,6 @@ impl VirtioProbeProfile {
         false
     }
 
-    fn maps_extra_notify(&self) -> bool {
-        for queue in self.extra_queues {
-            if let Some(queue) = queue {
-                if queue.map_notify {
-                    return true;
-                }
-            }
-        }
-        false
-    }
 }
 
 struct VirtioPciDrv;
@@ -1071,6 +1061,27 @@ fn notify_va_owned(
     mappings.map_page(n_page_pa) + n_page_off
 }
 
+fn map_queue_notify_va(
+    mappings: &mut TransportMappings,
+    notify_cap: Option<&virtio::VirtioPciCap>,
+    bars: &[pci::Bar; 6],
+    notify_off: u16,
+) -> u64 {
+    let Some(notify_cap) = notify_cap else { return 0 };
+    notify_va_owned(mappings, notify_cap, bars, notify_off)
+}
+
+fn kick_queue_notify(notify_va: u64, queue_index: u16) -> bool {
+    if notify_va == 0 {
+        return false;
+    }
+    // SAFETY: notify_va is a Device-attr virtio notify location decoded from
+    // the transport NOTIFY cap. Modern virtio-pci notify stores are u16 queue
+    // indexes at the per-queue notify address.
+    unsafe { core::ptr::write_volatile(notify_va as *mut u16, queue_index); }
+    true
+}
+
 fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -1368,6 +1379,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     let mut snd_q2_notify_va_local: u64 = 0;
     let mut snd_q3_notify_va_local: u64 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
+    let notify_cap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
     let msix = if features_ok {
         profile.msix0_handler.and_then(|handler| {
             bind_virtio_msix0(d, &caps, &bars, &mut mappings, handler)
@@ -1385,23 +1397,16 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         None
     };
     if let Some(programmed) = programmed_queues.as_ref() {
-        let extra_notify_cap = if profile.maps_extra_notify() {
-            vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG)
-        } else {
-            None
-        };
         for queue in profile.extra_queues {
             let Some(queue) = queue else { continue };
             if queue.map_notify {
                 if let Some(ring) = programmed.extra_queue(queue.index) {
-                    if let Some(ncap) = extra_notify_cap.as_ref() {
-                        let notify_va =
-                            notify_va_owned(&mut mappings, ncap, &bars, ring.notify_off);
-                        match queue.index {
-                            2 => snd_q2_notify_va_local = notify_va,
-                            3 => snd_q3_notify_va_local = notify_va,
-                            _ => {}
-                        }
+                    let notify_va =
+                        map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, ring.notify_off);
+                    match queue.index {
+                        2 => snd_q2_notify_va_local = notify_va,
+                        3 => snd_q3_notify_va_local = notify_va,
+                        _ => {}
                     }
                 }
             }
@@ -1486,33 +1491,17 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         }
     }
 
-    //: kick the notify register for queue 0. Notify address per
-    // Virtio 1.2 §4.1.4.4:
-    //   notify_pa = NOTIFY_BAR_pa + notify_cap.offset + qoff * notify_mult
-    // where qoff = the queue_notify_off captured above.
     let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        if let Some(notify_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
-            let nbar_pa = match bars[notify_cap.bar as usize] {
-                pci::Bar::Mem32 { base, .. } => base as u64,
-                pci::Bar::Mem64 { base, .. } => base,
-                _ => 0,
-            };
-            if nbar_pa != 0 {
-                let kick_va = notify_va_owned(&mut mappings, &notify_cap, &bars, q0_notify_off);
-                // Write queue index 0 as a u16 to the notify address.
-                // SAFETY: kick_va Device-attr; aligned u16 write.
-                unsafe { core::ptr::write_volatile(kick_va as *mut u16, 0u16); }
-                // Brief observation window for any device-driven RX
-                // completion (QEMU user-net delivers nothing without
-                // packets, so used.idx will normally stay 0).
-                for _ in 0..1_000_000 { core::hint::spin_loop(); }
-                let st = super::virtio_qsetup::read_status(cfg_va);
-                (kick_va, st)
-            } else {
-                (0u64, final_status)
-            }
+        let kick_va = map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, q0_notify_off);
+        if kick_queue_notify(kick_va, 0) {
+            // Brief observation window for any device-driven RX completion
+            // (QEMU user-net delivers nothing without packets, so used.idx
+            // will normally stay 0).
+            for _ in 0..1_000_000 { core::hint::spin_loop(); }
+            let st = super::virtio_qsetup::read_status(cfg_va);
+            (kick_va, st)
         } else {
             (0u64, final_status)
         }
@@ -1580,30 +1569,19 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
                 // SAFETY: same frame; published idx=1 after the desc and ring writes are observable.
                 unsafe { core::ptr::write_volatile(q1_avail.add(1), 1u16); }
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                // Compute q1 notify VA from notify_cap + q1_off * mult.
-                if let Some(notify_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
-                    let nbar_pa = match bars[notify_cap.bar as usize] {
-                        pci::Bar::Mem32 { base, .. } => base as u64,
-                        pci::Bar::Mem64 { base, .. } => base,
-                        _ => 0,
-                    };
-                    if nbar_pa != 0 {
-                        let kick_va = notify_va_owned(
-                            &mut mappings,
-                            &notify_cap,
-                            &bars,
-                            q1_notify_off_local,
-                        );
-                        q1_notify_va_local = kick_va;
-                        // Write queue index 1 to the q1 notify VA.
-                        // SAFETY: kick_va Device-attr mapped above; aligned u16 write.
-                        unsafe { core::ptr::write_volatile(kick_va as *mut u16, 1u16); }
-                        // Brief observation window for any TX completion.
-                        for _ in 0..1_000_000 { core::hint::spin_loop(); }
-                        let q1_used = (hhdm.wrapping_add(q1_device_pa)) as *const u16;
-                        // SAFETY: HHDM-mapped q1 used ring; u16 idx at offset 1.
-                        tx_used_idx_local = unsafe { core::ptr::read_volatile(q1_used.add(1)) };
-                    }
+                let kick_va = map_queue_notify_va(
+                    &mut mappings,
+                    notify_cap.as_ref(),
+                    &bars,
+                    q1_notify_off_local,
+                );
+                q1_notify_va_local = kick_va;
+                if kick_queue_notify(kick_va, 1) {
+                    // Brief observation window for any TX completion.
+                    for _ in 0..1_000_000 { core::hint::spin_loop(); }
+                    let q1_used = (hhdm.wrapping_add(q1_device_pa)) as *const u16;
+                    // SAFETY: HHDM-mapped q1 used ring; u16 idx at offset 1.
+                    tx_used_idx_local = unsafe { core::ptr::read_volatile(q1_used.add(1)) };
                 }
             }
         }
@@ -1616,10 +1594,8 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         && q1_desc_pa != 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        if let Some(notify_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
-            q1_notify_va_local =
-                notify_va_owned(&mut mappings, &notify_cap, &bars, q1_notify_off_local);
-        }
+        q1_notify_va_local =
+            map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
     }
 
     //: locate ISR cap, map its BAR page, and read the ISR byte
