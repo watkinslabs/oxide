@@ -13,6 +13,7 @@ pub unsafe fn init(info: &BootInfo) {
     tty::live::set_kbd_sink(console::kbd_input);
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
     drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
+    install_drv_sysfs_hooks();
     init_serial_console();
     init_ps2_keyboard(info);
     init_smp(info);
@@ -123,10 +124,6 @@ fn init_runtime_subsystems() {
 
 #[cfg(target_os = "oxide-kernel")]
 fn init_vt_and_drv_hooks() {
-    drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
-    drv::set_sysfs_remove_hook(crate::sysfs::bus::remove_device_cb);
-    drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
-    drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
     let _ = unsafe { vt::init() };
     vt::set_signal_hook(|pid, signo| {
         if signo == 0 || signo > 64 { return; }
@@ -139,6 +136,14 @@ fn init_vt_and_drv_hooks() {
     });
     vt::set_switch_hook(|_n| syscalls::ioctl::vt_switch_wake());
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn install_drv_sysfs_hooks() {
+    drv::set_sysfs_hook(crate::sysfs::bus::publish_device_cb);
+    drv::set_sysfs_remove_hook(crate::sysfs::bus::remove_device_cb);
+    drv::set_driver_hook(crate::sysfs::bus::publish_driver_cb);
+    drv::set_bind_hook(crate::sysfs::bus::bind_device_cb);
 }
 
 #[cfg(target_os = "oxide-kernel")]
