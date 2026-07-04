@@ -193,8 +193,22 @@ struct VirtioProbeState {
 
 #[derive(Default)]
 struct PlannedNotifyMappings {
-    q2: u64,
-    q3: u64,
+    by_queue: [u64; 4],
+}
+
+impl PlannedNotifyMappings {
+    fn set(&mut self, queue_index: u16, notify_va: u64) {
+        if let Some(slot) = self.by_queue.get_mut(queue_index as usize) {
+            *slot = notify_va;
+        }
+    }
+
+    fn get(&self, queue_index: u16) -> u64 {
+        self.by_queue
+            .get(queue_index as usize)
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 struct VirtioTransportBringup {
@@ -566,11 +580,7 @@ impl VirtioProbeState {
                 continue;
             };
             let notify_va = self.map_notify(notify_cap, bars, ring.notify_off);
-            match queue.index {
-                2 => mappings.q2 = notify_va,
-                3 => mappings.q3 = notify_va,
-                _ => {}
-            }
+            mappings.set(queue.index, notify_va);
         }
 
         mappings
@@ -666,8 +676,8 @@ impl VirtioProbeState {
                 scanned_queue_size(queues, queues_len, 1),
                 q1_notify_va,
             ),
-            queue_resource(2, q2_ring, 0, extra_notify_mappings.q2),
-            queue_resource(3, q3_ring, 0, extra_notify_mappings.q3),
+            queue_resource(2, q2_ring, 0, extra_notify_mappings.get(2)),
+            queue_resource(3, q3_ring, 0, extra_notify_mappings.get(3)),
         ];
 
         let isr_status = if net_rx_boot.avail_idx_posted > 0 {

@@ -143,6 +143,9 @@ test-pass claims.
   posting/allocation, used-ring sampling, and child resource facts consume the
   same transport runtime context instead of recomputing or passing raw HHDM
   offsets through unrelated probe code.
+- Planned virtio-pci extra-queue notify mappings are now stored by queue index
+  instead of hard-coded q2/q3 fields, removing another queue-number special
+  dispatch from the transport handoff path.
 - Child probe readiness checks for DRIVER_OK, required queue indexes, device
   config, and net boot payloads now go through shared
   `virtio::VirtioChildRequirements` evaluated by
