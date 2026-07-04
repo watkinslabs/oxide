@@ -317,6 +317,40 @@ mod tests {
     }
 
     #[test]
+    fn unregister_then_register_restores_model_owned_node() {
+        let idx = 0x7ffc;
+        let addr = alloc::format!("fb{idx}");
+        let _ = unregister_node(idx);
+
+        assert!(register_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            0
+        );
+
+        assert!(register_node(idx));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "graphics" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(idx));
+    }
+
+    #[test]
     fn register_node_leaves_slot_free_when_model_publication_conflicts() {
         let idx = 0x7ffd;
         let _ = unregister_node(idx);

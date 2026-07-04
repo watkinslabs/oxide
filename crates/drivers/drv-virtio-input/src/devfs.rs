@@ -302,6 +302,40 @@ mod tests {
     }
 
     #[test]
+    fn unregister_then_register_restores_model_owned_event_node() {
+        let id = (MAX_EVDEV - 3) as u32;
+        let addr = alloc::format!("event{id}");
+        let _ = unregister_node(id);
+
+        assert!(register_node(id));
+        assert!(EVDEV_DEVICES.lock()[id as usize].is_some());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(id));
+        assert!(EVDEV_DEVICES.lock()[id as usize].is_none());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == addr)
+                .count(),
+            0
+        );
+
+        assert!(register_node(id));
+        assert!(EVDEV_DEVICES.lock()[id as usize].is_some());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "input" && d.addr == addr)
+                .count(),
+            1
+        );
+        assert!(unregister_node(id));
+    }
+
+    #[test]
     fn register_node_leaves_slot_free_when_model_publication_conflicts() {
         let id = (MAX_EVDEV - 2) as u32;
         let _ = unregister_node(id);
