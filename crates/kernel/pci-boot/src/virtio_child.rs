@@ -232,8 +232,8 @@ impl VirtioChildOps for VirtioRngOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        let bdf_word = session.device_key().raw();
-        match drv_virtio_rng::install(bdf_word, resources) {
+        let device_key = session.device_key();
+        match drv_virtio_rng::install(device_key, resources) {
             Some(()) => {}
             None => {
                 return Err(drv::Error::ProbeFailed);
@@ -241,9 +241,9 @@ impl VirtioChildOps for VirtioRngOps {
         }
 
         let mut seed = [0u8; 32];
-        let n = drv_virtio_rng::fill_from_bdf(bdf_word, &mut seed);
+        let n = drv_virtio_rng::fill_from_device(device_key, &mut seed);
         if n == 0 {
-            let _ = drv_virtio_rng::uninstall(bdf_word);
+            let _ = drv_virtio_rng::uninstall(device_key);
             return Err(drv::Error::ProbeFailed);
         }
         devfs::misc::add_entropy(&seed[..n]);
@@ -256,11 +256,11 @@ impl VirtioChildOps for VirtioRngOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_rng::uninstall(device_key.raw());
+        let _ = drv_virtio_rng::uninstall(device_key);
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_rng::shutdown(device_key.raw());
+        let _ = drv_virtio_rng::shutdown(device_key);
     }
 }
 static VIRTIO_RNG_DRV: VirtioChildDriver<VirtioRngOps> = VirtioChildDriver::new();

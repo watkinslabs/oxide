@@ -134,9 +134,12 @@ test-pass claims.
   device IDs, and PCI-parent scans in the transport glue.
 - Shared `virtio::VirtioChildDeviceKey` now wraps the stable per-child runtime
   key exposed by `VirtioChildTransportSession`. The current PCI-backed bus
-  still derives it from BDF location, and child-driver crates still consume the
-  raw value at their legacy API boundary, but the shared child session contract
-  no longer exposes a PCI-shaped `u32` as its transport-neutral identity.
+  still derives it from BDF location, but the shared child session contract no
+  longer exposes a PCI-shaped `u32` as its transport-neutral identity.
+- `drv-virtio-rng` now accepts and stores `VirtioChildDeviceKey` for install,
+  remove, shutdown, active-device promotion, and direct probe-time entropy
+  seeding. Its public lifecycle API no longer receives raw PCI-packed child
+  keys from the PCI-backed virtio wrapper.
 - Shared `virtio::run_child_probe` now owns the transport-neutral child probe
   lifecycle: run child install, publish transport state only after success, and
   release failed-probe resources on child error. The PCI-backed child model
@@ -581,10 +584,13 @@ test-pass claims.
   rules in PCI transport code. The shared child session contract now exposes a
   typed `virtio::VirtioChildDeviceKey` rather than a raw PCI-packed `u32`; the
   current PCI-backed implementation derives that key from its BDF location and
-  converts to raw only at legacy child-driver API calls. Shared
-  `virtio::run_child_probe` now owns child-probe publish/unwind ordering, so
-  the PCI-backed wrapper no longer hand-codes successful transport publication
-  versus failed child-probe release. Shared `virtio::run_child_remove` and
+  `drv-virtio-rng` now consumes that typed key directly for install, remove,
+  shutdown, and probe-time direct entropy reads. The other virtio child-driver
+  APIs still need the same typed-key conversion where they currently force the
+  PCI-backed wrapper to call `.raw()`. Shared `virtio::run_child_probe` now
+  owns child-probe publish/unwind ordering, so the PCI-backed wrapper no
+  longer hand-codes successful transport publication versus failed child-probe
+  release. Shared `virtio::run_child_remove` and
   `virtio::run_child_shutdown` also own remove-before-unpublish and shutdown
   dispatch ordering for typed child keys. The PCI-backed session now carries an
   explicit `virtio_drv::VirtioPciTransport` backend, and raw probe, publish,
