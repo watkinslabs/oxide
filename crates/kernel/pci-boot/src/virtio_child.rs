@@ -43,14 +43,13 @@ impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
 
     fn remove(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
-            O::remove_child(device_key);
-            unpublish_transport(device_key);
+            virtio::run_child_remove(device_key, O::remove_child, unpublish_transport);
         }
     }
 
     fn shutdown(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
-            O::shutdown_child(device_key);
+            virtio::run_child_shutdown(device_key, O::shutdown_child);
         }
     }
 }

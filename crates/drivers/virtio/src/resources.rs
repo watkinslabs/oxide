@@ -960,9 +960,30 @@ where
     }
 }
 
+/// Run child remove before unpublishing transport-owned state.
+/// # C: O(child_remove + N_transport_resources)
+pub fn run_child_remove<R, U>(device_key: VirtioChildDeviceKey, remove: R, unpublish: U)
+where
+    R: FnOnce(VirtioChildDeviceKey),
+    U: FnOnce(VirtioChildDeviceKey),
+{
+    remove(device_key);
+    unpublish(device_key);
+}
+
+/// Run child shutdown for a stable child key.
+/// # C: O(child_shutdown)
+pub fn run_child_shutdown<S>(device_key: VirtioChildDeviceKey, shutdown: S)
+where
+    S: FnOnce(VirtioChildDeviceKey),
+{
+    shutdown(device_key);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -1102,6 +1123,43 @@ mod tests {
         let lifecycle = lifecycle.lock().unwrap();
         assert!(!lifecycle.published);
         assert!(lifecycle.released);
+    }
+
+    #[test]
+    fn child_remove_lifecycle_removes_before_unpublish() {
+        let key = VirtioChildDeviceKey::from_raw(0x12);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let remove_calls = calls.clone();
+        let unpublish_calls = calls.clone();
+
+        run_child_remove(
+            key,
+            |device_key| remove_calls.lock().unwrap().push(("remove", device_key.raw())),
+            |device_key| {
+                unpublish_calls
+                    .lock()
+                    .unwrap()
+                    .push(("unpublish", device_key.raw()))
+            },
+        );
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![("remove", 0x12), ("unpublish", 0x12)]
+        );
+    }
+
+    #[test]
+    fn child_shutdown_lifecycle_passes_stable_key() {
+        let key = VirtioChildDeviceKey::from_raw(0x34);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let shutdown_calls = calls.clone();
+
+        run_child_shutdown(key, |device_key| {
+            shutdown_calls.lock().unwrap().push(device_key.raw())
+        });
+
+        assert_eq!(*calls.lock().unwrap(), vec![0x34]);
     }
 
     const VALID_Q0: VirtQueueResource = VirtQueueResource {
