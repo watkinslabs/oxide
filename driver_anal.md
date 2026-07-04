@@ -644,7 +644,8 @@ Several drivers still use singleton global state:
   but still a singleton upper PCM/control ABI
 - UART drivers: global `PRESENT` and base state; RX interrupt delivery now has
   an explicit quiesce gate cleared before shutdown/remove masks hardware
-- PS/2 keyboard: global present/poll state
+- PS/2 keyboard: global present/poll state; IRQ1 delivery now has an explicit
+  quiesce gate cleared before shutdown/remove masks the controller line
 
 Some subsystems are per-device already or closer to it:
 
