@@ -348,11 +348,6 @@ pub fn install_device(
             || (dev.ev_bits[(EV_ABS / 8) as usize] & (1 << (EV_ABS % 8))) != 0;
     }
     install(dev);
-    #[cfg(target_os = "oxide-kernel")]
-    if !devfs::register_node(evdev_id) {
-        let _ = remove_device(device_key);
-        return None;
-    }
     Some(evdev_id)
 }
 
@@ -365,8 +360,6 @@ pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
         let idx = g.iter().position(|d| d.device_key == device_key)?;
         g.remove(idx).evdev_id
     };
-    #[cfg(target_os = "oxide-kernel")]
-    let _ = devfs::unregister_node(evdev_id);
     Some(evdev_id)
 }
 

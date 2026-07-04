@@ -121,8 +121,16 @@ impl VirtioChildOps for VirtioInputOps {
                 return Err(drv::Error::ProbeFailed);
             }
         };
+        if !drv_virtio_input::devfs::register_node(
+            evdev_id,
+            Some(("virtio", alloc::string::String::from(session.device_addr()))),
+        ) {
+            let _ = drv_virtio_input::remove_device(device_key);
+            return Err(drv::Error::ProbeFailed);
+        }
         let installed = drv_virtio_input::drain::install_eventq(device_key, evdev_id, resources);
         if installed.is_err() {
+            let _ = drv_virtio_input::devfs::unregister_node(evdev_id);
             let _ = drv_virtio_input::remove_device(device_key);
             return Err(drv::Error::ProbeFailed);
         }
@@ -136,6 +144,9 @@ impl VirtioChildOps for VirtioInputOps {
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
         let _ = drv_virtio_input::drain::uninstall_eventq(device_key);
+        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_device(device_key) {
+            let _ = drv_virtio_input::devfs::unregister_node(evdev_id);
+        }
         let _ = drv_virtio_input::remove_device(device_key);
     }
 
