@@ -334,6 +334,40 @@ pub fn build_queue_resources(
     })
 }
 
+/// Resolve notify mappings requested by child queue plans.
+///
+/// The concrete transport owns converting a programmed queue's
+/// `queue_notify_off` into a usable notify address; shared virtio owns the
+/// child-profile policy for which planned queues require persistent notify
+/// mappings.
+/// # C: O(MAX_RESOURCE_QUEUES)
+pub fn resolve_planned_notify_mappings<F>(
+    queue_plans: &[Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
+    programmed_queues: Option<&ProgrammedQueues>,
+    mut map_notify: F,
+) -> VirtioQueueNotifyMappings
+where
+    F: FnMut(u16) -> u64,
+{
+    let mut mappings = VirtioQueueNotifyMappings::new();
+    let Some(programmed) = programmed_queues else {
+        return mappings;
+    };
+
+    for queue in queue_plans {
+        let Some(queue) = queue else { continue };
+        if !queue.map_notify {
+            continue;
+        }
+        let Some(ring) = programmed.queue(queue.index) else {
+            continue;
+        };
+        mappings.set(queue.index, map_notify(ring.notify_off));
+    }
+
+    mappings
+}
+
 fn scanned_queue_size(
     scanned_queues: &[(u16, u16); MAX_RESOURCE_QUEUES],
     scanned_len: usize,
@@ -823,6 +857,52 @@ mod tests {
         assert_eq!(resources[3].size, 16);
         assert_eq!(resources[3].notify_va, 0x3000);
         assert_eq!(resources[2].size, 0);
+    }
+
+    #[test]
+    fn resolve_planned_notify_mappings_uses_child_queue_policy() {
+        let programmed = ProgrammedQueues::from_test_parts(
+            QueueRing {
+                desc_pa: 0x1000,
+                driver_pa: 0x2000,
+                device_pa: 0x3000,
+                notify_off: 4,
+                size: 8,
+            },
+            core::array::from_fn(|index| {
+                if index == 1 {
+                    Some(QueueRing {
+                        desc_pa: 0x4000,
+                        driver_pa: 0x5000,
+                        device_pa: 0x6000,
+                        notify_off: 8,
+                        size: 8,
+                    })
+                } else if index == 2 {
+                    Some(QueueRing {
+                        desc_pa: 0x7000,
+                        driver_pa: 0x8000,
+                        device_pa: 0x9000,
+                        notify_off: 12,
+                        size: 8,
+                    })
+                } else {
+                    None
+                }
+            }),
+        );
+        let mut plans = [None; MAX_RESOURCE_QUEUES];
+        plans[1] = Some(VirtioQueuePlan::new(1, None, true));
+        plans[2] = Some(VirtioQueuePlan::new(2, None, false));
+        plans[3] = Some(VirtioQueuePlan::new(3, None, true));
+
+        let mappings = resolve_planned_notify_mappings(&plans, Some(&programmed), |notify_off| {
+            0x1000 + notify_off as u64
+        });
+
+        assert_eq!(mappings.get(1), 0x1008);
+        assert_eq!(mappings.get(2), 0);
+        assert_eq!(mappings.get(3), 0);
     }
 
     #[test]

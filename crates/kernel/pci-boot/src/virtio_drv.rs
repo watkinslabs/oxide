@@ -503,33 +503,6 @@ impl VirtioProbeState {
         self.mappings.read_isr_status(isr_cap, bars)
     }
 
-    fn map_planned_notifies(
-        &mut self,
-        queue_plans: &[Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES],
-        programmed_queues: Option<&ProgrammedQueues>,
-        notify_cap: Option<&virtio::VirtioPciCap>,
-        bars: &[pci::Bar; 6],
-    ) -> virtio::VirtioQueueNotifyMappings {
-        let mut mappings = virtio::VirtioQueueNotifyMappings::default();
-        let Some(programmed) = programmed_queues else {
-            return mappings;
-        };
-
-        for queue in queue_plans {
-            let Some(queue) = queue else { continue };
-            if !queue.map_notify {
-                continue;
-            }
-            let Some(ring) = programmed.queue(queue.index) else {
-                continue;
-            };
-            let notify_va = self.map_notify(notify_cap, bars, ring.notify_off);
-            mappings.set(queue.index, notify_va);
-        }
-
-        mappings
-    }
-
     fn runtime_handoff(
         &mut self,
         profile: virtio::VirtioTransportProfile,
@@ -546,8 +519,11 @@ impl VirtioProbeState {
         let q1_ring = programmed_queues.and_then(|p| p.queue(1));
         let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
 
-        let planned_notify_mappings =
-            self.map_planned_notifies(&profile.queue_plans, programmed_queues, notify_cap, bars);
+        let planned_notify_mappings = virtio::resolve_planned_notify_mappings(
+            &profile.queue_plans,
+            programmed_queues,
+            |notify_off| self.map_notify(notify_cap, bars, notify_off),
+        );
 
         let net_rx_boot = if profile.needs_net_boot_buffers
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
