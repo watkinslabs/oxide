@@ -65,20 +65,6 @@ struct RngState {
 
 type RngHandle = Arc<Spinlock<RngState, DriverLockClass>>;
 
-/// Result returned to the owning model probe. The probe publishes any returned
-/// device through `drv::device_add`; the RNG crate only constructs state.
-pub struct RngProbe {
-    pub hwrng_dev: Option<Arc<drv::Device>>,
-}
-
-/// Result returned to the owning model remove. The remove path deletes the
-/// old `/dev/hwrng` model device and publishes a promoted one when another
-/// virtio-rng remains available.
-pub struct RngRemove {
-    pub hwrng_dev:          Option<Arc<drv::Device>>,
-    pub promoted_hwrng_dev: Option<Arc<drv::Device>>,
-}
-
 // SAFETY justification: RngState holds raw PAs/VAs into HHDM/MMIO stable for
 // device lifetime; each record serialises queue access through its Spinlock.
 static RNGS: Spinlock<Vec<RngHandle>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -90,10 +76,10 @@ pub fn present() -> bool { !RNGS.lock().is_empty() }
 
 /// Install the transport resources for the entropy requestq. Called once from
 /// `pci_boot::virtio_drv` after DRIVER_OK + q0 setup. Allocates the
-/// device-writable bounce frame; returns false if no frame is available
+/// device-writable bounce frame; returns None if no frame is available
 /// or the HHDM offset is unknown (device left uninstalled → no /dev/hwrng).
 /// # C: O(1)
-pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<RngProbe> {
+pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<()> {
     let Some(requestq) = resources.require_queue(0) else { return None };
     if !resources.common_cfg_valid() {
         return None;
@@ -144,18 +130,19 @@ pub fn install(bdf: u32, resources: virtio::VirtioResources) -> Option<RngProbe>
     drop(rngs);
     if publish_hwrng {
         devfs::misc::set_hwrng_source(fill);
+        drv::device_add(hwrng_dev);
     }
-    Some(RngProbe {
-        hwrng_dev: if publish_hwrng { Some(hwrng_dev) } else { None },
-    })
+    Some(())
 }
 
 /// Remove the installed rng context. Resets the virtio device and returns the
 /// bounce frame owned by the child driver. # C: O(1)
-pub fn uninstall(bdf: u32) -> Option<RngRemove> {
+pub fn uninstall(bdf: u32) -> bool {
     let (record, was_active, promoted_hwrng_dev) = {
         let mut rngs = RNGS.lock();
-        let idx = rngs.iter().position(|record| record.lock().bdf == bdf)?;
+        let Some(idx) = rngs.iter().position(|record| record.lock().bdf == bdf) else {
+            return false;
+        };
         let was_active = idx == 0;
         let record = rngs.remove(idx);
         let promoted_hwrng_dev = if was_active {
@@ -175,10 +162,15 @@ pub fn uninstall(bdf: u32) -> Option<RngRemove> {
     // size for the status field, matching modern virtio-pci.
     unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
     free_frame(ctx.bounce_pa);
-    Some(RngRemove {
-        hwrng_dev: if was_active { Some(Arc::clone(&ctx.hwrng_dev)) } else { None },
-        promoted_hwrng_dev,
-    })
+    let removed_hwrng_dev = if was_active { Some(Arc::clone(&ctx.hwrng_dev)) } else { None };
+    drop(ctx);
+    if let Some(hwrng_dev) = removed_hwrng_dev {
+        drv::device_del(&hwrng_dev);
+        if let Some(promoted) = promoted_hwrng_dev {
+            drv::device_add(promoted);
+        }
+    }
+    true
 }
 
 /// Quiesce an installed rng context for reboot/poweroff without removing or
