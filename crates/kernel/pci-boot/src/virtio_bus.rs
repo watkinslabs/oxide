@@ -23,7 +23,7 @@ impl VirtioChildSession {
         let probe = transport
             .probe_child(&d, profile)
             .ok_or(drv::Error::ProbeFailed)?;
-        super::virtio_trace::trace_probe(d.bdf, &probe);
+        super::virtio_trace::trace_probe(d.bdf, &probe.trace);
         Ok(Self {
             bdf: d.bdf,
             transport,

@@ -425,55 +425,28 @@ impl VirtioProbeState {
 
     fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
         let child_facts = result.child_facts(self.cfg_va, self.device_cfg_va);
+        let trace = result.trace(self.cfg_va);
         VirtioProbe {
             bdf_word: self.bdf_word,
             mappings: self.mappings,
             msix: self.msix,
             child_facts,
+            trace,
             cfg_va: self.cfg_va,
-            device_cfg_va: self.device_cfg_va,
-            cmd_orig: result.cmd_orig,
-            cmd_new: result.cmd_new,
-            dev_features: result.dev_features,
-            drv_features: result.drv_features,
-            post_status: result.post_status,
-            features_ok: result.features_ok,
-            msix_cfg: result.msix_cfg,
-            num_queues: result.num_queues,
-            queues: result.queues,
-            queues_len: result.queues_len,
             q0_desc_pa: result.q0_desc_pa,
             q0_driver_pa: result.q0_driver_pa,
             q0_device_pa: result.q0_device_pa,
-            final_status: result.final_status,
-            q0_notify_off: result.q0_notify_off,
-            q0_notify_va: result.q0_notify_va,
-            post_notify_status: result.post_notify_status,
-            avail_idx_posted: result.avail_idx_posted,
-            used_idx_observed: result.used_idx_observed,
-            isr_status: result.isr_status,
-            q1_notify_va: result.q1_notify_va,
-            q1_notify_off: result.q1_notify_off,
-            q0_size: result.q0_size,
-            q1_size: result.q1_size,
             q1_desc_pa: result.q1_desc_pa,
             q1_driver_pa: result.q1_driver_pa,
             q1_device_pa: result.q1_device_pa,
             rx0_buf_pa: result.rx0_buf_pa,
-            rx0_buf_len: result.rx0_buf_len,
             tx0_buf_pa: result.tx0_buf_pa,
             snd_q2_desc_pa: result.snd_q2_desc_pa,
             snd_q2_driver_pa: result.snd_q2_driver_pa,
             snd_q2_device_pa: result.snd_q2_device_pa,
-            snd_q2_notify_va: result.snd_q2_notify_va,
-            snd_q2_notify_off: result.snd_q2_notify_off,
-            snd_q2_size: result.snd_q2_size,
             snd_q3_desc_pa: result.snd_q3_desc_pa,
             snd_q3_driver_pa: result.snd_q3_driver_pa,
             snd_q3_device_pa: result.snd_q3_device_pa,
-            snd_q3_notify_va: result.snd_q3_notify_va,
-            snd_q3_notify_off: result.snd_q3_notify_off,
-            snd_q3_size: result.snd_q3_size,
         }
     }
 }
@@ -524,6 +497,34 @@ struct VirtioProbeResult {
 }
 
 impl VirtioProbeResult {
+    fn trace(&self, cfg_va: u64) -> VirtioPciProbeTrace {
+        VirtioPciProbeTrace {
+            cmd_orig: self.cmd_orig,
+            cmd_new: self.cmd_new,
+            cfg_va,
+            dev_features: self.dev_features,
+            drv_features: self.drv_features,
+            post_status: self.post_status,
+            features_ok: self.features_ok,
+            msix_cfg: self.msix_cfg,
+            num_queues: self.num_queues,
+            queues: self.queues,
+            queues_len: self.queues_len,
+            q0_desc_pa: self.q0_desc_pa,
+            q0_driver_pa: self.q0_driver_pa,
+            q0_device_pa: self.q0_device_pa,
+            final_status: self.final_status,
+            q0_notify_off: self.q0_notify_off,
+            q0_notify_va: self.q0_notify_va,
+            post_notify_status: self.post_notify_status,
+            avail_idx_posted: self.avail_idx_posted,
+            used_idx_observed: self.used_idx_observed,
+            isr_status: self.isr_status,
+            q1_notify_va: self.q1_notify_va,
+            q1_notify_off: self.q1_notify_off,
+        }
+    }
+
     fn child_facts(&self, cfg_va: u64, device_cfg_va: u64) -> virtio::VirtioChildProbeFacts {
         let mut resources =
             virtio::VirtioChildResourceState::new(self.final_status, cfg_va, virtio_hhdm_offset())
@@ -593,58 +594,53 @@ impl VirtioProbeResult {
     }
 }
 
-pub(super) struct VirtioProbe {
-    pub(super) bdf_word: u32,
-    mappings: TransportMappings,
-    msix: Vec<MsixBinding>,
-    pub(super) child_facts: virtio::VirtioChildProbeFacts,
+pub(super) struct VirtioPciProbeTrace {
     pub(super) cmd_orig: u16,
-    pub(super) cmd_new:  u16,
-    pub(super) cfg_va:   u64,
-    pub(super) device_cfg_va: u64,
+    pub(super) cmd_new: u16,
+    pub(super) cfg_va: u64,
     pub(super) dev_features: u64,
     pub(super) drv_features: u64,
     pub(super) post_status: u32,
     pub(super) features_ok: bool,
-    pub(super) msix_cfg:    u16,
-    pub(super) num_queues:  u16,
+    pub(super) msix_cfg: u16,
+    pub(super) num_queues: u16,
     pub(super) queues: [(u16, u16); 8],
     pub(super) queues_len: usize,
-    pub(super) q0_desc_pa:   u64,
+    pub(super) q0_desc_pa: u64,
     pub(super) q0_driver_pa: u64,
     pub(super) q0_device_pa: u64,
     pub(super) final_status: u8,
     pub(super) q0_notify_off: u16,
-    pub(super) q0_notify_va:  u64,
+    pub(super) q0_notify_va: u64,
     pub(super) post_notify_status: u8,
     pub(super) avail_idx_posted: u16,
     pub(super) used_idx_observed: u16,
     pub(super) isr_status: u8,
     pub(super) q1_notify_va: u64,
     pub(super) q1_notify_off: u16,
-    pub(super) q0_size: u16,
-    pub(super) q1_size: u16,
+}
+
+pub(super) struct VirtioProbe {
+    pub(super) bdf_word: u32,
+    mappings: TransportMappings,
+    msix: Vec<MsixBinding>,
+    pub(super) child_facts: virtio::VirtioChildProbeFacts,
+    pub(super) trace: VirtioPciProbeTrace,
+    pub(super) cfg_va: u64,
+    pub(super) q0_desc_pa:   u64,
+    pub(super) q0_driver_pa: u64,
+    pub(super) q0_device_pa: u64,
     pub(super) q1_desc_pa:   u64,
     pub(super) q1_driver_pa: u64,
     pub(super) q1_device_pa: u64,
     pub(super) rx0_buf_pa:  u64,
-    pub(super) rx0_buf_len: u16,
     pub(super) tx0_buf_pa: u64,
-    // F455: virtio-snd TXQ(2) playback ring + notify VA. 0 if not snd or
-    // the queue didn't program. (eventq/rxq land with events/capture.)
     pub(super) snd_q2_desc_pa:   u64,
     pub(super) snd_q2_driver_pa: u64,
     pub(super) snd_q2_device_pa: u64,
-    pub(super) snd_q2_notify_va: u64,
-    pub(super) snd_q2_notify_off: u16,
-    pub(super) snd_q2_size:      u16,
-    // F457: virtio-snd RXQ(3) capture ring + notify VA. 0 if not snd.
     pub(super) snd_q3_desc_pa:   u64,
     pub(super) snd_q3_driver_pa: u64,
     pub(super) snd_q3_device_pa: u64,
-    pub(super) snd_q3_notify_va: u64,
-    pub(super) snd_q3_notify_off: u16,
-    pub(super) snd_q3_size:      u16,
 }
 
 fn virtio_hhdm_offset() -> u64 {
