@@ -53,14 +53,14 @@ impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
 
     fn remove(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
-            O::remove_child(device_key);
+            O::remove_child(device_key.raw());
             unpublish_transport(device_key);
         }
     }
 
     fn shutdown(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
-            O::shutdown_child(device_key);
+            O::shutdown_child(device_key.raw());
         }
     }
 }
@@ -117,7 +117,7 @@ impl VirtioChildOps for VirtioInputOps {
     }
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
-        let bdf_word = session.device_key();
+        let bdf_word = session.device_key().raw();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -165,7 +165,7 @@ impl VirtioChildOps for VirtioNetOps {
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
-        let device_key = session.device_key();
+        let device_key = session.device_key().raw();
         let payloads = session.net_boot_payloads();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -209,7 +209,7 @@ impl VirtioChildOps for VirtioBlkOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        let device_key = session.device_key();
+        let device_key = session.device_key().raw();
         let idx = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
             device_key,
             resources,
@@ -243,7 +243,7 @@ impl VirtioChildOps for VirtioRngOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        let bdf_word = session.device_key();
+        let bdf_word = session.device_key().raw();
         match drv_virtio_rng::install(bdf_word, resources) {
             Some(()) => {}
             None => {
@@ -285,7 +285,7 @@ impl VirtioChildOps for VirtioVsockOps {
     }
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
-        let device_key = session.device_key();
+        let device_key = session.device_key().raw();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -320,7 +320,7 @@ impl VirtioChildOps for VirtioSndOps {
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
-        let device_key = session.device_key();
+        let device_key = session.device_key().raw();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };

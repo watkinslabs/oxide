@@ -37,7 +37,9 @@ impl VirtioChildSession {
 }
 
 impl virtio::VirtioChildTransportSession for VirtioChildSession {
-    fn device_key(&self) -> u32 { bdf_word(self.bdf) }
+    fn device_key(&self) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_location(self.location())
+    }
 
     fn location(&self) -> virtio::VirtioTransportLocation {
         virtio::VirtioTransportLocation::new(self.bdf.bus, self.bdf.device, self.bdf.function)
@@ -75,10 +77,6 @@ impl Drop for VirtioChildSession {
     }
 }
 
-pub(super) fn bdf_word(bdf: pci::Bdf) -> u32 {
-    (bdf.bus as u32) << 16 | (bdf.device as u32) << 8 | (bdf.function as u32)
-}
-
 pub(super) fn parent_bdf(dev: &drv::Device) -> Option<pci::Bdf> {
     let (bus, addr) = dev.parent()?;
     if bus != "pci" {
@@ -87,12 +85,18 @@ pub(super) fn parent_bdf(dev: &drv::Device) -> Option<pci::Bdf> {
     parse_pci_addr(addr)
 }
 
-pub(super) fn parent_key(dev: &drv::Device) -> Option<u32> {
-    parent_bdf(dev).map(bdf_word)
+pub(super) fn parent_key(dev: &drv::Device) -> Option<virtio::VirtioChildDeviceKey> {
+    parent_bdf(dev).map(|bdf| {
+        virtio::VirtioChildDeviceKey::from_location(virtio::VirtioTransportLocation::new(
+            bdf.bus,
+            bdf.device,
+            bdf.function,
+        ))
+    })
 }
 
-pub(super) fn unpublish_transport(device_key: u32) {
-    virtio_drv::VirtioPciTransport.unpublish_key(device_key);
+pub(super) fn unpublish_transport(device_key: virtio::VirtioChildDeviceKey) {
+    virtio_drv::VirtioPciTransport.unpublish_key(device_key.raw());
 }
 
 fn pci_device_from_child(dev: &drv::Device) -> Option<pci::PciDevice> {

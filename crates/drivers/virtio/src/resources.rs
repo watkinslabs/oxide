@@ -62,6 +62,34 @@ pub fn virtio_child_has_parent(
     actual_parent_bus == parent_bus && actual_parent_addr == parent_addr
 }
 
+/// Stable transport-neutral key for a virtio child device.
+///
+/// The current PCI transport packs bus/device/function into the raw value, but
+/// child-session users should not depend on that encoding.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct VirtioChildDeviceKey(u32);
+
+impl VirtioChildDeviceKey {
+    /// # C: O(1)
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// # C: O(1)
+    pub const fn from_location(location: VirtioTransportLocation) -> Self {
+        Self(
+            ((location.bus as u32) << 16)
+                | ((location.device as u32) << 8)
+                | location.function as u32,
+        )
+    }
+
+    /// # C: O(1)
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
 /// Model-driver identity for a virtio child driver. Child drivers own these
 /// descriptors; the virtio bus wrapper uses them for driver/device matching.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -882,7 +910,7 @@ pub fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
 pub trait VirtioChildTransportSession {
     /// Stable key used by this kernel's per-device child runtime tables.
     /// # C: O(1)
-    fn device_key(&self) -> u32;
+    fn device_key(&self) -> VirtioChildDeviceKey;
 
     /// Controller-local address of the transport-owned child.
     /// # C: O(1)
@@ -970,6 +998,15 @@ mod tests {
             "pci",
             "0000:00:01.0",
         ));
+    }
+
+    #[test]
+    fn child_device_key_is_constructed_from_transport_location() {
+        let location = VirtioTransportLocation::new(0x12, 0x03, 0x04);
+        let key = VirtioChildDeviceKey::from_location(location);
+
+        assert_eq!(key.raw(), 0x0012_0304);
+        assert_eq!(VirtioChildDeviceKey::from_raw(0x0012_0304), key);
     }
 
     const VALID_Q0: VirtQueueResource = VirtQueueResource {
