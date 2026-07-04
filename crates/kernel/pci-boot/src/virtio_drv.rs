@@ -221,7 +221,6 @@ struct VirtioTransportBringup {
 
 struct VirtioRuntimeHandoff {
     queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
-    q0_notify_va: u64,
     post_notify_status: u8,
     avail_idx_posted: u16,
     used_idx_observed: u16,
@@ -360,7 +359,6 @@ impl VirtioPciAcquisition {
             queues_len,
             queue_resources: handoff.queue_resources,
             final_status,
-            q0_notify_va: handoff.q0_notify_va,
             post_notify_status: handoff.post_notify_status,
             avail_idx_posted: handoff.avail_idx_posted,
             used_idx_observed: handoff.used_idx_observed,
@@ -690,7 +688,6 @@ impl VirtioProbeState {
 
         VirtioRuntimeHandoff {
             queue_resources,
-            q0_notify_va,
             post_notify_status,
             avail_idx_posted: net_rx_boot.avail_idx_posted,
             used_idx_observed,
@@ -733,7 +730,6 @@ struct VirtioProbeResult {
     queues_len: usize,
     queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     final_status: u8,
-    q0_notify_va: u64,
     post_notify_status: u8,
     avail_idx_posted: u16,
     used_idx_observed: u16,
@@ -775,18 +771,12 @@ impl VirtioProbeResult {
             num_queues: self.num_queues,
             queues: self.queues,
             queues_len: self.queues_len,
-            q0_desc_pa: self.queue(0).desc_pa,
-            q0_driver_pa: self.queue(0).driver_pa,
-            q0_device_pa: self.queue(0).device_pa,
+            queue_resources: self.queue_resources,
             final_status: self.final_status,
-            q0_notify_off: self.queue(0).notify_off,
-            q0_notify_va: self.q0_notify_va,
             post_notify_status: self.post_notify_status,
             avail_idx_posted: self.avail_idx_posted,
             used_idx_observed: self.used_idx_observed,
             isr_status: self.isr_status,
-            q1_notify_va: self.queue(1).notify_va,
-            q1_notify_off: self.queue(1).notify_off,
         }
     }
 
@@ -818,18 +808,12 @@ pub(super) struct VirtioPciProbeTrace {
     pub(super) num_queues: u16,
     pub(super) queues: [(u16, u16); 8],
     pub(super) queues_len: usize,
-    pub(super) q0_desc_pa: u64,
-    pub(super) q0_driver_pa: u64,
-    pub(super) q0_device_pa: u64,
+    pub(super) queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     pub(super) final_status: u8,
-    pub(super) q0_notify_off: u16,
-    pub(super) q0_notify_va: u64,
     pub(super) post_notify_status: u8,
     pub(super) avail_idx_posted: u16,
     pub(super) used_idx_observed: u16,
     pub(super) isr_status: u8,
-    pub(super) q1_notify_va: u64,
-    pub(super) q1_notify_off: u16,
 }
 
 pub(super) struct VirtioProbe {
