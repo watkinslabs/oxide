@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use crate::{read, walk, Findings};
 
+mod klog;
+use klog::check_klog_ungated;
+
 pub fn run(root: &Path, f: &mut Findings) {
     let ext_gated = build_externally_gated_map(root);
     for sub in &["crates", "kernel"] {
@@ -374,115 +377,6 @@ fn is_pub_fn(t: &str) -> bool {
         || t.starts_with("pub const fn ")
 }
 
-// ---------------------------------------------------------------------------
-// code/klog-ungated: every klog::* call site MUST be inside a per-subsystem
-// `#[cfg(feature = "debug-<sub>")]` scope or a `debug_<sub>!` macro pair.
-// Per `04§4.0` (R06).
-//
-// Detected names (from spec §4.0):
-//   klog::write_raw / write_hex_u64 / write_dec_u64 (emits). The sink
-//   REGISTRATION fns (set_byte_sink/set_aux_sink) are the console destination,
-//   not emits — always-on, exempt (a machine's default active console).
-//   klog::kinfo!   / kdebug! / kerror! / kfatal! / klog!
-//
-// Gating recognised:
-//   1. Enclosing `{` is preceded on the same line by `debug_<word>!`.
-//   2. Enclosing scope (or any ancestor) has a `#[cfg(feature = "debug-<word>")]`
-//      attribute on the line that introduces its `{` (fn / mod / impl / block).
-//
-// Strategy: single pass tracking brace depth. At each `{`, push a "gated"
-// boolean (true if this brace inherits gated, was preceded by a debug_<sub>!
-// macro on the same line, or had a `#[cfg(feature = "debug-...")]` attr
-// pending from a preceding line). Klog call sites are flagged if the
-// innermost scope is not gated.
-//
-// Pending-attr lifecycle: set on an attr line; consumed by the next `{` OR
-// `;` at the same depth — the `;` reset prevents an unrelated cfg-gated
-// statement (e.g. `#[cfg(feature="debug-pmm")] const X: u32 = 1;`) from
-// silently marking the next sibling fn body as gated.
-// ---------------------------------------------------------------------------
-
-fn check_klog_ungated(path: &Path, lines: &[&str], f: &mut Findings) {
-    let mut gated_stack: Vec<bool> = Vec::new();
-    let mut pending_attr_gated = false;
-
-    for (i, raw) in lines.iter().enumerate() {
-        // Strip line comments + string literals so klog tokens inside text
-        // (doc-comments, format strings) don't trigger.
-        let line = strip_for_lint(raw);
-
-        // Pending-gate detection BEFORE brace processing so an attribute
-        // line that also opens nothing (#[cfg(...)] alone) carries forward.
-        // Check the RAW line — the feature literal `"debug-..."` is wiped
-        // from the stripped form by quote-stripping.
-        if line_has_cfg_debug_attr(raw) {
-            pending_attr_gated = true;
-        }
-
-        // Single-pass walk: track braces + `;`, and check klog tokens
-        // against the gated state AT THE COLUMN where the klog token
-        // appears. Required because `debug_<sub>! { klog::...; }` opens
-        // and closes the gated scope on a single line — checking gated
-        // state only at end-of-line would miss it.
-        // `char_indices()` yields (byte_offset, char) so `col` is always a
-        // valid char boundary — slicing `&line[col..]` / `&line[..col]` is
-        // safe even when the line contains multi-byte UTF-8 (em-dash etc.).
-        // (A previous byte-index walk with `bytes[col] as char` panicked
-        // mid-`—`.) `prev_char` carries the preceding char for the
-        // ident-boundary test.
-        let mut prev_char: Option<char> = None;
-        for (col, c) in line.char_indices() {
-            // klog call detection: try at every ident start.
-            if prev_char.map_or(true, |p| !is_ident_char(p)) {
-                if let Some(name) = klog_call_at(&line, col) {
-                    let gated = gated_stack.last().copied().unwrap_or(false);
-                    if !gated {
-                        f.push(path, i + 1, "code/klog-ungated",
-                            format!("`{}` not under `#[cfg(feature=\"debug-<sub>\")]` or `debug_<sub>!` (R06)", name));
-                    }
-                }
-            }
-            match c {
-                '{' => {
-                    let prefix = &line[..col];
-                    let macro_gated = ends_with_debug_sub_macro(prefix);
-                    let inherit = gated_stack.last().copied().unwrap_or(false);
-                    gated_stack.push(macro_gated || pending_attr_gated || inherit);
-                    pending_attr_gated = false;
-                }
-                '}' => { let _ = gated_stack.pop(); }
-                ';' => {
-                    if gated_stack.is_empty() {
-                        pending_attr_gated = false;
-                    }
-                }
-                _ => {}
-            }
-            prev_char = Some(c);
-        }
-    }
-}
-
-/// If `line[col..]` starts with one of the gated klog::* names, return it.
-fn klog_call_at(line: &str, col: usize) -> Option<&'static str> {
-    let rest = &line[col..];
-    const FN_NAMES: &[(&str, &str)] = &[
-        ("klog::write_raw(",     "klog::write_raw"),
-        ("klog::write_hex_u64(", "klog::write_hex_u64"),
-        ("klog::write_dec_u64(", "klog::write_dec_u64"),
-    ];
-    const MAC_NAMES: &[(&str, &str)] = &[
-        ("klog::kinfo!",  "klog::kinfo!"),
-        ("klog::kdebug!", "klog::kdebug!"),
-        ("klog::kerror!", "klog::kerror!"),
-        ("klog::kfatal!", "klog::kfatal!"),
-        ("klog::klog!",   "klog::klog!"),
-    ];
-    for (pat, name) in FN_NAMES { if rest.starts_with(pat) { return Some(name); } }
-    for (pat, name) in MAC_NAMES { if rest.starts_with(pat) { return Some(name); } }
-    None
-}
-
 /// Strip `// ...` comments + double-quoted/backtick spans (replace with ' ').
 /// Block comments `/* */` are not stripped (rare in this codebase; future
 /// extension if needed). r-string forms `r"..."` / `r#"..."#` are handled
@@ -508,27 +402,4 @@ fn strip_for_lint(s: &str) -> String {
     out
 }
 
-fn line_has_cfg_debug_attr(raw_line: &str) -> bool {
-    // Attribute forms that gate a debug-* feature:
-    //   #[cfg(feature = "debug-<sub>")]
-    //   #[cfg(all(..., feature = "debug-<sub>", ...))]
-    //   #[cfg(any(feature = "debug-<sub>", ...))]
-    //   #[cfg_attr(feature = "debug-<sub>", ...)]
-    // Detection: the line carries `#[cfg` (any form) AND the literal
-    // `feature = "debug-` substring.
-    let t = raw_line.trim_start();
-    if !t.starts_with("#[cfg") { return false; }
-    raw_line.contains("\"debug-")
-}
-
-/// True if `prefix` ends with `debug_<word>!` followed only by whitespace.
-fn ends_with_debug_sub_macro(prefix: &str) -> bool {
-    let p = prefix.trim_end();
-    if !p.ends_with('!') { return false; }
-    let p = &p[..p.len() - 1];
-    let last_token: &str = p.rsplit(|c: char| !is_ident_char(c)).next().unwrap_or("");
-    last_token.starts_with("debug_") && last_token.len() > "debug_".len()
-}
-
 fn is_ident_char(c: char) -> bool { c.is_ascii_alphanumeric() || c == '_' }
-
