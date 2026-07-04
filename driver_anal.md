@@ -80,6 +80,10 @@ test-pass claims.
 - The stale procfs-era static `/sys/class/misc/autofs` registration has been
   removed; autofs sysfs state now comes from the model-owned misc device and
   exposes the same `10:235` dev_t as `/dev/autofs`.
+- Built-in devfs pseudo-device publication now has a fallible
+  `try_populate_defaults` path. Matching existing pseudo devices are treated
+  as idempotent model state, while conflicting model devices return a driver
+  model error instead of hiding publication failure inside the helper.
 - PCI capability dumping is read-only again for MSI-X; MSI-X programming for
   virtio devices belongs to the virtio-pci transport probe/remove path.
 - The virtio-pci transport accepts modern virtio PCI IDs only. Transitional

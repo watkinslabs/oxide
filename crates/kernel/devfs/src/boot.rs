@@ -16,15 +16,15 @@ use crate::register;
 /// metadata. Repeated boot/test population leaves the already-registered model
 /// device in place instead of publishing a duplicate bus identity.
 /// # C: O(N_devices)
-fn add_pseudo_dev(class: &'static str, name: &str, dt: (u32, u32), factory: drv::NodeFactory) {
+fn add_pseudo_dev(class: &'static str, name: &str, dt: (u32, u32), factory: drv::NodeFactory) -> drv::KResult<()> {
     use alloc::string::String;
     match drv::try_device_add(Arc::new(
         drv::Device::new(class, String::from(name), 0, 0, 0)
             .with_devnode(class, String::from(name), Some(dt))
             .with_node_factory(factory))) {
-        Ok(_) => {}
+        Ok(_) => Ok(()),
         Err(drv::Error::Busy) => {
-            if !drv::devices().iter().any(|d| {
+            if drv::devices().iter().any(|d| {
                 d.bus == class
                     && d.addr == name
                     && d.dev_class == class
@@ -32,17 +32,19 @@ fn add_pseudo_dev(class: &'static str, name: &str, dt: (u32, u32), factory: drv:
                     && d.dev_t == Some(dt)
                     && d.node_factory.is_some()
             }) {
-                panic!("conflicting pseudo device registration");
+                Ok(())
+            } else {
+                Err(drv::Error::Busy)
             }
         }
-        Err(_) => panic!("pseudo device registration failed"),
+        Err(e) => Err(e),
     }
 }
 
 /// Register the built-in pseudo-device nodes + the synthetic directory
 /// overlay. Boot, once (idempotent — re-registration overwrites).
 /// # C: O(N nodes)
-pub fn populate_defaults() {
+pub fn try_populate_defaults() -> drv::KResult<()> {
     // The `/sys/*` mount-point dirs (cgroup/bpf/pstore/security/tracing/debug)
     // are created in sysfs's OWN tree by `sysfs::init` (D1c) — devfs no longer
     // writes into the `/sys` subtree.
@@ -63,13 +65,13 @@ pub fn populate_defaults() {
     // standard mem major/minor metadata. Linux exposes random as 1:8 and
     // urandom as 1:9, so publish separate device identities even though both
     // use the same random file implementation.
-    add_pseudo_dev("mem", "null", (1, 3),  Arc::new(|| crate::misc::make_null_inode()));
-    add_pseudo_dev("mem", "kmsg", (1, 11), Arc::new(|| crate::misc::make_kmsg_inode()));
-    add_pseudo_dev("mem", "zero", (1, 5),  Arc::new(|| crate::misc::make_zero_inode()));
-    add_pseudo_dev("mem", "full", (1, 7),  Arc::new(|| crate::misc::make_full_inode()));
-    add_pseudo_dev("mem", "random",  (1, 8), Arc::new(|| crate::misc::make_random_inode()));
-    add_pseudo_dev("mem", "urandom", (1, 9), Arc::new(|| crate::misc::make_urandom_inode()));
-    add_pseudo_dev("misc", "autofs", (10, 235), Arc::new(|| crate::misc::make_autofs_inode()));
+    add_pseudo_dev("mem", "null", (1, 3),  Arc::new(|| crate::misc::make_null_inode()))?;
+    add_pseudo_dev("mem", "kmsg", (1, 11), Arc::new(|| crate::misc::make_kmsg_inode()))?;
+    add_pseudo_dev("mem", "zero", (1, 5),  Arc::new(|| crate::misc::make_zero_inode()))?;
+    add_pseudo_dev("mem", "full", (1, 7),  Arc::new(|| crate::misc::make_full_inode()))?;
+    add_pseudo_dev("mem", "random",  (1, 8), Arc::new(|| crate::misc::make_random_inode()))?;
+    add_pseudo_dev("mem", "urandom", (1, 9), Arc::new(|| crate::misc::make_urandom_inode()))?;
+    add_pseudo_dev("misc", "autofs", (10, 235), Arc::new(|| crate::misc::make_autofs_inode()))?;
     let sym = |target: &'static [u8], ino: u64| -> InodeRef {
         crate::misc::make_symlink_inode(target, ino)
     };
@@ -82,4 +84,15 @@ pub fn populate_defaults() {
     // register — no synthetic prefix-scan inodes needed. The CPU topology
     // dirs (/sys/devices/system/cpu/cpuN/online) materialize when sysfs
     // registers the cpu leaves; readdir enumerates the real BTreeMap.
+    Ok(())
+}
+
+/// Register the built-in pseudo-device nodes for the boot path. Pseudo-device
+/// conflicts are fatal at boot, but tests and staged init can use the fallible
+/// form above to prove rollback/error behavior.
+/// # C: O(N nodes)
+pub fn populate_defaults() {
+    if let Err(e) = try_populate_defaults() {
+        panic!("devfs pseudo device registration failed: {:?}", e);
+    }
 }
