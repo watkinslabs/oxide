@@ -84,7 +84,9 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     let idx = (inode.ino() & 0xFFFF) as u32;
     use syscall::errno::Errno;
     let efault = || Some(-(Errno::Efault.as_i32() as i64));
-    let user_ok = |p: u64, len: u64| p != 0 && p < hal::USER_VA_END && p + len < hal::USER_VA_END;
+    let user_ok = |p: u64, len: u64| {
+        p != 0 && p < hal::USER_VA_END && p.checked_add(len).is_some_and(|end| end <= hal::USER_VA_END)
+    };
     match req {
         // ---- pointer-arg ioctls ----
         crate::FBIOGET_VSCREENINFO => {
@@ -191,6 +193,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             if cm.red == 0 || cm.green == 0 || cm.blue == 0 { return efault(); }
             let nb = (cm.len as u64) * 2;
             if !user_ok(cm.red, nb) || !user_ok(cm.green, nb) || !user_ok(cm.blue, nb) { return efault(); }
+            if cm.transp != 0 && !user_ok(cm.transp, nb) { return efault(); }
             let var = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
             for i in 0..cm.len {
                 let px = crate::palette_at(idx, (cm.start + i) as usize).unwrap_or(0);
@@ -200,7 +203,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
                     core::ptr::write_volatile((cm.red + (i as u64) * 2) as *mut u16, r);
                     core::ptr::write_volatile((cm.green + (i as u64) * 2) as *mut u16, g);
                     core::ptr::write_volatile((cm.blue + (i as u64) * 2) as *mut u16, b);
-                    if cm.transp != 0 && user_ok(cm.transp + (i as u64) * 2, 2) {
+                    if cm.transp != 0 {
                         core::ptr::write_volatile((cm.transp + (i as u64) * 2) as *mut u16, 0);
                     }
                 }
