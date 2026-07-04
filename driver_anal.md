@@ -77,6 +77,10 @@ test-pass claims.
   FEATURES_OK validation, DRIVER_OK publication, and queue-size scanning now
   live in the shared virtio queue/setup helper instead of being open-coded in
   the virtio-pci probe body.
+- Mandatory q0 plus planned extra virtqueue programming now uses a shared
+  queue-set helper, so the virtio-pci probe body no longer hand-rolls q1/q2/q3
+  programming loops. Per-device notify mapping and queue warm-up policy still
+  remain in the probe body.
 - Virtio-blk no longer has PCI-transport-owned block config harvest. The
   virtio-pci path maps the device config as a generic resource, and the
   virtio-blk child driver reads capacity/block-size during its own probe.
@@ -221,10 +225,10 @@ test-pass claims.
   device ID. Resource handoff is now centralized and carries the common
   `DEVICE_CFG` window; virtio-blk, virtio-vsock, virtio-snd, virtio-input,
   and virtio-net config parsing have moved into their child drivers. The
-  common-cfg status/reset/feature/queue-size register protocol has moved into
-  a shared helper, but feature policy, full queue programming, queue warm-up
-  policy, MSI-X setup, and failure release helpers still need to move behind a
-  `VirtioPciTransport`/`VirtioProbeState` boundary.
+  common-cfg status/reset/feature/queue-size register protocol and planned
+  queue programming have moved into shared helpers, but feature policy, notify
+  mapping, queue warm-up policy, MSI-X setup, and failure release helpers still
+  need to move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and

@@ -1365,24 +1365,8 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::mmu_ops::hhdm_offset() }
     };
-    // queue 1 (TX) state captured when net/vsock program it below.
-    let mut q1_desc_pa: u64 = 0;
-    let mut q1_driver_pa: u64 = 0;
-    let mut q1_device_pa: u64 = 0;
-    let mut q1_notify_off_local: u16 = 0;
-    // F455: virtio-snd TXQ(2) state captured when snd programs it below.
-    let mut snd_q2_desc_pa_local:   u64 = 0;
-    let mut snd_q2_driver_pa_local: u64 = 0;
-    let mut snd_q2_device_pa_local: u64 = 0;
     let mut snd_q2_notify_va_local: u64 = 0;
-    let mut snd_q2_notify_off_local: u16 = 0;
-    let mut snd_q2_size_local:      u16 = 0;
-    let mut snd_q3_desc_pa_local:   u64 = 0;
-    let mut snd_q3_driver_pa_local: u64 = 0;
-    let mut snd_q3_device_pa_local: u64 = 0;
     let mut snd_q3_notify_va_local: u64 = 0;
-    let mut snd_q3_notify_off_local: u16 = 0;
-    let mut snd_q3_size_local:      u16 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let msix = if features_ok {
         profile.msix0_handler.and_then(|handler| {
@@ -1390,68 +1374,66 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         })
     } else { None };
     let q0_msix_vec = if msix.is_some() { 0 } else { 0xFFFF };
-    let (q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_off, final_status) = if features_ok {
-        // q0 uses MSI-X table entry 0 only after the transport has
-        // successfully allocated and programmed that entry.
-        match super::virtio_qsetup::program_queue(cfg_va, 0, q0_msix_vec, hhdm) {
-            Some(r0) => {
-                let extra_notify_cap = if profile.maps_extra_notify() {
-                    vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG)
-                } else {
-                    None
-                };
-                for queue in profile.extra_queues {
-                    let Some(queue) = queue else { continue };
-                    let Some(ring) =
-                        super::virtio_qsetup::program_queue(cfg_va, queue.index, queue.msix_vec, hhdm)
-                    else {
-                        continue;
-                    };
-                    match queue.index {
-                        1 => {
-                            q1_desc_pa = ring.desc_pa;
-                            q1_driver_pa = ring.driver_pa;
-                            q1_device_pa = ring.device_pa;
-                            q1_notify_off_local = ring.notify_off;
+    let programmed_queues = if features_ok {
+        super::virtio_qsetup::program_queue_set(
+            cfg_va,
+            hhdm,
+            q0_msix_vec,
+            &profile.extra_queues,
+        )
+    } else {
+        None
+    };
+    if let Some(programmed) = programmed_queues.as_ref() {
+        let extra_notify_cap = if profile.maps_extra_notify() {
+            vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG)
+        } else {
+            None
+        };
+        for queue in profile.extra_queues {
+            let Some(queue) = queue else { continue };
+            if queue.map_notify {
+                if let Some(ring) = programmed.extra_queue(queue.index) {
+                    if let Some(ncap) = extra_notify_cap.as_ref() {
+                        let notify_va =
+                            notify_va_owned(&mut mappings, ncap, &bars, ring.notify_off);
+                        match queue.index {
+                            2 => snd_q2_notify_va_local = notify_va,
+                            3 => snd_q3_notify_va_local = notify_va,
+                            _ => {}
                         }
-                        2 => {
-                            snd_q2_desc_pa_local = ring.desc_pa;
-                            snd_q2_driver_pa_local = ring.driver_pa;
-                            snd_q2_device_pa_local = ring.device_pa;
-                            snd_q2_notify_off_local = ring.notify_off;
-                            snd_q2_size_local = ring.size;
-                            if queue.map_notify {
-                                if let Some(ncap) = extra_notify_cap.as_ref() {
-                                    snd_q2_notify_va_local =
-                                        notify_va_owned(&mut mappings, ncap, &bars, ring.notify_off);
-                                }
-                            }
-                        }
-                        3 => {
-                            snd_q3_desc_pa_local = ring.desc_pa;
-                            snd_q3_driver_pa_local = ring.driver_pa;
-                            snd_q3_device_pa_local = ring.device_pa;
-                            snd_q3_notify_off_local = ring.notify_off;
-                            snd_q3_size_local = ring.size;
-                            if queue.map_notify {
-                                if let Some(ncap) = extra_notify_cap.as_ref() {
-                                    snd_q3_notify_va_local =
-                                        notify_va_owned(&mut mappings, ncap, &bars, ring.notify_off);
-                                }
-                            }
-                        }
-                        _ => {}
                     }
                 }
-
-                let final_status = super::virtio_qsetup::set_driver_ok(cfg_va);
-                (r0.desc_pa, r0.driver_pa, r0.device_pa, r0.notify_off, final_status)
             }
-            None => (0, 0, 0, 0, post_status as u8),
         }
+    }
+    let final_status = if programmed_queues.is_some() {
+        super::virtio_qsetup::set_driver_ok(cfg_va)
     } else {
-        (0, 0, 0, 0, post_status as u8)
+        post_status as u8
     };
+    let q0_ring = programmed_queues.as_ref().map(|p| p.q0);
+    let q1_ring = programmed_queues.as_ref().and_then(|p| p.extra_queue(1));
+    let q2_ring = programmed_queues.as_ref().and_then(|p| p.extra_queue(2));
+    let q3_ring = programmed_queues.as_ref().and_then(|p| p.extra_queue(3));
+    let q0_desc_pa = q0_ring.map(|q| q.desc_pa).unwrap_or(0);
+    let q0_driver_pa = q0_ring.map(|q| q.driver_pa).unwrap_or(0);
+    let q0_device_pa = q0_ring.map(|q| q.device_pa).unwrap_or(0);
+    let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
+    let q1_desc_pa = q1_ring.map(|q| q.desc_pa).unwrap_or(0);
+    let q1_driver_pa = q1_ring.map(|q| q.driver_pa).unwrap_or(0);
+    let q1_device_pa = q1_ring.map(|q| q.device_pa).unwrap_or(0);
+    let q1_notify_off_local = q1_ring.map(|q| q.notify_off).unwrap_or(0);
+    let snd_q2_desc_pa_local = q2_ring.map(|q| q.desc_pa).unwrap_or(0);
+    let snd_q2_driver_pa_local = q2_ring.map(|q| q.driver_pa).unwrap_or(0);
+    let snd_q2_device_pa_local = q2_ring.map(|q| q.device_pa).unwrap_or(0);
+    let snd_q2_notify_off_local = q2_ring.map(|q| q.notify_off).unwrap_or(0);
+    let snd_q2_size_local = q2_ring.map(|q| q.size).unwrap_or(0);
+    let snd_q3_desc_pa_local = q3_ring.map(|q| q.desc_pa).unwrap_or(0);
+    let snd_q3_driver_pa_local = q3_ring.map(|q| q.driver_pa).unwrap_or(0);
+    let snd_q3_device_pa_local = q3_ring.map(|q| q.device_pa).unwrap_or(0);
+    let snd_q3_notify_off_local = q3_ring.map(|q| q.notify_off).unwrap_or(0);
+    let snd_q3_size_local = q3_ring.map(|q| q.size).unwrap_or(0);
     // For network-style devices, post one RX buffer descriptor on queue 0 and
     // bump avail.idx before kicking. For other devices the queue stays empty so
     // the kick is a no-op nudge.

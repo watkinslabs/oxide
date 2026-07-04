@@ -45,12 +45,32 @@ impl QueuePlan {
 
 /// Programmed virtqueue: the three ring PAs handed to the device, the
 /// per-queue `queue_notify_off`, and the negotiated `queue_size`.
+#[derive(Clone, Copy)]
 pub(super) struct QueueRing {
     pub(super) desc_pa:    u64,
     pub(super) driver_pa:  u64,
     pub(super) device_pa:  u64,
     pub(super) notify_off: u16,
     pub(super) size:       u16,
+}
+
+pub(super) struct ProgrammedQueues {
+    pub(super) q0: QueueRing,
+    extra: [Option<QueueRing>; virtio::MAX_RESOURCE_QUEUES],
+}
+
+impl ProgrammedQueues {
+    /// Return a planned extra queue by index. Queue 0 is intentionally not
+    /// exposed through this helper; callers use `q0` for the mandatory queue.
+    /// # C: O(1)
+    pub(super) const fn extra_queue(&self, index: u16) -> Option<QueueRing> {
+        let index = index as usize;
+        if index < virtio::MAX_RESOURCE_QUEUES {
+            self.extra[index]
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -194,6 +214,30 @@ pub(super) fn set_driver_ok(cfg_va: u64) -> u8 {
         );
     }
     read_status(cfg_va)
+}
+
+/// Program mandatory queue 0 and every requested extra queue through the same
+/// common-cfg queue protocol. Extra queue failures are non-fatal here, matching
+/// the old staged probe behavior; child probes validate the queues they
+/// require before publishing runtime state.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(N_extra) queue programs
+pub(super) fn program_queue_set(
+    cfg_va: u64,
+    hhdm: u64,
+    q0_msix_vec: u16,
+    extra_plans: &[Option<QueuePlan>],
+) -> Option<ProgrammedQueues> {
+    let q0 = program_queue(cfg_va, 0, q0_msix_vec, hhdm)?;
+    let mut extra = [None; virtio::MAX_RESOURCE_QUEUES];
+    for plan in extra_plans.iter().copied().flatten() {
+        let index = plan.index as usize;
+        if index >= virtio::MAX_RESOURCE_QUEUES {
+            continue;
+        }
+        extra[index] = program_queue(cfg_va, plan.index, plan.msix_vec, hhdm);
+    }
+    Some(ProgrammedQueues { q0, extra })
 }
 
 /// Program virtqueue `qi` on the modern common-cfg window at `cfg_va`:
