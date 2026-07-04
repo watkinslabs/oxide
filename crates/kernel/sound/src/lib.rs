@@ -61,7 +61,7 @@ struct SndData {
 ///   - `pcmC0D0c`  : read → capture transfer, write → `Eio`
 ///   - `controlC0` : read → 0, write → `Eio`
 ///   - `/dev/dsp`,`/dev/audio` : read/write → OSS transfer (`Eio` on 0 write)
-///   - `/dev/mixer`: read → 0, write → accept (`Ok(len)`)
+///   - `/dev/mixer`: read → 0, write → `ENODEV` until real mixer controls exist
 struct SndFileOps;
 impl FileOps for SndFileOps {
     fn read(&self, inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
@@ -88,7 +88,7 @@ impl FileOps for SndFileOps {
                 let n = oss::write(data.owner, b);
                 if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
             }
-            MINOR_MIXER => Ok(b.len()),
+            MINOR_MIXER => Err(VfsError::Enodev),
             // pcmC0D0c / controlC0 → not writable.
             _ => Err(VfsError::Eio),
         }
@@ -109,12 +109,6 @@ struct SoundNodeTemplate {
     class: &'static str,
     minor: u64,
 }
-
-const ALSA_NODES: &[SoundNodeTemplate] = &[
-    SoundNodeTemplate { class: "sound", minor: MINOR_CONTROL },
-    SoundNodeTemplate { class: "sound", minor: MINOR_PCM_P },
-    SoundNodeTemplate { class: "sound", minor: MINOR_PCM_C },
-];
 
 const OSS_NODES: &[SoundNodeTemplate] = &[
     SoundNodeTemplate { class: "sound", minor: MINOR_DSP },
@@ -201,16 +195,31 @@ fn rollback_published_nodes(published: &[Arc<drv::Device>]) {
     }
 }
 
-fn publish_card_nodes(owner: u32, card: u32) -> Option<Vec<Arc<drv::Device>>> {
+fn publish_card_nodes(owner: u32, card: u32, has_playback: bool, has_capture: bool) -> Option<Vec<Arc<drv::Device>>> {
     let mut published = Vec::new();
-    for node in ALSA_NODES {
-        let dev_name = alsa_node_name(card, node.minor);
-        if !push_sound_node(&mut published, owner, card, node.class, dev_name, alsa_dev_t(card, node.minor), node.minor) {
+    let control_name = alsa_node_name(card, MINOR_CONTROL);
+    if !push_sound_node(&mut published, owner, card, "sound", control_name, alsa_dev_t(card, MINOR_CONTROL), MINOR_CONTROL) {
+        rollback_published_nodes(&published);
+        return None;
+    }
+    if has_playback {
+        let dev_name = alsa_node_name(card, MINOR_PCM_P);
+        if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, MINOR_PCM_P), MINOR_PCM_P) {
+            rollback_published_nodes(&published);
+            return None;
+        }
+    }
+    if has_capture {
+        let dev_name = alsa_node_name(card, MINOR_PCM_C);
+        if !push_sound_node(&mut published, owner, card, "sound", dev_name, alsa_dev_t(card, MINOR_PCM_C), MINOR_PCM_C) {
             rollback_published_nodes(&published);
             return None;
         }
     }
     for node in OSS_NODES {
+        if matches!(node.minor, MINOR_DSP | MINOR_AUDIO) && !has_playback && !has_capture {
+            continue;
+        }
         let dev_name = oss_node_name(card, node.minor);
         if !push_sound_node(&mut published, owner, card, node.class, dev_name, oss_dev_t(card, node.minor), node.minor) {
             rollback_published_nodes(&published);
@@ -218,10 +227,13 @@ fn publish_card_nodes(owner: u32, card: u32) -> Option<Vec<Arc<drv::Device>>> {
         }
     }
     if card == 0 {
-        if !push_sound_node(&mut published, owner, card, "sound", String::from("dsp"), (14, 3), MINOR_DSP)
-            || !push_sound_node(&mut published, owner, card, "sound", String::from("audio"), (14, 4), MINOR_AUDIO)
-            || !push_sound_node(&mut published, owner, card, "sound", String::from("mixer"), (14, 0), MINOR_MIXER)
-        {
+        let mut ok = true;
+        if has_playback || has_capture {
+            ok = push_sound_node(&mut published, owner, card, "sound", String::from("dsp"), (14, 3), MINOR_DSP)
+                && push_sound_node(&mut published, owner, card, "sound", String::from("audio"), (14, 4), MINOR_AUDIO);
+        }
+        ok = ok && push_sound_node(&mut published, owner, card, "sound", String::from("mixer"), (14, 0), MINOR_MIXER);
+        if !ok {
             rollback_published_nodes(&published);
             return None;
         }
@@ -269,11 +281,19 @@ pub fn register_card(owner: u32) -> bool {
     if CARDS.lock().iter().any(|record| record.owner == owner && !record.nodes.is_empty()) {
         return true;
     }
-    pcm::register_card(owner);
-    capture::register_card(owner);
-    oss::register_card(owner);
+    let has_playback = ops::pcm_caps(owner).is_some();
+    let has_capture = ops::cap_caps(owner).is_some();
+    if has_playback {
+        pcm::register_card(owner);
+    }
+    if has_capture {
+        capture::register_card(owner);
+    }
+    if has_playback || has_capture {
+        oss::register_card(owner);
+    }
     devfs::register_dir("/dev/snd");
-    let Some(published) = publish_card_nodes(owner, card) else {
+    let Some(published) = publish_card_nodes(owner, card, has_playback, has_capture) else {
         rollback_card_registration(owner);
         return false;
     };
@@ -300,6 +320,7 @@ pub fn register_card(owner: u32) -> bool {
 }
 
 fn rollback_card_registration(owner: u32) {
+    control::unregister_card(owner);
     oss::unregister_card(owner);
     capture::unregister_card(owner);
     pcm::unregister_card(owner);
@@ -373,6 +394,7 @@ pub fn unregister_card(owner: u32) -> bool {
     for node in record.nodes.iter().rev() {
         drv::device_del(node);
     }
+    control::unregister_card(owner);
     oss::unregister_card(owner);
     capture::unregister_card(owner);
     pcm::unregister_card(owner);
@@ -414,10 +436,13 @@ mod tests {
 
     fn cfg(_owner: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
     fn caps(_owner: u32) -> ops::Caps { Some((0, 0, 1, 2)) }
+    fn no_caps(_owner: u32) -> ops::Caps { None }
     fn period(_owner: u32) -> usize { 2048 }
     fn hw_params(_owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
     fn yes(_owner: u32) -> bool { true }
+    fn no(_owner: u32) -> bool { false }
     fn trigger(_owner: u32, _start: bool) -> bool { true }
+    fn fail_trigger(_owner: u32, _start: bool) -> bool { false }
     fn submit(_owner: u32, b: &[u8]) -> usize { b.len() }
     fn recv(_owner: u32, b: &mut [u8]) -> usize { b.len() }
 
@@ -438,6 +463,74 @@ mod tests {
         pcm_recv: recv,
     };
 
+    static PLAYBACK_ONLY_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: caps,
+        cap_caps: no_caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: trigger,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: trigger,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    static CAPTURE_ONLY_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: no_caps,
+        cap_caps: caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: trigger,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: trigger,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    static NO_PCM_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: no_caps,
+        cap_caps: no_caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: trigger,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: trigger,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    static FAIL_STOP_FREE_OPS: ops::SoundOps = ops::SoundOps {
+        config: cfg,
+        pcm_caps: caps,
+        cap_caps: caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: fail_trigger,
+        pcm_hw_free: no,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: fail_trigger,
+        cap_hw_free: no,
+        pcm_recv: recv,
+    };
+
     fn add_hook(class: &str, name: &str, dt: Option<(u32, u32)>, factory: Option<drv::NodeFactory>) {
         if class == "sound" {
             ADDED.lock().push((String::from(name), dt, factory.is_some()));
@@ -450,6 +543,24 @@ mod tests {
 
     fn has_node(nodes: &[(String, Option<(u32, u32)>, bool)], name: &str, dev_t: (u32, u32)) -> bool {
         nodes.iter().any(|node| node == &(String::from(name), Some(dev_t), true))
+    }
+
+    fn has_name(nodes: &[(String, Option<(u32, u32)>, bool)], name: &str) -> bool {
+        nodes.iter().any(|node| node.0 == name)
+    }
+
+    fn test_err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
+
+    fn put_u32(buf: &mut [u8], off: usize, value: u32) {
+        buf[off..off + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u64(buf: &mut [u8], off: usize, value: u64) {
+        buf[off..off + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn get_u64(buf: &[u8], off: usize) -> u64 {
+        u64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
     }
 
     #[test]
@@ -509,6 +620,107 @@ mod tests {
         assert_eq!(owner(), None);
         assert!(ops::ops_for(0x10).is_none(), "ops must not be visible after owner release");
         let _ = ops::clear(0x10);
+    }
+
+    #[test]
+    fn card_nodes_follow_reported_stream_directions() {
+        let _guard = test_guard();
+        drv::set_devtmpfs_hook(add_hook);
+        drv::set_devtmpfs_del_hook(del_hook);
+
+        for (owner, ops_table, expect_playback, expect_capture, expect_count) in [
+            (0x41, &PLAYBACK_ONLY_OPS, true, false, 8usize),
+            (0x42, &CAPTURE_ONLY_OPS, false, true, 8usize),
+            (0x43, &NO_PCM_OPS, false, false, 3usize),
+        ] {
+            ADDED.lock().clear();
+            REMOVED.lock().clear();
+            let _ = unregister_card(owner);
+            let _ = ops::clear(owner);
+
+            assert!(reserve_card(owner));
+            assert!(ops::register(owner, ops_table));
+            assert!(register_card(owner));
+            let added = ADDED.lock().clone();
+            assert_eq!(added.len(), expect_count);
+            assert!(has_node(&added, "snd/controlC0", (116, 0)));
+            assert_eq!(has_name(&added, "snd/pcmC0D0p"), expect_playback);
+            assert_eq!(has_name(&added, "snd/pcmC0D0c"), expect_capture);
+            assert_eq!(has_name(&added, "dsp"), expect_playback || expect_capture);
+            assert_eq!(has_name(&added, "audio"), expect_playback || expect_capture);
+            assert!(has_node(&added, "mixer", (14, 0)));
+            assert_eq!(pcm::has_card(owner), expect_playback);
+            assert_eq!(capture::has_card(owner), expect_capture);
+            assert_eq!(oss::has_card(owner), expect_playback || expect_capture);
+
+            assert!(unregister_card(owner));
+            let _ = ops::clear(owner);
+        }
+    }
+
+    #[test]
+    fn pcm_control_ops_propagate_backend_failures() {
+        let _guard = test_guard();
+        let owner = 0x44;
+        let _ = pcm::unregister_card(owner);
+        let _ = capture::unregister_card(owner);
+        let _ = cancel_card_reservation(owner);
+        let _ = ops::clear(owner);
+
+        assert!(reserve_card(owner));
+        assert!(ops::register(owner, &FAIL_STOP_FREE_OPS));
+        pcm::register_card(owner);
+        capture::register_card(owner);
+
+        assert_eq!(pcm::handle(owner, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
+        assert_eq!(pcm::handle(owner, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
+        assert_eq!(capture::handle(owner, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
+        assert_eq!(capture::handle(owner, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
+
+        let _ = pcm::unregister_card(owner);
+        let _ = capture::unregister_card(owner);
+        let _ = ops::clear(owner);
+        let _ = cancel_card_reservation(owner);
+    }
+
+    #[test]
+    fn pcm_sync_ptr_does_not_fabricate_hardware_progress() {
+        let _guard = test_guard();
+        let owner = 0x45;
+        let _ = pcm::unregister_card(owner);
+        let _ = capture::unregister_card(owner);
+        let _ = cancel_card_reservation(owner);
+        let _ = ops::clear(owner);
+
+        assert!(reserve_card(owner));
+        assert!(ops::register(owner, &TEST_OPS));
+        pcm::register_card(owner);
+        capture::register_card(owner);
+
+        let mut sync = [0u8; uapi::SYNC_PTR_SIZE];
+        put_u32(&mut sync, uapi::SP_FLAGS, 0);
+        put_u64(&mut sync, uapi::SP_CONTROL_APPL_PTR, 77);
+        assert_eq!(pcm::handle(owner, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
+        assert_eq!(get_u64(&sync, uapi::SP_CONTROL_APPL_PTR), 77);
+        assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
+
+        sync.fill(0);
+        put_u32(&mut sync, uapi::SP_FLAGS, 0);
+        put_u64(&mut sync, uapi::SP_CONTROL_APPL_PTR, 33);
+        assert_eq!(capture::handle(owner, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
+        assert_eq!(get_u64(&sync, uapi::SP_CONTROL_APPL_PTR), 33);
+        assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
+
+        assert_eq!(pcm::handle(owner, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(pcm::handle(owner, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(pcm::handle(owner, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(capture::handle(owner, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+        assert_eq!(capture::handle(owner, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+
+        let _ = pcm::unregister_card(owner);
+        let _ = capture::unregister_card(owner);
+        let _ = ops::clear(owner);
+        let _ = cancel_card_reservation(owner);
     }
 
     #[test]

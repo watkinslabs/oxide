@@ -96,14 +96,14 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         return ::fs::perf::handle_perf_ioctl(file.inode(), req, arg);
     }
     // evdev ioctls.
-    if let Some(rv) = drv_virtio_input::devfs::handle_evdev_ioctl(file.inode(), req, arg) {
+    if let Some(rv) = drv_virtio_input::devfs::handle_evdev_ioctl(&file, req, arg) {
         return rv;
     }
     // DRM/render fd ioctls.
     if let Some(rv) = fbdev::devfs::handle_fbdev_ioctl(file.inode(), req, arg) {
         return rv;
     }
-    if let Some(rv) = drm::node::handle_drm_ioctl(file.inode(), req, arg) {
+    if let Some(rv) = drm::node::handle_drm_ioctl(&file, req, arg) {
         return rv;
     }
     // ALSA /dev/snd/* + OSS /dev/dsp,/dev/mixer — the `sound` ALSA core.

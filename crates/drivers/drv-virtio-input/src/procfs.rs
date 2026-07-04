@@ -3,7 +3,7 @@
 //! `/proc/bus/input/devices` is a generated view over the live virtio-input
 //! registry. DRM and boot code must not fabricate input devices.
 
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 extern crate alloc;
 
@@ -48,7 +48,7 @@ fn devices_body() -> Vec<u8> {
         push_escaped_string(&mut out, &dev.name[..name_len]);
         let _ = write!(
             out,
-            "\"\nP: Phys=virtio/input{}\nS: Sysfs=/devices/virtio-input/input{}\nU: Uniq=",
+            "\"\nP: Phys=virtio/input{}\nS: Sysfs=/devices/virtual/input/event{}\nU: Uniq=",
             dev.evdev_id, dev.evdev_id,
         );
         push_escaped_string(&mut out, &dev.serial[..serial_len]);
@@ -67,9 +67,76 @@ fn devices_body() -> Vec<u8> {
 /// Register the generated `/proc/bus/input/devices` file. The file may be
 /// registered before PCI enumeration; reads reflect the current probed devices.
 /// # C: O(depth)
+#[cfg(target_os = "oxide-kernel")]
 pub fn init() {
     ::procfs::register(
         "/proc/bus/input/devices",
         ::procfs::dyn_file::make_gen_file(PROC_INPUT_DEVICES_INO, devices_body),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_raw(raw)
+    }
+
+    fn test_dev(device_key: virtio::VirtioChildDeviceKey, evdev_id: u32) -> crate::VirtioInputDev {
+        let mut dev = crate::VirtioInputDev {
+            device_key,
+            evdev_id,
+            is_pointer: true,
+            name: [0; 128],
+            name_len: 0,
+            serial: [0; 128],
+            serial_len: 0,
+            ids: crate::VirtioInputDevIds {
+                bustype: 0x0006,
+                vendor: 0x1af4,
+                product: 0x1052,
+                version: 0x0001,
+            },
+            ev_bits: [0; 32],
+            key_bits: crate::CapBitmap::default(),
+            rel_bits: crate::CapBitmap::default(),
+            abs_bits: crate::CapBitmap::default(),
+            led_bits: crate::CapBitmap::default(),
+            abs_info: [None; 64],
+            prop_bits: [0; 4],
+            repeat: crate::DEFAULT_REPEAT,
+        };
+        let name = b"QEMU \"Tablet\"";
+        dev.name[..name.len()].copy_from_slice(name);
+        dev.name_len = name.len();
+        let serial = b"seat0\\pointer";
+        dev.serial[..serial.len()].copy_from_slice(serial);
+        dev.serial_len = serial.len();
+        dev.prop_bits[0] = 0x02;
+        dev.ev_bits[(crate::EV_KEY / 8) as usize] |= 1 << (crate::EV_KEY % 8);
+        dev.ev_bits[(crate::EV_REL / 8) as usize] |= 1 << (crate::EV_REL % 8);
+        dev.key_bits.bits[0] = 0x01;
+        dev.rel_bits.bits[0] = 0x03;
+        dev
+    }
+
+    #[test]
+    fn devices_body_names_virtual_input_sysfs_device() {
+        crate::DEVICES.lock().clear();
+        let device_key = key(0x1234_0000);
+        crate::install(test_dev(device_key, 7));
+
+        let body = String::from_utf8(devices_body()).expect("valid proc devices body");
+        assert!(body.contains("I: Bus=0006 Vendor=1af4 Product=1052 Version=0001\n"));
+        assert!(body.contains("N: Name=\"QEMU \\\"Tablet\\\"\"\n"));
+        assert!(body.contains("P: Phys=virtio/input7\n"));
+        assert!(body.contains("S: Sysfs=/devices/virtual/input/event7\n"));
+        assert!(body.contains("U: Uniq=seat0\\\\pointer\n"));
+        assert!(body.contains("H: Handlers=event7\n"));
+        assert!(!body.contains("/devices/virtio-input/input"));
+
+        assert_eq!(crate::remove_device(device_key), Some(7));
+        crate::DEVICES.lock().clear();
+    }
 }

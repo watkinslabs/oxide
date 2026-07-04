@@ -102,7 +102,7 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
             // F202: consult inode.poll() — was special-casing pty and
             // returning (true,true) for everything else, so dropbear's
             // pipe-driven exec channel never woke on actual readiness.
-            let mask = file.inode().poll();
+            let mask = file.poll();
             let got_read  = (mask & vfs::POLL_IN)  != 0
                          || (mask & vfs::POLL_HUP) != 0;
             let got_write = (mask & vfs::POLL_OUT) != 0;

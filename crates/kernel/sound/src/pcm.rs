@@ -73,10 +73,12 @@ pub(crate) fn registered_count() -> usize {
     PCM.lock().len()
 }
 
-#[cfg(test)]
-pub(crate) fn has_card(owner: u32) -> bool {
+fn is_registered(owner: u32) -> bool {
     PCM.lock().iter().any(|p| p.owner == owner)
 }
+
+#[cfg(test)]
+pub(crate) fn has_card(owner: u32) -> bool { is_registered(owner) }
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -112,9 +114,7 @@ fn hz_rate_enum(hz: u32) -> u8 {
 
 /// Device OUTPUT caps `(virtio_formats, virtio_rates, ch_min, ch_max)`.
 /// # C: O(1)
-fn caps(owner: u32) -> (u64, u64, u8, u8) {
-    crate::ops::pcm_caps(owner).unwrap_or((1 << 5, 1 << 6, 1, 2)) // S16 @ 44.1k st default
-}
+fn caps(owner: u32) -> Option<(u64, u64, u8, u8)> { crate::ops::pcm_caps(owner) }
 
 // ── hw_params mask / interval accessors ────────────────────────────────
 
@@ -149,7 +149,7 @@ pub(crate) struct Resolved {
 
 /// ALSA format → virtio_snd FMT enum (re-exported for the capture path).
 /// # C: O(1)
-pub(crate) fn fmt_alsa_to_virtio(f: u32) -> u8 { alsa_fmt_to_virtio(f).unwrap_or(5) }
+pub(crate) fn fmt_alsa_to_virtio(f: u32) -> Option<u8> { alsa_fmt_to_virtio(f) }
 /// Hz → virtio RATE enum (re-exported for the capture path). # C: O(1)
 pub(crate) fn rate_hz_to_enum(hz: u32) -> u8 { hz_rate_enum(hz) }
 
@@ -251,10 +251,15 @@ pub(crate) fn refine_params(b: &UserBuf, vf: u64, vr: u64, ch_min: u8, ch_max: u
 /// Playback HW_REFINE/HW_PARAMS: refine against the OUTPUT caps; on commit
 /// apply via the playback ops + record the substream geometry. # C: O(CONTROLQ)
 fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
-    let (vf, vr, ch_min, ch_max) = caps(owner);
+    let Some((vf, vr, ch_min, ch_max)) = caps(owner) else {
+        return err(Errno::Enodev);
+    };
     let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
-        if !crate::ops::pcm_hw_params(owner, rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
+        let Some(format) = fmt_alsa_to_virtio(r.format) else {
+            return err(Errno::Einval);
+        };
+        if !crate::ops::pcm_hw_params(owner, rate_hz_to_enum(r.rate), format,
                                       r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
@@ -279,8 +284,8 @@ fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
 pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => write_int(arg, SNDRV_PCM_VERSION),
-        PCM_INFO => pcm_info(arg),
-        PCM_TSTAMP | PCM_TTSTAMP => 0,
+        PCM_INFO => pcm_info(owner, arg),
+        PCM_TSTAMP | PCM_TTSTAMP => err(Errno::Enotty),
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) {
             Some(b) => refine(owner, &b, false), None => err(Errno::Efault),
         },
@@ -288,7 +293,9 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
             Some(b) => refine(owner, &b, true), None => err(Errno::Efault),
         },
         PCM_HW_FREE => {
-            let _ = crate::ops::pcm_hw_free(owner);
+            if !crate::ops::pcm_hw_free(owner) {
+                return err(Errno::Eio);
+            }
             let mut guard = PCM.lock();
             let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
                 return err(Errno::Enodev);
@@ -314,22 +321,16 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
             p.state = STATE_RUNNING; 0
         }
         PCM_DROP | PCM_DRAIN => {
-            let _ = crate::ops::pcm_trigger(owner, false);
+            if !crate::ops::pcm_trigger(owner, false) {
+                return err(Errno::Eio);
+            }
             let mut guard = PCM.lock();
             let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
                 return err(Errno::Enodev);
             };
             p.state = STATE_SETUP; p.appl_ptr = 0; p.hw_ptr = 0; 0
         }
-        PCM_PAUSE => {
-            let _ = crate::ops::pcm_trigger(owner, false);
-            let mut guard = PCM.lock();
-            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
-                return err(Errno::Enodev);
-            };
-            p.state = STATE_PREPARED;
-            0
-        }
+        PCM_PAUSE => err(Errno::Enotty),
         PCM_HWSYNC => 0,
         PCM_DELAY => write_long(arg, 0),
         PCM_STATUS => pcm_status(owner, arg),
@@ -381,7 +382,10 @@ fn write_long(arg: u64, v: u64) -> i64 {
     match UserBuf::new(arg, 8) { Some(b) => { b.w64(0, v); 0 } None => err(Errno::Efault) }
 }
 
-fn pcm_info(arg: u64) -> i64 {
+fn pcm_info(owner: u32, arg: u64) -> i64 {
+    if caps(owner).is_none() || !is_registered(owner) {
+        return err(Errno::Enodev);
+    }
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     b.zero(0, PCM_INFO_SIZE);
     b.w32(PI_DEVICE, 0);
@@ -432,9 +436,8 @@ fn sync_ptr(owner: u32, arg: u64) -> i64 {
         return err(Errno::Enodev);
     };
     if flags & SYNC_PTR_APPL == 0 {
-        p.appl_ptr = b.r64(SP_CONTROL_APPL_PTR); // app advanced its pointer
+        p.appl_ptr = b.r64(SP_CONTROL_APPL_PTR);
     }
-    p.hw_ptr = p.appl_ptr; // synchronous transfer keeps hw caught up
     b.w32(SP_STATUS_STATE, p.state);
     b.w64(SP_STATUS_HW_PTR, p.hw_ptr);
     b.w64(SP_CONTROL_APPL_PTR, p.appl_ptr);

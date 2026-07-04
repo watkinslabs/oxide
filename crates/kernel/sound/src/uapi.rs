@@ -45,6 +45,43 @@ pub const CTL_SUBSCRIBE:      u64 = 0x16;
 pub const CTL_PCM_NEXT_DEVICE: u64 = 0x30;
 pub const CTL_PCM_INFO:       u64 = 0x31;
 
+// snd_ctl_elem_* constants and LP64 offsets.
+pub const CTL_ELEM_IFACE_MIXER: u32 = 2;
+pub const CTL_ELEM_TYPE_BOOLEAN: u32 = 1;
+pub const CTL_ELEM_TYPE_INTEGER: u32 = 2;
+pub const CTL_ELEM_ACCESS_READ: u32 = 1 << 0;
+pub const CTL_ELEM_ACCESS_WRITE: u32 = 1 << 1;
+pub const CTL_ELEM_ACCESS_READWRITE: u32 = CTL_ELEM_ACCESS_READ | CTL_ELEM_ACCESS_WRITE;
+
+pub const CTL_ELEM_ID_SIZE: usize = 64;
+pub const CEI_NUMID: usize = 0;
+pub const CEI_IFACE: usize = 4;
+pub const CEI_DEVICE: usize = 8;
+pub const CEI_SUBDEVICE: usize = 12;
+pub const CEI_NAME: usize = 16;
+pub const CEI_NAME_LEN: usize = 44;
+pub const CEI_INDEX: usize = 60;
+
+pub const CTL_ELEM_LIST_SIZE: usize = 80;
+pub const CEL_OFFSET: usize = 0;
+pub const CEL_SPACE: usize = 4;
+pub const CEL_USED: usize = 8;
+pub const CEL_COUNT: usize = 12;
+pub const CEL_PIDS: usize = 16;
+
+pub const CTL_ELEM_INFO_SIZE: usize = 272;
+pub const CEINFO_TYPE: usize = 64;
+pub const CEINFO_ACCESS: usize = 68;
+pub const CEINFO_COUNT: usize = 72;
+pub const CEINFO_OWNER: usize = 76;
+pub const CEINFO_VALUE: usize = 80;
+pub const CEINFO_INTEGER_MIN: usize = 80;
+pub const CEINFO_INTEGER_MAX: usize = 88;
+pub const CEINFO_INTEGER_STEP: usize = 96;
+
+pub const CTL_ELEM_VALUE_SIZE: usize = 1224;
+pub const CEV_VALUE: usize = 72;
+
 // Protocol versions.
 pub const SNDRV_PCM_VERSION: u32 = (2 << 16) | 15; // 2.0.15
 pub const SNDRV_CTL_VERSION: u32 = (2 << 16) | 9;  // 2.0.9

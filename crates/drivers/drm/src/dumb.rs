@@ -25,6 +25,8 @@ use sync::{Spinlock, TaskList as DumbLockClass};
 
 use crate::{DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888};
 
+pub const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
+
 // ============================================================
 // UAPI wire structs (drm_mode.h)
 // ============================================================
@@ -132,17 +134,26 @@ pub fn format_supported(fourcc: u32) -> bool {
     fourcc == DRM_FORMAT_XRGB8888 || fourcc == DRM_FORMAT_ARGB8888
 }
 
-/// DRM mmap-cookie space: a high tag OR'd with (handle << 12) so each
-/// handle gets a unique page-aligned fake mmap offset distinct from
-/// fbdev (which uses 0). # C: O(1)
-pub const DRM_MMAP_COOKIE_BASE: u64 = 0x1_0000_0000;
+/// DRM mmap-cookie space. Linux treats MODE_MAP_DUMB's returned offset as an
+/// opaque driver token; keep the tag above every possible `u32 << PAGE_SHIFT`
+/// handle value so the cookie cannot alias another handle or fbdev offset 0.
+/// # C: O(1)
+pub const DRM_MMAP_COOKIE_BASE: u64 = 1u64 << 48;
+const DRM_MMAP_COOKIE_HANDLE_SHIFT: u64 = 12;
+const DRM_MMAP_COOKIE_HANDLE_MASK: u64 = (u32::MAX as u64) << DRM_MMAP_COOKIE_HANDLE_SHIFT;
+const DRM_MMAP_COOKIE_VALID_MASK: u64 = DRM_MMAP_COOKIE_BASE | DRM_MMAP_COOKIE_HANDLE_MASK;
 /// Build the MAP_DUMB cookie for `handle`. # C: O(1)
-pub fn cookie_for(handle: u32) -> u64 { DRM_MMAP_COOKIE_BASE | ((handle as u64) << 12) }
+pub fn cookie_for(handle: u32) -> u64 {
+    DRM_MMAP_COOKIE_BASE | ((handle as u64) << DRM_MMAP_COOKIE_HANDLE_SHIFT)
+}
 /// Recover the handle from a cookie, or `None` if not a DRM cookie.
 /// # C: O(1)
 pub fn handle_of_cookie(cookie: u64) -> Option<u32> {
-    if (cookie & DRM_MMAP_COOKIE_BASE) == 0 { return None; }
-    Some(((cookie & 0xFFFF_FFFF) >> 12) as u32)
+    if (cookie & DRM_MMAP_COOKIE_BASE) != DRM_MMAP_COOKIE_BASE { return None; }
+    if (cookie & !DRM_MMAP_COOKIE_VALID_MASK) != 0 { return None; }
+    let handle = ((cookie & DRM_MMAP_COOKIE_HANDLE_MASK) >> DRM_MMAP_COOKIE_HANDLE_SHIFT) as u32;
+    if handle == 0 { return None; }
+    Some(handle)
 }
 
 // ============================================================
@@ -177,6 +188,7 @@ pub struct FbObj {
     pub handles:      [u32; 4],
     pub pitches:      [u32; 4],
     pub offsets:      [u32; 4],
+    pub scanout_res_id: u32,
 }
 
 /// DRM dumb/FB object tables. Handles and FB ids are globally allocated for
@@ -203,6 +215,9 @@ impl DumbTables {
     /// Find an FB by card id + FB id. # C: O(n)
     pub fn find_fb(&self, card_id: u32, id: u32) -> Option<&FbObj> {
         self.fbs.iter().find(|f| f.card_id == card_id && f.fb_id == id)
+    }
+    pub fn find_fb_mut(&mut self, card_id: u32, id: u32) -> Option<&mut FbObj> {
+        self.fbs.iter_mut().find(|f| f.card_id == card_id && f.fb_id == id)
     }
 
     /// Bump a handle's refcount. `false` if unknown. # C: O(n)
@@ -247,8 +262,9 @@ impl DumbTables {
     /// buffer pages whose last non-VMA reference dropped. VMA-pinned buffers
     /// are marked deleted and stay until `unpin_mmap`.
     /// # C: O(n)
-    pub fn remove_card(&mut self, card_id: u32) -> Vec<(u64, u8)> {
+    pub fn remove_card(&mut self, card_id: u32) -> (Vec<(u64, u8)>, Vec<u32>) {
         let mut freed = Vec::new();
+        let mut resources = Vec::new();
         let mut fb_idx = 0usize;
         while fb_idx < self.fbs.len() {
             if self.fbs[fb_idx].card_id != card_id {
@@ -256,6 +272,9 @@ impl DumbTables {
                 continue;
             }
             let fb = self.fbs.remove(fb_idx);
+            if fb.scanout_res_id != 0 {
+                resources.push(fb.scanout_res_id);
+            }
             for &h in fb.handles.iter() {
                 if h != 0 {
                     if let Some(f) = self.unref_handle(card_id, h) { freed.push(f); }
@@ -278,7 +297,7 @@ impl DumbTables {
                 idx += 1;
             }
         }
-        freed
+        (freed, resources)
     }
 }
 
@@ -310,7 +329,33 @@ fn enomem() -> i64 { -(Errno::Enomem.as_i32() as i64) }
 
 /// True iff `[ptr, ptr+len)` is a usable user range. # C: O(1)
 fn user_ok(ptr: u64, len: u64) -> bool {
-    ptr != 0 && ptr < hal::USER_VA_END && ptr.saturating_add(len) <= hal::USER_VA_END
+    ptr != 0 && ptr < hal::USER_VA_END && ptr.checked_add(len).is_some_and(|end| end <= hal::USER_VA_END)
+}
+
+fn release_scanout_resource(card_id: u32, res_id: u32) {
+    if res_id == 0 {
+        return;
+    }
+    if let Some(ops) = crate::node::scanout_ops(card_id) {
+        let _ = (ops.destroy_resource)(ops.driver_key, res_id);
+    }
+}
+
+/// Bind a newly-created backend scanout resource to an FB object. Returns
+/// false if the FB disappeared or already had a resource. # C: O(n)
+pub fn bind_fb_scanout_resource(card_id: u32, fb_id: u32, res_id: u32) -> bool {
+    if res_id == 0 {
+        return false;
+    }
+    let mut t = TABLES.lock();
+    let Some(fb) = t.find_fb_mut(card_id, fb_id) else {
+        return false;
+    };
+    if fb.scanout_res_id != 0 {
+        return false;
+    }
+    fb.scanout_res_id = res_id;
+    true
 }
 
 /// MODE_CREATE_DUMB: allocate contiguous pages, register a handle,
@@ -371,6 +416,8 @@ pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd2>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_fb_cmd2 is 104 bytes; aligned struct read through caller's AS at CPL=0.
     let mut req: DrmModeFbCmd2 = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd2) };
+    if req.flags != 0 { return einval(); }
+    if req.modifier.iter().any(|m| *m != 0) { return einval(); }
     if !format_supported(req.pixel_format) { return einval(); }
     if req.width == 0 || req.height == 0 { return einval(); }
     if req.handles[0] == 0 { return einval(); }
@@ -388,6 +435,7 @@ pub fn addfb2(card_id: u32, arg: u64) -> i64 {
         t.fbs.push(FbObj {
             card_id, fb_id, w: req.width, h: req.height, pixel_format: req.pixel_format,
             handles: req.handles, pitches: req.pitches, offsets: req.offsets,
+            scanout_res_id: 0,
         });
     }
     req.fb_id = fb_id;
@@ -417,6 +465,7 @@ pub fn addfb(card_id: u32, arg: u64) -> i64 {
         t.fbs.push(FbObj {
             card_id, fb_id, w: req.width, h: req.height, pixel_format: fourcc,
             handles: [req.handle, 0, 0, 0], pitches: [req.pitch, 0, 0, 0], offsets: [0; 4],
+            scanout_res_id: 0,
         });
     }
     req.fb_id = fb_id;
@@ -431,16 +480,19 @@ pub fn rmfb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, 4) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; aligned u32 read of the fb_id through caller's AS at CPL=0.
     let fb_id: u32 = unsafe { core::ptr::read_volatile(arg as *const u32) };
-    let to_free = {
+    let (to_free, scanout_res_id) = {
         let mut t = TABLES.lock();
         let idx = match t.fbs.iter().position(|f| f.card_id == card_id && f.fb_id == fb_id) { Some(i) => i, None => return einval() };
         let fb = t.fbs.remove(idx);
+        let scanout_res_id = fb.scanout_res_id;
         let mut freed: [Option<(u64, u8)>; 4] = [None; 4];
         for (i, &h) in fb.handles.iter().enumerate() {
             if h != 0 { freed[i] = t.unref_handle(card_id, h); }
         }
-        freed
+        (freed, scanout_res_id)
     };
+    crate::crtc::detach_fb(card_id, fb_id);
+    release_scanout_resource(card_id, scanout_res_id);
     for f in to_free.iter().flatten() { free_buf_pages(f.0, f.1); }
     0
 }
@@ -490,7 +542,10 @@ pub fn mmap_backing(card_id: u32, cookie: u64) -> Option<(u64, u64)> {
 /// Drop all dumb-buffer/FB state for a DRM card during backend unregister.
 /// # C: O(n)
 pub fn clear_card_state(card_id: u32) {
-    let freed = TABLES.lock().remove_card(card_id);
+    let (freed, resources) = TABLES.lock().remove_card(card_id);
+    for res_id in resources {
+        release_scanout_resource(card_id, res_id);
+    }
     for (pa, order) in freed { free_buf_pages(pa, order); }
 }
 
@@ -561,12 +616,20 @@ mod tests {
     #[test]
     fn cookie_round_trip() {
         let c = cookie_for(1);
-        assert_eq!(c, DRM_MMAP_COOKIE_BASE | (1 << 12));
+        assert_eq!(c, DRM_MMAP_COOKIE_BASE | (1 << DRM_MMAP_COOKIE_HANDLE_SHIFT));
         assert_eq!(handle_of_cookie(c), Some(1));
         let c7 = cookie_for(7);
         assert_eq!(handle_of_cookie(c7), Some(7));
+        let high = 1 << 20;
+        assert_eq!(handle_of_cookie(cookie_for(high)), Some(high));
+        assert_eq!(handle_of_cookie(cookie_for(u32::MAX)), Some(u32::MAX));
         // fbdev's offset 0 is not a DRM cookie.
         assert_eq!(handle_of_cookie(0), None);
+        // Handle 0 is not allocated by DRM, and malformed low/high bits are
+        // rejected instead of being truncated into a valid handle.
+        assert_eq!(handle_of_cookie(DRM_MMAP_COOKIE_BASE), None);
+        assert_eq!(handle_of_cookie(cookie_for(1) | 1), None);
+        assert_eq!(handle_of_cookie(cookie_for(1) | (1u64 << 47)), None);
     }
 
     #[test]
@@ -595,10 +658,31 @@ mod tests {
     fn fb_table_insert_lookup() {
         let mut t = DumbTables::new();
         t.fbs.push(FbObj { card_id: 0, fb_id: 1, w: 640, h: 480, pixel_format: DRM_FORMAT_XRGB8888,
-            handles: [3, 0, 0, 0], pitches: [2560, 0, 0, 0], offsets: [0; 4] });
+            handles: [3, 0, 0, 0], pitches: [2560, 0, 0, 0], offsets: [0; 4], scanout_res_id: 0 });
         assert_eq!(t.find_fb(0, 1).unwrap().handles[0], 3);
         assert!(t.find_fb(1, 1).is_none());
         assert!(t.find_fb(0, 2).is_none());
+    }
+
+    #[test]
+    fn addfb2_rejects_modifier_surface_without_modifier_support() {
+        use syscall::errno::Errno;
+
+        let mut req = DrmModeFbCmd2 {
+            width: 4,
+            height: 4,
+            pixel_format: DRM_FORMAT_XRGB8888,
+            flags: DRM_MODE_FB_MODIFIERS,
+            handles: [1, 0, 0, 0],
+            pitches: [16, 0, 0, 0],
+            offsets: [0; 4],
+            modifier: [1, 0, 0, 0],
+            ..Default::default()
+        };
+        assert_eq!(
+            addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64),
+            -(Errno::Einval.as_i32() as i64)
+        );
     }
 
     #[test]
@@ -609,14 +693,27 @@ mod tests {
         t.insert_buf(DumbBuf { card_id: 1, handle: 1, pa: 0x20_0000, size: 4096, order: 0,
             w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 1, mmap_refs: 0, deleted: false });
         t.fbs.push(FbObj { card_id: 0, fb_id: 7, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
-            handles: [1, 0, 0, 0], pitches: [16, 0, 0, 0], offsets: [0; 4] });
+            handles: [1, 0, 0, 0], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 0 });
         assert_eq!(t.find_buf(0, 1).unwrap().pa, 0x10_0000);
         assert_eq!(t.find_buf(1, 1).unwrap().pa, 0x20_0000);
         assert!(t.find_fb(1, 7).is_none());
-        assert_eq!(t.remove_card(0), alloc::vec![(0x10_0000, 0)]);
+        assert_eq!(t.remove_card(0), (alloc::vec![(0x10_0000, 0)], Vec::new()));
         assert!(t.find_buf(0, 1).is_none());
         assert!(t.find_buf(1, 1).is_some());
         assert!(t.find_fb(0, 7).is_none());
+    }
+
+    #[test]
+    fn card_remove_returns_scanout_resources() {
+        let mut t = DumbTables::new();
+        t.insert_buf(DumbBuf { card_id: 0, handle: 1, pa: 0x10_0000, size: 4096, order: 0,
+            w: 4, h: 4, pitch: 16, bpp: 32, refcnt: 2, mmap_refs: 0, deleted: false });
+        t.fbs.push(FbObj { card_id: 0, fb_id: 7, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
+            handles: [1, 0, 0, 0], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 42 });
+
+        assert_eq!(t.remove_card(0), (alloc::vec![(0x10_0000, 0)], alloc::vec![42]));
+        assert!(t.find_fb(0, 7).is_none());
+        assert!(t.find_buf(0, 1).is_none());
     }
 
     #[test]
@@ -629,7 +726,7 @@ mod tests {
         assert_eq!(t.find_buf(0, 1).unwrap().refcnt, 2);
         assert_eq!(t.find_buf(0, 1).unwrap().mmap_refs, 1);
 
-        assert_eq!(t.remove_card(0), Vec::<(u64, u8)>::new());
+        assert_eq!(t.remove_card(0), (Vec::<(u64, u8)>::new(), Vec::new()));
         assert!(t.find_buf(0, 1).is_none());
         assert_eq!(t.bufs.len(), 1);
         assert!(t.bufs[0].deleted);
