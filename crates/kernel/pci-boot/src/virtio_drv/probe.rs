@@ -1,195 +1,12 @@
-// Modern virtio-pci transport bring-up. Split from pci_boot/mod.rs.
-// klog calls gated under debug_boot! per R06.
-
-use super::virtio_transport::{
-    alloc_net_tx_boot_buffer, bind_msix_vector, disable_pci_command, kick_queue_notify,
-    post_net_rx_boot_buffer, program_queue_set, publish_transport_record, read_queue_used_idx,
+use super::address::{bdf_from_word, bdf_word};
+use super::runtime::VirtioPciRuntime;
+use super::{
+    bind_msix_vector, disable_pci_command, kick_queue_notify, publish_transport_record,
     release_failed_probe, release_msix_bindings, unpublish_transport_record, MsixBinding,
-    NetRxBootBuffer, ProgrammedQueues, QueueRing, TransportMappings,
+    NetRxBootBuffer, ProgrammedQueues, QueueRing, TransportMappings, Vec,
 };
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-
-struct VirtioPciDrv;
-impl drv::Driver for VirtioPciDrv {
-    fn name(&self) -> &'static str { "virtio-pci" }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "pci" && virtio::is_modern(dev.vendor_id, dev.device_id)
-    }
-
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let Some(d) = pci_device_from_pci_model(dev) else { return Err(drv::Error::ProbeFailed); };
-        if !virtio::is_modern(d.vendor_id, d.device_id) {
-            return Err(drv::Error::NoMatch);
-        }
-
-        let Some(child) = virtio::VirtioChildModelIdentity::modern_from_pci(
-            d.vendor_id,
-            d.device_id,
-            super::virtio_seq(),
-        ) else {
-            return Err(drv::Error::NoMatch);
-        };
-        drv::try_device_add(Arc::new(
-            drv::Device::new(
-                child.bus,
-                child.addr,
-                child.vendor_id,
-                child.device_id,
-                child.class,
-            )
-                .with_parent("pci", dev.addr.clone()),
-        ))?;
-        Ok(())
-    }
-
-    fn remove(&self, dev: &drv::Device) {
-        let children: Vec<Arc<drv::Device>> = drv::devices()
-            .into_iter()
-            .filter(|child| virtio::virtio_child_has_parent(&child.bus, child.parent(), "pci", &dev.addr))
-            .collect();
-        let mut bdfs: Vec<u32> = Vec::new();
-        if let Some(parent_bdf) = parse_pci_addr(&dev.addr) {
-            bdfs.push(bdf_word(parent_bdf));
-        }
-        for child in children {
-            if let Some((_, parent_addr)) = child.parent() {
-                if let Some(parent_bdf) = parse_pci_addr(&parent_addr) {
-                    bdfs.push(bdf_word(parent_bdf));
-                }
-            }
-            drv::device_del(&child);
-        }
-
-        bdfs.sort_unstable();
-        bdfs.dedup();
-        for bdf_word in bdfs {
-            unpublish_transport_mmio(bdf_word);
-        }
-    }
-
-    fn shutdown(&self, dev: &drv::Device) {
-        let Some(d) = pci_device_from_pci_model(dev) else { return };
-        disable_pci_command(d.bdf);
-    }
-}
-static VIRTIO_PCI_DRV: VirtioPciDrv = VirtioPciDrv;
-
-fn bdf_word(bdf: pci::Bdf) -> u32 {
-    (bdf.bus as u32) << 16 | (bdf.device as u32) << 8 | (bdf.function as u32)
-}
-
-fn bdf_from_word(word: u32) -> pci::Bdf {
-    pci::Bdf {
-        bus: ((word >> 16) & 0xFF) as u8,
-        device: ((word >> 8) & 0xFF) as u8,
-        function: (word & 0xFF) as u8,
-    }
-}
 
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
-
-#[derive(Copy, Clone, Default)]
-pub(super) struct VirtioPciTransport;
-
-impl VirtioPciTransport {
-    pub(super) fn probe_child(
-        self,
-        d: &pci::PciDevice,
-        profile: virtio::VirtioTransportProfile,
-    ) -> Option<VirtioProbe> {
-        if !virtio::is_modern(d.vendor_id, d.device_id) {
-            return None;
-        }
-        VirtioPciAcquisition::acquire(d.bdf)?.probe_child(d, profile)
-    }
-
-    pub(super) fn publish(self, p: &mut VirtioProbe) {
-        publish_transport_mmio(p);
-    }
-
-    pub(super) fn unpublish_key(self, device_key: virtio::VirtioChildDeviceKey) {
-        unpublish_transport_mmio(device_key.raw());
-    }
-}
-
-fn release_probe_msix(p: &mut VirtioProbe) {
-    release_msix_bindings(bdf_from_word(p.bdf_word), &mut p.msix);
-}
-
-fn publish_transport_mmio(p: &mut VirtioProbe) {
-    publish_transport_record(
-        p.bdf_word,
-        core::mem::take(&mut p.mappings),
-        p.owned_frames.take_vring_frames(),
-        core::mem::take(&mut p.msix),
-    );
-}
-
-fn abandon_probe_transport<T>(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<T> {
-    disable_pci_command(bdf);
-    mappings.unmap_all();
-    None
-}
-
-fn unpublish_transport_mmio(bdf: u32) {
-    unpublish_transport_record(bdf);
-}
-
-fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn hex_byte(s: &[u8]) -> Option<u8> {
-    Some((hex_nibble(*s.first()?)? << 4) | hex_nibble(*s.get(1)?)?)
-}
-
-fn parse_pci_addr(addr: &str) -> Option<pci::Bdf> {
-    let b = addr.as_bytes();
-    if b.len() != 12 || b[4] != b':' || b[7] != b':' || b[10] != b'.' {
-        return None;
-    }
-    Some(pci::Bdf {
-        bus: hex_byte(&b[5..7])?,
-        device: hex_byte(&b[8..10])?,
-        function: hex_nibble(b[11])?,
-    })
-}
-
-fn pci_device_from_pci_model(dev: &drv::Device) -> Option<pci::PciDevice> {
-    if dev.bus != "pci" {
-        return None;
-    }
-    pci_device_from_bdf(parse_pci_addr(&dev.addr)?)
-}
-
-fn pci_device_from_bdf(bdf: pci::Bdf) -> Option<pci::PciDevice> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let r = hal_x86_64::pci::LegacyPci;
-        pci::PciDevice::from_config(&r, bdf)
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => pci::PciDevice::from_config(&r, bdf),
-            None => None,
-        }
-    }
-}
-
-/// Register virtio drivers whose bring-up is owned by `Driver::probe`.
-/// # C: O(N_drivers)
-pub(super) fn register_model_drivers() {
-    drv::register_driver(&VIRTIO_PCI_DRV);
-    super::virtio_child::register_model_drivers();
-}
 
 // pub(super) so the trace (virtio_trace.rs) can read the fields without
 // re-deriving them; virtio model-driver probes are the producers.
@@ -201,50 +18,7 @@ struct VirtioProbeState {
     msix: Vec<MsixBinding>,
 }
 
-#[derive(Clone, Copy)]
-struct VirtioPciRuntime {
-    hhdm: u64,
-}
-
-impl VirtioPciRuntime {
-    fn current() -> Self {
-        Self {
-            hhdm: {
-                #[cfg(target_arch = "x86_64")]
-                {
-                    hal_x86_64::mmu_ops::hhdm_offset()
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    hal_aarch64::mmu_ops::hhdm_offset()
-                }
-            },
-        }
-    }
-
-    fn program_queue_set(
-        self,
-        cfg_va: u64,
-        q0_msix_vec: u16,
-        queue_plans: &[Option<virtio::VirtioQueuePlan>],
-    ) -> Option<ProgrammedQueues> {
-        program_queue_set(cfg_va, self.hhdm, q0_msix_vec, queue_plans)
-    }
-
-    fn post_net_rx_boot_buffer(self, q0_ring: Option<QueueRing>) -> NetRxBootBuffer {
-        post_net_rx_boot_buffer(self.hhdm, q0_ring)
-    }
-
-    fn alloc_net_tx_boot_buffer(self, q1_ring: Option<QueueRing>, q1_notify_va: u64) -> u64 {
-        alloc_net_tx_boot_buffer(self.hhdm, q1_ring, q1_notify_va)
-    }
-
-    fn read_queue_used_idx(self, q0_ring: Option<QueueRing>) -> u16 {
-        read_queue_used_idx(self.hhdm, q0_ring)
-    }
-}
-
-struct VirtioPciAcquisition {
+pub(super) struct VirtioPciAcquisition {
     caps: pci::heapless_caps::CapVec,
     vcaps: virtio::pci::heapless_v::VCapVec,
     bars: [pci::Bar; 6],
@@ -253,7 +27,7 @@ struct VirtioPciAcquisition {
 }
 
 impl VirtioPciAcquisition {
-    fn acquire(bdf: pci::Bdf) -> Option<Self> {
+    pub(super) fn acquire(bdf: pci::Bdf) -> Option<Self> {
         let (caps, vcaps, bars, cmd_orig) = {
             #[cfg(target_arch = "x86_64")]
             {
@@ -284,7 +58,7 @@ impl VirtioPciAcquisition {
         })
     }
 
-    fn probe_child(
+    pub(super) fn probe_child(
         self,
         d: &pci::PciDevice,
         profile: virtio::VirtioTransportProfile,
@@ -397,14 +171,7 @@ impl VirtioProbeState {
         {
             return Some(binding.queue_vector);
         }
-        if let Some(binding) = bind_msix_vector(
-                d,
-                caps,
-                bars,
-                &mut self.mappings,
-                queue_vector,
-                handler,
-        ) {
+        if let Some(binding) = bind_msix_vector(d, caps, bars, &mut self.mappings, queue_vector, handler) {
             let queue_vector = binding.queue_vector;
             self.msix.push(binding);
             return Some(queue_vector);
@@ -493,8 +260,6 @@ impl VirtioProbeState {
         if kick_va == 0 {
             return (0, fallback_status);
         }
-        // Brief observation window for device-driven completion. QEMU user-net
-        // normally has no packet ready here, so q0 used.idx may stay 0.
         for _ in 0..1_000_000 {
             core::hint::spin_loop();
         }
@@ -658,7 +423,29 @@ impl VirtioProbe {
     pub(super) fn release_failed_child(&mut self) {
         self.release_failed_transport();
     }
+}
 
+pub(super) fn publish_transport_mmio(p: &mut VirtioProbe) {
+    publish_transport_record(
+        p.bdf_word,
+        core::mem::take(&mut p.mappings),
+        p.owned_frames.take_vring_frames(),
+        core::mem::take(&mut p.msix),
+    );
+}
+
+pub(super) fn unpublish_transport_mmio(bdf: u32) {
+    unpublish_transport_record(bdf);
+}
+
+fn release_probe_msix(p: &mut VirtioProbe) {
+    release_msix_bindings(bdf_from_word(p.bdf_word), &mut p.msix);
+}
+
+fn abandon_probe_transport<T>(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<T> {
+    disable_pci_command(bdf);
+    mappings.unmap_all();
+    None
 }
 
 fn map_cap_window(
