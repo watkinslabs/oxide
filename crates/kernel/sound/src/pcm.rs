@@ -290,7 +290,9 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
             Some(b) => refine(owner, &b, true), None => err(Errno::Efault),
         },
         PCM_HW_FREE => {
-            let _ = crate::ops::pcm_hw_free(owner);
+            if !crate::ops::pcm_hw_free(owner) {
+                return err(Errno::Eio);
+            }
             let mut guard = PCM.lock();
             let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
                 return err(Errno::Enodev);
@@ -316,22 +318,16 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
             p.state = STATE_RUNNING; 0
         }
         PCM_DROP | PCM_DRAIN => {
-            let _ = crate::ops::pcm_trigger(owner, false);
+            if !crate::ops::pcm_trigger(owner, false) {
+                return err(Errno::Eio);
+            }
             let mut guard = PCM.lock();
             let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
                 return err(Errno::Enodev);
             };
             p.state = STATE_SETUP; p.appl_ptr = 0; p.hw_ptr = 0; 0
         }
-        PCM_PAUSE => {
-            let _ = crate::ops::pcm_trigger(owner, false);
-            let mut guard = PCM.lock();
-            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
-                return err(Errno::Enodev);
-            };
-            p.state = STATE_PREPARED;
-            0
-        }
+        PCM_PAUSE => err(Errno::Enotty),
         PCM_HWSYNC => 0,
         PCM_DELAY => write_long(arg, 0),
         PCM_STATUS => pcm_status(owner, arg),
@@ -437,9 +433,8 @@ fn sync_ptr(owner: u32, arg: u64) -> i64 {
         return err(Errno::Enodev);
     };
     if flags & SYNC_PTR_APPL == 0 {
-        p.appl_ptr = b.r64(SP_CONTROL_APPL_PTR); // app advanced its pointer
+        p.appl_ptr = b.r64(SP_CONTROL_APPL_PTR);
     }
-    p.hw_ptr = p.appl_ptr; // synchronous transfer keeps hw caught up
     b.w32(SP_STATUS_STATE, p.state);
     b.w64(SP_STATUS_HW_PTR, p.hw_ptr);
     b.w64(SP_CONTROL_APPL_PTR, p.appl_ptr);

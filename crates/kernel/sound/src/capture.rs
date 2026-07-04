@@ -92,7 +92,9 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, false), None => err(Errno::Efault) },
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, true), None => err(Errno::Efault) },
         PCM_HW_FREE => {
-            let _ = crate::ops::cap_hw_free(owner);
+            if !crate::ops::cap_hw_free(owner) {
+                return err(Errno::Eio);
+            }
             let mut guard = CAP.lock();
             let Some(c) = guard.iter_mut().find(|c| c.owner == owner) else {
                 return err(Errno::Enodev);
@@ -118,7 +120,9 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
             c.state = STATE_RUNNING; 0
         }
         PCM_DROP | PCM_DRAIN => {
-            let _ = crate::ops::cap_trigger(owner, false);
+            if !crate::ops::cap_trigger(owner, false) {
+                return err(Errno::Eio);
+            }
             let mut guard = CAP.lock();
             let Some(c) = guard.iter_mut().find(|c| c.owner == owner) else {
                 return err(Errno::Enodev);
@@ -173,7 +177,6 @@ fn sync_ptr(owner: u32, arg: u64) -> i64 {
         return err(Errno::Enodev);
     };
     if flags & SYNC_PTR_APPL == 0 { c.appl_ptr = b.r64(SP_CONTROL_APPL_PTR); }
-    c.hw_ptr = c.appl_ptr;
     b.w32(SP_STATUS_STATE, c.state);
     b.w64(SP_STATUS_HW_PTR, c.hw_ptr);
     b.w64(SP_CONTROL_APPL_PTR, c.appl_ptr);
