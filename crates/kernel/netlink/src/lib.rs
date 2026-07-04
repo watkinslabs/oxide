@@ -324,10 +324,19 @@ pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkS
         if let Some(s) = w.upgrade() {
             if core::ptr::eq(alloc::sync::Arc::as_ptr(&s), sender as *const NetlinkSocket) { continue; }
             let grp = s.groups.load(Ordering::Acquire);
-            // Skip udevd's raw group-1 receivers; deliver to cooked monitors
-            // (matching dest group, or the group-0 monitors systemd uses).
+            // Deliver a cooked multicast ONLY to a socket SUBSCRIBED to the
+            // destination group (Linux netlink_broadcast: `nlk->ngroups` /
+            // `nlk_sk(sk)->groups` must intersect the sent group). Measured
+            // (bind nl_groups): systemd-udevd's single-shot WORKER monitors bind
+            // nl_groups=0 (MONITOR_GROUP_NONE, unicast-only) while the real
+            // consumers — logind/upowerd/udisksd/NetworkManager/gdm — bind
+            // nl_groups=2 (MONITOR_GROUP_UDEV). Delivering group-2 events to the
+            // group-0 workers made EACH worker re-process EVERY broadcast device
+            // (one udev event processed ~20-25× — card0 never tagged in time, no
+            // greeter). Skip group-0 (unsubscribed) and group-1 (raw kernel
+            // monitors, which reject a libudev-magic payload).
             if (grp & 1) != 0 { continue; }
-            if grp != 0 && (grp & dest_groups) == 0 { continue; }
+            if (grp & dest_groups) == 0 { continue; }
             s.enqueue_from(msg.to_vec(), sender.port_id.load(Ordering::Acquire));
             n += 1;
         }
@@ -730,27 +739,30 @@ mod tests {
     }
 
     #[test]
-    fn cooked_uevent_reaches_only_udev_group_monitors() {
+    fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
         use alloc::sync::Arc;
         let sender = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
         let kernel_listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
-        let group0_monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        // A udev WORKER's MONITOR_GROUP_NONE monitor (nl_groups=0) must NOT
+        // receive cooked broadcasts — it is unicast-only. Only a real consumer
+        // subscribed to MONITOR_GROUP_UDEV (nl_groups=2) does.
+        let worker_none = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
         let udev_monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
         sender.set_group_mask(2);
         kernel_listener.set_group_mask(1);
-        group0_monitor.set_group_mask(0);
+        worker_none.set_group_mask(0);
         udev_monitor.set_group_mask(2);
         register_uevent_listener(&sender);
         register_uevent_listener(&kernel_listener);
-        register_uevent_listener(&group0_monitor);
+        register_uevent_listener(&worker_none);
         register_uevent_listener(&udev_monitor);
 
         let msg = b"libudev\0ACTION=add\0SUBSYSTEM=drm\0";
         let n = rebroadcast_cooked_uevent(msg, 2, &sender);
-        assert_eq!(n, 2);
+        assert_eq!(n, 1, "only the group-2 subscriber receives it");
         assert!(sender.dequeue().is_none());
         assert!(kernel_listener.dequeue().is_none());
-        assert_eq!(group0_monitor.dequeue().map(|(m, _)| m).as_deref(), Some(&msg[..]));
+        assert!(worker_none.dequeue().is_none(), "group-0 worker monitor is NOT flooded");
         assert_eq!(udev_monitor.dequeue().map(|(m, _)| m).as_deref(), Some(&msg[..]));
     }
 
