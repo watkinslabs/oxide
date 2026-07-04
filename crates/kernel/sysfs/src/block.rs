@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
-use crate::{DIR_PERM, RO_PERM};
+use crate::{DIR_PERM, RO_PERM, RW_PERM};
 
 const INO_BLOCK_ROOT: Ino = 0x5103_0001;
 const INO_DISK_DIR:   Ino = 0x5103_1000;
@@ -66,7 +66,7 @@ const DISK_ATTR_LIST: &[Attribute] = &[
     Attribute { name: "ro",        mode: RO_PERM },
     Attribute { name: "removable", mode: RO_PERM },
     Attribute { name: "dev",       mode: RO_PERM },
-    Attribute { name: "uevent",    mode: RO_PERM },
+    Attribute { name: "uevent",    mode: RW_PERM },
 ];
 static DISK_GROUP: AttrGroup = AttrGroup { attrs: DISK_ATTR_LIST };
 
@@ -84,6 +84,25 @@ impl SysfsOps for DiskKobj {
     fn show(&self, attr: &str) -> Option<Vec<u8>> {
         let disk = block::registry::by_name(&self.name)?;
         disk_attr(&disk, attr)
+    }
+
+    fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
+        if attr != "uevent" {
+            return Err(VfsError::Erofs);
+        }
+        let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enoent)?;
+        let (major, minor) = major_minor(&disk.name, disk.index);
+        let devpath = alloc::format!("/devices/virtual/block/{}", disk.name);
+        let devname = alloc::format!("DEVNAME={}", disk.name);
+        let maj = alloc::format!("MAJOR={}", major);
+        let min = alloc::format!("MINOR={}", minor);
+        ::netlink::emit_uevent_with_env(
+            crate::uevent_action(buf),
+            &devpath,
+            "block",
+            &[&devname, &maj, &min, "DEVTYPE=disk"],
+        );
+        Ok(buf.len())
     }
 }
 
@@ -265,4 +284,35 @@ pub fn init() {
     // /sys path that did not exist and udevd processed no disk.
     crate::register("/sys/devices/virtual/block", make_sys_devices_virtual_block_inode());
     crate::register("/sys/class/block", make_sys_class_block_inode());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use netlink::{proto, NetlinkSocket};
+    use sync::TaskList;
+
+    #[test]
+    fn block_uevent_write_reemits_model_event() {
+        let dev: Arc<dyn block::BlockDevice> = block::MemDisk::<TaskList>::new(512, 8);
+        let index = block::registry::register("sysfsblk0", dev);
+        assert_ne!(index, 0);
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+
+        let root = make_sys_block_inode();
+        let dir = root.lookup("sysfsblk0").expect("disk dir");
+        let uevent = dir.lookup("uevent").expect("uevent attr");
+        assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
+        let msg = listener.dequeue().expect("uevent message");
+        assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
+        assert!(msg.windows(b"DEVPATH=/devices/virtual/block/sysfsblk0".len()).any(|w| w == b"DEVPATH=/devices/virtual/block/sysfsblk0"));
+        assert!(msg.windows(b"SUBSYSTEM=block".len()).any(|w| w == b"SUBSYSTEM=block"));
+        assert!(msg.windows(b"DEVNAME=sysfsblk0".len()).any(|w| w == b"DEVNAME=sysfsblk0"));
+        assert!(msg.windows(b"DEVTYPE=disk".len()).any(|w| w == b"DEVTYPE=disk"));
+
+        assert!(block::registry::unregister("sysfsblk0"));
+    }
 }
