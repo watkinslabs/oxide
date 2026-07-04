@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 59% complete.
+  hotplug, fault injection, and multi-device coverage: about 60% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -380,7 +380,11 @@ test-pass claims.
   closer to a PCI transport lifetime object instead of a mixed
   diagnostic/resource bag. The probe result now carries child queue handoff as
   indexed `VirtQueueResource` records instead of a flattened pile of q0/q1/q2/q3
-  physical-address fields.
+  physical-address fields. Runtime handoff observation for q0 kick/status,
+  net boot payload buffers, q1 notify mapping, ISR sampling, used-ring
+  sampling, and queue-resource assembly now runs through a single
+  `VirtioProbeState` handoff builder instead of scattered local state in the
+  main probe body.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
