@@ -11,7 +11,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod procfs;
 
 // ============================================================
