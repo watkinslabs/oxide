@@ -305,12 +305,11 @@ test-pass claims.
   link-local neighbors on different interfaces no longer overwrite each other.
 - Virtio-vsock remove is keyed to the owning parent BDF and clears its
   `VsockRx` bottom half only for the installed transport. The upper
-  `net::vsock` layer is still a single global guest-CID/TX-hook protocol
-  endpoint, so simultaneous multi-transport vsock is not complete, but it now
-  reserves that endpoint before transport frame allocation, records the owning
-  device key in the protocol endpoint, rejects publish/cancel/uninstall from
-  non-owners, and stores transport state as keyed records instead of an
-  implicit single slot.
+  `net::vsock` layer now stores owner-keyed protocol endpoint records with
+  per-owner guest-CID/TX hooks, rejects duplicate owner or guest-CID
+  publication, and keeps transport state as keyed records instead of an
+  implicit single slot. Existing AF_VSOCK connect paths still choose a primary
+  endpoint when userspace does not explicitly select a device.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
   removes by owning parent BDF, owns `/dev/hwrng` publication/removal inside
   the RNG child driver, and promotes `/dev/hwrng` publication to a remaining
@@ -384,12 +383,11 @@ test-pass claims.
   helpers are now BDF-keyed instead of selecting the first installed GPU.
   fbdev flush/blank hooks are per-fb records keyed to the owning BDF, while
   fbcon remains a single foreground console bound to an explicit owner.
-  Virtio-vsock's upper protocol layer and
-  virtio-snd's upper sound-card layer also still retain singleton limits; vsock
-  now reserves its singleton protocol endpoint before allocation, keys that
-  endpoint to the owning device, and fails a second transport cleanly instead
-  of replacing or tearing down the installed transport. virtio-snd now keys the
-  published global sound card to the owning transport and routes PCM/control
+  Virtio-vsock's upper protocol endpoint records are now owner-keyed, while
+  the compatibility AF_VSOCK socket path still selects one primary endpoint
+  for unspecified connects. Virtio-snd's upper sound-card layer still retains
+  singleton limits; virtio-snd now keys the published global sound card to the
+  owning transport and routes PCM/control
   ops through that owner instead of selecting the first installed context, but
   it still needs a real per-card ALSA/PCM/control ABI for multiple sound cards.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
@@ -484,8 +482,9 @@ test-pass claims.
   card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
   fbdev flush/blank dispatch, and dumb-buffer mmap VMA lifetime pins;
-  virtio-vsock's upper protocol layer and virtio-snd's single-card PCM/control
-  ABI are still main offenders. AHCI and NVMe still need live
+  virtio-vsock now has owner-keyed endpoint records but still needs explicit
+  socket/device selection beyond the primary compatibility route; virtio-snd's
+  single-card PCM/control ABI remains a main offender. AHCI and NVMe still need live
   multi-controller proof, but they no longer use process-wide
   installed-controller slots.
 - Add explicit fault-injection coverage for probe failure after each allocation,
@@ -636,11 +635,10 @@ Several drivers still use singleton global state:
   is still missing
 - virtio-rng: keyed records with one explicit active-BDF `/dev/hwrng`
   provider; promotion skips shutdown records instead of relying on vector order
-- virtio-vsock: keyed transport records, owner-keyed endpoint teardown, and
-  owner-keyed shutdown quiesce that clears TX before queue state is freed; RX
-  protocol dispatch now carries the transport owner key and rejects packets
-  not from the published owner or not addressed to the published guest CID,
-  but the upper protocol endpoint is still singleton
+- virtio-vsock: keyed transport records and owner-keyed protocol endpoint
+  records; endpoint teardown and shutdown quiesce close only the matching
+  owner's connections/backlog entries, RX protocol dispatch carries the
+  transport owner key, and duplicate owner or guest-CID publication is rejected
 - virtio-snd: keyed transport records with EVENTQ drained per transport, an
   owner-keyed ops table, and an owner-keyed global sound card reserved before
   transport allocation/publish, with card ownership held until ALSA/OSS child

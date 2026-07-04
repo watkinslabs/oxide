@@ -17,69 +17,100 @@ pub use hdr::*;
 pub use conn::*;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::netdev::NetError;
+use sync::{Spinlock, Socket as SockLockClass};
 
 /// Process-global connection table. # C: O(1)
 pub static TABLE: VsockTable = VsockTable::new();
-
-/// Our guest CID, published by the driver at bring-up. 0 = no device.
-static GUEST_CID: AtomicU64 = AtomicU64::new(0);
-/// True once a virtio-vsock driver has reserved the singleton protocol
-/// endpoint. The endpoint is usable only after TX_HOOK is published.
-static DRIVER_UP: AtomicBool = AtomicBool::new(false);
-static DRIVER_OWNER: AtomicU32 = AtomicU32::new(0);
 
 /// TX hook: hand an owning device key plus a fully-encoded header + payload to
 /// the driver, which builds a TX descriptor, kicks q1, and polls the used ring.
 /// Returns true if the frame went out. # C: O(payload)
 pub type TxFn = fn(u32, &[u8]) -> bool;
-static TX_HOOK: AtomicU64 = AtomicU64::new(0);
 
-/// Reserve the singleton protocol endpoint before the transport allocates and
-/// pre-posts DMA state. Rejects a second active transport so a later probe
-/// cannot overwrite the live protocol endpoint behind existing sockets.
-/// # C: O(1)
+struct Endpoint {
+    owner: u32,
+    guest_cid: u64,
+    tx: Option<TxFn>,
+}
+
+static ENDPOINTS: Spinlock<Vec<Endpoint>, SockLockClass> = Spinlock::new(Vec::new());
+static PRIMARY_OWNER: AtomicU32 = AtomicU32::new(0);
+
+fn choose_primary_locked(endpoints: &[Endpoint]) -> u32 {
+    endpoints.iter().find(|e| e.tx.is_some()).map(|e| e.owner)
+        .or_else(|| endpoints.first().map(|e| e.owner))
+        .unwrap_or(0)
+}
+
+fn refresh_primary_locked(endpoints: &[Endpoint]) {
+    let current = PRIMARY_OWNER.load(Ordering::Acquire);
+    if current != 0 && endpoints.iter().any(|e| e.owner == current) {
+        return;
+    }
+    PRIMARY_OWNER.store(choose_primary_locked(endpoints), Ordering::Release);
+}
+
+fn primary_endpoint() -> Option<(u32, u64)> {
+    let endpoints = ENDPOINTS.lock();
+    let primary = PRIMARY_OWNER.load(Ordering::Acquire);
+    endpoints.iter()
+        .find(|e| e.owner == primary && e.tx.is_some())
+        .or_else(|| endpoints.iter().find(|e| e.tx.is_some()))
+        .map(|e| (e.owner, e.guest_cid))
+}
+
+/// Reserve a protocol endpoint for `owner` before the transport allocates and
+/// pre-posts DMA state. Multiple owners may coexist; duplicate owner keys are
+/// rejected so a later probe cannot overwrite an existing endpoint.
+/// # C: O(N endpoints)
 pub fn driver_reserve(owner: u32) -> bool {
     if owner == 0 {
         return false;
     }
-    if DRIVER_UP
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    let mut endpoints = ENDPOINTS.lock();
+    if endpoints.iter().any(|e| e.owner == owner) {
         return false;
     }
-    DRIVER_OWNER.store(owner, Ordering::Release);
+    endpoints.push(Endpoint { owner, guest_cid: 0, tx: None });
+    if PRIMARY_OWNER.load(Ordering::Acquire) == 0 {
+        PRIMARY_OWNER.store(owner, Ordering::Release);
+    }
     true
 }
 
 /// Publish guest CID + install the TX hook after the transport context exists.
-/// # C: O(1)
+/// # C: O(N endpoints)
 pub fn driver_publish_reserved(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
-    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
+    let mut endpoints = ENDPOINTS.lock();
+    if endpoints.iter().any(|e| e.owner != owner && e.tx.is_some() && e.guest_cid == guest_cid) {
         return false;
     }
-    GUEST_CID.store(guest_cid, Ordering::Release);
-    TX_HOOK.store(tx as usize as u64, Ordering::Release);
+    let Some(endpoint) = endpoints.iter_mut().find(|e| e.owner == owner) else {
+        return false;
+    };
+    endpoint.guest_cid = guest_cid;
+    endpoint.tx = Some(tx);
+    refresh_primary_locked(&endpoints);
     true
 }
 
 /// Cancel a reservation that failed before the endpoint became live.
-/// # C: O(1)
+/// # C: O(N endpoints)
 pub fn driver_cancel_reserved(owner: u32) -> bool {
-    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
+    let mut endpoints = ENDPOINTS.lock();
+    let before = endpoints.len();
+    endpoints.retain(|e| e.owner != owner);
+    if endpoints.len() == before {
         return false;
     }
-    TX_HOOK.store(0, Ordering::Release);
-    GUEST_CID.store(0, Ordering::Release);
-    DRIVER_OWNER.store(0, Ordering::Release);
-    DRIVER_UP.store(false, Ordering::Release);
+    PRIMARY_OWNER.store(choose_primary_locked(&endpoints), Ordering::Release);
     true
 }
 
 /// Driver bring-up entry: reserve and publish in one step.
-/// # C: O(1)
+/// # C: O(N endpoints)
 pub fn driver_install(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
     if !driver_reserve(owner) {
         return false;
@@ -92,69 +123,75 @@ pub fn driver_install(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
 }
 
 /// Driver remove entry: stop new TX, reset CID, and close live connections.
-/// # C: O(N conns)
+/// # C: O(N endpoints + N conns)
 pub fn driver_uninstall(owner: u32) -> bool {
-    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
-        return false;
+    let removed = driver_cancel_reserved(owner);
+    if removed {
+        TABLE.close_owner(owner);
     }
-    DRIVER_UP.store(false, Ordering::Release);
-    TX_HOOK.store(0, Ordering::Release);
-    GUEST_CID.store(0, Ordering::Release);
-    DRIVER_OWNER.store(0, Ordering::Release);
-    TABLE.close_all();
-    true
+    removed
 }
 
 /// Terminal shutdown entry: stop new TX/RX from reaching the transport before
 /// the driver tears down queue state. This preserves endpoint ownership so a
-/// late probe cannot claim the singleton protocol endpoint during shutdown,
-/// but makes the endpoint unusable immediately.
-/// # C: O(N conns)
+/// late operation cannot reuse the same owner during shutdown, but makes the
+/// endpoint unusable immediately.
+/// # C: O(N endpoints + N conns)
 pub fn driver_quiesce(owner: u32) -> bool {
-    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
+    let mut endpoints = ENDPOINTS.lock();
+    let Some(endpoint) = endpoints.iter_mut().find(|e| e.owner == owner) else {
         return false;
-    }
-    TX_HOOK.store(0, Ordering::Release);
-    GUEST_CID.store(0, Ordering::Release);
-    TABLE.close_all();
+    };
+    endpoint.tx = None;
+    endpoint.guest_cid = 0;
+    TABLE.close_owner(owner);
     true
 }
 
 /// Our guest CID (0 if no device). # C: O(1)
-pub fn guest_cid() -> u64 { GUEST_CID.load(Ordering::Acquire) }
+pub fn guest_cid() -> u64 { primary_endpoint().map(|(_, cid)| cid).unwrap_or(0) }
 
-/// Guest CID for a specific owning driver instance. # C: O(1)
+/// Guest CID for a specific owning driver instance. # C: O(N endpoints)
 pub fn guest_cid_for(owner: u32) -> u64 {
-    if DRIVER_OWNER.load(Ordering::Acquire) == owner {
-        GUEST_CID.load(Ordering::Acquire)
-    } else {
-        0
-    }
+    ENDPOINTS.lock().iter()
+        .find(|e| e.owner == owner && e.tx.is_some())
+        .map(|e| e.guest_cid)
+        .unwrap_or(0)
 }
 
-/// Owning driver instance for the installed endpoint, or 0 if none. # C: O(1)
-pub fn driver_owner() -> u32 { DRIVER_OWNER.load(Ordering::Acquire) }
+/// Primary driver instance for the compatibility socket path, or 0 if none.
+/// # C: O(N endpoints)
+pub fn driver_owner() -> u32 {
+    let endpoints = ENDPOINTS.lock();
+    let primary = PRIMARY_OWNER.load(Ordering::Acquire);
+    if primary != 0 && endpoints.iter().any(|e| e.owner == primary) {
+        return primary;
+    }
+    choose_primary_locked(&endpoints)
+}
 
 /// True iff a virtio-vsock device is installed and usable. # C: O(1)
-pub fn driver_up() -> bool { TX_HOOK.load(Ordering::Acquire) != 0 }
+pub fn driver_up() -> bool { primary_endpoint().is_some() }
 
 /// True iff `owner` owns an installed and usable virtio-vsock endpoint.
-/// # C: O(1)
+/// # C: O(N endpoints)
 pub fn driver_up_for(owner: u32) -> bool {
-    owner != 0 && DRIVER_OWNER.load(Ordering::Acquire) == owner && TX_HOOK.load(Ordering::Acquire) != 0
+    owner != 0 && ENDPOINTS.lock().iter().any(|e| e.owner == owner && e.tx.is_some())
 }
 
 /// Emit one packet via the owning driver's TX hook. False if no driver.
 /// # C: O(len)
 pub fn tx_for(owner: u32, hdr: &VsockHdr, payload: &[u8]) -> bool {
-    let raw = TX_HOOK.load(Ordering::Acquire);
-    if raw == 0 || DRIVER_OWNER.load(Ordering::Acquire) != owner {
-        return false;
-    }
-    // SAFETY: TX_HOOK only ever stores a `TxFn` (fn(u32, &[u8]) -> bool) via
-    // the driver publish path; the transmute reconstructs that exact fn
-    // pointer shape, matching the install-site type. No other writer exists.
-    let f: TxFn = unsafe { core::mem::transmute(raw as usize) };
+    let f = {
+        let endpoints = ENDPOINTS.lock();
+        let Some(endpoint) = endpoints.iter().find(|e| e.owner == owner) else {
+            return false;
+        };
+        let Some(tx) = endpoint.tx else {
+            return false;
+        };
+        tx
+    };
     let mut frame = Vec::with_capacity(VSOCK_HDR_LEN + payload.len());
     frame.extend_from_slice(&hdr.encode());
     frame.extend_from_slice(payload);
@@ -163,7 +200,10 @@ pub fn tx_for(owner: u32, hdr: &VsockHdr, payload: &[u8]) -> bool {
 
 /// Emit one packet via the installed endpoint. False if no driver. # C: O(len)
 pub fn tx(hdr: &VsockHdr, payload: &[u8]) -> bool {
-    tx_for(DRIVER_OWNER.load(Ordering::Acquire), hdr, payload)
+    let Some((owner, _)) = primary_endpoint() else {
+        return false;
+    };
+    tx_for(owner, hdr, payload)
 }
 
 /// Send a credit-update so the peer learns our fresh fwd_cnt after we
@@ -270,7 +310,10 @@ pub fn deliver_rx_from(owner: u32, h: &VsockHdr, payload: &[u8]) {
 
 /// Dispatch one inbound packet for the installed endpoint. # C: O(N conns)
 pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
-    deliver_rx_from(DRIVER_OWNER.load(Ordering::Acquire), h, payload)
+    let Some((owner, _)) = primary_endpoint() else {
+        return;
+    };
+    deliver_rx_from(owner, h, payload)
 }
 
 /// Client connect: allocate a local port, register the connection, send
@@ -279,14 +322,15 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
 pub fn connect(peer_cid: u64, peer_port: u32)
     -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
-    if !driver_up() { return Err(NetError::Enetunreach); }
-    let local_cid = guest_cid();
+    let Some((owner, local_cid)) = primary_endpoint() else {
+        return Err(NetError::Enetunreach);
+    };
     let local_port = TABLE.alloc_port();
     let c = alloc::sync::Arc::new(VsockConn::new(
-        driver_owner(), local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
+        owner, local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
     TABLE.insert(c.clone());
     let req = c.make_hdr(VIRTIO_VSOCK_OP_REQUEST, 0, 0);
-    if !tx(&req, &[]) {
+    if !tx_for(owner, &req, &[]) {
         TABLE.remove(c.key());
         return Err(NetError::Enetunreach);
     }

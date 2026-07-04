@@ -11,8 +11,11 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 fn tx_ok(_owner: u32, _frame: &[u8]) -> bool { true }
 
 fn cleanup_driver_state() {
-    let owner = driver_owner();
-    if owner != 0 {
+    loop {
+        let owner = driver_owner();
+        if owner == 0 {
+            break;
+        }
         let _ = driver_uninstall(owner);
         let _ = driver_cancel_reserved(owner);
     }
@@ -42,11 +45,32 @@ fn driver_reservation_is_not_live_until_publish() {
         assert!(!driver_up());
         assert_eq!(guest_cid(), 0);
         assert_eq!(driver_owner(), 7);
-        assert!(!driver_reserve(8));
-        assert!(!driver_cancel_reserved(8));
+        assert!(driver_reserve(8));
+        assert!(!driver_reserve(7));
+        assert!(!driver_cancel_reserved(9));
+        assert!(driver_cancel_reserved(8));
         assert!(driver_cancel_reserved(7));
         assert!(!driver_up());
         assert_eq!(driver_owner(), 0);
+    });
+}
+
+#[test]
+fn driver_endpoints_are_owner_keyed() {
+    with_vsock_state(|| {
+        assert!(driver_install(41, 3, tx_ok));
+        assert!(driver_install(42, 4, tx_ok));
+        assert!(!driver_install(41, 5, tx_ok));
+        assert!(!driver_install(43, 4, tx_ok));
+        assert!(driver_up_for(41));
+        assert!(driver_up_for(42));
+        assert_eq!(guest_cid_for(41), 3);
+        assert_eq!(guest_cid_for(42), 4);
+        assert!(driver_uninstall(41));
+        assert!(!driver_up_for(41));
+        assert!(driver_up_for(42));
+        assert_eq!(guest_cid_for(42), 4);
+        assert!(driver_uninstall(42));
     });
 }
 
@@ -82,7 +106,7 @@ fn driver_quiesce_stops_tx_but_keeps_owner_reserved() {
         assert!(!driver_up());
         assert_eq!(guest_cid(), 0);
         assert_eq!(driver_owner(), 21);
-        assert!(!driver_reserve(22));
+        assert!(!driver_reserve(21));
         assert!(driver_cancel_reserved(21));
         assert_eq!(driver_owner(), 0);
     });
@@ -289,5 +313,28 @@ fn rx_from_wrong_owner_is_dropped() {
         assert!(TABLE.pop_accept(7777).is_none());
         deliver_rx_from(37, &req, &[]);
         assert!(TABLE.pop_accept(7777).is_some());
+    });
+}
+
+#[test]
+fn uninstall_closes_only_matching_owner_connections() {
+    with_vsock_state(|| {
+        assert!(driver_install(51, 3, tx_ok));
+        assert!(driver_install(52, 4, tx_ok));
+        let a = alloc::sync::Arc::new(
+            VsockConn::new(51, 3, 2100, 2, 1234, VsockState::Connected));
+        let b = alloc::sync::Arc::new(
+            VsockConn::new(52, 4, 2100, 2, 1234, VsockState::Connected));
+        TABLE.insert(a.clone());
+        TABLE.insert(b.clone());
+
+        assert!(driver_uninstall(51));
+        assert_eq!(*a.st.lock(), VsockState::Closed);
+        assert_eq!(*b.st.lock(), VsockState::Connected);
+        assert!(TABLE.find(a.key()).is_none());
+        assert!(TABLE.find(b.key()).is_some());
+
+        TABLE.remove(b.key());
+        assert!(driver_uninstall(52));
     });
 }
