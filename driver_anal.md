@@ -197,6 +197,10 @@ test-pass claims.
   index up to the shared resource queue limit instead of using a compact
   q1/q2/q3 side table. The PCI transport consumes that indexed profile for
   MSI-X binding, common-cfg queue programming, and planned notify mappings.
+- The old q1-specific notify policy enum is gone. Persistent child queue
+  notify mappings now come from the indexed queue plan itself, while the
+  remaining net boot TX buffer allocation is tied to the existing net boot
+  payload requirement instead of a queue-number-specific dispatch.
 - Shared `virtio::ProgrammedQueues` now exposes indexed queue lookup, and
   virtio-pci resource handoff assembles child-visible queue resources over the
   shared resource queue count instead of expanding q2/q3 resource locals in

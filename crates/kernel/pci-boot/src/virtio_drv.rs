@@ -579,28 +579,6 @@ impl VirtioProbeState {
         mappings
     }
 
-    fn map_q1_notify(
-        &mut self,
-        policy: virtio::VirtioQ1NotifyPolicy,
-        q1_ring: Option<QueueRing>,
-        final_status: u8,
-        notify_cap: Option<&virtio::VirtioPciCap>,
-        bars: &[pci::Bar; 6],
-    ) -> u64 {
-        if (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0 {
-            return 0;
-        }
-        match policy {
-            virtio::VirtioQ1NotifyPolicy::None => 0,
-            virtio::VirtioQ1NotifyPolicy::NetBootTx
-            | virtio::VirtioQ1NotifyPolicy::PersistentTx
-            | virtio::VirtioQ1NotifyPolicy::PersistentEvent => {
-                let Some(ring) = q1_ring else { return 0 };
-                self.map_notify(notify_cap, bars, ring.notify_off)
-            }
-        }
-    }
-
     fn runtime_handoff(
         &mut self,
         profile: virtio::VirtioTransportProfile,
@@ -636,17 +614,12 @@ impl VirtioProbeState {
             (0u64, final_status)
         };
 
-        let q1_notify_va = self.map_q1_notify(
-            profile.q1_notify_policy,
-            q1_ring,
-            final_status,
-            notify_cap,
-            bars,
-        );
-        let tx0_buf_pa = if matches!(
-            profile.q1_notify_policy,
-            virtio::VirtioQ1NotifyPolicy::NetBootTx
-        )
+        let q1_notify_va = if (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+            planned_notify_mappings.get(1)
+        } else {
+            0
+        };
+        let tx0_buf_pa = if profile.needs_net_boot_buffers
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         {
             runtime.alloc_net_tx_boot_buffer(q1_ring, q1_notify_va)
