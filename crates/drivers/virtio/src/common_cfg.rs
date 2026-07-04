@@ -25,6 +25,14 @@ pub struct FeatureNegotiation {
     pub num_queues: u16,
 }
 
+pub struct CommonCfgBringup<Q> {
+    pub negotiated: FeatureNegotiation,
+    pub queues: [(u16, u16); crate::MAX_RESOURCE_QUEUES],
+    pub queues_len: usize,
+    pub programmed_queues: Option<Q>,
+    pub final_status: u8,
+}
+
 /// Execute the common virtio device reset + feature negotiation sequence on
 /// the modern common-cfg window.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
@@ -123,6 +131,41 @@ pub fn scan_queue_sizes(
     (queues, queues_len)
 }
 
+/// Execute the common modern virtio common-cfg bring-up state machine.
+///
+/// Shared virtio owns reset, feature negotiation, queue-size discovery, and
+/// the final DRIVER_OK/FAILED status transition. The concrete transport owns
+/// queue allocation, IRQ/vector binding, and transport-specific unwind inside
+/// `program_queues`.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(min(num_queues, MAX_RESOURCE_QUEUES) + program_queues)
+pub fn bring_up_common_cfg<Q, F>(
+    cfg_va: u64,
+    wanted_features: u64,
+    program_queues: F,
+) -> CommonCfgBringup<Q>
+where
+    F: FnOnce() -> Option<Q>,
+{
+    let negotiated = negotiate_features(cfg_va, wanted_features);
+    let (queues, queues_len) = scan_queue_sizes(cfg_va, negotiated.num_queues);
+    let programmed_queues = if negotiated.features_ok {
+        program_queues()
+    } else {
+        None
+    };
+    let final_status =
+        complete_driver_status(cfg_va, negotiated.features_ok, programmed_queues.is_some());
+
+    CommonCfgBringup {
+        negotiated,
+        queues,
+        queues_len,
+        programmed_queues,
+        final_status,
+    }
+}
+
 /// Read the modern common-cfg device status byte.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
 /// # C: O(1)
@@ -174,4 +217,72 @@ pub fn set_driver_ok(cfg_va: u64) -> u8 {
         );
     }
     read_status(cfg_va)
+}
+
+/// Complete modern virtio bring-up after queue programming.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub fn complete_driver_status(cfg_va: u64, features_ok: bool, queues_programmed: bool) -> u8 {
+    if !features_ok {
+        set_failed(cfg_va)
+    } else if queues_programmed {
+        set_driver_ok(cfg_va)
+    } else {
+        set_failed(cfg_va)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[repr(align(8))]
+    struct Regs([u32; 16]);
+
+    #[test]
+    fn common_cfg_bringup_programs_queues_before_driver_ok() {
+        let mut regs = Regs([0; 16]);
+        regs.0[(CFG_DEVICE_FEATURE / 4) as usize] = crate::VIRTIO_F_VERSION_1 as u32;
+        regs.0[(CFG_MSIX_CONFIG_NUMQ / 4) as usize] = (2u32 << 16) | 7;
+        regs.0[(CFG_QUEUE_SIZE / 4) as usize] = 8;
+
+        let cfg_va = regs.0.as_mut_ptr() as u64;
+        let mut programmed = false;
+        let bringup = bring_up_common_cfg(cfg_va, crate::VIRTIO_F_VERSION_1, || {
+            programmed = true;
+            Some(0x55u32)
+        });
+
+        assert!(programmed);
+        assert!(bringup.negotiated.features_ok);
+        assert_eq!(bringup.negotiated.msix_cfg, 7);
+        assert_eq!(bringup.negotiated.num_queues, 2);
+        assert_eq!(bringup.queues_len, 2);
+        assert_eq!(bringup.programmed_queues, Some(0x55));
+        assert_eq!(
+            bringup.final_status,
+            crate::VIRTIO_STATUS_ACKNOWLEDGE
+                | crate::VIRTIO_STATUS_DRIVER
+                | crate::VIRTIO_STATUS_FEATURES_OK
+                | crate::VIRTIO_STATUS_DRIVER_OK
+        );
+    }
+
+    #[test]
+    fn common_cfg_bringup_marks_failed_when_queue_programming_fails() {
+        let mut regs = Regs([0; 16]);
+        regs.0[(CFG_DEVICE_FEATURE / 4) as usize] = crate::VIRTIO_F_VERSION_1 as u32;
+        regs.0[(CFG_MSIX_CONFIG_NUMQ / 4) as usize] = 1u32 << 16;
+        regs.0[(CFG_QUEUE_SIZE / 4) as usize] = 8;
+
+        let cfg_va = regs.0.as_mut_ptr() as u64;
+        let bringup = bring_up_common_cfg::<u32, _>(cfg_va, crate::VIRTIO_F_VERSION_1, || None);
+
+        assert!(bringup.negotiated.features_ok);
+        assert_eq!(bringup.programmed_queues, None);
+        assert_eq!(
+            bringup.final_status & crate::VIRTIO_STATUS_FAILED,
+            crate::VIRTIO_STATUS_FAILED
+        );
+    }
 }

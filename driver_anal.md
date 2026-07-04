@@ -168,8 +168,10 @@ test-pass claims.
   requirements are no longer pci-boot-local structs.
 - Modern virtio common-cfg reset/status transitions, feature negotiation,
   FEATURES_OK validation, DRIVER_OK publication, and queue-size scanning now
-  live in the shared `virtio::common_cfg` helper instead of being open-coded
-  in the virtio-pci probe body.
+  live in the shared `virtio::common_cfg` helper. Shared virtio now also owns
+  the generic common-cfg bring-up wrapper that negotiates, scans queues, calls
+  a transport queue-programming callback, and publishes DRIVER_OK or FAILED,
+  instead of leaving that ordering as pci-boot-private state.
 - Mandatory q0 plus planned extra virtqueue programming now uses a shared
   queue-set helper with allocator-driven frame ownership and partial-allocation
   unwind, so the virtio-pci probe body no longer hand-rolls q1/q2/q3
@@ -482,8 +484,9 @@ test-pass claims.
   device ID. Resource handoff is now centralized and carries the common
   `DEVICE_CFG` window; virtio-blk, virtio-vsock, virtio-snd, virtio-input,
   and virtio-net config parsing have moved into their child drivers. The
-  common-cfg status/reset/feature/queue-size register protocol now lives in
-  shared `virtio::common_cfg`; common queue programming now lives in shared
+  common-cfg status/reset/feature/queue-size register protocol and generic
+  common-cfg bring-up state machine now live in shared `virtio::common_cfg`;
+  common queue programming now lives in shared
   `virtio::queue_cfg` behind a transport-provided allocator; BAR-derived
   transport mappings, PMM/HHDM-backed virtqueue frame allocation/zeroing,
   MSI-X table binding/release, runtime transport-record publish/unpublish,

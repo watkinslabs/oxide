@@ -186,14 +186,6 @@ struct VirtioProbeState {
     msix: Vec<MsixBinding>,
 }
 
-struct VirtioTransportBringup {
-    negotiated: virtio::FeatureNegotiation,
-    queues: [(u16, u16); virtio::MAX_RESOURCE_QUEUES],
-    queues_len: usize,
-    programmed_queues: Option<ProgrammedQueues>,
-    final_status: u8,
-}
-
 struct VirtioRuntimeHandoff {
     queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     post_notify_status: u8,
@@ -442,41 +434,14 @@ impl VirtioProbeState {
         bars: &[pci::Bar; 6],
         profile: virtio::VirtioTransportProfile,
         runtime: VirtioPciRuntime,
-    ) -> VirtioTransportBringup {
-        let negotiated = virtio::negotiate_features(self.cfg_va, profile.drv_features);
-        let (queues, queues_len) = virtio::scan_queue_sizes(self.cfg_va, negotiated.num_queues);
-
-        let q0_msix_vec = if negotiated.features_ok {
-            self.bind_msix0(d, caps, bars, profile.msix0_handler)
-                .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR)
-        } else {
-            virtio::VIRTIO_MSI_NO_VECTOR
-        };
-        let queue_plans = if negotiated.features_ok {
-            self.resolve_queue_plan_msix(d, caps, bars, &profile.queue_plans)
-        } else {
-            profile.queue_plans
-        };
-        let programmed_queues = if negotiated.features_ok {
+    ) -> virtio::CommonCfgBringup<ProgrammedQueues> {
+        virtio::bring_up_common_cfg(self.cfg_va, profile.drv_features, || {
+            let q0_msix_vec = self
+                .bind_msix0(d, caps, bars, profile.msix0_handler)
+                .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
+            let queue_plans = self.resolve_queue_plan_msix(d, caps, bars, &profile.queue_plans);
             runtime.program_queue_set(self.cfg_va, q0_msix_vec, &queue_plans)
-        } else {
-            None
-        };
-        let final_status = if !negotiated.features_ok {
-            virtio::set_failed(self.cfg_va)
-        } else if programmed_queues.is_some() {
-            virtio::set_driver_ok(self.cfg_va)
-        } else {
-            virtio::set_failed(self.cfg_va)
-        };
-
-        VirtioTransportBringup {
-            negotiated,
-            queues,
-            queues_len,
-            programmed_queues,
-            final_status,
-        }
+        })
     }
 
     fn map_notify(
