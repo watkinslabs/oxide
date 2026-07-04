@@ -47,6 +47,14 @@ pub struct ProgrammedQueues {
 }
 
 impl ProgrammedQueues {
+    #[cfg(test)]
+    pub(crate) const fn from_test_parts(
+        q0: QueueRing,
+        extra: [Option<QueueRing>; MAX_RESOURCE_QUEUES],
+    ) -> Self {
+        Self { q0, extra }
+    }
+
     /// Return a programmed queue by virtqueue index. Queue 0 is the mandatory
     /// transport queue; other indexes are planned extra queues.
     /// # C: O(1)

@@ -207,7 +207,8 @@ test-pass claims.
   child-visible `VirtQueueResource` assembly from scanned queue sizes,
   programmed queues, and transport-resolved notify VAs. The PCI transport
   still maps/kicks hardware notify windows, but no longer owns the generic
-  queue-resource handoff builder.
+  queue-resource handoff builder or the child queue-plan policy for resolving
+  persistent planned notify mappings.
 - Shared `virtio::VirtioTransportProbeResult` now owns the transport-neutral
   completed-probe result: child-facing facts, child resource state assembly,
   vring cleanup frame extraction, and net boot payload frame extraction. The
@@ -498,9 +499,10 @@ test-pass claims.
   status/used-ring observation, net boot-buffer mechanics, and notify VA/kick
   mechanics now live in a dedicated virtio-pci transport helper. A first
   `VirtioProbeState` owns config windows and transport lifetime through
-  finalization/state methods, including indexed extra-queue notify mapping and
-  explicit q1 mapping. Common transport bring-up ordering also now goes through
-  `VirtioProbeState`.
+  finalization/state methods. Shared virtio resolves indexed planned notify
+  mappings from child queue plans, while PCI supplies only the concrete
+  notify-offset-to-VA mapper. Common transport bring-up ordering also now goes
+  through `VirtioProbeState`.
   Child readiness validation is described by shared
   `virtio::VirtioChildRequirements` and evaluated by
   `virtio::VirtioChildResourceState`; child transport profiles and queue plans
