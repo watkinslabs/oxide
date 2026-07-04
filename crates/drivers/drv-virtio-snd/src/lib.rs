@@ -55,6 +55,8 @@ const VIRTIO_SND_R_PCM_STOP:       u32 = 0x0105;
 
 /// PCM sample format `VIRTIO_SND_PCM_FMT_S16` (docs/58§4.3).
 pub const VIRTIO_SND_PCM_FMT_S16: u8 = 5;
+/// PCM sample format `VIRTIO_SND_PCM_FMT_U16` (docs/58§4.3).
+pub const VIRTIO_SND_PCM_FMT_U16: u8 = 6;
 /// PCM rate `VIRTIO_SND_PCM_RATE_44100` (docs/58§4.3).
 pub const VIRTIO_SND_PCM_RATE_44100: u8 = 6;
 /// Playback sample rate matching VIRTIO_SND_PCM_RATE_44100 (Hz).
@@ -1063,7 +1065,7 @@ const PERIOD_BYTES: usize = 2048;
 /// # C: O(1)
 fn frame_bytes(format: u8, channels: u8) -> usize {
     let bps = match format {
-        VIRTIO_SND_PCM_FMT_S16 | 6 /*U16*/ => 2,
+        VIRTIO_SND_PCM_FMT_S16 | VIRTIO_SND_PCM_FMT_U16 => 2,
         _ => 1,
     };
     bps * channels.max(1) as usize
