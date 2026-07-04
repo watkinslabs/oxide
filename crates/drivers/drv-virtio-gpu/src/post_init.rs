@@ -5,6 +5,37 @@
 
 use core::sync::atomic::Ordering;
 
+struct ProbeCommandBuffer {
+    pa: u64,
+    va: *mut u8,
+    owned: bool,
+}
+
+impl ProbeCommandBuffer {
+    fn alloc(hhdm: u64) -> Option<Self> {
+        let pa = pmm::setup::alloc_one_frame()?;
+        Some(Self {
+            pa,
+            va: hhdm.wrapping_add(pa) as *mut u8,
+            owned: true,
+        })
+    }
+
+    fn disarm(&mut self) {
+        self.owned = false;
+    }
+}
+
+impl Drop for ProbeCommandBuffer {
+    fn drop(&mut self) {
+        if self.owned {
+            // SAFETY: the buffer is still owned by this probe guard and has not
+            // been transferred to the installed scanout context.
+            unsafe { pmm::setup::free_one_frame(self.pa); }
+        }
+    }
+}
+
 /// Submit `CMD_GET_DISPLAY_INFO` on q0; spin-poll used.idx for
 /// completion; parse the response and re-install the device with
 /// real DisplayInfo (which propagates to `47` DRM/KMS via the
@@ -21,25 +52,25 @@ pub fn get_display_info(
     }
     let cfg_va = resources.cfg_va;
     let hhdm = resources.hhdm;
-    let buf_pa = match pmm::setup::alloc_one_frame() {
-        Some(pa) => pa, None => return false,
+    let mut cmd_buf = match ProbeCommandBuffer::alloc(hhdm) {
+        Some(buf) => buf,
+        None => return false,
     };
-    let buf_va = hhdm.wrapping_add(buf_pa) as *mut u8;
     // SAFETY: HHDM-mapped frame; aligned writes within 4 KiB; sole writer at boot.
     unsafe {
-        for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
-        let req = core::slice::from_raw_parts_mut(buf_va, 24);
+        for i in 0..0x1000usize { core::ptr::write_volatile(cmd_buf.va.add(i), 0); }
+        let req = core::slice::from_raw_parts_mut(cmd_buf.va, 24);
         crate::encode_get_display_info(req);
     }
     let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
     // SAFETY: HHDM-mapped virtio q0 descriptor table; aligned u64 stores into driver-owned frame.
     unsafe {
-        core::ptr::write_volatile(desc0.add(0), buf_pa);
+        core::ptr::write_volatile(desc0.add(0), cmd_buf.pa);
         let d0 = 24u64
                | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
                | (1u64 << 48);
         core::ptr::write_volatile(desc0.add(1), d0);
-        core::ptr::write_volatile(desc0.add(2), buf_pa + 0x200);
+        core::ptr::write_volatile(desc0.add(2), cmd_buf.pa + 0x200);
         let d1 = 408u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc0.add(3), d1);
     }
@@ -68,15 +99,11 @@ pub fn get_display_info(
     core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
     // SAFETY: same HHDM-mapped frame; bounded 408-byte slice for parser.
     let resp_slice = unsafe {
-        core::slice::from_raw_parts(buf_va.add(0x200) as *const u8, 408)
+        core::slice::from_raw_parts(cmd_buf.va.add(0x200) as *const u8, 408)
     };
     let info = match crate::parse_display_info(resp_slice) {
         Ok(i)  => i,
-        Err(_) => {
-            // SAFETY: buf_pa was allocated above and no persistent state owns it.
-            unsafe { pmm::setup::free_one_frame(buf_pa); }
-            return false;
-        }
+        Err(_) => return false,
     };
     use core::sync::atomic::{AtomicU32, AtomicU64};
     let bdf_word = (bdf_bus as u32) << 16
@@ -100,19 +127,13 @@ pub fn get_display_info(
             setup_scanout(
                 bdf_word,
                 info.modes[0].r.width, info.modes[0].r.height,
-                cfg_va, ctrlq, buf_va, buf_pa, hhdm,
+                cfg_va, ctrlq, cmd_buf.va, cmd_buf.pa, hhdm,
             )
         };
         if !scanout_ok {
-            // No scanout context retained the command buffer.
-            // SAFETY: buf_pa is not retained when setup_scanout fails.
-            unsafe { pmm::setup::free_one_frame(buf_pa); }
             return false;
         }
-    } else {
-        // No scanout context retained the command buffer.
-        // SAFETY: buf_pa is not retained when no display is enabled.
-        unsafe { pmm::setup::free_one_frame(buf_pa); }
+        cmd_buf.disarm();
     }
     match crate::install_with_drm(crate::VirtioGpuDev {
         bdf: bdf_word, card_id: 0, cfg_va,
