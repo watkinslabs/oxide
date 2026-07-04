@@ -357,9 +357,9 @@ pub fn enumerate_and_log() {
             | ((d.subclass as u32) << 8) | (d.prog_if as u32);
         let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
             0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
-        let pci_dev = drv::device_add(alloc::sync::Arc::new(
-            drv::Device::new("pci", addr, d.vendor_id, d.device_id, class24)
-                .with_resources(pci_resources_arch(d.bdf))));
+        let Some(pci_dev) = publish_pci_model_device(d, addr, class24) else {
+            continue;
+        };
         let _ = drv::auto_bind(&pci_dev);
     }
 
@@ -509,5 +509,27 @@ pub fn enumerate_and_log() {
             klog::write_dec_u64((uart_after - uart_before) as u64);
             klog::write_raw(b"\n");
         }
+    }
+}
+
+fn publish_pci_model_device(
+    d: &pci::PciDevice,
+    addr: alloc::string::String,
+    class24: u32,
+) -> Option<alloc::sync::Arc<drv::Device>> {
+    let dev = alloc::sync::Arc::new(
+        drv::Device::new("pci", addr.clone(), d.vendor_id, d.device_id, class24)
+            .with_resources(pci_resources_arch(d.bdf)),
+    );
+    match drv::try_device_add(dev) {
+        Ok(dev) => Some(dev),
+        Err(drv::Error::Busy) => drv::devices().into_iter().find(|dev| {
+            dev.bus == "pci"
+                && dev.addr.as_str() == addr.as_str()
+                && dev.vendor_id == d.vendor_id
+                && dev.device_id == d.device_id
+                && dev.class == class24
+        }),
+        Err(_) => None,
     }
 }
