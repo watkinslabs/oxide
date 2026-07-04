@@ -1049,42 +1049,32 @@ This defeats the point of a driver model.
 
 Every real hardware driver should move bring-up into `probe()` or into a bus-specific probe method called by `probe()`.
 
-### 4. Binding has no error contract
+### 4. Binding error contract is now in the model
 
-`bind()` is currently effectively:
+`bind()` is no longer just a string stamp. It validates the registered driver,
+rejects already-bound and non-matching devices, calls `Driver::probe`, records
+the binding only after probe succeeds, emits a model-backed `change` uevent, and
+leaves the device unbound after probe failure.
 
-- set `dev.driver = Some(driver_name)`
-- fire bind hook
+Remaining work is not the bind contract itself; it is migrating every live
+hardware bring-up path so the real side effects happen from model-owned probe
+callbacks instead of enumeration-local direct calls.
 
-It does not:
+### 5. Unbind/remove exists, but driver teardown proof is incomplete
 
-- check whether the device is already bound
-- validate the driver exists
-- validate the driver matches
-- call `probe`
-- handle probe failure
-- return Linux-like errors
-- unwind partial state
+The model has `/sys/bus/<bus>/drivers/<driver>/unbind`, model-level `unbind`,
+`Driver::remove`, driver symlink/backref disappearance, devtmpfs node removal,
+and `device_del` remove uevents. Driver-core tests assert the teardown order,
+and sysfs/netlink tests prove bind/unbind `change` uevents plus `device_del`
+`remove` uevents.
 
-This is not Linux-correct. Duplicate bind should fail. Binding to a non-matching driver should fail. Probe failure should leave the device unbound and clean.
+Still missing or needing broader proof:
 
-### 5. There is no real unbind/remove path
-
-`Driver::remove()` exists, but the model does not properly use it.
-
-Missing:
-
-- `/sys/bus/<bus>/drivers/<driver>/unbind`
-- model-level `unbind`
-- remove uevents
-- driver symlink removal
-- driver directory backref removal
 - interrupt teardown
 - DMA/free-page teardown
 - BAR unmap
-- devfs node removal
 - sysfs child cleanup
-- net/block/input/sound/DRM child unregister
+- net/block/input/sound/DRM child unregister under real remove paths
 
 Hot-unplug and bind/unbind tests cannot be correct until this exists.
 
@@ -1425,12 +1415,13 @@ all derive from real registries, not duplicated hard-coded publication paths.
 
 ## Immediate next tasks
 
-1. Make `drv::bind` a real fallible operation that calls `Driver::probe`.
-2. Add `drv::unbind` and call `Driver::remove`.
-3. Remove direct probe/publication paths that still bypass model-owned binding.
-4. Add remove uevents to `device_del`.
-5. Pick one driver as the first migration target. Best candidate: virtio-blk, because it has clear visible acceptance through `/dev/vda`, `/sys/block/vda`, mount, and `lsblk`.
-6. After virtio-blk, migrate virtio-net or virtio-input. virtio-net tests netdev/rtnetlink; virtio-input tests class devices and graphical login dependencies.
+1. Remove direct probe/publication paths that still bypass model-owned binding.
+2. Finish real remove-path proof for the single-device desktop stack: root disk,
+   GPU/DRM/fbdev, input, sound, and net.
+3. Prove the GNOME-visible coldplug path in QEMU/userspace: `/dev`, `/sys`,
+   `/sys/dev`, class dirs, uevents, and udev seat state.
+4. After the single-device path works, broaden fault injection and multi-device
+   hardening.
 
 ## Do not do this
 
