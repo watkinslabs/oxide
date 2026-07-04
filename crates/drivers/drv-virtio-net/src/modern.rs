@@ -15,6 +15,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+/// Virtio device ID for network cards.
+pub const VIRTIO_ID_NET: u16 = 1;
+
 /// Length of the virtio-net packet header preceding each frame in the ring
 /// buffer per Virtio 1.2 §5.1.6.1. We negotiate
 /// without VIRTIO_NET_F_MRG_RXBUF, so the fixed 10-byte header expands

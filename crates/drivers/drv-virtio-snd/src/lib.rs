@@ -23,6 +23,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 use virtio::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
 
+/// Virtio device ID for sound devices.
+pub const VIRTIO_ID_SOUND: u16 = 25;
+
 // Wire constants — virtio 1.2 §5.14 / docs/58§4.
 /// CONTROLQ request: query the PCM stream table.
 pub const VIRTIO_SND_R_PCM_INFO: u32 = 0x0100;
