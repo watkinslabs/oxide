@@ -36,6 +36,8 @@ struct CharDevInfo {
     addr: String,
     devname: String,
     dev_t: (u32, u32),
+    parent_bus: Option<&'static str>,
+    parent_addr: Option<String>,
 }
 
 fn char_devs(class: &'static str) -> Vec<CharDevInfo> {
@@ -48,6 +50,8 @@ fn char_devs(class: &'static str) -> Vec<CharDevInfo> {
                 addr: d.addr.clone(),
                 devname: d.devname.clone().unwrap_or_else(|| d.addr.clone()),
                 dev_t,
+                parent_bus: d.parent_bus,
+                parent_addr: d.parent_addr.clone(),
             })
         })
         .collect()
@@ -65,6 +69,30 @@ fn uevent_body(info: &CharDevInfo) -> Vec<u8> {
         info.devname,
     )
     .into_bytes()
+}
+
+fn parent_root_leaf(bus: &str) -> &'static str {
+    match bus {
+        "pci" => "pci0000:00",
+        "virtio" => "virtio",
+        "platform" => "platform",
+        "mem" => "virtual/mem",
+        "misc" => "virtual/misc",
+        "sound" => "virtual/sound",
+        "graphics" => "virtual/graphics",
+        "input" => "virtual/input",
+        "drm" => "virtual/drm",
+        _ => "platform",
+    }
+}
+
+fn parent_device_target(info: &CharDevInfo) -> Option<Vec<u8>> {
+    Some(alloc::format!(
+        "../../../{}/{}",
+        parent_root_leaf(info.parent_bus?),
+        info.parent_addr.as_deref()?,
+    )
+    .into_bytes())
 }
 
 struct CharDevDirData {
@@ -86,20 +114,29 @@ impl InodeOps for CharDevDirOps {
             "subsystem" => Ok(crate::make_symlink_inode(
                 alloc::format!("../../../../class/{}", d.class).into_bytes(),
             )),
+            "device" => Ok(crate::make_symlink_inode(
+                parent_device_target(&info).ok_or(VfsError::Enoent)?,
+            )),
             _ => Err(VfsError::Enoent),
         }
     }
 }
 impl FileOps for CharDevDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const ENTRIES: &[(&str, FileType)] = &[
+        const BASE_ENTRIES: &[(&str, FileType)] = &[
             ("dev", FileType::Regular),
             ("uevent", FileType::Regular),
             ("subsystem", FileType::Symlink),
         ];
+        let d = inode.private::<CharDevDirData>().ok_or(VfsError::Einval)?;
+        let info = char_by_addr(d.class, &d.addr).ok_or(VfsError::Enoent)?;
+        let mut entries: Vec<(&str, FileType)> = BASE_ENTRIES.to_vec();
+        if parent_device_target(&info).is_some() {
+            entries.push(("device", FileType::Symlink));
+        }
         let mut idx = ctx.pos as usize;
-        while idx < ENTRIES.len() {
-            let (name, ft) = ENTRIES[idx];
+        while idx < entries.len() {
+            let (name, ft) = entries[idx];
             let next = idx as u64 + 1;
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, ft, next) {
@@ -379,5 +416,35 @@ mod tests {
 
         drv::device_del(&dev);
         assert_eq!(class.lookup("fb7").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn class_device_links_to_model_parent_when_present() {
+        let parent = Arc::new(drv::Device::new(
+            "virtio",
+            String::from("virtio-snd-parent0"),
+            0x1af4,
+            25,
+            0,
+        ));
+        drv::try_device_add(Arc::clone(&parent)).expect("test parent registration");
+        let dev = Arc::new(
+            drv::Device::new("sound", String::from("controlC10"), 0, 0, 0)
+                .with_parent("virtio", String::from("virtio-snd-parent0"))
+                .with_devnode("sound", String::from("snd/controlC10"), Some((116, 320))),
+        );
+        drv::try_device_add(Arc::clone(&dev)).expect("test sound registration");
+
+        let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
+        let dir = root.lookup("controlC10").expect("sound device dir");
+        let device = dir.lookup("device").expect("parent device link");
+        assert_eq!(
+            device.readlink().expect("readlink"),
+            b"../../../virtio/virtio-snd-parent0".to_vec()
+        );
+
+        drv::device_del(&dev);
+        drv::device_del(&parent);
+        assert_eq!(root.lookup("controlC10").err(), Some(VfsError::Enoent));
     }
 }

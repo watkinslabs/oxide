@@ -81,7 +81,9 @@ test-pass claims.
   `graphics` character devices now also publish Linux-style
   `/sys/class/<class>` symlinks and `/sys/devices/virtual/<class>/<name>`
   device directories, so `/sys/dev/char` resolves to a real device object for
-  pseudo, misc, ALSA/OSS, and fbdev char devices.
+  pseudo, misc, ALSA/OSS, and fbdev char devices. Model-backed virtual
+  input, DRM, and character class devices now expose a `device` symlink when
+  the class device has a real parent in the driver model.
 - The stale procfs-era static `/sys/class/misc/autofs` registration has been
   removed; autofs sysfs state now comes from the model-owned misc device and
   exposes the same `10:235` dev_t as `/dev/autofs`.
@@ -531,9 +533,10 @@ test-pass claims.
   namespace entries, devpts allocation, coredump artifacts, or other
   non-hardware pseudo-files rather than driver-owned device nodes.
 - Sysfs exposes more Linux-shaped bus state, including `/sys/dev/char`,
-  `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
-  but class-device topology and repeated bind/unbind/remove/readd behavior are
-  not proven across all subsystems.
+  `/sys/dev/block`, parent/subsystem links, class-device `device` links for
+  model-parented input/DRM/virtual character devices, and model-backed
+  bind/unbind attrs, but repeated bind/unbind/remove/readd behavior is not
+  proven across all subsystems.
 - Block, NVMe, AHCI, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
@@ -732,9 +735,9 @@ test-pass claims.
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
   block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2 paths.
-- Finish Linux-visible sysfs/devtmpfs/class contracts, including class parent
-  relationships, `/sys/dev/{char,block}`, and stable add/remove/change uevent
-  behavior across rebind.
+- Finish Linux-visible sysfs/devtmpfs/class contracts, including the remaining
+  class parent relationships, `/sys/dev/{char,block}`, and stable
+  add/remove/change uevent behavior across rebind.
 - Generalize PCI lifecycle ownership: command enable/disable is now covered for
   the main AHCI/NVMe/virtio paths, and virtio MSI-X teardown now releases the
   transport-owned binding before PCI memory decode is dropped. BAR mapping
