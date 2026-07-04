@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn devices_body_names_virtual_input_sysfs_device() {
-        crate::DEVICES.lock().clear();
+        crate::registry::clear_devices_for_tests();
         let device_key = key(0x1234_0000);
         crate::install(test_dev(device_key, 7));
 
@@ -137,6 +137,6 @@ mod tests {
         assert!(!body.contains("/devices/virtio-input/input"));
 
         assert_eq!(crate::remove_device(device_key), Some(7));
-        crate::DEVICES.lock().clear();
+        crate::registry::clear_devices_for_tests();
     }
 }
