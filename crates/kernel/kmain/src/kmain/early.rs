@@ -1,4 +1,6 @@
 use crate::{BootInfo, BootMemRegion, GLOBAL_ALLOC, zerotrap_tid};
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
+use crate::kthread;
 
 /// Early boot bring-up before runtime device and filesystem init.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
