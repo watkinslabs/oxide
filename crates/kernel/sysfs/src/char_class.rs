@@ -3,7 +3,7 @@
 // These devices are published through drv::try_device_add, so sysfs must expose the
 // matching class-device topology:
 //   /sys/class/<class>/<name> -> ../../devices/virtual/<class>/<name>
-//   /sys/devices/virtual/<class>/<name>/{dev,uevent,subsystem}
+//   /sys/devices/virtual/<class>/<name>/{dev,uevent,subsystem,device}
 //
 // Keeping this sourced from drv::devices() makes add/remove/readd behavior
 // follow the driver model instead of a separate static sysfs table.
@@ -446,5 +446,61 @@ mod tests {
         drv::device_del(&dev);
         drv::device_del(&parent);
         assert_eq!(root.lookup("controlC10").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn class_device_parent_link_tracks_remove_readd_model_state() {
+        let parent = Arc::new(drv::Device::new(
+            "virtio",
+            String::from("virtio-snd-readd-parent0"),
+            0x1af4,
+            25,
+            0,
+        ));
+        drv::try_device_add(Arc::clone(&parent)).expect("test parent registration");
+
+        let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
+        let class = make_sys_class_inode("sound", INO_CLASS_SOUND);
+        let first = Arc::new(
+            drv::Device::new("sound", String::from("controlC11"), 0, 0, 0)
+                .with_parent("virtio", String::from("virtio-snd-readd-parent0"))
+                .with_devnode("sound", String::from("snd/controlC11"), Some((116, 321))),
+        );
+        drv::try_device_add(Arc::clone(&first)).expect("first sound registration");
+
+        let dir = root.lookup("controlC11").expect("first sound device dir");
+        let device = dir.lookup("device").expect("first parent device link");
+        assert_eq!(
+            device.readlink().expect("readlink"),
+            b"../../../virtio/virtio-snd-readd-parent0".to_vec()
+        );
+        assert!(class.lookup("controlC11").is_ok());
+
+        drv::device_del(&first);
+        assert_eq!(root.lookup("controlC11").err(), Some(VfsError::Enoent));
+        assert_eq!(class.lookup("controlC11").err(), Some(VfsError::Enoent));
+
+        let second = Arc::new(
+            drv::Device::new("sound", String::from("controlC11"), 0, 0, 0)
+                .with_parent("virtio", String::from("virtio-snd-readd-parent0"))
+                .with_devnode("sound", String::from("snd/controlC11"), Some((116, 321))),
+        );
+        drv::try_device_add(Arc::clone(&second)).expect("second sound registration");
+
+        let dir = root.lookup("controlC11").expect("readded sound device dir");
+        let device = dir.lookup("device").expect("readded parent device link");
+        assert_eq!(
+            device.readlink().expect("readlink"),
+            b"../../../virtio/virtio-snd-readd-parent0".to_vec()
+        );
+        let link = class.lookup("controlC11").expect("readded class link");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC11".to_vec()
+        );
+
+        drv::device_del(&second);
+        drv::device_del(&parent);
+        assert_eq!(root.lookup("controlC11").err(), Some(VfsError::Enoent));
     }
 }
