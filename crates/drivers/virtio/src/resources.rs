@@ -82,6 +82,151 @@ impl VirtioChildRequirements {
     }
 }
 
+/// Sentinel used by MSI-X capable transports when a queue is intentionally
+/// left without a per-queue vector.
+pub const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
+
+/// Queue notification lifetime requested by the child profile. The transport
+/// maps notify windows according to this policy after queue programming.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VirtioQ1NotifyPolicy {
+    None,
+    NetBootTx,
+    PersistentTx,
+    PersistentEvent,
+}
+
+/// One extra virtqueue requested by a child profile. The child describes the
+/// queue index and callback policy; the concrete transport resolves MSI-X
+/// vectors and notify mappings during bring-up.
+#[derive(Copy, Clone)]
+pub struct VirtioQueuePlan {
+    pub index: u16,
+    pub msix_handler: Option<fn()>,
+    pub msix_vec: u16,
+    pub map_notify: bool,
+}
+
+impl VirtioQueuePlan {
+    /// # C: O(1)
+    pub const fn new(index: u16, msix_handler: Option<fn()>, map_notify: bool) -> Self {
+        Self {
+            index,
+            msix_handler,
+            msix_vec: VIRTIO_MSI_NO_VECTOR,
+            map_notify,
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn with_msix_vec(mut self, msix_vec: u16) -> Self {
+        self.msix_vec = msix_vec;
+        self
+    }
+}
+
+/// Child-declared transport profile consumed by virtio transports. Device
+/// drivers own feature policy and queue requirements; transports execute the
+/// common status/feature/queue protocol and publish validated resources.
+#[derive(Copy, Clone)]
+pub struct VirtioTransportProfile {
+    pub drv_features: u64,
+    pub msix0_handler: Option<fn()>,
+    pub extra_queues: [Option<VirtioQueuePlan>; 3],
+    pub q1_notify_policy: VirtioQ1NotifyPolicy,
+    pub needs_net_boot_buffers: bool,
+    pub child_requirements: VirtioChildRequirements,
+}
+
+impl VirtioTransportProfile {
+    /// # C: O(1)
+    pub const fn new(
+        drv_features: u64,
+        msix0_handler: Option<fn()>,
+        extra_queues: [Option<VirtioQueuePlan>; 3],
+        q1_notify_policy: VirtioQ1NotifyPolicy,
+        needs_net_boot_buffers: bool,
+        child_requirements: VirtioChildRequirements,
+    ) -> Self {
+        Self {
+            drv_features,
+            msix0_handler,
+            extra_queues,
+            q1_notify_policy,
+            needs_net_boot_buffers,
+            child_requirements,
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn q0(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+        Self::new(
+            drv_features,
+            msix0_handler,
+            [None, None, None],
+            VirtioQ1NotifyPolicy::None,
+            false,
+            VirtioChildRequirements::q0(),
+        )
+    }
+
+    /// # C: O(1)
+    pub const fn q0_device_cfg(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+        Self::new(
+            drv_features,
+            msix0_handler,
+            [None, None, None],
+            VirtioQ1NotifyPolicy::None,
+            false,
+            VirtioChildRequirements::q0_device_cfg(),
+        )
+    }
+
+    /// # C: O(1)
+    pub const fn net(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+        Self::new(
+            drv_features,
+            msix0_handler,
+            [Some(VirtioQueuePlan::new(1, None, false)), None, None],
+            VirtioQ1NotifyPolicy::NetBootTx,
+            true,
+            VirtioChildRequirements::net(),
+        )
+    }
+
+    /// # C: O(1)
+    pub const fn vsock(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+        Self::new(
+            drv_features,
+            msix0_handler,
+            [Some(VirtioQueuePlan::new(1, None, false)), None, None],
+            VirtioQ1NotifyPolicy::PersistentTx,
+            false,
+            VirtioChildRequirements::q0_q1_device_cfg(),
+        )
+    }
+
+    /// # C: O(1)
+    pub const fn snd(
+        drv_features: u64,
+        msix0_handler: Option<fn()>,
+        event_handler: Option<fn()>,
+    ) -> Self {
+        Self::new(
+            drv_features,
+            msix0_handler,
+            [
+                Some(VirtioQueuePlan::new(1, event_handler, false)),
+                Some(VirtioQueuePlan::new(2, None, true)),
+                Some(VirtioQueuePlan::new(3, None, true)),
+            ],
+            VirtioQ1NotifyPolicy::PersistentEvent,
+            false,
+            VirtioChildRequirements::snd(),
+        )
+    }
+}
+
 /// One programmed split virtqueue plus its notify window.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct VirtQueueResource {
@@ -273,5 +418,27 @@ mod tests {
         assert!(snd.required_queues[3]);
         assert!(snd.needs_device_cfg);
         assert!(!snd.required_queues[4]);
+    }
+
+    #[test]
+    fn transport_profiles_describe_child_queue_policy() {
+        let net = VirtioTransportProfile::net(0x55, None);
+        assert_eq!(net.drv_features, 0x55);
+        assert_eq!(net.q1_notify_policy, VirtioQ1NotifyPolicy::NetBootTx);
+        assert!(net.needs_net_boot_buffers);
+        assert_eq!(net.extra_queues[0].map(|q| q.index), Some(1));
+        assert!(net.child_requirements.needs_net_boot_payloads);
+
+        let snd = VirtioTransportProfile::snd(0xaa, None, None);
+        assert_eq!(snd.drv_features, 0xaa);
+        assert_eq!(
+            snd.q1_notify_policy,
+            VirtioQ1NotifyPolicy::PersistentEvent
+        );
+        assert_eq!(snd.extra_queues[0].map(|q| q.index), Some(1));
+        assert_eq!(snd.extra_queues[1].map(|q| q.index), Some(2));
+        assert_eq!(snd.extra_queues[2].map(|q| q.index), Some(3));
+        assert!(snd.extra_queues[1].map(|q| q.map_notify).unwrap_or(false));
+        assert!(snd.child_requirements.needs_device_cfg);
     }
 }

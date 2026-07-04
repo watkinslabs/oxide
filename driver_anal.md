@@ -81,6 +81,10 @@ test-pass claims.
   of hard-coded `needs_q1` / `needs_q2` / `needs_q3` dispatch in the virtio-pci
   probe path. The common queue programming still lives in pci-boot, but queue
   selection is now data-driven and uses one helper path for q1/q2/q3.
+- Virtio child transport profiles now use shared `virtio::VirtioTransportProfile`
+  and `virtio::VirtioQueuePlan` types. PCI-boot still resolves MSI-X vectors
+  and maps notify windows, but the child-declared feature/queue/notification
+  requirements are no longer pci-boot-local structs.
 - Modern virtio common-cfg reset/status transitions, feature negotiation,
   FEATURES_OK validation, DRIVER_OK publication, and queue-size scanning now
   live in the shared virtio queue/setup helper instead of being open-coded in
@@ -313,9 +317,10 @@ test-pass claims.
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
   Child readiness validation is centralized in `VirtioProbe` and described by
-  shared `virtio::VirtioChildRequirements`; the next step is to move the
-  remaining PCI-local probe profile out of pci-boot and into a real virtio
-  transport/core boundary.
+  shared `virtio::VirtioChildRequirements`; child transport profiles and queue
+  plans now use shared `virtio::VirtioTransportProfile` and
+  `virtio::VirtioQueuePlan`. The next step is to move the remaining PCI
+  execution/state machinery behind a real virtio transport/core boundary.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by

@@ -26,32 +26,6 @@ const CFG_DRIVER_FEATURE:        u64 = 0x0C; // u32
 const CFG_MSIX_CONFIG_NUMQ:      u64 = 0x10; // u16 msix_config + u16 num_queues
 const CFG_DEVICE_STATUS:         u64 = 0x14; // u8
 
-pub(super) const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
-
-#[derive(Clone, Copy)]
-pub(super) struct QueuePlan {
-    pub(super) index: u16,
-    pub(super) msix_handler: Option<fn()>,
-    pub(super) msix_vec: u16,
-    pub(super) map_notify: bool,
-}
-
-impl QueuePlan {
-    pub(super) const fn new(index: u16, msix_handler: Option<fn()>, map_notify: bool) -> Self {
-        Self {
-            index,
-            msix_handler,
-            msix_vec: VIRTIO_MSI_NO_VECTOR,
-            map_notify,
-        }
-    }
-
-    pub(super) const fn with_msix_vec(mut self, msix_vec: u16) -> Self {
-        self.msix_vec = msix_vec;
-        self
-    }
-}
-
 /// Programmed virtqueue: the three ring PAs handed to the device, the
 /// per-queue `queue_notify_off`, and the negotiated `queue_size`.
 #[derive(Clone, Copy)]
@@ -249,7 +223,7 @@ pub(super) fn program_queue_set(
     cfg_va: u64,
     hhdm: u64,
     q0_msix_vec: u16,
-    extra_plans: &[Option<QueuePlan>],
+    extra_plans: &[Option<virtio::VirtioQueuePlan>],
 ) -> Option<ProgrammedQueues> {
     let q0 = program_queue(cfg_va, 0, q0_msix_vec, hhdm)?;
     let mut extra = [None; virtio::MAX_RESOURCE_QUEUES];
