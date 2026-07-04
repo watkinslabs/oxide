@@ -168,17 +168,26 @@ const BOUNCE_ORDER: u8 = 6;
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 
 struct BlkRecord {
-    bus:      u8,
-    device:   u8,
-    function: u8,
+    device_key: u32,
     name:     String,
     state:    Arc<BlkState>,
 }
 
 static DEVICES: Spinlock<Vec<BlkRecord>, DriverLockClass> = Spinlock::new(Vec::new());
 
-fn same_bdf(rec: &BlkRecord, bus: u8, device: u8, function: u8) -> bool {
-    rec.bus == bus && rec.device == device && rec.function == function
+fn bdf_key(bus: u8, device: u8, function: u8) -> u32 {
+    (bus as u32) << 16 | (device as u32) << 8 | (function as u32)
+}
+
+#[cfg(feature = "debug-boot")]
+fn key_bus(key: u32) -> u8 { ((key >> 16) & 0xff) as u8 }
+#[cfg(feature = "debug-boot")]
+fn key_device(key: u32) -> u8 { ((key >> 8) & 0xff) as u8 }
+#[cfg(feature = "debug-boot")]
+fn key_function(key: u32) -> u8 { (key & 0xff) as u8 }
+
+fn same_device(rec: &BlkRecord, device_key: u32) -> bool {
+    rec.device_key == device_key
 }
 
 /// Persistent per-device request engine. The PAs/VA reference rings
@@ -647,9 +656,7 @@ impl BlockDevice for BlkState {
 /// DRIVER_OK.
 #[derive(Copy, Clone)]
 pub struct BlkInit {
-    pub bus:      u8,
-    pub device:   u8,
-    pub function: u8,
+    pub device_key: u32,
     pub resources: virtio::VirtioResources,
     pub drv_features: u64,
 }
@@ -721,7 +728,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let Some(device_cfg) = read_device_config(init.resources, init.drv_features) else {
         return 0;
     };
-    if DEVICES.lock().iter().any(|d| same_bdf(d, init.bus, init.device, init.function)) {
+    if DEVICES.lock().iter().any(|d| same_device(d, init.device_key)) {
         return 0;
     }
     // Contiguous BOUNCE_ORDER region (256 KiB) so the 128 KiB data
@@ -796,13 +803,11 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let idx = block::registry::register_with_serial(&name, serial_opt, state.clone());
     let published = if idx != 0 && !existed {
         let mut devices = DEVICES.lock();
-        if devices.iter().any(|d| same_bdf(d, init.bus, init.device, init.function)) {
+        if devices.iter().any(|d| same_device(d, init.device_key)) {
             false
         } else {
             devices.push(BlkRecord {
-                bus: init.bus,
-                device: init.device,
-                function: init.function,
+                device_key: init.device_key,
                 name: name.clone(),
                 state: state.clone(),
             });
@@ -821,11 +826,11 @@ pub fn init_blk(init: BlkInit) -> u32 {
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-blk-modern ");
-        klog::write_dec_u64(init.bus as u64);
+        klog::write_dec_u64(key_bus(init.device_key) as u64);
         klog::write_raw(b":");
-        klog::write_dec_u64(init.device as u64);
+        klog::write_dec_u64(key_device(init.device_key) as u64);
         klog::write_raw(b".");
-        klog::write_dec_u64(init.function as u64);
+        klog::write_dec_u64(key_function(init.device_key) as u64);
         klog::write_raw(b" cap_sec=");
         klog::write_dec_u64(device_cfg.capacity);
         klog::write_raw(b" blk_size=");
@@ -837,14 +842,14 @@ pub fn init_blk(init: BlkInit) -> u32 {
     idx
 }
 
-/// Remove the virtio-blk device identified by its PCI BDF. Stops future I/O,
+/// Remove the virtio-blk device identified by its parent device key. Stops future I/O,
 /// unregisters the block disk, and drops this driver's per-device record.
 /// Existing filesystem references keep their Arc alive but see EIO.
 /// # C: O(N_virtio_blk + N_disks + N_devices)
-pub fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
+pub fn remove_blk(device_key: u32) -> bool {
     let rec = {
         let mut devices = DEVICES.lock();
-        match devices.iter().position(|d| same_bdf(d, bus, device, function)) {
+        match devices.iter().position(|d| same_device(d, device_key)) {
             Some(i) => devices.remove(i),
             None => return false,
         }
@@ -853,15 +858,15 @@ pub fn remove_blk(bus: u8, device: u8, function: u8) -> bool {
     block::registry::unregister(&rec.name)
 }
 
-/// Shutdown the virtio-blk device identified by its PCI BDF without
+/// Shutdown the virtio-blk device identified by its parent device key without
 /// unregistering block/devtmpfs/sysfs publication. Used by reboot/poweroff,
 /// not hot-unplug.
 /// # C: O(N_virtio_blk + shutdown)
-pub fn shutdown_blk(bus: u8, device: u8, function: u8) -> bool {
+pub fn shutdown_blk(device_key: u32) -> bool {
     let state = {
         DEVICES.lock()
             .iter()
-            .find(|d| same_bdf(d, bus, device, function))
+            .find(|d| same_device(d, device_key))
             .map(|d| d.state.clone())
     };
     let Some(state) = state else { return false; };
@@ -871,7 +876,8 @@ pub fn shutdown_blk(bus: u8, device: u8, function: u8) -> bool {
 
 #[cfg(test)]
 pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str) -> u32 {
-    if DEVICES.lock().iter().any(|d| same_bdf(d, bus, device, function)) {
+    let device_key = bdf_key(bus, device, function);
+    if DEVICES.lock().iter().any(|d| same_device(d, device_key)) {
         return 0;
     }
     let state = Arc::new(BlkState {
@@ -895,9 +901,7 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
     let idx = block::registry::register_with_serial(name, None, state.clone());
     if idx != 0 {
         DEVICES.lock().push(BlkRecord {
-            bus,
-            device,
-            function,
+            device_key,
             name: String::from(name),
             state,
         });
@@ -907,5 +911,5 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
 
 #[cfg(test)]
 pub(crate) fn test_has_record(bus: u8, device: u8, function: u8) -> bool {
-    DEVICES.lock().iter().any(|d| same_bdf(d, bus, device, function))
+    DEVICES.lock().iter().any(|d| same_device(d, bdf_key(bus, device, function)))
 }
