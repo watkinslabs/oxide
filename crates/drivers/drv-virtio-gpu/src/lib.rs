@@ -730,6 +730,13 @@ pub fn wanted_features() -> u64 {
     default_driver_features()
 }
 
+/// Transport contract for the virtio-gpu child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub fn transport_profile() -> virtio::VirtioTransportProfile {
+    virtio::VirtioTransportProfile::q0(wanted_features(), None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

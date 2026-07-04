@@ -35,6 +35,20 @@ pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport contract for the virtio-input child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    #[cfg(target_os = "oxide-kernel")]
+    let eventq_irq = Some(crate::drain::raise_drain as fn());
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let eventq_irq = None;
+    virtio::VirtioTransportProfile::q0_device_cfg(
+        wanted_features(),
+        eventq_irq,
+    )
+}
+
 // virtio_input_config.select selectors
 pub const VIRTIO_INPUT_CFG_UNSET:     u8 = 0;
 pub const VIRTIO_INPUT_CFG_ID_NAME:   u8 = 1;

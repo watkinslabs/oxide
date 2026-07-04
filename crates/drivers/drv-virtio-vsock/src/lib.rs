@@ -70,6 +70,13 @@ pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport contract for the virtio-vsock child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    virtio::VirtioTransportProfile::vsock(wanted_features(), Some(raise_rx))
+}
+
 /// True once a virtio-vsock device has been brought up + installed.
 /// # C: O(1)
 pub fn present() -> bool { !CTX.lock().is_empty() }

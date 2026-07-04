@@ -31,6 +31,13 @@ pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport contract for the modern virtio-net child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    virtio::VirtioTransportProfile::net(wanted_features(), Some(raise_rx))
+}
+
 /// Persistent runtime state for one modern virtio-net device. Queue resources
 /// reference VAs/PAs already programmed into the device by the transport
 /// probe. `bus`/`device`/`function` mirror the PCI BDF for log lines and

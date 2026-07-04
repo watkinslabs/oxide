@@ -206,6 +206,10 @@ test-pass claims.
   programmed queues, and transport-resolved notify VAs. The PCI transport
   still maps/kicks hardware notify windows, but no longer owns the generic
   queue-resource handoff builder.
+- Virtio child drivers now export their own `VirtioTransportProfile`
+  declarations, including feature masks, queue requirements, and child IRQ
+  callback policy. The pci-boot virtio child bus glue consumes those profiles
+  instead of constructing child policy locally.
 - Shared `virtio::ProgrammedQueues` now exposes indexed queue lookup, and
   virtio-pci resource handoff assembles child-visible queue resources over the
   shared resource queue count instead of expanding q2/q3 resource locals in
@@ -496,7 +500,8 @@ test-pass claims.
   now use shared `virtio::VirtioTransportProfile` and
   `virtio::VirtioQueuePlan`; resource publication for child probes now uses
   shared readiness/resource assembly instead of per-child q0/q1/q2/q3 lists in
-  the PCI glue. Virtio child model-driver
+  the PCI glue, and child-owned transport-profile declarations keep feature,
+  queue, and child IRQ policy in the child driver crates. Virtio child model-driver
   declarations now live in a separate `pci-boot::virtio_child` module instead
   of the virtio-pci transport module, and child probes now use the shared
   `virtio::VirtioChildTransportSession` trait implemented by

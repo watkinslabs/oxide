@@ -140,6 +140,17 @@ pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport contract for the modern virtio-blk child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    #[cfg(target_os = "oxide-kernel")]
+    let completion_irq = Some(wake_completions as fn());
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let completion_irq = None;
+    virtio::VirtioTransportProfile::q0_device_cfg(wanted_features(), completion_irq)
+}
+
 /// Bounce-frame layout. Three disjoint regions inside one contiguous
 /// PMM allocation so the device's separate descriptors never alias and
 /// the data descriptor addresses one physically-contiguous run:
