@@ -15,9 +15,12 @@ const RX_BUF_LEN: u32 = 0x1000;
 
 /// Pre-post every RX descriptor on q0 + bump avail.idx by RX_RING_BUFS,
 /// then kick the device. Called once at install. # C: O(RX_RING_BUFS)
-pub(crate) fn prepost_all() {
+pub(crate) fn prepost_all(device_key: u32) {
     let mut g = CTX.lock();
-    let ctx = match g.as_mut() { Some(c) => c, None => return };
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == device_key) {
+        Some(c) => c,
+        None => return,
+    };
     let h = ctx.hhdm;
     let qsz = ctx.rxq.size;
     let desc = h.wrapping_add(ctx.rxq.desc_pa) as *mut u64;
@@ -63,7 +66,11 @@ pub(crate) fn drain() -> usize {
     let mut refill_slots: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
     {
         let mut g = CTX.lock();
-        let ctx = match g.as_mut() { Some(c) => c, None => return 0 };
+        let owner = net::vsock::driver_owner();
+        let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) {
+            Some(c) => c,
+            None => return 0,
+        };
         let h = ctx.hhdm;
         let qsz = ctx.rxq.size;
         let used = h.wrapping_add(ctx.rxq.device_pa) as *const u16;

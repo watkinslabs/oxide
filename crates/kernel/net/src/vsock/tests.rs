@@ -7,12 +7,32 @@ use super::*;
 
 #[test]
 fn driver_reservation_is_not_live_until_publish() {
-    assert!(driver_reserve());
+    assert!(driver_reserve(7));
     assert!(!driver_up());
     assert_eq!(guest_cid(), 0);
-    assert!(!driver_reserve());
-    driver_cancel_reserved();
+    assert_eq!(driver_owner(), 7);
+    assert!(!driver_reserve(8));
+    assert!(!driver_cancel_reserved(8));
+    assert!(driver_cancel_reserved(7));
     assert!(!driver_up());
+    assert_eq!(driver_owner(), 0);
+}
+
+#[test]
+fn driver_endpoint_uninstall_is_owner_keyed() {
+    fn tx_ok(_frame: &[u8]) -> bool { true }
+
+    assert!(driver_install(11, 3, tx_ok));
+    assert!(driver_up());
+    assert_eq!(guest_cid(), 3);
+    assert_eq!(driver_owner(), 11);
+    assert!(!driver_uninstall(12));
+    assert!(driver_up());
+    assert_eq!(guest_cid(), 3);
+    assert!(driver_uninstall(11));
+    assert!(!driver_up());
+    assert_eq!(guest_cid(), 0);
+    assert_eq!(driver_owner(), 0);
 }
 
 #[test]
