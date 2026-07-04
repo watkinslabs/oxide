@@ -62,6 +62,9 @@ test-pass claims.
 - Model unbind calls `Driver::remove` before clearing the binding.
 - `device_del` unbinds first, emits remove while the object is still visible,
   removes devtmpfs state, and then drops the device from the registry.
+  The driver-core tests now assert that order directly: driver `remove`,
+  sysfs remove callback while still registered, devtmpfs node deletion, then
+  registry disappearance.
 - `drv::shutdown_all` now walks bound model devices in reverse registration
   order and calls `Driver::shutdown` without unbinding or emitting remove
   events. The power/reboot path calls this through a boot-installed hook before
@@ -1126,7 +1129,7 @@ Missing or weak:
 - broader manual bind/unbind proof on real virtio devices
 - broader device `driver` symlink correctness proof across hot rebind
 - broader PCI resource/lifecycle proof beyond model-derived `resource*` attrs
-- remove/change event behavior
+- broader remove/change uevent behavior beyond driver-core ordering proof
 - per-class child relationships
 
 The issue is not that sysfs is synthesized. The issue is that the synthesized model does not yet expose Linux's required state transitions and links.
