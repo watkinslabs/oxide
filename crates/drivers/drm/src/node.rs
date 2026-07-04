@@ -198,11 +198,31 @@ struct DrmVersion {
     desc:        u64,   // user pointer
 }
 
+/// `struct drm_unique` Linux UAPI (16 bytes on 64-bit).
+#[repr(C)]
+struct DrmUnique {
+    unique_len: u64,
+    unique:     u64, // user pointer
+}
+
+/// `struct drm_set_version` Linux UAPI (16 bytes).
+#[repr(C)]
+struct DrmSetVersion {
+    drm_di_major: i32,
+    drm_di_minor: i32,
+    drm_dd_major: i32,
+    drm_dd_minor: i32,
+}
+
+const DRM_IF_MAJOR: i32 = 1;
+const DRM_IF_MINOR: i32 = 4;
+
 // Fallback strings used when no DrmDriver is registered (e.g.
 // QEMU launched without -device virtio-gpu-pci).
 const FALLBACK_NAME: &str = "oxide";
 const FALLBACK_DATE: &str = "20260509";
 const FALLBACK_DESC: &str = "Oxide DRM (no GPU)";
+const FALLBACK_UNIQUE: &str = "platform:oxide-drm";
 
 // High-bits tags keep the DRM char-device inodes distinct from every other
 // device number; low 32 bits carry the stable DRM card id.
@@ -276,6 +296,24 @@ fn ioctl_takes_user_ptr(req: u64) -> bool {
 
 fn valid_user_range(arg: u64, len: u64) -> bool {
     arg != 0 && arg.checked_add(len).is_some_and(|end| end <= hal::USER_VA_END)
+}
+
+fn copy_bytes_to_user(dst: u64, dst_len: u64, src: &[u8]) -> core::result::Result<(), ()> {
+    if dst_len == 0 {
+        return Ok(());
+    }
+    if !valid_user_range(dst, dst_len.min(src.len() as u64)) {
+        return Err(());
+    }
+    let n = core::cmp::min(dst_len, src.len() as u64) as usize;
+    // SAFETY: dst..dst+n is validated as a user range above; caller supplied
+    // bytes are kernel-owned and immutable for the copy.
+    unsafe {
+        for (i, b) in src.iter().copied().take(n).enumerate() {
+            core::ptr::write_volatile((dst + i as u64) as *mut u8, b);
+        }
+    }
+    Ok(())
 }
 
 /// Build a `/dev/dri/cardN` inode (`S_IFCHR|0o666`, card tag, card f_op).
@@ -392,6 +430,18 @@ pub fn registered_card_ids() -> Vec<u32> {
 mod node_publication_tests {
     use super::*;
     use vfs::{Dentry, File, OpenFlags};
+
+    struct TestDrv;
+    impl crate::DrmDriver for TestDrv {
+        fn name(&self) -> &'static str { "test_drm" }
+        fn version(&self) -> (u32, u32, u32) { (1, 2, 3) }
+        fn date(&self) -> &'static str { "20260704" }
+        fn desc(&self) -> &'static str { "test drm driver" }
+        fn unique(&self) -> &str { "pci:0000:01:02.3" }
+        fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 0, 0, 0) }
+        fn dim_bounds(&self) -> (u32, u32, u32, u32) { (0, 0, 0, 0) }
+        fn cap(&self, cap: u64) -> u64 { crate::default_cap(cap) }
+    }
 
     fn open_file(inode: vfs::InodeRef) -> Arc<File> {
         let dentry = Dentry::new_anon(Arc::clone(&inode));
@@ -596,6 +646,56 @@ mod node_publication_tests {
         assert!(AUTHORIZED_MAGICS.lock().iter().any(|(card, m)| *card == 0 && *m == magic));
         unregister_all();
     }
+
+    #[test]
+    fn drm_get_unique_copies_driver_bus_id_and_reports_full_length() {
+        unregister_all();
+        let card_id = crate::register(Arc::new(TestDrv));
+        let card = open_file(make_card_inode(card_id));
+        let expected = b"pci:0000:01:02.3";
+        let mut buffer = [0u8; 32];
+        let mut unique = DrmUnique {
+            unique_len: 8,
+            unique: buffer.as_mut_ptr() as u64,
+        };
+
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_GET_UNIQUE, (&mut unique as *mut DrmUnique) as u64),
+            Some(0)
+        );
+
+        assert_eq!(unique.unique_len, expected.len() as u64);
+        assert_eq!(&buffer[..8], &expected[..8]);
+        assert_eq!(buffer[8], 0);
+        assert!(crate::unregister(card_id));
+    }
+
+    #[test]
+    fn drm_set_version_negotiates_supported_core_interface() {
+        use syscall::errno::Errno;
+
+        let card = open_file(make_card_inode(0));
+        let mut version = DrmSetVersion {
+            drm_di_major: DRM_IF_MAJOR,
+            drm_di_minor: DRM_IF_MINOR,
+            drm_dd_major: 9,
+            drm_dd_minor: 9,
+        };
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64),
+            Some(0)
+        );
+        assert_eq!(version.drm_di_major, DRM_IF_MAJOR);
+        assert_eq!(version.drm_di_minor, DRM_IF_MINOR);
+        assert_eq!(version.drm_dd_major, 0);
+        assert_eq!(version.drm_dd_minor, 0);
+
+        version.drm_di_minor = DRM_IF_MINOR + 1;
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64),
+            Some(-(Errno::Einval.as_i32() as i64))
+        );
+    }
 }
 
 /// mmap backing for a DRM card inode (offset-keyed). Legacy raw lookup used
@@ -680,8 +780,43 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             unsafe { core::ptr::write_volatile((arg + 8) as *mut u64, val); }
             Some(0)
         }
-        DRM_IOCTL_GET_UNIQUE => Some(0),
-        DRM_IOCTL_SET_VERSION => Some(0),
+        DRM_IOCTL_GET_UNIQUE => {
+            if !valid_user_range(arg, core::mem::size_of::<DrmUnique>() as u64) {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            let unique = match driver.as_ref() {
+                Some(d) => d.unique(),
+                None    => FALLBACK_UNIQUE,
+            };
+            // SAFETY: the full drm_unique user struct was validated above.
+            let mut u: DrmUnique = unsafe { core::ptr::read_volatile(arg as *const DrmUnique) };
+            if u.unique != 0 && u.unique_len > 0 {
+                if copy_bytes_to_user(u.unique, u.unique_len, unique.as_bytes()).is_err() {
+                    return Some(-(Errno::Efault.as_i32() as i64));
+                }
+            }
+            u.unique_len = unique.len() as u64;
+            // SAFETY: the full drm_unique user struct was validated above.
+            unsafe { core::ptr::write_volatile(arg as *mut DrmUnique, u); }
+            Some(0)
+        }
+        DRM_IOCTL_SET_VERSION => {
+            if !valid_user_range(arg, core::mem::size_of::<DrmSetVersion>() as u64) {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            // SAFETY: the full drm_set_version user struct was validated above.
+            let mut v: DrmSetVersion = unsafe { core::ptr::read_volatile(arg as *const DrmSetVersion) };
+            if v.drm_di_major != DRM_IF_MAJOR || v.drm_di_minor > DRM_IF_MINOR {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
+            v.drm_di_major = DRM_IF_MAJOR;
+            v.drm_di_minor = DRM_IF_MINOR;
+            v.drm_dd_major = 0;
+            v.drm_dd_minor = 0;
+            // SAFETY: the full drm_set_version user struct was validated above.
+            unsafe { core::ptr::write_volatile(arg as *mut DrmSetVersion, v); }
+            Some(0)
+        }
         DRM_IOCTL_MODE_GETRESOURCES => {
             // Real 2-pass enumeration when a card is registered;
             // empty counts (no objects) when none. drm_mode_card_res

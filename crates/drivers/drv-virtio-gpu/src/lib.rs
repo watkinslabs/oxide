@@ -8,7 +8,7 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -518,6 +518,7 @@ pub struct VirtioGpuDrm {
     pub display:             DisplayInfo,
     pub features_negotiated: u64,
     pub bdf:                 u32,
+    pub unique:              String,
 }
 
 impl drm::DrmDriver for VirtioGpuDrm {
@@ -525,7 +526,7 @@ impl drm::DrmDriver for VirtioGpuDrm {
     fn version(&self) -> (u32, u32, u32) { (0, 1, 0) }
     fn date(&self) -> &'static str { "20260509" }
     fn desc(&self) -> &'static str { "virtio GPU" }
-    fn unique(&self) -> &str { "pci:virtio-gpu" }
+    fn unique(&self) -> &str { self.unique.as_str() }
     /// (count_fbs, count_crtcs, count_connectors, count_encoders).
     /// V1 maps each enabled scanout to a (CRTC, connector, encoder)
     /// triple; framebuffers are allocated dynamically via
@@ -619,6 +620,13 @@ impl VirtioGpuDrm {
     }
 }
 
+fn drm_unique_from_bdf(bdf: u32) -> String {
+    let bus = (bdf >> 16) & 0xff;
+    let device = (bdf >> 8) & 0xff;
+    let function = bdf & 0xff;
+    format!("pci:0000:{bus:02x}:{device:02x}.{function:x}")
+}
+
 /// Install + register with the DRM core (`47`).
 /// # C: O(1)
 pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
@@ -633,6 +641,7 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
         display,
         features_negotiated,
         bdf,
+        unique: drm_unique_from_bdf(bdf),
     });
     let card_id = drm::register(drm_dev);
     if card_id == u32::MAX {
@@ -1062,6 +1071,7 @@ mod tests {
         let d = VirtioGpuDrm {
             display: DisplayInfo { modes, count_enabled: 2 },
             features_negotiated: 0, bdf: 0,
+            unique: drm_unique_from_bdf(0),
         };
         // Two of each object, ids per the 1:1:1 model.
         assert_eq!(d.crtc_ids(), alloc::vec![1, 2]);
@@ -1103,6 +1113,12 @@ mod tests {
         assert_eq!(drm_fourcc_to_virtio(drm::DRM_FORMAT_XRGB8888), Some(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM));
         assert_eq!(drm_fourcc_to_virtio(drm::DRM_FORMAT_ARGB8888), Some(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM));
         assert_eq!(drm_fourcc_to_virtio(0xdead_beef), None);
+    }
+
+    #[test]
+    fn drm_unique_uses_pci_bdf_bus_id() {
+        assert_eq!(drm_unique_from_bdf(0x0010_0000), "pci:0000:10:00.0");
+        assert_eq!(drm_unique_from_bdf(0x0001_0203), "pci:0000:01:02.3");
     }
 
     #[test]
