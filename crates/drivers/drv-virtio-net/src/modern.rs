@@ -540,6 +540,7 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
                 // F180: IPv6. Hand the L3 payload to the stack's
                 // IPv6 path; minimum-viable demux handles ICMPv6
                 // echo + graceful drop for unbound L4 destinations.
+                learn_ndp_from_ipv6(device_key, &f[14..]);
                 let _ = stack.deliver_rx_ipv6(iface, &f[14..]);
             }
             _ => {}
@@ -575,6 +576,7 @@ struct NetRuntime {
     device_key: u32,
     name: alloc::string::String,
     arp: net::arp::ArpCache,
+    ndp: net::ndp::NdpCache,
     rx_packets: AtomicU64,
     rx_bytes:   AtomicU64,
     rx_dropped: AtomicU64,
@@ -623,6 +625,7 @@ fn ensure_net_runtime(device_key: u32) -> alloc::sync::Arc<NetRuntime> {
         device_key,
         name: allocate_net_name(&runtimes),
         arp: net::arp::ArpCache::new(),
+        ndp: net::ndp::NdpCache::new(),
         rx_packets: AtomicU64::new(0),
         rx_bytes:   AtomicU64::new(0),
         rx_dropped: AtomicU64::new(0),
@@ -980,27 +983,36 @@ fn resolve_ipv6_next_hop_mac(
     src_mac: [u8; 6],
     body: &[u8],
 ) -> Option<net::MacAddr> {
+    let hdr = match net::ipv6::Ipv6Hdr::parse(body) {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+
+    #[cfg(target_os = "oxide-kernel")]
+    let (next_hop, src_ip) = {
+        let stack = net::sock::stack();
+        let route = stack.routes6.lookup(hdr.dst);
+        match route {
+            Some(r) => (r.gateway.unwrap_or(hdr.dst), r.src_hint),
+            None => (hdr.dst, Some(hdr.src)),
+        }
+    };
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let (next_hop, src_ip) = (hdr.dst, Some(hdr.src));
+
+    if let Some(m) = net_runtime_for(device_key).and_then(|runtime| runtime.ndp.lookup(next_hop)) {
+        return Some(m);
+    }
+
     #[cfg(not(target_os = "oxide-kernel"))]
     {
-        let _ = (device_key, src_mac, body);
+        let _ = src_mac;
+        let _ = src_ip;
         return None;
     }
 
     #[cfg(target_os = "oxide-kernel")]
     {
-        let hdr = match net::ipv6::Ipv6Hdr::parse(body) {
-            Ok(h) => h,
-            Err(_) => return None,
-        };
-        let stack = net::sock::stack();
-        let route = stack.routes6.lookup(hdr.dst);
-        let (next_hop, src_ip) = match route {
-            Some(r) => (r.gateway.unwrap_or(hdr.dst), r.src_hint),
-            None => (hdr.dst, Some(hdr.src)),
-        };
-        if let Some(m) = stack.ndp.lookup(next_hop) {
-            return Some(m);
-        }
         let src_ip = src_ip?;
         if src_ip == net::Ipv6Addr::ANY { return None; }
         let ns_dst = solicited_node_multicast(next_hop);
@@ -1016,6 +1028,50 @@ fn resolve_ipv6_next_hop_mac(
         frame[14 + net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ns);
         let _ = tx_frame_for(device_key, &frame);
         None
+    }
+}
+
+fn learn_ndp_from_ipv6(device_key: u32, l3: &[u8]) {
+    let Ok(hdr) = net::ipv6::Ipv6Hdr::parse(l3) else {
+        return;
+    };
+    if hdr.next_header != net::icmpv6::IPPROTO_ICMPV6 {
+        return;
+    }
+    let payload_end = net::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
+    if payload_end > l3.len() {
+        return;
+    }
+    let payload = &l3[net::ipv6::IPV6_HDR_LEN..payload_end];
+    if payload.is_empty() {
+        return;
+    }
+    let Some(runtime) = net_runtime_for(device_key) else {
+        return;
+    };
+    match payload[0] {
+        t if t == net::ndp::NDP_NS => {
+            if let Ok(msg) = net::ndp::NdpMsg::parse(payload, hdr.src, hdr.dst) {
+                if let Some(mac) = msg.lladdr {
+                    runtime.ndp.insert(hdr.src, mac);
+                }
+            }
+        }
+        t if t == net::ndp::NDP_NA => {
+            if let Ok(msg) = net::ndp::NdpMsg::parse(payload, hdr.src, hdr.dst) {
+                if let Some(mac) = msg.lladdr {
+                    runtime.ndp.insert(msg.target, mac);
+                }
+            }
+        }
+        t if t == net::ndp::NDP_RA => {
+            if let Ok(ra) = net::ndp::RouterAdvertisement::parse(payload, hdr.src, hdr.dst) {
+                if let Some(mac) = ra.source_lladdr {
+                    runtime.ndp.insert(hdr.src, mac);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1258,6 +1314,72 @@ mod ndp_tests {
             resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
             Some(mac2)
         );
+        clear_test_state();
+    }
+
+    #[test]
+    fn ndp_cache_is_keyed_by_device() {
+        clear_test_state();
+        let rt1 = ensure_net_runtime(1);
+        let rt2 = ensure_net_runtime(2);
+        let src = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
+        let dst = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 2]);
+        let mac1 = net::MacAddr([1, 1, 1, 1, 1, 1]);
+        let mac2 = net::MacAddr([2, 2, 2, 2, 2, 2]);
+        rt1.ndp.insert(dst, mac1);
+        rt2.ndp.insert(dst, mac2);
+
+        let mut body = [0u8; net::ipv6::IPV6_HDR_LEN];
+        net::ipv6::Ipv6Hdr::build(src, dst, net::IpProto::Udp, 0).write_to(&mut body);
+        assert_eq!(
+            resolve_next_hop_mac(1, [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV6, &body),
+            Some(mac1)
+        );
+        assert_eq!(
+            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
+            Some(mac2)
+        );
+        let _ = remove_net_runtime(1);
+        assert_eq!(
+            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
+            Some(mac2)
+        );
+        clear_test_state();
+    }
+
+    #[test]
+    fn rx_ndp_learning_is_keyed_by_device() {
+        clear_test_state();
+        let rt1 = ensure_net_runtime(1);
+        let rt2 = ensure_net_runtime(2);
+        let router = net::Ipv6Addr::from_segments([0xfe80, 0, 0, 0, 0, 0, 0, 1]);
+        let all_nodes = net::ndp::IPV6_ALL_NODES;
+        let prefix = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0xabcd, 0, 0, 0, 0, 0]);
+        let mac1 = net::MacAddr([0x02, 0, 0, 0, 0, 1]);
+        let mac2 = net::MacAddr([0x02, 0, 0, 0, 0, 2]);
+        let ra1 = net::ndp::RouterAdvertisement::build_one_prefix(
+            router, all_nodes, mac1, 1800, prefix, 64, net::ndp::NDP_PIO_FLAG_AUTO,
+        );
+        let ra2 = net::ndp::RouterAdvertisement::build_one_prefix(
+            router, all_nodes, mac2, 1800, prefix, 64, net::ndp::NDP_PIO_FLAG_AUTO,
+        );
+        let mut frame1 = alloc::vec![0u8; net::ipv6::IPV6_HDR_LEN + ra1.len()];
+        net::ipv6::Ipv6Hdr::build(
+            router, all_nodes, net::IpProto::Icmpv6, ra1.len() as u16,
+        )
+        .write_to(&mut frame1[..net::ipv6::IPV6_HDR_LEN]);
+        frame1[net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ra1);
+        let mut frame2 = alloc::vec![0u8; net::ipv6::IPV6_HDR_LEN + ra2.len()];
+        net::ipv6::Ipv6Hdr::build(
+            router, all_nodes, net::IpProto::Icmpv6, ra2.len() as u16,
+        )
+        .write_to(&mut frame2[..net::ipv6::IPV6_HDR_LEN]);
+        frame2[net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ra2);
+
+        learn_ndp_from_ipv6(1, &frame1);
+        learn_ndp_from_ipv6(2, &frame2);
+        assert_eq!(rt1.ndp.lookup(router), Some(mac1));
+        assert_eq!(rt2.ndp.lookup(router), Some(mac2));
         clear_test_state();
     }
 
