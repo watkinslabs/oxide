@@ -33,8 +33,8 @@ static VIRTIO_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32
 /// Next virtio bus index. # C: O(1)
 fn virtio_seq() -> u32 { VIRTIO_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed) }
 
-/// Register PCI model drivers known at boot. Matching and probe are still
-/// driven by `drv::auto_bind` on each enumerated PCI device.
+/// Register PCI model drivers known at boot. Matching and probe are driven by
+/// driver-core attachment from `register_driver` and `device_add`.
 /// # C: O(N_drivers)
 fn register_pci_model_drivers() {
     drv::register_driver(&drv_nvme::NVME_DRIVER);

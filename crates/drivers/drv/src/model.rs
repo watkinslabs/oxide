@@ -367,27 +367,6 @@ pub fn bind(dev: &Arc<Device>, driver_name: &'static str) -> KResult<()> {
     Ok(())
 }
 
-/// Try every registered driver that matches `dev`, binding the first one
-/// whose `probe` succeeds. If no driver matches, returns `NoMatch`; if one or
-/// more match but all probes fail, returns the last probe error and leaves the
-/// device unbound. # C: O(N_drivers × probe)
-pub fn auto_bind(dev: &Arc<Device>) -> KResult<()> {
-    if dev.bound().is_some() { return Err(crate::Error::AlreadyBound); }
-    let drivers: Vec<&'static dyn Driver> = MODEL_DRIVERS.lock().clone();
-    let mut matched = false;
-    let mut last_err = crate::Error::NoMatch;
-    for driver in drivers {
-        if !driver_matches_device(driver, dev) { continue; }
-        matched = true;
-        match bind(dev, driver.name()) {
-            Ok(()) => return Ok(()),
-            Err(crate::Error::AlreadyBound) => return Err(crate::Error::AlreadyBound),
-            Err(e) => last_err = e,
-        }
-    }
-    if matched { Err(last_err) } else { Err(crate::Error::NoMatch) }
-}
-
 /// Unbind a device from its current driver. Calls `Driver::remove`, clears
 /// model state, then emits the same change hook used for bind so sysfs/udev
 /// observes a driver-link transition. # C: O(N_drivers + remove)
@@ -478,18 +457,6 @@ mod tests {
         }
     }
     static FAILING_PROBE_DRV: FailingProbeDrv = FailingProbeDrv;
-
-    static AUTO_FAIL_PROBES: AtomicU32 = AtomicU32::new(0);
-    struct AutoFailingProbeDrv;
-    impl Driver for AutoFailingProbeDrv {
-        fn name(&self) -> &'static str { "auto-failing-probe" }
-        fn matches(&self, dev: &Device) -> bool { dev.device_id == 0xf00e }
-        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
-            AUTO_FAIL_PROBES.fetch_add(1, Ordering::Release);
-            Err(crate::Error::ProbeFailed)
-        }
-    }
-    static AUTO_FAILING_PROBE_DRV: AutoFailingProbeDrv = AutoFailingProbeDrv;
 
     static LOOP_PROBES: AtomicU32 = AtomicU32::new(0);
     static LOOP_REMOVES: AtomicU32 = AtomicU32::new(0);
@@ -607,15 +574,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_bind_uses_matching_registered_driver() {
-        register_driver(&FAKE);
-        let d = device_add(Arc::new(Device::new(
-            "pci", alloc::string::String::from("0000:00:0d.0"), 0x1AF4, 0x1042, 0)));
-        assert_eq!(d.bound(), Some("fake-virtio-blk"));
-        assert_eq!(auto_bind(&d), Err(crate::Error::AlreadyBound));
-    }
-
-    #[test]
     fn driver_registration_binds_existing_matching_devices() {
         LATE_PROBES.store(0, Ordering::Release);
         LATE_REMOVES.store(0, Ordering::Release);
@@ -667,20 +625,6 @@ mod tests {
         assert_eq!(bind(&d, "failing-probe"), Err(crate::Error::ProbeFailed));
         assert!(d.bound().is_none());
         assert_eq!(FAIL_PROBES.load(Ordering::Acquire), 3);
-    }
-
-    #[test]
-    fn auto_bind_failed_probe_leaves_device_unbound() {
-        AUTO_FAIL_PROBES.store(0, Ordering::Release);
-        register_driver(&AUTO_FAILING_PROBE_DRV);
-        let d = device_add(Arc::new(Device::new(
-            "pci", String::from("0000:00:14.0"), 0x1234, 0xf00e, 0)));
-
-        assert!(d.bound().is_none());
-        assert_eq!(AUTO_FAIL_PROBES.load(Ordering::Acquire), 1);
-        assert_eq!(auto_bind(&d), Err(crate::Error::ProbeFailed));
-        assert!(d.bound().is_none());
-        assert_eq!(AUTO_FAIL_PROBES.load(Ordering::Acquire), 2);
     }
 
     #[test]

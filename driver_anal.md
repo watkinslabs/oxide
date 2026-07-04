@@ -29,8 +29,11 @@ test-pass claims.
 - The old flat `DriverEntry` / `probe_all(bdf)` implementation path is gone
   from the live driver path.
 - `drv::Device`, `drv::Driver`, `device_add`, `device_del`, `bind`,
-  `auto_bind`, and `unbind` are the authoritative model path in
+  `bind_addr`, and `unbind` are the authoritative model path in
   `crates/drivers/drv/src/model.rs`.
+- The public `drv::auto_bind` escape hatch has been removed; automatic
+  attachment is internal to `device_add` and `register_driver`, while explicit
+  binds go through the sysfs driver `bind` control path.
 - PCI enumeration creates `pci` model devices with BAR resources through
   `device_add`; NVMe, AHCI, and virtio-pci are registered as model drivers and
   attach through the driver core rather than an enumeration-local bind call.
@@ -589,7 +592,7 @@ It has useful pieces:
 - virtio-pci transport bring-up
 - block, net, DRM, input, sound, RNG, NVMe, AHCI, UART, and PS/2 driver code
 
-But the actual architecture is split between two worlds:
+At the earlier baseline, the architecture was split between two worlds:
 
 1. An older flat `DriverEntry` / `probe_all(bdf)` path in `crates/drivers/drv/src/lib.rs`.
 2. A newer `Device` / `Driver` / `device_add` model in `crates/drivers/drv/src/model.rs`.
@@ -602,19 +605,21 @@ That must be corrected. The driver model should own matching, probing, binding, 
 
 ### Driver core
 
-`crates/drivers/drv/src/lib.rs` still exposes the legacy probe system:
+At the earlier baseline, `crates/drivers/drv/src/lib.rs` exposed the legacy
+probe system:
 
 - `DriverEntry`
 - `register(DriverEntry)`
 - `probe_all(bdf)`
 
-This path is mostly obsolete. It is a flat list of probe functions and has no real device object, no binding state, no sysfs lifecycle, no remove, no devtmpfs connection, and no useful bus semantics.
+That path has since been removed from the live branch. It was a flat list of
+probe functions and had no real device object, no binding state, no sysfs
+lifecycle, no remove, no devtmpfs connection, and no useful bus semantics.
 
-`crates/drivers/drv/src/model.rs` is the newer model:
+`crates/drivers/drv/src/model.rs` is the current model:
 
 - `Device`
 - `Driver`
-- `register_device`
 - `register_driver`
 - `bind`
 - `bind_addr`
@@ -718,9 +723,11 @@ Correct:
 - Probe allocates resources and publishes child devices only after success.
 - Driver core records binding only after probe returns success.
 
-### 2. There are two competing driver APIs
+### 2. There were two competing driver APIs
 
-The legacy `DriverEntry/probe_all` path and the newer `Device/Driver` path overlap.
+The legacy `DriverEntry/probe_all` path and the newer `Device/Driver` path
+overlapped at the baseline. The flat API is now gone from live code on this
+branch.
 
 This creates ambiguity:
 
@@ -730,7 +737,8 @@ This creates ambiguity:
 - Which API owns remove?
 - Which API owns sysfs?
 
-The old flat API should be deprecated and removed once all live drivers use the real model.
+The old flat API has been removed. Remaining correctness work is in making all
+live driver side effects obey the real model.
 
 ### 3. `probe()` is mostly a no-op
 
@@ -943,14 +951,14 @@ Declare the `Device` / `Driver` model authoritative.
 
 Actions:
 
-- mark `DriverEntry` / `probe_all` legacy
-- stop adding new users of `DriverEntry`
-- add a real `driver_core::bind_device` path that calls `probe`
-- make `bind` return `Result`
-- check already-bound state
-- check driver exists
-- check driver matches unless using explicit override
-- bind only after successful probe
+- remove `DriverEntry` / `probe_all` from the live path: done
+- keep new probing on `Device` / `Driver` only: done for the live API
+- add a real bind path that calls `probe`: done
+- make `bind` return `Result`: done
+- check already-bound state: done
+- check driver exists: done
+- check driver matches unless using explicit override: done
+- bind only after successful probe: done
 - add model-level `unbind`
 
 Acceptance:
