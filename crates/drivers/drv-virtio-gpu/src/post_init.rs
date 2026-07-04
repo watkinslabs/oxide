@@ -440,6 +440,7 @@ struct ScanoutCtx {
     cmd_buf_pa: u64,
     hhdm: u64,
     fbdev_idx: Option<u32>,
+    quiesced: bool,
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -462,6 +463,9 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
     let g = CTX.lock();
     let owner = match console_owner_bdf() { Some(bdf) => bdf, None => return };
     let ctx = match g.iter().find(|ctx| ctx.bdf == owner) { Some(c) => c, None => return };
+    if ctx.quiesced {
+        return;
+    }
     let n = (ctx.fb_bytes as usize).min(pixels.len());
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded copy of n ≤ fb_bytes; CPL=0 writes through HHDM mapping.
     unsafe {
@@ -493,6 +497,9 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
 pub fn blank_scanout_for_bdf(bdf: u32) {
     let g = CTX.lock();
     let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return };
+    if ctx.quiesced {
+        return;
+    }
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded zero of the whole backing; CPL=0 writes through the HHDM mapping.
     hal::zerotrap::trap((ctx.fb_va as *mut u8) as *const u8, (ctx.fb_bytes as usize) as usize);
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
@@ -531,7 +538,7 @@ fn install_scanout_ctx(
     }
     ctxs.push(ScanoutCtx {
         bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
-        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None,
+        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
     });
     true
 }
@@ -587,25 +594,24 @@ pub fn uninstall_scanout(bdf: u32) -> bool {
 /// Stop scanout queue activity for terminal system shutdown.
 ///
 /// Unlike `uninstall_scanout`, this intentionally does not unregister fbdev,
-/// clear DRM publication, or free the framebuffer backing. Those objects can
-/// still be visible to late shutdown callers, and the system is powering off.
+/// clear DRM publication, remove scanout ownership metadata, or free the
+/// framebuffer backing. Those objects can still be visible to late shutdown
+/// callers, and a later remove path still needs the BDF-owned publication and
+/// allocation record.
 /// # C: O(1)
 pub fn shutdown_scanout(bdf: u32) -> bool {
-    let ctx = {
+    let cfg_va = {
         let mut guard = CTX.lock();
-        match guard.iter().position(|ctx| ctx.bdf == bdf) {
-            Some(idx) => Some(guard.remove(idx)),
-            None => None,
-        }
+        let Some(ctx) = guard.iter_mut().find(|ctx| ctx.bdf == bdf) else {
+            return false;
+        };
+        ctx.quiesced = true;
+        ctx.cfg_va
     };
-    let ctx = match ctx {
-        Some(ctx) => ctx,
-        None => return false,
-    };
-    if ctx.cfg_va != 0 {
+    if cfg_va != 0 {
         // SAFETY: cfg_va is the mapped common-cfg window captured at probe;
         // device_status is a u8 at +0x14.
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
+        unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
     }
     true
 }
@@ -798,6 +804,9 @@ pub fn boot_scanout_res_id_for_bdf(_bdf: u32) -> u32 { BOOT_SCANOUT_RES_ID }
 fn submit_ctrl_for_bdf<F: Fn(&mut [u8]) -> usize>(bdf: u32, encode: F) -> bool {
     let g = CTX.lock();
     let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return false };
+    if ctx.quiesced {
+        return false;
+    }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     // SAFETY: cmd_buf is the HHDM-mapped 4 KiB scratch frame setup_scanout installed; q0 descriptor/avail/used/notify VAs are the exact ones the boot path validated; we hold the CTX lock so we are the sole writer for this submit; the encode closure writes < 0x100 bytes into the per-call request slice.
     let ok = unsafe {
@@ -890,6 +899,9 @@ pub fn unregister_drm_hooks(card_id: u32) {
 pub fn flush_scanout_for_bdf(bdf: u32) {
     let g = CTX.lock();
     let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return };
+    if ctx.quiesced {
+        return;
+    }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
     // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.
