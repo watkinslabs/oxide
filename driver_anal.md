@@ -483,8 +483,12 @@ test-pass claims.
   are keyed by DRM card id and routed to the owning virtio-gpu BDF. DRM dumb
   buffers and FB metadata are now card-owned too: CREATE/MAP/DESTROY/ADDFB/RMFB,
   mmap cookie lookup, and SETCRTC/PAGE_FLIP FB resolution all require the
-  matching card id, and DRM unregister drops that card's CRTC and dumb-buffer
-  table state. DRM master state now follows the open file description instead
+  matching card id. Runtime virtio-gpu scanout resources are now bound to the
+  DRM FB object that first uses them, reused by later SETCRTC/PAGE_FLIP calls,
+  detached from the live CRTC before active RMFB teardown, and released through
+  the driver hook with RESOURCE_DETACH_BACKING + RESOURCE_UNREF on RMFB or DRM
+  unregister. DRM unregister drops that card's CRTC and dumb-buffer table
+  state. DRM master state now follows the open file description instead
   of the inode: SET_MASTER arbitrates one master per card, DROP_MASTER only
   releases the owning file, last-close releases master ownership, SETCRTC,
   PAGE_FLIP, and atomic commits require the active master, and SET_CLIENT_CAP
@@ -1013,10 +1017,11 @@ Several drivers still use singleton global state:
 
 - virtio-gpu: per-BDF installed device and scanout records; per-card DRM
   nodes, ioctl backend routing, runtime scanout hooks, scanout owner tokens,
-  flip-event queues, dumb-buffer/FB object lookup, display-info/feature
-  lookup, and per-fb owner-keyed fbdev flush/blank dispatch; dumb-buffer mmap
-  lifetime is pinned through shared VMA backing and PMM object refs; fbcon has
-  one explicit foreground console owner
+  flip-event queues, dumb-buffer/FB object lookup, FB-owned runtime scanout
+  resources with virtio detach/unref teardown, display-info/feature lookup,
+  and per-fb owner-keyed fbdev flush/blank dispatch; dumb-buffer mmap lifetime
+  is pinned through shared VMA backing and PMM object refs; fbcon has one
+  explicit foreground console owner
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; exported
   TX/RX helper entry points require an owning device key; IPv6 NDP is
   stack-owned and keyed by interface in kernel builds; shared RX softirq/timer

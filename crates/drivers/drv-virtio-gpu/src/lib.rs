@@ -344,6 +344,24 @@ pub fn encode_resource_attach_backing_one(buf: &mut [u8], res_id: u32, pa: u64, 
     48
 }
 
+/// Encode `CMD_RESOURCE_DETACH_BACKING`. Writes 32 bytes.
+/// # C: O(1)
+pub fn encode_resource_detach_backing(buf: &mut [u8], res_id: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING, 0, 0);
+    write_u32_le(buf, 24, res_id);
+    write_u32_le(buf, 28, 0);
+    32
+}
+
+/// Encode `CMD_RESOURCE_UNREF`. Writes 32 bytes.
+/// # C: O(1)
+pub fn encode_resource_unref(buf: &mut [u8], res_id: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_UNREF, 0, 0);
+    write_u32_le(buf, 24, res_id);
+    write_u32_le(buf, 28, 0);
+    32
+}
+
 /// Encode `CMD_SET_SCANOUT(scanout, res_id, x, y, w, h)`.
 /// Writes 48 bytes.
 /// # C: O(1)
@@ -854,6 +872,23 @@ mod tests {
         assert_eq!(read_u32_le(&buf, 28), VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM);
         assert_eq!(read_u32_le(&buf, 32), 800);
         assert_eq!(read_u32_le(&buf, 36), 600);
+    }
+
+    #[test]
+    fn encode_resource_lifetime_layouts() {
+        let mut detach = [0u8; 64];
+        let n = encode_resource_detach_backing(&mut detach, 9);
+        assert_eq!(n, 32);
+        assert_eq!(read_u32_le(&detach, 0), VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING);
+        assert_eq!(read_u32_le(&detach, 24), 9);
+        assert_eq!(read_u32_le(&detach, 28), 0);
+
+        let mut unref = [0u8; 64];
+        let n = encode_resource_unref(&mut unref, 9);
+        assert_eq!(n, 32);
+        assert_eq!(read_u32_le(&unref, 0), VIRTIO_GPU_CMD_RESOURCE_UNREF);
+        assert_eq!(read_u32_le(&unref, 24), 9);
+        assert_eq!(read_u32_le(&unref, 28), 0);
     }
 
     #[test]
