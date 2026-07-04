@@ -40,7 +40,7 @@ pub const RX_RING_BUFS: usize = 8;
 /// boot probe programmed. RX buffers are pre-posted at install; TX uses
 /// a single bounce frame serialised by the driver Spinlock.
 pub struct Ctx {
-    pub device_key: u32,
+    pub device_key: virtio::VirtioChildDeviceKey,
     pub cfg_va:    u64,
     pub hhdm:      u64,
     pub guest_cid: u64,
@@ -90,12 +90,12 @@ pub fn present() -> bool { !CTX.lock().is_empty() }
 
 /// True iff the named virtio-vsock device owns the installed transport.
 /// # C: O(1)
-pub fn present_for(device_key: u32) -> bool {
+pub fn present_for(device_key: virtio::VirtioChildDeviceKey) -> bool {
     CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
 }
 
 struct VsockProbeState {
-    device_key: u32,
+    device_key: virtio::VirtioChildDeviceKey,
     rx_bufs: [u64; RX_RING_BUFS],
     tx_buf_pa: u64,
     reserved_endpoint: bool,
@@ -103,8 +103,8 @@ struct VsockProbeState {
 }
 
 impl VsockProbeState {
-    fn reserve_and_alloc(device_key: u32) -> Option<Self> {
-        if !net::vsock::driver_reserve(device_key) {
+    fn reserve_and_alloc(device_key: virtio::VirtioChildDeviceKey) -> Option<Self> {
+        if !net::vsock::driver_reserve(device_key.raw()) {
             return None;
         }
         let mut state = Self {
@@ -142,7 +142,7 @@ impl Drop for VsockProbeState {
             }
         }
         if self.reserved_endpoint {
-            let _ = net::vsock::driver_cancel_reserved(self.device_key);
+            let _ = net::vsock::driver_cancel_reserved(self.device_key.raw());
         }
     }
 }
@@ -164,7 +164,7 @@ fn read_guest_cid(resources: virtio::VirtioResources) -> Option<u64> {
 /// then publishes the guest CID + TX hook into `net::vsock`. Returns false if
 /// HHDM/ring PAs/config are missing, the upper endpoint is busy, or no frames
 /// are available. # C: O(RX_RING_BUFS)
-pub fn install(device_key: u32, resources: virtio::VirtioResources) -> bool {
+pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::VirtioResources) -> bool {
     let Some(rxq) = resources.require_queue(0) else {
         return false;
     };
@@ -177,7 +177,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources) -> bool {
     let Some(guest_cid) = read_guest_cid(resources) else {
         return false;
     };
-    if device_key == 0 || CTX.lock().iter().any(|ctx| ctx.device_key == device_key) {
+    if device_key.raw() == 0 || CTX.lock().iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
     let mut probe = match VsockProbeState::reserve_and_alloc(device_key) {
@@ -219,7 +219,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources) -> bool {
     rx::prepost_all(device_key);
 
     // Publish guest CID + TX hook so net::vsock can drive the protocol.
-    if !net::vsock::driver_publish_reserved(device_key, guest_cid, tx_packet) {
+    if !net::vsock::driver_publish_reserved(device_key.raw(), guest_cid, tx_packet) {
         let _ = uninstall(device_key);
         return false;
     }
@@ -244,14 +244,14 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 /// Remove the installed vsock transport. Clears net hooks/connections, resets
 /// the virtio device, and frees RX/TX payload frames.
 /// # C: O(N conns + RX_BUFS)
-pub fn uninstall(device_key: u32) -> bool {
+pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
         return false;
     };
     if empty_after {
         clear_rx_softirq_handler();
     }
-    let _ = net::vsock::driver_uninstall(device_key);
+    let _ = net::vsock::driver_uninstall(device_key.raw());
     // Virtio reset: write 0 to device_status (§3.1.1), using byte access.
     unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
     free_rx_bufs(&mut ctx.rx_bufs);
@@ -270,11 +270,11 @@ pub fn uninstall(device_key: u32) -> bool {
 /// the TX hook before queue state is freed so no protocol path can touch the
 /// device after quiesce begins.
 /// # C: O(RX_BUFS)
-pub fn shutdown(device_key: u32) -> bool {
+pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
     if !present_for(device_key) {
         return false;
     }
-    if !net::vsock::driver_quiesce(device_key) {
+    if !net::vsock::driver_quiesce(device_key.raw()) {
         return false;
     }
     let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
@@ -294,7 +294,7 @@ pub fn shutdown(device_key: u32) -> bool {
     true
 }
 
-fn remove_ctx(device_key: u32) -> Option<(Ctx, bool)> {
+fn remove_ctx(device_key: virtio::VirtioChildDeviceKey) -> Option<(Ctx, bool)> {
     let mut g = CTX.lock();
     let pos = g.iter().position(|ctx| ctx.device_key == device_key)?;
     let ctx = g.remove(pos);
@@ -309,17 +309,17 @@ fn clear_rx_softirq_handler() {
 }
 
 /// Guest CID accessor (0 if no device). # C: O(1)
-pub fn guest_cid_for(owner: u32) -> u64 {
+pub fn guest_cid_for(device_key: virtio::VirtioChildDeviceKey) -> u64 {
     CTX.lock()
         .iter()
-        .find(|ctx| ctx.device_key == owner)
+        .find(|ctx| ctx.device_key == device_key)
         .map(|ctx| ctx.guest_cid)
         .unwrap_or(0)
 }
 
 /// Guest CID accessor (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 {
-    guest_cid_for(net::vsock::driver_owner())
+    guest_cid_for(virtio::VirtioChildDeviceKey::from_raw(net::vsock::driver_owner()))
 }
 
 /// TX hook installed into `net::vsock`. `frame` is a fully-encoded
@@ -328,7 +328,7 @@ pub fn guest_cid() -> u64 {
 /// # C: O(TX_POLL_BUDGET + frame bytes)
 pub fn tx_packet(owner: u32, frame: &[u8]) -> bool {
     let mut g = CTX.lock();
-    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) {
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key.raw() == owner) {
         Some(c) => c,
         None => return false,
     };
@@ -424,12 +424,16 @@ mod tests {
         }
     }
 
-    fn ctx(device_key: u32) -> Ctx {
+    fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_raw(raw)
+    }
+
+    fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
         Ctx {
             device_key,
             cfg_va: 0,
             hhdm: 0,
-            guest_cid: device_key as u64,
+            guest_cid: device_key.raw() as u64,
             rxq: queue(0),
             txq: queue(1),
             rx_avail_idx: 0,
@@ -451,16 +455,16 @@ mod tests {
         clear_ctxs();
         {
             let mut ctxs = CTX.lock();
-            ctxs.push(ctx(0x0010_0000));
-            ctxs.push(ctx(0x0020_0000));
+            ctxs.push(ctx(key(0x0010_0000)));
+            ctxs.push(ctx(key(0x0020_0000)));
         }
 
-        let Some((removed, empty_after)) = remove_ctx(0x0010_0000) else {
+        let Some((removed, empty_after)) = remove_ctx(key(0x0010_0000)) else {
             panic!("expected first context removal");
         };
-        assert_eq!(removed.device_key, 0x0010_0000);
+        assert_eq!(removed.device_key, key(0x0010_0000));
         assert!(!empty_after);
-        assert!(present_for(0x0020_0000));
+        assert!(present_for(key(0x0020_0000)));
         clear_ctxs();
     }
 
@@ -468,12 +472,12 @@ mod tests {
     fn removing_last_vsock_context_releases_shared_softirq_owner() {
         let _guard = TEST_LOCK.lock();
         clear_ctxs();
-        CTX.lock().push(ctx(0x0010_0000));
+        CTX.lock().push(ctx(key(0x0010_0000)));
 
-        let Some((removed, empty_after)) = remove_ctx(0x0010_0000) else {
+        let Some((removed, empty_after)) = remove_ctx(key(0x0010_0000)) else {
             panic!("expected last context removal");
         };
-        assert_eq!(removed.device_key, 0x0010_0000);
+        assert_eq!(removed.device_key, key(0x0010_0000));
         assert!(empty_after);
         assert!(!present());
     }
@@ -482,10 +486,10 @@ mod tests {
     fn missing_vsock_context_removal_leaves_live_contexts() {
         let _guard = TEST_LOCK.lock();
         clear_ctxs();
-        CTX.lock().push(ctx(0x0020_0000));
+        CTX.lock().push(ctx(key(0x0020_0000)));
 
-        assert!(remove_ctx(0x0010_0000).is_none());
-        assert!(present_for(0x0020_0000));
+        assert!(remove_ctx(key(0x0010_0000)).is_none());
+        assert!(present_for(key(0x0020_0000)));
         clear_ctxs();
     }
 }

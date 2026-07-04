@@ -144,6 +144,10 @@ test-pass claims.
   install, remove, and evdev lookup. The PCI-backed child wrapper tears down
   input event queues and device records without converting the typed child key
   back into a raw PCI-shaped integer.
+- `drv-virtio-vsock` now accepts and stores `VirtioChildDeviceKey` for
+  install, remove, shutdown, context lookup, and RX preposting. Its remaining
+  raw conversion is isolated at the `net::vsock` owner-key interface, not at
+  the PCI-backed child wrapper.
 - Shared `virtio::run_child_probe` now owns the transport-neutral child probe
   lifecycle: run child install, publish transport state only after success, and
   release failed-probe resources on child error. The PCI-backed child model
@@ -590,10 +594,13 @@ test-pass claims.
   current PCI-backed implementation derives that key from its BDF location and
   `drv-virtio-rng` now consumes that typed key directly for install, remove,
   shutdown, and probe-time direct entropy reads. `drv-virtio-input` now also
-  consumes that typed key directly for install, remove, and evdev lookup. The
-  remaining GPU, net, block, vsock, and sound child-driver APIs still need the
-  same typed-key conversion where they currently force the PCI-backed wrapper
-  to call `.raw()`. Shared `virtio::run_child_probe` now
+  consumes that typed key directly for install, remove, and evdev lookup.
+  `drv-virtio-vsock` now consumes it directly for install, remove, shutdown,
+  context lookup, and RX preposting, while converting to raw only at the
+  `net::vsock` owner-key boundary. The remaining GPU, net, block, and sound
+  child-driver APIs still need the same typed-key conversion where they
+  currently force the PCI-backed wrapper to call `.raw()`. Shared
+  `virtio::run_child_probe` now
   owns child-probe publish/unwind ordering, so the PCI-backed wrapper no
   longer hand-codes successful transport publication versus failed child-probe
   release. Shared `virtio::run_child_remove` and
