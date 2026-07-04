@@ -80,8 +80,9 @@ test-pass claims.
 - Mandatory q0 plus planned extra virtqueue programming now uses a shared
   queue-set helper, so the virtio-pci probe body no longer hand-rolls q1/q2/q3
   programming loops. Queue notify VA lookup and queue notify writes now go
-  through transport helper calls; notify lifetime policy and queue warm-up
-  policy still remain in the probe body.
+  through transport helper calls. The old virtio-net probe-time dummy TX kick
+  is gone; net boot-buffer posting/allocation now uses helper calls. Notify
+  lifetime policy still remains in the probe body.
 - Virtio-blk no longer has PCI-transport-owned block config harvest. The
   virtio-pci path maps the device config as a generic resource, and the
   virtio-blk child driver reads capacity/block-size during its own probe.
@@ -172,7 +173,7 @@ test-pass claims.
   centralized, and extra queue setup is now data-driven. Virtio-blk,
   virtio-vsock, virtio-snd, virtio-input, and virtio-net config parsing have
   moved into their child drivers, but common virtio transport, feature
-  policy, queue warm-up policy, and child policy remain too concentrated in
+  policy, net boot-buffer policy, and child policy remain too concentrated in
   `crates/kernel/pci-boot/src/virtio_drv.rs`.
 - Virtio IRQ callback ownership has moved in the right direction, and queue
   selection no longer uses per-queue special-case booleans, but feature
@@ -227,9 +228,9 @@ test-pass claims.
   `DEVICE_CFG` window; virtio-blk, virtio-vsock, virtio-snd, virtio-input,
   and virtio-net config parsing have moved into their child drivers. The
   common-cfg status/reset/feature/queue-size register protocol, planned queue
-  programming, and notify VA/kick mechanics have moved into shared helpers, but
-  feature policy, notify lifetime policy, queue warm-up policy, MSI-X setup,
-  and failure release helpers still need to move behind a
+  programming, notify VA/kick mechanics, and net RX/TX boot-buffer mechanics
+  have moved into shared helpers, but feature policy, notify lifetime policy,
+  MSI-X setup, and failure release helpers still need to move behind a
   `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
