@@ -1,8 +1,9 @@
-// OSS /dev/dsp + /dev/mixer emulation (the snd-pcm-oss role), layered on the
-// SAME drv-virtio-snd OUTPUT substream the ALSA core drives. Modern Linux
-// has no standalone OSS driver — /dev/dsp is a compat shim over ALSA. Here
-// write(2) lazily applies hw_params→prepare→trigger then transfers; the
-// SNDCTL_DSP_* ioctls set rate/format/channels and report buffer geometry.
+// OSS /dev/dsp emulation (the snd-pcm-oss role), layered on the SAME
+// drv-virtio-snd OUTPUT substream the ALSA core drives. Modern Linux has no
+// standalone OSS driver — /dev/dsp is a compat shim over ALSA. Here write(2)
+// lazily applies hw_params→prepare→trigger then transfers; the SNDCTL_DSP_*
+// ioctls set rate/format/channels and report buffer geometry. /dev/mixer
+// ioctls are rejected until a real ALSA control backend exists.
 
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as L};

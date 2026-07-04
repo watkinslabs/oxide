@@ -61,7 +61,7 @@ struct SndData {
 ///   - `pcmC0D0c`  : read → capture transfer, write → `Eio`
 ///   - `controlC0` : read → 0, write → `Eio`
 ///   - `/dev/dsp`,`/dev/audio` : read/write → OSS transfer (`Eio` on 0 write)
-///   - `/dev/mixer`: read → 0, write → accept (`Ok(len)`)
+///   - `/dev/mixer`: read → 0, write → `ENODEV` until real mixer controls exist
 struct SndFileOps;
 impl FileOps for SndFileOps {
     fn read(&self, inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
@@ -88,7 +88,7 @@ impl FileOps for SndFileOps {
                 let n = oss::write(data.owner, b);
                 if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
             }
-            MINOR_MIXER => Ok(b.len()),
+            MINOR_MIXER => Err(VfsError::Enodev),
             // pcmC0D0c / controlC0 → not writable.
             _ => Err(VfsError::Eio),
         }
