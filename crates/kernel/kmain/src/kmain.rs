@@ -60,6 +60,41 @@ static GLOBAL_ALLOC: kalloc::KAlloc = kalloc::KAlloc::new();
 // call sites compile unchanged during the Stage B migration.
 pub use boot_info::{BootInfo, BootMemKind, BootMemRegion};
 
+/// Publish a boot-discovered platform device through the driver model.
+/// Repeated boot wiring may reuse an identical model identity, but a conflicting
+/// platform object is a kernel model error and must not be hidden.
+/// # C: O(N_devices)
+fn platform_device_or_panic(addr: &'static str) -> alloc::sync::Arc<drv::Device> {
+    let candidate = alloc::sync::Arc::new(drv::Device::new(
+        "platform",
+        alloc::string::String::from(addr),
+        0,
+        0,
+        0,
+    ));
+    match drv::try_device_add(alloc::sync::Arc::clone(&candidate)) {
+        Ok(dev) => dev,
+        Err(drv::Error::Busy) => {
+            if let Some(existing) = drv::devices().into_iter().find(|d| {
+                d.bus == "platform"
+                    && d.addr == addr
+                    && d.parent_bus.is_none()
+                    && d.parent_addr.is_none()
+                    && d.vendor_id == 0
+                    && d.device_id == 0
+                    && d.class == 0
+                    && d.devname.is_none()
+                    && d.resources.is_empty()
+            }) {
+                existing
+            } else {
+                panic!("conflicting platform device registration: {}", addr);
+            }
+        }
+        Err(e) => panic!("platform device registration failed for {}: {:?}", addr, e),
+    }
+}
+
 /// Kernel entry. Called by per-arch boot stub after low-level setup.
 /// # SAFETY: caller set up a valid kernel stack, mapped the kernel image
 /// upper-half per the linker script, set the per-CPU base, disabled IRQs;
@@ -423,8 +458,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
     {
         let uart_drv = drv_serial::uart_driver();
-        let dev = drv::device_add(alloc::sync::Arc::new(drv::Device::new(
-            "platform", alloc::string::String::from("serial0"), 0, 0, 0)));
+        let dev = platform_device_or_panic("serial0");
         drv::register_driver(uart_drv);
         if dev.bound() == Some(drv::Driver::name(uart_drv)) {
             klog::set_byte_sink(drv_serial::emit);
@@ -442,8 +476,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         let ps2_drv = drv_ps2_keyboard::driver();
         drv_ps2_keyboard::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
-        drv::device_add(alloc::sync::Arc::new(drv::Device::new(
-            "platform", alloc::string::String::from("i8042"), 0, 0, 0)));
+        platform_device_or_panic("i8042");
         drv::register_driver(ps2_drv);
     }
 
