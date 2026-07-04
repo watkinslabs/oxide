@@ -60,7 +60,6 @@ struct VirtioProbeProfile {
     extra_queues: [Option<QueuePlan>; 3],
     needs_q1_tx_warmup: bool,
     needs_input_cfg: bool,
-    needs_snd_cfg: bool,
 }
 
 impl VirtioProbeProfile {
@@ -75,7 +74,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_snd_cfg: false,
         }
     }
 
@@ -86,7 +84,6 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: true,
             needs_input_cfg: false,
-            needs_snd_cfg: false,
         }
     }
 
@@ -97,7 +94,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: true,
-            needs_snd_cfg: false,
         }
     }
 
@@ -108,7 +104,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_snd_cfg: false,
         }
     }
 
@@ -123,7 +118,6 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_snd_cfg: false,
         }
     }
 
@@ -138,7 +132,6 @@ impl VirtioProbeProfile {
             ],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_snd_cfg: true,
         }
     }
 
@@ -691,7 +684,7 @@ impl drv::Driver for VirtioSndDrv {
             || p.q0_device_pa == 0
             || p.q0_notify_va == 0
             || p.q0_size == 0
-            || !p.snd_cfg_valid
+            || p.device_cfg_va == 0
         {
             release_snd_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
@@ -704,10 +697,6 @@ impl drv::Driver for VirtioSndDrv {
         let sp = super::virtio_snd_cfg::install_snd(
             device_key,
             resources,
-            p.snd_jacks,
-            p.snd_streams,
-            p.snd_chmaps,
-            p.snd_controls,
         ).ok_or_else(|| {
             release_snd_after_failed_probe(&mut p);
             drv::Error::ProbeFailed
@@ -1211,12 +1200,6 @@ pub(super) struct VirtioProbe {
     pub(super) mac:       [u8; 6],
     pub(super) mac_valid: bool,
     pub(super) tx0_buf_pa: u64,
-    // F454: virtio_snd_config (docs/58§4, le32 ×4 at device-cfg offset 0).
-    pub(super) snd_jacks:     u32,
-    pub(super) snd_streams:   u32,
-    pub(super) snd_chmaps:    u32,
-    pub(super) snd_controls:  u32,
-    pub(super) snd_cfg_valid: bool,
     // F455: virtio-snd TXQ(2) playback ring + notify VA. 0 if not snd or
     // the queue didn't program. (eventq/rxq land with events/capture.)
     pub(super) snd_q2_desc_pa:   u64,
@@ -1812,25 +1795,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         }
     }
 
-    // F454: harvest virtio_snd_config (docs/58§4): le32 jacks/streams/
-    // chmaps/controls at device-cfg offset 0. Same window pattern as MAC.
-    let mut snd_jacks_local: u32 = 0;
-    let mut snd_streams_local: u32 = 0;
-    let mut snd_chmaps_local: u32 = 0;
-    let mut snd_controls_local: u32 = 0;
-    let mut snd_cfg_valid_local: bool = false;
-    if profile.needs_snd_cfg {
-        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
-            if let Some((j, s, c, ct)) = super::virtio_snd_cfg::harvest(&devcfg_cap, &bars) {
-                snd_jacks_local = j;
-                snd_streams_local = s;
-                snd_chmaps_local = c;
-                snd_controls_local = ct;
-                snd_cfg_valid_local = true;
-            }
-        }
-    }
-
     let mut input_cfg_va_local: u64 = 0;
     if profile.needs_input_cfg {
         if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
@@ -1906,11 +1870,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         mac:       mac_local,
         mac_valid: mac_valid_local,
         tx0_buf_pa: tx0_buf_pa_local,
-        snd_jacks:     snd_jacks_local,
-        snd_streams:   snd_streams_local,
-        snd_chmaps:    snd_chmaps_local,
-        snd_controls:  snd_controls_local,
-        snd_cfg_valid: snd_cfg_valid_local,
         snd_q2_desc_pa:   snd_q2_desc_pa_local,
         snd_q2_driver_pa: snd_q2_driver_pa_local,
         snd_q2_device_pa: snd_q2_device_pa_local,

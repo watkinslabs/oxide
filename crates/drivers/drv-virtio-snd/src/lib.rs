@@ -6,9 +6,9 @@
 //
 // The boot probe in `pci_boot::virtio_drv` performs the generic virtio
 // bring-up (reset → ACK/DRIVER → feature negotiate → FEATURES_OK → q0
-// desc/driver/device PA program + DRIVER_OK), harvests virtio_snd_config,
-// then hands the persistent CONTROLQ ring addresses + notify VA + config
-// counts here via `install`. TXQ/RXQ playback rings land with PR-C.
+// desc/driver/device PA program + DRIVER_OK), then hands persistent queue
+// resources here via `install`. This driver reads virtio_snd_config itself.
+// TXQ/RXQ playback rings land with PR-C.
 //
 // Arch-neutral: every op is MMIO (notify_cap window) + HHDM (ring +
 // control scratch frame), mirroring drv-virtio-rng / drv-virtio-blk.
@@ -168,15 +168,38 @@ static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
     pcm_recv,
 };
 
-/// Boot-probe → driver handoff: the CONTROLQ ring the boot path programmed
-/// plus the harvested virtio_snd_config counts.
+/// Transport → driver handoff: the CONTROLQ ring and optional PCM rings the
+/// transport programmed.
 pub struct SndInstall {
     pub device_key: u32,
     pub resources: virtio::VirtioResources,
-    pub jacks:    u32,
-    pub streams:  u32,
-    pub chmaps:   u32,
-    pub controls: u32,
+}
+
+#[derive(Clone, Copy)]
+struct SndDeviceConfig {
+    jacks: u32,
+    streams: u32,
+    chmaps: u32,
+    controls: u32,
+}
+
+fn read_device_config(resources: virtio::VirtioResources) -> Option<SndDeviceConfig> {
+    let cfg = resources.device_cfg_va;
+    if cfg == 0 {
+        return None;
+    }
+    // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
+    // virtio-snd config window kept alive for this device lifetime. The config
+    // layout is four little-endian u32 fields at offsets 0, 4, 8, and 12.
+    let (jacks, streams, chmaps, controls) = unsafe {
+        (
+            core::ptr::read_volatile(cfg as *const u32),
+            core::ptr::read_volatile((cfg + 4) as *const u32),
+            core::ptr::read_volatile((cfg + 8) as *const u32),
+            core::ptr::read_volatile((cfg + 12) as *const u32),
+        )
+    };
+    Some(SndDeviceConfig { jacks, streams, chmaps, controls })
 }
 
 /// Probe result handed back for the boot line: total streams + the
@@ -208,17 +231,18 @@ pub fn config() -> Option<(u32, u32, u32, u32)> {
     CTX.lock().as_ref().map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
 }
 
-/// Install the CONTROLQ engine for one virtio-snd device. Called once from
-/// `pci_boot::virtio_drv` after DRIVER_OK + q0 setup + config harvest.
-/// Allocates the control scratch frame, then queries the PCM stream table
-/// and returns the OUTPUT/INPUT stream split. Returns None if a ring PA /
-/// notify VA / HHDM is missing or no scratch frame is available.
+/// Install the CONTROLQ engine for one virtio-snd device. Called once after
+/// DRIVER_OK + queue setup. Reads the device config, allocates the control
+/// scratch frame, then queries the PCM stream table and returns the
+/// OUTPUT/INPUT stream split. Returns None if a ring PA / notify VA / config /
+/// HHDM is missing or no scratch frame is available.
 /// # C: O(streams) — one CONTROLQ round-trip
 pub fn install(p: SndInstall) -> Option<SndProbe> {
     let controlq = p.resources.require_queue(0)?;
     if !p.resources.common_cfg_valid() {
         return None;
     }
+    let device_cfg = read_device_config(p.resources)?;
     let txq = p.resources.require_queue(2);
     let rxq = p.resources.require_queue(3);
     if CTX.lock().is_some() {
@@ -294,8 +318,10 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cfg_va: p.resources.cfg_va,
         scratch_pa,
         avail_idx: used_seen,
-        jacks: p.jacks, streams: p.streams,
-        chmaps: p.chmaps, controls: p.controls,
+        jacks: device_cfg.jacks,
+        streams: device_cfg.streams,
+        chmaps: device_cfg.chmaps,
+        controls: device_cfg.controls,
         out_stream: None,
         out_formats: 0, out_rates: 0, out_ch_min: 1, out_ch_max: 2,
         txq, tx_avail_idx: tx_used_seen,
@@ -331,7 +357,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         let _ = uninstall(p.device_key);
         return None;
     }
-    Some(SndProbe { streams: p.streams, out, input })
+    Some(SndProbe { streams: device_cfg.streams, out, input })
 }
 
 /// Stop streams, reset the virtio device, and release all queue/scratch frames
