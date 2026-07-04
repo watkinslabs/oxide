@@ -196,7 +196,9 @@ test-pass claims.
   virtio-net runtime instead of a process-global cache.
   IPv6 NDP is stack-owned in kernel builds: RX learning goes through
   `deliver_rx_ipv6`, and virtio-net TX resolves neighbors through the
-  registered interface's stack NDP table.
+  registered interface's stack NDP table. The virtio-pci net probe no longer
+  rejects a second net device before child install, so admission now reaches
+  the keyed net child path instead of a transport-side singleton gate.
 - The core IPv6 stack NDP cache is no longer a process-global `ip -> mac` map.
   Stack-side NDP learning is keyed by `(iface, IPv6 address)`, so duplicate
   link-local neighbors on different interfaces no longer overwrite each other.
@@ -205,14 +207,17 @@ test-pass claims.
   `net::vsock` layer is still a single global guest-CID/TX-hook protocol
   endpoint, so simultaneous multi-transport vsock is not complete, but it now
   reserves that endpoint before transport frame allocation and rejects a second
-  active hook instead of overwriting the live endpoint.
+  active hook from the child install path instead of overwriting the live
+  endpoint or relying on a transport-side precheck.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
   removes by owning parent BDF, owns `/dev/hwrng` publication/removal inside
   the RNG child driver, and promotes `/dev/hwrng` publication to a remaining
   RNG device on active-provider removal. Virtio-snd install/remove is now
   keyed to the owning parent BDF and releases child-owned queue/buffer
   resources only for the matching transport; the sound card layer remains a
-  single global card.
+  single global card and rejects a second card from the child install path
+  instead of a transport-side precheck. Virtio-gpu singleton admission is also
+  left to the child install path.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI
@@ -317,8 +322,8 @@ test-pass claims.
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
   stack-owned interface-scoped IPv6 NDP lookup, but virtio-net still needs live
-  loop proof; virtio-gpu still needs a real multi-card/scanout table after its
-  BDF-owned teardown fix;
+  loop proof and broader multi-NIC validation; virtio-gpu still needs a real
+  multi-card/scanout table after its BDF-owned teardown fix;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
   are still the other main offenders.
 - Add explicit fault-injection coverage for probe failure after each allocation,
