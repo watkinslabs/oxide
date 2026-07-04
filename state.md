@@ -1,83 +1,295 @@
 # state.md — session handoff
 
 ## Headline
-Kernel boots to graphical.target + gdm; **greeter still not rendered.** The
-greeter blocker is now precisely specced, not guessed: see
-**`docs/60-udev-kernel-contract.md`** (merged #2332) — the full kernel↔udev
-requirements checklist R01–R31 with status + an end-to-end acceptance gate (§11).
+THREE bugs FOUND+FIXED (committed+pushed, B318): 2 mount-ns bind-sharing + a
+NETLINK UNICAST bug (39221106) that was the primary udev amplification source.
+Before the netlink fix, systemd-udevd's manager dispatched each uevent to ONE
+worker by addressing that worker's netlink PORT (nl_pid, nl_groups=0), but our
+sendmsg IGNORED the destination nl_pid and BROADCAST it to all group-0 sockets —
+so EVERY worker ran EVERY event (~20× amplification) → udev queue never drained →
+card0 (SEQNUM 50) never processed → no master-of-seat → CAN_GRAPHICAL=0.
+With the fix, card0 IS now processed (queue drains past 50; was halting ~47) and
+CAN_GRAPHICAL reaches 1. Greeter STILL doesn't render: boot is still ~145s
+(a RESIDUAL worker→manager completion loop re-processes each event ~25×), so
+CAN_GRAPHICAL=1 lands at ~132s — AFTER gdm already started+exited code=1 at
+~105s. Fix the residual completion loop → faster boot → CanGraphical ready before
+gdm → greeter.
 
-## The day's arc (READ THIS)
-1. The #2330 driver merge broke the BUILD and dropped transitional virtio-blk →
-   kernel panicked at 2.3s. `xtask artifacts` silently re-exported the stale
-   kernel.elf, so hours of "udev/logind broken" debugging ran against DEAD
-   kernels — false conclusions. (Memory: [[stale-artifacts-mask-kernel-bugs]].)
-2. Repaired: #2331 (compile), oxide-images `disable-legacy=on` (modern virtio-blk
-   the refactored kernel binds). Kernel boots again.
-3. Wrote doc 60 (the udev contract) to stop the whack-a-mole.
+## Fixes landed this session (branch B318, pushed)
+- b71fb455 fix(devfs): register /dev/hugepages mount-point dir (systemd
+  per-service sandbox binds it; was ENOENT).
+- 29194e13 fix(vfs): thread walked DEST mnt_id through MS_MOVE
+  (`move_mount_by_id_to`) — bind-shared dentry defeated parent_by_dentry, so
+  MS_MOVE onto /run/systemd/mount-rootfs/<sub> was falsely rejected "dest within
+  source subtree". Fixed 12/13 namespace MS_MOVEs.
+- e66f8386 fix(vfs): thread walked PARENT mnt_id through mount graft
+  (`register_at`/`register_bind_at`/`attach_sb_with_flags_at` + parent_hint in
+  attach/graft_realized). systemd creates the apivfs at /run/systemd/namespace-X
+  AFTER rbinding / onto /run/systemd/mount-rootfs, so the /run root dentry is
+  bind-shared and the new mount was BORN parented under mount-rootfs/run
+  (rendered /run/systemd/mount-rootfs/... — unreachable via real /run). Now
+  renders correctly. 41 hosted vfs mount tests green.
+- crates/kernel/vfs/tests/sandbox_nested_primary.rs added (passes; note: the
+  string-keyed hosted fixture can't reproduce true bind-dentry ambiguity, so it's
+  a non-regression guard, not the repro — the repro is the boot trace).
 
-## Merged this session (kernel main): #2324–#2329, #2331, #2333
-udev RECEIVE + PROCESS path is DONE (R01–R09,R20,R24–R29): SCM_CREDENTIALS
-(#2327 — THE key fix), MSG_PEEK/TRUNC, nl_groups, poll-wake, sendmsg coalesce
-(#2329), pidfd poll (#2326), /proc/<pid>/fd (#2328), af_unix listener poll_subs
-(#2333, R22). Result: `/run/udev/data/c226:0` gets `G:master-of-seat`.
-oxide-images (local, no remote): `c1e9021` virtio-blk disable-legacy=on.
+## KEY measured finding: code=265 storm is NOT the greeter blocker
+- mount(2) failures ≈ 0 after the two mount fixes (was assumed to be the cause —
+  it was NOT; measure-don't-guess paid off).
+- ~25 `code=265` exits are `sd-executor` (`/proc/self/fd/9`) probe-forks that
+  exit after `waitid=ECHILD` + `pause=EINTR`; 265 > systemd's EXIT_ range
+  (max ~246) so it's not EXIT_NAMESPACE. Services like upower still reach
+  "Started" afterward. Treat 265 as a red herring until proven otherwise.
 
-## LIVE greeter blocker (doc 60 R21 + R30/R31)
-- **R30/R31 (the greeter gate):** logind does NOT create `/run/systemd/seats/seat0`
-  → seat0 not CanGraphical → gdm launches no greeter. logind IS functional (owns
-  `org.freedesktop.login1` = `:1.9`; earlier "activatable" was a bad-boot
-  artifact). It just never attaches card0. `/run/udev/tags/` is absent (udevd
-  writes /run/udev/data but not the tag index). UNKNOWN whether systemd 257 needs
-  /run/udev/tags/ or reads tags from /run/udev/data/ — VERIFY against systemd
-  source before implementing.
-- **R21 (introspection blocker):** `udevadm settle/info/trigger` time out (udevd
-  control socket). #2333 may help (targeted listener wake); re-test. Fixing this
-  unblocks `udevadm info /dev/dri/card0` (see TAGS) + `udevadm trigger` to diagnose R30.
+## LATEST (post-merge, journald-visible) — greeter now LAUNCHES A SESSION
+Fixed the serial journald forwarding first (imagectl: make ttyS0 the PREFERRED
+console — `console=tty0 console=ttyS0` so /dev/console maps to serial; the Linux
+way), which finally exposed userspace logs. With that visibility, fixed:
+- fix(ioctl) 3e43ae4d: socket ioctls (FIONREAD/SIOCOUTQ/FIONBIO) returned ENOTTY
+  → dbus-broker crashed (socket_dispatch_write) → whole D-Bus bus down. Now
+  dbus-broker is stable → gdm↔logind works → **greeter session (gnome-initial-
+  setup c1) LAUNCHES**.
+- fix(time) fe6a9fc9: CLOCK_REALTIME started at 1970 → PAM "password changed in
+  future". Read CMOS RTC at boot → clock now correct (2026-…).
+- fix(procfs) 6484c194: /proc/*/loginuid made writable (pam_loginuid).
+REMAINING greeter blocker (START HERE): `user@979.service` (User Manager for the
+gnome-initial-setup uid) FAILS at the PAM step — "PAM failed: Cannot make/remove
+an entry for the specified session" + "Failed to set up PAM session: Operation
+not permitted" (status 224/PAM). So the user session's systemd --user never
+starts → gnome-shell never runs → no greeter render. The EPERM is INTERNAL to a
+PAM session module (NOT a traced syscall EPERM at that instant; the nr=312/kcmp
+EPERM storm is just systemd's own seccomp SystemCallFilter, a red herring).
+NEXT: identify which pam session module returns PAM_SESSION_ERR/EPERM for the
+`systemd-user` stack (pam_loginuid-via-audit? pam_selinux? pam_namespace mount
+setup? pam_keyinit keyctl?). Trace the user-manager fork's syscalls right before
+[62.8s] (name=fork-child / (systemd)[166]); check for an EROFS ftruncate (saw
+nr=77 EROFS on fd 8 nearby) or a keyctl/mount/audit-netlink EPERM. Boot with the
+gdm/journald debug image edits (re-apply after build-rootfs; then build-boot).
 
-## udev-compliance build-out (doc 60) — IN PROGRESS
-Grounded code audit found real gaps beyond the greeter path (user: "get udev
-compliant first"). Fixed + verified:
-- **#2335 block device-model** — block uevents pointed DEVPATH at a nonexistent
-  /sys path (dev_root_canon block → devices/platform) so udevd processed NO
-  disk. Now /sys/devices/virtual/block/<name> + /sys/class/block + subsystem
-  symlink + DEVTYPE=disk; DEVPATH resolves. Boot-verified (root mounts, systemd up).
-- **#2336 input device-model** — same systematic bug: /dev/input/eventN emitted
-  DEVPATH=/devices/platform/event0 (nonexistent). New sysfs::input:
-  /sys/class/input + /sys/devices/virtual/input + subsystem symlink;
-  dev_root_canon("input")→devices/virtual/input. Boot-verified.
-- ROOT PATTERN: `sysfs::bus::dev_root_canon` sends every non-pci/virtio/platform
-  bus to a FAKE /sys path (`_ => devices/platform`). Fixed per-subsystem for
-  block+input; a GENERIC /sys/devices/virtual/<subsys> + /sys/class/<subsys>
-  synthesis would cover the rest (sound/graphics/misc/…) in one pass.
-- KEY DISTINCTION: the greeter gate is NOT the block/input device model. card0
-  (drm) ALREADY works — it's tagged master-of-seat in /run/udev/data. The greeter
-  needs logind to ATTACH the already-tagged card0 (R30/R31), which is downstream
-  of the (working) drm device model. block/input compliance is real but does not
-  render the greeter.
-Remaining compliance gaps (doc 60 §6.3a), NOT yet done:
-- block `/sys/.../uevent` still RO → R12 coldplug-write (systemd-udev-trigger)
-  fails EACCES; add SysfsOps::store re-emit (initial device_add add-uevent
-  already covers processing, so lower priority).
-- `/sys/class/` still missing input/backlight/leds/sound/hidraw/misc/graphics —
-  each needs a class dir + the device's subsystem symlink to target it.
-- R21 udevd control socket (udevadm settle/info/trigger hang) — #2333 didn't fix.
-- R30/R31 logind seat attach (the greeter gate) — /run/udev/tags absent.
-- R13 /sys/kernel/uevent_seqnum (legacy; modern udevd likely doesn't need it).
+## SESSION SUMMARY (branch B318, merged with fresh origin/main @ 7b4adb4d)
+SIX kernel fixes landed this campaign, clearing the whole graphics/seat chain
+that blocked GNOME:
+- 2 mount-ns bind-sharing fixes (29194e13 MS_MOVE dest-hint, e66f8386 graft
+  parent-hint) + /dev/hugepages (b71fb455).
+- netlink UNICAST delivery (39221106): honour dest nl_pid → udev manager→worker
+  dispatch stops broadcasting to all workers → card0 processes.
+- netlink cooked-group subscription (bad10001): cooked multicast only to
+  nl_groups=2 subscribers (logind/upowerd/…), NOT the nl_groups=0 workers →
+  udev re-processing 15-25×→1×.
+- epoll_wait EINTR-on-signal (f2836dbb): epoll_wait never returned -EINTR on a
+  pending signal → tasks parked in epoll_wait were UNKILLABLE (udev workers,
+  logind, gdm). Fixed → boot 120s→84s, 0 hanging workers, logind D-Bus timeout
+  GONE, udevd settles.
+RESULT: CAN_GRAPHICAL=1 reliably (was stuck 0 the whole effort), card0 tagged
+master-of-seat early, udev settles.
 
-## First task next session
-`git checkout main && git pull`. Work doc 60 R21→R30/R31. Concretely:
-1. Verify #2333 fixed udevadm control (boot, `udevadm settle`; needs a clean boot —
-   see [[boot-intermittency-and-debugfs-gotchas]], boots are ~50% flaky, re-run).
-2. If udevadm works: `udevadm info /dev/dri/card0` — does it show TAGS=master-of-seat
-   and is the device in logind's view? `loginctl seat-status seat0`.
-3. Determine (systemd 257 source) how logind enumerates master-of-seat: /run/udev/tags/
-   vs /run/udev/data/. Fix whichever the kernel/udev-flow breaks.
-4. Also audit doc 60 R10–R19 (per-subsystem uevent keys + sysfs attrs).
+## REMAINING greeter blocker — gdm doesn't launch gnome-shell  [START HERE]
+Greeter STILL does not render. After the merge + all fixes:
+- gdm.service reaches "Started"; code=1 is a harmless plymouth-quit fork.
+- gdm NEVER execs a session (no gnome-session/gdm-session-worker/gnome-shell in
+  execve traces) — its GdmLocalDisplayFactory does not create a display for the
+  CanGraphical seat0. Cause unknown (needs gdm's own reasoning).
+- Boot has service-timeout hangs: systemd-machined SIGABRT/timeout @123s, then
+  ~78s silence, virtqemud times out @201s. Something still isn't settling.
+- BLOCKER TO PROGRESS: cannot see gdm's decision — journald ForwardToConsole
+  does NOT reach our serial console (set it + gdm [debug]Enable=true +
+  gdm.service StandardError=journal+console in the image work dir; no gdm debug
+  lines appear). So EITHER journald→/dev/console forwarding is broken in our
+  kernel (worth fixing — it unblocks all userspace debugging) OR service stderr
+  isn't routed to serial. NEXT: (1) fix journald/console-forwarding OR route a
+  service's stderr to serial so gdm's debug is visible; (2) then read why
+  GdmLocalDisplayFactory skips seat0 (CanGraphical query result? no session-
+  capable? DRM master denied?); (3) check the merged "drm: enforce card and
+  render ioctl split" didn't break gdm's card0 open/DRM-master. Image debug
+  edits live in oxide-images/work/root-live-gnome-x86_64 (wiped by build-rootfs
+  — re-apply after it, then build-boot only).
 
-## Diagnosis harness (USE — ends the thrash)
-- Inject oxdiag oneshot on a FRESH never-booted img via ONE `debugfs -w -f cmdfile`
-  session (dumps to /dev/ttyS0 at graphical.target). NEVER debugfs-edit a booted
-  (dirty) metadata_csum img — corrupts it. Boots are flaky: loop boot 2-3× until
-  `grep -c OXDIAG_START` ≥1. Unit must NOT have a `Wants=`+`WantedBy=` cycle.
-- sudo/loop-mount are BLOCKED in the sandbox. Rootfs `/` is uid-1000 (harmless).
-- Ledger metadata/index.md: B next=315(→used by #2333? verify), D next=119.
+## FIXED: udev re-processing loop (bad10001) — MAJOR
+Root cause was NOT re-dispatch by the manager — it was rebroadcast_cooked_uevent
+delivering cooked (libudev) multicast to EVERY group-0 socket. Measured (bind
+nl_groups trace): real consumers (logind/upowerd/udisksd/NM/gdm) bind
+nl_groups=2; systemd-udevd's SINGLE-SHOT WORKER monitors bind nl_groups=0
+(MONITOR_GROUP_NONE, unicast-only). So every worker received+RE-PROCESSED every
+other worker's broadcast device (one event processed 15-25×). Fix: deliver cooked
+multicast only to sockets subscribed to the dest group (skip group-0). After:
+each event processed ONCE, card0 tagged master-of-seat, CAN_GRAPHICAL=1.
+
+## NEW frontier — greeter still not launching  [START HERE]
+With card0 tagged + CAN_GRAPHICAL=1, gdm STILL exits code=1 and no gnome-shell
+launches. Observations (bfix2.log):
+- gdm's dying syscalls: execve=-2 (plymouth ENOENT) ×2 — LIKELY a harmless
+  plymouth-quit fork, not the main daemon. gdm.service reaches "Started".
+- `Failed to get path for seat 'seat0': Connection timed out` — logind D-Bus is
+  slow/unresponsive, so gdm can't create the greeter session on seat0.
+- Boot still ~200s+: some udev WORKERS HANG (e.g. "Worker [59] processing
+  SEQNUM=47 killed", virtio2/virtio3) and are killed at ~207s after a long
+  timeout; code265 still ~33. System stays overloaded → logind slow → gdm
+  timeout. NEXT: (1) find why the virtio2/3 udev workers hang (trace what syscall
+  they block on — kmod load? a sysfs read? firmware?); fixing it settles the
+  system so logind responds. (2) Confirm gdm code=1 is the plymouth fork vs the
+  daemon (is /usr/bin/plymouth expected? gdm should tolerate its absence). (3)
+  Once logind is responsive, gdm should launch gdm-launch-environment →
+  gnome-shell (grep gnome-shell = 0 currently). The netlink UNICAST (39221106) +
+  cooked-group (bad10001) fixes were the big amplifiers; remaining is boot
+  settling + gdm↔logind.
+
+## (older) RESIDUAL — udev re-dispatch loop (superseded by bad10001)
+Confirmed via systemd source (WebFetch udev-worker.c / udev-manager.c) + kernel
+traces:
+- udev WORKERS are SINGLE-SHOT: fork per event, process, EXIT. Manager detects
+  completion via `event_add_child_pidref(..., WEXITED, on_worker_exit)` = pidfd
+  epoll + SIGCHLD. Event↔worker matched by worker POINTER (not SEQNUM/pid).
+- Our pidfd exit path WORKS: pidfd poll() returns POLL_IN on Zombie (measured 40
+  zombie detections); SIGCHLD posts + wakes parent (park_zombie /
+  signal_child_exit). So completion IS detectable.
+- sd_notify is NOT the completion channel — traced ALL notify-socket sends
+  (READY/STATUS/EXIT_STATUS/ERRNO/FDSTORE), ZERO "PROCESSED=1" or "TRY_AGAIN=1".
+  So workers don't request retries either.
+- YET each event is still re-processed ~24× (manager re-spawns a worker for the
+  same event ~24×). And the manager BUSY-LOOPS in epoll_wait: measured 1955 pidfd
+  poll() calls, 1915 "live" — epoll_wait returns immediately ~1900× because some
+  OTHER fd is perpetually ready, re-polling the (not-ready) worker pidfds each
+  loop. The busy-loop wastes the whole boot (~145s) so CAN_GRAPHICAL=1 lands at
+  ~132s, AFTER gdm ran+exited code=1 at ~59-105s → no greeter.
+- OPEN QUESTION (needs LIVE userspace debugging — kernel traces exhausted): WHY
+  does the manager re-dispatch when completion is detectable, and WHICH fd
+  perpetually-readable drives the epoll busy-loop? Candidates: (a) the manager
+  reaps the worker via SIGCHLD before its pidfd-epoll sees the Zombie, and
+  on_worker_exit's pointer-match fails / doesn't detach the event (a udev-manager
+  bug our timing exposes); (b) a perpetually-readable fd (the kernel uevent
+  monitor port 6? a timerfd? the manager's signalfd?) spins epoll so events
+  time out and re-dispatch. NEXT: attach gdb to the udevd MANAGER (find its pid,
+  break in on_worker_exit / event_dispatch), OR boot with udev.log_level=debug and
+  read the manager's own "worker exited"/"re-dispatch" log lines, OR trace which
+  fd the manager's epoll reports ready each spin (instrument epoll_wait to log the
+  ready fd's inode/type for the udevd manager pid). The netlink UNICAST fix
+  (39221106) already removed the BIGGEST amplifier (broadcast-dispatch to all
+  workers); this residual is a smaller loop but still gates boot speed.
+
+## (older) RESIDUAL framing — worker→manager completion loop (boot too slow)
+The netlink UNICAST fix (39221106) removed the BROADCAST-dispatch fan-out (was:
+manager dispatch to one worker got broadcast to ALL workers → every worker ran
+every event). card0 now processes; CAN_GRAPHICAL reaches 1. But each event is
+STILL re-processed ~25× because the manager RE-DISPATCHES — the worker→manager
+COMPLETION isn't registering. Measured:
+- Completion is NETLINK, not socketpair (udevd creates only ONE socketpair all
+  boot; per-worker comms are netlink).
+- Manager = netlink port 6, bound group-1 (kernel monitor); it dispatches to
+  workers via unicast FROM port 6 (my fix delivers these, found=1). No netlink
+  message is ever sent back TO port 6 — so workers do NOT unicast completions to
+  the manager; they BROADCAST results (nl_groups=2).
+- rebroadcast_cooked_uevent SKIPS every group-1 socket (netlink/src/lib.rs ~329
+  `if (grp & 1) != 0 continue`) — so the worker-result broadcast (dgrp=2) is
+  NEVER delivered to port 6 (measured: port 6 skipped 118×). If port 6 is the
+  manager's ONLY monitor, it never learns events completed → re-dispatch loop.
+- RESOLVED by measurement (trace: log recvmsg reader exe when dequeuing a
+  libudev-magic datagram): ZERO group-2 readers exist. Cooked RESULT broadcasts
+  are read only by port=2 (empty exe = PID1, 87×, legit) and by the udev WORKERS
+  themselves (ports 8-16, exe=systemd-udevd, ~10× each — they uselessly DRAIN the
+  broadcasts because register_uevent_listener subscribes EVERY uevent socket at
+  socket(2), even a worker's send-only result monitor). The MANAGER (port 6) reads
+  NONE. So the manager has NO netlink channel for worker completions → it
+  re-dispatches until it gives up (~20-25×/event), bounding the loop but wasting
+  the whole boot.
+- WHERE TO LOOK NEXT (needs systemd-source review, not just kernel traces): how
+  does systemd v257 udev-manager RECEIVE worker completion? Options: (a) worker
+  UNICASTs the result to the manager's monitor port — then our sendmsg is reading
+  a wrong/zero dest nl_pid for the worker's result send (I saw worker result
+  sends as dest_pid=0 groups=2 = broadcast, NOT unicast to port 6 — verify the
+  worker's msg_name offset/content; if systemd DOES set a dest, we're dropping
+  it); (b) completion is the worker's EXIT (SIGCHLD/pidfd) not a message — then
+  audit our SIGCHLD/pidfd/waitid for workers (ties to the earlier sd-executor
+  waitid=ECHILD finding); (c) the manager's result monitor needs a group we
+  aren't delivering. Read src/udev/udev-manager.c on_worker / worker_returned +
+  device_monitor. CAUTION: do NOT deliver cooked to the group-1 kernel monitor
+  (libudev rejects libudev-magic on a kernel monitor; skip is a deliberate
+  busy-loop guard). SECONDARY cleanup: workers shouldn't be subscribed as uevent
+  LISTENERS at all (their result monitors are send-only) — register_uevent_listener
+  over-subscribes; gating subscription on an actual bind/group would stop workers
+  draining broadcasts.
+- Consequence of the loop: boot ~145s; CAN_GRAPHICAL=1 lands ~132s AFTER gdm
+  started+exited code=1 at ~105s → greeter never launches. Even in a
+  CAN_GRAPHICAL=1 boot, no gnome-shell (checked). Fix the loop → fast boot →
+  seat graphical before gdm → greeter.
+- Method to continue: re-add klog to netlink/Cargo.toml; trace emit/dequeue
+  (port+group+cooked)/send(dest_pid+groups)/unicast(from,to,found) in
+  netlink/src/lib.rs + syscalls/src/netlink_fd.rs (all reverted now).
+
+## (superseded) earlier framing — CAN_GRAPHICAL=0 = udev RE-PROCESSING loop
+MAJOR advance this session: the CanGraphical blocker is NOT mount and NOT module
+loading — it is a **udev event-reprocessing amplification loop**. Measured (all
+via kernel klog traces on the netlink uevent path, since reverted):
+- Kernel emits each uevent EXACTLY ONCE (51 emits, 51 distinct seqnums; card0 =
+  seq 50 emitted once, delivered to udevd's group-1 socket once). NOT a kernel
+  duplication bug.
+- udevd reads each RAW kernel event EXACTLY ONCE (raw dequeue = 1 per seq,
+  grp=1). Correct.
+- BUT each event is RE-PROCESSED ~20× by udev WORKERS: the COOKED libudev result
+  for one device (e.g. SEQNUM=32) is SENT ~20× (traced in
+  netlink::rebroadcast_cooked_uevent — senders are worker ports 6,8-16) and
+  dequeued ~40× by monitors (port=2 = systemd PID1, grp=0, gets ~21 copies;
+  later-created monitors get fewer → early events loop more before udevd's ~36s
+  idle-cleanup). Re-processing count DECREASES over seqnum (seq33 ~59×, seq48
+  ~3×) — bounded by the 36s cutoff, consistent with a re-dispatch loop.
+- CONSEQUENCE: workers spend all their time re-processing seqnums 31-49; card0
+  (SEQNUM 50) is "queued"+"ready" (~23s) but NEVER gets a worker; udevd idles at
+  ~36s with card0 pending → card0 never tagged systemd/master-of-seat →
+  `/run/udev/data/c226:0` never written → CAN_GRAPHICAL=0 → gdm exits code=1.
+- ROOT: udevd re-dispatches each event ~20× because the WORKER→MANAGER
+  COMPLETION signal is not registering. In systemd udevd the worker sends the
+  processed device to the manager (addressed netlink unicast on MONITOR_GROUP_UDEV,
+  OR a socketpair — DETERMINE WHICH) so the manager marks the event done. Our
+  amplification is the symptom; the completion channel is the bug.
+- DISPROVEN (measured, don't re-chase): kernel emit dup; recv re-read
+  (recvmsg/recvfrom correctly dequeue vs MSG_PEEK); duplicate listener
+  registration (register_uevent_listener: 0 "already", list bounded ~13);
+  finit_module slowness (0 finit_module calls — modules are built-in).
+- SUSPECT: netlink::rebroadcast_cooked_uevent (netlink/src/lib.rs ~290) SKIPS
+  every group-1 socket (`if (grp & 1) != 0 continue`); port=6 (grp=1, also a
+  worker sender) is skipped 109×. If the manager's completion-receiving socket
+  has the group-1 bit set, it never gets worker results. NEXT: (1) confirm the
+  worker→manager completion channel (netlink unicast vs socketpair) by tracing
+  which port DEQUEUES the cooked result addressed to the manager, or by checking
+  if udevd uses a socketpair (then the bug is in our AF_UNIX/pipe IPC, not
+  netlink); (2) fix delivery so the manager registers completions ONCE per event.
+  Trace recipe: add [UEMIT]/[UDEQ R|C grp/port]/[USEND]/[USKIP] klog lines to
+  netlink/src/lib.rs emit_uevent_with_env / dequeue / rebroadcast_cooked_uevent
+  (needs `klog` dep added to netlink/Cargo.toml), grep per-seq counts.
+- LEADING FIX HYPOTHESIS (verify before coding): our netlink recvfrom/recvmsg
+  stamps the source address `nlmsg_pid = 0` (kernel) for ALL cooked receives
+  (netlink_fd.rs ~416-421) because rebroadcast_cooked_uevent enqueues a bare
+  `msg.to_vec()` and does NOT record the sender's port. If the udevd MANAGER
+  distinguishes a worker-completion (cooked, sender = worker pid) from a fresh
+  kernel event (sender pid 0) by that source pid, stamping 0 makes it treat each
+  worker completion as a NEW kernel event → re-queue → re-dispatch → the 20×
+  loop. Candidate fix: carry the sender port_id alongside each queued datagram
+  (rx_queue becomes (msg, src_port)) so recvfrom stamps the true sender for
+  cooked worker→manager messages. RISK: the existing pid=0 stamping is validated
+  for PID1's group-0 monitor (code comment, netlink/src/lib.rs ~264) — don't
+  regress that; only worker→manager cooked unicast needs the real pid. Confirm
+  the manager's check first (read systemd udev-manager.c on_uevent / libudev
+  udev_monitor_receive_device sender validation) before changing the stamp.
+- gdm exits code=1 (059_execve: only execs plymouth=ENOENT, non-fatal) — a
+  downstream symptom of CAN_GRAPHICAL=0. Fix the reprocessing loop first.
+
+## Diagnostic method (measure, don't guess — enforced this session)
+- Mount parent/dest bugs cracked by: trace each EINVAL return tag in
+  move_mount_m; dump the mount table (id, parent_id, rendered_path) at the
+  reject; then a [GRAFT] trace at creation showing the mount born with the wrong
+  parent. All traces reverted after use.
+- The bind-dentry ambiguity is the recurring theme (see auto-memory
+  "mount-dentry-sharing-gotcha"): ALWAYS pass the walked path->mnt, never
+  re-derive a mount from a bare dentry when binds are in play.
+
+## Boot harness
+`bash <scratchpad>/boot.sh <log> 200` (kills stale qemu, boots live-gnome ISO,
+serial→log). Build: `cd ../oxide-images && make kernel ARCH=x86_64 && cd
+../kernel && cargo run -q -p xtask -- artifacts --arch x86_64 && cd
+../oxide-images && cargo run -q -p imagectl -- build-boot --profile live-gnome
+--arch x86_64`. STALE-ARTIFACT TRAP: a compile FAIL still lets `xtask artifacts`
+export the last-good kernel — always confirm the build `Finished` line.
+Checks: `grep CAN_GRAPHICAL <log>`; `grep -c code=265 <log>`;
+udev queue: `grep 'Device processed' <log>`; card0: `grep -i card0 <log>`.
+
+## Ledger
+metadata/index.md: B next=319 (318 in use this session), D next=120, F next=650.

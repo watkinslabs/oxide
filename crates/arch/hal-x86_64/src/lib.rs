@@ -340,6 +340,52 @@ unsafe fn pio_out8(p: u16, v: u8) {
     }
 }
 
+/// Read the legacy CMOS/RTC wall clock (ports 0x70 index / 0x71 data) and
+/// return seconds since the Unix epoch. Used to initialise CLOCK_REALTIME at
+/// boot (Linux `read_persistent_clock64` / `mach_get_cmos_time`). Without it
+/// the wall clock starts at 1970, so PAM/shadow account checks see every
+/// account's password date as "in the future" and TLS/timers/mtimes are wrong.
+/// QEMU presents the host time here. Returns 0 if the year reads implausibly.
+/// # C: O(1) (a bounded UIP spin)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn read_rtc_unix_secs() -> u64 {
+    // SAFETY: legacy CMOS RTC index/data ports; side-effect-tolerable byte reads.
+    unsafe {
+        let rd = |r: u8| -> u8 { pio_out8(0x70, r); pio_in8(0x71) };
+        // Wait out an update-in-progress for a torn-read-free snapshot (bounded).
+        let mut spins = 0u32;
+        while rd(0x0A) & 0x80 != 0 { spins += 1; if spins > 2_000_000 { break; } }
+        let statusb = rd(0x0B);
+        let (mut sec, mut min, mut hour) = (rd(0x00), rd(0x02), rd(0x04));
+        let (mut day, mut mon, mut yr) = (rd(0x07), rd(0x08), rd(0x09));
+        let mut cent = rd(0x32);
+        let is_bcd = (statusb & 0x04) == 0;
+        let is_12h = (statusb & 0x02) == 0;
+        let pm = is_12h && (hour & 0x80) != 0;
+        hour &= 0x7F;
+        if is_bcd {
+            let c = |v: u8| (v & 0x0F) + ((v >> 4) * 10);
+            sec = c(sec); min = c(min); hour = c(hour);
+            day = c(day); mon = c(mon); yr = c(yr);
+            cent = if cent != 0 { c(cent) } else { 0 };
+        }
+        let mut hour = hour as u64;
+        if is_12h { if pm && hour != 12 { hour += 12; } else if !pm && hour == 12 { hour = 0; } }
+        let year: u64 = if cent >= 19 { cent as u64 * 100 + yr as u64 }
+                        else { 2000 + yr as u64 };
+        if !(1971..=2200).contains(&year) { return 0; }
+        // days_from_civil (Hinnant): days since 1970-01-01.
+        let m = mon as u64;
+        let y = if m <= 2 { year - 1 } else { year };
+        let era = y / 400;
+        let yoe = y - era * 400;
+        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as u64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146097 + doe - 719468;
+        days * 86400 + hour * 3600 + min as u64 * 60 + sec as u64
+    }
+}
+
 /// Calibrate the TSC frequency in kHz against PIT channel 2 — the
 /// standard one-shot gate method (Linux `pit_calibrate_tsc`, `23§3`).
 /// Programs channel 2 in mode 0 for the full 65535-tick (~54.9 ms)

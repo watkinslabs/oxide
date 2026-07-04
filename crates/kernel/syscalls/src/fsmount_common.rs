@@ -306,11 +306,11 @@ fn register_filesystems() {
 /// Graft a constructor-produced [`vfs::fs::MountSpec`] onto the walked mountpoint
 /// dentry, preserving the legacy per-fstype error policy via `spec.strict`:
 /// admit-and-ignore (old `let _ = register(); 0`) vs surface-errno. # C: O(depth)
-fn graft_mount(spec: vfs::fs::MountSpec, target_d: &Arc<Dentry>) -> i64 {
+fn graft_mount(spec: vfs::fs::MountSpec, target_d: &Arc<Dentry>, parent_hint: Option<u64>) -> i64 {
     if spec.strict {
         let res = match spec.bind_root {
-            Some(root) => vfs::mount::register_bind(Some(target_d.clone()), spec.fs, root),
-            None       => vfs::mount::register(Some(target_d.clone()), spec.fs),
+            Some(root) => vfs::mount::register_bind_at(Some(target_d.clone()), spec.fs, root, parent_hint),
+            None       => vfs::mount::register_at(Some(target_d.clone()), spec.fs, parent_hint),
         };
         match res {
             Ok(()) => { let _ = vfs::mount::propagate_mount(target_d); 0 }
@@ -319,8 +319,8 @@ fn graft_mount(spec: vfs::fs::MountSpec, target_d: &Arc<Dentry>) -> i64 {
         }
     } else {
         match spec.bind_root {
-            Some(root) => { let _ = vfs::mount::register_bind(Some(target_d.clone()), spec.fs, root); }
-            None       => { let _ = vfs::mount::register(Some(target_d.clone()), spec.fs); }
+            Some(root) => { let _ = vfs::mount::register_bind_at(Some(target_d.clone()), spec.fs, root, parent_hint); }
+            None       => { let _ = vfs::mount::register_at(Some(target_d.clone()), spec.fs, parent_hint); }
         }
         let _ = vfs::mount::propagate_mount(target_d);
         0
@@ -354,7 +354,10 @@ pub(crate) fn mount_fstype_with_data(
             Ok(s) => s,
             Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
-        return graft_mount(spec, target_d);
+        // Parent = the mount the target-dir walk crossed into (Linux `path->mnt`),
+        // not a re-derivation from the bind-shared mountpoint dentry.
+        let phint = crate::pathresolve::resolve_path(target, false).map(|p| p.mnt_id);
+        return graft_mount(spec, target_d, phint);
     }
     // Fallback: fstypes whose construction is NOT a clean backend-object
     // constructor (so they cannot live in the registry without restructuring

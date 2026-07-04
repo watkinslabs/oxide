@@ -622,6 +622,18 @@ fn dentry_kill(d: &Arc<Dentry>) {
 /// Also drops `d` from its inode's alias list (`inode->i_dentry`).
 /// # C: O(bucket_len + log N_children)
 pub fn d_drop(d: &Arc<Dentry>) {
+    // Linux invariant: a dentry with a filesystem mounted on it stays hashed
+    // and canonical — `__d_drop` never unhashes a live mountpoint. Unhashing it
+    // orphans the mount: a later lookup of the same (parent,name) mints a FRESH
+    // dentry the mount is not keyed on (`__lookup_mnt` keys on dentry pointer),
+    // so the mount is skipped and resolution falls through to the underlay. This
+    // is the live-gnome greeter blocker: systemd's sandbox setup d_drop'd the
+    // ext4 `/sys` dentry that sysfs was mounted on, so logind's re-lookup of
+    // `/sys` produced an unmounted dentry → `/sys` = empty ext4 dir →
+    // `/sys/dev/char/226:0` ENOENT → card0 never attached → no seat0 → no
+    // greeter. Unmount clears `D_MOUNTED` (`put_mountpoint`) BEFORE any drop, so
+    // this guard never blocks a real teardown. # C: O(1)
+    if d.is_mounted() { return; }
     DENTRY_HASHTABLE.remove(d);
     if let Some(inode) = d.inode() {
         if let Some(sb) = inode.i_sb() { sb.i_drop_alias(inode.ino(), d); }

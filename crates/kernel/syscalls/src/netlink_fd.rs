@@ -164,7 +164,7 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
         Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let dgram = if (flags & MSG_PEEK) != 0 { sock.peek_front() } else { sock.dequeue() };
-    let dgram = match dgram { Some(d) if !d.is_empty() => d, _ => return -(Errno::Eagain.as_i32() as i64) };
+    let (dgram, src_pid) = match dgram { Some((d, p)) if !d.is_empty() => (d, p), _ => return -(Errno::Eagain.as_i32() as i64) };
 
     // Scatter the one datagram across the iovecs (sd-netlink uses a single
     // buffer; tools may use several). Track copied vs total datagram len.
@@ -205,7 +205,7 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
         unsafe {
             core::ptr::write_volatile( name        as *mut u16, 16); // AF_NETLINK
             core::ptr::write_volatile((name +  2)  as *mut u16, 0);
-            core::ptr::write_volatile((name +  4)  as *mut u32, 0);  // nl_pid = kernel
+            core::ptr::write_volatile((name +  4)  as *mut u32, src_pid);  // nl_pid = sender (0 = kernel)
             core::ptr::write_volatile((name +  8)  as *mut u32, nl_groups);
         }
     }
@@ -340,12 +340,13 @@ pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let groups = if name != 0 {
+    let (groups, dest_pid) = if name != 0 {
         if name >= USER_VA_END || namelen < 12 { return -(Errno::Einval.as_i32() as i64); }
-        // SAFETY: name validated in user range and namelen covers sockaddr_nl.nl_groups @ +8.
-        unsafe { core::ptr::read_volatile((name + 8) as *const u32) }
+        // SAFETY: name validated in user range and namelen covers sockaddr_nl {nl_pid @ +4, nl_groups @ +8}.
+        unsafe { (core::ptr::read_volatile((name + 8) as *const u32),
+                  core::ptr::read_volatile((name + 4) as *const u32)) }
     } else {
-        0
+        (0, 0)
     };
 
     let mut payload = Vec::new();
@@ -367,6 +368,17 @@ pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
         // SAFETY: base..base+len validated < USER_VA_END.
         let src = unsafe { core::slice::from_raw_parts(base as *const u8, len) };
         payload.extend_from_slice(src);
+    }
+    // UNICAST to a specific port (Linux `netlink_unicast`): systemd-udevd's
+    // worker signals event COMPLETION to the manager by addressing the cooked
+    // device to the manager's netlink port (nl_pid != 0, nl_groups = 0). Honour
+    // it — a group broadcast never reaches the manager's per-event socket, so it
+    // re-dispatched each event ~20× (starving card0 → CAN_GRAPHICAL=0). Group
+    // broadcasts (nl_pid = 0) keep the write_to_groups path.
+    if sock.protocol == 15 && dest_pid != 0 && groups == 0 {
+        let src = sock.port_id.load(core::sync::atomic::Ordering::Acquire);
+        ::netlink::unicast_uevent_to_port(dest_pid, &payload, src);
+        return payload.len() as i64;
     }
     match sock.write_to_groups(&payload, groups) {
         Ok(n) => n as i64,
@@ -403,7 +415,7 @@ pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, flags: u64) -> i64 {
     // PEEK leaves the datagram queued (the following consuming read still sees
     // it); otherwise consume it. Empty/zero-length front → EAGAIN.
     let dgram = if (flags & MSG_PEEK) != 0 { sock.peek_front() } else { sock.dequeue() };
-    let dgram = match dgram { Some(d) if !d.is_empty() => d, _ => return -(Errno::Eagain.as_i32() as i64) };
+    let (dgram, src_pid) = match dgram { Some((d, p)) if !d.is_empty() => (d, p), _ => return -(Errno::Eagain.as_i32() as i64) };
     let copy = dgram.len().min(len);
     if copy > 0 {
         // SAFETY: bufp..bufp+copy validated above (len>0 ⇒ range checked); CPL=0 write through caller AS.
@@ -417,7 +429,7 @@ pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, flags: u64) -> i64 {
         unsafe {
             core::ptr::write_volatile( src_p        as *mut u16, 16);
             core::ptr::write_volatile((src_p +  2)  as *mut u16, 0);
-            core::ptr::write_volatile((src_p +  4)  as *mut u32, 0);  // kernel = pid 0
+            core::ptr::write_volatile((src_p +  4)  as *mut u32, src_pid);  // sender (0 = kernel)
             core::ptr::write_volatile((src_p +  8)  as *mut u32, nl_groups);
         }
     }

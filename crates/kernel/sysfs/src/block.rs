@@ -66,6 +66,10 @@ const DISK_ATTR_LIST: &[Attribute] = &[
     Attribute { name: "ro",        mode: RO_PERM },
     Attribute { name: "removable", mode: RO_PERM },
     Attribute { name: "dev",       mode: RO_PERM },
+    // uevent is WRITABLE (Linux disk_uevent): `udevadm trigger` / coldplug
+    // writes "add" to it to re-emit the device's uevent after udevd is up. A
+    // read-only uevent made coldplug fail EROFS on the first disk, so udevd
+    // never received ANY device uevent (no master-of-seat tag → no greeter).
     Attribute { name: "uevent",    mode: RW_PERM },
 ];
 static DISK_GROUP: AttrGroup = AttrGroup { attrs: DISK_ATTR_LIST };
@@ -86,6 +90,10 @@ impl SysfsOps for DiskKobj {
         disk_attr(&disk, attr)
     }
 
+    /// Writing "add"/"change"/"remove" to `uevent` re-emits the disk's uevent
+    /// (Linux `uevent_store` → `kobject_synth_uevent`). This is what `udevadm
+    /// trigger` (coldplug) does to replay device events after udevd starts.
+    /// # C: O(1)
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
         if attr != "uevent" {
             return Err(VfsError::Erofs);
