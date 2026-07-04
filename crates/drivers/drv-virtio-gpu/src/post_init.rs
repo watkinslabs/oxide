@@ -3,6 +3,7 @@
 
 
 
+use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 struct ProbeCommandBuffer {
@@ -186,7 +187,7 @@ pub fn get_display_info(
             return false;
         }
     }
-    publish_console_scanout();
+    publish_console_scanout(bdf_word);
     true
 }
 
@@ -416,11 +417,12 @@ unsafe fn submit_raw(
 
 
 // ---- Persistent scanout state for ongoing fbcon flush (B07) ------
-// After setup_scanout succeeds, save the context so the kernel-side
-// fbcon driver can push klog text to the FB via transfer + flush
-// after boot. Single scanout; single resource (res_id=1); single CPU
-// caller at boot installs it, repeated callers from klog stream
-// share via the Spinlock.
+// After setup_scanout succeeds, save the context so the kernel-side fbcon
+// driver can push klog text to the FB via transfer + flush after boot.
+// Contexts are keyed by owning parent BDF. The current DRM/fbcon/fbdev node
+// layer still exposes one console scanout, so those global hooks operate on
+// the primary entry (the first successfully installed scanout) while remove
+// and shutdown target the exact BDF.
 
 use sync::{TaskList as DriverLockClass, Spinlock};
 
@@ -439,7 +441,7 @@ struct ScanoutCtx {
     hhdm: u64,
 }
 
-static CTX: Spinlock<Option<ScanoutCtx>, DriverLockClass> = Spinlock::new(None);
+static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
 
 /// Copy `pixels` into the live framebuffer, then issue
 /// transfer_to_host_2d + resource_flush so the host repaints the
@@ -448,7 +450,7 @@ static CTX: Spinlock<Option<ScanoutCtx>, DriverLockClass> = Spinlock::new(None);
 /// # C: O(fb_bytes) copy + O(1) per submit.
 pub fn fbcon_flush_pixels(pixels: &[u8]) {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match g.first() { Some(c) => c, None => return };
     let n = (ctx.fb_bytes as usize).min(pixels.len());
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded copy of n ≤ fb_bytes; CPL=0 writes through HHDM mapping.
     unsafe {
@@ -479,7 +481,7 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
 /// # C: O(fb_bytes) clear + O(1) submits.
 pub fn blank_scanout() {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match g.first() { Some(c) => c, None => return };
     // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded zero of the whole backing; CPL=0 writes through the HHDM mapping.
     hal::zerotrap::trap((ctx.fb_va as *mut u8) as *const u8, (ctx.fb_bytes as usize) as usize);
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
@@ -508,11 +510,11 @@ fn install_scanout_ctx(
     w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_pages_alloc: usize, res_id: u32,
     ctrlq: virtio::VirtQueueResource, cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
 ) -> bool {
-    let mut ctx = CTX.lock();
-    if ctx.is_some() {
+    let mut ctxs = CTX.lock();
+    if ctxs.iter().any(|ctx| ctx.bdf == bdf) {
         return false;
     }
-    *ctx = Some(ScanoutCtx {
+    ctxs.push(ScanoutCtx {
         bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
         ctrlq, cmd_buf_va, cmd_buf_pa, hhdm,
     });
@@ -525,9 +527,9 @@ fn install_scanout_ctx(
 pub fn uninstall_scanout(bdf: u32) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => guard.take(),
-            _ => None,
+        match guard.iter().position(|ctx| ctx.bdf == bdf) {
+            Some(idx) => Some(guard.remove(idx)),
+            None => None,
         }
     };
     let ctx = match ctx {
@@ -559,9 +561,9 @@ pub fn uninstall_scanout(bdf: u32) -> bool {
 pub fn shutdown_scanout(bdf: u32) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => guard.take(),
-            _ => None,
+        match guard.iter().position(|ctx| ctx.bdf == bdf) {
+            Some(idx) => Some(guard.remove(idx)),
+            None => None,
         }
     };
     let ctx = match ctx {
@@ -582,9 +584,9 @@ pub fn shutdown_scanout(bdf: u32) -> bool {
 pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => guard.take(),
-            _ => None,
+        match guard.iter().position(|ctx| ctx.bdf == bdf) {
+            Some(idx) => Some(guard.remove(idx)),
+            None => None,
         }
     };
     let ctx = match ctx {
@@ -605,13 +607,13 @@ pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
 
 /// True iff the scanout context is installed (post-`setup_scanout`).
 /// # C: O(1)
-pub fn scanout_ready() -> bool { CTX.lock().is_some() }
+pub fn scanout_ready() -> bool { !CTX.lock().is_empty() }
 
 /// Read back the scanout dimensions. Used by the kernel's fbcon
 /// klog wiring to size its Console.
 /// # C: O(1)
 pub fn dimensions() -> Option<(u32, u32)> {
-    CTX.lock().as_ref().map(|c| (c.w, c.h))
+    CTX.lock().first().map(|c| (c.w, c.h))
 }
 
 /// The scanout framebuffer as `(base_pa, fb_va, bytes, pitch, w, h)` for the
@@ -620,7 +622,7 @@ pub fn dimensions() -> Option<(u32, u32)> {
 /// `w*4` (BGRA32). `None` before scanout setup. # C: O(1)
 pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
     let g = CTX.lock();
-    let c = g.as_ref()?;
+    let c = g.first()?;
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
 
@@ -630,8 +632,11 @@ pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
 /// its console/fb helper registration.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-pub fn publish_console_scanout() {
+pub fn publish_console_scanout(bdf: u32) {
     let Some((w, h)) = dimensions() else { return };
+    if CTX.lock().first().map(|ctx| ctx.bdf) != Some(bdf) {
+        return;
+    }
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
     if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer() {
         fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
@@ -651,10 +656,10 @@ pub fn publish_console_scanout() {
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unpublish_console_scanout(bdf: u32) {
-    let fb_base = {
-        let ctx = CTX.lock();
-        match ctx.as_ref() {
-            Some(ctx) if ctx.bdf == bdf => ctx.fb_va - ctx.hhdm,
+    let (fb_base, clear_scanout_ops) = {
+        let ctxs = CTX.lock();
+        match ctxs.first() {
+            Some(ctx) if ctx.bdf == bdf => (ctx.fb_va - ctx.hhdm, ctxs.len() == 1),
             _ => return,
         }
     };
@@ -665,7 +670,9 @@ pub fn unpublish_console_scanout(bdf: u32) {
     fbdev::clear_flush_hook();
     fbdev::clear_wait_hooks();
     let _ = fbdev::unregister_by_base(fb_base);
-    drm::node::clear_scanout_ops();
+    if clear_scanout_ops {
+        drm::node::clear_scanout_ops();
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -692,7 +699,7 @@ fn monotonic_now_ns() -> u64 {
 // ============================================================
 // D5b-2 runtime KMS scanout API (the drm crate calls these via the
 // hook registered in `register_drm_hooks`). All honest-fail (return
-// false/None) if the scanout CTX is None — i.e. QEMU was launched
+// false/None) if no primary scanout exists — i.e. QEMU was launched
 // without virtio-gpu, so SETCRTC must -EINVAL upstream.
 //
 // CONSOLE SAFETY: the boot fbcon framebuffer is res_id 1 and stays
@@ -716,11 +723,11 @@ pub fn boot_scanout_res_id() -> u32 { BOOT_SCANOUT_RES_ID }
 
 /// Run an encode closure as one CTRLQ command + poll used. Mirrors the
 /// boot `submit_one` but takes the queue context from the installed
-/// CTX. `false` if no CTX or the round-trip times out / NAKs.
+/// primary scanout. `false` if no scanout or the round-trip times out / NAKs.
 /// # C: O(1) submit + host-side O(work).
 fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return false };
+    let ctx = match g.first() { Some(c) => c, None => return false };
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     // SAFETY: cmd_buf is the HHDM-mapped 4 KiB scratch frame setup_scanout installed; q0 descriptor/avail/used/notify VAs are the exact ones the boot path validated; we hold the CTX lock so we are the sole writer for this submit; the encode closure writes < 0x100 bytes into the per-call request slice.
     let ok = unsafe {
@@ -738,7 +745,7 @@ fn submit_ctrl<F: Fn(&mut [u8]) -> usize>(encode: F) -> bool {
 /// contiguous physical buffer (`pa`, `w*h*4` bytes). Issues
 /// RESOURCE_CREATE_2D + RESOURCE_ATTACH_BACKING (one mem-entry over the
 /// whole contiguous run). Returns the new res_id, or `None` if no
-/// scanout CTX or a command failed. The buffer's PA must be a single
+/// primary scanout context or a command failed. The buffer's PA must be a single
 /// contiguous run (DRM dumb buffers are alloc_contig). # C: O(1) submits.
 pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32> {
     if !scanout_ready() { return None; }
@@ -758,7 +765,7 @@ pub fn create_scanout_from_pa(pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u
 
 /// Switch scanout 0 to `res_id` and make its pixels visible:
 /// SET_SCANOUT(0, res_id, 0,0,w,h) + TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
-/// `false` if no CTX or a command failed. # C: O(1) submits.
+/// `false` if no primary scanout or a command failed. # C: O(1) submits.
 pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
     if !scanout_ready() || w == 0 || h == 0 { return false; }
     if !submit_ctrl(|b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
@@ -773,7 +780,7 @@ pub fn set_scanout(res_id: u32, w: u32, h: u32) -> bool {
 /// SET_SCANOUT back to res_id 1 over the boot dimensions + flush, then
 /// `fbcon::force_repaint()` re-blits the live VT into res_id 1's backing
 /// (via fbcon_flush_pixels) so the next flush shows real content.
-/// `false` if no CTX. # C: O(1) submits + O(cols*rows) repaint.
+/// `false` if no primary scanout. # C: O(1) submits + O(cols*rows) repaint.
 pub fn restore_console_scanout() -> bool {
     let (w, h) = match dimensions() { Some(d) => d, None => return false };
     let ok = set_scanout(BOOT_SCANOUT_RES_ID, w, h);
@@ -804,7 +811,7 @@ pub fn register_drm_hooks() {
 /// # C: O(1) submits (+ host-side O(w*h) transfer).
 pub fn flush_scanout() {
     let g = CTX.lock();
-    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let ctx = match g.first() { Some(c) => c, None => return };
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
     // SAFETY: same VAs/PAs setup_scanout installed; sole writer under the CTX lock; cmd_buf is HHDM-mapped 4 KiB scratch.
