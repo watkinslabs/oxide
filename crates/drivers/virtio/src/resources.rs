@@ -692,25 +692,76 @@ impl VirtioTransportLocation {
 /// Early payload buffers a transport may prepare for a network child before
 /// the child runtime takes over normal RX/TX ownership.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct VirtioNetRxBuffer {
+    pub desc_id: u16,
+    pub pa:      u64,
+    pub len:     u16,
+}
+
+/// Number of RX buffers the PCI transport pre-posts for a virtio-net child.
+pub const VIRTIO_NET_RX_BOOT_POOL: usize = 8;
+
+/// Early payload buffers a transport may prepare for a network child before
+/// the child runtime takes over normal RX/TX ownership.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct VirtioNetBootPayloads {
-    pub rx_buf_pa: u64,
-    pub rx_buf_len: u16,
+    pub rx_bufs:   [VirtioNetRxBuffer; VIRTIO_NET_RX_BOOT_POOL],
+    pub rx_bufs_len: usize,
     pub tx_buf_pa: u64,
 }
 
 impl VirtioNetBootPayloads {
     /// # C: O(1)
     pub const fn new(rx_buf_pa: u64, rx_buf_len: u16, tx_buf_pa: u64) -> Self {
+        let mut rx_bufs = [VirtioNetRxBuffer { desc_id: 0, pa: 0, len: 0 }; VIRTIO_NET_RX_BOOT_POOL];
+        let rx_bufs_len = if rx_buf_pa != 0 && rx_buf_len != 0 {
+            rx_bufs[0] = VirtioNetRxBuffer {
+                desc_id: 0,
+                pa: rx_buf_pa,
+                len: rx_buf_len,
+            };
+            1
+        } else {
+            0
+        };
         Self {
-            rx_buf_pa,
-            rx_buf_len,
+            rx_bufs,
+            rx_bufs_len,
+            tx_buf_pa,
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn from_rx_pool(
+        rx_bufs: [VirtioNetRxBuffer; VIRTIO_NET_RX_BOOT_POOL],
+        rx_bufs_len: usize,
+        tx_buf_pa: u64,
+    ) -> Self {
+        Self {
+            rx_bufs,
+            rx_bufs_len,
             tx_buf_pa,
         }
     }
 
     /// # C: O(1)
     pub const fn is_present(&self) -> bool {
-        self.rx_buf_pa != 0 && self.rx_buf_len != 0 && self.tx_buf_pa != 0
+        self.rx_bufs_len != 0 && self.rx_bufs_valid() && self.tx_buf_pa != 0
+    }
+
+    /// # C: O(VIRTIO_NET_RX_BOOT_POOL)
+    pub const fn rx_bufs_valid(&self) -> bool {
+        let mut i = 0;
+        while i < self.rx_bufs_len {
+            if i >= VIRTIO_NET_RX_BOOT_POOL
+                || self.rx_bufs[i].pa == 0
+                || self.rx_bufs[i].len == 0
+            {
+                return false;
+            }
+            i += 1;
+        }
+        true
     }
 }
 
@@ -905,12 +956,14 @@ impl VirtioTransportProbeResult {
         frames
     }
 
-    /// # C: O(1)
-    pub const fn net_payload_frames(&self) -> [u64; 2] {
-        [
-            self.net_boot_payloads.rx_buf_pa,
-            self.net_boot_payloads.tx_buf_pa,
-        ]
+    /// # C: O(VIRTIO_NET_RX_BOOT_POOL)
+    pub fn net_payload_frames(&self) -> Vec<u64> {
+        let mut frames = Vec::new();
+        for i in 0..self.net_boot_payloads.rx_bufs_len.min(VIRTIO_NET_RX_BOOT_POOL) {
+            push_unique_frame(&mut frames, self.net_boot_payloads.rx_bufs[i].pa);
+        }
+        push_unique_frame(&mut frames, self.net_boot_payloads.tx_buf_pa);
+        frames
     }
 }
 
@@ -923,7 +976,7 @@ impl VirtioTransportProbeResult {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VirtioProbeOwnedFrames {
     vring_frames: Vec<u64>,
-    payload_frames: [u64; 2],
+    payload_frames: Vec<u64>,
 }
 
 impl VirtioProbeOwnedFrames {
@@ -953,14 +1006,14 @@ impl VirtioProbeOwnedFrames {
         core::mem::take(&mut self.vring_frames)
     }
 
-    /// # C: O(1)
-    pub const fn payload_frames(&self) -> [u64; 2] {
-        self.payload_frames
+    /// # C: O(N_payload)
+    pub fn payload_frames(&self) -> &[u64] {
+        &self.payload_frames
     }
 
     /// # C: O(1)
     pub fn is_empty(&self) -> bool {
-        self.vring_frames.is_empty() && self.payload_frames == [0, 0]
+        self.vring_frames.is_empty() && self.payload_frames.is_empty()
     }
 }
 
@@ -1616,7 +1669,8 @@ mod tests {
 
         let facts = result.child_facts();
         assert_eq!(facts.drv_features, 0x55);
-        assert_eq!(facts.net_boot_payloads().rx_buf_pa, 0x9000);
+        assert_eq!(facts.net_boot_payloads().rx_bufs[0].pa, 0x9000);
+        assert_eq!(facts.net_boot_payloads().rx_bufs_len, 1);
         let resources = facts.resources_for_child(VirtioChildRequirements::net()).unwrap();
         assert_eq!(resources.cfg_va, 0x10);
         assert_eq!(resources.device_cfg_va, 0x30);
@@ -1627,7 +1681,7 @@ mod tests {
             result.vring_frames(),
             alloc::vec![0x1000, 0x2000, 0x3000, 0x5000, 0x6000, 0x7000]
         );
-        assert_eq!(result.net_payload_frames(), [0x9000, 0xa000]);
+        assert_eq!(result.net_payload_frames(), alloc::vec![0x9000, 0xa000]);
     }
 
     #[test]
@@ -1690,7 +1744,7 @@ mod tests {
         let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result);
 
         assert_eq!(owned.take_vring_frames(), alloc::vec![0x1000, 0x2000, 0x3000]);
-        assert_eq!(owned.payload_frames(), [0x9000, 0xa000]);
+        assert_eq!(owned.payload_frames(), &[0x9000, 0xa000]);
         assert_eq!(owned.take_all(), alloc::vec![0x9000, 0xa000]);
         assert!(owned.is_empty());
     }

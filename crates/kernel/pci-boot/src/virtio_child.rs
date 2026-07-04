@@ -171,14 +171,17 @@ impl VirtioChildOps for VirtioNetOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        if !drv_virtio_net::modern::init_modern(
+        let rx_bufs = payloads.rx_bufs[..payloads.rx_bufs_len.min(virtio::VIRTIO_NET_RX_BOOT_POOL)]
+            .iter()
+            .copied()
+            .collect();
+        if !drv_virtio_net::modern::init_modern_with_rx_pool(
             device_key,
             resources,
             location.bus,
             location.device,
             location.function,
-            payloads.rx_buf_pa,
-            payloads.rx_buf_len,
+            rx_bufs,
             payloads.tx_buf_pa,
         ) {
             return Err(drv::Error::ProbeFailed);
