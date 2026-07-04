@@ -856,7 +856,10 @@ test-pass claims.
   update; only completed I/O advances the stored hw_ptr. The virtio-snd
   backend now also returns the actual STOP/RELEASE command result during
   reconfiguration and HW_FREE, leaving stream state unchanged when the device
-  rejects release.
+  rejects release. OSS parameter-changing ioctls now fail if reset cannot
+  stop/release the active stream, preserving the old OSS runtime state instead
+  of pretending the stream was disarmed. PCM timestamp configuration ioctls now
+  report unsupported until real status timestamp plumbing exists.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`

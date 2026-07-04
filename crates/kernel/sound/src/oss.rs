@@ -99,26 +99,31 @@ fn rate_enum_to_hz(e: u8) -> u32 {
 
 /// Stop + release both directions and disarm, so the next I/O re-applies
 /// params (SNDCTL_DSP_RESET / a param change).
-fn reset(owner: u32) {
+fn reset(owner: u32) -> bool {
     let (running, cap_running) = {
         let mut guard = OSS.lock();
         let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
-            return;
+            return false;
         };
-        let running = o.running;
-        let cap_running = o.cap_running;
-        o.running = false;
-        o.cap_running = false;
-        (running, cap_running)
+        (o.running, o.cap_running)
     };
     if running {
-        let _ = crate::ops::pcm_trigger(owner, false);
-        let _ = crate::ops::pcm_hw_free(owner);
+        if !crate::ops::pcm_trigger(owner, false) || !crate::ops::pcm_hw_free(owner) {
+            return false;
+        }
+        if let Some(o) = OSS.lock().iter_mut().find(|o| o.owner == owner) {
+            o.running = false;
+        }
     }
     if cap_running {
-        let _ = crate::ops::cap_trigger(owner, false);
-        let _ = crate::ops::cap_hw_free(owner);
+        if !crate::ops::cap_trigger(owner, false) || !crate::ops::cap_hw_free(owner) {
+            return false;
+        }
+        if let Some(o) = OSS.lock().iter_mut().find(|o| o.owner == owner) {
+            o.cap_running = false;
+        }
     }
+    true
 }
 
 /// /dev/dsp read(2): lazily cap_hw_params→cap_prepare→cap_trigger on the
@@ -201,12 +206,12 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
     let wi = |a: u64, v: u32| { if let Some(b) = UserBuf::new(a, 4) { b.w32(0, v); } };
 
     match nr {
-        0 => { reset(owner); 0 }                                      // RESET
+        0 => if reset(owner) { 0 } else { err(Errno::Eio) },          // RESET
         1 | 8 => 0,                                                  // SYNC / POST
         2 => {                                                       // SPEED
             let hz = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
             let e = hz_to_rate_enum(hz);
-            reset(owner);
+            if !reset(owner) { return err(Errno::Eio); }
             {
                 let mut guard = OSS.lock();
                 let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else {
@@ -219,7 +224,7 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
         }
         3 => {                                                       // STEREO
             let st = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            reset(owner);
+            if !reset(owner) { return err(Errno::Eio); }
             let channels = if st != 0 { 2 } else { 1 };
             {
                 let mut guard = OSS.lock();
@@ -243,7 +248,7 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
                 wi(arg, virtio_to_afmt(o.format));
                 return 0;
             }
-            reset(owner);
+            if !reset(owner) { return err(Errno::Eio); }
             let format = afmt_to_virtio(a);
             {
                 let mut guard = OSS.lock();
@@ -257,7 +262,7 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
         }
         6 => {                                                       // CHANNELS
             let n = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            reset(owner);
+            if !reset(owner) { return err(Errno::Eio); }
             let channels = n.clamp(1, 2) as u8;
             {
                 let mut guard = OSS.lock();
@@ -280,5 +285,73 @@ pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
         15 => { if UserBuf::new(arg, 4).is_none() { return err(Errno::Efault); } wi(arg, 0); 0 } // GETCAPS
         10 | 14 => 0,                                                // SUBDIVIDE / SETFRAGMENT
         _ => err(Errno::Enotty),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(_owner: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
+    fn caps(_owner: u32) -> crate::ops::Caps { Some((1 << V_S16, 1 << 6, 1, 2)) }
+    fn period(_owner: u32) -> usize { 2048 }
+    fn hw_params(_owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+    fn yes(_owner: u32) -> bool { true }
+    fn start_only(_owner: u32, start: bool) -> bool { start }
+    fn submit(_owner: u32, b: &[u8]) -> usize { b.len() }
+    fn recv(_owner: u32, b: &mut [u8]) -> usize { b.len() }
+
+    static STOP_FAIL_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
+        config: cfg,
+        pcm_caps: caps,
+        cap_caps: caps,
+        period_bytes: period,
+        pcm_hw_params: hw_params,
+        pcm_prepare: yes,
+        pcm_trigger: start_only,
+        pcm_hw_free: yes,
+        pcm_submit: submit,
+        cap_hw_params: hw_params,
+        cap_prepare: yes,
+        cap_trigger: start_only,
+        cap_hw_free: yes,
+        pcm_recv: recv,
+    };
+
+    fn test_err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+    #[test]
+    fn parameter_change_does_not_clear_running_state_when_reset_fails() {
+        let owner = 0x7100;
+        unregister_card(owner);
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+
+        assert!(crate::reserve_card(owner));
+        assert!(crate::ops::register(owner, &STOP_FAIL_OPS));
+        register_card(owner);
+
+        let bytes = [0x55u8; 128];
+        assert_eq!(write(owner, &bytes), bytes.len());
+        {
+            let guard = OSS.lock();
+            let o = guard.iter().find(|o| o.owner == owner).expect("registered OSS state");
+            assert!(o.running);
+            assert_eq!(o.rate, 6);
+        }
+
+        let speed_req = (1u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 2;
+        let mut hz = 48_000u32;
+        assert_eq!(handle(owner, false, speed_req, (&mut hz as *mut u32) as u64), test_err(Errno::Eio));
+        {
+            let guard = OSS.lock();
+            let o = guard.iter().find(|o| o.owner == owner).expect("registered OSS state");
+            assert!(o.running);
+            assert_eq!(o.rate, 6);
+        }
+
+        unregister_card(owner);
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
     }
 }
