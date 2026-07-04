@@ -1,5 +1,3 @@
-use core::cell::UnsafeCell;
-
 use crate::{boot_debug, boot_info_build};
 
 /// Rust-side boot continuation. Runs on the kernel stack we
@@ -18,7 +16,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // the sink is never installed.
     debug_boot! {
         // SAFETY: COM1 owned by us pre-init; no other CPU alive yet; `init` programs the UART for 115200-8N1 + FIFO. After this call any klog emit will land on the serial port.
-        unsafe { BOOT_UART.lock().init(); }
+        unsafe { boot_debug::init_boot_uart(); }
         klog::set_byte_sink(boot_debug::boot_emit);
     }
     // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (mirroring Limine's selector offsets so KERNEL_CS=0x28 / KERNEL_DS=0x30 stay valid) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
@@ -86,9 +84,7 @@ pub unsafe extern "C" fn _start() -> ! {
     // CPU alive yet. The pointer arithmetic stays within the static
     // array; the asm `mov rsp, _; call _` then `ud2` swaps the
     // stack and tail-calls _start_rust which never returns.
-    let stack_top = unsafe {
-        (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE)
-    };
+    let stack_top = unsafe { boot_info_build::kernel_stack_top() };
     // SAFETY: stack_top is one past the last byte of KERNEL_STACK; install via `mov rsp` before any call gives a valid kernel stack of STACK_SIZE bytes growing down. `_start_rust` is extern "C" + noreturn; `ud2` after the call hard-guards accidental return.
     unsafe {
         core::arch::asm!(
@@ -104,4 +100,3 @@ pub unsafe extern "C" fn _start() -> ! {
 
 // On host-test builds (target_os != oxide-kernel) we leave _start out so
 // the crate compiles for `cargo test` without linker headaches.
-

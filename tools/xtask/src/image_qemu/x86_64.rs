@@ -107,9 +107,9 @@ pub(super) fn qemu_run_grub_x86_64(
         // Stage-2: ROOT + HOME disks. The kernel identifies each by the
         // virtio-blk serial (oxide-root / oxide-home) via GET_ID.
         "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
-        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root",
+        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
         "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
-        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home",
+        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
         "-netdev", netdev.as_str(),
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // -vga none: q35 otherwise adds a default std-VGA that becomes the

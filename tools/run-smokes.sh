@@ -53,9 +53,9 @@ run_one() {
       -machine q35 -cpu Haswell-v4 -m 2G
       -cdrom "$img" -boot d
       -drive "if=none,id=root,format=raw,file=$root_img"
-      -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root"
+      -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on"
       -drive "if=none,id=home,format=raw,file=$home_img"
-      -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home"
+      -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on"
       -display none -no-reboot -no-shutdown
       -serial stdio)
   else
@@ -65,9 +65,9 @@ run_one() {
       -bios "$repo/vendor/firmware/ovmf-aarch64.fd"
       -cdrom "$img" -boot d
       -drive "if=none,id=root,format=raw,file=$root_img"
-      -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root"
+      -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on"
       -drive "if=none,id=home,format=raw,file=$home_img"
-      -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home"
+      -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on"
       -display none -no-reboot
       # Semihosting required: boot-aarch64 uses `hlt #0xf000`
       # for early-boot UART output before pl011 is set up;

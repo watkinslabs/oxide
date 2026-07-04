@@ -36,14 +36,6 @@ macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-boot"))]
 macro_rules! debug_boot { ($($t:tt)*) => {} }
 
-#[cfg(feature = "debug-boot")]
-use klog::Uart;
-#[cfg(feature = "debug-boot")]
-use sync::{Spinlock, Tty as UartClass};
-
-#[cfg(feature = "debug-boot")]
-use pl011::{Pl011, PL011_VIRT_BASE};
-
 mod boot_debug;
 mod boot_info_build;
 mod entry;

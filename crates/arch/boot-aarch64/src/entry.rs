@@ -50,7 +50,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // the paging-agnostic semihosting sink.
     debug_boot! {
         if selfboot::is_selfboot() {
-            klog::set_byte_sink(boot_debug::boot_debug::boot_emit_pl011);
+            klog::set_byte_sink(boot_debug::boot_emit_pl011);
         } else {
             klog::set_byte_sink(boot_debug::boot_emit);
         }
@@ -109,9 +109,7 @@ pub unsafe extern "C" fn _start(dtb_phys: u64) -> ! {
     // Save x0 before any function call clobbers it.
     boot_info_build::DTB_PHYS_ADDR.store(dtb_phys, core::sync::atomic::Ordering::Release);
     // SAFETY: KERNEL_STACK is BSS-resident, owned by us, single-CPU.
-    let stack_top = unsafe {
-        (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE)
-    };
+    let stack_top = unsafe { boot_info_build::kernel_stack_top() };
     // SAFETY: stack_top is one past KERNEL_STACK; we force SPSel=1 so SP_EL1 (auto-selected on EL1 exception entry) points at our kernel stack — the boot handoff may arrive with SPSel=0; `_start_rust` is extern "C" + noreturn; `brk` hard-guards accidental return.
     unsafe {
         core::arch::asm!(

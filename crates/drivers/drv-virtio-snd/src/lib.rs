@@ -76,7 +76,7 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 mod state;
 use state::{
     active_ctx, active_ctx_for, active_ctx_mut, active_ctx_mut_for, free_frame, Ctx,
-    PcmState, SndDeviceConfig, SndInstall, SndProbe, SndProbeFrames, SoundCardReservation, CTX,
+    PcmState, SndDeviceConfig, SndProbe, SndProbeFrames, SoundCardReservation, CTX,
     DRAINED_EVENTS, LAST_EVENT,
 };
 
@@ -93,6 +93,7 @@ pub use lifecycle::{
     config, eventq_state, eventq_state_for, event_stats_for, install, present, present_for,
     shutdown, uninstall,
 };
+pub use state::SndInstall;
 #[cfg(test)]
 use lifecycle::remove_ctx_and_release_event_handler;
 #[cfg(test)]

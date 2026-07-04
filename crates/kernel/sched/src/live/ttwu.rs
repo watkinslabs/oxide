@@ -169,7 +169,12 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
     // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
     task.wakeup_deadline_ns.store(0, Ordering::Release);
     let me = this_cpu();
-    let target = select_task_rq(&task);
+    // Timer-ISR callers cannot take any rq lock here, but they are already on
+    // a CPU that will drain its own wake-list on the next schedule edge. Keeping
+    // forced-deferred wakes local avoids marking a sleeper Runnable and then
+    // stranding it on a remote CPU's wake-list if that CPU never reaches the
+    // drain point promptly.
+    let target = if force_defer { me } else { select_task_rq(&task) };
     // Defer to the target's wake_list (Linux `ttwu_queue_wakelist`) when we must
     // not place directly: the task is still switching OFF elsewhere (`on_cpu`),
     // the target is remote, or the caller forced it (timer ISR). The target

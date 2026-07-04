@@ -2,12 +2,12 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-mod autofs;
-mod core;
-mod font;
-mod tioclinux;
-mod tty_ioctl;
-mod vt;
+#[path = "016_ioctl/autofs.rs"] mod autofs;
+#[path = "016_ioctl/core.rs"] mod core;
+#[path = "016_ioctl/font.rs"] mod font;
+#[path = "016_ioctl/tioclinux.rs"] mod tioclinux;
+#[path = "016_ioctl/tty_ioctl.rs"] mod tty_ioctl;
+#[path = "016_ioctl/vt.rs"] mod vt;
 
 pub use self::core::sys_ioctl;
 pub use self::vt::vt_switch_wake;
