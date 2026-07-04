@@ -424,10 +424,12 @@ impl VirtioProbeState {
     }
 
     fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
+        let child_facts = result.child_facts(self.cfg_va, self.device_cfg_va);
         VirtioProbe {
             bdf_word: self.bdf_word,
             mappings: self.mappings,
             msix: self.msix,
+            child_facts,
             cfg_va: self.cfg_va,
             device_cfg_va: self.device_cfg_va,
             cmd_orig: result.cmd_orig,
@@ -521,10 +523,81 @@ struct VirtioProbeResult {
     snd_q3_size: u16,
 }
 
+impl VirtioProbeResult {
+    fn child_facts(&self, cfg_va: u64, device_cfg_va: u64) -> virtio::VirtioChildProbeFacts {
+        let mut resources =
+            virtio::VirtioChildResourceState::new(self.final_status, cfg_va, virtio_hhdm_offset())
+                .with_device_cfg_va(device_cfg_va)
+                .with_net_boot_payloads(virtio::VirtioNetBootPayloads::new(
+                    self.rx0_buf_pa,
+                    self.rx0_buf_len,
+                    self.tx0_buf_pa,
+                ));
+        for queue in [
+            self.q0_resource(),
+            self.q1_resource(),
+            self.snd_q2_resource(),
+            self.snd_q3_resource(),
+        ] {
+            resources.set_queue(queue);
+        }
+        virtio::VirtioChildProbeFacts::new(self.drv_features, resources)
+    }
+
+    fn q0_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            0,
+            self.q0_size,
+            self.q0_desc_pa,
+            self.q0_driver_pa,
+            self.q0_device_pa,
+            self.q0_notify_va,
+            self.q0_notify_off,
+        )
+    }
+
+    fn q1_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            1,
+            self.q1_size,
+            self.q1_desc_pa,
+            self.q1_driver_pa,
+            self.q1_device_pa,
+            self.q1_notify_va,
+            self.q1_notify_off,
+        )
+    }
+
+    fn snd_q2_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            2,
+            self.snd_q2_size,
+            self.snd_q2_desc_pa,
+            self.snd_q2_driver_pa,
+            self.snd_q2_device_pa,
+            self.snd_q2_notify_va,
+            self.snd_q2_notify_off,
+        )
+    }
+
+    fn snd_q3_resource(&self) -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource::new(
+            3,
+            self.snd_q3_size,
+            self.snd_q3_desc_pa,
+            self.snd_q3_driver_pa,
+            self.snd_q3_device_pa,
+            self.snd_q3_notify_va,
+            self.snd_q3_notify_off,
+        )
+    }
+}
+
 pub(super) struct VirtioProbe {
     pub(super) bdf_word: u32,
     mappings: TransportMappings,
     msix: Vec<MsixBinding>,
+    pub(super) child_facts: virtio::VirtioChildProbeFacts,
     pub(super) cmd_orig: u16,
     pub(super) cmd_new:  u16,
     pub(super) cfg_va:   u64,
@@ -586,34 +659,11 @@ fn virtio_hhdm_offset() -> u64 {
 }
 
 impl VirtioProbe {
-    fn queue_resource(&self, index: u16) -> Option<virtio::VirtQueueResource> {
-        match index {
-            0 => Some(self.q0_resource()),
-            1 => Some(self.q1_resource()),
-            2 => Some(self.snd_q2_resource()),
-            3 => Some(self.snd_q3_resource()),
-            _ => None,
-        }
-    }
-
     pub(super) fn child_resources(
         &self,
         requirements: virtio::VirtioChildRequirements,
     ) -> Option<virtio::VirtioResources> {
-        let mut state =
-            virtio::VirtioChildResourceState::new(self.final_status, self.cfg_va, virtio_hhdm_offset())
-                .with_device_cfg_va(self.device_cfg_va)
-                .with_net_boot_payloads(virtio::VirtioNetBootPayloads::new(
-                    self.rx0_buf_pa,
-                    self.rx0_buf_len,
-                    self.tx0_buf_pa,
-                ));
-        for index in 0..virtio::MAX_RESOURCE_QUEUES {
-            if let Some(queue) = self.queue_resource(index as u16) {
-                state.set_queue(queue);
-            }
-        }
-        state.resources_for_child(requirements)
+        self.child_facts.resources_for_child(requirements)
     }
 
     fn transport_vring_frames(&self) -> Vec<u64> {
@@ -660,53 +710,6 @@ impl VirtioProbe {
         }
     }
 
-    fn q0_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            0,
-            self.q0_size,
-            self.q0_desc_pa,
-            self.q0_driver_pa,
-            self.q0_device_pa,
-            self.q0_notify_va,
-            self.q0_notify_off,
-        )
-    }
-
-    fn q1_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            1,
-            self.q1_size,
-            self.q1_desc_pa,
-            self.q1_driver_pa,
-            self.q1_device_pa,
-            self.q1_notify_va,
-            self.q1_notify_off,
-        )
-    }
-
-    fn snd_q2_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            2,
-            self.snd_q2_size,
-            self.snd_q2_desc_pa,
-            self.snd_q2_driver_pa,
-            self.snd_q2_device_pa,
-            self.snd_q2_notify_va,
-            self.snd_q2_notify_off,
-        )
-    }
-
-    fn snd_q3_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            3,
-            self.snd_q3_size,
-            self.snd_q3_desc_pa,
-            self.snd_q3_driver_pa,
-            self.snd_q3_device_pa,
-            self.snd_q3_notify_va,
-            self.snd_q3_notify_off,
-        )
-    }
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and

@@ -501,6 +501,38 @@ impl VirtioChildResourceState {
     }
 }
 
+/// Child-visible facts produced by a completed transport probe. The concrete
+/// transport still owns MMIO/MSI lifetime and teardown records; this object
+/// carries the transport-neutral facts child drivers need after bring-up.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioChildProbeFacts {
+    pub drv_features: u64,
+    pub resources: VirtioChildResourceState,
+}
+
+impl VirtioChildProbeFacts {
+    /// # C: O(1)
+    pub const fn new(drv_features: u64, resources: VirtioChildResourceState) -> Self {
+        Self {
+            drv_features,
+            resources,
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn net_boot_payloads(&self) -> VirtioNetBootPayloads {
+        self.resources.net_boot_payloads
+    }
+
+    /// # C: O(N_required)
+    pub fn resources_for_child(
+        &self,
+        requirements: VirtioChildRequirements,
+    ) -> Option<VirtioResources> {
+        self.resources.resources_for_child(requirements)
+    }
+}
+
 /// Common child-facing session contract implemented by concrete virtio
 /// transports. Child drivers consume this shape; transport backends own how
 /// bring-up, IRQ/vector binding, MMIO lifetime, and failed-probe release are
@@ -670,5 +702,20 @@ mod tests {
 
         let state = state.with_net_boot_payloads(VirtioNetBootPayloads::new(0x1000, 64, 0x2000));
         assert!(!state.ready_for_child(VirtioChildRequirements::net()));
+    }
+
+    #[test]
+    fn child_probe_facts_expose_features_payloads_and_resources() {
+        let mut state =
+            VirtioChildResourceState::new(crate::VIRTIO_STATUS_DRIVER_OK, 0x10, 0x20)
+                .with_net_boot_payloads(VirtioNetBootPayloads::new(0x1000, 64, 0x2000));
+        state.set_queue(VALID_Q0);
+        let facts = VirtioChildProbeFacts::new(0x55, state);
+
+        assert_eq!(facts.drv_features, 0x55);
+        assert!(facts.net_boot_payloads().is_present());
+        assert!(facts
+            .resources_for_child(VirtioChildRequirements::q0())
+            .is_some());
     }
 }
