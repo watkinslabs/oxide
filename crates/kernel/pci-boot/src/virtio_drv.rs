@@ -80,6 +80,16 @@ impl VirtioProbeProfile {
         }
     }
 
+    fn gpu(msix0_handler: Option<fn()>) -> Self {
+        Self {
+            drv_features: drv_virtio_gpu::wanted_features(),
+            msix0_handler,
+            extra_queues: [None, None, None],
+            q1_notify_policy: Q1NotifyPolicy::None,
+            needs_net_boot_buffers: false,
+        }
+    }
+
     const fn net(msix0_handler: Option<fn()>) -> Self {
         Self {
             drv_features: drv_virtio_net::modern::wanted_features(),
@@ -204,7 +214,7 @@ impl drv::Driver for VirtioGpuDrv {
             return Err(drv::Error::Busy);
         }
         let d = pci_device_from_virtio_child(dev).ok_or(drv::Error::ProbeFailed)?;
-        let mut p = virtio_init_arch(&d, VirtioProbeProfile::generic(None))
+        let mut p = virtio_init_arch(&d, VirtioProbeProfile::gpu(None))
             .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &p);
         if (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) == 0
