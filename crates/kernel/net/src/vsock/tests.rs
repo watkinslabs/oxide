@@ -44,7 +44,7 @@ fn driver_reservation_is_not_live_until_publish() {
         assert!(driver_reserve(7));
         assert!(!driver_up());
         assert_eq!(guest_cid(), 0);
-        assert_eq!(driver_owner(), 7);
+        assert_eq!(driver_owner(), 0);
         assert!(driver_reserve(8));
         assert!(!driver_reserve(7));
         assert!(!driver_cancel_reserved(9));
@@ -105,9 +105,30 @@ fn driver_quiesce_stops_tx_but_keeps_owner_reserved() {
         assert!(driver_quiesce(21));
         assert!(!driver_up());
         assert_eq!(guest_cid(), 0);
-        assert_eq!(driver_owner(), 21);
+        assert_eq!(driver_owner(), 0);
         assert!(!driver_reserve(21));
         assert!(driver_cancel_reserved(21));
+        assert_eq!(driver_owner(), 0);
+    });
+}
+
+#[test]
+fn quiesced_endpoint_does_not_hide_remaining_live_endpoint() {
+    with_vsock_state(|| {
+        assert!(driver_install(31, 3, tx_ok));
+        assert!(driver_install(32, 4, tx_ok));
+        assert_eq!(driver_owner(), 31);
+        assert_eq!(guest_cid(), 3);
+
+        assert!(driver_quiesce(31));
+        assert!(!driver_up_for(31));
+        assert!(driver_up_for(32));
+        assert_eq!(driver_owner(), 32);
+        assert_eq!(guest_cid(), 4);
+        assert!(!driver_reserve(31));
+
+        assert!(driver_cancel_reserved(31));
+        assert!(driver_uninstall(32));
         assert_eq!(driver_owner(), 0);
     });
 }
