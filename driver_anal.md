@@ -15,11 +15,11 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 84% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 85% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 64% complete.
+  hotplug, fault injection, and multi-device coverage: about 65% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -242,6 +242,11 @@ test-pass claims.
   successful probes allocate `nvmeXn1` names, record the bound BDF key, reject
   duplicate binds before controller bring-up, and route remove/shutdown through
   the device model's BDF.
+  AHCI publication is also now per PCI function: successful probes allocate
+  Linux-style `sdX` names, record the bound BDF key, reject duplicate binds
+  before HBA bring-up, and route remove/shutdown through the device model's BDF.
+  AHCI does not publish a fake shared serial; IDENTIFY serial decode still
+  needs to be plumbed before it can provide a proper by-id label.
 - Virtio-input supports multiple input device records, publishes
   `/dev/input/eventN` through model-owned devices, generates
   `/proc/bus/input/devices` from live input state, and clears its event-queue
@@ -340,11 +345,13 @@ test-pass claims.
   `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
   but class-device topology and repeated bind/unbind/remove/readd behavior are
   not proven across all subsystems.
-- Block, NVMe, virtio-input, and virtio-rng are closest to per-device state.
+- Block, NVMe, AHCI, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
   provider. NVMe now supports multiple per-BDF controller records and unique
-  block names, but still needs QEMU multi-controller bind/unbind/rebind proof.
+  block names, and AHCI now supports multiple per-BDF controller records with
+  unique `sdX` block names, but both still need QEMU multi-controller
+  bind/unbind/rebind proof.
   Virtio-net transport, registered-iface, TX, RX softirq runtime,
   visible naming, RX stats, IPv4 ARP cache state, and IPv6 NDP stack lookups
   are now BDF/interface-owned keyed records, and the core net stack's NDP table
@@ -446,8 +453,8 @@ test-pass claims.
   loop proof and broader multi-NIC validation; virtio-gpu still needs a real
   multi-card/scanout table after its BDF-owned teardown fix;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
-  are still main offenders. AHCI still needs the same per-controller conversion
-  NVMe now has.
+  are still main offenders. AHCI and NVMe still need live multi-controller
+  proof, but they no longer use process-wide installed-controller slots.
 - Add explicit fault-injection coverage for probe failure after each allocation,
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
@@ -588,7 +595,6 @@ Several drivers still use singleton global state:
 - virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
 - virtio-vsock: keyed transport records, but a singleton upper protocol endpoint
 - virtio-snd: keyed transport records, but a singleton upper sound card
-- AHCI: single installed block controller record
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
 
@@ -596,6 +602,7 @@ Some subsystems are per-device already or closer to it:
 
 - block registry stores multiple disks
 - NVMe stores per-BDF controller records and publishes unique `nvmeXn1` disks
+- AHCI stores per-BDF controller records and publishes unique `sdX` disks
 - DRM core can register multiple DRM drivers/cards in principle
 - fbdev has a registry
 - input has per-device event records, but some procfs metadata still needs
@@ -964,11 +971,10 @@ Priority:
 
 1. virtio-net
 2. virtio-gpu
-3. AHCI
-4. virtio-snd
-5. virtio-vsock
-6. UARTs
-7. live proof for virtio-input, virtio-rng, and NVMe
+3. virtio-snd
+4. virtio-vsock
+5. UARTs
+6. live proof for virtio-input, virtio-rng, NVMe, and AHCI
 
 Acceptance:
 
