@@ -13,6 +13,8 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+type DeviceKey = virtio::VirtioChildDeviceKey;
+
 // ============================================================
 // Wire constants per linux/include/uapi/linux/virtio_gpu.h
 // + virtio 1.2 §5.7
@@ -218,6 +220,7 @@ pub struct DisplayInfo {
 
 /// Per-device driver instance state. Populated at probe.
 pub struct VirtioGpuDev {
+    pub device_key:           DeviceKey,
     pub bdf:                  u32,
     pub card_id:              u32,
     pub cfg_va:               u64,
@@ -464,7 +467,7 @@ fn read_u32_le(buf: &[u8], off: usize) -> u32 {
 // after running the modern-transport bring-up + GET_DISPLAY_INFO).
 // ============================================================
 
-/// Installed virtio-gpu PCI functions, keyed by owning parent BDF.
+/// Installed virtio-gpu child devices, keyed by virtio child device identity.
 static DEVICES: Spinlock<Vec<VirtioGpuDev>, DriverLockClass> = Spinlock::new(Vec::new());
 
 /// Surface for the kernel to install a fully-initialised device
@@ -472,7 +475,10 @@ static DEVICES: Spinlock<Vec<VirtioGpuDev>, DriverLockClass> = Spinlock::new(Vec
 /// # C: O(N)
 pub fn install(dev: VirtioGpuDev) -> KResult<()> {
     let mut devices = DEVICES.lock();
-    if devices.iter().any(|installed| installed.bdf == dev.bdf) {
+    if devices
+        .iter()
+        .any(|installed| installed.device_key == dev.device_key)
+    {
         return Err(Error::Busy);
     }
     devices.push(dev);
@@ -616,6 +622,7 @@ impl VirtioGpuDrm {
 /// Install + register with the DRM core (`47`).
 /// # C: O(1)
 pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
+    let device_key = dev.device_key;
     let bdf = dev.bdf;
     let display = dev.display;
     let features_negotiated = dev.features_negotiated;
@@ -629,12 +636,15 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
     });
     let card_id = drm::register(drm_dev);
     if card_id == u32::MAX {
-        let _ = uninstall(bdf);
+        let _ = uninstall(device_key);
         return Err(Error::NoDevice);
     }
 
     let mut devices = DEVICES.lock();
-    match devices.iter_mut().find(|dev| dev.bdf == bdf) {
+    match devices
+        .iter_mut()
+        .find(|dev| dev.device_key == device_key)
+    {
         Some(dev) => {
             dev.card_id = card_id;
         }
@@ -656,12 +666,15 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
 }
 
 /// Remove an installed virtio-gpu device and unregister its DRM backend.
-/// Returns true when the BDF matched a live device.
+/// Returns the removed device when the key matched a live child device.
 /// # C: O(1)
-pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev> {
+pub fn uninstall(device_key: DeviceKey) -> Option<VirtioGpuDev> {
     let dev = {
         let mut devices = DEVICES.lock();
-        match devices.iter().position(|dev| dev.bdf == bdf) {
+        match devices
+            .iter()
+            .position(|dev| dev.device_key == device_key)
+        {
             Some(idx) => Some(devices.remove(idx)),
             None => None,
         }
@@ -685,17 +698,17 @@ pub fn uninstall(bdf: u32) -> Option<VirtioGpuDev> {
 /// This is not hot-remove: keep the DRM/fbdev-visible model state installed,
 /// but reset the device and stop future scanout queue submissions.
 /// # C: O(1)
-pub fn shutdown(bdf: u32) -> bool {
+pub fn shutdown(device_key: DeviceKey) -> bool {
     let cfg_va = {
         let devices = DEVICES.lock();
-        let Some(dev) = devices.iter().find(|dev| dev.bdf == bdf) else {
+        let Some(dev) = devices.iter().find(|dev| dev.device_key == device_key) else {
             return false;
         };
         dev.cfg_va
     };
     #[cfg(target_os = "oxide-kernel")]
     {
-        if post_init::shutdown_scanout(bdf) {
+        if post_init::shutdown_scanout(device_key) {
             return true;
         }
     }
@@ -738,6 +751,10 @@ pub fn transport_profile() -> virtio::VirtioTransportProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const fn key(raw: u32) -> DeviceKey {
+        DeviceKey::from_raw(raw)
+    }
 
     fn test_ctrlq() -> virtio::VirtQueueResource {
         virtio::VirtQueueResource {
@@ -896,6 +913,7 @@ mod tests {
         DEVICES.lock().clear();
         assert!(!is_present());
         install(VirtioGpuDev {
+            device_key: key(0x0010_0000),
             bdf: 0x0010_0000,
             card_id: 0,
             cfg_va: 0,
@@ -910,6 +928,7 @@ mod tests {
             capset_count: 0,
         }).unwrap();
         install(VirtioGpuDev {
+            device_key: key(0x0020_0000),
             bdf: 0x0020_0000,
             card_id: 1,
             cfg_va: 0,
@@ -937,9 +956,10 @@ mod tests {
     }
 
     #[test]
-    fn install_accepts_multiple_bdfs_and_rejects_duplicate_bdf() {
-        fn dev(bdf: u32) -> VirtioGpuDev {
+    fn install_accepts_multiple_keys_and_rejects_duplicate_key() {
+        fn dev(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
             VirtioGpuDev {
+                device_key,
                 bdf,
                 card_id: 0,
                 cfg_va: 0,
@@ -953,20 +973,21 @@ mod tests {
         }
 
         DEVICES.lock().clear();
-        install(dev(1)).unwrap();
-        install(dev(2)).unwrap();
-        assert_eq!(install(dev(2)), Err(Error::Busy));
+        install(dev(key(1), 0x0010_0000)).unwrap();
+        install(dev(key(2), 0x0020_0000)).unwrap();
+        assert_eq!(install(dev(key(2), 0x0020_0001)), Err(Error::Busy));
         assert_eq!(DEVICES.lock().len(), 2);
-        assert_eq!(uninstall(1).unwrap().bdf, 1);
+        assert_eq!(uninstall(key(1)).unwrap().bdf, 0x0010_0000);
         assert!(is_present());
-        assert_eq!(uninstall(2).unwrap().bdf, 2);
+        assert_eq!(uninstall(key(2)).unwrap().bdf, 0x0020_0000);
         assert!(!is_present());
     }
 
     #[test]
     fn install_with_drm_tracks_each_bdf_card_id() {
-        fn dev(bdf: u32) -> VirtioGpuDev {
+        fn dev(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
             VirtioGpuDev {
+                device_key,
                 bdf,
                 card_id: 0,
                 cfg_va: 0,
@@ -980,17 +1001,31 @@ mod tests {
         }
 
         DEVICES.lock().clear();
-        let card_id_1 = install_with_drm(dev(1)).unwrap();
-        let card_id_2 = install_with_drm(dev(2)).unwrap();
+        let card_id_1 = install_with_drm(dev(key(1), 0x0010_0000)).unwrap();
+        let card_id_2 = install_with_drm(dev(key(2), 0x0020_0000)).unwrap();
         {
             let devices = DEVICES.lock();
-            assert_eq!(devices.iter().find(|dev| dev.bdf == 1).unwrap().card_id, card_id_1);
-            assert_eq!(devices.iter().find(|dev| dev.bdf == 2).unwrap().card_id, card_id_2);
+            assert_eq!(
+                devices
+                    .iter()
+                    .find(|dev| dev.device_key == key(1))
+                    .unwrap()
+                    .card_id,
+                card_id_1
+            );
+            assert_eq!(
+                devices
+                    .iter()
+                    .find(|dev| dev.device_key == key(2))
+                    .unwrap()
+                    .card_id,
+                card_id_2
+            );
         }
-        assert_eq!(install_with_drm(dev(2)), Err(Error::Busy));
-        assert_eq!(uninstall(1).unwrap().card_id, card_id_1);
+        assert_eq!(install_with_drm(dev(key(2), 0x0020_0001)), Err(Error::Busy));
+        assert_eq!(uninstall(key(1)).unwrap().card_id, card_id_1);
         assert!(is_present());
-        assert_eq!(uninstall(2).unwrap().card_id, card_id_2);
+        assert_eq!(uninstall(key(2)).unwrap().card_id, card_id_2);
         assert!(!is_present());
     }
 
@@ -998,6 +1033,7 @@ mod tests {
     fn shutdown_keeps_device_installed() {
         DEVICES.lock().clear();
         install(VirtioGpuDev {
+            device_key: key(1),
             bdf: 1,
             card_id: 0,
             cfg_va: 0,
@@ -1009,8 +1045,8 @@ mod tests {
             capset_count: 0,
         }).unwrap();
 
-        assert!(!shutdown(2));
-        assert!(shutdown(1));
+        assert!(!shutdown(key(2)));
+        assert!(shutdown(key(1)));
         assert!(is_present());
 
         DEVICES.lock().clear();
@@ -1074,6 +1110,7 @@ mod tests {
     #[test]
     fn resource_id_increments() {
         let dev = VirtioGpuDev {
+            device_key: key(0),
             bdf: 0,
             card_id: 0,
             cfg_va: 0,

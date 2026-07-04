@@ -78,6 +78,7 @@ impl Drop for ProbeFramebufferRun {
 /// `VirtioGpuDrm` impl).
 /// # C: O(spin-poll bound = 1e6)
 pub fn get_display_info(
+    device_key: virtio::VirtioChildDeviceKey,
     bdf_bus: u8, bdf_dev: u8, bdf_fn: u8,
     drv_features: u64,
     resources: virtio::VirtioResources,
@@ -161,6 +162,7 @@ pub fn get_display_info(
         // SAFETY: boot path; queue + notify VAs valid; PMM up.
         let scanout_ok = unsafe {
             setup_scanout(
+                device_key,
                 bdf_word,
                 info.modes[0].r.width, info.modes[0].r.height,
                 cfg_va, ctrlq, cmd_buf.va, cmd_buf.pa, hhdm,
@@ -172,7 +174,7 @@ pub fn get_display_info(
         cmd_buf.disarm();
     }
     match crate::install_with_drm(crate::VirtioGpuDev {
-        bdf: bdf_word, card_id: 0, cfg_va,
+        device_key, bdf: bdf_word, card_id: 0, cfg_va,
         ctrlq,
         features_negotiated: drv_features,
         display: info,
@@ -182,7 +184,7 @@ pub fn get_display_info(
         Ok(_) => {}
         Err(_) => {
             if info.count_enabled > 0 {
-                let _ = uninstall_scanout_after_failed_probe(bdf_word);
+                let _ = uninstall_scanout_after_failed_probe(device_key);
             }
             return false;
         }
@@ -198,6 +200,7 @@ pub fn get_display_info(
 /// # SAFETY: caller is the boot path; queue + notify VAs valid; PMM up.
 /// # C: O(width * height) for the fill + O(1) per command.
 unsafe fn setup_scanout(
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     w: u32, h: u32,
     cfg_va: u64,
@@ -329,6 +332,7 @@ unsafe fn setup_scanout(
     // repaint after boot. base_pa is the contig PMM run; HHDM-map
     // it to a kernel VA for byte-copy access.
     if !install_scanout_ctx(
+        device_key,
         bdf,
         w, h,
         cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, pages_alloc, res_id,
@@ -419,14 +423,16 @@ unsafe fn submit_raw(
 // ---- Persistent scanout state for ongoing fbcon flush (B07) ------
 // After setup_scanout succeeds, save the context so the kernel-side fbcon
 // driver can push klog text to the FB via transfer + flush after boot.
-// Contexts are keyed by owning parent BDF. DRM KMS hooks are registered per
-// card/BDF, while the current fbcon/fbdev/VT helper layer still exposes one
-// console scanout and therefore operates on the explicitly elected console
-// owner. Remove and shutdown target the exact BDF-owned context.
+// Lifecycle contexts are keyed by virtio child device identity. DRM KMS hooks
+// are still registered per card/BDF because that is the DRM-facing private key,
+// while the current fbcon/fbdev/VT helper layer still exposes one console
+// scanout and therefore operates on the explicitly elected console owner.
+// Remove and shutdown target the exact child-owned context.
 
 use sync::{TaskList as DriverLockClass, Spinlock};
 
 struct ScanoutCtx {
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     cfg_va: u64,
     w: u32,
@@ -528,16 +534,17 @@ pub fn unblank_scanout_for_bdf(bdf: u32) {
 /// Install the scanout context for later flushes. Called once from
 /// `setup_scanout` after the resource is created and attached.
 fn install_scanout_ctx(
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_pages_alloc: usize, res_id: u32,
     ctrlq: virtio::VirtQueueResource, cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
 ) -> bool {
     let mut ctxs = CTX.lock();
-    if ctxs.iter().any(|ctx| ctx.bdf == bdf) {
+    if ctxs.iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
     ctxs.push(ScanoutCtx {
-        bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
+        device_key, bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
         ctrlq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
     });
     true
@@ -563,10 +570,10 @@ fn take_scanout_fbdev_idx(bdf: u32) -> Option<u32> {
 /// Tear down the installed scanout context, reset the virtio device, and free
 /// the command buffer plus framebuffer run.
 /// # C: O(fb_pages_alloc)
-pub fn uninstall_scanout(bdf: u32) -> bool {
+pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.iter().position(|ctx| ctx.bdf == bdf) {
+        match guard.iter().position(|ctx| ctx.device_key == device_key) {
             Some(idx) => Some(guard.remove(idx)),
             None => None,
         }
@@ -596,13 +603,13 @@ pub fn uninstall_scanout(bdf: u32) -> bool {
 /// Unlike `uninstall_scanout`, this intentionally does not unregister fbdev,
 /// clear DRM publication, remove scanout ownership metadata, or free the
 /// framebuffer backing. Those objects can still be visible to late shutdown
-/// callers, and a later remove path still needs the BDF-owned publication and
-/// allocation record.
+/// callers, and a later remove path still needs the child-owned publication
+/// and allocation record.
 /// # C: O(1)
-pub fn shutdown_scanout(bdf: u32) -> bool {
+pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let cfg_va = {
         let mut guard = CTX.lock();
-        let Some(ctx) = guard.iter_mut().find(|ctx| ctx.bdf == bdf) else {
+        let Some(ctx) = guard.iter_mut().find(|ctx| ctx.device_key == device_key) else {
             return false;
         };
         ctx.quiesced = true;
@@ -619,10 +626,10 @@ pub fn shutdown_scanout(bdf: u32) -> bool {
 /// Tear down scanout-only state after a probe failure. The caller still owns
 /// the transport unwind and will reset the virtio device and release q0.
 /// # C: O(fb_pages_alloc)
-pub fn uninstall_scanout_after_failed_probe(bdf: u32) -> bool {
+pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
-        match guard.iter().position(|ctx| ctx.bdf == bdf) {
+        match guard.iter().position(|ctx| ctx.device_key == device_key) {
             Some(idx) => Some(guard.remove(idx)),
             None => None,
         }
