@@ -66,7 +66,8 @@ pub(super) fn build_grub_arm_iso(
 /// Boot the aarch64 GRUB EFI ISO under QEMU with OVMF. Semihosting is on
 /// (the kernel's early klog uses it until device_map remaps PL011); GIC
 /// v3+ITS as the kernel expects; root mounts from the root-aarch64.img
-/// virtio-blk disk attached below. OXIDE_QEMU_UART_SOCK routes serial to a unix socket (the
+/// virtio-blk disk attached below.
+/// OXIDE_QEMU_UART_SOCK routes serial to a unix socket (the
 /// boot-smoke/login scripts feed scripted keystrokes that way); else
 /// headless stdio for CI or a muxed stdio + GTK display interactively.
 pub(super) fn qemu_run_aarch64_grub(

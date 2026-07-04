@@ -60,10 +60,16 @@ pub(super) fn qemu_run_grub_x86_64(
     // line-buffers + handles signals and drops scripted keystrokes.
     // Interactive: mux=on so Ctrl-A C reaches the QEMU monitor.
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
-    let uart_chardev = if headless {
-        "stdio,id=ser0,signal=off"
-    } else {
-        "stdio,id=ser0,mux=on,signal=off"
+    let uart_chardev = match std::env::var("OXIDE_QEMU_UART_SOCK") {
+        Ok(p) if !p.is_empty() => {
+            let _ = std::fs::remove_file(&p);
+            format!("socket,id=ser0,path={},server=on,wait=off", p)
+        }
+        _ => if headless {
+            "stdio,id=ser0,signal=off".to_string()
+        } else {
+            "stdio,id=ser0,mux=on,signal=off".to_string()
+        },
     };
     let netdev = ssh_fwd_netdev();
     let mut c = Command::new("qemu-system-x86_64");
@@ -146,7 +152,7 @@ pub(super) fn qemu_run_grub_x86_64(
         "-device", "ich9-ahci,id=ahci,bus=pcie.0",
         "-drive", ahci_drive.as_str(),
         "-device", "ide-hd,drive=sata0,bus=ahci.0",
-        "-chardev", uart_chardev,
+        "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         // GTK window by default so the virtio-gpu console is visible +
         // responsive; OXIDE_QEMU_HEADLESS=1 suppresses for CI/smoke.

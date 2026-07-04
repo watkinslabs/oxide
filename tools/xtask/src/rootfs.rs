@@ -178,6 +178,48 @@ ExecStart=/bin/g19_glibc_pthread
         dbg("mkdir /usr/lib/systemd/system/default.target.wants")?;
         dbg("symlink /usr/lib/systemd/system/default.target.wants/g19smoke.service ../g19smoke.service")?;
     }
+    if std::env::var_os("OXIDE_DRIVER_PATH_SMOKE").is_some() {
+        let sh = repo.join("target/driver_path_smoke.sh");
+        std::fs::write(&sh,
+b"#!/bin/sh
+set -eu
+echo driver_path_smoke: START
+/bin/fbdev_probe
+/bin/drm_probe
+/bin/sysblock_probe
+/bin/snd_probe
+/bin/rtlink_probe
+test -r /sys/class/net/eth0/address
+test -r /sys/class/net/eth0/statistics/rx_packets
+echo b002_net_eth0: PASS
+echo driver_path_smoke: run mouseprobe
+sleep 1
+/bin/mouseprobe
+echo driver_path_smoke: PASS - GPU input sound block net
+").map_err(|_| 1u8)?;
+        let svc = repo.join("target/driver-path-smoke.service");
+        std::fs::write(&svc,
+b"[Unit]
+Description=B002 driver path smoke
+DefaultDependencies=no
+Before=console-getty.service serial-getty-ttyS0.service
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+ExecStart=/bin/driver_path_smoke.sh
+").map_err(|_| 1u8)?;
+        put(&sh, "/bin/driver_path_smoke.sh")?;
+        dbg("sif /bin/driver_path_smoke.sh mode 0100755")?;
+        dbg("mkdir /usr/lib/systemd")?;
+        dbg("mkdir /usr/lib/systemd/system")?;
+        put(&svc, "/usr/lib/systemd/system/driver-path-smoke.service")?;
+        dbg("sif /usr/lib/systemd/system/driver-path-smoke.service mode 0100644")?;
+        dbg("mkdir /usr/lib/systemd/system/default.target.wants")?;
+        dbg("symlink /usr/lib/systemd/system/default.target.wants/driver-path-smoke.service ../driver-path-smoke.service")?;
+    }
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
     put(&user("sigframe_probe"), "/bin/sigframe_probe")?;
