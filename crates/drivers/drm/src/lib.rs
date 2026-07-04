@@ -14,6 +14,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
+
 // ============================================================
 // Core ioctl numbers (per linux/include/uapi/drm/drm.h)
 // ============================================================
@@ -753,6 +756,7 @@ mod tests {
 
     #[test]
     fn register_uses_stable_card_slots() {
+        let _guard = crate::TEST_LOCK.lock();
         CARDS.lock().clear();
         node::unregister_all();
         let idx = register(Arc::new(DummyDrv));
@@ -777,6 +781,7 @@ mod tests {
 
     #[test]
     fn register_rolls_back_card_slot_when_node_publication_fails() {
+        let _guard = crate::TEST_LOCK.lock();
         CARDS.lock().clear();
         node::unregister_all();
         let conflict = drv::try_device_add(Arc::new(
