@@ -17,7 +17,7 @@ use vfs::{
     VfsError,
 };
 
-use crate::DIR_PERM;
+use crate::{DIR_PERM, RW_PERM};
 
 const INO_VIRT_MEM: Ino = 0x5106_0001;
 const INO_CLASS_MEM: Ino = 0x5106_0002;
@@ -100,6 +100,40 @@ struct CharDevDirData {
     addr: String,
 }
 
+struct CharUeventData {
+    class: &'static str,
+    info: CharDevInfo,
+}
+
+struct CharUeventOps;
+impl FileOps for CharUeventOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<CharUeventData>().ok_or(VfsError::Einval)?;
+        Ok(crate::read_window(&uevent_body(&d.info), off, buf))
+    }
+    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
+        let d = inode.private::<CharUeventData>().ok_or(VfsError::Einval)?;
+        let devpath = alloc::format!("/devices/virtual/{}/{}", d.class, d.info.addr);
+        let devname = alloc::format!("DEVNAME={}", d.info.devname);
+        let maj = alloc::format!("MAJOR={}", d.info.dev_t.0);
+        let min = alloc::format!("MINOR={}", d.info.dev_t.1);
+        ::netlink::emit_uevent_with_env(
+            crate::uevent_action(b), &devpath, d.class, &[&devname, &maj, &min]);
+        Ok(b.len())
+    }
+}
+
+fn make_char_uevent_inode(class: &'static str, info: CharDevInfo) -> InodeRef {
+    InodeBuilder::new(
+        INO_CHAR_ATTR,
+        mk_mode(FileType::Regular, RW_PERM),
+        vfs::default_inode_ops(),
+        Arc::new(CharUeventOps),
+    )
+    .private(Arc::new(CharUeventData { class, info }))
+    .build()
+}
+
 struct CharDevDirOps;
 impl InodeOps for CharDevDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
@@ -110,7 +144,7 @@ impl InodeOps for CharDevDirOps {
                 alloc::format!("{}:{}\n", info.dev_t.0, info.dev_t.1).into_bytes(),
                 INO_CHAR_ATTR,
             )),
-            "uevent" => Ok(crate::make_body_inode(uevent_body(&info), INO_CHAR_ATTR)),
+            "uevent" => Ok(make_char_uevent_inode(d.class, info)),
             "subsystem" => Ok(crate::make_symlink_inode(
                 alloc::format!("../../../../class/{}", d.class).into_bytes(),
             )),
@@ -290,6 +324,7 @@ pub fn init() {
 mod tests {
     use super::*;
     use alloc::sync::Arc;
+    use netlink::{proto, NetlinkSocket};
 
     fn add_char(class: &'static str, addr: &str, devname: &str, dt: (u32, u32)) -> Arc<drv::Device> {
         let dev = Arc::new(
@@ -345,6 +380,26 @@ mod tests {
 
         drv::device_del(&dev);
         assert_eq!(root.lookup("sysfs-hwrng-test").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn class_uevent_write_reemits_model_event() {
+        let dev = add_char("sound", "controlC12", "snd/controlC12", (116, 322));
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+
+        let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
+        let dir = root.lookup("controlC12").expect("sound device dir");
+        let uevent = dir.lookup("uevent").expect("uevent attr");
+        assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
+        let msg = listener.dequeue().expect("uevent message");
+        assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
+        assert!(msg.windows(b"DEVPATH=/devices/virtual/sound/controlC12".len()).any(|w| w == b"DEVPATH=/devices/virtual/sound/controlC12"));
+        assert!(msg.windows(b"SUBSYSTEM=sound".len()).any(|w| w == b"SUBSYSTEM=sound"));
+        assert!(msg.windows(b"DEVNAME=snd/controlC12".len()).any(|w| w == b"DEVNAME=snd/controlC12"));
+
+        drv::device_del(&dev);
     }
 
     #[test]

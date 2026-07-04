@@ -109,6 +109,11 @@ test-pass claims.
   Sysfs/netlink tests now prove bind/unbind emits `change` uevents from the
   current model state: bound events include `DRIVER=<name>`, while unbound
   events do not carry stale driver ownership.
+  Block, input, and model-backed virtual character class `uevent` attributes
+  are now writable sysfs attributes rather than read-only static bodies, so
+  `udevadm trigger` can re-emit root-disk, evdev, sound, graphics, misc, and
+  mem device events from the current model-owned `/sys/devices/virtual/...`
+  state.
   Model-backed character-class tests now also prove remove/readd of the same
   device identity and `dev_t`: class symlinks, parent `device` links, and
   `/sys/dev/char` reverse indexes disappear on `device_del` and reappear from
