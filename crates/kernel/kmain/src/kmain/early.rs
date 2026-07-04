@@ -1,0 +1,210 @@
+use crate::{BootInfo, BootMemRegion, GLOBAL_ALLOC, zerotrap_tid};
+
+/// Early boot bring-up before runtime device and filesystem init.
+/// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
+/// # C: not measured (one-shot init)
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn init(info: &BootInfo) {
+    init_boot_percpu();
+
+    fs::init();
+    // SAFETY: kernel_main is called once per boot from a single CPU
+    // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
+    // by `kalloc`, and not yet referenced by anything else.
+    unsafe { GLOBAL_ALLOC.init_static() };
+    klog::set_clock_fn(syscalls::vvar::monotonic_now_ns);
+
+    log_boot_info(info);
+    init_pmm_and_arch(info);
+    kalloc_smoke();
+    debug_sched_smokes();
+    debug_pf_smoke();
+
+    // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
+    unsafe { pmm::user_as::init(info.hhdm_offset); }
+    // SAFETY: PMM up; HHDM offset just published; one-shot.
+    unsafe { syscalls::vvar::init(); }
+    procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
+    procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
+    procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
+    hal::zerotrap::set_tid_hook(zerotrap_tid);
+    ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
+    drv::set_devtmpfs_hook(devfs::add_device_node);
+    drv::set_devtmpfs_del_hook(devfs::del_device_node);
+    // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
+    unsafe { crate::boot_cmdline::install_arch_default(); }
+    console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
+    syscalls::init_wall_clock_from_rtc();
+    fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
+    drv_virtio_input::procfs::init();
+    fbdev::devfs::init(); devpts::init();
+    debug_boot_smokes();
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn init_boot_percpu() {
+    #[repr(align(16))]
+    struct PerCpuBootPage(core::cell::UnsafeCell<[u8; 4096]>);
+    // SAFETY: BSS-resident; sole writer is the boot CPU during its own bring-up here, before any other context can observe the cell.
+    unsafe impl Sync for PerCpuBootPage {}
+    static BOOT_PERCPU: PerCpuBootPage =
+        PerCpuBootPage(core::cell::UnsafeCell::new([0u8; 4096]));
+
+    let p = BOOT_PERCPU.0.get() as *mut u8;
+    // SAFETY: BSS-resident page; this is the boot path's single writer; cpu_id=0 stamped at offset 0 matches `current_cpu`'s gs:0 (x86) / TPIDR_EL1 (arm) read.
+    unsafe { core::ptr::write_volatile(p as *mut u32, 0u32); }
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use hal::CpuOps;
+        let mut cr4: u64;
+        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
+        cr4 |= 1u64 << 16;
+        core::arch::asm!("mov cr4, {cr4}", cr4 = in(reg) cr4, options(nomem, nostack, preserves_flags));
+        hal_x86_64::X86CpuOps::set_percpu_base(p);
+        hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { use hal::CpuOps; hal_aarch64::ArmCpuOps::set_percpu_base(p); }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn log_boot_info(info: &BootInfo) {
+    debug_boot! { klog::kinfo!("init started"); }
+    debug_boot! {
+        if info.hhdm_offset != 0 { klog::kinfo!("hhdm: present"); }
+        else { klog::kinfo!("hhdm: absent"); }
+    }
+    if info.rsdp_pa != 0 {
+        debug_acpi! {
+            klog::write_raw(b"[INFO]  rsdp: ");
+            klog::write_hex_u64(info.rsdp_pa);
+            klog::write_raw(b"\n");
+        }
+        firmware::set_add_cpu_hook(cpu::add_cpu);
+        // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
+        // for the RSDP (HHDM-mapped); the bootloader keeps the
+        // backing memory alive past kernel handoff per `36§3`.
+        unsafe { firmware::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
+        if let Some((id, _flags)) = cpu::get(0) {
+            // SAFETY: kernel_main runs single-CPU pre-init per fn contract; sole writer for BOOT_CPU_ID before any AP observes it.
+            unsafe { cpu::smp::set_boot_cpu_id(id); }
+        }
+    } else {
+        debug_boot! { klog::kinfo!("rsdp: absent"); }
+    }
+    if info.memmap_count != 0 {
+        debug_boot! { klog::kinfo!("memmap: present"); }
+        debug_pmm! {
+            // SAFETY: kernel_main fn-contract guarantees memmap_ptr is a
+            // valid slice of length memmap_count for this call.
+            let regions: &[BootMemRegion] = unsafe {
+                core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
+            };
+            pmm::boot::log_memmap(regions);
+        }
+    } else {
+        debug_boot! { klog::kinfo!("memmap: absent"); }
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn init_pmm_and_arch(info: &BootInfo) {
+    // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
+    // outlives the call.
+    let pmm = unsafe { pmm::setup::init_from_boot_info(info) };
+    #[cfg(target_arch = "x86_64")]
+    if pmm.is_ok() { arch_irq::smp_x86::reserve_trampoline_page(); }
+    if pmm.is_ok() { GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow); }
+    if pmm.is_ok() { pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info)); }
+    debug_boot! {
+        match &pmm {
+            Ok(_)                                       => klog::kinfo!("pmm: ready"),
+            Err(pmm::setup::SetupError::NoMemmap)        => klog::kinfo!("pmm: skip (no memmap)"),
+            Err(pmm::setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
+            Err(pmm::setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
+            Err(pmm::setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
+            Err(pmm::setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
+            Err(pmm::setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
+            Err(pmm::setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
+        }
+    }
+    if let Ok(p) = pmm {
+        debug_pmm! { smoke::pmm::run(p); }
+        #[cfg(feature = "debug-memtest")]
+        smoke::memtest::run(p);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            hal_x86_64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
+            hal_x86_64::mmu_ops::set_frame_alloc(pmm::setup::alloc_raw_frame);
+            hal_x86_64::setup_ist_stacks(0);
+            hal_x86_64::install_ist_gates();
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            hal_aarch64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
+            hal_aarch64::mmu_ops::set_frame_alloc(pmm::setup::alloc_raw_frame);
+        }
+        #[cfg(target_arch = "x86_64")]
+        smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
+        #[cfg(target_arch = "aarch64")]
+        smoke::device_map::smoke_device_map_arm(info.hhdm_offset);
+        #[cfg(all(target_arch = "x86_64", feature = "debug-vmm"))]
+        unsafe { smoke::mmuops::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        #[cfg(all(target_arch = "aarch64", feature = "debug-vmm"))]
+        unsafe { smoke::mmuops::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+        #[cfg(all(target_arch = "x86_64", feature = "debug-vmm"))]
+        unsafe { smoke::user_map::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        #[cfg(all(target_arch = "aarch64", feature = "debug-vmm"))]
+        unsafe { smoke::user_map::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn kalloc_smoke() {
+    debug_boot! {
+        let mut tree = vmm::VmaTree::new();
+        let start = hal::UserVirtAddr::new(0x1000).expect("test addr");
+        let end   = hal::UserVirtAddr::new(0x2000).expect("test addr");
+        let inserted = tree.insert(vmm::Vma::new(start, end, vmm::VmaProt::READ,
+            vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS, vmm::VmaBacking::Anonymous)).is_ok();
+        if inserted { klog::kinfo!("kalloc-smoke: VmaTree insert ok"); }
+        else { klog::kerror!("kalloc-smoke: VmaTree insert failed"); }
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn debug_sched_smokes() {
+    debug_sched! {
+        unsafe {
+            kthread::smoke();
+            kthread::smoke_yield();
+            smoke::ksched::smoke_rr(4);
+            #[cfg(target_arch = "x86_64")]
+            smoke::preempt::smoke_preempt_x86(4, 1_000_000);
+            #[cfg(target_arch = "aarch64")]
+            smoke::preempt::smoke_preempt_arm(4, 50_000);
+            #[cfg(target_arch = "x86_64")]
+            smoke::canary::smoke_canary_x86(1_000_000);
+            #[cfg(target_arch = "aarch64")]
+            smoke::canary::smoke_canary_arm(50_000);
+        }
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn debug_pf_smoke() {
+    #[cfg(all(target_arch = "x86_64", feature = "debug-vmm"))]
+    unsafe { smoke::pf_recover::run(); }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn debug_boot_smokes() {
+    debug_boot! {
+        ::devfs::misc::smoke_test();
+        procfs::smoke_test();
+        fs::pipe::smoke_test();
+        fs::tmpfs::smoke_test();
+        devpts::smoke_test();
+    }
+    debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
+}
