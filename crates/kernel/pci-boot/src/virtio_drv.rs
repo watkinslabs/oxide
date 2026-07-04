@@ -220,7 +220,7 @@ struct VirtioTransportBringup {
 }
 
 struct VirtioRuntimeHandoff {
-    queue_resources: [virtio::VirtQueueResource; 4],
+    queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     q0_notify_va: u64,
     post_notify_status: u8,
     avail_idx_posted: u16,
@@ -620,10 +620,8 @@ impl VirtioProbeState {
         isr_cap: Option<&virtio::VirtioPciCap>,
         bars: &[pci::Bar; 6],
     ) -> VirtioRuntimeHandoff {
-        let q0_ring = programmed_queues.map(|p| p.q0);
-        let q1_ring = programmed_queues.and_then(|p| p.extra_queue(1));
-        let q2_ring = programmed_queues.and_then(|p| p.extra_queue(2));
-        let q3_ring = programmed_queues.and_then(|p| p.extra_queue(3));
+        let q0_ring = programmed_queues.and_then(|p| p.queue(0));
+        let q1_ring = programmed_queues.and_then(|p| p.queue(1));
         let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
 
         let extra_notify_mappings =
@@ -663,22 +661,21 @@ impl VirtioProbeState {
             0
         };
 
-        let queue_resources = [
-            queue_resource(
-                0,
-                q0_ring,
-                scanned_queue_size(queues, queues_len, 0),
-                q0_notify_va,
-            ),
-            queue_resource(
-                1,
-                q1_ring,
-                scanned_queue_size(queues, queues_len, 1),
-                q1_notify_va,
-            ),
-            queue_resource(2, q2_ring, 0, extra_notify_mappings.get(2)),
-            queue_resource(3, q3_ring, 0, extra_notify_mappings.get(3)),
-        ];
+        let queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES] =
+            core::array::from_fn(|index| {
+                let index = index as u16;
+                let notify_va = match index {
+                    0 => q0_notify_va,
+                    1 => q1_notify_va,
+                    _ => extra_notify_mappings.get(index),
+                };
+                queue_resource(
+                    index,
+                    programmed_queues.and_then(|queues| queues.queue(index)),
+                    scanned_queue_size(queues, queues_len, index),
+                    notify_va,
+                )
+            });
 
         let isr_status = if net_rx_boot.avail_idx_posted > 0 {
             self.read_isr_status(isr_cap, bars)
@@ -734,7 +731,7 @@ struct VirtioProbeResult {
     num_queues: u16,
     queues: [(u16, u16); 8],
     queues_len: usize,
-    queue_resources: [virtio::VirtQueueResource; 4],
+    queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     final_status: u8,
     q0_notify_va: u64,
     post_notify_status: u8,

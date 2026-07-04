@@ -47,6 +47,17 @@ pub struct ProgrammedQueues {
 }
 
 impl ProgrammedQueues {
+    /// Return a programmed queue by virtqueue index. Queue 0 is the mandatory
+    /// transport queue; other indexes are planned extra queues.
+    /// # C: O(1)
+    pub const fn queue(&self, index: u16) -> Option<QueueRing> {
+        if index == 0 {
+            Some(self.q0)
+        } else {
+            self.extra_queue(index)
+        }
+    }
+
     /// Return a planned extra queue by index. Queue 0 is intentionally not
     /// exposed through this helper; callers use `q0` for the mandatory queue.
     /// # C: O(1)
@@ -232,5 +243,26 @@ mod tests {
         assert_eq!(allocator.allocated, [0x1000, 0x2000]);
         assert_eq!(allocator.freed, [0x2000, 0x1000]);
         assert!(allocator.zeroed.is_empty());
+    }
+
+    #[test]
+    fn programmed_queues_are_indexed_by_virtqueue() {
+        let ring = |index: u16| QueueRing {
+            desc_pa: 0x1000 + index as u64,
+            driver_pa: 0x2000 + index as u64,
+            device_pa: 0x3000 + index as u64,
+            notify_off: index,
+            size: 128,
+        };
+        let mut extra = [None; crate::MAX_RESOURCE_QUEUES];
+        extra[1] = Some(ring(1));
+        extra[3] = Some(ring(3));
+        let queues = ProgrammedQueues { q0: ring(0), extra };
+
+        assert_eq!(queues.queue(0).map(|queue| queue.notify_off), Some(0));
+        assert_eq!(queues.queue(1).map(|queue| queue.notify_off), Some(1));
+        assert_eq!(queues.queue(2).map(|queue| queue.notify_off), None);
+        assert_eq!(queues.queue(3).map(|queue| queue.notify_off), Some(3));
+        assert_eq!(queues.queue(4).map(|queue| queue.notify_off), None);
     }
 }
