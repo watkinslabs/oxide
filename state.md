@@ -1,12 +1,47 @@
 # state.md — session handoff
 
 ## Headline
-**Primary greeter blocker FOUND + FIXED (measured, committed, boot-verified):**
-logind's `/sys` now works and `/run/systemd/seats/seat0` is created (was absent).
-Branch B318 (pushed): the `mnt_root` mount-identification fix + d_drop invariant +
-2 dev-path/symlink fixes. Remaining gate: `CAN_GRAPHICAL=0` — card0 is never
-delivered to udevd (its uevent is emitted before udevd is up, and coldplug
-enumerates but never re-triggers it), so udevd never tags it master-of-seat.
+Multiple greeter-blocking bugs FOUND + FIXED this session (all measured,
+committed, boot-verified on branch B318, pushed). The chain now gets much
+further: logind's `/sys` works, seat0 is created, coldplug succeeds, udevd
+processes devices, and **card0's uevent now reaches udevd** (grp1=1 at t=6.1).
+Still `CAN_GRAPHICAL=0` — the NEW frontier is that udevd processes PCI/platform
+devices (107×, a re-processing loop → boot slowdown) but does NOT complete the
+VIRTUAL devices (drm card0 / block / input): no `/run/udev/data/c226:0` db and
+no master-of-seat tag is ever written, so seat0 never becomes graphical.
+
+## Fixes landed this session (branch B318, PR #2338, all pushed)
+- 6caec86e fix(sysfs): block/input `uevent` WRITABLE + emit → coldplug (udevadm
+  trigger) no longer fails EROFS; udevd now receives device uevents.
+- 21b4368e fix(sysfs): drm device_add uevent DEVPATH → devices/virtual/drm/<card>
+- 3a477d2b fix(vfs): identify a mount by `mnt_root` not `sb.s_root`  ← seat0
+- 8e81fd93 fix(vfs): d_drop must not unhash a mounted dentry (D_MOUNTED guard)
+- 18200270 fix(sysfs): /sys/dev/char/226:0 → devices/virtual/drm/card0
+- crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs — 5 hosted tests (pass).
+
+## NEXT frontier — udevd doesn't complete VIRTUAL devices  [START HERE]
+MEASURED (probe: any openat under /run/udev/data|tags with a write flag, + emit
+grp1 for drm):
+- card0's uevent IS emitted+delivered: `add@/devices/virtual/drm/card0 grp1=1`
+  at t=6.121 (coldplug, udevd's group-1 socket up since t=3.98).
+- udevd writes 107 `.#+pci:...` + 2 `.#+platform:...` db files — but ZERO for
+  block/input/drm/virtual, and ZERO tag writes. So it processes PCI/platform,
+  never completes card0 (no `/run/udev/data/c226:0`, no master-of-seat tag).
+- 107 writes for a handful of PCI functions ⇒ a RE-PROCESSING LOOP (likely the
+  `bind_device_cb` "change" uevent re-triggering process→bind→change), which is
+  also why the boot is ~3–4× slower (reaches graphical ~150s vs ~43s).
+Candidates to MEASURE next:
+1. Does udevd spawn a worker for card0's event and does it FAIL/exit? Check
+   `[EXIT] exe=...udev...` + recent-syscall ring right after t=6.1.
+2. Is card0's RAW uevent well-formed enough for udevd to build the sd_device
+   (ACTION/DEVPATH/SUBSYSTEM/MAJOR/MINOR/DEVNAME)? drm.rs write emits all; verify
+   udevd's from-uevent device build succeeds (a missing key drops it silently).
+3. The PCI re-process loop: is `bind_device_cb`/driver-bind emitting "change"
+   in a cycle? If udevd is saturated looping on PCI, card0's queued event may
+   just never get a worker. Fix the loop first — it may unblock everything.
+Also still latent: the LIVE cooked-uevent path (udevd→logind monitor) measured
+broken earlier (COOKTRACE=0) — needed for live attach once card0 is tagged.
+drm.rs:114 subsystem symlink is 3 `../` (should be 4) — basename still "drm", non-fatal.
 
 ## What was THE bug (measured end-to-end, not guessed)
 `containing_mount_id → parent_by_dentry → visible_mnt_id_of_root_dentry /
@@ -28,54 +63,6 @@ but is a task's private root, not the ns root). RESULT: containing_mount_id → 
 `/sys` crosses into sysfs, seat0 created. 98+ vfs tests green. Boots reliably
 (seat0 in 3/3; a graphical=0 boot is the pre-existing ~50% GRUB-hang, not a
 regression — see CLAUDE.md).
-
-## NEXT blocker — CAN_GRAPHICAL=0: udevd writes NO device db/tags  [START HERE]
-MEASURED (decisive, and the mount fix is RULED OUT as the cause):
-- logind's `/run/udev` = fsid 0x8, contains ONLY `control` — `tags`/`data`
-  `<unresolved>`. So `/sys/dev/char/226:0` is never chased (dev-index 226:0
-  lookup fires 0×), card0 never attaches → `CAN_GRAPHICAL=0` → gdm child exits 1.
-- WHY: a broad probe (any openat whose RESOLVED path is under `/run/udev/`,
-  W=create/write vs r) shows **udevd makes ZERO writes to `/run/udev/data` or
-  `/run/udev/tags`** — it only READS. So udevd never reaches `device_update_db`
-  / `device_tag`. No tags because nothing is written, not because of visibility.
-- REGRESSION RULED OUT: temporarily reverting ONLY the mnt_root fix (keeping
-  d_drop) and re-booting → udevd STILL writes 0. So udevd-not-writing is
-  PRE-EXISTING, not caused by this session's changes. The mnt_root fix is a real
-  correctness win (logind /sys works, seat0 created) and stays.
-
-So the real remaining gate is CARD0 UEVENT DELIVERY. Full measured timeline:
-- t=1.84: kernel emits card0's device_add uevent
-  (`add@/devices/virtual/drm/card0` AFTER the devpath fix — commit 21b4368e;
-  was `/devices/platform/dri/card0`). BUT `listeners=0 grp1(udevd)=0` — udevd
-  isn't up yet (starts t=8.5), so this initial emit is LOST.
-- t=5.29–6.12: systemd-udev-trigger (coldplug) runs. It DOES enumerate
-  `/sys/class/drm` (probe fired t=5.80), so it FINDS card0. BUT it does NOT
-  write card0's `uevent` (DrmUeventFileOps::write probe fires 0×) — so card0 is
-  NEVER re-triggered. udevd (t=8.5) thus never receives card0 → never runs
-  device_update_db/device_tag → no `/run/udev/tags/master-of-seat/c226:0` → no
-  attach → `CAN_GRAPHICAL=0` → gdm child exits 1.
-
-**NEXT: why does udev-trigger enumerate card0 but not write its uevent?**
-Measure (drm.rs probes, klog): trace card0's `uevent` file OPEN (read vs write,
-which path — `/sys/class/drm/card0/uevent` symlink vs `/sys/devices/virtual/drm/
-card0/uevent`) during coldplug. Candidates: (a) udevadm trigger opens uevent
-O_WRONLY and the write is dropped/misrouted (not reaching DrmUeventFileOps::
-write); (b) the enumerator lists card0 but a match/filter skips the trigger
-write; (c) the write targets the class symlink and symlink-target write doesn't
-resolve to the device uevent. Also verify the group-1 udevd socket is bound
-(grp1≥1) by t≈5.8 so a re-emit would actually buffer.
-Then: the LIVE cooked-uevent path (udevd→logind monitor) was ALSO measured
-broken long ago (COOKTRACE=0) — likely a SECOND fix needed for live attach.
-Latent: drm.rs:114 subsystem symlink `../../../class/drm` (3 ups) → wrong;
-should be `../../../../class/drm` (4 ups). Basename still "drm" so non-fatal.
-
-## Landed this session (branch B318, PR #2338, all pushed)
-- 21b4368e fix(sysfs): drm device_add uevent DEVPATH → devices/virtual/drm/<card>
-- 3a477d2b fix(vfs): identify a mount by mnt_root not sb.s_root  ← THE big fix
-- 8e81fd93 fix(vfs): d_drop must not unhash a mounted dentry (D_MOUNTED guard)
-- 18200270 fix(sysfs): /sys/dev/char/226:0 → devices/virtual/drm/card0
-- crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs — 5 hosted regression
-  tests for sysfs reachability across sandbox relocation (all pass).
 
 ## Diagnostic method that WORKED (measure, don't guess)
 The decisive probes: (a) log the fsid of the ACTUAL inode `openat` returns (no
