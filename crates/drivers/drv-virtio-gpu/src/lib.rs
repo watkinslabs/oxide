@@ -709,6 +709,14 @@ pub fn default_driver_features() -> u64 {
     | (1u64 << VIRTIO_F_RING_RESET)
 }
 
+/// Feature policy for the virtio-gpu child driver. The PCI transport owns the
+/// common-cfg negotiation sequence; this child driver owns the GPU feature
+/// bits it is prepared to consume.
+/// # C: O(1)
+pub fn wanted_features() -> u64 {
+    default_driver_features()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

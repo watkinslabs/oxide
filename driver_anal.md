@@ -116,6 +116,9 @@ test-pass claims.
 - Virtio-net's device-specific wanted feature mask now lives in the
   virtio-net child driver; virtio-pci still executes common-cfg negotiation
   but no longer carries the net MAC/STATUS feature policy itself.
+- Virtio-gpu's wanted feature mask now comes from the virtio-gpu child driver
+  instead of the transport using a generic VERSION_1-only profile, so GPU
+  feature negotiation matches the child driver's advertised capability policy.
 - Virtio-vsock no longer has PCI-transport-owned guest-CID harvest. The
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
   resource during install.
@@ -264,9 +267,9 @@ test-pass claims.
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
-  child-unwind leak has been fixed, and virtio-net feature policy has moved
-  to its child driver. Remaining device feature policy, complete MSI-X setup
-  policy, remaining child-probe failure unwind audit, and
+  child-unwind leak has been fixed, and virtio-net/GPU feature policy has
+  moved to child drivers. Remaining device feature policy, complete MSI-X
+  setup policy, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller
   `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
