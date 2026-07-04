@@ -21,9 +21,7 @@ impl drv::Driver for VirtioGpuDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let profile =
-            virtio::VirtioTransportProfile::q0(drv_virtio_gpu::wanted_features(), None);
-        let mut session = VirtioChildSession::begin(dev, profile)?;
+        let mut session = VirtioChildSession::begin(dev, drv_virtio_gpu::transport_profile())?;
         let location = session.location();
         let Some(resources) = session.child_resources() else {
             return session.fail();
@@ -74,11 +72,7 @@ impl drv::Driver for VirtioInputDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let profile = virtio::VirtioTransportProfile::q0_device_cfg(
-            drv_virtio_input::wanted_features(),
-            Some(drv_virtio_input::drain::raise_drain),
-        );
-        let mut session = VirtioChildSession::begin(dev, profile)?;
+        let mut session = VirtioChildSession::begin(dev, drv_virtio_input::transport_profile())?;
         let bdf_word = session.device_key();
         let Some(resources) = session.child_resources() else {
             return session.fail();
@@ -134,11 +128,8 @@ impl drv::Driver for VirtioNetDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let profile = virtio::VirtioTransportProfile::net(
-            drv_virtio_net::modern::wanted_features(),
-            Some(drv_virtio_net::modern::raise_rx),
-        );
-        let mut session = VirtioChildSession::begin(dev, profile)?;
+        let mut session =
+            VirtioChildSession::begin(dev, drv_virtio_net::modern::transport_profile())?;
         let location = session.location();
         let device_key = session.device_key();
         let payloads = session.net_boot_payloads();
@@ -189,11 +180,8 @@ impl drv::Driver for VirtioBlkDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let profile = virtio::VirtioTransportProfile::q0_device_cfg(
-            drv_virtio_blk::modern::wanted_features(),
-            Some(drv_virtio_blk::modern::wake_completions),
-        );
-        let mut session = VirtioChildSession::begin(dev, profile)?;
+        let mut session =
+            VirtioChildSession::begin(dev, drv_virtio_blk::modern::transport_profile())?;
         let Some(resources) = session.child_resources() else {
             return session.fail();
         };
@@ -236,9 +224,7 @@ impl drv::Driver for VirtioRngDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let profile =
-            virtio::VirtioTransportProfile::q0(drv_virtio_rng::wanted_features(), None);
-        let mut session = VirtioChildSession::begin(dev, profile)?;
+        let mut session = VirtioChildSession::begin(dev, drv_virtio_rng::transport_profile())?;
         let Some(resources) = session.child_resources() else {
             return session.fail();
         };
@@ -292,11 +278,7 @@ impl drv::Driver for VirtioVsockDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let profile = virtio::VirtioTransportProfile::vsock(
-            drv_virtio_vsock::wanted_features(),
-            Some(drv_virtio_vsock::raise_rx),
-        );
-        let mut session = VirtioChildSession::begin(dev, profile)?;
+        let mut session = VirtioChildSession::begin(dev, drv_virtio_vsock::transport_profile())?;
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return session.fail();
@@ -337,12 +319,7 @@ impl drv::Driver for VirtioSndDrv {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let profile = virtio::VirtioTransportProfile::snd(
-            drv_virtio_snd::wanted_features(),
-            None,
-            Some(drv_virtio_snd::raise_event),
-        );
-        let mut session = VirtioChildSession::begin(dev, profile)?;
+        let mut session = VirtioChildSession::begin(dev, drv_virtio_snd::transport_profile())?;
         let location = session.location();
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {

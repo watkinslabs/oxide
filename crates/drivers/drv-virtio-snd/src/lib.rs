@@ -84,6 +84,13 @@ pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport contract for the virtio-snd child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    virtio::VirtioTransportProfile::snd(wanted_features(), None, Some(raise_event))
+}
+
 /// Persistent per-device CONTROLQ engine. PAs/VA reference the q0 ring the
 /// boot probe already programmed. One in-flight control request at a time,
 /// serialised by the `Spinlock` around the whole request body.

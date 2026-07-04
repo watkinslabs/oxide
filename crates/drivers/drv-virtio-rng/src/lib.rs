@@ -37,6 +37,13 @@ pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport contract for the virtio-rng child driver. The virtio bus
+/// consumes this profile; the PCI transport only executes it.
+/// # C: O(1)
+pub const fn transport_profile() -> virtio::VirtioTransportProfile {
+    virtio::VirtioTransportProfile::q0(wanted_features(), None)
+}
+
 /// Persistent per-device request engine. The requestq resource references the
 /// q0 ring the transport already programmed into the device. A single
 /// in-flight request at a time, serialised by the `Spinlock` around the whole
