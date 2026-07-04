@@ -15,11 +15,11 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 81% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 82% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 44% complete.
+  hotplug, fault injection, and multi-device coverage: about 45% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -99,10 +99,11 @@ test-pass claims.
   softirq runtime state are keyed tables too, so softirq drains, ARP replies,
   and ARP/NDP neighbor solicitations transmit through the device that owns the
   registered netdev. Netdev visible names are allocated as `ethN` per runtime
-  record, RX stats are per netdev, and IPv4 ARP plus IPv6 NDP cache entries are
-  owned by the transmitting/receiving virtio-net runtime instead of a
-  process-global cache. RX-side IPv6 NDP learning now keys NS, NA, and RA
-  link-layer observations by the receiving virtio-net device.
+  record, RX stats are per netdev, and IPv4 ARP cache entries are owned by the
+  transmitting/receiving virtio-net runtime instead of a process-global cache.
+  IPv6 NDP is stack-owned in kernel builds: RX learning goes through
+  `deliver_rx_ipv6`, and virtio-net TX resolves neighbors through the
+  registered interface's stack NDP table.
 - The core IPv6 stack NDP cache is no longer a process-global `ip -> mac` map.
   Stack-side NDP learning is keyed by `(iface, IPv6 address)`, so duplicate
   link-local neighbors on different interfaces no longer overwrite each other.
@@ -164,12 +165,10 @@ test-pass claims.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
   provider. Virtio-net transport, registered-iface, TX, RX softirq runtime,
-  visible naming, RX stats, IPv4 ARP cache state, and the virtio-net IPv6 NDP
-  cache/lookup path are now BDF-owned keyed records, and the core net stack's
-  NDP table is keyed by interface. Virtio-net still needs live multi-device
-  bind/unbind proof, and its private NDP cache should eventually be collapsed
-  into the stack's interface-scoped neighbor table instead of duplicating
-  neighbor state in the NIC driver.
+  visible naming, RX stats, IPv4 ARP cache state, and IPv6 NDP stack lookups
+  are now BDF/interface-owned keyed records, and the core net stack's NDP table
+  is keyed by interface. Virtio-net still needs live multi-device bind/unbind
+  proof.
   Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device is still
   singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its
@@ -201,11 +200,10 @@ test-pass claims.
   still need to move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
-  keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and virtio-net
-  IPv6 NDP cache/lookup state, while the core stack has interface-scoped NDP,
-  but virtio-net still needs live loop proof and eventual use of the stack
-  neighbor table for TX resolution; virtio-gpu still needs a real
-  multi-card/scanout table after its BDF-owned teardown fix;
+  keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
+  stack-owned interface-scoped IPv6 NDP lookup, but virtio-net still needs live
+  loop proof; virtio-gpu still needs a real multi-card/scanout table after its
+  BDF-owned teardown fix;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
   are still the other main offenders.
 - Add explicit fault-injection coverage for probe failure after each allocation,
@@ -341,7 +339,7 @@ Several drivers use singleton global state:
 
 - virtio-gpu: single `DEV: Option<VirtioGpuDev>`
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
-  cache is still global in the net stack
+  is stack-owned and keyed by interface in kernel builds
 - virtio-rng: single `CTX`
 - virtio-vsock: single `CTX`
 - virtio-snd: single `CTX`

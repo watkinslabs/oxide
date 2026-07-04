@@ -540,7 +540,6 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
                 // F180: IPv6. Hand the L3 payload to the stack's
                 // IPv6 path; minimum-viable demux handles ICMPv6
                 // echo + graceful drop for unbound L4 destinations.
-                learn_ndp_from_ipv6(device_key, &f[14..]);
                 let _ = stack.deliver_rx_ipv6(iface, &f[14..]);
             }
             _ => {}
@@ -576,6 +575,7 @@ struct NetRuntime {
     device_key: u32,
     name: alloc::string::String,
     arp: net::arp::ArpCache,
+    #[cfg(not(target_os = "oxide-kernel"))]
     ndp: net::ndp::NdpCache,
     rx_packets: AtomicU64,
     rx_bytes:   AtomicU64,
@@ -625,6 +625,7 @@ fn ensure_net_runtime(device_key: u32) -> alloc::sync::Arc<NetRuntime> {
         device_key,
         name: allocate_net_name(&runtimes),
         arp: net::arp::ArpCache::new(),
+        #[cfg(not(target_os = "oxide-kernel"))]
         ndp: net::ndp::NdpCache::new(),
         rx_packets: AtomicU64::new(0),
         rx_bytes:   AtomicU64::new(0),
@@ -1000,7 +1001,7 @@ fn resolve_ipv6_next_hop_mac(
     #[cfg(not(target_os = "oxide-kernel"))]
     let (next_hop, src_ip) = (hdr.dst, Some(hdr.src));
 
-    if let Some(m) = net_runtime_for(device_key).and_then(|runtime| runtime.ndp.lookup(next_hop)) {
+    if let Some(m) = ndp_lookup_for_device(device_key, next_hop) {
         return Some(m);
     }
 
@@ -1031,6 +1032,18 @@ fn resolve_ipv6_next_hop_mac(
     }
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn ndp_lookup_for_device(device_key: u32, next_hop: net::Ipv6Addr) -> Option<net::MacAddr> {
+    let iface = registered_iface_for(device_key)?;
+    net::sock::stack().ndp_lookup(iface, next_hop)
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn ndp_lookup_for_device(device_key: u32, next_hop: net::Ipv6Addr) -> Option<net::MacAddr> {
+    net_runtime_for(device_key).and_then(|runtime| runtime.ndp.lookup(next_hop))
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
 fn learn_ndp_from_ipv6(device_key: u32, l3: &[u8]) {
     let Ok(hdr) = net::ipv6::Ipv6Hdr::parse(l3) else {
         return;
@@ -1095,6 +1108,8 @@ fn solicited_node_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
 mod ndp_tests {
     use super::*;
     use net::NetDev;
+
+    static TEST_STATE_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
     fn state(bus: u8) -> ModernNetState {
         ModernNetState {
@@ -1166,6 +1181,7 @@ mod ndp_tests {
 
     #[test]
     fn init_modern_accepts_distinct_devices_and_rejects_duplicate_key() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         assert!(init_modern(
             1,
@@ -1212,6 +1228,7 @@ mod ndp_tests {
 
     #[test]
     fn uninstall_modern_removes_only_named_device() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         {
             let mut devices = MODERN_DEVS.lock();
@@ -1237,6 +1254,7 @@ mod ndp_tests {
 
     #[test]
     fn shutdown_modern_quiesces_transport_without_forgetting_iface() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         set_registered_iface(1, net::NetIfaceId::from_raw(77));
         set_softirq_iface(1, net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
@@ -1254,6 +1272,7 @@ mod ndp_tests {
 
     #[test]
     fn registered_iface_is_keyed_by_device() {
+        let _guard = TEST_STATE_LOCK.lock();
         REGISTERED_NETDEVS.lock().clear();
         set_registered_iface(0x0012_0304, net::NetIfaceId::from_raw(9));
         assert_eq!(registered_iface().unwrap().raw(), 9);
@@ -1269,6 +1288,7 @@ mod ndp_tests {
 
     #[test]
     fn net_runtime_names_are_unique_and_reusable() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         {
             let mut devices = MODERN_DEVS.lock();
@@ -1290,6 +1310,7 @@ mod ndp_tests {
 
     #[test]
     fn arp_cache_is_keyed_by_device() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         let rt1 = ensure_net_runtime(1);
         let rt2 = ensure_net_runtime(2);
@@ -1319,6 +1340,7 @@ mod ndp_tests {
 
     #[test]
     fn ndp_cache_is_keyed_by_device() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         let rt1 = ensure_net_runtime(1);
         let rt2 = ensure_net_runtime(2);
@@ -1349,6 +1371,7 @@ mod ndp_tests {
 
     #[test]
     fn rx_ndp_learning_is_keyed_by_device() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         let rt1 = ensure_net_runtime(1);
         let rt2 = ensure_net_runtime(2);
@@ -1385,6 +1408,7 @@ mod ndp_tests {
 
     #[test]
     fn rx_runtime_is_keyed_by_device() {
+        let _guard = TEST_STATE_LOCK.lock();
         clear_rx_runtime();
         set_softirq_iface(0x0012_0304, net::NetIfaceId::from_raw(9), [10, 0, 0, 2]);
         assert_eq!(softirq_device_key(), Some(0x0012_0304));
@@ -1400,6 +1424,7 @@ mod ndp_tests {
 
     #[test]
     fn solicited_node_address_uses_low_24_bits() {
+        let _guard = TEST_STATE_LOCK.lock();
         let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
         let got = solicited_node_multicast(ip);
         assert_eq!(
@@ -1410,6 +1435,7 @@ mod ndp_tests {
 
     #[test]
     fn solicited_node_ethernet_uses_low_24_bits() {
+        let _guard = TEST_STATE_LOCK.lock();
         let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
         assert_eq!(
             solicited_node_ethernet(ip),
