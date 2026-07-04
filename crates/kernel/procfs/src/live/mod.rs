@@ -182,7 +182,12 @@ fn pc_statm(t: u32, _s: bool) -> InodeRef { make_pid_statm(t) }
 fn pc_wchan(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0") }
 fn pc_oom_score(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
 fn pc_oom_score_adj(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"0\n") }
-fn pc_loginuid(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
+// WRITABLE (Linux `proc_loginuid_operations`): pam_loginuid.so writes the
+// login uid here at session open. A read-only inode fails the write →
+// "Cannot make/remove an entry for the specified session" → PAM session setup
+// fails → user@<uid>.service (the greeter's user manager) can't start → no
+// gnome-shell. Accept + store the value (init -1 = unset, like Linux).
+fn pc_loginuid(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"4294967295\n") }
 fn pc_sessionid(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
 fn pc_io(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\n") }
 fn pc_limits(t: u32, _s: bool) -> InodeRef { make_pid_limits(t) }
