@@ -197,8 +197,11 @@ pub struct NetlinkSocket {
     /// (e.g. RTM_GETLINK NEWLINK notifications). v1 stores but
     /// doesn't yet publish notifications.
     pub groups:    AtomicU32,
-    /// FIFO of pending reply buffers, each already nlmsg-aligned.
-    pub rx_queue:  Spinlock<VecDeque<Vec<u8>>, SockLockClass>,
+    /// FIFO of pending reply datagrams, each already nlmsg-aligned. The `u32`
+    /// is the SENDER's port_id (Linux `NETLINK_CB(skb).portid`; 0 = kernel), so
+    /// a consuming recvmsg can stamp the true source pid + SCM_CREDENTIALS —
+    /// required for systemd-udevd's manager to identify a worker's completion.
+    pub rx_queue:  Spinlock<VecDeque<(Vec<u8>, u32)>, SockLockClass>,
     /// Per-fd epoll/poll subscribers (shared into the socket's inode via
     /// `make_netlink_socket_inode`'s `poll_subs_arc`). `enqueue` calls
     /// `notify()` so a task parked in `epoll_wait`/`ppoll` on this netlink fd
@@ -275,6 +278,32 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
     n
 }
 
+/// UNICAST a uevent-socket message to the single listener whose `port_id`
+/// matches `dest_pid` (Linux `netlink_unicast`). systemd-udevd's per-event
+/// worker signals COMPLETION to the manager by sending the processed device
+/// ADDRESSED to the manager's netlink port (`nl_pid = manager port`,
+/// `nl_groups = 0`) — a unicast, NOT a group broadcast. Without honouring the
+/// destination pid, that completion was group-broadcast (or dropped), the
+/// manager never learned the event finished, and it RE-DISPATCHED each event to
+/// a fresh worker ~20× (measured) — starving the queue so card0 was never
+/// processed → no master-of-seat tag → CAN_GRAPHICAL=0 → no gdm greeter.
+/// `src_port` is stamped as the datagram's sender so the manager's recvmsg sees
+/// the worker's pid in the source address / SCM_CREDENTIALS. Returns 1 if the
+/// destination socket was found and delivered, else 0. # C: O(N_listeners)
+pub fn unicast_uevent_to_port(dest_pid: u32, msg: &[u8], src_port: u32) -> usize {
+    let mut g = UEVENT_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    for w in g.iter() {
+        if let Some(s) = w.upgrade() {
+            if s.port_id.load(Ordering::Acquire) == dest_pid {
+                s.enqueue_from(msg.to_vec(), src_port);
+                return 1;
+            }
+        }
+    }
+    0
+}
+
 /// Re-broadcast a COOKED libudev uevent that a userspace daemon (systemd-udevd)
 /// sent on its `NETLINK_KOBJECT_UEVENT` socket to the monitor clients
 /// (systemd PID1 / logind). This is the userspace→userspace multicast half of
@@ -299,7 +328,7 @@ pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkS
             // (matching dest group, or the group-0 monitors systemd uses).
             if (grp & 1) != 0 { continue; }
             if grp != 0 && (grp & dest_groups) == 0 { continue; }
-            s.enqueue(msg.to_vec());
+            s.enqueue_from(msg.to_vec(), sender.port_id.load(Ordering::Acquire));
             n += 1;
         }
     }
@@ -372,8 +401,13 @@ impl NetlinkSocket {
     /// caller has already serialized the nlmsghdr(s) and aligned to
     /// 4-byte boundaries.
     /// # C: O(1) under rx_queue.lock()
-    pub fn enqueue(&self, msg: Vec<u8>) {
-        self.rx_queue.lock().push_back(msg);
+    pub fn enqueue(&self, msg: Vec<u8>) { self.enqueue_from(msg, 0); }
+
+    /// As [`enqueue`] but records the datagram's SENDER port_id (0 = kernel),
+    /// so a consuming recvmsg stamps the true source pid + SCM_CREDENTIALS.
+    /// # C: O(1) under rx_queue.lock()
+    pub fn enqueue_from(&self, msg: Vec<u8>, src_port: u32) {
+        self.rx_queue.lock().push_back((msg, src_port));
         // Wake any epoll/ppoll waiter on this fd (Linux `sk_data_ready` →
         // `wake_up_interruptible` on the netlink socket's sleep queue). A queued
         // datagram is useless if the consumer (systemd-udevd's sd-event loop)
@@ -381,19 +415,19 @@ impl NetlinkSocket {
         self.poll_subs.notify();
     }
 
-    /// Pop the head reply buffer if present.
+    /// Pop the head (datagram, sender_port) if present.
     /// # C: O(1) under rx_queue.lock()
-    pub fn dequeue(&self) -> Option<Vec<u8>> {
+    pub fn dequeue(&self) -> Option<(Vec<u8>, u32)> {
         self.rx_queue.lock().pop_front()
     }
 
-    /// Clone the head reply buffer WITHOUT removing it (MSG_PEEK).
+    /// Clone the head (datagram, sender_port) WITHOUT removing it (MSG_PEEK).
     /// libsystemd's sd-netlink sizes its receive buffer with a
     /// `recvmsg(MSG_PEEK|MSG_TRUNC)` before the real consuming read; the
     /// peek must leave the datagram queued or the next read sees nothing
     /// and sd_netlink times out waiting for the ack.
     /// # C: O(msg len) under rx_queue.lock()
-    pub fn peek_front(&self) -> Option<Vec<u8>> {
+    pub fn peek_front(&self) -> Option<(Vec<u8>, u32)> {
         self.rx_queue.lock().front().cloned()
     }
 
@@ -490,7 +524,7 @@ impl NetlinkSocket {
     /// # C: O(msg len)
     pub fn read(&self, buf: &mut [u8]) -> vfs::KResult<usize> {
         match self.dequeue() {
-            Some(reply) => {
+            Some((reply, _src)) => {
                 let n = reply.len().min(buf.len());
                 buf[..n].copy_from_slice(&reply[..n]);
                 Ok(n)
@@ -716,7 +750,35 @@ mod tests {
         assert_eq!(n, 2);
         assert!(sender.dequeue().is_none());
         assert!(kernel_listener.dequeue().is_none());
-        assert_eq!(group0_monitor.dequeue().as_deref(), Some(&msg[..]));
-        assert_eq!(udev_monitor.dequeue().as_deref(), Some(&msg[..]));
+        assert_eq!(group0_monitor.dequeue().map(|(m, _)| m).as_deref(), Some(&msg[..]));
+        assert_eq!(udev_monitor.dequeue().map(|(m, _)| m).as_deref(), Some(&msg[..]));
+    }
+
+    #[test]
+    fn unicast_reaches_only_target_port_with_sender_stamped() {
+        use alloc::sync::Arc;
+        // systemd-udevd manager dispatches an event to ONE worker by addressing
+        // the worker's netlink port (nl_pid), not a group broadcast. A broadcast
+        // would make every worker process every event (the ~20× amplification
+        // that starved card0). Verify unicast hits only the target + carries the
+        // sender pid so the receiver can identify who sent it.
+        let manager = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let worker_a = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let worker_b = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        worker_a.set_group_mask(0);
+        worker_b.set_group_mask(0);
+        register_uevent_listener(&manager);
+        register_uevent_listener(&worker_a);
+        register_uevent_listener(&worker_b);
+
+        let mgr_port = manager.port_id.load(Ordering::Acquire);
+        let a_port = worker_a.port_id.load(Ordering::Acquire);
+        let msg = b"libudev\0ACTION=add\0SEQNUM=42\0";
+        let delivered = unicast_uevent_to_port(a_port, msg, mgr_port);
+        assert_eq!(delivered, 1, "unicast found the target port");
+        assert!(worker_b.dequeue().is_none(), "non-target worker got nothing");
+        let got = worker_a.dequeue().expect("target worker got the datagram");
+        assert_eq!(got.0.as_slice(), &msg[..]);
+        assert_eq!(got.1, mgr_port, "sender port stamped for the receiver");
     }
 }
