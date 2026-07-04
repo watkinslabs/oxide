@@ -465,8 +465,11 @@ test-pass claims.
   publication, and keeps transport state as keyed records instead of an
   implicit single slot. Quiesced endpoints keep their reservation for ordered
   remove/unwind, but no longer report as the live compatibility owner or hide a
-  remaining live endpoint. Existing AF_VSOCK connect paths still choose a
-  primary endpoint when userspace does not explicitly select a device.
+  remaining live endpoint. AF_VSOCK bind now honors a specific local
+  `sockaddr_vm.svm_cid` by resolving it to the owning live endpoint; bound
+  connect/listen/accept paths carry that owner, listener backlogs are keyed by
+  `(owner, port)`, and `VMADDR_CID_ANY` remains the wildcard compatibility
+  route.
 - Virtio-rng now keeps per-child-key records, seeds from the just-bound device,
   removes by owning virtio child key, owns `/dev/hwrng` publication/removal
   inside the RNG child driver, and promotes `/dev/hwrng` publication to a
@@ -704,9 +707,9 @@ test-pass claims.
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
   fbdev flush/blank dispatch, exact fbdev-index publication ownership, and
   dumb-buffer mmap VMA lifetime pins;
-  virtio-vsock now has owner-keyed endpoint records and quiesced endpoints no
-  longer mask another live transport through the primary compatibility route,
-  but it still needs explicit socket/device selection beyond that route;
+  virtio-vsock now has owner-keyed endpoint records, CID-bound socket/device
+  selection, owner-keyed listener backlogs, and quiesced endpoints no longer
+  mask another live transport through the primary compatibility route;
   virtio-snd's
   ALSA card nodes, playback/capture/OSS substream runtime state, and ops
   routing are owner-keyed, but it still needs live multi-card proof and
@@ -870,7 +873,9 @@ Several drivers still use singleton global state:
   records; endpoint teardown and shutdown quiesce close only the matching
   owner's connections/backlog entries, RX protocol dispatch carries the
   transport owner key, quiesced endpoints are not advertised as live primary
-  endpoints, and duplicate owner or guest-CID publication is rejected
+  endpoints, AF_VSOCK bind/connect/listen/accept can select a specific live
+  endpoint by local CID, and duplicate owner or guest-CID publication is
+  rejected
 - virtio-snd: keyed transport records with EVENTQ drained per transport,
   owner-keyed ops, owner-keyed ALSA card records, per-card
   `controlC<N>`/`pcmC<N>D0*` publication, and ALSA PCM/capture/OSS runtime

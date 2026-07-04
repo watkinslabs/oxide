@@ -56,6 +56,23 @@ fn driver_reservation_is_not_live_until_publish() {
 }
 
 #[test]
+fn driver_owner_for_cid_resolves_only_live_endpoint() {
+    with_vsock_state(|| {
+        assert!(driver_install(71, 3, tx_ok));
+        assert!(driver_install(72, 4, tx_ok));
+        assert_eq!(driver_owner_for_cid(3), Some(71));
+        assert_eq!(driver_owner_for_cid(4), Some(72));
+        assert_eq!(driver_owner_for_cid(5), None);
+
+        assert!(driver_quiesce(71));
+        assert_eq!(driver_owner_for_cid(3), None);
+        assert_eq!(driver_owner_for_cid(4), Some(72));
+        assert!(driver_cancel_reserved(71));
+        assert!(driver_uninstall(72));
+    });
+}
+
+#[test]
 fn driver_endpoints_are_owner_keyed() {
     with_vsock_state(|| {
         assert!(driver_install(41, 3, tx_ok));
@@ -289,14 +306,14 @@ fn send_blocked_when_no_peer_credit() {
 #[test]
 fn listener_request_queues_accept() {
     with_driver(35, 3, || {
-        TABLE.add_listener(5555);
+        TABLE.add_listener(35, 5555);
         let req = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 5555,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
             op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
         };
         deliver_rx(&req, &[]);
-        let k = TABLE.pop_accept(5555).expect("accept queued");
+        let k = TABLE.pop_accept(35, 5555).expect("accept queued");
         assert_eq!(k.peer_cid, 2);
         assert_eq!(k.peer_port, 4444);
         assert_eq!(k.local_port, 5555);
@@ -310,30 +327,75 @@ fn listener_request_queues_accept() {
 #[test]
 fn rx_for_wrong_guest_cid_is_dropped() {
     with_driver(36, 3, || {
-        TABLE.add_listener(6666);
+        TABLE.add_listener(36, 6666);
         let req = VsockHdr {
             src_cid: 2, dst_cid: 99, src_port: 4444, dst_port: 6666,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
             op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
         };
         deliver_rx(&req, &[]);
-        assert!(TABLE.pop_accept(6666).is_none());
+        assert!(TABLE.pop_accept(36, 6666).is_none());
     });
 }
 
 #[test]
 fn rx_from_wrong_owner_is_dropped() {
     with_driver(37, 3, || {
-        TABLE.add_listener(7777);
+        TABLE.add_listener(37, 7777);
         let req = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 7777,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
             op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
         };
         deliver_rx_from(38, &req, &[]);
-        assert!(TABLE.pop_accept(7777).is_none());
+        assert!(TABLE.pop_accept(37, 7777).is_none());
         deliver_rx_from(37, &req, &[]);
-        assert!(TABLE.pop_accept(7777).is_some());
+        assert!(TABLE.pop_accept(37, 7777).is_some());
+    });
+}
+
+#[test]
+fn exact_owner_listener_wins_over_wildcard_listener() {
+    with_vsock_state(|| {
+        assert!(driver_install(81, 3, tx_ok));
+        assert!(driver_install(82, 4, tx_ok));
+        TABLE.add_listener(0, 8888);
+        TABLE.add_listener(82, 8888);
+
+        let req_b = VsockHdr {
+            src_cid: 2, dst_cid: 4, src_port: 4444, dst_port: 8888,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
+        };
+        deliver_rx_from(82, &req_b, &[]);
+        assert!(TABLE.pop_accept(0, 8888).is_none());
+        let exact = TABLE.pop_accept(82, 8888).expect("exact listener queued");
+        assert_eq!(exact.owner, 82);
+        TABLE.remove(exact);
+
+        let req_a = VsockHdr { dst_cid: 3, ..req_b };
+        deliver_rx_from(81, &req_a, &[]);
+        let wildcard = TABLE.pop_accept(0, 8888).expect("wildcard listener queued");
+        assert_eq!(wildcard.owner, 81);
+        TABLE.remove(wildcard);
+
+        assert!(driver_uninstall(81));
+        assert!(driver_uninstall(82));
+    });
+}
+
+#[test]
+fn connect_from_uses_requested_live_endpoint_and_local_port() {
+    with_vsock_state(|| {
+        assert!(driver_install(91, 3, tx_ok));
+        assert!(driver_install(92, 4, tx_ok));
+        let c = connect_from(92, Some(6000), 2, 1234).expect("connect queued");
+        assert_eq!(c.owner, 92);
+        assert_eq!(c.local_cid, 4);
+        assert_eq!(c.local_port, 6000);
+        TABLE.remove(c.key());
+        assert!(driver_uninstall(91));
+        assert!(driver_uninstall(92));
     });
 }
 

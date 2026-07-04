@@ -151,7 +151,8 @@ pub struct ConnKey {
 /// vsock fan-out is small (a handful of host↔guest streams). # C: see fns
 pub struct VsockTable {
     conns: Spinlock<Vec<alloc::sync::Arc<VsockConn>>, SockLockClass>,
-    /// Bound listeners: (local_port) → accept backlog of pending peers.
+    /// Bound listeners: (owner, local_port) → accept backlog of pending peers.
+    /// owner 0 is VMADDR_CID_ANY.
     listeners: Spinlock<Vec<Listener>, SockLockClass>,
     /// Ephemeral local-port allocator (1024..).
     ephem_next: core::sync::atomic::AtomicU32,
@@ -160,6 +161,7 @@ pub struct VsockTable {
 /// A bound listener + its accept backlog of inbound OP_REQUESTs that
 /// haven't been accept()ed yet. # C: O(1)
 pub struct Listener {
+    pub owner: u32,
     pub local_port: u32,
     pub backlog: Spinlock<VecDeque<ConnKey>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
@@ -249,11 +251,13 @@ impl VsockTable {
         }
     }
 
-    /// Register a listener on `port`. # C: O(1)
-    pub fn add_listener(&self, port: u32) {
+    /// Register a listener on `port` for `owner`; owner 0 is VMADDR_CID_ANY.
+    /// # C: O(1)
+    pub fn add_listener(&self, owner: u32, port: u32) {
         let mut g = self.listeners.lock();
-        if g.iter().any(|l| l.local_port == port) { return; }
+        if g.iter().any(|l| l.owner == owner && l.local_port == port) { return; }
         g.push(Listener {
+            owner,
             local_port: port,
             backlog: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
@@ -261,16 +265,22 @@ impl VsockTable {
         });
     }
 
-    /// True iff `port` has a registered listener. # C: O(N listeners)
-    pub fn is_listening(&self, port: u32) -> bool {
-        self.listeners.lock().iter().any(|l| l.local_port == port)
+    /// True iff `port` has an exact owner listener or a wildcard listener.
+    /// # C: O(N listeners)
+    pub fn is_listening(&self, owner: u32, port: u32) -> bool {
+        self.listeners.lock().iter().any(|l| {
+            l.local_port == port && (l.owner == owner || l.owner == 0)
+        })
     }
 
     /// Queue an accepted-but-not-yet-accept()ed peer key on `port`'s
-    /// listener backlog + wake any accept() parker. # C: O(N listeners)
-    pub fn queue_accept(&self, port: u32, k: ConnKey) {
+    /// listener backlog + wake any accept() parker. Exact owner listeners win
+    /// over wildcard listeners. # C: O(N listeners)
+    pub fn queue_accept(&self, owner: u32, port: u32, k: ConnKey) {
         let g = self.listeners.lock();
-        if let Some(l) = g.iter().find(|l| l.local_port == port) {
+        let listener = g.iter().find(|l| l.owner == owner && l.local_port == port)
+            .or_else(|| g.iter().find(|l| l.owner == 0 && l.local_port == port));
+        if let Some(l) = listener {
             l.backlog.lock().push_back(k);
             #[cfg(target_os = "oxide-kernel")]
             l.accept_waiters.wake_all();
@@ -278,17 +288,20 @@ impl VsockTable {
     }
 
     /// Pop one pending peer key from `port`'s accept backlog. # C: O(N)
-    pub fn pop_accept(&self, port: u32) -> Option<ConnKey> {
+    pub fn pop_accept(&self, owner: u32, port: u32) -> Option<ConnKey> {
         let g = self.listeners.lock();
-        let k = g.iter().find(|l| l.local_port == port)?.backlog.lock().pop_front();
+        let k = g.iter()
+            .find(|l| l.owner == owner && l.local_port == port)?
+            .backlog.lock()
+            .pop_front();
         k
     }
 
     /// True iff `port`'s accept backlog is non-empty (poll readability).
     /// # C: O(N listeners)
-    pub fn pop_accept_peek(&self, port: u32) -> bool {
+    pub fn pop_accept_peek(&self, owner: u32, port: u32) -> bool {
         let g = self.listeners.lock();
-        g.iter().find(|l| l.local_port == port)
+        g.iter().find(|l| l.owner == owner && l.local_port == port)
             .map(|l| !l.backlog.lock().is_empty()).unwrap_or(false)
     }
 }

@@ -61,6 +61,15 @@ fn primary_endpoint() -> Option<(u32, u64)> {
         .map(|e| (e.owner, e.guest_cid))
 }
 
+fn endpoint_by_owner(owner: u32) -> Option<(u32, u64)> {
+    if owner == 0 {
+        return primary_endpoint();
+    }
+    ENDPOINTS.lock().iter()
+        .find(|e| e.owner == owner && e.tx.is_some())
+        .map(|e| (e.owner, e.guest_cid))
+}
+
 /// Reserve a protocol endpoint for `owner` before the transport allocates and
 /// pre-posts DMA state. Multiple owners may coexist; duplicate owner keys are
 /// rejected so a later probe cannot overwrite an existing endpoint.
@@ -160,6 +169,14 @@ pub fn guest_cid_for(owner: u32) -> u64 {
         .unwrap_or(0)
 }
 
+/// Owning driver instance for a live local CID.
+/// # C: O(N endpoints)
+pub fn driver_owner_for_cid(cid: u64) -> Option<u32> {
+    ENDPOINTS.lock().iter()
+        .find(|e| e.guest_cid == cid && e.tx.is_some())
+        .map(|e| e.owner)
+}
+
 /// Primary driver instance for the compatibility socket path, or 0 if none.
 /// # C: O(N endpoints)
 pub fn driver_owner() -> u32 {
@@ -237,7 +254,7 @@ pub fn deliver_rx_from(owner: u32, h: &VsockHdr, payload: &[u8]) {
         VIRTIO_VSOCK_OP_REQUEST => {
             // Inbound connection attempt. Accept iff we listen on the
             // dst port; reply OP_RESPONSE and queue for accept(). Else RST.
-            if TABLE.is_listening(local_port) {
+            if TABLE.is_listening(owner, local_port) {
                 let c = alloc::sync::Arc::new(VsockConn::new(
                     owner, local_cid, local_port, peer_cid, peer_port,
                     VsockState::Connected));
@@ -245,7 +262,7 @@ pub fn deliver_rx_from(owner: u32, h: &VsockHdr, payload: &[u8]) {
                 let resp = c.make_hdr(VIRTIO_VSOCK_OP_RESPONSE, 0, 0);
                 TABLE.insert(c.clone());
                 let _ = tx_for(owner, &resp, &[]);
-                TABLE.queue_accept(local_port, c.key());
+                TABLE.queue_accept(owner, local_port, c.key());
             } else {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
@@ -324,13 +341,13 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
 /// Client connect: allocate a local port, register the connection, send
 /// OP_REQUEST, and (kernel) park until OP_RESPONSE / RST. Returns the
 /// connection on success. # C: O(RTT)
-pub fn connect(peer_cid: u64, peer_port: u32)
+pub fn connect_from(owner: u32, local_port: Option<u32>, peer_cid: u64, peer_port: u32)
     -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
-    let Some((owner, local_cid)) = primary_endpoint() else {
+    let Some((owner, local_cid)) = endpoint_by_owner(owner) else {
         return Err(NetError::Enetunreach);
     };
-    let local_port = TABLE.alloc_port();
+    let local_port = local_port.unwrap_or_else(|| TABLE.alloc_port());
     let c = alloc::sync::Arc::new(VsockConn::new(
         owner, local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
     TABLE.insert(c.clone());
@@ -359,6 +376,13 @@ pub fn connect(peer_cid: u64, peer_port: u32)
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     Ok(c)
+}
+
+/// Client connect through the compatibility primary endpoint. # C: O(RTT)
+pub fn connect(peer_cid: u64, peer_port: u32)
+    -> Result<alloc::sync::Arc<VsockConn>, NetError>
+{
+    connect_from(0, None, peer_cid, peer_port)
 }
 
 /// Connect-poll budget (tick_yield iterations) before giving up. Named,

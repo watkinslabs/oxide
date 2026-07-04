@@ -94,12 +94,12 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
 /// # C: O(1) per accept
 fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64,
                 nonblock: bool, flags: u64) -> i64 {
-    let port = match &*vs.kind.lock() {
-        net::vsock_socket::VsockKind::Listener(p) => *p,
+    let (owner, port) = match &*vs.kind.lock() {
+        net::vsock_socket::VsockKind::Listener { port, owner } => (*owner, *port),
         _ => return -(Errno::Einval.as_i32() as i64),
     };
     let key = loop {
-        if let Some(k) = net::vsock::TABLE.pop_accept(port) { break k; }
+        if let Some(k) = net::vsock::TABLE.pop_accept(owner, port) { break k; }
         if nonblock { return -(Errno::Eagain.as_i32() as i64); }
         // SAFETY: process ctx (sys_accept AF_VSOCK); runqueue installed;
         // preempt-off owned by the syscall stub; deliver_rx queues the
