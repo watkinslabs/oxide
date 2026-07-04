@@ -412,7 +412,7 @@ pub fn init() {
 
 /// Register one model-owned `/dev/input/event<id>` node.
 /// # C: O(depth)
-pub fn register_node(id: u32) -> bool {
+pub fn register_node(id: u32, parent: Option<(&'static str, alloc::string::String)>) -> bool {
     if (id as usize) >= MAX_EVDEV {
         return false;
     }
@@ -421,11 +421,13 @@ pub fn register_node(id: u32) -> bool {
         return false;
     }
     let factory: drv::NodeFactory = Arc::new(move || make_evdev_inode(id));
-    let dev = match drv::try_device_add(Arc::new(
-        drv::Device::new("input", alloc::format!("event{id}"), 0, 0, id)
-            .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))
-            .with_node_factory(factory),
-    )) {
+    let mut dev = drv::Device::new("input", alloc::format!("event{id}"), 0, 0, id)
+        .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))
+        .with_node_factory(factory);
+    if let Some((bus, addr)) = parent {
+        dev = dev.with_parent(bus, addr);
+    }
+    let dev = match drv::try_device_add(Arc::new(dev)) {
         Ok(dev) => dev,
         Err(_) => return false,
     };
@@ -493,8 +495,8 @@ mod tests {
         let id = (MAX_EVDEV - 1) as u32;
         let _ = unregister_node(id);
 
-        assert!(register_node(id));
-        assert!(!register_node(id));
+        assert!(register_node(id, None));
+        assert!(!register_node(id, None));
         assert_eq!(
             drv::devices().iter()
                 .filter(|d| d.bus == "input" && d.addr == alloc::format!("event{id}"))
@@ -506,12 +508,29 @@ mod tests {
     }
 
     #[test]
+    fn register_node_records_model_parent() {
+        let id = (MAX_EVDEV - 4) as u32;
+        let addr = alloc::format!("event{id}");
+        let parent_addr = String::from("virtio-input-parent0");
+        let _ = unregister_node(id);
+
+        assert!(register_node(id, Some(("virtio", parent_addr.clone()))));
+        let dev = drv::devices()
+            .into_iter()
+            .find(|d| d.bus == "input" && d.addr == addr)
+            .expect("registered input event device");
+        assert_eq!(dev.parent(), Some(("virtio", parent_addr.as_str())));
+
+        assert!(unregister_node(id));
+    }
+
+    #[test]
     fn unregister_then_register_restores_model_owned_event_node() {
         let id = (MAX_EVDEV - 3) as u32;
         let addr = alloc::format!("event{id}");
         let _ = unregister_node(id);
 
-        assert!(register_node(id));
+        assert!(register_node(id, None));
         assert!(EVDEV_DEVICES.lock()[id as usize].is_some());
         assert_eq!(
             drv::devices().iter()
@@ -528,7 +547,7 @@ mod tests {
             0
         );
 
-        assert!(register_node(id));
+        assert!(register_node(id, None));
         assert!(EVDEV_DEVICES.lock()[id as usize].is_some());
         assert_eq!(
             drv::devices().iter()
@@ -549,7 +568,7 @@ mod tests {
                 .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))))
             .expect("conflict device registration");
 
-        assert!(!register_node(id));
+        assert!(!register_node(id, None));
         assert!(EVDEV_DEVICES.lock()[id as usize].is_none());
         assert_eq!(
             drv::devices().iter()
@@ -559,7 +578,7 @@ mod tests {
         );
 
         drv::device_del(&conflict);
-        assert!(register_node(id));
+        assert!(register_node(id, None));
         assert!(unregister_node(id));
     }
 
