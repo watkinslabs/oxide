@@ -514,7 +514,7 @@ impl VirtioProbeState {
             |notify_off| self.map_notify(notify_cap, bars, notify_off),
         );
 
-        let net_rx_boot = if profile.needs_net_boot_buffers
+        let net_rx_boot = if profile.early_payload_policy.is_net()
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         {
             runtime.post_net_rx_boot_buffer(q0_ring)
@@ -535,7 +535,7 @@ impl VirtioProbeState {
         } else {
             0
         };
-        let tx0_buf_pa = if profile.needs_net_boot_buffers
+        let tx0_buf_pa = if profile.early_payload_policy.is_net()
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         {
             runtime.alloc_net_tx_boot_buffer(q1_ring, q1_notify_va)

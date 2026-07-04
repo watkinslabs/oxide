@@ -236,8 +236,9 @@ test-pass claims.
 - Virtio child transport profiles now use shared `virtio::VirtioTransportProfile`
   and `virtio::VirtioQueuePlan` types. BAR-derived transport mappings,
   PMM/HHDM-backed virtqueue frame allocation/zeroing, notify-window mapping,
-  notify kicks, q0 post-kick status/used-ring observation, net boot-buffer
-  posting/allocation, ISR read-to-clear sampling, MSI-X table binding/release,
+  notify kicks, q0 post-kick status/used-ring observation, child-declared
+  early payload policy, net boot-buffer posting/allocation, ISR read-to-clear
+  sampling, MSI-X table binding/release,
   runtime transport-record lifetime, and failed-probe frame release are now
   owned by a dedicated virtio-pci transport helper or probe-state method
   instead of the probe body. The child-declared feature/queue/notification
@@ -277,8 +278,8 @@ test-pass claims.
   MSI-X binding, common-cfg queue programming, and planned notify mappings.
 - The old q1-specific notify policy enum is gone. Persistent child queue
   notify mappings now come from the indexed queue plan itself, while the
-  remaining net boot TX buffer allocation is tied to the existing net boot
-  payload requirement instead of a queue-number-specific dispatch.
+  remaining net boot TX buffer allocation is tied to the child-declared early
+  payload policy instead of a queue-number-specific dispatch.
 - Shared virtio now owns indexed notify-mapping descriptors and the
   child-visible `VirtQueueResource` assembly from scanned queue sizes,
   programmed queues, and transport-resolved notify VAs. The PCI transport
@@ -528,8 +529,9 @@ test-pass claims.
 - Virtio child probing is model-driven and child resource handoff is more
   centralized, and extra queue setup is now data-driven. Virtio-blk,
   virtio-vsock, virtio-snd, virtio-input, and virtio-net config parsing have
-  moved into their child drivers, but common virtio transport, feature
-  policy, net boot-buffer policy, and child policy remain too concentrated in
+  moved into their child drivers, and net early payload policy is now declared
+  by the child transport profile. Common virtio transport and some child
+  policy still remain too concentrated in
   `crates/kernel/pci-boot/src/virtio_drv.rs`.
 - Virtio IRQ callback ownership has moved in the right direction, and queue
   selection no longer uses per-queue special-case booleans, but feature
@@ -613,7 +615,9 @@ test-pass claims.
   MSI-X table binding/release, runtime transport-record publish/unpublish,
   failed-probe frame release, ISR read-to-clear sampling, q0 post-kick
   status/used-ring observation, net boot-buffer mechanics, and notify VA/kick
-  mechanics now live in a dedicated virtio-pci transport helper. A first
+  mechanics now live in a dedicated virtio-pci transport helper, while the
+  net early payload requirement is child-declared in the shared transport
+  profile. A first
   `VirtioProbeState` owns config windows and transport lifetime through
   finalization/state methods. Shared virtio resolves indexed planned notify
   mappings from child queue plans, while PCI supplies only the concrete
@@ -623,9 +627,10 @@ test-pass claims.
   `virtio::VirtioChildRequirements` and evaluated by
   `virtio::VirtioChildResourceState`; child transport profiles and queue plans
   now use shared `virtio::VirtioTransportProfile` and
-  `virtio::VirtioQueuePlan`; resource publication for child probes now uses
-  shared readiness/resource assembly instead of per-child q0/q1/q2/q3 lists in
-  the PCI glue; final runtime handoff assembly now uses shared
+  `virtio::VirtioQueuePlan`; early payload policy is child-declared in
+  `virtio::VirtioEarlyPayloadPolicy`; resource publication for child probes
+  now uses shared readiness/resource assembly instead of per-child q0/q1/q2/q3
+  lists in the PCI glue; final runtime handoff assembly now uses shared
   `virtio::VirtioRuntimeHandoff` instead of a PCI-local resource struct; and
   child-owned transport-profile declarations keep feature, queue, and child
   IRQ policy in the child driver crates. Virtio child model-driver declarations
@@ -700,8 +705,9 @@ test-pass claims.
   free helper is gone; child probe now enters through `VirtioPciTransport` and
   the acquired PCI transport object drives the final probe sequence.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
-  child-unwind leak has been fixed, active virtio child feature policy has
-  moved to child drivers, and failed-probe transport release is now owned by
+  child-unwind leak has been fixed, active virtio child feature and early
+  payload policy have moved to child drivers, and failed-probe transport
+  release is now owned by
   `VirtioProbe` instead of ad-hoc per-device wrappers. `VirtioProbe` now drains
   a single transport-owned frame ledger on child failure, so net boot payload
   frames cannot be leaked by a child-requirement mismatch. MSI-X q0 vector
