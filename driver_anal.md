@@ -837,18 +837,19 @@ test-pass claims.
   unregister, and sound-ops clearing for the removed owner.
   Virtio-snd uninstall calls that owner cleanup before requiring the transport
   context, so stale public card state is not stranded by a missing CTX record.
-  The ALSA control node no longer reports an empty control table when no
-  virtio CTL table is present: `controlC<N>` now exposes static Linux master
-  playback volume/switch elements with real ELEM_LIST/INFO/READ/WRITE state,
-  and OSS mixer ioctls route through the same owner-keyed state that is removed
-  with the card. `SNDRV_CTL_IOCTL_PCM_INFO` now reports both playback and
-  capture streams for device 0 when the owning virtio-snd driver registered
-  those stream directions, virtio-snd caps helpers return no caps when the
-  scanned stream direction is absent instead of advertising an empty stream,
-  and the sound core now publishes `pcmC<N>D0p` / `pcmC<N>D0c` plus playback
-  runtime state only for directions backed by those real caps. Missing stream
-  caps now make direct PCM info/refine paths report no device instead of
-  falling back to synthetic S16/44.1k stereo support.
+  The ALSA control node no longer fabricates mixer controls when no virtio CTL
+  table or other driver-backed control table is present: `ELEM_LIST` reports
+  zero elements, element INFO/READ/WRITE for the old static Master controls
+  return no entry, and OSS mixer ioctls plus raw `/dev/mixer` writes report no
+  device instead of mutating private fake state. `SNDRV_CTL_IOCTL_PCM_INFO` now
+  reports both playback and capture streams for device 0 when the owning
+  virtio-snd driver registered those stream directions, virtio-snd caps helpers
+  return no caps when the scanned stream direction is absent instead of
+  advertising an empty stream, and the sound core now publishes
+  `pcmC<N>D0p` / `pcmC<N>D0c` plus playback runtime state only for directions
+  backed by those real caps. Missing stream caps now make direct PCM
+  info/refine paths report no device instead of falling back to synthetic
+  S16/44.1k stereo support.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
