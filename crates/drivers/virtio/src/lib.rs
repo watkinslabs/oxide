@@ -26,8 +26,9 @@ pub mod resources;
 pub use resources::{
     VirtioChildProbeFacts, VirtioChildRequirements, VirtioChildResourceState,
     VirtioChildTransportSession, VirtioNetBootPayloads, VirtioQueueNotifyMappings,
-    VirtioQueuePlan, VirtioResources, VirtioTransportLocation, VirtioTransportProfile,
-    VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_MSI_NO_VECTOR, build_queue_resources,
+    VirtioQueuePlan, VirtioResources, VirtioTransportLocation, VirtioTransportProbeResult,
+    VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_MSI_NO_VECTOR,
+    build_queue_resources, push_unique_frame,
 };
 
 pub mod common_cfg;

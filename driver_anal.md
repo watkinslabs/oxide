@@ -208,6 +208,10 @@ test-pass claims.
   programmed queues, and transport-resolved notify VAs. The PCI transport
   still maps/kicks hardware notify windows, but no longer owns the generic
   queue-resource handoff builder.
+- Shared `virtio::VirtioTransportProbeResult` now owns the transport-neutral
+  completed-probe result: child-facing facts, child resource state assembly,
+  vring cleanup frame extraction, and net boot payload frame extraction. The
+  PCI transport keeps PCI/MMIO/MSI-X lifetime and PCI debug trace state only.
 - Virtio child drivers now export their own `VirtioTransportProfile`
   declarations, including feature masks, queue requirements, and child IRQ
   callback policy. The pci-boot virtio child bus glue consumes those profiles
@@ -513,9 +517,11 @@ test-pass claims.
   an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
   publish, and unpublish helpers are private to that transport module. The
   shared `virtio::VirtioChildResourceState` now owns child readiness/resource
-  publication checks across transports. Shared `virtio::VirtioChildProbeFacts`
-  now carries child-visible negotiated features, resource state, and net boot
-  payloads. Backend debug/trace-only probe-result state has been split into
+  publication checks across transports. Shared
+  `virtio::VirtioTransportProbeResult` now builds
+  `virtio::VirtioChildProbeFacts` and owns the transport-neutral vring/net
+  payload cleanup frame lists. Backend debug/trace-only probe-result state has
+  been split into
   `VirtioPciProbeTrace`, and `VirtioProbe` now keeps opaque vring/net payload
   frame-release lists instead of individual child queue PA fields, so it is
   closer to a PCI transport lifetime object instead of a mixed

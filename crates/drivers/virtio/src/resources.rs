@@ -3,6 +3,8 @@
 //! live with the transport until every child driver is converted to managed
 //! resources.
 
+use alloc::vec::Vec;
+
 use crate::{ProgrammedQueues, QueueRing};
 
 /// Maximum virtqueues exposed through the staged resource object. Modern
@@ -632,6 +634,82 @@ impl VirtioChildProbeFacts {
     }
 }
 
+/// Transport-neutral result of a completed virtio transport bring-up.
+///
+/// Concrete transports still own MMIO mapping, IRQ/MSI binding, PCI command
+/// lifetime, and debug trace data. This object owns the common child-facing
+/// resource facts and the frame lists needed for failed-probe cleanup.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioTransportProbeResult {
+    pub hhdm: u64,
+    pub drv_features: u64,
+    pub final_status: u8,
+    pub cfg_va: u64,
+    pub device_cfg_va: u64,
+    pub queue_resources: [VirtQueueResource; MAX_RESOURCE_QUEUES],
+    pub net_boot_payloads: VirtioNetBootPayloads,
+}
+
+impl VirtioTransportProbeResult {
+    /// # C: O(1)
+    pub const fn new(
+        hhdm: u64,
+        drv_features: u64,
+        final_status: u8,
+        cfg_va: u64,
+        device_cfg_va: u64,
+        queue_resources: [VirtQueueResource; MAX_RESOURCE_QUEUES],
+        net_boot_payloads: VirtioNetBootPayloads,
+    ) -> Self {
+        Self {
+            hhdm,
+            drv_features,
+            final_status,
+            cfg_va,
+            device_cfg_va,
+            queue_resources,
+            net_boot_payloads,
+        }
+    }
+
+    /// # C: O(MAX_RESOURCE_QUEUES)
+    pub fn child_facts(&self) -> VirtioChildProbeFacts {
+        let mut resources = VirtioChildResourceState::new(self.final_status, self.cfg_va, self.hhdm)
+            .with_device_cfg_va(self.device_cfg_va)
+            .with_net_boot_payloads(self.net_boot_payloads);
+        for queue in self.queue_resources {
+            resources.set_queue(queue);
+        }
+        VirtioChildProbeFacts::new(self.drv_features, resources)
+    }
+
+    /// # C: O(MAX_RESOURCE_QUEUES)
+    pub fn vring_frames(&self) -> Vec<u64> {
+        let mut frames = Vec::new();
+        for queue in self.queue_resources {
+            push_unique_frame(&mut frames, queue.desc_pa);
+            push_unique_frame(&mut frames, queue.driver_pa);
+            push_unique_frame(&mut frames, queue.device_pa);
+        }
+        frames
+    }
+
+    /// # C: O(1)
+    pub const fn net_payload_frames(&self) -> [u64; 2] {
+        [
+            self.net_boot_payloads.rx_buf_pa,
+            self.net_boot_payloads.tx_buf_pa,
+        ]
+    }
+}
+
+/// # C: O(N)
+pub fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
+    if frame != 0 && !frames.iter().any(|existing| *existing == frame) {
+        frames.push(frame);
+    }
+}
+
 /// Common child-facing session contract implemented by concrete virtio
 /// transports. Child drivers consume this shape; transport backends own how
 /// bring-up, IRQ/vector binding, MMIO lifetime, and failed-probe release are
@@ -850,5 +928,46 @@ mod tests {
         assert!(facts
             .resources_for_child(VirtioChildRequirements::q0())
             .is_some());
+    }
+
+    #[test]
+    fn transport_probe_result_builds_child_facts_and_frame_lists() {
+        let mut queues = core::array::from_fn(|index| {
+            VirtQueueResource::new(index as u16, 0, 0, 0, 0, 0, 0)
+        });
+        queues[0] = VALID_Q0;
+        queues[1] = VirtQueueResource {
+            index:      1,
+            size:       8,
+            desc_pa:    0x5000,
+            driver_pa:  0x6000,
+            device_pa:  0x7000,
+            notify_va:  0x8000,
+            notify_off: 4,
+        };
+        let result = VirtioTransportProbeResult::new(
+            0x20,
+            0x55,
+            crate::VIRTIO_STATUS_DRIVER_OK,
+            0x10,
+            0x30,
+            queues,
+            VirtioNetBootPayloads::new(0x9000, 64, 0xa000),
+        );
+
+        let facts = result.child_facts();
+        assert_eq!(facts.drv_features, 0x55);
+        assert_eq!(facts.net_boot_payloads().rx_buf_pa, 0x9000);
+        let resources = facts.resources_for_child(VirtioChildRequirements::net()).unwrap();
+        assert_eq!(resources.cfg_va, 0x10);
+        assert_eq!(resources.device_cfg_va, 0x30);
+        assert_eq!(resources.require_queue(0), Some(queues[0]));
+        assert_eq!(resources.require_queue(1), Some(queues[1]));
+
+        assert_eq!(
+            result.vring_frames(),
+            alloc::vec![0x1000, 0x2000, 0x3000, 0x5000, 0x6000, 0x7000]
+        );
+        assert_eq!(result.net_payload_frames(), [0x9000, 0xa000]);
     }
 }

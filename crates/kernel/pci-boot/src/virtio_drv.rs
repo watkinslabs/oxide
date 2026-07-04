@@ -112,12 +112,6 @@ fn abandon_probe_transport<T>(bdf: pci::Bdf, mappings: &mut TransportMappings) -
     None
 }
 
-fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
-    if frame != 0 && !frames.iter().any(|existing| *existing == frame) {
-        frames.push(frame);
-    }
-}
-
 fn unpublish_transport_mmio(bdf: u32) {
     unpublish_transport_record(bdf);
 }
@@ -312,10 +306,23 @@ impl VirtioPciAcquisition {
             &self.bars,
         );
 
-        Some(state.finish(VirtioProbeResult {
+        let transport_result = virtio::VirtioTransportProbeResult::new(
+            runtime.hhdm,
+            drv_features,
+            final_status,
+            state.cfg_va,
+            state.device_cfg_va,
+            handoff.queue_resources,
+            virtio::VirtioNetBootPayloads::new(
+                handoff.rx0_buf_pa,
+                handoff.rx0_buf_len,
+                handoff.tx0_buf_pa,
+            ),
+        );
+        let trace = VirtioPciProbeTrace {
             cmd_orig: self.cmd_orig,
             cmd_new: self.cmd_new,
-            hhdm: runtime.hhdm,
+            cfg_va: state.cfg_va,
             dev_features,
             drv_features,
             post_status,
@@ -330,10 +337,9 @@ impl VirtioPciAcquisition {
             avail_idx_posted: handoff.avail_idx_posted,
             used_idx_observed: handoff.used_idx_observed,
             isr_status: handoff.isr_status,
-            rx0_buf_pa: handoff.rx0_buf_pa,
-            rx0_buf_len: handoff.rx0_buf_len,
-            tx0_buf_pa: handoff.tx0_buf_pa,
-        }))
+        };
+
+        Some(state.finish(transport_result, trace))
     }
 }
 
@@ -601,9 +607,12 @@ impl VirtioProbeState {
         }
     }
 
-    fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
-        let child_facts = result.child_facts(self.cfg_va, self.device_cfg_va);
-        let trace = result.trace(self.cfg_va);
+    fn finish(
+        self,
+        result: virtio::VirtioTransportProbeResult,
+        trace: VirtioPciProbeTrace,
+    ) -> VirtioProbe {
+        let child_facts = result.child_facts();
         let vring_frames = result.vring_frames();
         let net_payload_frames = result.net_payload_frames();
         VirtioProbe {
@@ -616,82 +625,6 @@ impl VirtioProbeState {
             vring_frames,
             net_payload_frames,
         }
-    }
-}
-
-struct VirtioProbeResult {
-    cmd_orig: u16,
-    cmd_new: u16,
-    hhdm: u64,
-    dev_features: u64,
-    drv_features: u64,
-    post_status: u32,
-    features_ok: bool,
-    msix_cfg: u16,
-    num_queues: u16,
-    queues: [(u16, u16); virtio::MAX_RESOURCE_QUEUES],
-    queues_len: usize,
-    queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
-    final_status: u8,
-    post_notify_status: u8,
-    avail_idx_posted: u16,
-    used_idx_observed: u16,
-    isr_status: u8,
-    rx0_buf_pa: u64,
-    rx0_buf_len: u16,
-    tx0_buf_pa: u64,
-}
-
-impl VirtioProbeResult {
-    fn vring_frames(&self) -> Vec<u64> {
-        let mut frames = Vec::new();
-        for queue in self.queue_resources {
-            for frame in [queue.desc_pa, queue.driver_pa, queue.device_pa] {
-                push_unique_frame(&mut frames, frame);
-            }
-        }
-        frames
-    }
-
-    fn net_payload_frames(&self) -> [u64; 2] {
-        [self.rx0_buf_pa, self.tx0_buf_pa]
-    }
-
-    fn trace(&self, cfg_va: u64) -> VirtioPciProbeTrace {
-        VirtioPciProbeTrace {
-            cmd_orig: self.cmd_orig,
-            cmd_new: self.cmd_new,
-            cfg_va,
-            dev_features: self.dev_features,
-            drv_features: self.drv_features,
-            post_status: self.post_status,
-            features_ok: self.features_ok,
-            msix_cfg: self.msix_cfg,
-            num_queues: self.num_queues,
-            queues: self.queues,
-            queues_len: self.queues_len,
-            queue_resources: self.queue_resources,
-            final_status: self.final_status,
-            post_notify_status: self.post_notify_status,
-            avail_idx_posted: self.avail_idx_posted,
-            used_idx_observed: self.used_idx_observed,
-            isr_status: self.isr_status,
-        }
-    }
-
-    fn child_facts(&self, cfg_va: u64, device_cfg_va: u64) -> virtio::VirtioChildProbeFacts {
-        let mut resources =
-            virtio::VirtioChildResourceState::new(self.final_status, cfg_va, self.hhdm)
-                .with_device_cfg_va(device_cfg_va)
-                .with_net_boot_payloads(virtio::VirtioNetBootPayloads::new(
-                    self.rx0_buf_pa,
-                    self.rx0_buf_len,
-                    self.tx0_buf_pa,
-                ));
-        for queue in self.queue_resources {
-            resources.set_queue(queue);
-        }
-        virtio::VirtioChildProbeFacts::new(self.drv_features, resources)
     }
 }
 
@@ -737,7 +670,7 @@ impl VirtioProbe {
     fn release_failed_transport(&mut self, payload_frames: &[u64]) {
         let mut frames = core::mem::take(&mut self.vring_frames);
         for frame in payload_frames.iter().copied() {
-            push_unique_frame(&mut frames, frame);
+            virtio::push_unique_frame(&mut frames, frame);
         }
         release_failed_probe(self.cfg_va, &frames);
         release_probe_msix(self);
