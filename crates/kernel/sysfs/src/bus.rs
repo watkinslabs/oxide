@@ -355,6 +355,20 @@ fn find_dev_by_index(kind: DevIndexKind, name: &str) -> Option<Arc<drv::Device>>
 }
 
 fn dev_index_target(dev: &drv::Device) -> Vec<u8> {
+    // DRM cards are "virtual" devices whose real sysfs dir is
+    // /sys/devices/virtual/drm/<sysname> (built by sysfs::drm), where sysname is
+    // the devnode BASENAME (`card0`/`renderD128`) — NOT the `dri/`-prefixed drv
+    // addr, and NOT under devices/platform (the dev_root_canon fallthrough).
+    // logind resolves a seat's DRM device via sd_device_new_from_device_id
+    // ("c226:0") → sd_device_new_from_syspath("/sys/dev/char/226:0"), which
+    // chases THIS symlink and requires the target to hold a `uevent` file.
+    // Pointing it at the bogus devices/platform/dri/card0 made the chase fail,
+    // so logind dropped card0, seat0 never became CanGraphical, and gdm launched
+    // no greeter (60§2). Match sysfs::drm's tree exactly.
+    if dev.bus == "drm" {
+        let sysname = dev.addr.rsplit('/').next().unwrap_or(dev.addr.as_str());
+        return alloc::format!("../../devices/virtual/drm/{}", sysname).into_bytes();
+    }
     alloc::format!("../../{}/{}", dev_root_canon(dev.bus), dev.addr).into_bytes()
 }
 
