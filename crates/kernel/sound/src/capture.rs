@@ -48,22 +48,24 @@ pub(crate) fn registered_count() -> usize {
     CAP.lock().len()
 }
 
-#[cfg(test)]
-pub(crate) fn has_card(owner: u32) -> bool {
+fn is_registered(owner: u32) -> bool {
     CAP.lock().iter().any(|c| c.owner == owner)
 }
+
+#[cfg(test)]
+pub(crate) fn has_card(owner: u32) -> bool { is_registered(owner) }
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// Device INPUT caps `(virtio_formats, virtio_rates, ch_min, ch_max)`.
-fn caps(owner: u32) -> (u64, u64, u8, u8) {
-    crate::ops::cap_caps(owner).unwrap_or((1 << 5, 1 << 6, 1, 2))
-}
+fn caps(owner: u32) -> Option<(u64, u64, u8, u8)> { crate::ops::cap_caps(owner) }
 
 /// Capture HW_REFINE/HW_PARAMS: refine against the INPUT caps; on commit
 /// apply via the capture ops + record geometry. # C: O(CONTROLQ)
 fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
-    let (vf, vr, ch_min, ch_max) = caps(owner);
+    let Some((vf, vr, ch_min, ch_max)) = caps(owner) else {
+        return err(Errno::Enodev);
+    };
     let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
         if !crate::ops::cap_hw_params(owner, rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
@@ -85,7 +87,7 @@ fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
 pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => match UserBuf::new(arg, 4) { Some(b) => { b.w32(0, SNDRV_PCM_VERSION); 0 } None => err(Errno::Efault) },
-        PCM_INFO => pcm_info(arg),
+        PCM_INFO => pcm_info(owner, arg),
         PCM_TSTAMP | PCM_TTSTAMP => 0,
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, false), None => err(Errno::Efault) },
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, true), None => err(Errno::Efault) },
@@ -133,7 +135,10 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
     }
 }
 
-fn pcm_info(arg: u64) -> i64 {
+fn pcm_info(owner: u32, arg: u64) -> i64 {
+    if caps(owner).is_none() || !is_registered(owner) {
+        return err(Errno::Enodev);
+    }
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     b.zero(0, PCM_INFO_SIZE);
     b.w32(PI_STREAM, STREAM_CAPTURE as u32);
