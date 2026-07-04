@@ -105,7 +105,7 @@ fn publish_transport_mmio(p: &mut VirtioProbe) {
     publish_transport_record(
         p.bdf_word,
         core::mem::take(&mut p.mappings),
-        core::mem::take(&mut p.vring_frames),
+        p.owned_frames.take_vring_frames(),
         core::mem::take(&mut p.msix),
     );
 }
@@ -579,8 +579,7 @@ impl VirtioProbeState {
         trace: VirtioPciProbeTrace,
     ) -> VirtioProbe {
         let child_facts = result.child_facts();
-        let vring_frames = result.vring_frames();
-        let net_payload_frames = result.net_payload_frames();
+        let owned_frames = virtio::VirtioProbeOwnedFrames::from_probe_result(&result);
         VirtioProbe {
             bdf_word: self.bdf_word,
             mappings: self.mappings,
@@ -588,8 +587,7 @@ impl VirtioProbeState {
             child_facts,
             trace,
             cfg_va: self.cfg_va,
-            vring_frames,
-            net_payload_frames,
+            owned_frames,
         }
     }
 }
@@ -621,8 +619,7 @@ pub(super) struct VirtioProbe {
     pub(super) child_facts: virtio::VirtioChildProbeFacts,
     pub(super) trace: VirtioPciProbeTrace,
     pub(super) cfg_va: u64,
-    vring_frames: Vec<u64>,
-    net_payload_frames: [u64; 2],
+    owned_frames: virtio::VirtioProbeOwnedFrames,
 }
 
 impl VirtioProbe {
@@ -633,28 +630,16 @@ impl VirtioProbe {
         self.child_facts.resources_for_child(requirements)
     }
 
-    fn release_failed_transport(&mut self, payload_frames: &[u64]) {
-        let mut frames = core::mem::take(&mut self.vring_frames);
-        for frame in payload_frames.iter().copied() {
-            virtio::push_unique_frame(&mut frames, frame);
-        }
+    fn release_failed_transport(&mut self) {
+        let frames = self.owned_frames.take_all();
         release_failed_probe(self.cfg_va, &frames);
         release_probe_msix(self);
         disable_pci_command(bdf_from_word(self.bdf_word));
         self.mappings.unmap_all();
     }
 
-    fn release_failed_transport_with_net_payloads(&mut self) {
-        let payload_frames = self.net_payload_frames;
-        self.release_failed_transport(&payload_frames);
-    }
-
-    pub(super) fn release_failed_child(&mut self, requirements: virtio::VirtioChildRequirements) {
-        if requirements.needs_net_boot_payloads {
-            self.release_failed_transport_with_net_payloads();
-        } else {
-            self.release_failed_transport(&[]);
-        }
+    pub(super) fn release_failed_child(&mut self) {
+        self.release_failed_transport();
     }
 
 }
