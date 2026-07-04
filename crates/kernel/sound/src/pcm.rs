@@ -149,7 +149,7 @@ pub(crate) struct Resolved {
 
 /// ALSA format → virtio_snd FMT enum (re-exported for the capture path).
 /// # C: O(1)
-pub(crate) fn fmt_alsa_to_virtio(f: u32) -> u8 { alsa_fmt_to_virtio(f).unwrap_or(5) }
+pub(crate) fn fmt_alsa_to_virtio(f: u32) -> Option<u8> { alsa_fmt_to_virtio(f) }
 /// Hz → virtio RATE enum (re-exported for the capture path). # C: O(1)
 pub(crate) fn rate_hz_to_enum(hz: u32) -> u8 { hz_rate_enum(hz) }
 
@@ -256,7 +256,10 @@ fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
     };
     let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
-        if !crate::ops::pcm_hw_params(owner, rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
+        let Some(format) = fmt_alsa_to_virtio(r.format) else {
+            return err(Errno::Einval);
+        };
+        if !crate::ops::pcm_hw_params(owner, rate_hz_to_enum(r.rate), format,
                                       r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
