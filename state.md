@@ -41,6 +41,44 @@ gdm → greeter.
   (max ~246) so it's not EXIT_NAMESPACE. Services like upower still reach
   "Started" afterward. Treat 265 as a red herring until proven otherwise.
 
+## SESSION SUMMARY (branch B318, merged with fresh origin/main @ 7b4adb4d)
+SIX kernel fixes landed this campaign, clearing the whole graphics/seat chain
+that blocked GNOME:
+- 2 mount-ns bind-sharing fixes (29194e13 MS_MOVE dest-hint, e66f8386 graft
+  parent-hint) + /dev/hugepages (b71fb455).
+- netlink UNICAST delivery (39221106): honour dest nl_pid → udev manager→worker
+  dispatch stops broadcasting to all workers → card0 processes.
+- netlink cooked-group subscription (bad10001): cooked multicast only to
+  nl_groups=2 subscribers (logind/upowerd/…), NOT the nl_groups=0 workers →
+  udev re-processing 15-25×→1×.
+- epoll_wait EINTR-on-signal (f2836dbb): epoll_wait never returned -EINTR on a
+  pending signal → tasks parked in epoll_wait were UNKILLABLE (udev workers,
+  logind, gdm). Fixed → boot 120s→84s, 0 hanging workers, logind D-Bus timeout
+  GONE, udevd settles.
+RESULT: CAN_GRAPHICAL=1 reliably (was stuck 0 the whole effort), card0 tagged
+master-of-seat early, udev settles.
+
+## REMAINING greeter blocker — gdm doesn't launch gnome-shell  [START HERE]
+Greeter STILL does not render. After the merge + all fixes:
+- gdm.service reaches "Started"; code=1 is a harmless plymouth-quit fork.
+- gdm NEVER execs a session (no gnome-session/gdm-session-worker/gnome-shell in
+  execve traces) — its GdmLocalDisplayFactory does not create a display for the
+  CanGraphical seat0. Cause unknown (needs gdm's own reasoning).
+- Boot has service-timeout hangs: systemd-machined SIGABRT/timeout @123s, then
+  ~78s silence, virtqemud times out @201s. Something still isn't settling.
+- BLOCKER TO PROGRESS: cannot see gdm's decision — journald ForwardToConsole
+  does NOT reach our serial console (set it + gdm [debug]Enable=true +
+  gdm.service StandardError=journal+console in the image work dir; no gdm debug
+  lines appear). So EITHER journald→/dev/console forwarding is broken in our
+  kernel (worth fixing — it unblocks all userspace debugging) OR service stderr
+  isn't routed to serial. NEXT: (1) fix journald/console-forwarding OR route a
+  service's stderr to serial so gdm's debug is visible; (2) then read why
+  GdmLocalDisplayFactory skips seat0 (CanGraphical query result? no session-
+  capable? DRM master denied?); (3) check the merged "drm: enforce card and
+  render ioctl split" didn't break gdm's card0 open/DRM-master. Image debug
+  edits live in oxide-images/work/root-live-gnome-x86_64 (wiped by build-rootfs
+  — re-apply after it, then build-boot only).
+
 ## FIXED: udev re-processing loop (bad10001) — MAJOR
 Root cause was NOT re-dispatch by the manager — it was rebroadcast_cooked_uevent
 delivering cooked (libudev) multicast to EVERY group-0 socket. Measured (bind
