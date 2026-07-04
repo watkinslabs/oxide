@@ -84,6 +84,10 @@ test-pass claims.
   `try_populate_defaults` path. Matching existing pseudo devices are treated
   as idempotent model state, while conflicting model devices return a driver
   model error instead of hiding publication failure inside the helper.
+- Console/tty boot node publication now also has a fallible
+  `try_register_devnodes` batch path. Matching existing tty model devices are
+  idempotent, and conflicts roll back nodes published by the failed attempt
+  before the boot wrapper reports the fatal model error.
 - PCI capability dumping is read-only again for MSI-X; MSI-X programming for
   virtio devices belongs to the virtio-pci transport probe/remove path.
 - The virtio-pci transport accepts modern virtio PCI IDs only. Transitional
