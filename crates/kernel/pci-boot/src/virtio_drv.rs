@@ -572,7 +572,7 @@ impl drv::Driver for VirtioVsockDrv {
             return Err(drv::Error::ProbeFailed);
         }
         let resources = p.resources(&[p.q0_resource(), p.q1_resource()]);
-        if !super::virtio_vsock_cfg::install_vsock(device_key, resources) {
+        if !drv_virtio_vsock::install(device_key, resources) {
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -644,10 +644,10 @@ impl drv::Driver for VirtioSndDrv {
             p.snd_q2_resource(),
             p.snd_q3_resource(),
         ]);
-        let sp = super::virtio_snd_cfg::install_snd(
+        let sp = drv_virtio_snd::install(drv_virtio_snd::SndInstall {
             device_key,
             resources,
-        ).ok_or_else(|| {
+        }).ok_or_else(|| {
             p.release_failed_transport(&[]);
             drv::Error::ProbeFailed
         })?;
