@@ -1,8 +1,8 @@
 // D5b-2 DRM SETCRTC + PAGE_FLIP — scan out a userspace dumb buffer via
 // virtio-gpu. Real, no façade:
 //   - SETCRTC validates crtc_id + fb_id, looks up the FB → its dumb
-//     handle → (pa, w, h, format), creates a virtio-gpu resource over
-//     that contiguous PA, and switches scanout 0 to it.
+//     handle → (pa, w, h, format), binds one virtio-gpu resource to
+//     that FB if needed, and switches scanout 0 to it.
 //   - fb_id == 0 disables the CRTC → restore the boot fbcon scanout.
 //   - PAGE_FLIP re-scanouts a (new) fb on the crtc (virtio-gpu has no
 //     true double-buffer flip → flip = SET_SCANOUT+transfer+flush of
@@ -10,7 +10,7 @@
 //     DRM_EVENT_FLIP_COMPLETE the requesting card fd's read() drains.
 //
 // CONSOLE SAFETY: the boot fbcon scanout (virtio res_id 1) is never
-// touched here — SETCRTC creates a fresh res_id and switches the
+// touched here — SETCRTC uses an FB-owned runtime res_id and switches the
 // scanout to it. The OWNER token records that a card fd took the
 // scanout; `node::on_release` calls `restore_console_scanout` on
 // last-close so the fb console + getty come back. A normal boot
@@ -75,6 +75,7 @@ struct EventQueue {
 /// Queued page-flip completion events to be drained by the requesting card
 /// fd's read(), keyed by stable DRM card id + open-file token.
 static EVENTS: Spinlock<Vec<EventQueue>, CrtcLockClass> = Spinlock::new(Vec::new());
+static CURRENT_FB: Spinlock<alloc::vec::Vec<u32>, CrtcLockClass> = Spinlock::new(alloc::vec::Vec::new());
 
 /// Record `token` as the current scanout owner. # C: O(1)
 pub fn set_owner(card_id: u32, token: u64) {
@@ -101,11 +102,47 @@ pub fn clear_owner(card_id: u32) {
     }
 }
 
+fn set_current_fb(card_id: u32, fb_id: u32) {
+    let mut current = CURRENT_FB.lock();
+    let idx = card_id as usize;
+    if current.len() <= idx {
+        current.resize(idx + 1, 0);
+    }
+    current[idx] = fb_id;
+}
+
+fn clear_current_fb(card_id: u32) {
+    if let Some(fb_id) = CURRENT_FB.lock().get_mut(card_id as usize) {
+        *fb_id = 0;
+    }
+}
+
+pub fn current_fb(card_id: u32) -> u32 {
+    CURRENT_FB.lock().get(card_id as usize).copied().unwrap_or(0)
+}
+
+/// Detach a framebuffer from the live CRTC before RMFB tears down its backend
+/// resource. Linux removes an RMFB target from active planes before dropping
+/// the framebuffer object; this driver restores the boot fbcon scanout because
+/// it has a single primary scanout and no full atomic plane state yet.
+/// # C: O(1) + O(scanout repaint)
+pub fn detach_fb(card_id: u32, fb_id: u32) {
+    if fb_id == 0 || current_fb(card_id) != fb_id {
+        return;
+    }
+    if let Some(ops) = scanout_ops(card_id) {
+        let _ = (ops.restore_console)(ops.driver_key);
+    }
+    clear_current_fb(card_id);
+    clear_owner(card_id);
+}
+
 /// Clear all CRTC runtime state owned by a stable DRM card id.
 /// Called from DRM unregister so a reused card slot cannot inherit stale
 /// ownership or unread flip events from the removed device. # C: O(events)
 pub fn clear_card_state(card_id: u32) {
     clear_owner(card_id);
+    clear_current_fb(card_id);
     EVENTS.lock().retain(|q| q.card_id != card_id);
 }
 
@@ -179,11 +216,30 @@ pub fn has_events(card_id: u32, token: u64) -> bool {
 
 /// Resolve an FB id → its primary dumb buffer's (pa, w, h, fourcc).
 /// `None` if the fb or its handle is unknown. # C: O(n)
-fn fb_to_scanout(card_id: u32, fb_id: u32) -> Option<(u64, u32, u32, u32)> {
+fn fb_to_scanout(card_id: u32, fb_id: u32) -> Option<(u64, u32, u32, u32, u32)> {
     let t = crate::dumb::TABLES.lock();
     let fb = t.find_fb(card_id, fb_id)?;
     let buf = t.find_buf(card_id, fb.handles[0])?;
-    Some((buf.pa, fb.w, fb.h, fb.pixel_format))
+    Some((buf.pa, fb.w, fb.h, fb.pixel_format, fb.scanout_res_id))
+}
+
+fn release_new_scanout_resource(card_id: u32, res_id: u32) {
+    if let Some(ops) = scanout_ops(card_id) {
+        let _ = (ops.destroy_resource)(ops.driver_key, res_id);
+    }
+}
+
+fn fb_scanout_resource(card_id: u32, ops: crate::node::ScanoutOps, fb_id: u32) -> Option<(u32, u32, u32)> {
+    let (pa, w, h, fmt, existing) = fb_to_scanout(card_id, fb_id)?;
+    if existing != 0 {
+        return Some((existing, w, h));
+    }
+    let res_id = (ops.create_from_pa)(ops.driver_key, pa, w, h, fmt)?;
+    if !crate::dumb::bind_fb_scanout_resource(card_id, fb_id, res_id) {
+        release_new_scanout_resource(card_id, res_id);
+        return None;
+    }
+    Some((res_id, w, h))
 }
 
 /// `MODE_SETCRTC` — parse `drm_mode_crtc`, validate crtc_id + fb_id,
@@ -211,21 +267,23 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
         if is_owner(card_id, token) {
             (ops.restore_console)(ops.driver_key);
             clear_owner(card_id);
+            clear_current_fb(card_id);
         } else if owner(card_id) == 0 {
             // No client owns it; SETCRTC(fb=0) is a no-op disable.
             (ops.restore_console)(ops.driver_key);
+            clear_current_fb(card_id);
         }
         return 0;
     }
 
-    let (pa, w, h, fmt) = match fb_to_scanout(card_id, c.fb_id) { Some(v) => v, None => return einval() };
+    let (res_id, w, h) = match fb_scanout_resource(card_id, ops, c.fb_id) { Some(v) => v, None => return einval() };
     // Optionally validate the connector array pointer is sane when set.
     if c.set_connectors_ptr != 0
         && !user_ok(c.set_connectors_ptr, (c.count_connectors as u64) * 4) {
         return einval();
     }
-    let res_id = match (ops.create_from_pa)(ops.driver_key, pa, w, h, fmt) { Some(r) => r, None => return einval() };
     if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
+    set_current_fb(card_id, c.fb_id);
     set_owner(card_id, token);
     0
 }
@@ -244,9 +302,9 @@ pub fn page_flip(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, ar
     if crtc_idx_of(f.crtc_id, count).is_none() { return einval(); }
     if f.fb_id == 0 { return einval(); }
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
-    let (pa, w, h, fmt) = match fb_to_scanout(card_id, f.fb_id) { Some(v) => v, None => return einval() };
-    let res_id = match (ops.create_from_pa)(ops.driver_key, pa, w, h, fmt) { Some(r) => r, None => return einval() };
+    let (res_id, w, h) = match fb_scanout_resource(card_id, ops, f.fb_id) { Some(v) => v, None => return einval() };
     if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
+    set_current_fb(card_id, f.fb_id);
     set_owner(card_id, token);
     if (f.flags & crate::DRM_MODE_PAGE_FLIP_EVENT) != 0 {
         queue_flip_event(card_id, token, f.crtc_id, f.user_data);
@@ -271,18 +329,28 @@ mod tests {
     fn owner_token_logic() {
         clear_owner(0);
         clear_owner(1);
+        clear_current_fb(0);
+        clear_current_fb(1);
         assert_eq!(owner(0), 0);
         assert_eq!(owner(1), 0);
+        assert_eq!(current_fb(0), 0);
+        assert_eq!(current_fb(1), 0);
         assert!(!is_owner(0, 0));       // 0 token never "owns"
         assert!(!is_owner(0, 0x1000));
         set_owner(0, 0x1000);
+        set_current_fb(0, 7);
         assert_eq!(owner(0), 0x1000);
+        assert_eq!(current_fb(0), 7);
         assert_eq!(owner(1), 0);
         assert!(is_owner(0, 0x1000));
         assert!(!is_owner(1, 0x1000));
         assert!(!is_owner(0, 0x2000));  // a different fd doesn't own it
+        detach_fb(0, 8);
+        assert_eq!(current_fb(0), 7);
+        detach_fb(0, 7);
         clear_owner(0);
         assert_eq!(owner(0), 0);
+        assert_eq!(current_fb(0), 0);
         assert!(!is_owner(0, 0x1000));
     }
 
@@ -351,11 +419,14 @@ mod tests {
         let mut scratch = [0u8; 4096];
         let _ = drain_events(2, TOKEN, &mut scratch);
         set_owner(2, 0x2000);
+        set_current_fb(2, 17);
         queue_flip_event(2, TOKEN, 1, 0xCAFE);
         assert_eq!(owner(2), 0x2000);
+        assert_eq!(current_fb(2), 17);
         assert!(has_events(2, TOKEN));
         clear_card_state(2);
         assert_eq!(owner(2), 0);
+        assert_eq!(current_fb(2), 0);
         assert!(!has_events(2, TOKEN));
         assert_eq!(drain_events(2, TOKEN, &mut scratch), 0);
     }

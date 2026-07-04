@@ -857,9 +857,21 @@ pub fn create_scanout_from_pa_for_bdf(bdf: u32, pa: u64, w: u32, h: u32, fmt_drm
         return None;
     }
     if !submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_attach_backing_one(b, res_id, pa, bytes as u32)) {
+        let _ = unref_scanout_resource_for_bdf(bdf, res_id);
         return None;
     }
     Some(res_id)
+}
+
+/// Drop a runtime KMS scanout resource created for a DRM FB object. The boot
+/// console resource is owned by the fbcon scanout context and is never freed
+/// through this path. # C: O(1) submits.
+pub fn unref_scanout_resource_for_bdf(bdf: u32, res_id: u32) -> bool {
+    if res_id == 0 || res_id == BOOT_SCANOUT_RES_ID {
+        return false;
+    }
+    let _ = submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_detach_backing(b, res_id));
+    submit_ctrl_for_bdf(bdf, |b| crate::encode_resource_unref(b, res_id))
 }
 
 /// Switch scanout 0 to `res_id` and make its pixels visible:
@@ -900,6 +912,7 @@ pub fn register_drm_hooks(card_id: u32, bdf: u32) {
     drm::node::set_scanout_ops(card_id, drm::node::ScanoutOps {
         driver_key: bdf,
         create_from_pa: create_scanout_from_pa_for_bdf,
+        destroy_resource: unref_scanout_resource_for_bdf,
         set_scanout: set_scanout_for_bdf,
         restore_console: restore_console_scanout_for_bdf,
         boot_res_id: boot_scanout_res_id_for_bdf,

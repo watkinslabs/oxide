@@ -39,6 +39,8 @@ pub struct ScanoutOps {
     pub driver_key: u32,
     /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
     pub create_from_pa: fn(driver_key: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
+    /// Drop a previously-created runtime scanout resource.
+    pub destroy_resource: fn(driver_key: u32, res_id: u32) -> bool,
     /// Switch scanout 0 to `res_id` + transfer + flush.
     pub set_scanout: fn(driver_key: u32, res_id: u32, w: u32, h: u32) -> bool,
     /// Restore the boot fbcon scanout + repaint the console.
