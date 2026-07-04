@@ -274,7 +274,7 @@ impl VirtioChildOps for VirtioVsockOps {
     }
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
-        let device_key = session.device_key().raw();
+        let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -290,11 +290,11 @@ impl VirtioChildOps for VirtioVsockOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_vsock::uninstall(device_key.raw());
+        let _ = drv_virtio_vsock::uninstall(device_key);
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_vsock::shutdown(device_key.raw());
+        let _ = drv_virtio_vsock::shutdown(device_key);
     }
 }
 static VIRTIO_VSOCK_DRV: VirtioChildDriver<VirtioVsockOps> = VirtioChildDriver::new();

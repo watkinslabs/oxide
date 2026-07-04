@@ -15,7 +15,7 @@ const RX_BUF_LEN: u32 = 0x1000;
 
 /// Pre-post every RX descriptor on q0 + bump avail.idx by RX_RING_BUFS,
 /// then kick the device. Called once at install. # C: O(RX_RING_BUFS)
-pub(crate) fn prepost_all(device_key: u32) {
+pub(crate) fn prepost_all(device_key: virtio::VirtioChildDeviceKey) {
     let mut g = CTX.lock();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == device_key) {
         Some(c) => c,
@@ -66,7 +66,7 @@ pub(crate) fn drain() -> usize {
     {
         let mut g = CTX.lock();
         for ctx in g.iter_mut() {
-            let owner = ctx.device_key;
+            let owner = ctx.device_key.raw();
             let h = ctx.hhdm;
             let qsz = ctx.rxq.size;
             let used = h.wrapping_add(ctx.rxq.device_pa) as *const u16;
