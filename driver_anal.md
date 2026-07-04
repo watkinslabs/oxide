@@ -642,7 +642,8 @@ Several drivers still use singleton global state:
 - virtio-snd: keyed transport records with EVENTQ drained per transport and an
   owner-keyed global sound card reserved before transport allocation/publish,
   but still a singleton upper PCM/control ABI
-- UART drivers: global `PRESENT` and base state
+- UART drivers: global `PRESENT` and base state; RX interrupt delivery now has
+  an explicit quiesce gate cleared before shutdown/remove masks hardware
 - PS/2 keyboard: global present/poll state
 
 Some subsystems are per-device already or closer to it:
