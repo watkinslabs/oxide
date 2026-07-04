@@ -193,3 +193,22 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
 /// migration / pageout and the COW-reuse cross-check.
 /// # C: O(N_chain_edges) page-table walks
 pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
+    let av = match crate::setup::anon_vma_for_pa(pa) { Some(a) => a, None => return 0 };
+    let idx = crate::setup::page_index_for_pa(pa) as u64;
+    let hhdm = hhdm_offset();
+    let target = pa & !0xfff;
+    let mut count = 0usize;
+    av.walk(|mm, start, end| {
+        let va = start.saturating_add(idx.saturating_mul(4096));
+        if va >= end { return; }
+        let root = mm.root_pa();
+        if root == 0 { return; }
+        // SAFETY: root comes from a live rmap target; HHDM covers page-table memory.
+        let mapped = unsafe { read_foreign_leaf_pa(root, va & !0xfff, hhdm) };
+        if mapped.map(|p| p & !0xfff) == Some(target) {
+            f(root, va);
+            count += 1;
+        }
+    });
+    count
+}

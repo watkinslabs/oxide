@@ -8,7 +8,7 @@ use super::*;
 pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     drain_loopback();
     let port = (*sock.local_port.lock())?;
-    STACK.recv_udp(port)
+    stack().recv_udp(port)
 }
 
 /// AF_INET6 UDP dgram receive — pops one datagram from the v6 port
@@ -17,7 +17,7 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
 pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)> {
     drain_loopback();
     let port = (*sock.local_port.lock())?;
-    STACK.recv_udp6(port)
+    stack().recv_udp6(port)
 }
 
 /// F150: boot-installed hook: iface primary IPv4 lookup. # C: O(1)
@@ -68,14 +68,14 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
         Ipv4Addr::LOOPBACK
     } else {
         // Find the outbound iface's primary IPv4 via the route table.
-        STACK.routes.lookup(dst)
+        stack().routes.lookup(dst)
             .and_then(|r| r.src_hint)
-            .or_else(|| iface_primary_ip(bound_iface.or_else(|| STACK.routes.lookup(dst).map(|r| r.iface))))
+            .or_else(|| iface_primary_ip(bound_iface.or_else(|| stack().routes.lookup(dst).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
     let mcast_loop = sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0; let ttl = if dst.is_multicast() { sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) } else { sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) } as u8;
     let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8; if dst.is_multicast() && !mcast_loop && crate::sock_mcast::is_loopback_iface(bound_iface) { return Ok(payload.len()); }
-    STACK.send_udp_to_bound_opts(src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl)?;
+    stack().send_udp_to_bound_opts(src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl)?;
     if !dst.is_multicast() || mcast_loop { drain_loopback(); }
     Ok(payload.len())
 }
