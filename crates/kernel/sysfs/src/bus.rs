@@ -49,6 +49,14 @@ const INO_ATTR:          Ino = 0x5102_2000;
 const INO_DRIVER_ATTR:   Ino = 0x5102_3000;
 
 const DEV_ATTR: Attribute = Attribute { name: "dev", mode: RO_PERM };
+const PCI_RESOURCE_ATTRS: [Attribute; 6] = [
+    Attribute { name: "resource0", mode: RO_PERM },
+    Attribute { name: "resource1", mode: RO_PERM },
+    Attribute { name: "resource2", mode: RO_PERM },
+    Attribute { name: "resource3", mode: RO_PERM },
+    Attribute { name: "resource4", mode: RO_PERM },
+    Attribute { name: "resource5", mode: RO_PERM },
+];
 
 fn modalias(dev: &drv::Device) -> String {
     if dev.bus == "pci" {
@@ -90,6 +98,25 @@ fn dev_uevent_env(dev: &drv::Device) -> Vec<String> {
     env
 }
 
+fn pci_resource_index(leaf: &str) -> Option<u8> {
+    let suffix = leaf.strip_prefix("resource")?;
+    if suffix.len() != 1 {
+        return None;
+    }
+    let b = suffix.as_bytes()[0];
+    if !(b'0'..=b'5').contains(&b) {
+        return None;
+    }
+    Some(b - b'0')
+}
+
+fn resource_body(r: &drv::Resource) -> Vec<u8> {
+    alloc::format!(
+        "0x{:016x} 0x{:016x} 0x{:016x}\n",
+        r.start, r.end, r.flags,
+    ).into_bytes()
+}
+
 fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
     match leaf {
         "vendor" => Some(alloc::format!("0x{:04x}\n", dev.vendor_id).into_bytes()),
@@ -104,6 +131,13 @@ fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
                 ));
             }
             Some(s.into_bytes())
+        }
+        leaf if dev.bus == "pci" && pci_resource_index(leaf).is_some() => {
+            let bar = pci_resource_index(leaf).expect("resource index checked");
+            dev.resources
+                .iter()
+                .find(|r| r.bar == bar)
+                .map(resource_body)
         }
         "modalias" => Some(alloc::format!("{}\n", modalias(dev)).into_bytes()),
         "driver_override" => {
@@ -238,6 +272,15 @@ impl InodeOps for DeviceDirOps {
             let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
             return Ok(make_attr_inode(&DEV_ATTR, ops, INO_ATTR));
         }
+        if data.bus == "pci" {
+            if let Some(bar) = pci_resource_index(name) {
+                if !dev.resources.iter().any(|r| r.bar == bar) {
+                    return Err(VfsError::Enoent);
+                }
+                let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
+                return Ok(make_attr_inode(&PCI_RESOURCE_ATTRS[bar as usize], ops, INO_ATTR));
+            }
+        }
         let attr = dev_group(data.bus).find(name).ok_or(VfsError::Enoent)?;
         let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
         Ok(make_attr_inode(attr, ops, INO_ATTR))
@@ -256,6 +299,17 @@ impl FileOps for DeviceDirOps {
             .collect();
         if has_dev {
             entries.push(("dev", FileType::Regular));
+        }
+        if data.bus == "pci" {
+            if let Some(dev) = dev.as_ref() {
+                for attr in PCI_RESOURCE_ATTRS.iter() {
+                    if let Some(bar) = pci_resource_index(attr.name) {
+                        if dev.resources.iter().any(|r| r.bar == bar) {
+                            entries.push((attr.name, FileType::Regular));
+                        }
+                    }
+                }
+            }
         }
         entries.push(("subsystem", FileType::Symlink));
         if has_parent {
@@ -827,6 +881,40 @@ mod tests {
         drv::device_del(&dev);
         assert_eq!(devices.lookup("sysfs-dev-index0").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("254:42").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn pci_device_exposes_indexed_bar_resource_attrs() {
+        let dev = Arc::new(
+            drv::Device::new("pci", String::from("0000:00:1f.0"), 0x1234, 0x5678, 0x010601)
+                .with_resources(Vec::from([
+                    drv::Resource { bar: 2, start: 0x1000, end: 0x1fff, flags: 0x200 },
+                    drv::Resource { bar: 5, start: 0xfebc_0000, end: 0xfebc_0fff, flags: 0x2200 },
+                ])));
+        drv::try_device_add(Arc::clone(&dev)).expect("test pci registration");
+
+        let devices = make_devices_root_inode("pci");
+        let dir = devices.lookup("0000:00:1f.0").expect("pci device dir");
+        assert_eq!(dir.lookup("resource0").err(), Some(VfsError::Enoent));
+
+        let res2 = dir.lookup("resource2").expect("resource2 attr");
+        let mut buf = [0u8; 96];
+        let n = res2.read(0, &mut buf).expect("read resource2");
+        assert_eq!(
+            &buf[..n],
+            b"0x0000000000001000 0x0000000000001fff 0x0000000000000200\n");
+
+        let res5 = dir.lookup("resource5").expect("resource5 attr");
+        let n = res5.read(0, &mut buf).expect("read resource5");
+        assert_eq!(
+            &buf[..n],
+            b"0x00000000febc0000 0x00000000febc0fff 0x0000000000002200\n");
+
+        let modalias = dir.lookup("modalias").expect("modalias still works");
+        let n = modalias.read(0, &mut buf).expect("read modalias");
+        assert_eq!(&buf[..n], b"pci:v00001234d00005678sv*sd*bc01sc06i01\n");
+
+        drv::device_del(&dev);
     }
 
     #[test]

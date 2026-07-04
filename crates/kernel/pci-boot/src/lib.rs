@@ -128,7 +128,13 @@ fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
     };
     resources
         .iter()
-        .filter_map(|r| r.map(|r| drv::Resource { start: r.start, end: r.end, flags: r.flags }))
+        .enumerate()
+        .filter_map(|(bar, r)| r.map(|r| drv::Resource {
+            bar: bar as u8,
+            start: r.start,
+            end: r.end,
+            flags: r.flags,
+        }))
         .collect()
 }
 
