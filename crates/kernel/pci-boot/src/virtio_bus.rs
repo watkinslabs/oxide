@@ -45,14 +45,10 @@ impl virtio::VirtioChildTransportSession for VirtioChildSession {
         virtio::VirtioTransportLocation::new(self.bdf.bus, self.bdf.device, self.bdf.function)
     }
 
-    fn drv_features(&self) -> u64 { self.probe.drv_features }
+    fn drv_features(&self) -> u64 { self.probe.child_facts.drv_features }
 
     fn net_boot_payloads(&self) -> virtio::VirtioNetBootPayloads {
-        virtio::VirtioNetBootPayloads::new(
-            self.probe.rx0_buf_pa,
-            self.probe.rx0_buf_len,
-            self.probe.tx0_buf_pa,
-        )
+        self.probe.child_facts.net_boot_payloads()
     }
 
     fn child_resources(&self) -> Option<virtio::VirtioResources> {

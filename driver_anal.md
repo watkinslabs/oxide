@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 55% complete.
+  hotplug, fault injection, and multi-device coverage: about 56% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -81,6 +81,11 @@ test-pass claims.
   config presence, required queue validity, optional device config, and
   optional net boot payloads. The PCI backend supplies concrete q0-q3 resource
   descriptors and payload addresses, but no longer owns the readiness policy.
+- Shared `virtio::VirtioChildProbeFacts` now carries the child-visible
+  transport probe result: negotiated driver features, validated child resource
+  state, and net boot payload descriptors. The PCI `VirtioProbe` still owns
+  PCI/MMIO/MSI-X lifetime and trace/debug fields, but child sessions read the
+  shared facts object instead of individual PCI probe fields.
 - Virtio-pci owns persistent transport MMIO mappings, MSI-X state, and vring
   frame publication/teardown records for successful child probes.
 - Virtio-pci MSI-X state is now carried as an owned optional binding instead
@@ -366,9 +371,11 @@ test-pass claims.
   an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
   publish, and unpublish helpers are private to that transport module. The
   shared `virtio::VirtioChildResourceState` now owns child readiness/resource
-  publication checks across transports. The next step is to move more of the
-  backend's probe-result shape into shared virtio-core lifecycle helpers so
-  shared virtio core owns the child probe lifecycle across transports.
+  publication checks across transports. Shared `virtio::VirtioChildProbeFacts`
+  now carries child-visible negotiated features, resource state, and net boot
+  payloads. The next step is to move more of the backend's debug/trace-only
+  probe-result shape away from `VirtioProbe` so PCI owns only transport
+  lifetime and hardware programming records.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
