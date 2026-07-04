@@ -90,6 +90,10 @@ test-pass claims.
   Sysfs/netlink tests now prove bind/unbind emits `change` uevents from the
   current model state: bound events include `DRIVER=<name>`, while unbound
   events do not carry stale driver ownership.
+  Model-backed character-class tests now also prove remove/readd of the same
+  device identity and `dev_t`: class symlinks, parent `device` links, and
+  `/sys/dev/char` reverse indexes disappear on `device_del` and reappear from
+  the re-added model device.
 - The stale procfs-era static `/sys/class/misc/autofs` registration has been
   removed; autofs sysfs state now comes from the model-owned misc device and
   exposes the same `10:235` dev_t as `/dev/autofs`.
@@ -561,8 +565,9 @@ test-pass claims.
   `/sys/dev/block`, parent/subsystem links, class-device `device` links for
   model-parented input/DRM/virtual character devices, virtual root mappings
   for block/input/DRM reverse-dev indexes, and model-backed bind/unbind attrs,
-  but repeated bind/unbind/remove/readd behavior is not proven across all
-  subsystems.
+  plus direct proofs for bind/unbind change uevents and model-backed
+  character-class remove/readd. Repeated bind/unbind/remove/readd behavior is
+  still not proven across all subsystems.
 - Block, NVMe, AHCI, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
@@ -776,8 +781,9 @@ test-pass claims.
   block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2 paths.
 - Finish Linux-visible sysfs/devtmpfs/class contracts, including the remaining
   class parent relationships and stable add/remove/change uevent behavior
-  across rebind beyond the current driver-core remove-order and sysfs
-  bind/unbind change-event proofs. `/sys/dev/{char,block}` and the core
+  across rebind beyond the current driver-core remove-order, sysfs
+  bind/unbind change-event, and character-class remove/readd proofs.
+  `/sys/dev/{char,block}` and the core
   `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape exist, and
   driver-directory device symlinks resolve back to the canonical
   `/sys/devices/...` object.

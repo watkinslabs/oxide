@@ -1029,4 +1029,34 @@ mod tests {
         assert_eq!(index.lookup("13:88").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("226:88").err(), Some(VfsError::Enoent));
     }
+
+    #[test]
+    fn sys_dev_char_index_tracks_remove_readd_same_devt() {
+        let index = make_sys_dev_index_inode(DevIndexKind::Char);
+        let first = Arc::new(
+            drv::Device::new("sound", String::from("controlC12"), 0, 0, 0)
+                .with_devnode("sound", String::from("snd/controlC12"), Some((116, 322))));
+        drv::try_device_add(Arc::clone(&first)).expect("first sound registration");
+
+        let link = index.lookup("116:322").expect("first sound char index");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC12".to_vec());
+
+        drv::device_del(&first);
+        assert_eq!(index.lookup("116:322").err(), Some(VfsError::Enoent));
+
+        let second = Arc::new(
+            drv::Device::new("sound", String::from("controlC12"), 0, 0, 0)
+                .with_devnode("sound", String::from("snd/controlC12"), Some((116, 322))));
+        drv::try_device_add(Arc::clone(&second)).expect("second sound registration");
+
+        let link = index.lookup("116:322").expect("readded sound char index");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC12".to_vec());
+
+        drv::device_del(&second);
+        assert_eq!(index.lookup("116:322").err(), Some(VfsError::Enoent));
+    }
 }
