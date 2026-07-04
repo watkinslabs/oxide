@@ -146,6 +146,10 @@ test-pass claims.
 - Planned virtio-pci extra-queue notify mappings are now stored by queue index
   instead of hard-coded q2/q3 fields, removing another queue-number special
   dispatch from the transport handoff path.
+- Shared `virtio::ProgrammedQueues` now exposes indexed queue lookup, and
+  virtio-pci resource handoff assembles child-visible queue resources over the
+  shared resource queue count instead of expanding q2/q3 resource locals in
+  pci-boot.
 - Child probe readiness checks for DRIVER_OK, required queue indexes, device
   config, and net boot payloads now go through shared
   `virtio::VirtioChildRequirements` evaluated by
@@ -362,7 +366,7 @@ test-pass claims.
   status/used-ring observation, net boot-buffer mechanics, and notify VA/kick
   mechanics now live in a dedicated virtio-pci transport helper. A first
   `VirtioProbeState` owns config windows and transport lifetime through
-  finalization/state methods, including planned q2/q3 notify mapping and
+  finalization/state methods, including indexed extra-queue notify mapping and
   explicit q1 mapping. Common transport bring-up ordering also now goes through
   `VirtioProbeState`.
   Child readiness validation is described by shared
