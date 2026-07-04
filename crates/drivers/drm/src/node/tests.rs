@@ -2,6 +2,7 @@ use super::auth::{clear_master_owner, is_magic_authorized, DRM_FILE_CAP_ATOMIC};
 use super::publication::{make_card_inode, make_render_inode};
 use super::uapi::{DrmModeAtomic, DrmSetVersion, DrmUnique, DRM_IF_MAJOR, DRM_IF_MINOR};
 use super::*;
+use crate::uapi::DRM_RENDER_MINOR_BASE;
 use alloc::format;
 use alloc::sync::Arc;
 use crate::DRM_MODE_ATOMIC_TEST_ONLY;
@@ -48,7 +49,7 @@ use vfs::{Dentry, File, OpenFlags};
         let _guard = crate::TEST_LOCK.lock();
         let card_id = 0x7ff2;
         let card_name = format!("dri/card{card_id}");
-        let render_minor = 128 + card_id;
+        let render_minor = DRM_RENDER_MINOR_BASE + card_id;
         let render_name = format!("dri/renderD{render_minor}");
         unregister(card_id);
 
@@ -94,7 +95,7 @@ use vfs::{Dentry, File, OpenFlags};
         let _guard = crate::TEST_LOCK.lock();
         let card_id = 0x7ff1;
         unregister(card_id);
-        let render_minor = 128 + card_id;
+        let render_minor = DRM_RENDER_MINOR_BASE + card_id;
         let render_name = format!("dri/renderD{render_minor}");
 
         assert!(register(card_id, None));
