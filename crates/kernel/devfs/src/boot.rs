@@ -58,6 +58,12 @@ pub fn try_populate_defaults() -> drv::KResult<()> {
     // is also register_dir'd by `devpts::init`; idempotent. /dev/shm above.
     crate::register_dir("/dev/mqueue");
     crate::register_dir("/dev/pts");
+    // /dev/hugepages mount-point underlay (hugetlbfs; `dev-hugepages.mount`).
+    // Without it, systemd's PER-SERVICE sandbox bind of `/dev/hugepages` failed
+    // ENOENT → EXIT_NAMESPACE(226/265) → systemd multi-second retries on EVERY
+    // sandboxed unit (upowerd/udisksd/accounts-daemon/logind/…) → boot crawled
+    // to minutes and gdm timed out before rendering the greeter.
+    crate::register_dir("/dev/hugepages");
     // device-model Stage C (D27): built-in pseudo char devices self-register
     // through `drv::try_device_add` so ONE registration drives the device model +
     // /dev. `node_factory` mints the bespoke inode with the correct fops/rdev.

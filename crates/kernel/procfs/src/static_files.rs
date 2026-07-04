@@ -201,9 +201,11 @@ pub fn register_static_files() {
         "/proc/self/oom_adj",
         crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
+    // WRITABLE: pam_loginuid.so writes the login uid at session open; a
+    // read-only inode fails the write and breaks PAM session setup → no greeter.
     crate::reg::register(
         "/proc/self/loginuid",
-        StaticFileInode::new(b"4294967295\n") as InodeRef,
+        crate::sysctl::SysctlInode::new(b"4294967295\n") as InodeRef,
     );
 
     // /sys/kernel/tracing — tracefs surface (P30a). v1 exposes the

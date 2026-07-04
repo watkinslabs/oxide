@@ -386,6 +386,24 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
             if let Some(d) = deadline_ns {
                 if now() >= d { return 0; }
             }
+            // Linux `ep_poll`: a pending signal aborts the wait with -EINTR so
+            // the syscall-return dispatch tail can run the handler OR the
+            // SIG_DFL terminate. Without this an epoll_wait-parked task
+            // re-scanned + re-parked forever, so a SIGTERM/SIGKILL never took
+            // effect — udev's single-shot workers idle in epoll_wait were
+            // UNKILLABLE (measured: 8 workers stuck in nr#232, state Sleeping,
+            // survived SIGKILL), so udevd's event_timeout kills failed, the
+            // queue never drained, and logind/gdm (also epoll-driven) hung on
+            // D-Bus. SIGKILL/SIGSTOP are always deliverable (unmaskable).
+            if let Some(cur) = sched::current() {
+                use core::sync::atomic::Ordering;
+                const FORCED: u64 = (1u64 << 8) | (1u64 << 18); // SIGKILL(9) | SIGSTOP(19)
+                let pending = cur.sigpending.load(Ordering::Acquire);
+                let masked  = cur.sigmask.load(Ordering::Acquire);
+                if (pending & !masked) | (pending & FORCED) != 0 {
+                    return -(syscall::errno::Errno::Eintr.as_i32() as i64);
+                }
+            }
         }
     }
     #[cfg(not(target_os = "oxide-kernel"))]

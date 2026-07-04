@@ -94,7 +94,13 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
             if let Some((sb, _root)) = mo.realized.as_ref() {
                 let mnt_flags = vfs::mount::mount_attr_to_mnt(
                     mo.mnt_attrs.load(core::sync::atomic::Ordering::Acquire));
-                return match vfs::mount::attach_sb_with_flags(Some(target_d.clone()), sb.clone(), mnt_flags) {
+                // Parent = the mount the target-dir walk crossed into, not a
+                // re-derivation from the (bind-shared) mountpoint dentry. systemd
+                // creates the sandbox apivfs at /run/systemd/namespace-X after
+                // rbinding / onto /run/systemd/mount-rootfs, so parent_by_dentry
+                // is ambiguous; the walked mnt_id places it under the real /run.
+                let phint = crate::pathresolve::resolve_path(&target, false).map(|p| p.mnt_id);
+                return match vfs::mount::attach_sb_with_flags_at(Some(target_d.clone()), sb.clone(), mnt_flags, phint) {
                     Ok(()) => { let _ = vfs::mount::propagate_mount(&target_d); 0 }
                     Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
                     Err(e) => crate::namei_common::errno_from_vfs(e),
@@ -115,7 +121,10 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     let from_vp = match crate::pathresolve::resolve_path(&from, false) {
         Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
     };
-    match vfs::mount::move_mount_by_id(from_vp.mnt_id, &target_d) {
+    // Destination mount id from the walk: disambiguates a `to` sitting in a bind
+    // mount (shared dentries defeat `parent_by_dentry`). Falls back to `target_d`.
+    let to_mnt = crate::pathresolve::resolve_path(&target, false).map(|p| p.mnt_id);
+    match vfs::mount::move_mount_by_id_to(from_vp.mnt_id, to_mnt, &target_d) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),

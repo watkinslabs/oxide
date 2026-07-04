@@ -140,18 +140,41 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         };
     }
     if file.inode().file_type() != vfs::FileType::CharDev {
-        #[cfg(feature = "debug-syscall")]
-        if req != TCGETS {
-            klog::write_raw(b"[ioctl] non-char ENOTTY fd=");
-            klog::write_dec_u64(fd as u64);
-            klog::write_raw(b" req=");
-            klog::write_hex_u64(req);
-            klog::write_raw(b" ino=");
-            klog::write_dec_u64(file.inode().ino());
-            klog::write_raw(b" path=");
-            let p = file.dentry().absolute_path();
-            klog::write_raw(&p);
-            klog::write_raw(b"\n");
+        // Socket/pipe ioctls (Linux `sock_ioctl`): a socket is NOT a CharDev but
+        // supports FIONREAD/SIOCINQ, SIOCOUTQ/TIOCOUTQ, FIONBIO, FIOASYNC. dbus-
+        // broker's socket write path calls one of these for flow control and
+        // treats ENOTTY as FATAL — so a blanket ENOTTY crashed the whole D-Bus
+        // system bus (Inappropriate ioctl for device), taking down every
+        // D-Bus-dependent service (logind↔gdm → no greeter). Answer them.
+        const FIONREAD:  u64 = 0x541B; // == SIOCINQ: bytes available to read
+        const SIOCOUTQ:  u64 = 0x5411; // == TIOCOUTQ: bytes queued to send
+        const FIONBIO:   u64 = 0x5421; // set/clear O_NONBLOCK
+        const FIOASYNC:  u64 = 0x5452; // set/clear O_ASYNC
+        match req {
+            FIONREAD | SIOCOUTQ => {
+                // Report a pending byte count as an int out-param. Best-effort:
+                // FIONREAD signals "data readable" (1) vs not (0); SIOCOUTQ (send
+                // queue) reports drained (0). Never fatal, unlike ENOTTY.
+                let n: u32 = if req == FIONREAD
+                    && (file.inode().poll_file(file.pos()) & vfs::POLL_IN) != 0 { 1 } else { 0 };
+                if arg != 0 && arg < hal::USER_VA_END {
+                    // SAFETY: arg validated < USER_VA_END; 4-byte int out-param.
+                    unsafe { core::ptr::write_volatile(arg as *mut u32, n); }
+                }
+                return 0;
+            }
+            FIONBIO => {
+                if arg != 0 && arg < hal::USER_VA_END {
+                    // SAFETY: arg validated; read the on/off int the caller passed.
+                    let on = unsafe { core::ptr::read_volatile(arg as *const u32) } != 0;
+                    let mut fl = file.flags();
+                    if on { fl |= vfs::OpenFlags::O_NONBLOCK; } else { fl &= !vfs::OpenFlags::O_NONBLOCK; }
+                    file.set_flags(fl);
+                }
+                return 0;
+            }
+            FIOASYNC => return 0, // accept; async SIGIO wiring rides fasync
+            _ => {}
         }
         return -(Errno::Enotty.as_i32() as i64);
     }

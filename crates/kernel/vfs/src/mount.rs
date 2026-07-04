@@ -175,8 +175,10 @@ fn is_ns_root_dentry(d: &Arc<Dentry>) -> bool {
 /// IDENTITY (cross-ns scanner over the global map). # C: O(N_mounts)
 fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     let dp = dptr(d);
+    // Match the mount's OWN root dentry (`mnt_root`, per-mount for binds/clones),
+    // not the shared `sb.s_root()` — see `visible_mnt_id_of_root_dentry`.
     MOUNTS.lock().values()
-        .find(|m| m.ns == ns && m.sb.s_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .find(|m| m.ns == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
         .cloned()
 }
 
@@ -193,13 +195,24 @@ fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
 /// mount even under shadowed singleton-fs duplicates. # C: O(N_mounts)
 fn visible_mnt_id_of_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
     let dp = dptr(d);
+    // Match on the mount's OWN root dentry (`mnt_root`), which for a bind/clone
+    // is a per-mount override distinct from the shared `sb.s_root()`. Filtering
+    // by `sb.s_root()` missed bind mounts entirely: a task chrooted/pivoted onto
+    // a bind root (systemd sandbox, mnt 397) resolved its root dentry to the ns
+    // root (381) instead, so `__lookup_mnt(381, /sys)` could not find the sysfs
+    // mounted under 397 — logind's `/sys` fell to the empty ext4 underlay and no
+    // greeter rendered. `mnt_root()` falls back to `sb.s_root()`, so the
+    // singleton-pseudo-fs (procfs/sysfs) sharing case below is unchanged.
     let cands: Vec<Arc<Mount>> = MOUNTS.lock().values()
-        .filter(|m| m.ns == ns && m.sb.s_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .filter(|m| m.ns == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
         .cloned().collect();
     if cands.is_empty() { return None; }
-    // (a) ns root mount ⇒ the canonical ns-root id. [D25] identity by the
-    // self-parent `is_root()` predicate, not the `mountpoint == None` data state.
-    if cands.iter().any(|m| m.is_root()) { return root_mount_id(ns); }
+    // (a) THE ns root mount ⇒ the canonical ns-root id. Must be the ACTUAL ns
+    // root (mnt_id == root_mount_id), NOT merely any self-parented mount: a
+    // sandbox bind root is also self-parented (`is_root()`) but is a task's
+    // private root, not the namespace root — collapsing it to the ns root is the
+    // bind-root misidentification above.
+    if cands.iter().any(|m| Some(m.mnt_id) == root_mount_id(ns)) { return root_mount_id(ns); }
     // (b) the duplicate currently visible (top of its own mountpoint crossing).
     for m in cands.iter() {
         if let Some(mp) = m.mountpoint() {
@@ -856,7 +869,8 @@ fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String)
 /// namespace root mount. Acquires (or shares, via `build_sb`/`sget`) the
 /// `SuperBlock`, then grafts it through the shared [`graft_realized`] tail.
 /// # C: O(depth)
-fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<()> {
+fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>,
+    parent_hint: Option<u64>) -> KResult<()> {
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let root_inode = root.clone().or_else(|| fs.root());
     // `s_id` (the SB label) mirrors Linux's device/source id; the legacy mount
@@ -866,7 +880,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
     let sb = build_sb(fs, root_inode, s_id);
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, 0)
+    graft_realized(mp, sb, 0, parent_hint)
 }
 
 /// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
@@ -879,7 +893,7 @@ fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRe
 pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach_sb", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, 0)
+    graft_realized(mp, sb, 0, None)
 }
 
 /// [D51] As [`attach_sb`] but stamps the per-mount MNT_* option bits (mapped
@@ -890,9 +904,23 @@ pub fn attach_sb(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>) -> KResult<()> {
 /// # C: O(depth)
 pub fn attach_sb_with_flags(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
     -> KResult<()> {
+    attach_sb_with_flags_at(mp, sb, mnt_flags, None)
+}
+
+/// As [`attach_sb_with_flags`] but the caller supplies the destination PARENT
+/// mount id the path walk crossed into (`Some`). When `mp` sits in a bind
+/// mount, its parent dentry is SHARED between the bind and its source, so
+/// `parent_by_dentry(mp)` is ambiguous and can parent the new mount under a
+/// peer bind — leaving it unreachable via the path the caller walked (systemd
+/// creates the sandbox apivfs at /run/systemd/namespace-X AFTER rbinding / onto
+/// /run/systemd/mount-rootfs, so the /run root dentry is bind-shared and the
+/// new mount was born parented under mount-rootfs/run). Threading the walked
+/// parent mnt_id fixes the placement. # C: O(depth)
+pub fn attach_sb_with_flags_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
+    mnt_flags: u64, parent_hint: Option<u64>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach_sb_with_flags", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, mnt_flags & MNT_OPTION_MASK)
+    graft_realized(mp, sb, mnt_flags & MNT_OPTION_MASK, parent_hint)
 }
 
 /// Shared TAIL of [`attach`]/[`attach_sb`]: reserve the per-ns mount slot,
@@ -900,8 +928,8 @@ pub fn attach_sb_with_flags(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_fl
 /// crossing-hash links, and commit. The mount root inode is derived from
 /// `sb.s_root()` (Linux `mnt_root`), not a stored copy. `mp == None` ⇒ the
 /// namespace root mount. # C: O(depth)
-fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
-    -> KResult<()> {
+fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
+    parent_hint: Option<u64>) -> KResult<()> {
     let ns = current_ns();
     let mnt_flags = mnt_flags & MNT_OPTION_MASK;
     // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
@@ -931,7 +959,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
         mntns::bump_gen(ns);
         return Ok(());
     };
-    let parent_id = parent_by_dentry(ns, &d);
+    let parent_id = parent_hint.unwrap_or_else(|| parent_by_dentry(ns, &d));
     let rendered = rendered_path_for(parent_id, &d);
     let m = new_mount(sb, rendered, Some(d.clone()), parent_id, mnt_id, ns);
     // [D51] Stamp the requested option bits before the mount goes live, so a
@@ -960,14 +988,28 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64)
 /// Register a FileSystem on mountpoint dentry `mp` (Linux `do_new_mount`).
 /// # C: O(depth)
 pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> {
-    attach(mp, fs, None)
+    attach(mp, fs, None, None)
+}
+
+/// As [`register`] but with the walked destination PARENT mount id (see
+/// [`attach_sb_with_flags_at`] — disambiguates a mountpoint sitting in a bind
+/// mount whose parent dentry is shared). # C: O(depth)
+pub fn register_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, parent_hint: Option<u64>) -> KResult<()> {
+    attach(mp, fs, None, parent_hint)
 }
 
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`). # C: O(depth)
 pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    register_bind_at(mp, fs, root, None)
+}
+
+/// As [`register_bind`] but with the walked destination PARENT mount id.
+/// # C: O(depth)
+pub fn register_bind_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef,
+    parent_hint: Option<u64>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
-    attach(mp, fs, Some(root))
+    attach(mp, fs, Some(root), parent_hint)
 }
 
 /// Bind attach with an EXPLICIT parent mount id + rendered path — Linux
@@ -1412,7 +1454,7 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
 pub fn attach_recursive_mnt(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
                             root: Option<InodeRef>) -> KResult<usize> {
     let at = mp.clone();
-    attach(mp, fs, root)?;
+    attach(mp, fs, root, None)?;
     Ok(match at { Some(d) => propagation::propagate_mount(&d), None => 0 })
 }
 
@@ -1772,7 +1814,7 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 /// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let from_m = mount_exact_at(current_ns(), from).ok_or(VfsError::Einval)?;
-    move_mount_m(from_m, to)
+    move_mount_m(from_m, to, None)
 }
 
 /// As [`move_mount`] but identifies the SOURCE mount by the `mnt_id` the path
@@ -1782,15 +1824,31 @@ pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
 /// `mount_move_root` (`mount(".", "/", MS_MOVE)`, the final pivot of the
 /// assembled sandbox root) got EINVAL at step NAMESPACE. # C: O(N × depth)
 pub fn move_mount_by_id(from_id: u64, to: &Arc<Dentry>) -> KResult<()> {
+    move_mount_by_id_to(from_id, None, to)
+}
+
+/// As [`move_mount_by_id`] but the caller supplies the DESTINATION mount id the
+/// path walk crossed into (`Some`), instead of re-deriving it from the bare
+/// `to` dentry. Required when `to` sits in a BIND mount: bind mounts SHARE the
+/// underlying dentries, so `parent_by_dentry(to)` is ambiguous and can resolve
+/// to a peer bind (e.g. systemd assembles the sandbox root at
+/// `/run/systemd/mount-rootfs` — a bind of `/` — then MS_MOVEs `/sys` onto
+/// `/run/systemd/mount-rootfs/sys`, whose `sys` dentry IS the real `/sys`
+/// mountpoint dentry). Threading the walked `to_mnt_id` disambiguates.
+/// # C: O(N × depth)
+pub fn move_mount_by_id_to(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry>) -> KResult<()> {
     let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
     // [D32] Uniform cross-ns guard: `mount_by_id` is the ns-AGNOSTIC arena
     // lookup, so a by-id handle MUST pass `check_mnt` before any mutation.
     if !check_mnt(&from_m) { return Err(VfsError::Einval); }
-    move_mount_m(from_m, to)
+    move_mount_m(from_m, to, to_mnt_id)
 }
 
-/// Shared MS_MOVE body for both [`move_mount`] variants. # C: O(N × depth)
-fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
+/// Shared MS_MOVE body for both [`move_mount`] variants. `dest_hint` is the
+/// destination parent mount id when known from the walk (see
+/// [`move_mount_by_id_to`]); `None` falls back to `parent_by_dentry(to)`.
+/// # C: O(N × depth)
+fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) -> KResult<()> {
     let ns = current_ns();
     let from_id = from_m.mnt_id;
     let to_root = is_ns_root_dentry(to);
@@ -1813,19 +1871,22 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
     if let Some(p) = mount_by_id(from_m.parent_id.load(Ordering::Acquire)) {
         if is_shared(&p) { return Err(VfsError::Einval); }
     }
+    // Destination parent mount: prefer the walked `dest_hint` (unambiguous
+    // even when `to` is in a bind mount); else re-derive by dentry identity.
+    let dest_pid = if to_root { None } else { Some(dest_hint.unwrap_or_else(|| parent_by_dentry(ns, to))) };
     // [D21] Don't move a tree containing UNBINDABLE mounts onto a SHARED
     // destination (Linux `do_move_mount`: `IS_MNT_SHARED(dest) &&
     // tree_contains_unbindable(old)` → -EINVAL): the dest's peers would receive
     // a propagated copy of a mount declared unbindable.
-    if !to_root {
-        if let Some(dest) = mount_by_id(parent_by_dentry(ns, to)) {
+    if let Some(dp) = dest_pid {
+        if let Some(dest) = mount_by_id(dp) {
             if is_shared(&dest) && tree_contains_unbindable(ns, from_id) {
                 return Err(VfsError::Einval);
             }
         }
     }
-    if !to_root {
-        let mut anc = Some(parent_by_dentry(ns, to));
+    if let Some(dp0) = dest_pid {
+        let mut anc = Some(dp0);
         while let Some(a) = anc {
             if a == from_id { return Err(VfsError::Einval); }
             let Some(am) = mount_by_id(a) else { break; };
@@ -1858,7 +1919,7 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
                 *from_m.mnt_parent.lock() = Weak::new();
             }
             Some(d) => {
-                let new_parent = parent_by_dentry(ns, d);
+                let new_parent = dest_pid.unwrap_or_else(|| parent_by_dentry(ns, d));
                 from_m.parent_id.store(new_parent, Ordering::Release);
                 if let Some(p) = mount_by_id(new_parent) {
                     *from_m.mnt_parent.lock() = Arc::downgrade(&p);

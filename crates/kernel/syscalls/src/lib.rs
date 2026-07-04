@@ -61,6 +61,7 @@ mod fsmount_common;
 mod net_common;
 mod namei_common;
 mod time_common;
+pub use time_common::init_wall_clock_from_rtc;
 mod statfs_common;
 #[path = "000_read.rs"] pub mod s000_read;
 mod open_common;
