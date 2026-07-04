@@ -60,7 +60,6 @@ struct VirtioProbeProfile {
     extra_queues: [Option<QueuePlan>; 3],
     needs_q1_tx_warmup: bool,
     needs_input_cfg: bool,
-    needs_vsock_cfg: bool,
     needs_snd_cfg: bool,
 }
 
@@ -76,7 +75,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
     }
@@ -88,7 +86,6 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: true,
             needs_input_cfg: false,
-            needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
     }
@@ -100,7 +97,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: true,
-            needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
     }
@@ -112,7 +108,6 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_vsock_cfg: false,
             needs_snd_cfg: false,
         }
     }
@@ -128,7 +123,6 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_vsock_cfg: true,
             needs_snd_cfg: false,
         }
     }
@@ -144,7 +138,6 @@ impl VirtioProbeProfile {
             ],
             needs_q1_tx_warmup: false,
             needs_input_cfg: false,
-            needs_vsock_cfg: false,
             needs_snd_cfg: true,
         }
     }
@@ -636,19 +629,19 @@ impl drv::Driver for VirtioVsockDrv {
             || p.q1_device_pa == 0
             || p.q1_notify_va == 0
             || p.q1_size == 0
-            || !p.vsock_cid_valid
+            || p.device_cfg_va == 0
         {
             release_vsock_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
         }
         let resources = p.resources(&[p.q0_resource(), p.q1_resource()]);
-        if !super::virtio_vsock_cfg::install_vsock(device_key, resources, p.vsock_cid) {
+        if !super::virtio_vsock_cfg::install_vsock(device_key, resources) {
             release_vsock_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-vsock installed cid=");
-            klog::write_dec_u64(p.vsock_cid);
+            klog::write_dec_u64(drv_virtio_vsock::guest_cid());
             klog::write_raw(b"\n");
         }
         publish_transport_mmio(&mut p);
@@ -1218,9 +1211,6 @@ pub(super) struct VirtioProbe {
     pub(super) mac:       [u8; 6],
     pub(super) mac_valid: bool,
     pub(super) tx0_buf_pa: u64,
-    // D3.3: virtio-vsock guest CID (device-cfg offset 0, le64).
-    pub(super) vsock_cid: u64,
-    pub(super) vsock_cid_valid: bool,
     // F454: virtio_snd_config (docs/58§4, le32 ×4 at device-cfg offset 0).
     pub(super) snd_jacks:     u32,
     pub(super) snd_streams:   u32,
@@ -1822,24 +1812,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         }
     }
 
-    // Stage 1: harvest virtio_blk_config (spec §5.2.4) from the
-    // device-cfg cap. capacity = le64 sectors (512B units) at offset 0;
-    // blk_size = le32 at offset 20 iff VIRTIO_BLK_F_BLK_SIZE negotiated,
-    // else the wire default 512. The serial is read later by the engine
-    // via GET_ID, not from device-cfg. Same window pattern as the MAC
-    // harvest above.
-    // D3.3: harvest virtio_vsock_config (spec §5.10.4): guest_cid is a
-    // le64 at device-cfg offset 0. Same window pattern as the MAC harvest.
-    let mut vsock_cid_local: u64 = 0;
-    let mut vsock_cid_valid_local: bool = false;
-    if profile.needs_vsock_cfg {
-        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
-            let (cid, valid) = super::virtio_vsock_cfg::harvest_cid(&devcfg_cap, &bars);
-            vsock_cid_local = cid;
-            vsock_cid_valid_local = valid;
-        }
-    }
-
     // F454: harvest virtio_snd_config (docs/58§4): le32 jacks/streams/
     // chmaps/controls at device-cfg offset 0. Same window pattern as MAC.
     let mut snd_jacks_local: u32 = 0;
@@ -1934,8 +1906,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         mac:       mac_local,
         mac_valid: mac_valid_local,
         tx0_buf_pa: tx0_buf_pa_local,
-        vsock_cid:       vsock_cid_local,
-        vsock_cid_valid: vsock_cid_valid_local,
         snd_jacks:     snd_jacks_local,
         snd_streams:   snd_streams_local,
         snd_chmaps:    snd_chmaps_local,
