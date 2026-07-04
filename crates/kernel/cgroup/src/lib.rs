@@ -13,293 +13,30 @@ extern crate alloc;
 pub mod selftest;
 
 pub mod inode;
+pub mod fs;
+pub mod policy;
+pub mod state;
 pub mod tree;
 
 use alloc::fmt::Write;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use alloc::sync::Arc;
+use vfs::{KResult, VfsError};
 
-use sync::{Spinlock, TaskList as TaskListClass};
-use vfs::fs::FileSystem;
-use vfs::{Dentry, InodeRef, KResult, VfsError};
-
-use tree::Tree;
-
-/// cgroup2 filesystem for the unified mount table (`16§7`). Mounted
-/// at `/sys/fs/cgroup`; `vfs::mount::lookup` routes paths here. cgroupfs
-/// OWNS its inodes: `lookup` strips the mount prefix, resolves the
-/// relative cgroup path through the hierarchy (`tree.rs`), and SYNTHESIZES
-/// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.
-pub struct CgroupFs;
-
-impl CgroupFs {
-    /// Create a cgroup2 filesystem instance. The backing hierarchy is
-    /// global; resolution is per-component from the mount root `CgDir`
-    /// (`root()` → `CgDir::lookup`), so the instance carries no path prefix.
-    /// # C: O(1)
-    pub fn new(_mount_point: &str) -> Self { Self }
-}
-
-impl FileSystem for CgroupFs {
-    /// # C: O(1)
-    fn name(&self) -> &str { "cgroup2" }
-    /// CGROUP2_SUPER_MAGIC (linux/magic.h) — systemd's `cg_all_unified()`
-    /// detects the unified hierarchy by this `statfs` f_type.
-    /// # C: O(1)
-    fn magic(&self) -> u64 { 0x6367_7270 }
-    /// Resolve a `/sys/fs/cgroup/...` path by synthesizing from the
-    /// hierarchy: strip the mount prefix → relative cgroup path; the
-    /// last component may be a child cgroup (→ `CgDir`) or a control
-    /// file of its parent cgroup (→ `CgFile`).
-    /// # C: O(components · log n)
-    fn root(&self) -> Option<InodeRef> {
-        if !is_mounted() { return None; }
-        Some(inode::make_cg_dir(tree::ROOT))
-    }
-    /// # C: O(1)
-    fn mounts_line(&self, mp: &str, _sb: Option<&vfs::SuperBlock>) -> alloc::string::String {
-        let mut s = alloc::string::String::from("cgroup2 ");
-        s.push_str(mp);
-        s.push_str(" cgroup2 rw,nosuid,nodev,noexec,relatime 0 0\n");
-        s
-    }
-}
-
-/// SIGKILL — raw number (the typed `Signum` lives in `sched`, which
-/// this leaf crate cannot depend on without a cycle). Delivered via
-/// the registered `SIGNAL_HOOK` for `cgroup.kill`.
-const SIGKILL: i32 = 9;
-
-static TREE: Spinlock<Tree, TaskListClass> = Spinlock::new(Tree::new());
-
-/// Signal-delivery hook: `fn(pid, signum)`. Set by the kernel at
-/// boot so `cgroup.kill` can SIGKILL every member without this crate
-/// depending on `sched`.
-static SIGNAL_HOOK: Spinlock<Option<fn(u64, i32)>, TaskListClass> = Spinlock::new(None);
-
-/// `cgroup.freeze` delivery: `(pid, frozen)`. The kernel installs a hook
-/// that freezes/thaws the task via the scheduler, so this leaf crate has
-/// no `sched` dependency. Mirrors `SIGNAL_HOOK` for `cgroup.kill`.
-static FREEZE_HOOK: Spinlock<Option<fn(u64, bool)>, TaskListClass> = Spinlock::new(None);
-
-/// `cpu.weight` delivery: `(pid, cfs_weight)`. The kernel installs a hook
-/// that rewrites the task's live CFS load weight so the cgroup weight
-/// shifts CPU shares. Leaf crate stays `sched`-free.
-static WEIGHT_HOOK: Spinlock<Option<fn(u64, u32)>, TaskListClass> = Spinlock::new(None);
-
-/// `cpuset.cpus` delivery: `(pid, cpu_mask)`. The kernel installs a hook
-/// that rewrites the task's `cpus_allowed` so the cgroup cpuset restricts
-/// which CPUs its members run on.
-static CPUSET_HOOK: Spinlock<Option<fn(u64, u64)>, TaskListClass> = Spinlock::new(None);
-
-/// vpid → canonical (global) tid resolver. `cgroup.procs`/`threads`
-/// receive a pid as seen in the writer's pid namespace; the cgroup
-/// tree keys membership on the canonical tid (matching `/proc/<pid>/
-/// cgroup` via `current().tid` and fork-inheritance). The kernel
-/// installs this so the leaf crate can translate without a `sched`
-/// dependency. Identity fallback when the pid can't be resolved.
-static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
-
-/// canonical tid → visible pid formatter for cgroup.procs reads. The
-/// hierarchy stores canonical tids for kernel accounting, but Linux's
-/// cgroupfs ABI exposes PIDs in userspace's PID view. Identity fallback
-/// preserves hosted tests and early boot before sched installs the hook.
-static PID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
-
-/// `cgroup.events` change-notification: `fn(events_file_path)`. The
-/// kernel installs `fs::inotify::fire_modify_path` so a `populated`/
-/// `frozen` transition fires inotify `IN_MODIFY` on the node's
-/// `cgroup.events` inode (Linux `cgroup_file_notify`). Leaf crate stays
-/// `fs`-free. systemd watches this to drive empty-cgroup restart/GC —
-/// without it an emptied service cgroup is rmdir'd and never re-realized
-/// on restart (`26§4.1`).
-static NOTIFY_HOOK: Spinlock<Option<fn(&str)>, TaskListClass> = Spinlock::new(None);
+pub use fs::{mount_at, mount_root, realize_tree, CgroupFs};
+pub use policy::{CpuAction, cpu_bandwidth_decision, cpulist_to_mask, cpu_weight_to_cfs};
+pub use state::{
+    set_cpuset_hook, set_freeze_hook, set_notify_hook, set_pid_display_hook, set_pid_resolve_hook,
+    set_signal_hook, set_weight_hook,
+};
+use state::{
+    SIGKILL, TREE, cpuset_hook, freeze_hook, notify_events_chain, notify_events_self, resolve_pid,
+    signal_hook, visible_pid, weight_hook,
+};
 
 /// Mount-point of the unified hierarchy.
 pub const MOUNT: &str = "/sys/fs/cgroup";
-
-/// Install the signal hook. Boot path.
-/// # C: O(1)
-pub fn set_signal_hook(f: fn(u64, i32)) { *SIGNAL_HOOK.lock() = Some(f); }
-
-/// Install the freezer hook. Boot path.
-/// # C: O(1)
-pub fn set_freeze_hook(f: fn(u64, bool)) { *FREEZE_HOOK.lock() = Some(f); }
-
-/// Install the cpu.weight hook. Boot path.
-/// # C: O(1)
-pub fn set_weight_hook(f: fn(u64, u32)) { *WEIGHT_HOOK.lock() = Some(f); }
-
-/// Install the cpuset.cpus hook. Boot path.
-/// # C: O(1)
-pub fn set_cpuset_hook(f: fn(u64, u64)) { *CPUSET_HOOK.lock() = Some(f); }
-
-/// Parse a Linux cpulist (`"0-3,7,9-11"`) into a CPU bitmask (bit N ⇔
-/// CPU N), capped at 64. Empty/whitespace → `None` (no restriction).
-/// Malformed tokens are skipped (best-effort, matching how the kernel
-/// tolerates partial writes). Pure — hosted-tested.
-/// # C: O(len)
-pub fn cpulist_to_mask(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() { return None; }
-    let mut mask = 0u64;
-    for tok in s.split(',') {
-        let tok = tok.trim();
-        if tok.is_empty() { continue; }
-        if let Some((a, b)) = tok.split_once('-') {
-            if let (Ok(lo), Ok(hi)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
-                for c in lo..=hi.min(63) { if c < 64 { mask |= 1u64 << c; } }
-            }
-        } else if let Ok(c) = tok.parse::<u32>() {
-            if c < 64 { mask |= 1u64 << c; }
-        }
-    }
-    if mask == 0 { None } else { Some(mask) }
-}
-
-/// Map cgroup v2 `cpu.weight` (1..=10000, default 100) → CFS load weight
-/// (nice-0 == cpu.weight 100 == weight 1024). Saturates to ≥1.
-/// # C: O(1)
-pub fn cpu_weight_to_cfs(cpu_weight: u32) -> u32 {
-    ((cpu_weight as u64 * NICE_0_CFS as u64) / 100).clamp(1, u32::MAX as u64) as u32
-}
-
-/// CFS weight of a nice-0 task — kept in sync with `sched::cputime`.
-const NICE_0_CFS: u32 = 1024;
-
-/// cpu.max bandwidth-scan decision for one cgroup.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum CpuAction {
-    /// Within quota this period — leave members running.
-    Continue,
-    /// Over quota this period — freeze members until the next refill.
-    Throttle,
-    /// Period elapsed — start a new period: unthrottle + re-baseline at
-    /// `new_base_ns` (the current cumulative member runtime).
-    Refill { new_base_ns: u64 },
-}
-
-/// Decide the bandwidth action for a cgroup given the cumulative member
-/// runtime `total_ns` (sum of members' sum_exec_runtime), the quota +
-/// period, the runtime `base_ns` captured at period start, the period
-/// start time, and `now_ns`. Pure — hosted-tested.
-///
-/// - period elapsed (`now - period_start >= period`) → Refill (re-baseline
-///   to `total_ns`, unthrottle).
-/// - else consumed (`total - base`) >= quota → Throttle.
-/// - else Continue.
-/// # C: O(1)
-pub fn cpu_bandwidth_decision(
-    total_ns: u64, base_ns: u64, quota_ns: u64, period_ns: u64,
-    period_start_ns: u64, now_ns: u64,
-) -> CpuAction {
-    if period_ns == 0 || now_ns.saturating_sub(period_start_ns) >= period_ns {
-        return CpuAction::Refill { new_base_ns: total_ns };
-    }
-    let consumed = total_ns.saturating_sub(base_ns);
-    if consumed >= quota_ns { CpuAction::Throttle } else { CpuAction::Continue }
-}
-
-/// Install the vpid→tid resolver. Boot path.
-/// # C: O(1)
-pub fn set_pid_resolve_hook(f: fn(u64) -> u64) { *PID_RESOLVE_HOOK.lock() = Some(f); }
-
-/// Install the tid→visible-pid formatter. Boot path.
-/// # C: O(1)
-pub fn set_pid_display_hook(f: fn(u64) -> u64) { *PID_DISPLAY_HOOK.lock() = Some(f); }
-
-/// Install the `cgroup.events` inotify hook. Boot path.
-/// # C: O(1)
-pub fn set_notify_hook(f: fn(&str)) { *NOTIFY_HOOK.lock() = Some(f); }
-
-/// Fire `cgroup.events` `IN_MODIFY` for `cgid` and every ancestor up to
-/// root. `populated` is a subtree aggregate, so a membership change in
-/// `cgid` can flip an ancestor's `populated` bit — Linux walks
-/// `cgroup_file_notify` up the chain. Paths are collected under the tree
-/// lock; the hook fires after the lock drops (it re-enters devfs/inotify
-/// locks, so must not nest under `TREE`).
-/// # C: O(depth) + O(devfs+inotify) per node
-fn notify_events_chain(cgid: u64) {
-    let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
-    let paths: Vec<String> = {
-        let t = TREE.lock();
-        let mut v = Vec::new();
-        let mut cur = Some(cgid);
-        while let Some(id) = cur {
-            let mut p = fs_path(&t, id);
-            if !p.ends_with('/') { p.push('/'); }
-            p.push_str("cgroup.events");
-            v.push(p);
-            cur = t.node(id).and_then(|n| n.parent);
-        }
-        v
-    };
-    for p in paths { hook(&p); }
-}
-
-/// Fire `cgroup.events` `IN_MODIFY` for `cgid` only (the `frozen` field
-/// is per-node, not a subtree aggregate, so no ancestor walk).
-/// # C: O(devfs+inotify)
-fn notify_events_self(cgid: u64) {
-    let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
-    let path = { let t = TREE.lock(); let mut p = fs_path(&t, cgid); if !p.ends_with('/') { p.push('/'); } p.push_str("cgroup.events"); p };
-    hook(&path);
-}
-
-/// Translate a userspace-written pid (writer's ns) to the canonical
-/// tid the tree keys on. Identity when no resolver / no such task.
-/// # C: O(resolver)
-fn resolve_pid(vpid: u64) -> u64 {
-    match *PID_RESOLVE_HOOK.lock() { Some(f) => f(vpid), None => vpid }
-}
-
-/// Mount the unified hierarchy at the canonical boot location. Resolves the
-/// mountpoint dentry via the namei walk (the root-dentry provider must be
-/// installed and `/sys` mounted first, so this runs AFTER the boot `/sys`
-/// register). Idempotent from the boot caller's perspective.
-/// # C: O(path components)
-pub fn mount_root() -> bool {
-    let mp = vfs::resolve_path_dentry(MOUNT);
-    mount_at(MOUNT, mp).is_ok()
-}
-
-/// Mount the shared unified cgroup2 hierarchy on the caller-walked mountpoint
-/// dentry `mp` (`mount_point` is its rendered path string, fs INPUT only).
-/// Multiple mount instances share the same tree, as Linux does for the
-/// unified hierarchy, but each mount shadows its own target dentry.
-/// # C: O(N_mounts)
-pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
-    // Guard against a missing/unresolved non-root target turning into an
-    // accidental namespace-root mount (`mp == None` ⇒ ns root in the engine).
-    if mount_point != "/" && mp.is_none() { return Err(vfs::VfsError::Enoent); }
-    let first = TREE.lock().mount_root();
-    let fs = Arc::new(CgroupFs::new(mount_point));
-    let root = inode::make_cg_dir(tree::ROOT);
-    match vfs::mount::register_bind(mp, fs, root) {
-        Ok(()) => Ok(()),
-        Err(vfs::VfsError::Eexist) if !first => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-/// fs_context `get_tree` realize for the unified cgroup2 hierarchy: mark the
-/// (singleton, global) tree mounted — idempotent, mirroring `mount_at`'s
-/// `TREE.lock().mount_root()` — and return the `(FileSystem, root inode)` the
-/// mount engine wraps into a `SuperBlock` (`SuperBlock::for_backend`). This is
-/// the TARGET-INDEPENDENT equivalent of `mount_at`'s `register_bind`: cgroup2's
-/// SB does not depend on the mount target (the hierarchy is global; `CgroupFs`
-/// is zero-sized; resolution is per-component from the root `CgDir`), so the SB
-/// realized at `fsconfig(CMD_CREATE)` is byte-identical to what `mount_at`
-/// grafts. Used by the converted `fsopen`→`fsconfig`→`vfs_get_tree`→`fsmount`→
-/// `move_mount` path (a registered `cgroup2` `file_system_type`'s ctor). # C: O(1)
-pub fn realize_tree() -> (Arc<dyn FileSystem>, InodeRef) {
-    let _ = TREE.lock().mount_root();
-    let fs: Arc<dyn FileSystem> = Arc::new(CgroupFs::new(""));
-    let root = inode::make_cg_dir(tree::ROOT);
-    (fs, root)
-}
 
 /// True iff cgroup `cgid` has a control file named `name`.
 /// # C: O(controllers)
@@ -327,10 +64,9 @@ pub fn read_file(cgid: u64, file: &str) -> KResult<Vec<u8>> {
     if file == "cgroup.procs" || file == "cgroup.threads" {
         let t = TREE.lock();
         let n = t.node(cgid).ok_or(VfsError::Enoent)?;
-        let display = *PID_DISPLAY_HOOK.lock();
         let mut out = String::new();
         for pid in &n.procs {
-            let shown = display.map(|f| f(*pid)).unwrap_or(*pid);
+            let shown = visible_pid(*pid);
             let _ = writeln!(out, "{shown}");
         }
         return Ok(out.into_bytes());
@@ -407,7 +143,7 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
         "cgroup.kill" => {
             if buf.trim() != "1" { return Err(VfsError::Einval); }
             let pids = TREE.lock().subtree_pids(cgid);
-            if let Some(hook) = *SIGNAL_HOOK.lock() {
+            if let Some(hook) = signal_hook() {
                 for p in pids { hook(p, SIGKILL); }
             }
             Ok(())
@@ -416,7 +152,7 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             let v = match buf.trim() { "1" => true, "0" => false, _ => return Err(VfsError::Einval) };
             let pids = { let mut t = TREE.lock(); t.set_frozen(cgid, v); t.subtree_pids(cgid) };
             // Actually freeze/thaw each member task via the scheduler.
-            if let Some(hook) = *FREEZE_HOOK.lock() {
+            if let Some(hook) = freeze_hook() {
                 for p in pids { hook(p, v); }
             }
             // `frozen` field changed → cgroup.events IN_MODIFY.
@@ -428,7 +164,7 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             // member task so the cgroup weight actually shifts CPU shares.
             let pids = { let mut t = TREE.lock(); t.write_file(cgid, file, buf)?; t.subtree_pids(cgid) };
             let w = cpu_weight_to_cfs(TREE.lock().node(cgid).map(|n| n.cpu_weight).unwrap_or(100));
-            if let Some(hook) = *WEIGHT_HOOK.lock() {
+            if let Some(hook) = weight_hook() {
                 for p in pids { hook(p, w); }
             }
             Ok(())
@@ -438,7 +174,7 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             // member task so the cgroup cpuset restricts their CPUs.
             let pids = { let mut t = TREE.lock(); t.write_file(cgid, file, buf)?; t.subtree_pids(cgid) };
             if let Some(mask) = cpulist_to_mask(buf) {
-                if let Some(hook) = *CPUSET_HOOK.lock() {
+                if let Some(hook) = cpuset_hook() {
                     for p in pids { hook(p, mask); }
                 }
             }
@@ -446,18 +182,6 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
         }
         _ => TREE.lock().write_file(cgid, file, buf),
     }
-}
-
-/// Full `cgroup.events` fs path of a cgroup node (`MOUNT` + hierarchy
-/// path): root → `MOUNT`, else `/sys/fs/cgroup/a/b`. Used only to address
-/// the inotify watch target; cgroupfs no longer keys inodes by path.
-/// # C: O(depth)
-fn fs_path(t: &Tree, cgid: u64) -> String {
-    let hp = t.path_of(cgid);
-    if hp == "/" { return String::from(MOUNT); }
-    let mut s = String::from(MOUNT);
-    s.push_str(&hp);
-    s
 }
 
 /// `mkdir(2)` on a cgroup directory: create the child node in `tree.rs`.
