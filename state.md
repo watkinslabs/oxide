@@ -28,29 +28,36 @@ but is a task's private root, not the ns root). RESULT: containing_mount_id → 
 (seat0 in 3/3; a graphical=0 boot is the pre-existing ~50% GRUB-hang, not a
 regression — see CLAUDE.md).
 
-## NEXT blocker — CAN_GRAPHICAL=0 (card0 not attached)  [START HERE]
-MEASURED: at logind's master-of-seat enumerate (~t=22), logind's `/run/udev`
-resolves to **fsid 0x8 with ONLY `control`** — `tags` and `data` are
-`<unresolved>`. So logind never finds `/run/udev/tags/master-of-seat/c226:0`,
-never chases `/sys/dev/char/226:0` (dev-index 226:0 lookup fires 0×), so card0 is
-never attached → `CAN_GRAPHICAL=0` → gdm greeter child exits code 1.
+## NEXT blocker — CAN_GRAPHICAL=0: udevd writes NO device db/tags  [START HERE]
+MEASURED (decisive, and the mount fix is RULED OUT as the cause):
+- logind's `/run/udev` = fsid 0x8, contains ONLY `control` — `tags`/`data`
+  `<unresolved>`. So `/sys/dev/char/226:0` is never chased (dev-index 226:0
+  lookup fires 0×), card0 never attaches → `CAN_GRAPHICAL=0` → gdm child exits 1.
+- WHY: a broad probe (any openat whose RESOLVED path is under `/run/udev/`,
+  W=create/write vs r) shows **udevd makes ZERO writes to `/run/udev/data` or
+  `/run/udev/tags`** — it only READS. So udevd never reaches `device_update_db`
+  / `device_tag`. No tags because nothing is written, not because of visibility.
+- REGRESSION RULED OUT: temporarily reverting ONLY the mnt_root fix (keeping
+  d_drop) and re-booting → udevd STILL writes 0. So udevd-not-writing is
+  PRE-EXISTING, not caused by this session's changes. The mnt_root fix is a real
+  correctness win (logind /sys works, seat0 created) and stays.
 
-TWO hypotheses to DISTINGUISH FIRST (measure, don't guess):
-1. **Visibility:** a tmpfs (fsid 0x8, only `control`) shadows the real
-   `/run/udev` (with tags/data) in logind's sandbox view — OR the same
-   mount-crossing class of bug for `/run/udev`. Measure: at the SAME instant,
-   does udevd (the tag WRITER) see `/run/udev/tags` while logind (reader) does
-   not? Trace any openat whose RESOLVED path contains `udev/tags` (matches both
-   udevd's touch_file create AND logind's opendir), log `exe` + `/run/udev` fsid
-   + whether `tags` resolves. Diverging fsids ⇒ a `/run/udev` mount not
-   propagated into logind's ns (fixable, likely same class as the just-fixed
-   bug). NOTE: pre-fix logind (wrongly on mnt 381) DID see tags; the correct
-   re-root to 397 exposed this — so 397's `/run/udev` genuinely lacks them.
-2. **Wipe/timing:** `/run/udev/{tags,data}` get WIPED (observed earlier: data/
-   c226:0 present ~t=20, gone ~t=42). If NOBODY sees tags at t=22, card0 depends
-   on the LIVE cooked-uevent path — which was measured BROKEN long ago
-   (COOKTRACE=0: udevd broadcasts no cooked group-2 uevents to logind's monitor).
-   That netlink-broadcast gap would then be the real fix.
+So the real remaining gate: **udevd processes no device to the point of writing
+its db/tags.** udevd only makes /run/udev READS at t=5–9. Candidates (measure):
+1. udevd receives no RAW kernel uevents (NETLINK_KOBJECT_UEVENT group 1) — the
+   kernel isn't delivering add@ uevents to udevd's monitor. (Earlier this
+   session card0's tag DID exist in bfix5/6 boots — so uevent delivery worked at
+   some point; determine what changed, or if those were a different img state.)
+   Measure: does udevd's netlink recv return card0's add@ uevent? Trace the
+   netlink enqueue→recv for udevd's uevent socket.
+2. udevd receives but a worker fails before device_update_db (rule error / a
+   syscall ENOSYS in the worker). Measure: [EXIT] of udevd workers + their
+   recent-syscall ring.
+3. The LIVE cooked-uevent path (udevd→logind monitor) was ALSO measured broken
+   long ago (COOKTRACE=0). Even once udevd writes tags, logind's live attach
+   needs that broadcast. Likely a second fix.
+Latent: drm.rs:114 subsystem symlink `../../../class/drm` (3 ups) → wrong;
+should be `../../../../class/drm` (4 ups). Basename still "drm" so non-fatal.
 
 Also latent (fix once card0 attaches): drm.rs:114 subsystem symlink is
 `../../../class/drm` (3 ups) → resolves to /sys/devices/class/drm (wrong);
