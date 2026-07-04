@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 58% complete.
+  hotplug, fault injection, and multi-device coverage: about 59% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -378,7 +378,9 @@ test-pass claims.
   `VirtioPciProbeTrace`, and `VirtioProbe` now keeps opaque vring/net payload
   frame-release lists instead of individual child queue PA fields, so it is
   closer to a PCI transport lifetime object instead of a mixed
-  diagnostic/resource bag.
+  diagnostic/resource bag. The probe result now carries child queue handoff as
+  indexed `VirtQueueResource` records instead of a flattened pile of q0/q1/q2/q3
+  physical-address fields.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
