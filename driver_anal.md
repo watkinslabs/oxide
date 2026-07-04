@@ -49,6 +49,9 @@ test-pass claims.
   registered matching drivers after devtmpfs/sysfs publication, so both
   driver-register and device-add orderings probe through the driver model
   instead of requiring call-site bind work.
+- Boot-time platform devices such as serial and i8042 now rely on the same
+  model-owned attach path; the remaining production explicit bind entry is the
+  sysfs `/sys/bus/*/drivers/*/bind` control path.
 - Model unbind calls `Driver::remove` before clearing the binding.
 - `device_del` unbinds first, emits remove while the object is still visible,
   removes devtmpfs state, and then drops the device from the registry.
