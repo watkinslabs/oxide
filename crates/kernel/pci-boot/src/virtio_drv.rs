@@ -1212,6 +1212,30 @@ impl VirtioProbeState {
         self.msix.is_some()
     }
 
+    fn map_notify(
+        &mut self,
+        notify_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+        notify_off: u16,
+    ) -> u64 {
+        map_queue_notify_va(&mut self.mappings, notify_cap, bars, notify_off)
+    }
+
+    fn kick_queue(
+        &mut self,
+        notify_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+        notify_off: u16,
+        queue_index: u16,
+    ) -> u64 {
+        let notify_va = self.map_notify(notify_cap, bars, notify_off);
+        if kick_queue_notify(notify_va, queue_index) {
+            notify_va
+        } else {
+            0
+        }
+    }
+
     fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
         VirtioProbe {
             bdf_word: self.bdf_word,
@@ -1549,8 +1573,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
             let Some(queue) = queue else { continue };
             if queue.map_notify {
                 if let Some(ring) = programmed.extra_queue(queue.index) {
-                    let notify_va =
-                        map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, ring.notify_off);
+                    let notify_va = state.map_notify(notify_cap.as_ref(), &bars, ring.notify_off);
                     match queue.index {
                         2 => snd_q2_notify_va_local = notify_va,
                         3 => snd_q3_notify_va_local = notify_va,
@@ -1601,8 +1624,8 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        let kick_va = map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, q0_notify_off);
-        if kick_queue_notify(kick_va, 0) {
+        let kick_va = state.kick_queue(notify_cap.as_ref(), &bars, q0_notify_off, 0);
+        if kick_va != 0 {
             // Brief observation window for any device-driven RX completion
             // (QEMU user-net delivers nothing without packets, so used.idx
             // will normally stay 0).
@@ -1622,7 +1645,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
         q1_notify_va_local =
-            map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
+            state.map_notify(notify_cap.as_ref(), &bars, q1_notify_off_local);
         tx0_buf_pa_local = alloc_net_tx_boot_buffer(
             hhdm,
             q1_desc_pa,
@@ -1640,7 +1663,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
         q1_notify_va_local =
-            map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
+            state.map_notify(notify_cap.as_ref(), &bars, q1_notify_off_local);
     }
 
     //: locate ISR cap, map its BAR page, and read the ISR byte
