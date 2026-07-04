@@ -1,0 +1,156 @@
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use super::pid_ino;
+use super::self_files::{push, push_hex, push_u64};
+use vfs::InodeRef;
+
+fn pid_status_body(tid: u32) -> Vec<u8> {
+    crate::pid_status::body(tid)
+}
+
+fn pid_cmdline_body(tid: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(64);
+    let task = match sched::live::registry::lookup(tid) {
+        Some(t) => t,
+        None => return out,
+    };
+    let snap = unsafe { (*task.cmdline.get()).clone() };
+    if let Some(s) = snap {
+        push(&mut out, s.as_bytes());
+    } else {
+        push(&mut out, task.name.as_bytes());
+        out.push(0);
+    }
+    out
+}
+
+fn pid_stat_body(tid: u32) -> Vec<u8> {
+    crate::pid_stat::body(tid)
+}
+
+fn pid_maps_body(tid: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1024);
+    let task = match sched::live::registry::lookup(tid) {
+        Some(t) => t,
+        None => return out,
+    };
+    let mm = match unsafe { (*task.mm.get()).as_ref() } {
+        Some(m) => m.clone(),
+        None => return out,
+    };
+    for vma in mm.snapshot_vmas() {
+        push_hex(&mut out, vma.start.as_u64());
+        out.push(b'-');
+        push_hex(&mut out, vma.end.as_u64());
+        out.push(b' ');
+        let p = vma.prot;
+        out.push(if p.contains(vmm::VmaProt::READ) { b'r' } else { b'-' });
+        out.push(if p.contains(vmm::VmaProt::WRITE) { b'w' } else { b'-' });
+        out.push(if p.contains(vmm::VmaProt::EXEC) { b'x' } else { b'-' });
+        out.push(b'p');
+        push(&mut out, b" 00000000 00:00 0 \n");
+    }
+    out
+}
+
+macro_rules! pid_inode_ctor {
+    ($ctor:ident, $body:ident, $tag:expr) => {
+        pub fn $ctor(tid: u32) -> InodeRef {
+            crate::dyn_file::make_pid_gen_file(pid_ino($tag, tid), tid, $body)
+        }
+    };
+}
+
+pid_inode_ctor!(make_pid_status, pid_status_body, 0x20);
+pid_inode_ctor!(make_pid_cmdline, pid_cmdline_body, 0x21);
+pid_inode_ctor!(make_pid_stat, pid_stat_body, 0x22);
+pid_inode_ctor!(make_pid_maps, pid_maps_body, 0x23);
+pid_inode_ctor!(make_pid_comm, pid_comm_body, 0x24);
+pid_inode_ctor!(make_pid_environ, pid_environ_body, 0x25);
+pid_inode_ctor!(make_pid_statm, pid_statm_body, 0x26);
+pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
+use crate::pid_sched::pid_sched_body;
+pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
+
+fn pid_limits_body(tid: u32) -> Vec<u8> {
+    use sched::rlimit::{format_rlim, rlim};
+    let mut out = Vec::with_capacity(2048);
+    let task = match sched::live::registry::lookup(tid) {
+        Some(t) => t,
+        None => return out,
+    };
+    push(&mut out, b"Limit                     Soft Limit           Hard Limit           Units\n");
+    let names: &[(usize, &[u8], &[u8])] = &[
+        (rlim::CPU, b"Max cpu time             ", b"seconds"),
+        (rlim::FSIZE, b"Max file size            ", b"bytes"),
+        (rlim::DATA, b"Max data size            ", b"bytes"),
+        (rlim::STACK, b"Max stack size           ", b"bytes"),
+        (rlim::CORE, b"Max core file size       ", b"bytes"),
+        (rlim::RSS, b"Max resident set         ", b"bytes"),
+        (rlim::NPROC, b"Max processes            ", b"processes"),
+        (rlim::NOFILE, b"Max open files           ", b"files"),
+        (rlim::MEMLOCK, b"Max locked memory        ", b"bytes"),
+        (rlim::AS, b"Max address space        ", b"bytes"),
+        (rlim::LOCKS, b"Max file locks           ", b"locks"),
+        (rlim::SIGPENDING, b"Max pending signals      ", b"signals"),
+        (rlim::MSGQUEUE, b"Max msgqueue size        ", b"bytes"),
+        (rlim::NICE, b"Max nice priority        ", b""),
+        (rlim::RTPRIO, b"Max realtime priority    ", b""),
+        (rlim::RTTIME, b"Max realtime timeout     ", b"us"),
+    ];
+    let limits = unsafe { *task.rlimits.get() };
+    let mut buf = [0u8; 32];
+    for (i, label, units) in names {
+        push(&mut out, label);
+        let n = format_rlim(&mut buf, limits[*i].0).unwrap_or(0);
+        push(&mut out, &buf[..n]);
+        for _ in n..21 { out.push(b' '); }
+        let n = format_rlim(&mut buf, limits[*i].1).unwrap_or(0);
+        push(&mut out, &buf[..n]);
+        for _ in n..21 { out.push(b' '); }
+        push(&mut out, units);
+        out.push(b'\n');
+    }
+    out
+}
+
+fn pid_statm_body(tid: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(48);
+    let task = match sched::live::registry::lookup(tid) {
+        Some(t) => t,
+        None => return out,
+    };
+    let pages = match unsafe { (*task.mm.get()).as_ref() } {
+        Some(mm) => mm.snapshot_vmas().iter().map(|v| (v.end.as_u64() - v.start.as_u64()) / 4096).sum::<u64>(),
+        None => 0,
+    };
+    push_u64(&mut out, pages);
+    out.push(b' ');
+    push_u64(&mut out, pages);
+    out.push(b' ');
+    push(&mut out, b"0 0 0 0 0\n");
+    out
+}
+
+fn pid_comm_body(tid: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    let task = match sched::live::registry::lookup(tid) {
+        Some(t) => t,
+        None => return out,
+    };
+    push(&mut out, task.name.as_bytes());
+    out.push(b'\n');
+    out
+}
+
+fn pid_environ_body(tid: u32) -> Vec<u8> {
+    let task = match sched::live::registry::lookup(tid) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+    match unsafe { (*task.environ.get()).clone() } {
+        Some(s) => s.into_bytes(),
+        None => Vec::new(),
+    }
+}
