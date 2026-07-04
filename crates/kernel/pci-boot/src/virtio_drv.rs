@@ -379,7 +379,6 @@ impl drv::Driver for VirtioNetDrv {
             || p.rx0_buf_pa == 0
             || p.rx0_buf_len == 0
             || p.tx0_buf_pa == 0
-            || !p.mac_valid
         {
             release_net_after_failed_probe(&mut p);
             return Err(drv::Error::ProbeFailed);
@@ -393,8 +392,6 @@ impl drv::Driver for VirtioNetDrv {
             d.bdf.function,
             p.rx0_buf_pa,
             p.rx0_buf_len,
-            p.mac,
-            p.mac_valid,
             p.tx0_buf_pa,
         ) {
             release_net_after_failed_probe(&mut p);
@@ -1190,8 +1187,6 @@ pub(super) struct VirtioProbe {
     pub(super) q1_device_pa: u64,
     pub(super) rx0_buf_pa:  u64,
     pub(super) rx0_buf_len: u16,
-    pub(super) mac:       [u8; 6],
-    pub(super) mac_valid: bool,
     pub(super) tx0_buf_pa: u64,
     // F455: virtio-snd TXQ(2) playback ring + notify VA. 0 if not snd or
     // the queue didn't program. (eventq/rxq land with events/capture.)
@@ -1751,42 +1746,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         } else { 0 }
     } else { 0 };
 
-    // F59-04: harvest virtio-net MAC from the device-cfg region. Per
-    // Virtio 1.2 §5.1.4 `virtio_net_config`, the first 6 bytes of the
-    // device-cfg space are the MAC address (when F_MAC negotiated;
-    // QEMU's virtio-net always supports it). Layout: bar=N off=M from
-    // the `VIRTIO_PCI_CAP_DEVICE_CFG` capability decoded above.
-    let mut mac_local: [u8; 6] = [0; 6];
-    let mut mac_valid_local: bool = false;
-    if profile.needs_q1_tx_warmup {
-        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
-            let dbar_pa = match bars[devcfg_cap.bar as usize] {
-                pci::Bar::Mem32 { base, .. } => base as u64,
-                pci::Bar::Mem64 { base, .. } => base,
-                _ => 0,
-            };
-            if dbar_pa != 0 {
-                let d_pa = dbar_pa + devcfg_cap.offset as u64;
-                let d_page_pa = d_pa & !0xFFF;
-                let d_page_off = d_pa - d_page_pa;
-                // SAFETY: device-cfg BAR PA decoded from device cap; bump VA private; one-page window covers the 6-byte MAC at offset 0.
-                let d_va = unsafe { map_mmio_pages(d_page_pa, 1) };
-                let mac_va = d_va + d_page_off;
-                for i in 0..6 {
-                    // SAFETY: mac_va Device-attr-mapped above via map_mmio_pages; aligned u8 read within the one-page MAC window.
-                    mac_local[i] = unsafe {
-                        core::ptr::read_volatile((mac_va + i as u64) as *const u8)
-                    };
-                }
-                // SAFETY: this was a temporary one-page device-cfg mapping
-                // used only to harvest the MAC. Runtime net code keeps the
-                // copied MAC bytes, not this VA.
-                unsafe { mmio_map::unmap_pages(d_va, 1); }
-                mac_valid_local = true;
-            }
-        }
-    }
-
     //: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
         let hhdm = {
@@ -1841,8 +1800,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         q1_device_pa,
         rx0_buf_pa:  rx0_buf_pa_local,
         rx0_buf_len: rx0_buf_len_local,
-        mac:       mac_local,
-        mac_valid: mac_valid_local,
         tx0_buf_pa: tx0_buf_pa_local,
         snd_q2_desc_pa:   snd_q2_desc_pa_local,
         snd_q2_driver_pa: snd_q2_driver_pa_local,
