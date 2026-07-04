@@ -88,6 +88,10 @@ test-pass claims.
   `try_register_devnodes` batch path. Matching existing tty model devices are
   idempotent, and conflicts roll back nodes published by the failed attempt
   before the boot wrapper reports the fatal model error.
+- Boot-created platform devices for serial and i8042 now go through explicit
+  `try_device_add` handling instead of the infallible convenience wrapper;
+  matching existing platform identities are reused, while real conflicts are
+  reported at the boot boundary.
 - PCI capability dumping is read-only again for MSI-X; MSI-X programming for
   virtio devices belongs to the virtio-pci transport probe/remove path.
 - The virtio-pci transport accepts modern virtio PCI IDs only. Transitional
