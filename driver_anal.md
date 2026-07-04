@@ -505,6 +505,10 @@ test-pass claims.
   for a bound child after attempting child-specific teardown, so stale MMIO,
   MSI-X, or vring ownership cannot survive merely because a child driver's
   state table was already missing.
+  Sound card ALSA/OSS node publication is now fallible as a batch: each node
+  is published through `try_device_add`, partial publication rolls back already
+  visible nodes in reverse order, and failed publication clears card ops and
+  substream runtime state before probe can report success.
   Higher-level sound event interpretation/publication, remaining child-probe
   failure unwind audit, and fault-injection proof still need to move behind a
   fuller `VirtioPciTransport` boundary.
@@ -554,6 +558,7 @@ Complete:
 - Virtio transport ownership for persistent MMIO, MSI-X, and successful-probe
   vring records.
 - Concrete teardown fixes for several DMA/MMIO/devnode/bottom-half leaks.
+- Sound card node publication rollback on model-device conflicts.
 
 Partial:
 
