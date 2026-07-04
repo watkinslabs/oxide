@@ -361,9 +361,14 @@ test-pass claims.
   matching card id, and DRM unregister drops that card's CRTC and dumb-buffer
   table state. fbdev flush/blank operations are now stored on each `/dev/fbN`
   record and call back into the owning virtio-gpu BDF instead of a global
-  display hook; fbcon publication still has one explicit foreground console
-  owner. Dumb-buffer mmap now pins the DRM object through a file-backed shared
-  VMA and PMM object refs, so DESTROY_DUMB/card unregister cannot return pages
+  display hook; virtio-gpu scanout context now records the exact published
+  fbdev index and unpublishes by that owner token instead of searching by
+  framebuffer base address. Console/fbdev publication is transactional around
+  that stored index, so failed fbdev publication releases console ownership
+  before global fbcon/klog/tty hooks are installed. fbcon publication still
+  has one explicit foreground console owner. Dumb-buffer mmap now pins the DRM
+  object through a file-backed shared VMA and PMM object refs, so
+  DESTROY_DUMB/card unregister cannot return pages
   while userspace VMAs can still fault them.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
@@ -598,7 +603,8 @@ test-pass claims.
   loop proof and broader multi-NIC validation; virtio-gpu now has per-card DRM
   card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
-  fbdev flush/blank dispatch, and dumb-buffer mmap VMA lifetime pins;
+  fbdev flush/blank dispatch, exact fbdev-index publication ownership, and
+  dumb-buffer mmap VMA lifetime pins;
   virtio-vsock now has owner-keyed endpoint records but still needs explicit
   socket/device selection beyond the primary compatibility route; virtio-snd's
   ALSA card nodes, playback/capture/OSS substream runtime state, and ops
