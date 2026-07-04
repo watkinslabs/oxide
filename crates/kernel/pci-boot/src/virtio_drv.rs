@@ -1350,81 +1350,26 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         None => 0,
     };
 
-    // u32 volatile R/W over the Device-attr MMIO window.
+    // u32/u8 volatile R/W over the Device-attr MMIO window for status reads
+    // and the final DRIVER_OK transition. Common feature and queue-size
+    // protocol lives in virtio_qsetup.
     let r32 = |off: u64| -> u32 {
         // SAFETY: cfg_va Device-attr mapped; off < 0x1000.
         unsafe { core::ptr::read_volatile((cfg_va + off) as *const u32) }
-    };
-    let w32 = |off: u64, v: u32| {
-        // SAFETY: same window; writes drive device per spec.
-        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u32, v); }
-    };
-    // F59-09: u16-precise writes for the byte/word fields in
-    // virtio_pci_common_cfg. QEMU's `virtio_pci_common_write`
-    // dispatches by `switch(addr)` — a 4-byte store at 0x14
-    // only triggers the DEVSTATUS handler (byte 0); bytes 1-3
-    // (config_generation @ 0x15 + queue_select @ 0x16) are
-    // silently dropped. queue_select MUST be written as a u16
-    // at 0x16 or it never takes effect.
-    let w16 = |off: u64, v: u16| {
-        // SAFETY: same window; per Virtio 1.2 §4.1.4.3 the field at `off` is u16-aligned.
-        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u16, v); }
     };
     let w8 = |off: u64, v: u8| {
         // SAFETY: same window; per Virtio 1.2 §4.1.4.3 device_status is a u8 at +0x14.
         unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u8, v); }
     };
 
-    // Spec §3.1.1 driver init sequence.
-    w8(0x14, 0);                                                   // reset
-    let _ = r32(0x14);
-    w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE);
-    w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE
-             | virtio::VIRTIO_STATUS_DRIVER);
-
-    // Feature negotiation. Insist on VIRTIO_F_VERSION_1 (bit 32) for
-    // modern transport. F59-08: also accept VIRTIO_NET_F_MAC (bit 5)
-    // + VIRTIO_NET_F_STATUS (bit 16) for virtio-net so QEMU's modern
-    // virtio-net-pci queues actually start processing kicks. The
-    // boot probe's q1 TX never advanced used.idx with only V1
-    // negotiated; QEMU's virtio_net_set_status() gates queue
-    // activation on a complete enough feature set for nets.
-    w32(0x00, 0); let dev_feat_lo = r32(0x04);
-    w32(0x00, 1); let dev_feat_hi = r32(0x04);
-    let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
-    let mut want = profile.drv_features;
-    let drv_features: u64 = dev_features & want;
-    w32(0x08, 1); w32(0x0C, (drv_features >> 32) as u32);
-    w32(0x08, 0); w32(0x0C, (drv_features & 0xFFFF_FFFF) as u32);
-    w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE
-             | virtio::VIRTIO_STATUS_DRIVER
-             | virtio::VIRTIO_STATUS_FEATURES_OK);
-
-    let post_status = r32(0x14) & 0xFF;
-    let features_ok = post_status & virtio::VIRTIO_STATUS_FEATURES_OK as u32 != 0;
-
-    let w_msix_nq = r32(0x10);
-    let msix_cfg   = (w_msix_nq & 0xFFFF) as u16;
-    let num_queues = (w_msix_nq >> 16) as u16;
-
-    // Queue scan: iterate queue_select 0..min(num_queues, 8) reading
-    // queue_size at +0x18. queue_size==0 means the queue is disabled
-    // (per spec). queue_select sits in the high u16 of the same dword
-    // as device_status; preserve status when writing.
-    let mut queues = [(0u16, 0u16); 8];
-    let mut queues_len = 0usize;
-    let cap = if num_queues == 0 || num_queues > 8 { 8 } else { num_queues } as u16;
-    for qi in 0..cap {
-        // F59-09: queue_select is a u16 at +0x16 — must be a u16
-        // store, not a u32 store at 0x14 (QEMU's switch-based
-        // dispatcher would only update DEVSTATUS @ 0x14).
-        w16(0x16, qi);
-        let qs_data = r32(0x18);
-        let queue_size = (qs_data & 0xFFFF) as u16;
-        queues[queues_len] = (qi, queue_size);
-        queues_len += 1;
-        if queue_size == 0 { break; }
-    }
+    let negotiated = super::virtio_qsetup::negotiate_features(cfg_va, profile.drv_features);
+    let dev_features = negotiated.dev_features;
+    let drv_features = negotiated.drv_features;
+    let post_status = negotiated.post_status;
+    let features_ok = negotiated.features_ok;
+    let msix_cfg = negotiated.msix_cfg;
+    let num_queues = negotiated.num_queues;
+    let (queues, queues_len) = super::virtio_qsetup::scan_queue_sizes(cfg_va, num_queues);
 
     // Per-arch HHDM offset, hoisted once for all queue programming. The
     // virtio core (virtio_qsetup) programs EVERY virtqueue uniformly —

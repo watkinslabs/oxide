@@ -19,6 +19,12 @@ const CFG_QUEUE_NOTIFY: u64 = 0x1E; // u16 (read: queue_notify_off)
 const CFG_QUEUE_DESC:   u64 = 0x20; // le64
 const CFG_QUEUE_DRIVER: u64 = 0x28; // le64
 const CFG_QUEUE_DEVICE: u64 = 0x30; // le64
+const CFG_DEVICE_FEATURE_SELECT: u64 = 0x00; // u32
+const CFG_DEVICE_FEATURE:        u64 = 0x04; // u32
+const CFG_DRIVER_FEATURE_SELECT: u64 = 0x08; // u32
+const CFG_DRIVER_FEATURE:        u64 = 0x0C; // u32
+const CFG_MSIX_CONFIG_NUMQ:      u64 = 0x10; // u16 msix_config + u16 num_queues
+const CFG_DEVICE_STATUS:         u64 = 0x14; // u8
 
 #[derive(Clone, Copy)]
 pub(super) struct QueuePlan {
@@ -45,6 +51,110 @@ pub(super) struct QueueRing {
     pub(super) device_pa:  u64,
     pub(super) notify_off: u16,
     pub(super) size:       u16,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FeatureNegotiation {
+    pub(super) dev_features: u64,
+    pub(super) drv_features: u64,
+    pub(super) post_status:  u32,
+    pub(super) features_ok:  bool,
+    pub(super) msix_cfg:     u16,
+    pub(super) num_queues:   u16,
+}
+
+/// Execute the common virtio device reset + feature negotiation sequence on
+/// the modern PCI common-cfg window. This is transport/core work: child
+/// drivers choose wanted feature bits, but the common config protocol owns the
+/// register dance and FEATURES_OK validation.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub(super) fn negotiate_features(cfg_va: u64, wanted_features: u64) -> FeatureNegotiation {
+    let r32 = |off: u64| -> u32 {
+        // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; aligned
+        // u32 load of a common-cfg register.
+        unsafe { core::ptr::read_volatile((cfg_va + off) as *const u32) }
+    };
+    let w32 = |off: u64, v: u32| {
+        // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; aligned
+        // u32 store of a common-cfg register.
+        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u32, v); }
+    };
+    let w8 = |off: u64, v: u8| {
+        // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status
+        // is the u8 field at CFG_DEVICE_STATUS.
+        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u8, v); }
+    };
+
+    w8(CFG_DEVICE_STATUS, 0);
+    let _ = r32(CFG_DEVICE_STATUS);
+    w8(CFG_DEVICE_STATUS, virtio::VIRTIO_STATUS_ACKNOWLEDGE);
+    w8(
+        CFG_DEVICE_STATUS,
+        virtio::VIRTIO_STATUS_ACKNOWLEDGE | virtio::VIRTIO_STATUS_DRIVER,
+    );
+
+    w32(CFG_DEVICE_FEATURE_SELECT, 0);
+    let dev_feat_lo = r32(CFG_DEVICE_FEATURE);
+    w32(CFG_DEVICE_FEATURE_SELECT, 1);
+    let dev_feat_hi = r32(CFG_DEVICE_FEATURE);
+    let dev_features = ((dev_feat_hi as u64) << 32) | dev_feat_lo as u64;
+    let drv_features = dev_features & wanted_features;
+
+    w32(CFG_DRIVER_FEATURE_SELECT, 1);
+    w32(CFG_DRIVER_FEATURE, (drv_features >> 32) as u32);
+    w32(CFG_DRIVER_FEATURE_SELECT, 0);
+    w32(CFG_DRIVER_FEATURE, (drv_features & 0xFFFF_FFFF) as u32);
+    w8(
+        CFG_DEVICE_STATUS,
+        virtio::VIRTIO_STATUS_ACKNOWLEDGE
+            | virtio::VIRTIO_STATUS_DRIVER
+            | virtio::VIRTIO_STATUS_FEATURES_OK,
+    );
+
+    let post_status = r32(CFG_DEVICE_STATUS) & 0xFF;
+    let features_ok = post_status & virtio::VIRTIO_STATUS_FEATURES_OK as u32 != 0;
+    let w_msix_nq = r32(CFG_MSIX_CONFIG_NUMQ);
+    FeatureNegotiation {
+        dev_features,
+        drv_features,
+        post_status,
+        features_ok,
+        msix_cfg: (w_msix_nq & 0xFFFF) as u16,
+        num_queues: (w_msix_nq >> 16) as u16,
+    }
+}
+
+/// Scan modern common-cfg queue sizes into a compact `(index, size)` table.
+/// Queue selection is u16-precise; see the comment above the common-cfg
+/// offsets for why this must not use a wider write.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(min(num_queues, 8))
+pub(super) fn scan_queue_sizes(cfg_va: u64, num_queues: u16) -> ([(u16, u16); 8], usize) {
+    let r32 = |off: u64| -> u32 {
+        // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; aligned
+        // u32 load of a common-cfg register.
+        unsafe { core::ptr::read_volatile((cfg_va + off) as *const u32) }
+    };
+    let w16 = |off: u64, v: u16| {
+        // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; queue
+        // selection is the u16 field at CFG_QUEUE_SELECT.
+        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u16, v); }
+    };
+
+    let mut queues = [(0u16, 0u16); 8];
+    let mut queues_len = 0usize;
+    let cap = if num_queues == 0 || num_queues > 8 { 8 } else { num_queues } as u16;
+    for qi in 0..cap {
+        w16(CFG_QUEUE_SELECT, qi);
+        let queue_size = (r32(CFG_QUEUE_SIZE) & 0xFFFF) as u16;
+        queues[queues_len] = (qi, queue_size);
+        queues_len += 1;
+        if queue_size == 0 {
+            break;
+        }
+    }
+    (queues, queues_len)
 }
 
 /// Program virtqueue `qi` on the modern common-cfg window at `cfg_va`:
