@@ -354,6 +354,18 @@ fn find_dev_by_index(kind: DevIndexKind, name: &str) -> Option<Arc<drv::Device>>
     })
 }
 
+/// Canonical `/sys` DEVPATH for a device's uevent (Linux `add@<devpath>`).
+/// udevd reads `/sys<DEVPATH>/uevent`, so this MUST match the real sysfs dir.
+/// DRM cards live at `/devices/virtual/drm/<sysname>` (sysfs::drm), NOT the
+/// `dev_root_canon("drm")` fallthrough `devices/platform/dri/card0`. # C: O(1)
+fn dev_devpath(dev: &drv::Device) -> String {
+    if dev.bus == "drm" {
+        let sysname = dev.addr.rsplit('/').next().unwrap_or(dev.addr.as_str());
+        return alloc::format!("/devices/virtual/drm/{}", sysname);
+    }
+    alloc::format!("/{}/{}", dev_root_canon(dev.bus), dev.addr)
+}
+
 fn dev_index_target(dev: &drv::Device) -> Vec<u8> {
     // DRM cards are "virtual" devices whose real sysfs dir is
     // /sys/devices/virtual/drm/<sysname> (built by sysfs::drm), where sysname is
@@ -658,7 +670,7 @@ pub fn init() {
 
 /// drv `set_sysfs_hook` target: a device was registered. # C: O(1)
 pub fn publish_device_cb(dev: &drv::Device) {
-    let devpath = alloc::format!("/{}/{}", dev_root_canon(dev.bus), dev.addr);
+    let devpath = dev_devpath(dev);
     let env = dev_uevent_env(dev);
     let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
     ::netlink::emit_uevent_with_env("add", &devpath, dev.bus, &refs);
@@ -667,7 +679,7 @@ pub fn publish_device_cb(dev: &drv::Device) {
 /// drv `set_sysfs_remove_hook` target: a device is being removed while it is
 /// still visible in the model registry. # C: O(1)
 pub fn remove_device_cb(dev: &drv::Device) {
-    let devpath = alloc::format!("/{}/{}", dev_root_canon(dev.bus), dev.addr);
+    let devpath = dev_devpath(dev);
     let env = dev_uevent_env(dev);
     let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
     ::netlink::emit_uevent_with_env("remove", &devpath, dev.bus, &refs);
