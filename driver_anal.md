@@ -62,6 +62,9 @@ test-pass claims.
   virtio drivers bind through the model.
 - Virtio-pci owns persistent transport MMIO mappings, MSI-X state, and vring
   frame publication/teardown records for successful child probes.
+- Virtio-pci MSI-X state is now carried as an owned optional binding instead
+  of parallel zero-sentinel fields, and teardown masks the MSI-X table entry
+  and disables MSI-X before dropping PCI memory decoding.
 - The shared virtio resource handoff exists through `VirtioResources` and
   `VirtQueueResource`, with queue lookup validation centralized through
   `require_queue`. Child probes now build those resources through one
@@ -230,8 +233,8 @@ test-pass claims.
   common-cfg status/reset/feature/queue-size register protocol, planned queue
   programming, notify VA/kick mechanics, and net RX/TX boot-buffer mechanics
   have moved into shared helpers, but feature policy, notify lifetime policy,
-  MSI-X setup, and failure release helpers still need to move behind a
-  `VirtioPciTransport`/`VirtioProbeState` boundary.
+  complete MSI-X setup policy, and failure release helpers still need to move
+  behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
@@ -248,9 +251,11 @@ test-pass claims.
   relationships, `/sys/dev/{char,block}`, and stable add/remove/change uevent
   behavior across rebind.
 - Generalize PCI lifecycle ownership: command enable/disable is now covered for
-  the main AHCI/NVMe/virtio paths, but BAR mapping ownership, MSI/MSI-X
-  setup/teardown proof, `enable`, `driver_override`, `modalias`, `resource*`,
-  and bridge topology still need complete PCI-driver semantics.
+  the main AHCI/NVMe/virtio paths, and virtio MSI-X teardown now releases the
+  transport-owned binding before PCI memory decode is dropped. BAR mapping
+  ownership, broader MSI/MSI-X setup/teardown proof, `enable`,
+  `driver_override`, `modalias`, `resource*`, and bridge topology still need
+  complete PCI-driver semantics.
 - Audit all remaining direct subsystem side effects so hardware-backed device
   nodes and class devices are registered by the owning probe path and removed
   by the owning remove path.
