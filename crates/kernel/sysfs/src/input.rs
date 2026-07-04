@@ -36,6 +36,34 @@ fn input_by_addr(addr: &str) -> Option<((u32, u32), String)> {
     input_devs().into_iter().find(|(a, _, _)| a == addr).map(|(_, dt, dn)| (dt, dn))
 }
 
+// ---- /sys/devices/virtual/input/<addr>/uevent (rw: read body, write=emit) --
+struct InputUeventData { addr: String }
+struct InputUeventFileOps;
+impl FileOps for InputUeventFileOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<InputUeventData>().ok_or(VfsError::Einval)?;
+        let ((maj, min), devname) = input_by_addr(&d.addr).ok_or(VfsError::Enoent)?;
+        let body = alloc::format!("MAJOR={}\nMINOR={}\nDEVNAME={}\n", maj, min, devname).into_bytes();
+        Ok(crate::read_window(&body, off, buf))
+    }
+    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
+        let d = inode.private::<InputUeventData>().ok_or(VfsError::Einval)?;
+        if let Some(((maj, min), devname)) = input_by_addr(&d.addr) {
+            let devpath = alloc::format!("/devices/virtual/input/{}", d.addr);
+            ::netlink::emit_uevent_with_env(
+                crate::uevent_action(b), &devpath, "input",
+                &[&alloc::format!("MAJOR={}", maj), &alloc::format!("MINOR={}", min),
+                  &alloc::format!("DEVNAME={}", devname)]);
+        }
+        Ok(b.len())
+    }
+}
+fn make_input_uevent_inode(addr: String) -> InodeRef {
+    InodeBuilder::new(INO_INPUT_ATTR, mk_mode(FileType::Regular, crate::RW_PERM),
+        vfs::default_inode_ops(), Arc::new(InputUeventFileOps))
+        .private(Arc::new(InputUeventData { addr })).build()
+}
+
 // ---- /sys/devices/virtual/input/<addr> (per-device dir) -------------------
 struct InputDevDirData { addr: String }
 struct InputDevDirOps;
@@ -44,9 +72,10 @@ impl InodeOps for InputDevDirOps {
         let d = inode.private::<InputDevDirData>().ok_or(VfsError::Einval)?;
         let ((maj, min), devname) = input_by_addr(&d.addr).ok_or(VfsError::Enoent)?;
         match name {
-            "uevent" => Ok(crate::make_body_inode(
-                alloc::format!("MAJOR={}\nMINOR={}\nDEVNAME={}\n", maj, min, devname).into_bytes(),
-                INO_INPUT_ATTR)),
+            // WRITABLE uevent (Linux): coldplug / `udevadm trigger` writes
+            // "add" here to re-emit the device. A read-only uevent makes
+            // coldplug fail EROFS and abort before reaching later devices.
+            "uevent" => Ok(make_input_uevent_inode(d.addr.clone())),
             "dev" => Ok(crate::make_body_inode(
                 alloc::format!("{}:{}\n", maj, min).into_bytes(), INO_INPUT_ATTR)),
             // sd-device reads SUBSYSTEM from the basename of this symlink.
