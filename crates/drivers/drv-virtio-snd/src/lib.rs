@@ -315,8 +315,8 @@ pub fn present_for(device_key: u32) -> bool {
 /// controls)`. None until a device is installed. Backs the ALSA card /
 /// jack / control-element sizing under `/dev/snd/*`.
 /// # C: O(1)
-pub fn config() -> Option<(u32, u32, u32, u32)> {
-    active_ctx(&CTX.lock()).map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
+pub fn config(owner: u32) -> Option<(u32, u32, u32, u32)> {
+    active_ctx_for(&CTX.lock(), owner).map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
 }
 
 /// Snapshot of the installed EVENTQ resource:
@@ -503,11 +503,19 @@ fn remove_ctx(device_key: u32) -> Option<(Ctx, bool)> {
 
 fn active_ctx_mut(ctxs: &mut [Ctx]) -> Option<&mut Ctx> {
     let owner = sound::owner()?;
-    ctxs.iter_mut().find(|ctx| ctx.device_key == owner)
+    active_ctx_mut_for(ctxs, owner)
 }
 
 fn active_ctx(ctxs: &[Ctx]) -> Option<&Ctx> {
     let owner = sound::owner()?;
+    active_ctx_for(ctxs, owner)
+}
+
+fn active_ctx_mut_for(ctxs: &mut [Ctx], owner: u32) -> Option<&mut Ctx> {
+    ctxs.iter_mut().find(|ctx| ctx.device_key == owner)
+}
+
+fn active_ctx_for(ctxs: &[Ctx], owner: u32) -> Option<&Ctx> {
     ctxs.iter().find(|ctx| ctx.device_key == owner)
 }
 
@@ -1004,12 +1012,12 @@ fn frame_bytes(format: u8, channels: u8) -> usize {
 /// from PCM_INFO — `formats`/`rates` are VIRTIO_SND_PCM_FMT_*/RATE_* bit
 /// masks. Drive the ALSA `hw_params` refinement. None until installed.
 /// # C: O(1)
-pub fn pcm_caps() -> Option<(u64, u64, u8, u8)> {
-    active_ctx(&CTX.lock()).map(|c| (c.out_formats, c.out_rates, c.out_ch_min, c.out_ch_max))
+pub fn pcm_caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
+    active_ctx_for(&CTX.lock(), owner).map(|c| (c.out_formats, c.out_rates, c.out_ch_min, c.out_ch_max))
 }
 
 /// Default period (fragment) size in bytes the TXQ transfers. # C: O(1)
-pub fn period_bytes() -> usize { PERIOD_BYTES }
+pub fn period_bytes(_owner: u32) -> usize { PERIOD_BYTES }
 
 /// `(installed, has_output_stream, has_txq)` — playback-readiness probe for
 /// the core/self-test. # C: O(1)
@@ -1041,10 +1049,10 @@ pub fn frame_size() -> usize {
 /// snd_pcm_ops::hw_params — apply rate/format/channels + the period/buffer
 /// geometry to the device (VIRTIO_SND_R_PCM_SET_PARAMS). rate/format are
 /// VIRTIO_SND_PCM_RATE_*/FMT_* enums. → state Configured. # C: O(CONTROLQ)
-pub fn pcm_hw_params(rate: u8, format: u8, channels: u8,
+pub fn pcm_hw_params(owner: u32, rate: u8, format: u8, channels: u8,
                      period_bytes: u32, buffer_bytes: u32) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
     let ch = channels.clamp(1, 2);
     // SET_PARAMS requires a released stream (spec §5.14): if a prior session
@@ -1065,9 +1073,9 @@ pub fn pcm_hw_params(rate: u8, format: u8, channels: u8,
 
 /// snd_pcm_ops::prepare — allocate the device buffer + ready the stream
 /// (VIRTIO_SND_R_PCM_PREPARE). → state Prepared. # C: O(CONTROLQ)
-pub fn pcm_prepare() -> bool {
+pub fn pcm_prepare(owner: u32) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.pcm_state == PcmState::Idle { return false; }
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
     if pcm_ctl(ctx, VIRTIO_SND_R_PCM_PREPARE, stream) != Some(VIRTIO_SND_S_OK) { return false; }
@@ -1077,9 +1085,9 @@ pub fn pcm_prepare() -> bool {
 
 /// snd_pcm_ops::trigger — START (`start=true`) / STOP (`start=false`)
 /// streaming. → state Running / Prepared. # C: O(CONTROLQ)
-pub fn pcm_trigger(start: bool) -> bool {
+pub fn pcm_trigger(owner: u32, start: bool) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
     let code = if start { VIRTIO_SND_R_PCM_START } else { VIRTIO_SND_R_PCM_STOP };
     if pcm_ctl(ctx, code, stream) != Some(VIRTIO_SND_S_OK) { return false; }
@@ -1089,9 +1097,9 @@ pub fn pcm_trigger(start: bool) -> bool {
 
 /// snd_pcm_ops::hw_free — release the device buffer
 /// (VIRTIO_SND_R_PCM_RELEASE). → state Idle. # C: O(CONTROLQ)
-pub fn pcm_hw_free() -> bool {
+pub fn pcm_hw_free(owner: u32) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.pcm_state == PcmState::Idle { return true; }
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
     let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
@@ -1103,9 +1111,9 @@ pub fn pcm_hw_free() -> bool {
 /// snd_pcm_ops transfer/ack: push the bytes as period-sized TXQ chains,
 /// blocking until each is consumed. Returns bytes accepted (0 if not
 /// Running / no device / TX timeout). # C: O(bytes/period × TXQ round-trip)
-pub fn pcm_submit(bytes: &[u8]) -> usize {
+pub fn pcm_submit(owner: u32, bytes: &[u8]) -> usize {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return 0 };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.pcm_state != PcmState::Running { return 0; }
     let stream = match ctx.out_stream { Some(s) => s, None => return 0 };
     let chunk = (ctx.cfg_period_bytes as usize).max(1).min(0x1000);
@@ -1199,8 +1207,8 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
 
 /// INPUT-stream hw capabilities `(formats, rates, ch_min, ch_max)`. None
 /// until installed. # C: O(1)
-pub fn cap_caps() -> Option<(u64, u64, u8, u8)> {
-    active_ctx(&CTX.lock()).map(|c| (c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))
+pub fn cap_caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
+    active_ctx_for(&CTX.lock(), owner).map(|c| (c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))
 }
 
 /// The default INPUT (capture) stream id, or None. # C: O(1)
@@ -1227,10 +1235,10 @@ pub fn cap_frame_size() -> usize {
 
 /// snd_pcm_ops::hw_params for the INPUT stream (RELEASE-if-armed then
 /// SET_PARAMS). → cap state Configured. # C: O(CONTROLQ)
-pub fn cap_hw_params(rate: u8, format: u8, channels: u8,
+pub fn cap_hw_params(owner: u32, rate: u8, format: u8, channels: u8,
                      period_bytes: u32, buffer_bytes: u32) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
     let ch = channels.clamp(1, 2);
     if ctx.cap_state == PcmState::Prepared || ctx.cap_state == PcmState::Running {
@@ -1246,9 +1254,9 @@ pub fn cap_hw_params(rate: u8, format: u8, channels: u8,
 }
 
 /// snd_pcm_ops::prepare for the INPUT stream. → cap state Prepared. # C: O(CONTROLQ)
-pub fn cap_prepare() -> bool {
+pub fn cap_prepare(owner: u32) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.cap_state == PcmState::Idle { return false; }
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
     if pcm_ctl(ctx, VIRTIO_SND_R_PCM_PREPARE, stream) != Some(VIRTIO_SND_S_OK) { return false; }
@@ -1257,9 +1265,9 @@ pub fn cap_prepare() -> bool {
 }
 
 /// snd_pcm_ops::trigger for the INPUT stream. → Running / Prepared. # C: O(CONTROLQ)
-pub fn cap_trigger(start: bool) -> bool {
+pub fn cap_trigger(owner: u32, start: bool) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
     let code = if start { VIRTIO_SND_R_PCM_START } else { VIRTIO_SND_R_PCM_STOP };
     if pcm_ctl(ctx, code, stream) != Some(VIRTIO_SND_S_OK) { return false; }
@@ -1268,9 +1276,9 @@ pub fn cap_trigger(start: bool) -> bool {
 }
 
 /// snd_pcm_ops::hw_free for the INPUT stream. → cap state Idle. # C: O(CONTROLQ)
-pub fn cap_hw_free() -> bool {
+pub fn cap_hw_free(owner: u32) -> bool {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return false };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.cap_state == PcmState::Idle { return true; }
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
     let _ = pcm_ctl(ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
@@ -1282,9 +1290,9 @@ pub fn cap_hw_free() -> bool {
 /// snd_pcm_ops transfer for READI: post period-sized RXQ buffers, blocking
 /// until each is filled. Returns bytes captured (0 if not Running / no
 /// device / RX timeout). # C: O(bytes/period × RXQ round-trip)
-pub fn pcm_recv(out: &mut [u8]) -> usize {
+pub fn pcm_recv(owner: u32, out: &mut [u8]) -> usize {
     let mut g = CTX.lock();
-    let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return 0 };
+    let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.cap_state != PcmState::Running { return 0; }
     let stream = match ctx.in_stream { Some(s) => s, None => return 0 };
     let chunk = (ctx.cap_period_bytes as usize).max(1).min(0x1000);

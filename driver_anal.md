@@ -315,9 +315,9 @@ test-pass claims.
   the RNG child driver, and promotes `/dev/hwrng` publication to a remaining
   RNG device on active-provider removal. Virtio-snd install/remove is now
   keyed to the owning parent BDF and releases child-owned queue/buffer
-  resources only for the matching transport; the sound card layer remains a
-  single global card, but that card is now owner-keyed by the publishing BDF,
-  rejects second-card takeover, and rejects unregister from non-owners.
+  resources only for the matching transport; the sound card layer allocates
+  owner-keyed ALSA card numbers, publishes per-card ALSA/OSS nodes, routes ops
+  by the card owner, and rejects unregister from non-owners.
   Virtio-gpu duplicate-BDF admission is also left to the child install path.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
@@ -385,11 +385,12 @@ test-pass claims.
   fbcon remains a single foreground console bound to an explicit owner.
   Virtio-vsock's upper protocol endpoint records are now owner-keyed, while
   the compatibility AF_VSOCK socket path still selects one primary endpoint
-  for unspecified connects. Virtio-snd now keys the published global sound
-  card and ALSA playback/capture/OSS substream runtime state to the owning
-  transport and routes PCM/control ops through that owner instead of selecting
-  the first installed context, but it still publishes only card0 and needs a
-  real per-card ALSA/PCM/control node ABI for multiple sound cards.
+  for unspecified connects. Virtio-snd now keys ALSA card publication,
+  playback/capture/OSS substream runtime state, and ops routing to the owning
+  transport, publishing `controlC<N>`/`pcmC<N>D0*` nodes with stable card
+  numbers instead of selecting the first installed context. It still needs
+  QEMU live multi-card bind/unbind/rebind proof and broader event/control
+  coverage.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
@@ -484,8 +485,9 @@ test-pass claims.
   fbdev flush/blank dispatch, and dumb-buffer mmap VMA lifetime pins;
   virtio-vsock now has owner-keyed endpoint records but still needs explicit
   socket/device selection beyond the primary compatibility route; virtio-snd's
-  ALSA playback/capture/OSS substream runtime state is owner-keyed, but its
-  single-card PCM/control node ABI remains a main offender. AHCI and NVMe still need live
+  ALSA card nodes, playback/capture/OSS substream runtime state, and ops
+  routing are owner-keyed, but it still needs live multi-card proof and
+  broader sound event/control coverage. AHCI and NVMe still need live
   multi-controller proof, but they no longer use process-wide
   installed-controller slots.
 - Add explicit fault-injection coverage for probe failure after each allocation,
@@ -640,12 +642,11 @@ Several drivers still use singleton global state:
   records; endpoint teardown and shutdown quiesce close only the matching
   owner's connections/backlog entries, RX protocol dispatch carries the
   transport owner key, and duplicate owner or guest-CID publication is rejected
-- virtio-snd: keyed transport records with EVENTQ drained per transport, an
-  owner-keyed ops table, and an owner-keyed global sound card reserved before
-  transport allocation/publish, with card ownership held until ALSA/OSS child
-  nodes are removed; ALSA PCM/capture/OSS runtime state is now bound to the
-  owning card key, but the ABI still exposes only card0 and rejects a second
-  transport before publication
+- virtio-snd: keyed transport records with EVENTQ drained per transport,
+  owner-keyed ops, owner-keyed ALSA card records, per-card
+  `controlC<N>`/`pcmC<N>D0*` publication, and ALSA PCM/capture/OSS runtime
+  state bound to the owning card key; live multi-card QEMU proof is still
+  missing
 - UART drivers: global `PRESENT` and base state; RX interrupt delivery now has
   an explicit quiesce gate cleared before shutdown/remove masks hardware
 - PS/2 keyboard: global present/poll state; IRQ1 delivery now has an explicit
