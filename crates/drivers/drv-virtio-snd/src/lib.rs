@@ -236,6 +236,66 @@ pub struct SndProbe {
     pub input:   u32,
 }
 
+struct SndProbeFrames {
+    scratch_pa:    u64,
+    event_buf_pa:  u64,
+    tx_buf_pa:     u64,
+    tx_scratch_pa: u64,
+    rx_buf_pa:     u64,
+    rx_scratch_pa: u64,
+    owned:         bool,
+}
+
+impl SndProbeFrames {
+    fn alloc(need_tx: bool, need_rx: bool) -> Option<Self> {
+        let mut frames = Self {
+            scratch_pa: 0,
+            event_buf_pa: 0,
+            tx_buf_pa: 0,
+            tx_scratch_pa: 0,
+            rx_buf_pa: 0,
+            rx_scratch_pa: 0,
+            owned: true,
+        };
+        frames.scratch_pa = pmm::setup::alloc_one_frame()?;
+        frames.event_buf_pa = pmm::setup::alloc_one_frame()?;
+        if need_tx {
+            frames.tx_buf_pa = pmm::setup::alloc_one_frame()?;
+            frames.tx_scratch_pa = pmm::setup::alloc_one_frame()?;
+        }
+        if need_rx {
+            frames.rx_buf_pa = pmm::setup::alloc_one_frame()?;
+            frames.rx_scratch_pa = pmm::setup::alloc_one_frame()?;
+        }
+        Some(frames)
+    }
+
+    fn all(&self) -> [u64; 6] {
+        [
+            self.scratch_pa,
+            self.event_buf_pa,
+            self.tx_buf_pa,
+            self.tx_scratch_pa,
+            self.rx_buf_pa,
+            self.rx_scratch_pa,
+        ]
+    }
+
+    fn disarm(&mut self) {
+        self.owned = false;
+    }
+}
+
+impl Drop for SndProbeFrames {
+    fn drop(&mut self) {
+        if self.owned {
+            for pa in self.all() {
+                free_frame(pa);
+            }
+        }
+    }
+}
+
 /// True once a virtio-snd device has been brought up + installed.
 /// # C: O(1)
 pub fn present() -> bool { CTX.lock().is_some() }
@@ -289,49 +349,9 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     if eventq.size == 0 || eventq.size > MAX_EVENTQ_DESCS {
         return None;
     }
-    let scratch_pa = pmm::setup::alloc_one_frame()?;
-    let event_buf_pa = match pmm::setup::alloc_one_frame() {
-        Some(pa) => pa,
-        None => {
-            free_frame(scratch_pa);
-            return None;
-        }
-    };
-    let (tx_buf_pa, tx_scratch_pa) = if txq.is_some() {
-        match (pmm::setup::alloc_one_frame(), pmm::setup::alloc_one_frame()) {
-            (Some(buf), Some(scratch)) => (buf, scratch),
-            (buf, scratch) => {
-                free_frame(buf.unwrap_or(0));
-                free_frame(scratch.unwrap_or(0));
-                free_frame(event_buf_pa);
-                free_frame(scratch_pa);
-                return None;
-            }
-        }
-    } else { (0, 0) };
-    let (rx_buf_pa, rx_scratch_pa) = if rxq.is_some() {
-        match (pmm::setup::alloc_one_frame(), pmm::setup::alloc_one_frame()) {
-            (Some(buf), Some(scratch)) => (buf, scratch),
-            (buf, scratch) => {
-                free_frame(buf.unwrap_or(0));
-                free_frame(scratch.unwrap_or(0));
-                free_frame(event_buf_pa);
-                free_frame(tx_buf_pa);
-                free_frame(tx_scratch_pa);
-                free_frame(scratch_pa);
-                return None;
-            }
-        }
-    } else { (0, 0) };
+    let mut frames = SndProbeFrames::alloc(txq.is_some(), rxq.is_some())?;
     // Zero every freshly-allocated frame for deterministic state.
-    for &pa in &[
-        scratch_pa,
-        event_buf_pa,
-        tx_buf_pa,
-        tx_scratch_pa,
-        rx_buf_pa,
-        rx_scratch_pa,
-    ] {
+    for pa in frames.all() {
         if pa == 0 { continue; }
         let va = p.resources.hhdm.wrapping_add(pa) as *mut u8;
         // SAFETY: HHDM covers all RAM the PMM hands out; each frame is
@@ -350,7 +370,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     // aligned u16 load of used.idx at u16 offset 1.
     let event_used_seen = unsafe { core::ptr::read_volatile(event_used.add(1)) };
     let event_avail_idx = event_used_seen.wrapping_add(eventq.size);
-    prepost_eventq(p.resources.hhdm, eventq, event_buf_pa, event_avail_idx);
+    prepost_eventq(p.resources.hhdm, eventq, frames.event_buf_pa, event_avail_idx);
     // TXQ avail.idx seeds from its own used.idx likewise (0 if unprogrammed).
     let tx_used_seen = if let Some(txq) = txq {
         let txu = p.resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
@@ -367,12 +387,6 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     let mut g = CTX.lock();
     if g.is_some() {
         drop(g);
-        free_frame(rx_buf_pa);
-        free_frame(rx_scratch_pa);
-        free_frame(tx_buf_pa);
-        free_frame(tx_scratch_pa);
-        free_frame(event_buf_pa);
-        free_frame(scratch_pa);
         return None;
     }
     *g = Some(Ctx {
@@ -380,10 +394,10 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         controlq,
         hhdm: p.resources.hhdm,
         cfg_va: p.resources.cfg_va,
-        scratch_pa,
+        scratch_pa: frames.scratch_pa,
         avail_idx: used_seen,
         eventq: Some(eventq),
-        event_buf_pa,
+        event_buf_pa: frames.event_buf_pa,
         event_last_used: event_used_seen,
         event_avail_idx,
         jacks: device_cfg.jacks,
@@ -393,7 +407,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         out_stream: None,
         out_formats: 0, out_rates: 0, out_ch_min: 1, out_ch_max: 2,
         txq, tx_avail_idx: tx_used_seen,
-        tx_buf_pa, tx_scratch_pa,
+        tx_buf_pa: frames.tx_buf_pa, tx_scratch_pa: frames.tx_scratch_pa,
         pcm_state: PcmState::Idle,
         cfg_rate: VIRTIO_SND_PCM_RATE_44100,
         cfg_format: VIRTIO_SND_PCM_FMT_S16,
@@ -402,13 +416,14 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         in_stream: None,
         in_formats: 0, in_rates: 0, in_ch_min: 1, in_ch_max: 2,
         rxq, rx_avail_idx: rx_used_seen,
-        rx_buf_pa, rx_scratch_pa,
+        rx_buf_pa: frames.rx_buf_pa, rx_scratch_pa: frames.rx_scratch_pa,
         cap_state: PcmState::Idle,
         cap_rate: VIRTIO_SND_PCM_RATE_44100,
         cap_format: VIRTIO_SND_PCM_FMT_S16,
         cap_channels: 2,
         cap_period_bytes: PERIOD_BYTES as u32,
     });
+    frames.disarm();
     drop(g);
     softirq::set_handler(softirq::Slot::SndEvent, event_softirq);
     let (out, input) = match pcm_info_scan() {
