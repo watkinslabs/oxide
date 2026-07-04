@@ -99,6 +99,10 @@ test-pass claims.
   DRIVER_OK publication into one transport bring-up result. The probe body
   records the result and handles child-specific resource publication rather
   than sequencing the common transport protocol directly.
+- Virtio common-cfg now has an explicit FAILED status helper, and virtio-pci
+  transport bring-up marks the device FAILED when FEATURES_OK is rejected or
+  mandatory q0 programming fails instead of leaving the device in a partial
+  non-DRIVER_OK state.
 - Failed virtio child probes now release transport vring frames through the
   probe's recorded queue state instead of per-driver hand-written q0/q1/q2/q3
   frame lists; child-owned payload frames are passed as explicit extras.
@@ -252,9 +256,9 @@ test-pass claims.
   config windows, MSI-X, and notify lifetime through finalization/state
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
-  Device feature policy, complete MSI-X setup policy, and full
-  failure-unwind proof still need to move behind a fuller
-  `VirtioPciTransport` boundary.
+  Transport-level feature/q0 failure now sets FAILED. Device feature policy,
+  complete MSI-X setup policy, child-probe failure unwind, and fault-injection
+  proof still need to move behind a fuller `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and

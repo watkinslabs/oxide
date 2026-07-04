@@ -198,6 +198,20 @@ pub(super) fn reset_device(cfg_va: u64) {
     unsafe { core::ptr::write_volatile((cfg_va + CFG_DEVICE_STATUS) as *mut u8, 0u8); }
 }
 
+/// Publish FAILED when the transport cannot complete feature or mandatory
+/// queue bring-up. Virtio keeps FAILED as a status bit on the current state.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub(super) fn set_failed(cfg_va: u64) -> u8 {
+    let status = read_status(cfg_va) | virtio::VIRTIO_STATUS_FAILED;
+    // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status is
+    // the u8 field at CFG_DEVICE_STATUS.
+    unsafe {
+        core::ptr::write_volatile((cfg_va + CFG_DEVICE_STATUS) as *mut u8, status);
+    }
+    read_status(cfg_va)
+}
+
 /// Publish DRIVER_OK after features and queues are fully programmed.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
 /// # C: O(1)

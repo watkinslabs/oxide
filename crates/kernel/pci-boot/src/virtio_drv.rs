@@ -1253,10 +1253,12 @@ impl VirtioProbeState {
         } else {
             None
         };
-        let final_status = if programmed_queues.is_some() {
+        let final_status = if !negotiated.features_ok {
+            super::virtio_qsetup::set_failed(self.cfg_va)
+        } else if programmed_queues.is_some() {
             super::virtio_qsetup::set_driver_ok(self.cfg_va)
         } else {
-            negotiated.post_status as u8
+            super::virtio_qsetup::set_failed(self.cfg_va)
         };
 
         VirtioTransportBringup {
