@@ -34,10 +34,6 @@ impl VirtioChildSession {
         })
     }
 
-    pub(super) fn fail<T>(&mut self) -> drv::KResult<T> {
-        virtio::VirtioChildTransportSession::release_failed_child(self);
-        Err(drv::Error::ProbeFailed)
-    }
 }
 
 impl virtio::VirtioChildTransportSession for VirtioChildSession {

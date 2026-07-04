@@ -112,6 +112,12 @@ test-pass claims.
   module. The PCI transport file no longer owns every child `drv::Driver`
   declaration, and child probes no longer import transport helper callbacks
   directly.
+- Virtio child driver binding now goes through one bus-facing
+  `VirtioChildDriver` wrapper in `pci-boot::virtio_child`. Matching by virtio
+  device ID, child session begin, failed-probe transport release, successful
+  transport publish, parent-key remove unpublish, and shutdown key lookup are
+  centralized; per-child code supplies only profile, install, remove, and
+  shutdown policy.
 - Shared `virtio` now owns a transport-neutral
   `VirtioChildTransportSession` contract plus child location and net
   boot-payload descriptors. The current boot PCI-backed implementation lives
@@ -522,8 +528,11 @@ test-pass claims.
   virtio-pci transport module, and child probes now use the shared
   `virtio::VirtioChildTransportSession` trait implemented by
   `pci-boot::virtio_bus::VirtioChildSession` instead of importing
-  `virtio_drv` transport helpers directly. The PCI-backed session now carries
-  an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
+  `virtio_drv` transport helpers directly. That child module now uses one
+  generic `VirtioChildDriver` wrapper for model-driver matching, session
+  lifetime, failed-probe release, publish, unpublish, and shutdown key lookup,
+  leaving per-child ops focused on device policy. The PCI-backed session now
+  carries an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
   publish, and unpublish helpers are private to that transport module. The
   shared `virtio::VirtioChildResourceState` now owns child readiness/resource
   publication checks across transports. Shared
