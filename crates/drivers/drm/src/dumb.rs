@@ -25,6 +25,8 @@ use sync::{Spinlock, TaskList as DumbLockClass};
 
 use crate::{DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888};
 
+pub const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
+
 // ============================================================
 // UAPI wire structs (drm_mode.h)
 // ============================================================
@@ -380,6 +382,8 @@ pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd2>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_fb_cmd2 is 104 bytes; aligned struct read through caller's AS at CPL=0.
     let mut req: DrmModeFbCmd2 = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd2) };
+    if req.flags != 0 { return einval(); }
+    if req.modifier.iter().any(|m| *m != 0) { return einval(); }
     if !format_supported(req.pixel_format) { return einval(); }
     if req.width == 0 || req.height == 0 { return einval(); }
     if req.handles[0] == 0 { return einval(); }
@@ -616,6 +620,27 @@ mod tests {
         assert_eq!(t.find_fb(0, 1).unwrap().handles[0], 3);
         assert!(t.find_fb(1, 1).is_none());
         assert!(t.find_fb(0, 2).is_none());
+    }
+
+    #[test]
+    fn addfb2_rejects_modifier_surface_without_modifier_support() {
+        use syscall::errno::Errno;
+
+        let mut req = DrmModeFbCmd2 {
+            width: 4,
+            height: 4,
+            pixel_format: DRM_FORMAT_XRGB8888,
+            flags: DRM_MODE_FB_MODIFIERS,
+            handles: [1, 0, 0, 0],
+            pitches: [16, 0, 0, 0],
+            offsets: [0; 4],
+            modifier: [1, 0, 0, 0],
+            ..Default::default()
+        };
+        assert_eq!(
+            addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64),
+            -(Errno::Einval.as_i32() as i64)
+        );
     }
 
     #[test]

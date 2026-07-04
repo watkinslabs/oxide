@@ -589,7 +589,7 @@ mod node_publication_tests {
     }
 
     #[test]
-    fn drm_atomic_requires_master_and_client_cap() {
+    fn drm_atomic_client_cap_is_not_advertised_until_properties_exist() {
         use syscall::errno::Errno;
 
         clear_master_owner(0);
@@ -611,12 +611,14 @@ mod node_publication_tests {
         let mut cap = [crate::DRM_CLIENT_CAP_ATOMIC, 1u64];
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_SET_CLIENT_CAP, cap.as_mut_ptr() as u64),
-            Some(0)
+            Some(-(Errno::Eopnotsupp.as_i32() as i64))
         );
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, atomic_arg),
-            Some(0)
+            Some(-(Errno::Einval.as_i32() as i64))
         );
+
+        card.set_private_data(DRM_FILE_CAP_ATOMIC);
 
         let mut bad_flags = DrmModeAtomic {
             flags: 0x8000_0000,
@@ -663,6 +665,7 @@ mod node_publication_tests {
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut unsupported_commit as *mut DrmModeAtomic) as u64),
             Some(-(Errno::Eopnotsupp.as_i32() as i64))
         );
+        card.set_private_data(0);
         clear_master_owner(0);
     }
 
@@ -928,12 +931,19 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 return Some(-(Errno::Einval.as_i32() as i64));
             }
             let bit = match capability {
+                crate::DRM_CLIENT_CAP_UNIVERSAL_PLANES => 1u64 << capability,
                 crate::DRM_CLIENT_CAP_STEREO_3D
-                | crate::DRM_CLIENT_CAP_UNIVERSAL_PLANES
                 | crate::DRM_CLIENT_CAP_ATOMIC
                 | crate::DRM_CLIENT_CAP_ASPECT_RATIO
                 | crate::DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
-                | crate::DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => 1u64 << capability,
+                | crate::DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT if value == 0 => 1u64 << capability,
+                crate::DRM_CLIENT_CAP_STEREO_3D
+                | crate::DRM_CLIENT_CAP_ATOMIC
+                | crate::DRM_CLIENT_CAP_ASPECT_RATIO
+                | crate::DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
+                | crate::DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => {
+                    return Some(-(Errno::Eopnotsupp.as_i32() as i64));
+                }
                 _ => return Some(-(Errno::Einval.as_i32() as i64)),
             };
             let mut state = file.private_data();
