@@ -647,7 +647,14 @@ fn drm_unique_from_bdf(bdf: u32) -> String {
 
 /// Install + register with the DRM core (`47`).
 /// # C: O(1)
-pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
+pub fn install_with_drm(dev: VirtioGpuDev) -> KResult<u32> {
+    install_with_drm_parent(dev, None)
+}
+
+pub fn install_with_drm_parent(
+    mut dev: VirtioGpuDev,
+    parent: Option<(&'static str, String)>,
+) -> KResult<u32> {
     let device_key = dev.device_key;
     let bdf = dev.bdf;
     let display = dev.display;
@@ -661,7 +668,7 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
         bdf,
         unique: drm_unique_from_bdf(bdf),
     });
-    let card_id = drm::register(drm_dev);
+    let card_id = drm::register_with_parent(drm_dev, parent);
     if card_id == u32::MAX {
         let _ = uninstall(device_key);
         return Err(Error::NoDevice);
@@ -1068,6 +1075,40 @@ mod tests {
         assert_eq!(uninstall(key(1)).unwrap().card_id, card_id_1);
         assert!(is_present());
         assert_eq!(uninstall(key(2)).unwrap().card_id, card_id_2);
+        assert!(!is_present());
+    }
+
+    #[test]
+    fn install_with_drm_records_model_parent() {
+        fn dev(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
+            VirtioGpuDev {
+                device_key,
+                bdf,
+                card_id: 0,
+                cfg_va: 0,
+                ctrlq: test_ctrlq(),
+                features_negotiated: 0,
+                display: DisplayInfo::default(),
+                resource_id_alloc: AtomicU32::new(1),
+                blob_uuid_alloc: AtomicU64::new(1),
+                capset_count: 0,
+            }
+        }
+
+        DEVICES.lock().clear();
+        let parent_addr = String::from("virtio-gpu-parent-test0");
+        let card_id = install_with_drm_parent(
+            dev(key(3), 0x0030_0000),
+            Some(("virtio", parent_addr.clone())),
+        ).unwrap();
+        let card_name = format!("dri/card{card_id}");
+        let drm_dev = drv::devices()
+            .into_iter()
+            .find(|dev| dev.bus == "drm" && dev.addr.as_str() == card_name.as_str())
+            .expect("DRM card model device");
+        assert_eq!(drm_dev.parent(), Some(("virtio", parent_addr.as_str())));
+
+        assert_eq!(uninstall(key(3)).unwrap().card_id, card_id);
         assert!(!is_present());
     }
 

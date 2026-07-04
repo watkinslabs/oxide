@@ -481,6 +481,18 @@ static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 /// Register a per-device backend. Returns a stable card slot (0 ⇒ card0).
 /// # C: O(N) to reuse a vacant slot, O(1) append when none exists.
 pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
+    register_with_parent(driver, None)
+}
+
+/// Register a per-device backend whose DRM class device is anchored under a
+/// real model parent. This is the Linux class-device shape used by PCI/virtio
+/// display drivers: `/sys/class/drm/cardN/device` points back to the owning
+/// bus device instead of a virtual-only placeholder.
+/// # C: O(N) to reuse a vacant slot, O(1) append when none exists.
+pub fn register_with_parent(
+    driver: Arc<dyn DrmDriver>,
+    parent: Option<(&'static str, alloc::string::String)>,
+) -> u32 {
     let mut driver = Some(driver);
     let card_id = {
         let mut g = CARDS.lock();
@@ -492,7 +504,7 @@ pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
             (g.len() - 1) as u32
         }
     };
-    if !node::register(card_id) {
+    if !node::register(card_id, parent) {
         let mut g = CARDS.lock();
         if let Some(slot) = g.get_mut(card_id as usize) {
             *slot = None;

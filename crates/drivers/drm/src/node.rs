@@ -378,18 +378,26 @@ fn make_render_inode(card_id: u32) -> vfs::InodeRef {
 /// each used before, so the /dev node is byte-identical; `dt` is the standard
 /// `(major,minor)` metadata. bus == `class` (`drm`) is ignored by the pci/virtio
 /// /sys synthesis, so no spurious /sys entry appears. # C: O(1)
-fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeFactory) -> Option<Arc<drv::Device>> {
+fn add_node(
+    name: &str,
+    class: &'static str,
+    dt: (u32, u32),
+    factory: drv::NodeFactory,
+    parent: Option<(&'static str, alloc::string::String)>,
+) -> Option<Arc<drv::Device>> {
     use alloc::string::String;
-    drv::try_device_add(Arc::new(
-        drv::Device::new(class, String::from(name), 0, 0, 0)
-            .with_devnode(class, String::from(name), Some(dt))
-            .with_node_factory(factory),
-    )).ok()
+    let mut dev = drv::Device::new(class, String::from(name), 0, 0, 0)
+        .with_devnode(class, String::from(name), Some(dt))
+        .with_node_factory(factory);
+    if let Some((bus, addr)) = parent {
+        dev = dev.with_parent(bus, addr);
+    }
+    drv::try_device_add(Arc::new(dev)).ok()
 }
 
 /// Register a DRM card node for a stable DRM card id.
 /// # C: O(1)
-pub fn register(card_id: u32) -> bool {
+pub fn register(card_id: u32, parent: Option<(&'static str, alloc::string::String)>) -> bool {
     let mut nodes = DRM_NODES.lock();
     let idx = card_id as usize;
     if nodes.len() <= idx {
@@ -404,6 +412,7 @@ pub fn register(card_id: u32) -> bool {
         "drm",
         (226, card_id),
         Arc::new(move || make_card_inode(card_id)),
+        parent,
     ) else {
         return false;
     };
@@ -485,8 +494,8 @@ mod node_publication_tests {
         let card_id = 0x7ff0;
         unregister(card_id);
 
-        assert!(register(card_id));
-        assert!(!register(card_id));
+        assert!(register(card_id, None));
+        assert!(!register(card_id, None));
         assert_eq!(
             drv::devices()
                 .iter()
@@ -506,7 +515,7 @@ mod node_publication_tests {
         let render_name = format!("dri/renderD{render_minor}");
         unregister(card_id);
 
-        assert!(register(card_id));
+        assert!(register(card_id, None));
         assert!(registered_card_ids().contains(&card_id));
         assert_eq!(
             drv::devices()
@@ -528,7 +537,7 @@ mod node_publication_tests {
             0
         );
 
-        assert!(register(card_id));
+        assert!(register(card_id, None));
         assert!(registered_card_ids().contains(&card_id));
         assert_eq!(
             drv::devices()
@@ -550,7 +559,7 @@ mod node_publication_tests {
         let render_minor = 128 + card_id;
         let render_name = format!("dri/renderD{render_minor}");
 
-        assert!(register(card_id));
+        assert!(register(card_id, None));
         assert!(registered_card_ids().contains(&card_id));
         assert!(drv::devices().iter().all(|d| d.bus != "drm" || d.addr != render_name));
         unregister(card_id);

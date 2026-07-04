@@ -8,6 +8,7 @@ use super::virtio_drv;
 
 pub(super) struct VirtioChildSession {
     bdf: pci::Bdf,
+    child_addr: alloc::string::String,
     transport: virtio_drv::VirtioPciTransport,
     profile: virtio::VirtioTransportProfile,
     probe: virtio_drv::VirtioProbe,
@@ -27,6 +28,7 @@ impl VirtioChildSession {
         super::virtio_trace::trace_probe(d.bdf, &probe.trace);
         Ok(Self {
             bdf: d.bdf,
+            child_addr: dev.addr.clone(),
             transport,
             profile,
             probe,
@@ -43,6 +45,8 @@ impl virtio::VirtioChildTransportSession for VirtioChildSession {
     fn location(&self) -> virtio::VirtioTransportLocation {
         virtio::VirtioTransportLocation::new(self.bdf.bus, self.bdf.device, self.bdf.function)
     }
+
+    fn device_addr(&self) -> &str { self.child_addr.as_str() }
 
     fn drv_features(&self) -> u64 { self.probe.child_facts.drv_features }
 
