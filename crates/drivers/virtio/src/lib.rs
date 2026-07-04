@@ -32,8 +32,8 @@ pub use resources::{
 
 pub mod common_cfg;
 pub use common_cfg::{
-    negotiate_features, read_status, reset_device, scan_queue_sizes, set_driver_ok, set_failed,
-    FeatureNegotiation,
+    bring_up_common_cfg, complete_driver_status, negotiate_features, read_status, reset_device,
+    scan_queue_sizes, set_driver_ok, set_failed, CommonCfgBringup, FeatureNegotiation,
 };
 
 pub mod queue_cfg;
