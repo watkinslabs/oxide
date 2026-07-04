@@ -162,10 +162,10 @@ pub fn has_events(card_id: u32) -> bool {
 
 /// Resolve an FB id → its primary dumb buffer's (pa, w, h, fourcc).
 /// `None` if the fb or its handle is unknown. # C: O(n)
-fn fb_to_scanout(fb_id: u32) -> Option<(u64, u32, u32, u32)> {
+fn fb_to_scanout(card_id: u32, fb_id: u32) -> Option<(u64, u32, u32, u32)> {
     let t = crate::dumb::TABLES.lock();
-    let fb = t.find_fb(fb_id)?;
-    let buf = t.find_buf(fb.handles[0])?;
+    let fb = t.find_fb(card_id, fb_id)?;
+    let buf = t.find_buf(card_id, fb.handles[0])?;
     Some((buf.pa, fb.w, fb.h, fb.pixel_format))
 }
 
@@ -201,7 +201,7 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
         return 0;
     }
 
-    let (pa, w, h, fmt) = match fb_to_scanout(c.fb_id) { Some(v) => v, None => return einval() };
+    let (pa, w, h, fmt) = match fb_to_scanout(card_id, c.fb_id) { Some(v) => v, None => return einval() };
     // Optionally validate the connector array pointer is sane when set.
     if c.set_connectors_ptr != 0
         && !user_ok(c.set_connectors_ptr, (c.count_connectors as u64) * 4) {
@@ -227,7 +227,7 @@ pub fn page_flip(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, ar
     if crtc_idx_of(f.crtc_id, count).is_none() { return einval(); }
     if f.fb_id == 0 { return einval(); }
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
-    let (pa, w, h, fmt) = match fb_to_scanout(f.fb_id) { Some(v) => v, None => return einval() };
+    let (pa, w, h, fmt) = match fb_to_scanout(card_id, f.fb_id) { Some(v) => v, None => return einval() };
     let res_id = match (ops.create_from_pa)(ops.driver_key, pa, w, h, fmt) { Some(r) => r, None => return einval() };
     if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
     set_owner(card_id, token);

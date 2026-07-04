@@ -266,10 +266,8 @@ pub fn registered_card_ids() -> Vec<u32> {
 /// not the DRM card, or the cookie/handle is unknown — caller then
 /// falls through to fbdev / file-backing. # C: O(n)
 pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
-    if !matches!(drm_inode_parts(inode), Some((DRM_CARD_INO, _))) {
-        return None;
-    }
-    crate::dumb::mmap_backing(offset)
+    let Some((DRM_CARD_INO, card_id)) = drm_inode_parts(inode) else { return None; };
+    crate::dumb::mmap_backing(card_id, offset)
 }
 
 /// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller
@@ -432,15 +430,16 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             Some(-(Errno::Einval.as_i32() as i64))
         }
         // ---- D5b-1 dumb buffers + ADDFB2 (offscreen; no scanout) ----
-        DRM_IOCTL_MODE_CREATE_DUMB  => Some(crate::dumb::create_dumb(arg)),
-        DRM_IOCTL_MODE_MAP_DUMB     => Some(crate::dumb::map_dumb(arg)),
-        DRM_IOCTL_MODE_DESTROY_DUMB => Some(crate::dumb::destroy_dumb(arg)),
-        DRM_IOCTL_MODE_ADDFB2       => Some(crate::dumb::addfb2(arg)),
-        DRM_IOCTL_MODE_ADDFB        => Some(crate::dumb::addfb(arg)),
-        DRM_IOCTL_MODE_RMFB         => Some(crate::dumb::rmfb(arg)),
+        DRM_IOCTL_MODE_CREATE_DUMB  => Some(crate::dumb::create_dumb(card_id, arg)),
+        DRM_IOCTL_MODE_MAP_DUMB     => Some(crate::dumb::map_dumb(card_id, arg)),
+        DRM_IOCTL_MODE_DESTROY_DUMB => Some(crate::dumb::destroy_dumb(card_id, arg)),
+        DRM_IOCTL_MODE_ADDFB2       => Some(crate::dumb::addfb2(card_id, arg)),
+        DRM_IOCTL_MODE_ADDFB        => Some(crate::dumb::addfb(card_id, arg)),
+        DRM_IOCTL_MODE_RMFB         => Some(crate::dumb::rmfb(card_id, arg)),
         // ---- D5b-2 SETCRTC / PAGE_FLIP (real scanout) ----
-        // Token = the card inode pointer (stable per card; v1 single
-        // client). Card required (no GPU → set_crtc honest-fails EINVAL).
+        // Token = the card inode pointer used by the current open path to
+        // identify the KMS owner for this card. Card required (no GPU →
+        // set_crtc honest-fails EINVAL).
         DRM_IOCTL_MODE_SETCRTC => {
             let token = Arc::as_ptr(inode) as *const () as u64;
             match driver.as_ref() {

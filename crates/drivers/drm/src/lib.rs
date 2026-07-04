@@ -532,6 +532,7 @@ pub fn unregister(card_id: u32) -> bool {
     }
     drop(g);
     crtc::clear_card_state(card_id);
+    dumb::clear_card_state(card_id);
     node::unregister(card_id);
     true
 }
