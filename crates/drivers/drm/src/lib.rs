@@ -577,8 +577,8 @@ pub fn default_cap(cap: u64) -> u64 {
         DRM_CAP_PRIME                   => 0,
         DRM_CAP_TIMESTAMP_MONOTONIC     => 1,
         DRM_CAP_ASYNC_PAGE_FLIP         => 0,
-        DRM_CAP_CURSOR_WIDTH            => 64,
-        DRM_CAP_CURSOR_HEIGHT           => 64,
+        DRM_CAP_CURSOR_WIDTH            => 0,
+        DRM_CAP_CURSOR_HEIGHT           => 0,
         DRM_CAP_ADDFB2_MODIFIERS        => 0,
         DRM_CAP_PAGE_FLIP_TARGET        => 0,
         DRM_CAP_CRTC_IN_VBLANK_EVENT    => 1,
@@ -629,7 +629,8 @@ mod tests {
     fn default_caps_all_one_or_set() {
         assert_eq!(default_cap(DRM_CAP_DUMB_BUFFER), 1);
         assert_eq!(default_cap(DRM_CAP_DUMB_PREFERRED_DEPTH), 32);
-        assert_eq!(default_cap(DRM_CAP_CURSOR_WIDTH), 64);
+        assert_eq!(default_cap(DRM_CAP_CURSOR_WIDTH), 0);
+        assert_eq!(default_cap(DRM_CAP_CURSOR_HEIGHT), 0);
         assert_eq!(default_cap(DRM_CAP_PRIME), 0);
         assert_eq!(default_cap(DRM_CAP_ADDFB2_MODIFIERS), 0);
         assert_eq!(default_cap(DRM_CAP_SYNCOBJ), 0);
