@@ -27,6 +27,27 @@ pub(crate) const CLOCK_BOOTTIME:           u64 = 7;
 /// settimeofday / clock_settime overwrite it.
 pub(crate) static REALTIME_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
 
+/// Initialise CLOCK_REALTIME from the hardware RTC at boot (Linux reads the
+/// persistent clock in `timekeeping_init`). Without this the wall clock is
+/// 1970 until settimeofday, so PAM/shadow account checks see accounts as
+/// "password changed in the future" and reject the greeter session; TLS,
+/// systemd timers and file mtimes are all wrong too. Boot, once, after the
+/// monotonic timer is up.
+/// # C: O(1)
+pub fn init_wall_clock_from_rtc() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let secs = hal_x86_64::read_rtc_unix_secs();
+        if secs != 0 {
+            let rtc_ns = secs.saturating_mul(1_000_000_000);
+            let mono = monotonic_ns();
+            REALTIME_OFFSET_NS.store(rtc_ns.saturating_sub(mono), Ordering::Release);
+        }
+    }
+    // aarch64: no CMOS RTC; PL031/devtree RTC init is a follow-up (offset stays
+    // 0 → 1970, as before — no regression).
+}
+
 /// # C: O(1)
 #[inline]
 pub(crate) fn monotonic_ns() -> u64 {
