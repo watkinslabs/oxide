@@ -41,7 +41,8 @@ pub fn register(name: &str, dev: Arc<dyn BlockDevice>) -> u32 {
 
 /// Register a block device with an identity `serial` (`Some("oxide-root")`
 /// etc.). Empty/`None` serial = no by-serial binding. Same idempotency
-/// on `name` as `register`.
+/// on `name` as `register`. Returns 0 if the block device cannot be published
+/// into the driver model; the disk table is rolled back in that case.
 /// # C: O(N_disks)
 pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn BlockDevice>) -> u32 {
     let index = {
@@ -63,8 +64,8 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
         index
     }; // release TABLE before firing the device-model hooks (avoids holding the
        // registry lock across the devtmpfs /dev-node insertion).
-    // device-model Stage C (D27): publish the disk as a `drv::device_add` block
-    // device so ONE registration mints the `/dev/<name>` block node (devtmpfs)
+    // device-model Stage C (D27): publish the disk as a `drv::try_device_add`
+    // block device so ONE registration mints the `/dev/<name>` block node (devtmpfs)
     // alongside the existing `/sys/block/<name>` synthesis (which already reads
     // this registry). bus "block" is ignored by the pci/virtio /sys synthesis,
     // so the disk is NOT double-listed under /sys/bus; the real virtio-blk PCI
@@ -73,10 +74,18 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
     // devtmpfs node Linux would create (none existed before — the rootfs image
     // ships no /dev/<disk> node).
     let dt = major_minor(name, index);
-    drv::device_add(Arc::new(
+    match drv::try_device_add(Arc::new(
         drv::Device::new("block", name.to_string(), 0, 0, 0)
-            .with_devnode("block", name.to_string(), Some(dt))));
-    index
+            .with_devnode("block", name.to_string(), Some(dt)))) {
+        Ok(_) => index,
+        Err(_) => {
+            let mut t = TABLE.lock();
+            if let Some(pos) = t.iter().position(|d| d.name == name && d.index == index) {
+                t.remove(pos);
+            }
+            0
+        }
+    }
 }
 
 /// Unregister a block device by name. Removes the disk from the registry so
@@ -264,6 +273,56 @@ mod sysfs_format_tests {
     }
 
     #[test]
+    fn register_existing_name_is_idempotent_without_republishing() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        static SEEN: Spinlock<Vec<String>, DevicesClass> = Spinlock::new(Vec::new());
+        fn cb(class: &str, name: &str, _dt: Option<(u32, u32)>, _f: Option<drv::NodeFactory>) {
+            if class == "block" {
+                SEEN.lock().push(name.to_string());
+            }
+        }
+        drv::set_devtmpfs_hook(cb);
+        let first_dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let second_dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+
+        let first = register("vdidem", first_dev);
+        let second = register("vdidem", second_dev);
+
+        assert_eq!(second, first);
+        assert_eq!(SEEN.lock().iter().filter(|n| n.as_str() == "vdidem").count(), 1);
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "block" && d.addr == "vdidem")
+                .count(),
+            1
+        );
+        assert!(unregister("vdidem"));
+    }
+
+    #[test]
+    fn register_rolls_back_disk_table_when_model_publication_conflicts() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        let conflict = drv::try_device_add(Arc::new(
+            drv::Device::new("block", String::from("vdconflict"), 0, 0, 0)
+                .with_devnode("block", String::from("vdconflict"), Some((254, 77)))))
+            .expect("conflict device registration");
+        let dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+
+        assert_eq!(register("vdconflict", dev), 0);
+        assert!(by_name("vdconflict").is_none());
+        assert_eq!(
+            drv::devices().iter()
+                .filter(|d| d.bus == "block" && d.addr == "vdconflict")
+                .count(),
+            1
+        );
+
+        drv::device_del(&conflict);
+    }
+
+    #[test]
     fn unregister_removes_disk_and_device_node() {
         use crate::blockdev::MemDisk;
         use sync::TaskList;
@@ -280,6 +339,67 @@ mod sysfs_format_tests {
         assert!(by_name("vdremove").is_none());
         assert!(REMOVED.lock().iter().any(|n| n == "vdremove"));
         assert!(!unregister("vdremove"));
+    }
+
+    #[test]
+    fn unregister_then_register_restores_disk_device_node_and_dev_t() {
+        use crate::blockdev::MemDisk;
+        use sync::TaskList;
+        static REMOVED: Spinlock<Vec<String>, DevicesClass> = Spinlock::new(Vec::new());
+        fn del(name: &str) {
+            REMOVED.lock().push(name.to_string());
+        }
+        drv::set_devtmpfs_del_hook(del);
+
+        let name = "vdreadd";
+        let _ = unregister(name);
+        assert!(by_name(name).is_none());
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            0
+        );
+
+        let first_dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let first = register(name, first_dev);
+        assert_ne!(first, 0);
+        let first_dev_t = dev_t_of(name, first);
+        let first_disk = by_dev(first_dev_t).expect("registered disk owns its dev_t");
+        assert_eq!(first_disk.name, name);
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            1
+        );
+
+        assert!(unregister(name));
+        assert!(by_name(name).is_none());
+        assert!(by_dev(first_dev_t).is_none());
+        assert!(REMOVED.lock().iter().any(|n| n == name));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            0
+        );
+
+        let second_dev: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+        let second = register(name, second_dev);
+        assert_eq!(second, first);
+        assert!(by_dev(first_dev_t).is_some());
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "block" && d.addr == name)
+                .count(),
+            1
+        );
+        assert!(unregister(name));
     }
 
     #[test]

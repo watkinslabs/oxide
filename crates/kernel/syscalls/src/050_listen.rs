@@ -15,9 +15,15 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
     // D3.3: AF_VSOCK listen — register the bound port in the vsock
     // connection table so inbound OP_REQUESTs are accepted + queued.
     if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
-        if let net::vsock_socket::VsockKind::Listener(port) = &*vs.kind.lock() {
-            net::vsock::TABLE.add_listener(*port);
-            return 0;
+        let mut kind = vs.kind.lock();
+        match *kind {
+            net::vsock_socket::VsockKind::Bound { port, owner } => {
+                net::vsock::TABLE.add_listener(owner, port);
+                *kind = net::vsock_socket::VsockKind::Listener { port, owner };
+                return 0;
+            }
+            net::vsock_socket::VsockKind::Listener { .. } => return 0,
+            _ => {}
         }
         return -(Errno::Einval.as_i32() as i64);
     }

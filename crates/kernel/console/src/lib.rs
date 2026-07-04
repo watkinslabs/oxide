@@ -20,8 +20,9 @@ pub mod jobctl;
 pub mod static_console;
 pub mod vt_tty;
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use tty::ReadOutcome;
 use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError};
@@ -432,17 +433,18 @@ pub fn system_console_inode() -> InodeRef {
     make_system_console_inode()
 }
 
-/// Register the console/tty char-device nodes into devfs (self-registration
-/// per docs/56). `/dev/console` follows the preferred `console=`
-/// ([`system_console_inode`]); `/dev/tty`+`/dev/tty0` are the foreground VT;
-/// /dev/tty1..N each carry their own VT id; /dev/vcs{,0,a,a0} dump the screen.
-/// Boot, once.
+/// Fallibly register the console/tty char-device nodes into devfs
+/// (self-registration per docs/56). `/dev/console` follows the preferred
+/// `console=` ([`system_console_inode`]); `/dev/tty`+`/dev/tty0` are the
+/// foreground VT; /dev/tty1..N each carry their own VT id; /dev/vcs{,0,a,a0}
+/// dump the screen. Matching existing model devices are idempotent; conflicts
+/// roll back nodes published by this call and return the driver-model error.
 /// # C: O(N_VT)
-pub fn register_devnodes() {
+pub fn try_register_devnodes() -> drv::KResult<()> {
     use alloc::sync::Arc;
-    use alloc::string::String;
+    let mut published = Vec::new();
     // device-model Stage C (D27): the console/tty char devices self-register
-    // through `drv::device_add` (dev_class "tty"). Each `node_factory` mints the
+    // through `drv::try_device_add` (dev_class "tty"). Each `node_factory` mints the
     // EXACT bespoke inode (per-VT `i_private`, routing tag, rdev) the direct
     // register used, so every /dev node is byte-identical (shared instances —
     // tty/tty0, vcs/vcs0, vcsa/vcsa0 — are preserved by cloning a captured Arc).
@@ -451,43 +453,94 @@ pub fn register_devnodes() {
     // /dev/console = the preferred console (serial when a serial console is
     // the preferred console, else the fg VT) — the Linux 5:1 kernel-console
     // device.
-    add_tty_node("console", 0x0501, Arc::new(|| system_console_inode()));
+    push_tty_node(&mut published, "console", 0x0501, Arc::new(|| system_console_inode()))?;
     // /dev/tty, /dev/tty0 = the foreground video VT (always video; distinct
     // from /dev/console, which the console= cmdline may point at serial). Both
     // share ONE inode instance (rdev 5:0), as before.
     let fg: vfs::InodeRef = make_console_inode(0);
     let fg2 = Arc::clone(&fg);
-    add_tty_node("tty",  console_rdev(0), Arc::new(move || Arc::clone(&fg)));
-    add_tty_node("tty0", console_rdev(0), Arc::new(move || Arc::clone(&fg2)));
+    push_tty_node(&mut published, "tty",  console_rdev(0), Arc::new(move || Arc::clone(&fg)))?;
+    push_tty_node(&mut published, "tty0", console_rdev(0), Arc::new(move || Arc::clone(&fg2)))?;
     // Serial line — a SEPARATE device (its own tty, serial-only, own winsize).
-    add_tty_node("ttyS0", SERIAL_RDEV, Arc::new(|| make_serial_inode()));
+    push_tty_node(&mut published, "ttyS0", SERIAL_RDEV, Arc::new(|| make_serial_inode()))?;
     for vt in 1..=tty::live::N_VT as u8 {
         let mut name = String::with_capacity(6);
         name.push_str("tty");
         if vt >= 10 { name.push((b'0' + (vt / 10)) as char); }
         name.push((b'0' + (vt % 10)) as char);
-        add_tty_node(&name, console_rdev(vt), Arc::new(move || make_console_inode(vt)));
+        push_tty_node(&mut published, &name, console_rdev(vt), Arc::new(move || make_console_inode(vt)))?;
     }
     // VT screen-dump devices (vc_screen.c). 0 = current foreground VT.
     let vcs: vfs::InodeRef = make_vcs_inode(false);
     let vcs2 = Arc::clone(&vcs);
-    add_tty_node("vcs",  0x0700, Arc::new(move || Arc::clone(&vcs)));
-    add_tty_node("vcs0", 0x0700, Arc::new(move || Arc::clone(&vcs2)));
+    push_tty_node(&mut published, "vcs",  0x0700, Arc::new(move || Arc::clone(&vcs)))?;
+    push_tty_node(&mut published, "vcs0", 0x0700, Arc::new(move || Arc::clone(&vcs2)))?;
     let vcsa: vfs::InodeRef = make_vcs_inode(true);
     let vcsa2 = Arc::clone(&vcsa);
-    add_tty_node("vcsa",  0x0780, Arc::new(move || Arc::clone(&vcsa)));
-    add_tty_node("vcsa0", 0x0780, Arc::new(move || Arc::clone(&vcsa2)));
+    push_tty_node(&mut published, "vcsa",  0x0780, Arc::new(move || Arc::clone(&vcsa)))?;
+    push_tty_node(&mut published, "vcsa0", 0x0780, Arc::new(move || Arc::clone(&vcsa2)))?;
+    Ok(())
 }
 
-/// Self-register a tty-class `/dev/<name>` node through `drv::device_add` (D27).
+/// Register console/tty nodes for the boot path. A model conflict here means
+/// the kernel cannot publish the canonical tty namespace, so fail immediately.
+/// # C: O(N_VT)
+pub fn register_devnodes() {
+    if let Err(e) = try_register_devnodes() {
+        panic!("console tty device registration failed: {:?}", e);
+    }
+}
+
+fn push_tty_node(
+    published: &mut Vec<Arc<drv::Device>>,
+    name: &str,
+    rdev: u32,
+    factory: drv::NodeFactory,
+) -> drv::KResult<()> {
+    match add_tty_node(name, rdev, factory) {
+        Ok(Some(dev)) => {
+            published.push(dev);
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(e) => {
+            for dev in published.iter().rev() {
+                drv::device_del(dev);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Self-register a tty-class `/dev/<name>` node through `drv::try_device_add`
+/// (D27).
 /// `rdev` is the inode's packed `(major<<8)|minor`; the device-model carries the
 /// decoded `(major,minor)` metadata and the `factory` mints the exact inode.
-/// # C: O(1) amortised
-fn add_tty_node(name: &str, rdev: u32, factory: drv::NodeFactory) {
-    use alloc::string::String;
-    use alloc::sync::Arc;
-    drv::device_add(Arc::new(
+/// Returns `Ok(Some(_))` when this call published a fresh model device and
+/// `Ok(None)` when an identical model device already existed.
+/// # C: O(N_devices)
+fn add_tty_node(name: &str, rdev: u32, factory: drv::NodeFactory) -> drv::KResult<Option<Arc<drv::Device>>> {
+    let dev_t = (rdev >> 8, rdev & 0xff);
+    match drv::try_device_add(Arc::new(
         drv::Device::new("tty", String::from(name), 0, 0, 0)
-            .with_devnode("tty", String::from(name), Some((rdev >> 8, rdev & 0xff)))
-            .with_node_factory(factory)));
+            .with_devnode("tty", String::from(name), Some(dev_t))
+            .with_node_factory(factory)))
+    {
+        Ok(dev) => Ok(Some(dev)),
+        Err(drv::Error::Busy) => {
+            if drv::devices().iter().any(|d| {
+                d.bus == "tty"
+                    && d.addr == name
+                    && d.dev_class == "tty"
+                    && d.devname.as_deref() == Some(name)
+                    && d.dev_t == Some(dev_t)
+                    && d.node_factory.is_some()
+            }) {
+                Ok(None)
+            } else {
+                Err(drv::Error::Busy)
+            }
+        }
+        Err(e) => Err(e),
+    }
 }

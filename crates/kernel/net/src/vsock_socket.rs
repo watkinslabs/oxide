@@ -15,10 +15,13 @@ pub const VSOCK_INO_TAG: u64 = 0x5653_4F43_0000_0000;
 pub enum VsockKind {
     /// `socket()` done, no connect/bind yet.
     Init,
+    /// `bind()` done, not listening yet. `owner == 0` means VMADDR_CID_ANY.
+    Bound { port: u32, owner: u32 },
     /// `connect()` succeeded or `accept()` produced this — live stream.
     Conn(Arc<VsockConn>),
     /// `bind()`+`listen()` — accepts inbound OP_REQUESTs on `port`.
-    Listener(u32),
+    /// `owner == 0` means VMADDR_CID_ANY.
+    Listener { port: u32, owner: u32 },
 }
 
 /// AF_VSOCK socket VFS state. # C: O(1)
@@ -50,6 +53,20 @@ impl VsockSocket {
 }
 
 impl Default for VsockSocket { fn default() -> Self { Self::new() } }
+
+impl Drop for VsockSocket {
+    fn drop(&mut self) {
+        match &*self.kind.lock() {
+            VsockKind::Listener { port, owner } => {
+                let _ = vsock::TABLE.remove_listener(*owner, *port);
+            }
+            VsockKind::Conn(c) => {
+                vsock::close(c);
+            }
+            VsockKind::Init | VsockKind::Bound { .. } => {}
+        }
+    }
+}
 
 /// Build the `Arc<Inode>` wrapping an AF_VSOCK socket fd. The socket lives in
 /// `i_private` (recover it with [`vsock_from_inode`]); `ino()` carries
@@ -91,6 +108,83 @@ impl vfs::FileOps for VsockFileOps {
     }
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<VsockSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vsock::{ConnKey, VsockState};
+
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn drop_listener_removes_vsock_listener() {
+        let _guard = SERIAL.lock().unwrap();
+        let owner = 0x0a00_0001;
+        let port = 61_001;
+        let _ = vsock::TABLE.remove_listener(owner, port);
+        vsock::TABLE.add_listener(owner, port);
+        let key = ConnKey {
+            owner,
+            local_cid: 3,
+            local_port: port,
+            peer_cid: 2,
+            peer_port: 1024,
+        };
+        vsock::TABLE.remove(key);
+        let conn = Arc::new(VsockConn::new(
+            owner,
+            key.local_cid,
+            key.local_port,
+            key.peer_cid,
+            key.peer_port,
+            VsockState::Connected,
+        ));
+        vsock::TABLE.insert(conn.clone());
+        vsock::TABLE.queue_accept(owner, port, key);
+        assert!(vsock::TABLE.is_listening(owner, port));
+        assert!(vsock::TABLE.pop_accept_peek(owner, port));
+
+        let sock = Arc::new(VsockSocket::new());
+        *sock.kind.lock() = VsockKind::Listener { port, owner };
+        drop(sock);
+
+        assert!(!vsock::TABLE.is_listening(owner, port));
+        assert_eq!(*conn.st.lock(), VsockState::Closed);
+        assert!(vsock::TABLE.find(key).is_none());
+        assert!(!vsock::TABLE.remove_listener(owner, port));
+    }
+
+    #[test]
+    fn drop_connected_socket_closes_connection_record() {
+        let _guard = SERIAL.lock().unwrap();
+        let owner = 0x0a00_0002;
+        let key = ConnKey {
+            owner,
+            local_cid: 3,
+            local_port: 61_002,
+            peer_cid: 2,
+            peer_port: 1024,
+        };
+        vsock::TABLE.remove(key);
+        let conn = Arc::new(VsockConn::new(
+            owner,
+            key.local_cid,
+            key.local_port,
+            key.peer_cid,
+            key.peer_port,
+            VsockState::Connected,
+        ));
+        vsock::TABLE.insert(conn.clone());
+        assert!(vsock::TABLE.find(key).is_some());
+
+        let sock = Arc::new(VsockSocket::new());
+        *sock.kind.lock() = VsockKind::Conn(conn.clone());
+        drop(sock);
+
+        assert_eq!(*conn.st.lock(), VsockState::Closed);
+        assert!(vsock::TABLE.find(key).is_none());
     }
 }
 
@@ -190,10 +284,10 @@ impl VsockSocket {
                 }
                 mask
             }
-            VsockKind::Listener(port) => {
-                if vsock::TABLE.pop_accept_peek(*port) { POLL_IN } else { 0 }
+            VsockKind::Listener { port, owner } => {
+                if vsock::TABLE.pop_accept_peek(*owner, *port) { POLL_IN } else { 0 }
             }
-            VsockKind::Init => POLL_OUT,
+            VsockKind::Init | VsockKind::Bound { .. } => POLL_OUT,
         }
     }
 }

@@ -35,9 +35,10 @@ pub enum VsockState {
     Closed,
 }
 
-/// One vsock STREAM connection. Keyed in the table by the 4-tuple
+/// One vsock STREAM connection. Keyed in the table by owner plus the 4-tuple
 /// (local_cid, local_port, peer_cid, peer_port). # C: O(1)
 pub struct VsockConn {
+    pub owner:      u32,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
@@ -95,9 +96,10 @@ impl Credit {
 
 impl VsockConn {
     /// New connection in `st`. # C: O(1)
-    pub fn new(local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
+    pub fn new(owner: u32, local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
                st: VsockState) -> Self {
         VsockConn {
+            owner,
             local_cid, local_port, peer_cid, peer_port,
             st: Spinlock::new(st),
             rx: Spinlock::new(VecDeque::new()),
@@ -128,15 +130,17 @@ impl VsockConn {
     /// Match key for the table. # C: O(1)
     pub fn key(&self) -> ConnKey {
         ConnKey {
+            owner: self.owner,
             local_cid: self.local_cid, local_port: self.local_port,
             peer_cid: self.peer_cid, peer_port: self.peer_port,
         }
     }
 }
 
-/// 4-tuple connection key. # C: O(1)
+/// Owner-keyed 4-tuple connection key. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ConnKey {
+    pub owner:      u32,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
@@ -147,7 +151,8 @@ pub struct ConnKey {
 /// vsock fan-out is small (a handful of host↔guest streams). # C: see fns
 pub struct VsockTable {
     conns: Spinlock<Vec<alloc::sync::Arc<VsockConn>>, SockLockClass>,
-    /// Bound listeners: (local_port) → accept backlog of pending peers.
+    /// Bound listeners: (owner, local_port) → accept backlog of pending peers.
+    /// owner 0 is VMADDR_CID_ANY.
     listeners: Spinlock<Vec<Listener>, SockLockClass>,
     /// Ephemeral local-port allocator (1024..).
     ephem_next: core::sync::atomic::AtomicU32,
@@ -156,6 +161,7 @@ pub struct VsockTable {
 /// A bound listener + its accept backlog of inbound OP_REQUESTs that
 /// haven't been accept()ed yet. # C: O(1)
 pub struct Listener {
+    pub owner: u32,
     pub local_port: u32,
     pub backlog: Spinlock<VecDeque<ConnKey>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
@@ -193,11 +199,11 @@ impl VsockTable {
     /// Look up by the *local* 2-tuple regardless of peer — used by the
     /// RX dispatcher which keys on (dst_cid, dst_port, src_cid, src_port)
     /// of the incoming packet. # C: O(N conns)
-    pub fn find_for_rx(&self, local_cid: u64, local_port: u32,
+    pub fn find_for_rx(&self, owner: u32, local_cid: u64, local_port: u32,
                        peer_cid: u64, peer_port: u32)
         -> Option<alloc::sync::Arc<VsockConn>>
     {
-        self.find(ConnKey { local_cid, local_port, peer_cid, peer_port })
+        self.find(ConnKey { owner, local_cid, local_port, peer_cid, peer_port })
     }
 
     /// Remove a connection by key. # C: O(N conns)
@@ -225,11 +231,33 @@ impl VsockTable {
         }
     }
 
-    /// Register a listener on `port`. # C: O(1)
-    pub fn add_listener(&self, port: u32) {
+    /// Mark one owner's live connections closed, remove only those connection
+    /// records, and prune that owner's accept backlog entries. Other transport
+    /// owners must keep running across a single device remove.
+    /// # C: O(N conns + N listeners + backlog)
+    pub fn close_owner(&self, owner: u32) {
+        let mut conns = self.conns.lock();
+        for c in conns.iter().filter(|c| c.owner == owner) {
+            *c.st.lock() = VsockState::Closed;
+            #[cfg(target_os = "oxide-kernel")]
+            c.waiters.wake_all();
+        }
+        conns.retain(|c| c.owner != owner);
+        let listeners = self.listeners.lock();
+        for l in listeners.iter() {
+            l.backlog.lock().retain(|k| k.owner != owner);
+            #[cfg(target_os = "oxide-kernel")]
+            l.accept_waiters.wake_all();
+        }
+    }
+
+    /// Register a listener on `port` for `owner`; owner 0 is VMADDR_CID_ANY.
+    /// # C: O(1)
+    pub fn add_listener(&self, owner: u32, port: u32) {
         let mut g = self.listeners.lock();
-        if g.iter().any(|l| l.local_port == port) { return; }
+        if g.iter().any(|l| l.owner == owner && l.local_port == port) { return; }
         g.push(Listener {
+            owner,
             local_port: port,
             backlog: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
@@ -237,16 +265,53 @@ impl VsockTable {
         });
     }
 
-    /// True iff `port` has a registered listener. # C: O(N listeners)
-    pub fn is_listening(&self, port: u32) -> bool {
-        self.listeners.lock().iter().any(|l| l.local_port == port)
+    /// Remove the listener owned by `(owner, port)` and discard pending accepts.
+    /// Called when the listening AF_VSOCK fd is closed.
+    /// # C: O(N listeners + N pending + N conns)
+    pub fn remove_listener(&self, owner: u32, port: u32) -> bool {
+        let mut pending = Vec::new();
+        let removed = {
+            let mut g = self.listeners.lock();
+            let before = g.len();
+            for l in g.iter().filter(|l| l.owner == owner && l.local_port == port) {
+                let mut backlog = l.backlog.lock();
+                while let Some(k) = backlog.pop_front() {
+                    pending.push(k);
+                }
+                #[cfg(target_os = "oxide-kernel")]
+                l.accept_waiters.wake_all();
+            }
+            g.retain(|l| !(l.owner == owner && l.local_port == port));
+            before != g.len()
+        };
+        if !pending.is_empty() {
+            let mut conns = self.conns.lock();
+            for c in conns.iter().filter(|c| pending.iter().any(|k| c.key() == *k)) {
+                *c.st.lock() = VsockState::Closed;
+                #[cfg(target_os = "oxide-kernel")]
+                c.waiters.wake_all();
+            }
+            conns.retain(|c| !pending.iter().any(|k| c.key() == *k));
+        }
+        removed
+    }
+
+    /// True iff `port` has an exact owner listener or a wildcard listener.
+    /// # C: O(N listeners)
+    pub fn is_listening(&self, owner: u32, port: u32) -> bool {
+        self.listeners.lock().iter().any(|l| {
+            l.local_port == port && (l.owner == owner || l.owner == 0)
+        })
     }
 
     /// Queue an accepted-but-not-yet-accept()ed peer key on `port`'s
-    /// listener backlog + wake any accept() parker. # C: O(N listeners)
-    pub fn queue_accept(&self, port: u32, k: ConnKey) {
+    /// listener backlog + wake any accept() parker. Exact owner listeners win
+    /// over wildcard listeners. # C: O(N listeners)
+    pub fn queue_accept(&self, owner: u32, port: u32, k: ConnKey) {
         let g = self.listeners.lock();
-        if let Some(l) = g.iter().find(|l| l.local_port == port) {
+        let listener = g.iter().find(|l| l.owner == owner && l.local_port == port)
+            .or_else(|| g.iter().find(|l| l.owner == 0 && l.local_port == port));
+        if let Some(l) = listener {
             l.backlog.lock().push_back(k);
             #[cfg(target_os = "oxide-kernel")]
             l.accept_waiters.wake_all();
@@ -254,17 +319,20 @@ impl VsockTable {
     }
 
     /// Pop one pending peer key from `port`'s accept backlog. # C: O(N)
-    pub fn pop_accept(&self, port: u32) -> Option<ConnKey> {
+    pub fn pop_accept(&self, owner: u32, port: u32) -> Option<ConnKey> {
         let g = self.listeners.lock();
-        let k = g.iter().find(|l| l.local_port == port)?.backlog.lock().pop_front();
+        let k = g.iter()
+            .find(|l| l.owner == owner && l.local_port == port)?
+            .backlog.lock()
+            .pop_front();
         k
     }
 
     /// True iff `port`'s accept backlog is non-empty (poll readability).
     /// # C: O(N listeners)
-    pub fn pop_accept_peek(&self, port: u32) -> bool {
+    pub fn pop_accept_peek(&self, owner: u32, port: u32) -> bool {
         let g = self.listeners.lock();
-        g.iter().find(|l| l.local_port == port)
+        g.iter().find(|l| l.owner == owner && l.local_port == port)
             .map(|l| !l.backlog.lock().is_empty()).unwrap_or(false)
     }
 }

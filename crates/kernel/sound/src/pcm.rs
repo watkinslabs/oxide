@@ -1,4 +1,4 @@
-// ALSA PCM core for the single virtio-snd OUTPUT substream (card 0, dev 0).
+// ALSA PCM core for virtio-snd OUTPUT substreams (card N, dev 0).
 // Owns the substream state machine + hw_params refinement against the
 // device caps + sw_params + appl_ptr/hw_ptr ring accounting + the
 // SNDRV_PCM_IOCTL_* ABI. Calls the card driver's registered snd_pcm_ops
@@ -9,6 +9,7 @@
 // whole buffer is available again — the canonical snd_pcm_writei blocking
 // mode (mmap/async streaming is a follow-up; INFO advertises no MMAP).
 
+use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as L};
 use syscall::errno::Errno;
 
@@ -22,8 +23,9 @@ const DEF_PERIODS: u32 = 2;
 /// appl_ptr/hw_ptr wrap point reported to userspace.
 const BOUNDARY: u64 = 0x4000_0000_0000;
 
-/// The OUTPUT substream. A single global instance (one card, one device).
+/// The OUTPUT substream state owned by one registered sound card.
 struct Pcm {
+    owner: u32,
     state: u32,
     format: u32,      // ALSA SNDRV_PCM_FORMAT_*
     rate: u32,        // Hz
@@ -36,11 +38,45 @@ struct Pcm {
     hw_ptr: u64,          // frames
 }
 
-static PCM: Spinlock<Pcm, L> = Spinlock::new(Pcm {
-    state: STATE_OPEN, format: FMT_S16_LE, rate: 44100, channels: 2,
-    frame_bytes: 4, period_frames: 512, buffer_frames: 1024,
-    start_threshold: 1, appl_ptr: 0, hw_ptr: 0,
-});
+static PCM: Spinlock<Vec<Pcm>, L> = Spinlock::new(Vec::new());
+
+fn initial(owner: u32) -> Pcm {
+    Pcm {
+        owner,
+        state: STATE_OPEN,
+        format: FMT_S16_LE,
+        rate: 44100,
+        channels: 2,
+        frame_bytes: 4,
+        period_frames: 512,
+        buffer_frames: 1024,
+        start_threshold: 1,
+        appl_ptr: 0,
+        hw_ptr: 0,
+    }
+}
+
+pub(crate) fn register_card(owner: u32) {
+    let mut guard = PCM.lock();
+    if !guard.iter().any(|p| p.owner == owner) {
+        guard.push(initial(owner));
+    }
+}
+
+pub(crate) fn unregister_card(owner: u32) {
+    let mut guard = PCM.lock();
+    guard.retain(|p| p.owner != owner);
+}
+
+#[cfg(test)]
+pub(crate) fn registered_count() -> usize {
+    PCM.lock().len()
+}
+
+#[cfg(test)]
+pub(crate) fn has_card(owner: u32) -> bool {
+    PCM.lock().iter().any(|p| p.owner == owner)
+}
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -76,8 +112,8 @@ fn hz_rate_enum(hz: u32) -> u8 {
 
 /// Device OUTPUT caps `(virtio_formats, virtio_rates, ch_min, ch_max)`.
 /// # C: O(1)
-fn caps() -> (u64, u64, u8, u8) {
-    crate::ops::pcm_caps().unwrap_or((1 << 5, 1 << 6, 1, 2)) // S16 @ 44.1k st default
+fn caps(owner: u32) -> (u64, u64, u8, u8) {
+    crate::ops::pcm_caps(owner).unwrap_or((1 << 5, 1 << 6, 1, 2)) // S16 @ 44.1k st default
 }
 
 // ── hw_params mask / interval accessors ────────────────────────────────
@@ -214,15 +250,18 @@ pub(crate) fn refine_params(b: &UserBuf, vf: u64, vr: u64, ch_min: u8, ch_max: u
 
 /// Playback HW_REFINE/HW_PARAMS: refine against the OUTPUT caps; on commit
 /// apply via the playback ops + record the substream geometry. # C: O(CONTROLQ)
-fn refine(b: &UserBuf, commit: bool) -> i64 {
-    let (vf, vr, ch_min, ch_max) = caps();
+fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
+    let (vf, vr, ch_min, ch_max) = caps(owner);
     let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
-        if !crate::ops::pcm_hw_params(rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
-                                          r.channels as u8, r.period_bytes, r.buffer_bytes) {
+        if !crate::ops::pcm_hw_params(owner, rate_hz_to_enum(r.rate), fmt_alsa_to_virtio(r.format),
+                                      r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
-        let mut p = PCM.lock();
+        let mut guard = PCM.lock();
+        let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+            return err(Errno::Enodev);
+        };
         p.format = r.format; p.rate = r.rate; p.channels = r.channels;
         p.frame_bytes = r.frame_bytes;
         p.period_frames = r.period_frames; p.buffer_frames = r.buffer_frames;
@@ -237,39 +276,65 @@ fn refine(b: &UserBuf, commit: bool) -> i64 {
 /// Handle one `SNDRV_PCM_IOCTL_*` on the playback substream. The caller has
 /// already matched the node; `nr` is the ioctl nr (magic 'A' stripped).
 /// # C: O(1) excluding the blocking transfer in WRITEI
-pub fn handle(nr: u64, arg: u64) -> i64 {
+pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => write_int(arg, SNDRV_PCM_VERSION),
         PCM_INFO => pcm_info(arg),
         PCM_TSTAMP | PCM_TTSTAMP => 0,
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) {
-            Some(b) => refine(&b, false), None => err(Errno::Efault),
+            Some(b) => refine(owner, &b, false), None => err(Errno::Efault),
         },
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) {
-            Some(b) => refine(&b, true), None => err(Errno::Efault),
+            Some(b) => refine(owner, &b, true), None => err(Errno::Efault),
         },
-        PCM_HW_FREE => { crate::ops::pcm_hw_free(); PCM.lock().state = STATE_OPEN; 0 }
-        PCM_SW_PARAMS => sw_params(arg),
+        PCM_HW_FREE => {
+            let _ = crate::ops::pcm_hw_free(owner);
+            let mut guard = PCM.lock();
+            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+                return err(Errno::Enodev);
+            };
+            p.state = STATE_OPEN;
+            0
+        }
+        PCM_SW_PARAMS => sw_params(owner, arg),
         PCM_PREPARE => {
-            if !crate::ops::pcm_prepare() { return err(Errno::Eio); }
-            let mut p = PCM.lock();
+            if !crate::ops::pcm_prepare(owner) { return err(Errno::Eio); }
+            let mut guard = PCM.lock();
+            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+                return err(Errno::Enodev);
+            };
             p.state = STATE_PREPARED; p.appl_ptr = 0; p.hw_ptr = 0; 0
         }
         PCM_START => {
-            if !crate::ops::pcm_trigger(true) { return err(Errno::Eio); }
-            PCM.lock().state = STATE_RUNNING; 0
+            if !crate::ops::pcm_trigger(owner, true) { return err(Errno::Eio); }
+            let mut guard = PCM.lock();
+            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+                return err(Errno::Enodev);
+            };
+            p.state = STATE_RUNNING; 0
         }
         PCM_DROP | PCM_DRAIN => {
-            let _ = crate::ops::pcm_trigger(false);
-            let mut p = PCM.lock();
+            let _ = crate::ops::pcm_trigger(owner, false);
+            let mut guard = PCM.lock();
+            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+                return err(Errno::Enodev);
+            };
             p.state = STATE_SETUP; p.appl_ptr = 0; p.hw_ptr = 0; 0
         }
-        PCM_PAUSE => { let _ = crate::ops::pcm_trigger(false); PCM.lock().state = STATE_PREPARED; 0 }
+        PCM_PAUSE => {
+            let _ = crate::ops::pcm_trigger(owner, false);
+            let mut guard = PCM.lock();
+            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+                return err(Errno::Enodev);
+            };
+            p.state = STATE_PREPARED;
+            0
+        }
         PCM_HWSYNC => 0,
         PCM_DELAY => write_long(arg, 0),
-        PCM_STATUS => pcm_status(arg),
-        PCM_SYNC_PTR => sync_ptr(arg),
-        PCM_WRITEI => writei(arg),
+        PCM_STATUS => pcm_status(owner, arg),
+        PCM_SYNC_PTR => sync_ptr(owner, arg),
+        PCM_WRITEI => writei(owner, arg),
         PCM_READI => err(Errno::Ebadf), // capture is a follow-up (RXQ)
         _ => err(Errno::Enotty),
     }
@@ -279,17 +344,30 @@ pub fn handle(nr: u64, arg: u64) -> i64 {
 /// the configured geometry (snd_pcm_write). Auto-starts a PREPARED stream,
 /// transfers (blocking), advances appl_ptr/hw_ptr. Returns bytes accepted.
 /// # C: O(bytes/period × TXQ round-trip)
-pub fn write_bytes(buf: &[u8]) -> usize {
-    let (fb, state) = { let p = PCM.lock(); (p.frame_bytes as u64, p.state) };
+pub fn write_bytes(owner: u32, buf: &[u8]) -> usize {
+    let (fb, state) = {
+        let guard = PCM.lock();
+        let Some(p) = guard.iter().find(|p| p.owner == owner) else {
+            return 0;
+        };
+        (p.frame_bytes as u64, p.state)
+    };
     if state == STATE_OPEN || state == STATE_SETUP { return 0; }
     if state == STATE_PREPARED {
-        if !crate::ops::pcm_trigger(true) { return 0; }
-        PCM.lock().state = STATE_RUNNING;
+        if !crate::ops::pcm_trigger(owner, true) { return 0; }
+        let mut guard = PCM.lock();
+        let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+            return 0;
+        };
+        p.state = STATE_RUNNING;
     }
-    let n = crate::ops::pcm_submit(buf);
+    let n = crate::ops::pcm_submit(owner, buf);
     if n > 0 {
         let frames = n as u64 / fb.max(1);
-        let mut p = PCM.lock();
+        let mut guard = PCM.lock();
+        let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+            return n;
+        };
         p.appl_ptr = p.appl_ptr.wrapping_add(frames) % BOUNDARY;
         p.hw_ptr = p.appl_ptr;
     }
@@ -318,17 +396,24 @@ fn pcm_info(arg: u64) -> i64 {
     0
 }
 
-fn sw_params(arg: u64) -> i64 {
+fn sw_params(owner: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SW_PARAMS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let st = b.r64(SWP_START_THRESHOLD);
-    PCM.lock().start_threshold = if st == 0 { 1 } else { st };
+    let mut guard = PCM.lock();
+    let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+        return err(Errno::Enodev);
+    };
+    p.start_threshold = if st == 0 { 1 } else { st };
     b.w64(SWP_BOUNDARY, BOUNDARY); // echo the wrap point back
     0
 }
 
-fn pcm_status(arg: u64) -> i64 {
+fn pcm_status(owner: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, STATUS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    let p = PCM.lock();
+    let guard = PCM.lock();
+    let Some(p) = guard.iter().find(|p| p.owner == owner) else {
+        return err(Errno::Enodev);
+    };
     let avail = p.buffer_frames as u64; // synchronous transfer → buffer always free
     b.zero(0, STATUS_SIZE);
     b.w32(ST_STATE, p.state);
@@ -339,10 +424,13 @@ fn pcm_status(arg: u64) -> i64 {
     0
 }
 
-fn sync_ptr(arg: u64) -> i64 {
+fn sync_ptr(owner: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SYNC_PTR_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let flags = b.r32(SP_FLAGS);
-    let mut p = PCM.lock();
+    let mut guard = PCM.lock();
+    let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+        return err(Errno::Enodev);
+    };
     if flags & SYNC_PTR_APPL == 0 {
         p.appl_ptr = b.r64(SP_CONTROL_APPL_PTR); // app advanced its pointer
     }
@@ -356,12 +444,15 @@ fn sync_ptr(arg: u64) -> i64 {
 /// SNDRV_PCM_IOCTL_WRITEI_FRAMES — interleaved blocking playback. Copies the
 /// app frames out of `buf`, auto-starts at the start_threshold, transfers
 /// via the driver, and advances appl_ptr/hw_ptr. Returns frames written.
-fn writei(arg: u64) -> i64 {
+fn writei(owner: u32, arg: u64) -> i64 {
     let xf = match UserBuf::new(arg, XFERI_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let ubuf = xf.r64(XFERI_BUF);
     let frames = xf.r64(XFERI_FRAMES);
     let (fb, mut state, start_thr) = {
-        let p = PCM.lock();
+        let guard = PCM.lock();
+        let Some(p) = guard.iter().find(|p| p.owner == owner) else {
+            return err(Errno::Enodev);
+        };
         (p.frame_bytes as u64, p.state, p.start_threshold)
     };
     if fb == 0 || frames == 0 { return 0; }
@@ -372,10 +463,20 @@ fn writei(arg: u64) -> i64 {
 
     // Auto-start once enough has been queued (snd_pcm start_threshold).
     if state == STATE_PREPARED {
-        let appl = PCM.lock().appl_ptr;
+        let appl = {
+            let guard = PCM.lock();
+            let Some(p) = guard.iter().find(|p| p.owner == owner) else {
+                return err(Errno::Enodev);
+            };
+            p.appl_ptr
+        };
         if appl + frames >= start_thr {
-            if !crate::ops::pcm_trigger(true) { return err(Errno::Eio); }
-            PCM.lock().state = STATE_RUNNING;
+            if !crate::ops::pcm_trigger(owner, true) { return err(Errno::Eio); }
+            let mut guard = PCM.lock();
+            let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+                return err(Errno::Enodev);
+            };
+            p.state = STATE_RUNNING;
             state = STATE_RUNNING;
         }
     }
@@ -388,14 +489,17 @@ fn writei(arg: u64) -> i64 {
     while done < bytes {
         let chunk = ((bytes - done) as usize).min(staged.len());
         for i in 0..chunk { staged[i] = src.r8(done as usize + i); }
-        let n = crate::ops::pcm_submit(&staged[..chunk]);
+        let n = crate::ops::pcm_submit(owner, &staged[..chunk]);
         if n == 0 { break; }
         done += n as u64;
         if n < chunk { break; }
     }
     let wrote_frames = done / fb;
     {
-        let mut p = PCM.lock();
+        let mut guard = PCM.lock();
+        let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else {
+            return err(Errno::Enodev);
+        };
         p.appl_ptr = p.appl_ptr.wrapping_add(wrote_frames) % BOUNDARY;
         p.hw_ptr = p.appl_ptr;
     }

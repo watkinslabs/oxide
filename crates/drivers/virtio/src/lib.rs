@@ -23,7 +23,28 @@ pub use pci::{
 };
 
 pub mod resources;
-pub use resources::{VirtQueueResource, VirtioResources, MAX_RESOURCE_QUEUES};
+pub use resources::{
+    VirtioChildDeviceKey, VirtioChildDriverId, VirtioChildModelIdentity, VirtioChildProbeFacts,
+    VirtioChildRequirements, VirtioChildResourceState, VirtioChildTransportSession,
+    VirtioNetBootPayloads, VirtioProbeLease, VirtioProbeOwnedFrames,
+    VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources, VirtioRuntimeHandoff,
+    VirtioRuntimeHandoffInput, VirtioTransportLocation, VirtioTransportProbeResult,
+    VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_CHILD_BUS,
+    VIRTIO_CHILD_CLASS, VIRTIO_MSI_NO_VECTOR, VIRTIO_VENDOR_ID, build_queue_resources,
+    build_runtime_handoff, push_unique_frame, virtio_child_addr, virtio_child_has_parent,
+    resolve_planned_notify_mappings, run_child_probe, run_child_remove, run_child_shutdown,
+};
+
+pub mod common_cfg;
+pub use common_cfg::{
+    bring_up_common_cfg, complete_driver_status, negotiate_features, read_status, reset_device,
+    scan_queue_sizes, set_driver_ok, set_failed, CommonCfgBringup, FeatureNegotiation,
+};
+
+pub mod queue_cfg;
+pub use queue_cfg::{
+    program_queue, program_queue_set, ProgrammedQueues, QueueRing, VirtioQueueAllocator,
+};
 
 pub mod queue;
 pub use queue::{

@@ -81,6 +81,7 @@ mod imp {
     const CFG_PORT1_TRANSLATE: u8 = 1 << 6; // scancode-set-1 translation
 
     static PRESENT: AtomicBool = AtomicBool::new(false);
+    static IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
     static BSP_APIC_ID: AtomicU64 = AtomicU64::new(0);
     static DEVICE_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
     static IRQ_VEC: AtomicU64 = AtomicU64::new(0);
@@ -265,7 +266,7 @@ mod imp {
     /// # SAFETY: IRQ context with the i8042 line owned by this driver.
     /// # C: O(bytes pending), <= 64 per interrupt.
     unsafe fn drain_irq() {
-        if !PRESENT.load(Ordering::Acquire) {
+        if !present() || !irq_enabled() {
             return;
         }
         let mut n = 0u32;
@@ -347,6 +348,7 @@ mod imp {
         IRQ_PIN.store(pin as u64, Ordering::Release);
         // SAFETY: the IRQ handler/vector/redirection entry are installed.
         if !unsafe { set_controller_irq(true) } {
+            IRQ_ENABLED.store(false, Ordering::Release);
             let pin = IRQ_PIN.swap(u64::MAX, Ordering::AcqRel);
             if pin != u64::MAX {
                 // SAFETY: I/O APIC was mapped before IRQ_PIN was published.
@@ -358,6 +360,7 @@ mod imp {
             }
             return false;
         }
+        IRQ_ENABLED.store(true, Ordering::Release);
         // Drain any byte that arrived between scan enable and IRQ enable.
         unsafe { drain_irq(); }
         true
@@ -377,6 +380,7 @@ mod imp {
     /// # SAFETY: CPL=0 i8042 port I/O; driver-core remove owns teardown.
     /// # C: O(spin) bounded by controller response latency.
     unsafe fn bringdown() {
+        IRQ_ENABLED.store(false, Ordering::Release);
         // SAFETY: bounded CPL=0 port I/O to the i8042; no concurrent accessor.
         unsafe {
             let _ = set_controller_irq(false);
@@ -396,8 +400,33 @@ mod imp {
         PRESENT.store(false, Ordering::Release);
     }
 
+    /// Stop keyboard scan/IRQ delivery for terminal system shutdown while
+    /// keeping the bound platform device state intact.
+    /// # SAFETY: CPL=0 i8042 port I/O; driver-core shutdown owns quiesce.
+    /// # C: O(spin) bounded by controller response latency.
+    unsafe fn shutdown_hw() {
+        IRQ_ENABLED.store(false, Ordering::Release);
+        // SAFETY: bounded CPL=0 port I/O to the i8042; no concurrent accessor.
+        unsafe {
+            let _ = set_controller_irq(false);
+            let _ = kbd_cmd(KBD_DISABLE_SCAN);
+            flush_output();
+        }
+        let pin = IRQ_PIN.load(Ordering::Acquire);
+        if pin != u64::MAX {
+            // SAFETY: I/O APIC mapping was installed before IRQ_PIN was published.
+            unsafe { hal_x86_64::ioapic::mask(pin as u32); }
+        }
+    }
+
     /// True once the i8042 keyboard was detected by `Ps2KbdDriver::probe`. # C: O(1)
     pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
+
+    /// True while IRQ1 delivery may drain scancodes into the input pipeline.
+    /// Shutdown/remove clear this before masking hardware so late vectors see a
+    /// quiesced driver.
+    /// # C: O(1)
+    pub fn irq_enabled() -> bool { IRQ_ENABLED.load(Ordering::Acquire) }
 
     // Register the i8042 keyboard as a platform-bus driver. Binding runs the
     // hardware bring-up; failed detection leaves platform/i8042 unbound.
@@ -434,6 +463,14 @@ mod imp {
             }
             // SAFETY: driver-core remove owns the bound platform/i8042 device.
             unsafe { bringdown(); }
+        }
+
+        fn shutdown(&self, _dev: &drv::Device) {
+            if !present() {
+                return;
+            }
+            // SAFETY: driver-core shutdown owns terminal platform-device quiesce.
+            unsafe { shutdown_hw(); }
         }
     }
     static PS2_DRV: Ps2KbdDriver = Ps2KbdDriver;

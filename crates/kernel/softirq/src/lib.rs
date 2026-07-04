@@ -46,6 +46,9 @@ pub enum Slot {
     /// AF_VSOCK. Raised by the MSI dispatcher; the handler is installed
     /// by the virtio-vsock driver probe.
     VsockRx = 3,
+    /// virtio-snd: drain EVENTQ used-ring entries. Raised by the
+    /// virtio-snd queue-1 MSI callback.
+    SndEvent = 4,
 }
 
 const N_SLOTS: usize = 32;

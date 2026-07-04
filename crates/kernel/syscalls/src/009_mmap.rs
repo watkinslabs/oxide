@@ -4,6 +4,35 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+struct DrmDumbBacking {
+    pin: drm::dumb::DumbMmapPin,
+}
+
+impl vmm::FileBacking for DrmDumbBacking {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> {
+        Err(())
+    }
+
+    fn size_hint(&self) -> u64 { self.pin.size }
+
+    fn ino(&self) -> u64 {
+        0xD000_0000u64 | ((self.pin.card_id as u64) << 32) | self.pin.handle as u64
+    }
+
+    fn shared_frame(&self, off: u64) -> Option<u64> {
+        if (off & 0xfff) != 0 || off >= self.pin.size {
+            return None;
+        }
+        Some(self.pin.pa + off)
+    }
+}
+
+impl Drop for DrmDumbBacking {
+    fn drop(&mut self) {
+        drm::dumb::unpin_mmap(self.pin);
+    }
+}
+
 /// # C: O(log N_vmas)
 pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd     = args.a4 as i64;
@@ -43,13 +72,17 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         };
         let inode = file.inode();
         // DRM dumb buffers: the `offset` is a MODE_MAP_DUMB cookie that
-        // selects the buffer (not a within-buffer byte offset). The
-        // PhysRange base must equal the buffer's PA, so pass file_off=0
-        // to glue_mmap. Try DRM first; fall through to fbdev, then to
-        // a page-cache file-backing.
-        if let Some((pa, len)) = drm::node::mmap_backing(inode, offset) {
-            if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, 0, None, Some(pa)) {
+        // selects the buffer. Pin the dumb handle for the VMA lifetime and map
+        // it through the file-backed shared-frame path so PTE refs keep pages
+        // alive until munmap/AS teardown.
+        if let Some(pin) = drm::node::pin_mmap_backing(inode, offset) {
+            if (flags & MAP_SHARED) == 0 || args.a1 > pin.size {
+                drm::dumb::unpin_mmap(pin);
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            let drm_backing: alloc::sync::Arc<dyn vmm::FileBacking> =
+                alloc::sync::Arc::new(DrmDumbBacking { pin });
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, 0, Some(drm_backing), None) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };

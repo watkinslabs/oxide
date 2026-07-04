@@ -4,13 +4,23 @@
 // when the queue is empty (matching real evdev semantics — X11,
 // Wayland, evdev, libinput etc. all rely on blocking reads).
 
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use alloc::collections::VecDeque;
 use core::sync::atomic::Ordering;
 
+#[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
 use sync::{Spinlock, TaskList as TaskListClass};
+
+#[cfg(test)]
+pub struct WaitList;
+#[cfg(test)]
+impl WaitList {
+    pub const fn new() -> Self { Self }
+    pub fn wake_one(&self) {}
+    pub unsafe fn park(&self) {}
+}
 
 /// One `struct input_event` per Linux input.h (24 B on 64-bit).
 #[repr(C)]
@@ -86,7 +96,10 @@ impl EvdevQueue {
             // SAFETY: caller is running task; preempt-off; WaitList::park bumps Arc + marks Sleeping before we schedule.
             unsafe { self.waiters.park(); }
             // SAFETY: process ctx; runqueue installed; preempt-off; current is Sleeping so schedule won't re-enqueue until a push wakes us.
+            #[cfg(target_os = "oxide-kernel")]
             unsafe { sched::live::schedule::schedule(); }
+            #[cfg(test)]
+            return 0;
         }
     }
 }

@@ -169,11 +169,9 @@ pub fn register_static_files() {
         "/sys/devices/system/cpu",
         crate::syscpu::make_syscpu_root(),
     );
-    sysfs::register_dir("/sys/class/misc/autofs");
-    sysfs::register(
-        "/sys/class/misc/autofs/dev",
-        StaticFileInode::new(b"10:236\n") as InodeRef,
-    );
+    // Dynamic sysfs class/device trees are registered by sysfs::init below.
+    // Device-model owned nodes such as /sys/class/misc/autofs must come from
+    // drv::try_device_add, not static procfs-era registrations.
     // /sys/class/net dynamic — readdir walks the live netdev registry,
     // lookup synthesises per-iface attribute files from the NetDev trait
     // (address/mtu/operstate/type/flags/carrier/speed/duplex/ifindex/...).

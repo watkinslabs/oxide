@@ -21,12 +21,11 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // Submodule named `virtio_drv` (not `virtio`) so it doesn't shadow
 // the external `virtio` crate dependency referenced elsewhere in this
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
+mod virtio_bus;
+mod virtio_child;
 mod virtio_drv;
-mod virtio_qsetup;
-mod virtio_blk_cfg;
-mod virtio_vsock_cfg;
-mod virtio_snd_cfg;
 mod virtio_trace;
+mod virtio_transport;
 
 /// Monotonic virtio-bus sequence (`virtioN` naming) assigned in
 /// enumeration order, mirroring Linux's virtio-pci registration.
@@ -34,8 +33,8 @@ static VIRTIO_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32
 /// Next virtio bus index. # C: O(1)
 fn virtio_seq() -> u32 { VIRTIO_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed) }
 
-/// Register PCI model drivers known at boot. Matching and probe are still
-/// driven by `drv::auto_bind` on each enumerated PCI device.
+/// Register PCI model drivers known at boot. Matching and probe are driven by
+/// driver-core attachment from `register_driver` and `device_add`.
 /// # C: O(N_drivers)
 fn register_pci_model_drivers() {
     drv::register_driver(&drv_nvme::NVME_DRIVER);
@@ -129,7 +128,13 @@ fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
     };
     resources
         .iter()
-        .filter_map(|r| r.map(|r| drv::Resource { start: r.start, end: r.end, flags: r.flags }))
+        .enumerate()
+        .filter_map(|(bar, r)| r.map(|r| drv::Resource {
+            bar: bar as u8,
+            start: r.start,
+            end: r.end,
+            flags: r.flags,
+        }))
         .collect()
 }
 
@@ -358,10 +363,9 @@ pub fn enumerate_and_log() {
             | ((d.subclass as u32) << 8) | (d.prog_if as u32);
         let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
             0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
-        let pci_dev = drv::device_add(alloc::sync::Arc::new(
-            drv::Device::new("pci", addr, d.vendor_id, d.device_id, class24)
-                .with_resources(pci_resources_arch(d.bdf))));
-        let _ = drv::auto_bind(&pci_dev);
+        if publish_pci_model_device(d, addr, class24).is_none() {
+            continue;
+        }
     }
 
     // F40 + F57: brief IRQ unmask window so any MSIs queued during
@@ -411,18 +415,19 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
 
-    // F59-15: install the default L2/netlink route state for the netdev
+    // F59-15: install the default L2/netlink route state for every netdev
     // already registered by virtio-net's model probe.
-    if let Some(id) = drv_virtio_net::modern::registered_iface() {
-            let stack = net::sock::stack();
-
-            let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
-            ::netlink::rtnetlink::seed_defaults(Some(id.0), lo_idx);
+    {
+        let stack = net::sock::stack();
+        let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
+        ::netlink::rtnetlink::seed_defaults(None, lo_idx);
+        if let Some(lo_idx) = lo_idx {
+            ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
+        }
+        for (_device_key, id) in drv_virtio_net::modern::registered_ifaces() {
             ::netlink::rtnetlink::seed_default_routes(id.0);
-            if let Some(lo_idx) = lo_idx {
-                ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
-            }
             let _ = stack.send_router_solicitation(id, net::Ipv6Addr::ANY);
+        }
     }
 
     debug_boot! {
@@ -509,5 +514,27 @@ pub fn enumerate_and_log() {
             klog::write_dec_u64((uart_after - uart_before) as u64);
             klog::write_raw(b"\n");
         }
+    }
+}
+
+fn publish_pci_model_device(
+    d: &pci::PciDevice,
+    addr: alloc::string::String,
+    class24: u32,
+) -> Option<alloc::sync::Arc<drv::Device>> {
+    let dev = alloc::sync::Arc::new(
+        drv::Device::new("pci", addr.clone(), d.vendor_id, d.device_id, class24)
+            .with_resources(pci_resources_arch(d.bdf)),
+    );
+    match drv::try_device_add(dev) {
+        Ok(dev) => Some(dev),
+        Err(drv::Error::Busy) => drv::devices().into_iter().find(|dev| {
+            dev.bus == "pci"
+                && dev.addr.as_str() == addr.as_str()
+                && dev.vendor_id == d.vendor_id
+                && dev.device_id == d.device_id
+                && dev.class == class24
+        }),
+        Err(_) => None,
     }
 }

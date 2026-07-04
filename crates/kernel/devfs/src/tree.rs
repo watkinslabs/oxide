@@ -25,7 +25,7 @@ static ROOTS: Spinlock<BTreeMap<u64, Arc<PseudoDir>>, TaskListClass> = Spinlock:
 
 /// Get-or-create the root `PseudoDir` for namespace `ns` (path = "").
 /// D17/D19: devfs no longer overlays the ext4 rootfs at all. `/dev` is FULLY
-/// populated by `drv::device_add` + the boot `register`/`register_dir` nodes
+/// populated by `drv::try_device_add` + the boot `register`/`register_dir` nodes
 /// (the rootfs image ships ZERO `/dev` device nodes), and `/etc`'s 7 former
 /// runtime-synthetic files now ship as real rootfs ext4 files
 /// (`tools/xtask/src/rootfs_etc.rs`), so the directory-overlay machinery is
