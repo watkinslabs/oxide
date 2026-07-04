@@ -229,6 +229,26 @@ impl VsockTable {
         }
     }
 
+    /// Mark one owner's live connections closed, remove only those connection
+    /// records, and prune that owner's accept backlog entries. Other transport
+    /// owners must keep running across a single device remove.
+    /// # C: O(N conns + N listeners + backlog)
+    pub fn close_owner(&self, owner: u32) {
+        let mut conns = self.conns.lock();
+        for c in conns.iter().filter(|c| c.owner == owner) {
+            *c.st.lock() = VsockState::Closed;
+            #[cfg(target_os = "oxide-kernel")]
+            c.waiters.wake_all();
+        }
+        conns.retain(|c| c.owner != owner);
+        let listeners = self.listeners.lock();
+        for l in listeners.iter() {
+            l.backlog.lock().retain(|k| k.owner != owner);
+            #[cfg(target_os = "oxide-kernel")]
+            l.accept_waiters.wake_all();
+        }
+    }
+
     /// Register a listener on `port`. # C: O(1)
     pub fn add_listener(&self, port: u32) {
         let mut g = self.listeners.lock();
