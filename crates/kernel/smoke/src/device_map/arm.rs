@@ -1,6 +1,7 @@
 use super::{device_flags, KERNEL_DEVICE_BASE};
 use hal::{MmuOps, Pa, PageSize, Va};
 
+#[path = "its.rs"]
 mod its;
 
 /// GIC distributor base on QEMU virt (matches MADT log; same address

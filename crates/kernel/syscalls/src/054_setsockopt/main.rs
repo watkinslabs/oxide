@@ -14,6 +14,7 @@ use crate::net_trace::trace_enotsock_at;
 use super::multicast::{
     SourceOp, ipv4_group_filter, ipv4_mcast_group_req, ipv4_mcast_group_source_req,
     ipv4_mcast_if, ipv4_mcast_membership, ipv4_mcast_source_req, ipv6_mcast_membership,
+    ipv4_msfilter,
 };
 use super::uapi::*;
 

@@ -427,4 +427,3 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, fd: i32, req: u64, arg: u64) ->
         },
     }
 }
-}

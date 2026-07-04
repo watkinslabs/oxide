@@ -11,6 +11,7 @@ mod robust;
 mod wait;
 mod waitv;
 
+pub use core::FUTEX_PRIVATE_FLAG;
 pub use ops::{cmp_requeue, requeue, wake_op};
 pub use robust::exit_robust_list;
 pub use wait::{dispatch, dispatch_timed};

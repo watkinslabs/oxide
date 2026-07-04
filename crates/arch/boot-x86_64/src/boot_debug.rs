@@ -14,6 +14,14 @@ use crate::uart::{Uart16550, COM1};
 static BOOT_UART: Spinlock<Uart16550, UartClass>
     = Spinlock::new(Uart16550::new(COM1));
 
+/// Initialise the boot UART before installing it as the klog sink.
+/// # SAFETY: boot-only, single-CPU, before any concurrent UART user exists.
+#[cfg(feature = "debug-boot")]
+pub(crate) unsafe fn init_boot_uart() {
+    // SAFETY: caller guarantees boot-only, single-CPU ownership of COM1.
+    unsafe { BOOT_UART.lock().init(); }
+}
+
 /// klog `LogSink` adapter — drives `BOOT_UART` for every byte slice
 /// klog emits. Registered via `klog::set_byte_sink` from
 /// `_start_rust` after `BOOT_UART::init()`.
@@ -24,7 +32,7 @@ static BOOT_UART: Spinlock<Uart16550, UartClass>
 /// holder were preempted by an IRQ that itself klogs.
 /// # C: O(len)
 #[cfg(feature = "debug-boot")]
-fn boot_emit(bytes: &[u8]) {
+pub(crate) fn boot_emit(bytes: &[u8]) {
     let mut g = BOOT_UART.lock_irqsave::<hal_x86_64::X86IrqGate>();
     g.write_bytes(bytes);
 }
@@ -32,7 +40,7 @@ fn boot_emit(bytes: &[u8]) {
 /// klog clock thunk — surfaces `X86TimerOps::monotonic_ns` as the
 /// `klog::ClockFn` after `set_tsc_khz` calibration.
 /// # C: O(1)
-fn now_ns_x86() -> u64 {
+pub(crate) fn now_ns_x86() -> u64 {
     use hal::TimerOps;
     hal_x86_64::X86TimerOps::monotonic_ns().0
 }
@@ -49,7 +57,7 @@ fn now_ns_x86() -> u64 {
 /// 0xA0/0xA1 are the always-present legacy PIC registers on the q35
 /// target. # C: O(1) # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
-unsafe fn remap_and_mask_pic() {
+pub(crate) unsafe fn remap_and_mask_pic() {
     // # SAFETY: single byte `out` to a legacy PIC port; no memory effect.
     unsafe fn outb(port: u16, val: u8) {
         // SAFETY: port-mapped I/O to the legacy 8259 PIC during single-CPU boot with IRQs masked; the q35 machine always wires these ports.
@@ -76,7 +84,7 @@ unsafe fn remap_and_mask_pic() {
 /// and 0x80000002..0x80000004 (brand) and emits both via klog.
 /// # C: O(1)
 #[cfg(feature = "debug-boot")]
-fn log_cpu_info() {
+pub(crate) fn log_cpu_info() {
     let v = hal_x86_64::cpuid_vendor();
     klog::write_raw(b"[INFO]  cpu vendor: ");
     klog::write_raw(&v);
@@ -94,4 +102,3 @@ fn log_cpu_info() {
     klog::write_hex_u64(hal_x86_64::read_efer());
     klog::write_raw(b"\n");
 }
-

@@ -4,11 +4,11 @@ use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 use super::TransportMappings;
 
 #[derive(Clone, Copy)]
-pub(super) struct MsixBinding {
+pub(crate) struct MsixBinding {
     id: u32,
     entry_va: u64,
     cap_off: u8,
-    pub(super) queue_vector: u16,
+    pub(crate) queue_vector: u16,
 }
 
 struct TransportRecord {
@@ -21,7 +21,7 @@ struct TransportRecord {
 static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
     Spinlock::new(Vec::new());
 
-pub(super) fn bind_msix_vector(
+pub(crate) fn bind_msix_vector(
     d: &pci::PciDevice,
     caps: &pci::heapless_caps::CapVec,
     bars: &[pci::Bar; 6],
@@ -67,7 +67,7 @@ pub(super) fn bind_msix_vector(
     })
 }
 
-pub(super) fn release_msix_binding(bdf: pci::Bdf, binding: MsixBinding) {
+fn release_msix_binding(bdf: pci::Bdf, binding: MsixBinding) {
     // SAFETY: entry_va was recorded from the MSI-X table mapping while the
     // transport was bound and is still mapped until the caller releases the
     // transport MMIO mappings.
@@ -78,14 +78,14 @@ pub(super) fn release_msix_binding(bdf: pci::Bdf, binding: MsixBinding) {
     free_msi_id(binding.id);
 }
 
-pub(super) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBinding>) {
+pub(crate) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBinding>) {
     let bindings = core::mem::take(bindings);
     for binding in bindings {
         release_msix_binding(bdf, binding);
     }
 }
 
-pub(super) fn publish_transport_record(
+pub(crate) fn publish_transport_record(
     bdf: u32,
     mappings: TransportMappings,
     vring_frames: Vec<u64>,
@@ -105,7 +105,7 @@ pub(super) fn publish_transport_record(
     records.push(rec);
 }
 
-pub(super) fn unpublish_transport_record(bdf: u32) {
+pub(crate) fn unpublish_transport_record(bdf: u32) {
     let rec = {
         let mut records = TRANSPORT_MMIO.lock();
         records
@@ -137,7 +137,7 @@ fn release_transport_record(rec: TransportRecord) {
     }
 }
 
-pub(super) fn release_failed_probe(cfg_va: u64, frames: &[u64]) {
+pub(crate) fn release_failed_probe(cfg_va: u64, frames: &[u64]) {
     virtio::reset_device(cfg_va);
     for frame in frames.iter().copied() {
         if frame == 0 {
@@ -151,7 +151,7 @@ pub(super) fn release_failed_probe(cfg_va: u64, frames: &[u64]) {
     }
 }
 
-pub(super) fn disable_pci_command(bdf: pci::Bdf) {
+pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
     #[cfg(target_arch = "x86_64")]
     {
         let r = hal_x86_64::pci::LegacyPci;

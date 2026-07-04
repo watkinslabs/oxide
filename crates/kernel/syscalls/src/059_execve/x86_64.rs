@@ -29,7 +29,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
 /// caller has already produced `path_owned` from whatever source.
 /// # SAFETY: dispatch ctx, IRQs masked.
 /// # C: O(phdrs) + O(N_vmas) + O(1)
-pub(crate) fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
+pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     use hal::UserVirtAddr;
     use vmm::{AddressSpace, VmaBacking, VmaProt};
 
