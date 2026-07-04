@@ -1074,7 +1074,10 @@ fn frame_bytes(format: u8, channels: u8) -> usize {
 /// masks. Drive the ALSA `hw_params` refinement. None until installed.
 /// # C: O(1)
 pub fn pcm_caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
-    active_ctx_for(&CTX.lock(), owner).map(|c| (c.out_formats, c.out_rates, c.out_ch_min, c.out_ch_max))
+    active_ctx_for(&CTX.lock(), owner).and_then(|c| {
+        c.out_stream?;
+        Some((c.out_formats, c.out_rates, c.out_ch_min, c.out_ch_max))
+    })
 }
 
 /// Default period (fragment) size in bytes the TXQ transfers. # C: O(1)
@@ -1269,7 +1272,10 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
 /// INPUT-stream hw capabilities `(formats, rates, ch_min, ch_max)`. None
 /// until installed. # C: O(1)
 pub fn cap_caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
-    active_ctx_for(&CTX.lock(), owner).map(|c| (c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))
+    active_ctx_for(&CTX.lock(), owner).and_then(|c| {
+        c.in_stream?;
+        Some((c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))
+    })
 }
 
 /// The default INPUT (capture) stream id, or None. # C: O(1)
@@ -1472,6 +1478,39 @@ mod tests {
         assert_eq!(LAST_EVENT.load(Ordering::Relaxed), 0xbbbb_0000_0000_0003);
         assert_eq!(eventq_state_for(key(0x0010_0000)), Some((8, 0, 0)));
         assert_eq!(eventq_state_for(key(0x0020_0000)), Some((8, 0, 0)));
+        reset_test_state();
+    }
+
+    #[test]
+    fn caps_exist_only_for_scanned_stream_directions() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        let owner = sound_owner(key(0x0010_0000));
+        let mut c = ctx(key(0x0010_0000));
+        CTX.lock().push(c);
+        assert!(pcm_caps(owner).is_none());
+        assert!(cap_caps(owner).is_none());
+
+        c = remove_ctx(key(0x0010_0000)).expect("context must be present").0;
+        c.out_stream = Some(0);
+        c.out_formats = 1 << VIRTIO_SND_PCM_FMT_S16;
+        c.out_rates = 1 << VIRTIO_SND_PCM_RATE_44100;
+        CTX.lock().push(c);
+        assert_eq!(
+            pcm_caps(owner),
+            Some((1 << VIRTIO_SND_PCM_FMT_S16, 1 << VIRTIO_SND_PCM_RATE_44100, 1, 2))
+        );
+        assert!(cap_caps(owner).is_none());
+
+        c = remove_ctx(key(0x0010_0000)).expect("context must be present").0;
+        c.in_stream = Some(1);
+        c.in_formats = 1 << VIRTIO_SND_PCM_FMT_S16;
+        c.in_rates = 1 << VIRTIO_SND_PCM_RATE_44100;
+        CTX.lock().push(c);
+        assert_eq!(
+            cap_caps(owner),
+            Some((1 << VIRTIO_SND_PCM_FMT_S16, 1 << VIRTIO_SND_PCM_RATE_44100, 1, 2))
+        );
         reset_test_state();
     }
 

@@ -131,8 +131,8 @@ pub fn handle(owner: u32, card: u32, nr: u64, arg: u64) -> i64 {
             Some(b) => { b.w32(0, SNDRV_CTL_VERSION); 0 } None => err(Errno::Efault),
         },
         CTL_CARD_INFO => card_info(card, arg),
-        CTL_PCM_NEXT_DEVICE => pcm_next_device(arg),
-        CTL_PCM_INFO => pcm_info(card, arg),
+        CTL_PCM_NEXT_DEVICE => pcm_next_device(owner, arg),
+        CTL_PCM_INFO => pcm_info(owner, card, arg),
         CTL_ELEM_LIST => elem_list(arg),
         CTL_SUBSCRIBE => subscribe(owner, arg),
         CTL_ELEM_INFO => elem_info(arg),
@@ -156,29 +156,38 @@ fn card_info(card: u32, arg: u64) -> i64 {
 }
 
 /// SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE: given a starting device number, return
-/// the next existing one (or -1). We have exactly device 0 (playback).
-fn pcm_next_device(arg: u64) -> i64 {
+/// the next existing one (or -1). ALSA device 0 exists when the card has
+/// either playback or capture caps registered.
+fn pcm_next_device(owner: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
     let from = b.r32(0) as i32;
-    let next: i32 = if from <= 0 { 0 } else { -1 };
+    let has_device = crate::ops::pcm_caps(owner).is_some() || crate::ops::cap_caps(owner).is_some();
+    let next: i32 = if has_device && from <= 0 { 0 } else { -1 };
     b.w32(0, next as u32);
     0
 }
 
 /// SNDRV_CTL_IOCTL_PCM_INFO: fill snd_pcm_info for the device/stream selected
-/// in the struct's `device`/`stream` fields. Only device 0 / playback exists.
-fn pcm_info(card: u32, arg: u64) -> i64 {
+/// in the struct's `device`/`stream` fields. Device 0 exposes the playback
+/// and capture streams that the registered card ops report.
+fn pcm_info(owner: u32, card: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let device = b.r32(PI_DEVICE);
     let stream = b.r32(PI_STREAM) as i32;
-    if device != 0 || stream != STREAM_PLAYBACK { return err(Errno::Enoent); }
+    let available = match stream {
+        STREAM_PLAYBACK => crate::ops::pcm_caps(owner).is_some(),
+        STREAM_CAPTURE => crate::ops::cap_caps(owner).is_some(),
+        _ => false,
+    };
+    if device != 0 || !available { return err(Errno::Enoent); }
     b.zero(0, PCM_INFO_SIZE);
     b.w32(PI_DEVICE, 0);
     b.w32(PI_SUBDEVICE, 0);
-    b.w32(PI_STREAM, STREAM_PLAYBACK as u32);
+    b.w32(PI_STREAM, stream as u32);
     b.w32(PI_CARD, card);
     b.wstr(PI_ID, b"virtio-snd", 64);
-    b.wstr(PI_NAME, b"virtio-snd PCM", 80);
+    let name = if stream == STREAM_CAPTURE { b"virtio-snd PCM Capture".as_slice() } else { b"virtio-snd PCM Playback".as_slice() };
+    b.wstr(PI_NAME, name, 80);
     b.wstr(PI_SUBNAME, b"subdevice #0", 32);
     b.w32(PI_SUBDEVICES_COUNT, 1);
     b.w32(PI_SUBDEVICES_AVAIL, 1);
@@ -359,6 +368,42 @@ mod tests {
     fn put_id(buf: &mut [u8], numid: u32) {
         put_u32(buf, CEI_NUMID, numid);
         put_u32(buf, CEI_IFACE, CTL_ELEM_IFACE_MIXER);
+    }
+
+    #[test]
+    fn control_pcm_info_reports_playback_and_capture_streams() {
+        let owner = 0x5102;
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
+        assert!(crate::reserve_card(owner));
+        assert!(crate::ops::register(owner, &TEST_OPS));
+
+        let mut info = [0u8; PCM_INFO_SIZE];
+        put_u32(&mut info, PI_DEVICE, 0);
+        put_u32(&mut info, PI_STREAM, STREAM_PLAYBACK as u32);
+        assert_eq!(handle(owner, 3, CTL_PCM_INFO, info.as_mut_ptr() as u64), 0);
+        assert_eq!(u32_at(&info, PI_DEVICE), 0);
+        assert_eq!(u32_at(&info, PI_STREAM), STREAM_PLAYBACK as u32);
+        assert_eq!(u32_at(&info, PI_CARD), 3);
+
+        info.fill(0);
+        put_u32(&mut info, PI_DEVICE, 0);
+        put_u32(&mut info, PI_STREAM, STREAM_CAPTURE as u32);
+        assert_eq!(handle(owner, 3, CTL_PCM_INFO, info.as_mut_ptr() as u64), 0);
+        assert_eq!(u32_at(&info, PI_DEVICE), 0);
+        assert_eq!(u32_at(&info, PI_STREAM), STREAM_CAPTURE as u32);
+        assert_eq!(u32_at(&info, PI_CARD), 3);
+
+        info.fill(0);
+        put_u32(&mut info, PI_DEVICE, 0);
+        put_u32(&mut info, PI_STREAM, 99);
+        assert_eq!(
+            handle(owner, 3, CTL_PCM_INFO, info.as_mut_ptr() as u64),
+            -(Errno::Enoent.as_i32() as i64)
+        );
+
+        let _ = crate::ops::clear(owner);
+        let _ = crate::cancel_card_reservation(owner);
     }
 
     #[test]
