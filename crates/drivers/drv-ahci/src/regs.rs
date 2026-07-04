@@ -149,6 +149,39 @@ pub fn identify_sector_size(words: &[u16]) -> u32 {
     512
 }
 
+/// Decode the ATA IDENTIFY DEVICE serial field (words 10..19). ATA strings
+/// store each two-byte word with characters in high-byte, low-byte order even
+/// though the word itself is little-endian in memory. Leading/trailing space
+/// and NUL padding is not part of the identity. Returns the decoded bytes and
+/// valid length; an all-padding field returns length 0. # C: O(1)
+pub fn identify_serial(words: &[u16]) -> ([u8; 20], usize) {
+    let mut raw = [0u8; 20];
+    let mut i = 0usize;
+    while i < 10 {
+        let w = words[10 + i];
+        raw[i * 2] = (w >> 8) as u8;
+        raw[i * 2 + 1] = (w & 0xff) as u8;
+        i += 1;
+    }
+
+    let mut start = 0usize;
+    while start < raw.len() && (raw[start] == b' ' || raw[start] == 0) {
+        start += 1;
+    }
+    let mut end = raw.len();
+    while end > start && (raw[end - 1] == b' ' || raw[end - 1] == 0) {
+        end -= 1;
+    }
+
+    let mut out = [0u8; 20];
+    let mut len = 0usize;
+    while start + len < end {
+        out[len] = raw[start + len];
+        len += 1;
+    }
+    (out, len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +280,23 @@ mod tests {
         w[106] = (1 << 14) | (1 << 12);
         w[117] = 2048; w[118] = 0; // 2048 words = 4096 bytes
         assert_eq!(identify_sector_size(&w), 4096);
+    }
+
+    #[test]
+    fn identify_serial_decodes_ata_word_swapped_ascii() {
+        let mut w = [0u16; 256];
+        let serial = *b"  OXIDE-AHCI-0001   ";
+        for i in 0..10 {
+            w[10 + i] = ((serial[i * 2] as u16) << 8) | serial[i * 2 + 1] as u16;
+        }
+        let (decoded, len) = identify_serial(&w);
+        assert_eq!(&decoded[..len], b"OXIDE-AHCI-0001");
+    }
+
+    #[test]
+    fn identify_serial_all_padding_is_absent() {
+        let w = [0x2020u16; 256];
+        let (_decoded, len) = identify_serial(&w);
+        assert_eq!(len, 0);
     }
 }

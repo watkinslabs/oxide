@@ -10,6 +10,8 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::string::String;
+
 use crate::regs;
 use mmio_map::Mapping;
 
@@ -70,6 +72,8 @@ pub struct Ahci {
     /// Disk geometry harvested at IDENTIFY.
     pub sectors:   u64,
     pub blk_size:  u32,
+    /// ATA IDENTIFY DEVICE serial, if the device reports a non-padding value.
+    pub serial:    Option<String>,
 }
 
 // SAFETY justification: Ahci holds raw PAs/VAs into HHDM/MMIO stable for the
@@ -244,7 +248,7 @@ impl Ahci {
         let mut a = Ahci {
             mmio, abar_va, port,
             clb_pa: clb, fb_pa: fb, ctba_pa: ct, bounce_pa: bnc,
-            sectors: 0, blk_size: 512,
+            sectors: 0, blk_size: 512, serial: None,
         };
 
         // Stop the port, program the bases, restart it.
@@ -402,6 +406,16 @@ impl Ahci {
         unsafe { for i in 0..256 { words[i] = core::ptr::read_volatile(p.add(i)); } }
         self.sectors = regs::identify_sector_count(&words);
         self.blk_size = regs::identify_sector_size(&words);
+        let (serial, serial_len) = regs::identify_serial(&words);
+        self.serial = if serial_len == 0 {
+            None
+        } else {
+            let mut s = String::new();
+            for b in &serial[..serial_len] {
+                s.push(*b as char);
+            }
+            Some(s)
+        };
         self.sectors > 0
     }
 

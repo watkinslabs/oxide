@@ -233,6 +233,7 @@ mod imp {
         }};
         let blk_size = a.blk_size;
         let capacity = a.sectors;
+        let serial = a.serial.clone();
 
         #[cfg(feature = "debug-boot")]
         {
@@ -263,7 +264,7 @@ mod imp {
         let block_dev: Arc<dyn BlockDevice> = dev.clone();
         let name = sd_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
         let existed = block::registry::by_name(&name).is_some();
-        let idx = block::registry::register_with_serial(&name, None, block_dev);
+        let idx = block::registry::register_with_serial(&name, serial.as_deref(), block_dev);
         let published = if idx != 0 && !existed {
             let mut devices = DEVICES.lock();
             if devices.iter().any(|rec| rec.device_key == device_key) {
