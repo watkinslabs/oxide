@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 60% complete.
+  hotplug, fault injection, and multi-device coverage: about 61% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -384,7 +384,9 @@ test-pass claims.
   net boot payload buffers, q1 notify mapping, ISR sampling, used-ring
   sampling, and queue-resource assembly now runs through a single
   `VirtioProbeState` handoff builder instead of scattered local state in the
-  main probe body.
+  main probe body. COMMON_CFG and DEVICE_CFG BAR-window setup now belongs to
+  `VirtioProbeState::from_caps`, including required COMMON_CFG failure unwind,
+  instead of being hand-mapped in `virtio_init_arch`.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
