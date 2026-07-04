@@ -132,7 +132,7 @@ impl VirtioQueuePlan {
 pub struct VirtioTransportProfile {
     pub drv_features: u64,
     pub msix0_handler: Option<fn()>,
-    pub extra_queues: [Option<VirtioQueuePlan>; 3],
+    pub queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
     pub q1_notify_policy: VirtioQ1NotifyPolicy,
     pub needs_net_boot_buffers: bool,
     pub child_requirements: VirtioChildRequirements,
@@ -143,7 +143,7 @@ impl VirtioTransportProfile {
     pub const fn new(
         drv_features: u64,
         msix0_handler: Option<fn()>,
-        extra_queues: [Option<VirtioQueuePlan>; 3],
+        queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
         q1_notify_policy: VirtioQ1NotifyPolicy,
         needs_net_boot_buffers: bool,
         child_requirements: VirtioChildRequirements,
@@ -151,7 +151,7 @@ impl VirtioTransportProfile {
         Self {
             drv_features,
             msix0_handler,
-            extra_queues,
+            queue_plans,
             q1_notify_policy,
             needs_net_boot_buffers,
             child_requirements,
@@ -163,7 +163,7 @@ impl VirtioTransportProfile {
         Self::new(
             drv_features,
             msix0_handler,
-            [None, None, None],
+            [None, None, None, None, None, None, None, None],
             VirtioQ1NotifyPolicy::None,
             false,
             VirtioChildRequirements::q0(),
@@ -175,7 +175,7 @@ impl VirtioTransportProfile {
         Self::new(
             drv_features,
             msix0_handler,
-            [None, None, None],
+            [None, None, None, None, None, None, None, None],
             VirtioQ1NotifyPolicy::None,
             false,
             VirtioChildRequirements::q0_device_cfg(),
@@ -187,7 +187,16 @@ impl VirtioTransportProfile {
         Self::new(
             drv_features,
             msix0_handler,
-            [Some(VirtioQueuePlan::new(1, None, false)), None, None],
+            [
+                None,
+                Some(VirtioQueuePlan::new(1, None, false)),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
             VirtioQ1NotifyPolicy::NetBootTx,
             true,
             VirtioChildRequirements::net(),
@@ -199,7 +208,16 @@ impl VirtioTransportProfile {
         Self::new(
             drv_features,
             msix0_handler,
-            [Some(VirtioQueuePlan::new(1, None, false)), None, None],
+            [
+                None,
+                Some(VirtioQueuePlan::new(1, None, false)),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
             VirtioQ1NotifyPolicy::PersistentTx,
             false,
             VirtioChildRequirements::q0_q1_device_cfg(),
@@ -216,9 +234,14 @@ impl VirtioTransportProfile {
             drv_features,
             msix0_handler,
             [
+                None,
                 Some(VirtioQueuePlan::new(1, event_handler, false)),
                 Some(VirtioQueuePlan::new(2, None, true)),
                 Some(VirtioQueuePlan::new(3, None, true)),
+                None,
+                None,
+                None,
+                None,
             ],
             VirtioQ1NotifyPolicy::PersistentEvent,
             false,
@@ -639,7 +662,7 @@ mod tests {
         assert_eq!(net.drv_features, 0x55);
         assert_eq!(net.q1_notify_policy, VirtioQ1NotifyPolicy::NetBootTx);
         assert!(net.needs_net_boot_buffers);
-        assert_eq!(net.extra_queues[0].map(|q| q.index), Some(1));
+        assert_eq!(net.queue_plans[1].map(|q| q.index), Some(1));
         assert!(net.child_requirements.needs_net_boot_payloads);
 
         let snd = VirtioTransportProfile::snd(0xaa, None, None);
@@ -648,10 +671,10 @@ mod tests {
             snd.q1_notify_policy,
             VirtioQ1NotifyPolicy::PersistentEvent
         );
-        assert_eq!(snd.extra_queues[0].map(|q| q.index), Some(1));
-        assert_eq!(snd.extra_queues[1].map(|q| q.index), Some(2));
-        assert_eq!(snd.extra_queues[2].map(|q| q.index), Some(3));
-        assert!(snd.extra_queues[1].map(|q| q.map_notify).unwrap_or(false));
+        assert_eq!(snd.queue_plans[1].map(|q| q.index), Some(1));
+        assert_eq!(snd.queue_plans[2].map(|q| q.index), Some(2));
+        assert_eq!(snd.queue_plans[3].map(|q| q.index), Some(3));
+        assert!(snd.queue_plans[2].map(|q| q.map_notify).unwrap_or(false));
         assert!(snd.child_requirements.needs_device_cfg);
     }
 

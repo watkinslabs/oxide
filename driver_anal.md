@@ -193,6 +193,10 @@ test-pass claims.
 - Planned virtio-pci extra-queue notify mappings are now stored by queue index
   instead of hard-coded q2/q3 fields, removing another queue-number special
   dispatch from the transport handoff path.
+- Shared virtio child transport profiles now store queue plans by virtqueue
+  index up to the shared resource queue limit instead of using a compact
+  q1/q2/q3 side table. The PCI transport consumes that indexed profile for
+  MSI-X binding, common-cfg queue programming, and planned notify mappings.
 - Shared `virtio::ProgrammedQueues` now exposes indexed queue lookup, and
   virtio-pci resource handoff assembles child-visible queue resources over the
   shared resource queue count instead of expanding q2/q3 resource locals in

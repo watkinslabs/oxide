@@ -250,9 +250,9 @@ impl VirtioPciRuntime {
         self,
         cfg_va: u64,
         q0_msix_vec: u16,
-        extra_queues: &[Option<virtio::VirtioQueuePlan>; 3],
+        queue_plans: &[Option<virtio::VirtioQueuePlan>],
     ) -> Option<ProgrammedQueues> {
-        program_queue_set(cfg_va, self.hhdm, q0_msix_vec, extra_queues)
+        program_queue_set(cfg_va, self.hhdm, q0_msix_vec, queue_plans)
     }
 
     fn post_net_rx_boot_buffer(self, q0_ring: Option<QueueRing>) -> NetRxBootBuffer {
@@ -438,14 +438,14 @@ impl VirtioProbeState {
         self.bind_msix_queue(d, caps, bars, VIRTIO_MSIX_Q0_VECTOR, handler)
     }
 
-    fn resolve_extra_queue_msix(
+    fn resolve_queue_plan_msix(
         &mut self,
         d: &pci::PciDevice,
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
-        extra_queues: &[Option<virtio::VirtioQueuePlan>; 3],
-    ) -> [Option<virtio::VirtioQueuePlan>; 3] {
-        let mut resolved = *extra_queues;
+        queue_plans: &[Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES],
+    ) -> [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES] {
+        let mut resolved = *queue_plans;
         for plan in resolved.iter_mut().flatten() {
             let msix_vec = self
                 .bind_msix_queue(d, caps, bars, plan.index, plan.msix_handler)
@@ -472,13 +472,13 @@ impl VirtioProbeState {
         } else {
             virtio::VIRTIO_MSI_NO_VECTOR
         };
-        let extra_queues = if negotiated.features_ok {
-            self.resolve_extra_queue_msix(d, caps, bars, &profile.extra_queues)
+        let queue_plans = if negotiated.features_ok {
+            self.resolve_queue_plan_msix(d, caps, bars, &profile.queue_plans)
         } else {
-            profile.extra_queues
+            profile.queue_plans
         };
         let programmed_queues = if negotiated.features_ok {
-            runtime.program_queue_set(self.cfg_va, q0_msix_vec, &extra_queues)
+            runtime.program_queue_set(self.cfg_va, q0_msix_vec, &queue_plans)
         } else {
             None
         };
@@ -552,9 +552,9 @@ impl VirtioProbeState {
         self.mappings.read_isr_status(isr_cap, bars)
     }
 
-    fn map_planned_extra_notifies(
+    fn map_planned_notifies(
         &mut self,
-        queue_plans: &[Option<virtio::VirtioQueuePlan>; 3],
+        queue_plans: &[Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES],
         programmed_queues: Option<&ProgrammedQueues>,
         notify_cap: Option<&virtio::VirtioPciCap>,
         bars: &[pci::Bar; 6],
@@ -617,8 +617,8 @@ impl VirtioProbeState {
         let q1_ring = programmed_queues.and_then(|p| p.queue(1));
         let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
 
-        let extra_notify_mappings =
-            self.map_planned_extra_notifies(&profile.extra_queues, programmed_queues, notify_cap, bars);
+        let planned_notify_mappings =
+            self.map_planned_notifies(&profile.queue_plans, programmed_queues, notify_cap, bars);
 
         let net_rx_boot = if profile.needs_net_boot_buffers
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
@@ -660,7 +660,7 @@ impl VirtioProbeState {
                 let notify_va = match index {
                     0 => q0_notify_va,
                     1 => q1_notify_va,
-                    _ => extra_notify_mappings.get(index),
+                    _ => planned_notify_mappings.get(index),
                 };
                 queue_resource(
                     index,
