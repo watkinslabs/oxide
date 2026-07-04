@@ -15,7 +15,7 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 76% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 77% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
@@ -96,7 +96,9 @@ test-pass claims.
   the installed transport. TX/RX queue cursors now live in the installed
   device state, the TX primitive has a BDF-keyed entry point, and the published
   `NetDev` now carries its owning device key instead of rediscovering the
-  singleton transport for every transmit.
+  singleton transport for every transmit. The RX softirq runtime is also keyed
+  to the owning transport, so softirq drains, ARP replies, and ARP/NDP neighbor
+  solicitations transmit through the device that owns the registered netdev.
 - Virtio-vsock remove is keyed to the owning parent BDF and clears its
   `VsockRx` bottom half only for the installed transport. The upper
   `net::vsock` layer is still a single global guest-CID/TX-hook protocol
@@ -154,9 +156,9 @@ test-pass claims.
 - Block, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
-  provider. Virtio-net teardown and transmit ownership are BDF-owned, but the
-  runtime/RX path still has a singleton installed-device slot and needs a real
-  per-net-device table.
+  provider. Virtio-net teardown, transmit ownership, and RX softirq routing are
+  BDF-owned, but the installed transport is still a singleton and it still needs
+  a real per-net-device table plus per-iface neighbor/runtime state.
   Virtio-gpu teardown is BDF-owned, but the installed DRM/scanout device is still
   singleton. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its

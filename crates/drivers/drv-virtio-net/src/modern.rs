@@ -172,7 +172,7 @@ pub fn uninstall_modern(device_key: u32) -> bool {
     uninstall_rx_softirq_handler();
     MODERN_PRESENT.store(false, Ordering::Release);
     REGISTERED_NETDEV.store(0, Ordering::Release);
-    SOFTIRQ_IFACE_AND_IP.store(0, Ordering::Release);
+    clear_rx_runtime();
     unregister_timers();
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
@@ -205,7 +205,7 @@ pub fn shutdown_modern(device_key: u32) -> bool {
     #[cfg(target_os = "oxide-kernel")]
     uninstall_rx_softirq_handler();
     MODERN_PRESENT.store(false, Ordering::Release);
-    SOFTIRQ_IFACE_AND_IP.store(0, Ordering::Release);
+    clear_rx_runtime();
     unregister_timers();
     if state.cfg_va != 0 {
         // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
@@ -448,9 +448,17 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
 pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
+    let Some(device_key) = softirq_device_key() else {
+        return 0;
+    };
+    poll_into_stack_for(device_key, iface, our_ip)
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
     let our_mac = match mac() { Some(m) => m, None => return 0 };
     let stack = net::sock::stack();
-    rx_poll(|f: &[u8]| {
+    rx_poll_for(device_key, |f: &[u8]| {
         if f.len() < 14 { return; }
         let et = ((f[12] as u16) << 8) | (f[13] as u16);
         // F137: tap full L2 frame to AF_PACKET sockets bound on this
@@ -475,7 +483,7 @@ pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
                             net::eth_p::ARP, &mut frame[..14],
                         );
                         frame[14..].copy_from_slice(&reply_body);
-                        let _ = tx_frame(&frame);
+                        let _ = tx_frame_for(device_key, &frame);
                     }
                 }
             }
@@ -574,7 +582,7 @@ pub fn register_netdev(device_key: u32) -> Option<net::NetIfaceId> {
     let stack = net::sock::stack();
     let id = stack.ifaces.register(dev as alloc::sync::Arc<dyn net::NetDev>);
     set_registered_iface(device_key, id);
-    install_rx_runtime(id);
+    install_rx_runtime(device_key, id);
     Some(id)
 }
 
@@ -618,7 +626,7 @@ impl net::NetDev for VirtioNetDev {
         // ARP; IPv6 misses send NDP NS. The current frame falls back
         // to broadcast, matching the older one-shot behavior until the
         // upper layer retries after the neighbor cache is warm.
-        let dst = resolve_next_hop_mac(self.mac, pkt.proto, body)
+        let dst = resolve_next_hop_mac(self.device_key, self.mac, pkt.proto, body)
             .unwrap_or(net::MacAddr([0xFF; 6]));
         let mut frame = alloc::vec![0u8; 14 + body.len()];
         net::ethernet::EthHdr::write_to(
@@ -719,31 +727,41 @@ pub fn is_modern_present_for(device_key: u32) -> bool {
 
 // ---- F87: softirq RX handler ----------------------------------------
 //
-// The model probe calls `install_rx_runtime(id)` after the NetDev is registered
-// with the kernel net stack. The MSI dispatcher raises NetRx on device MSI; the
-// runner drains the pending bit and invokes `rx_drain_softirq` (no-arg per the
-// softirq handler ABI), which forwards to `poll_into_stack` with the stashed
-// values. The IPv4 slot starts as 0.0.0.0 and is updated by normal address
-// configuration through `set_softirq_ip`.
+// The model probe calls `install_rx_runtime(device_key, id)` after the NetDev
+// is registered with the kernel net stack. The MSI dispatcher raises NetRx on
+// device MSI; the runner drains the pending bit and invokes `rx_drain_softirq`
+// (no-arg per the softirq handler ABI), which forwards to `poll_into_stack_for`
+// with the stashed owner key and iface values. The IPv4 slot starts as 0.0.0.0
+// and is updated by normal address configuration through
+// `set_softirq_ip_for_iface`.
 
-static SOFTIRQ_IFACE_AND_IP: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+#[derive(Clone, Copy)]
+struct RxRuntime {
+    device_key: u32,
+    iface: net::NetIfaceId,
+    ip: [u8; 4],
+}
+
+static RX_RUNTIME: Spinlock<Option<RxRuntime>, DriverLockClass> = Spinlock::new(None);
 
 /// Stash the iface id + IPv4 used by the RX softirq handler. Layout
-/// is `(iface_id as u64) << 32 | be32(ip)` — same encoding as the
-/// kthread arg. 0 = unset (handler is a no-op).
+/// is keyed by owning transport so RX drains cannot silently route through
+/// whichever virtio-net device happens to be globally installed.
 /// # C: O(1)
-pub fn set_softirq_iface(id: net::NetIfaceId, ip: [u8; 4]) {
-    let v = ((id.0 as u64) << 32) | (u32::from_be_bytes(ip) as u64);
-    SOFTIRQ_IFACE_AND_IP.store(v, Ordering::Release);
+pub fn set_softirq_iface(device_key: u32, id: net::NetIfaceId, ip: [u8; 4]) {
+    *RX_RUNTIME.lock() = Some(RxRuntime {
+        device_key,
+        iface: id,
+        ip,
+    });
 }
 
 /// Install runtime RX resources owned by this net driver: iface identity for
 /// the bottom half, ARP-GC timer, and NetRx softirq handler. IPv4 address
 /// state is filled later by the net address-change hook.
 /// # C: O(1)
-pub fn install_rx_runtime(id: net::NetIfaceId) {
-    set_softirq_iface(id, [0, 0, 0, 0]);
+pub fn install_rx_runtime(device_key: u32, id: net::NetIfaceId) {
+    set_softirq_iface(device_key, id, [0, 0, 0, 0]);
     register_timers();
     #[cfg(target_os = "oxide-kernel")]
     install_rx_softirq_handler();
@@ -775,16 +793,45 @@ pub fn uninstall_rx_softirq_handler() {
 /// queries from the host's slirp NAT.
 /// # C: O(1)
 pub fn set_softirq_ip(ip: [u8; 4]) {
-    let cur = SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire);
-    let v = (cur & 0xFFFF_FFFF_0000_0000) | (u32::from_be_bytes(ip) as u64);
-    SOFTIRQ_IFACE_AND_IP.store(v, Ordering::Release);
+    let mut runtime = RX_RUNTIME.lock();
+    if let Some(runtime) = runtime.as_mut() {
+        runtime.ip = ip;
+    }
+}
+
+/// F138: update only the IP slot for the named iface.
+/// # C: O(1)
+pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
+    let mut runtime = RX_RUNTIME.lock();
+    let Some(runtime) = runtime.as_mut() else {
+        return false;
+    };
+    if runtime.iface.raw() != id.raw() {
+        return false;
+    }
+    runtime.ip = ip;
+    true
 }
 
 /// F138: read the current stashed iface id (0 = none yet).
 /// Used by siocsifaddr to decide whether to update the IP slot.
 /// # C: O(1)
 pub fn softirq_iface_id() -> u32 {
-    (SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire) >> 32) as u32
+    RX_RUNTIME
+        .lock()
+        .as_ref()
+        .map(|runtime| runtime.iface.raw())
+        .unwrap_or(0)
+}
+
+/// Owning device key for the current RX softirq runtime, if installed.
+/// # C: O(1)
+pub fn softirq_device_key() -> Option<u32> {
+    RX_RUNTIME.lock().as_ref().map(|runtime| runtime.device_key)
+}
+
+fn clear_rx_runtime() {
+    *RX_RUNTIME.lock() = None;
 }
 
 /// Softirq slot handler. Drains pending RX into the net stack.
@@ -793,11 +840,10 @@ pub fn softirq_iface_id() -> u32 {
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
 pub fn rx_drain_softirq() {
-    let v = SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire);
-    if v == 0 { return; }
-    let id = net::NetIfaceId::from_raw((v >> 32) as u32);
-    let ip = (v as u32).to_be_bytes();
-    let _ = poll_into_stack(id, ip);
+    let Some(runtime) = RX_RUNTIME.lock().as_ref().copied() else {
+        return;
+    };
+    let _ = poll_into_stack_for(runtime.device_key, runtime.iface, runtime.ip);
 }
 
 /// Raise the virtio-net RX softirq from device IRQ context. Actual ring walking
@@ -809,9 +855,14 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 /// Returns Some(mac) when the neighbor cache has the next-hop, else
 /// None after firing ARP/NDP so a subsequent attempt can resolve.
 /// # C: O(1) cache hit; O(route lookup + request xmit) on miss.
-fn resolve_next_hop_mac(src_mac: [u8; 6], proto: u16, body: &[u8]) -> Option<net::MacAddr> {
+fn resolve_next_hop_mac(
+    device_key: u32,
+    src_mac: [u8; 6],
+    proto: u16,
+    body: &[u8],
+) -> Option<net::MacAddr> {
     if proto == net::eth_p::IPV6 {
-        return resolve_ipv6_next_hop_mac(src_mac, body);
+        return resolve_ipv6_next_hop_mac(device_key, src_mac, body);
     }
     if proto != net::eth_p::IPV4 || body.len() < 20 { return None; }
     let dst_ip = net::Ipv4Addr::new(body[16], body[17], body[18], body[19]);
@@ -836,50 +887,52 @@ fn resolve_next_hop_mac(src_mac: [u8; 6], proto: u16, body: &[u8]) -> Option<net
             net::eth_p::ARP, &mut frame[..14],
         );
         frame[14..].copy_from_slice(&req);
-        let _ = tx_frame(&frame);
+        let _ = tx_frame_for(device_key, &frame);
     }
     None
 }
 
-fn resolve_ipv6_next_hop_mac(src_mac: [u8; 6], body: &[u8]) -> Option<net::MacAddr> {
+fn resolve_ipv6_next_hop_mac(
+    device_key: u32,
+    src_mac: [u8; 6],
+    body: &[u8],
+) -> Option<net::MacAddr> {
     #[cfg(not(target_os = "oxide-kernel"))]
     {
-        let _ = (src_mac, body);
+        let _ = (device_key, src_mac, body);
         return None;
     }
 
     #[cfg(target_os = "oxide-kernel")]
     {
-    let hdr = match net::ipv6::Ipv6Hdr::parse(body) {
-        Ok(h) => h,
-        Err(_) => return None,
-    };
-    let stack = net::sock::stack();
-    let route = stack.routes6.lookup(hdr.dst);
-    let (next_hop, src_ip) = match route {
-        Some(r) => (r.gateway.unwrap_or(hdr.dst), r.src_hint),
-        None => (hdr.dst, Some(hdr.src)),
-    };
-    if let Some(m) = stack.ndp.lookup(next_hop) {
-        return Some(m);
-    }
-    let src_ip = src_ip?;
-    if src_ip == net::Ipv6Addr::ANY { return None; }
-    let ns_dst = solicited_node_multicast(next_hop);
-    let ns_eth = solicited_node_ethernet(next_hop);
-    let ns = net::ndp::NdpMsg::build_ns(src_ip, ns_dst, net::MacAddr(src_mac), next_hop);
-    let total = net::ipv6::IPV6_HDR_LEN + ns.len();
-    let mut frame = alloc::vec![0u8; 14 + total];
-    net::ethernet::EthHdr::write_to(
-        ns_eth, net::MacAddr(src_mac), net::eth_p::IPV6, &mut frame[..14],
-    );
-    let v6 = net::ipv6::Ipv6Hdr::build(
-        src_ip, ns_dst, net::IpProto::Icmpv6, ns.len() as u16,
-    );
-    v6.write_to(&mut frame[14..14 + net::ipv6::IPV6_HDR_LEN]);
-    frame[14 + net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ns);
-    let _ = tx_frame(&frame);
-    None
+        let hdr = match net::ipv6::Ipv6Hdr::parse(body) {
+            Ok(h) => h,
+            Err(_) => return None,
+        };
+        let stack = net::sock::stack();
+        let route = stack.routes6.lookup(hdr.dst);
+        let (next_hop, src_ip) = match route {
+            Some(r) => (r.gateway.unwrap_or(hdr.dst), r.src_hint),
+            None => (hdr.dst, Some(hdr.src)),
+        };
+        if let Some(m) = stack.ndp.lookup(next_hop) {
+            return Some(m);
+        }
+        let src_ip = src_ip?;
+        if src_ip == net::Ipv6Addr::ANY { return None; }
+        let ns_dst = solicited_node_multicast(next_hop);
+        let ns_eth = solicited_node_ethernet(next_hop);
+        let ns = net::ndp::NdpMsg::build_ns(src_ip, ns_dst, net::MacAddr(src_mac), next_hop);
+        let total = net::ipv6::IPV6_HDR_LEN + ns.len();
+        let mut frame = alloc::vec![0u8; 14 + total];
+        net::ethernet::EthHdr::write_to(
+            ns_eth, net::MacAddr(src_mac), net::eth_p::IPV6, &mut frame[..14],
+        );
+        let v6 = net::ipv6::Ipv6Hdr::build(src_ip, ns_dst, net::IpProto::Icmpv6, ns.len() as u16);
+        v6.write_to(&mut frame[14..14 + net::ipv6::IPV6_HDR_LEN]);
+        frame[14 + net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ns);
+        let _ = tx_frame_for(device_key, &frame);
+        None
     }
 }
 
@@ -994,7 +1047,7 @@ mod ndp_tests {
     fn shutdown_modern_quiesces_transport_without_forgetting_iface() {
         let _ = uninstall_modern(1);
         set_registered_iface(1, net::NetIfaceId::from_raw(77));
-        SOFTIRQ_IFACE_AND_IP.store((77u64 << 32) | 0x0a00_0001, Ordering::Release);
+        set_softirq_iface(1, net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
         {
             let mut g = MODERN_DEV.lock();
             *g = Some(state(1));
@@ -1006,7 +1059,8 @@ mod ndp_tests {
         assert!(modern_state().is_none());
         assert_eq!(registered_iface_for(1).unwrap().raw(), 77);
         assert!(registered_iface_for(2).is_none());
-        assert_eq!(SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire), 0);
+        assert_eq!(softirq_iface_id(), 0);
+        assert!(softirq_device_key().is_none());
         assert!(matches!(tx_frame_for(1, &[0; 14]), Err(TxErr::NotPresent)));
 
         REGISTERED_NETDEV.store(0, Ordering::Release);
@@ -1020,6 +1074,21 @@ mod ndp_tests {
         assert_eq!(registered_iface_for(0x0012_0304).unwrap().raw(), 9);
         assert!(registered_iface_for(0x0012_0305).is_none());
         REGISTERED_NETDEV.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn rx_runtime_is_keyed_by_device() {
+        clear_rx_runtime();
+        set_softirq_iface(0x0012_0304, net::NetIfaceId::from_raw(9), [10, 0, 0, 2]);
+        assert_eq!(softirq_device_key(), Some(0x0012_0304));
+        assert_eq!(softirq_iface_id(), 9);
+        assert!(set_softirq_ip_for_iface(net::NetIfaceId::from_raw(9), [10, 0, 0, 3]));
+        assert_eq!(first_iface_ip(), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        assert!(!set_softirq_ip_for_iface(net::NetIfaceId::from_raw(10), [10, 0, 0, 4]));
+        assert_eq!(first_iface_ip(), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        clear_rx_runtime();
+        assert_eq!(softirq_iface_id(), 0);
+        assert!(softirq_device_key().is_none());
     }
 
     #[test]
@@ -1047,9 +1116,10 @@ mod ndp_tests {
 /// to 0.0.0.0 when the iface is unconfigured.
 /// # C: O(1)
 fn first_iface_ip() -> Option<net::Ipv4Addr> {
-    let v = SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire);
-    if v == 0 { return None; }
-    Some(net::Ipv4Addr::from_u32(v as u32))
+    RX_RUNTIME
+        .lock()
+        .as_ref()
+        .map(|runtime| net::Ipv4Addr::from_u32(u32::from_be_bytes(runtime.ip)))
 }
 
 // -------- F59-02: RX poll on the modern transport ----------------------
@@ -1081,10 +1151,20 @@ fn first_iface_ip() -> Option<net::Ipv4Addr> {
 ///       stack emitting an ACK via tx_frame) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
 ///       so the device can safely overwrite rx0_buf once republished.
-pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
+pub fn rx_poll<F: FnMut(&[u8])>(cb: F) -> usize {
+    let Some(device_key) = softirq_device_key() else {
+        return 0;
+    };
+    rx_poll_for(device_key, cb)
+}
+
+pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
     if !MODERN_PRESENT.load(Ordering::Acquire) { return 0; }
     let mut g = MODERN_DEV.lock();
-    let s = match g.as_mut() { Some(s) => s, None => return 0 };
+    let s = match g.as_mut() {
+        Some(s) if s.device_key == device_key => s,
+        _ => return 0,
+    };
     if !s.rxq.is_runtime_valid() || s.rx0_buf_pa == 0 || s.rx0_buf_len == 0 {
         return 0;
     }
