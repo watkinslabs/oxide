@@ -325,6 +325,22 @@ fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
     }
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn clear_pci_bus_master(dev: &drv::Device) {
+    let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        let _ = pci::disable_mem_bus_master(&r, bdf);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+            let _ = pci::disable_mem_bus_master(&r, bdf);
+        }
+    }
+}
+
 /// The D1a model driver for NVMe: matches PCI class 0x010802 on the PCI bus.
 /// Registered + bound at the bring-up success site in pci-boot.
 #[cfg(target_os = "oxide-kernel")]
@@ -367,6 +383,7 @@ impl drv::Driver for NvmeDriver {
 
     fn remove(&self, dev: &drv::Device) {
         let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+        clear_pci_bus_master(dev);
         let _ = imp::remove(imp::device_key_from_bdf(bdf));
     }
 

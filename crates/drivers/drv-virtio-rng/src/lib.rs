@@ -104,7 +104,7 @@ pub fn present() -> bool { !RNGS.lock().records.is_empty() }
 pub fn install(
     device_key: virtio::VirtioChildDeviceKey,
     resources: virtio::VirtioResources,
-) -> Option<()> {
+) -> Option<usize> {
     let Some(requestq) = resources.require_queue(0) else { return None };
     if !resources.common_cfg_valid() {
         return None;
@@ -179,7 +179,14 @@ pub fn install(
             return None;
         }
     }
-    Some(())
+    let mut seed = [0u8; 32];
+    let n = fill_from_device(device_key, &mut seed);
+    if n == 0 {
+        let _ = uninstall(device_key);
+        return None;
+    }
+    devfs::misc::add_entropy(&seed[..n]);
+    Some(n)
 }
 
 /// Remove the installed rng context. Resets the virtio device and returns the
