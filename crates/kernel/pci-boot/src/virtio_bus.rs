@@ -8,6 +8,7 @@ use super::virtio_drv;
 
 pub(super) struct VirtioChildSession {
     bdf: pci::Bdf,
+    transport: virtio_drv::VirtioPciTransport,
     profile: virtio::VirtioTransportProfile,
     probe: virtio_drv::VirtioProbe,
 }
@@ -18,10 +19,14 @@ impl VirtioChildSession {
         profile: virtio::VirtioTransportProfile,
     ) -> drv::KResult<Self> {
         let d = pci_device_from_child(dev).ok_or(drv::Error::ProbeFailed)?;
-        let probe = virtio_drv::virtio_init_arch(&d, profile).ok_or(drv::Error::ProbeFailed)?;
+        let transport = virtio_drv::VirtioPciTransport;
+        let probe = transport
+            .probe_child(&d, profile)
+            .ok_or(drv::Error::ProbeFailed)?;
         super::virtio_trace::trace_probe(d.bdf, &probe);
         Ok(Self {
             bdf: d.bdf,
+            transport,
             profile,
             probe,
         })
@@ -60,7 +65,7 @@ impl virtio::VirtioChildTransportSession for VirtioChildSession {
     }
 
     fn publish(mut self) {
-        virtio_drv::publish_transport_mmio(&mut self.probe);
+        self.transport.publish(&mut self.probe);
     }
 }
 
@@ -81,7 +86,7 @@ pub(super) fn parent_key(dev: &drv::Device) -> Option<u32> {
 }
 
 pub(super) fn unpublish_transport(device_key: u32) {
-    virtio_drv::unpublish_transport_mmio(device_key);
+    virtio_drv::VirtioPciTransport.unpublish_key(device_key);
 }
 
 fn pci_device_from_child(dev: &drv::Device) -> Option<pci::PciDevice> {

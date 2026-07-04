@@ -74,11 +74,32 @@ fn bdf_from_word(word: u32) -> pci::Bdf {
 
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
 
+#[derive(Copy, Clone, Default)]
+pub(super) struct VirtioPciTransport;
+
+impl VirtioPciTransport {
+    pub(super) fn probe_child(
+        self,
+        d: &pci::PciDevice,
+        profile: virtio::VirtioTransportProfile,
+    ) -> Option<VirtioProbe> {
+        virtio_init_arch(d, profile)
+    }
+
+    pub(super) fn publish(self, p: &mut VirtioProbe) {
+        publish_transport_mmio(p);
+    }
+
+    pub(super) fn unpublish_key(self, bdf: u32) {
+        unpublish_transport_mmio(bdf);
+    }
+}
+
 fn release_probe_msix(p: &mut VirtioProbe) {
     release_msix_bindings(bdf_from_word(p.bdf_word), &mut p.msix);
 }
 
-pub(super) fn publish_transport_mmio(p: &mut VirtioProbe) {
+fn publish_transport_mmio(p: &mut VirtioProbe) {
     publish_transport_record(
         p.bdf_word,
         core::mem::take(&mut p.mappings),
@@ -99,7 +120,7 @@ fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
     }
 }
 
-pub(super) fn unpublish_transport_mmio(bdf: u32) {
+fn unpublish_transport_mmio(bdf: u32) {
     unpublish_transport_record(bdf);
 }
 
@@ -719,7 +740,7 @@ impl VirtioProbe {
 /// scan its queue layout. Returns Some(probe) on success.
 /// # SAFETY: caller is the boot path; PMM ready; single-CPU; IRQs masked.
 /// # C: O(BAR pages mapped + ~num_queues u32 reads)
-pub(super) fn virtio_init_arch(
+fn virtio_init_arch(
     d: &pci::PciDevice,
     profile: virtio::VirtioTransportProfile,
 ) -> Option<VirtioProbe> {
