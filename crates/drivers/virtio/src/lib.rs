@@ -26,8 +26,8 @@ pub mod resources;
 pub use resources::{
     VirtioChildDeviceKey, VirtioChildDriverId, VirtioChildModelIdentity, VirtioChildProbeFacts,
     VirtioChildRequirements, VirtioChildResourceState, VirtioChildTransportSession,
-    VirtioNetBootPayloads, VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources,
-    VirtioRuntimeHandoff, VirtioRuntimeHandoffInput, VirtioTransportLocation,
+    VirtioNetBootPayloads, VirtioProbeLease, VirtioQueueNotifyMappings, VirtioQueuePlan,
+    VirtioResources, VirtioRuntimeHandoff, VirtioRuntimeHandoffInput, VirtioTransportLocation,
     VirtioTransportProbeResult, VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES,
     VIRTIO_CHILD_BUS, VIRTIO_CHILD_CLASS, VIRTIO_MSI_NO_VECTOR, VIRTIO_VENDOR_ID,
     build_queue_resources, build_runtime_handoff, push_unique_frame, virtio_child_addr,
