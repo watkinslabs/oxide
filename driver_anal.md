@@ -495,8 +495,14 @@ test-pass claims.
   unique bus id, GET_UNIQUE copies and reports the true string length, and
   SET_VERSION validates/negotiates the supported DRM interface version.
   MODE_ATOMIC now validates flags and nested user arrays, accepts only an
-  empty atomic state, and returns unsupported for structurally valid non-empty
-  property commits until real atomic property tables land. fbdev flush/blank
+  internally-gated empty atomic state, and returns unsupported for structurally
+  valid non-empty property commits until real atomic property tables land.
+  Userspace cannot enable `DRM_CLIENT_CAP_ATOMIC` yet: SET_CLIENT_CAP returns
+  `EOPNOTSUPP` for atomic/writeback/aspect/stereo/cursor-hotspot caps that do
+  not have a real property/object implementation. DRM GET_CAP also stops
+  advertising PRIME, syncobj, async page flip, page-flip-target, and ADDFB2
+  modifiers until those UAPI paths are implemented; modifier-bearing ADDFB2
+  requests are rejected instead of ignored. fbdev flush/blank
   operations are now stored on each `/dev/fbN` record and call back into the
   owning virtio-gpu BDF instead of a global display hook; virtio-gpu scanout
   context now records the exact published fbdev index and unpublishes by that
