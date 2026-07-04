@@ -466,7 +466,9 @@ test-pass claims.
   virtio-net runtime instead of a process-global cache.
   Hot-remove now clears registered netdev publication, interface runtime, and RX
   softirq runtime by child key even when the primary virtio-net transport record
-  is already gone.
+  is already gone. The shared `NetRx` bottom-half handler and ARP-GC timer now
+  stay installed until the last RX runtime is removed instead of following a
+  single primary transport record.
   IPv6 NDP is stack-owned in kernel builds: RX learning goes through
   `deliver_rx_ipv6`, and virtio-net TX resolves neighbors through the
   registered interface's stack NDP table. The virtio-pci net probe no longer
@@ -739,8 +741,9 @@ test-pass claims.
 - Replace remaining singleton hardware-backed drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
-  stack-owned interface-scoped IPv6 NDP lookup, but virtio-net still needs live
-  loop proof and broader multi-NIC validation; virtio-gpu now has per-card DRM
+  stack-owned interface-scoped IPv6 NDP lookup. Its shared RX bottom-half/timer
+  lifetime is last-runtime-owned, but virtio-net still needs live loop proof
+  and broader multi-NIC validation; virtio-gpu now has per-card DRM
   card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
   fbdev flush/blank dispatch, exact fbdev-index publication ownership,
@@ -905,9 +908,10 @@ Several drivers still use singleton global state:
   one explicit foreground console owner
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; exported
   TX/RX helper entry points require an owning device key; IPv6 NDP is
-  stack-owned and keyed by interface in kernel builds; boot route/RS seeding
-  iterates the registered virtio-net iface snapshot, but live multi-NIC proof
-  is still missing
+  stack-owned and keyed by interface in kernel builds; shared RX softirq/timer
+  lifetime follows the last RX runtime; boot route/RS seeding iterates the
+  registered virtio-net iface snapshot, but live multi-NIC proof is still
+  missing
 - virtio-rng: keyed records with one explicit active-BDF `/dev/hwrng`
   provider; promotion skips shutdown records instead of relying on vector order
 - virtio-vsock: keyed transport records and owner-keyed protocol endpoint
