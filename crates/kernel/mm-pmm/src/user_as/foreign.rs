@@ -59,13 +59,13 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(super) pub(super) unsafe fn read_foreign_leaf_pa(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<u64> {
+pub(super) unsafe fn read_foreign_leaf_pa(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<u64> {
     use hal_x86_64::vmm::PtWalkerX86;
     // SAFETY: root_pa is a valid PML4 frame; HHDM covers PT memory; reads only.
     unsafe { hal::pt_walker::translate_4k_at_root::<PtWalkerX86>(root_pa, va_aligned, hhdm).map(|(pa, _)| pa) }
 }
 #[cfg(target_arch = "aarch64")]
-pub(super) pub(super) unsafe fn read_foreign_leaf_pa(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<u64> {
+pub(super) unsafe fn read_foreign_leaf_pa(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<u64> {
     use hal_aarch64::vmm::PtWalkerArm;
     // SAFETY: root_pa is a valid L0 frame; HHDM covers PT memory; reads only.
     unsafe { hal::pt_walker::translate_4k_at_root::<PtWalkerArm>(root_pa, va_aligned, hhdm).map(|(pa, _)| pa) }
