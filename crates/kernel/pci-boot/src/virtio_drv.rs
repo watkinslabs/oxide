@@ -4,22 +4,12 @@
 use super::map_mmio_pages;
 use super::virtio_qsetup::{ProgrammedQueues, QueueRing};
 use super::virtio_transport::{
-    bind_msix_vector, kick_queue_notify, release_msix_binding, release_msix_bindings, MsixBinding,
+    bind_msix_vector, disable_pci_command, kick_queue_notify, publish_transport_record,
+    release_failed_probe, release_msix_bindings, unpublish_transport_record, MsixBinding,
     TransportMappings,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use sync::{Spinlock, TaskList as VirtioTransportLockClass};
-
-struct TransportRecord {
-    bdf: u32,
-    _mappings: TransportMappings,
-    vring_frames: Vec<u64>,
-    msix: Vec<MsixBinding>,
-}
-
-static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
-    Spinlock::new(Vec::new());
 
 struct VirtioPciDrv;
 impl drv::Driver for VirtioPciDrv {
@@ -522,63 +512,18 @@ fn release_probe_msix(p: &mut VirtioProbe) {
 }
 
 fn publish_transport_mmio(p: &mut VirtioProbe) {
-    let rec = TransportRecord {
-        bdf: p.bdf_word,
-        _mappings: core::mem::take(&mut p.mappings),
-        vring_frames: p.transport_vring_frames(),
-        msix: core::mem::take(&mut p.msix),
-    };
-    let mut records = TRANSPORT_MMIO.lock();
-    if let Some(idx) = records.iter().position(|old| old.bdf == p.bdf_word) {
-        let old = records.remove(idx);
-        unmap_transport_record(old);
-    }
-    records.push(rec);
-}
-
-fn disable_pci_command(bdf: pci::Bdf) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let r = hal_x86_64::pci::LegacyPci;
-        let cur = pci::read_command(&r, bdf);
-        let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
-        if restored != cur {
-            pci::write_command(&r, bdf, restored);
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-            let cur = pci::read_command(&r, bdf);
-            let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
-            if restored != cur {
-                pci::write_command(&r, bdf, restored);
-            }
-        }
-    }
+    publish_transport_record(
+        p.bdf_word,
+        core::mem::take(&mut p.mappings),
+        p.transport_vring_frames(),
+        core::mem::take(&mut p.msix),
+    );
 }
 
 fn abandon_probe_transport(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<VirtioProbe> {
     disable_pci_command(bdf);
     mappings.unmap_all();
     None
-}
-
-fn unmap_transport_record(rec: TransportRecord) {
-    let bdf = bdf_from_word(rec.bdf);
-    for binding in rec.msix {
-        release_msix_binding(bdf, binding);
-    }
-    disable_pci_command(bdf);
-    for frame in rec.vring_frames.iter().copied() {
-        if frame == 0 {
-            continue;
-        }
-        // SAFETY: these frames were allocated and programmed by the virtio-pci
-        // transport for the child device. Child remove resets/quiesces the
-        // device before unpublishing this transport record.
-        unsafe { pmm::setup::free_one_frame(frame); }
-    }
 }
 
 fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
@@ -588,28 +533,7 @@ fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
 }
 
 fn unpublish_transport_mmio(bdf: u32) {
-    let rec = {
-        let mut records = TRANSPORT_MMIO.lock();
-        records
-            .iter()
-            .position(|rec| rec.bdf == bdf)
-            .map(|idx| records.remove(idx))
-    };
-    if let Some(rec) = rec {
-        unmap_transport_record(rec);
-    }
-}
-
-fn release_virtio_transport(cfg_va: u64, frames: &[u64]) {
-    virtio::reset_device(cfg_va);
-    for frame in frames.iter().copied() {
-        if frame == 0 {
-            continue;
-        }
-        // SAFETY: non-zero frames passed here were allocated by the failed
-        // virtio probe and have not been retained by runtime driver state.
-        unsafe { pmm::setup::free_one_frame(frame); }
-    }
+    unpublish_transport_record(bdf);
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1195,7 +1119,7 @@ impl VirtioProbe {
         for frame in payload_frames.iter().copied() {
             push_unique_frame(&mut frames, frame);
         }
-        release_virtio_transport(self.cfg_va, &frames);
+        release_failed_probe(self.cfg_va, &frames);
         release_probe_msix(self);
         disable_pci_command(bdf_from_word(self.bdf_word));
         self.mappings.unmap_all();
