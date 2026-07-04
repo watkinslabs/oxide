@@ -141,6 +141,14 @@ pub fn init_modern(
         return false;
     }
     g.push(state);
+    drop(g);
+    #[cfg(target_os = "oxide-kernel")]
+    if register_netdev(device_key).is_none() {
+        MODERN_DEVS
+            .lock()
+            .retain(|installed| installed.device_key != device_key);
+        return false;
+    }
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-net-modern ");
@@ -169,11 +177,12 @@ pub fn init_modern(
     true
 }
 
-/// Remove the installed modern virtio-net transport. The caller must have
-/// unregistered the netdev first. This owns the RX bottom-half lifetime along
-/// with the queue/device state it drains.
+/// Remove the installed modern virtio-net transport. This owns netdev
+/// unregistration, RX bottom-half lifetime, and the queue/device state it
+/// drains.
 /// # C: O(NCPU)
 pub fn uninstall_modern(device_key: u32) -> bool {
+    let _ = unregister_netdev(device_key);
     let (state, last_device) = {
         let mut guard = MODERN_DEVS.lock();
         let pos = guard.iter().position(|state| state.device_key == device_key);

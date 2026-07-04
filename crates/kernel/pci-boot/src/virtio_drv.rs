@@ -383,31 +383,14 @@ impl drv::Driver for VirtioNetDrv {
             p.release_failed_transport_with_net_payloads();
             return Err(drv::Error::ProbeFailed);
         }
-        match drv_virtio_net::modern::register_netdev(device_key) {
-            Some(id) => {
-                #[cfg(not(feature = "debug-boot"))]
-                let _ = id;
-                debug_boot! {
-                    klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
-                    klog::write_dec_u64(id.0 as u64);
-                    klog::write_raw(b" name=eth0\n");
-                }
-                publish_transport_mmio(&mut p);
-                Ok(())
-            }
-            None => {
-                let _ = drv_virtio_net::modern::uninstall_modern(device_key);
-                p.release_failed_transport(&[]);
-                Err(drv::Error::ProbeFailed)
-            }
-        }
+        publish_transport_mmio(&mut p);
+        Ok(())
     }
 
     fn remove(&self, _dev: &drv::Device) {
         if let Some(bdf) = pci_parent_bdf(_dev) {
             let device_key = bdf_word(bdf);
             if drv_virtio_net::modern::is_modern_present_for(device_key) {
-                let _ = drv_virtio_net::modern::unregister_netdev(device_key);
                 if drv_virtio_net::modern::uninstall_modern(device_key) {
                     unpublish_transport_mmio(device_key);
                 }

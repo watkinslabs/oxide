@@ -175,18 +175,20 @@ test-pass claims.
   the device, so a second GPU cannot publish then roll back a stray DRM card.
 - Virtio-net owns netdev publication/removal and RX runtime
   installation/removal: iface/IP bottom-half state, ARP-GC timer, and `NetRx`
-  handler are installed from the net driver path and removed after reset. The
-  old boot-probe default IPv4 policy is gone; the RX path learns IPv4 state
-  from normal address configuration hooks. Virtio-net install/remove is now
-  keyed to the owning parent BDF, so a remove for another device cannot clear
-  another transport. TX/RX queue cursors now live in keyed installed-device
-  records, the TX primitive has a BDF-keyed entry point, and the published
-  `NetDev` carries its owning device key. Registered iface ownership and RX
-  softirq runtime state are keyed tables too, so softirq drains, ARP replies,
-  and ARP/NDP neighbor solicitations transmit through the device that owns the
-  registered netdev. Netdev visible names are allocated as `ethN` per runtime
-  record, RX stats are per netdev, and IPv4 ARP cache entries are owned by the
-  transmitting/receiving virtio-net runtime instead of a process-global cache.
+  handler are installed from the net driver path and removed after reset. Netdev
+  registration and unregistration now happen inside virtio-net child
+  install/remove rather than in the virtio-pci glue. The old boot-probe default
+  IPv4 policy is gone; the RX path learns IPv4 state from normal address
+  configuration hooks. Virtio-net install/remove is now keyed to the owning
+  parent BDF, so a remove for another device cannot clear another transport.
+  TX/RX queue cursors now live in keyed installed-device records, the TX
+  primitive has a BDF-keyed entry point, and the published `NetDev` carries its
+  owning device key. Registered iface ownership and RX softirq runtime state
+  are keyed tables too, so softirq drains, ARP replies, and ARP/NDP neighbor
+  solicitations transmit through the device that owns the registered netdev.
+  Netdev visible names are allocated as `ethN` per runtime record, RX stats are
+  per netdev, and IPv4 ARP cache entries are owned by the transmitting/receiving
+  virtio-net runtime instead of a process-global cache.
   IPv6 NDP is stack-owned in kernel builds: RX learning goes through
   `deliver_rx_ipv6`, and virtio-net TX resolves neighbors through the
   registered interface's stack NDP table.
