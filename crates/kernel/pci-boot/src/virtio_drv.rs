@@ -582,9 +582,9 @@ impl VirtioProbeState {
             avail_idx_posted: net_rx_boot.avail_idx_posted,
             used_idx_observed,
             isr_status,
-            net_boot_payloads: virtio::VirtioNetBootPayloads::new(
-                net_rx_boot.buf_pa,
-                net_rx_boot.buf_len,
+            net_boot_payloads: virtio::VirtioNetBootPayloads::from_rx_pool(
+                net_rx_boot.bufs,
+                net_rx_boot.bufs_len,
                 tx0_buf_pa,
             ),
         })

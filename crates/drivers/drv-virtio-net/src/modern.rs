@@ -1,8 +1,8 @@
 // Modern virtio-net runtime state (arch-neutral). The boot-time probe
 // in `pci_boot::virtio_drv` brings up cap discovery, BAR mapping, queue
 // program, DRIVER_OK, and MSI-X bind; once that finishes it hands the
-// persistent kernel-side addresses here via `init_modern`. Later F59
-// PRs consume the stashed state to drive RX-poll, TX, and ARP through
+// persistent kernel-side addresses here via `init_modern`. Runtime paths
+// consume the stashed state to drive RX-poll, TX, and ARP through
 // `crate::net::stack`.
 //
 // Kept arch-neutral because every operation post-bring-up is MMIO
@@ -36,6 +36,7 @@ const WANTED_FEATURES: u64 =
 /// Feature policy for the modern virtio-net child driver. The PCI transport
 /// executes the common-cfg negotiation, but the child driver owns which
 /// device-specific bits it needs for its runtime model.
+/// # C: O(1)
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
@@ -51,7 +52,7 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 /// reference VAs/PAs already programmed into the device by the transport
 /// probe. `bus`/`device`/`function` mirror the PCI BDF for log lines and
 /// later sysfs export.
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct ModernNetState {
     /// Owning virtio child identity supplied by the transport bus.
     pub device_key: DeviceKey,
@@ -62,11 +63,9 @@ pub struct ModernNetState {
     pub hhdm:     u64,
     pub rxq:      virtio::VirtQueueResource,
     pub txq:      virtio::VirtQueueResource,
-    /// F59-02: PA + len of the single boot-allocated RX buffer pinned
-    /// to queue-0 descriptor 0. rx_poll re-publishes this descriptor
-    /// on every completion (one-in-flight RX ring v1; pool comes later).
-    pub rx0_buf_pa:  u64,
-    pub rx0_buf_len: u16,
+    /// RX descriptors posted on queue 0. Each descriptor owns one packet-sized
+    /// DMA buffer and is reposted after completion.
+    pub rx_bufs:  alloc::vec::Vec<virtio::VirtioNetRxBuffer>,
     /// 6-byte device MAC read from the virtio-net device config during
     /// driver install. TX and neighbor-discovery paths consume this to fill
     /// ethernet src + ARP/NDP sender-hw fields.
@@ -118,6 +117,37 @@ pub fn init_modern(
     rx0_buf_len: u16,
     tx0_buf_pa: u64,
 ) -> bool {
+    let mut rx_bufs = alloc::vec::Vec::new();
+    if rx0_buf_pa != 0 && rx0_buf_len != 0 {
+        rx_bufs.push(virtio::VirtioNetRxBuffer {
+            desc_id: 0,
+            pa: rx0_buf_pa,
+            len: rx0_buf_len,
+        });
+    }
+    init_modern_with_rx_pool(
+        device_key,
+        resources,
+        bus,
+        device,
+        function,
+        rx_bufs,
+        tx0_buf_pa,
+    )
+}
+
+/// Stash modern virtio-net runtime state with a transport-posted RX pool.
+/// Returns false if this device key is already installed.
+/// # C: O(N_rx_bufs^2)
+pub fn init_modern_with_rx_pool(
+    device_key: DeviceKey,
+    resources: virtio::VirtioResources,
+    bus: u8,
+    device: u8,
+    function: u8,
+    rx_bufs: alloc::vec::Vec<virtio::VirtioNetRxBuffer>,
+    tx0_buf_pa: u64,
+) -> bool {
     let Some(rxq) = resources.require_queue(0) else {
         return false;
     };
@@ -128,12 +158,26 @@ pub fn init_modern(
         return false;
     };
     if !resources.common_cfg_valid()
-        || rx0_buf_pa == 0
-        || rx0_buf_len == 0
+        || rx_bufs.is_empty()
         || tx0_buf_pa == 0
     {
         return false;
     }
+    if rx_bufs
+        .iter()
+        .any(|buf| buf.pa == 0 || buf.len == 0 || buf.desc_id >= rxq.size)
+    {
+        return false;
+    }
+    for (idx, buf) in rx_bufs.iter().enumerate() {
+        if rx_bufs[idx + 1..]
+            .iter()
+            .any(|other| other.desc_id == buf.desc_id)
+        {
+            return false;
+        }
+    }
+    let rx_next_avail = rx_bufs.len() as u16;
     let state = ModernNetState {
         device_key,
         bus,
@@ -143,14 +187,13 @@ pub fn init_modern(
         hhdm: resources.hhdm,
         rxq,
         txq,
-        rx0_buf_pa,
-        rx0_buf_len,
+        rx_bufs,
         mac,
         tx0_buf_pa,
         tx_last_used: 0,
         tx_next_avail: 0,
         rx_last_used: 0,
-        rx_next_avail: 1,
+        rx_next_avail,
     };
     let mut g = MODERN_DEVS.lock();
     if g.iter().any(|installed| installed.device_key == device_key) {
@@ -229,7 +272,9 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
         // probe; device_status is an 8-bit register at offset 0x14.
         unsafe { core::ptr::write_volatile((state.cfg_va + 0x14) as *mut u8, 0u8); }
     }
-    free_frame(state.rx0_buf_pa);
+    for rx_buf in state.rx_bufs {
+        free_frame(rx_buf.pa);
+    }
     free_frame(state.tx0_buf_pa);
     true
 }
@@ -265,7 +310,9 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
         // probe; device_status is an 8-bit register at offset 0x14.
         unsafe { core::ptr::write_volatile((state.cfg_va + 0x14) as *mut u8, 0u8); }
     }
-    free_frame(state.rx0_buf_pa);
+    for rx_buf in state.rx_bufs {
+        free_frame(rx_buf.pa);
+    }
     free_frame(state.tx0_buf_pa);
     true
 }
@@ -329,6 +376,8 @@ pub fn mac() -> Option<[u8; 6]> {
         .map(|state| state.mac)
 }
 
+/// Read-only accessor for one device MAC.
+/// # C: O(N devices) under device-table lock
 pub fn mac_for(device_key: DeviceKey) -> Option<[u8; 6]> {
     MODERN_DEVS
         .lock()
@@ -494,7 +543,7 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
 // kthread or per-tick hook; v1 invokes it once at boot for a
 // diagnostic line, replacing the explicit ARP+ICMP probes once the
 // stack is fully wired (F59-14+). Returns frames consumed.
-
+/// # C: O(N used * frame_len)
 #[cfg(target_os = "oxide-kernel")]
 pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
     let our_mac = match mac_for(device_key) { Some(m) => m, None => return 0 };
@@ -791,7 +840,7 @@ pub fn modern_state_for(device_key: DeviceKey) -> Option<ModernNetState> {
         .lock()
         .iter()
         .find(|state| state.device_key == device_key)
-        .copied()
+        .cloned()
 }
 
 /// True once `init_modern` has been called with a valid state.
@@ -1129,8 +1178,11 @@ mod ndp_tests {
                 notify_va: 0,
                 notify_off: 0,
             },
-            rx0_buf_pa: 0,
-            rx0_buf_len: 2048,
+            rx_bufs: alloc::vec![virtio::VirtioNetRxBuffer {
+                desc_id: 0,
+                pa: 0x9000 + bus as u64,
+                len: 2048,
+            }],
             mac: [0x02, 0, 0, 0, 0, bus],
             tx0_buf_pa: 0,
             tx_last_used: 0,
@@ -1215,6 +1267,63 @@ mod ndp_tests {
         ));
         MODERN_DEVS.lock().clear();
         assert!(!is_modern_present());
+    }
+
+    #[test]
+    fn init_modern_with_rx_pool_records_pool_and_rejects_duplicate_desc() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        static MAC1: [u8; 6] = [0x02, 0, 0, 0, 0, 3];
+        static MAC2: [u8; 6] = [0x02, 0, 0, 0, 0, 4];
+
+        assert!(init_modern_with_rx_pool(
+            key(3),
+            resources_with_mac(&MAC1),
+            3,
+            1,
+            0,
+            alloc::vec![
+                virtio::VirtioNetRxBuffer {
+                    desc_id: 0,
+                    pa: 0x9000,
+                    len: 2048,
+                },
+                virtio::VirtioNetRxBuffer {
+                    desc_id: 1,
+                    pa: 0xa000,
+                    len: 2048,
+                },
+            ],
+            0xb000,
+        ));
+        let state = modern_state_for(key(3)).unwrap();
+        assert_eq!(state.rx_bufs.len(), 2);
+        assert_eq!(state.rx_bufs[0].desc_id, 0);
+        assert_eq!(state.rx_bufs[1].desc_id, 1);
+        assert_eq!(state.rx_next_avail, 2);
+        clear_test_state();
+
+        assert!(!init_modern_with_rx_pool(
+            key(4),
+            resources_with_mac(&MAC2),
+            4,
+            1,
+            0,
+            alloc::vec![
+                virtio::VirtioNetRxBuffer {
+                    desc_id: 0,
+                    pa: 0x9000,
+                    len: 2048,
+                },
+                virtio::VirtioNetRxBuffer {
+                    desc_id: 0,
+                    pa: 0xa000,
+                    len: 2048,
+                },
+            ],
+            0xb000,
+        ));
+        assert!(!is_modern_present_for(key(4)));
     }
 
     #[test]
@@ -1496,13 +1605,11 @@ fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr> {
 
 // -------- F59-02: RX poll on the modern transport ----------------------
 //
-// Drains queue-0 used-ring entries the device wrote since the last
-// call, hands each frame body (header stripped) to `cb`, and
-// re-publishes the same descriptor onto the avail ring so the device
-// can fill it again. v1 uses a single buffer pinned to descriptor 0
-// (state.rx0_buf_pa); a pool is a later F59 step. After a non-zero
-// drain we kick the RX queue notify window so the device knows the avail-ring
-// advanced.
+// Drains queue-0 used-ring entries the device wrote since the last call, hands
+// each frame body (header stripped) to `cb`, and re-publishes the completed
+// descriptor ID onto the avail ring so the device can fill that buffer again.
+// After a non-zero drain we kick the RX queue notify window so the device knows
+// the avail-ring advanced.
 //
 // Cursors live in the per-device runtime record and are incremented only inside
 // rx_poll while holding the virtio-net device-table lock.
@@ -1520,14 +1627,14 @@ fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr> {
 ///       before invoking cb. Required so cb's downstream (e.g. the TCP
 ///       stack emitting an ACK via tx_frame_for) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
-///       so the device can safely overwrite rx0_buf once republished.
+///       so the device can safely overwrite RX buffers once republished.
 pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
     let runtime = net_runtime_for(device_key);
     let mut g = MODERN_DEVS.lock();
     let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {
         return 0;
     };
-    if !s.rxq.is_runtime_valid() || s.rx0_buf_pa == 0 || s.rx0_buf_len == 0 {
+    if !s.rxq.is_runtime_valid() || s.rx_bufs.is_empty() {
         return 0;
     }
 
@@ -1536,7 +1643,6 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
 
     let used_va  = hhdm.wrapping_add(s.rxq.device_pa);
     let avail_va = hhdm.wrapping_add(s.rxq.driver_pa);
-    let buf_va   = hhdm.wrapping_add(s.rx0_buf_pa);
 
     // SAFETY: HHDM-mapped device-written used ring; aligned u16 load
     // at offset +2 (idx field). Ordering::Acquire pairs with the
@@ -1551,6 +1657,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
 
     let rxq_size = s.rxq.size as usize;
     let mut delivered = 0usize;
+    let mut repost_ids: alloc::vec::Vec<u16> = alloc::vec::Vec::new();
     // Collect frame copies under the lock so we can safely drop the
     // lock before invoking cb (cb's TCP-stack path may re-take it via
     // tx_frame when emitting an ACK — UP spinlock self-deadlock).
@@ -1569,16 +1676,25 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
         };
         last = last.wrapping_add(1);
 
-        // v1 single buffer: only descriptor 0 is published. Anything
-        // else means the device wrote past our published descriptors,
-        // which would indicate a driver bug; drop the frame and keep
-        // the ring sane by republishing.
-        if id == 0
-            && (frame_total as usize) >= VIRTIO_NET_HDR_LEN
-            && (frame_total as usize) <= s.rx0_buf_len as usize
+        let rx_buf = s
+            .rx_bufs
+            .iter()
+            .find(|buf| buf.desc_id as u32 == id)
+            .copied();
+        if let Some(rx_buf) = rx_buf {
+            repost_ids.push(rx_buf.desc_id);
+        }
+        if rx_buf
+            .map(|buf| {
+                (frame_total as usize) >= VIRTIO_NET_HDR_LEN
+                    && (frame_total as usize) <= buf.len as usize
+            })
+            .unwrap_or(false)
         {
+            let rx_buf = rx_buf.expect("rx buffer was validated above");
             let body_len = frame_total as usize - VIRTIO_NET_HDR_LEN;
-            // SAFETY: rx0 buffer is HHDM-mapped, owned by this driver
+            let buf_va = hhdm.wrapping_add(rx_buf.pa);
+            // SAFETY: RX buffer is HHDM-mapped, owned by this driver
             // under the virtio-net device-table lock; the device finished writing
             // before publishing used.ring per Virtio 1.2 §2.6.8. Copy
             // out so we can release the lock before cb runs.
@@ -1603,6 +1719,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
                 }
             }
             frames.push(body.to_vec());
+            delivered += 1;
         } else {
             // Device wrote a slot we didn't publish, or a frame too
             // short to even hold the virtio_net_hdr, or one larger than
@@ -1611,25 +1728,26 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
                 runtime.rx_dropped.fetch_add(1, Ordering::Relaxed);
             }
         }
-        delivered += 1;
     }
     s.rx_last_used = last;
 
-    // Re-publish descriptor 0 on the avail ring `delivered` times so
-    // the device sees fresh slots. avail.ring lives at +4 (u16 entries).
+    // Re-publish completed descriptor IDs so the device sees fresh slots.
+    // avail.ring lives at +4 (u16 entries).
     let mut next_avail = s.rx_next_avail;
-    for _ in 0..delivered {
+    let mut reposted = false;
+    for id in repost_ids {
         let pub_slot = (next_avail as usize) % rxq_size;
         // SAFETY: HHDM-mapped avail ring, exclusive under the virtio-net device-table lock.
         unsafe {
             core::ptr::write_volatile(
                 (avail_va + 4 + (pub_slot as u64) * 2) as *mut u16,
-                0u16, // descriptor id 0 — same buffer
+                id,
             );
         }
         next_avail = next_avail.wrapping_add(1);
+        reposted = true;
     }
-    if delivered > 0 {
+    if reposted {
         core::sync::atomic::fence(Ordering::Release);
         // SAFETY: avail.idx is u16 at +2 of the avail ring frame; HHDM-mapped exclusive under the virtio-net device-table lock; device reads after the fence.
         unsafe {

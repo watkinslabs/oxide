@@ -60,8 +60,8 @@ pub(super) fn program_queue_set(
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct NetRxBootBuffer {
-    pub(super) buf_pa: u64,
-    pub(super) buf_len: u16,
+    pub(super) bufs: [virtio::VirtioNetRxBuffer; virtio::VIRTIO_NET_RX_BOOT_POOL],
+    pub(super) bufs_len: usize,
     pub(super) avail_idx_posted: u16,
 }
 
@@ -73,40 +73,58 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
     if hhdm == 0 || q0.desc_pa == 0 || q0.driver_pa == 0 {
         return NetRxBootBuffer::default();
     }
-    let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
+    let pool_len = (q0.size as usize).min(virtio::VIRTIO_NET_RX_BOOT_POOL);
+    if pool_len == 0 {
         return NetRxBootBuffer::default();
-    };
+    }
 
-    // Descriptor[0]: addr=rx_pa, len=2048, flags=WRITE, next=0.
-    let desc0 = (hhdm.wrapping_add(q0.desc_pa)) as *mut u8;
-    // SAFETY: HHDM maps the freshly allocated RX frame and queue-0 descriptor
-    // table. The transport owns descriptor 0 until the child driver takes the
-    // resource handoff.
-    unsafe {
-        core::ptr::write_volatile(desc0 as *mut u64, rx_pa);
-        core::ptr::write_volatile((desc0.add(8)) as *mut u32, RX_BUF_LEN as u32);
-        core::ptr::write_volatile((desc0.add(12)) as *mut u16, virtio::VRING_DESC_F_WRITE);
-        core::ptr::write_volatile((desc0.add(14)) as *mut u16, 0u16);
+    let mut bufs = [virtio::VirtioNetRxBuffer::default(); virtio::VIRTIO_NET_RX_BOOT_POOL];
+    let mut bufs_len = 0usize;
+    for desc_id in 0..pool_len {
+        let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
+            break;
+        };
+        let desc = (hhdm.wrapping_add(q0.desc_pa) + (desc_id as u64) * 16) as *mut u8;
+        // SAFETY: HHDM maps the freshly allocated RX frame and queue-0
+        // descriptor table. The transport owns these descriptors until the
+        // child driver takes the resource handoff.
+        unsafe {
+            core::ptr::write_volatile(desc as *mut u64, rx_pa);
+            core::ptr::write_volatile((desc.add(8)) as *mut u32, RX_BUF_LEN as u32);
+            core::ptr::write_volatile((desc.add(12)) as *mut u16, virtio::VRING_DESC_F_WRITE);
+            core::ptr::write_volatile((desc.add(14)) as *mut u16, 0u16);
+        }
+        bufs[bufs_len] = virtio::VirtioNetRxBuffer {
+            desc_id: desc_id as u16,
+            pa: rx_pa,
+            len: RX_BUF_LEN,
+        };
+        bufs_len += 1;
+    }
+    if bufs_len == 0 {
+        return NetRxBootBuffer::default();
     }
 
     let avail = (hhdm.wrapping_add(q0.driver_pa)) as *mut u16;
-    // SAFETY: HHDM maps the queue-0 avail ring frame. ring[0] is u16 offset 2
-    // and idx is u16 offset 1.
-    unsafe {
-        core::ptr::write_volatile(avail.add(2), 0u16);
+    for (slot, buf) in bufs.iter().take(bufs_len).enumerate() {
+        // SAFETY: HHDM maps the queue-0 avail ring frame. ring[slot] starts at
+        // u16 offset 2 and idx is u16 offset 1.
+        unsafe {
+            core::ptr::write_volatile(avail.add(2 + slot), buf.desc_id);
+        }
     }
     core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-    // SAFETY: same avail ring; idx publishes descriptor 0 after the release
-    // fence made descriptor and ring writes observable.
+    // SAFETY: same avail ring; idx publishes the descriptor pool after the
+    // release fence made descriptor and ring writes observable.
     unsafe {
-        core::ptr::write_volatile(avail.add(1), 1u16);
+        core::ptr::write_volatile(avail.add(1), bufs_len as u16);
     }
     core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
     NetRxBootBuffer {
-        buf_pa: rx_pa,
-        buf_len: RX_BUF_LEN,
-        avail_idx_posted: 1,
+        bufs,
+        bufs_len,
+        avail_idx_posted: bufs_len as u16,
     }
 }
 
