@@ -50,10 +50,9 @@ impl drv::Driver for VirtioGpuDrv {
     fn remove(&self, dev: &drv::Device) {
         let Some(bdf) = parent_bdf(dev) else { return };
         let bdf_word = bdf_word(bdf);
-        if drv_virtio_gpu::uninstall(bdf_word).is_none() {
-            return;
+        if drv_virtio_gpu::uninstall(bdf_word).is_some() {
+            let _ = drv_virtio_gpu::post_init::uninstall_scanout(bdf_word);
         }
-        let _ = drv_virtio_gpu::post_init::uninstall_scanout(bdf_word);
         unpublish_transport(bdf_word);
     }
 
@@ -165,10 +164,9 @@ impl drv::Driver for VirtioNetDrv {
     fn remove(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
             if drv_virtio_net::modern::is_modern_present_for(device_key) {
-                if drv_virtio_net::modern::uninstall_modern(device_key) {
-                    unpublish_transport(device_key);
-                }
+                let _ = drv_virtio_net::modern::uninstall_modern(device_key);
             }
+            unpublish_transport(device_key);
         }
     }
 
@@ -317,9 +315,7 @@ impl drv::Driver for VirtioVsockDrv {
 
     fn remove(&self, dev: &drv::Device) {
         let Some(device_key) = parent_key(dev) else { return };
-        if !drv_virtio_vsock::uninstall(device_key) {
-            return;
-        }
+        let _ = drv_virtio_vsock::uninstall(device_key);
         unpublish_transport(device_key);
     }
 
@@ -360,6 +356,8 @@ impl drv::Driver for VirtioSndDrv {
             None => return session.fail(),
         };
         #[cfg(not(feature = "debug-boot"))]
+        let _ = &location;
+        #[cfg(not(feature = "debug-boot"))]
         let _ = &sp;
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-snd: bdf=0:");
@@ -382,9 +380,8 @@ impl drv::Driver for VirtioSndDrv {
 
     fn remove(&self, dev: &drv::Device) {
         if let Some(device_key) = parent_key(dev) {
-            if drv_virtio_snd::uninstall(device_key) {
-                unpublish_transport(device_key);
-            }
+            let _ = drv_virtio_snd::uninstall(device_key);
+            unpublish_transport(device_key);
         }
     }
 

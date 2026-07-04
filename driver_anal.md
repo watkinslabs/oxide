@@ -486,6 +486,10 @@ test-pass claims.
   MSI-X table entries before common-cfg queue programming. Virtio-snd now
   programs, owns, and drains its required EVENTQ(1) resource. Dead pci-boot
   child install pass-throughs are gone for block, vsock, and sound.
+  Virtio child remove paths now always unpublish the parent transport record
+  for a bound child after attempting child-specific teardown, so stale MMIO,
+  MSI-X, or vring ownership cannot survive merely because a child driver's
+  state table was already missing.
   Higher-level sound event interpretation/publication, remaining child-probe
   failure unwind audit, and fault-injection proof still need to move behind a
   fuller `VirtioPciTransport` boundary.
