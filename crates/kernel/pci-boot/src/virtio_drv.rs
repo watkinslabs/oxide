@@ -45,7 +45,7 @@ struct TransportRecord {
     bdf: u32,
     _mappings: TransportMappings,
     vring_frames: Vec<u64>,
-    msix: Option<MsixBinding>,
+    msix: Vec<MsixBinding>,
 }
 
 static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
@@ -815,7 +815,8 @@ fn release_msix_binding(bdf: pci::Bdf, binding: MsixBinding) {
 }
 
 fn release_probe_msix(p: &mut VirtioProbe) {
-    if let Some(binding) = p.msix.take() {
+    let bindings = core::mem::take(&mut p.msix);
+    for binding in bindings {
         release_msix_binding(bdf_from_word(p.bdf_word), binding);
     }
 }
@@ -910,7 +911,7 @@ fn publish_transport_mmio(p: &mut VirtioProbe) {
         bdf: p.bdf_word,
         _mappings: core::mem::take(&mut p.mappings),
         vring_frames: p.transport_vring_frames(),
-        msix: p.msix.take(),
+        msix: core::mem::take(&mut p.msix),
     };
     let mut records = TRANSPORT_MMIO.lock();
     if let Some(idx) = records.iter().position(|old| old.bdf == p.bdf_word) {
@@ -950,7 +951,7 @@ fn abandon_probe_transport(bdf: pci::Bdf, mappings: &mut TransportMappings) -> O
 
 fn unmap_transport_record(rec: TransportRecord) {
     let bdf = bdf_from_word(rec.bdf);
-    if let Some(binding) = rec.msix {
+    for binding in rec.msix {
         release_msix_binding(bdf, binding);
     }
     disable_pci_command(bdf);
@@ -1173,7 +1174,7 @@ struct VirtioProbeState {
     mappings: TransportMappings,
     cfg_va: u64,
     device_cfg_va: u64,
-    msix: Option<MsixBinding>,
+    msix: Vec<MsixBinding>,
 }
 
 #[derive(Default)]
@@ -1197,7 +1198,7 @@ impl VirtioProbeState {
             mappings,
             cfg_va,
             device_cfg_va,
-            msix: None,
+            msix: Vec::new(),
         }
     }
 
@@ -1211,17 +1212,26 @@ impl VirtioProbeState {
         let Some(handler) = handler else {
             return None;
         };
-        if self.msix.is_none() {
-            self.msix = bind_virtio_msix_vector(
+        if let Some(binding) = self
+            .msix
+            .iter()
+            .find(|binding| binding.queue_vector == VIRTIO_MSIX_Q0_VECTOR)
+        {
+            return Some(binding.queue_vector);
+        }
+        if let Some(binding) = bind_virtio_msix_vector(
                 d,
                 caps,
                 bars,
                 &mut self.mappings,
                 VIRTIO_MSIX_Q0_VECTOR,
                 handler,
-            );
+        ) {
+            let queue_vector = binding.queue_vector;
+            self.msix.push(binding);
+            return Some(queue_vector);
         }
-        self.msix.as_ref().map(|binding| binding.queue_vector)
+        None
     }
 
     fn negotiate_and_program(
@@ -1445,7 +1455,7 @@ struct VirtioProbeResult {
 pub(super) struct VirtioProbe {
     pub(super) bdf_word: u32,
     mappings: TransportMappings,
-    msix: Option<MsixBinding>,
+    msix: Vec<MsixBinding>,
     pub(super) cmd_orig: u16,
     pub(super) cmd_new:  u16,
     pub(super) cfg_va:   u64,
