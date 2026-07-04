@@ -60,54 +60,13 @@ enum Q1NotifyPolicy {
 }
 
 #[derive(Clone, Copy)]
-struct VirtioChildRequirements {
-    queues: [bool; 4],
-    needs_device_cfg: bool,
-    needs_net_boot_payloads: bool,
-}
-
-impl VirtioChildRequirements {
-    const fn new(
-        queues: [bool; 4],
-        needs_device_cfg: bool,
-        needs_net_boot_payloads: bool,
-    ) -> Self {
-        Self {
-            queues,
-            needs_device_cfg,
-            needs_net_boot_payloads,
-        }
-    }
-
-    const fn q0() -> Self {
-        Self::new([true, false, false, false], false, false)
-    }
-
-    const fn q0_device_cfg() -> Self {
-        Self::new([true, false, false, false], true, false)
-    }
-
-    const fn q0_q1_device_cfg() -> Self {
-        Self::new([true, true, false, false], true, false)
-    }
-
-    const fn net() -> Self {
-        Self::new([true, true, false, false], false, true)
-    }
-
-    const fn snd() -> Self {
-        Self::new([true, true, true, true], true, false)
-    }
-}
-
-#[derive(Clone, Copy)]
 struct VirtioProbeProfile {
     drv_features: u64,
     msix0_handler: Option<fn()>,
     extra_queues: [Option<QueuePlan>; 3],
     q1_notify_policy: Q1NotifyPolicy,
     needs_net_boot_buffers: bool,
-    child_requirements: VirtioChildRequirements,
+    child_requirements: virtio::VirtioChildRequirements,
 }
 
 impl VirtioProbeProfile {
@@ -118,7 +77,7 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
-            child_requirements: VirtioChildRequirements::q0(),
+            child_requirements: virtio::VirtioChildRequirements::q0(),
         }
     }
 
@@ -129,7 +88,7 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, None, false)), None, None],
             q1_notify_policy: Q1NotifyPolicy::NetBootTx,
             needs_net_boot_buffers: true,
-            child_requirements: VirtioChildRequirements::net(),
+            child_requirements: virtio::VirtioChildRequirements::net(),
         }
     }
 
@@ -140,7 +99,7 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
-            child_requirements: VirtioChildRequirements::q0_device_cfg(),
+            child_requirements: virtio::VirtioChildRequirements::q0_device_cfg(),
         }
     }
 
@@ -151,7 +110,7 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
-            child_requirements: VirtioChildRequirements::q0_device_cfg(),
+            child_requirements: virtio::VirtioChildRequirements::q0_device_cfg(),
         }
     }
 
@@ -162,7 +121,7 @@ impl VirtioProbeProfile {
             extra_queues: [None, None, None],
             q1_notify_policy: Q1NotifyPolicy::None,
             needs_net_boot_buffers: false,
-            child_requirements: VirtioChildRequirements::q0(),
+            child_requirements: virtio::VirtioChildRequirements::q0(),
         }
     }
 
@@ -173,7 +132,7 @@ impl VirtioProbeProfile {
             extra_queues: [Some(QueuePlan::new(1, None, false)), None, None],
             q1_notify_policy: Q1NotifyPolicy::PersistentTx,
             needs_net_boot_buffers: false,
-            child_requirements: VirtioChildRequirements::q0_q1_device_cfg(),
+            child_requirements: virtio::VirtioChildRequirements::q0_q1_device_cfg(),
         }
     }
 
@@ -188,7 +147,7 @@ impl VirtioProbeProfile {
             ],
             q1_notify_policy: Q1NotifyPolicy::PersistentEvent,
             needs_net_boot_buffers: false,
-            child_requirements: VirtioChildRequirements::snd(),
+            child_requirements: virtio::VirtioChildRequirements::snd(),
         }
     }
 }
@@ -1472,43 +1431,25 @@ fn virtio_hhdm_offset() -> u64 {
 }
 
 impl VirtioProbe {
-    fn queue_ready(&self, index: usize) -> bool {
+    fn queue_resource(&self, index: u16) -> Option<virtio::VirtQueueResource> {
         match index {
-            0 => {
-                self.q0_desc_pa != 0
-                    && self.q0_driver_pa != 0
-                    && self.q0_device_pa != 0
-                    && self.q0_notify_va != 0
-                    && self.q0_size != 0
-            }
-            1 => {
-                self.q1_desc_pa != 0
-                    && self.q1_driver_pa != 0
-                    && self.q1_device_pa != 0
-                    && self.q1_notify_va != 0
-                    && self.q1_size != 0
-            }
-            2 => {
-                self.snd_q2_desc_pa != 0
-                    && self.snd_q2_driver_pa != 0
-                    && self.snd_q2_device_pa != 0
-                    && self.snd_q2_notify_va != 0
-                    && self.snd_q2_size != 0
-            }
-            3 => {
-                self.snd_q3_desc_pa != 0
-                    && self.snd_q3_driver_pa != 0
-                    && self.snd_q3_device_pa != 0
-                    && self.snd_q3_notify_va != 0
-                    && self.snd_q3_size != 0
-            }
-            _ => false,
+            0 => Some(self.q0_resource()),
+            1 => Some(self.q1_resource()),
+            2 => Some(self.snd_q2_resource()),
+            3 => Some(self.snd_q3_resource()),
+            _ => None,
         }
     }
 
-    fn child_queues_ready(&self, requirements: VirtioChildRequirements) -> bool {
-        for (index, required) in requirements.queues.iter().copied().enumerate() {
-            if required && !self.queue_ready(index) {
+    fn child_queues_ready(&self, requirements: virtio::VirtioChildRequirements) -> bool {
+        for (index, required) in requirements.required_queues.iter().copied().enumerate() {
+            if !required {
+                continue;
+            }
+            let Some(queue) = self.queue_resource(index as u16) else {
+                return false;
+            };
+            if !queue.is_runtime_valid() {
                 return false;
             }
         }
@@ -1519,7 +1460,7 @@ impl VirtioProbe {
         self.rx0_buf_pa != 0 && self.rx0_buf_len != 0 && self.tx0_buf_pa != 0
     }
 
-    fn ready_for_child(&self, requirements: VirtioChildRequirements) -> bool {
+    fn ready_for_child(&self, requirements: virtio::VirtioChildRequirements) -> bool {
         (self.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
             && self.cfg_va != 0
             && self.child_queues_ready(requirements)
