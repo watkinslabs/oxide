@@ -83,7 +83,10 @@ impl VirtioPciTransport {
         d: &pci::PciDevice,
         profile: virtio::VirtioTransportProfile,
     ) -> Option<VirtioProbe> {
-        virtio_init_arch(d, profile)
+        if !virtio::is_modern(d.vendor_id, d.device_id) {
+            return None;
+        }
+        VirtioPciAcquisition::acquire(d.bdf)?.probe_child(d, profile)
     }
 
     pub(super) fn publish(self, p: &mut VirtioProbe) {
@@ -252,6 +255,71 @@ impl VirtioPciAcquisition {
             cmd_orig: (cmd_orig & 0xFFFF) as u16,
             cmd_new: (cmd_new & 0xFFFF) as u16,
         })
+    }
+
+    fn probe_child(
+        self,
+        d: &pci::PciDevice,
+        profile: virtio::VirtioTransportProfile,
+    ) -> Option<VirtioProbe> {
+        let bdf = d.bdf;
+        let mut state = VirtioProbeState::from_caps(bdf, &self.vcaps, &self.bars)?;
+
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            {
+                hal_x86_64::mmu_ops::hhdm_offset()
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                hal_aarch64::mmu_ops::hhdm_offset()
+            }
+        };
+        let bringup = state.negotiate_and_program(d, &self.caps, &self.bars, profile, hhdm);
+        let dev_features = bringup.negotiated.dev_features;
+        let drv_features = bringup.negotiated.drv_features;
+        let post_status = bringup.negotiated.post_status;
+        let features_ok = bringup.negotiated.features_ok;
+        let msix_cfg = bringup.negotiated.msix_cfg;
+        let num_queues = bringup.negotiated.num_queues;
+        let queues = bringup.queues;
+        let queues_len = bringup.queues_len;
+        let notify_cap = self.vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
+        let final_status = bringup.final_status;
+        let runtime = state.runtime_handoff(
+            profile,
+            hhdm,
+            final_status,
+            &queues,
+            queues_len,
+            bringup.programmed_queues.as_ref(),
+            notify_cap.as_ref(),
+            self.vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(),
+            &self.bars,
+        );
+
+        Some(state.finish(VirtioProbeResult {
+            cmd_orig: self.cmd_orig,
+            cmd_new: self.cmd_new,
+            dev_features,
+            drv_features,
+            post_status,
+            features_ok,
+            msix_cfg,
+            num_queues,
+            queues,
+            queues_len,
+            queue_resources: runtime.queue_resources,
+            final_status,
+            q0_notify_va: runtime.q0_notify_va,
+            post_notify_status: runtime.post_notify_status,
+            avail_idx_posted: runtime.avail_idx_posted,
+            used_idx_observed: runtime.used_idx_observed,
+            isr_status: runtime.isr_status,
+            rx0_buf_pa: runtime.rx0_buf_pa,
+            rx0_buf_len: runtime.rx0_buf_len,
+            tx0_buf_pa: runtime.tx0_buf_pa,
+        }))
     }
 }
 
@@ -818,74 +886,4 @@ fn map_cap_window(
     let page_pa = cap_pa & !0xFFF;
     let page_off = cap_pa - page_pa;
     Some(mappings.map_page(page_pa) + page_off)
-}
-
-/// Drive one modern virtio-pci device through FEATURES_OK and
-/// scan its queue layout. Returns Some(probe) on success.
-/// # SAFETY: caller is the boot path; PMM ready; single-CPU; IRQs masked.
-/// # C: O(BAR pages mapped + ~num_queues u32 reads)
-fn virtio_init_arch(
-    d: &pci::PciDevice,
-    profile: virtio::VirtioTransportProfile,
-) -> Option<VirtioProbe> {
-    if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
-    let bdf = d.bdf;
-    let acquisition = VirtioPciAcquisition::acquire(bdf)?;
-    let mut state = VirtioProbeState::from_caps(bdf, &acquisition.vcaps, &acquisition.bars)?;
-
-    // Per-arch HHDM offset, hoisted once for all queue programming. The
-    // virtio core programs EVERY virtqueue uniformly through the transport:
-    // q0 for all devices, q1 for net/vsock TX or snd EVENTQ, and q2/q3 for
-    // multi-queue devices such as virtio-snd.
-    let hhdm = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::mmu_ops::hhdm_offset() }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::mmu_ops::hhdm_offset() }
-    };
-    let bringup = state.negotiate_and_program(d, &acquisition.caps, &acquisition.bars, profile, hhdm);
-    let dev_features = bringup.negotiated.dev_features;
-    let drv_features = bringup.negotiated.drv_features;
-    let post_status = bringup.negotiated.post_status;
-    let features_ok = bringup.negotiated.features_ok;
-    let msix_cfg = bringup.negotiated.msix_cfg;
-    let num_queues = bringup.negotiated.num_queues;
-    let queues = bringup.queues;
-    let queues_len = bringup.queues_len;
-    let notify_cap = acquisition.vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
-    let final_status = bringup.final_status;
-    let runtime = state.runtime_handoff(
-        profile,
-        hhdm,
-        final_status,
-        &queues,
-        queues_len,
-        bringup.programmed_queues.as_ref(),
-        notify_cap.as_ref(),
-        acquisition.vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(),
-        &acquisition.bars,
-    );
-
-    Some(state.finish(VirtioProbeResult {
-        cmd_orig: acquisition.cmd_orig,
-        cmd_new: acquisition.cmd_new,
-        dev_features,
-        drv_features,
-        post_status,
-        features_ok,
-        msix_cfg,
-        num_queues,
-        queues,
-        queues_len,
-        queue_resources: runtime.queue_resources,
-        final_status,
-        q0_notify_va: runtime.q0_notify_va,
-        post_notify_status: runtime.post_notify_status,
-        avail_idx_posted: runtime.avail_idx_posted,
-        used_idx_observed: runtime.used_idx_observed,
-        isr_status: runtime.isr_status,
-        rx0_buf_pa: runtime.rx0_buf_pa,
-        rx0_buf_len: runtime.rx0_buf_len,
-        tx0_buf_pa: runtime.tx0_buf_pa,
-    }))
 }
