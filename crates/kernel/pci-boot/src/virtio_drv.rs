@@ -507,15 +507,12 @@ impl drv::Driver for VirtioRngDrv {
         }
         let resources = p.resources(&[p.q0_resource()]);
         let bdf_word = bdf_word(d.bdf);
-        let probe = match drv_virtio_rng::install(bdf_word, resources) {
-            Some(probe) => probe,
+        match drv_virtio_rng::install(bdf_word, resources) {
+            Some(()) => {}
             None => {
                 p.release_failed_transport(&[]);
                 return Err(drv::Error::ProbeFailed);
             }
-        };
-        if let Some(hwrng_dev) = probe.hwrng_dev {
-            drv::device_add(hwrng_dev);
         }
 
         // Seed the kernel RNG with real entropy at bring-up. Read from the
@@ -523,14 +520,7 @@ impl drv::Driver for VirtioRngDrv {
         let mut seed = [0u8; 32];
         let n = drv_virtio_rng::fill_from_bdf(bdf_word, &mut seed);
         if n == 0 {
-            if let Some(remove) = drv_virtio_rng::uninstall(bdf_word) {
-                if let Some(hwrng_dev) = remove.hwrng_dev {
-                    drv::device_del(&hwrng_dev);
-                }
-                if let Some(promoted) = remove.promoted_hwrng_dev {
-                    drv::device_add(promoted);
-                }
-            }
+            let _ = drv_virtio_rng::uninstall(bdf_word);
             p.release_failed_transport(&[]);
             return Err(drv::Error::ProbeFailed);
         }
@@ -547,14 +537,7 @@ impl drv::Driver for VirtioRngDrv {
     fn remove(&self, dev: &drv::Device) {
         if let Some(bdf) = pci_parent_bdf(dev) {
             let bdf_word = bdf_word(bdf);
-            if let Some(remove) = drv_virtio_rng::uninstall(bdf_word) {
-                if let Some(hwrng_dev) = remove.hwrng_dev {
-                    drv::device_del(&hwrng_dev);
-                }
-                if let Some(promoted) = remove.promoted_hwrng_dev {
-                    drv::device_add(promoted);
-                }
-            }
+            let _ = drv_virtio_rng::uninstall(bdf_word);
             unpublish_transport_mmio(bdf_word);
         }
     }

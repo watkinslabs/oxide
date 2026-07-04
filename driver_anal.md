@@ -200,9 +200,10 @@ test-pass claims.
   reserves that endpoint before transport frame allocation and rejects a second
   active hook instead of overwriting the live endpoint.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
-  removes by owning parent BDF, and promotes `/dev/hwrng` publication to a
-  remaining RNG device on active-provider removal. Virtio-snd install/remove
-  is now keyed to the owning parent BDF and releases child-owned queue/buffer
+  removes by owning parent BDF, owns `/dev/hwrng` publication/removal inside
+  the RNG child driver, and promotes `/dev/hwrng` publication to a remaining
+  RNG device on active-provider removal. Virtio-snd install/remove is now
+  keyed to the owning parent BDF and releases child-owned queue/buffer
   resources only for the matching transport; the sound card layer remains a
   single global card.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
