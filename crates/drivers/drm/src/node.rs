@@ -289,6 +289,47 @@ mod node_publication_tests {
     }
 
     #[test]
+    fn unregister_then_register_restores_card_and_render_nodes() {
+        let card_id = 0x7ff2;
+        let card_name = format!("dri/card{card_id}");
+        let render_minor = 128 + card_id;
+        let render_name = format!("dri/renderD{render_minor}");
+        unregister(card_id);
+
+        assert!(register(card_id));
+        assert!(registered_card_ids().contains(&card_id));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
+                .count(),
+            2
+        );
+
+        unregister(card_id);
+        assert!(!registered_card_ids().contains(&card_id));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
+                .count(),
+            0
+        );
+
+        assert!(register(card_id));
+        assert!(registered_card_ids().contains(&card_id));
+        assert_eq!(
+            drv::devices()
+                .iter()
+                .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
+                .count(),
+            2
+        );
+
+        unregister(card_id);
+    }
+
+    #[test]
     fn register_rolls_back_card_node_when_render_publication_conflicts() {
         let card_id = 0x7ff1;
         unregister(card_id);
