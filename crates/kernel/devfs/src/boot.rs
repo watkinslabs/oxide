@@ -9,17 +9,34 @@ use alloc::sync::Arc;
 use vfs::InodeRef;
 use crate::register;
 
-/// Self-register a pseudo character device through `drv::device_add` (D27):
+/// Self-register a pseudo character device through `drv::try_device_add` (D27):
 /// pushes a `drv::Device` (bus/dev_class `class`, addr/devname `name`) into the
 /// device registry and fires the devtmpfs hook → `/dev/<name>` minted from the
 /// `factory` (preserving the exact bespoke inode). `dt` is the `(major, minor)`
-/// metadata. # C: O(1) amortised
+/// metadata. Repeated boot/test population leaves the already-registered model
+/// device in place instead of publishing a duplicate bus identity.
+/// # C: O(N_devices)
 fn add_pseudo_dev(class: &'static str, name: &str, dt: (u32, u32), factory: drv::NodeFactory) {
     use alloc::string::String;
-    drv::device_add(Arc::new(
+    match drv::try_device_add(Arc::new(
         drv::Device::new(class, String::from(name), 0, 0, 0)
             .with_devnode(class, String::from(name), Some(dt))
-            .with_node_factory(factory)));
+            .with_node_factory(factory))) {
+        Ok(_) => {}
+        Err(drv::Error::Busy) => {
+            if !drv::devices().iter().any(|d| {
+                d.bus == class
+                    && d.addr == name
+                    && d.dev_class == class
+                    && d.devname.as_deref() == Some(name)
+                    && d.dev_t == Some(dt)
+                    && d.node_factory.is_some()
+            }) {
+                panic!("conflicting pseudo device registration");
+            }
+        }
+        Err(_) => panic!("pseudo device registration failed"),
+    }
 }
 
 /// Register the built-in pseudo-device nodes + the synthetic directory

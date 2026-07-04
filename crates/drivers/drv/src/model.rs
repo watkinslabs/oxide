@@ -205,26 +205,43 @@ pub fn devices() -> Vec<Arc<Device>> { DEVICES.lock().clone() }
 /// Number of registered devices. # C: O(1)
 pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 
-/// Unified device registration (Linux `device_add`). ONE call publishes a
-/// device to BOTH `/sys` and `/dev` from a single registration:
+/// Fallible unified device registration (Linux `device_add`). ONE call
+/// publishes a device to BOTH `/sys` and `/dev` from a single registration:
 ///   1. push to the registry so sysfs can resolve the object;
 ///   2. if the device declares a `/dev` node (`devname.is_some()`), fire
 ///      `DEVTMPFS_HOOK` so devtmpfs mints `/dev/<devname>`;
 ///   3. fire `SYSFS_HOOK`, which emits the Linux `add` uevent only after the
-///      devtmpfs node is visible.
+///      devtmpfs node is visible;
+///   4. reject duplicate `(bus, addr)` identities before publishing anything.
 ///
 /// Deliberate oxide design (do NOT "fix" into Linux kset/kobject trees): `/sys`
 /// directories are SYNTHESISED on demand from this registry by the sysfs crate
 /// (`sysfs::bus`), so there is no eager kobject/kset dir tree or refcounting to
 /// build here — registration is the single source of truth, dirs are a view.
-/// # C: O(1) amortised
-pub fn device_add(d: Arc<Device>) -> Arc<Device> {
+/// # C: O(N_devices)
+pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
+    if DEVICES.lock().iter().any(|x| x.bus == d.bus && x.addr == d.addr) {
+        return Err(crate::Error::Busy);
+    }
     let d = push_device(d);
     if let Some(name) = d.devname.clone() {
         if let Some(h) = *DEVTMPFS_HOOK.lock() { h(d.dev_class, &name, d.dev_t, d.node_factory.clone()); }
     }
     if let Some(h) = *SYSFS_HOOK.lock() { h(&d); }
-    d
+    Ok(d)
+}
+
+/// Infallible convenience wrapper for callers whose enumeration path has
+/// already guaranteed a unique bus address. Duplicate registration is a kernel
+/// model bug, so fail immediately instead of publishing two devices with one
+/// identity.
+/// # C: O(N_devices)
+pub fn device_add(d: Arc<Device>) -> Arc<Device> {
+    match try_device_add(d) {
+        Ok(d) => d,
+        Err(crate::Error::Busy) => panic!("duplicate device registration"),
+        Err(e) => panic!("device_add failed: {:?}", e),
+    }
 }
 
 /// Symmetric teardown (Linux `device_del`): first detach any bound driver so
@@ -452,6 +469,44 @@ mod tests {
     }
     static AUTO_FAILING_PROBE_DRV: AutoFailingProbeDrv = AutoFailingProbeDrv;
 
+    static LOOP_PROBES: AtomicU32 = AtomicU32::new(0);
+    static LOOP_REMOVES: AtomicU32 = AtomicU32::new(0);
+    struct LoopLifecycleDrv;
+    impl Driver for LoopLifecycleDrv {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "loop-lifecycle-test" }
+        fn matches(&self, dev: &Device) -> bool {
+            dev.bus == "platform" && dev.device_id == 0x51fe
+        }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+            LOOP_PROBES.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+        fn remove(&self, _dev: &Device) {
+            LOOP_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static LOOP_LIFECYCLE_DRV: LoopLifecycleDrv = LoopLifecycleDrv;
+
+    static READD_PROBES: AtomicU32 = AtomicU32::new(0);
+    static READD_REMOVES: AtomicU32 = AtomicU32::new(0);
+    struct ReaddLifecycleDrv;
+    impl Driver for ReaddLifecycleDrv {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "readd-lifecycle-test" }
+        fn matches(&self, dev: &Device) -> bool {
+            dev.bus == "platform" && dev.device_id == 0x51ff
+        }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+            READD_PROBES.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+        fn remove(&self, _dev: &Device) {
+            READD_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static READD_LIFECYCLE_DRV: ReaddLifecycleDrv = ReaddLifecycleDrv;
+
     #[test]
     fn addr_formatting_pci() {
         let a = alloc::format!("{:04x}:{:02x}:{:02x}.{}", 0u16, 0u8, 3u8, 0u8);
@@ -545,6 +600,73 @@ mod tests {
 
         device_del(&d);
         assert_eq!(REMOVE_HITS.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn try_device_add_rejects_duplicate_bus_identity() {
+        let first = try_device_add(Arc::new(Device::new(
+            "platform", String::from("duplicate-device-test0"), 0, 0x51fd, 0)))
+            .unwrap();
+        let duplicate = try_device_add(Arc::new(Device::new(
+            "platform", String::from("duplicate-device-test0"), 0, 0x51fd, 0)));
+
+        assert!(matches!(duplicate, Err(crate::Error::Busy)));
+        assert_eq!(
+            devices().iter()
+                .filter(|d| d.bus == "platform" && d.addr == "duplicate-device-test0")
+                .count(),
+            1
+        );
+
+        device_del(&first);
+        assert!(!devices().iter().any(|d| {
+            d.bus == "platform" && d.addr == "duplicate-device-test0"
+        }));
+    }
+
+    #[test]
+    fn repeated_bind_unbind_keeps_model_state_consistent() {
+        LOOP_PROBES.store(0, Ordering::Release);
+        LOOP_REMOVES.store(0, Ordering::Release);
+        register_driver(&LOOP_LIFECYCLE_DRV);
+        let d = device_add(Arc::new(Device::new(
+            "platform", String::from("loop-lifecycle-test0"), 0, 0x51fe, 0)));
+
+        for i in 1..=16 {
+            assert_eq!(bind(&d, "loop-lifecycle-test"), Ok(()));
+            assert_eq!(d.bound(), Some("loop-lifecycle-test"));
+            assert_eq!(bind(&d, "loop-lifecycle-test"), Err(crate::Error::AlreadyBound));
+            assert_eq!(unbind(&d), Ok(()));
+            assert_eq!(d.bound(), None);
+            assert_eq!(LOOP_PROBES.load(Ordering::Acquire), i);
+            assert_eq!(LOOP_REMOVES.load(Ordering::Acquire), i);
+        }
+
+        device_del(&d);
+    }
+
+    #[test]
+    fn remove_readd_rebind_loop_reuses_bus_identity_after_device_del() {
+        READD_PROBES.store(0, Ordering::Release);
+        READD_REMOVES.store(0, Ordering::Release);
+        register_driver(&READD_LIFECYCLE_DRV);
+
+        for i in 1..=16 {
+            let d = try_device_add(Arc::new(Device::new(
+                "platform", String::from("readd-lifecycle-test0"), 0, 0x51ff, 0)))
+                .unwrap();
+            assert_eq!(bind(&d, "readd-lifecycle-test"), Ok(()));
+            assert_eq!(d.bound(), Some("readd-lifecycle-test"));
+
+            device_del(&d);
+
+            assert_eq!(d.bound(), None);
+            assert!(!devices().iter().any(|dev| {
+                dev.bus == "platform" && dev.addr == "readd-lifecycle-test0"
+            }));
+            assert_eq!(READD_PROBES.load(Ordering::Acquire), i);
+            assert_eq!(READD_REMOVES.load(Ordering::Acquire), i);
+        }
     }
 
     #[test]
