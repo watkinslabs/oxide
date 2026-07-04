@@ -45,9 +45,7 @@ struct TransportRecord {
     bdf: u32,
     _mappings: TransportMappings,
     vring_frames: Vec<u64>,
-    msi_id: u32,
-    msix_entry_va: u64,
-    msix_cap_off: u8,
+    msix: Option<MsixBinding>,
 }
 
 static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
@@ -775,29 +773,19 @@ fn bind_virtio_msix0(
     Some(MsixBinding { id, entry_va, cap_off: c.cfg_off })
 }
 
-fn release_msix_binding(rec: TransportRecord) {
-    if rec.msix_entry_va != 0 {
-        // SAFETY: this VA was recorded from the MSI-X table mapping while the
-        // transport was bound and is still mapped until the caller unmaps the
-        // transport MMIO pages.
-        unsafe { core::ptr::write_volatile((rec.msix_entry_va + 12) as *mut u32, 1); }
-    }
-    if rec.msix_cap_off != 0 {
-        set_msix_enabled_arch(bdf_from_word(rec.bdf), rec.msix_cap_off, false);
-    }
-    free_msi_id(rec.msi_id);
+fn release_msix_binding(bdf: pci::Bdf, binding: MsixBinding) {
+    // SAFETY: entry_va was recorded from the MSI-X table mapping while the
+    // transport was bound and is still mapped until the caller releases the
+    // transport MMIO mappings.
+    unsafe { core::ptr::write_volatile((binding.entry_va + 12) as *mut u32, 1); }
+    set_msix_enabled_arch(bdf, binding.cap_off, false);
+    free_msi_id(binding.id);
 }
 
-fn release_probe_msix(p: &VirtioProbe) {
-    if p.msix_entry_va != 0 {
-        // SAFETY: this VA was recorded from the MSI-X table mapping while the
-        // probe-owned transport mappings are still live.
-        unsafe { core::ptr::write_volatile((p.msix_entry_va + 12) as *mut u32, 1); }
+fn release_probe_msix(p: &mut VirtioProbe) {
+    if let Some(binding) = p.msix.take() {
+        release_msix_binding(bdf_from_word(p.bdf_word), binding);
     }
-    if p.msix_cap_off != 0 {
-        set_msix_enabled_arch(bdf_from_word(p.bdf_word), p.msix_cap_off, false);
-    }
-    free_msi_id(p.msi_id);
 }
 
 fn decode_msix_cap_arch(bdf: pci::Bdf, cfg_off: u8) -> Option<pci::MsixCap> {
@@ -880,9 +868,7 @@ fn publish_transport_mmio(p: &mut VirtioProbe) {
         bdf: p.bdf_word,
         _mappings: core::mem::take(&mut p.mappings),
         vring_frames: transport_vring_frames(p),
-        msi_id: p.msi_id,
-        msix_entry_va: p.msix_entry_va,
-        msix_cap_off: p.msix_cap_off,
+        msix: p.msix.take(),
     };
     let mut records = TRANSPORT_MMIO.lock();
     if let Some(idx) = records.iter().position(|old| old.bdf == p.bdf_word) {
@@ -921,7 +907,11 @@ fn abandon_probe_transport(bdf: pci::Bdf, mappings: &mut TransportMappings) -> O
 }
 
 fn unmap_transport_record(rec: TransportRecord) {
-    disable_pci_command(bdf_from_word(rec.bdf));
+    let bdf = bdf_from_word(rec.bdf);
+    if let Some(binding) = rec.msix {
+        release_msix_binding(bdf, binding);
+    }
+    disable_pci_command(bdf);
     for frame in rec.vring_frames.iter().copied() {
         if frame == 0 {
             continue;
@@ -931,7 +921,6 @@ fn unmap_transport_record(rec: TransportRecord) {
         // device before unpublishing this transport record.
         unsafe { pmm::setup::free_one_frame(frame); }
     }
-    release_msix_binding(rec);
 }
 
 fn transport_vring_frames(p: &VirtioProbe) -> Vec<u64> {
@@ -1222,9 +1211,7 @@ pub(super) fn register_model_drivers() {
 pub(super) struct VirtioProbe {
     pub(super) bdf_word: u32,
     mappings: TransportMappings,
-    pub(super) msi_id: u32,
-    pub(super) msix_entry_va: u64,
-    pub(super) msix_cap_off: u8,
+    msix: Option<MsixBinding>,
     pub(super) cmd_orig: u16,
     pub(super) cmd_new:  u16,
     pub(super) cfg_va:   u64,
@@ -1606,9 +1593,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     Some(VirtioProbe {
         bdf_word: bdf_word(bdf),
         mappings,
-        msi_id: msix.map(|m| m.id).unwrap_or(0),
-        msix_entry_va: msix.map(|m| m.entry_va).unwrap_or(0),
-        msix_cap_off: msix.map(|m| m.cap_off).unwrap_or(0),
+        msix,
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
         cmd_new:  (cmd_new  & 0xFFFF) as u16,
         cfg_va,
