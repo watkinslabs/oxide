@@ -175,8 +175,10 @@ fn is_ns_root_dentry(d: &Arc<Dentry>) -> bool {
 /// IDENTITY (cross-ns scanner over the global map). # C: O(N_mounts)
 fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     let dp = dptr(d);
+    // Match the mount's OWN root dentry (`mnt_root`, per-mount for binds/clones),
+    // not the shared `sb.s_root()` — see `visible_mnt_id_of_root_dentry`.
     MOUNTS.lock().values()
-        .find(|m| m.ns == ns && m.sb.s_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .find(|m| m.ns == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
         .cloned()
 }
 
@@ -193,13 +195,24 @@ fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
 /// mount even under shadowed singleton-fs duplicates. # C: O(N_mounts)
 fn visible_mnt_id_of_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
     let dp = dptr(d);
+    // Match on the mount's OWN root dentry (`mnt_root`), which for a bind/clone
+    // is a per-mount override distinct from the shared `sb.s_root()`. Filtering
+    // by `sb.s_root()` missed bind mounts entirely: a task chrooted/pivoted onto
+    // a bind root (systemd sandbox, mnt 397) resolved its root dentry to the ns
+    // root (381) instead, so `__lookup_mnt(381, /sys)` could not find the sysfs
+    // mounted under 397 — logind's `/sys` fell to the empty ext4 underlay and no
+    // greeter rendered. `mnt_root()` falls back to `sb.s_root()`, so the
+    // singleton-pseudo-fs (procfs/sysfs) sharing case below is unchanged.
     let cands: Vec<Arc<Mount>> = MOUNTS.lock().values()
-        .filter(|m| m.ns == ns && m.sb.s_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .filter(|m| m.ns == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
         .cloned().collect();
     if cands.is_empty() { return None; }
-    // (a) ns root mount ⇒ the canonical ns-root id. [D25] identity by the
-    // self-parent `is_root()` predicate, not the `mountpoint == None` data state.
-    if cands.iter().any(|m| m.is_root()) { return root_mount_id(ns); }
+    // (a) THE ns root mount ⇒ the canonical ns-root id. Must be the ACTUAL ns
+    // root (mnt_id == root_mount_id), NOT merely any self-parented mount: a
+    // sandbox bind root is also self-parented (`is_root()`) but is a task's
+    // private root, not the namespace root — collapsing it to the ns root is the
+    // bind-root misidentification above.
+    if cands.iter().any(|m| Some(m.mnt_id) == root_mount_id(ns)) { return root_mount_id(ns); }
     // (b) the duplicate currently visible (top of its own mountpoint crossing).
     for m in cands.iter() {
         if let Some(mp) = m.mountpoint() {
