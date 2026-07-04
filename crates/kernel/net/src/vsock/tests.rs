@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn tx_ok(_frame: &[u8]) -> bool { true }
+fn tx_ok(_owner: u32, _frame: &[u8]) -> bool { true }
 
 fn cleanup_driver_state() {
     let owner = driver_owner();
@@ -118,7 +118,7 @@ fn hdr_decode_short_buffer_none() {
 
 #[test]
 fn build_request_header() {
-    let c = VsockConn::new(3, 1024, 2, 1234, VsockState::Connecting);
+    let c = VsockConn::new(31, 3, 1024, 2, 1234, VsockState::Connecting);
     let h = c.make_hdr(VIRTIO_VSOCK_OP_REQUEST, 0, 0);
     assert_eq!(h.src_cid, 3);
     assert_eq!(h.dst_cid, 2);
@@ -134,7 +134,7 @@ fn build_request_header() {
 fn parse_response_promotes_state() {
     with_driver(31, 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(3, 2000, 2, 1234, VsockState::Connecting));
+            VsockConn::new(31, 3, 2000, 2, 1234, VsockState::Connecting));
         TABLE.insert(c.clone());
         let resp = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2000,
@@ -170,7 +170,7 @@ fn credit_update_math() {
 fn rw_buffers_payload_and_recv_drains() {
     with_driver(32, 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(3, 2001, 2, 1234, VsockState::Connected));
+            VsockConn::new(32, 3, 2001, 2, 1234, VsockState::Connected));
         TABLE.insert(c.clone());
         let payload = b"oxide-vsock-ping";
         let rw = VsockHdr {
@@ -193,7 +193,7 @@ fn rw_buffers_payload_and_recv_drains() {
 fn shutdown_then_eof() {
     with_driver(33, 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(3, 2002, 2, 1234, VsockState::Connected));
+            VsockConn::new(33, 3, 2002, 2, 1234, VsockState::Connected));
         TABLE.insert(c.clone());
         let sh = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2002,
@@ -214,7 +214,7 @@ fn shutdown_then_eof() {
 fn rst_closes_connection() {
     with_driver(34, 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(3, 2003, 2, 1234, VsockState::Connected));
+            VsockConn::new(34, 3, 2003, 2, 1234, VsockState::Connected));
         TABLE.insert(c.clone());
         let rst = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2003,
@@ -230,7 +230,7 @@ fn rst_closes_connection() {
 #[test]
 fn send_blocked_when_no_peer_credit() {
     with_vsock_state(|| {
-        let c = VsockConn::new(3, 2004, 2, 1234, VsockState::Connected);
+        let c = VsockConn::new(0, 3, 2004, 2, 1234, VsockState::Connected);
         // peer_buf_alloc stays 0 → no credit → Eagain.
         assert_eq!(send(&c, b"data"), Err(crate::NetError::Eagain));
         // Open a window and it sends (tx hook is a no-op because no driver is
@@ -273,5 +273,21 @@ fn rx_for_wrong_guest_cid_is_dropped() {
         };
         deliver_rx(&req, &[]);
         assert!(TABLE.pop_accept(6666).is_none());
+    });
+}
+
+#[test]
+fn rx_from_wrong_owner_is_dropped() {
+    with_driver(37, 3, || {
+        TABLE.add_listener(7777);
+        let req = VsockHdr {
+            src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 7777,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
+        };
+        deliver_rx_from(38, &req, &[]);
+        assert!(TABLE.pop_accept(7777).is_none());
+        deliver_rx_from(37, &req, &[]);
+        assert!(TABLE.pop_accept(7777).is_some());
     });
 }

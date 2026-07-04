@@ -289,8 +289,7 @@ pub fn shutdown(device_key: u32) -> bool {
 }
 
 /// Guest CID accessor (0 if no device). # C: O(1)
-pub fn guest_cid() -> u64 {
-    let owner = net::vsock::driver_owner();
+pub fn guest_cid_for(owner: u32) -> u64 {
     CTX.lock()
         .iter()
         .find(|ctx| ctx.device_key == owner)
@@ -298,13 +297,17 @@ pub fn guest_cid() -> u64 {
         .unwrap_or(0)
 }
 
+/// Guest CID accessor (0 if no device). # C: O(1)
+pub fn guest_cid() -> u64 {
+    guest_cid_for(net::vsock::driver_owner())
+}
+
 /// TX hook installed into `net::vsock`. `frame` is a fully-encoded
 /// virtio_vsock_hdr + payload. Builds one TX descriptor on q1, kicks,
 /// polls the used ring for completion. Returns true on completion.
 /// # C: O(TX_POLL_BUDGET + frame bytes)
-pub fn tx_packet(frame: &[u8]) -> bool {
+pub fn tx_packet(owner: u32, frame: &[u8]) -> bool {
     let mut g = CTX.lock();
-    let owner = net::vsock::driver_owner();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) {
         Some(c) => c,
         None => return false,
