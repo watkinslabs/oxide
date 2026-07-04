@@ -41,6 +41,31 @@ gdm → greeter.
   (max ~246) so it's not EXIT_NAMESPACE. Services like upower still reach
   "Started" afterward. Treat 265 as a red herring until proven otherwise.
 
+## LATEST (post-merge, journald-visible) — greeter now LAUNCHES A SESSION
+Fixed the serial journald forwarding first (imagectl: make ttyS0 the PREFERRED
+console — `console=tty0 console=ttyS0` so /dev/console maps to serial; the Linux
+way), which finally exposed userspace logs. With that visibility, fixed:
+- fix(ioctl) 3e43ae4d: socket ioctls (FIONREAD/SIOCOUTQ/FIONBIO) returned ENOTTY
+  → dbus-broker crashed (socket_dispatch_write) → whole D-Bus bus down. Now
+  dbus-broker is stable → gdm↔logind works → **greeter session (gnome-initial-
+  setup c1) LAUNCHES**.
+- fix(time) fe6a9fc9: CLOCK_REALTIME started at 1970 → PAM "password changed in
+  future". Read CMOS RTC at boot → clock now correct (2026-…).
+- fix(procfs) 6484c194: /proc/*/loginuid made writable (pam_loginuid).
+REMAINING greeter blocker (START HERE): `user@979.service` (User Manager for the
+gnome-initial-setup uid) FAILS at the PAM step — "PAM failed: Cannot make/remove
+an entry for the specified session" + "Failed to set up PAM session: Operation
+not permitted" (status 224/PAM). So the user session's systemd --user never
+starts → gnome-shell never runs → no greeter render. The EPERM is INTERNAL to a
+PAM session module (NOT a traced syscall EPERM at that instant; the nr=312/kcmp
+EPERM storm is just systemd's own seccomp SystemCallFilter, a red herring).
+NEXT: identify which pam session module returns PAM_SESSION_ERR/EPERM for the
+`systemd-user` stack (pam_loginuid-via-audit? pam_selinux? pam_namespace mount
+setup? pam_keyinit keyctl?). Trace the user-manager fork's syscalls right before
+[62.8s] (name=fork-child / (systemd)[166]); check for an EROFS ftruncate (saw
+nr=77 EROFS on fd 8 nearby) or a keyctl/mount/audit-netlink EPERM. Boot with the
+gdm/journald debug image edits (re-apply after build-rootfs; then build-boot).
+
 ## SESSION SUMMARY (branch B318, merged with fresh origin/main @ 7b4adb4d)
 SIX kernel fixes landed this campaign, clearing the whole graphics/seat chain
 that blocked GNOME:
