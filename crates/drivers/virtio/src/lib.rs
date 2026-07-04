@@ -24,7 +24,8 @@ pub use pci::{
 
 pub mod resources;
 pub use resources::{
-    VirtioChildRequirements, VirtioQ1NotifyPolicy, VirtioQueuePlan, VirtioResources,
+    VirtioChildRequirements, VirtioChildTransportSession, VirtioNetBootPayloads,
+    VirtioQ1NotifyPolicy, VirtioQueuePlan, VirtioResources, VirtioTransportLocation,
     VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_MSI_NO_VECTOR,
 };
 

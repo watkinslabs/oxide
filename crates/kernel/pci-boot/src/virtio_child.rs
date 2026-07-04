@@ -8,6 +8,7 @@ use super::virtio_bus::{
     bdf_word, parent_bdf, parent_key, unpublish_transport, VirtioChildSession,
 };
 use alloc::sync::Arc;
+use virtio::VirtioChildTransportSession;
 
 struct VirtioGpuDrv;
 impl drv::Driver for VirtioGpuDrv {
@@ -23,14 +24,14 @@ impl drv::Driver for VirtioGpuDrv {
         let profile =
             virtio::VirtioTransportProfile::q0(drv_virtio_gpu::wanted_features(), None);
         let mut session = VirtioChildSession::begin(dev, profile)?;
-        let bdf = session.bdf();
+        let location = session.location();
         let Some(resources) = session.child_resources() else {
             return session.fail();
         };
         let ok = drv_virtio_gpu::post_init::get_display_info(
-            bdf.bus,
-            bdf.device,
-            bdf.function,
+            location.bus,
+            location.device,
+            location.function,
             session.drv_features(),
             resources,
         );
@@ -139,21 +140,21 @@ impl drv::Driver for VirtioNetDrv {
             Some(drv_virtio_net::modern::raise_rx),
         );
         let mut session = VirtioChildSession::begin(dev, profile)?;
-        let bdf = session.bdf();
+        let location = session.location();
         let device_key = session.device_key();
-        let (rx0_buf_pa, rx0_buf_len, tx0_buf_pa) = session.net_boot_payloads();
+        let payloads = session.net_boot_payloads();
         let Some(resources) = session.child_resources() else {
             return session.fail();
         };
         if !drv_virtio_net::modern::init_modern(
             device_key,
             resources,
-            bdf.bus,
-            bdf.device,
-            bdf.function,
-            rx0_buf_pa,
-            rx0_buf_len,
-            tx0_buf_pa,
+            location.bus,
+            location.device,
+            location.function,
+            payloads.rx_buf_pa,
+            payloads.rx_buf_len,
+            payloads.tx_buf_pa,
         ) {
             return session.fail();
         }
@@ -346,7 +347,7 @@ impl drv::Driver for VirtioSndDrv {
             Some(drv_virtio_snd::raise_event),
         );
         let mut session = VirtioChildSession::begin(dev, profile)?;
-        let bdf = session.bdf();
+        let location = session.location();
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return session.fail();
@@ -362,7 +363,7 @@ impl drv::Driver for VirtioSndDrv {
         let _ = &sp;
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-snd: bdf=0:");
-            klog::write_dec_u64(bdf.device as u64);
+            klog::write_dec_u64(location.device as u64);
             klog::write_raw(b".0 card=C0 streams=");
             klog::write_dec_u64(sp.streams as u64);
             klog::write_raw(b" out=");

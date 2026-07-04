@@ -356,6 +356,88 @@ impl VirtioResources {
     }
 }
 
+/// Transport-neutral location for a virtio child. PCI transports fill these
+/// fields from BDF; non-PCI transports can use the same tuple as a stable
+/// controller-local location without pulling PCI types into child drivers.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct VirtioTransportLocation {
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+}
+
+impl VirtioTransportLocation {
+    /// # C: O(1)
+    pub const fn new(bus: u8, device: u8, function: u8) -> Self {
+        Self {
+            bus,
+            device,
+            function,
+        }
+    }
+}
+
+/// Early payload buffers a transport may prepare for a network child before
+/// the child runtime takes over normal RX/TX ownership.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct VirtioNetBootPayloads {
+    pub rx_buf_pa: u64,
+    pub rx_buf_len: u16,
+    pub tx_buf_pa: u64,
+}
+
+impl VirtioNetBootPayloads {
+    /// # C: O(1)
+    pub const fn new(rx_buf_pa: u64, rx_buf_len: u16, tx_buf_pa: u64) -> Self {
+        Self {
+            rx_buf_pa,
+            rx_buf_len,
+            tx_buf_pa,
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn is_present(&self) -> bool {
+        self.rx_buf_pa != 0 && self.rx_buf_len != 0 && self.tx_buf_pa != 0
+    }
+}
+
+/// Common child-facing session contract implemented by concrete virtio
+/// transports. Child drivers consume this shape; transport backends own how
+/// bring-up, IRQ/vector binding, MMIO lifetime, and failed-probe release are
+/// actually performed.
+pub trait VirtioChildTransportSession {
+    /// Stable key used by this kernel's per-device child runtime tables.
+    /// # C: O(1)
+    fn device_key(&self) -> u32;
+
+    /// Controller-local address of the transport-owned child.
+    /// # C: O(1)
+    fn location(&self) -> VirtioTransportLocation;
+
+    /// Negotiated driver feature mask after transport bring-up.
+    /// # C: O(1)
+    fn drv_features(&self) -> u64;
+
+    /// Transport-prepared network boot payload buffers, if requested.
+    /// # C: O(1)
+    fn net_boot_payloads(&self) -> VirtioNetBootPayloads;
+
+    /// Validated common/device config and queue resources for the child.
+    /// # C: O(N_required)
+    fn child_resources(&self) -> Option<VirtioResources>;
+
+    /// Release transport-owned probe state after child install failure.
+    /// # C: O(N_transport_resources)
+    fn release_failed_child(&mut self);
+
+    /// Publish persistent transport state after a child probe succeeds.
+    /// # C: O(N_transport_resources)
+    fn publish(self)
+    where
+        Self: Sized;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,5 +522,19 @@ mod tests {
         assert_eq!(snd.extra_queues[2].map(|q| q.index), Some(3));
         assert!(snd.extra_queues[1].map(|q| q.map_notify).unwrap_or(false));
         assert!(snd.child_requirements.needs_device_cfg);
+    }
+
+    #[test]
+    fn child_session_data_is_transport_neutral() {
+        let loc = VirtioTransportLocation::new(0, 3, 1);
+        assert_eq!(loc.bus, 0);
+        assert_eq!(loc.device, 3);
+        assert_eq!(loc.function, 1);
+
+        let empty = VirtioNetBootPayloads::default();
+        assert!(!empty.is_present());
+
+        let payloads = VirtioNetBootPayloads::new(0x1000, 64, 0x2000);
+        assert!(payloads.is_present());
     }
 }
