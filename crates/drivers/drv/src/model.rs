@@ -263,7 +263,7 @@ pub fn device_del(d: &Arc<Device>) {
 /// Register a model driver. Fires the driver-publish hook so
 /// `/sys/bus/<bus>/drivers/<name>` appears on the bus the driver actually
 /// belongs to.
-/// # C: O(1)
+/// # C: O(N_devices + probe)
 pub fn register_driver(d: &'static dyn Driver) {
     {
         let mut l = MODEL_DRIVERS.lock();
@@ -273,6 +273,35 @@ pub fn register_driver(d: &'static dyn Driver) {
     DRV_COUNT.fetch_add(1, Ordering::Release);
     if let Some(h) = *DRIVER_HOOK.lock() { h(d.bus(), d.name()); }
     attach_driver_to_existing_devices(d);
+}
+
+/// Unregister a model driver. Bound devices are detached while the driver is
+/// still present in the registry, then the driver disappears from
+/// `/sys/bus/<bus>/drivers` because sysfs enumerates this registry dynamically.
+/// # C: O(N_devices * N_drivers + remove + N_drivers)
+pub fn unregister_driver(d: &'static dyn Driver) -> KResult<()> {
+    if !MODEL_DRIVERS.lock().iter().any(|x| x.bus() == d.bus() && x.name() == d.name()) {
+        return Err(crate::Error::NotFound);
+    }
+
+    for dev in devices() {
+        if dev.bus == d.bus() && dev.bound() == Some(d.name()) {
+            unbind(&dev)?;
+        }
+    }
+
+    let removed = {
+        let mut drivers = MODEL_DRIVERS.lock();
+        let before = drivers.len();
+        drivers.retain(|x| !(x.bus() == d.bus() && x.name() == d.name()));
+        drivers.len() != before
+    };
+    if removed {
+        DRV_COUNT.fetch_sub(1, Ordering::Release);
+        Ok(())
+    } else {
+        Err(crate::Error::NotFound)
+    }
 }
 
 /// Snapshot of registered model-driver names. # C: O(N_drivers)
@@ -521,6 +550,23 @@ mod tests {
     }
     static DUPLICATE_REGISTER_DRV: DuplicateRegisterDrv = DuplicateRegisterDrv;
 
+    static UNREGISTER_PROBES: AtomicU32 = AtomicU32::new(0);
+    static UNREGISTER_REMOVES: AtomicU32 = AtomicU32::new(0);
+    struct UnregisterDrv;
+    impl Driver for UnregisterDrv {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "unregister-test" }
+        fn matches(&self, dev: &Device) -> bool { dev.device_id == 0x6202 }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+            UNREGISTER_PROBES.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+        fn remove(&self, _dev: &Device) {
+            UNREGISTER_REMOVES.fetch_add(1, Ordering::Release);
+        }
+    }
+    static UNREGISTER_DRV: UnregisterDrv = UnregisterDrv;
+
     fn device_add(d: Arc<Device>) -> Arc<Device> {
         try_device_add(d).expect("test device registration")
     }
@@ -597,6 +643,28 @@ mod tests {
 
         assert!(d.bound().is_none());
         assert_eq!(DUP_REGISTER_PROBES.load(Ordering::Acquire), 1);
+        device_del(&d);
+    }
+
+    #[test]
+    fn unregister_driver_unbinds_devices_before_removing_driver() {
+        UNREGISTER_PROBES.store(0, Ordering::Release);
+        UNREGISTER_REMOVES.store(0, Ordering::Release);
+        register_driver(&UNREGISTER_DRV);
+        let d = device_add(Arc::new(Device::new(
+            "platform", String::from("unregister-test0"), 0, 0x6202, 0)));
+
+        assert_eq!(d.bound(), Some("unregister-test"));
+        assert_eq!(UNREGISTER_PROBES.load(Ordering::Acquire), 1);
+        assert!(driver_names_for_bus("platform").contains(&"unregister-test"));
+
+        assert_eq!(unregister_driver(&UNREGISTER_DRV), Ok(()));
+        assert_eq!(d.bound(), None);
+        assert_eq!(UNREGISTER_REMOVES.load(Ordering::Acquire), 1);
+        assert!(!driver_names_for_bus("platform").contains(&"unregister-test"));
+        assert_eq!(bind(&d, "unregister-test"), Err(crate::Error::NotFound));
+        assert_eq!(unregister_driver(&UNREGISTER_DRV), Err(crate::Error::NotFound));
+
         device_del(&d);
     }
 
