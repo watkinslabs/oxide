@@ -49,14 +49,14 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 ## File length cap (`docs/08§7`)
 
 - Hard cap: **1000 lines** per `.rs` or `.md` file. CI fail above. Applies to our source in `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`, `vendor/**`, and `vendors/**`). Imported third-party vendor code is not subject to line caps.
-- Soft target: **500 lines**. Above 500 → consider splitting at next touch.
+- Split trigger: **500 lines**. Above 500 is not a suggestion: split the file into focused child modules before continuing feature work in that area. The parent file remains a manifest, not a place to park the excess code.
 - Split big files into submodules: Rust `mod foo; foo/{a.rs,b.rs}`; markdown into sister docs cross-referenced via `<doc>§<sec>`.
 - Tests count toward the cap — split `tests.rs` into `tests/<feature>.rs` once it grows.
-- Parent module files are manifests after a split: keep a short `Module manifest` comment near the top that names each child module and its owned responsibility. The parent coordinates/re-exports; it must not become a dumping ground again.
+- Parent module files are manifests: keep a short `Module manifest` comment near the top that names each child module and its owned responsibility. The parent coordinates/re-exports; it must not contain implementation logic, tests, long impl blocks, dispatch bodies, policy, backend translation, or helper piles.
 
 ## Crate/module shape rules
 
-- **Crate root files are manifests, not implementation files.** `lib.rs`, `main.rs`, and parent `mod.rs` files declare child modules, re-export the public surface, and carry the short module manifest that says where each functional group lives. They do not hold subsystem logic, long method impl blocks, dispatch tables, policy, backend translation, tests, or growing helper piles. Move implementation code into focused child modules by function/group (`ioctl.rs`, `lookup.rs`, `signals.rs`, `creds.rs`, `irq.rs`, `modeset.rs`, `tests/<feature>.rs`, etc.).
+- **Crate main files are manifests only.** `lib.rs`, `main.rs`, `mod.rs`, and top-level parent module files declare child modules, re-export the public surface, and carry the short module manifest that says where each functional group lives. All real code lives in focused child files/modules by function or ownership group (`ioctl.rs`, `lookup.rs`, `signals.rs`, `creds.rs`, `irq.rs`, `modeset.rs`, `tests/<feature>.rs`, etc.). These manifest files must not hold subsystem logic, method bodies, dispatch bodies, policy, backend translation, tests, or growing helper piles.
 - **After a module is split, keep it split.** Do not add new logic back into the crate root or parent manifest because it is "small" or convenient. Put new code in the child module that owns that responsibility, or create a new named child module when no current owner fits.
 - Constants are owned by contract, not convenience. UAPI/ABI numbers live in `uapi.rs`; bit flags, mode flags, caps, and feature bits live in `flags.rs` or the owning UAPI module; hardware/bus IDs live in `ids.rs`; limits, alignment, counts, and timeout constants live in `limits.rs`; layout offsets and ABI size helpers live in `layout.rs`.
 - Do not create catch-all `constants.rs` files unless the crate is tiny and has exactly one constant contract. A generic constants file becomes a dumping ground; prefer a name that states ownership (`uapi`, `flags`, `ids`, `limits`, `layout`, `features`).
