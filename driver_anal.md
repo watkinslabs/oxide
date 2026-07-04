@@ -132,7 +132,10 @@ test-pass claims.
   entry and validates it against the decoded table size, so q0 is just the
   first policy user rather than a hardcoded special case. Transport MSI-X
   ownership is now plural, so published and failed probes release all bound
-  table entries instead of a single optional binding.
+  table entries instead of a single optional binding. Extra queue plans now
+  carry explicit per-queue IRQ callback policy, and virtio-pci resolves that
+  policy into transport-owned MSI-X bindings before common-cfg queue
+  programming instead of hardcoding `NO_VECTOR` into every extra queue plan.
 - Virtio-vsock no longer has PCI-transport-owned guest-CID harvest. The
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
   resource during install.
@@ -285,10 +288,12 @@ test-pass claims.
   moved to child drivers, and failed-probe transport release is now owned by
   `VirtioProbe` instead of ad-hoc per-device wrappers. MSI-X q0 vector policy
   is now explicit, including function-mask handling and table-entry validation.
-  Transport-owned MSI-X binding lifetime now handles multiple entries, but
-  actual extra-queue vector assignment is still pending. Complete multi-vector
-  MSI-X setup policy, remaining child-probe failure unwind audit, and
-  fault-injection proof still need to move behind a fuller
+  Transport-owned MSI-X binding lifetime now handles multiple entries, and
+  extra queue plans now resolve declared IRQ callbacks into queue-indexed
+  MSI-X table entries before common-cfg queue programming. Queue-specific
+  callback coverage for extra queues that should interrupt, remaining
+  child-probe failure unwind audit, and fault-injection proof still need to
+  move behind a fuller
   `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has

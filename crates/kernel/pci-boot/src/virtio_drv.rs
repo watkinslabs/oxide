@@ -82,11 +82,7 @@ impl VirtioProbeProfile {
         Self {
             drv_features: drv_virtio_net::modern::wanted_features(),
             msix0_handler,
-            extra_queues: [Some(QueuePlan::new(
-                1,
-                super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
-                false,
-            )), None, None],
+            extra_queues: [Some(QueuePlan::new(1, None, false)), None, None],
             q1_notify_policy: Q1NotifyPolicy::NetBootTx,
             needs_net_boot_buffers: true,
         }
@@ -126,11 +122,7 @@ impl VirtioProbeProfile {
         Self {
             drv_features: drv_virtio_vsock::wanted_features(),
             msix0_handler,
-            extra_queues: [Some(QueuePlan::new(
-                1,
-                super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
-                false,
-            )), None, None],
+            extra_queues: [Some(QueuePlan::new(1, None, false)), None, None],
             q1_notify_policy: Q1NotifyPolicy::PersistentTx,
             needs_net_boot_buffers: false,
         }
@@ -141,16 +133,8 @@ impl VirtioProbeProfile {
             drv_features: drv_virtio_snd::wanted_features(),
             msix0_handler,
             extra_queues: [
-                Some(QueuePlan::new(
-                    2,
-                    super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
-                    true,
-                )),
-                Some(QueuePlan::new(
-                    3,
-                    super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR,
-                    true,
-                )),
+                Some(QueuePlan::new(2, None, true)),
+                Some(QueuePlan::new(3, None, true)),
                 None,
             ],
             q1_notify_policy: Q1NotifyPolicy::None,
@@ -1202,11 +1186,12 @@ impl VirtioProbeState {
         }
     }
 
-    fn bind_msix0(
+    fn bind_msix_queue(
         &mut self,
         d: &pci::PciDevice,
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
+        queue_vector: u16,
         handler: Option<fn()>,
     ) -> Option<u16> {
         let Some(handler) = handler else {
@@ -1215,7 +1200,7 @@ impl VirtioProbeState {
         if let Some(binding) = self
             .msix
             .iter()
-            .find(|binding| binding.queue_vector == VIRTIO_MSIX_Q0_VECTOR)
+            .find(|binding| binding.queue_vector == queue_vector)
         {
             return Some(binding.queue_vector);
         }
@@ -1224,7 +1209,7 @@ impl VirtioProbeState {
                 caps,
                 bars,
                 &mut self.mappings,
-                VIRTIO_MSIX_Q0_VECTOR,
+                queue_vector,
                 handler,
         ) {
             let queue_vector = binding.queue_vector;
@@ -1232,6 +1217,33 @@ impl VirtioProbeState {
             return Some(queue_vector);
         }
         None
+    }
+
+    fn bind_msix0(
+        &mut self,
+        d: &pci::PciDevice,
+        caps: &pci::heapless_caps::CapVec,
+        bars: &[pci::Bar; 6],
+        handler: Option<fn()>,
+    ) -> Option<u16> {
+        self.bind_msix_queue(d, caps, bars, VIRTIO_MSIX_Q0_VECTOR, handler)
+    }
+
+    fn resolve_extra_queue_msix(
+        &mut self,
+        d: &pci::PciDevice,
+        caps: &pci::heapless_caps::CapVec,
+        bars: &[pci::Bar; 6],
+        extra_queues: &[Option<QueuePlan>; 3],
+    ) -> [Option<QueuePlan>; 3] {
+        let mut resolved = *extra_queues;
+        for plan in resolved.iter_mut().flatten() {
+            let msix_vec = self
+                .bind_msix_queue(d, caps, bars, plan.index, plan.msix_handler)
+                .unwrap_or(super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR);
+            *plan = plan.with_msix_vec(msix_vec);
+        }
+        resolved
     }
 
     fn negotiate_and_program(
@@ -1252,12 +1264,17 @@ impl VirtioProbeState {
         } else {
             super::virtio_qsetup::VIRTIO_MSI_NO_VECTOR
         };
+        let extra_queues = if negotiated.features_ok {
+            self.resolve_extra_queue_msix(d, caps, bars, &profile.extra_queues)
+        } else {
+            profile.extra_queues
+        };
         let programmed_queues = if negotiated.features_ok {
             super::virtio_qsetup::program_queue_set(
                 self.cfg_va,
                 hhdm,
                 q0_msix_vec,
-                &profile.extra_queues,
+                &extra_queues,
             )
         } else {
             None

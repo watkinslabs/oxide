@@ -31,17 +31,24 @@ pub(super) const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
 #[derive(Clone, Copy)]
 pub(super) struct QueuePlan {
     pub(super) index: u16,
+    pub(super) msix_handler: Option<fn()>,
     pub(super) msix_vec: u16,
     pub(super) map_notify: bool,
 }
 
 impl QueuePlan {
-    pub(super) const fn new(index: u16, msix_vec: u16, map_notify: bool) -> Self {
+    pub(super) const fn new(index: u16, msix_handler: Option<fn()>, map_notify: bool) -> Self {
         Self {
             index,
-            msix_vec,
+            msix_handler,
+            msix_vec: VIRTIO_MSI_NO_VECTOR,
             map_notify,
         }
+    }
+
+    pub(super) const fn with_msix_vec(mut self, msix_vec: u16) -> Self {
+        self.msix_vec = msix_vec;
+        self
     }
 }
 
