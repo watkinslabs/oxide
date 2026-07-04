@@ -319,7 +319,7 @@ fn enomem() -> i64 { -(Errno::Enomem.as_i32() as i64) }
 
 /// True iff `[ptr, ptr+len)` is a usable user range. # C: O(1)
 fn user_ok(ptr: u64, len: u64) -> bool {
-    ptr != 0 && ptr < hal::USER_VA_END && ptr.saturating_add(len) <= hal::USER_VA_END
+    ptr != 0 && ptr < hal::USER_VA_END && ptr.checked_add(len).is_some_and(|end| end <= hal::USER_VA_END)
 }
 
 /// MODE_CREATE_DUMB: allocate contiguous pages, register a handle,

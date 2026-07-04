@@ -472,8 +472,9 @@ test-pass claims.
   child-key install is rejected before publication, and DRM card IDs are
   stable slots so unregistering one card does not renumber the remaining
   devices.
-  DRM now publishes card/render device nodes per stable card slot
-  (`/dev/dri/cardN`, `/dev/dri/renderD128+N`), encodes the card id in the DRM
+  DRM now publishes card device nodes per stable card slot
+  (`/dev/dri/cardN`; render nodes are intentionally withheld until real
+  render/GEM UAPI exists), encodes the card id in the DRM
   inode tag, routes card-backed ioctls through the matching backend slot, and
   builds `/sys/class/drm` plus `/sys/devices/virtual/drm` from live DRM
   `drv::try_device_add` records instead of a static card0 table.
@@ -625,8 +626,8 @@ test-pass claims.
   char devices. The remaining direct `devfs::register` users are fixed
   namespace entries, devpts allocation, coredump artifacts, or other
   non-hardware pseudo-files rather than driver-owned device nodes.
-- Driver-owned devnode registries for block, evdev, fbdev, DRM card/render
-  nodes, and the active virtio-rng `/dev/hwrng` provider now have hosted
+- Driver-owned devnode registries for block, evdev, fbdev, DRM card nodes,
+  and the active virtio-rng `/dev/hwrng` provider now have hosted
   remove/readd loop proofs: unregister/remove deletes the model device(s),
   re-register/re-publish recreates exactly one owned model device per node,
   block `dev_t` lookup disappears and returns with the disk, and registry slots
@@ -651,8 +652,8 @@ test-pass claims.
   entry points require an owning device key, and the core net stack's NDP table
   is keyed by interface. Virtio-net still needs live multi-device bind/unbind
   proof.
-  Virtio-gpu installed device state, DRM backend records, DRM card/render
-  nodes, DRM ioctl backend routing, scanout backing records, DRM runtime
+  Virtio-gpu installed device state, DRM backend records, DRM card nodes,
+  DRM ioctl backend routing, scanout backing records, DRM runtime
   scanout hooks, scanout owner tokens, flip-event queues, and dumb-buffer/FB
   object lookup are BDF/card owned. Display-info and negotiated-feature
   helpers are now BDF-keyed instead of selecting the first installed GPU.
@@ -837,7 +838,7 @@ test-pass claims.
   stack-owned interface-scoped IPv6 NDP lookup. Its shared RX bottom-half/timer
   lifetime is last-runtime-owned, but virtio-net still needs live loop proof
   and broader multi-NIC validation; virtio-gpu now has per-card DRM
-  card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
+  card nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
   fbdev flush/blank dispatch, exact fbdev-index publication ownership,
   independent primary/scanout hot-remove cleanup, and dumb-buffer mmap VMA
@@ -1440,7 +1441,7 @@ Each subsystem should provide a central registration API:
 
 - block: gendisk-like disk and partition registration
 - net: netdev registration
-- DRM: card/render/connector registration
+- DRM: card/connector registration; render registration only after render UAPI
 - input: input device and event handler registration
 - sound: ALSA card/device/control registration
 - tty: tty driver and tty device registration

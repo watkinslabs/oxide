@@ -13,6 +13,7 @@
 //   /sys/class/drm/                          (dir of symlinks)
 //     cardN        -> ../../devices/virtual/drm/cardN
 //     renderD128+N -> ../../devices/virtual/drm/renderD128+N
+//                    (only when a DRM driver publishes a real render minor)
 //   /sys/devices/virtual/drm/<name>/         (per-minor dir)
 //     dev                                     "226:<minor>\n"
 //     uevent                                  MAJOR=/MINOR=/DEVNAME=/DEVTYPE=

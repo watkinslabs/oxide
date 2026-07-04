@@ -1,5 +1,6 @@
-// DRM/KMS card nodes per `47`. /dev/dri/cardN + /dev/dri/renderD128+N
-// dispatch ioctls through the stable DrmDriver slot in the drm crate.
+// DRM/KMS card nodes per `47`. /dev/dri/cardN dispatches ioctls through the
+// stable DrmDriver slot in the drm crate. Render nodes are intentionally not
+// published until a real render/GEM UAPI exists behind them.
 
 #![allow(dead_code)]
 
@@ -50,7 +51,6 @@ static SCANOUT_OPS: Spinlock<Vec<Option<ScanoutOps>>, OpsLockClass> = Spinlock::
 
 struct DrmNodePair {
     card: Arc<drv::Device>,
-    render: Arc<drv::Device>,
 }
 
 static DRM_NODES: Spinlock<Vec<Option<DrmNodePair>>, OpsLockClass> = Spinlock::new(Vec::new());
@@ -374,7 +374,7 @@ fn add_node(name: &str, class: &'static str, dt: (u32, u32), factory: drv::NodeF
     )).ok()
 }
 
-/// Register DRM card/render nodes for a stable DRM card id.
+/// Register a DRM card node for a stable DRM card id.
 /// # C: O(1)
 pub fn register(card_id: u32) -> bool {
     let mut nodes = DRM_NODES.lock();
@@ -386,8 +386,6 @@ pub fn register(card_id: u32) -> bool {
         return false;
     }
     let card_name = format!("dri/card{}", card_id);
-    let render_minor = 128u32.checked_add(card_id).expect("DRM render minor overflow");
-    let render_name = format!("dri/renderD{}", render_minor);
     let Some(card) = add_node(
         &card_name,
         "drm",
@@ -396,20 +394,11 @@ pub fn register(card_id: u32) -> bool {
     ) else {
         return false;
     };
-    let Some(render) = add_node(
-        &render_name,
-        "drm",
-        (226, render_minor),
-        Arc::new(move || make_render_inode(card_id)),
-    ) else {
-        drv::device_del(&card);
-        return false;
-    };
-    nodes[idx] = Some(DrmNodePair { card, render });
+    nodes[idx] = Some(DrmNodePair { card });
     true
 }
 
-/// Remove DRM card/render nodes for a stable DRM card id.
+/// Remove the DRM card node for a stable DRM card id.
 /// # C: O(depth)
 pub fn unregister(card_id: u32) {
     let pair = {
@@ -423,7 +412,6 @@ pub fn unregister(card_id: u32) {
     if let Some(pair) = pair {
         clear_master_owner(card_id);
         AUTHORIZED_MAGICS.lock().retain(|(card, _)| *card != card_id);
-        drv::device_del(&pair.render);
         drv::device_del(&pair.card);
     }
 }
@@ -440,7 +428,6 @@ pub fn unregister_all() {
         pairs
     };
     for pair in pairs.into_iter().rev() {
-        drv::device_del(&pair.render);
         drv::device_del(&pair.card);
     }
     MASTER_OWNERS.lock().clear();
@@ -499,7 +486,7 @@ mod node_publication_tests {
     }
 
     #[test]
-    fn unregister_then_register_restores_card_and_render_nodes() {
+    fn unregister_then_register_restores_card_node_only() {
         let card_id = 0x7ff2;
         let card_name = format!("dri/card{card_id}");
         let render_minor = 128 + card_id;
@@ -513,8 +500,10 @@ mod node_publication_tests {
                 .iter()
                 .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
                 .count(),
-            2
+            1
         );
+        assert!(drv::devices().iter().any(|d| d.bus == "drm" && d.addr == card_name));
+        assert!(drv::devices().iter().all(|d| d.bus != "drm" || d.addr != render_name));
 
         unregister(card_id);
         assert!(!registered_card_ids().contains(&card_id));
@@ -533,44 +522,24 @@ mod node_publication_tests {
                 .iter()
                 .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
                 .count(),
-            2
+            1
         );
+        assert!(drv::devices().iter().any(|d| d.bus == "drm" && d.addr == card_name));
+        assert!(drv::devices().iter().all(|d| d.bus != "drm" || d.addr != render_name));
 
         unregister(card_id);
     }
 
     #[test]
-    fn register_rolls_back_card_node_when_render_publication_conflicts() {
+    fn register_does_not_publish_render_node() {
         let card_id = 0x7ff1;
         unregister(card_id);
-        let card_name = format!("dri/card{card_id}");
         let render_minor = 128 + card_id;
         let render_name = format!("dri/renderD{render_minor}");
-        let conflict = drv::try_device_add(Arc::new(
-            drv::Device::new("drm", render_name.clone(), 0, 0, 0)
-                .with_devnode("drm", render_name.clone(), Some((226, render_minor))),
-        ))
-        .expect("conflict device registration");
 
-        assert!(!register(card_id));
-        assert!(!registered_card_ids().contains(&card_id));
-        assert_eq!(
-            drv::devices()
-                .iter()
-                .filter(|d| d.bus == "drm" && d.addr == card_name)
-                .count(),
-            0
-        );
-        assert_eq!(
-            drv::devices()
-                .iter()
-                .filter(|d| d.bus == "drm" && d.addr == render_name)
-                .count(),
-            1
-        );
-
-        drv::device_del(&conflict);
         assert!(register(card_id));
+        assert!(registered_card_ids().contains(&card_id));
+        assert!(drv::devices().iter().all(|d| d.bus != "drm" || d.addr != render_name));
         unregister(card_id);
     }
 
