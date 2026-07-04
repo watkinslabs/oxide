@@ -57,17 +57,31 @@ COMPLETION isn't registering. Measured:
   `if (grp & 1) != 0 continue`) — so the worker-result broadcast (dgrp=2) is
   NEVER delivered to port 6 (measured: port 6 skipped 118×). If port 6 is the
   manager's ONLY monitor, it never learns events completed → re-dispatch loop.
-- UNRESOLVED: does the manager have a SEPARATE group-2 result monitor that DOES
-  get the broadcasts (making the port-6 skip correct and the loop elsewhere)? A
-  group-2 socket would be DELIVERED (not logged by the skip trace) — need to
-  trace cooked DEQUEUES by port+group to see if any manager-owned socket reads
-  the results, and whether re-dispatch stops after. If NO manager socket reads
-  results, the fix is to route worker result broadcasts to the manager (e.g. the
-  worker should UNICAST results to the manager's port — check if systemd sets a
-  dest addr we're dropping in send_slice/sendmsg; or the manager's result
-  monitor needs a group we're not delivering). CAUTION: do NOT just deliver
-  cooked to the group-1 kernel monitor — libudev rejects a libudev-magic message
-  on a kernel monitor, and the skip was added deliberately (busy-loop guard).
+- RESOLVED by measurement (trace: log recvmsg reader exe when dequeuing a
+  libudev-magic datagram): ZERO group-2 readers exist. Cooked RESULT broadcasts
+  are read only by port=2 (empty exe = PID1, 87×, legit) and by the udev WORKERS
+  themselves (ports 8-16, exe=systemd-udevd, ~10× each — they uselessly DRAIN the
+  broadcasts because register_uevent_listener subscribes EVERY uevent socket at
+  socket(2), even a worker's send-only result monitor). The MANAGER (port 6) reads
+  NONE. So the manager has NO netlink channel for worker completions → it
+  re-dispatches until it gives up (~20-25×/event), bounding the loop but wasting
+  the whole boot.
+- WHERE TO LOOK NEXT (needs systemd-source review, not just kernel traces): how
+  does systemd v257 udev-manager RECEIVE worker completion? Options: (a) worker
+  UNICASTs the result to the manager's monitor port — then our sendmsg is reading
+  a wrong/zero dest nl_pid for the worker's result send (I saw worker result
+  sends as dest_pid=0 groups=2 = broadcast, NOT unicast to port 6 — verify the
+  worker's msg_name offset/content; if systemd DOES set a dest, we're dropping
+  it); (b) completion is the worker's EXIT (SIGCHLD/pidfd) not a message — then
+  audit our SIGCHLD/pidfd/waitid for workers (ties to the earlier sd-executor
+  waitid=ECHILD finding); (c) the manager's result monitor needs a group we
+  aren't delivering. Read src/udev/udev-manager.c on_worker / worker_returned +
+  device_monitor. CAUTION: do NOT deliver cooked to the group-1 kernel monitor
+  (libudev rejects libudev-magic on a kernel monitor; skip is a deliberate
+  busy-loop guard). SECONDARY cleanup: workers shouldn't be subscribed as uevent
+  LISTENERS at all (their result monitors are send-only) — register_uevent_listener
+  over-subscribes; gating subscription on an actual bind/group would stop workers
+  draining broadcasts.
 - Consequence of the loop: boot ~145s; CAN_GRAPHICAL=1 lands ~132s AFTER gdm
   started+exited code=1 at ~105s → greeter never launches. Even in a
   CAN_GRAPHICAL=1 boot, no gnome-shell (checked). Fix the loop → fast boot →
