@@ -373,7 +373,8 @@ test-pass claims.
   bind/unbind/rebind proof.
   Virtio-net transport, registered-iface, TX, RX softirq runtime,
   visible naming, RX stats, IPv4 ARP cache state, and IPv6 NDP stack lookups
-  are now BDF/interface-owned keyed records, and the core net stack's NDP table
+  are now BDF/interface-owned keyed records, exported virtio-net TX/RX helper
+  entry points require an owning device key, and the core net stack's NDP table
   is keyed by interface. Virtio-net still needs live multi-device bind/unbind
   proof.
   Virtio-gpu installed device state, DRM backend records, DRM card/render
@@ -626,10 +627,11 @@ Several drivers still use singleton global state:
   fbdev flush/blank dispatch; dumb-buffer mmap lifetime is pinned through
   shared VMA backing and PMM object refs; fbcon has one explicit foreground
   console owner
-- virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
-  is stack-owned and keyed by interface in kernel builds; boot route/RS seeding
-  now iterates the registered virtio-net iface snapshot instead of using only
-  the first iface, but live multi-NIC proof is still missing
+- virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; exported
+  TX/RX helper entry points require an owning device key; IPv6 NDP is
+  stack-owned and keyed by interface in kernel builds; boot route/RS seeding
+  iterates the registered virtio-net iface snapshot, but live multi-NIC proof
+  is still missing
 - virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
 - virtio-vsock: keyed transport records and owner-keyed endpoint teardown, but
   a singleton upper protocol endpoint
