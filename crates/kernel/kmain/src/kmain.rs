@@ -401,6 +401,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
         unsafe { crate::boot_cmdline::install_arch_default(); }
         console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
+        // Init CLOCK_REALTIME from the hardware RTC (else the wall clock is 1970
+        // → PAM sees accounts as future-dated and rejects the greeter session).
+        syscalls::init_wall_clock_from_rtc();
         fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
         drv_virtio_input::procfs::init();
         fbdev::devfs::init(); devpts::init();
