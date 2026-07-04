@@ -161,6 +161,11 @@ test-pass claims.
   context identity, hot-remove, shutdown, PCM-info scan, and event-handler
   teardown. Its raw conversion is isolated at the sound-core owner-key
   interface instead of the PCI-backed child wrapper.
+- `drv-virtio-gpu` now accepts and stores `VirtioChildDeviceKey` for device
+  table identity, install, hot-remove, shutdown, probe-failure scanout unwind,
+  and scanout lifecycle teardown. BDF remains only as PCI/location metadata and
+  as the existing DRM/fbdev private callback key; the PCI-backed child wrapper
+  no longer converts GPU child keys into raw PCI-shaped integers.
 - Shared `virtio::run_child_probe` now owns the transport-neutral child probe
   lifecycle: run child install, publish transport state only after success, and
   release failed-probe resources on child error. The PCI-backed child model
@@ -387,12 +392,13 @@ test-pass claims.
   `/proc/bus/input/devices` from live input state, and clears its event-queue
   bottom half when the last queue is removed. Shutdown now calls an explicit
   event-queue quiesce path instead of the hot-remove-named helper.
-- Virtio-gpu remove is keyed to the owning parent BDF and tears down
+- Virtio-gpu remove is keyed to the owning virtio child key and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
-  Probe-failure unwind only removes scanout state for the failed probe's BDF.
-  Installed virtio-gpu device state is now a per-BDF table, duplicate BDF
-  install is rejected before publication, and DRM card IDs are stable slots
-  so unregistering one card does not renumber the remaining devices.
+  Probe-failure unwind only removes scanout state for the failed child key.
+  Installed virtio-gpu device state is now a per-child-key table, duplicate
+  child-key install is rejected before publication, and DRM card IDs are
+  stable slots so unregistering one card does not renumber the remaining
+  devices.
   DRM now publishes card/render device nodes per stable card slot
   (`/dev/dri/cardN`, `/dev/dri/renderD128+N`), encodes the card id in the DRM
   inode tag, routes card-backed ioctls through the matching backend slot, and
@@ -416,8 +422,8 @@ test-pass claims.
   consume the correct owner token and free the backing. fbcon publication
   still has one explicit foreground console owner. Dumb-buffer mmap now pins
   the DRM object through a file-backed shared VMA and PMM object refs, so
-  DESTROY_DUMB/card unregister cannot return pages
-  while userspace VMAs can still fault them.
+  DESTROY_DUMB/card unregister cannot return pages while userspace VMAs can
+  still fault them.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
@@ -429,7 +435,8 @@ test-pass claims.
   install/remove rather than in the virtio-pci glue. The old boot-probe default
   IPv4 policy is gone; the RX path learns IPv4 state from normal address
   configuration hooks. Virtio-net install/remove is now keyed to the owning
-  parent BDF, so a remove for another device cannot clear another transport.
+  virtio child key, so a remove for another device cannot clear another
+  transport.
   TX/RX queue cursors now live in keyed installed-device records, the TX
   primitive has a BDF-keyed entry point, and the published `NetDev` carries its
   owning device key. Registered iface ownership and RX softirq runtime state
@@ -446,22 +453,23 @@ test-pass claims.
 - The core IPv6 stack NDP cache is no longer a process-global `ip -> mac` map.
   Stack-side NDP learning is keyed by `(iface, IPv6 address)`, so duplicate
   link-local neighbors on different interfaces no longer overwrite each other.
-- Virtio-vsock remove is keyed to the owning parent BDF and clears its
+- Virtio-vsock remove is keyed to the owning virtio child key and clears its
   `VsockRx` bottom half only for the installed transport. The upper
   `net::vsock` layer now stores owner-keyed protocol endpoint records with
   per-owner guest-CID/TX hooks, rejects duplicate owner or guest-CID
   publication, and keeps transport state as keyed records instead of an
   implicit single slot. Existing AF_VSOCK connect paths still choose a primary
   endpoint when userspace does not explicitly select a device.
-- Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
-  removes by owning parent BDF, owns `/dev/hwrng` publication/removal inside
-  the RNG child driver, and promotes `/dev/hwrng` publication to a remaining
-  RNG device on active-provider removal. Virtio-snd install/remove is now
-  keyed to the owning parent BDF and releases child-owned queue/buffer
-  resources only for the matching transport; the sound card layer allocates
-  owner-keyed ALSA card numbers, publishes per-card ALSA/OSS nodes, routes ops
-  by the card owner, and rejects unregister from non-owners.
-  Virtio-gpu duplicate-BDF admission is also left to the child install path.
+- Virtio-rng now keeps per-child-key records, seeds from the just-bound device,
+  removes by owning virtio child key, owns `/dev/hwrng` publication/removal
+  inside the RNG child driver, and promotes `/dev/hwrng` publication to a
+  remaining RNG device on active-provider removal. Virtio-snd install/remove is
+  now keyed to the owning virtio child key and releases child-owned
+  queue/buffer resources only for the matching transport; the sound card layer
+  allocates owner-keyed ALSA card numbers, publishes per-card ALSA/OSS nodes,
+  routes ops by the card owner, and rejects unregister from non-owners.
+  Virtio-gpu duplicate child-key admission is also left to the child install
+  path.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI

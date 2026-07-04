@@ -64,10 +64,12 @@ impl VirtioChildOps for VirtioGpuOps {
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
+        let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
         let ok = drv_virtio_gpu::post_init::get_display_info(
+            device_key,
             location.bus,
             location.device,
             location.function,
@@ -86,13 +88,13 @@ impl VirtioChildOps for VirtioGpuOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        if drv_virtio_gpu::uninstall(device_key.raw()).is_some() {
-            let _ = drv_virtio_gpu::post_init::uninstall_scanout(device_key.raw());
+        if drv_virtio_gpu::uninstall(device_key).is_some() {
+            let _ = drv_virtio_gpu::post_init::uninstall_scanout(device_key);
         }
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_gpu::shutdown(device_key.raw());
+        let _ = drv_virtio_gpu::shutdown(device_key);
     }
 }
 static VIRTIO_GPU_DRV: VirtioChildDriver<VirtioGpuOps> = VirtioChildDriver::new();
