@@ -27,7 +27,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "044_sendto.rs"] pub mod s044_sendto; #[path = "046_sendmsg.rs"] pub mod s046_sendmsg; #[path = "047_recvmsg.rs"] pub mod s047_recvmsg;
 #[path = "048_shutdown.rs"] pub mod s048_shutdown; #[path = "049_bind.rs"] pub mod s049_bind; #[path = "050_listen.rs"] pub mod s050_listen;
 #[path = "051_getsockname.rs"] pub mod s051_getsockname; #[path = "052_getpeername.rs"] pub mod s052_getpeername; #[path = "053_socketpair.rs"] pub mod s053_socketpair;
-#[path = "054_setsockopt.rs"] pub mod s054_setsockopt; #[path = "055_getsockopt.rs"] pub mod s055_getsockopt; #[path = "082_rename.rs"] pub mod s082_rename;
+#[path = "054_setsockopt/mod.rs"] pub mod s054_setsockopt; #[path = "055_getsockopt.rs"] pub mod s055_getsockopt; #[path = "082_rename.rs"] pub mod s082_rename;
 #[path = "083_mkdir.rs"] pub mod s083_mkdir; #[path = "084_rmdir.rs"] pub mod s084_rmdir; #[path = "086_link.rs"] pub mod s086_link;
 #[path = "087_unlink.rs"] pub mod s087_unlink; #[path = "088_symlink.rs"] pub mod s088_symlink; #[path = "133_mknod.rs"] pub mod s133_mknod;
 #[path = "258_mkdirat.rs"] pub mod s258_mkdirat; #[path = "259_mknodat.rs"] pub mod s259_mknodat; #[path = "263_unlinkat.rs"] pub mod s263_unlinkat;
@@ -44,7 +44,7 @@ mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path 
 mod fs_access_common; #[path = "021_access.rs"] pub mod s021_access; #[path = "269_faccessat.rs"] pub mod s269_faccessat; #[path = "307_sendmmsg.rs"] pub mod s307_sendmmsg; #[path = "299_recvmmsg.rs"] pub mod s299_recvmmsg;
 #[path = "290_eventfd2.rs"] pub mod s290_eventfd2; #[path = "319_memfd_create.rs"] pub mod s319_memfd_create;
 mod affinity_common; #[path = "203_sched_setaffinity.rs"] pub mod s203_sched_setaffinity; #[path = "204_sched_getaffinity.rs"] pub mod s204_sched_getaffinity;
-mod execve_common; #[path = "059_execve.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;
+mod execve_common; #[path = "059_execve/mod.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;
 #[path = "425_io_uring_setup.rs"] pub mod s425_io_uring_setup; #[path = "426_io_uring_enter.rs"] pub mod s426_io_uring_enter; #[path = "427_io_uring_register.rs"] pub mod s427_io_uring_register;
 #[path = "462_mseal.rs"] pub mod s462_mseal;
 #[path = "039_getpid.rs"] pub mod s039_getpid;
