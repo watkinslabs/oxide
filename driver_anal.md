@@ -15,7 +15,7 @@ shape, but it is not a Linux-complete driver model yet.
 Estimated branch-local status:
 
 - Driver-core lifecycle cleanup: about 80% complete.
-- Concrete driver probe/remove/shutdown cleanup: about 83% complete.
+- Concrete driver probe/remove/shutdown cleanup: about 84% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
@@ -238,6 +238,10 @@ test-pass claims.
 - NVMe and AHCI now bind through model probes and keep typed block-device state;
   remove unregisters disks, quiesces hardware state, and returns queue/bounce
   frames. Their BAR mappings are owned and dropped on probe failure/remove.
+  NVMe publication is now per PCI function instead of a process-wide singleton:
+  successful probes allocate `nvmeXn1` names, record the bound BDF key, reject
+  duplicate binds before controller bring-up, and route remove/shutdown through
+  the device model's BDF.
 - Virtio-input supports multiple input device records, publishes
   `/dev/input/eventN` through model-owned devices, generates
   `/proc/bus/input/devices` from live input state, and clears its event-queue
@@ -336,10 +340,12 @@ test-pass claims.
   `/sys/dev/block`, parent/subsystem links, and model-backed bind/unbind attrs,
   but class-device topology and repeated bind/unbind/remove/readd behavior are
   not proven across all subsystems.
-- Block, virtio-input, and virtio-rng are closest to per-device state.
+- Block, NVMe, virtio-input, and virtio-rng are closest to per-device state.
   Virtio-blk supports multiple records; virtio-input supports multiple event
   devices; virtio-rng supports multiple records with one active `/dev/hwrng`
-  provider. Virtio-net transport, registered-iface, TX, RX softirq runtime,
+  provider. NVMe now supports multiple per-BDF controller records and unique
+  block names, but still needs QEMU multi-controller bind/unbind/rebind proof.
+  Virtio-net transport, registered-iface, TX, RX softirq runtime,
   visible naming, RX stats, IPv4 ARP cache state, and IPv6 NDP stack lookups
   are now BDF/interface-owned keyed records, and the core net stack's NDP table
   is keyed by interface. Virtio-net still needs live multi-device bind/unbind
@@ -433,14 +439,15 @@ test-pass claims.
   Higher-level sound event interpretation/publication, remaining child-probe
   failure unwind audit, and fault-injection proof still need to move behind a
   fuller `VirtioPciTransport` boundary.
-- Replace remaining singleton virtio child drivers with per-device state where
+- Replace remaining singleton hardware-backed drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
   stack-owned interface-scoped IPv6 NDP lookup, but virtio-net still needs live
   loop proof and broader multi-NIC validation; virtio-gpu still needs a real
   multi-card/scanout table after its BDF-owned teardown fix;
   virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
-  are still the other main offenders.
+  are still main offenders. AHCI still needs the same per-controller conversion
+  NVMe now has.
 - Add explicit fault-injection coverage for probe failure after each allocation,
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
@@ -572,23 +579,27 @@ Also, many real devices still use `register_device()` instead of `device_add()`,
 
 ### Runtime state
 
-Several drivers use singleton global state:
+Several drivers still use singleton global state:
 
 - virtio-gpu: single `DEV: Option<VirtioGpuDev>`
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; IPv6 NDP
-  is stack-owned and keyed by interface in kernel builds
-- virtio-rng: single `CTX`
-- virtio-vsock: single `CTX`
-- virtio-snd: single `CTX`
+  is stack-owned and keyed by interface in kernel builds, but live multi-NIC
+  proof is still missing
+- virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
+- virtio-vsock: keyed transport records, but a singleton upper protocol endpoint
+- virtio-snd: keyed transport records, but a singleton upper sound card
+- AHCI: single installed block controller record
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
 
 Some subsystems are per-device already or closer to it:
 
 - block registry stores multiple disks
+- NVMe stores per-BDF controller records and publishes unique `nvmeXn1` disks
 - DRM core can register multiple DRM drivers/cards in principle
 - fbdev has a registry
-- input has pieces of per-device support, but `/dev/input/event0` and procfs metadata still include synthetic/singleton paths
+- input has per-device event records, but some procfs metadata still needs
+  broader live multi-device proof
 
 Singleton runtime state is acceptable only for explicitly singleton hardware or transitional boot code. It is not acceptable as the general driver model.
 
@@ -953,11 +964,11 @@ Priority:
 
 1. virtio-net
 2. virtio-gpu
-3. virtio-input
+3. AHCI
 4. virtio-snd
-5. virtio-rng
-6. virtio-vsock
-7. UARTs
+5. virtio-vsock
+6. UARTs
+7. live proof for virtio-input, virtio-rng, and NVMe
 
 Acceptance:
 

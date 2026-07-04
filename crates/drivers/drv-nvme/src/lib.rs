@@ -1,7 +1,8 @@
 // NVMe block driver (drivers-plan D3.5). A real controller bring-up: reset →
 // admin SQ/CQ → IDENTIFY controller + namespace 1 → one I/O queue pair →
 // READ/WRITE via a PRP bounce frame, exposed as a `block::BlockDevice` under
-// the registry name `nvme0n1`. The model driver's `probe` matches PCI class
+// Linux-style registry names `nvme0n1`, `nvme1n1`, ... . The model driver's
+// `probe` matches PCI class
 // 0x010802 (QEMU vendor 0x1b36 device 0x0010), maps BAR0, and calls `init`.
 //
 // Layering: `regs.rs` = pure register/bit math (host-tested); `queue.rs` =
@@ -19,8 +20,10 @@ mod queue;
 
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
+    use alloc::string::String;
     use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
     use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
     use crate::queue::Nvme;
@@ -155,13 +158,45 @@ mod imp {
         }
     }
 
-    static INSTALLED: Spinlock<Option<Arc<NvmeBlk>>, DriverLockClass> = Spinlock::new(None);
+    /// Global registration-order counter for Linux-style disk naming.
+    /// Each successfully-published namespace claims the next controller index.
+    static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
+
+    struct NvmeRecord {
+        device_key: u32,
+        name:       String,
+        dev:        Arc<NvmeBlk>,
+    }
+
+    static DEVICES: Spinlock<Vec<NvmeRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+
+    fn bdf_key(bus: u8, device: u8, function: u8) -> u32 {
+        (bus as u32) << 16 | (device as u32) << 8 | (function as u32)
+    }
+
+    #[cfg(feature = "debug-boot")]
+    fn key_bus(key: u32) -> u8 { ((key >> 16) & 0xff) as u8 }
+    #[cfg(feature = "debug-boot")]
+    fn key_device(key: u32) -> u8 { ((key >> 8) & 0xff) as u8 }
+    #[cfg(feature = "debug-boot")]
+    fn key_function(key: u32) -> u8 { (key & 0xff) as u8 }
+
+    fn nvme_name(index: u32) -> String {
+        alloc::format!("nvme{}n1", index)
+    }
+
+    pub fn device_key_from_bdf(bdf: pci::Bdf) -> u32 {
+        bdf_key(bdf.bus, bdf.device, bdf.function)
+    }
 
     /// Bring up the NVMe controller mapped by `mmio` (BAR0 register file,
-    /// ≥2 pages), register it as `nvme0n1`, and return the
+    /// ≥2 pages), register it under a unique `nvmeXn1` name, and return the
     /// 1-based registry index (0 on failure). Optionally self-tests by reading
-    /// LBA 0. # C: O(controller bring-up) + registry O(N_disks)
-    pub fn init(mmio: mmio_map::Mapping, bar0_off: u64) -> u32 {
+    /// LBA 0. # C: O(N_nvme + controller bring-up + N_disks)
+    pub fn init(device_key: u32, mmio: mmio_map::Mapping, bar0_off: u64) -> u32 {
+        if DEVICES.lock().iter().any(|rec| rec.device_key == device_key) {
+            return 0;
+        }
         let nv = match Nvme::bring_up(mmio, bar0_off) { Some(n) => n, None => {
             #[cfg(feature = "debug-boot")]
             { klog::write_raw(b"[WARN]  nvme: controller bring-up failed\n"); }
@@ -196,19 +231,44 @@ mod imp {
             klog::write_raw(b"\n");
         }
 
+        let name = nvme_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
+        let existed = block::registry::by_name(&name).is_some();
         let idx = block::registry::register_with_serial(
-            "nvme0n1",
+            &name,
             Some("oxnvme"),
             dev.clone() as Arc<dyn BlockDevice>,
         );
-        if idx == 0 {
+        let published = if idx != 0 && !existed {
+            let mut devices = DEVICES.lock();
+            if devices.iter().any(|rec| rec.device_key == device_key) {
+                false
+            } else {
+                devices.push(NvmeRecord {
+                    device_key,
+                    name: name.clone(),
+                    dev: dev.clone(),
+                });
+                true
+            }
+        } else {
+            false
+        };
+        if !published {
+            if idx != 0 && !existed {
+                let _ = block::registry::unregister(&name);
+            }
             dev.remove();
             return 0;
         }
-        *INSTALLED.lock() = Some(dev);
         #[cfg(feature = "debug-boot")]
         {
-            klog::write_raw(b"[INFO]  nvme: block dev registered idx=");
+            klog::write_raw(b"[INFO]  nvme ");
+            klog::write_dec_u64(key_bus(device_key) as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(key_device(device_key) as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(key_function(device_key) as u64);
+            klog::write_raw(b" block dev registered idx=");
             klog::write_dec_u64(idx as u64);
             klog::write_raw(b"\n");
         }
@@ -216,22 +276,30 @@ mod imp {
     }
 
     /// Remove the registered NVMe disk and release controller-owned resources.
-    /// # C: O(N_disks + controller shutdown)
-    pub fn remove() -> bool {
-        let dev = match INSTALLED.lock().take() {
-            Some(dev) => dev,
-            None => return false,
+    /// # C: O(N_nvme + N_disks + controller shutdown)
+    pub fn remove(device_key: u32) -> bool {
+        let rec = {
+            let mut devices = DEVICES.lock();
+            match devices.iter().position(|rec| rec.device_key == device_key) {
+                Some(i) => devices.remove(i),
+                None => return false,
+            }
         };
-        let _ = block::registry::unregister("nvme0n1");
-        dev.remove();
+        let _ = block::registry::unregister(&rec.name);
+        rec.dev.remove();
         true
     }
 
-    /// Quiesce the installed NVMe controller for reboot/poweroff without
+    /// Quiesce the bound NVMe controller for reboot/poweroff without
     /// unregistering userspace-visible block publication.
-    /// # C: O(controller shutdown)
-    pub fn shutdown() -> bool {
-        let dev = match INSTALLED.lock().as_ref().cloned() {
+    /// # C: O(N_nvme + controller shutdown)
+    pub fn shutdown(device_key: u32) -> bool {
+        let dev = match DEVICES
+            .lock()
+            .iter()
+            .find(|rec| rec.device_key == device_key)
+            .map(|rec| rec.dev.clone())
+        {
             Some(dev) => dev,
             None => return false,
         };
@@ -241,7 +309,7 @@ mod imp {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{init, remove, shutdown, NvmeBlk, NVME_CLASS24};
+pub use imp::{device_key_from_bdf, init, remove, shutdown, NvmeBlk, NVME_CLASS24};
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
@@ -290,18 +358,21 @@ impl drv::Driver for NvmeDriver {
         // SAFETY: BAR0 PA came from this PCI function's config space; two
         // pages cover the controller register file and QEMU doorbells.
         let mmio = unsafe { mmio_map::map_owned(bar0_pa & !0xFFF, 2) };
-        if imp::init(mmio, bar0_pa & 0xFFF) == 0 {
+        let device_key = imp::device_key_from_bdf(bdf);
+        if imp::init(device_key, mmio, bar0_pa & 0xFFF) == 0 {
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
     }
 
-    fn remove(&self, _dev: &drv::Device) {
-        let _ = imp::remove();
+    fn remove(&self, dev: &drv::Device) {
+        let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+        let _ = imp::remove(imp::device_key_from_bdf(bdf));
     }
 
-    fn shutdown(&self, _dev: &drv::Device) {
-        let _ = imp::shutdown();
+    fn shutdown(&self, dev: &drv::Device) {
+        let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+        let _ = imp::shutdown(imp::device_key_from_bdf(bdf));
     }
 }
 
