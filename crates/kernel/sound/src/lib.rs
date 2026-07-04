@@ -236,23 +236,19 @@ pub fn owner() -> Option<u32> {
 /// Remove ALSA/OSS nodes for the card being removed.
 /// # C: O(nodes * depth)
 pub fn unregister_card(owner: u32) -> bool {
-    if CARD_OWNER
-        .compare_exchange(owner, NO_CARD_OWNER, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    if CARD_OWNER.load(Ordering::Acquire) != owner {
         return false;
     }
     let nodes = {
         let mut registered = CARD_NODES.lock();
         core::mem::take(&mut *registered)
     };
-    if nodes.is_empty() {
-        return true;
-    }
     for node in nodes.iter().rev() {
         drv::device_del(node);
     }
-    true
+    CARD_OWNER
+        .compare_exchange(owner, NO_CARD_OWNER, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -260,9 +256,29 @@ mod tests {
     use super::*;
     use alloc::string::String;
 
+    static TEST_LOCK: AtomicU32 = AtomicU32::new(0);
     static ADDED: Spinlock<Vec<(String, Option<(u32, u32)>, bool)>, SoundLockClass>
         = Spinlock::new(Vec::new());
     static REMOVED: Spinlock<Vec<String>, SoundLockClass> = Spinlock::new(Vec::new());
+    static REMOVE_EXPECTED_OWNER: AtomicU32 = AtomicU32::new(NO_CARD_OWNER);
+
+    struct TestGuard;
+
+    impl Drop for TestGuard {
+        fn drop(&mut self) {
+            TEST_LOCK.store(0, Ordering::Release);
+        }
+    }
+
+    fn test_guard() -> TestGuard {
+        while TEST_LOCK
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        TestGuard
+    }
 
     fn cfg() -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
     fn caps() -> ops::Caps { Some((0, 0, 1, 2)) }
@@ -297,13 +313,19 @@ mod tests {
     }
 
     fn del_hook(name: &str) {
+        let expected = REMOVE_EXPECTED_OWNER.load(Ordering::Acquire);
+        if expected != NO_CARD_OWNER {
+            assert_eq!(owner(), Some(expected));
+        }
         REMOVED.lock().push(String::from(name));
     }
 
     #[test]
     fn card_nodes_are_model_owned_and_removed() {
+        let _guard = test_guard();
         drv::set_devtmpfs_hook(add_hook);
         drv::set_devtmpfs_del_hook(del_hook);
+        REMOVE_EXPECTED_OWNER.store(NO_CARD_OWNER, Ordering::Release);
         ADDED.lock().clear();
         REMOVED.lock().clear();
         let _ = unregister_card(0x10);
@@ -329,7 +351,9 @@ mod tests {
         assert_eq!(REMOVED.lock().len(), 0);
         assert_eq!(owner(), Some(0x10));
 
+        REMOVE_EXPECTED_OWNER.store(0x10, Ordering::Release);
         assert!(unregister_card(0x10));
+        REMOVE_EXPECTED_OWNER.store(NO_CARD_OWNER, Ordering::Release);
         let removed = REMOVED.lock().clone();
         assert_eq!(removed.len(), SOUND_NODES.len());
         assert!(removed.iter().any(|n| n == "snd/controlC0"));
@@ -348,8 +372,10 @@ mod tests {
 
     #[test]
     fn card_reservation_rejects_second_owner_before_publication() {
+        let _guard = test_guard();
         drv::set_devtmpfs_hook(add_hook);
         drv::set_devtmpfs_del_hook(del_hook);
+        REMOVE_EXPECTED_OWNER.store(NO_CARD_OWNER, Ordering::Release);
         ADDED.lock().clear();
         REMOVED.lock().clear();
         let _ = unregister_card(0x10);
@@ -366,7 +392,9 @@ mod tests {
         assert!(register_card(0x10));
         assert_eq!(ADDED.lock().len(), SOUND_NODES.len());
         assert!(!register_card(0x20));
+        REMOVE_EXPECTED_OWNER.store(0x10, Ordering::Release);
         assert!(unregister_card(0x10));
+        REMOVE_EXPECTED_OWNER.store(NO_CARD_OWNER, Ordering::Release);
         assert_eq!(owner(), None);
         ops::clear();
     }
