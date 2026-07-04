@@ -151,6 +151,9 @@ test-pass claims.
   shared resource queue count instead of expanding q2/q3 resource locals in
   pci-boot. Planned notify mappings use the same shared queue count and
   indexed programmed-queue lookup.
+- Virtio-pci debug probe trace now carries the same indexed
+  `VirtQueueResource` handoff records used by child publication instead of
+  duplicating q0/q1 descriptor and notify fields in a trace-only structure.
 - Child probe readiness checks for DRIVER_OK, required queue indexes, device
   config, and net boot payloads now go through shared
   `virtio::VirtioChildRequirements` evaluated by
