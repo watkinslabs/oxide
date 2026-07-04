@@ -1,9 +1,10 @@
 // AHCI/SATA block driver (drivers-plan D3.6). A real HBA bring-up: GHC.AE →
 // scan Ports Implemented → first port with a SATA disk (DET==3, SIG==0x101)
 // → stop/program/start the port → ATA IDENTIFY → READ/WRITE DMA EXT via a
-// PRDT bounce frame, exposed as a `block::BlockDevice` under the registry
-// name `sata0`. The model driver's `probe` matches PCI class 0x010601 (QEMU
-// ich9-ahci vendor 0x8086 device 0x2922), maps BAR5 (ABAR), and calls `init`.
+// PRDT bounce frame, exposed as a `block::BlockDevice` under Linux-style SCSI
+// disk names `sda`, `sdb`, ... . The model driver's `probe` matches PCI class
+// 0x010601 (QEMU ich9-ahci vendor 0x8086 device 0x2922), maps BAR5 (ABAR),
+// and calls `init`.
 //
 // Layering: `regs.rs` = pure register/FIS/IDENTIFY math (host-tested);
 // `port.rs` = the kernel-only MMIO + command mechanics (the `Ahci`
@@ -21,8 +22,10 @@ mod port;
 
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
+    use alloc::string::String;
     use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
     use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
     use crate::port::Ahci;
@@ -157,13 +160,64 @@ mod imp {
         }
     }
 
-    static INSTALLED: Spinlock<Option<Arc<AhciBlk>>, DriverLockClass> = Spinlock::new(None);
+    /// Global registration-order counter for Linux SCSI disk names.
+    /// Each successfully-published AHCI disk claims the next `sdX` slot.
+    static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
+
+    struct AhciRecord {
+        device_key: u32,
+        name:       String,
+        dev:        Arc<AhciBlk>,
+    }
+
+    static DEVICES: Spinlock<Vec<AhciRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+
+    fn bdf_key(bus: u8, device: u8, function: u8) -> u32 {
+        (bus as u32) << 16 | (device as u32) << 8 | (function as u32)
+    }
+
+    #[cfg(feature = "debug-boot")]
+    fn key_bus(key: u32) -> u8 { ((key >> 16) & 0xff) as u8 }
+    #[cfg(feature = "debug-boot")]
+    fn key_device(key: u32) -> u8 { ((key >> 8) & 0xff) as u8 }
+    #[cfg(feature = "debug-boot")]
+    fn key_function(key: u32) -> u8 { (key & 0xff) as u8 }
+
+    fn sd_name(index: u32) -> String {
+        let mut out = [0u8; 8];
+        out[0] = b's';
+        out[1] = b'd';
+        let mut suffix = [0u8; 6];
+        let mut k = 0usize;
+        let mut n = index as u64 + 1;
+        while n > 0 && k < suffix.len() {
+            n -= 1;
+            suffix[k] = b'a' + (n % 26) as u8;
+            k += 1;
+            n /= 26;
+        }
+        let mut w = 2usize;
+        while k > 0 && w < out.len() {
+            k -= 1;
+            out[w] = suffix[k];
+            w += 1;
+        }
+        String::from_utf8_lossy(&out[..w]).into_owned()
+    }
+
+    pub fn device_key_from_bdf(bdf: pci::Bdf) -> u32 {
+        bdf_key(bdf.bus, bdf.device, bdf.function)
+    }
 
     /// Bring up the AHCI controller whose ABAR (BAR5) register file is mapped
     /// by `mmio` (≥2 pages), register the first SATA
-    /// disk as `sata0`, and return the 1-based registry index (0 on failure).
-    /// Optionally self-tests by reading LBA 0. # C: O(bring-up) + registry O(N)
-    pub fn init(mmio: mmio_map::Mapping, abar_off: u64) -> u32 {
+    /// disk under a unique `sdX` name, and return the 1-based registry index
+    /// (0 on failure). Optionally self-tests by reading LBA 0.
+    /// # C: O(N_ahci + bring-up + registry O(N))
+    pub fn init(device_key: u32, mmio: mmio_map::Mapping, abar_off: u64) -> u32 {
+        if DEVICES.lock().iter().any(|rec| rec.device_key == device_key) {
+            return 0;
+        }
         let a = match Ahci::bring_up(mmio, abar_off) { Ok(a) => a, Err(reason) => {
             // "no ..." = an empty HBA (e.g. the ICH9 chipset SATA controller
             // with no drive attached) — benign INFO, not a failure WARN.
@@ -207,15 +261,40 @@ mod imp {
         }
 
         let block_dev: Arc<dyn BlockDevice> = dev.clone();
-        let idx = block::registry::register_with_serial("sata0", Some("oxsata"), block_dev);
-        if idx == 0 {
+        let name = sd_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
+        let existed = block::registry::by_name(&name).is_some();
+        let idx = block::registry::register_with_serial(&name, None, block_dev);
+        let published = if idx != 0 && !existed {
+            let mut devices = DEVICES.lock();
+            if devices.iter().any(|rec| rec.device_key == device_key) {
+                false
+            } else {
+                devices.push(AhciRecord {
+                    device_key,
+                    name: name.clone(),
+                    dev: dev.clone(),
+                });
+                true
+            }
+        } else {
+            false
+        };
+        if !published {
+            if idx != 0 && !existed {
+                let _ = block::registry::unregister(&name);
+            }
             dev.remove();
             return 0;
         }
-        *INSTALLED.lock() = Some(dev);
         #[cfg(feature = "debug-boot")]
         {
-            klog::write_raw(b"[INFO]  ahci: block dev registered idx=");
+            klog::write_raw(b"[INFO]  ahci ");
+            klog::write_dec_u64(key_bus(device_key) as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(key_device(device_key) as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(key_function(device_key) as u64);
+            klog::write_raw(b" block dev registered idx=");
             klog::write_dec_u64(idx as u64);
             klog::write_raw(b"\n");
         }
@@ -223,22 +302,30 @@ mod imp {
     }
 
     /// Remove the registered AHCI disk and release controller-owned resources.
-    /// # C: O(N_disks + port shutdown)
-    pub fn remove() -> bool {
-        let dev = match INSTALLED.lock().take() {
-            Some(dev) => dev,
-            None => return false,
+    /// # C: O(N_ahci + N_disks + port shutdown)
+    pub fn remove(device_key: u32) -> bool {
+        let rec = {
+            let mut devices = DEVICES.lock();
+            match devices.iter().position(|rec| rec.device_key == device_key) {
+                Some(i) => devices.remove(i),
+                None => return false,
+            }
         };
-        let _ = block::registry::unregister("sata0");
-        dev.remove();
+        let _ = block::registry::unregister(&rec.name);
+        rec.dev.remove();
         true
     }
 
-    /// Quiesce the installed AHCI controller for reboot/poweroff without
+    /// Quiesce the bound AHCI controller for reboot/poweroff without
     /// unregistering userspace-visible block publication.
-    /// # C: O(port shutdown)
-    pub fn shutdown() -> bool {
-        let dev = match INSTALLED.lock().as_ref().cloned() {
+    /// # C: O(N_ahci + port shutdown)
+    pub fn shutdown(device_key: u32) -> bool {
+        let dev = match DEVICES
+            .lock()
+            .iter()
+            .find(|rec| rec.device_key == device_key)
+            .map(|rec| rec.dev.clone())
+        {
             Some(dev) => dev,
             None => return false,
         };
@@ -248,7 +335,7 @@ mod imp {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{init, remove, shutdown, AhciBlk, AHCI_CLASS24};
+pub use imp::{device_key_from_bdf, init, remove, shutdown, AhciBlk, AHCI_CLASS24};
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
@@ -297,18 +384,21 @@ impl drv::Driver for AhciDriver {
         // SAFETY: BAR5 PA came from this PCI function's config space; two
         // pages cover generic HBA registers plus the 32-port register array.
         let mmio = unsafe { mmio_map::map_owned(abar_pa & !0xFFF, 2) };
-        if imp::init(mmio, abar_pa & 0xFFF) == 0 {
+        let device_key = imp::device_key_from_bdf(bdf);
+        if imp::init(device_key, mmio, abar_pa & 0xFFF) == 0 {
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
     }
 
-    fn remove(&self, _dev: &drv::Device) {
-        let _ = imp::remove();
+    fn remove(&self, dev: &drv::Device) {
+        let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+        let _ = imp::remove(imp::device_key_from_bdf(bdf));
     }
 
-    fn shutdown(&self, _dev: &drv::Device) {
-        let _ = imp::shutdown();
+    fn shutdown(&self, dev: &drv::Device) {
+        let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+        let _ = imp::shutdown(imp::device_key_from_bdf(bdf));
     }
 }
 
