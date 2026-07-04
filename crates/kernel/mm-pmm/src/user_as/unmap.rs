@@ -165,10 +165,3 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         None          => -(Errno::Enosys.as_i32() as i64),
     }
 }
-
-/// setup_arg_pages: eagerly map the anonymous stack pages of `as_` covering
-/// `[top-len, top)` into `as_`'s own page table. The boot PID-1 spawn calls
-/// this before `build_user_stack` (which runs in boot context, `current()==
-/// None`) so the stack writes hit mapped pages instead of demand-faulting —
-/// Linux maps the initial stack into the new mm at execve time, never lazily.
-/// # C: O(pages)
