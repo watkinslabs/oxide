@@ -198,7 +198,7 @@ impl VirtioChildOps for VirtioBlkOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        let device_key = session.device_key().raw();
+        let device_key = session.device_key();
         let idx = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
             device_key,
             resources,
@@ -211,11 +211,11 @@ impl VirtioChildOps for VirtioBlkOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_blk::modern::remove_blk(device_key.raw());
+        let _ = drv_virtio_blk::modern::remove_blk(device_key);
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_blk::modern::shutdown_blk(device_key.raw());
+        let _ = drv_virtio_blk::modern::shutdown_blk(device_key);
     }
 }
 static VIRTIO_BLK_DRV: VirtioChildDriver<VirtioBlkOps> = VirtioChildDriver::new();
