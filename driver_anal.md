@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 50% complete.
+  hotplug, fault injection, and multi-device coverage: about 52% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -62,9 +62,14 @@ test-pass claims.
   virtio drivers bind through the model.
 - Virtio child model-driver declarations have been split out of the
   virtio-pci transport module into a dedicated `pci-boot::virtio_child`
-  module. They still call back into the boot virtio-pci transport for now, but
-  the PCI transport file no longer owns every child `drv::Driver`
-  declaration.
+  module. The PCI transport file no longer owns every child `drv::Driver`
+  declaration, and child probes no longer import transport helper callbacks
+  directly.
+- Virtio child probes now enter the boot PCI-backed transport through a
+  `pci-boot::virtio_bus::VirtioChildSession` boundary. The child module no
+  longer imports `virtio_drv` transport helpers directly; session begin,
+  validated resource handoff, failed-probe release, transport publication, and
+  transport unpublication are mediated by the bus-facing boundary.
 - Virtio-pci owns persistent transport MMIO mappings, MSI-X state, and vring
   frame publication/teardown records for successful child probes.
 - Virtio-pci MSI-X state is now carried as an owned optional binding instead
@@ -342,9 +347,11 @@ test-pass claims.
   through `VirtioProbe::child_resources` using those requirements instead of
   per-child q0/q1/q2/q3 lists in the PCI glue. Virtio child model-driver
   declarations now live in a separate `pci-boot::virtio_child` module instead
-  of the virtio-pci transport module. The next step is to replace the remaining
-  boot transport callback dependency between `virtio_child` and `virtio_drv`
-  with a real virtio bus/core interface.
+  of the virtio-pci transport module, and child probes now use
+  `pci-boot::virtio_bus::VirtioChildSession` instead of importing
+  `virtio_drv` transport helpers directly. The next step is to move this
+  boundary out of the boot PCI implementation and make the shared virtio core
+  own the child probe session contract across transports.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
