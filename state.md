@@ -41,7 +41,40 @@ gdm → greeter.
   (max ~246) so it's not EXIT_NAMESPACE. Services like upower still reach
   "Started" afterward. Treat 265 as a red herring until proven otherwise.
 
-## RESIDUAL to fix — worker→manager completion loop (boot too slow)  [START HERE]
+## RESIDUAL — udev re-dispatch loop (deeply investigated, cause still open)  [START HERE]
+Confirmed via systemd source (WebFetch udev-worker.c / udev-manager.c) + kernel
+traces:
+- udev WORKERS are SINGLE-SHOT: fork per event, process, EXIT. Manager detects
+  completion via `event_add_child_pidref(..., WEXITED, on_worker_exit)` = pidfd
+  epoll + SIGCHLD. Event↔worker matched by worker POINTER (not SEQNUM/pid).
+- Our pidfd exit path WORKS: pidfd poll() returns POLL_IN on Zombie (measured 40
+  zombie detections); SIGCHLD posts + wakes parent (park_zombie /
+  signal_child_exit). So completion IS detectable.
+- sd_notify is NOT the completion channel — traced ALL notify-socket sends
+  (READY/STATUS/EXIT_STATUS/ERRNO/FDSTORE), ZERO "PROCESSED=1" or "TRY_AGAIN=1".
+  So workers don't request retries either.
+- YET each event is still re-processed ~24× (manager re-spawns a worker for the
+  same event ~24×). And the manager BUSY-LOOPS in epoll_wait: measured 1955 pidfd
+  poll() calls, 1915 "live" — epoll_wait returns immediately ~1900× because some
+  OTHER fd is perpetually ready, re-polling the (not-ready) worker pidfds each
+  loop. The busy-loop wastes the whole boot (~145s) so CAN_GRAPHICAL=1 lands at
+  ~132s, AFTER gdm ran+exited code=1 at ~59-105s → no greeter.
+- OPEN QUESTION (needs LIVE userspace debugging — kernel traces exhausted): WHY
+  does the manager re-dispatch when completion is detectable, and WHICH fd
+  perpetually-readable drives the epoll busy-loop? Candidates: (a) the manager
+  reaps the worker via SIGCHLD before its pidfd-epoll sees the Zombie, and
+  on_worker_exit's pointer-match fails / doesn't detach the event (a udev-manager
+  bug our timing exposes); (b) a perpetually-readable fd (the kernel uevent
+  monitor port 6? a timerfd? the manager's signalfd?) spins epoll so events
+  time out and re-dispatch. NEXT: attach gdb to the udevd MANAGER (find its pid,
+  break in on_worker_exit / event_dispatch), OR boot with udev.log_level=debug and
+  read the manager's own "worker exited"/"re-dispatch" log lines, OR trace which
+  fd the manager's epoll reports ready each spin (instrument epoll_wait to log the
+  ready fd's inode/type for the udevd manager pid). The netlink UNICAST fix
+  (39221106) already removed the BIGGEST amplifier (broadcast-dispatch to all
+  workers); this residual is a smaller loop but still gates boot speed.
+
+## (older) RESIDUAL framing — worker→manager completion loop (boot too slow)
 The netlink UNICAST fix (39221106) removed the BROADCAST-dispatch fan-out (was:
 manager dispatch to one worker got broadcast to ALL workers → every worker ran
 every event). card0 now processes; CAN_GRAPHICAL reaches 1. But each event is
