@@ -10,8 +10,7 @@ use core::marker::PhantomData;
 use virtio::VirtioChildTransportSession;
 
 trait VirtioChildOps: Sync {
-    const NAME: &'static str;
-    const DEVICE_ID: u16;
+    const DRIVER_ID: virtio::VirtioChildDriverId;
 
     fn profile() -> virtio::VirtioTransportProfile;
     fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()>;
@@ -30,12 +29,12 @@ impl<O> VirtioChildDriver<O> {
 }
 
 impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
-    fn bus(&self) -> &'static str { "virtio" }
+    fn bus(&self) -> &'static str { virtio::VIRTIO_CHILD_BUS }
 
-    fn name(&self) -> &'static str { O::NAME }
+    fn name(&self) -> &'static str { O::DRIVER_ID.name }
 
     fn matches(&self, dev: &drv::Device) -> bool {
-        dev.bus == "virtio" && dev.vendor_id == 0x1AF4 && dev.device_id == O::DEVICE_ID
+        O::DRIVER_ID.matches_device(&dev.bus, dev.vendor_id, dev.device_id)
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
@@ -68,8 +67,7 @@ impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
 
 struct VirtioGpuOps;
 impl VirtioChildOps for VirtioGpuOps {
-    const NAME: &'static str = "virtio-gpu";
-    const DEVICE_ID: u16 = drv_virtio_gpu::VIRTIO_ID_GPU;
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_gpu::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_gpu::transport_profile()
@@ -112,8 +110,7 @@ static VIRTIO_GPU_DRV: VirtioChildDriver<VirtioGpuOps> = VirtioChildDriver::new(
 
 struct VirtioInputOps;
 impl VirtioChildOps for VirtioInputOps {
-    const NAME: &'static str = "virtio-input";
-    const DEVICE_ID: u16 = drv_virtio_input::VIRTIO_ID_INPUT;
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_input::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_input::transport_profile()
@@ -160,8 +157,7 @@ static VIRTIO_INPUT_DRV: VirtioChildDriver<VirtioInputOps> = VirtioChildDriver::
 
 struct VirtioNetOps;
 impl VirtioChildOps for VirtioNetOps {
-    const NAME: &'static str = "virtio-net";
-    const DEVICE_ID: u16 = drv_virtio_net::modern::VIRTIO_ID_NET;
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_net::modern::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_net::modern::transport_profile()
@@ -203,8 +199,7 @@ static VIRTIO_NET_DRV: VirtioChildDriver<VirtioNetOps> = VirtioChildDriver::new(
 
 struct VirtioBlkOps;
 impl VirtioChildOps for VirtioBlkOps {
-    const NAME: &'static str = "virtio-blk";
-    const DEVICE_ID: u16 = drv_virtio_blk::modern::VIRTIO_ID_BLOCK;
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_blk::modern::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_blk::modern::transport_profile()
@@ -238,8 +233,7 @@ static VIRTIO_BLK_DRV: VirtioChildDriver<VirtioBlkOps> = VirtioChildDriver::new(
 
 struct VirtioRngOps;
 impl VirtioChildOps for VirtioRngOps {
-    const NAME: &'static str = "virtio-rng";
-    const DEVICE_ID: u16 = drv_virtio_rng::VIRTIO_ID_RNG;
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_rng::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_rng::transport_profile()
@@ -284,8 +278,7 @@ static VIRTIO_RNG_DRV: VirtioChildDriver<VirtioRngOps> = VirtioChildDriver::new(
 
 struct VirtioVsockOps;
 impl VirtioChildOps for VirtioVsockOps {
-    const NAME: &'static str = "virtio-vsock";
-    const DEVICE_ID: u16 = drv_virtio_vsock::VIRTIO_ID_VSOCK;
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_vsock::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_vsock::transport_profile()
@@ -319,8 +312,7 @@ static VIRTIO_VSOCK_DRV: VirtioChildDriver<VirtioVsockOps> = VirtioChildDriver::
 
 struct VirtioSndOps;
 impl VirtioChildOps for VirtioSndOps {
-    const NAME: &'static str = "virtio-snd";
-    const DEVICE_ID: u16 = drv_virtio_snd::VIRTIO_ID_SOUND;
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_snd::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_snd::transport_profile()

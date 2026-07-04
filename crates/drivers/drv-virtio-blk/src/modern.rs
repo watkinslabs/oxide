@@ -38,6 +38,10 @@ use virtio::blk;
 /// Virtio device ID for block devices.
 pub const VIRTIO_ID_BLOCK: u16 = 2;
 
+/// Driver-model identity for virtio-blk child binding.
+pub const DRIVER_ID: virtio::VirtioChildDriverId =
+    virtio::VirtioChildDriverId::new("virtio-blk", VIRTIO_ID_BLOCK);
+
 /// Global wait list every blk sleeper parks on. One shared list (rather
 /// than per-device) keeps the tick waker trivial: a wake re-runs all
 /// sleepers, each re-checks its own used.idx / busy condition and

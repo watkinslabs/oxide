@@ -21,6 +21,10 @@ pub mod procfs;
 
 pub const VIRTIO_ID_INPUT: u16 = 18;
 
+/// Driver-model identity for virtio-input child binding.
+pub const DRIVER_ID: virtio::VirtioChildDriverId =
+    virtio::VirtioChildDriverId::new("virtio-input", VIRTIO_ID_INPUT);
+
 pub const VIRTIO_INPUT_PCI_DEVICE_ID: u16 = 0x1052;
 pub const VIRTIO_PCI_VENDOR_RH:       u16 = 0x1AF4;
 

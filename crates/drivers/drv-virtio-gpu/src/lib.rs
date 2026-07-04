@@ -20,6 +20,10 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 
 pub const VIRTIO_ID_GPU: u16 = 16;
 
+/// Driver-model identity for virtio-gpu child binding.
+pub const DRIVER_ID: virtio::VirtioChildDriverId =
+    virtio::VirtioChildDriverId::new("virtio-gpu", VIRTIO_ID_GPU);
+
 // PCI device id (modern transport): 0x1040 + virtio_id.
 pub const VIRTIO_GPU_PCI_DEVICE_ID: u16 = 0x1050;
 pub const VIRTIO_PCI_VENDOR_RH:     u16 = 0x1AF4;

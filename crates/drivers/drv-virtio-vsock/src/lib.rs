@@ -28,6 +28,10 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 /// Virtio device ID for vsock transports.
 pub const VIRTIO_ID_VSOCK: u16 = 19;
 
+/// Driver-model identity for virtio-vsock child binding.
+pub const DRIVER_ID: virtio::VirtioChildDriverId =
+    virtio::VirtioChildDriverId::new("virtio-vsock", VIRTIO_ID_VSOCK);
+
 /// Number of RX buffers pre-posted on q0. Each buffer is one 4 KiB
 /// frame holding a virtio_vsock_hdr + payload. # C: O(1)
 pub const RX_RING_BUFS: usize = 8;
