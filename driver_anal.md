@@ -380,9 +380,11 @@ test-pass claims.
   Virtio-gpu installed device state, DRM backend records, DRM card/render
   nodes, DRM ioctl backend routing, scanout backing records, DRM runtime
   scanout hooks, scanout owner tokens, flip-event queues, and dumb-buffer/FB
-  object lookup are BDF/card owned. fbdev flush/blank hooks are per-fb records
-  keyed to the owning BDF, while fbcon remains a single foreground console
-  bound to an explicit owner. Virtio-vsock's upper protocol layer and
+  object lookup are BDF/card owned. Display-info and negotiated-feature
+  helpers are now BDF-keyed instead of selecting the first installed GPU.
+  fbdev flush/blank hooks are per-fb records keyed to the owning BDF, while
+  fbcon remains a single foreground console bound to an explicit owner.
+  Virtio-vsock's upper protocol layer and
   virtio-snd's upper sound-card layer also still retain singleton limits; vsock
   now reserves its singleton protocol endpoint before allocation, keys that
   endpoint to the owning device, and fails a second transport cleanly instead
@@ -623,10 +625,10 @@ Several drivers still use singleton global state:
 
 - virtio-gpu: per-BDF installed device and scanout records; per-card DRM
   nodes, ioctl backend routing, runtime scanout hooks, scanout owner tokens,
-  flip-event queues, dumb-buffer/FB object lookup, and per-fb owner-keyed
-  fbdev flush/blank dispatch; dumb-buffer mmap lifetime is pinned through
-  shared VMA backing and PMM object refs; fbcon has one explicit foreground
-  console owner
+  flip-event queues, dumb-buffer/FB object lookup, display-info/feature
+  lookup, and per-fb owner-keyed fbdev flush/blank dispatch; dumb-buffer mmap
+  lifetime is pinned through shared VMA backing and PMM object refs; fbcon has
+  one explicit foreground console owner
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; exported
   TX/RX helper entry points require an owning device key; IPv6 NDP is
   stack-owned and keyed by interface in kernel builds; boot route/RS seeding

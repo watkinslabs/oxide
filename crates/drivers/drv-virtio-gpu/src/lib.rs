@@ -475,11 +475,14 @@ pub fn install(dev: VirtioGpuDev) -> KResult<()> {
     Ok(())
 }
 
-/// Snapshot the cached display info. `47` (DRM/KMS) calls this
-/// from `MODE_GETRESOURCES` to enumerate CRTCs/connectors.
-/// # C: O(1) for the primary GPU, O(N) under the device lock.
-pub fn current_display_info() -> Option<DisplayInfo> {
-    DEVICES.lock().first().map(|d| d.display)
+/// Snapshot the cached display info for the named virtio-gpu device.
+/// # C: O(N)
+pub fn display_info_for_bdf(bdf: u32) -> Option<DisplayInfo> {
+    DEVICES
+        .lock()
+        .iter()
+        .find(|d| d.bdf == bdf)
+        .map(|d| d.display)
 }
 
 /// Returns true once at least one virtio-gpu device has been
@@ -489,10 +492,14 @@ pub fn is_present() -> bool {
     !DEVICES.lock().is_empty()
 }
 
-/// Take the negotiated feature mask of the installed device.
-/// # C: O(1) for the primary GPU, O(N) under the device lock.
-pub fn negotiated_features() -> u64 {
-    DEVICES.lock().first().map(|d| d.features_negotiated).unwrap_or(0)
+/// Negotiated feature mask for the named virtio-gpu device.
+/// # C: O(N)
+pub fn negotiated_features_for_bdf(bdf: u32) -> Option<u64> {
+    DEVICES
+        .lock()
+        .iter()
+        .find(|d| d.bdf == bdf)
+        .map(|d| d.features_negotiated)
 }
 
 /// `47` DrmDriver impl over a `VirtioGpuDev` snapshot. Registered
@@ -880,7 +887,7 @@ mod tests {
         DEVICES.lock().clear();
         assert!(!is_present());
         install(VirtioGpuDev {
-            bdf: 0,
+            bdf: 0x0010_0000,
             card_id: 0,
             cfg_va: 0,
             ctrlq: test_ctrlq(),
@@ -893,10 +900,29 @@ mod tests {
             blob_uuid_alloc: AtomicU64::new(1),
             capset_count: 0,
         }).unwrap();
+        install(VirtioGpuDev {
+            bdf: 0x0020_0000,
+            card_id: 1,
+            cfg_va: 0,
+            ctrlq: test_ctrlq(),
+            features_negotiated: 0,
+            display: DisplayInfo {
+                modes: [VirtioGpuDisplayOne::default(); VIRTIO_GPU_MAX_SCANOUTS],
+                count_enabled: 2,
+            },
+            resource_id_alloc: AtomicU32::new(1),
+            blob_uuid_alloc: AtomicU64::new(1),
+            capset_count: 0,
+        }).unwrap();
         assert!(is_present());
-        let info = current_display_info().unwrap();
-        assert_eq!(info.count_enabled, 1);
-        assert!(negotiated_features() & (1u64 << VIRTIO_GPU_F_EDID) != 0);
+        let first = display_info_for_bdf(0x0010_0000).unwrap();
+        let second = display_info_for_bdf(0x0020_0000).unwrap();
+        assert_eq!(first.count_enabled, 1);
+        assert_eq!(second.count_enabled, 2);
+        assert!(negotiated_features_for_bdf(0x0010_0000).unwrap() & (1u64 << VIRTIO_GPU_F_EDID) != 0);
+        assert_eq!(negotiated_features_for_bdf(0x0020_0000), Some(0));
+        assert!(display_info_for_bdf(0x0030_0000).is_none());
+        assert!(negotiated_features_for_bdf(0x0030_0000).is_none());
         // Cleanup.
         DEVICES.lock().clear();
     }

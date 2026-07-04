@@ -421,8 +421,8 @@ unsafe fn submit_raw(
 // driver can push klog text to the FB via transfer + flush after boot.
 // Contexts are keyed by owning parent BDF. DRM KMS hooks are registered per
 // card/BDF, while the current fbcon/fbdev/VT helper layer still exposes one
-// console scanout and therefore operates on the primary installed scanout.
-// Remove and shutdown target the exact BDF-owned context.
+// console scanout and therefore operates on the explicitly elected console
+// owner. Remove and shutdown target the exact BDF-owned context.
 
 use sync::{TaskList as DriverLockClass, Spinlock};
 
