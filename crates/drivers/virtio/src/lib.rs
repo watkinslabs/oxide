@@ -34,6 +34,11 @@ pub use common_cfg::{
     FeatureNegotiation,
 };
 
+pub mod queue_cfg;
+pub use queue_cfg::{
+    program_queue, program_queue_set, ProgrammedQueues, QueueRing, VirtioQueueAllocator,
+};
+
 pub mod queue;
 pub use queue::{
     Desc, AvailRing, UsedElem, UsedRing, VirtQueue,
