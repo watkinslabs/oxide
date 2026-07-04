@@ -87,6 +87,9 @@ test-pass claims.
   pseudo, misc, ALSA/OSS, fbdev, input, and DRM char devices. Model-backed
   virtual input, DRM, and character class devices now expose a `device`
   symlink when the class device has a real parent in the driver model.
+  Sysfs/netlink tests now prove bind/unbind emits `change` uevents from the
+  current model state: bound events include `DRIVER=<name>`, while unbound
+  events do not carry stale driver ownership.
 - The stale procfs-era static `/sys/class/misc/autofs` registration has been
   removed; autofs sysfs state now comes from the model-owned misc device and
   exposes the same `10:235` dev_t as `/dev/autofs`.
@@ -773,7 +776,8 @@ test-pass claims.
   block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2 paths.
 - Finish Linux-visible sysfs/devtmpfs/class contracts, including the remaining
   class parent relationships and stable add/remove/change uevent behavior
-  across rebind. `/sys/dev/{char,block}` and the core
+  across rebind beyond the current driver-core remove-order and sysfs
+  bind/unbind change-event proofs. `/sys/dev/{char,block}` and the core
   `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape exist, and
   driver-directory device symlinks resolve back to the canonical
   `/sys/devices/...` object.

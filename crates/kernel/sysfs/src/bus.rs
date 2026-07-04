@@ -766,6 +766,14 @@ mod tests {
     static BIND_PROBES: AtomicU32 = AtomicU32::new(0);
     static BIND_REMOVES: AtomicU32 = AtomicU32::new(0);
 
+    struct SysfsBindUeventDriver;
+    impl drv::Driver for SysfsBindUeventDriver {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "sysfs-bind-uevent-test" }
+        fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-bind-uevent0" }
+    }
+    static SYSFS_BIND_UEVENT_DRIVER: SysfsBindUeventDriver = SysfsBindUeventDriver;
+
     struct RejectDriver;
     impl drv::Driver for RejectDriver {
         fn bus(&self) -> &'static str { "platform" }
@@ -792,6 +800,10 @@ mod tests {
         let d = Arc::new(drv::Device::new("platform", String::from(addr), 0, 0, 0));
         drv::try_device_add(Arc::clone(&d)).expect("test device registration");
         d
+    }
+
+    fn uevent_has_entry(msg: &[u8], needle: &[u8]) -> bool {
+        msg.split(|b| *b == 0).any(|entry| entry == needle)
     }
 
     #[test]
@@ -825,6 +837,40 @@ mod tests {
         assert_eq!(
             rebound_link.readlink().expect("readlink"),
             b"../../../../devices/platform/sysfs-bind-dev0".to_vec());
+    }
+
+    #[test]
+    fn bind_unbind_emit_change_uevents_from_current_model_state() {
+        use netlink::{proto, NetlinkSocket};
+
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+        drv::set_bind_hook(bind_device_cb);
+
+        let dev = platform_device("sysfs-bind-uevent0");
+        drv::register_driver(&SYSFS_BIND_UEVENT_DRIVER);
+
+        let bound = listener.dequeue().expect("bind change uevent");
+        assert!(uevent_has_entry(&bound, b"ACTION=change"));
+        assert!(uevent_has_entry(&bound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
+        assert!(uevent_has_entry(&bound, b"SUBSYSTEM=platform"));
+        assert!(uevent_has_entry(&bound, b"DRIVER=sysfs-bind-uevent-test"));
+        assert_eq!(dev.bound(), Some("sysfs-bind-uevent-test"));
+
+        let root = make_bus_drivers_inode("platform");
+        let dir = root.lookup("sysfs-bind-uevent-test").expect("driver dir");
+        let unbind = dir.lookup("unbind").expect("unbind attr");
+        assert_eq!(unbind.write(0, b"sysfs-bind-uevent0\n"), Ok("sysfs-bind-uevent0\n".len()));
+
+        let unbound = listener.dequeue().expect("unbind change uevent");
+        assert!(uevent_has_entry(&unbound, b"ACTION=change"));
+        assert!(uevent_has_entry(&unbound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
+        assert!(uevent_has_entry(&unbound, b"SUBSYSTEM=platform"));
+        assert!(!uevent_has_entry(&unbound, b"DRIVER=sysfs-bind-uevent-test"));
+        assert_eq!(dev.bound(), None);
+
+        drv::device_del(&dev);
     }
 
     #[test]
