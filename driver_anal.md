@@ -516,6 +516,11 @@ test-pass claims.
   dimensions while cursor ioctls are unsupported, and DRM card/render file
   operations reject raw writes instead of acknowledging bytes that have no DRM
   UAPI meaning. Modifier-bearing ADDFB2 requests are rejected instead of ignored.
+  ADDFB and ADDFB2 now validate packed-RGB framebuffer metadata against the
+  referenced dumb buffer: unused planes must stay zero, plane 0 pitch must
+  cover the requested width, and checked offset/height math must fit inside
+  the GEM backing object before an FB object is created or a handle ref is
+  taken.
   fbdev flush/blank
   operations are now stored on each `/dev/fbN` record and call back into the
   owning virtio-gpu BDF instead of a global display hook; virtio-gpu scanout

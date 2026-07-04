@@ -134,6 +134,52 @@ pub fn format_supported(fourcc: u32) -> bool {
     fourcc == DRM_FORMAT_XRGB8888 || fourcc == DRM_FORMAT_ARGB8888
 }
 
+/// Bytes per pixel for formats this dumb-buffer path can expose.
+/// # C: O(1)
+pub fn format_cpp(fourcc: u32) -> Option<u32> {
+    match fourcc {
+        DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => Some(4),
+        _ => None,
+    }
+}
+
+/// True iff plane 0 describes a framebuffer fully inside `buf`.
+/// # C: O(1)
+pub fn fb_plane_fits_buf(
+    width: u32,
+    height: u32,
+    pixel_format: u32,
+    pitch: u32,
+    offset: u32,
+    buf: &DumbBuf,
+) -> bool {
+    if width == 0 || height == 0 {
+        return false;
+    }
+    let Some(cpp) = format_cpp(pixel_format) else {
+        return false;
+    };
+    let row_bytes = match (width as u64).checked_mul(cpp as u64) {
+        Some(bytes) => bytes,
+        None => return false,
+    };
+    if (pitch as u64) < row_bytes {
+        return false;
+    }
+    let last_row = match (pitch as u64).checked_mul((height - 1) as u64) {
+        Some(bytes) => bytes,
+        None => return false,
+    };
+    let span = match last_row.checked_add(row_bytes) {
+        Some(bytes) => bytes,
+        None => return false,
+    };
+    match (offset as u64).checked_add(span) {
+        Some(end) => end <= buf.size,
+        None => false,
+    }
+}
+
 /// DRM mmap-cookie space. Linux treats MODE_MAP_DUMB's returned offset as an
 /// opaque driver token; keep the tag above every possible `u32 << PAGE_SHIFT`
 /// handle value so the cookie cannot alias another handle or fbdev offset 0.
@@ -421,17 +467,27 @@ pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     if !format_supported(req.pixel_format) { return einval(); }
     if req.width == 0 || req.height == 0 { return einval(); }
     if req.handles[0] == 0 { return einval(); }
-    // Validate every non-zero plane handle exists.
+    if req.handles[1..].iter().any(|h| *h != 0) { return einval(); }
+    if req.pitches[1..].iter().any(|p| *p != 0) { return einval(); }
+    if req.offsets[1..].iter().any(|o| *o != 0) { return einval(); }
     {
         let t = TABLES.lock();
-        for &h in req.handles.iter() {
-            if h != 0 && t.find_buf(card_id, h).is_none() { return einval(); }
+        let Some(buf) = t.find_buf(card_id, req.handles[0]) else { return einval(); };
+        if !fb_plane_fits_buf(
+            req.width,
+            req.height,
+            req.pixel_format,
+            req.pitches[0],
+            req.offsets[0],
+            buf,
+        ) {
+            return einval();
         }
     }
     let fb_id = alloc_fb_id();
     {
         let mut t = TABLES.lock();
-        for &h in req.handles.iter() { if h != 0 { t.ref_handle(card_id, h); } }
+        t.ref_handle(card_id, req.handles[0]);
         t.fbs.push(FbObj {
             card_id, fb_id, w: req.width, h: req.height, pixel_format: req.pixel_format,
             handles: req.handles, pitches: req.pitches, offsets: req.offsets,
@@ -457,7 +513,13 @@ pub fn addfb(card_id: u32, arg: u64) -> i64 {
         (32, 32) => DRM_FORMAT_ARGB8888,
         _        => return einval(),
     };
-    if TABLES.lock().find_buf(card_id, req.handle).is_none() { return einval(); }
+    {
+        let t = TABLES.lock();
+        let Some(buf) = t.find_buf(card_id, req.handle) else { return einval(); };
+        if !fb_plane_fits_buf(req.width, req.height, fourcc, req.pitch, 0, buf) {
+            return einval();
+        }
+    }
     let fb_id = alloc_fb_id();
     {
         let mut t = TABLES.lock();
@@ -611,6 +673,21 @@ mod tests {
         assert!(format_supported(DRM_FORMAT_XRGB8888));
         assert!(format_supported(DRM_FORMAT_ARGB8888));
         assert!(!format_supported(0xdead_beef));
+        assert_eq!(format_cpp(DRM_FORMAT_XRGB8888), Some(4));
+        assert_eq!(format_cpp(DRM_FORMAT_ARGB8888), Some(4));
+        assert_eq!(format_cpp(0xdead_beef), None);
+    }
+
+    #[test]
+    fn fb_plane_bounds_validation() {
+        let buf = DumbBuf { card_id: 0, handle: 1, pa: 0x10_0000, size: 4096, order: 0,
+            w: 16, h: 16, pitch: 64, bpp: 32, refcnt: 1, mmap_refs: 0, deleted: false };
+
+        assert!(fb_plane_fits_buf(16, 16, DRM_FORMAT_XRGB8888, 64, 0, &buf));
+        assert!(fb_plane_fits_buf(8, 8, DRM_FORMAT_XRGB8888, 64, 128, &buf));
+        assert!(!fb_plane_fits_buf(16, 16, DRM_FORMAT_XRGB8888, 63, 0, &buf));
+        assert!(!fb_plane_fits_buf(16, 16, DRM_FORMAT_XRGB8888, 64, 4090, &buf));
+        assert!(!fb_plane_fits_buf(u32::MAX, 2, DRM_FORMAT_XRGB8888, u32::MAX, 0, &buf));
     }
 
     #[test]
@@ -683,6 +760,166 @@ mod tests {
             addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64),
             -(Errno::Einval.as_i32() as i64)
         );
+    }
+
+    fn reset_global_tables() {
+        let mut t = TABLES.lock();
+        t.bufs.clear();
+        t.fbs.clear();
+    }
+
+    fn insert_global_buf(size: u64) {
+        TABLES.lock().insert_buf(DumbBuf {
+            card_id: 0,
+            handle: 1,
+            pa: 0x10_0000,
+            size,
+            order: 0,
+            w: 16,
+            h: 16,
+            pitch: 64,
+            bpp: 32,
+            refcnt: 1,
+            mmap_refs: 0,
+            deleted: false,
+        });
+    }
+
+    #[test]
+    fn addfb2_validates_single_plane_bounds() {
+        use syscall::errno::Errno;
+
+        reset_global_tables();
+        insert_global_buf(4096);
+        let mut req = DrmModeFbCmd2 {
+            width: 16,
+            height: 16,
+            pixel_format: DRM_FORMAT_XRGB8888,
+            handles: [1, 0, 0, 0],
+            pitches: [64, 0, 0, 0],
+            offsets: [0; 4],
+            ..Default::default()
+        };
+        assert_eq!(addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64), 0);
+        assert!(req.fb_id != 0);
+        {
+            let t = TABLES.lock();
+            assert_eq!(t.find_buf(0, 1).unwrap().refcnt, 2);
+            assert_eq!(t.fbs.len(), 1);
+        }
+
+        reset_global_tables();
+        insert_global_buf(4096);
+        let mut req = DrmModeFbCmd2 {
+            width: 16,
+            height: 16,
+            pixel_format: DRM_FORMAT_XRGB8888,
+            handles: [1, 0, 0, 0],
+            pitches: [63, 0, 0, 0],
+            offsets: [0; 4],
+            ..Default::default()
+        };
+        assert_eq!(
+            addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64),
+            -(Errno::Einval.as_i32() as i64)
+        );
+        assert!(TABLES.lock().fbs.is_empty());
+
+        reset_global_tables();
+        insert_global_buf(4096);
+        let mut req = DrmModeFbCmd2 {
+            width: 16,
+            height: 1,
+            pixel_format: DRM_FORMAT_XRGB8888,
+            handles: [1, 0, 0, 0],
+            pitches: [64, 0, 0, 0],
+            offsets: [4090, 0, 0, 0],
+            ..Default::default()
+        };
+        assert_eq!(
+            addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64),
+            -(Errno::Einval.as_i32() as i64)
+        );
+        assert!(TABLES.lock().fbs.is_empty());
+
+        reset_global_tables();
+    }
+
+    #[test]
+    fn addfb2_rejects_unused_plane_metadata_for_packed_rgb() {
+        use syscall::errno::Errno;
+
+        reset_global_tables();
+        insert_global_buf(4096);
+        let mut req = DrmModeFbCmd2 {
+            width: 16,
+            height: 16,
+            pixel_format: DRM_FORMAT_XRGB8888,
+            handles: [1, 1, 0, 0],
+            pitches: [64, 0, 0, 0],
+            offsets: [0; 4],
+            ..Default::default()
+        };
+        assert_eq!(
+            addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64),
+            -(Errno::Einval.as_i32() as i64)
+        );
+
+        reset_global_tables();
+        insert_global_buf(4096);
+        let mut req = DrmModeFbCmd2 {
+            width: 16,
+            height: 16,
+            pixel_format: DRM_FORMAT_XRGB8888,
+            handles: [1, 0, 0, 0],
+            pitches: [64, 1, 0, 0],
+            offsets: [0; 4],
+            ..Default::default()
+        };
+        assert_eq!(
+            addfb2(0, (&mut req as *mut DrmModeFbCmd2) as u64),
+            -(Errno::Einval.as_i32() as i64)
+        );
+
+        reset_global_tables();
+    }
+
+    #[test]
+    fn legacy_addfb_validates_pitch_and_bounds() {
+        use syscall::errno::Errno;
+
+        reset_global_tables();
+        insert_global_buf(4096);
+        let mut req = DrmModeFbCmd {
+            width: 16,
+            height: 16,
+            pitch: 64,
+            bpp: 32,
+            depth: 24,
+            handle: 1,
+            ..Default::default()
+        };
+        assert_eq!(addfb(0, (&mut req as *mut DrmModeFbCmd) as u64), 0);
+        assert!(req.fb_id != 0);
+
+        reset_global_tables();
+        insert_global_buf(4096);
+        let mut req = DrmModeFbCmd {
+            width: 16,
+            height: 16,
+            pitch: 63,
+            bpp: 32,
+            depth: 24,
+            handle: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            addfb(0, (&mut req as *mut DrmModeFbCmd) as u64),
+            -(Errno::Einval.as_i32() as i64)
+        );
+        assert!(TABLES.lock().fbs.is_empty());
+
+        reset_global_tables();
     }
 
     #[test]
