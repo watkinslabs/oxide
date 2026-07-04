@@ -16,13 +16,21 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     if crate::netlink_fd::is_netlink(fd) {
         return crate::netlink_fd::bind(fd, addr_p);
     }
-    // D3.3: AF_VSOCK bind — record the local port; listen() registers
-    // the listener in the table. sockaddr_vm svm_port @4.
+    // D3.3: AF_VSOCK bind — record the local CID/port; listen() registers
+    // the owner-keyed listener in the table.
     if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
-        let (_fam, port, _cid) = match read_sockaddr_vm(addr_p) {
+        let (_fam, port, cid) = match read_sockaddr_vm(addr_p) {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };
-        *vs.kind.lock() = net::vsock_socket::VsockKind::Listener(port);
+        let owner = if cid == net::vsock::VMADDR_CID_ANY {
+            0
+        } else {
+            match net::vsock::driver_owner_for_cid(cid) {
+                Some(owner) => owner,
+                None => return -(Errno::Eaddrnotavail.as_i32() as i64),
+            }
+        };
+        *vs.kind.lock() = net::vsock_socket::VsockKind::Bound { port, owner };
         return 0;
     }
     let sock   = match socket_from_fd(fd) {

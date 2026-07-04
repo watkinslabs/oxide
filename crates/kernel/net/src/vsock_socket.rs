@@ -15,10 +15,13 @@ pub const VSOCK_INO_TAG: u64 = 0x5653_4F43_0000_0000;
 pub enum VsockKind {
     /// `socket()` done, no connect/bind yet.
     Init,
+    /// `bind()` done, not listening yet. `owner == 0` means VMADDR_CID_ANY.
+    Bound { port: u32, owner: u32 },
     /// `connect()` succeeded or `accept()` produced this — live stream.
     Conn(Arc<VsockConn>),
     /// `bind()`+`listen()` — accepts inbound OP_REQUESTs on `port`.
-    Listener(u32),
+    /// `owner == 0` means VMADDR_CID_ANY.
+    Listener { port: u32, owner: u32 },
 }
 
 /// AF_VSOCK socket VFS state. # C: O(1)
@@ -190,10 +193,10 @@ impl VsockSocket {
                 }
                 mask
             }
-            VsockKind::Listener(port) => {
-                if vsock::TABLE.pop_accept_peek(*port) { POLL_IN } else { 0 }
+            VsockKind::Listener { port, owner } => {
+                if vsock::TABLE.pop_accept_peek(*owner, *port) { POLL_IN } else { 0 }
             }
-            VsockKind::Init => POLL_OUT,
+            VsockKind::Init | VsockKind::Bound { .. } => POLL_OUT,
         }
     }
 }
