@@ -7,6 +7,34 @@ use alloc::vec::Vec;
 
 use crate::{ProgrammedQueues, QueueRing};
 
+/// Driver-model bus name used for virtio child devices.
+pub const VIRTIO_CHILD_BUS: &str = "virtio";
+
+/// Virtio vendor ID used by virtio child model devices.
+pub const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
+
+/// Model-driver identity for a virtio child driver. Child drivers own these
+/// descriptors; the virtio bus wrapper uses them for driver/device matching.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioChildDriverId {
+    pub name: &'static str,
+    pub device_id: u16,
+}
+
+impl VirtioChildDriverId {
+    /// # C: O(1)
+    pub const fn new(name: &'static str, device_id: u16) -> Self {
+        Self { name, device_id }
+    }
+
+    /// # C: O(1)
+    pub fn matches_device(&self, bus: &str, vendor_id: u16, device_id: u16) -> bool {
+        bus == VIRTIO_CHILD_BUS
+            && vendor_id == VIRTIO_VENDOR_ID
+            && device_id == self.device_id
+    }
+}
+
 /// Maximum virtqueues exposed through the staged resource object. Modern
 /// virtio devices in this kernel currently use queues 0..=3.
 pub const MAX_RESOURCE_QUEUES: usize = 8;
@@ -837,6 +865,17 @@ pub trait VirtioChildTransportSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_driver_id_matches_virtio_child_devices() {
+        let id = VirtioChildDriverId::new("virtio-test", 42);
+
+        assert_eq!(id.name, "virtio-test");
+        assert!(id.matches_device(VIRTIO_CHILD_BUS, VIRTIO_VENDOR_ID, 42));
+        assert!(!id.matches_device("pci", VIRTIO_VENDOR_ID, 42));
+        assert!(!id.matches_device(VIRTIO_CHILD_BUS, 0x1234, 42));
+        assert!(!id.matches_device(VIRTIO_CHILD_BUS, VIRTIO_VENDOR_ID, 43));
+    }
 
     const VALID_Q0: VirtQueueResource = VirtQueueResource {
         index:      0,

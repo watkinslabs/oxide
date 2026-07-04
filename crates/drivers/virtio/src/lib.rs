@@ -24,12 +24,13 @@ pub use pci::{
 
 pub mod resources;
 pub use resources::{
-    VirtioChildProbeFacts, VirtioChildRequirements, VirtioChildResourceState,
-    VirtioChildTransportSession, VirtioNetBootPayloads, VirtioQueueNotifyMappings,
-    VirtioQueuePlan, VirtioResources, VirtioRuntimeHandoff, VirtioRuntimeHandoffInput,
-    VirtioTransportLocation, VirtioTransportProbeResult, VirtioTransportProfile,
-    VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_MSI_NO_VECTOR, build_queue_resources,
-    build_runtime_handoff, push_unique_frame, resolve_planned_notify_mappings,
+    VirtioChildDriverId, VirtioChildProbeFacts, VirtioChildRequirements,
+    VirtioChildResourceState, VirtioChildTransportSession, VirtioNetBootPayloads,
+    VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources, VirtioRuntimeHandoff,
+    VirtioRuntimeHandoffInput, VirtioTransportLocation, VirtioTransportProbeResult,
+    VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_CHILD_BUS,
+    VIRTIO_MSI_NO_VECTOR, VIRTIO_VENDOR_ID, build_queue_resources, build_runtime_handoff,
+    push_unique_frame, resolve_planned_notify_mappings,
 };
 
 pub mod common_cfg;
