@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 53% complete.
+  hotplug, fault injection, and multi-device coverage: about 54% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -71,6 +71,11 @@ test-pass claims.
   in `pci-boot::virtio_bus::VirtioChildSession`, and child probes consume the
   shared session trait instead of importing `virtio_drv` transport helpers
   directly.
+- The PCI-backed child session now carries an explicit
+  `virtio_drv::VirtioPciTransport` backend. Child-session transport bring-up,
+  publish, and unpublish calls go through that backend object; the raw
+  virtio-pci probe/publish/unpublish helpers are private to the transport
+  module.
 - Virtio-pci owns persistent transport MMIO mappings, MSI-X state, and vring
   frame publication/teardown records for successful child probes.
 - Virtio-pci MSI-X state is now carried as an owned optional binding instead
@@ -351,9 +356,12 @@ test-pass claims.
   of the virtio-pci transport module, and child probes now use the shared
   `virtio::VirtioChildTransportSession` trait implemented by
   `pci-boot::virtio_bus::VirtioChildSession` instead of importing
-  `virtio_drv` transport helpers directly. The next step is to move more of
-  the PCI-backed session implementation behind a true transport backend so
-  shared virtio core owns the child probe lifecycle across transports.
+  `virtio_drv` transport helpers directly. The PCI-backed session now carries
+  an explicit `virtio_drv::VirtioPciTransport` backend, and raw probe,
+  publish, and unpublish helpers are private to that transport module. The
+  next step is to move more of the backend's probe-result/resource assembly
+  into shared virtio-core lifecycle helpers so shared virtio core owns the
+  child probe lifecycle across transports.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
