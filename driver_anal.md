@@ -1,6 +1,6 @@
 # Driver and driver-system status ledger
 
-Date: 2026-07-03
+Date: 2026-07-04
 
 Scope: this ledger describes the active worktree at
 `/home/nd/oxide/kernel-driver-shutdown-work` on branch
@@ -317,9 +317,9 @@ test-pass claims.
   RNG device on active-provider removal. Virtio-snd install/remove is now
   keyed to the owning parent BDF and releases child-owned queue/buffer
   resources only for the matching transport; the sound card layer remains a
-  single global card and rejects a second card from the child install path
-  instead of a transport-side precheck. Virtio-gpu duplicate-BDF admission is
-  also left to the child install path.
+  single global card, but that card is now owner-keyed by the publishing BDF,
+  rejects second-card takeover, and rejects unregister from non-owners.
+  Virtio-gpu duplicate-BDF admission is also left to the child install path.
 - Virtio MSI-X handler ownership is no longer selected by a transport-side
   PCI-ID special-case dispatch. Child virtio driver probes now pass the
   optional queue-0 IRQ callback into the virtio-pci setup path; the PCI
@@ -381,11 +381,14 @@ test-pass claims.
   scanout hooks, scanout owner tokens, flip-event queues, and dumb-buffer/FB
   object lookup are BDF/card owned. fbdev flush/blank hooks are per-fb records
   keyed to the owning BDF, while fbcon remains a single foreground console
-  bound to an explicit owner. Virtio-vsock's upper protocol layer and virtio-snd's upper
-  sound-card layer also still retain singleton limits; vsock now reserves its
-  singleton protocol endpoint before allocation, keys that endpoint to the
-  owning device, and fails a second transport cleanly instead of replacing or
-  tearing down the installed transport.
+  bound to an explicit owner. Virtio-vsock's upper protocol layer and
+  virtio-snd's upper sound-card layer also still retain singleton limits; vsock
+  now reserves its singleton protocol endpoint before allocation, keys that
+  endpoint to the owning device, and fails a second transport cleanly instead
+  of replacing or tearing down the installed transport. virtio-snd now keys the
+  published global sound card to the owning transport and routes PCM/control
+  ops through that owner instead of selecting the first installed context, but
+  it still needs a real per-card ALSA/PCM/control ABI for multiple sound cards.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
@@ -478,9 +481,10 @@ test-pass claims.
   card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
   fbdev flush/blank dispatch, and dumb-buffer mmap VMA lifetime pins;
-  virtio-vsock's upper protocol layer and virtio-snd's global sound-card layer
-  are still main offenders. AHCI and NVMe still need live multi-controller
-  proof, but they no longer use process-wide installed-controller slots.
+  virtio-vsock's upper protocol layer and virtio-snd's single-card PCM/control
+  ABI are still main offenders. AHCI and NVMe still need live
+  multi-controller proof, but they no longer use process-wide
+  installed-controller slots.
 - Add explicit fault-injection coverage for probe failure after each allocation,
   mapping, registration, IRQ/MSI step, queue setup, and userspace publication.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
@@ -629,8 +633,8 @@ Several drivers still use singleton global state:
 - virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
 - virtio-vsock: keyed transport records and owner-keyed endpoint teardown, but
   a singleton upper protocol endpoint
-- virtio-snd: keyed transport records with EVENTQ drained per transport, but a
-  singleton upper sound card/PCM/control ABI
+- virtio-snd: keyed transport records with EVENTQ drained per transport and an
+  owner-keyed global sound card, but still a singleton upper PCM/control ABI
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
 
