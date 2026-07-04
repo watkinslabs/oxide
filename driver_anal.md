@@ -141,7 +141,10 @@ test-pass claims.
   resource during install.
 - Virtio-snd no longer has PCI-transport-owned sound config harvest. The
   virtio-snd child driver reads jacks/streams/chmaps/controls from the generic
-  `DEVICE_CFG` resource before querying PCM stream info.
+  `DEVICE_CFG` resource before querying PCM stream info. Its virtio-pci profile
+  now plans the required EVENTQ(1) alongside CONTROLQ/TXQ/RXQ, maps q1's notify
+  window, and hands the event queue resource to the child driver instead of
+  silently programming only q0/q2/q3.
 - Virtio-input no longer has PCI-transport-owned input config VA handoff. The
   input child driver reads identity and capability data from the generic
   `DEVICE_CFG` resource during its own install path.
@@ -290,10 +293,11 @@ test-pass claims.
   is now explicit, including function-mask handling and table-entry validation.
   Transport-owned MSI-X binding lifetime now handles multiple entries, and
   extra queue plans now resolve declared IRQ callbacks into queue-indexed
-  MSI-X table entries before common-cfg queue programming. Queue-specific
-  callback coverage for extra queues that should interrupt, remaining
-  child-probe failure unwind audit, and fault-injection proof still need to
-  move behind a fuller
+  MSI-X table entries before common-cfg queue programming. Virtio-snd now
+  programs and owns its required EVENTQ(1) resource. Queue-specific callback
+  coverage for extra queues that should interrupt, sound EVENTQ draining,
+  remaining child-probe failure unwind audit, and fault-injection proof still
+  need to move behind a fuller
   `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
