@@ -90,7 +90,7 @@ fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; 6]> {
 }
 
 /// Stash modern virtio-net runtime state for later RX/TX drivers.
-/// Returns false if a device is already installed.
+/// Returns false if this device key is already installed.
 /// # C: O(1)
 pub fn init_modern(
     device_key: u32,
@@ -278,13 +278,23 @@ fn set_registered_iface(device_key: u32, id: net::NetIfaceId) {
     registered.push((device_key, id));
 }
 
-/// Registered net stack ifindex, if any.
+/// First registered net stack ifindex, if any.
+///
+/// Compatibility helper for legacy single-NIC tests. Production callers that
+/// need to act on installed devices should use `registered_ifaces()`.
 /// # C: O(1)
+#[cfg(test)]
 pub fn registered_iface() -> Option<net::NetIfaceId> {
     REGISTERED_NETDEVS
         .lock()
         .first()
         .map(|(_, iface)| *iface)
+}
+
+/// Snapshot of every registered virtio-net device and its net stack ifindex.
+/// # C: O(N)
+pub fn registered_ifaces() -> alloc::vec::Vec<(u32, net::NetIfaceId)> {
+    REGISTERED_NETDEVS.lock().clone()
 }
 
 /// Registered ifindex for the named device key, if it owns the published netdev.
@@ -496,7 +506,7 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
 // stack is fully wired (F59-14+). Returns frames consumed.
 
 /// Drain pending RX frames into the kernel net stack. ARP requests
-/// for `our_ip` get a synchronous reply via `tx_frame`. Returns the
+/// for `our_ip` get a synchronous reply through the same device. Returns the
 /// number of frames consumed.
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
@@ -890,10 +900,9 @@ pub fn uninstall_rx_softirq_handler() {
     }
 }
 
-/// F138: update only the IP slot (preserves iface id). SIOCSIFADDR
-/// calls this when userspace (dhcpcd) configures the iface address so
-/// the rx-side ARP responder starts replying to "who-has <new-ip>"
-/// queries from the host's slirp NAT.
+/// F138: update the first installed IP slot (preserves iface id).
+/// Compatibility helper for older single-NIC callers; keyed updates should
+/// use `set_softirq_ip_for_iface`.
 /// # C: O(1)
 pub fn set_softirq_ip(ip: [u8; 4]) {
     let mut runtimes = RX_RUNTIMES.lock();
@@ -914,8 +923,8 @@ pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
     true
 }
 
-/// F138: read the current stashed iface id (0 = none yet).
-/// Used by siocsifaddr to decide whether to update the IP slot.
+/// F138: read the first stashed iface id (0 = none yet).
+/// Compatibility helper for older single-NIC callers.
 /// # C: O(1)
 pub fn softirq_iface_id() -> u32 {
     RX_RUNTIMES
@@ -925,7 +934,8 @@ pub fn softirq_iface_id() -> u32 {
         .unwrap_or(0)
 }
 
-/// Owning device key for the current RX softirq runtime, if installed.
+/// Owning device key for the first RX softirq runtime, if installed.
+/// Compatibility helper for older single-NIC callers.
 /// # C: O(1)
 pub fn softirq_device_key() -> Option<u32> {
     RX_RUNTIMES.lock().first().map(|runtime| runtime.device_key)
@@ -1301,10 +1311,16 @@ mod ndp_tests {
         assert_eq!(registered_iface_for(0x0012_0304).unwrap().raw(), 9);
         assert!(registered_iface_for(0x0012_0305).is_none());
         set_registered_iface(0x0012_0305, net::NetIfaceId::from_raw(10));
+        let snapshot = registered_ifaces();
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.iter().any(|(key, id)| *key == 0x0012_0304 && id.raw() == 9));
+        assert!(snapshot.iter().any(|(key, id)| *key == 0x0012_0305 && id.raw() == 10));
         assert_eq!(registered_iface_for(0x0012_0305).unwrap().raw(), 10);
         assert_eq!(remove_registered_iface(0x0012_0304).unwrap().raw(), 9);
         assert!(registered_iface_for(0x0012_0304).is_none());
         assert_eq!(registered_iface_for(0x0012_0305).unwrap().raw(), 10);
+        let snapshot = registered_ifaces();
+        assert_eq!(snapshot, alloc::vec![(0x0012_0305, net::NetIfaceId::from_raw(10))]);
         REGISTERED_NETDEVS.lock().clear();
     }
 
