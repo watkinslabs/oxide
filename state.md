@@ -1,84 +1,84 @@
 # state.md — session handoff
 
 ## Headline
-7 greeter-blocking kernel bugs FOUND + FIXED this session (measured, committed,
-boot-verified, branch B318 pushed). The ENTIRE kernel seat/graphics/udev chain
-now works: **`CAN_GRAPHICAL=1` achieved** (seat0 graphical, card0 tagged
-master-of-seat, GPU detected via 61-gdm.rules -> `gdm-machine-has-hardware-gpu`).
-Greeter still doesn't render — two REMAINING issues, both now measured:
- (1) `CAN_GRAPHICAL=1` is INTERMITTENT (~1-in-several boots; a race in card0
-     coldplug tagging — most boots get =0).
- (2) gnome-shell (the greeter session) NEVER launches even when CanGraphical=1;
-     gdm starts but forks no greeter. Plus NAMESPACE failures (accounts-daemon:
-     `Failed to set up mount namespacing: /run/systemd/seats: No such file or
-     directory` — for a path that DOES exist; smells like ANOTHER mount-ns
-     visibility bug, same class as the mnt_root fix), missing `/usr/bin/plymouth`
-     (non-fatal), and a missing `path_id` udev builtin (71-seat.rules:75).
-Boot is also ~4.5 min now (udevd does real coldplug work — each device slow).
+Two more mount-namespace bugs FOUND + FIXED this session (measured, committed,
+pushed on branch B318). Both are the SAME class: the mount engine re-derived a
+mount's parent/dest from a bare dentry via `parent_by_dentry`, which is
+AMBIGUOUS under bind-sharing (bind mounts share the underlying dentries), so
+mounts created/moved onto a bind of `/` were mis-placed. Fixed by threading the
+walked `path->mnt` (which the syscall layer already knows) as an explicit hint.
+Greeter STILL not rendering — root cause is NOT mount (measured: mount(2) has ~0
+failures now). The live blocker is `CAN_GRAPHICAL=0` because udevd never
+processes card0's uevent, plus gdm exits code=1 downstream of that.
 
-## Fixes landed this session (branch B318, PR #2338, all pushed)
-- eb225e9a fix(kernfs): implement `rename` -> /dev (devtmpfs) supports udevd's
-  atomic symlink-via-rename; udevd completes device workers -> master-of-seat
-  tag -> **CAN_GRAPHICAL=1**.  <- the breakthrough
-- 6caec86e fix(sysfs): block/input `uevent` WRITABLE + emit -> coldplug no longer
-  EROFS; udevd receives device uevents.
-- 21b4368e fix(sysfs): drm device_add uevent DEVPATH -> devices/virtual/drm/<card>
-- 3a477d2b fix(vfs): identify a mount by `mnt_root` not `sb.s_root`  <- seat0
-- 8e81fd93 fix(vfs): d_drop must not unhash a mounted dentry (D_MOUNTED guard)
-- 18200270 fix(sysfs): /sys/dev/char/226:0 -> devices/virtual/drm/card0
-- crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs — 5 hosted tests (pass).
+## Fixes landed this session (branch B318, pushed)
+- b71fb455 fix(devfs): register /dev/hugepages mount-point dir (systemd
+  per-service sandbox binds it; was ENOENT).
+- 29194e13 fix(vfs): thread walked DEST mnt_id through MS_MOVE
+  (`move_mount_by_id_to`) — bind-shared dentry defeated parent_by_dentry, so
+  MS_MOVE onto /run/systemd/mount-rootfs/<sub> was falsely rejected "dest within
+  source subtree". Fixed 12/13 namespace MS_MOVEs.
+- e66f8386 fix(vfs): thread walked PARENT mnt_id through mount graft
+  (`register_at`/`register_bind_at`/`attach_sb_with_flags_at` + parent_hint in
+  attach/graft_realized). systemd creates the apivfs at /run/systemd/namespace-X
+  AFTER rbinding / onto /run/systemd/mount-rootfs, so the /run root dentry is
+  bind-shared and the new mount was BORN parented under mount-rootfs/run
+  (rendered /run/systemd/mount-rootfs/... — unreachable via real /run). Now
+  renders correctly. 41 hosted vfs mount tests green.
+- crates/kernel/vfs/tests/sandbox_nested_primary.rs added (passes; note: the
+  string-keyed hosted fixture can't reproduce true bind-dentry ambiguity, so it's
+  a non-regression guard, not the repro — the repro is the boot trace).
 
-## NEXT frontier — greeter session doesn't launch  [START HERE]
-1. gnome-shell never spawns. Even in a CAN_GRAPHICAL=1 boot, gdm starts but
-   forks no greeter (`grep gnome-shell` = 0). Measure: does gdm try to exec
-   gnome-shell / gdm-session-worker / Xorg and fail? (unconditional execve-ENOENT
-   trace at 059_execve.rs:75 — was used this session, gated behind debug-boot).
-   STRONG candidate: the NAMESPACE failures. `/run/systemd/seats: No such file or
-   directory` for a path that DOES exist (seat0 is created) => the service's
-   sandbox mount-ns can't SEE it. Same class as the /sys mnt_root bug just fixed.
-   Measure: does `/run/systemd/seats` resolve in the failing service's ns vs
-   globally? (fsid + exe probe, the method that cracked /sys). If it's a ns
-   visibility bug, fixing it likely unblocks BOTH accounts-daemon AND the greeter.
-2. CanGraphical intermittent. card0's coldplug tag is racy — measure across N
-   boots whether `/run/udev/tags/master-of-seat/c226:0` is written each time.
-3. Image/userspace: missing `/usr/bin/plymouth`, missing `path_id` udev builtin.
+## KEY measured finding: code=265 storm is NOT the greeter blocker
+- mount(2) failures ≈ 0 after the two mount fixes (was assumed to be the cause —
+  it was NOT; measure-don't-guess paid off).
+- ~25 `code=265` exits are `sd-executor` (`/proc/self/fd/9`) probe-forks that
+  exit after `waitid=ECHILD` + `pause=EINTR`; 265 > systemd's EXIT_ range
+  (max ~246) so it's not EXIT_NAMESPACE. Services like upower still reach
+  "Started" afterward. Treat 265 as a red herring until proven otherwise.
 
-## What was THE bug (measured end-to-end, not guessed)
-`containing_mount_id → parent_by_dentry → visible_mnt_id_of_root_dentry /
-mount_with_root_dentry` matched a mount by **`sb.s_root()`**. A bind/clone
-mount's real root dentry is the PER-MOUNT `mnt_root` override, which differs from
-the shared `sb.s_root()`. So a task chrooted/pivoted onto a systemd-sandbox bind
-root resolved its root dentry to the NS-ROOT mount instead.
+## NEXT frontier — CAN_GRAPHICAL=0: udevd never processes card0  [START HERE]
+Measured chain (single boot, OXDIAG probe in image dumps /run/udev state):
+- seat0 file: `CAN_GRAPHICAL=0`, `CAN_TTY=0`.
+- `/run/udev/tags/systemd/` contains ONLY `b254:0` — card0 (c226:0) is NOT
+  tagged systemd/master-of-seat. `cat /run/udev/data/c226:0` → ENOENT (no db
+  entry written → udevd never finished card0).
+- card0 = SEQNUM 50: logged "Device is queued" + "ready for processing" at ~23s
+  but NO "Worker forked for SEQNUM=50" ever, and "Device processed" reaches
+  ~41/47/48/49 then HALTS (42-46, 50, 51 never processed). udevd prints
+  "Cleaning up idle workers" ~30.5s thinking the queue is drained.
+- children_max=15 but only 8 workers ever fork (51-58); ALL exit together at
+  ~30.8-31.0s after being busy ~10-20s each doing `kmod load` / "Loading module:
+  pci:..." (138 kmod loads total). Boot is ~2.5-4.5 min to graphical.
+- HYPOTHESIS (unproven): card0 waits on its PCI/virtio-gpu PARENT event
+  (one of SEQNUM 42-46) that is stuck in a slow/looping worker; OR udevd stops
+  dispatching the queue. Next measure: identify card0's parent devpath and
+  whether that parent's uevent ever completes; time a single `kmod load` /
+  finit_module (313_finit_module.rs reads whole .ko over ext4 — likely the
+  per-worker slowness). If module-load-for-builtin is the stall, make
+  kmod/finit_module fail-fast for built-in modules.
+- gdm exits code=1 (059_execve shows it only execs plymouth=ENOENT, non-fatal);
+  most likely gdm exits because CAN_GRAPHICAL=0 (no graphical seat). Fix
+  CanGraphical reliability first, then re-check gdm.
 
-MEASURED chain (via probes on the ACTUAL inode logind's openat returns, no
-re-resolve): logind root dentry = mnt 397's `mnt_root` (`is_root=1`,
-`owner_mnt=397`), but `containing_mount_id` returned **381** (ns root) →
-walk seeded mnt 381 → `__lookup_mnt(381, /sys-dentry)` missed the sysfs under
-397 → logind's `/sys` = empty ext4 underlay (fsid 0x1, while 159 other opens got
-sysfs 0x0102199400000002) → `/sys/dev/char/226:0` ENOENT → no device attach → no
-seat0. FIX (commit 3a477d2b): match on `mnt_root()` (falls back to sb.s_root, so
-singleton procfs/sysfs sharing is unchanged) + collapse to the ns-root id only
-when a candidate IS the ns root (a sandbox bind root is self-parented `is_root()`
-but is a task's private root, not the ns root). RESULT: containing_mount_id → 397,
-`/sys` crosses into sysfs, seat0 created. 98+ vfs tests green. Boots reliably
-(seat0 in 3/3; a graphical=0 boot is the pre-existing ~50% GRUB-hang, not a
-regression — see CLAUDE.md).
-
-## Diagnostic method that WORKED (measure, don't guess)
-The decisive probes: (a) log the fsid of the ACTUAL inode `openat` returns (no
-re-resolve → no root-provider ambiguity); (b) `current()->exe_path` to identify
-the process; (c) compare `root_vfs.mnt_id` vs `containing_mount_id(root_dentry)`
-vs `root_mount_id(ns)`; (d) scan `all_mounts()` for the one whose `mnt_root()`
-IS a given dentry. All traces were reverted after use.
+## Diagnostic method (measure, don't guess — enforced this session)
+- Mount parent/dest bugs cracked by: trace each EINVAL return tag in
+  move_mount_m; dump the mount table (id, parent_id, rendered_path) at the
+  reject; then a [GRAFT] trace at creation showing the mount born with the wrong
+  parent. All traces reverted after use.
+- The bind-dentry ambiguity is the recurring theme (see auto-memory
+  "mount-dentry-sharing-gotcha"): ALWAYS pass the walked path->mnt, never
+  re-derive a mount from a bare dentry when binds are in play.
 
 ## Boot harness
-`bash <scratchpad>/boot.sh <log> 100` (kills stale qemu, boots live-gnome ISO,
+`bash <scratchpad>/boot.sh <log> 200` (kills stale qemu, boots live-gnome ISO,
 serial→log). Build: `cd ../oxide-images && make kernel ARCH=x86_64 && cd
 ../kernel && cargo run -q -p xtask -- artifacts --arch x86_64 && cd
 ../oxide-images && cargo run -q -p imagectl -- build-boot --profile live-gnome
 --arch x86_64`. STALE-ARTIFACT TRAP: a compile FAIL still lets `xtask artifacts`
 export the last-good kernel — always confirm the build `Finished` line.
-seat0 check: `grep IS_SEAT0 <log>`; CanGraphical: `grep CAN_GRAPHICAL <log>`.
+Checks: `grep CAN_GRAPHICAL <log>`; `grep -c code=265 <log>`;
+udev queue: `grep 'Device processed' <log>`; card0: `grep -i card0 <log>`.
 
 ## Ledger
-metadata/index.md: B next=319 (318 used this session), D next=120, F next=650.
+metadata/index.md: B next=319 (318 in use this session), D next=120, F next=650.
