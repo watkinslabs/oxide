@@ -58,6 +58,91 @@ pub(super) fn program_queue_set(
     virtio::program_queue_set(cfg_va, &mut allocator, q0_msix_vec, extra_plans)
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct NetRxBootBuffer {
+    pub(super) buf_pa: u64,
+    pub(super) buf_len: u16,
+    pub(super) avail_idx_posted: u16,
+}
+
+pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRxBootBuffer {
+    const RX_BUF_LEN: u16 = 2048;
+    let Some(q0) = q0 else {
+        return NetRxBootBuffer::default();
+    };
+    if hhdm == 0 || q0.desc_pa == 0 || q0.driver_pa == 0 {
+        return NetRxBootBuffer::default();
+    }
+    let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
+        return NetRxBootBuffer::default();
+    };
+
+    // Descriptor[0]: addr=rx_pa, len=2048, flags=WRITE, next=0.
+    let desc0 = (hhdm.wrapping_add(q0.desc_pa)) as *mut u8;
+    // SAFETY: HHDM maps the freshly allocated RX frame and queue-0 descriptor
+    // table. The transport owns descriptor 0 until the child driver takes the
+    // resource handoff.
+    unsafe {
+        core::ptr::write_volatile(desc0 as *mut u64, rx_pa);
+        core::ptr::write_volatile((desc0.add(8)) as *mut u32, RX_BUF_LEN as u32);
+        core::ptr::write_volatile((desc0.add(12)) as *mut u16, virtio::VRING_DESC_F_WRITE);
+        core::ptr::write_volatile((desc0.add(14)) as *mut u16, 0u16);
+    }
+
+    let avail = (hhdm.wrapping_add(q0.driver_pa)) as *mut u16;
+    // SAFETY: HHDM maps the queue-0 avail ring frame. ring[0] is u16 offset 2
+    // and idx is u16 offset 1.
+    unsafe {
+        core::ptr::write_volatile(avail.add(2), 0u16);
+    }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    // SAFETY: same avail ring; idx publishes descriptor 0 after the release
+    // fence made descriptor and ring writes observable.
+    unsafe {
+        core::ptr::write_volatile(avail.add(1), 1u16);
+    }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+
+    NetRxBootBuffer {
+        buf_pa: rx_pa,
+        buf_len: RX_BUF_LEN,
+        avail_idx_posted: 1,
+    }
+}
+
+pub(super) fn alloc_net_tx_boot_buffer(
+    hhdm: u64,
+    q1: Option<QueueRing>,
+    q1_notify_va: u64,
+) -> u64 {
+    let Some(q1) = q1 else {
+        return 0;
+    };
+    if hhdm == 0
+        || q1.desc_pa == 0
+        || q1.driver_pa == 0
+        || q1.device_pa == 0
+        || q1_notify_va == 0
+    {
+        return 0;
+    }
+    pmm::setup::alloc_raw_frame().unwrap_or(0)
+}
+
+pub(super) fn read_queue_used_idx(hhdm: u64, queue: Option<QueueRing>) -> u16 {
+    let Some(queue) = queue else {
+        return 0;
+    };
+    if hhdm == 0 || queue.device_pa == 0 {
+        return 0;
+    }
+    let used = (hhdm.wrapping_add(queue.device_pa)) as *const u16;
+    // used.idx at +0x02 (u16 offset 1).
+    // SAFETY: HHDM maps this programmed split-queue used ring frame; used.idx
+    // is an aligned u16 field.
+    unsafe { core::ptr::read_volatile(used.add(1)) }
+}
+
 struct MappedTransportPage {
     page_pa: u64,
     mapping: mmio_map::Mapping,
