@@ -232,23 +232,15 @@ impl VirtioChildOps for VirtioRngOps {
             return Err(drv::Error::ProbeFailed);
         };
         let device_key = session.device_key();
-        match drv_virtio_rng::install(device_key, resources) {
-            Some(()) => {}
+        let seeded = match drv_virtio_rng::install(device_key, resources) {
+            Some(seeded) => seeded,
             None => {
                 return Err(drv::Error::ProbeFailed);
             }
-        }
-
-        let mut seed = [0u8; 32];
-        let n = drv_virtio_rng::fill_from_device(device_key, &mut seed);
-        if n == 0 {
-            let _ = drv_virtio_rng::uninstall(device_key);
-            return Err(drv::Error::ProbeFailed);
-        }
-        devfs::misc::add_entropy(&seed[..n]);
+        };
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-rng installed seeded=");
-            klog::write_dec_u64(n as u64);
+            klog::write_dec_u64(seeded as u64);
             klog::write_raw(b" bytes\n");
         }
         Ok(())
