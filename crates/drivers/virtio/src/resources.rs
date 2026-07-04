@@ -7,6 +7,81 @@
 /// virtio devices in this kernel currently use queues 0..=3.
 pub const MAX_RESOURCE_QUEUES: usize = 8;
 
+/// Child-driver transport requirements declared before a transport publishes
+/// resources to the child. The transport owns validation against its concrete
+/// bring-up result; the child owns device-specific parsing and registration.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VirtioChildRequirements {
+    pub required_queues: [bool; MAX_RESOURCE_QUEUES],
+    pub needs_device_cfg: bool,
+    pub needs_net_boot_payloads: bool,
+}
+
+impl VirtioChildRequirements {
+    /// # C: O(1)
+    pub const fn new(
+        required_queues: [bool; MAX_RESOURCE_QUEUES],
+        needs_device_cfg: bool,
+        needs_net_boot_payloads: bool,
+    ) -> Self {
+        Self {
+            required_queues,
+            needs_device_cfg,
+            needs_net_boot_payloads,
+        }
+    }
+
+    /// Require q0, the mandatory virtqueue for the active drivers here.
+    /// # C: O(1)
+    pub const fn q0() -> Self {
+        Self::new(
+            [true, false, false, false, false, false, false, false],
+            false,
+            false,
+        )
+    }
+
+    /// Require q0 and a device-specific config window.
+    /// # C: O(1)
+    pub const fn q0_device_cfg() -> Self {
+        Self::new(
+            [true, false, false, false, false, false, false, false],
+            true,
+            false,
+        )
+    }
+
+    /// Require q0/q1 and a device-specific config window.
+    /// # C: O(1)
+    pub const fn q0_q1_device_cfg() -> Self {
+        Self::new(
+            [true, true, false, false, false, false, false, false],
+            true,
+            false,
+        )
+    }
+
+    /// Require virtio-net RX/TX queues plus boot payload buffers.
+    /// # C: O(1)
+    pub const fn net() -> Self {
+        Self::new(
+            [true, true, false, false, false, false, false, false],
+            false,
+            true,
+        )
+    }
+
+    /// Require virtio-snd control, event, TX, and RX queues plus config.
+    /// # C: O(1)
+    pub const fn snd() -> Self {
+        Self::new(
+            [true, true, true, true, false, false, false, false],
+            true,
+            false,
+        )
+    }
+}
+
 /// One programmed split virtqueue plus its notify window.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct VirtQueueResource {
@@ -176,5 +251,27 @@ mod tests {
 
         assert_eq!(resources.require_queue(0), Some(VALID_Q0));
         assert!(!resources.require_common_and_queues(&[0]));
+    }
+
+    #[test]
+    fn child_requirements_describe_transport_contracts() {
+        let q0 = VirtioChildRequirements::q0();
+        assert!(q0.required_queues[0]);
+        assert!(!q0.needs_device_cfg);
+        assert!(!q0.needs_net_boot_payloads);
+
+        let net = VirtioChildRequirements::net();
+        assert!(net.required_queues[0]);
+        assert!(net.required_queues[1]);
+        assert!(net.needs_net_boot_payloads);
+        assert!(!net.needs_device_cfg);
+
+        let snd = VirtioChildRequirements::snd();
+        assert!(snd.required_queues[0]);
+        assert!(snd.required_queues[1]);
+        assert!(snd.required_queues[2]);
+        assert!(snd.required_queues[3]);
+        assert!(snd.needs_device_cfg);
+        assert!(!snd.required_queues[4]);
     }
 }
