@@ -643,7 +643,9 @@ Several drivers still use singleton global state:
 - virtio-snd: keyed transport records with EVENTQ drained per transport, an
   owner-keyed ops table, and an owner-keyed global sound card reserved before
   transport allocation/publish, with card ownership held until ALSA/OSS child
-  nodes are removed, but still a singleton upper PCM/control ABI
+  nodes are removed; ALSA PCM/capture/OSS runtime state is now bound to the
+  owning card key, but the ABI still exposes only card0 and rejects a second
+  transport before publication
 - UART drivers: global `PRESENT` and base state; RX interrupt delivery now has
   an explicit quiesce gate cleared before shutdown/remove masks hardware
 - PS/2 keyboard: global present/poll state; IRQ1 delivery now has an explicit

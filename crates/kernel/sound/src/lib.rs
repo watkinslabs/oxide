@@ -39,10 +39,13 @@ static CARD_NODES: Spinlock<Vec<Arc<drv::Device>>, SoundLockClass> = Spinlock::n
 const NO_CARD_OWNER: u32 = u32::MAX;
 static CARD_OWNER: AtomicU32 = AtomicU32::new(NO_CARD_OWNER);
 
-/// Backend-private state (`i_private`) for a sound node: the device minor that
-/// keys the shared read/write/ioctl dispatch (`controlC0`/`pcmC0D0p`/…). The
-/// old per-inode `ino()` tag is now `SND_INO_BASE | minor` on the inode. # C: O(1)
-struct SndData { minor: u64 }
+/// Backend-private state (`i_private`) for a sound node: the owning card key
+/// plus the device minor that routes `controlC0`/`pcmC0D0p`/… dispatch.
+/// # C: O(1)
+struct SndData {
+    owner: u32,
+    minor: u64,
+}
 
 /// `file_operations` for every `/dev/snd/*` + OSS node — `read`/`write`
 /// dispatch on the node's stored minor (the same key the ioctl path uses),
@@ -55,27 +58,27 @@ struct SndData { minor: u64 }
 struct SndFileOps;
 impl FileOps for SndFileOps {
     fn read(&self, inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
-        let minor = match inode.private::<SndData>() { Some(d) => d.minor, None => return Err(VfsError::Einval) };
+        let data = match inode.private::<SndData>() { Some(d) => d, None => return Err(VfsError::Einval) };
         if b.is_empty() { return Ok(0); }
-        match minor {
+        match data.minor {
             // OSS /dev/dsp read(2) → capture (snd-pcm-oss over the same RXQ).
-            MINOR_DSP | MINOR_AUDIO => Ok(oss::read(b)),
-            MINOR_PCM_C             => Ok(capture::read_bytes(b)),
+            MINOR_DSP | MINOR_AUDIO => Ok(oss::read(data.owner, b)),
+            MINOR_PCM_C             => Ok(capture::read_bytes(data.owner, b)),
             // pcmC0D0p / controlC0 / mixer → no readable byte stream.
             _ => Ok(0),
         }
     }
     fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
-        let minor = match inode.private::<SndData>() { Some(d) => d.minor, None => return Err(VfsError::Einval) };
-        match minor {
+        let data = match inode.private::<SndData>() { Some(d) => d, None => return Err(VfsError::Einval) };
+        match data.minor {
             MINOR_PCM_P => {
                 if b.is_empty() { return Ok(0); }
-                let n = pcm::write_bytes(b);
+                let n = pcm::write_bytes(data.owner, b);
                 if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
             }
             MINOR_DSP | MINOR_AUDIO => {
                 if b.is_empty() { return Ok(0); }
-                let n = oss::write(b);
+                let n = oss::write(data.owner, b);
                 if n == 0 { Err(VfsError::Eio) } else { Ok(n) }
             }
             MINOR_MIXER => Ok(b.len()),
@@ -88,10 +91,10 @@ impl FileOps for SndFileOps {
 /// Build a `/dev/snd/*` (or OSS) char-device inode for `minor`: `S_IFCHR|0o666`,
 /// `ino = SND_INO_BASE | minor` (the routing tag the ioctl path reads), the
 /// shared `SndFileOps` data path, lookup → `ENOTDIR` (default i_op). # C: O(1)
-fn make_snd_inode(minor: u64) -> InodeRef {
+fn make_snd_inode(owner: u32, minor: u64) -> InodeRef {
     InodeBuilder::new(SND_INO_BASE | minor, mk_mode(FileType::CharDev, 0o666),
                       default_inode_ops(), Arc::new(SndFileOps))
-        .private(Arc::new(SndData { minor }))
+        .private(Arc::new(SndData { owner, minor }))
         .build()
 }
 
@@ -155,9 +158,9 @@ const SOUND_NODES: &[SoundNode] = &[
     },
 ];
 
-fn add_sound_node(node: &SoundNode) -> Arc<drv::Device> {
+fn add_sound_node(owner: u32, node: &SoundNode) -> Arc<drv::Device> {
     let minor = node.minor;
-    let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(minor));
+    let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(owner, minor));
     drv::device_add(Arc::new(
         drv::Device::new(node.class, node.name.into(), 0, 0, node.minor as u32)
             .with_devnode(node.class, node.dev_name.into(), Some(node.dev_t))
@@ -171,15 +174,18 @@ fn add_sound_node(node: &SoundNode) -> Arc<drv::Device> {
 pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     let ino = inode.ino();
     if ino & SND_INO_MASK != SND_INO_BASE { return None; }
-    let minor = ino & 0xFF;
+    let data = match inode.private::<SndData>() {
+        Some(data) => data,
+        None => return Some(-(syscall::errno::Errno::Einval.as_i32() as i64)),
+    };
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
-    Some(match minor {
-        MINOR_PCM_P if group == PCM_MAGIC => pcm::handle(nr, arg),
-        MINOR_PCM_C if group == PCM_MAGIC => capture::handle(nr, arg),
-        MINOR_CONTROL if group == CTL_MAGIC => control::handle(nr, arg),
-        MINOR_DSP | MINOR_AUDIO => oss::handle(false, req, arg),
-        MINOR_MIXER => oss::handle(true, req, arg),
+    Some(match data.minor {
+        MINOR_PCM_P if group == PCM_MAGIC => pcm::handle(data.owner, nr, arg),
+        MINOR_PCM_C if group == PCM_MAGIC => capture::handle(data.owner, nr, arg),
+        MINOR_CONTROL if group == CTL_MAGIC => control::handle(data.owner, nr, arg),
+        MINOR_DSP | MINOR_AUDIO => oss::handle(data.owner, false, req, arg),
+        MINOR_MIXER => oss::handle(data.owner, true, req, arg),
         // Unknown ioctl on a sound node → ENOTTY (don't fall through).
         _ => -(syscall::errno::Errno::Enotty.as_i32() as i64),
     })
@@ -201,10 +207,13 @@ pub fn register_card(owner: u32) -> bool {
             return true;
         }
     }
+    pcm::register_card(owner);
+    capture::register_card(owner);
+    oss::register_card(owner);
     devfs::register_dir("/dev/snd");
     let mut published = Vec::new();
     for node in SOUND_NODES {
-        published.push(add_sound_node(node));
+        published.push(add_sound_node(owner, node));
     }
     *CARD_NODES.lock() = published;
     true
@@ -246,6 +255,9 @@ pub fn unregister_card(owner: u32) -> bool {
     for node in nodes.iter().rev() {
         drv::device_del(node);
     }
+    oss::unregister_card(owner);
+    capture::unregister_card(owner);
+    pcm::unregister_card(owner);
     CARD_OWNER
         .compare_exchange(owner, NO_CARD_OWNER, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()

@@ -27,9 +27,32 @@ const AFMT_U16_LE: u32 = 0x0000_0080;
 
 /// OSS lazily-applied params (virtio enums) + whether each direction is
 /// armed (`running` = playback, `cap_running` = capture).
-struct Oss { rate: u8, format: u8, channels: u8, running: bool, cap_running: bool }
-static OSS: Spinlock<Oss, L> =
-    Spinlock::new(Oss { rate: 6 /*44100*/, format: V_S16, channels: 2, running: false, cap_running: false });
+struct Oss {
+    owner: u32,
+    rate: u8,
+    format: u8,
+    channels: u8,
+    running: bool,
+    cap_running: bool,
+}
+
+static OSS: Spinlock<Option<Oss>, L> = Spinlock::new(None);
+
+fn initial(owner: u32) -> Oss {
+    Oss { owner, rate: 6 /*44100*/, format: V_S16, channels: 2, running: false, cap_running: false }
+}
+
+pub(crate) fn register_card(owner: u32) {
+    *OSS.lock() = Some(initial(owner));
+}
+
+pub(crate) fn unregister_card(owner: u32) {
+    reset(owner);
+    let mut guard = OSS.lock();
+    if guard.as_ref().map(|o| o.owner == owner).unwrap_or(false) {
+        *guard = None;
+    }
+}
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -63,58 +86,83 @@ fn rate_enum_to_hz(e: u8) -> u32 {
 
 /// Stop + release both directions and disarm, so the next I/O re-applies
 /// params (SNDCTL_DSP_RESET / a param change).
-fn reset() {
-    let mut o = OSS.lock();
-    if o.running {
-        let _ = crate::ops::pcm_trigger(false);
-        let _ = crate::ops::pcm_hw_free();
+fn reset(owner: u32) {
+    let (running, cap_running) = {
+        let mut o = OSS.lock();
+        let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+            return;
+        };
+        let running = o.running;
+        let cap_running = o.cap_running;
         o.running = false;
-    }
-    if o.cap_running {
-        let _ = crate::ops::cap_trigger(false);
-        let _ = crate::ops::cap_hw_free();
         o.cap_running = false;
+        (running, cap_running)
+    };
+    if running {
+        let _ = crate::ops::pcm_trigger(owner, false);
+        let _ = crate::ops::pcm_hw_free(owner);
+    }
+    if cap_running {
+        let _ = crate::ops::cap_trigger(owner, false);
+        let _ = crate::ops::cap_hw_free(owner);
     }
 }
 
 /// /dev/dsp read(2): lazily cap_hw_params→cap_prepare→cap_trigger on the
 /// first read after a param change, then capture (blocking). Returns bytes.
 /// # C: O(bytes/period × RXQ round-trip)
-pub fn read(buf: &mut [u8]) -> usize {
+pub fn read(owner: u32, buf: &mut [u8]) -> usize {
     if buf.is_empty() { return 0; }
-    let (rate, fmt, ch) = { let o = OSS.lock(); (o.rate, o.format, o.channels) };
-    if !OSS.lock().cap_running {
-        let period = crate::ops::period_bytes() as u32;
-        if !crate::ops::cap_hw_params(rate, fmt, ch, period, period * 2) { return 0; }
-        if !crate::ops::cap_prepare() { return 0; }
-        if !crate::ops::cap_trigger(true) { return 0; }
-        OSS.lock().cap_running = true;
+    let (rate, fmt, ch, cap_running) = {
+        let o = OSS.lock();
+        let Some(o) = o.as_ref().filter(|o| o.owner == owner) else {
+            return 0;
+        };
+        (o.rate, o.format, o.channels, o.cap_running)
+    };
+    if !cap_running {
+        let period = crate::ops::period_bytes(owner) as u32;
+        if !crate::ops::cap_hw_params(owner, rate, fmt, ch, period, period * 2) { return 0; }
+        if !crate::ops::cap_prepare(owner) { return 0; }
+        if !crate::ops::cap_trigger(owner, true) { return 0; }
+        let mut o = OSS.lock();
+        let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+            return 0;
+        };
+        o.cap_running = true;
     }
-    crate::ops::pcm_recv(buf)
+    crate::ops::pcm_recv(owner, buf)
 }
 
 /// /dev/dsp write(2): lazily hw_params→prepare→trigger on the first write
 /// after a param change, then transfer (blocking). Returns bytes accepted.
 /// # C: O(bytes/period × TXQ round-trip)
-pub fn write(buf: &[u8]) -> usize {
+pub fn write(owner: u32, buf: &[u8]) -> usize {
     if buf.is_empty() { return 0; }
-    let (rate, fmt, ch) = {
+    let (rate, fmt, ch, running) = {
         let o = OSS.lock();
-        (o.rate, o.format, o.channels)
+        let Some(o) = o.as_ref().filter(|o| o.owner == owner) else {
+            return 0;
+        };
+        (o.rate, o.format, o.channels, o.running)
     };
-    if !OSS.lock().running {
-        let period = crate::ops::period_bytes() as u32;
-        if !crate::ops::pcm_hw_params(rate, fmt, ch, period, period * 2) { return 0; }
-        if !crate::ops::pcm_prepare() { return 0; }
-        if !crate::ops::pcm_trigger(true) { return 0; }
-        OSS.lock().running = true;
+    if !running {
+        let period = crate::ops::period_bytes(owner) as u32;
+        if !crate::ops::pcm_hw_params(owner, rate, fmt, ch, period, period * 2) { return 0; }
+        if !crate::ops::pcm_prepare(owner) { return 0; }
+        if !crate::ops::pcm_trigger(owner, true) { return 0; }
+        let mut o = OSS.lock();
+        let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+            return 0;
+        };
+        o.running = true;
     }
-    crate::ops::pcm_submit(buf)
+    crate::ops::pcm_submit(owner, buf)
 }
 
 /// Handle a SNDCTL_DSP_* (`/dev/dsp`, minor=DSP/AUDIO) or SOUND_MIXER_*
 /// (`/dev/mixer`) ioctl. # C: O(1)
-pub fn handle(is_mixer: bool, req: u64, arg: u64) -> i64 {
+pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
 
@@ -129,45 +177,79 @@ pub fn handle(is_mixer: bool, req: u64, arg: u64) -> i64 {
     let wi = |a: u64, v: u32| { if let Some(b) = UserBuf::new(a, 4) { b.w32(0, v); } };
 
     match nr {
-        0 => { reset(); 0 }                                          // RESET
+        0 => { reset(owner); 0 }                                      // RESET
         1 | 8 => 0,                                                  // SYNC / POST
         2 => {                                                       // SPEED
             let hz = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
             let e = hz_to_rate_enum(hz);
-            { let mut o = OSS.lock(); o.rate = e; o.running = false; o.cap_running = false; }
-            reset();
+            reset(owner);
+            {
+                let mut o = OSS.lock();
+                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                    return err(Errno::Enodev);
+                };
+                o.rate = e;
+            }
             wi(arg, rate_enum_to_hz(e));
             0
         }
         3 => {                                                       // STEREO
             let st = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            { let mut o = OSS.lock(); o.channels = if st != 0 { 2 } else { 1 }; o.running = false; o.cap_running = false; }
-            reset();
-            wi(arg, (OSS.lock().channels - 1) as u32);
+            reset(owner);
+            let channels = if st != 0 { 2 } else { 1 };
+            {
+                let mut o = OSS.lock();
+                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                    return err(Errno::Enodev);
+                };
+                o.channels = channels;
+            }
+            wi(arg, (channels - 1) as u32);
             0
         }
         4 => { if UserBuf::new(arg, 4).is_none() { return err(Errno::Efault); }   // GETBLKSIZE
-               wi(arg, crate::ops::period_bytes() as u32); 0 }
+               wi(arg, crate::ops::period_bytes(owner) as u32); 0 }
         5 => {                                                       // SETFMT
             let a = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            if a == 0 { wi(arg, virtio_to_afmt(OSS.lock().format)); return 0; }
-            { let mut o = OSS.lock(); o.format = afmt_to_virtio(a); o.running = false; o.cap_running = false; }
-            reset();
-            wi(arg, virtio_to_afmt(OSS.lock().format));
+            if a == 0 {
+                let o = OSS.lock();
+                let Some(o) = o.as_ref().filter(|o| o.owner == owner) else {
+                    return err(Errno::Enodev);
+                };
+                wi(arg, virtio_to_afmt(o.format));
+                return 0;
+            }
+            reset(owner);
+            let format = afmt_to_virtio(a);
+            {
+                let mut o = OSS.lock();
+                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                    return err(Errno::Enodev);
+                };
+                o.format = format;
+            }
+            wi(arg, virtio_to_afmt(format));
             0
         }
         6 => {                                                       // CHANNELS
             let n = match ri(arg) { Some(v) => v, None => return err(Errno::Efault) };
-            { let mut o = OSS.lock(); o.channels = n.clamp(1, 2) as u8; o.running = false; o.cap_running = false; }
-            reset();
-            wi(arg, OSS.lock().channels as u32);
+            reset(owner);
+            let channels = n.clamp(1, 2) as u8;
+            {
+                let mut o = OSS.lock();
+                let Some(o) = o.as_mut().filter(|o| o.owner == owner) else {
+                    return err(Errno::Enodev);
+                };
+                o.channels = channels;
+            }
+            wi(arg, channels as u32);
             0
         }
         11 => { if UserBuf::new(arg, 4).is_none() { return err(Errno::Efault); }  // GETFMTS
                 wi(arg, AFMT_S16_LE | AFMT_U8 | AFMT_S8 | AFMT_U16_LE | AFMT_MU_LAW | AFMT_A_LAW); 0 }
         12 | 13 => {                                                 // GET[OI]SPACE
             let b = match UserBuf::new(arg, 16) { Some(b) => b, None => return err(Errno::Efault) };
-            let frag = crate::ops::period_bytes() as u32;
+            let frag = crate::ops::period_bytes(owner) as u32;
             b.w32(0, 2); b.w32(4, 2); b.w32(8, frag); b.w32(12, 2 * frag);
             0
         }

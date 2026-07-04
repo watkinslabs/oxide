@@ -10,7 +10,10 @@ use crate::uapi::*;
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// Handle one `SNDRV_CTL_IOCTL_*` (magic 'U' stripped → `nr`). # C: O(1)
-pub fn handle(nr: u64, arg: u64) -> i64 {
+pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
+    if crate::ops::ops_for(owner).is_none() {
+        return err(Errno::Enodev);
+    }
     match nr {
         CTL_PVERSION => match UserBuf::new(arg, 4) {
             Some(b) => { b.w32(0, SNDRV_CTL_VERSION); 0 } None => err(Errno::Efault),
