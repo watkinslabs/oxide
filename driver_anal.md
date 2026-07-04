@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 47% complete.
+  hotplug, fault injection, and multi-device coverage: about 48% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -79,6 +79,9 @@ test-pass claims.
 - Virtio-vsock no longer has PCI-transport-owned guest-CID harvest. The
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
   resource during install.
+- Virtio-snd no longer has PCI-transport-owned sound config harvest. The
+  virtio-snd child driver reads jacks/streams/chmaps/controls from the generic
+  `DEVICE_CFG` resource before querying PCM stream info.
 - Virtio-blk has per-device records, unregisters disks on remove, freezes new
   I/O, waits for its single in-flight request owner, resets the device, and
   returns child-owned bounce allocation when safe.
@@ -151,10 +154,10 @@ test-pass claims.
   device-specific setup policy still lives in bus/transport helper code instead
   of clean per-driver or per-bus abstractions.
 - Virtio child probing is model-driven and child resource handoff is more
-  centralized, and extra queue setup is now data-driven. Virtio-blk and
-  virtio-vsock config parsing have moved into their child drivers, but common
-  virtio transport, feature negotiation, remaining config harvest, and child
-  policy remain too
+  centralized, and extra queue setup is now data-driven. Virtio-blk,
+  virtio-vsock, and virtio-snd config parsing have moved into their child
+  drivers, but common virtio transport, feature negotiation, remaining config
+  harvest, and child policy remain too
   concentrated in `crates/kernel/pci-boot/src/virtio_drv.rs`.
 - Virtio IRQ callback ownership has moved in the right direction, and queue
   selection no longer uses per-queue special-case booleans, but feature
@@ -206,10 +209,10 @@ test-pass claims.
   virtio-pci function, virtio-pci creates virtio bus devices, common virtio core
   owns feature/queue transport mechanics, and child drivers bind by virtio
   device ID. Resource handoff is now centralized and carries the common
-  `DEVICE_CFG` window; virtio-blk and virtio-vsock config parsing have moved
-  into their child drivers. Feature negotiation, queue programming, remaining
-  config harvest, MSI-X setup, and failure release helpers still need to move
-  behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
+  `DEVICE_CFG` window; virtio-blk, virtio-vsock, and virtio-snd config parsing
+  have moved into their child drivers. Feature negotiation, queue programming,
+  remaining config harvest, MSI-X setup, and failure release helpers still need
+  to move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
