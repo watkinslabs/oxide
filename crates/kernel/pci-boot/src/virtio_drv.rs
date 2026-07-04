@@ -1046,11 +1046,7 @@ fn release_gpu_transport(cfg_va: u64, q0_desc_pa: u64, q0_driver_pa: u64, q0_dev
 }
 
 fn release_virtio_transport(cfg_va: u64, frames: &[u64]) {
-    if cfg_va != 0 {
-        // SAFETY: cfg_va is a mapped virtio common-cfg window returned by
-        // virtio_init_arch; device_status is a u8 at +0x14.
-        unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
-    }
+    super::virtio_qsetup::reset_device(cfg_va);
     for frame in frames.iter().copied() {
         if frame == 0 {
             continue;
@@ -1350,18 +1346,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         None => 0,
     };
 
-    // u32/u8 volatile R/W over the Device-attr MMIO window for status reads
-    // and the final DRIVER_OK transition. Common feature and queue-size
-    // protocol lives in virtio_qsetup.
-    let r32 = |off: u64| -> u32 {
-        // SAFETY: cfg_va Device-attr mapped; off < 0x1000.
-        unsafe { core::ptr::read_volatile((cfg_va + off) as *const u32) }
-    };
-    let w8 = |off: u64, v: u8| {
-        // SAFETY: same window; per Virtio 1.2 §4.1.4.3 device_status is a u8 at +0x14.
-        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u8, v); }
-    };
-
     let negotiated = super::virtio_qsetup::negotiate_features(cfg_va, profile.drv_features);
     let dev_features = negotiated.dev_features;
     let drv_features = negotiated.drv_features;
@@ -1460,12 +1444,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
                     }
                 }
 
-                // DRIVER_OK
-                w8(0x14, virtio::VIRTIO_STATUS_ACKNOWLEDGE
-                         | virtio::VIRTIO_STATUS_DRIVER
-                         | virtio::VIRTIO_STATUS_FEATURES_OK
-                         | virtio::VIRTIO_STATUS_DRIVER_OK);
-                let final_status = (r32(0x14) & 0xFF) as u8;
+                let final_status = super::virtio_qsetup::set_driver_ok(cfg_va);
                 (r0.desc_pa, r0.driver_pa, r0.device_pa, r0.notify_off, final_status)
             }
             None => (0, 0, 0, 0, post_status as u8),
@@ -1547,7 +1526,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
                 // completion (QEMU user-net delivers nothing without
                 // packets, so used.idx will normally stay 0).
                 for _ in 0..1_000_000 { core::hint::spin_loop(); }
-                let st = (r32(0x14) & 0xFF) as u8;
+                let st = super::virtio_qsetup::read_status(cfg_va);
                 (kick_va, st)
             } else {
                 (0u64, final_status)

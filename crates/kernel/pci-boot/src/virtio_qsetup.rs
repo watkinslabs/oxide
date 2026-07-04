@@ -157,6 +157,45 @@ pub(super) fn scan_queue_sizes(cfg_va: u64, num_queues: u16) -> ([(u16, u16); 8]
     (queues, queues_len)
 }
 
+/// Read the modern common-cfg device status byte.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub(super) fn read_status(cfg_va: u64) -> u8 {
+    // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status is
+    // the u8 field at CFG_DEVICE_STATUS.
+    unsafe { core::ptr::read_volatile((cfg_va + CFG_DEVICE_STATUS) as *const u8) }
+}
+
+/// Reset a modern virtio device through the common-cfg status register.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub(super) fn reset_device(cfg_va: u64) {
+    if cfg_va == 0 {
+        return;
+    }
+    // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status is
+    // the u8 field at CFG_DEVICE_STATUS.
+    unsafe { core::ptr::write_volatile((cfg_va + CFG_DEVICE_STATUS) as *mut u8, 0u8); }
+}
+
+/// Publish DRIVER_OK after features and queues are fully programmed.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub(super) fn set_driver_ok(cfg_va: u64) -> u8 {
+    // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status is
+    // the u8 field at CFG_DEVICE_STATUS.
+    unsafe {
+        core::ptr::write_volatile(
+            (cfg_va + CFG_DEVICE_STATUS) as *mut u8,
+            virtio::VIRTIO_STATUS_ACKNOWLEDGE
+                | virtio::VIRTIO_STATUS_DRIVER
+                | virtio::VIRTIO_STATUS_FEATURES_OK
+                | virtio::VIRTIO_STATUS_DRIVER_OK,
+        );
+    }
+    read_status(cfg_va)
+}
+
 /// Program virtqueue `qi` on the modern common-cfg window at `cfg_va`:
 /// select the queue, read its `queue_size` (0 → queue absent, returns
 /// None), allocate + zero the three ring frames via `hhdm`, write the
