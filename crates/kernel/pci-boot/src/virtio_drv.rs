@@ -2,7 +2,7 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::map_mmio_pages;
-use super::virtio_qsetup::QueuePlan;
+use super::virtio_qsetup::{ProgrammedQueues, QueuePlan};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as VirtioTransportLockClass};
@@ -1187,6 +1187,12 @@ struct VirtioProbeState {
     msix: Option<MsixBinding>,
 }
 
+#[derive(Default)]
+struct PlannedNotifyMappings {
+    q2: u64,
+    q3: u64,
+}
+
 impl VirtioProbeState {
     fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
         Self {
@@ -1234,6 +1240,37 @@ impl VirtioProbeState {
         } else {
             0
         }
+    }
+
+    fn map_planned_extra_notifies(
+        &mut self,
+        queue_plans: &[Option<QueuePlan>; 3],
+        programmed_queues: Option<&ProgrammedQueues>,
+        notify_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+    ) -> PlannedNotifyMappings {
+        let mut mappings = PlannedNotifyMappings::default();
+        let Some(programmed) = programmed_queues else {
+            return mappings;
+        };
+
+        for queue in queue_plans {
+            let Some(queue) = queue else { continue };
+            if !queue.map_notify {
+                continue;
+            }
+            let Some(ring) = programmed.extra_queue(queue.index) else {
+                continue;
+            };
+            let notify_va = self.map_notify(notify_cap, bars, ring.notify_off);
+            match queue.index {
+                2 => mappings.q2 = notify_va,
+                3 => mappings.q3 = notify_va,
+                _ => {}
+            }
+        }
+
+        mappings
     }
 
     fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
@@ -1552,8 +1589,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::mmu_ops::hhdm_offset() }
     };
-    let mut snd_q2_notify_va_local: u64 = 0;
-    let mut snd_q3_notify_va_local: u64 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let notify_cap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
     let msix_bound = features_ok && state.bind_msix0(d, &caps, &bars, profile.msix0_handler);
@@ -1568,21 +1603,14 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     } else {
         None
     };
-    if let Some(programmed) = programmed_queues.as_ref() {
-        for queue in profile.extra_queues {
-            let Some(queue) = queue else { continue };
-            if queue.map_notify {
-                if let Some(ring) = programmed.extra_queue(queue.index) {
-                    let notify_va = state.map_notify(notify_cap.as_ref(), &bars, ring.notify_off);
-                    match queue.index {
-                        2 => snd_q2_notify_va_local = notify_va,
-                        3 => snd_q3_notify_va_local = notify_va,
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
+    let extra_notify_mappings = state.map_planned_extra_notifies(
+        &profile.extra_queues,
+        programmed_queues.as_ref(),
+        notify_cap.as_ref(),
+        &bars,
+    );
+    let snd_q2_notify_va_local = extra_notify_mappings.q2;
+    let snd_q3_notify_va_local = extra_notify_mappings.q3;
     let final_status = if programmed_queues.is_some() {
         super::virtio_qsetup::set_driver_ok(state.cfg_va)
     } else {
