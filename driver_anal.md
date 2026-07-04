@@ -72,9 +72,10 @@ test-pass claims.
   mapping mutation from the main probe body.
 - The shared virtio resource handoff exists through `VirtioResources` and
   `VirtQueueResource`, with queue lookup validation centralized through
-  `require_queue`. Child probes now build those resources through one
-  transport-owned helper path instead of rebuilding queue handoff state in each
-  child glue path. The resource object now also carries the generic
+  `require_queue`. Child probes now ask `VirtioProbe` for resources by their
+  declared `VirtioChildRequirements`, and `VirtioProbe` builds the resource set
+  from the required queue bitmap instead of each child glue path manually
+  selecting q0/q1/q2/q3. The resource object now also carries the generic
   transport-mapped `DEVICE_CFG` window, so child drivers can parse their own
   device-specific config.
 - Virtio extra queue setup is now described by a transport queue plan instead
@@ -113,9 +114,9 @@ test-pass claims.
 - Child probe readiness checks for DRIVER_OK, required queue indexes, device
   config, and net boot payloads now go through shared
   `virtio::VirtioChildRequirements` evaluated by
-  `VirtioProbe::ready_for_child` instead of per-driver open-coded guards.
-  Virtio-snd now requires all four of its transport queues before child
-  install, and pci-boot validates required queues through
+  `VirtioProbe::child_resources` instead of per-driver open-coded guards and
+  resource lists. Virtio-snd now requires all four of its transport queues
+  before child install, and pci-boot validates required queues through
   `VirtQueueResource::is_runtime_valid`.
 - Virtio common-cfg now has an explicit FAILED status helper, and virtio-pci
   transport bring-up marks the device FAILED when FEATURES_OK is rejected or
@@ -332,9 +333,11 @@ test-pass claims.
   Child readiness validation is centralized in `VirtioProbe` and described by
   shared `virtio::VirtioChildRequirements`; child transport profiles and queue
   plans now use shared `virtio::VirtioTransportProfile` and
-  `virtio::VirtioQueuePlan`. The next step is to split the remaining
-  child-specific resource publication decisions out from the PCI execution
-  machinery and behind a real virtio bus/core boundary.
+  `virtio::VirtioQueuePlan`; resource publication for child probes now goes
+  through `VirtioProbe::child_resources` using those requirements instead of
+  per-child q0/q1/q2/q3 lists in the PCI glue. The next step is to split the
+  remaining child-driver probe entrypoints themselves out from the PCI
+  execution machinery and behind a real virtio bus/core boundary.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
