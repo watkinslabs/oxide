@@ -19,7 +19,7 @@ Estimated branch-local status:
 - Device publication through model-owned sysfs/devtmpfs/class state: about 65%
   complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 57% complete.
+  hotplug, fault injection, and multi-device coverage: about 58% complete.
 
 The percentages are engineering estimates for this branch only. They are not
 test-pass claims.
@@ -84,9 +84,9 @@ test-pass claims.
 - Shared `virtio::VirtioChildProbeFacts` now carries the child-visible
   transport probe result: negotiated driver features, validated child resource
   state, and net boot payload descriptors. The PCI `VirtioProbe` now owns
-  PCI/MMIO/MSI-X lifetime and teardown records, while debug-only probe trace
-  fields live in `VirtioPciProbeTrace`; child sessions read the shared facts
-  object instead of individual PCI probe fields.
+  PCI/MMIO/MSI-X lifetime and opaque frame-release records, while debug-only
+  probe trace fields live in `VirtioPciProbeTrace`; child sessions read the
+  shared facts object instead of individual PCI probe fields.
 - Virtio-pci owns persistent transport MMIO mappings, MSI-X state, and vring
   frame publication/teardown records for successful child probes.
 - Virtio-pci MSI-X state is now carried as an owned optional binding instead
@@ -375,8 +375,10 @@ test-pass claims.
   publication checks across transports. Shared `virtio::VirtioChildProbeFacts`
   now carries child-visible negotiated features, resource state, and net boot
   payloads. Backend debug/trace-only probe-result state has been split into
-  `VirtioPciProbeTrace`, so `VirtioProbe` is closer to a PCI transport
-  lifetime object instead of a mixed diagnostic/resource bag.
+  `VirtioPciProbeTrace`, and `VirtioProbe` now keeps opaque vring/net payload
+  frame-release lists instead of individual child queue PA fields, so it is
+  closer to a PCI transport lifetime object instead of a mixed
+  diagnostic/resource bag.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by

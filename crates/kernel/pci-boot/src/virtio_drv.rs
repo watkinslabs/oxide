@@ -103,7 +103,7 @@ fn publish_transport_mmio(p: &mut VirtioProbe) {
     publish_transport_record(
         p.bdf_word,
         core::mem::take(&mut p.mappings),
-        p.transport_vring_frames(),
+        core::mem::take(&mut p.vring_frames),
         core::mem::take(&mut p.msix),
     );
 }
@@ -426,6 +426,8 @@ impl VirtioProbeState {
     fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
         let child_facts = result.child_facts(self.cfg_va, self.device_cfg_va);
         let trace = result.trace(self.cfg_va);
+        let vring_frames = result.vring_frames();
+        let net_payload_frames = result.net_payload_frames();
         VirtioProbe {
             bdf_word: self.bdf_word,
             mappings: self.mappings,
@@ -433,20 +435,8 @@ impl VirtioProbeState {
             child_facts,
             trace,
             cfg_va: self.cfg_va,
-            q0_desc_pa: result.q0_desc_pa,
-            q0_driver_pa: result.q0_driver_pa,
-            q0_device_pa: result.q0_device_pa,
-            q1_desc_pa: result.q1_desc_pa,
-            q1_driver_pa: result.q1_driver_pa,
-            q1_device_pa: result.q1_device_pa,
-            rx0_buf_pa: result.rx0_buf_pa,
-            tx0_buf_pa: result.tx0_buf_pa,
-            snd_q2_desc_pa: result.snd_q2_desc_pa,
-            snd_q2_driver_pa: result.snd_q2_driver_pa,
-            snd_q2_device_pa: result.snd_q2_device_pa,
-            snd_q3_desc_pa: result.snd_q3_desc_pa,
-            snd_q3_driver_pa: result.snd_q3_driver_pa,
-            snd_q3_device_pa: result.snd_q3_device_pa,
+            vring_frames,
+            net_payload_frames,
         }
     }
 }
@@ -497,6 +487,31 @@ struct VirtioProbeResult {
 }
 
 impl VirtioProbeResult {
+    fn vring_frames(&self) -> Vec<u64> {
+        let mut frames = Vec::new();
+        for frame in [
+            self.q0_desc_pa,
+            self.q0_driver_pa,
+            self.q0_device_pa,
+            self.q1_desc_pa,
+            self.q1_driver_pa,
+            self.q1_device_pa,
+            self.snd_q2_desc_pa,
+            self.snd_q2_driver_pa,
+            self.snd_q2_device_pa,
+            self.snd_q3_desc_pa,
+            self.snd_q3_driver_pa,
+            self.snd_q3_device_pa,
+        ] {
+            push_unique_frame(&mut frames, frame);
+        }
+        frames
+    }
+
+    fn net_payload_frames(&self) -> [u64; 2] {
+        [self.rx0_buf_pa, self.tx0_buf_pa]
+    }
+
     fn trace(&self, cfg_va: u64) -> VirtioPciProbeTrace {
         VirtioPciProbeTrace {
             cmd_orig: self.cmd_orig,
@@ -627,20 +642,8 @@ pub(super) struct VirtioProbe {
     pub(super) child_facts: virtio::VirtioChildProbeFacts,
     pub(super) trace: VirtioPciProbeTrace,
     pub(super) cfg_va: u64,
-    pub(super) q0_desc_pa:   u64,
-    pub(super) q0_driver_pa: u64,
-    pub(super) q0_device_pa: u64,
-    pub(super) q1_desc_pa:   u64,
-    pub(super) q1_driver_pa: u64,
-    pub(super) q1_device_pa: u64,
-    pub(super) rx0_buf_pa:  u64,
-    pub(super) tx0_buf_pa: u64,
-    pub(super) snd_q2_desc_pa:   u64,
-    pub(super) snd_q2_driver_pa: u64,
-    pub(super) snd_q2_device_pa: u64,
-    pub(super) snd_q3_desc_pa:   u64,
-    pub(super) snd_q3_driver_pa: u64,
-    pub(super) snd_q3_device_pa: u64,
+    vring_frames: Vec<u64>,
+    net_payload_frames: [u64; 2],
 }
 
 fn virtio_hhdm_offset() -> u64 {
@@ -662,29 +665,8 @@ impl VirtioProbe {
         self.child_facts.resources_for_child(requirements)
     }
 
-    fn transport_vring_frames(&self) -> Vec<u64> {
-        let mut frames = Vec::new();
-        for frame in [
-            self.q0_desc_pa,
-            self.q0_driver_pa,
-            self.q0_device_pa,
-            self.q1_desc_pa,
-            self.q1_driver_pa,
-            self.q1_device_pa,
-            self.snd_q2_desc_pa,
-            self.snd_q2_driver_pa,
-            self.snd_q2_device_pa,
-            self.snd_q3_desc_pa,
-            self.snd_q3_driver_pa,
-            self.snd_q3_device_pa,
-        ] {
-            push_unique_frame(&mut frames, frame);
-        }
-        frames
-    }
-
     fn release_failed_transport(&mut self, payload_frames: &[u64]) {
-        let mut frames = self.transport_vring_frames();
+        let mut frames = core::mem::take(&mut self.vring_frames);
         for frame in payload_frames.iter().copied() {
             push_unique_frame(&mut frames, frame);
         }
@@ -695,7 +677,8 @@ impl VirtioProbe {
     }
 
     fn release_failed_transport_with_net_payloads(&mut self) {
-        self.release_failed_transport(&[self.rx0_buf_pa, self.tx0_buf_pa]);
+        let payload_frames = self.net_payload_frames;
+        self.release_failed_transport(&payload_frames);
     }
 
     pub(super) fn release_failed_child(&mut self, requirements: virtio::VirtioChildRequirements) {
