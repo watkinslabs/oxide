@@ -1,16 +1,19 @@
 # state.md — session handoff
 
 ## Headline
-Two mount-namespace bugs FOUND+FIXED (committed, pushed, branch B318) AND the
-real greeter blocker DIAGNOSED (not yet fixed). Greeter still doesn't render.
-Root cause of `CAN_GRAPHICAL=0`: a **udev event-reprocessing amplification loop**
-— each uevent is re-processed ~20× by udev workers (worker→manager completion
-signal not registering), which starves the queue so card0 (SEQNUM 50) never gets
-a worker → card0 never tagged master-of-seat → no graphical seat → gdm exits
-code=1. Measured rigorously (kernel emits once, udevd reads raw once, but cooked
-result re-broadcast ~20×/event). NOT mount, NOT module-load. Leading fix: the
-netlink cooked-uevent source-pid stamping (see NEXT frontier). Did not push a
-fix — needs systemd-udev IPC confirmation + a careful rx_queue change.
+THREE bugs FOUND+FIXED (committed+pushed, B318): 2 mount-ns bind-sharing + a
+NETLINK UNICAST bug (39221106) that was the primary udev amplification source.
+Before the netlink fix, systemd-udevd's manager dispatched each uevent to ONE
+worker by addressing that worker's netlink PORT (nl_pid, nl_groups=0), but our
+sendmsg IGNORED the destination nl_pid and BROADCAST it to all group-0 sockets —
+so EVERY worker ran EVERY event (~20× amplification) → udev queue never drained →
+card0 (SEQNUM 50) never processed → no master-of-seat → CAN_GRAPHICAL=0.
+With the fix, card0 IS now processed (queue drains past 50; was halting ~47) and
+CAN_GRAPHICAL reaches 1. Greeter STILL doesn't render: boot is still ~145s
+(a RESIDUAL worker→manager completion loop re-processes each event ~25×), so
+CAN_GRAPHICAL=1 lands at ~132s — AFTER gdm already started+exited code=1 at
+~105s. Fix the residual completion loop → faster boot → CanGraphical ready before
+gdm → greeter.
 
 ## Fixes landed this session (branch B318, pushed)
 - b71fb455 fix(devfs): register /dev/hugepages mount-point dir (systemd
@@ -38,7 +41,42 @@ fix — needs systemd-udev IPC confirmation + a careful rx_queue change.
   (max ~246) so it's not EXIT_NAMESPACE. Services like upower still reach
   "Started" afterward. Treat 265 as a red herring until proven otherwise.
 
-## NEXT frontier — CAN_GRAPHICAL=0 root cause = udev event RE-PROCESSING loop  [START HERE]
+## RESIDUAL to fix — worker→manager completion loop (boot too slow)  [START HERE]
+The netlink UNICAST fix (39221106) removed the BROADCAST-dispatch fan-out (was:
+manager dispatch to one worker got broadcast to ALL workers → every worker ran
+every event). card0 now processes; CAN_GRAPHICAL reaches 1. But each event is
+STILL re-processed ~25× because the manager RE-DISPATCHES — the worker→manager
+COMPLETION isn't registering. Measured:
+- Completion is NETLINK, not socketpair (udevd creates only ONE socketpair all
+  boot; per-worker comms are netlink).
+- Manager = netlink port 6, bound group-1 (kernel monitor); it dispatches to
+  workers via unicast FROM port 6 (my fix delivers these, found=1). No netlink
+  message is ever sent back TO port 6 — so workers do NOT unicast completions to
+  the manager; they BROADCAST results (nl_groups=2).
+- rebroadcast_cooked_uevent SKIPS every group-1 socket (netlink/src/lib.rs ~329
+  `if (grp & 1) != 0 continue`) — so the worker-result broadcast (dgrp=2) is
+  NEVER delivered to port 6 (measured: port 6 skipped 118×). If port 6 is the
+  manager's ONLY monitor, it never learns events completed → re-dispatch loop.
+- UNRESOLVED: does the manager have a SEPARATE group-2 result monitor that DOES
+  get the broadcasts (making the port-6 skip correct and the loop elsewhere)? A
+  group-2 socket would be DELIVERED (not logged by the skip trace) — need to
+  trace cooked DEQUEUES by port+group to see if any manager-owned socket reads
+  the results, and whether re-dispatch stops after. If NO manager socket reads
+  results, the fix is to route worker result broadcasts to the manager (e.g. the
+  worker should UNICAST results to the manager's port — check if systemd sets a
+  dest addr we're dropping in send_slice/sendmsg; or the manager's result
+  monitor needs a group we're not delivering). CAUTION: do NOT just deliver
+  cooked to the group-1 kernel monitor — libudev rejects a libudev-magic message
+  on a kernel monitor, and the skip was added deliberately (busy-loop guard).
+- Consequence of the loop: boot ~145s; CAN_GRAPHICAL=1 lands ~132s AFTER gdm
+  started+exited code=1 at ~105s → greeter never launches. Even in a
+  CAN_GRAPHICAL=1 boot, no gnome-shell (checked). Fix the loop → fast boot →
+  seat graphical before gdm → greeter.
+- Method to continue: re-add klog to netlink/Cargo.toml; trace emit/dequeue
+  (port+group+cooked)/send(dest_pid+groups)/unicast(from,to,found) in
+  netlink/src/lib.rs + syscalls/src/netlink_fd.rs (all reverted now).
+
+## (superseded) earlier framing — CAN_GRAPHICAL=0 = udev RE-PROCESSING loop
 MAJOR advance this session: the CanGraphical blocker is NOT mount and NOT module
 loading — it is a **udev event-reprocessing amplification loop**. Measured (all
 via kernel klog traces on the netlink uevent path, since reverted):
