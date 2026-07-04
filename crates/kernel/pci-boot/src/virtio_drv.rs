@@ -1179,6 +1179,137 @@ pub(super) fn register_model_drivers() {
 
 // pub(super) so the trace (virtio_trace.rs) can read the fields without
 // re-deriving them; virtio model-driver probes are the producers.
+struct VirtioProbeState {
+    bdf_word: u32,
+    mappings: TransportMappings,
+    cfg_va: u64,
+    device_cfg_va: u64,
+    msix: Option<MsixBinding>,
+}
+
+impl VirtioProbeState {
+    fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
+        Self {
+            bdf_word: bdf_word(bdf),
+            mappings,
+            cfg_va,
+            device_cfg_va,
+            msix: None,
+        }
+    }
+
+    fn bind_msix0(
+        &mut self,
+        d: &pci::PciDevice,
+        caps: &pci::heapless_caps::CapVec,
+        bars: &[pci::Bar; 6],
+        handler: Option<fn()>,
+    ) -> bool {
+        let Some(handler) = handler else {
+            return false;
+        };
+        self.msix = bind_virtio_msix0(d, caps, bars, &mut self.mappings, handler);
+        self.msix.is_some()
+    }
+
+    fn finish(self, result: VirtioProbeResult) -> VirtioProbe {
+        VirtioProbe {
+            bdf_word: self.bdf_word,
+            mappings: self.mappings,
+            msix: self.msix,
+            cfg_va: self.cfg_va,
+            device_cfg_va: self.device_cfg_va,
+            cmd_orig: result.cmd_orig,
+            cmd_new: result.cmd_new,
+            dev_features: result.dev_features,
+            drv_features: result.drv_features,
+            post_status: result.post_status,
+            features_ok: result.features_ok,
+            msix_cfg: result.msix_cfg,
+            num_queues: result.num_queues,
+            queues: result.queues,
+            queues_len: result.queues_len,
+            q0_desc_pa: result.q0_desc_pa,
+            q0_driver_pa: result.q0_driver_pa,
+            q0_device_pa: result.q0_device_pa,
+            final_status: result.final_status,
+            q0_notify_off: result.q0_notify_off,
+            q0_notify_va: result.q0_notify_va,
+            post_notify_status: result.post_notify_status,
+            avail_idx_posted: result.avail_idx_posted,
+            used_idx_observed: result.used_idx_observed,
+            isr_status: result.isr_status,
+            q1_notify_va: result.q1_notify_va,
+            q1_notify_off: result.q1_notify_off,
+            q0_size: result.q0_size,
+            q1_size: result.q1_size,
+            q1_desc_pa: result.q1_desc_pa,
+            q1_driver_pa: result.q1_driver_pa,
+            q1_device_pa: result.q1_device_pa,
+            rx0_buf_pa: result.rx0_buf_pa,
+            rx0_buf_len: result.rx0_buf_len,
+            tx0_buf_pa: result.tx0_buf_pa,
+            snd_q2_desc_pa: result.snd_q2_desc_pa,
+            snd_q2_driver_pa: result.snd_q2_driver_pa,
+            snd_q2_device_pa: result.snd_q2_device_pa,
+            snd_q2_notify_va: result.snd_q2_notify_va,
+            snd_q2_notify_off: result.snd_q2_notify_off,
+            snd_q2_size: result.snd_q2_size,
+            snd_q3_desc_pa: result.snd_q3_desc_pa,
+            snd_q3_driver_pa: result.snd_q3_driver_pa,
+            snd_q3_device_pa: result.snd_q3_device_pa,
+            snd_q3_notify_va: result.snd_q3_notify_va,
+            snd_q3_notify_off: result.snd_q3_notify_off,
+            snd_q3_size: result.snd_q3_size,
+        }
+    }
+}
+
+struct VirtioProbeResult {
+    cmd_orig: u16,
+    cmd_new: u16,
+    dev_features: u64,
+    drv_features: u64,
+    post_status: u32,
+    features_ok: bool,
+    msix_cfg: u16,
+    num_queues: u16,
+    queues: [(u16, u16); 8],
+    queues_len: usize,
+    q0_desc_pa: u64,
+    q0_driver_pa: u64,
+    q0_device_pa: u64,
+    final_status: u8,
+    q0_notify_off: u16,
+    q0_notify_va: u64,
+    post_notify_status: u8,
+    avail_idx_posted: u16,
+    used_idx_observed: u16,
+    isr_status: u8,
+    q1_notify_va: u64,
+    q1_notify_off: u16,
+    q0_size: u16,
+    q1_size: u16,
+    q1_desc_pa: u64,
+    q1_driver_pa: u64,
+    q1_device_pa: u64,
+    rx0_buf_pa: u64,
+    rx0_buf_len: u16,
+    tx0_buf_pa: u64,
+    snd_q2_desc_pa: u64,
+    snd_q2_driver_pa: u64,
+    snd_q2_device_pa: u64,
+    snd_q2_notify_va: u64,
+    snd_q2_notify_off: u16,
+    snd_q2_size: u16,
+    snd_q3_desc_pa: u64,
+    snd_q3_driver_pa: u64,
+    snd_q3_device_pa: u64,
+    snd_q3_notify_va: u64,
+    snd_q3_notify_off: u16,
+    snd_q3_size: u16,
+}
+
 pub(super) struct VirtioProbe {
     pub(super) bdf_word: u32,
     mappings: TransportMappings,
@@ -1376,15 +1507,16 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         }
         None => 0,
     };
+    let mut state = VirtioProbeState::new(bdf, mappings, cfg_va, device_cfg_va);
 
-    let negotiated = super::virtio_qsetup::negotiate_features(cfg_va, profile.drv_features);
+    let negotiated = super::virtio_qsetup::negotiate_features(state.cfg_va, profile.drv_features);
     let dev_features = negotiated.dev_features;
     let drv_features = negotiated.drv_features;
     let post_status = negotiated.post_status;
     let features_ok = negotiated.features_ok;
     let msix_cfg = negotiated.msix_cfg;
     let num_queues = negotiated.num_queues;
-    let (queues, queues_len) = super::virtio_qsetup::scan_queue_sizes(cfg_va, num_queues);
+    let (queues, queues_len) = super::virtio_qsetup::scan_queue_sizes(state.cfg_va, num_queues);
 
     // Per-arch HHDM offset, hoisted once for all queue programming. The
     // virtio core (virtio_qsetup) programs EVERY virtqueue uniformly —
@@ -1400,15 +1532,11 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     let mut snd_q3_notify_va_local: u64 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let notify_cap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
-    let msix = if features_ok {
-        profile.msix0_handler.and_then(|handler| {
-            bind_virtio_msix0(d, &caps, &bars, &mut mappings, handler)
-        })
-    } else { None };
-    let q0_msix_vec = if msix.is_some() { 0 } else { 0xFFFF };
+    let msix_bound = features_ok && state.bind_msix0(d, &caps, &bars, profile.msix0_handler);
+    let q0_msix_vec = if msix_bound { 0 } else { 0xFFFF };
     let programmed_queues = if features_ok {
         super::virtio_qsetup::program_queue_set(
-            cfg_va,
+            state.cfg_va,
             hhdm,
             q0_msix_vec,
             &profile.extra_queues,
@@ -1422,7 +1550,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
             if queue.map_notify {
                 if let Some(ring) = programmed.extra_queue(queue.index) {
                     let notify_va =
-                        map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, ring.notify_off);
+                        map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, ring.notify_off);
                     match queue.index {
                         2 => snd_q2_notify_va_local = notify_va,
                         3 => snd_q3_notify_va_local = notify_va,
@@ -1433,7 +1561,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         }
     }
     let final_status = if programmed_queues.is_some() {
-        super::virtio_qsetup::set_driver_ok(cfg_va)
+        super::virtio_qsetup::set_driver_ok(state.cfg_va)
     } else {
         post_status as u8
     };
@@ -1473,13 +1601,13 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        let kick_va = map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, q0_notify_off);
+        let kick_va = map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, q0_notify_off);
         if kick_queue_notify(kick_va, 0) {
             // Brief observation window for any device-driven RX completion
             // (QEMU user-net delivers nothing without packets, so used.idx
             // will normally stay 0).
             for _ in 0..1_000_000 { core::hint::spin_loop(); }
-            let st = super::virtio_qsetup::read_status(cfg_va);
+            let st = super::virtio_qsetup::read_status(state.cfg_va);
             (kick_va, st)
         } else {
             (0u64, final_status)
@@ -1494,7 +1622,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
         q1_notify_va_local =
-            map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
+            map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
         tx0_buf_pa_local = alloc_net_tx_boot_buffer(
             hhdm,
             q1_desc_pa,
@@ -1512,7 +1640,7 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
         q1_notify_va_local =
-            map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
+            map_queue_notify_va(&mut state.mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
     }
 
     //: locate ISR cap, map its BAR page, and read the ISR byte
@@ -1561,14 +1689,9 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         } else { 0 }
     } else { 0 };
 
-    Some(VirtioProbe {
-        bdf_word: bdf_word(bdf),
-        mappings,
-        msix,
+    Some(state.finish(VirtioProbeResult {
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
         cmd_new:  (cmd_new  & 0xFFFF) as u16,
-        cfg_va,
-        device_cfg_va,
         dev_features,
         drv_features,
         post_status,
@@ -1609,5 +1732,5 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         snd_q3_notify_va: snd_q3_notify_va_local,
         snd_q3_notify_off: snd_q3_notify_off_local,
         snd_q3_size:      snd_q3_size_local,
-    })
+    }))
 }

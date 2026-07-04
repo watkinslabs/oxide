@@ -65,6 +65,10 @@ test-pass claims.
 - Virtio-pci MSI-X state is now carried as an owned optional binding instead
   of parallel zero-sentinel fields, and teardown masks the MSI-X table entry
   and disables MSI-X before dropping PCI memory decoding.
+- Virtio-pci probe ownership has started moving behind an explicit
+  `VirtioProbeState`: transport mappings, common/device config windows, and
+  MSI-X binding are now consumed through probe-state finalization instead of
+  being copied into `VirtioProbe` from loose locals.
 - The shared virtio resource handoff exists through `VirtioResources` and
   `VirtQueueResource`, with queue lookup validation centralized through
   `require_queue`. Child probes now build those resources through one
@@ -235,9 +239,11 @@ test-pass claims.
   and virtio-net config parsing have moved into their child drivers. The
   common-cfg status/reset/feature/queue-size register protocol, planned queue
   programming, notify VA/kick mechanics, and net RX/TX boot-buffer mechanics
-  have moved into shared helpers, but feature policy, notify lifetime policy,
-  complete MSI-X setup policy, and full failure-unwind proof still need to
-  move behind a `VirtioPciTransport`/`VirtioProbeState` boundary.
+  have moved into shared helpers. A first `VirtioProbeState` owns mappings,
+  config windows, and MSI-X through finalization, but feature policy, notify
+  lifetime policy, complete MSI-X setup policy, and full failure-unwind proof
+  still need to move behind a fuller `VirtioPciTransport`/`VirtioProbeState`
+  boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
