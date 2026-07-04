@@ -24,7 +24,7 @@ pub use pci::{
 
 pub mod resources;
 pub use resources::{
-    VirtioChildDriverId, VirtioChildModelIdentity, VirtioChildProbeFacts,
+    VirtioChildDeviceKey, VirtioChildDriverId, VirtioChildModelIdentity, VirtioChildProbeFacts,
     VirtioChildRequirements, VirtioChildResourceState, VirtioChildTransportSession,
     VirtioNetBootPayloads, VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources,
     VirtioRuntimeHandoff, VirtioRuntimeHandoffInput, VirtioTransportLocation,
