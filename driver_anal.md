@@ -114,6 +114,12 @@ test-pass claims.
   `udevadm trigger` can re-emit root-disk, evdev, sound, graphics, misc, and
   mem device events from the current model-owned `/sys/devices/virtual/...`
   state.
+  `try_device_add` now follows the Linux `device_add` coldplug order more
+  closely: the device is visible in the model, devtmpfs publication runs, an
+  already-registered matching driver gets its initial probe before the parent
+  add uevent, and that initial auto-probe does not emit a separate bind-change
+  event. The add uevent is therefore generated from the current bound state and
+  can carry `DRIVER=<name>` for udev without racing a later change event.
   Model-backed character-class tests now also prove remove/readd of the same
   device identity and `dev_t`: class symlinks, parent `device` links, and
   `/sys/dev/char` reverse indexes disappear on `device_del` and reappear from

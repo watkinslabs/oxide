@@ -214,9 +214,12 @@ pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 ///   2. push to the registry so sysfs can resolve the object;
 ///   3. if the device declares a `/dev` node (`devname.is_some()`), fire
 ///      `DEVTMPFS_HOOK` so devtmpfs mints `/dev/<devname>`;
-///   4. fire `SYSFS_HOOK`, which emits the Linux `add` uevent only after the
-///      devtmpfs node is visible;
-///   5. attach any already-registered matching driver after publication.
+///   4. attach any already-registered matching driver while the device is in
+///      the registry but before the add uevent, matching Linux `device_add`
+///      probing before `KOBJ_ADD`;
+///   5. fire `SYSFS_HOOK`, which emits the Linux `add` uevent only after the
+///      devtmpfs node is visible and initial driver probe had a chance to
+///      publish child devices.
 ///
 /// Deliberate oxide design (do NOT "fix" into Linux kset/kobject trees): `/sys`
 /// directories are SYNTHESISED on demand from this registry by the sysfs crate
@@ -231,8 +234,8 @@ pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
     if let Some(name) = d.devname.clone() {
         if let Some(h) = *DEVTMPFS_HOOK.lock() { h(d.dev_class, &name, d.dev_t, d.node_factory.clone()); }
     }
+    attach_device_to_registered_drivers(&d, false);
     if let Some(h) = *SYSFS_HOOK.lock() { h(&d); }
-    attach_device_to_registered_drivers(&d);
     Ok(d)
 }
 
@@ -358,17 +361,17 @@ fn attach_driver_to_existing_devices(driver: &'static dyn Driver) {
         if dev.bound().is_some() || !driver_matches_device(driver, &dev) {
             continue;
         }
-        let _ = bind(&dev, driver.name());
+        let _ = bind_inner(&dev, driver.name(), true);
     }
 }
 
-fn attach_device_to_registered_drivers(dev: &Arc<Device>) {
+fn attach_device_to_registered_drivers(dev: &Arc<Device>, emit_bind_event: bool) {
     let drivers: Vec<&'static dyn Driver> = MODEL_DRIVERS.lock().clone();
     for driver in drivers {
         if dev.bound().is_some() || !driver_matches_device(driver, dev) {
             continue;
         }
-        let _ = bind(dev, driver.name());
+        let _ = bind_inner(dev, driver.name(), emit_bind_event);
     }
 }
 
@@ -377,12 +380,18 @@ fn attach_device_to_registered_drivers(dev: &Arc<Device>) {
 /// `dev.driver` and fire the bind-publish hook. Probe failure leaves the
 /// device unbound. # C: O(N_drivers + probe)
 pub fn bind(dev: &Arc<Device>, driver_name: &'static str) -> KResult<()> {
+    bind_inner(dev, driver_name, true)
+}
+
+fn bind_inner(dev: &Arc<Device>, driver_name: &'static str, emit_bind_event: bool) -> KResult<()> {
     if dev.bound().is_some() { return Err(crate::Error::AlreadyBound); }
     let driver = find_driver_on_bus(dev.bus, driver_name).ok_or(crate::Error::NotFound)?;
     if !driver_matches_device(driver, dev) { return Err(crate::Error::NoMatch); }
     driver.probe(dev)?;
     *dev.driver.lock() = Some(driver_name);
-    if let Some(h) = *BIND_HOOK.lock() { h(dev.bus, &dev.addr, driver_name, BindEvent::Bound); }
+    if emit_bind_event {
+        if let Some(h) = *BIND_HOOK.lock() { h(dev.bus, &dev.addr, driver_name, BindEvent::Bound); }
+    }
     Ok(())
 }
 
@@ -571,6 +580,25 @@ mod tests {
         }
     }
     static UNREGISTER_DRV: UnregisterDrv = UnregisterDrv;
+
+    static ADD_ORDER: TestLock<Vec<&'static str>, DriverListClass> = TestLock::new(Vec::new());
+    static ADD_PROBES: AtomicU32 = AtomicU32::new(0);
+    static ADD_SYSFS_SAW_BOUND: AtomicU32 = AtomicU32::new(0);
+    static ADD_BIND_EVENTS: AtomicU32 = AtomicU32::new(0);
+    struct AddOrderDrv;
+    impl Driver for AddOrderDrv {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "device-add-order-test" }
+        fn matches(&self, dev: &Device) -> bool {
+            dev.bus == "platform" && dev.device_id == 0x6300
+        }
+        fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+            ADD_PROBES.fetch_add(1, Ordering::Release);
+            ADD_ORDER.lock().push("probe");
+            Ok(())
+        }
+    }
+    static ADD_ORDER_DRV: AddOrderDrv = AddOrderDrv;
 
     static DEVICE_DEL_ORDER: TestLock<Vec<&'static str>, DriverListClass> = TestLock::new(Vec::new());
     static DEVICE_DEL_ORDER_ACTIVE: AtomicU32 = AtomicU32::new(0);
@@ -881,7 +909,9 @@ mod tests {
         assert_eq!(d.bound(), Some("remove-test"));
         assert_eq!(unbind(&d), Ok(()));
         assert_eq!(d.bound(), None);
-        assert_eq!(&*EVENTS.lock(), &[BindEvent::Bound, BindEvent::Unbound]);
+        assert_eq!(&*EVENTS.lock(), &[BindEvent::Unbound]);
+        assert_eq!(bind(&d, "remove-test"), Ok(()));
+        assert_eq!(&*EVENTS.lock(), &[BindEvent::Unbound, BindEvent::Bound]);
     }
 
     #[test]
@@ -954,6 +984,48 @@ mod tests {
         assert!(devices().iter().any(|x| x.addr == "virtio9"));
         assert_eq!(dev.dev_class, "block");
         assert_eq!(SYSFS_AFTER_DEV.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn device_add_initial_probe_precedes_add_uevent_without_bind_change() {
+        fn devtmpfs_cb(_class: &str, name: &str, _dev_t: Option<(u32, u32)>, _f: Option<NodeFactory>) {
+            if name == "device-add-order-node" {
+                ADD_ORDER.lock().push("devtmpfs");
+            }
+        }
+        fn sysfs_cb(d: &Device) {
+            if d.addr == "device-add-order0" {
+                if d.bound() == Some("device-add-order-test") {
+                    ADD_SYSFS_SAW_BOUND.store(1, Ordering::Release);
+                }
+                ADD_ORDER.lock().push("sysfs-add");
+            }
+        }
+        fn bind_cb(_bus: &str, addr: &str, _driver: &'static str, event: BindEvent) {
+            if addr == "device-add-order0" && event == BindEvent::Bound {
+                ADD_BIND_EVENTS.fetch_add(1, Ordering::Release);
+            }
+        }
+
+        ADD_ORDER.lock().clear();
+        ADD_PROBES.store(0, Ordering::Release);
+        ADD_SYSFS_SAW_BOUND.store(0, Ordering::Release);
+        ADD_BIND_EVENTS.store(0, Ordering::Release);
+        set_devtmpfs_hook(devtmpfs_cb);
+        set_sysfs_hook(sysfs_cb);
+        set_bind_hook(bind_cb);
+        register_driver(&ADD_ORDER_DRV);
+
+        let dev = device_add(Arc::new(
+            Device::new("platform", String::from("device-add-order0"), 0, 0x6300, 0)
+                .with_devnode("misc", String::from("device-add-order-node"), Some((10, 252)))));
+
+        assert_eq!(dev.bound(), Some("device-add-order-test"));
+        assert_eq!(ADD_PROBES.load(Ordering::Acquire), 1);
+        assert_eq!(ADD_SYSFS_SAW_BOUND.load(Ordering::Acquire), 1);
+        assert_eq!(ADD_BIND_EVENTS.load(Ordering::Acquire), 0);
+        assert_eq!(&*ADD_ORDER.lock(), &["devtmpfs", "probe", "sysfs-add"]);
+        device_del(&dev);
     }
 
     #[test]
