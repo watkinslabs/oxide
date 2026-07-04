@@ -99,6 +99,9 @@ test-pass claims.
   DRIVER_OK publication into one transport bring-up result. The probe body
   records the result and handles child-specific resource publication rather
   than sequencing the common transport protocol directly.
+- Child probe readiness checks for DRIVER_OK, q0, required q1, device config,
+  and net boot payloads now go through `VirtioProbe::ready_for_child` instead
+  of per-driver open-coded guards.
 - Virtio common-cfg now has an explicit FAILED status helper, and virtio-pci
   transport bring-up marks the device FAILED when FEATURES_OK is rejected or
   mandatory q0 programming fails instead of leaving the device in a partial
@@ -305,6 +308,9 @@ test-pass claims.
   config windows, MSI-X, and notify lifetime through finalization/state
   methods, including planned q2/q3 notify mapping and explicit q1 mapping.
   Common transport bring-up ordering also now goes through `VirtioProbeState`.
+  Child readiness validation is centralized in `VirtioProbe`, but the
+  requirement profile is still passed as booleans and should become typed
+  transport/child requirements.
   Transport-level feature/q0 failure now sets FAILED. One late virtio-net
   child-unwind leak has been fixed, active virtio child feature policy has
   moved to child drivers, and failed-probe transport release is now owned by
@@ -316,8 +322,8 @@ test-pass claims.
   programs, owns, and drains its required EVENTQ(1) resource. Dead pci-boot
   child install pass-throughs are gone for block, vsock, and sound.
   Higher-level sound event interpretation/publication, remaining child-probe
-  failure unwind audit, and fault-injection proof still need to move behind a fuller
-  `VirtioPciTransport` boundary.
+  failure unwind audit, and fault-injection proof still need to move behind a
+  fuller `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
   keyed transport, RX runtime, name/stat, IPv4 ARP cache state, and
