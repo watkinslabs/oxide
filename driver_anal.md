@@ -769,8 +769,11 @@ test-pass claims.
 - Prove repeated bind/unbind/remove/readd loops under QEMU for PCI, virtio,
   block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2 paths.
 - Finish Linux-visible sysfs/devtmpfs/class contracts, including the remaining
-  class parent relationships, `/sys/dev/{char,block}`, and stable
-  add/remove/change uevent behavior across rebind.
+  class parent relationships and stable add/remove/change uevent behavior
+  across rebind. `/sys/dev/{char,block}` and the core
+  `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape exist, and
+  driver-directory device symlinks resolve back to the canonical
+  `/sys/devices/...` object.
 - Generalize PCI lifecycle ownership: command enable/disable is now covered for
   the main AHCI/NVMe/virtio paths, and virtio MSI-X teardown now releases the
   transport-owned binding before PCI memory decode is dropped. BAR mapping
@@ -1119,12 +1122,8 @@ Sysfs currently synthesizes some bus views from the registry. That is fine as an
 
 Missing or weak:
 
-- `/sys/bus/<bus>/drivers/<driver>/bind`
-- `/sys/bus/<bus>/drivers/<driver>/unbind`
-- driver directory device symlinks
-- device `driver` symlink correctness
-- device `subsystem` symlink
-- `modalias`
+- broader manual bind/unbind proof on real virtio devices
+- broader device `driver` symlink correctness proof across hot rebind
 - PCI resources
 - remove/change event behavior
 - per-class child relationships
@@ -1336,7 +1335,7 @@ Implement:
 
 - `/sys/bus/<bus>/drivers/<driver>/bind`
 - `/sys/bus/<bus>/drivers/<driver>/unbind`
-- driver directory device symlinks
+- driver directory device symlinks to canonical `/sys/devices/...`
 - device `driver` symlink
 - device `subsystem` symlink
 - `driver_override`

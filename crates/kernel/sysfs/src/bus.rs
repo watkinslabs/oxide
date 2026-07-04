@@ -540,7 +540,9 @@ impl InodeOps for DriverDirOps {
             d.bus == data.bus && d.addr == name && d.bound() == Some(data.driver)
         });
         if !is_bound { return Err(VfsError::Enoent); }
-        let t = alloc::format!("../../../{}/{}", dev_root_canon(data.bus), name);
+        // from /sys/bus/<bus>/drivers/<driver>/<addr>
+        // to /sys/devices/<root>/<addr>
+        let t = alloc::format!("../../../../{}/{}", dev_root_canon(data.bus), name);
         Ok(make_link_inode(t.into_bytes()))
     }
 }
@@ -751,7 +753,10 @@ mod tests {
         assert_eq!(dev.bound(), Some("sysfs-bind-test"));
         assert_eq!(BIND_PROBES.load(Ordering::Acquire), 1);
         assert_eq!(bind.write(0, b"sysfs-bind-dev0\n").err(), Some(VfsError::Ebusy));
-        assert!(dir.lookup("sysfs-bind-dev0").is_ok(), "driver dir exposes bound device symlink");
+        let bound_link = dir.lookup("sysfs-bind-dev0").expect("driver dir bound device symlink");
+        assert_eq!(
+            bound_link.readlink().expect("readlink"),
+            b"../../../../devices/platform/sysfs-bind-dev0".to_vec());
 
         let unbind = dir.lookup("unbind").expect("unbind attr");
         assert_eq!(unbind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
@@ -762,7 +767,10 @@ mod tests {
         assert_eq!(bind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
         assert_eq!(dev.bound(), Some("sysfs-bind-test"));
         assert_eq!(BIND_PROBES.load(Ordering::Acquire), 2);
-        assert!(dir.lookup("sysfs-bind-dev0").is_ok(), "driver dir exposes rebound device symlink");
+        let rebound_link = dir.lookup("sysfs-bind-dev0").expect("driver dir rebound device symlink");
+        assert_eq!(
+            rebound_link.readlink().expect("readlink"),
+            b"../../../../devices/platform/sysfs-bind-dev0".to_vec());
     }
 
     #[test]
