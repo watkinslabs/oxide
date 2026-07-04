@@ -17,7 +17,7 @@ pub use hdr::*;
 pub use conn::*;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use crate::netdev::NetError;
 
 /// Process-global connection table. # C: O(1)
@@ -28,6 +28,7 @@ static GUEST_CID: AtomicU64 = AtomicU64::new(0);
 /// True once a virtio-vsock driver has reserved the singleton protocol
 /// endpoint. The endpoint is usable only after TX_HOOK is published.
 static DRIVER_UP: AtomicBool = AtomicBool::new(false);
+static DRIVER_OWNER: AtomicU32 = AtomicU32::new(0);
 
 /// TX hook: hand a fully-encoded header + payload to the driver, which
 /// builds a TX descriptor, kicks q1, and polls the used ring. Returns
@@ -39,48 +40,76 @@ static TX_HOOK: AtomicU64 = AtomicU64::new(0);
 /// pre-posts DMA state. Rejects a second active transport so a later probe
 /// cannot overwrite the live protocol endpoint behind existing sockets.
 /// # C: O(1)
-pub fn driver_reserve() -> bool {
-    DRIVER_UP
+pub fn driver_reserve(owner: u32) -> bool {
+    if owner == 0 {
+        return false;
+    }
+    if DRIVER_UP
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
+        .is_err()
+    {
+        return false;
+    }
+    DRIVER_OWNER.store(owner, Ordering::Release);
+    true
 }
 
 /// Publish guest CID + install the TX hook after the transport context exists.
 /// # C: O(1)
-pub fn driver_publish_reserved(guest_cid: u64, tx: TxFn) {
+pub fn driver_publish_reserved(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
+    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
+        return false;
+    }
     GUEST_CID.store(guest_cid, Ordering::Release);
     TX_HOOK.store(tx as usize as u64, Ordering::Release);
+    true
 }
 
 /// Cancel a reservation that failed before the endpoint became live.
 /// # C: O(1)
-pub fn driver_cancel_reserved() {
+pub fn driver_cancel_reserved(owner: u32) -> bool {
+    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
+        return false;
+    }
     TX_HOOK.store(0, Ordering::Release);
     GUEST_CID.store(0, Ordering::Release);
+    DRIVER_OWNER.store(0, Ordering::Release);
     DRIVER_UP.store(false, Ordering::Release);
+    true
 }
 
 /// Driver bring-up entry: reserve and publish in one step.
 /// # C: O(1)
-pub fn driver_install(guest_cid: u64, tx: TxFn) -> bool {
-    if !driver_reserve() {
+pub fn driver_install(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
+    if !driver_reserve(owner) {
         return false;
     }
-    driver_publish_reserved(guest_cid, tx);
+    if !driver_publish_reserved(owner, guest_cid, tx) {
+        let _ = driver_cancel_reserved(owner);
+        return false;
+    }
     true
 }
 
 /// Driver remove entry: stop new TX, reset CID, and close live connections.
 /// # C: O(N conns)
-pub fn driver_uninstall() {
+pub fn driver_uninstall(owner: u32) -> bool {
+    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
+        return false;
+    }
     DRIVER_UP.store(false, Ordering::Release);
     TX_HOOK.store(0, Ordering::Release);
     GUEST_CID.store(0, Ordering::Release);
+    DRIVER_OWNER.store(0, Ordering::Release);
     TABLE.close_all();
+    true
 }
 
 /// Our guest CID (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 { GUEST_CID.load(Ordering::Acquire) }
+
+/// Owning driver instance for the installed endpoint, or 0 if none. # C: O(1)
+pub fn driver_owner() -> u32 { DRIVER_OWNER.load(Ordering::Acquire) }
 
 /// True iff a virtio-vsock device is installed and usable. # C: O(1)
 pub fn driver_up() -> bool { TX_HOOK.load(Ordering::Acquire) != 0 }

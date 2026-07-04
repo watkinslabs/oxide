@@ -307,9 +307,10 @@ test-pass claims.
   `VsockRx` bottom half only for the installed transport. The upper
   `net::vsock` layer is still a single global guest-CID/TX-hook protocol
   endpoint, so simultaneous multi-transport vsock is not complete, but it now
-  reserves that endpoint before transport frame allocation and rejects a second
-  active hook from the child install path instead of overwriting the live
-  endpoint or relying on a transport-side precheck.
+  reserves that endpoint before transport frame allocation, records the owning
+  device key in the protocol endpoint, rejects publish/cancel/uninstall from
+  non-owners, and stores transport state as keyed records instead of an
+  implicit single slot.
 - Virtio-rng now keeps per-BDF records, seeds from the just-bound device,
   removes by owning parent BDF, owns `/dev/hwrng` publication/removal inside
   the RNG child driver, and promotes `/dev/hwrng` publication to a remaining
@@ -382,8 +383,9 @@ test-pass claims.
   keyed to the owning BDF, while fbcon remains a single foreground console
   bound to an explicit owner. Virtio-vsock's upper protocol layer and virtio-snd's upper
   sound-card layer also still retain singleton limits; vsock now reserves its
-  singleton protocol endpoint before allocation and fails a second transport
-  cleanly instead of replacing the installed transport.
+  singleton protocol endpoint before allocation, keys that endpoint to the
+  owning device, and fails a second transport cleanly instead of replacing or
+  tearing down the installed transport.
 - UART and PS/2 platform drivers now have model probes/removes, but they are
   still intentionally singleton hardware paths, not general multi-device
   serial/input infrastructure.
@@ -625,7 +627,8 @@ Several drivers still use singleton global state:
   now iterates the registered virtio-net iface snapshot instead of using only
   the first iface, but live multi-NIC proof is still missing
 - virtio-rng: keyed records with one promoted active `/dev/hwrng` provider
-- virtio-vsock: keyed transport records, but a singleton upper protocol endpoint
+- virtio-vsock: keyed transport records and owner-keyed endpoint teardown, but
+  a singleton upper protocol endpoint
 - virtio-snd: keyed transport records with EVENTQ drained per transport, but a
   singleton upper sound card/PCM/control ABI
 - UART drivers: global `PRESENT` and base state
