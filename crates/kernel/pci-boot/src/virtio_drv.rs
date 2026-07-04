@@ -56,6 +56,7 @@ enum Q1NotifyPolicy {
     None,
     NetBootTx,
     PersistentTx,
+    PersistentEvent,
 }
 
 #[derive(Clone, Copy)]
@@ -133,11 +134,11 @@ impl VirtioProbeProfile {
             drv_features: drv_virtio_snd::wanted_features(),
             msix0_handler,
             extra_queues: [
+                Some(QueuePlan::new(1, None, false)),
                 Some(QueuePlan::new(2, None, true)),
                 Some(QueuePlan::new(3, None, true)),
-                None,
             ],
-            q1_notify_policy: Q1NotifyPolicy::None,
+            q1_notify_policy: Q1NotifyPolicy::PersistentEvent,
             needs_net_boot_buffers: false,
         }
     }
@@ -666,6 +667,11 @@ impl drv::Driver for VirtioSndDrv {
             || p.q0_device_pa == 0
             || p.q0_notify_va == 0
             || p.q0_size == 0
+            || p.q1_desc_pa == 0
+            || p.q1_driver_pa == 0
+            || p.q1_device_pa == 0
+            || p.q1_notify_va == 0
+            || p.q1_size == 0
             || p.device_cfg_va == 0
         {
             p.release_failed_transport(&[]);
@@ -673,6 +679,7 @@ impl drv::Driver for VirtioSndDrv {
         }
         let resources = p.resources(&[
             p.q0_resource(),
+            p.q1_resource(),
             p.snd_q2_resource(),
             p.snd_q3_resource(),
         ]);
@@ -1364,7 +1371,9 @@ impl VirtioProbeState {
         }
         match policy {
             Q1NotifyPolicy::None => 0,
-            Q1NotifyPolicy::NetBootTx | Q1NotifyPolicy::PersistentTx => {
+            Q1NotifyPolicy::NetBootTx
+            | Q1NotifyPolicy::PersistentTx
+            | Q1NotifyPolicy::PersistentEvent => {
                 let Some(ring) = q1_ring else { return 0 };
                 self.map_notify(notify_cap, bars, ring.notify_off)
             }
@@ -1705,9 +1714,9 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     let mut state = VirtioProbeState::new(bdf, mappings, cfg_va, device_cfg_va);
 
     // Per-arch HHDM offset, hoisted once for all queue programming. The
-    // virtio core (virtio_qsetup) programs EVERY virtqueue uniformly —
-    // q0 (all devices) + q1 (net/vsock TX) here, q2/q3 for multi-queue
-    // devices (virtio-snd) via the same `program_queue`.
+    // virtio core (virtio_qsetup) programs EVERY virtqueue uniformly:
+    // q0 for all devices, q1 for net/vsock TX or snd EVENTQ, and q2/q3 for
+    // multi-queue devices such as virtio-snd.
     let hhdm = {
         #[cfg(target_arch = "x86_64")]
         { hal_x86_64::mmu_ops::hhdm_offset() }

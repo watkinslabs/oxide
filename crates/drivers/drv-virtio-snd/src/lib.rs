@@ -7,8 +7,8 @@
 // The boot probe in `pci_boot::virtio_drv` performs the generic virtio
 // bring-up (reset → ACK/DRIVER → feature negotiate → FEATURES_OK → q0
 // desc/driver/device PA program + DRIVER_OK), then hands persistent queue
-// resources here via `install`. This driver reads virtio_snd_config itself.
-// TXQ/RXQ playback rings land with PR-C.
+// resources here via `install`. This driver reads virtio_snd_config itself
+// and owns CONTROLQ/EVENTQ/TXQ/RXQ resource state.
 //
 // Arch-neutral: every op is MMIO (notify_cap window) + HHDM (ring +
 // control scratch frame), mirroring drv-virtio-rng / drv-virtio-blk.
@@ -95,6 +95,13 @@ struct Ctx {
     scratch_pa:   u64,
     /// Driver-side avail.idx shadow (next ring slot to publish).
     avail_idx:    u16,
+    /// EVENTQ(1) ring the transport programmed. Event draining lands in a
+    /// later sound-event worker, but the queue resource is part of the
+    /// installed virtio-snd device state rather than being ignored by the
+    /// transport.
+    eventq: Option<virtio::VirtQueueResource>,
+    /// EVENTQ driver-side avail.idx shadow.
+    event_avail_idx: u16,
     /// virtio_snd_config (docs/58§4): jacks/streams/chmaps/controls.
     jacks:    u32,
     streams:  u32,
@@ -177,8 +184,8 @@ static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
     pcm_recv,
 };
 
-/// Transport → driver handoff: the CONTROLQ ring and optional PCM rings the
-/// transport programmed.
+/// Transport → driver handoff: the CONTROLQ/EVENTQ rings and optional PCM
+/// rings the transport programmed.
 pub struct SndInstall {
     pub device_key: u32,
     pub resources: virtio::VirtioResources,
@@ -240,14 +247,25 @@ pub fn config() -> Option<(u32, u32, u32, u32)> {
     CTX.lock().as_ref().map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
 }
 
-/// Install the CONTROLQ engine for one virtio-snd device. Called once after
-/// DRIVER_OK + queue setup. Reads the device config, allocates the control
-/// scratch frame, then queries the PCM stream table and returns the
-/// OUTPUT/INPUT stream split. Returns None if a ring PA / notify VA / config /
-/// HHDM is missing or no scratch frame is available.
+/// Snapshot of the installed EVENTQ resource: `(queue_size, next_avail_idx)`.
+/// This is the state the later event-drain worker will consume.
+/// # C: O(1)
+pub fn eventq_state() -> Option<(u16, u16)> {
+    CTX.lock()
+        .as_ref()
+        .and_then(|ctx| ctx.eventq.map(|eventq| (eventq.size, ctx.event_avail_idx)))
+}
+
+/// Install the virtio-snd queue state for one device. Called once after
+/// DRIVER_OK + queue setup. Reads the device config, requires CONTROLQ and
+/// EVENTQ, allocates the control scratch frame, then queries the PCM stream
+/// table and returns the OUTPUT/INPUT stream split. Returns None if a required
+/// ring PA / notify VA / config / HHDM is missing or no scratch frame is
+/// available.
 /// # C: O(streams) — one CONTROLQ round-trip
 pub fn install(p: SndInstall) -> Option<SndProbe> {
     let controlq = p.resources.require_queue(0)?;
+    let eventq = p.resources.require_queue(1)?;
     if !p.resources.common_cfg_valid() {
         return None;
     }
@@ -297,6 +315,10 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     // SAFETY: HHDM-mapped queue-0 used ring programmed by the boot probe;
     // aligned u16 load of used.idx at u16 offset 1 in the device-owned frame.
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
+    let event_used = p.resources.hhdm.wrapping_add(eventq.device_pa) as *const u16;
+    // SAFETY: HHDM-mapped EVENTQ used ring programmed by the boot probe;
+    // aligned u16 load of used.idx at u16 offset 1.
+    let event_used_seen = unsafe { core::ptr::read_volatile(event_used.add(1)) };
     // TXQ avail.idx seeds from its own used.idx likewise (0 if unprogrammed).
     let tx_used_seen = if let Some(txq) = txq {
         let txu = p.resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
@@ -327,6 +349,8 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cfg_va: p.resources.cfg_va,
         scratch_pa,
         avail_idx: used_seen,
+        eventq: Some(eventq),
+        event_avail_idx: event_used_seen,
         jacks: device_cfg.jacks,
         streams: device_cfg.streams,
         chmaps: device_cfg.chmaps,
