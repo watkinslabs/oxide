@@ -11,7 +11,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as SoundLockClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError, InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
@@ -36,7 +36,8 @@ const MINOR_AUDIO:   u64 = 0x21; // /dev/audio
 const MINOR_MIXER:   u64 = 0x22; // /dev/mixer
 
 static CARD_NODES: Spinlock<Vec<Arc<drv::Device>>, SoundLockClass> = Spinlock::new(Vec::new());
-static CARD_REGISTERED: AtomicBool = AtomicBool::new(false);
+const NO_CARD_OWNER: u32 = u32::MAX;
+static CARD_OWNER: AtomicU32 = AtomicU32::new(NO_CARD_OWNER);
 
 /// Backend-private state (`i_private`) for a sound node: the device minor that
 /// keys the shared read/write/ioctl dispatch (`controlC0`/`pcmC0D0p`/…). The
@@ -187,15 +188,13 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 /// Register the ALSA (primary) + OSS (emulation) nodes for a probed card.
 /// Called from the sound card driver's probe after it has installed ops.
 /// # C: O(depth)
-pub fn register_card() -> bool {
+pub fn register_card(owner: u32) -> bool {
     if ops::ops().is_none() {
         return false;
     }
-    if CARD_REGISTERED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return true;
+    match CARD_OWNER.compare_exchange(NO_CARD_OWNER, owner, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {}
+        Err(current) => return current == owner,
     }
     devfs::register_dir("/dev/snd");
     let mut published = Vec::new();
@@ -206,22 +205,35 @@ pub fn register_card() -> bool {
     true
 }
 
+/// Device key that owns the published global sound card.
+/// # C: O(1)
+pub fn owner() -> Option<u32> {
+    match CARD_OWNER.load(Ordering::Acquire) {
+        NO_CARD_OWNER => None,
+        owner => Some(owner),
+    }
+}
+
 /// Remove ALSA/OSS nodes for the card being removed.
 /// # C: O(nodes * depth)
-pub fn unregister_card() {
-    if !CARD_REGISTERED.swap(false, Ordering::AcqRel) {
-        return;
+pub fn unregister_card(owner: u32) -> bool {
+    if CARD_OWNER
+        .compare_exchange(owner, NO_CARD_OWNER, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
     }
     let nodes = {
         let mut registered = CARD_NODES.lock();
-        if registered.is_empty() {
-            return;
-        }
         core::mem::take(&mut *registered)
     };
+    if nodes.is_empty() {
+        return true;
+    }
     for node in nodes.iter().rev() {
         drv::device_del(node);
     }
+    true
 }
 
 #[cfg(test)]
@@ -275,12 +287,14 @@ mod tests {
         drv::set_devtmpfs_del_hook(del_hook);
         ADDED.lock().clear();
         REMOVED.lock().clear();
-        unregister_card();
+        let _ = unregister_card(0x10);
         ops::clear();
 
         ops::register(&TEST_OPS);
-        assert!(register_card());
-        assert!(register_card(), "second register is idempotent");
+        assert!(register_card(0x10));
+        assert_eq!(owner(), Some(0x10));
+        assert!(register_card(0x10), "same-owner register is idempotent");
+        assert!(!register_card(0x20), "different owner cannot take a live card");
 
         let added = ADDED.lock().clone();
         assert_eq!(added.len(), SOUND_NODES.len());
@@ -292,7 +306,11 @@ mod tests {
         assert!(added.iter().any(|n| n == &(String::from("audio"), Some((14, 4)), true)));
         assert!(added.iter().any(|n| n == &(String::from("mixer"), Some((14, 0)), true)));
 
-        unregister_card();
+        assert!(!unregister_card(0x20), "different owner cannot remove a live card");
+        assert_eq!(REMOVED.lock().len(), 0);
+        assert_eq!(owner(), Some(0x10));
+
+        assert!(unregister_card(0x10));
         let removed = REMOVED.lock().clone();
         assert_eq!(removed.len(), SOUND_NODES.len());
         assert!(removed.iter().any(|n| n == "snd/controlC0"));
@@ -303,8 +321,9 @@ mod tests {
         assert!(removed.iter().any(|n| n == "audio"));
         assert!(removed.iter().any(|n| n == "mixer"));
 
-        unregister_card();
+        assert!(!unregister_card(0x10));
         assert_eq!(REMOVED.lock().len(), SOUND_NODES.len(), "second unregister is idempotent");
+        assert_eq!(owner(), None);
         ops::clear();
     }
 }
