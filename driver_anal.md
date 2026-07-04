@@ -35,9 +35,9 @@ Estimated branch-local status:
 - Concrete driver probe/remove/shutdown cleanup: about 85% complete.
 - Device publication through model-owned sysfs/devtmpfs/class state: about 70%
   complete.
-- GNOME-usable single-device desktop driver path: about 60% complete.
+- GNOME-usable single-device desktop driver path: about 61% complete.
 - Full Linux-grade driver architecture, including proper bus factoring,
-  hotplug, fault injection, and multi-device coverage: about 66% complete, but
+  hotplug, fault injection, and multi-device coverage: about 67% complete, but
   multi-device coverage is not the immediate priority.
 
 The percentages are engineering estimates for this branch only. They are not
@@ -512,8 +512,11 @@ test-pass claims.
   `EOPNOTSUPP` for atomic/writeback/aspect/stereo/cursor-hotspot caps that do
   not have a real property/object implementation. DRM GET_CAP also stops
   advertising PRIME, syncobj, async page flip, page-flip-target, and ADDFB2
-  modifiers until those UAPI paths are implemented; modifier-bearing ADDFB2
-  requests are rejected instead of ignored. fbdev flush/blank
+  modifiers until those UAPI paths are implemented, no longer advertises cursor
+  dimensions while cursor ioctls are unsupported, and DRM card/render file
+  operations reject raw writes instead of acknowledging bytes that have no DRM
+  UAPI meaning. Modifier-bearing ADDFB2 requests are rejected instead of ignored.
+  fbdev flush/blank
   operations are now stored on each `/dev/fbN` record and call back into the
   owning virtio-gpu BDF instead of a global display hook; virtio-gpu scanout
   context now records the exact published fbdev index and unpublishes by that
@@ -862,7 +865,12 @@ test-pass claims.
   report unsupported until real status timestamp plumbing exists. OSS format,
   rate, channel defaults, `GETFMTS`, and SETFMT/SPEED/CHANNELS negotiation now
   come from the same real playback/capture caps as ALSA rather than hard-coded
-  S16/all-format/stereo assumptions.
+  S16/all-format/stereo assumptions. OSS `SUBDIVIDE` and `SETFRAGMENT` now
+  maintain Linux-style fragment geometry state, drive `GETBLKSIZE`,
+  `GETOSPACE`/`GETISPACE`, and feed the derived period/buffer bytes into the
+  backend instead of returning success while ignoring the request. ALSA PCM
+  commit paths also reject impossible ALSA-to-virtio format conversion instead
+  of falling back to a hard-coded S16 enum.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
