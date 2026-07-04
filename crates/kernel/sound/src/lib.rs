@@ -167,32 +167,66 @@ fn sound_addr(dev_name: &str) -> String {
     }
 }
 
-fn add_sound_node(owner: u32, card: u32, class: &'static str, dev_name: String, dev_t: (u32, u32), minor: u64) -> Arc<drv::Device> {
+fn add_sound_node(owner: u32, card: u32, class: &'static str, dev_name: String, dev_t: (u32, u32), minor: u64) -> Option<Arc<drv::Device>> {
     let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(owner, card, minor));
     let addr = sound_addr(&dev_name);
-    drv::device_add(Arc::new(
+    drv::try_device_add(Arc::new(
         drv::Device::new(class, addr, 0, 0, minor as u32)
             .with_devnode(class, dev_name, Some(dev_t))
             .with_node_factory(factory),
-    ))
+    )).ok()
 }
 
-fn publish_card_nodes(owner: u32, card: u32) -> Vec<Arc<drv::Device>> {
+fn push_sound_node(
+    published: &mut Vec<Arc<drv::Device>>,
+    owner: u32,
+    card: u32,
+    class: &'static str,
+    dev_name: String,
+    dev_t: (u32, u32),
+    minor: u64,
+) -> bool {
+    match add_sound_node(owner, card, class, dev_name, dev_t, minor) {
+        Some(dev) => {
+            published.push(dev);
+            true
+        }
+        None => false,
+    }
+}
+
+fn rollback_published_nodes(published: &[Arc<drv::Device>]) {
+    for node in published.iter().rev() {
+        drv::device_del(node);
+    }
+}
+
+fn publish_card_nodes(owner: u32, card: u32) -> Option<Vec<Arc<drv::Device>>> {
     let mut published = Vec::new();
     for node in ALSA_NODES {
         let dev_name = alsa_node_name(card, node.minor);
-        published.push(add_sound_node(owner, card, node.class, dev_name, alsa_dev_t(card, node.minor), node.minor));
+        if !push_sound_node(&mut published, owner, card, node.class, dev_name, alsa_dev_t(card, node.minor), node.minor) {
+            rollback_published_nodes(&published);
+            return None;
+        }
     }
     for node in OSS_NODES {
         let dev_name = oss_node_name(card, node.minor);
-        published.push(add_sound_node(owner, card, node.class, dev_name, oss_dev_t(card, node.minor), node.minor));
+        if !push_sound_node(&mut published, owner, card, node.class, dev_name, oss_dev_t(card, node.minor), node.minor) {
+            rollback_published_nodes(&published);
+            return None;
+        }
     }
     if card == 0 {
-        published.push(add_sound_node(owner, card, "sound", String::from("dsp"), (14, 3), MINOR_DSP));
-        published.push(add_sound_node(owner, card, "sound", String::from("audio"), (14, 4), MINOR_AUDIO));
-        published.push(add_sound_node(owner, card, "sound", String::from("mixer"), (14, 0), MINOR_MIXER));
+        if !push_sound_node(&mut published, owner, card, "sound", String::from("dsp"), (14, 3), MINOR_DSP)
+            || !push_sound_node(&mut published, owner, card, "sound", String::from("audio"), (14, 4), MINOR_AUDIO)
+            || !push_sound_node(&mut published, owner, card, "sound", String::from("mixer"), (14, 0), MINOR_MIXER)
+        {
+            rollback_published_nodes(&published);
+            return None;
+        }
     }
-    published
+    Some(published)
 }
 
 /// Sound-node ioctl entry point for the shared `sys_ioctl` dispatch chain.
@@ -239,22 +273,41 @@ pub fn register_card(owner: u32) -> bool {
     capture::register_card(owner);
     oss::register_card(owner);
     devfs::register_dir("/dev/snd");
-    let published = publish_card_nodes(owner, card);
-    let mut cards = CARDS.lock();
-    let Some(record) = cards.iter_mut().find(|record| record.owner == owner) else {
-        for node in published.iter().rev() {
-            drv::device_del(node);
-        }
+    let Some(published) = publish_card_nodes(owner, card) else {
+        rollback_card_registration(owner);
         return false;
     };
-    if record.nodes.is_empty() {
-        record.nodes = published;
-    } else {
-        for node in published.iter().rev() {
-            drv::device_del(node);
+    let mut published = Some(published);
+    {
+        let mut cards = CARDS.lock();
+        let Some(record) = cards.iter_mut().find(|record| record.owner == owner) else {
+            drop(cards);
+            if let Some(nodes) = published.take() {
+                rollback_published_nodes(&nodes);
+            }
+            rollback_card_registration(owner);
+            return false;
+        };
+        if record.nodes.is_empty() {
+            record.nodes = published.take().unwrap_or_default();
         }
     }
+    if let Some(nodes) = published {
+        rollback_published_nodes(&nodes);
+        rollback_card_registration(owner);
+    }
     true
+}
+
+fn rollback_card_registration(owner: u32) {
+    oss::unregister_card(owner);
+    capture::unregister_card(owner);
+    pcm::unregister_card(owner);
+    let _ = ops::clear(owner);
+    let mut cards = CARDS.lock();
+    if let Some(idx) = cards.iter().position(|record| record.owner == owner && record.nodes.is_empty()) {
+        cards.remove(idx);
+    }
 }
 
 /// Reserve a stable ALSA card number before the transport probe allocates or
@@ -488,6 +541,49 @@ mod tests {
         assert_eq!(owner(), None);
         assert!(ops::clear(0x10));
         assert!(ops::clear(0x20));
+    }
+
+    #[test]
+    fn card_publication_conflict_rolls_back_partial_nodes_and_owner_state() {
+        let _guard = test_guard();
+        drv::set_devtmpfs_hook(add_hook);
+        drv::set_devtmpfs_del_hook(del_hook);
+        ADDED.lock().clear();
+        REMOVED.lock().clear();
+        let _ = unregister_card(0x10);
+        let _ = unregister_card(0x20);
+        let _ = unregister_card(0x30);
+        let _ = ops::clear(0x10);
+        let _ = ops::clear(0x20);
+        let _ = ops::clear(0x30);
+
+        let conflict = drv::device_add(Arc::new(
+            drv::Device::new("sound", String::from("pcmC0D0p"), 0, 0, MINOR_PCM_P as u32)
+                .with_devnode("sound", String::from("snd/pcmC0D0p"), Some((116, 16)))));
+        ADDED.lock().clear();
+        REMOVED.lock().clear();
+
+        assert!(reserve_card(0x30));
+        assert!(ops::register(0x30, &TEST_OPS));
+        assert!(!register_card(0x30), "conflicting model device fails card publication");
+
+        let added = ADDED.lock().clone();
+        assert_eq!(added.len(), 1, "only nodes before the conflict may be published");
+        assert!(has_node(&added, "snd/controlC0", (116, 0)));
+        let removed = REMOVED.lock().clone();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], String::from("snd/controlC0"));
+        assert!(!drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "controlC0"));
+        assert!(drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "pcmC0D0p"));
+        assert_eq!(owner(), None);
+        assert_eq!(card_number(0x30), None);
+        assert!(ops::ops_for(0x30).is_none());
+        assert!(!pcm::has_card(0x30));
+        assert!(!capture::has_card(0x30));
+        assert!(!oss::has_card(0x30));
+
+        drv::device_del(&conflict);
+        let _ = ops::clear(0x30);
     }
 
     #[test]
