@@ -41,7 +41,36 @@ gdm → greeter.
   (max ~246) so it's not EXIT_NAMESPACE. Services like upower still reach
   "Started" afterward. Treat 265 as a red herring until proven otherwise.
 
-## RESIDUAL — udev re-dispatch loop (deeply investigated, cause still open)  [START HERE]
+## FIXED: udev re-processing loop (bad10001) — MAJOR
+Root cause was NOT re-dispatch by the manager — it was rebroadcast_cooked_uevent
+delivering cooked (libudev) multicast to EVERY group-0 socket. Measured (bind
+nl_groups trace): real consumers (logind/upowerd/udisksd/NM/gdm) bind
+nl_groups=2; systemd-udevd's SINGLE-SHOT WORKER monitors bind nl_groups=0
+(MONITOR_GROUP_NONE, unicast-only). So every worker received+RE-PROCESSED every
+other worker's broadcast device (one event processed 15-25×). Fix: deliver cooked
+multicast only to sockets subscribed to the dest group (skip group-0). After:
+each event processed ONCE, card0 tagged master-of-seat, CAN_GRAPHICAL=1.
+
+## NEW frontier — greeter still not launching  [START HERE]
+With card0 tagged + CAN_GRAPHICAL=1, gdm STILL exits code=1 and no gnome-shell
+launches. Observations (bfix2.log):
+- gdm's dying syscalls: execve=-2 (plymouth ENOENT) ×2 — LIKELY a harmless
+  plymouth-quit fork, not the main daemon. gdm.service reaches "Started".
+- `Failed to get path for seat 'seat0': Connection timed out` — logind D-Bus is
+  slow/unresponsive, so gdm can't create the greeter session on seat0.
+- Boot still ~200s+: some udev WORKERS HANG (e.g. "Worker [59] processing
+  SEQNUM=47 killed", virtio2/virtio3) and are killed at ~207s after a long
+  timeout; code265 still ~33. System stays overloaded → logind slow → gdm
+  timeout. NEXT: (1) find why the virtio2/3 udev workers hang (trace what syscall
+  they block on — kmod load? a sysfs read? firmware?); fixing it settles the
+  system so logind responds. (2) Confirm gdm code=1 is the plymouth fork vs the
+  daemon (is /usr/bin/plymouth expected? gdm should tolerate its absence). (3)
+  Once logind is responsive, gdm should launch gdm-launch-environment →
+  gnome-shell (grep gnome-shell = 0 currently). The netlink UNICAST (39221106) +
+  cooked-group (bad10001) fixes were the big amplifiers; remaining is boot
+  settling + gdm↔logind.
+
+## (older) RESIDUAL — udev re-dispatch loop (superseded by bad10001)
 Confirmed via systemd source (WebFetch udev-worker.c / udev-manager.c) + kernel
 traces:
 - udev WORKERS are SINGLE-SHOT: fork per event, process, EXIT. Manager detects
