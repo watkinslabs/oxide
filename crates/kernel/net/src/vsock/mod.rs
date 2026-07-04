@@ -105,6 +105,21 @@ pub fn driver_uninstall(owner: u32) -> bool {
     true
 }
 
+/// Terminal shutdown entry: stop new TX/RX from reaching the transport before
+/// the driver tears down queue state. This preserves endpoint ownership so a
+/// late probe cannot claim the singleton protocol endpoint during shutdown,
+/// but makes the endpoint unusable immediately.
+/// # C: O(N conns)
+pub fn driver_quiesce(owner: u32) -> bool {
+    if DRIVER_OWNER.load(Ordering::Acquire) != owner {
+        return false;
+    }
+    TX_HOOK.store(0, Ordering::Release);
+    GUEST_CID.store(0, Ordering::Release);
+    TABLE.close_all();
+    true
+}
+
 /// Our guest CID (0 if no device). # C: O(1)
 pub fn guest_cid() -> u64 { GUEST_CID.load(Ordering::Acquire) }
 
