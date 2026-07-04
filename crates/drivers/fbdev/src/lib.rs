@@ -780,5 +780,5 @@ mod tests {
 }
 
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod devfs;
