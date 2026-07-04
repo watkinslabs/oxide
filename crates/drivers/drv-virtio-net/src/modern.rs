@@ -18,6 +18,8 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 /// Virtio device ID for network cards.
 pub const VIRTIO_ID_NET: u16 = 1;
 
+type DeviceKey = virtio::VirtioChildDeviceKey;
+
 /// Driver-model identity for virtio-net child binding.
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-net", VIRTIO_ID_NET);
@@ -51,8 +53,8 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 /// later sysfs export.
 #[derive(Copy, Clone)]
 pub struct ModernNetState {
-    /// Owning PCI transport BDF packed as bus:device:function.
-    pub device_key: u32,
+    /// Owning virtio child identity supplied by the transport bus.
+    pub device_key: DeviceKey,
     pub bus:      u8,
     pub device:   u8,
     pub function: u8,
@@ -84,7 +86,7 @@ pub struct ModernNetState {
 static MODERN_DEVS: Spinlock<alloc::vec::Vec<ModernNetState>, DriverLockClass> =
     Spinlock::new(alloc::vec::Vec::new());
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
-static REGISTERED_NETDEVS: Spinlock<alloc::vec::Vec<(u32, net::NetIfaceId)>, DriverLockClass> =
+static REGISTERED_NETDEVS: Spinlock<alloc::vec::Vec<(DeviceKey, net::NetIfaceId)>, DriverLockClass> =
     Spinlock::new(alloc::vec::Vec::new());
 static ARP_GC_TIMER_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -107,7 +109,7 @@ fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; 6]> {
 /// Returns false if this device key is already installed.
 /// # C: O(1)
 pub fn init_modern(
-    device_key: u32,
+    device_key: DeviceKey,
     resources: virtio::VirtioResources,
     bus: u8,
     device: u8,
@@ -195,7 +197,7 @@ pub fn init_modern(
 /// unregistration, RX bottom-half lifetime, and the queue/device state it
 /// drains.
 /// # C: O(NCPU)
-pub fn uninstall_modern(device_key: u32) -> bool {
+pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     let _ = unregister_netdev(device_key);
     let (state, last_device) = {
         let mut guard = MODERN_DEVS.lock();
@@ -236,7 +238,7 @@ pub fn uninstall_modern(device_key: u32) -> bool {
 /// published so model-visible state is not torn down underneath late callers,
 /// but make TX/RX paths fail closed and stop all device/runtime activity.
 /// # C: O(NCPU)
-pub fn shutdown_modern(device_key: u32) -> bool {
+pub fn shutdown_modern(device_key: DeviceKey) -> bool {
     let (state, last_device) = {
         let mut guard = MODERN_DEVS.lock();
         let pos = guard.iter().position(|state| state.device_key == device_key);
@@ -280,7 +282,7 @@ fn free_frame(pa: u64) {
 
 /// Remember the net stack ifindex registered for this transport.
 /// # C: O(1)
-fn set_registered_iface(device_key: u32, id: net::NetIfaceId) {
+fn set_registered_iface(device_key: DeviceKey, id: net::NetIfaceId) {
     let mut registered = REGISTERED_NETDEVS.lock();
     if let Some((_, iface)) = registered
         .iter_mut()
@@ -294,13 +296,13 @@ fn set_registered_iface(device_key: u32, id: net::NetIfaceId) {
 
 /// Snapshot of every registered virtio-net device and its net stack ifindex.
 /// # C: O(N)
-pub fn registered_ifaces() -> alloc::vec::Vec<(u32, net::NetIfaceId)> {
+pub fn registered_ifaces() -> alloc::vec::Vec<(DeviceKey, net::NetIfaceId)> {
     REGISTERED_NETDEVS.lock().clone()
 }
 
 /// Registered ifindex for the named device key, if it owns the published netdev.
 /// # C: O(1)
-pub fn registered_iface_for(device_key: u32) -> Option<net::NetIfaceId> {
+pub fn registered_iface_for(device_key: DeviceKey) -> Option<net::NetIfaceId> {
     REGISTERED_NETDEVS
         .lock()
         .iter()
@@ -308,7 +310,7 @@ pub fn registered_iface_for(device_key: u32) -> Option<net::NetIfaceId> {
         .map(|(_, iface)| *iface)
 }
 
-fn remove_registered_iface(device_key: u32) -> Option<net::NetIfaceId> {
+fn remove_registered_iface(device_key: DeviceKey) -> Option<net::NetIfaceId> {
     let mut registered = REGISTERED_NETDEVS.lock();
     let pos = registered
         .iter()
@@ -327,7 +329,7 @@ pub fn mac() -> Option<[u8; 6]> {
         .map(|state| state.mac)
 }
 
-pub fn mac_for(device_key: u32) -> Option<[u8; 6]> {
+pub fn mac_for(device_key: DeviceKey) -> Option<[u8; 6]> {
     MODERN_DEVS
         .lock()
         .iter()
@@ -386,7 +388,7 @@ pub enum TxOutcome {
 ///
 /// # C: O(N devices) under device-table lock
 /// # Lk: takes the virtio-net device-table lock across MMIO writes; no callbacks.
-pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
+pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxErr> {
     if body.len() > TX_MAX_BODY {
         return Err(TxErr::TooLarge);
     }
@@ -494,7 +496,7 @@ pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
 // stack is fully wired (F59-14+). Returns frames consumed.
 
 #[cfg(target_os = "oxide-kernel")]
-pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
+pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
     let our_mac = match mac_for(device_key) { Some(m) => m, None => return 0 };
     let stack = net::sock::stack();
     rx_poll_for(device_key, |f: &[u8]| {
@@ -574,7 +576,7 @@ pub fn poll_into_stack_for(device_key: u32, iface: net::NetIfaceId, our_ip: [u8;
 // where the virtio-net device-table lock is already held.
 
 pub struct VirtioNetDev {
-    device_key: u32,
+    device_key: DeviceKey,
     runtime: alloc::sync::Arc<NetRuntime>,
     mac: [u8; 6],
     tx_packets: AtomicU64,
@@ -583,7 +585,7 @@ pub struct VirtioNetDev {
 }
 
 struct NetRuntime {
-    device_key: u32,
+    device_key: DeviceKey,
     name: alloc::string::String,
     arp: net::arp::ArpCache,
     #[cfg(not(target_os = "oxide-kernel"))]
@@ -597,7 +599,7 @@ struct NetRuntime {
 static NET_RUNTIMES: Spinlock<alloc::vec::Vec<alloc::sync::Arc<NetRuntime>>, DriverLockClass> =
     Spinlock::new(alloc::vec::Vec::new());
 
-fn net_runtime_for(device_key: u32) -> Option<alloc::sync::Arc<NetRuntime>> {
+fn net_runtime_for(device_key: DeviceKey) -> Option<alloc::sync::Arc<NetRuntime>> {
     NET_RUNTIMES
         .lock()
         .iter()
@@ -605,7 +607,7 @@ fn net_runtime_for(device_key: u32) -> Option<alloc::sync::Arc<NetRuntime>> {
         .map(alloc::sync::Arc::clone)
 }
 
-fn remove_net_runtime(device_key: u32) -> Option<alloc::sync::Arc<NetRuntime>> {
+fn remove_net_runtime(device_key: DeviceKey) -> Option<alloc::sync::Arc<NetRuntime>> {
     let mut runtimes = NET_RUNTIMES.lock();
     let pos = runtimes
         .iter()
@@ -624,7 +626,7 @@ fn allocate_net_name(runtimes: &[alloc::sync::Arc<NetRuntime>]) -> alloc::string
     }
 }
 
-fn ensure_net_runtime(device_key: u32) -> alloc::sync::Arc<NetRuntime> {
+fn ensure_net_runtime(device_key: DeviceKey) -> alloc::sync::Arc<NetRuntime> {
     let mut runtimes = NET_RUNTIMES.lock();
     if let Some(runtime) = runtimes
         .iter()
@@ -651,7 +653,7 @@ impl VirtioNetDev {
     /// Build a `VirtioNetDev` from the persisted modern state.
     /// Returns `None` if `init_modern` has not run for this device.
     /// # C: O(1)
-    pub fn new_for(device_key: u32) -> Option<alloc::sync::Arc<Self>> {
+    pub fn new_for(device_key: DeviceKey) -> Option<alloc::sync::Arc<Self>> {
         let m = {
             let g = MODERN_DEVS.lock();
             let state = g
@@ -676,7 +678,7 @@ impl VirtioNetDev {
 /// succeeds during model probe.
 /// # C: O(1) amortised
 #[cfg(target_os = "oxide-kernel")]
-pub fn register_netdev(device_key: u32) -> Option<net::NetIfaceId> {
+pub fn register_netdev(device_key: DeviceKey) -> Option<net::NetIfaceId> {
     let dev = VirtioNetDev::new_for(device_key)?;
     let stack = net::sock::stack();
     let id = stack.ifaces.register(dev as alloc::sync::Arc<dyn net::NetDev>);
@@ -689,13 +691,13 @@ pub fn register_netdev(device_key: u32) -> Option<net::NetIfaceId> {
 /// explicit so production registration cannot accidentally use a fake stack.
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
-pub fn register_netdev(_device_key: u32) -> Option<net::NetIfaceId> { None }
+pub fn register_netdev(_device_key: DeviceKey) -> Option<net::NetIfaceId> { None }
 
 /// Unregister this virtio-net device from the kernel net stack. Called before
 /// `uninstall_modern` tears down queue state and RX runtime resources.
 /// # C: O(N iface-owned state)
 #[cfg(target_os = "oxide-kernel")]
-pub fn unregister_netdev(device_key: u32) -> bool {
+pub fn unregister_netdev(device_key: DeviceKey) -> bool {
     let Some(id) = registered_iface_for(device_key) else {
         return false;
     };
@@ -710,7 +712,7 @@ pub fn unregister_netdev(device_key: u32) -> bool {
 /// Hosted tests do not build the kernel socket stack.
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
-pub fn unregister_netdev(_device_key: u32) -> bool { false }
+pub fn unregister_netdev(_device_key: DeviceKey) -> bool { false }
 
 impl net::NetDev for VirtioNetDev {
     fn name(&self) -> &str { self.runtime.name.as_str() }
@@ -784,7 +786,7 @@ impl net::NetDev for VirtioNetDev {
 
 /// Snapshot of the named modern device, if installed.
 /// # C: O(N devices)
-pub fn modern_state_for(device_key: u32) -> Option<ModernNetState> {
+pub fn modern_state_for(device_key: DeviceKey) -> Option<ModernNetState> {
     MODERN_DEVS
         .lock()
         .iter()
@@ -798,7 +800,7 @@ pub fn is_modern_present() -> bool { !MODERN_DEVS.lock().is_empty() }
 
 /// True iff the named virtio-net transport owns the installed runtime state.
 /// # C: O(1)
-pub fn is_modern_present_for(device_key: u32) -> bool {
+pub fn is_modern_present_for(device_key: DeviceKey) -> bool {
     modern_state_for(device_key).is_some()
 }
 
@@ -814,7 +816,7 @@ pub fn is_modern_present_for(device_key: u32) -> bool {
 
 #[derive(Clone, Copy)]
 struct RxRuntime {
-    device_key: u32,
+    device_key: DeviceKey,
     iface: net::NetIfaceId,
     ip: [u8; 4],
 }
@@ -826,7 +828,7 @@ static RX_RUNTIMES: Spinlock<alloc::vec::Vec<RxRuntime>, DriverLockClass> =
 /// is keyed by owning transport so RX drains cannot silently route through
 /// whichever virtio-net device happens to be globally installed.
 /// # C: O(1)
-pub fn set_softirq_iface(device_key: u32, id: net::NetIfaceId, ip: [u8; 4]) {
+pub fn set_softirq_iface(device_key: DeviceKey, id: net::NetIfaceId, ip: [u8; 4]) {
     let mut runtimes = RX_RUNTIMES.lock();
     if let Some(runtime) = runtimes
         .iter_mut()
@@ -843,7 +845,7 @@ pub fn set_softirq_iface(device_key: u32, id: net::NetIfaceId, ip: [u8; 4]) {
 /// the bottom half, ARP-GC timer, and NetRx softirq handler. IPv4 address
 /// state is filled later by the net address-change hook.
 /// # C: O(1)
-pub fn install_rx_runtime(device_key: u32, id: net::NetIfaceId) {
+pub fn install_rx_runtime(device_key: DeviceKey, id: net::NetIfaceId) {
     set_softirq_iface(device_key, id, [0, 0, 0, 0]);
     register_timers();
     #[cfg(target_os = "oxide-kernel")]
@@ -886,7 +888,7 @@ fn clear_rx_runtime() {
     RX_RUNTIMES.lock().clear();
 }
 
-fn clear_rx_runtime_for(device_key: u32) -> bool {
+fn clear_rx_runtime_for(device_key: DeviceKey) -> bool {
     let mut runtimes = RX_RUNTIMES.lock();
     let Some(pos) = runtimes
         .iter()
@@ -918,7 +920,7 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 /// None after firing ARP/NDP so a subsequent attempt can resolve.
 /// # C: O(1) cache hit; O(route lookup + request xmit) on miss.
 fn resolve_next_hop_mac(
-    device_key: u32,
+    device_key: DeviceKey,
     src_mac: [u8; 6],
     proto: u16,
     body: &[u8],
@@ -956,7 +958,7 @@ fn resolve_next_hop_mac(
 }
 
 fn resolve_ipv6_next_hop_mac(
-    device_key: u32,
+    device_key: DeviceKey,
     src_mac: [u8; 6],
     body: &[u8],
 ) -> Option<net::MacAddr> {
@@ -1009,18 +1011,18 @@ fn resolve_ipv6_next_hop_mac(
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn ndp_lookup_for_device(device_key: u32, next_hop: net::Ipv6Addr) -> Option<net::MacAddr> {
+fn ndp_lookup_for_device(device_key: DeviceKey, next_hop: net::Ipv6Addr) -> Option<net::MacAddr> {
     let iface = registered_iface_for(device_key)?;
     net::sock::stack().ndp_lookup(iface, next_hop)
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn ndp_lookup_for_device(device_key: u32, next_hop: net::Ipv6Addr) -> Option<net::MacAddr> {
+fn ndp_lookup_for_device(device_key: DeviceKey, next_hop: net::Ipv6Addr) -> Option<net::MacAddr> {
     net_runtime_for(device_key).and_then(|runtime| runtime.ndp.lookup(next_hop))
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn learn_ndp_from_ipv6(device_key: u32, l3: &[u8]) {
+fn learn_ndp_from_ipv6(device_key: DeviceKey, l3: &[u8]) {
     let Ok(hdr) = net::ipv6::Ipv6Hdr::parse(l3) else {
         return;
     };
@@ -1087,9 +1089,13 @@ mod ndp_tests {
 
     static TEST_STATE_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
+    const fn key(raw: u32) -> DeviceKey {
+        DeviceKey::from_raw(raw)
+    }
+
     fn state(bus: u8) -> ModernNetState {
         ModernNetState {
-            device_key: bus as u32,
+            device_key: key(bus as u32),
             bus,
             device: 1,
             function: 0,
@@ -1161,7 +1167,7 @@ mod ndp_tests {
         static MAC1: [u8; 6] = [0x02, 0, 0, 0, 0, 1];
         static MAC2: [u8; 6] = [0x02, 0, 0, 0, 0, 2];
         assert!(init_modern(
-            1,
+            key(1),
             resources_with_mac(&MAC1),
             1,
             1,
@@ -1170,10 +1176,10 @@ mod ndp_tests {
             2048,
             10
         ));
-        assert!(is_modern_present_for(1));
-        assert_eq!(mac_for(1), Some(MAC1));
+        assert!(is_modern_present_for(key(1)));
+        assert_eq!(mac_for(key(1)), Some(MAC1));
         assert!(init_modern(
-            2,
+            key(2),
             resources_with_mac(&MAC2),
             2,
             1,
@@ -1182,11 +1188,11 @@ mod ndp_tests {
             2048,
             10
         ));
-        assert_eq!(mac_for(2), Some(MAC2));
-        assert_eq!(modern_state_for(1).unwrap().bus, 1);
-        assert_eq!(modern_state_for(2).unwrap().bus, 2);
+        assert_eq!(mac_for(key(2)), Some(MAC2));
+        assert_eq!(modern_state_for(key(1)).unwrap().bus, 1);
+        assert_eq!(modern_state_for(key(2)).unwrap().bus, 2);
         assert!(!init_modern(
-            2,
+            key(2),
             resources_with_mac(&MAC2),
             2,
             1,
@@ -1208,20 +1214,20 @@ mod ndp_tests {
             devices.push(state(1));
             devices.push(state(2));
         }
-        set_registered_iface(1, net::NetIfaceId::from_raw(77));
-        set_registered_iface(2, net::NetIfaceId::from_raw(88));
-        set_softirq_iface(1, net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
-        set_softirq_iface(2, net::NetIfaceId::from_raw(88), [10, 0, 0, 2]);
+        set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
+        set_registered_iface(key(2), net::NetIfaceId::from_raw(88));
+        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        set_softirq_iface(key(2), net::NetIfaceId::from_raw(88), [10, 0, 0, 2]);
 
-        assert!(uninstall_modern(1));
-        assert!(!is_modern_present_for(1));
-        assert!(is_modern_present_for(2));
-        assert!(registered_iface_for(1).is_none());
-        assert_eq!(registered_iface_for(2).unwrap().raw(), 88);
+        assert!(uninstall_modern(key(1)));
+        assert!(!is_modern_present_for(key(1)));
+        assert!(is_modern_present_for(key(2)));
+        assert!(registered_iface_for(key(1)).is_none());
+        assert_eq!(registered_iface_for(key(2)).unwrap().raw(), 88);
         assert!(set_softirq_ip_for_iface(net::NetIfaceId::from_raw(88), [10, 0, 0, 3]));
-        assert_eq!(first_iface_ip_for(2), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        assert_eq!(first_iface_ip_for(key(2)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
 
-        assert!(uninstall_modern(2));
+        assert!(uninstall_modern(key(2)));
         assert!(!is_modern_present());
     }
 
@@ -1229,37 +1235,37 @@ mod ndp_tests {
     fn shutdown_modern_quiesces_transport_without_forgetting_iface() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        set_registered_iface(1, net::NetIfaceId::from_raw(77));
-        set_softirq_iface(1, net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
+        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
         MODERN_DEVS.lock().push(state(1));
 
-        assert!(shutdown_modern(1));
+        assert!(shutdown_modern(key(1)));
         assert!(!is_modern_present());
-        assert!(modern_state_for(1).is_none());
-        assert_eq!(registered_iface_for(1).unwrap().raw(), 77);
-        assert!(registered_iface_for(2).is_none());
-        assert!(first_iface_ip_for(1).is_none());
-        assert!(matches!(tx_frame_for(1, &[0; 14]), Err(TxErr::NotPresent)));
+        assert!(modern_state_for(key(1)).is_none());
+        assert_eq!(registered_iface_for(key(1)).unwrap().raw(), 77);
+        assert!(registered_iface_for(key(2)).is_none());
+        assert!(first_iface_ip_for(key(1)).is_none());
+        assert!(matches!(tx_frame_for(key(1), &[0; 14]), Err(TxErr::NotPresent)));
     }
 
     #[test]
     fn registered_iface_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
         REGISTERED_NETDEVS.lock().clear();
-        set_registered_iface(0x0012_0304, net::NetIfaceId::from_raw(9));
-        assert_eq!(registered_iface_for(0x0012_0304).unwrap().raw(), 9);
-        assert!(registered_iface_for(0x0012_0305).is_none());
-        set_registered_iface(0x0012_0305, net::NetIfaceId::from_raw(10));
+        set_registered_iface(key(0x0012_0304), net::NetIfaceId::from_raw(9));
+        assert_eq!(registered_iface_for(key(0x0012_0304)).unwrap().raw(), 9);
+        assert!(registered_iface_for(key(0x0012_0305)).is_none());
+        set_registered_iface(key(0x0012_0305), net::NetIfaceId::from_raw(10));
         let snapshot = registered_ifaces();
         assert_eq!(snapshot.len(), 2);
-        assert!(snapshot.iter().any(|(key, id)| *key == 0x0012_0304 && id.raw() == 9));
-        assert!(snapshot.iter().any(|(key, id)| *key == 0x0012_0305 && id.raw() == 10));
-        assert_eq!(registered_iface_for(0x0012_0305).unwrap().raw(), 10);
-        assert_eq!(remove_registered_iface(0x0012_0304).unwrap().raw(), 9);
-        assert!(registered_iface_for(0x0012_0304).is_none());
-        assert_eq!(registered_iface_for(0x0012_0305).unwrap().raw(), 10);
+        assert!(snapshot.iter().any(|(dev_key, id)| *dev_key == key(0x0012_0304) && id.raw() == 9));
+        assert!(snapshot.iter().any(|(dev_key, id)| *dev_key == key(0x0012_0305) && id.raw() == 10));
+        assert_eq!(registered_iface_for(key(0x0012_0305)).unwrap().raw(), 10);
+        assert_eq!(remove_registered_iface(key(0x0012_0304)).unwrap().raw(), 9);
+        assert!(registered_iface_for(key(0x0012_0304)).is_none());
+        assert_eq!(registered_iface_for(key(0x0012_0305)).unwrap().raw(), 10);
         let snapshot = registered_ifaces();
-        assert_eq!(snapshot, alloc::vec![(0x0012_0305, net::NetIfaceId::from_raw(10))]);
+        assert_eq!(snapshot, alloc::vec![(key(0x0012_0305), net::NetIfaceId::from_raw(10))]);
         REGISTERED_NETDEVS.lock().clear();
     }
 
@@ -1272,15 +1278,15 @@ mod ndp_tests {
             devices.push(state(1));
             devices.push(state(2));
         }
-        let dev1 = VirtioNetDev::new_for(1).unwrap();
-        let dev2 = VirtioNetDev::new_for(2).unwrap();
+        let dev1 = VirtioNetDev::new_for(key(1)).unwrap();
+        let dev2 = VirtioNetDev::new_for(key(2)).unwrap();
         assert_eq!(dev1.name(), "eth0");
         assert_eq!(dev2.name(), "eth1");
-        assert_eq!(ensure_net_runtime(1).name.as_str(), "eth0");
-        assert_eq!(ensure_net_runtime(2).name.as_str(), "eth1");
+        assert_eq!(ensure_net_runtime(key(1)).name.as_str(), "eth0");
+        assert_eq!(ensure_net_runtime(key(2)).name.as_str(), "eth1");
 
-        let _ = remove_net_runtime(1);
-        let rt3 = ensure_net_runtime(3);
+        let _ = remove_net_runtime(key(1));
+        let rt3 = ensure_net_runtime(key(3));
         assert_eq!(rt3.name.as_str(), "eth0");
         clear_test_state();
     }
@@ -1289,8 +1295,8 @@ mod ndp_tests {
     fn arp_cache_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        let rt1 = ensure_net_runtime(1);
-        let rt2 = ensure_net_runtime(2);
+        let rt1 = ensure_net_runtime(key(1));
+        let rt2 = ensure_net_runtime(key(2));
         let dst = net::Ipv4Addr::new(10, 0, 0, 2);
         let mac1 = net::MacAddr([1, 1, 1, 1, 1, 1]);
         let mac2 = net::MacAddr([2, 2, 2, 2, 2, 2]);
@@ -1300,16 +1306,16 @@ mod ndp_tests {
         let mut body = [0u8; 20];
         body[16..20].copy_from_slice(&dst.octets());
         assert_eq!(
-            resolve_next_hop_mac(1, [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV4, &body),
+            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV4, &body),
             Some(mac1)
         );
         assert_eq!(
-            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
             Some(mac2)
         );
-        let _ = remove_net_runtime(1);
+        let _ = remove_net_runtime(key(1));
         assert_eq!(
-            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
             Some(mac2)
         );
         clear_test_state();
@@ -1319,8 +1325,8 @@ mod ndp_tests {
     fn ndp_cache_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        let rt1 = ensure_net_runtime(1);
-        let rt2 = ensure_net_runtime(2);
+        let rt1 = ensure_net_runtime(key(1));
+        let rt2 = ensure_net_runtime(key(2));
         let src = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
         let dst = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 2]);
         let mac1 = net::MacAddr([1, 1, 1, 1, 1, 1]);
@@ -1331,16 +1337,16 @@ mod ndp_tests {
         let mut body = [0u8; net::ipv6::IPV6_HDR_LEN];
         net::ipv6::Ipv6Hdr::build(src, dst, net::IpProto::Udp, 0).write_to(&mut body);
         assert_eq!(
-            resolve_next_hop_mac(1, [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV6, &body),
+            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV6, &body),
             Some(mac1)
         );
         assert_eq!(
-            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
             Some(mac2)
         );
-        let _ = remove_net_runtime(1);
+        let _ = remove_net_runtime(key(1));
         assert_eq!(
-            resolve_next_hop_mac(2, [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
             Some(mac2)
         );
         clear_test_state();
@@ -1350,8 +1356,8 @@ mod ndp_tests {
     fn rx_ndp_learning_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        let rt1 = ensure_net_runtime(1);
-        let rt2 = ensure_net_runtime(2);
+        let rt1 = ensure_net_runtime(key(1));
+        let rt2 = ensure_net_runtime(key(2));
         let router = net::Ipv6Addr::from_segments([0xfe80, 0, 0, 0, 0, 0, 0, 1]);
         let all_nodes = net::ndp::IPV6_ALL_NODES;
         let prefix = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0xabcd, 0, 0, 0, 0, 0]);
@@ -1376,8 +1382,8 @@ mod ndp_tests {
         .write_to(&mut frame2[..net::ipv6::IPV6_HDR_LEN]);
         frame2[net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ra2);
 
-        learn_ndp_from_ipv6(1, &frame1);
-        learn_ndp_from_ipv6(2, &frame2);
+        learn_ndp_from_ipv6(key(1), &frame1);
+        learn_ndp_from_ipv6(key(2), &frame2);
         assert_eq!(rt1.ndp.lookup(router), Some(mac1));
         assert_eq!(rt2.ndp.lookup(router), Some(mac2));
         clear_test_state();
@@ -1387,14 +1393,14 @@ mod ndp_tests {
     fn rx_runtime_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_rx_runtime();
-        set_softirq_iface(0x0012_0304, net::NetIfaceId::from_raw(9), [10, 0, 0, 2]);
-        assert_eq!(first_iface_ip_for(0x0012_0304), Some(net::Ipv4Addr::new(10, 0, 0, 2)));
+        set_softirq_iface(key(0x0012_0304), net::NetIfaceId::from_raw(9), [10, 0, 0, 2]);
+        assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(10, 0, 0, 2)));
         assert!(set_softirq_ip_for_iface(net::NetIfaceId::from_raw(9), [10, 0, 0, 3]));
-        assert_eq!(first_iface_ip_for(0x0012_0304), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
         assert!(!set_softirq_ip_for_iface(net::NetIfaceId::from_raw(10), [10, 0, 0, 4]));
-        assert_eq!(first_iface_ip_for(0x0012_0304), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
         clear_rx_runtime();
-        assert!(first_iface_ip_for(0x0012_0304).is_none());
+        assert!(first_iface_ip_for(key(0x0012_0304)).is_none());
     }
 
     #[test]
@@ -1419,7 +1425,7 @@ mod ndp_tests {
     }
 }
 
-fn first_iface_ip_for(device_key: u32) -> Option<net::Ipv4Addr> {
+fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr> {
     RX_RUNTIMES
         .lock()
         .iter()
@@ -1454,7 +1460,7 @@ fn first_iface_ip_for(device_key: u32) -> Option<net::Ipv4Addr> {
 ///       stack emitting an ACK via tx_frame_for) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
 ///       so the device can safely overwrite rx0_buf once republished.
-pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: u32, mut cb: F) -> usize {
+pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
     let runtime = net_runtime_for(device_key);
     let mut g = MODERN_DEVS.lock();
     let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {

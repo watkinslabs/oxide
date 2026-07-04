@@ -154,7 +154,7 @@ impl VirtioChildOps for VirtioNetOps {
 
     fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
         let location = session.location();
-        let device_key = session.device_key().raw();
+        let device_key = session.device_key();
         let payloads = session.net_boot_payloads();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -175,13 +175,13 @@ impl VirtioChildOps for VirtioNetOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        if drv_virtio_net::modern::is_modern_present_for(device_key.raw()) {
-            let _ = drv_virtio_net::modern::uninstall_modern(device_key.raw());
+        if drv_virtio_net::modern::is_modern_present_for(device_key) {
+            let _ = drv_virtio_net::modern::uninstall_modern(device_key);
         }
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_net::modern::shutdown_modern(device_key.raw());
+        let _ = drv_virtio_net::modern::shutdown_modern(device_key);
     }
 }
 static VIRTIO_NET_DRV: VirtioChildDriver<VirtioNetOps> = VirtioChildDriver::new();
