@@ -138,7 +138,8 @@ test-pass claims.
   programming instead of hardcoding `NO_VECTOR` into every extra queue plan.
 - Virtio-vsock no longer has PCI-transport-owned guest-CID harvest. The
   virtio-vsock child driver reads its own CID from the generic `DEVICE_CFG`
-  resource during install.
+  resource during install. The dead pci-boot `virtio_vsock_cfg` pass-through
+  has been removed, so vsock install goes directly through the child driver.
 - Virtio-snd no longer has PCI-transport-owned sound config harvest. The
   virtio-snd child driver reads jacks/streams/chmaps/controls from the generic
   `DEVICE_CFG` resource before querying PCM stream info. Its virtio-pci profile
@@ -147,7 +148,8 @@ test-pass claims.
   resource to the child driver instead of silently programming only q0/q2/q3.
   The child driver now preposts writable event descriptors, drains EVENTQ from
   a sound softirq, recycles used descriptors back onto avail, and tracks raw
-  drained-event diagnostics.
+  drained-event diagnostics. The dead pci-boot `virtio_snd_cfg` pass-through
+  has been removed, so sound install goes directly through the child driver.
 - Virtio-input no longer has PCI-transport-owned input config VA handoff. The
   input child driver reads identity and capability data from the generic
   `DEVICE_CFG` resource during its own install path. It now also owns
@@ -306,9 +308,10 @@ test-pass claims.
   Transport-owned MSI-X binding lifetime now handles multiple entries, and
   extra queue plans now resolve declared IRQ callbacks into queue-indexed
   MSI-X table entries before common-cfg queue programming. Virtio-snd now
-  programs, owns, and drains its required EVENTQ(1) resource. Higher-level
-  sound event interpretation/publication, remaining child-probe failure unwind
-  audit, and fault-injection proof still need to move behind a fuller
+  programs, owns, and drains its required EVENTQ(1) resource. Dead pci-boot
+  child install pass-throughs are gone for block, vsock, and sound.
+  Higher-level sound event interpretation/publication, remaining child-probe
+  failure unwind audit, and fault-injection proof still need to move behind a fuller
   `VirtioPciTransport` boundary.
 - Replace remaining singleton virtio child drivers with per-device state where
   the hardware class should support multiple instances: virtio-net now has
