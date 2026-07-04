@@ -140,6 +140,10 @@ test-pass claims.
   remove, shutdown, active-device promotion, and direct probe-time entropy
   seeding. Its public lifecycle API no longer receives raw PCI-packed child
   keys from the PCI-backed virtio wrapper.
+- `drv-virtio-input` now accepts and stores `VirtioChildDeviceKey` for
+  install, remove, and evdev lookup. The PCI-backed child wrapper tears down
+  input event queues and device records without converting the typed child key
+  back into a raw PCI-shaped integer.
 - Shared `virtio::run_child_probe` now owns the transport-neutral child probe
   lifecycle: run child install, publish transport state only after success, and
   release failed-probe resources on child error. The PCI-backed child model
@@ -585,9 +589,11 @@ test-pass claims.
   typed `virtio::VirtioChildDeviceKey` rather than a raw PCI-packed `u32`; the
   current PCI-backed implementation derives that key from its BDF location and
   `drv-virtio-rng` now consumes that typed key directly for install, remove,
-  shutdown, and probe-time direct entropy reads. The other virtio child-driver
-  APIs still need the same typed-key conversion where they currently force the
-  PCI-backed wrapper to call `.raw()`. Shared `virtio::run_child_probe` now
+  shutdown, and probe-time direct entropy reads. `drv-virtio-input` now also
+  consumes that typed key directly for install, remove, and evdev lookup. The
+  remaining GPU, net, block, vsock, and sound child-driver APIs still need the
+  same typed-key conversion where they currently force the PCI-backed wrapper
+  to call `.raw()`. Shared `virtio::run_child_probe` now
   owns child-probe publish/unwind ordering, so the PCI-backed wrapper no
   longer hand-codes successful transport publication versus failed child-probe
   release. Shared `virtio::run_child_remove` and
