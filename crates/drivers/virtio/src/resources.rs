@@ -3,6 +3,8 @@
 //! live with the transport until every child driver is converted to managed
 //! resources.
 
+use crate::{ProgrammedQueues, QueueRing};
+
 /// Maximum virtqueues exposed through the staged resource object. Modern
 /// virtio devices in this kernel currently use queues 0..=3.
 pub const MAX_RESOURCE_QUEUES: usize = 8;
@@ -267,6 +269,98 @@ impl VirtQueueResource {
             && self.device_pa != 0
             && self.notify_va != 0
     }
+}
+
+/// Queue notify VAs resolved by a concrete transport. The shared handoff
+/// builder consumes this indexed table so resource assembly is not tied to a
+/// PCI-specific q0/q1/q2/q3 shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VirtioQueueNotifyMappings {
+    by_queue: [u64; MAX_RESOURCE_QUEUES],
+}
+
+impl VirtioQueueNotifyMappings {
+    /// # C: O(1)
+    pub const fn new() -> Self {
+        Self {
+            by_queue: [0; MAX_RESOURCE_QUEUES],
+        }
+    }
+
+    /// # C: O(1)
+    pub fn set(&mut self, queue_index: u16, notify_va: u64) {
+        let index = queue_index as usize;
+        if index < MAX_RESOURCE_QUEUES {
+            self.by_queue[index] = notify_va;
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn get(&self, queue_index: u16) -> u64 {
+        let index = queue_index as usize;
+        if index < MAX_RESOURCE_QUEUES {
+            self.by_queue[index]
+        } else {
+            0
+        }
+    }
+}
+
+impl Default for VirtioQueueNotifyMappings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Assemble child-visible queue resources from the transport's programmed
+/// queues, scanned queue-size table, and resolved notify mappings.
+/// # C: O(MAX_RESOURCE_QUEUES * N_scanned)
+pub fn build_queue_resources(
+    scanned_queues: &[(u16, u16); MAX_RESOURCE_QUEUES],
+    scanned_len: usize,
+    programmed_queues: Option<&ProgrammedQueues>,
+    notify_mappings: &VirtioQueueNotifyMappings,
+) -> [VirtQueueResource; MAX_RESOURCE_QUEUES] {
+    core::array::from_fn(|index| {
+        let index = index as u16;
+        queue_resource(
+            index,
+            programmed_queues.and_then(|queues| queues.queue(index)),
+            scanned_queue_size(scanned_queues, scanned_len, index),
+            notify_mappings.get(index),
+        )
+    })
+}
+
+fn scanned_queue_size(
+    scanned_queues: &[(u16, u16); MAX_RESOURCE_QUEUES],
+    scanned_len: usize,
+    index: u16,
+) -> u16 {
+    scanned_queues
+        .iter()
+        .take(scanned_len)
+        .find(|queue| queue.0 == index)
+        .map(|queue| queue.1)
+        .unwrap_or(0)
+}
+
+fn queue_resource(
+    index: u16,
+    ring: Option<QueueRing>,
+    fallback_size: u16,
+    notify_va: u64,
+) -> VirtQueueResource {
+    let size = ring.map(|ring| ring.size).unwrap_or(fallback_size);
+    VirtQueueResource::new(
+        index,
+        size,
+        ring.map(|ring| ring.desc_pa).unwrap_or(0),
+        ring.map(|ring| ring.driver_pa).unwrap_or(0),
+        ring.map(|ring| ring.device_pa).unwrap_or(0),
+        notify_va,
+        ring.map(|ring| ring.notify_off).unwrap_or(0),
+    )
 }
 
 /// Common transport state and the programmed queues visible to a child driver.
@@ -614,6 +708,43 @@ mod tests {
 
         assert_eq!(resources.require_queue(0), Some(VALID_Q0));
         assert!(!resources.require_common_and_queues(&[0]));
+    }
+
+    #[test]
+    fn notify_mappings_are_indexed_and_bounded() {
+        let mut mappings = VirtioQueueNotifyMappings::new();
+        mappings.set(1, 0x1000);
+        mappings.set((MAX_RESOURCE_QUEUES + 1) as u16, 0x2000);
+
+        assert_eq!(mappings.get(1), 0x1000);
+        assert_eq!(mappings.get((MAX_RESOURCE_QUEUES + 1) as u16), 0);
+    }
+
+    #[test]
+    fn build_queue_resources_uses_scanned_sizes_and_notify_mappings() {
+        let mut mappings = VirtioQueueNotifyMappings::new();
+        mappings.set(0, 0x1000);
+        mappings.set(3, 0x3000);
+        let scanned = [
+            (0, 8),
+            (3, 16),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+        ];
+
+        let resources = build_queue_resources(&scanned, 2, None, &mappings);
+
+        assert_eq!(resources[0].index, 0);
+        assert_eq!(resources[0].size, 8);
+        assert_eq!(resources[0].notify_va, 0x1000);
+        assert_eq!(resources[3].index, 3);
+        assert_eq!(resources[3].size, 16);
+        assert_eq!(resources[3].notify_va, 0x3000);
+        assert_eq!(resources[2].size, 0);
     }
 
     #[test]

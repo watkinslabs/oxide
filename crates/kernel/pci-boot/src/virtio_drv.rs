@@ -186,29 +186,9 @@ struct VirtioProbeState {
     msix: Vec<MsixBinding>,
 }
 
-#[derive(Default)]
-struct PlannedNotifyMappings {
-    by_queue: [u64; virtio::MAX_RESOURCE_QUEUES],
-}
-
-impl PlannedNotifyMappings {
-    fn set(&mut self, queue_index: u16, notify_va: u64) {
-        if let Some(slot) = self.by_queue.get_mut(queue_index as usize) {
-            *slot = notify_va;
-        }
-    }
-
-    fn get(&self, queue_index: u16) -> u64 {
-        self.by_queue
-            .get(queue_index as usize)
-            .copied()
-            .unwrap_or(0)
-    }
-}
-
 struct VirtioTransportBringup {
     negotiated: virtio::FeatureNegotiation,
-    queues: [(u16, u16); 8],
+    queues: [(u16, u16); virtio::MAX_RESOURCE_QUEUES],
     queues_len: usize,
     programmed_queues: Option<ProgrammedQueues>,
     final_status: u8,
@@ -558,8 +538,8 @@ impl VirtioProbeState {
         programmed_queues: Option<&ProgrammedQueues>,
         notify_cap: Option<&virtio::VirtioPciCap>,
         bars: &[pci::Bar; 6],
-    ) -> PlannedNotifyMappings {
-        let mut mappings = PlannedNotifyMappings::default();
+    ) -> virtio::VirtioQueueNotifyMappings {
+        let mut mappings = virtio::VirtioQueueNotifyMappings::default();
         let Some(programmed) = programmed_queues else {
             return mappings;
         };
@@ -584,7 +564,7 @@ impl VirtioProbeState {
         profile: virtio::VirtioTransportProfile,
         runtime: VirtioPciRuntime,
         final_status: u8,
-        queues: &[(u16, u16); 8],
+        queues: &[(u16, u16); virtio::MAX_RESOURCE_QUEUES],
         queues_len: usize,
         programmed_queues: Option<&ProgrammedQueues>,
         notify_cap: Option<&virtio::VirtioPciCap>,
@@ -627,21 +607,11 @@ impl VirtioProbeState {
             0
         };
 
-        let queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES] =
-            core::array::from_fn(|index| {
-                let index = index as u16;
-                let notify_va = match index {
-                    0 => q0_notify_va,
-                    1 => q1_notify_va,
-                    _ => planned_notify_mappings.get(index),
-                };
-                queue_resource(
-                    index,
-                    programmed_queues.and_then(|queues| queues.queue(index)),
-                    scanned_queue_size(queues, queues_len, index),
-                    notify_va,
-                )
-            });
+        let mut notify_mappings = planned_notify_mappings;
+        notify_mappings.set(0, q0_notify_va);
+        notify_mappings.set(1, q1_notify_va);
+        let queue_resources =
+            virtio::build_queue_resources(queues, queues_len, programmed_queues, &notify_mappings);
 
         let isr_status = if net_rx_boot.avail_idx_posted > 0 {
             self.read_isr_status(isr_cap, bars)
@@ -694,7 +664,7 @@ struct VirtioProbeResult {
     features_ok: bool,
     msix_cfg: u16,
     num_queues: u16,
-    queues: [(u16, u16); 8],
+    queues: [(u16, u16); virtio::MAX_RESOURCE_QUEUES],
     queues_len: usize,
     queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     final_status: u8,
@@ -708,10 +678,6 @@ struct VirtioProbeResult {
 }
 
 impl VirtioProbeResult {
-    fn queue(&self, index: u16) -> virtio::VirtQueueResource {
-        self.queue_resources[index as usize]
-    }
-
     fn vring_frames(&self) -> Vec<u64> {
         let mut frames = Vec::new();
         for queue in self.queue_resources {
@@ -774,7 +740,7 @@ pub(super) struct VirtioPciProbeTrace {
     pub(super) features_ok: bool,
     pub(super) msix_cfg: u16,
     pub(super) num_queues: u16,
-    pub(super) queues: [(u16, u16); 8],
+    pub(super) queues: [(u16, u16); virtio::MAX_RESOURCE_QUEUES],
     pub(super) queues_len: usize,
     pub(super) queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     pub(super) final_status: u8,
@@ -827,33 +793,6 @@ impl VirtioProbe {
         }
     }
 
-}
-
-fn scanned_queue_size(queues: &[(u16, u16); 8], queues_len: usize, index: u16) -> u16 {
-    queues
-        .iter()
-        .take(queues_len)
-        .find(|queue| queue.0 == index)
-        .map(|queue| queue.1)
-        .unwrap_or(0)
-}
-
-fn queue_resource(
-    index: u16,
-    ring: Option<QueueRing>,
-    fallback_size: u16,
-    notify_va: u64,
-) -> virtio::VirtQueueResource {
-    let size = ring.map(|ring| ring.size).unwrap_or(fallback_size);
-    virtio::VirtQueueResource::new(
-        index,
-        size,
-        ring.map(|ring| ring.desc_pa).unwrap_or(0),
-        ring.map(|ring| ring.driver_pa).unwrap_or(0),
-        ring.map(|ring| ring.device_pa).unwrap_or(0),
-        notify_va,
-        ring.map(|ring| ring.notify_off).unwrap_or(0),
-    )
 }
 
 fn map_cap_window(

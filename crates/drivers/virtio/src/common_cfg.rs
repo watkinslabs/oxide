@@ -87,8 +87,11 @@ pub fn negotiate_features(cfg_va: u64, wanted_features: u64) -> FeatureNegotiati
 
 /// Scan modern common-cfg queue sizes into a compact `(index, size)` table.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
-/// # C: O(min(num_queues, 8))
-pub fn scan_queue_sizes(cfg_va: u64, num_queues: u16) -> ([(u16, u16); 8], usize) {
+/// # C: O(min(num_queues, MAX_RESOURCE_QUEUES))
+pub fn scan_queue_sizes(
+    cfg_va: u64,
+    num_queues: u16,
+) -> ([(u16, u16); crate::MAX_RESOURCE_QUEUES], usize) {
     let r32 = |off: u64| -> u32 {
         // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; aligned
         // u32 load of a common-cfg register.
@@ -100,14 +103,15 @@ pub fn scan_queue_sizes(cfg_va: u64, num_queues: u16) -> ([(u16, u16); 8], usize
         unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u16, v); }
     };
 
-    let mut queues = [(0u16, 0u16); 8];
+    let mut queues = [(0u16, 0u16); crate::MAX_RESOURCE_QUEUES];
     let mut queues_len = 0usize;
-    let cap = if num_queues == 0 || num_queues > 8 {
-        8
+    let cap = if num_queues == 0 || num_queues as usize > crate::MAX_RESOURCE_QUEUES {
+        crate::MAX_RESOURCE_QUEUES
     } else {
-        num_queues
-    } as u16;
+        num_queues as usize
+    };
     for qi in 0..cap {
+        let qi = qi as u16;
         w16(CFG_QUEUE_SELECT, qi);
         let queue_size = (r32(CFG_QUEUE_SIZE) & 0xFFFF) as u16;
         queues[queues_len] = (qi, queue_size);

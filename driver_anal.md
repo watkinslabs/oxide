@@ -201,6 +201,11 @@ test-pass claims.
   notify mappings now come from the indexed queue plan itself, while the
   remaining net boot TX buffer allocation is tied to the existing net boot
   payload requirement instead of a queue-number-specific dispatch.
+- Shared virtio now owns indexed notify-mapping descriptors and the
+  child-visible `VirtQueueResource` assembly from scanned queue sizes,
+  programmed queues, and transport-resolved notify VAs. The PCI transport
+  still maps/kicks hardware notify windows, but no longer owns the generic
+  queue-resource handoff builder.
 - Shared `virtio::ProgrammedQueues` now exposes indexed queue lookup, and
   virtio-pci resource handoff assembles child-visible queue resources over the
   shared resource queue count instead of expanding q2/q3 resource locals in
