@@ -793,6 +793,11 @@ test-pass claims.
   unregister, and sound-ops clearing for the removed owner.
   Virtio-snd uninstall calls that owner cleanup before requiring the transport
   context, so stale public card state is not stranded by a missing CTX record.
+  The ALSA control node no longer reports an empty control table when no
+  virtio CTL table is present: `controlC<N>` now exposes static Linux master
+  playback volume/switch elements with real ELEM_LIST/INFO/READ/WRITE state,
+  and OSS mixer ioctls route through the same owner-keyed state that is removed
+  with the card.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`

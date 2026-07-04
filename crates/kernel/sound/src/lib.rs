@@ -300,6 +300,7 @@ pub fn register_card(owner: u32) -> bool {
 }
 
 fn rollback_card_registration(owner: u32) {
+    control::unregister_card(owner);
     oss::unregister_card(owner);
     capture::unregister_card(owner);
     pcm::unregister_card(owner);
@@ -373,6 +374,7 @@ pub fn unregister_card(owner: u32) -> bool {
     for node in record.nodes.iter().rev() {
         drv::device_del(node);
     }
+    control::unregister_card(owner);
     oss::unregister_card(owner);
     capture::unregister_card(owner);
     pcm::unregister_card(owner);
