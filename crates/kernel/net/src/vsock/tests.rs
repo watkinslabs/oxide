@@ -36,6 +36,27 @@ fn driver_endpoint_uninstall_is_owner_keyed() {
 }
 
 #[test]
+fn driver_quiesce_stops_tx_but_keeps_owner_reserved() {
+    fn tx_ok(_frame: &[u8]) -> bool { true }
+
+    assert!(driver_install(21, 9, tx_ok));
+    assert!(driver_up());
+    assert_eq!(guest_cid(), 9);
+    assert_eq!(driver_owner(), 21);
+    assert!(!driver_quiesce(22));
+    assert!(driver_up());
+    assert_eq!(guest_cid(), 9);
+
+    assert!(driver_quiesce(21));
+    assert!(!driver_up());
+    assert_eq!(guest_cid(), 0);
+    assert_eq!(driver_owner(), 21);
+    assert!(!driver_reserve(22));
+    assert!(driver_cancel_reserved(21));
+    assert_eq!(driver_owner(), 0);
+}
+
+#[test]
 fn hdr_roundtrip_all_fields() {
     let h = VsockHdr {
         src_cid: 3, dst_cid: 2,

@@ -255,11 +255,18 @@ pub fn uninstall(device_key: u32) -> bool {
 
 /// Quiesce the installed vsock transport for terminal system shutdown.
 ///
-/// This is not hot-remove: it leaves the upper `net::vsock` endpoint installed
-/// so visible protocol state is not torn down during shutdown, but TX/RX can no
-/// longer touch the device.
+/// This is not hot-remove: it keeps the upper `net::vsock` endpoint owned by
+/// this transport so a late probe cannot take it during shutdown, but clears
+/// the TX hook before queue state is freed so no protocol path can touch the
+/// device after quiesce begins.
 /// # C: O(RX_BUFS)
 pub fn shutdown(device_key: u32) -> bool {
+    if !present_for(device_key) {
+        return false;
+    }
+    if !net::vsock::driver_quiesce(device_key) {
+        return false;
+    }
     let mut ctx = {
         let mut g = CTX.lock();
         let Some(pos) = g.iter().position(|ctx| ctx.device_key == device_key) else {
