@@ -488,7 +488,9 @@ test-pass claims.
   of the inode: SET_MASTER arbitrates one master per card, DROP_MASTER only
   releases the owning file, last-close releases master ownership, SETCRTC,
   PAGE_FLIP, and atomic commits require the active master, and SET_CLIENT_CAP
-  updates per-file capability bits. GET_MAGIC/AUTH_MAGIC now allocate, return,
+  updates per-file capability bits. PAGE_FLIP completion events are queued per
+  card open file description and drained/polled only by the requesting file,
+  with unread events discarded on last close. GET_MAGIC/AUTH_MAGIC now allocate, return,
   and authorize real per-open-file DRM magic values from the card file handler
   instead of returning unconditional success. GET_UNIQUE and SET_VERSION now
   marshal their real Linux UAPI structs: virtio-gpu reports a PCI BDF-derived

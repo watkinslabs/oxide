@@ -254,11 +254,21 @@ impl vfs::FileOps for DrmCardFileOps {
     /// completions) as `drm_event_vblank` records — Linux `drm_read`.
     /// 0 bytes when no event is pending (libdrm polls then reads).
     /// # C: O(events)
-    fn read(&self, inode: &vfs::Inode, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
-        let Some((_, card_id)) = drm_inode_parts_raw(inode.ino()) else {
+    fn read_file(&self, file: &File, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
+        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
             return Ok(0);
         };
-        Ok(crate::crtc::drain_events(card_id, b))
+        Ok(crate::crtc::drain_events(card_id, file_token(file), b))
+    }
+    fn poll_open_file(&self, file: &File) -> u32 {
+        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
+            return vfs::POLL_ERR;
+        };
+        let mut mask = vfs::POLL_OUT;
+        if crate::crtc::has_events(card_id, file_token(file)) {
+            mask |= vfs::POLL_IN;
+        }
+        mask
     }
     fn write(&self, _inode: &vfs::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
     /// Last-close: if a KMS client took the scanout via SETCRTC and is
@@ -274,6 +284,7 @@ impl vfs::FileOps for DrmCardFileOps {
         let token = file_token(file);
         release_master_owner(card_id, token);
         release_file_magic(token);
+        crate::crtc::clear_file_events(card_id, token);
         if crate::crtc::is_owner(card_id, token) {
             if let Some(ops) = scanout_ops(card_id) {
                 (ops.restore_console)(ops.driver_key);
