@@ -109,6 +109,17 @@ test-pass claims.
   Sysfs/netlink tests now prove bind/unbind emits `change` uevents from the
   current model state: bound events include `DRIVER=<name>`, while unbound
   events do not carry stale driver ownership.
+  Block, input, and model-backed virtual character class `uevent` attributes
+  are now writable sysfs attributes rather than read-only static bodies, so
+  `udevadm trigger` can re-emit root-disk, evdev, sound, graphics, misc, and
+  mem device events from the current model-owned `/sys/devices/virtual/...`
+  state.
+  `try_device_add` now follows the Linux `device_add` coldplug order more
+  closely: the device is visible in the model, devtmpfs publication runs, an
+  already-registered matching driver gets its initial probe before the parent
+  add uevent, and that initial auto-probe does not emit a separate bind-change
+  event. The add uevent is therefore generated from the current bound state and
+  can carry `DRIVER=<name>` for udev without racing a later change event.
   Model-backed character-class tests now also prove remove/readd of the same
   device identity and `dev_t`: class symlinks, parent `device` links, and
   `/sys/dev/char` reverse indexes disappear on `device_del` and reappear from
@@ -436,7 +447,21 @@ test-pass claims.
   event-queue quiesce path instead of the hot-remove-named helper. Hot-remove
   and shutdown now address event-queue drain state by the owning virtio child
   key directly, so missing input metadata cannot strand queue buffers or the
-  shared input bottom-half handler.
+  shared input bottom-half handler. `/proc/bus/input/devices` now advertises
+  the same `/devices/virtual/input/eventN` sysfs path that the input class
+  actually publishes, so libinput/udev metadata no longer points at a dead
+  pre-model topology.
+  Evdev now handles `EVIOCGRAB` as Linux per-open-file state: grabs are keyed to
+  the open `File`, competing grabs fail with `EBUSY`, non-owners do not drain or
+  poll events while another client owns the grab, and last close releases the
+  grab. `EVIOCSCLOCKID` now validates the requested userspace clock id instead
+  of blindly acknowledging it, and `EVIOCREVOKE` marks the current open file
+  revoked so later reads fail with `ENODEV`. VFS read/poll/release dispatch now
+  has file-aware hooks so this lives in the same layer Linux uses
+  (`struct file`/`file_operations`) rather than in inode-global shortcuts. The
+  obsolete crate-level EVIOC recognizer that returned success without doing the
+  operation is gone; `EVIOCGREP`/`EVIOCSREP` are now implemented in the real
+  evdev file ioctl handler and round-trip per-device repeat delay/period state.
 - Virtio-gpu remove is keyed to the owning virtio child key and tears down
   fbcon/fbdev/DRM/klog/tty scanout state before backing memory is released.
   Probe-failure unwind only removes scanout state for the failed child key.
@@ -447,31 +472,69 @@ test-pass claims.
   child-key install is rejected before publication, and DRM card IDs are
   stable slots so unregistering one card does not renumber the remaining
   devices.
-  DRM now publishes card/render device nodes per stable card slot
-  (`/dev/dri/cardN`, `/dev/dri/renderD128+N`), encodes the card id in the DRM
+  DRM now publishes card device nodes per stable card slot
+  (`/dev/dri/cardN`; render nodes are intentionally withheld until real
+  render/GEM UAPI exists), encodes the card id in the DRM
   inode tag, routes card-backed ioctls through the matching backend slot, and
   builds `/sys/class/drm` plus `/sys/devices/virtual/drm` from live DRM
-  `drv::try_device_add` records instead of a static card0 table.
+  `drv::try_device_add` records instead of a static card0 table. Virtio-gpu
+  registers DRM card devices with their real virtio child model parent, and
+  sysfs now places parented DRM minors under the owning device
+  (`/sys/devices/virtio/<dev>/drm/cardN`) with `/sys/class/drm` and
+  `/sys/dev/char/226:N` pointing at that canonical kobject instead of leaving
+  GPU cards under `/sys/devices/virtual/drm`.
   Scanout backing state is also a BDF-keyed table now. DRM SETCRTC/PAGE_FLIP
   runtime hooks, scanout ownership, last-close restore, and flip-event queues
   are keyed by DRM card id and routed to the owning virtio-gpu BDF. DRM dumb
   buffers and FB metadata are now card-owned too: CREATE/MAP/DESTROY/ADDFB/RMFB,
   mmap cookie lookup, and SETCRTC/PAGE_FLIP FB resolution all require the
-  matching card id, and DRM unregister drops that card's CRTC and dumb-buffer
-  table state. fbdev flush/blank operations are now stored on each `/dev/fbN`
-  record and call back into the owning virtio-gpu BDF instead of a global
-  display hook; virtio-gpu scanout context now records the exact published
-  fbdev index and unpublishes by that owner token instead of searching by
-  framebuffer base address. Console/fbdev publication is transactional around
-  that stored index, so failed fbdev publication releases console ownership
-  before global fbcon/klog/tty hooks are installed. Shutdown quiesces the
+  matching card id. Runtime virtio-gpu scanout resources are now bound to the
+  DRM FB object that first uses them, reused by later SETCRTC/PAGE_FLIP calls,
+  detached from the live CRTC before active RMFB teardown, and released through
+  the driver hook with RESOURCE_DETACH_BACKING + RESOURCE_UNREF on RMFB or DRM
+  unregister. DRM unregister drops that card's CRTC and dumb-buffer table
+  state. DRM master state now follows the open file description instead
+  of the inode: SET_MASTER arbitrates one master per card, DROP_MASTER only
+  releases the owning file, last-close releases master ownership, SETCRTC,
+  PAGE_FLIP, and atomic commits require the active master, and SET_CLIENT_CAP
+  updates per-file capability bits. PAGE_FLIP completion events are queued per
+  card open file description and drained/polled only by the requesting file,
+  with unread events discarded on last close. GET_MAGIC/AUTH_MAGIC now allocate, return,
+  and authorize real per-open-file DRM magic values from the card file handler
+  instead of returning unconditional success. GET_UNIQUE and SET_VERSION now
+  marshal their real Linux UAPI structs: virtio-gpu reports a PCI BDF-derived
+  unique bus id, GET_UNIQUE copies and reports the true string length, and
+  SET_VERSION validates/negotiates the supported DRM interface version.
+  MODE_ATOMIC now validates flags and nested user arrays, accepts only an
+  internally-gated empty atomic state, and returns unsupported for structurally
+  valid non-empty property commits until real atomic property tables land.
+  Userspace cannot enable `DRM_CLIENT_CAP_ATOMIC` yet: SET_CLIENT_CAP returns
+  `EOPNOTSUPP` for atomic/writeback/aspect/stereo/cursor-hotspot caps that do
+  not have a real property/object implementation. DRM GET_CAP also stops
+  advertising PRIME, syncobj, async page flip, page-flip-target, and ADDFB2
+  modifiers until those UAPI paths are implemented; modifier-bearing ADDFB2
+  requests are rejected instead of ignored. fbdev flush/blank
+  operations are now stored on each `/dev/fbN` record and call back into the
+  owning virtio-gpu BDF instead of a global display hook; virtio-gpu scanout
+  context now records the exact published fbdev index and unpublishes by that
+  owner token instead of searching by framebuffer base address.
+  Console/fbdev publication is transactional around that stored index, so failed
+  fbdev publication releases console ownership before global fbcon/klog/tty
+  hooks are installed. Shutdown quiesces the
   scanout context in place and resets the device without dropping fbdev
   publication or framebuffer allocation metadata, so a later remove can still
   consume the correct owner token and free the backing. fbcon publication
   still has one explicit foreground console owner. Dumb-buffer mmap now pins
   the DRM object through a file-backed shared VMA and PMM object refs, so
   DESTROY_DUMB/card unregister cannot return pages while userspace VMAs can
-  still fault them.
+  still fault them. MODE_MAP_DUMB offsets are high-tagged DRM cookies with a
+  non-overlapping handle field, and mmap rejects zero handles, low-bit offsets,
+  and out-of-layout bits instead of truncating malformed cookies into another
+  handle.
+  fbdev's FBIO user-copy validation now uses checked exclusive-end arithmetic,
+  and FBIOGETCMAP rejects an invalid transparency array pointer with `EFAULT`
+  instead of silently skipping part of the requested copy while returning
+  success.
   The display-info probe command buffer and scanout framebuffer run are now
   owned probe objects; early parse/no-display/setup failures release them
   through drop, and successful scanout setup explicitly transfers those frames
@@ -580,8 +643,8 @@ test-pass claims.
   char devices. The remaining direct `devfs::register` users are fixed
   namespace entries, devpts allocation, coredump artifacts, or other
   non-hardware pseudo-files rather than driver-owned device nodes.
-- Driver-owned devnode registries for block, evdev, fbdev, DRM card/render
-  nodes, and the active virtio-rng `/dev/hwrng` provider now have hosted
+- Driver-owned devnode registries for block, evdev, fbdev, DRM card nodes,
+  and the active virtio-rng `/dev/hwrng` provider now have hosted
   remove/readd loop proofs: unregister/remove deletes the model device(s),
   re-register/re-publish recreates exactly one owned model device per node,
   block `dev_t` lookup disappears and returns with the disk, and registry slots
@@ -606,8 +669,8 @@ test-pass claims.
   entry points require an owning device key, and the core net stack's NDP table
   is keyed by interface. Virtio-net still needs live multi-device bind/unbind
   proof.
-  Virtio-gpu installed device state, DRM backend records, DRM card/render
-  nodes, DRM ioctl backend routing, scanout backing records, DRM runtime
+  Virtio-gpu installed device state, DRM backend records, DRM card nodes,
+  DRM ioctl backend routing, scanout backing records, DRM runtime
   scanout hooks, scanout owner tokens, flip-event queues, and dumb-buffer/FB
   object lookup are BDF/card owned. Display-info and negotiated-feature
   helpers are now BDF-keyed instead of selecting the first installed GPU.
@@ -774,6 +837,32 @@ test-pass claims.
   unregister, and sound-ops clearing for the removed owner.
   Virtio-snd uninstall calls that owner cleanup before requiring the transport
   context, so stale public card state is not stranded by a missing CTX record.
+  The ALSA control node no longer fabricates mixer controls when no virtio CTL
+  table or other driver-backed control table is present: `ELEM_LIST` reports
+  zero elements, element INFO/READ/WRITE for the old static Master controls
+  return no entry, and OSS mixer ioctls plus raw `/dev/mixer` writes report no
+  device instead of mutating private fake state. `SNDRV_CTL_IOCTL_PCM_INFO` now
+  reports both playback and capture streams for device 0 when the owning
+  virtio-snd driver registered those stream directions, virtio-snd caps helpers
+  return no caps when the scanned stream direction is absent instead of
+  advertising an empty stream, and the sound core now publishes
+  `pcmC<N>D0p` / `pcmC<N>D0c` plus playback runtime state only for directions
+  backed by those real caps. Missing stream caps now make direct PCM
+  info/refine paths report no device instead of falling back to synthetic
+  S16/44.1k stereo support. ALSA PCM HW_FREE and DROP/DRAIN now propagate
+  backend failures instead of updating runtime state after a failed device
+  command, PAUSE is rejected until a real pause operation is supported, and
+  SYNC_PTR no longer fabricates hardware progress from a userspace appl_ptr
+  update; only completed I/O advances the stored hw_ptr. The virtio-snd
+  backend now also returns the actual STOP/RELEASE command result during
+  reconfiguration and HW_FREE, leaving stream state unchanged when the device
+  rejects release. OSS parameter-changing ioctls now fail if reset cannot
+  stop/release the active stream, preserving the old OSS runtime state instead
+  of pretending the stream was disarmed. PCM timestamp configuration ioctls now
+  report unsupported until real status timestamp plumbing exists. OSS format,
+  rate, channel defaults, `GETFMTS`, and SETFMT/SPEED/CHANNELS negotiation now
+  come from the same real playback/capture caps as ALSA rather than hard-coded
+  S16/all-format/stereo assumptions.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
@@ -784,7 +873,7 @@ test-pass claims.
   stack-owned interface-scoped IPv6 NDP lookup. Its shared RX bottom-half/timer
   lifetime is last-runtime-owned, but virtio-net still needs live loop proof
   and broader multi-NIC validation; virtio-gpu now has per-card DRM
-  card/render nodes, ioctl backend routing, KMS scanout hooks, scanout owner
+  card nodes, ioctl backend routing, KMS scanout hooks, scanout owner
   state, flip events, dumb-buffer/FB object lookup, and per-fb owner-keyed
   fbdev flush/blank dispatch, exact fbdev-index publication ownership,
   independent primary/scanout hot-remove cleanup, and dumb-buffer mmap VMA
@@ -951,10 +1040,11 @@ Several drivers still use singleton global state:
 
 - virtio-gpu: per-BDF installed device and scanout records; per-card DRM
   nodes, ioctl backend routing, runtime scanout hooks, scanout owner tokens,
-  flip-event queues, dumb-buffer/FB object lookup, display-info/feature
-  lookup, and per-fb owner-keyed fbdev flush/blank dispatch; dumb-buffer mmap
-  lifetime is pinned through shared VMA backing and PMM object refs; fbcon has
-  one explicit foreground console owner
+  flip-event queues, dumb-buffer/FB object lookup, FB-owned runtime scanout
+  resources with virtio detach/unref teardown, display-info/feature lookup,
+  and per-fb owner-keyed fbdev flush/blank dispatch; dumb-buffer mmap lifetime
+  is pinned through shared VMA backing and PMM object refs; fbcon has one
+  explicit foreground console owner
 - virtio-net modern: keyed device/runtime/name/stat/IPv4 ARP tables; exported
   TX/RX helper entry points require an owning device key; IPv6 NDP is
   stack-owned and keyed by interface in kernel builds; shared RX softirq/timer
@@ -974,9 +1064,9 @@ Several drivers still use singleton global state:
 - virtio-snd: keyed transport records with EVENTQ drained per transport,
   owner-keyed EVENTQ counters/last-event snapshots, owner-keyed ops,
   owner-keyed ALSA card records, per-card
-  `controlC<N>`/`pcmC<N>D0*` publication, and ALSA PCM/capture/OSS runtime
-  state bound to the owning card key; live multi-card QEMU proof is still
-  missing
+  direction-aware `controlC<N>`/`pcmC<N>D0*` publication, and ALSA
+  PCM/capture/OSS runtime state bound to the owning card key; live multi-card
+  QEMU proof is still missing
 - UART drivers: global `PRESENT` and base state; RX interrupt delivery now has
   an explicit quiesce gate cleared before shutdown/remove masks hardware
 - PS/2 keyboard: global present/poll state; IRQ1 delivery now has an explicit
@@ -1041,42 +1131,32 @@ This defeats the point of a driver model.
 
 Every real hardware driver should move bring-up into `probe()` or into a bus-specific probe method called by `probe()`.
 
-### 4. Binding has no error contract
+### 4. Binding error contract is now in the model
 
-`bind()` is currently effectively:
+`bind()` is no longer just a string stamp. It validates the registered driver,
+rejects already-bound and non-matching devices, calls `Driver::probe`, records
+the binding only after probe succeeds, emits a model-backed `change` uevent, and
+leaves the device unbound after probe failure.
 
-- set `dev.driver = Some(driver_name)`
-- fire bind hook
+Remaining work is not the bind contract itself; it is migrating every live
+hardware bring-up path so the real side effects happen from model-owned probe
+callbacks instead of enumeration-local direct calls.
 
-It does not:
+### 5. Unbind/remove exists, but driver teardown proof is incomplete
 
-- check whether the device is already bound
-- validate the driver exists
-- validate the driver matches
-- call `probe`
-- handle probe failure
-- return Linux-like errors
-- unwind partial state
+The model has `/sys/bus/<bus>/drivers/<driver>/unbind`, model-level `unbind`,
+`Driver::remove`, driver symlink/backref disappearance, devtmpfs node removal,
+and `device_del` remove uevents. Driver-core tests assert the teardown order,
+and sysfs/netlink tests prove bind/unbind `change` uevents plus `device_del`
+`remove` uevents.
 
-This is not Linux-correct. Duplicate bind should fail. Binding to a non-matching driver should fail. Probe failure should leave the device unbound and clean.
+Still missing or needing broader proof:
 
-### 5. There is no real unbind/remove path
-
-`Driver::remove()` exists, but the model does not properly use it.
-
-Missing:
-
-- `/sys/bus/<bus>/drivers/<driver>/unbind`
-- model-level `unbind`
-- remove uevents
-- driver symlink removal
-- driver directory backref removal
 - interrupt teardown
 - DMA/free-page teardown
 - BAR unmap
-- devfs node removal
 - sysfs child cleanup
-- net/block/input/sound/DRM child unregister
+- net/block/input/sound/DRM child unregister under real remove paths
 
 Hot-unplug and bind/unbind tests cannot be correct until this exists.
 
@@ -1397,7 +1477,7 @@ Each subsystem should provide a central registration API:
 
 - block: gendisk-like disk and partition registration
 - net: netdev registration
-- DRM: card/render/connector registration
+- DRM: card/connector registration; render registration only after render UAPI
 - input: input device and event handler registration
 - sound: ALSA card/device/control registration
 - tty: tty driver and tty device registration
@@ -1417,12 +1497,13 @@ all derive from real registries, not duplicated hard-coded publication paths.
 
 ## Immediate next tasks
 
-1. Make `drv::bind` a real fallible operation that calls `Driver::probe`.
-2. Add `drv::unbind` and call `Driver::remove`.
-3. Remove direct probe/publication paths that still bypass model-owned binding.
-4. Add remove uevents to `device_del`.
-5. Pick one driver as the first migration target. Best candidate: virtio-blk, because it has clear visible acceptance through `/dev/vda`, `/sys/block/vda`, mount, and `lsblk`.
-6. After virtio-blk, migrate virtio-net or virtio-input. virtio-net tests netdev/rtnetlink; virtio-input tests class devices and graphical login dependencies.
+1. Remove direct probe/publication paths that still bypass model-owned binding.
+2. Finish real remove-path proof for the single-device desktop stack: root disk,
+   GPU/DRM/fbdev, input, sound, and net.
+3. Prove the GNOME-visible coldplug path in QEMU/userspace: `/dev`, `/sys`,
+   `/sys/dev`, class dirs, uevents, and udev seat state.
+4. After the single-device path works, broaden fault injection and multi-device
+   hardening.
 
 ## Do not do this
 

@@ -481,6 +481,18 @@ static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
 /// Register a per-device backend. Returns a stable card slot (0 ⇒ card0).
 /// # C: O(N) to reuse a vacant slot, O(1) append when none exists.
 pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
+    register_with_parent(driver, None)
+}
+
+/// Register a per-device backend whose DRM class device is anchored under a
+/// real model parent. This is the Linux class-device shape used by PCI/virtio
+/// display drivers: `/sys/class/drm/cardN/device` points back to the owning
+/// bus device instead of a virtual-only placeholder.
+/// # C: O(N) to reuse a vacant slot, O(1) append when none exists.
+pub fn register_with_parent(
+    driver: Arc<dyn DrmDriver>,
+    parent: Option<(&'static str, alloc::string::String)>,
+) -> u32 {
     let mut driver = Some(driver);
     let card_id = {
         let mut g = CARDS.lock();
@@ -492,7 +504,7 @@ pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
             (g.len() - 1) as u32
         }
     };
-    if !node::register(card_id) {
+    if !node::register(card_id, parent) {
         let mut g = CARDS.lock();
         if let Some(slot) = g.get_mut(card_id as usize) {
             *slot = None;
@@ -562,16 +574,16 @@ pub fn default_cap(cap: u64) -> u64 {
         DRM_CAP_VBLANK_HIGH_CRTC        => 1,
         DRM_CAP_DUMB_PREFERRED_DEPTH    => 32,
         DRM_CAP_DUMB_PREFER_SHADOW      => 0,
-        DRM_CAP_PRIME                   => 3,
+        DRM_CAP_PRIME                   => 0,
         DRM_CAP_TIMESTAMP_MONOTONIC     => 1,
-        DRM_CAP_ASYNC_PAGE_FLIP         => 1,
-        DRM_CAP_CURSOR_WIDTH            => 64,
-        DRM_CAP_CURSOR_HEIGHT           => 64,
-        DRM_CAP_ADDFB2_MODIFIERS        => 1,
-        DRM_CAP_PAGE_FLIP_TARGET        => 1,
+        DRM_CAP_ASYNC_PAGE_FLIP         => 0,
+        DRM_CAP_CURSOR_WIDTH            => 0,
+        DRM_CAP_CURSOR_HEIGHT           => 0,
+        DRM_CAP_ADDFB2_MODIFIERS        => 0,
+        DRM_CAP_PAGE_FLIP_TARGET        => 0,
         DRM_CAP_CRTC_IN_VBLANK_EVENT    => 1,
-        DRM_CAP_SYNCOBJ                 => 1,
-        DRM_CAP_SYNCOBJ_TIMELINE        => 1,
+        DRM_CAP_SYNCOBJ                 => 0,
+        DRM_CAP_SYNCOBJ_TIMELINE        => 0,
         _                               => 0,
     }
 }
@@ -617,7 +629,14 @@ mod tests {
     fn default_caps_all_one_or_set() {
         assert_eq!(default_cap(DRM_CAP_DUMB_BUFFER), 1);
         assert_eq!(default_cap(DRM_CAP_DUMB_PREFERRED_DEPTH), 32);
-        assert_eq!(default_cap(DRM_CAP_CURSOR_WIDTH), 64);
+        assert_eq!(default_cap(DRM_CAP_CURSOR_WIDTH), 0);
+        assert_eq!(default_cap(DRM_CAP_CURSOR_HEIGHT), 0);
+        assert_eq!(default_cap(DRM_CAP_PRIME), 0);
+        assert_eq!(default_cap(DRM_CAP_ADDFB2_MODIFIERS), 0);
+        assert_eq!(default_cap(DRM_CAP_SYNCOBJ), 0);
+        assert_eq!(default_cap(DRM_CAP_SYNCOBJ_TIMELINE), 0);
+        assert_eq!(default_cap(DRM_CAP_ASYNC_PAGE_FLIP), 0);
+        assert_eq!(default_cap(DRM_CAP_PAGE_FLIP_TARGET), 0);
         assert_eq!(default_cap(0xdead), 0);
     }
 

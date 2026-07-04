@@ -8,7 +8,7 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -344,6 +344,24 @@ pub fn encode_resource_attach_backing_one(buf: &mut [u8], res_id: u32, pa: u64, 
     48
 }
 
+/// Encode `CMD_RESOURCE_DETACH_BACKING`. Writes 32 bytes.
+/// # C: O(1)
+pub fn encode_resource_detach_backing(buf: &mut [u8], res_id: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING, 0, 0);
+    write_u32_le(buf, 24, res_id);
+    write_u32_le(buf, 28, 0);
+    32
+}
+
+/// Encode `CMD_RESOURCE_UNREF`. Writes 32 bytes.
+/// # C: O(1)
+pub fn encode_resource_unref(buf: &mut [u8], res_id: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_UNREF, 0, 0);
+    write_u32_le(buf, 24, res_id);
+    write_u32_le(buf, 28, 0);
+    32
+}
+
 /// Encode `CMD_SET_SCANOUT(scanout, res_id, x, y, w, h)`.
 /// Writes 48 bytes.
 /// # C: O(1)
@@ -518,6 +536,7 @@ pub struct VirtioGpuDrm {
     pub display:             DisplayInfo,
     pub features_negotiated: u64,
     pub bdf:                 u32,
+    pub unique:              String,
 }
 
 impl drm::DrmDriver for VirtioGpuDrm {
@@ -525,7 +544,7 @@ impl drm::DrmDriver for VirtioGpuDrm {
     fn version(&self) -> (u32, u32, u32) { (0, 1, 0) }
     fn date(&self) -> &'static str { "20260509" }
     fn desc(&self) -> &'static str { "virtio GPU" }
-    fn unique(&self) -> &str { "pci:virtio-gpu" }
+    fn unique(&self) -> &str { self.unique.as_str() }
     /// (count_fbs, count_crtcs, count_connectors, count_encoders).
     /// V1 maps each enabled scanout to a (CRTC, connector, encoder)
     /// triple; framebuffers are allocated dynamically via
@@ -619,9 +638,23 @@ impl VirtioGpuDrm {
     }
 }
 
+fn drm_unique_from_bdf(bdf: u32) -> String {
+    let bus = (bdf >> 16) & 0xff;
+    let device = (bdf >> 8) & 0xff;
+    let function = bdf & 0xff;
+    format!("pci:0000:{bus:02x}:{device:02x}.{function:x}")
+}
+
 /// Install + register with the DRM core (`47`).
 /// # C: O(1)
-pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
+pub fn install_with_drm(dev: VirtioGpuDev) -> KResult<u32> {
+    install_with_drm_parent(dev, None)
+}
+
+pub fn install_with_drm_parent(
+    mut dev: VirtioGpuDev,
+    parent: Option<(&'static str, String)>,
+) -> KResult<u32> {
     let device_key = dev.device_key;
     let bdf = dev.bdf;
     let display = dev.display;
@@ -633,8 +666,9 @@ pub fn install_with_drm(mut dev: VirtioGpuDev) -> KResult<u32> {
         display,
         features_negotiated,
         bdf,
+        unique: drm_unique_from_bdf(bdf),
     });
-    let card_id = drm::register(drm_dev);
+    let card_id = drm::register_with_parent(drm_dev, parent);
     if card_id == u32::MAX {
         let _ = uninstall(device_key);
         return Err(Error::NoDevice);
@@ -848,6 +882,23 @@ mod tests {
     }
 
     #[test]
+    fn encode_resource_lifetime_layouts() {
+        let mut detach = [0u8; 64];
+        let n = encode_resource_detach_backing(&mut detach, 9);
+        assert_eq!(n, 32);
+        assert_eq!(read_u32_le(&detach, 0), VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING);
+        assert_eq!(read_u32_le(&detach, 24), 9);
+        assert_eq!(read_u32_le(&detach, 28), 0);
+
+        let mut unref = [0u8; 64];
+        let n = encode_resource_unref(&mut unref, 9);
+        assert_eq!(n, 32);
+        assert_eq!(read_u32_le(&unref, 0), VIRTIO_GPU_CMD_RESOURCE_UNREF);
+        assert_eq!(read_u32_le(&unref, 24), 9);
+        assert_eq!(read_u32_le(&unref, 28), 0);
+    }
+
+    #[test]
     fn encode_set_scanout_layout() {
         let mut buf = [0u8; 64];
         let n = encode_set_scanout(&mut buf, 0, 5, 0, 0, 800, 600);
@@ -1028,6 +1079,40 @@ mod tests {
     }
 
     #[test]
+    fn install_with_drm_records_model_parent() {
+        fn dev(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
+            VirtioGpuDev {
+                device_key,
+                bdf,
+                card_id: 0,
+                cfg_va: 0,
+                ctrlq: test_ctrlq(),
+                features_negotiated: 0,
+                display: DisplayInfo::default(),
+                resource_id_alloc: AtomicU32::new(1),
+                blob_uuid_alloc: AtomicU64::new(1),
+                capset_count: 0,
+            }
+        }
+
+        DEVICES.lock().clear();
+        let parent_addr = String::from("virtio-gpu-parent-test0");
+        let card_id = install_with_drm_parent(
+            dev(key(3), 0x0030_0000),
+            Some(("virtio", parent_addr.clone())),
+        ).unwrap();
+        let card_name = format!("dri/card{card_id}");
+        let drm_dev = drv::devices()
+            .into_iter()
+            .find(|dev| dev.bus == "drm" && dev.addr.as_str() == card_name.as_str())
+            .expect("DRM card model device");
+        assert_eq!(drm_dev.parent(), Some(("virtio", parent_addr.as_str())));
+
+        assert_eq!(uninstall(key(3)).unwrap().card_id, card_id);
+        assert!(!is_present());
+    }
+
+    #[test]
     fn shutdown_keeps_device_installed() {
         DEVICES.lock().clear();
         install(VirtioGpuDev {
@@ -1062,6 +1147,7 @@ mod tests {
         let d = VirtioGpuDrm {
             display: DisplayInfo { modes, count_enabled: 2 },
             features_negotiated: 0, bdf: 0,
+            unique: drm_unique_from_bdf(0),
         };
         // Two of each object, ids per the 1:1:1 model.
         assert_eq!(d.crtc_ids(), alloc::vec![1, 2]);
@@ -1103,6 +1189,12 @@ mod tests {
         assert_eq!(drm_fourcc_to_virtio(drm::DRM_FORMAT_XRGB8888), Some(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM));
         assert_eq!(drm_fourcc_to_virtio(drm::DRM_FORMAT_ARGB8888), Some(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM));
         assert_eq!(drm_fourcc_to_virtio(0xdead_beef), None);
+    }
+
+    #[test]
+    fn drm_unique_uses_pci_bdf_bus_id() {
+        assert_eq!(drm_unique_from_bdf(0x0010_0000), "pci:0000:10:00.0");
+        assert_eq!(drm_unique_from_bdf(0x0001_0203), "pci:0000:01:02.3");
     }
 
     #[test]

@@ -267,6 +267,9 @@ impl InodeOps for DeviceDirOps {
             let t = alloc::format!("../../{}/{}", dev_root_leaf(parent_bus), parent_addr);
             return Ok(make_link_inode(t.into_bytes()));
         }
+        if name == "drm" && crate::drm::has_parented_minors(data.bus, &data.addr) {
+            return Ok(crate::drm::make_parent_drm_inode(data.bus, data.addr.clone()));
+        }
         if name == "dev" {
             if dev.dev_t.is_none() { return Err(VfsError::Enoent); }
             let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
@@ -314,6 +317,9 @@ impl FileOps for DeviceDirOps {
         entries.push(("subsystem", FileType::Symlink));
         if has_parent {
             entries.push(("parent", FileType::Symlink));
+        }
+        if crate::drm::has_parented_minors(data.bus, &data.addr) {
+            entries.push(("drm", FileType::Directory));
         }
         if bound {
             entries.push(("driver", FileType::Symlink));
@@ -433,19 +439,8 @@ fn dev_devpath(dev: &drv::Device) -> String {
 }
 
 fn dev_index_target(dev: &drv::Device) -> Vec<u8> {
-    // DRM cards are "virtual" devices whose real sysfs dir is
-    // /sys/devices/virtual/drm/<sysname> (built by sysfs::drm), where sysname is
-    // the devnode BASENAME (`card0`/`renderD128`) — NOT the `dri/`-prefixed drv
-    // addr, and NOT under devices/platform (the dev_root_canon fallthrough).
-    // logind resolves a seat's DRM device via sd_device_new_from_device_id
-    // ("c226:0") → sd_device_new_from_syspath("/sys/dev/char/226:0"), which
-    // chases THIS symlink and requires the target to hold a `uevent` file.
-    // Pointing it at the bogus devices/platform/dri/card0 made the chase fail,
-    // so logind dropped card0, seat0 never became CanGraphical, and gdm launched
-    // no greeter (60§2). Match sysfs::drm's tree exactly.
-    if dev.bus == "drm" {
-        let sysname = dev.addr.rsplit('/').next().unwrap_or(dev.addr.as_str());
-        return alloc::format!("../../devices/virtual/drm/{}", sysname).into_bytes();
+    if let Some(target) = crate::drm::dev_index_target(dev) {
+        return target;
     }
     alloc::format!("../../{}/{}", dev_root_canon(dev.bus), dev.addr).into_bytes()
 }
@@ -800,6 +795,14 @@ mod tests {
     }
     static SYSFS_BIND_UEVENT_DRIVER: SysfsBindUeventDriver = SysfsBindUeventDriver;
 
+    struct SysfsAddUeventDriver;
+    impl drv::Driver for SysfsAddUeventDriver {
+        fn bus(&self) -> &'static str { "platform" }
+        fn name(&self) -> &'static str { "sysfs-add-uevent-test" }
+        fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-add-uevent0" }
+    }
+    static SYSFS_ADD_UEVENT_DRIVER: SysfsAddUeventDriver = SysfsAddUeventDriver;
+
     struct RejectDriver;
     impl drv::Driver for RejectDriver {
         fn bus(&self) -> &'static str { "platform" }
@@ -897,6 +900,63 @@ mod tests {
         assert_eq!(dev.bound(), None);
 
         drv::device_del(&dev);
+    }
+
+    #[test]
+    fn device_add_uevent_includes_initial_bound_driver_state() {
+        use netlink::{proto, NetlinkSocket};
+
+        drv::set_sysfs_hook(publish_device_cb);
+        drv::register_driver(&SYSFS_ADD_UEVENT_DRIVER);
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+
+        let dev = platform_device("sysfs-add-uevent0");
+
+        let added = listener.dequeue().expect("add uevent");
+        assert!(uevent_has_entry(&added, b"ACTION=add"));
+        assert!(uevent_has_entry(&added, b"DEVPATH=/devices/platform/sysfs-add-uevent0"));
+        assert!(uevent_has_entry(&added, b"SUBSYSTEM=platform"));
+        assert!(uevent_has_entry(&added, b"DRIVER=sysfs-add-uevent-test"));
+        assert_eq!(dev.bound(), Some("sysfs-add-uevent-test"));
+
+        drv::device_del(&dev);
+    }
+
+    #[test]
+    fn device_del_emits_remove_uevent_before_model_disappears() {
+        use netlink::{proto, NetlinkSocket};
+
+        fn no_add_uevent(_dev: &drv::Device) {}
+
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+        drv::set_sysfs_hook(no_add_uevent);
+        drv::set_sysfs_remove_hook(remove_device_cb);
+
+        let dev = Arc::new(drv::Device::new(
+            "platform",
+            String::from("sysfs-remove-uevent0"),
+            0,
+            0,
+            0,
+        ));
+        drv::try_device_add(Arc::clone(&dev)).expect("test device registration");
+
+        drv::device_del(&dev);
+
+        let removed = listener.dequeue().expect("remove uevent");
+        assert!(uevent_has_entry(&removed, b"ACTION=remove"));
+        assert!(uevent_has_entry(
+            &removed,
+            b"DEVPATH=/devices/platform/sysfs-remove-uevent0"
+        ));
+        assert!(uevent_has_entry(&removed, b"SUBSYSTEM=platform"));
+        assert!(!drv::devices()
+            .iter()
+            .any(|registered| Arc::ptr_eq(registered, &dev)));
     }
 
     #[test]
@@ -1054,6 +1114,40 @@ mod tests {
         assert_eq!(index.lookup("29:8").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("13:88").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("226:88").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn sys_dev_char_indexes_parented_drm_under_parent_device() {
+        let parent = Arc::new(drv::Device::new(
+            "virtio",
+            String::from("sysfs-gpu-parent0"),
+            0x1af4,
+            16,
+            0,
+        ));
+        let drm = Arc::new(
+            drv::Device::new("drm", String::from("card89"), 0, 0, 0)
+                .with_parent("virtio", String::from("sysfs-gpu-parent0"))
+                .with_devnode("drm", String::from("dri/card89"), Some((226, 89))),
+        );
+        drv::try_device_add(Arc::clone(&parent)).expect("test parent registration");
+        drv::try_device_add(Arc::clone(&drm)).expect("test drm registration");
+
+        let parent_dir = make_devices_root_inode("virtio")
+            .lookup("sysfs-gpu-parent0")
+            .expect("parent device dir");
+        let drm_dir = parent_dir.lookup("drm").expect("parent drm child dir");
+        assert!(drm_dir.lookup("card89").is_ok());
+
+        let index = make_sys_dev_index_inode(DevIndexKind::Char);
+        let drm_link = index.lookup("226:89").expect("drm char index link");
+        assert_eq!(
+            drm_link.readlink().expect("readlink"),
+            b"../../devices/virtio/sysfs-gpu-parent0/drm/card89".to_vec());
+
+        drv::device_del(&drm);
+        drv::device_del(&parent);
+        assert_eq!(index.lookup("226:89").err(), Some(VfsError::Enoent));
     }
 
     #[test]

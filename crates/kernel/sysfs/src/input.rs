@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 
 use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use crate::DIR_PERM;
+use crate::{DIR_PERM, RW_PERM};
 
 const INO_VIRT_INPUT:  Ino = 0x5105_0001;
 const INO_CLASS_INPUT: Ino = 0x5105_0002;
@@ -73,6 +73,41 @@ fn parent_device_target(info: &InputDevInfo) -> Option<Vec<u8>> {
 
 // ---- /sys/devices/virtual/input/<addr> (per-device dir) -------------------
 struct InputDevDirData { addr: String }
+
+fn input_uevent_body(info: &InputDevInfo) -> Vec<u8> {
+    alloc::format!(
+        "MAJOR={}\nMINOR={}\nDEVNAME={}\n",
+        info.dev_t.0, info.dev_t.1, info.devname,
+    )
+    .into_bytes()
+}
+
+struct InputUeventData { info: InputDevInfo }
+struct InputUeventOps;
+impl FileOps for InputUeventOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<InputUeventData>().ok_or(VfsError::Einval)?;
+        Ok(crate::read_window(&input_uevent_body(&d.info), off, buf))
+    }
+    fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
+        let d = inode.private::<InputUeventData>().ok_or(VfsError::Einval)?;
+        let devpath = alloc::format!("/devices/virtual/input/{}", d.info.addr);
+        let devname = alloc::format!("DEVNAME={}", d.info.devname);
+        let maj = alloc::format!("MAJOR={}", d.info.dev_t.0);
+        let min = alloc::format!("MINOR={}", d.info.dev_t.1);
+        ::netlink::emit_uevent_with_env(
+            crate::uevent_action(b), &devpath, "input", &[&devname, &maj, &min]);
+        Ok(b.len())
+    }
+}
+
+fn make_input_uevent_inode(info: InputDevInfo) -> InodeRef {
+    InodeBuilder::new(INO_INPUT_ATTR, mk_mode(FileType::Regular, RW_PERM),
+        vfs::default_inode_ops(), Arc::new(InputUeventOps))
+        .private(Arc::new(InputUeventData { info }))
+        .build()
+}
+
 struct InputDevDirOps;
 impl InodeOps for InputDevDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
@@ -80,9 +115,7 @@ impl InodeOps for InputDevDirOps {
         let info = input_by_addr(&d.addr).ok_or(VfsError::Enoent)?;
         let (maj, min) = info.dev_t;
         match name {
-            "uevent" => Ok(crate::make_body_inode(
-                alloc::format!("MAJOR={}\nMINOR={}\nDEVNAME={}\n", maj, min, info.devname).into_bytes(),
-                INO_INPUT_ATTR)),
+            "uevent" => Ok(make_input_uevent_inode(info)),
             "dev" => Ok(crate::make_body_inode(
                 alloc::format!("{}:{}\n", maj, min).into_bytes(), INO_INPUT_ATTR)),
             // sd-device reads SUBSYSTEM from the basename of this symlink.
@@ -184,6 +217,7 @@ pub fn init() {
 mod tests {
     use super::*;
     use alloc::sync::Arc;
+    use netlink::{proto, NetlinkSocket};
 
     #[test]
     fn input_class_device_links_to_model_parent_when_present() {
@@ -238,6 +272,36 @@ mod tests {
         .build();
         let dir = root.lookup("event-orphan0").expect("input device dir");
         assert_eq!(dir.lookup("device").err(), Some(VfsError::Enoent));
+
+        drv::device_del(&input);
+    }
+
+    #[test]
+    fn input_uevent_write_reemits_model_event() {
+        let input = Arc::new(
+            drv::Device::new("input", String::from("event-trigger0"), 0, 0, 0)
+                .with_devnode("input", String::from("input/event-trigger0"), Some((13, 82))),
+        );
+        drv::try_device_add(Arc::clone(&input)).expect("test input registration");
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        listener.set_group_mask(1);
+        netlink::register_uevent_listener(&listener);
+
+        let root = InodeBuilder::new(
+            INO_VIRT_INPUT,
+            mk_mode(FileType::Directory, DIR_PERM),
+            Arc::new(VirtInputOps),
+            Arc::new(VirtInputOps),
+        )
+        .build();
+        let dir = root.lookup("event-trigger0").expect("input device dir");
+        let uevent = dir.lookup("uevent").expect("uevent attr");
+        assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
+        let msg = listener.dequeue().expect("uevent message");
+        assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
+        assert!(msg.windows(b"DEVPATH=/devices/virtual/input/event-trigger0".len()).any(|w| w == b"DEVPATH=/devices/virtual/input/event-trigger0"));
+        assert!(msg.windows(b"SUBSYSTEM=input".len()).any(|w| w == b"SUBSYSTEM=input"));
+        assert!(msg.windows(b"DEVNAME=input/event-trigger0".len()).any(|w| w == b"DEVNAME=input/event-trigger0"));
 
         drv::device_del(&input);
     }

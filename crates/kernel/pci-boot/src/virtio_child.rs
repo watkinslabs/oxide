@@ -73,6 +73,8 @@ impl VirtioChildOps for VirtioGpuOps {
             location.bus,
             location.device,
             location.function,
+            "virtio",
+            alloc::string::String::from(session.device_addr()),
             session.drv_features(),
             resources,
         );

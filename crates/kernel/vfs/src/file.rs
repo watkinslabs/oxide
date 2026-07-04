@@ -671,7 +671,7 @@ impl Drop for File {
         // so Drop fires on the LAST close (incl. process exit). No lock
         // is held here (only atomics read above); on_release must not
         // block or panic. pty MASTER uses this to hang up the slave.
-        self.inode.on_release();
+        self.f_op.on_release_file(self);
         // D11: release the `d_count` ref taken in `new_at` (Linux `dput` in
         // `__fput`). At zero the dentry is unused — `d_op->d_delete` may evict
         // it (pseudo-fs), otherwise it joins the dcache LRU for the shrinker.
@@ -821,6 +821,14 @@ impl File {
 
     /// `file->private_data` slot write. # C: O(1)
     pub fn set_private_data(&self, v: u64) { self.private_data.store(v, Ordering::Release); }
+
+    /// `f_op->poll` for this open file description. This is the Linux
+    /// `struct file *` poll shape; inode-only polling remains the default for
+    /// backends that do not need per-open state.
+    /// # C: O(1)
+    pub fn poll(&self) -> u32 {
+        self.f_op.poll_open_file(self)
+    }
 
     /// `F_SETOWN` (Linux `f_setown`): set the SIGIO/SIGURG delivery target
     /// (`>0` a task, `<0` a `-pgrp`, `0` clears) AND snapshot the requesting
@@ -1057,9 +1065,9 @@ impl File {
         }
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.f_op.read_nonblock(&self.inode, pos, buf)?
+            self.f_op.read_nonblock_file(self, pos, buf)?
         } else {
-            self.f_op.read(&self.inode, pos, buf)?
+            self.f_op.read_file(self, pos, buf)?
         };
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
@@ -1303,7 +1311,11 @@ impl File {
             let want = buf.len();
             let off = pos + total;
             // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-            let r = if nonblock { self.f_op.read_nonblock(&self.inode, off, buf) } else { self.f_op.read(&self.inode, off, buf) };
+            let r = if nonblock {
+                self.f_op.read_nonblock_file(self, off, buf)
+            } else {
+                self.f_op.read_file(self, off, buf)
+            };
             match r {
                 Ok(0)                => break,                   // EOF
                 Ok(n)                => { total += n as u64; if n < want { break; } }

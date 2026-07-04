@@ -15,6 +15,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use crate::file::File;
 use crate::inode::{Inode, no_data_op_errno, POLL_IN, POLL_OUT};
 use crate::types::{FileType, KResult, VfsError};
 
@@ -75,6 +76,13 @@ pub trait FileOps: Send + Sync {
         Err(no_data_op_errno(inode.file_type()))
     }
 
+    /// `f_op->read` with access to the open file description. Backends with
+    /// per-open state override this; the default preserves inode-only drivers.
+    /// # C: backend-dependent
+    fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        self.read(file.inode(), off, buf)
+    }
+
     /// `f_op->write` — write `buf` at byte offset `off`. Default `EISDIR`/`EINVAL`
     /// per `S_IFMT` (Linux `vfs_write`). # C: backend-dependent
     fn write(&self, inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {
@@ -86,6 +94,12 @@ pub trait FileOps: Send + Sync {
     /// regular files, tmpfs, procfs); pipes/ttys/sockets override. # C: backend
     fn read_nonblock(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         self.read(inode, off, buf)
+    }
+
+    /// Non-blocking read with access to the open file description.
+    /// # C: backend-dependent
+    fn read_nonblock_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        self.read_nonblock(file.inode(), off, buf)
     }
 
     /// Non-blocking write. Default forwards to [`Self::write`]. # C: backend
@@ -113,6 +127,13 @@ pub trait FileOps: Send + Sync {
     /// # C: O(1)
     fn poll_file(&self, inode: &Inode, _pos: u64) -> u32 { self.poll(inode) }
 
+    /// `f_op->poll` with access to the open file description. Backends with
+    /// per-open readiness, such as evdev grabs, override this.
+    /// # C: O(1)
+    fn poll_open_file(&self, file: &File) -> u32 {
+        self.poll_file(file.inode(), file.pos())
+    }
+
     /// `MAP_SHARED` page-cache frame for page-aligned file offset `off`. Default
     /// forwards through the inode's `i_mapping` (one per-inode address space);
     /// `None` → the fault handler copies via `read` into a private frame.
@@ -128,6 +149,12 @@ pub trait FileOps: Send + Sync {
     /// `f_op->release` — last-close hook (final fd of an open description
     /// drops). MUST NOT panic/block (runs from `File` Drop). # C: O(1)
     fn on_release(&self, _inode: &Inode) {}
+
+    /// Last-close hook with access to the open file description.
+    /// # C: O(1)
+    fn on_release_file(&self, file: &File) {
+        self.on_release(file.inode())
+    }
 
     /// `f_op->flush` — per-`close(2)` hook on EVERY fd close (not only the
     /// last). MUST NOT panic/block. # C: O(1)
