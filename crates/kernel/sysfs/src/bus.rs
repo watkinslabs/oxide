@@ -296,6 +296,8 @@ fn dev_root_canon(bus: &str) -> &'static str {
         // /sys<DEVPATH>/uevent → ENOENT and never processes the disk.
         "block" => "devices/virtual/block",
         "input" => "devices/virtual/input",
+        "mem" => "devices/virtual/mem",
+        "misc" => "devices/virtual/misc",
         _ => "devices/platform",
     }
 }
@@ -305,6 +307,8 @@ fn dev_root_leaf(bus: &str) -> &'static str {
         "pci" => "pci0000:00",
         "virtio" => "virtio",
         "platform" => "platform",
+        "mem" => "virtual/mem",
+        "misc" => "virtual/misc",
         _ => "platform",
     }
 }
@@ -773,5 +777,32 @@ mod tests {
         drv::device_del(&dev);
         assert_eq!(devices.lookup("sysfs-dev-index0").err(), Some(VfsError::Enoent));
         assert_eq!(index.lookup("254:42").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn sys_dev_char_indexes_virtual_mem_and_misc_devices() {
+        let mem = Arc::new(
+            drv::Device::new("mem", String::from("sysfs-random-test"), 0, 0, 0)
+                .with_devnode("mem", String::from("random-test"), Some((1, 8))));
+        let misc = Arc::new(
+            drv::Device::new("misc", String::from("sysfs-autofs-test"), 0, 0, 0)
+                .with_devnode("misc", String::from("autofs-test"), Some((10, 235))));
+        drv::device_add(Arc::clone(&mem));
+        drv::device_add(Arc::clone(&misc));
+
+        let index = make_sys_dev_index_inode(DevIndexKind::Char);
+        let mem_link = index.lookup("1:8").expect("mem char index link");
+        assert_eq!(
+            mem_link.readlink().expect("readlink"),
+            b"../../devices/virtual/mem/sysfs-random-test".to_vec());
+        let misc_link = index.lookup("10:235").expect("misc char index link");
+        assert_eq!(
+            misc_link.readlink().expect("readlink"),
+            b"../../devices/virtual/misc/sysfs-autofs-test".to_vec());
+
+        drv::device_del(&mem);
+        drv::device_del(&misc);
+        assert_eq!(index.lookup("1:8").err(), Some(VfsError::Enoent));
+        assert_eq!(index.lookup("10:235").err(), Some(VfsError::Enoent));
     }
 }

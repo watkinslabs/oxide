@@ -25,6 +25,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, DirContext, FileOps, Fil
 
 pub mod block;
 pub mod bus;
+pub mod char_class;
 pub mod drm;
 pub mod input;
 pub mod kobject;
@@ -565,6 +566,7 @@ pub fn init() {
     register("/sys/devices/virtual/tty", make_sys_devices_virtual_tty_inode());
     bus::init();
     block::init();
+    char_class::init();
     drm::init();
     input::init();
 }

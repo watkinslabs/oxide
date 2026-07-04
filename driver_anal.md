@@ -53,7 +53,10 @@ test-pass claims.
   driver links, `driver_override`, `modalias`, PCI `resource`, and model-derived
   uevent environment coverage improved on this branch. Model devices with
   `dev_t` now expose a `dev` attribute and dynamic `/sys/dev/char` and
-  `/sys/dev/block` reverse indexes.
+  `/sys/dev/block` reverse indexes. Model-backed `mem` and `misc` character
+  devices now also publish Linux-style `/sys/class/<class>` symlinks and
+  `/sys/devices/virtual/<class>/<name>` device directories, so `/sys/dev/char`
+  resolves to a real device object for pseudo and misc char devices.
 - PCI capability dumping is read-only again for MSI-X; MSI-X programming for
   virtio devices belongs to the virtio-pci transport probe/remove path.
 - The virtio-pci transport accepts modern virtio PCI IDs only. Transitional
