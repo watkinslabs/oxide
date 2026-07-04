@@ -2,12 +2,12 @@
 // under the 1000-line cap (docs/08§7). All output is gated under
 // `debug-boot` (R06) — zero bytes in a default build.
 
-use super::virtio_drv::VirtioProbe;
+use super::virtio_drv::VirtioPciProbeTrace;
 
 /// Emit the per-device `[INFO] virtio-*` probe trace lines. Gated under
 /// `debug-boot`; the side-effect bring-up itself runs in `virtio_drv`.
 /// # C: O(num_queues) klog writes
-pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
+pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioPciProbeTrace) {
     #[cfg(not(feature = "debug-boot"))]
     let _ = (bdf, p);
     debug_boot! {
