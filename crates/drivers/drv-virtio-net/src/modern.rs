@@ -41,12 +41,10 @@ pub struct ModernNetState {
     /// on every completion (one-in-flight RX ring v1; pool comes later).
     pub rx0_buf_pa:  u64,
     pub rx0_buf_len: u16,
-    /// F59-04: 6-byte device MAC read from the device-cfg cap during
-    /// the boot probe. `mac_valid=true` once the cap was located and
-    /// read; F59-05 (TX) and the ARP path consume this to fill the
-    /// ethernet src + ARP sender-hw fields.
+    /// 6-byte device MAC read from the virtio-net device config during
+    /// driver install. TX and neighbor-discovery paths consume this to fill
+    /// ethernet src + ARP/NDP sender-hw fields.
     pub mac:       [u8; 6],
-    pub mac_valid: bool,
     /// F59-05: PA of the boot-allocated TX scratch frame. 4 KiB.
     /// `tx_frame` rewrites this buffer (12-byte virtio_net_hdr +
     /// caller body) and reposts q1 descriptor 0 each call.
@@ -66,6 +64,21 @@ static REGISTERED_NETDEVS: Spinlock<alloc::vec::Vec<(u32, net::NetIfaceId)>, Dri
     Spinlock::new(alloc::vec::Vec::new());
 static ARP_GC_TIMER_ID: AtomicU64 = AtomicU64::new(0);
 
+fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; 6]> {
+    let cfg = resources.device_cfg_va;
+    if cfg == 0 {
+        return None;
+    }
+    let mut mac = [0u8; 6];
+    for (i, byte) in mac.iter_mut().enumerate() {
+        // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
+        // virtio-net config window. The MAC occupies bytes 0..6 when
+        // VIRTIO_NET_F_MAC was negotiated by the transport.
+        *byte = unsafe { core::ptr::read_volatile((cfg + i as u64) as *const u8) };
+    }
+    Some(mac)
+}
+
 /// Stash modern virtio-net runtime state for later RX/TX drivers.
 /// Returns false if a device is already installed.
 /// # C: O(1)
@@ -77,8 +90,6 @@ pub fn init_modern(
     function: u8,
     rx0_buf_pa: u64,
     rx0_buf_len: u16,
-    mac: [u8; 6],
-    mac_valid: bool,
     tx0_buf_pa: u64,
 ) -> bool {
     let Some(rxq) = resources.require_queue(0) else {
@@ -87,11 +98,13 @@ pub fn init_modern(
     let Some(txq) = resources.require_queue(1) else {
         return false;
     };
+    let Some(mac) = read_device_mac(resources) else {
+        return false;
+    };
     if !resources.common_cfg_valid()
         || rx0_buf_pa == 0
         || rx0_buf_len == 0
         || tx0_buf_pa == 0
-        || !mac_valid
     {
         return false;
     }
@@ -107,7 +120,6 @@ pub fn init_modern(
         rx0_buf_pa,
         rx0_buf_len,
         mac,
-        mac_valid,
         tx0_buf_pa,
         tx_last_used: 1,
         tx_next_avail: 1,
@@ -138,13 +150,9 @@ pub fn init_modern(
         klog::write_raw(b" txq_notify_va=");
         klog::write_hex_u64(state.txq.notify_va);
         klog::write_raw(b" mac=");
-        if state.mac_valid {
-            for (i, b) in state.mac.iter().enumerate() {
-                klog::write_hex_u64(*b as u64);
-                if i < 5 { klog::write_raw(b":"); }
-            }
-        } else {
-            klog::write_raw(b"unread");
+        for (i, b) in state.mac.iter().enumerate() {
+            klog::write_hex_u64(*b as u64);
+            if i < 5 { klog::write_raw(b":"); }
         }
         klog::write_raw(b"\n");
     }
@@ -279,13 +287,13 @@ fn remove_registered_iface(device_key: u32) -> Option<net::NetIfaceId> {
 }
 
 /// Read-only accessor for the device MAC. Returns `None` until
-/// `init_modern` has run with `mac_valid=true`.
+/// `init_modern` has installed at least one device.
 /// # C: O(N devices) under device-table lock
 pub fn mac() -> Option<[u8; 6]> {
     MODERN_DEVS
         .lock()
         .iter()
-        .find(|state| state.mac_valid)
+        .next()
         .map(|state| state.mac)
 }
 
@@ -293,7 +301,7 @@ pub fn mac_for(device_key: u32) -> Option<[u8; 6]> {
     MODERN_DEVS
         .lock()
         .iter()
-        .find(|state| state.device_key == device_key && state.mac_valid)
+        .find(|state| state.device_key == device_key)
         .map(|state| state.mac)
 }
 
@@ -638,14 +646,14 @@ fn ensure_net_runtime(device_key: u32) -> alloc::sync::Arc<NetRuntime> {
 
 impl VirtioNetDev {
     /// Build a `VirtioNetDev` from the persisted modern state.
-    /// Returns `None` if `init_modern` hasn't run or MAC is invalid.
+    /// Returns `None` if `init_modern` has not run for this device.
     /// # C: O(1)
     pub fn new_for(device_key: u32) -> Option<alloc::sync::Arc<Self>> {
         let m = {
             let g = MODERN_DEVS.lock();
             let state = g
                 .iter()
-                .find(|state| state.device_key == device_key && state.mac_valid)?;
+                .find(|state| state.device_key == device_key)?;
             state.mac
         };
         let runtime = ensure_net_runtime(device_key);
@@ -1140,7 +1148,6 @@ mod ndp_tests {
             rx0_buf_pa: 0,
             rx0_buf_len: 2048,
             mac: [0x02, 0, 0, 0, 0, bus],
-            mac_valid: true,
             tx0_buf_pa: 0,
             tx_last_used: 1,
             tx_next_avail: 1,
@@ -1156,7 +1163,7 @@ mod ndp_tests {
         clear_rx_runtime();
     }
 
-    fn resources() -> virtio::VirtioResources {
+    fn resources_with_mac(mac: &'static [u8; 6]) -> virtio::VirtioResources {
         let mut resources = virtio::VirtioResources::new(1, 1);
         resources.set_queue(virtio::VirtQueueResource {
             index: 0,
@@ -1176,50 +1183,48 @@ mod ndp_tests {
             notify_va: 8,
             notify_off: 0,
         });
-        resources
+        resources.with_device_cfg_va(mac.as_ptr() as u64)
     }
 
     #[test]
     fn init_modern_accepts_distinct_devices_and_rejects_duplicate_key() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
+        static MAC1: [u8; 6] = [0x02, 0, 0, 0, 0, 1];
+        static MAC2: [u8; 6] = [0x02, 0, 0, 0, 0, 2];
         assert!(init_modern(
             1,
-            resources(),
+            resources_with_mac(&MAC1),
             1,
             1,
             0,
             9,
             2048,
-            [0x02, 0, 0, 0, 0, 1],
-            true,
             10
         ));
         assert!(is_modern_present_for(1));
+        assert_eq!(mac_for(1), Some(MAC1));
         assert!(init_modern(
             2,
-            resources(),
+            resources_with_mac(&MAC2),
             2,
             1,
             0,
             9,
             2048,
-            [0x02, 0, 0, 0, 0, 2],
-            true,
             10
         ));
+        assert_eq!(mac_for(2), Some(MAC2));
         assert_eq!(modern_state_for(1).unwrap().bus, 1);
         assert_eq!(modern_state_for(2).unwrap().bus, 2);
         assert!(!init_modern(
             2,
-            resources(),
+            resources_with_mac(&MAC2),
             2,
             1,
             0,
             9,
             2048,
-            [0x02, 0, 0, 0, 0, 2],
-            true,
             10
         ));
         MODERN_DEVS.lock().clear();
