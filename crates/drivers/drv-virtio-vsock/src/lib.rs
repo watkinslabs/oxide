@@ -82,6 +82,57 @@ pub fn present_for(device_key: u32) -> bool {
         .unwrap_or(false)
 }
 
+struct VsockProbeState {
+    rx_bufs: [u64; RX_RING_BUFS],
+    tx_buf_pa: u64,
+    reserved_endpoint: bool,
+    owned_frames: bool,
+}
+
+impl VsockProbeState {
+    fn reserve_and_alloc() -> Option<Self> {
+        if !net::vsock::driver_reserve() {
+            return None;
+        }
+        let mut state = Self {
+            rx_bufs: [0u64; RX_RING_BUFS],
+            tx_buf_pa: 0,
+            reserved_endpoint: true,
+            owned_frames: true,
+        };
+        for slot in state.rx_bufs.iter_mut() {
+            *slot = pmm::setup::alloc_one_frame()?;
+        }
+        state.tx_buf_pa = pmm::setup::alloc_one_frame()?;
+        Some(state)
+    }
+
+    fn disarm_frames(&mut self) {
+        self.owned_frames = false;
+    }
+
+    fn disarm_endpoint(&mut self) {
+        self.reserved_endpoint = false;
+    }
+}
+
+impl Drop for VsockProbeState {
+    fn drop(&mut self) {
+        if self.owned_frames {
+            free_rx_bufs(&mut self.rx_bufs);
+            if self.tx_buf_pa != 0 {
+                // SAFETY: tx_buf_pa was allocated in this probe attempt and
+                // has not been published to the installed device context.
+                unsafe { pmm::setup::free_one_frame(self.tx_buf_pa); }
+                self.tx_buf_pa = 0;
+            }
+        }
+        if self.reserved_endpoint {
+            net::vsock::driver_cancel_reserved();
+        }
+    }
+}
+
 fn read_guest_cid(resources: virtio::VirtioResources) -> Option<u64> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
@@ -115,27 +166,9 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources) -> bool {
     if CTX.lock().is_some() {
         return false;
     }
-    if !net::vsock::driver_reserve() {
-        return false;
-    }
-    let mut rx_bufs = [0u64; RX_RING_BUFS];
-    for slot in rx_bufs.iter_mut() {
-        match pmm::setup::alloc_one_frame() {
-            Some(pa) => *slot = pa,
-            None => {
-                free_rx_bufs(&mut rx_bufs);
-                net::vsock::driver_cancel_reserved();
-                return false;
-            }
-        }
-    }
-    let tx_buf_pa = match pmm::setup::alloc_one_frame() {
-        Some(pa) => pa,
-        None => {
-            free_rx_bufs(&mut rx_bufs);
-            net::vsock::driver_cancel_reserved();
-            return false;
-        }
+    let mut probe = match VsockProbeState::reserve_and_alloc() {
+        Some(probe) => probe,
+        None => return false,
     };
 
     // Seed used.idx shadows from the live rings so the first drain/tx
@@ -156,23 +189,16 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources) -> bool {
         rxq,
         txq,
         rx_avail_idx: rx_used_seen, rx_used_seen,
-        rx_bufs,
+        rx_bufs: probe.rx_bufs,
         tx_avail_idx: tx_used_seen, tx_used_seen,
-        tx_buf_pa,
+        tx_buf_pa: probe.tx_buf_pa,
     };
     let mut g = CTX.lock();
     if g.is_some() {
-        let mut rx_bufs = ctx.rx_bufs;
-        free_rx_bufs(&mut rx_bufs);
-        if ctx.tx_buf_pa != 0 {
-            // SAFETY: tx_buf_pa was allocated in this install attempt and was
-            // not published to the device model because another context won.
-            unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
-        }
-        net::vsock::driver_cancel_reserved();
         return false;
     }
     *g = Some(ctx);
+    probe.disarm_frames();
     drop(g);
 
     // Pre-post all RX buffers + kick the device.
@@ -180,6 +206,7 @@ pub fn install(device_key: u32, resources: virtio::VirtioResources) -> bool {
 
     // Publish guest CID + TX hook so net::vsock can drive the protocol.
     net::vsock::driver_publish_reserved(guest_cid, tx_packet);
+    probe.disarm_endpoint();
     if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
         softirq::set_handler(softirq::Slot::VsockRx, rx_drain_softirq);
     }
