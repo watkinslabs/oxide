@@ -162,6 +162,10 @@ fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> {
     drm_inode_parts_raw(inode.ino())
 }
 
+fn ioctl_takes_user_ptr(req: u64) -> bool {
+    !matches!(req, DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER)
+}
+
 /// Build a `/dev/dri/cardN` inode (`S_IFCHR|0o666`, card tag, card f_op).
 /// # C: O(1)
 fn make_card_inode(card_id: u32) -> vfs::InodeRef {
@@ -363,6 +367,28 @@ mod node_publication_tests {
         assert!(register(card_id));
         unregister(card_id);
     }
+
+    #[test]
+    fn render_node_rejects_master_only_ioctls() {
+        use syscall::errno::Errno;
+
+        let render = make_render_inode(0);
+        assert_eq!(
+            handle_drm_ioctl(&render, DRM_IOCTL_MODE_SETCRTC, 1),
+            Some(-(Errno::Eacces.as_i32() as i64))
+        );
+        assert_eq!(
+            handle_drm_ioctl(&render, DRM_IOCTL_SET_MASTER, 1),
+            Some(-(Errno::Eacces.as_i32() as i64))
+        );
+    }
+
+    #[test]
+    fn card_master_ioctls_do_not_require_user_pointer() {
+        let card = make_card_inode(0);
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_DROP_MASTER, 0), Some(0));
+    }
 }
 
 /// mmap backing for a DRM card inode (offset-keyed). Legacy raw lookup used
@@ -384,9 +410,12 @@ pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dum
 /// falls back to the generic CharDev path).
 /// # C: O(1)
 pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
-    let (_, card_id) = drm_inode_parts(inode)?;
+    let (tag, card_id) = drm_inode_parts(inode)?;
     use syscall::errno::Errno;
-    if arg == 0 || arg >= hal::USER_VA_END {
+    if tag == DRM_RENDER_INO && crate::is_master_only(req) {
+        return Some(-(Errno::Eacces.as_i32() as i64));
+    }
+    if ioctl_takes_user_ptr(req) && (arg == 0 || arg >= hal::USER_VA_END) {
         return Some(-(Errno::Efault.as_i32() as i64));
     }
     let driver = crate::card(card_id);
