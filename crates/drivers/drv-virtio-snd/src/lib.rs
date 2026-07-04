@@ -69,6 +69,15 @@ const TX_POLL_BUDGET: u32 = 4_000_000;
 const REQ_OFF: u64 = 0;
 const RESP_OFF: u64 = 0x200;
 
+const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
+
+/// Feature policy for the virtio-snd child driver. The PCI transport executes
+/// common-cfg negotiation; this driver owns the sound feature mask it is
+/// prepared to consume.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
+
 /// Persistent per-device CONTROLQ engine. PAs/VA reference the q0 ring the
 /// boot probe already programmed. One in-flight control request at a time,
 /// serialised by the `Spinlock` around the whole request body.

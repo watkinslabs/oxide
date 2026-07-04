@@ -28,6 +28,15 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 /// matches the gpu/blk poll style. Named, not a magic literal.
 const FILL_POLL_BUDGET: u32 = 2_000_000;
 
+const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
+
+/// Feature policy for the virtio-rng child driver. The PCI transport executes
+/// common-cfg negotiation; this driver owns the RNG feature mask it is
+/// prepared to consume.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
+
 /// Persistent per-device request engine. The requestq resource references the
 /// q0 ring the transport already programmed into the device. A single
 /// in-flight request at a time, serialised by the `Spinlock` around the whole

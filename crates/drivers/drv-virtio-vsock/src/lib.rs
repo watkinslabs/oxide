@@ -60,6 +60,15 @@ static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// TX poll budget for one outbound packet completion. # C: O(1)
 const TX_POLL_BUDGET: u32 = 2_000_000;
 
+const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
+
+/// Feature policy for the virtio-vsock child driver. The PCI transport
+/// executes common-cfg negotiation; this driver owns the vsock feature mask it
+/// is prepared to consume.
+pub const fn wanted_features() -> u64 {
+    WANTED_FEATURES
+}
+
 /// True once a virtio-vsock device has been brought up + installed.
 /// # C: O(1)
 pub fn present() -> bool { CTX.lock().is_some() }
