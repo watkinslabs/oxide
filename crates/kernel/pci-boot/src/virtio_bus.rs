@@ -27,35 +27,39 @@ impl VirtioChildSession {
         })
     }
 
-    pub(super) fn device_key(&self) -> u32 { bdf_word(self.bdf) }
+    pub(super) fn fail<T>(&mut self) -> drv::KResult<T> {
+        virtio::VirtioChildTransportSession::release_failed_child(self);
+        Err(drv::Error::ProbeFailed)
+    }
+}
 
-    pub(super) fn bdf(&self) -> pci::Bdf { self.bdf }
+impl virtio::VirtioChildTransportSession for VirtioChildSession {
+    fn device_key(&self) -> u32 { bdf_word(self.bdf) }
 
-    pub(super) fn drv_features(&self) -> u64 { self.probe.drv_features }
+    fn location(&self) -> virtio::VirtioTransportLocation {
+        virtio::VirtioTransportLocation::new(self.bdf.bus, self.bdf.device, self.bdf.function)
+    }
 
-    pub(super) fn net_boot_payloads(&self) -> (u64, u16, u64) {
-        (
+    fn drv_features(&self) -> u64 { self.probe.drv_features }
+
+    fn net_boot_payloads(&self) -> virtio::VirtioNetBootPayloads {
+        virtio::VirtioNetBootPayloads::new(
             self.probe.rx0_buf_pa,
             self.probe.rx0_buf_len,
             self.probe.tx0_buf_pa,
         )
     }
 
-    pub(super) fn child_resources(&self) -> Option<virtio::VirtioResources> {
+    fn child_resources(&self) -> Option<virtio::VirtioResources> {
         self.probe.child_resources(self.profile.child_requirements)
     }
 
-    pub(super) fn release_failed_child(&mut self) {
+    fn release_failed_child(&mut self) {
         self.probe
             .release_failed_child(self.profile.child_requirements);
     }
 
-    pub(super) fn fail<T>(&mut self) -> drv::KResult<T> {
-        self.release_failed_child();
-        Err(drv::Error::ProbeFailed)
-    }
-
-    pub(super) fn publish(mut self) {
+    fn publish(mut self) {
         virtio_drv::publish_transport_mmio(&mut self.probe);
     }
 }
