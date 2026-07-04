@@ -1785,7 +1785,7 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 /// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let from_m = mount_exact_at(current_ns(), from).ok_or(VfsError::Einval)?;
-    move_mount_m(from_m, to)
+    move_mount_m(from_m, to, None)
 }
 
 /// As [`move_mount`] but identifies the SOURCE mount by the `mnt_id` the path
@@ -1795,15 +1795,31 @@ pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
 /// `mount_move_root` (`mount(".", "/", MS_MOVE)`, the final pivot of the
 /// assembled sandbox root) got EINVAL at step NAMESPACE. # C: O(N × depth)
 pub fn move_mount_by_id(from_id: u64, to: &Arc<Dentry>) -> KResult<()> {
+    move_mount_by_id_to(from_id, None, to)
+}
+
+/// As [`move_mount_by_id`] but the caller supplies the DESTINATION mount id the
+/// path walk crossed into (`Some`), instead of re-deriving it from the bare
+/// `to` dentry. Required when `to` sits in a BIND mount: bind mounts SHARE the
+/// underlying dentries, so `parent_by_dentry(to)` is ambiguous and can resolve
+/// to a peer bind (e.g. systemd assembles the sandbox root at
+/// `/run/systemd/mount-rootfs` — a bind of `/` — then MS_MOVEs `/sys` onto
+/// `/run/systemd/mount-rootfs/sys`, whose `sys` dentry IS the real `/sys`
+/// mountpoint dentry). Threading the walked `to_mnt_id` disambiguates.
+/// # C: O(N × depth)
+pub fn move_mount_by_id_to(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry>) -> KResult<()> {
     let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
     // [D32] Uniform cross-ns guard: `mount_by_id` is the ns-AGNOSTIC arena
     // lookup, so a by-id handle MUST pass `check_mnt` before any mutation.
     if !check_mnt(&from_m) { return Err(VfsError::Einval); }
-    move_mount_m(from_m, to)
+    move_mount_m(from_m, to, to_mnt_id)
 }
 
-/// Shared MS_MOVE body for both [`move_mount`] variants. # C: O(N × depth)
-fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
+/// Shared MS_MOVE body for both [`move_mount`] variants. `dest_hint` is the
+/// destination parent mount id when known from the walk (see
+/// [`move_mount_by_id_to`]); `None` falls back to `parent_by_dentry(to)`.
+/// # C: O(N × depth)
+fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) -> KResult<()> {
     let ns = current_ns();
     let from_id = from_m.mnt_id;
     let to_root = is_ns_root_dentry(to);
@@ -1826,19 +1842,22 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
     if let Some(p) = mount_by_id(from_m.parent_id.load(Ordering::Acquire)) {
         if is_shared(&p) { return Err(VfsError::Einval); }
     }
+    // Destination parent mount: prefer the walked `dest_hint` (unambiguous
+    // even when `to` is in a bind mount); else re-derive by dentry identity.
+    let dest_pid = if to_root { None } else { Some(dest_hint.unwrap_or_else(|| parent_by_dentry(ns, to))) };
     // [D21] Don't move a tree containing UNBINDABLE mounts onto a SHARED
     // destination (Linux `do_move_mount`: `IS_MNT_SHARED(dest) &&
     // tree_contains_unbindable(old)` → -EINVAL): the dest's peers would receive
     // a propagated copy of a mount declared unbindable.
-    if !to_root {
-        if let Some(dest) = mount_by_id(parent_by_dentry(ns, to)) {
+    if let Some(dp) = dest_pid {
+        if let Some(dest) = mount_by_id(dp) {
             if is_shared(&dest) && tree_contains_unbindable(ns, from_id) {
                 return Err(VfsError::Einval);
             }
         }
     }
-    if !to_root {
-        let mut anc = Some(parent_by_dentry(ns, to));
+    if let Some(dp0) = dest_pid {
+        let mut anc = Some(dp0);
         while let Some(a) = anc {
             if a == from_id { return Err(VfsError::Einval); }
             let Some(am) = mount_by_id(a) else { break; };
@@ -1871,7 +1890,7 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>) -> KResult<()> {
                 *from_m.mnt_parent.lock() = Weak::new();
             }
             Some(d) => {
-                let new_parent = parent_by_dentry(ns, d);
+                let new_parent = dest_pid.unwrap_or_else(|| parent_by_dentry(ns, d));
                 from_m.parent_id.store(new_parent, Ordering::Release);
                 if let Some(p) = mount_by_id(new_parent) {
                     *from_m.mnt_parent.lock() = Arc::downgrade(&p);
