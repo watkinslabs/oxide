@@ -121,8 +121,8 @@ pub fn init_modern(
         rx0_buf_len,
         mac,
         tx0_buf_pa,
-        tx_last_used: 1,
-        tx_next_avail: 1,
+        tx_last_used: 0,
+        tx_next_avail: 0,
         rx_last_used: 0,
         rx_next_avail: 1,
     };
@@ -309,10 +309,9 @@ pub fn mac_for(device_key: u32) -> Option<[u8; 6]> {
 //
 // One scratch buffer pinned to queue 1 descriptor 0; tx_frame rewrites
 // the buffer (12-byte virtio_net_hdr zeros + caller body) and posts a
-// fresh avail.idx entry referring to descriptor 0. The boot probe
-// already issued one TX with size 72; we resume from TX_NEXT_AVAIL=1
-// (next slot) and TX_LAST_USED=1 (boot probe's completion was logged
-// in `virtio-tx tx_used_idx=N`; we trust the device finished it).
+// fresh avail.idx entry referring to descriptor 0. The transport probe
+// allocates this scratch page but does not send a synthetic packet; first
+// real TX starts from avail.idx 0.
 
 /// Errors returned by `tx_frame`.
 #[derive(Copy, Clone, Debug)]
@@ -409,9 +408,8 @@ pub fn tx_frame_for(device_key: u32, body: &[u8]) -> Result<TxOutcome, TxErr> {
     }
 
     // Read q1 used.idx BEFORE the kick so we can poll for a real
-    // post-kick change — the static cursor is unreliable since the
-    // boot probe's own TX may or may not have completed before our
-    // call (depends on SLIRP timing).
+    // post-kick change. The device may already have unrelated used.idx
+    // movement, so the live pre-kick value is the only reliable cursor.
     // SAFETY: HHDM-mapped q1 used ring; aligned u16 load at +2.
     let pre_used = unsafe {
         core::ptr::read_volatile((used_va + 2) as *const u16)
@@ -1149,8 +1147,8 @@ mod ndp_tests {
             rx0_buf_len: 2048,
             mac: [0x02, 0, 0, 0, 0, bus],
             tx0_buf_pa: 0,
-            tx_last_used: 1,
-            tx_next_avail: 1,
+            tx_last_used: 0,
+            tx_next_avail: 0,
             rx_last_used: 0,
             rx_next_avail: 1,
         }

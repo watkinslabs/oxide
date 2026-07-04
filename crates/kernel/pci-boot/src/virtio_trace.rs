@@ -85,8 +85,6 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioProbe) {
             klog::write_dec_u64(p.q1_notify_off as u64);
             klog::write_raw(b" q1_notify_va=");
             klog::write_hex_u64(p.q1_notify_va);
-            klog::write_raw(b" tx_used_idx=");
-            klog::write_dec_u64(p.tx_used_idx as u64);
             klog::write_raw(b"\n");
         }
         if p.q0_notify_va != 0 {

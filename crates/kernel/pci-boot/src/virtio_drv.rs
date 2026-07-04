@@ -58,7 +58,7 @@ struct VirtioProbeProfile {
     drv_features: u64,
     msix0_handler: Option<fn()>,
     extra_queues: [Option<QueuePlan>; 3],
-    needs_q1_tx_warmup: bool,
+    needs_net_boot_buffers: bool,
 }
 
 impl VirtioProbeProfile {
@@ -71,7 +71,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [None, None, None],
-            needs_q1_tx_warmup: false,
+            needs_net_boot_buffers: false,
         }
     }
 
@@ -80,7 +80,7 @@ impl VirtioProbeProfile {
             drv_features: Self::NET_FEATURES,
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
-            needs_q1_tx_warmup: true,
+            needs_net_boot_buffers: true,
         }
     }
 
@@ -89,7 +89,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [None, None, None],
-            needs_q1_tx_warmup: false,
+            needs_net_boot_buffers: false,
         }
     }
 
@@ -98,7 +98,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [None, None, None],
-            needs_q1_tx_warmup: false,
+            needs_net_boot_buffers: false,
         }
     }
 
@@ -111,7 +111,7 @@ impl VirtioProbeProfile {
             drv_features: Self::VERSION_ONLY,
             msix0_handler,
             extra_queues: [Some(QueuePlan::new(1, 0xFFFF, false)), None, None],
-            needs_q1_tx_warmup: false,
+            needs_net_boot_buffers: false,
         }
     }
 
@@ -124,7 +124,7 @@ impl VirtioProbeProfile {
                 Some(QueuePlan::new(3, 0xFFFF, true)),
                 None,
             ],
-            needs_q1_tx_warmup: false,
+            needs_net_boot_buffers: false,
         }
     }
 
@@ -1082,6 +1082,69 @@ fn kick_queue_notify(notify_va: u64, queue_index: u16) -> bool {
     true
 }
 
+#[derive(Clone, Copy, Default)]
+struct NetRxBootBuffer {
+    buf_pa: u64,
+    buf_len: u16,
+    avail_idx_posted: u16,
+}
+
+fn post_net_rx_boot_buffer(hhdm: u64, q0_desc_pa: u64, q0_driver_pa: u64) -> NetRxBootBuffer {
+    const RX_BUF_LEN: u16 = 2048;
+    if hhdm == 0 || q0_desc_pa == 0 || q0_driver_pa == 0 {
+        return NetRxBootBuffer::default();
+    }
+    let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
+        return NetRxBootBuffer::default();
+    };
+
+    // Descriptor[0]: addr=rx_pa, len=2048, flags=WRITE, next=0.
+    let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u8;
+    // SAFETY: HHDM maps the freshly allocated RX frame and queue-0 descriptor
+    // table. The transport owns descriptor 0 until the child driver takes the
+    // resource handoff.
+    unsafe {
+        core::ptr::write_volatile(desc0 as *mut u64, rx_pa);
+        core::ptr::write_volatile((desc0.add(8)) as *mut u32, RX_BUF_LEN as u32);
+        core::ptr::write_volatile((desc0.add(12)) as *mut u16, virtio::VRING_DESC_F_WRITE);
+        core::ptr::write_volatile((desc0.add(14)) as *mut u16, 0u16);
+    }
+
+    let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
+    // SAFETY: HHDM maps the queue-0 avail ring frame. ring[0] is u16 offset 2
+    // and idx is u16 offset 1.
+    unsafe { core::ptr::write_volatile(avail.add(2), 0u16); }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    // SAFETY: same avail ring; idx publishes descriptor 0 after the release
+    // fence made descriptor and ring writes observable.
+    unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+
+    NetRxBootBuffer {
+        buf_pa: rx_pa,
+        buf_len: RX_BUF_LEN,
+        avail_idx_posted: 1,
+    }
+}
+
+fn alloc_net_tx_boot_buffer(
+    hhdm: u64,
+    q1_desc_pa: u64,
+    q1_driver_pa: u64,
+    q1_device_pa: u64,
+    q1_notify_va: u64,
+) -> u64 {
+    if hhdm == 0
+        || q1_desc_pa == 0
+        || q1_driver_pa == 0
+        || q1_device_pa == 0
+        || q1_notify_va == 0
+    {
+        return 0;
+    }
+    pmm::setup::alloc_raw_frame().unwrap_or(0)
+}
+
 fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -1184,7 +1247,6 @@ pub(super) struct VirtioProbe {
     pub(super) avail_idx_posted: u16,
     pub(super) used_idx_observed: u16,
     pub(super) isr_status: u8,
-    pub(super) tx_used_idx: u16,
     pub(super) q1_notify_va: u64,
     pub(super) q1_notify_off: u16,
     pub(super) q0_size: u16,
@@ -1439,57 +1501,16 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
     let snd_q3_device_pa_local = q3_ring.map(|q| q.device_pa).unwrap_or(0);
     let snd_q3_notify_off_local = q3_ring.map(|q| q.notify_off).unwrap_or(0);
     let snd_q3_size_local = q3_ring.map(|q| q.size).unwrap_or(0);
-    // For network-style devices, post one RX buffer descriptor on queue 0 and
-    // bump avail.idx before kicking. For other devices the queue stays empty so
-    // the kick is a no-op nudge.
-    let mut avail_idx_posted = 0u16;
-    // F59-02: persisted RX-buffer info for runtime rx_poll. Set when
-    // the virtio-net branch below allocates the boot-time RX page;
-    // 0/0 if no virtio-net device or DRIVER_OK didn't land.
-    let mut rx0_buf_pa_local: u64 = 0;
-    let mut rx0_buf_len_local: u16 = 0;
-    if profile.needs_q1_tx_warmup
-        && q0_desc_pa != 0
+    let net_rx_boot = if profile.needs_net_boot_buffers
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
-        if let Some(rx_pa) = pmm::setup::alloc_raw_frame() {
-            if hhdm != 0 {
-                // F59-02: capture rx_pa for runtime rx_poll re-publish.
-                rx0_buf_pa_local = rx_pa;
-                rx0_buf_len_local = 2048;
-                // Descriptor[0]: { addr=rx_pa; len=2048; flags=WRITE(2); next=0 }
-                let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
-                // SAFETY: HHDM-mapped, freshly-allocated frame, single-CPU.
-                unsafe {
-                    core::ptr::write_volatile(desc0, rx_pa);
-                    // len=2048 (low 32) | flags=WRITE(2) << 32 | next=0 << 48
-                    let lo32 = 2048u32 as u64;
-                    let flags_next = (virtio::VRING_DESC_F_WRITE as u64) << 32;
-                    core::ptr::write_volatile(desc0.add(1), lo32 | flags_next);
-                }
-                // avail.ring[0] = 0 at driver_pa+0x04
-                let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
-                // SAFETY: same frame, ring[0] at byte +4 = u16 offset 2.
-                unsafe {
-                    core::ptr::write_volatile(avail.add(2), 0u16);
-                }
-                // Memory barrier so the descriptor + ring writes are
-                // observable before avail.idx bump.
-                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                // avail.idx = 1 at driver_pa+0x02 (u16 offset 1).
-                // SAFETY: HHDM-mapped avail ring as above; this u16 store at idx publishes the descriptor we just wrote.
-                unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
-                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                avail_idx_posted = 1;
-            }
-        }
-    }
+        post_net_rx_boot_buffer(hhdm, q0_desc_pa, q0_driver_pa)
+    } else {
+        NetRxBootBuffer::default()
+    };
+    let avail_idx_posted = net_rx_boot.avail_idx_posted;
+    let rx0_buf_pa_local = net_rx_boot.buf_pa;
+    let rx0_buf_len_local = net_rx_boot.buf_len;
 
     let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
@@ -1509,88 +1530,26 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         (0u64, final_status)
     };
 
-    //: virtio-net TX path. After DRIVER_OK + (existing F26) q0
-    // kick, post one ethernet frame to queue 1, kick q1, observe
-    // q1.used.idx. Frame = 12-byte virtio_net_hdr (zeros) + 60-byte
-    // dummy ethernet broadcast frame. Single descriptor, flags=0
-    // (driver-side only).
     let mut q1_notify_va_local: u64 = 0;
-    let mut tx_used_idx_local: u16 = 0;
-    // F59-05: persist TX scratch buffer PA so drv_virtio_net::modern::
-    // tx_frame can rewrite + repost it after boot. 0 if no virtio-net
-    // or DRIVER_OK didn't land or the q1 setup bailed before alloc.
     let mut tx0_buf_pa_local: u64 = 0;
-    if profile.needs_q1_tx_warmup
-        && q1_desc_pa != 0
+    if profile.needs_net_boot_buffers
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
-        if let Some(tx_pa) = pmm::setup::alloc_raw_frame() {
-            tx0_buf_pa_local = tx_pa;
-            if hhdm != 0 {
-                let tx_va = hhdm.wrapping_add(tx_pa) as *mut u8;
-                // SAFETY: HHDM-mapped freshly-allocated frame; bytes 0..72 stay within the 4 KiB page; we own this frame exclusively.
-                unsafe {
-                    // virtio_net_hdr: 12 bytes of zeros (no checksum, no GSO, num_buffers=0).
-                    for i in 0..12usize { core::ptr::write_volatile(tx_va.add(i), 0); }
-                    // 60-byte dummy ethernet frame at +12.
-                    // dst MAC (broadcast) ff*6
-                    for i in 0..6 { core::ptr::write_volatile(tx_va.add(12 + i), 0xFF); }
-                    // src MAC 02:00:00:00:00:01
-                    core::ptr::write_volatile(tx_va.add(18), 0x02);
-                    for i in 19..24 { core::ptr::write_volatile(tx_va.add(i), 0); }
-                    core::ptr::write_volatile(tx_va.add(23), 0x01);
-                    // ethertype 0x0800 (IPv4)
-                    core::ptr::write_volatile(tx_va.add(24), 0x08);
-                    core::ptr::write_volatile(tx_va.add(25), 0x00);
-                    // 46 bytes of pad (already zeroed via PMM in some
-                    // setups; explicit for safety).
-                    for i in 26..72 { core::ptr::write_volatile(tx_va.add(i), 0); }
-                }
-                // descriptor[0] for q1 = { addr=tx_pa, len=72, flags=0, next=0 }
-                let q1_desc = (hhdm.wrapping_add(q1_desc_pa)) as *mut u64;
-                // SAFETY: HHDM-mapped queue-1 descriptor table; aligned u64 stores within frame bounds; driver owns it.
-                unsafe {
-                    core::ptr::write_volatile(q1_desc, tx_pa);
-                    core::ptr::write_volatile(q1_desc.add(1), 72u64);
-                }
-                // avail.ring[0] = 0; avail.idx = 1
-                let q1_avail = (hhdm.wrapping_add(q1_driver_pa)) as *mut u16;
-                // SAFETY: HHDM-mapped q1 avail ring frame; u16 offset 2 = ring[0], offset 1 = idx.
-                unsafe {
-                    core::ptr::write_volatile(q1_avail.add(2), 0u16);
-                }
-                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                // SAFETY: same frame; published idx=1 after the desc and ring writes are observable.
-                unsafe { core::ptr::write_volatile(q1_avail.add(1), 1u16); }
-                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                let kick_va = map_queue_notify_va(
-                    &mut mappings,
-                    notify_cap.as_ref(),
-                    &bars,
-                    q1_notify_off_local,
-                );
-                q1_notify_va_local = kick_va;
-                if kick_queue_notify(kick_va, 1) {
-                    // Brief observation window for any TX completion.
-                    for _ in 0..1_000_000 { core::hint::spin_loop(); }
-                    let q1_used = (hhdm.wrapping_add(q1_device_pa)) as *const u16;
-                    // SAFETY: HHDM-mapped q1 used ring; u16 idx at offset 1.
-                    tx_used_idx_local = unsafe { core::ptr::read_volatile(q1_used.add(1)) };
-                }
-            }
-        }
+        q1_notify_va_local =
+            map_queue_notify_va(&mut mappings, notify_cap.as_ref(), &bars, q1_notify_off_local);
+        tx0_buf_pa_local = alloc_net_tx_boot_buffer(
+            hhdm,
+            q1_desc_pa,
+            q1_driver_pa,
+            q1_device_pa,
+            q1_notify_va_local,
+        );
     }
 
-    // D3.3: virtio-vsock q1 notify VA. No dummy TX frame (vsock has no
-    // broadcast warm-up); the persistent driver posts real OP_* packets
-    // post-boot. Just map the q1 notify window so `tx_packet` can kick.
-    if profile.wants_queue(1) && !profile.needs_q1_tx_warmup
+    // D3.3: virtio-vsock q1 notify VA. The persistent driver posts real
+    // OP_* packets post-boot; this path only maps the q1 notify window so
+    // `tx_packet` can kick.
+    if profile.wants_queue(1) && !profile.needs_net_boot_buffers
         && q1_desc_pa != 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
@@ -1672,7 +1631,6 @@ fn virtio_init_arch(d: &pci::PciDevice, profile: VirtioProbeProfile) -> Option<V
         avail_idx_posted,
         used_idx_observed,
         isr_status,
-        tx_used_idx: tx_used_idx_local,
         q1_notify_va: q1_notify_va_local,
         q1_notify_off: q1_notify_off_local,
         q0_size,
