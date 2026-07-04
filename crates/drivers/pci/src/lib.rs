@@ -100,6 +100,19 @@ pub fn enable_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
     old
 }
 
+/// Disable Memory Space and Bus Master for a function.
+///
+/// Returns the previous command value so callers can restore it if desired.
+/// # C: O(1)
+pub fn disable_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
+    let old = read_command(r, bdf);
+    let restored = old & !(COMMAND_MEMORY | COMMAND_BUS_MASTER);
+    if restored != old {
+        write_command(r, bdf, restored);
+    }
+    old
+}
+
 /// Per-device decoded summary for the kernel's device list.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PciDevice {
@@ -556,6 +569,18 @@ mod tests {
 
         assert_eq!(old, COMMAND_IO);
         assert_eq!(r.read32(bdf, 0x04), 0x1234_0007);
+    }
+
+    #[test]
+    fn disable_mem_bus_master_preserves_status_bits() {
+        let r = MapReader { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { bus: 0, device: 6, function: 0 };
+        r.write32(bdf, 0x04, 0x1234_0007);
+
+        let old = disable_mem_bus_master(&r, bdf);
+
+        assert_eq!(old, COMMAND_MEMORY | COMMAND_BUS_MASTER | COMMAND_IO);
+        assert_eq!(r.read32(bdf, 0x04), 0x1234_0001);
     }
 
     #[test]
