@@ -86,16 +86,6 @@ impl VirtioChildRequirements {
 /// left without a per-queue vector.
 pub const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
 
-/// Queue notification lifetime requested by the child profile. The transport
-/// maps notify windows according to this policy after queue programming.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum VirtioQ1NotifyPolicy {
-    None,
-    NetBootTx,
-    PersistentTx,
-    PersistentEvent,
-}
-
 /// One extra virtqueue requested by a child profile. The child describes the
 /// queue index and callback policy; the concrete transport resolves MSI-X
 /// vectors and notify mappings during bring-up.
@@ -133,7 +123,6 @@ pub struct VirtioTransportProfile {
     pub drv_features: u64,
     pub msix0_handler: Option<fn()>,
     pub queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
-    pub q1_notify_policy: VirtioQ1NotifyPolicy,
     pub needs_net_boot_buffers: bool,
     pub child_requirements: VirtioChildRequirements,
 }
@@ -144,7 +133,6 @@ impl VirtioTransportProfile {
         drv_features: u64,
         msix0_handler: Option<fn()>,
         queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
-        q1_notify_policy: VirtioQ1NotifyPolicy,
         needs_net_boot_buffers: bool,
         child_requirements: VirtioChildRequirements,
     ) -> Self {
@@ -152,7 +140,6 @@ impl VirtioTransportProfile {
             drv_features,
             msix0_handler,
             queue_plans,
-            q1_notify_policy,
             needs_net_boot_buffers,
             child_requirements,
         }
@@ -164,7 +151,6 @@ impl VirtioTransportProfile {
             drv_features,
             msix0_handler,
             [None, None, None, None, None, None, None, None],
-            VirtioQ1NotifyPolicy::None,
             false,
             VirtioChildRequirements::q0(),
         )
@@ -176,7 +162,6 @@ impl VirtioTransportProfile {
             drv_features,
             msix0_handler,
             [None, None, None, None, None, None, None, None],
-            VirtioQ1NotifyPolicy::None,
             false,
             VirtioChildRequirements::q0_device_cfg(),
         )
@@ -189,7 +174,7 @@ impl VirtioTransportProfile {
             msix0_handler,
             [
                 None,
-                Some(VirtioQueuePlan::new(1, None, false)),
+                Some(VirtioQueuePlan::new(1, None, true)),
                 None,
                 None,
                 None,
@@ -197,7 +182,6 @@ impl VirtioTransportProfile {
                 None,
                 None,
             ],
-            VirtioQ1NotifyPolicy::NetBootTx,
             true,
             VirtioChildRequirements::net(),
         )
@@ -210,7 +194,7 @@ impl VirtioTransportProfile {
             msix0_handler,
             [
                 None,
-                Some(VirtioQueuePlan::new(1, None, false)),
+                Some(VirtioQueuePlan::new(1, None, true)),
                 None,
                 None,
                 None,
@@ -218,7 +202,6 @@ impl VirtioTransportProfile {
                 None,
                 None,
             ],
-            VirtioQ1NotifyPolicy::PersistentTx,
             false,
             VirtioChildRequirements::q0_q1_device_cfg(),
         )
@@ -235,7 +218,7 @@ impl VirtioTransportProfile {
             msix0_handler,
             [
                 None,
-                Some(VirtioQueuePlan::new(1, event_handler, false)),
+                Some(VirtioQueuePlan::new(1, event_handler, true)),
                 Some(VirtioQueuePlan::new(2, None, true)),
                 Some(VirtioQueuePlan::new(3, None, true)),
                 None,
@@ -243,7 +226,6 @@ impl VirtioTransportProfile {
                 None,
                 None,
             ],
-            VirtioQ1NotifyPolicy::PersistentEvent,
             false,
             VirtioChildRequirements::snd(),
         )
@@ -660,20 +642,17 @@ mod tests {
     fn transport_profiles_describe_child_queue_policy() {
         let net = VirtioTransportProfile::net(0x55, None);
         assert_eq!(net.drv_features, 0x55);
-        assert_eq!(net.q1_notify_policy, VirtioQ1NotifyPolicy::NetBootTx);
         assert!(net.needs_net_boot_buffers);
         assert_eq!(net.queue_plans[1].map(|q| q.index), Some(1));
+        assert!(net.queue_plans[1].map(|q| q.map_notify).unwrap_or(false));
         assert!(net.child_requirements.needs_net_boot_payloads);
 
         let snd = VirtioTransportProfile::snd(0xaa, None, None);
         assert_eq!(snd.drv_features, 0xaa);
-        assert_eq!(
-            snd.q1_notify_policy,
-            VirtioQ1NotifyPolicy::PersistentEvent
-        );
         assert_eq!(snd.queue_plans[1].map(|q| q.index), Some(1));
         assert_eq!(snd.queue_plans[2].map(|q| q.index), Some(2));
         assert_eq!(snd.queue_plans[3].map(|q| q.index), Some(3));
+        assert!(snd.queue_plans[1].map(|q| q.map_notify).unwrap_or(false));
         assert!(snd.queue_plans[2].map(|q| q.map_notify).unwrap_or(false));
         assert!(snd.child_requirements.needs_device_cfg);
     }
