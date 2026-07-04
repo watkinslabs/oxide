@@ -160,10 +160,18 @@ fn oss_dev_t(card: u32, minor: u64) -> (u32, u32) {
     }
 }
 
+fn sound_addr(dev_name: &str) -> String {
+    match dev_name.rsplit('/').next() {
+        Some(leaf) => String::from(leaf),
+        None => String::from(dev_name),
+    }
+}
+
 fn add_sound_node(owner: u32, card: u32, class: &'static str, dev_name: String, dev_t: (u32, u32), minor: u64) -> Arc<drv::Device> {
     let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(owner, card, minor));
+    let addr = sound_addr(&dev_name);
     drv::device_add(Arc::new(
-        drv::Device::new(class, dev_name.clone(), 0, 0, minor as u32)
+        drv::Device::new(class, addr, 0, 0, minor as u32)
             .with_devnode(class, dev_name, Some(dev_t))
             .with_node_factory(factory),
     ))
@@ -397,6 +405,12 @@ mod tests {
         assert!(has_node(&added, "snd/controlC0", (116, 0)));
         assert!(has_node(&added, "snd/pcmC0D0p", (116, 16)));
         assert!(has_node(&added, "snd/pcmC0D0c", (116, 24)));
+        assert!(drv::devices().iter().any(|d| d.bus == "sound"
+            && d.addr == "controlC0"
+            && d.devname.as_deref() == Some("snd/controlC0")));
+        assert!(drv::devices().iter().any(|d| d.bus == "sound"
+            && d.addr == "pcmC0D0p"
+            && d.devname.as_deref() == Some("snd/pcmC0D0p")));
         assert!(has_node(&added, "dsp", (14, 3)));
         assert!(has_node(&added, "dsp0", (14, 3)));
         assert!(has_node(&added, "audio", (14, 4)));

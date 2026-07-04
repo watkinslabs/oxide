@@ -1,4 +1,4 @@
-// Model-backed virtual character classes for Linux mem/misc devices.
+// Model-backed virtual character classes for Linux character devices.
 //
 // These devices are published through drv::device_add, so sysfs must expose the
 // matching class-device topology:
@@ -23,6 +23,10 @@ const INO_VIRT_MEM: Ino = 0x5106_0001;
 const INO_CLASS_MEM: Ino = 0x5106_0002;
 const INO_VIRT_MISC: Ino = 0x5106_0003;
 const INO_CLASS_MISC: Ino = 0x5106_0004;
+const INO_VIRT_SOUND: Ino = 0x5106_0005;
+const INO_CLASS_SOUND: Ino = 0x5106_0006;
+const INO_VIRT_GRAPHICS: Ino = 0x5106_0007;
+const INO_CLASS_GRAPHICS: Ino = 0x5106_0008;
 const INO_CHAR_DIR: Ino = 0x5106_1000;
 const INO_CHAR_ATTR: Ino = 0x5106_2000;
 const INO_CHAR_LINK: Ino = 0x5106_3000;
@@ -227,6 +231,22 @@ pub fn init() {
         "/sys/class/misc",
         make_sys_class_inode("misc", INO_CLASS_MISC),
     );
+    crate::register(
+        "/sys/devices/virtual/sound",
+        make_virtual_class_inode("sound", INO_VIRT_SOUND),
+    );
+    crate::register(
+        "/sys/class/sound",
+        make_sys_class_inode("sound", INO_CLASS_SOUND),
+    );
+    crate::register(
+        "/sys/devices/virtual/graphics",
+        make_virtual_class_inode("graphics", INO_VIRT_GRAPHICS),
+    );
+    crate::register(
+        "/sys/class/graphics",
+        make_sys_class_inode("graphics", INO_CLASS_GRAPHICS),
+    );
 }
 
 #[cfg(test)]
@@ -288,5 +308,54 @@ mod tests {
 
         drv::device_del(&dev);
         assert_eq!(root.lookup("sysfs-hwrng-test").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn sound_class_separates_sysfs_leaf_from_devtmpfs_path() {
+        let dev = add_char("sound", "controlC9", "snd/controlC9", (116, 288));
+
+        let class = make_sys_class_inode("sound", INO_CLASS_SOUND);
+        let link = class.lookup("controlC9").expect("sound class link");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/sound/controlC9".to_vec()
+        );
+        assert_eq!(class.lookup("snd").err(), Some(VfsError::Enoent));
+
+        let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
+        let dir = root.lookup("controlC9").expect("sound device dir");
+        let uevent = dir.lookup("uevent").expect("uevent attr");
+        let mut buf = [0u8; 64];
+        let n = uevent.read(0, &mut buf).expect("read uevent");
+        assert_eq!(
+            &buf[..n],
+            b"MAJOR=116\nMINOR=288\nDEVNAME=snd/controlC9\n"
+        );
+
+        drv::device_del(&dev);
+        assert_eq!(root.lookup("controlC9").err(), Some(VfsError::Enoent));
+    }
+
+    #[test]
+    fn graphics_class_resolves_fbdev_nodes() {
+        let dev = add_char("graphics", "fb7", "fb7", (29, 7));
+
+        let class = make_sys_class_inode("graphics", INO_CLASS_GRAPHICS);
+        let link = class.lookup("fb7").expect("graphics class link");
+        assert_eq!(
+            link.readlink().expect("readlink"),
+            b"../../devices/virtual/graphics/fb7".to_vec()
+        );
+
+        let root = make_virtual_class_inode("graphics", INO_VIRT_GRAPHICS);
+        let dir = root.lookup("fb7").expect("graphics device dir");
+        let subsystem = dir.lookup("subsystem").expect("subsystem link");
+        assert_eq!(
+            subsystem.readlink().expect("readlink"),
+            b"../../../../class/graphics".to_vec()
+        );
+
+        drv::device_del(&dev);
+        assert_eq!(class.lookup("fb7").err(), Some(VfsError::Enoent));
     }
 }
