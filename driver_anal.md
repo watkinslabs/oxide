@@ -639,7 +639,8 @@ Several drivers still use singleton global state:
 - virtio-vsock: keyed transport records and owner-keyed endpoint teardown, but
   a singleton upper protocol endpoint
 - virtio-snd: keyed transport records with EVENTQ drained per transport and an
-  owner-keyed global sound card, but still a singleton upper PCM/control ABI
+  owner-keyed global sound card reserved before transport allocation/publish,
+  but still a singleton upper PCM/control ABI
 - UART drivers: global `PRESENT` and base state
 - PS/2 keyboard: global present/poll state
 
