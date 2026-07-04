@@ -2,9 +2,10 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::virtio_transport::{
-    bind_msix_vector, disable_pci_command, kick_queue_notify, publish_transport_record,
-    program_queue_set, release_failed_probe, release_msix_bindings, unpublish_transport_record,
-    MsixBinding, ProgrammedQueues, QueueRing, TransportMappings,
+    alloc_net_tx_boot_buffer, bind_msix_vector, disable_pci_command, kick_queue_notify,
+    post_net_rx_boot_buffer, program_queue_set, publish_transport_record, read_queue_used_idx,
+    release_failed_probe, release_msix_bindings, unpublish_transport_record, MsixBinding,
+    NetRxBootBuffer, ProgrammedQueues, QueueRing, TransportMappings,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -534,69 +535,6 @@ fn unpublish_transport_mmio(bdf: u32) {
     unpublish_transport_record(bdf);
 }
 
-#[derive(Clone, Copy, Default)]
-struct NetRxBootBuffer {
-    buf_pa: u64,
-    buf_len: u16,
-    avail_idx_posted: u16,
-}
-
-fn post_net_rx_boot_buffer(hhdm: u64, q0_desc_pa: u64, q0_driver_pa: u64) -> NetRxBootBuffer {
-    const RX_BUF_LEN: u16 = 2048;
-    if hhdm == 0 || q0_desc_pa == 0 || q0_driver_pa == 0 {
-        return NetRxBootBuffer::default();
-    }
-    let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
-        return NetRxBootBuffer::default();
-    };
-
-    // Descriptor[0]: addr=rx_pa, len=2048, flags=WRITE, next=0.
-    let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u8;
-    // SAFETY: HHDM maps the freshly allocated RX frame and queue-0 descriptor
-    // table. The transport owns descriptor 0 until the child driver takes the
-    // resource handoff.
-    unsafe {
-        core::ptr::write_volatile(desc0 as *mut u64, rx_pa);
-        core::ptr::write_volatile((desc0.add(8)) as *mut u32, RX_BUF_LEN as u32);
-        core::ptr::write_volatile((desc0.add(12)) as *mut u16, virtio::VRING_DESC_F_WRITE);
-        core::ptr::write_volatile((desc0.add(14)) as *mut u16, 0u16);
-    }
-
-    let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
-    // SAFETY: HHDM maps the queue-0 avail ring frame. ring[0] is u16 offset 2
-    // and idx is u16 offset 1.
-    unsafe { core::ptr::write_volatile(avail.add(2), 0u16); }
-    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-    // SAFETY: same avail ring; idx publishes descriptor 0 after the release
-    // fence made descriptor and ring writes observable.
-    unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
-    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-
-    NetRxBootBuffer {
-        buf_pa: rx_pa,
-        buf_len: RX_BUF_LEN,
-        avail_idx_posted: 1,
-    }
-}
-
-fn alloc_net_tx_boot_buffer(
-    hhdm: u64,
-    q1_desc_pa: u64,
-    q1_driver_pa: u64,
-    q1_device_pa: u64,
-    q1_notify_va: u64,
-) -> u64 {
-    if hhdm == 0
-        || q1_desc_pa == 0
-        || q1_driver_pa == 0
-        || q1_device_pa == 0
-        || q1_notify_va == 0
-    {
-        return 0;
-    }
-    pmm::setup::alloc_raw_frame().unwrap_or(0)
-}
-
 fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -831,6 +769,26 @@ impl VirtioProbeState {
         } else {
             0
         }
+    }
+
+    fn kick_queue_and_observe_status(
+        &mut self,
+        notify_cap: Option<&virtio::VirtioPciCap>,
+        bars: &[pci::Bar; 6],
+        notify_off: u16,
+        queue_index: u16,
+        fallback_status: u8,
+    ) -> (u64, u8) {
+        let kick_va = self.kick_queue(notify_cap, bars, notify_off, queue_index);
+        if kick_va == 0 {
+            return (0, fallback_status);
+        }
+        // Brief observation window for device-driven completion. QEMU user-net
+        // normally has no packet ready here, so q0 used.idx may stay 0.
+        for _ in 0..1_000_000 {
+            core::hint::spin_loop();
+        }
+        (kick_va, virtio::read_status(self.cfg_va))
     }
 
     fn read_isr_status(
@@ -1322,7 +1280,7 @@ fn virtio_init_arch(
     let net_rx_boot = if profile.needs_net_boot_buffers
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        post_net_rx_boot_buffer(hhdm, q0_desc_pa, q0_driver_pa)
+        post_net_rx_boot_buffer(hhdm, q0_ring)
     } else {
         NetRxBootBuffer::default()
     };
@@ -1333,17 +1291,7 @@ fn virtio_init_arch(
     let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        let kick_va = state.kick_queue(notify_cap.as_ref(), &bars, q0_notify_off, 0);
-        if kick_va != 0 {
-            // Brief observation window for any device-driven RX completion
-            // (QEMU user-net delivers nothing without packets, so used.idx
-            // will normally stay 0).
-            for _ in 0..1_000_000 { core::hint::spin_loop(); }
-            let st = virtio::read_status(state.cfg_va);
-            (kick_va, st)
-        } else {
-            (0u64, final_status)
-        }
+        state.kick_queue_and_observe_status(notify_cap.as_ref(), &bars, q0_notify_off, 0, final_status)
     } else {
         (0u64, final_status)
     };
@@ -1361,13 +1309,7 @@ fn virtio_init_arch(
     )
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
-        alloc_net_tx_boot_buffer(
-            hhdm,
-            q1_desc_pa,
-            q1_driver_pa,
-            q1_device_pa,
-            q1_notify_va_local,
-        )
+        alloc_net_tx_boot_buffer(hhdm, q1_ring, q1_notify_va_local)
     } else {
         0
     };
@@ -1376,20 +1318,8 @@ fn virtio_init_arch(
         state.read_isr_status(vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(), &bars)
     } else { 0 };
 
-    //: read used.idx after the kick.
-    let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
-        if hhdm != 0 {
-            let used = (hhdm.wrapping_add(q0_device_pa)) as *const u16;
-            // used.idx at +0x02 (u16 offset 1).
-            // SAFETY: HHDM-mapped frame; aligned u16 load.
-            unsafe { core::ptr::read_volatile(used.add(1)) }
-        } else { 0 }
+    let used_idx_observed = if avail_idx_posted > 0 {
+        read_queue_used_idx(hhdm, q0_ring)
     } else { 0 };
 
     Some(state.finish(VirtioProbeResult {
