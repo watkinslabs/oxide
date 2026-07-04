@@ -849,7 +849,11 @@ test-pass claims.
   `pcmC<N>D0p` / `pcmC<N>D0c` plus playback runtime state only for directions
   backed by those real caps. Missing stream caps now make direct PCM
   info/refine paths report no device instead of falling back to synthetic
-  S16/44.1k stereo support.
+  S16/44.1k stereo support. ALSA PCM HW_FREE and DROP/DRAIN now propagate
+  backend failures instead of updating runtime state after a failed device
+  command, PAUSE is rejected until a real pause operation is supported, and
+  SYNC_PTR no longer fabricates hardware progress from a userspace appl_ptr
+  update; only completed I/O advances the stored hw_ptr.
   Raw EVENTQ drain/accounting is now owner-keyed; higher-level sound event
   interpretation/publication, remaining child-probe failure unwind audit, and
   fault-injection proof still need to move behind a fuller `VirtioPciTransport`
