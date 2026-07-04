@@ -439,6 +439,7 @@ struct ScanoutCtx {
     cmd_buf_va: u64,
     cmd_buf_pa: u64,
     hhdm: u64,
+    fbdev_idx: Option<u32>,
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -530,9 +531,26 @@ fn install_scanout_ctx(
     }
     ctxs.push(ScanoutCtx {
         bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
-        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm,
+        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None,
     });
     true
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn set_scanout_fbdev_idx(bdf: u32, fbdev_idx: Option<u32>) -> bool {
+    let mut ctxs = CTX.lock();
+    let Some(ctx) = ctxs.iter_mut().find(|ctx| ctx.bdf == bdf) else {
+        return false;
+    };
+    ctx.fbdev_idx = fbdev_idx;
+    true
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn take_scanout_fbdev_idx(bdf: u32) -> Option<u32> {
+    let mut ctxs = CTX.lock();
+    let ctx = ctxs.iter_mut().find(|ctx| ctx.bdf == bdf)?;
+    ctx.fbdev_idx.take()
 }
 
 /// Tear down the installed scanout context, reset the virtio device, and free
@@ -674,18 +692,31 @@ pub fn publish_console_scanout(bdf: u32) {
     {
         return;
     }
-    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
-    if let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer_for_bdf(bdf) {
-        let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
-        let _ = fbdev::set_ops(idx, fbdev::FbOps {
+
+    let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer_for_bdf(bdf) else {
+        CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
+        return;
+    };
+    let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
+    if idx == fbdev::INVALID_FB_INDEX
+        || !fbdev::set_ops(idx, fbdev::FbOps {
             driver_key: bdf,
             flush: flush_scanout_for_bdf,
             blank: blank_scanout_for_bdf,
             unblank: unblank_scanout_for_bdf,
-        });
-        fbdev::set_yield_hook(fbdev_vsync_yield);
-        fbdev::set_now_hook(monotonic_now_ns);
+        })
+        || !set_scanout_fbdev_idx(bdf, Some(idx))
+    {
+        if idx != fbdev::INVALID_FB_INDEX {
+            let _ = fbdev::unregister(idx);
+        }
+        CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
+        return;
     }
+
+    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
+    fbdev::set_yield_hook(fbdev_vsync_yield);
+    fbdev::set_now_hook(monotonic_now_ns);
     klog::set_aux_sink(fbcon::kernel::vt_console_sink);
     fbcon::kernel::set_reply_sink(console::vt_reply_sink);
     tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
@@ -697,22 +728,20 @@ pub fn publish_console_scanout(bdf: u32) {
 /// # C: O(N + depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unpublish_console_scanout(bdf: u32) {
-    let fb_base = {
-        let ctxs = CTX.lock();
-        match ctxs.iter().find(|ctx| ctx.bdf == bdf) {
-            Some(ctx) if ctx.bdf == bdf => ctx.fb_va - ctx.hhdm,
-            _ => return,
-        }
-    };
-    if console_owner_bdf() != Some(bdf) {
+    if CONSOLE_OWNER_BDF
+        .compare_exchange(bdf, NO_CONSOLE_OWNER, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return;
     }
+    let fbdev_idx = take_scanout_fbdev_idx(bdf);
     klog::clear_aux_sink();
     tty::live::clear_vt_mode_queries();
     fbcon::kernel::kernel_unregister();
     fbdev::clear_wait_hooks();
-    let _ = fbdev::unregister_by_base(fb_base);
-    CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
+    if let Some(idx) = fbdev_idx {
+        let _ = fbdev::unregister(idx);
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]

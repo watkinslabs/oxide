@@ -229,7 +229,7 @@ pub struct FbOps {
     pub unblank:    fn(u32),
 }
 
-const INVALID_FB_INDEX: u32 = u32::MAX;
+pub const INVALID_FB_INDEX: u32 = u32::MAX;
 
 fn lowest_free_fb_idx(fbs: &[FbDev]) -> u32 {
     let mut idx = 0u32;
