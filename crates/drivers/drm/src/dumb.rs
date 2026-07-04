@@ -132,17 +132,26 @@ pub fn format_supported(fourcc: u32) -> bool {
     fourcc == DRM_FORMAT_XRGB8888 || fourcc == DRM_FORMAT_ARGB8888
 }
 
-/// DRM mmap-cookie space: a high tag OR'd with (handle << 12) so each
-/// handle gets a unique page-aligned fake mmap offset distinct from
-/// fbdev (which uses 0). # C: O(1)
-pub const DRM_MMAP_COOKIE_BASE: u64 = 0x1_0000_0000;
+/// DRM mmap-cookie space. Linux treats MODE_MAP_DUMB's returned offset as an
+/// opaque driver token; keep the tag above every possible `u32 << PAGE_SHIFT`
+/// handle value so the cookie cannot alias another handle or fbdev offset 0.
+/// # C: O(1)
+pub const DRM_MMAP_COOKIE_BASE: u64 = 1u64 << 48;
+const DRM_MMAP_COOKIE_HANDLE_SHIFT: u64 = 12;
+const DRM_MMAP_COOKIE_HANDLE_MASK: u64 = (u32::MAX as u64) << DRM_MMAP_COOKIE_HANDLE_SHIFT;
+const DRM_MMAP_COOKIE_VALID_MASK: u64 = DRM_MMAP_COOKIE_BASE | DRM_MMAP_COOKIE_HANDLE_MASK;
 /// Build the MAP_DUMB cookie for `handle`. # C: O(1)
-pub fn cookie_for(handle: u32) -> u64 { DRM_MMAP_COOKIE_BASE | ((handle as u64) << 12) }
+pub fn cookie_for(handle: u32) -> u64 {
+    DRM_MMAP_COOKIE_BASE | ((handle as u64) << DRM_MMAP_COOKIE_HANDLE_SHIFT)
+}
 /// Recover the handle from a cookie, or `None` if not a DRM cookie.
 /// # C: O(1)
 pub fn handle_of_cookie(cookie: u64) -> Option<u32> {
-    if (cookie & DRM_MMAP_COOKIE_BASE) == 0 { return None; }
-    Some(((cookie & 0xFFFF_FFFF) >> 12) as u32)
+    if (cookie & DRM_MMAP_COOKIE_BASE) != DRM_MMAP_COOKIE_BASE { return None; }
+    if (cookie & !DRM_MMAP_COOKIE_VALID_MASK) != 0 { return None; }
+    let handle = ((cookie & DRM_MMAP_COOKIE_HANDLE_MASK) >> DRM_MMAP_COOKIE_HANDLE_SHIFT) as u32;
+    if handle == 0 { return None; }
+    Some(handle)
 }
 
 // ============================================================
@@ -561,12 +570,20 @@ mod tests {
     #[test]
     fn cookie_round_trip() {
         let c = cookie_for(1);
-        assert_eq!(c, DRM_MMAP_COOKIE_BASE | (1 << 12));
+        assert_eq!(c, DRM_MMAP_COOKIE_BASE | (1 << DRM_MMAP_COOKIE_HANDLE_SHIFT));
         assert_eq!(handle_of_cookie(c), Some(1));
         let c7 = cookie_for(7);
         assert_eq!(handle_of_cookie(c7), Some(7));
+        let high = 1 << 20;
+        assert_eq!(handle_of_cookie(cookie_for(high)), Some(high));
+        assert_eq!(handle_of_cookie(cookie_for(u32::MAX)), Some(u32::MAX));
         // fbdev's offset 0 is not a DRM cookie.
         assert_eq!(handle_of_cookie(0), None);
+        // Handle 0 is not allocated by DRM, and malformed low/high bits are
+        // rejected instead of being truncated into a valid handle.
+        assert_eq!(handle_of_cookie(DRM_MMAP_COOKIE_BASE), None);
+        assert_eq!(handle_of_cookie(cookie_for(1) | 1), None);
+        assert_eq!(handle_of_cookie(cookie_for(1) | (1u64 << 47)), None);
     }
 
     #[test]
