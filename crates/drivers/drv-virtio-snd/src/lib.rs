@@ -370,7 +370,7 @@ impl SoundCardReservation {
 impl Drop for SoundCardReservation {
     fn drop(&mut self) {
         if self.active {
-            let _ = sound::unregister_card(self.owner);
+            let _ = sound::cancel_card_reservation(self.owner);
         }
     }
 }

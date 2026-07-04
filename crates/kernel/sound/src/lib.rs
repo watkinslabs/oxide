@@ -329,6 +329,21 @@ pub fn reserve_card(owner: u32) -> bool {
     true
 }
 
+/// Cancel a reserved-but-unpublished card number. This is the probe-failure
+/// path before ALSA/OSS nodes have been made visible.
+/// # C: O(cards)
+pub fn cancel_card_reservation(owner: u32) -> bool {
+    let mut cards = CARDS.lock();
+    let Some(idx) = cards
+        .iter()
+        .position(|record| record.owner == owner && record.nodes.is_empty())
+    else {
+        return false;
+    };
+    cards.remove(idx);
+    true
+}
+
 /// Stable card number assigned to `owner`.
 /// # C: O(cards)
 pub fn card_number(owner: u32) -> Option<u32> {
@@ -361,6 +376,7 @@ pub fn unregister_card(owner: u32) -> bool {
     oss::unregister_card(owner);
     capture::unregister_card(owner);
     pcm::unregister_card(owner);
+    let _ = ops::clear(owner);
     true
 }
 
@@ -539,8 +555,40 @@ mod tests {
         assert!(ops::ops_for(0x20).is_some(), "remaining owner ops stay visible");
         assert!(unregister_card(0x20));
         assert_eq!(owner(), None);
-        assert!(ops::clear(0x10));
-        assert!(ops::clear(0x20));
+        assert!(ops::ops_for(0x10).is_none());
+        assert!(ops::ops_for(0x20).is_none());
+    }
+
+    #[test]
+    fn cancel_card_reservation_only_releases_unpublished_cards() {
+        let _guard = test_guard();
+        drv::set_devtmpfs_hook(add_hook);
+        drv::set_devtmpfs_del_hook(del_hook);
+        ADDED.lock().clear();
+        REMOVED.lock().clear();
+        let _ = unregister_card(0x10);
+        let _ = unregister_card(0x20);
+        let _ = ops::clear(0x10);
+        let _ = ops::clear(0x20);
+
+        assert!(reserve_card(0x10));
+        assert!(cancel_card_reservation(0x10));
+        assert_eq!(card_number(0x10), None);
+        assert!(!cancel_card_reservation(0x10));
+        assert_eq!(ADDED.lock().len(), 0);
+        assert_eq!(REMOVED.lock().len(), 0);
+
+        assert!(reserve_card(0x20));
+        assert!(ops::register(0x20, &TEST_OPS));
+        assert!(register_card(0x20));
+        assert!(
+            !cancel_card_reservation(0x20),
+            "published cards must use unregister_card"
+        );
+        assert_eq!(card_number(0x20), Some(0));
+        assert!(unregister_card(0x20));
+        assert!(ops::ops_for(0x20).is_none());
+        let _ = ops::clear(0x20);
     }
 
     #[test]
