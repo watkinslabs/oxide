@@ -452,58 +452,29 @@ struct VirtioProbeResult {
     num_queues: u16,
     queues: [(u16, u16); 8],
     queues_len: usize,
-    q0_desc_pa: u64,
-    q0_driver_pa: u64,
-    q0_device_pa: u64,
+    queue_resources: [virtio::VirtQueueResource; 4],
     final_status: u8,
-    q0_notify_off: u16,
     q0_notify_va: u64,
     post_notify_status: u8,
     avail_idx_posted: u16,
     used_idx_observed: u16,
     isr_status: u8,
-    q1_notify_va: u64,
-    q1_notify_off: u16,
-    q0_size: u16,
-    q1_size: u16,
-    q1_desc_pa: u64,
-    q1_driver_pa: u64,
-    q1_device_pa: u64,
     rx0_buf_pa: u64,
     rx0_buf_len: u16,
     tx0_buf_pa: u64,
-    snd_q2_desc_pa: u64,
-    snd_q2_driver_pa: u64,
-    snd_q2_device_pa: u64,
-    snd_q2_notify_va: u64,
-    snd_q2_notify_off: u16,
-    snd_q2_size: u16,
-    snd_q3_desc_pa: u64,
-    snd_q3_driver_pa: u64,
-    snd_q3_device_pa: u64,
-    snd_q3_notify_va: u64,
-    snd_q3_notify_off: u16,
-    snd_q3_size: u16,
 }
 
 impl VirtioProbeResult {
+    fn queue(&self, index: u16) -> virtio::VirtQueueResource {
+        self.queue_resources[index as usize]
+    }
+
     fn vring_frames(&self) -> Vec<u64> {
         let mut frames = Vec::new();
-        for frame in [
-            self.q0_desc_pa,
-            self.q0_driver_pa,
-            self.q0_device_pa,
-            self.q1_desc_pa,
-            self.q1_driver_pa,
-            self.q1_device_pa,
-            self.snd_q2_desc_pa,
-            self.snd_q2_driver_pa,
-            self.snd_q2_device_pa,
-            self.snd_q3_desc_pa,
-            self.snd_q3_driver_pa,
-            self.snd_q3_device_pa,
-        ] {
-            push_unique_frame(&mut frames, frame);
+        for queue in self.queue_resources {
+            for frame in [queue.desc_pa, queue.driver_pa, queue.device_pa] {
+                push_unique_frame(&mut frames, frame);
+            }
         }
         frames
     }
@@ -525,18 +496,18 @@ impl VirtioProbeResult {
             num_queues: self.num_queues,
             queues: self.queues,
             queues_len: self.queues_len,
-            q0_desc_pa: self.q0_desc_pa,
-            q0_driver_pa: self.q0_driver_pa,
-            q0_device_pa: self.q0_device_pa,
+            q0_desc_pa: self.queue(0).desc_pa,
+            q0_driver_pa: self.queue(0).driver_pa,
+            q0_device_pa: self.queue(0).device_pa,
             final_status: self.final_status,
-            q0_notify_off: self.q0_notify_off,
+            q0_notify_off: self.queue(0).notify_off,
             q0_notify_va: self.q0_notify_va,
             post_notify_status: self.post_notify_status,
             avail_idx_posted: self.avail_idx_posted,
             used_idx_observed: self.used_idx_observed,
             isr_status: self.isr_status,
-            q1_notify_va: self.q1_notify_va,
-            q1_notify_off: self.q1_notify_off,
+            q1_notify_va: self.queue(1).notify_va,
+            q1_notify_off: self.queue(1).notify_off,
         }
     }
 
@@ -549,63 +520,10 @@ impl VirtioProbeResult {
                     self.rx0_buf_len,
                     self.tx0_buf_pa,
                 ));
-        for queue in [
-            self.q0_resource(),
-            self.q1_resource(),
-            self.snd_q2_resource(),
-            self.snd_q3_resource(),
-        ] {
+        for queue in self.queue_resources {
             resources.set_queue(queue);
         }
         virtio::VirtioChildProbeFacts::new(self.drv_features, resources)
-    }
-
-    fn q0_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            0,
-            self.q0_size,
-            self.q0_desc_pa,
-            self.q0_driver_pa,
-            self.q0_device_pa,
-            self.q0_notify_va,
-            self.q0_notify_off,
-        )
-    }
-
-    fn q1_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            1,
-            self.q1_size,
-            self.q1_desc_pa,
-            self.q1_driver_pa,
-            self.q1_device_pa,
-            self.q1_notify_va,
-            self.q1_notify_off,
-        )
-    }
-
-    fn snd_q2_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            2,
-            self.snd_q2_size,
-            self.snd_q2_desc_pa,
-            self.snd_q2_driver_pa,
-            self.snd_q2_device_pa,
-            self.snd_q2_notify_va,
-            self.snd_q2_notify_off,
-        )
-    }
-
-    fn snd_q3_resource(&self) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource::new(
-            3,
-            self.snd_q3_size,
-            self.snd_q3_desc_pa,
-            self.snd_q3_driver_pa,
-            self.snd_q3_device_pa,
-            self.snd_q3_notify_va,
-            self.snd_q3_notify_off,
-        )
     }
 }
 
@@ -689,6 +607,33 @@ impl VirtioProbe {
         }
     }
 
+}
+
+fn scanned_queue_size(queues: &[(u16, u16); 8], queues_len: usize, index: u16) -> u16 {
+    queues
+        .iter()
+        .take(queues_len)
+        .find(|queue| queue.0 == index)
+        .map(|queue| queue.1)
+        .unwrap_or(0)
+}
+
+fn queue_resource(
+    index: u16,
+    ring: Option<QueueRing>,
+    fallback_size: u16,
+    notify_va: u64,
+) -> virtio::VirtQueueResource {
+    let size = ring.map(|ring| ring.size).unwrap_or(fallback_size);
+    virtio::VirtQueueResource::new(
+        index,
+        size,
+        ring.map(|ring| ring.desc_pa).unwrap_or(0),
+        ring.map(|ring| ring.driver_pa).unwrap_or(0),
+        ring.map(|ring| ring.device_pa).unwrap_or(0),
+        notify_va,
+        ring.map(|ring| ring.notify_off).unwrap_or(0),
+    )
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -793,7 +738,6 @@ fn virtio_init_arch(
     let num_queues = bringup.negotiated.num_queues;
     let queues = bringup.queues;
     let queues_len = bringup.queues_len;
-    let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let notify_cap = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG);
     let extra_notify_mappings = state.map_planned_extra_notifies(
         &profile.extra_queues,
@@ -808,24 +752,7 @@ fn virtio_init_arch(
     let q1_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(1));
     let q2_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(2));
     let q3_ring = bringup.programmed_queues.as_ref().and_then(|p| p.extra_queue(3));
-    let q0_desc_pa = q0_ring.map(|q| q.desc_pa).unwrap_or(0);
-    let q0_driver_pa = q0_ring.map(|q| q.driver_pa).unwrap_or(0);
-    let q0_device_pa = q0_ring.map(|q| q.device_pa).unwrap_or(0);
     let q0_notify_off = q0_ring.map(|q| q.notify_off).unwrap_or(0);
-    let q1_desc_pa = q1_ring.map(|q| q.desc_pa).unwrap_or(0);
-    let q1_driver_pa = q1_ring.map(|q| q.driver_pa).unwrap_or(0);
-    let q1_device_pa = q1_ring.map(|q| q.device_pa).unwrap_or(0);
-    let q1_notify_off_local = q1_ring.map(|q| q.notify_off).unwrap_or(0);
-    let snd_q2_desc_pa_local = q2_ring.map(|q| q.desc_pa).unwrap_or(0);
-    let snd_q2_driver_pa_local = q2_ring.map(|q| q.driver_pa).unwrap_or(0);
-    let snd_q2_device_pa_local = q2_ring.map(|q| q.device_pa).unwrap_or(0);
-    let snd_q2_notify_off_local = q2_ring.map(|q| q.notify_off).unwrap_or(0);
-    let snd_q2_size_local = q2_ring.map(|q| q.size).unwrap_or(0);
-    let snd_q3_desc_pa_local = q3_ring.map(|q| q.desc_pa).unwrap_or(0);
-    let snd_q3_driver_pa_local = q3_ring.map(|q| q.driver_pa).unwrap_or(0);
-    let snd_q3_device_pa_local = q3_ring.map(|q| q.device_pa).unwrap_or(0);
-    let snd_q3_notify_off_local = q3_ring.map(|q| q.notify_off).unwrap_or(0);
-    let snd_q3_size_local = q3_ring.map(|q| q.size).unwrap_or(0);
     let net_rx_boot = if profile.needs_net_boot_buffers
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
     {
@@ -862,6 +789,22 @@ fn virtio_init_arch(
     } else {
         0
     };
+    let queue_resources = [
+        queue_resource(
+            0,
+            q0_ring,
+            scanned_queue_size(&queues, queues_len, 0),
+            q0_notify_va,
+        ),
+        queue_resource(
+            1,
+            q1_ring,
+            scanned_queue_size(&queues, queues_len, 1),
+            q1_notify_va_local,
+        ),
+        queue_resource(2, q2_ring, 0, snd_q2_notify_va_local),
+        queue_resource(3, q3_ring, 0, snd_q3_notify_va_local),
+    ];
 
     let isr_status = if avail_idx_posted > 0 {
         state.read_isr_status(vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG).as_ref(), &bars)
@@ -882,37 +825,15 @@ fn virtio_init_arch(
         num_queues,
         queues,
         queues_len,
-        q0_desc_pa,
-        q0_driver_pa,
-        q0_device_pa,
+        queue_resources,
         final_status,
-        q0_notify_off,
         q0_notify_va,
         post_notify_status,
         avail_idx_posted,
         used_idx_observed,
         isr_status,
-        q1_notify_va: q1_notify_va_local,
-        q1_notify_off: q1_notify_off_local,
-        q0_size,
-        q1_size: if queues_len > 1 { queues[1].1 } else { 0 },
-        q1_desc_pa,
-        q1_driver_pa,
-        q1_device_pa,
         rx0_buf_pa:  rx0_buf_pa_local,
         rx0_buf_len: rx0_buf_len_local,
         tx0_buf_pa: tx0_buf_pa_local,
-        snd_q2_desc_pa:   snd_q2_desc_pa_local,
-        snd_q2_driver_pa: snd_q2_driver_pa_local,
-        snd_q2_device_pa: snd_q2_device_pa_local,
-        snd_q2_notify_va: snd_q2_notify_va_local,
-        snd_q2_notify_off: snd_q2_notify_off_local,
-        snd_q2_size:      snd_q2_size_local,
-        snd_q3_desc_pa:   snd_q3_desc_pa_local,
-        snd_q3_driver_pa: snd_q3_driver_pa_local,
-        snd_q3_device_pa: snd_q3_device_pa_local,
-        snd_q3_notify_va: snd_q3_notify_va_local,
-        snd_q3_notify_off: snd_q3_notify_off_local,
-        snd_q3_size:      snd_q3_size_local,
     }))
 }
