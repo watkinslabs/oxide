@@ -454,8 +454,8 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B372-virtio-net-keyed-cursors
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B372-virtio-net-keyed-cursors`
 
-Evidence: source audit of virtio-net TX/RX cursor ownership is in progress.
+Evidence: `ModernNetState` owns `tx_last_used`, `tx_next_avail`, `rx_last_used`, and `rx_next_avail`; `tx_frame_for` and `rx_poll_for` select `MODERN_DEVS` by `device_key` before mutating cursors; RX pool install initializes per-device `rx_next_avail` from the posted buffer count. Focused `init_modern_with_rx_pool_records_pool_and_rejects_duplicate_desc`, full `cargo test -p drv-virtio-net`, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
