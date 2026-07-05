@@ -253,11 +253,6 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 | crate::DRM_CLIENT_CAP_ATOMIC
                 | crate::DRM_CLIENT_CAP_ASPECT_RATIO
                 | crate::DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
-                | crate::DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT if value == 0 => 1u64 << capability,
-                crate::DRM_CLIENT_CAP_STEREO_3D
-                | crate::DRM_CLIENT_CAP_ATOMIC
-                | crate::DRM_CLIENT_CAP_ASPECT_RATIO
-                | crate::DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
                 | crate::DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => {
                     return Some(-(Errno::Eopnotsupp.as_i32() as i64));
                 }

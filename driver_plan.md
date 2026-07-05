@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B352-drm-atomic-empty-state` — VERIFIED, PR merge pending.
+ACTIVE NOW: `B353-drm-client-cap-rejects-unsupported` — VERIFIED, PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B352-drm-atomic-empty-state`.
+Current active item: `>>> ACTIVE >>> B353-drm-client-cap-rejects-unsupported`.
 
-Current B352 gate: PR update, merge, and main sync.
+Current B353 gate: PR update, merge, and main sync.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -282,8 +282,8 @@ Status legend:
 | VERIFIED | B349-drm-page-flip-file-events | DRM PAGE_FLIP events are per card open file and poll/read correctly; source audit, hosted duplicate-open/split-open/split-card poll-read regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2402 merge, and local main sync to `origin/main` at `3287909f` pass. |
 | VERIFIED | B350-drm-magic-open-file-auth | DRM GET_MAGIC/AUTH_MAGIC allocate and authorize real per-open-file magic; forged `AUTH_MAGIC` now rejects unallocated magic, hosted magic-state/ioctl regressions, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2403 merge, and local main sync to `origin/main` at `8e78fe0d` pass. |
 | VERIFIED | B351-drm-unique-version-uapi | DRM GET_UNIQUE and SET_VERSION marshal Linux UAPI structs; fixed GET_UNIQUE to stay empty until SET_VERSION, avoid partial undersized-buffer copies, and return driver version negotiation fields. Hosted regressions, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2404 merge, and local main sync to `origin/main` at `66d5c727` pass. |
-| >>> ACTIVE >>> VERIFIED, PR merge pending | B352-drm-atomic-empty-state | DRM MODE_ATOMIC empty-state gate now uses Linux 64-byte UAPI/ioctl, rejects reserved/event/async, keeps non-empty commits unsupported; hosted DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. |
-| NOT DONE |  | DRM SET_CLIENT_CAP rejects unsupported atomic/writeback/aspect/stereo/cursor hotspot caps. |
+| VERIFIED | B352-drm-atomic-empty-state | DRM MODE_ATOMIC empty-state gate now uses Linux 64-byte UAPI/ioctl, rejects reserved/event/async, keeps non-empty commits unsupported; hosted DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2405 merge, and local main sync to `origin/main` at `be5399d3` pass. |
+| >>> ACTIVE >>> VERIFIED, PR merge pending | B353-drm-client-cap-rejects-unsupported | DRM SET_CLIENT_CAP rejects unsupported atomic/writeback/aspect/stereo/cursor hotspot caps for enable and disable without mutating file state; hosted regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. |
 | NOT DONE |  | DRM GET_CAP stops advertising unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps. |
 | NOT DONE |  | DRM raw writes rejected. |
 | NOT DONE |  | DRM modifier-bearing ADDFB2 rejected. |
