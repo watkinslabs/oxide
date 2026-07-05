@@ -415,8 +415,8 @@ Evidence: source audit against Linux `drm_setclientcap` found unsupported caps m
 
 ## B354-drm-get-cap-supported-only
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, pre-push/PR merge pending`.
 
 Branch: `B354-drm-get-cap-supported-only`
 
-Evidence: source audit started for `DRM_IOCTL_GET_CAP` advertised values for unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps; no completion claim yet.
+Evidence: source audit found `GET_CAP` trusted `DrmDriver::cap` directly, allowing drivers to advertise unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps. Added DRM-core advertised-cap clamp and over-reporting-driver ioctl regression. Focused GET_CAP regression, full `cargo test -p drm` with 65 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass.
