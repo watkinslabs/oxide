@@ -114,12 +114,8 @@ pub fn init_blk(init: BlkInit) -> u32 {
     }
     #[cfg(feature = "debug-boot")]
     {
-        klog::write_raw(b"[INFO]  virtio-blk-modern ");
-        klog::write_dec_u64(key_bus(init.device_key) as u64);
-        klog::write_raw(b":");
-        klog::write_dec_u64(key_device(init.device_key) as u64);
-        klog::write_raw(b".");
-        klog::write_dec_u64(key_function(init.device_key) as u64);
+        klog::write_raw(b"[INFO]  virtio-blk-modern key=");
+        klog::write_hex_u64(key_raw(init.device_key) as u64);
         klog::write_raw(b" cap_sec=");
         klog::write_dec_u64(device_cfg.capacity);
         klog::write_raw(b" blk_size=");

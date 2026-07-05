@@ -1,6 +1,5 @@
-//! virtio-net driver per `34§*`. Per-arch HAL + net + pci.
-//! Modern virtio-net transport: capability-list driven PCI setup,
-//! MMIO notify regions, and MSI-X interrupts.
+//! virtio-net driver per `34§*`. Transport-supplied MMIO queues plus net stack
+//! integration.
 
 #![no_std]
 

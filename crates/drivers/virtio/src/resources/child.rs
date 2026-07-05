@@ -308,10 +308,6 @@ pub trait VirtioChildTransportSession {
     /// # C: O(1)
     fn device_key(&self) -> VirtioChildDeviceKey;
 
-    /// Controller-local address of the transport-owned child.
-    /// # C: O(1)
-    fn location(&self) -> VirtioTransportLocation;
-
     /// Device-model address of the child device being probed.
     /// # C: O(1)
     fn device_addr(&self) -> &str;
