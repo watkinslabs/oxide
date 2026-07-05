@@ -468,27 +468,28 @@ Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
 recent-completed table above; main was synced after each merge through
 `cdd8d243`.
 
-## Recent Completed B382-B384
+## Recent Completed B382-B385
 
 | Branch | Status | Evidence |
 |---|---|---|
 | B382-virtio-net-multidev-rebind-proof | VERIFIED | Fast `/init` multidev proof passes on x86_64/aarch64 for `eth0`/`eth1`, sysfs bind/unbind/rebind, restored virtio-net driver readdir state, and normal input tail; hosted checks, normal smoke, PR #2435 merge, and main sync `d09f5123` pass. Follow-up: stale direct driver symlink dcache after unbind. |
 | B383-core-ipv6-ndp-iface-cache | VERIFIED | Core NDP map is `(iface, IPv6)` keyed and `unregister_iface` purges removed-iface entries; focused/NDP tests, line cap, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2436 merge, and main sync `505521d8` pass. First ARM driver-path run hit existing no-progress; rerun passed. |
 | B384-virtio-vsock-remove-keyed | VERIFIED | Owner-keyed remove regression, full virtio-vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2437 merge, and main sync `2efc98f8` pass. |
+| B385-virtio-vsock-rx-bh-installed | VERIFIED | RX bottom-half ownership regression, full virtio-vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2438 merge, and main sync `4db141ad` pass. |
 
-## B385-virtio-vsock-rx-bh-installed
+## B386-net-vsock-owner-keyed-endpoints
 
 Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
-Branch: `B385-virtio-vsock-rx-bh-installed`
+Branch: `B386-net-vsock-owner-keyed-endpoints`
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PASS: install sets `SOFTIRQ_INSTALLED` only after endpoint publish, `uninstall`/`shutdown` clear `VsockRx` only when keyed ctx removal leaves no ctxs, and nonmatching removals do not clear the shared handler. |
-| Hosted regression | PASS: `uninstall_unpublished_context_keeps_live_softirq_installed` proves unpublished ctx teardown leaves live endpoint and RX bottom half installed. |
-| `cargo test -p drv-virtio-vsock uninstall_unpublished_context_keeps_live_softirq_installed -- --nocapture` | PASS: 1 passed. |
-| `cargo test -p drv-virtio-vsock -- --nocapture` | PASS: 7 passed. |
-| `./tools/boot-smoke-driver-path.sh x86 240` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b385-x86-driver-path.log`. |
-| `./tools/boot-smoke-driver-path.sh arm 300` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b385-arm-driver-path.log`. |
+| Source audit | PASS: `ENDPOINTS` stores `{ owner, guest_cid, tx }`; reserve/publish/cancel/quiesce/uninstall, `guest_cid_for`, `driver_owner_for_cid`, `tx_for`, and RX delivery select by owner. |
+| Hosted regression | PASS: `tx_for_routes_through_matching_owner_endpoint` proves two live endpoints route through the matching owner's TX hook. |
+| `cargo test -p net tx_for_routes_through_matching_owner_endpoint -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p net vsock -- --nocapture` | PASS: 25 passed. |
+| `./tools/boot-smoke-driver-path.sh x86 240` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b386-x86-driver-path.log`. |
+| `./tools/boot-smoke-driver-path.sh arm 300` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b386-arm-driver-path.log`. |
