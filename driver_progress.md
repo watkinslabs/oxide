@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B471-sysfs-driver-override; IN AUDIT.
+Current marker: none; B471-sysfs-driver-override VERIFIED pending PR merge.
 
 ## B471 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B471-sysfs-driver-override | IN AUDIT | Fresh main `9244c997` after PR #2528 merge; proving sysfs exposes Linux-style `driver_override` from model state without bypassing driver-core bind/match semantics. |
+| B471-sysfs-driver-override | VERIFIED | Fresh main `9244c997` after PR #2528 merge; source audit proves `crates/kernel/sysfs/src/bus/device.rs` includes writable `driver_override` in PCI, virtio, and platform device attr groups, `dev_attr` reads `dev.driver_override()` and returns either `<name>\n` or `(null)\n`, and `DeviceKobj::store` writes through `dev.set_driver_override`, clearing on empty or `(null)`. Driver-model audit proves `crates/drivers/drv/src/model.rs::match_driver` and `driver_matches_device` consume the override only for registered drivers on the same bus, preserving driver-core bind/match semantics. Added hosted sysfs regression `driver_override_attr_tracks_model_state` covering default `(null)` read, write/readback, model state update, and `(null)` clear. Checks pass: `cargo test -p sysfs driver_override_attr_tracks_model_state -- --nocapture --test-threads=1`, `cargo test -p sysfs -p drv -- --nocapture --test-threads=1` with sysfs 26/26 and drv 27/27, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B470 Current
 
