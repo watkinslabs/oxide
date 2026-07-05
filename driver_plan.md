@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B366-fbdev-getcmap-transp-efault` — IN AUDIT.
+ACTIVE NOW: `B366-fbdev-getcmap-transp-efault` — VERIFIED, PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B366-fbdev-getcmap-transp-efault`.
 
-Current B366 gate: add focused FBIOGETCMAP transparency-pointer regression, run fbdev tests, x86_64/aarch64 driver-path proof, push PR, merge, then sync local `main`.
+Current B366 gate: commit verified evidence, push, mark PR ready, merge, then sync local `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -296,7 +296,7 @@ Status legend:
 | VERIFIED | B363-drm-dumb-mmap-pins-object | MODE_MAP_DUMB mmap uses `pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; existing table regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, PR #2416 merge, and local main sync to `origin/main` at `89ab2e44` pass. |
 | VERIFIED | B364-drm-map-dumb-cookie-validation | MODE_MAP_DUMB cookies are high-tagged at bit 48 with handle bits 12..43; decoder rejects zero handle, low page-offset bits, and out-of-layout bits. Source audit, existing cookie regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, PR #2417 merge, and local main sync to `origin/main` at `a0cbb9bd` pass. |
 | VERIFIED | B365-fbdev-fbio-usercopy-bounds | fbdev FBIO fixed-size args and cmap arrays use checked exclusive-end user range validation before read/write copies; added overflow regression, full fbdev tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2418 merge, and local main sync to `origin/main` at `70ac7dff` pass. |
-| >>> ACTIVE >>> IN AUDIT | B366-fbdev-getcmap-transp-efault | FBIOGETCMAP rejects invalid transparency pointer with `EFAULT`; source has conditional `cm.transp` user-range validation before transparency writes, focused regression and arch proof pending. |
+| >>> ACTIVE >>> VERIFIED, PR merge pending | B366-fbdev-getcmap-transp-efault | FBIOGETCMAP rejects invalid transparency pointer with `EFAULT`; added focused hosted regression, full fbdev tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE | TBD | Display-info probe command buffer and scanout framebuffer ownership/unwind need fault proof. |
 | NOT DONE |  | Virtio-net owns netdev publication/removal. |
 | NOT DONE |  | Virtio-net owns RX runtime installation/removal. |

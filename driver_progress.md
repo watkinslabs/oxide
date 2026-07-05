@@ -464,8 +464,8 @@ Evidence: source audit found FBIO fixed-size args and cmap arrays use `p.checked
 
 ## B366-fbdev-getcmap-transp-efault
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B366-fbdev-getcmap-transp-efault`
 
-Evidence: source audit found `FBIOGETCMAP` validates nonzero `cm.transp` with the same checked exclusive-end user range as red/green/blue before any transparency writes. Focused hosted regression, full fbdev tests, and x86_64/aarch64 driver-path proof pending.
+Evidence: source audit found `FBIOGETCMAP` validates nonzero `cm.transp` with the same checked exclusive-end user range as red/green/blue before any transparency writes. Added `fbio_getcmap_rejects_invalid_transparency_pointer`; focused regression, full `cargo test -p fbdev` with 22 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
