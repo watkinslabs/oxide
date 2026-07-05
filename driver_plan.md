@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B383-core-ipv6-ndp-iface-cache` — CLAIMED.
+ACTIVE NOW: `B383-core-ipv6-ndp-iface-cache` — VERIFIED; commit/PR/merge pending.
 
 Current active item: `>>> ACTIVE >>> B383-core-ipv6-ndp-iface-cache`.
 
-Current B383 gate: prove core IPv6 NDP cache entries are keyed by
-`(NetIfaceId, IPv6 address)`, with source audit, hosted net tests, and
-x86_64/aarch64 runtime proof before merge.
+Current B383 gate: source audit, hosted net tests, and fast x86_64/aarch64
+driver-path proof pass; commit/PR/merge and main sync still pending.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -249,7 +248,7 @@ Status legend:
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-| NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed before `mouseprobe` then passed on rerun in B327 and B337; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/oxide-boot-smoke-arm-jyMRB8.log`, `/tmp/oxide-boot-smoke-arm-vsmd0t.log`; passing logs `/tmp/b327-queue-quiesce-arm-rerun.log`, `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`, `/tmp/oxide-boot-smoke-arm-nJVaKr.log`, `/tmp/oxide-boot-smoke-arm-laxjZl.log`; root-cause separately. |
+| NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed before `mouseprobe` then passed on rerun in B327, B337, and B383; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/oxide-boot-smoke-arm-jyMRB8.log`, `/tmp/oxide-boot-smoke-arm-vsmd0t.log`, `/tmp/b383-arm-driver-path.log`; passing logs `/tmp/b327-queue-quiesce-arm-rerun.log`, `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`, `/tmp/b383-arm-driver-path-rerun.log`, `/tmp/oxide-boot-smoke-arm-nJVaKr.log`, `/tmp/oxide-boot-smoke-arm-laxjZl.log`; root-cause separately. |
 | VERIFIED | B328-virtio-input-drain-split | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth; `cargo test -p drv-virtio-input`, fast x86_64 driver path, and fast aarch64 driver path pass. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
@@ -315,7 +314,7 @@ Status legend:
 | VERIFIED | B380-virtio-net-ipv6-ndp-stack-owned | IPv6 NDP learning goes through the stack-owned interface table: virtio-net RX delivers IPv6 frames to `NetStack::deliver_rx_ipv6(iface, ...)`, stale driver-private `learn_ndp_from_ipv6` path/test removed, stack NDP tests prove `(iface, IPv6)` scoped NS/NA learning, full virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2433 merge, and local main sync to `origin/main` at `0fbf754b` pass. |
 | VERIFIED | B381-virtio-net-ipv6-tx-stack-ndp | Virtio-net TX resolves IPv6 neighbors through registered interface stack NDP table: kernel `ndp_lookup_for_device` maps `DeviceKey` to `registered_iface_for(device_key)` and calls `net::sock::stack().ndp_lookup(iface, next_hop)`, `VirtioNetDev::xmit` uses that resolver before `tx_frame_for`, hosted stack NDP tests, virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, PR #2434 merge, and local main sync to `origin/main` at `cdd8d243` pass. |
 | VERIFIED | B382-virtio-net-multidev-rebind-proof | Fast-init live proof passes on x86_64 and aarch64 for two virtio-net devices, `eth0`/`eth1`, sysfs driver `unbind`/`bind`, restored virtio-net driver readdir state, and normal input tail; ARM PID1 selection now honors `/init`, rootfs cache keys multidev mode; normal x86_64/aarch64 smoke, PR #2435 merge, and local main sync to `origin/main` at `d09f5123` pass. |
-| >>> ACTIVE >>> CLAIMED | B383-core-ipv6-ndp-iface-cache | Core IPv6 stack NDP cache must be keyed by `(iface, IPv6 address)` so identical IPv6 neighbors on different interfaces cannot collide or bleed TX resolution across devices. |
+| >>> ACTIVE >>> VERIFIED | B383-core-ipv6-ndp-iface-cache | Core IPv6 stack NDP cache is keyed by `(iface, IPv6 address)` and unregister purges the removed iface's entries; source audit, hosted NDP tests, line-cap check, x86_64 driver-path, and aarch64 driver-path rerun pass. Commit/PR/merge pending. |
 | NOT DONE |  | Virtio-vsock remove keyed to owning child key. |
 | NOT DONE |  | Virtio-vsock clears `VsockRx` bottom half only for installed transport. |
 | NOT DONE |  | Upper `net::vsock` stores owner-keyed endpoint records. |
