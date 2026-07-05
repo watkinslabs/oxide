@@ -483,9 +483,13 @@ recent-completed table above; main was synced after each merge through
 
 ## B390-virtio-rng-child-key-records
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B390-virtio-rng-child-key-records`
 
-Scope: prove or fix virtio-rng state so every live record is keyed by
-`VirtioChildDeviceKey`, with no singleton device state reused across children.
+Evidence: source audit proves records are keyed by `VirtioChildDeviceKey`,
+install/uninstall/shutdown/find and `fill_from_device` select exact keys,
+active hwrng uses `active_key`, pci-boot passes `session.device_key()`, and
+focused plus full `drv-virtio-rng` hosted tests pass; x86_64
+`/tmp/b390-x86-driver-path.log` and aarch64 `/tmp/b390-arm-driver-path.log`
+driver-path proofs pass.

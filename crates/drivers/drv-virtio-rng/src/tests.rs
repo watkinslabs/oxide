@@ -3,7 +3,8 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::registry::{
-    promote_active_locked, publish_hwrng_or_clear_active, RngHandle, RngRegistry, RngState, RNGS,
+    active_handle, find_handle, promote_active_locked, publish_hwrng_or_clear_active,
+    RngHandle, RngRegistry, RngState, RNGS,
 };
 use crate::uninstall;
 
@@ -63,6 +64,27 @@ fn test_record_with_device(
         hwrng_dev,
         shutdown: false,
     }))
+}
+
+#[test]
+fn registry_records_are_child_keyed() {
+    let _guard = TEST_LOCK.lock();
+    let key0 = key(0x0001_0000);
+    let key1 = key(0x0002_0000);
+    {
+        let mut registry = RNGS.lock();
+        registry.records.clear();
+        registry.records.push(test_record(key0, false));
+        registry.records.push(test_record(key1, false));
+        registry.active_key = Some(key1);
+    }
+    assert_eq!(find_handle(key0).unwrap().lock().device_key, key0);
+    assert_eq!(find_handle(key1).unwrap().lock().device_key, key1);
+    assert!(find_handle(key(0x0003_0000)).is_none());
+    assert_eq!(active_handle().unwrap().lock().device_key, key1);
+    let mut registry = RNGS.lock();
+    registry.records.clear();
+    registry.active_key = None;
 }
 
 #[test]

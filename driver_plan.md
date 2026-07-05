@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B390-virtio-rng-child-key-records` — CLAIMED.
+ACTIVE NOW: `B390-virtio-rng-child-key-records` — VERIFIED; COMMIT/PR PENDING.
 
 Current active item: `>>> ACTIVE >>> B390-virtio-rng-child-key-records`.
 
-Current B390 gate: prove or fix virtio-rng state so records are per child key,
-with hosted tests and x86_64/aarch64 runtime proof before merge.
+Current B390 gate: source audit, hosted tests, and x86_64/aarch64 driver-path
+runtime proof pass; commit, push, PR, merge, and main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -321,7 +321,7 @@ Status legend:
 | VERIFIED | B387-af-vsock-bind-specific-local-cid | AF_VSOCK bind honors specific local CID: source audit proves `sys_bind` resolves `sockaddr_vm` cid through `net::vsock::bind_owner_for_cid`, ANY maps to owner 0, live specific CID maps to owning endpoint, dead/quiesced CID returns `EADDRNOTAVAIL`; hosted bind-owner regression, full vsock tests, `syscalls` check, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2440 merge, and local main sync to `origin/main` at `72aebeca` pass. |
 | VERIFIED | B388-vsock-listener-backlogs-owner-port | Listener backlogs are keyed by `(owner, port)`: source audit proves `Listener { owner, local_port, backlog }`, `add_listener` rejects duplicates only for the same pair, inbound requests queue through exact owner before wildcard, and `pop_accept` reads only the matching owner/port backlog; hosted same-port dual-owner regression, full vsock tests, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2441 merge, and local main sync to `origin/main` at `a7a5312f` pass. |
 | VERIFIED | B389-vsock-close-releases-state | AF_VSOCK close releases listener/backlog/connection state: source audit proves `Drop for VsockSocket` removes listeners via `TABLE.remove_listener(owner, port)` and closes connected sockets via `vsock::close`; `remove_listener` drains pending backlog keys, closes those conns, removes table records, and deletes the listener; focused drop cleanup tests, full vsock tests, fast x86_64/aarch64 driver-path smokes, PR #2442 merge, and local main sync to `origin/main` at `e3f505da` pass. |
-| >>> ACTIVE >>> CLAIMED | B390-virtio-rng-child-key-records | Virtio-rng keeps per-child-key records. |
+| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B390-virtio-rng-child-key-records | Virtio-rng keeps per-child-key records: source audit proves `RngState` stores `VirtioChildDeviceKey`, registry records are per-device handles, install/uninstall/shutdown/find and `fill_from_device` select exact keys, active provider uses `active_key`, and pci-boot passes `session.device_key()`; hosted child-key regression, full drv-virtio-rng tests, x86_64 driver-path log `/tmp/b390-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b390-arm-driver-path.log` pass. |
 | NOT DONE |  | Virtio-rng seeds from just-bound device. |
 | NOT DONE | B325-virtio-rng-active-provider | Virtio-rng active `/dev/hwrng` provider promotion/removal must pass hosted tests and not leave stale active key. |
 | NOT DONE |  | Virtio-snd install/remove keyed to owning child key. |
