@@ -2,13 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B332-virtio-gpu-hot-remove-cleanup` — CLAIMED.
+ACTIVE NOW: `B332-virtio-gpu-hot-remove-cleanup` — VERIFIED; commit/PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B332-virtio-gpu-hot-remove-cleanup`.
+Current active item: `>>> ACTIVE >>> B332-virtio-gpu-hot-remove-cleanup` (verified; merge pending).
 
-Current B332 gate: prove or fix virtio-gpu hot-remove so console/fbdev, DRM,
-and scanout cleanup are each attempted independently instead of one failed
-cleanup preventing the later teardown paths.
+Current B332 gate: DONE. `drv_virtio_gpu::hot_remove` centralizes hot-remove
+and independently attempts device/DRM/console teardown plus scanout teardown;
+hosted regressions and fast x86_64/aarch64 driver-path smokes pass.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -263,7 +263,7 @@ Status legend:
 | VERIFIED | B329-virtio-gpu-remove-child-key | Virtio-gpu remove is keyed to owning child key; removed BDF-keyed child-remove pre-unpublish and added hosted key-vs-BDF regression plus fast x86_64/aarch64 driver-path proof. |
 | VERIFIED | B330-virtio-gpu-remove-teardown-order | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release; source order is `uninstall(device_key)` before `uninstall_scanout(device_key)`, with hosted GPU tests and fast x86_64/aarch64 driver-path proof passing. |
 | VERIFIED | B331-virtio-gpu-probe-failure-unwind | Virtio-gpu probe-failure unwind removes only failed child scanout; hosted post-init regression now runs, full GPU crate tests pass, and fast x86_64/aarch64 driver-path proof passes. |
-| CLAIMED | B332-virtio-gpu-hot-remove-cleanup | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup. |
+| VERIFIED | B332-virtio-gpu-hot-remove-cleanup | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup; hosted hot-remove regressions, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | Virtio-gpu installed device state is per child key. |
 | NOT DONE |  | Virtio-gpu duplicate child-key install rejected before publication. |
 | NOT DONE |  | DRM card IDs are stable slots. |
