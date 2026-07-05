@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B501-pci-backed-child-wrapper-descriptors; VERIFIED.
+Current marker: B503-transport-neutral-child-key-proof; IN AUDIT.
+
+## B503 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B503-transport-neutral-child-key-proof | ACTIVE | Fresh main `56e4935e` after PR #2561 merge. B502 is occupied by local unmerged branch `B502-fifo-open-impl` at `128b8e08`, so this driver lane uses B503 and advances the B counter to B504. Auditing the remaining BDF-derived child-key path and adding proof that child runtime identity can be constructed without a PCI BDF. |
 
 ## B501 Current
 
