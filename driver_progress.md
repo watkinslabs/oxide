@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B499-virtio-gpu-placeholder-notify; VERIFIED.
+Current marker: B500-virtio-child-descriptor-exports; IN AUDIT.
+
+## B500 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B500-virtio-child-descriptor-exports | IN AUDIT | Fresh main `37e7b2ff` after PR #2559 merge; auditing that each virtio child driver crate publicly exports its own driver descriptor/profile surface rather than relying on pci-boot-owned descriptors. Hosted and x86_64/aarch64 smoke gates required before merge. |
 
 ## B499 Current
 
