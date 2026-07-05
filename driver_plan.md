@@ -2,12 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B334-virtio-gpu-duplicate-key-reject` — CLAIMED.
+ACTIVE NOW: `B334-virtio-gpu-duplicate-key-reject` — VERIFIED; commit/PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject`.
+Current active item: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject` — verified locally; commit/PR merge pending.
 
-Current B334 gate: prove or fix virtio-gpu duplicate child-key install rejection
-before any second publication side effects.
+Current B334 gate: duplicate child-key rejection is proven before second DRM
+card/model publication side effects; hosted tests and x86_64/aarch64
+driver-path smokes passed.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -264,7 +265,7 @@ Status legend:
 | VERIFIED | B331-virtio-gpu-probe-failure-unwind | Virtio-gpu probe-failure unwind removes only failed child scanout; hosted post-init regression now runs, full GPU crate tests pass, and fast x86_64/aarch64 driver-path proof passes. |
 | VERIFIED | B332-virtio-gpu-hot-remove-cleanup | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup; hosted hot-remove regressions, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
 | VERIFIED | B333-virtio-gpu-device-state-key | Virtio-gpu installed device state is per child key; source audit, hosted key-vs-BDF tests, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
-| CLAIMED | B334-virtio-gpu-duplicate-key-reject | Virtio-gpu duplicate child-key install rejected before publication. |
+| VERIFIED; commit/PR merge pending | B334-virtio-gpu-duplicate-key-reject | Virtio-gpu duplicate child-key install rejects `Error::Busy` before second DRM card/model publication; hosted duplicate-publication regression, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | DRM card IDs are stable slots. |
 | NOT DONE |  | DRM publishes `/dev/dri/cardN` per stable card slot. |
 | NOT DONE |  | DRM render nodes withheld until real render/GEM UAPI exists. |
