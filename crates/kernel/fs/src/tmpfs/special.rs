@@ -1,6 +1,6 @@
 use alloc::sync::{Arc, Weak};
 
-use vfs::{FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError, default_inode_ops, mk_mode};
+use vfs::{FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, PollSubscribers, VfsError, default_inode_ops, mk_mode};
 use vfs::superblock::SuperBlock;
 
 use super::inode::{fsid_of, iget_or_build, next_ino};
@@ -40,6 +40,12 @@ pub(super) fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: 
             .rdev(rdev)
             .xattrs(vfs::SimpleXattrs::new())
             .fsid(fsid_of(&sb2));
+        // A named FIFO binds `pipefifo_fops` per-open via `fs::pipe::fifo_open`;
+        // give it a poll queue so epoll/poll on the fifo gets readiness edges
+        // (systemd's sd-event epolls /run/systemd/initctl). The `TmpfsErrFileOps`
+        // stub stays as the on-disk `i_fop` — a bare read of an unopened FIFO is
+        // still meaningless; the pipe vtable is installed on the open `File`.
+        if ft == FileType::Fifo { b = b.poll_subs(PollSubscribers::new()); }
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()
     })
