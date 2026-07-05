@@ -413,7 +413,7 @@ fn spawn_init_from_rootfs_arm() {
             0, // smoke: no vDSO mapped
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
         )
-    }.unwrap_or(INIT_STACK_TOP);
+    }.map(|l| l.sp).unwrap_or(INIT_STACK_TOP);
 
     // F152-2: leave TPIDR_EL0 = 0 on first user entry. musl crt1's
     // __init_tls mmaps a TCB and writes TPIDR_EL0 directly (EL0

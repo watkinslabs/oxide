@@ -15,6 +15,12 @@ fn pid_cmdline_body(tid: u32) -> Vec<u8> {
         Some(t) => t,
         None => return out,
     };
+    // If PR_SET_MM rewrote the argv region (systemd relabels its cmdline
+    // this way), emit the raw [arg_start, arg_end) bytes read from the
+    // task's own address space — that is what `/proc/pid/cmdline` sources
+    // in Linux (`get_mm_cmdline`). Gated on the user-set flag: at exec
+    // baseline the correct-order `task.cmdline` snapshot is used instead.
+    if let Some(bytes) = foreign_region_bytes(tid, true) { return bytes; }
     let snap = unsafe { (*task.cmdline.get()).clone() };
     if let Some(s) = snap {
         push(&mut out, s.as_bytes());
@@ -23,6 +29,28 @@ fn pid_cmdline_body(tid: u32) -> Vec<u8> {
         out.push(0);
     }
     out
+}
+
+/// Read a task's argv (`arg`=true) or env region from its own address
+/// space, exactly like Linux `get_mm_cmdline`/`environ_read` source the
+/// raw `[arg_start,arg_end)`/`[env_start,env_end)` bytes. The exec stack
+/// builder lays argv/env FORWARD (argv[0] lowest), so the baseline region
+/// is already correct-order and needs no gate. `None` (→ caller falls back
+/// to the snapshot) when the bounds are unset (arg_start==0: kernel thread /
+/// no argv) or the AS has no real PT root. Bounded to ARG_MAX (128 KiB).
+fn foreign_region_bytes(tid: u32, arg: bool) -> Option<Vec<u8>> {
+    let task = sched::live::registry::lookup(tid)?;
+    let mm = unsafe { (*task.mm.get()).as_ref() }?.clone();
+    let (start, end) = if arg { (mm.arg_start(), mm.arg_end()) } else { (mm.env_start(), mm.env_end()) };
+    if start == 0 || end <= start { return None; }
+    let root = mm.root_pa();
+    if root == 0 { return None; }
+    let len = ((end - start) as usize).min(128 * 1024);
+    let mut buf = alloc::vec![0u8; len];
+    // SAFETY: root is this live mm's PT root (Arc held); read-only foreign walk over the [start,end) user region.
+    let n = unsafe { pmm::user_as::read_foreign_user(root, start, &mut buf) };
+    buf.truncate(n);
+    Some(buf)
 }
 
 fn pid_stat_body(tid: u32) -> Vec<u8> {
@@ -149,6 +177,11 @@ fn pid_environ_body(tid: u32) -> Vec<u8> {
         Some(t) => t,
         None => return Vec::new(),
     };
+    // PR_SET_MM_ENV_START/END rewrite: read the raw [env_start, env_end)
+    // region from the task's AS (Linux `environ_read`). Gated on the
+    // user-set flag; else the exec-time snapshot. (Owner/ptrace access
+    // control is enforced at the /proc file open, unchanged here.)
+    if let Some(bytes) = foreign_region_bytes(tid, false) { return bytes; }
     match unsafe { (*task.environ.get()).clone() } {
         Some(s) => s.into_bytes(),
         None => Vec::new(),

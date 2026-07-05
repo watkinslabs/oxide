@@ -26,13 +26,22 @@ mod fault;
 mod fork;
 mod layout;
 mod limits;
+mod mmfields;
 mod ops;
 
 pub use limits::{MIN_USER_VA, MMAP_BASE_GAP, MMAP_TOP};
+pub use mmfields::{
+    prctl_mm_map_size, validate_mm_map, PrctlMmMap,
+    PR_SET_MM_ARG_END, PR_SET_MM_ARG_START, PR_SET_MM_AUXV, PR_SET_MM_BRK,
+    PR_SET_MM_END_CODE, PR_SET_MM_END_DATA, PR_SET_MM_ENV_END, PR_SET_MM_ENV_START,
+    PR_SET_MM_EXE_FILE, PR_SET_MM_MAP, PR_SET_MM_MAP_SIZE, PR_SET_MM_START_BRK,
+    PR_SET_MM_START_CODE, PR_SET_MM_START_DATA, PR_SET_MM_START_STACK,
+};
 
 // Module manifest:
 // - limits: address-space numeric boundaries and growth caps.
 // - layout: page-alignment validation helpers.
+// - mmfields: mm_struct arg/env/stack/code/data/brk bounds + prctl(PR_SET_MM).
 // - ops: VMA lookup, mmap/munmap/mprotect/mseal, rmap edge upkeep.
 // - fork: fork tree cloning, eager copy, and COW page sharing.
 // - fault: demand-fault, file-fill, COW, and rmap-aware fault paths.
@@ -92,6 +101,12 @@ pub struct AddressSpace {
     /// the set/clear ordering (mark-before-activate, clear-after-activate)
     /// is load-bearing. `u64` exactly covers `cpu::MAX_CPUS == 64`.
     cpumask: core::sync::atomic::AtomicU64,
+    /// Linux `mm_struct` argv/env/stack/code/data/start_brk bounds +
+    /// saved auxv. Set at execve; rewritable via `prctl(PR_SET_MM)` under
+    /// CAP_SYS_RESOURCE. Source for `/proc/<pid>/{cmdline,environ,stat}`.
+    /// Getters/setters + the PR_SET_MM apply/validate logic live in the
+    /// `mmfields` child module.
+    mm_layout: mmfields::MmLayout,
 }
 
 impl Drop for AddressSpace {
@@ -134,6 +149,7 @@ impl AddressSpace {
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
+            mm_layout: mmfields::MmLayout::new(),
         }))
     }
 

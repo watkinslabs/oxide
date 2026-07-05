@@ -34,6 +34,7 @@ impl AddressSpace {
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
+            mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
         }))
     }
 
@@ -227,6 +228,7 @@ impl AddressSpace {
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
+            mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
         });
         // Linux `anon_vma_fork`: each anonymous VMA in the child
         // inherits the parent's `Arc<AnonVma>` (already cloned by
@@ -314,6 +316,7 @@ impl AddressSpace {
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
+            mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
         }))
     }
 
