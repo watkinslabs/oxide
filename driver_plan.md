@@ -2,14 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B446-model-unbind-remove-before-clear VERIFIED pending PR
-merge.
+ACTIVE NOW: B447-device-del-unbinds-first; IN AUDIT.
 
-Current active item: none; next claim starts after B446 merge and fresh main
-sync.
+Current active item: `device_del` unbinds first.
 
-Next gate after merge: return to fresh `origin/main` before claiming B447 using
-`metadata/index.md`.
+Next gate after B447: prove source ordering, hosted driver-model regressions,
+runtime arch relevance, PR merge, then fresh `origin/main` before claiming B448.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -55,7 +53,7 @@ Status legend:
 | VERIFIED | B444-i8042-platform-model-attach | Boot-time i8042 platform device relies on model-owned attach path: x86_64 `init_ps2_keyboard` configures probe data, publishes `platform/i8042` through `platform_device_or_panic` / `drv::try_device_add`, and registers the `i8042-kbd` platform model driver; its `probe` owns i8042 bring-up and IRQ1 setup, failed detection leaves the model device unbound, aarch64 intentionally compiles this boot hook to no-op because QEMU virt has no i8042, hosted PS/2/model checks pass, and x86 boot log proves `i8042 keyboard detected`. |
 | VERIFIED | B445-sysfs-bind-entry-production | Production explicit bind entry remains sysfs `/sys/bus/*/drivers/*/bind`: sysfs registers per-bus driver directories for pci/virtio/platform, each driver dir exposes bind/unbind attrs, bind writes call `drv::bind_addr(bus, addr, driver)`, unbind resolves the currently bound model device then calls `drv::unbind`, errors map to Linux-style errno, and focused sysfs regressions prove bind/unbind state, symlink, probe-failure, and uevent behavior. |
 | VERIFIED | B446-model-unbind-remove-before-clear | Model unbind calls `Driver::remove` before clearing binding: `drv::unbind` reads the current bound driver, resolves the registered driver, calls `driver.remove(dev)`, then clears `dev.driver` and emits the unbound change hook; hosted regression `unbind_calls_remove_before_clearing_binding` proves `remove` observes the device still bound, and full driver-model tests pass 27/27. |
-| SOURCE OK |  | `device_del` unbinds first. |
+| ACTIVE | B447-device-del-unbinds-first | `device_del` unbinds first. |
 | SOURCE OK |  | `device_del` emits remove while object is still visible. |
 | SOURCE OK |  | `device_del` removes devtmpfs state. |
 | SOURCE OK |  | `device_del` drops device from registry after remove/devtmpfs teardown. |
