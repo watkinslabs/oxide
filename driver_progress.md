@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B459-virtio-input-explicit-shutdown-callback; IN AUDIT.
+Current marker: none; B459-virtio-input-explicit-shutdown-callback VERIFIED pending PR merge.
 
 ## B459 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B459-virtio-input-explicit-shutdown-callback | IN AUDIT | Fresh main `3b5d8188` after PR #2516 merge; proving virtio-input child driver implements explicit shutdown through the model child-driver path and event-queue drain state keyed by the owning virtio child identity. |
+| B459-virtio-input-explicit-shutdown-callback | VERIFIED | Fresh main `3b5d8188` after PR #2516 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioInputOps::shutdown_child` calls `drv_virtio_input::drain::shutdown_eventq`, and `shutdown_eventq` removes only the matching event queue by `VirtioChildDeviceKey`, resets the device through shared `virtio::reset_device`, releases the shared input drain handler only when the last queue is gone, and leaves evdev/devfs/input publication teardown to remove. Code cleanup replaced the raw common-cfg status offset write in `crates/drivers/drv-virtio-input/src/drain/queue.rs` with shared `virtio::reset_device`. Checks pass: `cargo test -p drv-virtio-input -- --nocapture` with 36/36 tests, `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B458 Current
 
