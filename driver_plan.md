@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B360-console-fbdev-transactional-publish` — VERIFIED, PR merge pending.
+ACTIVE NOW: `B361-shutdown-scanout-quiesce-in-place` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B360-console-fbdev-transactional-publish`.
+Current active item: `>>> ACTIVE >>> B361-shutdown-scanout-quiesce-in-place`.
 
-Current B360 gate: PR update, merge, and main sync.
+Current B361 gate: audit shutdown scanout quiesce behavior and retained publication/backing metadata.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -290,8 +290,8 @@ Status legend:
 | VERIFIED | B357-drm-addfb-packed-rgb-validation | ADDFB/ADDFB2 validate packed-RGB metadata and bounds; added ADDFB2 unused-offset and legacy ADDFB backing-span regressions; full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2410 merge, and local main sync to `origin/main` at `dc05b71a` pass. |
 | VERIFIED | B358-fbdev-flush-blank-record | fbdev flush/blank ops are per `/dev/fbN` record; added hosted `/dev/fbN` FBIOBLANK/FBIO_WAITFORVSYNC regression proving selected inode routes to selected ops key; full fbdev tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2411 merge, and local main sync to `origin/main` at `4824dd77` pass. |
 | VERIFIED | B359-virtio-gpu-fbdev-index-owner | Virtio-gpu scanout context records exact fbdev index and unpublishes by owner token; added owner-keyed fbdev-index store/take regression and serialized post_init global-state tests; full virtio-gpu tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2412 merge, and local main sync to `origin/main` at `91039d81` pass. |
-| >>> ACTIVE >>> VERIFIED, PR merge pending | B360-console-fbdev-transactional-publish | Console/fbdev publication now installs fbdev, ops, and stored idx before committing console owner token; lost owner commits unwind stored idx and fbdev record; hosted transactional regressions, full virtio-gpu tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
-| NOT DONE | TBD | Shutdown quiesces scanout in place without dropping publication/backing metadata. |
+| VERIFIED | B360-console-fbdev-transactional-publish | Console/fbdev publication now installs fbdev, ops, and stored idx before committing console owner token; lost owner commits unwind stored idx and fbdev record; hosted transactional regressions, full virtio-gpu tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2413 merge, and local main sync to `origin/main` at `e0c60058` pass. |
+| >>> ACTIVE >>> CLAIMED | B361-shutdown-scanout-quiesce-in-place | Shutdown quiesces scanout in place without dropping publication/backing metadata. |
 | NOT DONE | TBD | fbcon still has one explicit foreground console owner. |
 | NOT DONE |  | Dumb-buffer mmap pins DRM object through file-backed shared VMA and PMM refs. |
 | NOT DONE |  | MODE_MAP_DUMB cookies are high-tagged and validated. |
