@@ -644,3 +644,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B429-pci-model-bar-publication | VERIFIED | Fresh main `71a8020c`; source audit proves `pci-boot::enumerate_and_log` computes canonical PCI model addresses, calls `pci_resources_arch`, builds `drv::Device::new("pci", ...)`, attaches BAR resources with `with_resources`, and publishes through fallible `drv::try_device_add`; duplicate same-address matches are treated as existing only when vendor/device/class also match. Added `try_device_add_preserves_pci_bar_resources_and_rejects_republish` to prove BAR resources remain in the authoritative model record and duplicate publication does not replace them. Hosted checks pass: focused regression, full `cargo test -p drv -- --nocapture --test-threads=1` with 25 tests, full `cargo test -p pci -- --nocapture` with 10 tests, and `cargo test -p sysfs pci_device_exposes_indexed_bar_resource_attrs -- --nocapture`. Runtime lockstep passes: x86_64 `/tmp/b429-pci-model-bar-publication-x86.log` and aarch64 `/tmp/b429-pci-model-bar-publication-arm-2.log`; first ARM attempt failed before boot proof because vhost-vsock guest CID 3 was temporarily busy, no live QEMU remained, and rerun passed. |
+
+## B430 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B430-pci-model-driver-registration | IN AUDIT | Fresh main `7936535e` after PR #2484 merge; auditing NVMe, AHCI, and virtio-pci model-driver registration against current source before changing code. |
