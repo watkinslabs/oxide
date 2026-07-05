@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B464-8250-serial-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: B465-pl011-serial-explicit-shutdown-callback; IN AUDIT.
+
+## B465 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B465-pl011-serial-explicit-shutdown-callback | IN AUDIT | Fresh main `bfe8037c` after PR #2522 merge; proving PL011 serial driver implements explicit shutdown through the model driver path without relying on remove/unbind side effects. |
 
 ## B464 Current
 
