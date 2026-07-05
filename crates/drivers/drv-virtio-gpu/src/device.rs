@@ -34,6 +34,12 @@ pub struct VirtioGpuDev {
     pub capset_count:         u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HotRemoveResult {
+    pub device_removed:  bool,
+    pub scanout_removed: bool,
+}
+
 impl VirtioGpuDev {
     /// Allocate a fresh resource id. Resource id 0 reserved.
     /// # C: O(1)
@@ -309,6 +315,19 @@ pub fn uninstall(device_key: DeviceKey) -> Option<VirtioGpuDev> {
         }
         None => None,
     }
+}
+
+/// Hot-remove an installed virtio-gpu child and its scanout backing.
+/// Each teardown path is attempted independently so stale partial state from
+/// failed or repeated remove does not block later cleanup.
+/// # C: O(N)
+pub fn hot_remove(device_key: DeviceKey) -> HotRemoveResult {
+    let device_removed = uninstall(device_key).is_some();
+    #[cfg(any(target_os = "oxide-kernel", test))]
+    let scanout_removed = crate::post_init::uninstall_scanout(device_key);
+    #[cfg(not(any(target_os = "oxide-kernel", test)))]
+    let scanout_removed = false;
+    HotRemoveResult { device_removed, scanout_removed }
 }
 
 /// Quiesce the installed virtio-gpu device for terminal system shutdown.
