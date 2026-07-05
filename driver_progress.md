@@ -704,3 +704,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B439-driver-unregistration-detaches-bound | VERIFIED | Fresh main `583c456b` after PR #2494 merge; source audit proves `unregister_driver` first confirms the driver exists, walks current devices, calls `unbind` for devices bound to that bus/name, and only then removes the driver from `MODEL_DRIVERS`. Hosted checks pass: `cargo test -p drv unregister_driver_unbinds_devices_before_removing_driver -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. The regression proves remove is called, `dev.bound()` becomes `None`, the driver disappears from `driver_names_for_bus`, later bind fails with `NotFound`, and a second unregister fails with `NotFound`. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
+
+## B440 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B440-new-device-attach-after-publication | IN AUDIT | Fresh main `83af070e` after PR #2495 merge; auditing new-device attach ordering relative to devtmpfs/sysfs publication and add uevent. |
