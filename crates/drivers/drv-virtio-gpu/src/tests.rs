@@ -256,6 +256,35 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
     }
 
     #[test]
+    fn uninstall_selects_owner_by_child_key_not_raw_bdf() {
+        let _guard = TEST_LOCK.lock();
+        fn dev(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
+            VirtioGpuDev {
+                device_key,
+                bdf,
+                card_id: 0,
+                cfg_va: 0,
+                ctrlq: test_ctrlq(),
+                features_negotiated: 0,
+                display: DisplayInfo::default(),
+                resource_id_alloc: AtomicU32::new(1),
+                blob_uuid_alloc: AtomicU64::new(1),
+                capset_count: 0,
+            }
+        }
+
+        DEVICES.lock().clear();
+        install(dev(key(0x00aa_0000), 0x0010_0000)).unwrap();
+        install(dev(key(0x0010_0000), 0x0020_0000)).unwrap();
+
+        let removed = uninstall(key(0x00aa_0000)).unwrap();
+        assert_eq!(removed.bdf, 0x0010_0000);
+        assert_eq!(DEVICES.lock().len(), 1);
+        assert_eq!(uninstall(key(0x0010_0000)).unwrap().bdf, 0x0020_0000);
+        assert!(!is_present());
+    }
+
+    #[test]
     fn install_with_drm_tracks_each_bdf_card_id() {
         let _guard = TEST_LOCK.lock();
         fn dev(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
