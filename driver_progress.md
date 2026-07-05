@@ -379,7 +379,7 @@ Evidence:
 
 ## B338-drm-inode-tag-card-id
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B338-drm-inode-tag-card-id`
 
@@ -387,10 +387,17 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | DRM inode tag encodes card id. |
+| VERIFIED | DRM inode tag encodes card id. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `make_card_inode(card_id)` builds inode `DRM_CARD_INO | card_id`; `make_render_inode(card_id)` builds inode `DRM_RENDER_INO | card_id`; `drm_inode_parts_raw` masks the high tag with `DRM_INO_TAG_MASK` and returns the low `DRM_INO_CARD_MASK` bits as the stable card id. |
+| Hosted regression | PASS: `drm_inode_tags_encode_stable_card_id` proves card and render inode tags preserve stable ids `0`, `7`, and `0x7ffe`. |
+| `cargo test -p drm drm_inode_tags_encode_stable_card_id -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 58 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 409 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b338-drm-inode-tag-card-id-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b338-drm-inode-tag-card-id-arm.log`. |

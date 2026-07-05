@@ -2,12 +2,12 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B338-drm-inode-tag-card-id` — CLAIMED.
+ACTIVE NOW: `B338-drm-inode-tag-card-id` — VERIFIED, commit/PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B338-drm-inode-tag-card-id`.
 
-Current B338 gate: prove or fix DRM inode tags encode the stable DRM card id,
-with hosted source proof and x86_64/aarch64 runtime discovery.
+Current B338 gate: verified DRM inode tags encode the stable DRM card id;
+commit/PR merge pending.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -268,7 +268,7 @@ Status legend:
 | VERIFIED | B335-drm-card-id-stable-slots | DRM card IDs are stable slots: registry stores `Vec<Option<Arc<dyn DrmDriver>>>`, node inodes tag the stable card id, ioctl routing uses that tag, lower-slot reuse does not reroute an existing higher-slot fd, full DRM crate tests pass, fast x86_64/aarch64 driver-path proof passes, and PR #2388 merge pass. |
 | VERIFIED | B336-drm-card-node-publication | DRM publishes `/dev/dri/cardN` per stable card slot; source audit, hosted metadata regression, full DRM crate tests, fast x86_64/aarch64 driver-path proof, line-cap check, and PR #2389 merge pass. |
 | VERIFIED | B337-drm-render-nodes-withheld | DRM render nodes withheld until real render/GEM UAPI exists; source audit, hosted no-render publication regression, updated runtime `drm_probe` ENOENT check, full DRM crate tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, line-cap check, and PR #2390 merge pass. |
-| CLAIMED | B338-drm-inode-tag-card-id | DRM inode tag encodes card id. |
+| VERIFIED | B338-drm-inode-tag-card-id | DRM inode tag encodes card id; source audit, hosted card/render inode-tag regression, full DRM crate tests, fast x86_64/aarch64 driver-path proof, and line-cap check pass; commit/PR merge pending. |
 | NOT DONE |  | DRM card ioctls route through matching backend slot. |
 | NOT DONE |  | `/sys/class/drm` and `/sys/devices/virtual/drm` derive from live DRM model devices. |
 | NOT DONE |  | Virtio-gpu registers DRM card devices with real virtio child parent. |
