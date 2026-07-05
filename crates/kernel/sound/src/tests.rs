@@ -13,6 +13,7 @@ const CARD1_NODE_COUNT: usize = 6;
 static TEST_LOCK: AtomicU32 = AtomicU32::new(0);
 static ADDED: Spinlock<Vec<(String, Option<(u32, u32)>, bool)>, SoundLockClass> = Spinlock::new(Vec::new());
 static REMOVED: Spinlock<Vec<String>, SoundLockClass> = Spinlock::new(Vec::new());
+static ROUTED: Spinlock<Vec<u32>, SoundLockClass> = Spinlock::new(Vec::new());
 
 struct TestGuard;
 
@@ -40,6 +41,17 @@ fn trigger(_owner: u32, _start: bool) -> bool { true }
 fn fail_trigger(_owner: u32, _start: bool) -> bool { false }
 fn submit(_owner: u32, b: &[u8]) -> usize { b.len() }
 fn recv(_owner: u32, b: &mut [u8]) -> usize { b.len() }
+fn route_cfg(owner: u32) -> Option<(u32, u32, u32, u32)> { ROUTED.lock().push(owner); Some((0, 0, 0, 0)) }
+fn route_caps(owner: u32) -> ops::Caps { ROUTED.lock().push(owner); Some((1u64 << 5, 1u64 << 6, 1, 2)) }
+fn route_period(owner: u32) -> usize { ROUTED.lock().push(owner); 2048 }
+fn route_yes(owner: u32) -> bool { ROUTED.lock().push(owner); true }
+fn route_trigger(owner: u32, _start: bool) -> bool { ROUTED.lock().push(owner); true }
+fn route_submit(owner: u32, b: &[u8]) -> usize { ROUTED.lock().push(owner); b.len() }
+fn route_recv(owner: u32, b: &mut [u8]) -> usize { ROUTED.lock().push(owner); b.len() }
+fn route_hw_params(owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool {
+    ROUTED.lock().push(owner);
+    true
+}
 
 static TEST_OPS: ops::SoundOps = ops::SoundOps {
     config: cfg, pcm_caps: caps, cap_caps: caps, period_bytes: period,
@@ -69,6 +81,13 @@ static FAIL_STOP_FREE_OPS: ops::SoundOps = ops::SoundOps {
     config: cfg, pcm_caps: caps, cap_caps: caps, period_bytes: period,
     pcm_hw_params: hw_params, pcm_prepare: yes, pcm_trigger: fail_trigger, pcm_hw_free: no, pcm_submit: submit,
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: fail_trigger, cap_hw_free: no, pcm_recv: recv,
+};
+
+static ROUTE_OPS: ops::SoundOps = ops::SoundOps {
+    config: route_cfg, pcm_caps: route_caps, cap_caps: route_caps, period_bytes: route_period,
+    pcm_hw_params: route_hw_params, pcm_prepare: route_yes, pcm_trigger: route_trigger, pcm_hw_free: route_yes,
+    pcm_submit: route_submit, cap_hw_params: route_hw_params, cap_prepare: route_yes, cap_trigger: route_trigger,
+    cap_hw_free: route_yes, pcm_recv: route_recv,
 };
 
 fn add_hook(class: &str, name: &str, dt: Option<(u32, u32)>, factory: Option<drv::NodeFactory>) {
@@ -296,6 +315,44 @@ fn card_reservation_allocates_per_owner_cards_before_publication() {
     assert_eq!(owner(), None);
     assert!(ops::ops_for(0x10).is_none());
     assert!(ops::ops_for(0x20).is_none());
+}
+
+#[test]
+fn sound_data_paths_route_ops_by_explicit_owner() {
+    let _guard = test_guard();
+    const OWNER0: u32 = 0x7100;
+    const OWNER1: u32 = 0x7101;
+    for owner_id in [OWNER0, OWNER1] {
+        let _ = unregister_card(owner_id);
+        let _ = ops::clear(owner_id);
+        assert!(reserve_card(owner_id));
+        assert!(ops::register(owner_id, &ROUTE_OPS));
+        pcm::register_card(owner_id);
+        capture::register_card(owner_id);
+        oss::register_card(owner_id);
+    }
+    ROUTED.lock().clear();
+
+    assert_eq!(pcm::handle(OWNER1, uapi::PCM_PREPARE, 0), 0);
+    assert_eq!(pcm::write_bytes(OWNER1, &[1, 2, 3, 4]), 4);
+    assert_eq!(capture::handle(OWNER1, uapi::PCM_PREPARE, 0), 0);
+    let mut input = [0u8; 4];
+    assert_eq!(capture::read_bytes(OWNER1, &mut input), 4);
+    assert_eq!(oss::write(OWNER1, &[5, 6, 7, 8]), 4);
+    let mut next = [0u8; 4];
+    assert_eq!(crate::control::handle(OWNER1, 1, uapi::CTL_PCM_NEXT_DEVICE, next.as_mut_ptr() as u64), 0);
+
+    let routed = ROUTED.lock().clone();
+    assert!(!routed.is_empty());
+    assert!(routed.iter().all(|owner_id| *owner_id == OWNER1));
+
+    for owner_id in [OWNER0, OWNER1] {
+        pcm::unregister_card(owner_id);
+        capture::unregister_card(owner_id);
+        oss::unregister_card(owner_id);
+        let _ = ops::clear(owner_id);
+        let _ = cancel_card_reservation(owner_id);
+    }
 }
 
 #[test]
