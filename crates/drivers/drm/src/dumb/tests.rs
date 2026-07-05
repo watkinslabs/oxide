@@ -368,13 +368,26 @@ fn card_state_isolated() {
         offsets: [0; 4],
         scanout_res_id: 0,
     });
+    t.fbs.push(FbObj {
+        card_id: 1,
+        fb_id: 7,
+        w: 8,
+        h: 8,
+        pixel_format: DRM_FORMAT_ARGB8888,
+        handles: [1, 0, 0, 0],
+        pitches: [32, 0, 0, 0],
+        offsets: [0; 4],
+        scanout_res_id: 0,
+    });
     assert_eq!(t.find_buf(0, 1).unwrap().pa, 0x10_0000);
     assert_eq!(t.find_buf(1, 1).unwrap().pa, 0x20_0000);
-    assert!(t.find_fb(1, 7).is_none());
+    assert_eq!(t.find_fb(0, 7).unwrap().w, 4);
+    assert_eq!(t.find_fb(1, 7).unwrap().w, 8);
     assert_eq!(t.remove_card(0), (alloc::vec![(0x10_0000, 0)], Vec::new()));
     assert!(t.find_buf(0, 1).is_none());
     assert!(t.find_buf(1, 1).is_some());
     assert!(t.find_fb(0, 7).is_none());
+    assert_eq!(t.find_fb(1, 7).unwrap().pixel_format, DRM_FORMAT_ARGB8888);
 }
 
 #[test]
