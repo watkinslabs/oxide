@@ -475,8 +475,8 @@ Evidence: virtio-net RX delivers IPv6 frames to `NetStack::deliver_rx_ipv6(iface
 
 ## B381-virtio-net-ipv6-tx-stack-ndp
 
-Status: `>>> ACTIVE >>> IN AUDIT`.
+Status: `>>> ACTIVE >>> VERIFIED - PR READY`.
 
 Branch: `B381-virtio-net-ipv6-tx-stack-ndp`
 
-Evidence: audit pending for virtio-net IPv6 TX neighbor resolution through the registered interface stack NDP table.
+Evidence: kernel `ndp_lookup_for_device` resolves by registered iface via `net::sock::stack().ndp_lookup(iface, next_hop)`, and `VirtioNetDev::xmit` calls `resolve_next_hop_mac` before `tx_frame_for`. `cargo test -p net f180c -- --nocapture`, `cargo test -p drv-virtio-net`, `git diff --check`, line caps, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
