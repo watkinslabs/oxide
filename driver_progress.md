@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B495-virtio-child-remove-unpublish; IN AUDIT.
+Current marker: B495-virtio-child-remove-unpublish; VERIFIED.
 
 ## B495 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B495-virtio-child-remove-unpublish | IN AUDIT | Fresh main `01fec269` after PR #2554 merge; auditing that child remove uses the centralized parent-key path and unpublishes transport state after child policy remove, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
+| B495-virtio-child-remove-unpublish | VERIFIED | Fresh main `01fec269` after PR #2554 merge. Source audit proves child remove uses the centralized parent-key path and unpublishes transport state after child policy remove: generic `VirtioChildDriver<O>::remove` calls `parent_key(dev)` and then shared `virtio::run_child_remove(device_key, O::remove_child, unpublish_transport)`; `parent_key` derives the stable `VirtioChildDeviceKey` from the parent PCI model device; `run_child_remove` calls child remove first and transport unpublish second; pci-boot `unpublish_transport` routes through `VirtioPciTransport::unpublish_key` to `unpublish_transport_record`, releasing the persistent transport record. Checks pass: `cargo test -q -p virtio child_remove_lifecycle_removes_before_unpublish -- --nocapture --test-threads=1` 1/1; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B494 Current
 
