@@ -91,11 +91,6 @@ mod imp {
         }
     }
 
-    /// No timer polling: PL011 RX is delivered by SPI 33.
-    /// # SAFETY: shell retained for drv-serial API shape; no side effects.
-    /// # C: O(1)
-    pub unsafe fn rx_poll(_dlv: fn(u8)) {}
-
     /// RX interrupt drain.
     /// # C: O(bytes pending)
     pub fn rx_isr(dlv: fn(u8)) {
@@ -165,10 +160,6 @@ mod imp {
     /// # C: O(1)
     pub fn emit(_bytes: &[u8]) {}
     /// No PL011 on non-arm arches.
-    /// # SAFETY: shell; no side effects.
-    /// # C: O(1)
-    pub unsafe fn rx_poll(_dlv: fn(u8)) {}
-    /// No PL011 on non-arm arches.
     /// # C: O(1)
     pub fn rx_isr(_dlv: fn(u8)) {}
     /// No PL011 on non-arm arches; detect fails.
@@ -185,7 +176,7 @@ mod imp {
     pub(super) unsafe fn shutdown() {}
 }
 
-pub use imp::{emit, rx_isr, rx_poll};
+pub use imp::{emit, rx_isr};
 
 // ------------------------------------------------ drv model
 /// The PL011 console as a drv model driver. Probe performs detection; a
