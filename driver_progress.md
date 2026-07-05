@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B466-i8042-keyboard-explicit-shutdown-callback; IN AUDIT.
+Current marker: none; B466-i8042-keyboard-explicit-shutdown-callback VERIFIED pending PR merge.
 
 ## B466 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B466-i8042-keyboard-explicit-shutdown-callback | IN AUDIT | Fresh main `5e017b01` after PR #2523 merge; proving i8042 keyboard driver implements explicit shutdown through the model driver path without relying on remove/unbind side effects. |
+| B466-i8042-keyboard-explicit-shutdown-callback | VERIFIED | Fresh main `5e017b01` after PR #2523 merge; source audit proves `crates/kernel/kmain/src/kmain/runtime.rs::init_ps2_keyboard` on x86_64 publishes `platform/i8042`, configures probe data, and registers `drv_ps2_keyboard::driver`; `crates/drivers/drv-ps2-keyboard/src/lib.rs::Ps2KbdDriver::shutdown` calls `shutdown_hw`. The shutdown path disables IRQ1 delivery, disables keyboard scanning, flushes pending output, and masks the I/O APIC pin while preserving `PRESENT` plus allocated vector/pin state; `bringdown` remains the full remove path that disables the port, frees the vector, clears IRQ state, and clears `PRESENT`. On aarch64 `init_ps2_keyboard` is intentionally no-op because QEMU virt has no i8042. Checks pass: `cargo test -p drv-ps2-keyboard -- --nocapture` with 6/6 tests, `cargo test -p drv shutdown_all_quiesces_bound_devices_in_reverse_registration_order -- --nocapture`, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B465 Current
 
