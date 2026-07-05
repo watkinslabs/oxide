@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B392-virtio-rng-active-provider`.
+Current marker: `>>> ACTIVE >>> B393-virtio-snd-install-remove-keyed`.
 
 ## Archived Completed B327-B330
 
@@ -481,15 +481,15 @@ recent-completed table above; main was synced after each merge through
 | B388-vsock-listener-backlogs-owner-port | VERIFIED | Same-port listener backlogs are owner-keyed; focused/full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2441 merge, and main sync `a7a5312f` pass. |
 | B389-vsock-close-releases-state | VERIFIED | Existing AF_VSOCK drop cleanup releases listener/backlog/connection state; cleanup/full vsock tests, x86_64/aarch64 driver-path proof, PR #2442 merge, and main sync `e3f505da` pass. |
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
-| B391-virtio-rng-seeds-bound-device | VERIFIED | Just-bound-device seeding proven by source audit, requested-child fill regression/full tests, arch proof, pre-push boot smoke, PR #2444 merge, and main sync `75c9cfe8`. |
+| B391-B392 virtio-rng closeout | VERIFIED | B391 just-bound seeding and B392 active-provider promotion/removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2445, main sync `197482f2`. |
 
-## B392-virtio-rng-active-provider
+## B393-virtio-snd-install-remove-keyed
 
 Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
-Branch: `B392-virtio-rng-active-provider`
+Branch: `B393-virtio-snd-install-remove-keyed`
 
-Evidence: hosted regressions prove publish failure clears the matching active
-key, no-live removal clears hwrng, and active removal promotes the next live
-provider. Full tests plus x86_64 `/tmp/b392-x86-driver-path.log` and aarch64
-`/tmp/b392-arm-driver-path.log` driver-path proofs pass.
+Evidence: source audit and hosted regression prove key0 removal leaves key1
+context, card, ops, and event softirq live. Full tests plus x86_64
+`/tmp/b393-x86-driver-path.log` and aarch64 `/tmp/b393-arm-driver-path.log`
+driver-path proofs pass.
