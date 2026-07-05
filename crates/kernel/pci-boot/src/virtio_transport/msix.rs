@@ -21,6 +21,7 @@ pub(crate) struct MsixBinding {
 }
 
 struct TransportRecord {
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     _mappings: TransportMappings,
     vring_frames: Vec<u64>,
@@ -95,26 +96,41 @@ pub(crate) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBindin
 }
 
 pub(crate) fn publish_transport_record(
+    device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     mappings: TransportMappings,
     vring_frames: Vec<u64>,
     msix: Vec<MsixBinding>,
 ) {
     let rec = TransportRecord {
+        device_key,
         bdf,
         _mappings: mappings,
         vring_frames,
         msix,
     };
     let mut records = TRANSPORT_MMIO.lock();
-    if let Some(idx) = records.iter().position(|old| old.bdf == bdf) {
+    if let Some(idx) = records.iter().position(|old| old.device_key == device_key) {
         let old = records.remove(idx);
         release_transport_record(old);
     }
     records.push(rec);
 }
 
-pub(crate) fn unpublish_transport_record(bdf: u32) {
+pub(crate) fn unpublish_transport_record(device_key: virtio::VirtioChildDeviceKey) {
+    let rec = {
+        let mut records = TRANSPORT_MMIO.lock();
+        records
+            .iter()
+            .position(|rec| rec.device_key == device_key)
+            .map(|idx| records.remove(idx))
+    };
+    if let Some(rec) = rec {
+        release_transport_record(rec);
+    }
+}
+
+pub(crate) fn unpublish_transport_record_by_bdf(bdf: u32) {
     let rec = {
         let mut records = TRANSPORT_MMIO.lock();
         records

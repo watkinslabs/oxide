@@ -4,8 +4,8 @@
 use super::virtio_transport::{
     alloc_net_tx_boot_buffer, bind_msix_vector, disable_pci_command, kick_queue_notify,
     post_net_rx_boot_buffer, program_queue_set, read_queue_used_idx, unpublish_transport_record,
-    MsixBinding, NetRxBootBuffer, ProgrammedQueues, QueueRing, TransportMappings,
-    VirtioProbeDevres,
+    unpublish_transport_record_by_bdf, MsixBinding, NetRxBootBuffer, ProgrammedQueues, QueueRing,
+    TransportMappings, VirtioProbeDevres,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
