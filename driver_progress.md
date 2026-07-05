@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B338-drm-inode-tag-card-id`.
+Current marker: `>>> ACTIVE >>> B339-drm-card-ioctl-slot-routing`.
 
 ## B002-single-machine-desktop-proof
 
@@ -171,7 +171,7 @@ Evidence:
 
 ## B330-virtio-gpu-remove-teardown-order
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2391.
 
 Branch: `B330-virtio-gpu-remove-teardown-order`
 
@@ -402,3 +402,22 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b338-drm-inode-tag-card-id-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b338-drm-inode-tag-card-id-arm.log`. |
 | Pre-push boot smoke | PASS: x86_64 reached `oxide login:` in 22s on attempt 1 (`/tmp/oxide-boot-smoke-x86-7UiyH1.log`); aarch64 hit existing no-progress on attempt 1 (`/tmp/oxide-boot-smoke-arm-vsmd0t.log`) then reached `oxide login:` in 16s on attempt 2 (`/tmp/oxide-boot-smoke-arm-laxjZl.log`). |
+| PR merge | PASS: PR #2391 merged to `main` at `81192089`. |
+
+## B339-drm-card-ioctl-slot-routing
+
+Status: `CLAIMED`.
+
+Branch: `B339-drm-card-ioctl-slot-routing`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | DRM card ioctls route through matching backend slot. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
