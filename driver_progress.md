@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B489-child-probes-no-transport-callback-imports; VERIFIED pending PR merge.
+Current marker: B490-virtio-child-single-bus-facing-wrapper; VERIFIED.
+
+## B490 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B490-virtio-child-single-bus-facing-wrapper | VERIFIED | Fresh main `458afcd1` after PR #2547 merge. Source audit proves virtio child binding is driven by one generic bus-facing `VirtioChildDriver<O>` wrapper: `virtio_child.rs` owns the single child `impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O>`, supplies `virtio::VIRTIO_CHILD_BUS`, generic `O::DRIVER_ID` matching, and `VirtioChildSession::begin`/`virtio::run_child_probe`; GPU/input/net/blk/rng/vsock/snd registrations are typed wrapper statics; the only other virtio `drv::Driver` impl is parent PCI transport `VirtioPciDrv`; child driver crates do not implement bus-facing `drv::Driver`. Checks pass: `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 
 ## B489 Current
 
