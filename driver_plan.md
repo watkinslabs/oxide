@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B401-virtio-pci-probe-exit-unwind` — VERIFIED.
+ACTIVE NOW: `B402-sound-card-publication-model-owned` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B401-virtio-pci-probe-exit-unwind`.
+Current active item: `>>> ACTIVE >>> B402-sound-card-publication-model-owned`.
 
-Current B401 gate: virtio-pci probe now owns a self-cleaning transport lease
-that releases failed/unpublished probe state on drop and consumes the lease on
-publish; hosted compile/tests and x86_64/aarch64 driver-path proof pass.
+Current B402 gate: audit/fix sound card publication so model-owned publication
+guards duplicate card/node creation; prove with hosted sound tests and
+x86_64/aarch64 driver-path proof before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -336,7 +336,7 @@ Status legend:
 | VERIFIED | B399-virtio-snd-multicard-rebind-proof | Virtio-snd multi-card live proof added: env-gated second QEMU sound device, rootfs probe, and `smoke-virtio-snd-multidev`; C probe compile, `cargo check -p xtask`, full `drv-virtio-snd` tests, serial full `sound` tests, and x86_64/aarch64 smoke logs pass; PR #2452 merge and local main sync to `origin/main` at `36d0b388` pass. |
 | >>> ACTIVE >>> VERIFIED | B400-virtio-msix-child-owned-handlers | Source audit shows `VirtioChildOps::profile()` supplies MSI-X handlers and PCI transport consumes profile fields without virtio-ID dispatch; added hosted profile-handler regression, `cargo test -p virtio`, `cargo test -p pci-boot`, x86_64 driver-path log `/tmp/b400-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b400-arm-driver-path.log` all pass. |
 | >>> ACTIVE >>> VERIFIED | B401-virtio-pci-probe-exit-unwind | Virtio-pci probe now carries `VirtioProbeLease` inside `VirtioProbe`: failed/unpublished drop paths release frames/MSI-X, clear PCI MEM/BUS_MASTER, and unmap transport mappings once; publish consumes the lease and transfers mappings/MSI-X/vring frames. Source audit, `cargo test -p virtio`, `cargo test -p pci-boot`, x86_64 driver-path log `/tmp/b401-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b401-arm-driver-path.log` all pass. |
-| NOT DONE |  | Sound card publication is model-owned and duplicate publication guarded. |
+| >>> ACTIVE >>> CLAIMED | B402-sound-card-publication-model-owned | Sound card publication is model-owned and duplicate publication guarded. |
 | NOT DONE |  | Fbdev publication unwinds framebuffer record on model publication failure. |
 | NOT DONE |  | 8250 receive path is IRQ-owned rather than timer-poll fallback. |
 | NOT DONE |  | PL011 receive path is IRQ-owned rather than timer-poll fallback. |
