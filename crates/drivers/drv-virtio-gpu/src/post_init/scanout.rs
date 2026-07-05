@@ -148,9 +148,7 @@ pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         Some(ctx) => ctx,
         None => return false,
     };
-    if ctx.cfg_va != 0 {
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
-    }
+    virtio::reset_device(ctx.cfg_va);
     let fb_base_pa = ctx.fb_va - ctx.hhdm;
     unsafe {
         if ctx.cmd_buf_pa != 0 {
@@ -175,9 +173,7 @@ pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         ctx.quiesced = true;
         ctx.cfg_va
     };
-    if cfg_va != 0 {
-        unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
-    }
+    virtio::reset_device(cfg_va);
     true
 }
 

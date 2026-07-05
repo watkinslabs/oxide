@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B459-virtio-input-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: none; B460-virtio-gpu-explicit-shutdown-callback VERIFIED pending PR merge.
+
+## B460 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B460-virtio-gpu-explicit-shutdown-callback | VERIFIED | Fresh main `d9353a03` after PR #2517 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioGpuOps::shutdown_child` calls `drv_virtio_gpu::shutdown`, and gpu shutdown keeps DRM/fbdev-visible model state installed while quiescing scanout publication state. Code cleanup replaced raw common-cfg status offset writes in `crates/drivers/drv-virtio-gpu/src/device.rs` and `crates/drivers/drv-virtio-gpu/src/post_init/scanout.rs` with shared `virtio::reset_device`. Checks pass: `cargo test -p drv-virtio-gpu -- --nocapture` with 36/36 tests, `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 33s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B459 Current
 

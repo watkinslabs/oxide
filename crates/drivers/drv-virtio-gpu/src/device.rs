@@ -347,11 +347,7 @@ pub fn shutdown(device_key: DeviceKey) -> bool {
         };
         dev.cfg_va
     };
-    if cfg_va != 0 {
-        // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
-        // probe; device_status is an 8-bit register at offset 0x14.
-        unsafe { core::ptr::write_volatile((cfg_va + 0x14) as *mut u8, 0u8); }
-    }
+    virtio::reset_device(cfg_va);
     true
 }
 
