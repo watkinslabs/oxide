@@ -2,10 +2,10 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B453-shutdown-no-unbind-or-events; IN AUDIT.
+ACTIVE NOW: none; B453-shutdown-no-unbind-or-events VERIFIED pending PR merge.
 
-Current active item: `drv::shutdown_all` calls `Driver::shutdown` without
-unbinding or emitting remove events.
+Current active item: none; next claim starts after B453 merge and fresh main
+sync.
 
 Next gate after merge: return to fresh `origin/main` before claiming B454 using
 `metadata/index.md`.
@@ -60,7 +60,7 @@ Status legend:
 | VERIFIED | B450-device-del-registry-drop-after-teardown | `device_del` drops device from registry after remove/devtmpfs teardown: `drv::device_del` calls unbind, sysfs remove, and devtmpfs delete before retaining the device out of `DEVICES`, and hosted teardown-order tests prove callbacks run before final registry disappearance. |
 | VERIFIED | B451-driver-core-teardown-order-tests | Driver-core tests assert remove/sysfs/devtmpfs/registry disappearance order: hosted regression `device_del_orders_remove_event_and_devtmpfs_teardown` proves driver remove, sysfs remove, devtmpfs delete, and final registry disappearance in one sequence, and the full driver-model suite passes 27/27. |
 | VERIFIED | B452-shutdown-all-reverse-registration | `drv::shutdown_all` walks bound model devices in reverse registration order: the model snapshots devices, reverses the snapshot, skips unbound devices, calls each bound driver's `shutdown`, and hosted regression proves later-registered devices shut down before earlier ones. |
-| ACTIVE | B453-shutdown-no-unbind-or-events | `drv::shutdown_all` calls `Driver::shutdown` without unbinding or emitting remove events. |
+| VERIFIED | B453-shutdown-no-unbind-or-events | `drv::shutdown_all` calls `Driver::shutdown` without unbinding or emitting remove events: source audit proves `shutdown_all` calls only `driver.shutdown(&dev)` for bound devices, and hosted regression proves shutdown order while bindings remain, driver `remove` is not called, and no `BindEvent::Unbound` fires; full driver-model tests pass 27/27 and pre-push boot smoke passes on x86_64 and aarch64. |
 | SOURCE OK | TBD | Power/reboot/halt path must call driver shutdown hook before restart/poweroff/halt. |
 | SOURCE OK |  | NVMe has explicit shutdown callback. |
 | SOURCE OK |  | AHCI has explicit shutdown callback. |
