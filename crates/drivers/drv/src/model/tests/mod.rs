@@ -224,6 +224,10 @@ impl Driver for DeviceDelOrderDrv {
 }
 static DEVICE_DEL_ORDER_DRV: DeviceDelOrderDrv = DeviceDelOrderDrv;
 
+static SHUTDOWN_REMOVES: AtomicU32 = AtomicU32::new(0);
+static SHUTDOWN_UNBOUND_EVENTS: AtomicU32 = AtomicU32::new(0);
+static SHUTDOWN_EVENT_ACTIVE: AtomicU32 = AtomicU32::new(0);
+
 fn device_del_order_sysfs_remove(dev: &Device) {
     if DEVICE_DEL_ORDER_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
@@ -242,6 +246,15 @@ fn device_del_order_devtmpfs_del(name: &str) {
     assert_eq!(&*DEVICE_DEL_ORDER.lock(), &["driver-remove", "sysfs-remove"]);
     DEVICE_DEL_ORDER.lock().push("devtmpfs-del");
     DEVICE_DEL_ORDER_ACTIVE.store(0, Ordering::Release);
+}
+
+fn shutdown_all_bind_event(_bus: &str, addr: &str, _driver: &'static str, event: BindEvent) {
+    if SHUTDOWN_EVENT_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    if event == BindEvent::Unbound && (addr == "0000:00:15.0" || addr == "0000:00:16.0") {
+        SHUTDOWN_UNBOUND_EVENTS.fetch_add(1, Ordering::Release);
+    }
 }
 
 fn device_add(d: Arc<Device>) -> Arc<Device> {
