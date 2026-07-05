@@ -5,8 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B456-ahci-explicit-shutdown-callback; VERIFIED pending PR
-merge.
+Current marker: none; B457-virtio-pci-explicit-shutdown-callback VERIFIED pending PR merge.
+
+## B457 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B457-virtio-pci-explicit-shutdown-callback | VERIFIED | Fresh main `b9db75a5` after PR #2514 merge; source audit proves `crates/kernel/pci-boot/src/virtio_drv/driver.rs::VirtioPciDrv::shutdown` parses the bound model PCI device and calls `disable_pci_command(d.bdf)`, giving the parent virtio-pci transport an explicit terminal quiesce path without child unbind/remove. Child virtio model drivers independently use `crates/kernel/pci-boot/src/virtio_child.rs::shutdown` and `virtio::run_child_shutdown` with the stable parent key. Checks pass: `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, and `cargo test -p pci-boot -- --nocapture` hosted compile. Runtime arch proof is inherited from B454 pre-push `make smoke-x86`/`make smoke-arm` because B457 changes only docs/metadata and virtio-pci production source is unchanged from that booted main. |
 
 ## B456 Current
 
