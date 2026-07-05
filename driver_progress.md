@@ -388,7 +388,7 @@ Evidence:
 
 ## B345-drm-dumb-fb-card-owned
 
-Status: `CLAIMED`.
+Status: `VERIFIED, commit/PR merge pending`.
 
 Branch: `B345-drm-dumb-fb-card-owned`
 
@@ -396,10 +396,16 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | DRM dumb buffers and FB metadata are card-owned. |
+| VERIFIED | DRM dumb buffers and FB metadata are card-owned. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `DumbBuf` and `FbObj` carry `card_id`; ioctl, mmap, scanout, RMFB, and unregister paths look up/remove by `card_id`; inode mmap routing decodes the owning card id before table lookup. |
+| `cargo test -p drm card_state_isolated -- --nocapture` | PASS: same numeric handle and same `fb_id` on two cards stay isolated across remove. |
+| `cargo test -p drm` | PASS: 59 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `dumb/tests.rs` 458, `dumb/tables.rs` 203, `dumb/ioctl.rs` 142, `driver_progress.md` under cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-arm.log`. |
