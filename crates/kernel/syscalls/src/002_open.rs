@@ -149,8 +149,19 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     // → `i_count` never reaches 0 on the live inode. (The Err path leaves the
     // born ref held — conservative: no eviction there, but never a UAF.)
     let created_ref = if created { Some(inode.clone()) } else { None };
+    // fifo(7): a named-pipe (S_IFIFO) open binds the shared pipe ring + runs the
+    // reader/writer rendezvous (Linux `fifo_open`), then this open's data path
+    // dispatches through `pipefifo_fops` — else a FIFO read hits the backend stub
+    // (tmpfs → EIO, the systemd-initctl failure). O_PATH never runs the hook.
+    let fifo_fop: Option<alloc::sync::Arc<dyn vfs::FileOps>> =
+        if (flags & crate::open_common::O_PATH) == 0 && ::fs::pipe::is_named_fifo(&inode) {
+            match ::fs::pipe::fifo_open(&inode, flags) {
+                Ok(fop) => Some(fop),
+                Err(e)  => return -(e as i64),
+            }
+        } else { None };
     match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags),
-        mnt_id, crate::pathresolve::current_cred(), cur.nofile_soft()) {
+        mnt_id, crate::pathresolve::current_cred(), cur.nofile_soft(), fifo_fop) {
         Ok(fd) => { if let Some(i) = created_ref { vfs::file::iput(i); } fd as i64 }
         Err(e) => -(e as i64),
     }

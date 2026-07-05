@@ -18,16 +18,19 @@
 // and the opposite wait list is woken so peers see EOF / EPIPE.
 
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
 use sync::{Spinlock, Tty as TtyClass};
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{File, FileType, Fmode, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, PollSubscribers, default_inode_ops, mk_mode};
 
 mod smoke;
+#[cfg(test)]
+mod fifo_tests;
 
 /// Hosted-test stand-in: WaitList only exists under the live
 /// scheduler. On hosted unit-test builds the pipe inode still
@@ -275,133 +278,348 @@ impl PipeData {
         }
         n
     }
-}
 
-/// `i_fop` for an anonymous-pipe inode. Reads `PipeData` off `i_private`.
-struct PipeFileOps;
-impl FileOps for PipeFileOps {
-    /// Blocking pipe read per Linux pipe(7).
-    /// - data available     → up to `buf.len()` bytes copied.
-    /// - empty + writers>0  → park on `read_waiters`, retry on wake.
-    /// - empty + writers==0 → Ok(0) (EOF, all write ends closed).
-    fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+    /// Blocking ring read shared by the anonymous-pipe (`PipeFileOps`) and
+    /// named-FIFO (`FifoFileOps`) data paths — Linux `pipe_read`. `subs` is the
+    /// inode's epoll subscriber set (`None` when the backing inode carries no
+    /// poll queue). Semantics per pipe(7): data available → up to `buf.len()`
+    /// bytes; empty + writers>0 → park on `read_waiters`; empty + writers==0 →
+    /// `Ok(0)` (EOF, all write ends closed); a deliverable signal → `Eintr`.
+    /// # C: O(bytes) + park
+    fn read_blocking(&self, subs: Option<&PollSubscribers>, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
-        let subs = inode.poll_subscribers();
         loop {
-            let n = this.try_drain(buf);
+            let n = self.try_drain(buf);
             if n > 0 {
-                this.write_waiters.wake_all();
+                self.write_waiters.wake_all();
                 if let Some(s) = subs { s.notify(); }
                 return Ok(n);
             }
-            if this.writers.load(Ordering::Acquire) == 0 {
-                return Ok(0);
-            }
-            // Signal-interruptible per pipe(7): a blocked read with a
-            // deliverable signal pending returns EINTR so the libc
-            // handler runs (and the caller can restart). Without this
-            // a blocked pipe read ignores signals entirely — e.g. a
-            // read under a SIGCHLD/SIGALRM handler never wakes.
+            if self.writers.load(Ordering::Acquire) == 0 { return Ok(0); }
             #[cfg(target_os = "oxide-kernel")]
-            if sched::live::deliverable_signals_self() != 0 {
-                return Err(VfsError::Eintr);
-            }
-            // SAFETY: caller is the running task; preempt-off; we are about to schedule. WaitList::park bumps Arc and marks Sleeping.
-            unsafe { this.read_waiters.park(); }
-            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue us — only the write-side wake or last-writer-close wake will.
+            if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Eintr); }
+            // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping before we schedule, and there is >=1 writer to wake us.
             #[cfg(target_os = "oxide-kernel")]
-            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue until peer wakes us.
+            unsafe { self.read_waiters.park(); }
+            // SAFETY: process ctx; runqueue installed; preempt-off; current is Sleeping so schedule won't re-enqueue until a writer wake fires.
+            #[cfg(target_os = "oxide-kernel")]
             unsafe { sched::live::schedule::schedule(); }
             #[cfg(not(target_os = "oxide-kernel"))]
-            unreachable!("blocking pipe under hosted");
+            return Err(VfsError::Eagain);
         }
     }
 
-    /// Blocking pipe write per Linux pipe(7).
-    /// - readers==0     → Epipe (caller also gets SIGPIPE via sys_write).
-    /// - space available→ push up to `buf.len()` bytes, return n.
-    /// - buffer full    → park on `write_waiters`, retry on wake.
-    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+    /// Blocking ring write shared by both data paths — Linux `pipe_write`.
+    /// readers==0 → `Epipe` (caller also gets SIGPIPE); space → push up to
+    /// `buf.len()`; full + readers>0 → park on `write_waiters`; signal → `Eintr`.
+    /// # C: O(bytes) + park
+    fn write_blocking(&self, subs: Option<&PollSubscribers>, buf: &[u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
-        let subs = inode.poll_subscribers();
         loop {
-            if this.readers.load(Ordering::Acquire) == 0 {
-                return Err(VfsError::Epipe);
-            }
-            let n = this.try_fill(buf);
+            if self.readers.load(Ordering::Acquire) == 0 { return Err(VfsError::Epipe); }
+            let n = self.try_fill(buf);
             if n > 0 {
-                this.read_waiters.wake_all();
+                self.read_waiters.wake_all();
                 if let Some(s) = subs { s.notify(); }
                 return Ok(n);
             }
-            // Signal-interruptible per pipe(7): a blocked write with a
-            // deliverable signal pending returns EINTR (Linux semantic).
             #[cfg(target_os = "oxide-kernel")]
-            if sched::live::deliverable_signals_self() != 0 {
-                return Err(VfsError::Eintr);
-            }
-            // SAFETY: caller is the running task; preempt-off; WaitList::park bumps Arc and marks Sleeping before we schedule.
-            unsafe { this.write_waiters.park(); }
-            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue us — only the read-side wake or last-reader-close wake will.
+            if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Eintr); }
+            // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping before we schedule, and a reader wake / last-reader-close will resume us.
             #[cfg(target_os = "oxide-kernel")]
-            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue until peer wakes us.
+            unsafe { self.write_waiters.park(); }
+            // SAFETY: process ctx; runqueue installed; preempt-off; current is Sleeping so schedule won't re-enqueue until a read-side wake fires.
+            #[cfg(target_os = "oxide-kernel")]
             unsafe { sched::live::schedule::schedule(); }
             #[cfg(not(target_os = "oxide-kernel"))]
-            unreachable!("blocking pipe under hosted");
+            return Err(VfsError::Eagain);
         }
     }
 
-    /// Non-blocking pipe read per Linux O_NONBLOCK semantics:
-    /// - data available     → bytes copied, no wait.
-    /// - empty + writers>0  → Eagain.
-    /// - empty + writers==0 → Ok(0).
-    fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+    /// Non-blocking ring read (`O_NONBLOCK`): data → bytes; empty + writers>0 →
+    /// `Eagain`; empty + writers==0 → `Ok(0)`. # C: O(bytes)
+    fn read_nb(&self, subs: Option<&PollSubscribers>, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
-        let n = this.try_drain(buf);
+        let n = self.try_drain(buf);
         if n > 0 {
-            this.write_waiters.wake_all();
-            if let Some(s) = inode.poll_subscribers() { s.notify(); }
+            self.write_waiters.wake_all();
+            if let Some(s) = subs { s.notify(); }
             return Ok(n);
         }
-        if this.writers.load(Ordering::Acquire) == 0 { Ok(0) }
-        else { Err(VfsError::Eagain) }
+        if self.writers.load(Ordering::Acquire) == 0 { Ok(0) } else { Err(VfsError::Eagain) }
     }
 
-    /// Readiness for select/poll per Linux pipe(7):
-    /// - POLLIN  when bytes are buffered, or when the last writer
-    ///   has closed (read returns EOF immediately, not a block).
-    /// - POLLHUP when readers==0 (write side will get EPIPE).
-    /// - POLLOUT when buffer has room AND at least one reader.
-    fn poll(&self, inode: &Inode) -> u32 {
-        let this = match pipe_data(inode) { Some(p) => p, None => return 0 };
-        let len = this.buf.lock().len;
-        let writers = this.writers.load(Ordering::Acquire);
-        let readers = this.readers.load(Ordering::Acquire);
+    /// Non-blocking ring write (`O_NONBLOCK`): readers==0 → `Epipe`; space →
+    /// bytes; full → `Eagain`. # C: O(bytes)
+    fn write_nb(&self, subs: Option<&PollSubscribers>, buf: &[u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
+        if self.readers.load(Ordering::Acquire) == 0 { return Err(VfsError::Epipe); }
+        let n = self.try_fill(buf);
+        if n > 0 {
+            self.read_waiters.wake_all();
+            if let Some(s) = subs { s.notify(); }
+            return Ok(n);
+        }
+        Err(VfsError::Eagain)
+    }
+
+    /// `poll`/`select` readiness bitmask per pipe(7): POLLIN when bytes buffered
+    /// OR the last writer closed (read returns EOF, not a block); POLLHUP when
+    /// readers==0; POLLOUT when the ring has room AND a reader exists. # C: O(1)
+    fn poll_mask(&self) -> u32 {
+        let len = self.buf.lock().len;
+        let writers = self.writers.load(Ordering::Acquire);
+        let readers = self.readers.load(Ordering::Acquire);
         let mut mask = 0u32;
         if len > 0 || writers == 0 { mask |= vfs::POLL_IN; }
         if readers == 0 { mask |= vfs::POLL_HUP; }
         if len < PIPE_CAP && readers > 0 { mask |= vfs::POLL_OUT; }
         mask
     }
+}
 
-    /// Non-blocking pipe write per Linux O_NONBLOCK semantics.
-    fn write_nonblock(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
-        if buf.is_empty() { return Ok(0); }
-        let this = match pipe_data(inode) { Some(p) => p, None => return Err(VfsError::Einval) };
-        if this.readers.load(Ordering::Acquire) == 0 {
-            return Err(VfsError::Epipe);
-        }
-        let n = this.try_fill(buf);
-        if n > 0 {
-            this.read_waiters.wake_all();
-            if let Some(s) = inode.poll_subscribers() { s.notify(); }
-            return Ok(n);
-        }
-        Err(VfsError::Eagain)
+/// `i_fop` for an anonymous-pipe inode. Reads `PipeData` off `i_private` and
+/// delegates to the shared ring core (also used by `FifoFileOps`).
+struct PipeFileOps;
+impl FileOps for PipeFileOps {
+    fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        pipe_data(inode).ok_or(VfsError::Einval)?.read_blocking(inode.poll_subscribers(), buf)
     }
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        pipe_data(inode).ok_or(VfsError::Einval)?.write_blocking(inode.poll_subscribers(), buf)
+    }
+    fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        pipe_data(inode).ok_or(VfsError::Einval)?.read_nb(inode.poll_subscribers(), buf)
+    }
+    fn write_nonblock(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        pipe_data(inode).ok_or(VfsError::Einval)?.write_nb(inode.poll_subscribers(), buf)
+    }
+    fn poll(&self, inode: &Inode) -> u32 {
+        pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Named FIFO (S_IFIFO) — Linux `fs/pipe.c` `fifo_open` + `pipefifo_fops`.
+//
+// A named pipe is a filesystem inode (tmpfs/ext4/devnode `mknod`) whose on-disk
+// `i_fop` is a metadata-only / EIO stub — a bare read/write of a FIFO inode is
+// meaningless. On `open(2)`, `fifo_open` attaches ONE shared `PipeData` ring to
+// the inode (created on first open, reused by every later open of the SAME
+// path/inode so a reader process and a writer process rendezvous on one ring),
+// does the access-mode reader/writer rendezvous, and swaps THIS open's
+// `file->f_op` to `FifoFileOps` so its data path goes through the ring.
+//
+// Linux stores the ring on `inode->i_pipe`. The oxide `Inode` is immutable
+// post-build and its `i_private` slot is already owned by the backend (tmpfs
+// stores nothing, devnode stores `DeviceNodeData`), so the shared ring lives in
+// a per-inode side table keyed by inode identity, created on first open and
+// dropped when the last end closes (Linux `free_pipe_info`).
+// ---------------------------------------------------------------------------
+
+/// Lock class for the FIFO side table. Taken standalone — every access copies an
+/// `Arc<PipeData>` out (or inserts/removes one) and releases the lock BEFORE any
+/// ring/wait-list work, so it never nests under `buf`/wait-list locks. # C: O(1)
+struct FifoReg;
+impl sync::LockClass for FifoReg { fn rank() -> u16 { 34 } }
+
+/// `inode->i_pipe` side table: FIFO inode identity → its shared pipe ring. An
+/// entry exists only while the FIFO has at least one open end.
+static FIFO_PIPES: Spinlock<BTreeMap<usize, Arc<PipeData>>, FifoReg>
+    = Spinlock::new(BTreeMap::new());
+
+/// Inode identity key for the FIFO side table — the `Inode` allocation address.
+/// Every `open`/read/write/release of the same named FIFO derives it from the
+/// SAME `Arc<Inode>` (the dcache caches one inode per path), so the key is
+/// stable while the FIFO is open. # C: O(1)
+fn fifo_key(inode: &Inode) -> usize { inode as *const Inode as usize }
+
+/// `true` iff `inode` is a NAMED FIFO (a filesystem S_IFIFO node), as opposed to
+/// an anonymous pipe (`PipeData` in `i_private`) or an eventfd (`EventfdData`) —
+/// both of which are also `FileType::Fifo` but are born via `pipe2`/`eventfd`
+/// with their ring/counter already bound and are never opened by path. # C: O(1)
+pub fn is_named_fifo(inode: &Inode) -> bool {
+    inode.file_type() == FileType::Fifo
+        && inode.private::<PipeData>().is_none()
+        && inode.private::<EventfdData>().is_none()
+}
+
+/// Get (or create on first open) the shared ring for a FIFO inode. # C: O(log N)
+fn fifo_pipe_get_or_create(inode: &Inode) -> Arc<PipeData> {
+    let key = fifo_key(inode);
+    let mut g = FIFO_PIPES.lock();
+    if let Some(p) = g.get(&key) { return p.clone(); }
+    let p = Arc::new(PipeData {
+        buf: Spinlock::new(PipeBuf::new()),
+        ino: inode.ino(),
+        writers: AtomicUsize::new(0),
+        readers: AtomicUsize::new(0),
+        read_waiters:  WaitList::new(),
+        write_waiters: WaitList::new(),
+        capacity: AtomicUsize::new(PIPE_CAP),
+    });
+    g.insert(key, p.clone());
+    p
+}
+
+/// Look up the shared ring for an already-open FIFO inode. # C: O(log N)
+fn fifo_pipe_lookup(inode: &Inode) -> Option<Arc<PipeData>> {
+    FIFO_PIPES.lock().get(&fifo_key(inode)).cloned()
+}
+
+/// Drop the shared ring once BOTH ends are closed (Linux `free_pipe_info`); the
+/// next open re-creates it (buffered bytes are lost, as on Linux). # C: O(log N)
+fn fifo_gc(inode: &Inode, p: &PipeData) {
+    if p.readers.load(Ordering::Acquire) == 0 && p.writers.load(Ordering::Acquire) == 0 {
+        FIFO_PIPES.lock().remove(&fifo_key(inode));
+    }
+}
+
+/// `i_fop` OVERRIDE installed on a FIFO's open `File` by [`fifo_open`]. Recovers
+/// the shared ring from the side table and delegates to the same core as
+/// `PipeFileOps`. `Einval` if the ring is gone (should not happen while open).
+struct FifoFileOps;
+impl FileOps for FifoFileOps {
+    fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        fifo_pipe_lookup(inode).ok_or(VfsError::Einval)?.read_blocking(inode.poll_subscribers(), buf)
+    }
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        fifo_pipe_lookup(inode).ok_or(VfsError::Einval)?.write_blocking(inode.poll_subscribers(), buf)
+    }
+    fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        fifo_pipe_lookup(inode).ok_or(VfsError::Einval)?.read_nb(inode.poll_subscribers(), buf)
+    }
+    fn write_nonblock(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        fifo_pipe_lookup(inode).ok_or(VfsError::Einval)?.write_nb(inode.poll_subscribers(), buf)
+    }
+    fn poll(&self, inode: &Inode) -> u32 {
+        fifo_pipe_lookup(inode).map(|p| p.poll_mask()).unwrap_or(0)
+    }
+    /// Last-close of THIS FIFO open description (Linux `pipe_release`): drop the
+    /// reader and/or writer count this open took in `fifo_open` (per its
+    /// `f_mode`), wake the opposite side so a peer sees EOF / EPIPE, and GC the
+    /// ring when both ends are gone. Runs from `File::Drop`. # C: O(log N)
+    fn on_release_file(&self, file: &File) {
+        let fm = file.f_mode();
+        fifo_release(file.inode(), fm.contains(Fmode::READ), fm.contains(Fmode::WRITE));
+    }
+}
+
+/// Release the reader (`dec_read`) and/or writer (`dec_write`) count a FIFO open
+/// took in [`fifo_open`], waking the opposite side when a count reaches 0 so a
+/// peer sees EOF / EPIPE, and GC-ing the shared ring once both ends are gone
+/// (Linux `pipe_release` + `free_pipe_info`). # C: O(log N)
+fn fifo_release(inode: &Inode, dec_read: bool, dec_write: bool) {
+    let Some(p) = fifo_pipe_lookup(inode) else { return; };
+    let subs = inode.poll_subscribers();
+    if dec_read {
+        let prev = p.readers.fetch_sub(1, Ordering::AcqRel);
+        if prev <= 1 {
+            p.readers.store(0, Ordering::Release);
+            p.write_waiters.wake_all();
+            if let Some(s) = subs { s.notify(); }
+        }
+    }
+    if dec_write {
+        let prev = p.writers.fetch_sub(1, Ordering::AcqRel);
+        if prev <= 1 {
+            p.writers.store(0, Ordering::Release);
+            p.read_waiters.wake_all();
+            if let Some(s) = subs { s.notify(); }
+        }
+    }
+    fifo_gc(inode, &p);
+}
+
+/// FIFO `open(2)` — Linux `fs/pipe.c` `fifo_open`. Attaches/looks up the shared
+/// ring, runs the access-mode reader/writer rendezvous, and returns the `f_op`
+/// the caller installs on this open's `File` (Linux `filp->f_op =
+/// &pipefifo_fops`). Reader/writer counts taken here are released by
+/// `FifoFileOps::on_release_file` at last close.
+///
+/// Rendezvous (Linux, `is_pipe == false`):
+/// - `O_RDONLY`: `readers++`, wake writers. No writer yet and NOT `O_NONBLOCK` →
+///   BLOCK until a writer opens; `O_NONBLOCK` → succeed immediately.
+/// - `O_WRONLY`: no reader yet and `O_NONBLOCK` → `ENXIO` (no count taken).
+///   Else `writers++`, wake readers; no reader yet and NOT `O_NONBLOCK` → BLOCK
+///   until a reader opens.
+/// - `O_RDWR`: `readers++` and `writers++`, wake both; NEVER blocks (Linux FIFO
+///   quirk).
+/// A blocking wait is interruptible by a deliverable signal → `Eintr`
+/// (`-ERESTARTSYS`), which undoes the count it took.
+///
+/// Hosted builds have no scheduler: the block loops are `oxide-kernel`-gated, so
+/// a would-block open returns immediately (only the never-blocking / `O_NONBLOCK`
+/// matrix is exercised in hosted tests). # C: O(log N) + rendezvous wait
+pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
+    const O_ACCMODE: u32 = 0o3;
+    const O_WRONLY:  u32 = 0o1;
+    const O_RDWR:    u32 = 0o2;
+    const O_NONBLOCK: u32 = 0o4000;
+    let accmode  = flags & O_ACCMODE;
+    let nonblock = (flags & O_NONBLOCK) != 0;
+    let subs = inode.poll_subscribers();
+    let p = fifo_pipe_get_or_create(inode);
+    match accmode {
+        O_WRONLY => {
+            // ENXIO BEFORE taking a writer count (Linux: `!pipe->readers` +
+            // O_NONBLOCK → -ENXIO at `err`, having incremented nothing).
+            if nonblock && p.readers.load(Ordering::Acquire) == 0 {
+                fifo_gc(inode, &p);
+                return Err(VfsError::Enxio);
+            }
+            p.writers.fetch_add(1, Ordering::AcqRel);
+            p.read_waiters.wake_all();
+            if let Some(s) = subs { s.notify(); }
+            if !nonblock && p.readers.load(Ordering::Acquire) == 0 {
+                #[cfg(target_os = "oxide-kernel")]
+                loop {
+                    if p.readers.load(Ordering::Acquire) != 0 { break; }
+                    if sched::live::deliverable_signals_self() != 0 {
+                        let prev = p.writers.fetch_sub(1, Ordering::AcqRel);
+                        if prev <= 1 { p.read_waiters.wake_all(); }
+                        fifo_gc(inode, &p);
+                        return Err(VfsError::Eintr);
+                    }
+                    // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a reader open (or its close) will wake write_waiters.
+                    unsafe { p.write_waiters.park(); }
+                    // SAFETY: process ctx; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a reader wake fires.
+                    unsafe { sched::live::schedule::schedule(); }
+                }
+            }
+        }
+        O_RDWR => {
+            // O_RDWR on a FIFO takes BOTH ends and never blocks (Linux quirk).
+            p.readers.fetch_add(1, Ordering::AcqRel);
+            p.writers.fetch_add(1, Ordering::AcqRel);
+            p.read_waiters.wake_all();
+            p.write_waiters.wake_all();
+            if let Some(s) = subs { s.notify(); }
+        }
+        _ => {
+            // O_RDONLY (access mode 0).
+            p.readers.fetch_add(1, Ordering::AcqRel);
+            p.write_waiters.wake_all();
+            if let Some(s) = subs { s.notify(); }
+            if !nonblock && p.writers.load(Ordering::Acquire) == 0 {
+                #[cfg(target_os = "oxide-kernel")]
+                loop {
+                    if p.writers.load(Ordering::Acquire) != 0 { break; }
+                    if sched::live::deliverable_signals_self() != 0 {
+                        let prev = p.readers.fetch_sub(1, Ordering::AcqRel);
+                        if prev <= 1 { p.write_waiters.wake_all(); }
+                        fifo_gc(inode, &p);
+                        return Err(VfsError::Eintr);
+                    }
+                    // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a writer open (or its close) will wake read_waiters.
+                    unsafe { p.read_waiters.park(); }
+                    // SAFETY: process ctx; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a writer wake fires.
+                    unsafe { sched::live::schedule::schedule(); }
+                }
+            }
+        }
+    }
+    Ok(Arc::new(FifoFileOps))
 }
 
 /// Close hook installed at boot via `vfs::set_close_hook`. Tracks
