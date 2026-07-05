@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B443-platform-serial-model-attach VERIFIED pending PR merge.
+ACTIVE NOW: none; B444-i8042-platform-model-attach VERIFIED pending PR merge.
 
-Current active item: none; next claim starts after B443 merge and fresh main
+Current active item: none; next claim starts after B444 merge and fresh main
 sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B444 using
+Next gate after merge: return to fresh `origin/main` before claiming B445 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -51,7 +51,7 @@ Status legend:
 | VERIFIED | B441-initial-autoprobe-no-bind-change | Initial auto-probe does not emit a separate bind-change event before add uevent: `try_device_add` passes `emit_bind_event=false` into initial auto-attach, and hosted bind-hook regression proves initial probe binds the device while `ADD_BIND_EVENTS` remains zero before the sysfs add event. |
 | VERIFIED | B442-add-uevent-driver-state | Add uevent carries current `DRIVER=<name>` state: `dev_uevent_env` appends `DRIVER=` only from `dev.bound()`, sysfs add/remove/change hooks emit the current model-derived environment, hosted add-uevent regression proves initial bound devices emit `ACTION=add` with `DRIVER=`, and hosted bind/unbind regression proves change events add `DRIVER=` when bound and omit stale driver state after unbind. |
 | VERIFIED | B443-platform-serial-model-attach | Boot-time platform serial devices rely on model-owned attach path: `init_serial_console` publishes `platform/serial0` through `platform_device_or_panic` / `drv::try_device_add`, registers the per-arch UART model driver through `drv::register_driver`, and only installs `drv_serial::emit` when model binding records the expected driver; x86_64 uses `8250-serial`, aarch64 uses `pl011-serial`, hosted model/UART checks pass, and fast boot smokes reach serial login on both arches. |
-| SOURCE OK |  | Boot-time i8042 platform device relies on model-owned attach path. |
+| VERIFIED | B444-i8042-platform-model-attach | Boot-time i8042 platform device relies on model-owned attach path: x86_64 `init_ps2_keyboard` configures probe data, publishes `platform/i8042` through `platform_device_or_panic` / `drv::try_device_add`, and registers the `i8042-kbd` platform model driver; its `probe` owns i8042 bring-up and IRQ1 setup, failed detection leaves the model device unbound, aarch64 intentionally compiles this boot hook to no-op because QEMU virt has no i8042, hosted PS/2/model checks pass, and x86 boot log proves `i8042 keyboard detected`. |
 | SOURCE OK |  | Production explicit bind entry remains sysfs `/sys/bus/*/drivers/*/bind`. |
 | SOURCE OK |  | Model unbind calls `Driver::remove` before clearing binding. |
 | SOURCE OK |  | `device_del` unbinds first. |
