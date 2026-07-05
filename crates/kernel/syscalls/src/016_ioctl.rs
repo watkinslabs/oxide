@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 #[path = "016_ioctl/autofs.rs"] mod autofs;
+#[path = "016_ioctl/blk.rs"] mod blk;
 #[path = "016_ioctl/core.rs"] mod core;
 #[path = "016_ioctl/font.rs"] mod font;
 #[path = "016_ioctl/tioclinux.rs"] mod tioclinux;

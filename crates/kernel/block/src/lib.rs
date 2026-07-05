@@ -17,6 +17,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod blockdev;
+pub mod devbridge;
 pub mod pagecache;
 pub mod registry;
 pub mod stats;
