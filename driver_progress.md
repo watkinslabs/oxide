@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B488-pci-transport-no-child-driver-decls; VERIFIED pending PR merge.
+Current marker: B489-child-probes-no-transport-callback-imports; IN AUDIT.
+
+## B489 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B489-child-probes-no-transport-callback-imports | IN AUDIT | Fresh main `135f7977` after PR #2546 merge; auditing child probe crates and `pci-boot::virtio_child` to prove child probes use transport sessions/profiles instead of importing PCI transport helper callbacks directly, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B488 Current
 
