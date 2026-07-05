@@ -5,7 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B427-no-public-auto-bind; VERIFIED pending commit/PR.
+Current marker: B428-sysfs-explicit-bind-route; IN AUDIT.
+
+## B428-sysfs-explicit-bind-route
+
+Status: `IN AUDIT`; claim commit pending.
+
+Branch: `B428-sysfs-explicit-bind-route`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| ACTIVE | Route explicit binds through sysfs driver `bind` control path. |
 
 ## B427-no-public-auto-bind
 
