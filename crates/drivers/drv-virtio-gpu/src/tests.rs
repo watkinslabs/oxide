@@ -324,7 +324,11 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
                 card_id_2
             );
         }
+        let cards_before_dup = drm::card_count();
+        let drm_devices_before_dup = drv::devices().into_iter().filter(|dev| dev.bus == "drm").count();
         assert_eq!(install_with_drm(dev(key(2), 0x0020_0001)), Err(Error::Busy));
+        assert_eq!(drm::card_count(), cards_before_dup);
+        assert_eq!(drv::devices().into_iter().filter(|dev| dev.bus == "drm").count(), drm_devices_before_dup);
         assert_eq!(uninstall(key(1)).unwrap().card_id, card_id_1);
         assert!(is_present());
         assert_eq!(uninstall(key(2)).unwrap().card_id, card_id_2);
