@@ -394,4 +394,33 @@ mod tests {
 
         reset_publication_state();
     }
+
+    #[test]
+    fn shutdown_scanout_quiesces_without_dropping_publication_metadata() {
+        let _guard = super::super::TEST_LOCK.lock();
+        reset_publication_state();
+        let mut ctx = ctx(key(0x10));
+        ctx.fb_va = 0xffff_8000_0000_4000;
+        ctx.fb_bytes = 0x2000;
+        ctx.fb_pages_alloc = 2;
+        ctx.cmd_buf_pa = 0x9000;
+        let idx = fbdev::init_scanout(0x4000, ctx.fb_va, ctx.fb_bytes, 128, 32, 16);
+        ctx.fbdev_idx = Some(idx);
+        CTX.lock().push(ctx);
+
+        assert!(shutdown_scanout(key(0x10)));
+
+        let guard = CTX.lock();
+        assert_eq!(guard.len(), 1);
+        assert!(guard[0].quiesced);
+        assert_eq!(guard[0].fbdev_idx, Some(idx));
+        assert_eq!(guard[0].fb_va, 0xffff_8000_0000_4000);
+        assert_eq!(guard[0].fb_bytes, 0x2000);
+        assert_eq!(guard[0].fb_pages_alloc, 2);
+        assert_eq!(guard[0].cmd_buf_pa, 0x9000);
+        drop(guard);
+        assert_eq!(fbdev::count(), 1);
+
+        reset_publication_state();
+    }
 }

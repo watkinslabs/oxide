@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B360-console-fbdev-transactional-publish`.
+Current marker: `>>> ACTIVE >>> B361-shutdown-scanout-quiesce-in-place`.
 
 ## Archived Completed B327-B330
 
@@ -463,8 +463,16 @@ Evidence: source audit found `publish_console_scanout` claims `CONSOLE_OWNER_KEY
 
 ## B360-console-fbdev-transactional-publish
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2413.
 
 Branch: `B360-console-fbdev-transactional-publish`
 
-Evidence: source audit found `publish_console_scanout` claimed `CONSOLE_OWNER_KEY` before fbdev registration, ops install, and stored-index commit completed, creating a partial owner-visible publication window on failure paths. Split publication into `install_console_fbdev` and `commit_console_owner_key`; fbdev record, ops, and stored idx now complete before owner-token commit, and owner-commit failure clears the stored idx and unregisters the fbdev record. Added `console_owner_commits_after_fbdev_idx_is_stored` and `console_owner_commit_failure_unwinds_stored_fbdev_idx`; focused regressions, full `cargo test -p drv-virtio-gpu` with 34 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found `publish_console_scanout` claimed `CONSOLE_OWNER_KEY` before fbdev registration, ops install, and stored-index commit completed, creating a partial owner-visible publication window on failure paths. Split publication into `install_console_fbdev` and `commit_console_owner_key`; fbdev record, ops, and stored idx now complete before owner-token commit, and owner-commit failure clears the stored idx and unregisters the fbdev record. Added `console_owner_commits_after_fbdev_idx_is_stored` and `console_owner_commit_failure_unwinds_stored_fbdev_idx`; focused regressions, full `cargo test -p drv-virtio-gpu` with 34 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2413, and main sync `e0c60058` pass.
+
+## B361-shutdown-scanout-quiesce-in-place
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B361-shutdown-scanout-quiesce-in-place`
+
+Evidence: source audit found `shutdown_scanout` mutates the matching `ScanoutCtx` in place by setting `quiesced = true`, writes the device scanout disable register when live `cfg_va` exists, and does not remove CTX, fbdev idx, framebuffer VA/size, allocation count, command-buffer PA, or fbdev record. Added `shutdown_scanout_quiesces_without_dropping_publication_metadata`; focused regression, full `cargo test -p drv-virtio-gpu` with 35 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
