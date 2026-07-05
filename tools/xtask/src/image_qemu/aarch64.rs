@@ -163,6 +163,12 @@ pub(super) fn qemu_run_aarch64_grub(
         "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
+    if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() {
+        c.args([
+            "-netdev", "user,id=net1",
+            "-device", "virtio-net-pci-non-transitional,netdev=net1,bus=pcie.0",
+        ]);
+    }
     eprintln!("xtask grub: launching qemu-system-aarch64 (OVMF→GRUB→EFI-stub), smp={smp}, headless={headless}");
     run(c)
 }

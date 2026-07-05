@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B381-virtio-net-ipv6-tx-stack-ndp` — VERIFIED, PR READY.
+ACTIVE NOW: `B382-virtio-net-multidev-rebind-proof` — VERIFIED, push gate passed.
 
-Current active item: `>>> ACTIVE >>> B381-virtio-net-ipv6-tx-stack-ndp`.
+Current active item: `>>> ACTIVE >>> B382-virtio-net-multidev-rebind-proof`.
 
-Current B381 gate: source audit, hosted stack/virtio-net tests, line checks,
-and x86_64/aarch64 fast driver-path proof pass; PR merge pending.
+Current B382 gate: x86_64 and aarch64 fast-init live proofs pass for two
+virtio-net devices, sysfs unbind/rebind, and the normal driver-path tail.
+Pre-push gate: x86_64 and aarch64 normal smoke both reach login.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -312,8 +313,8 @@ Status legend:
 | VERIFIED | B378-virtio-net-hot-remove-key-cleanup | Hot-remove clears netdev/interface/RX runtime by child key: PCI child remove calls `uninstall_modern(device_key)`, uninstall unregisters/removes iface and net runtime by key, removes only the matching RX runtime, and releases shared RX state only after the last runtime; focused uninstall/RX regressions, full virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, PR #2431 merge, and local main sync to `origin/main` at `3445c15a` pass. |
 | VERIFIED | B379-virtio-net-shared-rx-last-runtime | Shared NetRx bottom half and ARP-GC timer stay installed until last RX runtime removed: `install_rx_runtime` arms both shared resources, `remove_rx_runtime_for` reports whether removal emptied the keyed runtime table, and `release_rx_shared_runtime_if_last` tears down softirq/timer only when the table is empty; tightened regression proves timer and softirq survive first removal and clear after final removal, with full virtio-net tests, x86_64/aarch64 driver-path proof, PR #2432 merge, and local main sync to `origin/main` at `2178cd35` passing. |
 | VERIFIED | B380-virtio-net-ipv6-ndp-stack-owned | IPv6 NDP learning goes through the stack-owned interface table: virtio-net RX delivers IPv6 frames to `NetStack::deliver_rx_ipv6(iface, ...)`, stale driver-private `learn_ndp_from_ipv6` path/test removed, stack NDP tests prove `(iface, IPv6)` scoped NS/NA learning, full virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2433 merge, and local main sync to `origin/main` at `0fbf754b` pass. |
-| >>> ACTIVE >>> VERIFIED - PR READY | B381-virtio-net-ipv6-tx-stack-ndp | Virtio-net TX resolves IPv6 neighbors through registered interface stack NDP table: kernel `ndp_lookup_for_device` maps `DeviceKey` to `registered_iface_for(device_key)` and calls `net::sock::stack().ndp_lookup(iface, next_hop)`, `VirtioNetDev::xmit` uses that resolver before `tx_frame_for`, hosted stack NDP tests and virtio-net tests pass, and x86_64/aarch64 driver-path proof passes. |
-| NOT DONE | TBD | Virtio-net multi-device bind/unbind/rebind needs live QEMU proof. |
+| VERIFIED | B381-virtio-net-ipv6-tx-stack-ndp | Virtio-net TX resolves IPv6 neighbors through registered interface stack NDP table: kernel `ndp_lookup_for_device` maps `DeviceKey` to `registered_iface_for(device_key)` and calls `net::sock::stack().ndp_lookup(iface, next_hop)`, `VirtioNetDev::xmit` uses that resolver before `tx_frame_for`, hosted stack NDP tests, virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, PR #2434 merge, and local main sync to `origin/main` at `cdd8d243` pass. |
+| >>> ACTIVE >>> VERIFIED | B382-virtio-net-multidev-rebind-proof | Fast-init live proof passes on x86_64 and aarch64 for two virtio-net devices, `eth0`/`eth1`, sysfs driver `unbind`/`bind`, restored virtio-net driver readdir state, and normal input tail; ARM PID1 selection now honors `/init`, rootfs cache keys multidev mode; normal x86_64 and aarch64 smoke reach login. |
 | NOT DONE |  | Core IPv6 stack NDP cache keyed by `(iface, IPv6 address)`. |
 | NOT DONE |  | Virtio-vsock remove keyed to owning child key. |
 | NOT DONE |  | Virtio-vsock clears `VsockRx` bottom half only for installed transport. |

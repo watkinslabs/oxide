@@ -107,6 +107,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
         "socketpair_fork_probe", "tty_reset_probe", "dsr_probe", "vtswitch_probe", "vtmode_probe", "vtresize_probe", "kdfont_probe", "fbdev_probe", "fbdev_probe2", "vcs_probe", "ptyhup_probe", "hwrng_probe", "netstats_probe", "vsock_probe", "drm_probe", "drm_probe2", "drm_probe3", "sysblock_probe", "snd_probe", "mouseprobe",
+        "virtio_net_multidev_probe",
     ] {
         put(&user(b), &format!("/bin/{b}"))?;
     }
@@ -180,23 +181,39 @@ ExecStart=/bin/g19_glibc_pthread
     }
     if std::env::var_os("OXIDE_DRIVER_PATH_SMOKE").is_some() {
         let sh = repo.join("target/driver_path_smoke.sh");
-        std::fs::write(&sh,
+        let script: &[u8] = if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() {
+b"#!/bin/sh
+set -eu
+exec /bin/virtio_net_multidev_probe
+"
+        } else {
 b"#!/bin/sh
 set -eu
 echo driver_path_smoke: START
+check_read() {
+    path=$1
+    tag=$2
+    if test -r \"$path\"; then return 0; fi
+    echo \"$tag: FAIL path=$path\"
+    ls -l /sys/class/net 2>&1 || true
+    ls -l \"$path\" 2>&1 || true
+    exit 1
+}
 /bin/fbdev_probe
 /bin/drm_probe
 /bin/sysblock_probe
 /bin/snd_probe
 /bin/rtlink_probe
-test -r /sys/class/net/eth0/address
-test -r /sys/class/net/eth0/statistics/rx_packets
+check_read /sys/class/net/eth0/address b002_eth0_address
+check_read /sys/class/net/eth0/statistics/rx_packets b002_eth0_rx_packets
 echo b002_net_eth0: PASS
 echo driver_path_smoke: run mouseprobe
 sleep 1
 /bin/mouseprobe
 echo driver_path_smoke: PASS - GPU input sound block net
-").map_err(|_| 1u8)?;
+"
+        };
+        std::fs::write(&sh, script).map_err(|_| 1u8)?;
         let svc = repo.join("target/driver-path-smoke.service");
         std::fs::write(&svc,
 b"[Unit]
@@ -219,6 +236,9 @@ ExecStart=/bin/driver_path_smoke.sh
         dbg("sif /usr/lib/systemd/system/driver-path-smoke.service mode 0100644")?;
         dbg("mkdir /usr/lib/systemd/system/default.target.wants")?;
         dbg("symlink /usr/lib/systemd/system/default.target.wants/driver-path-smoke.service ../driver-path-smoke.service")?;
+        if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() {
+            put(&user("virtio_net_multidev_probe"), "/init")?;
+        }
     }
     if std::env::var_os("OXIDE_USERSPACE_SEAT_SMOKE").is_some() {
         let sh = repo.join("target/userspace_seat_smoke.sh");

@@ -304,18 +304,25 @@ fn spawn_init_from_rootfs_arm() {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
-    // PID 1: load /sbin/init from the mounted rootfs.
-    let init_blob: &'static [u8] = {
-        // PID 1 = systemd (OXIDE distro init); /sbin/init fallback.
-        let bytes_opt = ext4::rootfs::read_file(b"/lib/systemd/systemd")
-            .or_else(|| ext4::rootfs::read_file(b"/sbin/init"))
-            .or_else(|| ext4::rootfs::read_file(b"/init"));
-        match bytes_opt {
-            Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
-            None => {
-                debug_irq! { klog::kinfo!("elf-smoke-arm: no /sbin/init in rootfs; halting"); }
-                return;
-            }
+    let init_candidates: &[&[u8]] = &[
+        b"/init",
+        b"/lib/systemd/systemd",
+        b"/sbin/init",
+    ];
+    let mut init_path: &[u8] = b"/init";
+    let mut init_blob_opt = None;
+    for path in init_candidates {
+        if let Some(bytes) = ext4::rootfs::read_file(path) {
+            init_path = path;
+            init_blob_opt = Some(bytes);
+            break;
+        }
+    }
+    let init_blob: &'static [u8] = match init_blob_opt {
+        Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
+        None => {
+            debug_irq! { klog::kinfo!("elf-smoke-arm: no /init, /lib/systemd/systemd or /sbin/init in rootfs; halting"); }
+            return;
         }
     };
 
@@ -385,8 +392,8 @@ fn spawn_init_from_rootfs_arm() {
         }
     }
 
-    // F153-1: build a real SysV initial stack with argv[0]=/sbin/init.
-    // Same shape as the x86 spawn_user_blob_smoke path.
+    // F153-1: build a real SysV initial stack with argv[0]=selected init.
+    // Same shape and init selection order as the x86 PID1 path.
     let random16 = {
         use hal::TimerOps;
         let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
@@ -394,7 +401,7 @@ fn spawn_init_from_rootfs_arm() {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
-    let argv0: &[&[u8]] = &[b"/lib/systemd/systemd"];
+    let argv0: &[&[u8]] = &[init_path];
     // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
     let new_sp = unsafe {
         elf_load::stack::build_user_stack(
@@ -402,7 +409,7 @@ fn spawn_init_from_rootfs_arm() {
             argv0, &[b"TERM=vt100" as &[u8]],
             &img,
             &random16,
-            b"/lib/systemd/systemd",
+            init_path,
             0, // smoke: no vDSO mapped
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
         )
