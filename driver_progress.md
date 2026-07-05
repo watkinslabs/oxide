@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B383-core-ipv6-ndp-iface-cache`.
+Current marker: `>>> ACTIVE >>> B384-virtio-vsock-remove-keyed`.
 
 ## Archived Completed B327-B330
 
@@ -468,27 +468,27 @@ Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
 recent-completed table above; main was synced after each merge through
 `cdd8d243`.
 
-## Recent Completed B382
+## Recent Completed B382-B383
 
 | Branch | Status | Evidence |
 |---|---|---|
 | B382-virtio-net-multidev-rebind-proof | VERIFIED | Fast `/init` multidev proof passes on x86_64/aarch64 for `eth0`/`eth1`, sysfs bind/unbind/rebind, restored virtio-net driver readdir state, and normal input tail; hosted checks, normal smoke, PR #2435 merge, and main sync `d09f5123` pass. Follow-up: stale direct driver symlink dcache after unbind. |
+| B383-core-ipv6-ndp-iface-cache | VERIFIED | Core NDP map is `(iface, IPv6)` keyed and `unregister_iface` purges removed-iface entries; focused/NDP tests, line cap, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2436 merge, and main sync `505521d8` pass. First ARM driver-path run hit existing no-progress; rerun passed. |
 
-## B383-core-ipv6-ndp-iface-cache
+## B384-virtio-vsock-remove-keyed
 
-Status: `>>> ACTIVE >>> VERIFIED`; commit/PR/merge pending.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
-Branch: `B383-core-ipv6-ndp-iface-cache`
-
-Scope: core IPv6 stack NDP cache keyed by `(NetIfaceId, Ipv6Addr)` with teardown
-purge for removed interfaces.
+Branch: `B384-virtio-vsock-remove-keyed`
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PASS: `NetStack::ndp` is `BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>`; `ndp_insert`/`ndp_lookup` use `(iface, ip)` keys; NS/NA/RA handlers pass ingress iface; IPv6 TX routes to an iface before packet emission. |
-| Fix | PASS: `unregister_iface` now purges NDP entries for the removed iface along with routes, IPv4/IPv6 addresses, and multicast state. |
-| Hosted tests | PASS: `cargo test -p net f180c_ndp_cache_is_scoped_by_iface -- --nocapture`; `cargo test -p net f180c_unregister_iface_drops_only_its_ndp_entries -- --nocapture`; `cargo test -p net ndp -- --nocapture` (14 passed). |
-| Static checks | PASS: `git diff --check`; line cap OK (`stack/core.rs` 218, `tests_correctness/tcp_ipv6.rs` 461). |
-| Runtime | PASS: x86_64 fast driver-path rerun passed (`/tmp/b383-x86-driver-path-rerun.log`); first aarch64 run hit existing no-progress before `mouseprobe` (`/tmp/b383-arm-driver-path.log`), clean rerun passed (`/tmp/b383-arm-driver-path-rerun.log`). |
+| Source audit | PASS: `pci-boot` probe/remove/shutdown passes `VirtioChildDeviceKey`; `drv-virtio-vsock` contexts store the key; endpoint install/uninstall/quiesce, TX, RX prepost, and RX delivery use `device_key.raw()` as owner. |
+| Hosted regression | PASS: `uninstall_removes_only_matching_vsock_context_and_endpoint` proves removing key1 leaves key2 ctx and `net::vsock` endpoint live. |
+| `cargo test -p drv-virtio-vsock uninstall_removes_only_matching_vsock_context_and_endpoint -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drv-virtio-vsock -- --nocapture` | PASS: 6 passed. |
+| Static checks | PASS: `git diff --check`; line cap OK (`tests.rs` 137, `driver_plan.md` 384, `driver_progress.md` under cap). |
+| `./tools/boot-smoke-driver-path.sh x86 240` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b384-x86-driver-path.log`. |
+| `./tools/boot-smoke-driver-path.sh arm 300` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b384-arm-driver-path.log`. |

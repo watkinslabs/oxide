@@ -84,6 +84,33 @@ fn missing_vsock_context_removal_leaves_live_contexts() {
 }
 
 #[test]
+fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
+    fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+
+    let _guard = TEST_LOCK.lock();
+    crate::registry::clear_ctxs_for_tests();
+    let key1 = key(0x0010_0000);
+    let key2 = key(0x0020_0000);
+    assert!(net::vsock::driver_install(key1.raw(), 3, tx_stub));
+    assert!(net::vsock::driver_install(key2.raw(), 4, tx_stub));
+    {
+        let mut ctxs = crate::registry::CTX.lock();
+        ctxs.push(ctx(key1));
+        ctxs.push(ctx(key2));
+    }
+
+    assert!(uninstall(key1));
+    assert!(!present_for(key1));
+    assert!(present_for(key2));
+    assert!(!net::vsock::driver_up_for(key1.raw()));
+    assert!(net::vsock::driver_up_for(key2.raw()));
+    assert_eq!(net::vsock::guest_cid_for(key2.raw()), 4);
+
+    assert!(uninstall(key2));
+    crate::registry::clear_ctxs_for_tests();
+}
+
+#[test]
 fn uninstall_clears_endpoint_without_primary_context() {
     fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
 
