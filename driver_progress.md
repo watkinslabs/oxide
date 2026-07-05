@@ -686,3 +686,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B436-model-binding-records-after-probe | VERIFIED | Fresh main `076f568e` after PR #2491 merge; source audit proves `bind_inner` executes `driver.probe(dev)?` before assigning `*dev.driver.lock() = Some(driver_name)`, so failed probes return before recording a binding or firing a bind hook. Hosted checks pass: `cargo test -p drv failed_probe_leaves_device_unbound_and_retriable -- --nocapture`, `cargo test -p drv driver_registration_binds_existing_matching_devices -- --nocapture`, `cargo test -p drv device_add_initial_probe_precedes_add_uevent_without_bind_change -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
+
+## B437 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B437-probe-failure-unbound-retriable | VERIFIED | Fresh main `e92b7401` after PR #2492 merge; source audit proves `bind_inner` propagates `Driver::probe` failure through `driver.probe(dev)?` before assigning `dev.driver`. Hosted regression `failed_probe_leaves_device_unbound_and_retriable` proves automatic probe failure leaves `dev.bound() == None`, then two explicit `bind` retries each return `drv::Error::ProbeFailed`, increment the failing probe counter, and still leave the device unbound. Checks pass: `cargo test -p drv failed_probe_leaves_device_unbound_and_retriable -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
