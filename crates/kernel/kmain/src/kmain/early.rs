@@ -38,7 +38,7 @@ pub unsafe fn init(info: &BootInfo) {
     unsafe { crate::boot_cmdline::install_arch_default(); }
     console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
     syscalls::init_wall_clock_from_rtc();
-    fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
+    fs::tmpfs::init(); fs::fuse::register(); tracefs::init(); drv_virtio_input::devfs::init();
     drv_virtio_input::procfs::init();
     fbdev::devfs::init(); devpts::init();
     debug_boot_smokes();

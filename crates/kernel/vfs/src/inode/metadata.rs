@@ -66,6 +66,11 @@ impl Inode {
     pub fn private<T: Any + Send + Sync>(&self) -> Option<&T> { self.i_private.downcast_ref::<T>() }
     /// Per-inode epoll subscribers. # C: O(1)
     pub fn poll_subscribers(&self) -> Option<&PollSubscribers> { self.poll_subs.as_deref() }
+    /// Clone the `Arc` backing the per-inode epoll subscriber set — a backend
+    /// (FUSE `/dev/fuse`) whose channel state must notify the SAME subscriber set
+    /// the poller registered on adopts this into its shared connection object.
+    /// # C: O(1)
+    pub fn poll_subscribers_arc(&self) -> Option<Arc<PollSubscribers>> { self.poll_subs.clone() }
     /// memfd seal-store carrier. # C: O(1)
     pub fn as_seal_carrier(&self) -> Option<&dyn SealCarrier> { self.seal_carrier.as_deref() }
     /// memfd seal word. # C: O(1)

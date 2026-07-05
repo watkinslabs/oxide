@@ -124,9 +124,9 @@ impl File {
         };
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.f_op.write_nonblock(&self.inode, off, buf)?
+            self.f_op.write_nonblock_file(self, off, buf)?
         } else {
-            self.f_op.write(&self.inode, off, buf)?
+            self.f_op.write_file(self, off, buf)?
         };
         self.pos.store(off + n as u64, Ordering::Release);
         drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
