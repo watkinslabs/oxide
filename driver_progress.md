@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B453-shutdown-no-unbind-or-events; VERIFIED pending PR merge.
+Current marker: B454-power-path-calls-driver-shutdown; IN AUDIT.
+
+## B454 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B454-power-path-calls-driver-shutdown | IN AUDIT | Fresh main `b9175b88` after PR #2511 merge; proving restart/poweroff/halt paths call `drv::shutdown_all` before platform power transition. |
 
 ## B453 Current
 
