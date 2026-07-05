@@ -656,3 +656,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B431-pci-driver-core-attach | VERIFIED | Fresh main `26eff5af` after PR #2486 merge; source audit proves `pci-boot::enumerate_and_log` calls `register_pci_model_drivers()` once before the device loop, then only publishes each enumerated PCI function through `publish_pci_model_device` and `drv::try_device_add`. Attachment is owned by `drv::try_device_add` -> `attach_device_to_registered_drivers` -> `bind_inner` -> `Driver::probe`. `rg` over `crates/kernel/pci-boot/src`, `drv-nvme`, and `drv-ahci` finds no enumeration-local `drv::bind`, `drv::bind_addr`, NVMe/AHCI init call, or direct virtio child probe bypass from enumeration. Hosted checks pass: `cargo test -p drv -- --nocapture --test-threads=1` and `cargo test -p pci-boot -- --nocapture`. Runtime proof is inherited from unchanged B430 code and passed x86_64/aarch64 logs `/tmp/b430-pci-model-driver-registration-x86.log` and `/tmp/b430-pci-model-driver-registration-arm.log`, each containing `uevent_probe_pci_drivers: PASS nvme=1 ahci=1 virtio-pci=9`. |
+
+## B432 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B432-pci-publication-idempotent-proof | IN AUDIT | Fresh main `20a8dce9` after PR #2487 merge; auditing fallible/idempotent PCI model-device publication for repeated matching `(pci, addr)` enumeration. |
