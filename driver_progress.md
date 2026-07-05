@@ -467,7 +467,7 @@ Evidence:
 
 ## B348-drm-master-open-file-state
 
-Status: `VERIFIED, commit/PR merge pending`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B348-drm-master-open-file-state`
 
@@ -489,3 +489,4 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` 474 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
