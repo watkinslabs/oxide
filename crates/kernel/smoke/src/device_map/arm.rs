@@ -144,8 +144,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
     // F47: turn on PL011 RX + RX-timeout IRQs and enable the matching
     // SPI at the distributor. SPCR exposes irq=33 as the PL011 line on
     // QEMU virt; with F45's ITARGETSR+ICFGR programming, SPI 33 will
-    // now actually deliver to oxide_arm_irq_dispatch. Replaces the
-    // timer-poll fallback for stdin wakeup.
+    // now deliver to oxide_arm_irq_dispatch; stdin wakeup is IRQ-owned.
     // SAFETY: pl011::enable just ran; gic::enable_intid is idempotent and the GIC was enabled earlier in this fn; single-CPU pre-init.
     unsafe {
         hal_aarch64::pl011::enable_rx_irq();
