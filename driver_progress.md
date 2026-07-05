@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B328-virtio-input-drain-split` verified; commit and PR merge pending.
+Current marker: `>>> ACTIVE >>> B329-virtio-gpu-remove-child-key`.
 
 ## B002-single-machine-desktop-proof
 
@@ -145,3 +145,21 @@ Evidence:
 | `cargo test -p drv-virtio-input` | PASS: 36 tests, 0 failed. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b328-drain-split-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b328-drain-split-arm.log`. |
+
+## B329-virtio-gpu-remove-child-key
+
+Status: `CLAIMED`.
+
+Branch: `B329-virtio-gpu-remove-child-key`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Virtio-gpu remove is keyed to owning child key. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
