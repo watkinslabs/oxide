@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B368-virtio-net-netdev-publish-owner` verified locally; PR #2421 ready to update/merge.
+Current marker: `>>> ACTIVE >>> B369-virtio-net-rx-runtime-owner`.
 
 ## Archived Completed B327-B330
 
@@ -480,8 +480,16 @@ Evidence: source audit found `ProbeCommandBuffer` and `ProbeFramebufferRun` own 
 
 ## B368-virtio-net-netdev-publish-owner
 
-Status: `VERIFIED`; PR #2421 ready to update/merge.
+Status: `VERIFIED`; merged by PR #2421.
 
 Branch: `B368-virtio-net-netdev-publish-owner`
 
-Evidence: source audit found `init_modern_with_rx_pool` publishes kernel netdev state by child `DeviceKey`, `VirtioNetDev` stores that owner key, `REGISTERED_NETDEVS` and `NET_RUNTIMES` are keyed by the same owner, and `uninstall_modern` unregisters/removes only the named key. Added `uninstall_modern_removes_only_named_netdev_runtime` and extended missing-primary cleanup to prove net runtime removal. Focused regression, full `cargo test -p drv-virtio-net` with 16 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt hit external `vhost-vsock` guest-CID conflict; no stale QEMU remained and rerun passed.
+Evidence: source audit found `init_modern_with_rx_pool` publishes kernel netdev state by child `DeviceKey`, `VirtioNetDev` stores that owner key, `REGISTERED_NETDEVS` and `NET_RUNTIMES` are keyed by the same owner, and `uninstall_modern` unregisters/removes only the named key. Added `uninstall_modern_removes_only_named_netdev_runtime` and extended missing-primary cleanup to prove net runtime removal. Focused regression, full `cargo test -p drv-virtio-net` with 16 tests, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2421, and main sync `11a52b12` pass. First ARM smoke attempt hit external `vhost-vsock` guest-CID conflict; no stale QEMU remained and rerun passed.
+
+## B369-virtio-net-rx-runtime-owner
+
+Status: `IN AUDIT`.
+
+Branch: `B369-virtio-net-rx-runtime-owner`
+
+Evidence: source audit of virtio-net RX runtime installation/removal ownership is in progress.
