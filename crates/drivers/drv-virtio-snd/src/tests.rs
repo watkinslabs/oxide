@@ -314,3 +314,37 @@ use super::*;
         assert!(sound::ops::ops_for(owner1).is_none());
         reset_test_state();
     }
+
+    #[test]
+    fn shutdown_removes_only_matching_snd_child_key_without_unpublishing_sound() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        let key0 = key(0x0060_0000);
+        let key1 = key(0x0070_0000);
+        let owner0 = sound_owner(key0);
+        let owner1 = sound_owner(key1);
+        publish_test_card(owner0);
+        publish_test_card(owner1);
+        {
+            let mut ctxs = CTX.lock();
+            ctxs.push(ctx(key0));
+            ctxs.push(ctx(key1));
+        }
+        softirq::set_handler(softirq::Slot::SndEvent, test_event_handler);
+
+        assert!(shutdown(key0));
+        assert!(!present_for(key0));
+        assert!(present_for(key1));
+        assert!(sound::card_number(owner0).is_some());
+        assert!(sound::ops::ops_for(owner0).is_some());
+        assert!(sound::card_number(owner1).is_some());
+        assert!(sound::ops::ops_for(owner1).is_some());
+        softirq::raise(softirq::Slot::SndEvent);
+        // SAFETY: hosted unit test owns the SndEvent slot under TEST_LOCK.
+        unsafe { softirq::run_pending(); }
+        assert_eq!(TEST_EVENT_CALLS.load(Ordering::Relaxed), 1);
+
+        assert!(uninstall(key0));
+        assert!(uninstall(key1));
+        reset_test_state();
+    }

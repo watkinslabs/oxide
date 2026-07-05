@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B462-virtio-net-explicit-shutdown-callback VERIFIED pending PR merge.
+ACTIVE NOW: none; B463-virtio-snd-explicit-shutdown-callback VERIFIED pending PR merge.
 
-Current active item: none; next claim starts after B462 merge and fresh main sync.
+Current active item: none; next claim starts after B463 merge and fresh main sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B463 using
+Next gate after merge: return to fresh `origin/main` before claiming B464 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -70,7 +70,7 @@ Status legend:
 | VERIFIED | B325-virtio-rng-active-provider | virtio-rng active-provider teardown and hwrng promotion semantics. |
 | VERIFIED | B461-virtio-vsock-explicit-shutdown-callback | virtio-vsock has explicit shutdown callback: virtio child model shutdown resolves the stable parent key and calls `drv_virtio_vsock::shutdown`; shutdown quiesces the vsock endpoint, removes only the matching context by `VirtioChildDeviceKey`, releases shared RX softirq ownership only when the last context is gone, frees owned buffers, and resets the device through shared `virtio::reset_device` instead of raw common-cfg status offsets. Hosted `drv-virtio-vsock` tests pass 7/7, shared `virtio` tests pass 43/43, `pci-boot` compiles, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B462-virtio-net-explicit-shutdown-callback | virtio-net has explicit shutdown callback: virtio child model shutdown resolves the stable parent key and calls `drv_virtio_net::modern::shutdown_modern`; shutdown keeps netdev identity published, removes only the matching modern state by `VirtioChildDeviceKey`, releases RX runtime/shared softirq state only when the last relevant runtime/device is gone, frees owned buffers, and resets the device through shared `virtio::reset_device` instead of raw common-cfg status offsets. Hosted `drv-virtio-net` tests pass 16/16, shared `virtio` tests pass 43/43, `pci-boot` compiles, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
-| SOURCE OK |  | virtio-snd has explicit shutdown callback. |
+| VERIFIED | B463-virtio-snd-explicit-shutdown-callback | virtio-snd has explicit shutdown callback: virtio child model shutdown resolves the stable parent key and calls `drv_virtio_snd::shutdown`; shutdown removes only the matching sound context by `VirtioChildDeviceKey`, releases the shared sound event softirq only when the last context is gone, keeps sound card and ops publication visible during terminal shutdown, frees owned buffers, resets the device through shared `virtio::reset_device`, and uses shared `virtio::read_status`/`hal::PAGE_SIZE_BYTES` instead of raw common-cfg status offsets or frame-size literals. Hosted `drv-virtio-snd` tests pass 8/8, shared `virtio` tests pass 43/43, `pci-boot` compiles, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | SOURCE OK |  | 8250 serial has explicit shutdown callback. |
 | SOURCE OK |  | PL011 serial has explicit shutdown callback. |
 | SOURCE OK |  | i8042 keyboard has explicit shutdown callback. |
