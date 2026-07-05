@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B448-device-del-remove-visible; IN AUDIT.
+Current marker: B448-device-del-remove-visible; VERIFIED pending PR merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -757,4 +757,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B448-device-del-remove-visible | IN AUDIT | Fresh main `fa17ea74` after PR #2505 merge; auditing that `device_del` emits remove while the model device remains visible in the registry. |
+| B448-device-del-remove-visible | VERIFIED | Fresh main `fa17ea74` after PR #2505 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` fires `SYSFS_REMOVE_HOOK` before `DEVICES.retain(...)` removes the object from the registry. Hosted hook `device_del_order_sysfs_remove` asserts `dev.bound() == None` and `devices().iter().any(|d| d.bus == dev.bus && d.addr == dev.addr)` while the remove hook runs. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B448 changes only docs/metadata and production `device_del` code is unchanged. |
