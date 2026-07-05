@@ -257,6 +257,11 @@ pub fn register_static_files() {
         "/proc/self/mounts",
         crate::mounts::make_proc_mounts(),
     );
+    // /proc/pressure/{cpu,memory,io} — PSI pressure files (B517). O_RDWR:
+    // read renders the snapshot, write registers a poll trigger. Creating
+    // these clears systemd's memory-pressure-watch EOPNOTSUPP.
+    crate::pressure::register();
+
     // /proc/sys ctl_table (D22): one declarative table + the dynamic/live-bound
     // handlers, registered into procfs's own PROC_REG subtree. Replaces the
     // ~70 scattered imperative `register("/proc/sys/...")` calls.
