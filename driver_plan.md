@@ -237,21 +237,21 @@ Status legend:
 | SOURCE OK | TBD | AHCI duplicate binds rejected before HBA bring-up; needs hosted/live proof. |
 | SOURCE OK |  | AHCI publishes ATA IDENTIFY serial into block registry. |
 | NOT DONE |  | Virtio-input supports multiple input device records. |
-| NOT DONE |  | Virtio-input publishes `/dev/input/eventN` through model-owned devices. |
-| NOT DONE |  | `/proc/bus/input/devices` derives from live input state. |
+| VERIFIED |  | Virtio-input publishes `/dev/input/eventN` through model-owned devices. |
+| VERIFIED |  | `/proc/bus/input/devices` derives from live input state. |
 | NOT DONE |  | Virtio-input clears event-queue bottom half when last queue removed. |
 | NOT DONE |  | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | NOT DONE |  | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-| NOT DONE |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
-| NOT DONE |  | Evdev `EVIOCGRAB` is per open file. |
-| NOT DONE |  | Competing evdev grabs fail with `EBUSY`. |
-| NOT DONE |  | Non-owner evdev clients do not drain/poll under another client's grab. |
-| NOT DONE |  | Last close releases evdev grab. |
-| NOT DONE |  | `EVIOCSCLOCKID` validates userspace clock id. |
-| NOT DONE |  | `EVIOCREVOKE` marks current open file revoked and later reads fail with `ENODEV`. |
-| NOT DONE |  | VFS has file-aware read/poll/release hooks for evdev semantics. |
+| VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
+| VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
+| VERIFIED |  | Competing evdev grabs fail with `EBUSY`. |
+| VERIFIED |  | Non-owner evdev clients do not drain/poll under another client's grab. |
+| VERIFIED |  | Last close releases evdev grab. |
+| VERIFIED |  | `EVIOCSCLOCKID` validates userspace clock id. |
+| VERIFIED |  | `EVIOCREVOKE` marks current open file revoked and later reads fail with `ENODEV`. |
+| VERIFIED |  | VFS has file-aware read/poll/release hooks for evdev semantics. |
 | NOT DONE |  | Obsolete crate-level EVIOC recognizer removed. |
-| NOT DONE |  | `EVIOCGREP`/`EVIOCSREP` implemented in real evdev file ioctl handler. |
+| VERIFIED |  | `EVIOCGREP`/`EVIOCSREP` implemented in real evdev file ioctl handler. |
 | NOT DONE |  | Virtio-gpu remove is keyed to owning child key. |
 | NOT DONE |  | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
 | NOT DONE | TBD | Virtio-gpu probe-failure unwind removes only failed child scanout. |

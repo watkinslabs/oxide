@@ -54,6 +54,36 @@ pub const SYN_DROPPED: u16 = 0x03;
 
 pub const EVIOC_GROUP: u8 = b'E';
 
+pub const EVDEV_VERSION: u32 = 0x01_0001;
+pub const EVDEV_ID_BYTES: usize = 8;
+pub const EVDEV_ID_BUSTYPE_OFF: usize = 0;
+pub const EVDEV_ID_VENDOR_OFF: usize = 2;
+pub const EVDEV_ID_PRODUCT_OFF: usize = 4;
+pub const EVDEV_ID_VERSION_OFF: usize = 6;
+pub const EVDEV_ABSINFO_BYTES: usize = 24;
+pub const EVDEV_ABSINFO_MIN_OFF: usize = 4;
+pub const EVDEV_ABSINFO_MAX_OFF: usize = 8;
+pub const EVDEV_ABSINFO_FUZZ_OFF: usize = 12;
+pub const EVDEV_ABSINFO_FLAT_OFF: usize = 16;
+pub const EVDEV_ABSINFO_RES_OFF: usize = 20;
+pub const EVDEV_STR_BYTES: usize = 129;
+pub const EVDEV_REPEAT_BYTES: usize = 8;
+pub const EVDEV_CLOCKID_BYTES: usize = 4;
+pub const EVDEV_FF_EFFECT_BYTES: usize = 44;
+pub const EVDEV_CLOCK_MONOTONIC: i32 = 1;
+
+pub const IOC_NR_MASK: u64 = 0xFF;
+pub const IOC_TYPE_SHIFT: u32 = 8;
+pub const IOC_TYPE_MASK: u64 = 0xFF;
+pub const IOC_SIZE_SHIFT: u32 = 16;
+pub const IOC_SIZE_MASK: u64 = 0x3FFF;
+pub const IOC_DIR_SHIFT: u32 = 30;
+pub const IOC_DIR_MASK: u64 = 0x3;
+pub const IOC_WRITE: u32 = 1;
+pub const IOC_READ: u32 = 2;
+
+pub const EVIOCGVERSION_NR: u8 = 0x01;
+pub const EVIOCGID_NR: u8 = 0x02;
 pub const EVIOCGVERSION: u64 = 0x80044501;
 pub const EVIOCGID: u64 = 0x80084502;
 pub const EVIOCREP_NR: u8 = 0x03;
@@ -66,12 +96,18 @@ pub const EVIOCGSND_NR: u8 = 0x1a;
 pub const EVIOCGSW_NR: u8 = 0x1b;
 pub const EVIOCGBIT_BASE_NR: u8 = 0x20;
 pub const EVIOCGABS_BASE_NR: u8 = 0x40;
+pub const EVIOCGABS_END_NR: u8 = 0x80;
 pub const EVIOCGREP: u64 = 0x80084503;
 pub const EVIOCSREP: u64 = 0x40084503;
+pub const EVIOCGPHYS_NR: u8 = 0x07;
 pub const EVIOCSFF: u64 = 0x402c4580;
 pub const EVIOCRMFF: u64 = 0x40044581;
+pub const EVIOCGRAB_NR: u8 = 0x90;
 pub const EVIOCGRAB: u64 = 0x40044590;
+pub const EVIOCREVOKE_NR: u8 = 0x91;
 pub const EVIOCREVOKE: u64 = 0x40044591;
+pub const EVIOCSCLOCKID_NR: u8 = 0xa0;
+pub const EVIOCSCLOCKID: u64 = 0x400445a0;
 pub const EVIOCGEFFECTS: u64 = 0x80044584;
 
 pub const DEFAULT_REP_DELAY_MS: u32 = 250;
