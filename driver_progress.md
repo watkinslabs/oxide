@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B373-virtio-net-netdev-owning-key`.
+Current marker: `>>> ACTIVE >>> B374-virtio-net-iface-rx-keyed-tables`.
 
 ## Archived Completed B327-B330
 
@@ -438,7 +438,7 @@ Branch: `B362-fbcon-foreground-owner`
 
 Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2415, and main sync `1b3a3d14` pass.
 
-## Recent Completed B363-B372
+## Recent Completed B363-B373
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -452,11 +452,12 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B370-virtio-net-no-boot-ipv4-policy | VERIFIED | RX runtime install seeds `0.0.0.0`, iface address hook updates later; full virtio-net tests, arch proof, PR #2423, main sync `c9a786f6`. |
 | B371-virtio-net-install-remove-keyed | VERIFIED | Install/remove paths carry owning child key from PCI child dispatch into driver state; full virtio-net tests, arch proof, PR #2424, main sync `fb70eeb3`. |
 | B372-virtio-net-keyed-cursors | VERIFIED | TX/RX cursors live in keyed device records; full virtio-net tests, arch proof, PR #2425, main sync `ebf774cb`. |
+| B373-virtio-net-netdev-owning-key | VERIFIED | Published NetDev stores owning child key; full virtio-net tests, arch proof, PR #2426, main sync `b03912d3`. |
 
-## B373-virtio-net-netdev-owning-key
+## B374-virtio-net-iface-rx-keyed-tables
 
 Status: `VERIFIED - PR READY`.
 
-Branch: `B373-virtio-net-netdev-owning-key`
+Branch: `B374-virtio-net-iface-rx-keyed-tables`
 
-Evidence: `VirtioNetDev::new_for(device_key)` reads the matching modern state, stores `device_key` in the published `NetDev`, creates the keyed `NetRuntime`, and all TX paths use that owner key for neighbor resolution and `tx_frame_for`. Added hosted assertions to `net_runtime_names_are_unique_and_reusable` proving two published netdevs retain distinct keys. Focused test, full `cargo test -p drv-virtio-net`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: `REGISTERED_NETDEVS` stores `(DeviceKey, NetIfaceId)` and all iface helpers select/remove by `DeviceKey`. `RX_RUNTIMES` stores `device_key`, `set_softirq_iface` updates an existing key or appends a keyed runtime, `remove_rx_runtime_for` removes only the named key, and `rx_drain_softirq` polls each runtime with its own key/iface/IP tuple. Focused `registered_iface_is_keyed_by_device` and `rx_runtime_is_keyed_by_device`, full `cargo test -p drv-virtio-net`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
