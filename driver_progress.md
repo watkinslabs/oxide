@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B480-platform-identity-reuse; IN AUDIT.
+Current marker: B480-platform-identity-reuse; VERIFIED; commit/PR/merge pending.
 
 ## B480 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B480-platform-identity-reuse | IN AUDIT | Fresh main `0bb7a9ee` after PR #2537 merge; auditing matching existing platform identity reuse for boot-created platform devices and x86_64/aarch64 runtime proof. |
+| B480-platform-identity-reuse | VERIFIED | Fresh main `0bb7a9ee` after PR #2537 merge; `crates/kernel/kmain/src/kmain/runtime.rs::platform_device_or_panic` now handles `drv::try_device_add` `Busy` by calling shared `drv::find_matching_device_identity(&candidate)` rather than keeping a private boot-only identity predicate. `crates/drivers/drv/src/model.rs::Device::identity_eq` compares full model identity across bus, addr, parent, vendor, device, class, devnode, dev_t, absent node factory, and resources; the new hosted regression `find_matching_device_identity_reuses_only_exact_platform_identity` proves exact platform identity returns the existing `Arc` and parent/devnode/resource shape changes do not match. Checks pass: focused regression, `cargo test -q -p drv -p kmain -- --nocapture --test-threads=1` with drv 30/30 and kmain compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s, `git diff --check` clean, and line caps remain under limit. |
 
 ## B479 Current
 

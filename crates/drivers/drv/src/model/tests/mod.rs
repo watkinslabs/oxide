@@ -201,6 +201,18 @@ const ROLLBACK_DROP_ADDR: &str = "rollback-new-tty0";
 const ROLLBACK_KEEP_ID: u16 = 0x6600;
 const ROLLBACK_DROP_ID: u16 = 0x6601;
 const ROLLBACK_CONFLICT_ID: u16 = 0x6602;
+const PLATFORM_REUSE_ADDR: &str = "platform-reuse0";
+const PLATFORM_REUSE_PARENT_ADDR: &str = "platform-reuse-parent0";
+const PLATFORM_REUSE_DEVNODE_CLASS: &str = "misc";
+const PLATFORM_REUSE_DEVNODE_NAME: &str = "platform-reuse-node";
+const PLATFORM_REUSE_VENDOR_ID: u16 = 0;
+const PLATFORM_REUSE_DEVICE_ID: u16 = 0;
+const PLATFORM_REUSE_CLASS: u32 = 0;
+const PLATFORM_REUSE_DEV_MAJOR: u32 = 10;
+const PLATFORM_REUSE_DEV_MINOR: u32 = 250;
+const PLATFORM_REUSE_RESOURCE_BAR: u8 = 0;
+const PLATFORM_REUSE_RESOURCE_START: u64 = 0x6800_0000;
+const PLATFORM_REUSE_RESOURCE_END: u64 = 0x6800_0fff;
 struct AddOrderDrv;
 impl Driver for AddOrderDrv {
     fn bus(&self) -> &'static str { "platform" }
