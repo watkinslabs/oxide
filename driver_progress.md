@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B357-drm-addfb-packed-rgb-validation`.
+Current marker: `>>> ACTIVE >>> B358-fbdev-flush-blank-record`.
 
 ## Archived Completed B327-B330
 
@@ -444,3 +444,11 @@ Status: `VERIFIED, PR merge pending`.
 Branch: `B357-drm-addfb-packed-rgb-validation`
 
 Evidence: source audit found `fb_plane_fits_buf` rejects zero dimensions, unsupported formats, short pitch, checked span overflow, and backing-buffer overflow for packed RGB. `addfb2` rejects nonzero flags, modifier payloads, missing handles, extra handles/pitches/offsets, and routes bounds through that helper; legacy `addfb` maps depth/bpp to packed RGB and uses the same bounds helper. Added `addfb2_rejects_unused_plane_offset_for_packed_rgb` and `legacy_addfb_rejects_framebuffer_larger_than_backing_buffer`; focused regressions, full `cargo test -p drm` with 68 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; no stale QEMU process was found and rerun passed.
+
+## B358-fbdev-flush-blank-record
+
+Status: `CLAIMED`.
+
+Branch: `B358-fbdev-flush-blank-record`
+
+Evidence: claimed from synced main `dc05b71a`; source audit not started yet.
