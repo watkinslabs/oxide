@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B420-virtio-snd-event-control-proof; VERIFIED, commit/PR pending.
+Current marker: B421-pci-identity-mismatch-proof; VERIFIED, commit/PR pending.
 
 ## Archived Completed B327-B330
 
@@ -483,7 +483,7 @@ recent-completed table above; main was synced after each merge through
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 | B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B412-B419 Current
+## B412-B420 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -496,3 +496,9 @@ recent-completed table above; main was synced after each merge through
 | B418-virtio-gpu-live-multigpu-proof | VERIFIED | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
 | B419-virtio-vsock-live-multiendpoint-proof | VERIFIED | Fresh main `de65f27c`; fixed vsock proof to use direct `/init`, added visible probe phase logging, and made AF_VSOCK read/write waits poll the endpoint-owned RX hook before sleeping. Hosted `cargo test -p net -p drv-virtio-vsock -p pci-boot -- --nocapture --test-threads=1` passes. x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log` both install cid=3/cid=4 and complete the host round-trip. |
 | B420-virtio-snd-event-control-proof | VERIFIED | Fresh main `00aeb0da`; B399 already proved two live virtio-snd cards and rebind, but only by node presence plus `snd_probe` after rebind. Added Linux ALSA control ioctl proof for `controlC0`/`controlC1` before and after rebind: `SNDRV_CTL_IOCTL_CARD_INFO`, `PCM_NEXT_DEVICE`, `PCM_INFO` for playback/capture, empty `ELEM_LIST`, missing mixer element `ENOENT`, and `SUBSCRIBE_EVENTS`. Harness now surfaces `b420_` pass/fail lines. Direct musl builds pass for x86_64 and aarch64; `cargo test -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` passes; fast live proofs pass in `/tmp/b420-x86-virtio-snd-event-control.log` and `/tmp/b420-arm-virtio-snd-event-control.log`. |
+
+## B421 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B421-pci-identity-mismatch-proof | VERIFIED | Fresh main `9e8594ad`; source audit found `try_device_add` rejects duplicate `(bus, addr)` and PCI publication only reuses an existing model device when vendor/device/class match. Added hosted regression `pci_identity_mismatch_does_not_replace_or_rebind` covering duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class; it proves the original model device remains bound, registry identity is not replaced, and the mismatched driver never probes. Focused regression and full serial `cargo test -p drv -- --nocapture --test-threads=1` pass. Fast x86_64 and aarch64 driver-path proofs pass in `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`; first ARM attempt hit the tracked systemd no-progress wedge and was recorded as `/tmp/b421-pci-identity-mismatch-arm-noprogress.log`. |
