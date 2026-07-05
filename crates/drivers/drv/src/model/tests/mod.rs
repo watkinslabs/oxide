@@ -213,6 +213,11 @@ const PLATFORM_REUSE_DEV_MINOR: u32 = 250;
 const PLATFORM_REUSE_RESOURCE_BAR: u8 = 0;
 const PLATFORM_REUSE_RESOURCE_START: u64 = 0x6800_0000;
 const PLATFORM_REUSE_RESOURCE_END: u64 = 0x6800_0fff;
+const PLATFORM_CONFLICT_ADDR: &str = "platform-conflict0";
+const PLATFORM_CONFLICT_DEVNODE_CLASS: &str = "misc";
+const PLATFORM_CONFLICT_DEVNODE_NAME: &str = "platform-conflict-node";
+const PLATFORM_CONFLICT_DEV_MAJOR: u32 = 10;
+const PLATFORM_CONFLICT_DEV_MINOR: u32 = 249;
 struct AddOrderDrv;
 impl Driver for AddOrderDrv {
     fn bus(&self) -> &'static str { "platform" }
