@@ -662,3 +662,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B432-pci-publication-idempotent-proof | VERIFIED | Fresh main `20a8dce9` after PR #2487 merge; source audit proves `publish_pci_model_device` constructs `drv::Device::new("pci", ...)` with BAR resources and publishes only through fallible `drv::try_device_add`. On `drv::Error::Busy`, it returns an existing model record only when bus, addr, vendor, device, and class all match; other errors return `None`, so publication is fallible rather than forced. Hosted regressions pass: `cargo test -p drv try_device_add_preserves_pci_bar_resources_and_rejects_republish -- --nocapture`, `cargo test -p drv pci_identity_mismatch_does_not_replace_or_rebind -- --nocapture`, and `cargo test -p pci-boot -- --nocapture`. Runtime proof is inherited from unchanged B429/B430 code and passed x86_64/aarch64 fast driver-path logs with PCI driver bindings. |
+
+## B433 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B433-model-binding-rejects-bound-devices | VERIFIED | Fresh main `114fdf3d` after PR #2488 merge; source audit proves `bind_inner` checks `dev.bound()` first and returns `drv::Error::AlreadyBound` before `find_driver_on_bus`, bus/match validation, `Driver::probe`, state update, or bind hook. Automatic attach paths skip already-bound devices before calling `bind_inner`, and sysfs maps `AlreadyBound` to `VfsError::Ebusy`. Hosted proof passes: `cargo test -p drv device_add_and_bind -- --nocapture`, `cargo test -p drv repeated_bind_unbind_keeps_model_state_consistent -- --nocapture`, `cargo test -p sysfs driver_bind_unbind_attrs_drive_drv_model -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 25/25 tests. This branch changes only docs/metadata; x86_64/aarch64 runtime proof is inherited from unchanged merged fast driver-path smokes for B430/B432-era driver-core code. |
