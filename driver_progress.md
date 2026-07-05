@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B362-fbcon-foreground-owner`.
+Current marker: `>>> ACTIVE >>> B363-drm-dumb-mmap-pins-object`.
 
 ## Archived Completed B327-B330
 
@@ -479,8 +479,16 @@ Evidence: source audit found `shutdown_scanout` mutates the matching `ScanoutCtx
 
 ## B362-fbcon-foreground-owner
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2415.
 
 Branch: `B362-fbcon-foreground-owner`
 
-Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2415, and main sync `1b3a3d14` pass.
+
+## B363-drm-dumb-mmap-pins-object
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B363-drm-dumb-mmap-pins-object`
+
+Evidence: source audit proves MODE_MAP_DUMB mmap pins through `drm::node::pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; `mmap_pin_survives_card_remove_until_unpin`, full `cargo test -p drm`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
