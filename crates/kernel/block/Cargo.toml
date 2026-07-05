@@ -17,6 +17,10 @@ sync     = { path = "../../shared/sync" }
 # block /dev node so /dev/<disk> + /sys/block derive from one registration.
 # drv deps {hal,klog,sync,vfs} only — acyclic with block.
 drv      = { path = "../../drivers/drv" }
+# blkdev open bridge (devbridge.rs): publish each disk into the VFS BLKDEV
+# dispatch table so `open("/dev/<disk>")` resolves. vfs is no_std + depends on
+# neither block nor drv (acyclic), same edge drv already uses.
+vfs      = { path = "../../kernel/vfs" }
 bitflags = { version = "2", default-features = false }
 
 [features]
