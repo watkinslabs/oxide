@@ -22,7 +22,7 @@
 //   raises the softirq slot; the IRQ tail runs the drain with IRQs
 //   enabled. Same shape as Linux NET_RX.
 
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -139,11 +139,16 @@ pub fn handle_key_event(keycode: u16, pressed: bool) {
         // Shift+PgUp/PgDn: scrolled the VT scrollback, no byte.
     } else if pressed {
         // Cursor keys honor the foreground VT's DECCKM (Linux `applkey`).
-        let out = keymap::translate_app(keycode, tty::live::fg_app_cursor());
-        out.for_each(|b| {
-            tty::live::input_push_byte(b);
-            DRAINED_KEYS.fetch_add(1, Ordering::Relaxed);
-        });
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let out = keymap::translate_app(keycode, tty::live::fg_app_cursor());
+            out.for_each(|b| {
+                tty::live::input_push_byte(b);
+                DRAINED_KEYS.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let _ = keycode;
     }
 }
 
@@ -291,9 +296,7 @@ pub fn shutdown_eventq(device_key: virtio::VirtioChildDeviceKey) -> bool {
         // buffers.
         unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
     }
-    if last_queue && HANDLER_INSTALLED.swap(false, Ordering::AcqRel) {
-        let _ = softirq::clear_handler(softirq::Slot::InputDrain);
-    }
+    release_handler_if_last(last_queue);
     // SAFETY: this frame was allocated for this driver's event buffer and the
     // device was reset before releasing it. Vring frames are transport-owned
     // after successful probe and are released when the transport is unpublished.
@@ -301,6 +304,12 @@ pub fn shutdown_eventq(device_key: virtio::VirtioChildDeviceKey) -> bool {
         pmm::setup::free_one_frame(ctx.buf_pa);
     }
     true
+}
+
+fn release_handler_if_last(last_queue: bool) {
+    if last_queue && HANDLER_INSTALLED.swap(false, Ordering::AcqRel) {
+        let _ = softirq::clear_handler(softirq::Slot::InputDrain);
+    }
 }
 
 /// Remove an installed queue context, reset the device, and release owned
@@ -395,3 +404,6 @@ fn drain_one(ctx: &mut QueueCtx, evdev_id: u32) {
     // SAFETY: queue notify register VA; u16 store of the queue index.
     unsafe { core::ptr::write_volatile(ctx.eventq.notify_va as *mut u16, ctx.eventq.index); }
 }
+
+#[cfg(test)]
+mod tests;
