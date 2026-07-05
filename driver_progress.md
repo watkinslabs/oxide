@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B387-af-vsock-bind-specific-local-cid`.
+Current marker: `>>> ACTIVE >>> B388-vsock-listener-backlogs-owner-port`.
 
 ## Archived Completed B327-B330
 
@@ -468,7 +468,7 @@ Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
 recent-completed table above; main was synced after each merge through
 `cdd8d243`.
 
-## Recent Completed B382-B386
+## Recent Completed B382-B387
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -477,19 +477,13 @@ recent-completed table above; main was synced after each merge through
 | B384-virtio-vsock-remove-keyed | VERIFIED | Owner-keyed remove regression, full virtio-vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2437 merge, and main sync `2efc98f8` pass. |
 | B385-virtio-vsock-rx-bh-installed | VERIFIED | RX bottom-half ownership regression, full virtio-vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2438 merge, and main sync `4db141ad` pass. |
 | B386-net-vsock-owner-keyed-endpoints | VERIFIED | Owner-keyed endpoint TX routing regression, full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2439 merge, and main sync `947cb224` pass. |
+| B387-af-vsock-bind-specific-local-cid | VERIFIED | Specific local-CID bind resolves live endpoint owner and rejects dead/quiesced CIDs; focused/full vsock tests, `syscalls` check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2440 merge, and main sync `72aebeca` pass. |
 
-## B387-af-vsock-bind-specific-local-cid
+## B388-vsock-listener-backlogs-owner-port
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
+Status: `>>> ACTIVE >>> CLAIMED`.
 
-Branch: `B387-af-vsock-bind-specific-local-cid`
+Branch: `B388-vsock-listener-backlogs-owner-port`
 
-Evidence: source audit proves AF_VSOCK `sys_bind` reads `sockaddr_vm`, calls
-`net::vsock::bind_owner_for_cid`, stores `VsockKind::Bound { port, owner }`,
-and listen/connect reuse that owner; ANY maps to owner 0, live specific CIDs
-map to the endpoint owner, and dead/quiesced CIDs return `EADDRNOTAVAIL`.
-Hosted regression `bind_owner_for_cid_requires_matching_live_endpoint`,
-`cargo test -p net bind_owner_for_cid_requires_matching_live_endpoint`,
-`cargo test -p net vsock` with 26 tests, and `cargo check -p syscalls` pass.
-Fast driver-path runtime proof passes on x86_64 (`/tmp/b387-x86-driver-path.log`)
-and aarch64 (`/tmp/b387-arm-driver-path.log`).
+Scope: prove or fix AF_VSOCK listener backlog state so pending connections are
+keyed by `(owner, port)` and cannot cross-talk between endpoints sharing a port.
