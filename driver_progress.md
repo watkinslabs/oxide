@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B378-virtio-net-hot-remove-key-cleanup`.
+Current marker: `>>> ACTIVE >>> B378-virtio-net-hot-remove-key-cleanup` - VERIFIED - PR READY.
 
 ## Archived Completed B327-B330
 
@@ -475,8 +475,15 @@ PASS, and `make smoke-driver-path-arm` PASS.
 
 ## B378-virtio-net-hot-remove-key-cleanup
 
-Status: `IN AUDIT`.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B378-virtio-net-hot-remove-key-cleanup`
 
-Evidence: audit pending for hot-remove keyed netdev/interface/RX cleanup.
+Evidence: PCI child hot-remove calls `uninstall_modern(device_key)`. The
+uninstall path unregisters/removes the iface and net runtime by child key,
+removes only the matching RX runtime, and releases shared RX softirq/timer state
+only once the last runtime is gone.
+
+Verification: focused uninstall/RX regressions PASS, full
+`cargo test -p drv-virtio-net` PASS, `git diff --check` PASS, line caps PASS,
+`make smoke-driver-path-x86` PASS, and `make smoke-driver-path-arm` PASS.
