@@ -59,6 +59,21 @@ fn unregister_driver_unbinds_devices_before_removing_driver() {
 }
 
 #[test]
+fn unbind_calls_remove_before_clearing_binding() {
+    UNBIND_ORDER_REMOVE_SAW_BOUND.store(0, Ordering::Release);
+    register_driver(&UNBIND_ORDER_DRV);
+    let d = device_add(Arc::new(Device::new(
+        "platform", String::from("unbind-order-test0"), 0, 0x6204, 0)));
+
+    assert_eq!(d.bound(), Some("unbind-order-test"));
+    assert_eq!(unbind(&d), Ok(()));
+    assert_eq!(UNBIND_ORDER_REMOVE_SAW_BOUND.load(Ordering::Acquire), 1);
+    assert_eq!(d.bound(), None);
+
+    device_del(&d);
+}
+
+#[test]
 fn failed_probe_leaves_device_unbound_and_retriable() {
     FAIL_PROBES.store(0, Ordering::Release);
     register_driver(&FAILING_PROBE_DRV);
