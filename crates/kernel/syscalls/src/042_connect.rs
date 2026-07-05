@@ -20,7 +20,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };
         let (owner, local_port) = match &*vs.kind.lock() {
-            net::vsock_socket::VsockKind::Init => (0, None),
+            net::vsock_socket::VsockKind::Init => (None, None),
             net::vsock_socket::VsockKind::Bound { port, owner } => (*owner, Some(*port)),
             _ => return -(Errno::Einval.as_i32() as i64),
         };

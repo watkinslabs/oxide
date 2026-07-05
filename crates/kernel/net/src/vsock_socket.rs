@@ -15,13 +15,13 @@ pub const VSOCK_INO_TAG: u64 = 0x5653_4F43_0000_0000;
 pub enum VsockKind {
     /// `socket()` done, no connect/bind yet.
     Init,
-    /// `bind()` done, not listening yet. `owner == 0` means VMADDR_CID_ANY.
-    Bound { port: u32, owner: u32 },
+    /// `bind()` done, not listening yet. None means VMADDR_CID_ANY.
+    Bound { port: u32, owner: Option<vsock::VsockOwner> },
     /// `connect()` succeeded or `accept()` produced this — live stream.
     Conn(Arc<VsockConn>),
     /// `bind()`+`listen()` — accepts inbound OP_REQUESTs on `port`.
-    /// `owner == 0` means VMADDR_CID_ANY.
-    Listener { port: u32, owner: u32 },
+    /// None means VMADDR_CID_ANY.
+    Listener { port: u32, owner: Option<vsock::VsockOwner> },
 }
 
 /// AF_VSOCK socket VFS state. # C: O(1)
@@ -118,15 +118,19 @@ mod tests {
 
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn owner(raw: u32) -> vsock::VsockOwner {
+        vsock::VsockOwner::from_raw(raw).expect("test owner is nonzero")
+    }
+
     #[test]
     fn drop_listener_removes_vsock_listener() {
         let _guard = SERIAL.lock().unwrap();
-        let owner = 0x0a00_0001;
+        let owner = Some(owner(0x0a00_0001));
         let port = 61_001;
         let _ = vsock::TABLE.remove_listener(owner, port);
         vsock::TABLE.add_listener(owner, port);
         let key = ConnKey {
-            owner,
+            owner: owner.expect("concrete test owner"),
             local_cid: 3,
             local_port: port,
             peer_cid: 2,
@@ -134,7 +138,7 @@ mod tests {
         };
         vsock::TABLE.remove(key);
         let conn = Arc::new(VsockConn::new(
-            owner,
+            owner.expect("concrete test owner"),
             key.local_cid,
             key.local_port,
             key.peer_cid,
@@ -142,15 +146,15 @@ mod tests {
             VsockState::Connected,
         ));
         vsock::TABLE.insert(conn.clone());
-        vsock::TABLE.queue_accept(owner, port, key);
-        assert!(vsock::TABLE.is_listening(owner, port));
+        vsock::TABLE.queue_accept(owner.expect("concrete test owner"), port, key);
+        assert!(vsock::TABLE.is_listening(owner.expect("concrete test owner"), port));
         assert!(vsock::TABLE.pop_accept_peek(owner, port));
 
         let sock = Arc::new(VsockSocket::new());
         *sock.kind.lock() = VsockKind::Listener { port, owner };
         drop(sock);
 
-        assert!(!vsock::TABLE.is_listening(owner, port));
+        assert!(!vsock::TABLE.is_listening(owner.expect("concrete test owner"), port));
         assert_eq!(*conn.st.lock(), VsockState::Closed);
         assert!(vsock::TABLE.find(key).is_none());
         assert!(!vsock::TABLE.remove_listener(owner, port));
@@ -159,7 +163,7 @@ mod tests {
     #[test]
     fn drop_connected_socket_closes_connection_record() {
         let _guard = SERIAL.lock().unwrap();
-        let owner = 0x0a00_0002;
+        let owner = owner(0x0a00_0002);
         let key = ConnKey {
             owner,
             local_cid: 3,
