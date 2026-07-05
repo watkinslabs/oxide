@@ -5,13 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B477-console-tty-devnode-batch; VERIFIED; commit/PR/merge pending.
+Current marker: B478-console-tty-conflict-rollback; IN AUDIT.
+
+## B478 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B478-console-tty-conflict-rollback | IN AUDIT | Fresh main `e69bd9c0` after PR #2535 merge; auditing console/tty conflict rollback from current source and adding direct proof if hosted testability allows without stubs or hacks. |
 
 ## B477 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B477-console-tty-devnode-batch | VERIFIED | Fresh main `80c07049` after PR #2534 merge; source audit proves `crates/kernel/console/src/devnodes.rs::try_register_devnodes` publishes the console/tty/vcs batch through `drv::try_device_add`, rolls back already-published nodes on error via `drv::device_del`, and reuses only matching existing tty identities on `Busy`. `crates/kernel/console/src/devnum.rs` owns Linux tty/vcs/serial major/minor encoding for x86_64 and aarch64 instead of packed literals. `crates/kernel/kmain/src/kmain/early.rs` installs devtmpfs hooks before `console::register_devnodes()` and `devfs::boot::populate_defaults()`. Checks pass: `cargo test -p console -- --nocapture --test-threads=1` compile-only with 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
+| B477-console-tty-devnode-batch | VERIFIED | Fresh main `80c07049` after PR #2534 merge; merged as PR #2535 at `e69bd9c0`. Source audit proves `crates/kernel/console/src/devnodes.rs::try_register_devnodes` publishes the console/tty/vcs batch through `drv::try_device_add`, rolls back already-published nodes on error via `drv::device_del`, and reuses only matching existing tty identities on `Busy`. `crates/kernel/console/src/devnum.rs` owns Linux tty/vcs/serial major/minor encoding for x86_64 and aarch64 instead of packed literals. `crates/kernel/kmain/src/kmain/early.rs` installs devtmpfs hooks before `console::register_devnodes()` and `devfs::boot::populate_defaults()`. Checks pass: `cargo test -p console -- --nocapture --test-threads=1` compile-only with 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 
 ## B476 Current
 
