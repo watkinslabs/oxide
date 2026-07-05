@@ -88,6 +88,53 @@ fn failed_probe_unwind_removes_only_matching_child_scanout() {
 }
 
 #[test]
+fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
+    let _guard = TEST_LOCK.lock();
+    CTX.lock().clear();
+    let mut cmd = ProbeCommandBuffer {
+        pa: 0,
+        va: core::ptr::null_mut(),
+        owned: true,
+    };
+    let mut fb = ProbeFramebufferRun {
+        base_pa: 0,
+        pages_alloc: 1,
+        owned: true,
+    };
+    cmd.disarm();
+    fb.disarm();
+
+    assert!(!cmd.owned);
+    assert!(!fb.owned);
+    assert!(install_scanout_ctx(
+        key(0x10),
+        0x0010_0000,
+        32,
+        16,
+        0,
+        0xffff_8000_0000_4000,
+        0x1000,
+        fb.pages_alloc,
+        1,
+        test_ctrlq(),
+        0,
+        cmd.pa,
+        0xffff_8000_0000_4000,
+    ));
+    {
+        let guard = CTX.lock();
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard[0].cmd_buf_pa, 0);
+        assert_eq!(guard[0].fb_va, 0xffff_8000_0000_4000);
+        assert_eq!(guard[0].fb_bytes, 0x1000);
+        assert_eq!(guard[0].fb_pages_alloc, 1);
+    }
+
+    assert!(uninstall_scanout_after_failed_probe(key(0x10)));
+    assert!(CTX.lock().is_empty());
+}
+
+#[test]
 fn hot_remove_attempts_scanout_when_device_state_is_missing() {
     let _guard = TEST_LOCK.lock();
     CTX.lock().clear();

@@ -472,8 +472,8 @@ Evidence: source audit found `FBIOGETCMAP` validates nonzero `cm.transp` with th
 
 ## B367-virtio-gpu-probe-unwind-proof
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B367-virtio-gpu-probe-unwind-proof`
 
-Evidence: source audit of display-info command buffer ownership and scanout framebuffer failure unwind is in progress.
+Evidence: source audit found `ProbeCommandBuffer` and `ProbeFramebufferRun` own probe allocations until `setup_scanout` succeeds; `disarm()` transfers both into `ScanoutCtx`, and failed DRM/device install calls `uninstall_scanout_after_failed_probe` to remove the matching child scanout. Added `failed_probe_unwind_owns_probe_command_and_framebuffer_state`; focused regression, full `cargo test -p drv-virtio-gpu` with 36 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
