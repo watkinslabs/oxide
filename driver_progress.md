@@ -5,8 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B456-ahci-explicit-shutdown-callback; VERIFIED pending PR
-merge.
+Current marker: B457-virtio-pci-explicit-shutdown-callback; IN AUDIT.
+
+## B457 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B457-virtio-pci-explicit-shutdown-callback | IN AUDIT | Fresh main `b9db75a5` after PR #2514 merge; proving virtio-pci model driver implements an explicit shutdown callback that quiesces child virtio devices by transport identity. |
 
 ## B456 Current
 
