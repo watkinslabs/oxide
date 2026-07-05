@@ -205,3 +205,51 @@ pub fn registered_card_ids() -> Vec<u32> {
         .filter_map(|(idx, pair)| pair.as_ref().map(|_| idx as u32))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vfs::{Dentry, File, OpenFlags};
+
+    fn open_file(inode: vfs::InodeRef) -> Arc<File> {
+        let dentry = Dentry::new_anon(Arc::clone(&inode));
+        File::new(inode, dentry, OpenFlags::O_RDWR)
+    }
+
+    #[test]
+    fn page_flip_events_are_open_file_poll_read_state() {
+        let _guard = crate::TEST_LOCK.lock();
+        const CARD: u32 = 0x7ee0;
+        const OTHER_CARD: u32 = 0x7ee1;
+        crate::crtc::clear_card_state(CARD);
+        crate::crtc::clear_card_state(OTHER_CARD);
+
+        let owner = open_file(make_card_inode(CARD));
+        let owner_dup = Arc::clone(&owner);
+        let other = open_file(make_card_inode(CARD));
+        let other_card = open_file(make_card_inode(OTHER_CARD));
+        let mut buf = [0u8; 64];
+
+        assert_eq!(owner.poll(), vfs::POLL_OUT);
+        assert_eq!(owner.read(&mut buf), Ok(0));
+        crate::crtc::queue_flip_event(CARD, file_token(&owner), 7, 0xfeed_beef);
+
+        assert_eq!(owner.poll(), vfs::POLL_IN | vfs::POLL_OUT);
+        assert_eq!(owner_dup.poll(), vfs::POLL_IN | vfs::POLL_OUT);
+        assert_eq!(other.poll(), vfs::POLL_OUT);
+        assert_eq!(other_card.poll(), vfs::POLL_OUT);
+
+        let mut tiny = [0u8; 4];
+        assert_eq!(owner_dup.read(&mut tiny), Ok(0));
+        assert_eq!(owner.poll(), vfs::POLL_IN | vfs::POLL_OUT);
+
+        let rec = core::mem::size_of::<crate::DrmEventVblank>();
+        assert_eq!(owner.read(&mut buf), Ok(rec));
+        assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), crate::DRM_EVENT_FLIP_COMPLETE);
+        assert_eq!(u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]), 0xfeed_beef);
+        assert_eq!(owner.poll(), vfs::POLL_OUT);
+
+        crate::crtc::clear_card_state(CARD);
+        crate::crtc::clear_card_state(OTHER_CARD);
+    }
+}
