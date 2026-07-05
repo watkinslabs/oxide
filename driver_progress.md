@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B369-virtio-net-rx-runtime-owner` verified locally; PR #2422 ready to update/merge.
+Current marker: `>>> ACTIVE >>> B370-virtio-net-no-boot-ipv4-policy`.
 
 ## Archived Completed B327-B330
 
@@ -438,58 +438,22 @@ Branch: `B362-fbcon-foreground-owner`
 
 Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2415, and main sync `1b3a3d14` pass.
 
-## B363-drm-dumb-mmap-pins-object
+## Recent Completed B363-B369
 
-Status: `VERIFIED`; merged by PR #2416.
+| Branch | Status | Evidence |
+|---|---|---|
+| B363-drm-dumb-mmap-pins-object | VERIFIED | DUMB mmap pins through VMA-owned backing with Drop/unpin; full DRM tests, arch driver-path proof, PR #2416, main sync `89ab2e44`. |
+| B364-drm-map-dumb-cookie-validation | VERIFIED | MAP_DUMB cookie tag/layout rejection proof; full DRM tests, arch driver-path proof, PR #2417, main sync `a0cbb9bd`. |
+| B365-fbdev-fbio-usercopy-bounds | VERIFIED | FBIO fixed/cmap usercopy ranges use checked exclusive-end validation; full fbdev tests, arch proof, PR #2418, main sync `70ac7dff`. |
+| B366-fbdev-getcmap-transp-efault | VERIFIED | FBIOGETCMAP transparency pointer validates before writes; full fbdev tests, arch proof, PR #2419, main sync `50f507dc`. |
+| B367-virtio-gpu-probe-unwind-proof | VERIFIED | Probe command/framebuffer allocations transfer or unwind by child key; full virtio-gpu tests, arch proof, PR #2420, main sync `c2e8e3cf`. |
+| B368-virtio-net-netdev-publish-owner | VERIFIED | Netdev iface/runtime publication and removal are child-key owned; full virtio-net tests, arch proof, PR #2421, main sync `11a52b12`. |
+| B369-virtio-net-rx-runtime-owner | VERIFIED | RX runtime install/removal and last-runtime shared teardown are child-key owned; full virtio-net tests, arch proof, PR #2422, main sync `92bf93aa`. |
 
-Branch: `B363-drm-dumb-mmap-pins-object`
+## B370-virtio-net-no-boot-ipv4-policy
 
-Evidence: source audit proves MODE_MAP_DUMB mmap pins through `drm::node::pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; `mmap_pin_survives_card_remove_until_unpin`, full `cargo test -p drm`, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, PR #2416, and main sync `89ab2e44` pass.
+Status: `VERIFIED - PR READY`.
 
-## B364-drm-map-dumb-cookie-validation
+Branch: `B370-virtio-net-no-boot-ipv4-policy`
 
-Status: `VERIFIED`; merged by PR #2417.
-
-Branch: `B364-drm-map-dumb-cookie-validation`
-
-Evidence: source audit proves `cookie_for` sets tag bit 48 and handle bits 12..43, while `handle_of_cookie` rejects missing tag, zero handle, low page-offset bits, and out-of-layout bits before `pin_mmap`/`mmap_backing` lookup. Existing `cookie_round_trip`, full `cargo test -p drm`, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, PR #2417, and main sync `a0cbb9bd` pass. First ARM attempts hit external vhost CID conflict and transient userspace watchdog; clean rerun passed.
-
-## B365-fbdev-fbio-usercopy-bounds
-
-Status: `VERIFIED`; merged by PR #2418.
-
-Branch: `B365-fbdev-fbio-usercopy-bounds`
-
-Evidence: source audit found FBIO fixed-size args and cmap arrays use `p.checked_add(len)` exclusive-end validation against `USER_VA_END` before any read/write copy. Added `fbio_usercopy_rejects_overflowing_user_ranges` for fixed-struct and cmap-channel overflow. Focused regression, full `cargo test -p fbdev` with 21 tests, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2418, and main sync `70ac7dff` pass. First ARM attempts hit external vhost CID conflict and transient userspace watchdog; clean reruns passed.
-
-## B366-fbdev-getcmap-transp-efault
-
-Status: `VERIFIED`; merged by PR #2419.
-
-Branch: `B366-fbdev-getcmap-transp-efault`
-
-Evidence: source audit found `FBIOGETCMAP` validates nonzero `cm.transp` with the same checked exclusive-end user range as red/green/blue before any transparency writes. Added `fbio_getcmap_rejects_invalid_transparency_pointer`; focused regression, full `cargo test -p fbdev` with 22 tests, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2419, and main sync `50f507dc` pass.
-
-## B367-virtio-gpu-probe-unwind-proof
-
-Status: `VERIFIED`; merged by PR #2420.
-
-Branch: `B367-virtio-gpu-probe-unwind-proof`
-
-Evidence: source audit found `ProbeCommandBuffer` and `ProbeFramebufferRun` own probe allocations until `setup_scanout` succeeds; `disarm()` transfers both into `ScanoutCtx`, and failed DRM/device install calls `uninstall_scanout_after_failed_probe` to remove the matching child scanout. Added `failed_probe_unwind_owns_probe_command_and_framebuffer_state`; focused regression, full `cargo test -p drv-virtio-gpu` with 36 tests, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2420, and main sync `c2e8e3cf` pass.
-
-## B368-virtio-net-netdev-publish-owner
-
-Status: `VERIFIED`; merged by PR #2421.
-
-Branch: `B368-virtio-net-netdev-publish-owner`
-
-Evidence: source audit found `init_modern_with_rx_pool` publishes kernel netdev state by child `DeviceKey`, `VirtioNetDev` stores that owner key, `REGISTERED_NETDEVS` and `NET_RUNTIMES` are keyed by the same owner, and `uninstall_modern` unregisters/removes only the named key. Added `uninstall_modern_removes_only_named_netdev_runtime` and extended missing-primary cleanup to prove net runtime removal. Focused regression, full `cargo test -p drv-virtio-net` with 16 tests, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2421, and main sync `11a52b12` pass. First ARM smoke attempt hit external `vhost-vsock` guest-CID conflict; no stale QEMU remained and rerun passed.
-
-## B369-virtio-net-rx-runtime-owner
-
-Status: `VERIFIED`; PR #2422 ready to update/merge.
-
-Branch: `B369-virtio-net-rx-runtime-owner`
-
-Evidence: source audit found `install_rx_runtime` records iface/IP state by child `DeviceKey` and installs shared timers/NetRx softirq, while `remove_rx_runtime_for` removes only the named key and reports whether the last RX runtime was removed; `uninstall_modern` releases shared RX resources only on last runtime. Extended `rx_runtime_is_keyed_by_device` to prove install creates keyed records and iface IP updates do not cross keys. Focused regression, full `cargo test -p drv-virtio-net` with 16 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass. First x86 smoke attempt hit external `vhost-vsock` guest-CID conflict during parallel ARM run; clean rerun passed.
+Evidence: `install_rx_runtime` seeds RX softirq state with `0.0.0.0`; iface address updates are explicit through `set_softirq_ip_for_iface`. Added `rx_runtime_install_does_not_seed_boot_ipv4_policy`; targeted test, full `cargo test -p drv-virtio-net`, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.

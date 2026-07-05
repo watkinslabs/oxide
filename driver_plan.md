@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B369-virtio-net-rx-runtime-owner` — VERIFIED; PR READY.
+ACTIVE NOW: `B370-virtio-net-no-boot-ipv4-policy` — VERIFIED - PR READY.
 
-Current active item: `>>> ACTIVE >>> B369-virtio-net-rx-runtime-owner` verified locally; PR #2422 ready to update/merge.
+Current active item: `>>> ACTIVE >>> B370-virtio-net-no-boot-ipv4-policy`.
 
-Current B369 gate: source proof, focused hosted regression, full virtio-net tests, and x86_64/aarch64 driver-path proof pass; update PR #2422, merge, then sync local `main`.
+Current B370 gate: focused regression, full virtio-net tests, and x86_64/aarch64 driver-path proof pass; push PR, merge, then sync local `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -299,8 +299,8 @@ Status legend:
 | VERIFIED | B366-fbdev-getcmap-transp-efault | FBIOGETCMAP rejects invalid transparency pointer with `EFAULT`; added focused hosted regression, full fbdev tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2419 merge, and local main sync to `origin/main` at `50f507dc` pass. |
 | VERIFIED | B367-virtio-gpu-probe-unwind-proof | Display-info probe command buffer and scanout framebuffer ownership/unwind have RAII transfer plus failed-probe cleanup proof; added focused hosted regression, full virtio-gpu tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2420 merge, and local main sync to `origin/main` at `c2e8e3cf` pass. |
 | VERIFIED | B368-virtio-net-netdev-publish-owner | Virtio-net owns netdev publication/removal: `init_modern_with_rx_pool` publishes by child `DeviceKey`, `VirtioNetDev` carries the key, `REGISTERED_NETDEVS`/`NET_RUNTIMES` are key-owned, and `uninstall_modern` removes only the named key; added hosted netdev-runtime owner regression, full virtio-net tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2421 merge, and local main sync to `origin/main` at `11a52b12` pass. |
-| >>> ACTIVE >>> VERIFIED - PR READY | B369-virtio-net-rx-runtime-owner | Virtio-net owns RX runtime installation/removal: `install_rx_runtime` records iface/IP state by child `DeviceKey`, installs shared timers/softirq once, `remove_rx_runtime_for` removes only the named key and reports last-runtime state, and `uninstall_modern` releases shared RX resources only after the last runtime; extended hosted RX runtime regression, full virtio-net tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. PR #2422 merge/main-sync pending. |
-| NOT DONE |  | Virtio-net old boot-probe default IPv4 policy removed. |
+| VERIFIED | B369-virtio-net-rx-runtime-owner | Virtio-net owns RX runtime installation/removal: `install_rx_runtime` records iface/IP state by child `DeviceKey`, installs shared timers/softirq once, `remove_rx_runtime_for` removes only the named key and reports last-runtime state, and `uninstall_modern` releases shared RX resources only after the last runtime; extended hosted RX runtime regression, full virtio-net tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2422 merge, and local main sync to `origin/main` at `92bf93aa` pass. |
+| >>> ACTIVE >>> VERIFIED - PR READY | B370-virtio-net-no-boot-ipv4-policy | Virtio-net old boot-probe default IPv4 policy removed: `install_rx_runtime` seeds RX softirq state with `0.0.0.0`, later iface address updates flow through `set_softirq_ip_for_iface`, added hosted regression `rx_runtime_install_does_not_seed_boot_ipv4_policy`, full `drv-virtio-net` tests pass, and fast x86_64/aarch64 driver-path proof passes. |
 | NOT DONE |  | Virtio-net install/remove keyed to owning child key. |
 | NOT DONE |  | Virtio-net TX/RX cursors live in keyed device records. |
 | NOT DONE |  | Published `NetDev` carries owning key. |
