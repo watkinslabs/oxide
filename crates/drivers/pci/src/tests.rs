@@ -6,6 +6,11 @@ struct MapReader {
     m: Mutex<HashMap<(Bdf, u8), u32>>,
 }
 
+struct ReadOnlyReader {
+    m: HashMap<(Bdf, u8), u32>,
+    writes: std::sync::atomic::AtomicUsize,
+}
+
 impl ConfigSpaceReader for MapReader {
     fn read32(&self, bdf: Bdf, offset: u8) -> u32 {
         self.m
@@ -18,6 +23,16 @@ impl ConfigSpaceReader for MapReader {
 
     fn write32(&self, bdf: Bdf, offset: u8, val: u32) {
         self.m.lock().unwrap().insert((bdf, offset), val);
+    }
+}
+
+impl ConfigSpaceReader for ReadOnlyReader {
+    fn read32(&self, bdf: Bdf, offset: u8) -> u32 {
+        self.m.get(&(bdf, offset)).copied().unwrap_or(0xFFFF_FFFF)
+    }
+
+    fn write32(&self, _bdf: Bdf, _offset: u8, _val: u32) {
+        self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -218,6 +233,32 @@ fn decode_msix_cap_basic() {
     assert_eq!(m.table_offset, 0x1000);
     assert_eq!(m.pba_bir, 4);
     assert_eq!(m.pba_offset, 0x2000);
+}
+
+#[test]
+fn capability_walk_and_msix_decode_do_not_write_config_space() {
+    let bdf = Bdf {
+        bus: 0,
+        device: 1,
+        function: 0,
+    };
+    let mut m = HashMap::new();
+    m.insert((bdf, 0x04), 0x0010_0000);
+    m.insert((bdf, 0x34), 0x0000_0040);
+    m.insert((bdf, 0x40), 0xC003_0011);
+    m.insert((bdf, 0x44), 0x0000_1004);
+    m.insert((bdf, 0x48), 0x0000_2004);
+    let r = ReadOnlyReader {
+        m,
+        writes: std::sync::atomic::AtomicUsize::new(0),
+    };
+
+    let caps = capabilities(&r, bdf);
+    assert_eq!(caps.find(CAP_ID_MSIX).map(|c| c.cfg_off), Some(0x40));
+    let msix = decode_msix_cap(&r, bdf, 0x40).expect("msix cap");
+    assert!(msix.enabled);
+    assert!(msix.function_mask);
+    assert_eq!(r.writes.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 
 #[test]

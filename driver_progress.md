@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B483-pci-msix-capability-readonly-audit; IN AUDIT.
+Current marker: B483-pci-msix-capability-readonly-audit; VERIFIED pending PR merge.
 
 ## B483 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B483-pci-msix-capability-readonly-audit | IN AUDIT | Fresh main `d18bf28b` after PR #2540 merge; auditing PCI capability dump paths to prove MSI-X capability reads do not program or mutate device MSI-X state. |
+| B483-pci-msix-capability-readonly-audit | VERIFIED | Fresh main `d18bf28b` after PR #2540 merge; source audit proves `pci::capabilities` and `pci::decode_msix_cap` only use config-space reads, `pci-boot::trace` logs MSI-X metadata without programming device state, and MSI-X table writes stay isolated in virtio-pci transport bind/release. Added regression `capability_walk_and_msix_decode_do_not_write_config_space`. Checks pass: `cargo test -p pci capability_walk_and_msix_decode_do_not_write_config_space -- --nocapture --test-threads=1`; `cargo test -q -p pci -p pci-boot -- --nocapture --test-threads=1`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B482 Current
 
