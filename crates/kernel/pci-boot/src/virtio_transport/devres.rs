@@ -46,11 +46,12 @@ impl VirtioProbeDevres {
         self.mappings.unmap_all();
     }
 
-    pub(crate) fn publish(&mut self) {
+    pub(crate) fn publish(&mut self, device_key: virtio::VirtioChildDeviceKey) {
         if !self.lease.take() {
             return;
         }
         publish_transport_record(
+            device_key,
             self.bdf_word,
             core::mem::take(&mut self.mappings),
             self.frames.take_vring_frames(),

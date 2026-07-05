@@ -8,6 +8,7 @@ use super::virtio_drv;
 
 pub(super) struct VirtioChildSession {
     bdf: pci::Bdf,
+    device_key: virtio::VirtioChildDeviceKey,
     child_addr: alloc::string::String,
     transport: virtio_drv::VirtioPciTransport,
     profile: virtio::VirtioTransportProfile,
@@ -21,6 +22,7 @@ impl VirtioChildSession {
         profile: virtio::VirtioTransportProfile,
     ) -> drv::KResult<Self> {
         let d = pci_device_from_child(dev).ok_or(drv::Error::ProbeFailed)?;
+        let device_key = child_key(dev).ok_or(drv::Error::ProbeFailed)?;
         let transport = virtio_drv::VirtioPciTransport;
         let probe = transport
             .probe_child(&d, profile)
@@ -28,6 +30,7 @@ impl VirtioChildSession {
         super::virtio_trace::trace_probe(d.bdf, &probe.trace);
         Ok(Self {
             bdf: d.bdf,
+            device_key,
             child_addr: dev.addr.clone(),
             transport,
             profile,
@@ -39,7 +42,7 @@ impl VirtioChildSession {
 
 impl virtio::VirtioChildTransportSession for VirtioChildSession {
     fn device_key(&self) -> virtio::VirtioChildDeviceKey {
-        virtio::VirtioChildDeviceKey::from_location(self.location())
+        self.device_key
     }
 
     fn location(&self) -> virtio::VirtioTransportLocation {
@@ -66,7 +69,7 @@ impl virtio::VirtioChildTransportSession for VirtioChildSession {
 
     fn publish(mut self) {
         if self.transport_lease.take() {
-            self.transport.publish(&mut self.probe);
+            self.transport.publish(&mut self.probe, self.device_key);
         }
     }
 }
@@ -86,13 +89,7 @@ pub(super) fn parent_bdf(dev: &drv::Device) -> Option<pci::Bdf> {
 }
 
 pub(super) fn parent_key(dev: &drv::Device) -> Option<virtio::VirtioChildDeviceKey> {
-    parent_bdf(dev).map(|bdf| {
-        virtio::VirtioChildDeviceKey::from_location(virtio::VirtioTransportLocation::new(
-            bdf.bus,
-            bdf.device,
-            bdf.function,
-        ))
-    })
+    child_key(dev)
 }
 
 pub(super) fn unpublish_transport(device_key: virtio::VirtioChildDeviceKey) {
@@ -101,6 +98,10 @@ pub(super) fn unpublish_transport(device_key: virtio::VirtioChildDeviceKey) {
 
 fn pci_device_from_child(dev: &drv::Device) -> Option<pci::PciDevice> {
     pci_device_from_bdf(parent_bdf(dev)?)
+}
+
+fn child_key(dev: &drv::Device) -> Option<virtio::VirtioChildDeviceKey> {
+    virtio::VirtioChildDeviceKey::from_child_addr(dev.addr.as_str())
 }
 
 fn pci_device_from_bdf(bdf: pci::Bdf) -> Option<pci::PciDevice> {

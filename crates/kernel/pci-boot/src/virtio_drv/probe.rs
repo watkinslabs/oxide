@@ -2,7 +2,8 @@ use super::address::{bdf_from_word, bdf_word};
 use super::runtime::VirtioPciRuntime;
 use super::{
     bind_msix_vector, disable_pci_command, kick_queue_notify, unpublish_transport_record,
-    MsixBinding, NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
+    unpublish_transport_record_by_bdf, MsixBinding, NetRxBootBuffer, ProgrammedQueues,
+    TransportMappings, VirtioProbeDevres, Vec,
 };
 
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
@@ -425,12 +426,19 @@ impl Drop for VirtioProbe {
     }
 }
 
-pub(super) fn publish_transport_mmio(p: &mut VirtioProbe) {
-    p.devres.publish();
+pub(super) fn publish_transport_mmio(
+    p: &mut VirtioProbe,
+    device_key: virtio::VirtioChildDeviceKey,
+) {
+    p.devres.publish(device_key);
 }
 
-pub(super) fn unpublish_transport_mmio(bdf: u32) {
-    unpublish_transport_record(bdf);
+pub(super) fn unpublish_transport_mmio(device_key: virtio::VirtioChildDeviceKey) {
+    unpublish_transport_record(device_key);
+}
+
+pub(super) fn unpublish_transport_mmio_bdf(bdf: u32) {
+    unpublish_transport_record_by_bdf(bdf);
 }
 
 fn abandon_probe_transport<T>(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<T> {

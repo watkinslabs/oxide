@@ -2,10 +2,10 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B503-transport-neutral-child-key-proof; IN AUDIT.
+ACTIVE NOW: none; B503-transport-neutral-child-key-proof VERIFIED.
 
-Current active item: Current PCI-backed bus still derives child key from BDF;
-transport-neutral model needs non-PCI proof.
+Last verified item: Current PCI-backed bus no longer derives child key from
+BDF; transport-neutral child model address proof passes.
 
 Next gate after merge: return to fresh `origin/main` before claiming B504 using
 `metadata/index.md`.
@@ -145,7 +145,7 @@ Status legend:
 | VERIFIED |  | Shared `virtio` owns virtio child class. |
 | VERIFIED |  | Shared `virtio` owns parent-link matching. |
 | VERIFIED |  | Shared `VirtioChildDeviceKey` wraps stable per-child runtime key. |
-| ACTIVE | B503-transport-neutral-child-key-proof | Current PCI-backed bus still derives child key from BDF; transport-neutral model needs non-PCI proof. |
+| VERIFIED | B503-transport-neutral-child-key-proof | Current PCI-backed bus no longer derives child key from BDF: shared virtio derives `VirtioChildDeviceKey` from the child model address (`virtioN`) with one-based nonzero keys, `VirtioChildSession` stores that child-address key, `parent_key` parses the child device address instead of parent PCI BDF, and PCI transport records keep BDF only as private teardown metadata while publish/unpublish lookup is keyed by `VirtioChildDeviceKey`. Non-PCI proof: hosted identity test constructs keys from `VirtioChildModelIdentity` address without `VirtioTransportLocation`. Checks pass: broad hosted gate for `pci-boot`, `virtio`, and all virtio child driver crates; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 | VERIFIED |  | `drv-virtio-rng` consumes `VirtioChildDeviceKey` for install/remove/shutdown/active promotion/probe seeding. |
 | VERIFIED |  | `drv-virtio-input` consumes `VirtioChildDeviceKey` for install/remove/evdev lookup. |
 | VERIFIED |  | `drv-virtio-vsock` consumes `VirtioChildDeviceKey` for install/remove/shutdown/context lookup/RX preposting. |

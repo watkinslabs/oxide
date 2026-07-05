@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B503-transport-neutral-child-key-proof; IN AUDIT.
+Current marker: B503-transport-neutral-child-key-proof; VERIFIED.
 
 ## B503 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B503-transport-neutral-child-key-proof | ACTIVE | Fresh main `56e4935e` after PR #2561 merge. B502 is occupied by local unmerged branch `B502-fifo-open-impl` at `128b8e08`, so this driver lane uses B503 and advances the B counter to B504. Auditing the remaining BDF-derived child-key path and adding proof that child runtime identity can be constructed without a PCI BDF. |
+| B503-transport-neutral-child-key-proof | VERIFIED | Fresh main `56e4935e` after PR #2561 merge. B502 is occupied by local unmerged branch `B502-fifo-open-impl` at `128b8e08`, so this driver lane uses B503 and advances the B counter to B504. Code change removes BDF-derived child runtime keys: shared virtio adds child-address key construction from `virtioN` with nonzero one-based raw keys; `VirtioChildSession` stores `device_key` from `dev.addr`; `parent_key` parses the child device address instead of parent PCI BDF; `VirtioPciTransport::publish` passes the child key to devres; persistent PCI transport records are looked up by `VirtioChildDeviceKey` while retaining BDF only for MSI-X/MMIO teardown. Non-PCI proof: `child_device_key_is_constructed_from_child_model_address` derives a key from `VirtioChildModelIdentity` without `VirtioTransportLocation`, maps `virtio0` to raw key 1, and rejects non-virtio/malformed addresses. Checks pass: focused non-PCI key test 1/1; broad hosted `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with child suites 18/18, 36/36, 36/36, 16/16, 8/8, 8/8, 7/7, shared `virtio` 43/43, and pci-boot compile-only 0 tests; first x86 smoke attempt exposed and fixed a `pci-boot` import-boundary compile error; final `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B501 Current
 
