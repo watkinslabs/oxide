@@ -171,7 +171,7 @@ Evidence:
 
 ## B330-virtio-gpu-remove-teardown-order
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B330-virtio-gpu-remove-teardown-order`
 
@@ -179,10 +179,16 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
+| VERIFIED | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `VirtioGpuOps::remove_child` calls `drv_virtio_gpu::uninstall(device_key)` before `post_init::uninstall_scanout(device_key)`. |
+| Teardown order | PASS: `uninstall` unregisters DRM hooks, unpublishes console scanout by installed BDF, clears klog/tty/fbcon/fbdev hooks through `unpublish_console_scanout`, then returns before `uninstall_scanout` resets/frees scanout backing. |
+| `cargo test -p drv-virtio-gpu uninstall_selects_owner_by_child_key_not_raw_bdf -- --nocapture` | PASS. |
+| `cargo test -p drv-virtio-gpu` | PASS: 27 tests, 0 failed. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b330-gpu-remove-teardown-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b330-gpu-remove-teardown-arm.log`. |
+| Line cap | PASS: `virtio_child.rs` 368 lines, `device.rs` 365, `post_init/scanout.rs` 278, `drv-virtio-gpu/src/tests.rs` 473. |
