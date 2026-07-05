@@ -196,6 +196,8 @@ impl VsockSocket {
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         loop {
+            #[cfg(target_os = "oxide-kernel")]
+            let _ = vsock::poll_rx_for(c.owner);
             match vsock::recv(&c, buf) {
                 Ok(n)  => return Ok(n),
                 Err(crate::NetError::Eagain) => {
@@ -233,6 +235,8 @@ impl VsockSocket {
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         let mut sent = 0usize;
         while sent < buf.len() {
+            #[cfg(target_os = "oxide-kernel")]
+            let _ = vsock::poll_rx_for(c.owner);
             match vsock::send(&c, &buf[sent..]) {
                 Ok(0)  => break,
                 Ok(n)  => sent += n,

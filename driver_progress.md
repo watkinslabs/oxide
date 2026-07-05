@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B418 verified, pending commit/PR/merge/sync.
+Current marker: B419-virtio-vsock-live-multiendpoint-proof; VERIFIED, commit/PR pending.
 
 ## Archived Completed B327-B330
 
@@ -483,7 +483,7 @@ recent-completed table above; main was synced after each merge through
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 | B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B412-B418 Current
+## B412-B419 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -494,3 +494,4 @@ recent-completed table above; main was synced after each merge through
 | B416-nvme-ahci-multicontroller-proof | VERIFIED | Added opt-in two-NVMe/two-AHCI QEMU harness and `/bin/storage_multictrl_probe`; source audit confirms per-BDF state, hosted `cargo test -p drv -p sysfs -p block` passes, x86_64 `/tmp/b416-x86-storage-multictrl-3.log` and aarch64 `/tmp/b416-arm-storage-multictrl.log` prove sysfs unbind/rebind restores `/sys/block`. |
 | B417-virtio-net-live-multidev-proof | VERIFIED | Existing `/bin/virtio_net_multidev_probe` and `OXIDE_VIRTIO_NET_MULTIDEV_SMOKE` QEMU mode prove two virtio-net devices, `eth0`/`eth1`, sysfs unbind/rebind, restored driver readdir state, and input tail. Hosted `cargo test -p drv-virtio-net -p net -p virtio -p pci-boot` plus x86_64 `/tmp/b417-x86-virtio-net-multidev.log` and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
 | B418-virtio-gpu-live-multigpu-proof | VERIFIED | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
+| B419-virtio-vsock-live-multiendpoint-proof | VERIFIED | Fresh main `de65f27c`; fixed vsock proof to use direct `/init`, added visible probe phase logging, and made AF_VSOCK read/write waits poll the endpoint-owned RX hook before sleeping. Hosted `cargo test -p net -p drv-virtio-vsock -p pci-boot -- --nocapture --test-threads=1` passes. x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log` both install cid=3/cid=4 and complete the host round-trip. |

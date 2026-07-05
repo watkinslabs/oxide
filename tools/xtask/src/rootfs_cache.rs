@@ -170,6 +170,8 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
     if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0virtio-gpu-multidev-smoke=");
     if std::env::var_os("OXIDE_VIRTIO_GPU_MULTIDEV_SMOKE").is_some() { h.write(b"1"); }
+    h.write(b"\0vsock-smoke=");
+    if std::env::var_os("OXIDE_VSOCK_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0storage-multictrl-smoke=");
     if std::env::var_os("OXIDE_STORAGE_MULTICTRL_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0userspace-seat-smoke=");

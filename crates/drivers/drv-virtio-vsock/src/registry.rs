@@ -147,7 +147,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
 
     crate::rx::prepost_all(device_key);
 
-    if !net::vsock::driver_publish_reserved(device_key.raw(), guest_cid, crate::tx_packet) {
+    if !net::vsock::driver_publish_reserved(device_key.raw(), guest_cid, crate::tx_packet, rx_poll_for_owner) {
         let _ = uninstall(device_key);
         return false;
     }
@@ -238,6 +238,10 @@ pub fn rx_drain_softirq() {
 }
 
 pub fn rx_drain() -> usize {
+    crate::rx::drain()
+}
+
+fn rx_poll_for_owner(_owner: u32) -> usize {
     crate::rx::drain()
 }
 

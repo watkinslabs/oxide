@@ -28,11 +28,16 @@ pub static TABLE: VsockTable = VsockTable::new();
 /// the driver, which builds a TX descriptor, kicks q1, and polls the used ring.
 /// Returns true if the frame went out. # C: O(payload)
 pub type TxFn = fn(u32, &[u8]) -> bool;
+/// RX poll hook: let the owning transport drain completed RX descriptors.
+/// This is an opportunistic progress hook for syscall waits; IRQ/softirq
+/// remains the normal delivery path. # C: O(device RX completions)
+pub type RxPollFn = fn(u32) -> usize;
 
 struct Endpoint {
     owner: u32,
     guest_cid: u64,
     tx: Option<TxFn>,
+    rx_poll: Option<RxPollFn>,
 }
 
 static ENDPOINTS: Spinlock<Vec<Endpoint>, SockLockClass> = Spinlock::new(Vec::new());
@@ -82,7 +87,7 @@ pub fn driver_reserve(owner: u32) -> bool {
     if endpoints.iter().any(|e| e.owner == owner) {
         return false;
     }
-    endpoints.push(Endpoint { owner, guest_cid: 0, tx: None });
+    endpoints.push(Endpoint { owner, guest_cid: 0, tx: None, rx_poll: None });
     if PRIMARY_OWNER.load(Ordering::Acquire) == 0 {
         PRIMARY_OWNER.store(owner, Ordering::Release);
     }
@@ -91,7 +96,7 @@ pub fn driver_reserve(owner: u32) -> bool {
 
 /// Publish guest CID + install the TX hook after the transport context exists.
 /// # C: O(N endpoints)
-pub fn driver_publish_reserved(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
+pub fn driver_publish_reserved(owner: u32, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -> bool {
     let mut endpoints = ENDPOINTS.lock();
     if endpoints.iter().any(|e| e.owner != owner && e.tx.is_some() && e.guest_cid == guest_cid) {
         return false;
@@ -101,6 +106,7 @@ pub fn driver_publish_reserved(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
     };
     endpoint.guest_cid = guest_cid;
     endpoint.tx = Some(tx);
+    endpoint.rx_poll = Some(rx_poll);
     refresh_primary_locked(&endpoints);
     true
 }
@@ -120,11 +126,11 @@ pub fn driver_cancel_reserved(owner: u32) -> bool {
 
 /// Driver bring-up entry: reserve and publish in one step.
 /// # C: O(N endpoints)
-pub fn driver_install(owner: u32, guest_cid: u64, tx: TxFn) -> bool {
+pub fn driver_install(owner: u32, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -> bool {
     if !driver_reserve(owner) {
         return false;
     }
-    if !driver_publish_reserved(owner, guest_cid, tx) {
+    if !driver_publish_reserved(owner, guest_cid, tx, rx_poll) {
         let _ = driver_cancel_reserved(owner);
         return false;
     }
@@ -152,6 +158,7 @@ pub fn driver_quiesce(owner: u32) -> bool {
         return false;
     };
     endpoint.tx = None;
+    endpoint.rx_poll = None;
     endpoint.guest_cid = 0;
     refresh_primary_locked(&endpoints);
     TABLE.close_owner(owner);
@@ -228,6 +235,22 @@ pub fn tx_for(owner: u32, hdr: &VsockHdr, payload: &[u8]) -> bool {
     frame.extend_from_slice(&hdr.encode());
     frame.extend_from_slice(payload);
     f(owner, &frame)
+}
+
+/// Ask the owning transport to drain completed RX buffers, if it exposes a
+/// poll hook. # C: O(device RX completions)
+pub(crate) fn poll_rx_for(owner: u32) -> usize {
+    let f = {
+        let endpoints = ENDPOINTS.lock();
+        let Some(endpoint) = endpoints.iter().find(|e| e.owner == owner) else {
+            return 0;
+        };
+        let Some(rx_poll) = endpoint.rx_poll else {
+            return 0;
+        };
+        rx_poll
+    };
+    f(owner)
 }
 
 /// Emit one packet via the installed endpoint. False if no driver. # C: O(len)
@@ -370,6 +393,7 @@ pub fn connect_from(owner: u32, local_port: Option<u32>, peer_cid: u64, peer_por
     {
         let budget = crate::vsock::VSOCK_CONNECT_POLL_BUDGET;
         for _ in 0..budget {
+            let _ = poll_rx_for(owner);
             let st = *c.st.lock();
             match st {
                 VsockState::Connected   => return Ok(c),
