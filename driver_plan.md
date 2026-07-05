@@ -239,9 +239,9 @@ Status legend:
 | VERIFIED | B326-userspace-seat-driver-proof | Virtio-input supports multiple input device records. |
 | VERIFIED |  | Virtio-input publishes `/dev/input/eventN` through model-owned devices. |
 | VERIFIED |  | `/proc/bus/input/devices` derives from live input state. |
-| NOT DONE |  | Virtio-input clears event-queue bottom half when last queue removed. |
-| NOT DONE |  | Virtio-input shutdown uses explicit event-queue quiesce path. |
-| NOT DONE |  | Virtio-input hot-remove/shutdown address drain state by owning child key. |
+| CLAIMED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
+| CLAIMED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
+| CLAIMED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
 | VERIFIED |  | Competing evdev grabs fail with `EBUSY`. |
