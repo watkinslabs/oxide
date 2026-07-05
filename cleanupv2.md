@@ -15,6 +15,31 @@ Everything else in the log is either (a) a contributor to that wedge, (b) an ind
 
 ---
 
+## Campaign ledger
+
+Goal: complete every item below to **100% Linux compat, no hacks/stubs**. One item = one branch = one PR (isolated worktree off fresh `origin/main`). Status flips to DONE with the merging PR so history is auditable.
+
+Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself diverges, per [[build-missing-subsystems-for-100]]).
+
+| Item | Summary | Tier | Status | Branch | PR |
+|------|---------|------|--------|--------|-----|
+| 1.1 | PAM/keyring EPERM — `user@979.service` step PAM | 1 | INVESTIGATED (blocked: needs boot capture) | B423-pam-session-keyring-eperm | #2477 |
+| 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | TODO | — | — |
+| 2.1 | `PR_SET_MM_ARG_START/END` prctl setters | 2 | TODO | — | — |
+| 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO | — | — |
+| 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | TODO | — | — |
+| 2.4 | Module autoload alias no-op for built-ins | 2 | TODO | — | — |
+| 3.1 | `systemd-initctl` fifo `read()` EIO | 3 | TODO | — | — |
+| 3.2 | Persistent journal EBUSY (mmap/flock) | 3 | TODO | — | — |
+| 3.3 | `/proc/sys` writable sysctl leaves | 3 | TODO | — | — |
+| 3.4 | `/dev/null` ENXIO + `/dev/fuse` node missing | 3 | TODO | — | — |
+| 3.5 | userdb short-read message framing | 3 | TODO | — | — |
+| 3.6 | update-utmp-runlevel D-Bus (cascade of 1.1) | 3 | TODO | — | — |
+| 3.7 | PSI `/proc/pressure/*` memory-pressure watch | 3 | TODO | — | — |
+| 3.8 | `/dev/mem` / `/dev/kvm` | 3 | WONTFIX | — | expected nested-virt noise |
+
+---
+
 ## TIER 1 — Fatal (blocks login / GNOME session)
 
 ### 1.1 `user@979.service` dies at step PAM → no `systemd --user` → session-bus deadlock  ⭐ primary blocker
@@ -32,6 +57,13 @@ gnome-session-binary: ... StartServiceByName for org.freedesktop.systemd1: Timeo
 gsd-usb-protection / gsd-sharing / gsd-rfkill: Timeout was reached
 ```
 The concrete kernel signal is **EPERM at the PAM session step**. `systemd --user` runs a fresh PAM stack; the failing module is almost certainly one of `pam_keyinit` (session keyring join via `keyctl(KEYCTL_JOIN_SESSION_KEYRING)`), `pam_loginuid` (write `/proc/self/loginuid`), or `pam_namespace`/`pam_systemd`. "Cannot make/remove an entry for the specified session" points hardest at the **session keyring**.
+
+**Static audit (B423, 2026-07-05) — three prime suspects CLEARED:**
+- `keyctl(KEYCTL_JOIN_SESSION_KEYRING)` → returns the global keyring serial unconditionally, no uid/cap gate (`crates/kernel/fs/src/keyring.rs:166`). Succeeds for uid 979. Not the cause.
+- `/proc/self/loginuid` write → backed by writable `SysctlInode`, no CAP_AUDIT_CONTROL gate (`crates/kernel/procfs/src/static_files.rs:204`, `sysctl.rs:42`). Succeeds. Not the cause.
+- `setns`/`unshare`/`clone(CLONE_NEW*)` → no cap gate; all NS bits implemented (`syscalls/src/272_unshare.rs`, `308_setns.rs`, `056_clone.rs`). Not the cause.
+- The ONLY cap-gated EPERM reachable in a fresh PAM stack is **`setgroups`** (`crates/kernel/sched/src/cred.rs:388`, needs `CAP_SETGID`). Root gets `CAP_FULL` (`creds.rs:47`), so this only fires **if exec has already dropped to uid 979 before the PAM step**. Real systemd runs `setup_pam()` while still root (before `enforce_user()`), so setgroups should succeed — meaning either our exec drops privileges too early, OR the EPERM is a syscall that EPERMs even for root.
+- **Disambiguation requires a capture-first boot** with `--features debug-syscall` (+`debug-mount`): reproduce, grep pid-182's window for the syscall returning `rv=-1`/EPERM (errno 1). debug-syscall already logs every `(nr, rv)` — no new probe needed (`syscalls/src/dispatch/core.rs:38`). **Blocker: needs an exclusive live-gnome boot** (main tree is occupied by the parallel agent; boot-verify reads main-tree artifacts).
 
 **Plan of attack:** capture-first, per house method. Add/extend a `debug-pam` (or reuse `debug-syscall`) gate to log the exact syscall returning EPERM in pid 182's window. Prime suspects to audit in kernel: `keyctl`/`add_key` session-keyring semantics, `/proc/self/loginuid` write path, and `setns`/`unshare` used by pam_namespace. Fixing this single item is expected to unblock the whole desktop.
 
