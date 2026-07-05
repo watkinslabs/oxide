@@ -5,63 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B342-parented-drm-minors-links`.
-
-## B326-userspace-seat-driver-proof
-
-Status: `VERIFIED` and merged by PR #2379.
-
-Branch: `B326-userspace-seat-driver-proof`
-
-Target row: userspace seat proof for DRM/fbdev nodes, evdev nodes, ALSA
-nodes, block/net discovery, uevent delivery, `/run/udev`, and seat state.
-
-Active loop: driver fixes use kernel-local fast smoke and targeted probes only,
-on both `ARCH=x86_64` and `ARCH=aarch64`. Do not use GNOME/live image boots for
-the 300+ driver-system work loop. GNOME/live image boot is a final seat proof
-gate only after the driver path is clean on both arches.
-
-Image-loop rule: `../oxide-images` `rootfs` is a cached base artifact per
-profile/arch. Do not rebuild live GNOME rootfs for normal kernel-driver
-iterations; rebuild only `kernel` + `boot-serial` unless packages or profile
-configuration changed.
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | DONE for B326: per-item validation used fast driver smoke and targeted driver probes on both arches; GNOME remains final proof only. |
-| `cargo check -p xtask` | PASS |
-| `bash -n tools/boot-smoke-userspace-seat.sh` | PASS |
-| `git diff --check` | PASS |
-| kernel-local `make smoke-userspace-seat-x86` | DIAGNOSTIC ONLY: B002 device probes passed; old kernel-local rootfs lacked `/run/udev`, udev data/tag index, seat0, and loginctl/logind. |
-| kernel-local `make smoke-userspace-seat-arm` | DIAGNOSTIC ONLY: interrupted after live log showed systemd no-progress watchdog before the B326 oneshot could run. |
-| `cd ../oxide-images && make kernel boot-serial PROFILE=live-gnome ARCH=x86_64 KERNEL_DIR=../kernel` | PASS: exported kernel artifacts and wrote `output/live-gnome-x86_64-boot-serial.iso`. |
-| `cd ../oxide-images && timeout 900s make run-serial-console PROFILE=live-gnome ARCH=x86_64 KERNEL_DIR=../kernel` | PARTIAL PASS: boot reached `graphical.target` and started `gdm.service`; seat-specific `/run/udev`/logind evidence still needs an in-image probe. Log: `../oxide-images/output/b326-live-gnome-x86_64.log`. |
-| `cd ../oxide-images && make rootfs PROFILE=live-gnome ARCH=aarch64` | PASS one-time base seed: wrote `output/live-gnome-aarch64-root.img`. Slow path; do not repeat for kernel-only B326 iteration. Compose warning: `systemd-udev` trigger logged `Failed to write database /etc/udev/hwdb.bin: Function not implemented` but DNF completed. |
-| `cd ../oxide-images && make kernel boot-serial PROFILE=live-gnome ARCH=aarch64 KERNEL_DIR=../kernel` | PASS: `xtask artifacts` now regenerates `target/artifacts/aarch64/kernel.Image` from the just-built ELF before image staging; wrote `output/live-gnome-aarch64-boot-serial.iso`. |
-| `cd ../oxide-images && qemu-system-aarch64 ... output/live-gnome-aarch64-boot-serial.iso ...` | PARTIAL PASS: old ARM `[FAULT] esr=000000006234f841 ec=0x18` dynamic-linker halt is cleared. Boot completes modprobe units and starts `systemd-journald.service`, then stalls before `systemd-logind.service`/`gdm.service`. Latest log: `../oxide-images/output/b326-live-gnome-aarch64-fixed-image.log`. |
-| kernel-local `make smoke-driver-path-x86` | PASS: GPU, input, sound, block, and net driver-path smoke completed. Log: `/tmp/b326-driver-path-x86-its.log`. |
-| kernel-local `make smoke-driver-path-arm` | PASS: GPU, input, sound, block, and net driver-path smoke completed after ARM MSI-X switched to GICv3 ITS/LPI delivery. Log: `/tmp/b326-driver-path-arm-its.log`. |
-
-Runtime proof:
-
-| Arch | Evidence |
-|---|---|
-| x86 | Live GNOME image boot reached real Fedora userspace: `systemd-udevd-control.socket`, `systemd-udevd-kernel.socket`, `systemd-udev-trigger.service`, and `systemd-udevd.service` started; `systemd-logind.service` started; `gdm.service` started; `multi-user.target` and `graphical.target` reached. Remaining blockers: no explicit seat tag/CAN_GRAPHICAL probe yet; accounts-daemon, avahi-daemon, initctl, and systemd-update-utmp-runlevel failed. Kernel-local diagnostic also had B002 probes passing. |
-| arm | Kernel-local fast driver path now passes with the real ARM PCI MSI-X path using GICv3 ITS/LPI. Earlier live GNOME image has a cached base root and fresh boot ISO; it reaches real Fedora systemd, queues `graphical.target`, opens udev sockets, finishes modprobe units, and starts `systemd-journald.service`. GNOME remains final proof only. |
-
-Next required work:
-
-| Item | Required change |
-|---|---|
-| Image path | DONE: `xtask artifacts --arch aarch64` rebuilds `kernel.Image` from the just-built `kernel.elf`; prior evidence showed `kernel.elf` had the sysreg fix while the raw Image was stale and still missing the branch. |
-| B326 gate | Boot `live-gnome` through `../oxide-images` on x86_64 and aarch64; only mark verified after both report graphical seat readiness, including `/run/udev/tags/master-of-seat/c226:0` plus `CAN_GRAPHICAL=1`. |
-| ARM MSI backend | DONE for fast driver path: virtio MSI-X allocation now prefers GICv3 ITS/LPI on ARM and falls back to GICv2m only when no ITS doorbell is published. |
-| Evdev file semantics | DONE in hosted and fast boot proof: `cargo test -p drv-virtio-input` passes 30 tests covering model-owned event nodes, `/proc/bus/input/devices`, per-open `EVIOCGRAB`, `EBUSY` contention, non-owner read/poll exclusion, last-close grab release, `EVIOCSCLOCKID`, `EVIOCREVOKE`, and repeat ioctls. Fast driver smokes also pass on x86_64 (`/tmp/b326-evdev-x86.log`) and ARM (`/tmp/b326-evdev-arm.log`). |
-| Evdev ioctl constants | DONE: evdev ioctl dispatch now uses named uapi constants for `_IOC` fields, request numbers, event ranges, clock id, and fixed struct sizes; regression keeps `EVIOCSFF` out of the `EVIOCGABS` range. Verified by `cargo test -p drv-virtio-input` plus x86_64/ARM driver-path smokes. |
-| Virtio-input multi-device records | DONE: hosted tests prove multiple typed child-key records remain independent and `/proc/bus/input/devices` emits ordered `event0`/`event1` records. Fast x86_64 and ARM driver-path logs show `virtio-keyboard-pci` as `evdev_id=0 keyboard` and `virtio-mouse-pci` as `evdev_id=1 pointer`, with mouseprobe passing on both arches. |
-| Obsolete EVIOC recognizer | DONE by source audit: `rg` finds evdev ioctl handling only in `drv_virtio_input::devfs::handle_evdev_ioctl(&File, ...)`, routed from `sys_ioctl` with the open file. There is no remaining crate-level EVIOC recognizer that bypasses file-aware grab/revoke semantics. |
+Current marker: `>>> ACTIVE >>> B343-scanout-backing-bdf-keyed`.
 
 ## B327-virtio-input-queue-quiesce
 
@@ -455,7 +399,7 @@ Evidence:
 
 ## B342-parented-drm-minors-links
 
-Status: `VERIFIED`; commit/PR merge pending.
+Status: `VERIFIED` and merged by PR #2395.
 
 Branch: `B342-parented-drm-minors-links`
 
@@ -479,3 +423,21 @@ Evidence:
 | Line cap | PASS: `sysfs/src/drm.rs` 443, `bus/tests.rs` 420, `bus/index.rs` 95, `bus/device.rs` 309, `driver_progress.md` under cap. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b342-parented-drm-minors-links-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b342-parented-drm-minors-links-arm.log`. |
+
+## B343-scanout-backing-bdf-keyed
+
+Status: `CLAIMED`.
+
+Branch: `B343-scanout-backing-bdf-keyed`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Scanout backing state is BDF-keyed. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
