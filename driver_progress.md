@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B466-i8042-keyboard-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: B467-remove-public-register-device-bypasses; IN AUDIT.
+
+## B467 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B467-remove-public-register-device-bypasses | IN AUDIT | Fresh main `280498ff` after PR #2524 merge; proving there is no public `register_device` driver-model bypass and production publication routes through `drv::try_device_add`. |
 
 ## B466 Current
 
