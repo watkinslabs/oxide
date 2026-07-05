@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B371-virtio-net-install-remove-keyed`.
+Current marker: `>>> ACTIVE >>> B372-virtio-net-keyed-cursors`.
 
 ## Archived Completed B327-B330
 
@@ -438,7 +438,7 @@ Branch: `B362-fbcon-foreground-owner`
 
 Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2415, and main sync `1b3a3d14` pass.
 
-## Recent Completed B363-B370
+## Recent Completed B363-B371
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -450,11 +450,12 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B368-virtio-net-netdev-publish-owner | VERIFIED | Netdev iface/runtime publication and removal are child-key owned; full virtio-net tests, arch proof, PR #2421, main sync `11a52b12`. |
 | B369-virtio-net-rx-runtime-owner | VERIFIED | RX runtime install/removal and last-runtime shared teardown are child-key owned; full virtio-net tests, arch proof, PR #2422, main sync `92bf93aa`. |
 | B370-virtio-net-no-boot-ipv4-policy | VERIFIED | RX runtime install seeds `0.0.0.0`, iface address hook updates later; full virtio-net tests, arch proof, PR #2423, main sync `c9a786f6`. |
+| B371-virtio-net-install-remove-keyed | VERIFIED | Install/remove paths carry owning child key from PCI child dispatch into driver state; full virtio-net tests, arch proof, PR #2424, main sync `fb70eeb3`. |
 
-## B371-virtio-net-install-remove-keyed
+## B372-virtio-net-keyed-cursors
 
 Status: `VERIFIED - PR READY`.
 
-Branch: `B371-virtio-net-install-remove-keyed`
+Branch: `B372-virtio-net-keyed-cursors`
 
-Evidence: PCI child dispatch passes `session.device_key()` to `init_modern_with_rx_pool`; remove/shutdown pass the parent `VirtioChildDeviceKey` to `uninstall_modern`/`shutdown_modern`; `ModernNetState` stores the key; install rejects duplicate keys; remove searches `MODERN_DEVS` by key and preserves other devices. Focused `init_modern_accepts_distinct_devices_and_rejects_duplicate_key`, `uninstall_modern_removes_only_named_device`, full `cargo test -p drv-virtio-net`, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
+Evidence: `ModernNetState` owns `tx_last_used`, `tx_next_avail`, `rx_last_used`, and `rx_next_avail`; `tx_frame_for` and `rx_poll_for` select `MODERN_DEVS` by `device_key` before mutating cursors; RX pool install initializes per-device `rx_next_avail` from the posted buffer count. Focused `init_modern_with_rx_pool_records_pool_and_rejects_duplicate_desc`, full `cargo test -p drv-virtio-net`, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
