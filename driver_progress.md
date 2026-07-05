@@ -5,7 +5,29 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B422-bind-unbind-uevent-stability; VERIFIED pending commit/PR.
+Current marker: B424-bound-unbound-uevent-state-proof; VERIFIED pending commit/PR.
+
+## B424-bound-unbound-uevent-state-proof
+
+Status: `VERIFIED`; commit and PR merge pending.
+
+Branch: `B424-bound-unbound-uevent-state-proof`
+
+Target rows:
+
+| Status | Item |
+|---|---|
+| VERIFIED | Bound change uevents include `DRIVER=<name>`. |
+| VERIFIED | Unbound change uevents do not carry stale driver ownership. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `/bin/uevent_probe` matches bind events on `ACTION=change`, `SUBSYSTEM=virtio`, `DEVPATH=/devices/virtio/<dev>`, and `DRIVER=virtio-snd`; it matches unbind events on the same action/subsystem/devpath while rejecting stale `DRIVER=virtio-snd`. |
+| Hosted regression | PASS: `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture` passed on current source. |
+| x86_64 live proof | PASS: `/tmp/b422-bind-unbind-uevent-stability-x86.log` contains `uevent_probe_unbind_change: PASS`, `uevent_probe_bind_change: PASS`, and final `uevent_probe: PASS netlink KOBJECT_UEVENT bind/unbind`. |
+| aarch64 live proof | PASS: `/tmp/b422-bind-unbind-uevent-stability-arm.log` contains the same live proof lines. |
 
 ## B422-bind-unbind-uevent-stability
 
