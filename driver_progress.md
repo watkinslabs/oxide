@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B474-graphics-fbdev-coldplug; IN AUDIT.
+Current marker: none; B474-graphics-fbdev-coldplug VERIFIED pending PR merge.
 
 ## B474 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B474-graphics-fbdev-coldplug | IN AUDIT | Fresh main `5e40692d` after PR #2531 merge; auditing graphics/fbdev class `uevent` read/write paths for model-backed current-state coldplug, with x86_64 and aarch64 proof required before VERIFIED. |
+| B474-graphics-fbdev-coldplug | VERIFIED | Fresh main `5e40692d` after PR #2531 merge; source audit proves `crates/drivers/fbdev/src/devfs.rs::register_node` publishes each framebuffer through `drv::try_device_add` as bus/dev_class `graphics`, addr/devname `fbN`, Linux dev_t `29:N`, and an fbdev node factory. `crates/kernel/sysfs/src/char_class.rs` builds `/sys/class/graphics` and `/sys/devices/virtual/graphics` dynamically from `drv::devices()`, and `CharUeventOps::write` re-emits the requested action with current model-derived `DEVPATH=/devices/virtual/graphics/<addr>`, `SUBSYSTEM=graphics`, `DEVNAME`, `MAJOR`, and `MINOR`. Added hosted regression `graphics_uevent_write_reemits_fbdev_model_event` covering fbdev coldplug write-trigger. Checks pass: `cargo test -p sysfs graphics_uevent_write_reemits_fbdev_model_event -- --nocapture --test-threads=1`, `cargo test -q -p sysfs -p fbdev -p drv -- --nocapture --test-threads=1` with sysfs 27/27, fbdev 23/23, and drv 27/27, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B473 Current
 
