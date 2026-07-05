@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -16,6 +17,48 @@
 #define MAX_PATH 128
 #define RETRIES 50
 #define SLEEP_US 100000
+#define STREAM_PLAYBACK 0
+#define STREAM_CAPTURE 1
+#define CTL_ELEM_IFACE_MIXER 2
+
+struct snd_ctl_card_info {
+    int card;
+    int pad;
+    unsigned char id[16], driver[16], name[32], longname[80],
+                  reserved_[16], mixername[80], components[128];
+};
+
+struct snd_pcm_info {
+    unsigned int device, subdevice, stream, card;
+    unsigned char id[64], name[80], subname[32], pad[8];
+    unsigned int subdevices_count, subdevices_avail;
+    unsigned char reserved[80];
+};
+
+struct snd_ctl_elem_id {
+    unsigned int numid, iface, device, subdevice;
+    unsigned char name[44];
+    unsigned int index;
+};
+
+struct snd_ctl_elem_list {
+    unsigned int offset, space, used, count;
+    struct snd_ctl_elem_id *pids;
+    unsigned char reserved[56];
+};
+
+struct snd_ctl_elem_info {
+    struct snd_ctl_elem_id id;
+    unsigned int type, access, count, owner;
+    unsigned char value[192];
+};
+
+#define CTL_CARD_INFO  _IOR('U', 0x01, struct snd_ctl_card_info)
+#define CTL_ELEM_LIST  _IOWR('U', 0x10, struct snd_ctl_elem_list)
+#define CTL_ELEM_INFO  _IOWR('U', 0x11, struct snd_ctl_elem_info)
+#define CTL_SUBSCRIBE  _IOWR('U', 0x16, int)
+#define CTL_PCM_NEXT   _IOWR('U', 0x30, int)
+#define CTL_PCM_INFO   _IOWR('U', 0x31, struct snd_pcm_info)
 
 static const char *driver = "/sys/bus/virtio/drivers/virtio-snd";
 
@@ -26,6 +69,12 @@ static void emit_line(const char *msg) {
         write(fd, msg, strlen(msg));
         close(fd);
     }
+}
+
+static void emit_status(const char *tag, const char *status) {
+    char line[96];
+    int n = snprintf(line, sizeof line, "%s: %s\n", tag, status);
+    if (n > 0) emit_line(line);
 }
 
 static void mount_api_fs(void) {
@@ -156,6 +205,99 @@ static int prove_two_cards(const char *tag) {
     return 0;
 }
 
+static int expect_missing_elem(int fd, const char *tag) {
+    struct snd_ctl_elem_info info;
+    memset(&info, 0, sizeof info);
+    info.id.numid = 1;
+    info.id.iface = CTL_ELEM_IFACE_MIXER;
+    errno = 0;
+    if (ioctl(fd, CTL_ELEM_INFO, &info) == 0 || errno != ENOENT) {
+        printf("%s: FAIL elem_info errno=%d\n", tag, errno);
+        emit_status(tag, "FAIL");
+        return 1;
+    }
+    return 0;
+}
+
+static int prove_control_card(const char *path, int want_card, const char *tag) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { printf("%s: FAIL open errno=%d\n", tag, errno); emit_status(tag, "FAIL"); return 1; }
+    struct snd_ctl_card_info ci;
+    memset(&ci, 0, sizeof ci);
+    if (ioctl(fd, CTL_CARD_INFO, &ci) < 0) {
+        printf("%s: FAIL CARD_INFO errno=%d\n", tag, errno);
+        emit_status(tag, "FAIL");
+        close(fd);
+        return 1;
+    }
+    if (ci.card != want_card || ci.name[0] == 0) {
+        printf("%s: FAIL card=%d want=%d name0=%u\n", tag, ci.card, want_card, ci.name[0]);
+        emit_status(tag, "FAIL");
+        close(fd);
+        return 1;
+    }
+    int dev = -1;
+    if (ioctl(fd, CTL_PCM_NEXT, &dev) < 0 || dev != 0) {
+        printf("%s: FAIL PCM_NEXT dev=%d errno=%d\n", tag, dev, errno);
+        emit_status(tag, "FAIL");
+        close(fd);
+        return 1;
+    }
+    for (int stream = STREAM_PLAYBACK; stream <= STREAM_CAPTURE; stream++) {
+        struct snd_pcm_info pi;
+        memset(&pi, 0, sizeof pi);
+        pi.device = 0;
+        pi.stream = stream;
+        if (ioctl(fd, CTL_PCM_INFO, &pi) < 0) {
+            printf("%s: FAIL PCM_INFO stream=%d errno=%d\n", tag, stream, errno);
+            emit_status(tag, "FAIL");
+            close(fd);
+            return 1;
+        }
+        if ((int)pi.card != want_card || pi.device != 0 || (int)pi.stream != stream) {
+            printf("%s: FAIL PCM_INFO route card=%u dev=%u stream=%u\n",
+                   tag, pi.card, pi.device, pi.stream);
+            emit_status(tag, "FAIL");
+            close(fd);
+            return 1;
+        }
+    }
+    struct snd_ctl_elem_id ids[2];
+    struct snd_ctl_elem_list list;
+    memset(ids, 0, sizeof ids);
+    memset(&list, 0, sizeof list);
+    list.space = 2;
+    list.pids = ids;
+    if (ioctl(fd, CTL_ELEM_LIST, &list) < 0) {
+        printf("%s: FAIL ELEM_LIST errno=%d\n", tag, errno);
+        emit_status(tag, "FAIL");
+        close(fd);
+        return 1;
+    }
+    if (list.used != 0 || list.count != 0 || ids[0].numid != 0 || ids[1].numid != 0) {
+        printf("%s: FAIL fabricated controls used=%u count=%u id0=%u id1=%u\n",
+               tag, list.used, list.count, ids[0].numid, ids[1].numid);
+        emit_status(tag, "FAIL");
+        close(fd);
+        return 1;
+    }
+    if (expect_missing_elem(fd, tag)) {
+        close(fd);
+        return 1;
+    }
+    int sub = 1;
+    if (ioctl(fd, CTL_SUBSCRIBE, &sub) < 0) {
+        printf("%s: FAIL SUBSCRIBE errno=%d\n", tag, errno);
+        emit_status(tag, "FAIL");
+        close(fd);
+        return 1;
+    }
+    close(fd);
+    printf("%s: PASS\n", tag);
+    emit_status(tag, "PASS");
+    return 0;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     emit_line("virtio_snd_multidev_probe: START\n");
@@ -166,6 +308,8 @@ int main(void) {
     if (writable("/sys/bus/virtio/drivers/virtio-snd/bind", "b399_bind_attr") ||
         writable("/sys/bus/virtio/drivers/virtio-snd/unbind", "b399_unbind_attr") ||
         prove_two_cards("b399_snd_cards_initial")) return 1;
+    if (prove_control_card("/dev/snd/controlC0", 0, "b420_controlC0_initial") ||
+        prove_control_card("/dev/snd/controlC1", 1, "b420_controlC1_initial")) return 1;
 
     char names[MAX_DEVS][MAX_NAME];
     int n = list_bound(names);
@@ -187,6 +331,8 @@ int main(void) {
     if (write_token("bind", dev, "b399_bind_write")) return 1;
     if (wait_bound(dev, 1)) { printf("b399_virtio_snd_rebind: FAIL\n"); return 1; }
     if (prove_two_cards("b399_snd_cards_after_rebind")) return 1;
+    if (prove_control_card("/dev/snd/controlC0", 0, "b420_controlC0_after_rebind") ||
+        prove_control_card("/dev/snd/controlC1", 1, "b420_controlC1_after_rebind")) return 1;
     if (run_probe("/bin/snd_probe")) return 1;
 
     emit_line("driver_path_smoke: PASS - GPU sound block net virtio-snd-multidev-rebind\n");

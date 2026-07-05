@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B420-virtio-snd-event-control-proof; IN AUDIT.
+ACTIVE NOW: B420-virtio-snd-event-control-proof; VERIFIED, commit/PR pending.
 
 Current active item: Virtio-snd live multi-card proof and broader event/control coverage.
 
@@ -353,7 +353,7 @@ Status legend:
 | VERIFIED | B417-virtio-net-live-multidev-proof | Existing virtio-net multidev probe and QEMU two-device mode satisfy the row: source audit confirms keyed install/remove/rebind path; hosted `drv-virtio-net/net/virtio/pci-boot`, x86_64 `/tmp/b417-x86-virtio-net-multidev.log`, and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
 | VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
 | VERIFIED | B419-virtio-vsock-live-multiendpoint-proof | Virtio-vsock primary compatibility route works with multiple live endpoints: direct `/init` proof installs cid=3/cid=4 and completes host round-trip on x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log`; hosted `net`, `drv-virtio-vsock`, and `pci-boot` tests pass. |
-| ACTIVE | B420-virtio-snd-event-control-proof | Virtio-snd live multi-card proof and broader event/control coverage missing; audit current B399 coverage before claiming completion. |
+| VERIFIED | B420-virtio-snd-event-control-proof | Virtio-snd live multi-card proof now covers control/event UAPI shape without fabricated mixer controls: `controlC0`/`controlC1` prove card info, PCM discovery/info for playback+capture, empty control element list, missing element `ENOENT`, and event subscription before and after live rebind. Direct musl builds pass for x86_64/aarch64; hosted `cargo test -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` passes; fast live logs `/tmp/b420-x86-virtio-snd-event-control.log` and `/tmp/b420-arm-virtio-snd-event-control.log` pass. |
 | NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
 | NOT DONE | TBD | QEMU-visible runtime bind/unbind/rebind certification incomplete. |
 | NOT DONE | TBD | PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. |
