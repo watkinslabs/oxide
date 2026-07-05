@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B432-pci-publication-idempotent-proof; IN AUDIT.
+ACTIVE NOW: none; B432-pci-publication-idempotent-proof VERIFIED pending PR merge.
 
-Current active item: PCI model-device publication is fallible and idempotent for repeated enumeration of matching `(pci, addr)` identity.
+Current active item: none; next claim starts after B432 merge and fresh main sync.
 
-Next gate after B432: prove source, hosted tests, x86_64/aarch64 runtime
-evidence, PR merge, then fresh `origin/main` before claiming B433.
+Next gate after merge: return to fresh `origin/main` before claiming B433
+using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -37,7 +37,7 @@ Status legend:
 | VERIFIED | B429-pci-model-bar-publication | PCI enumeration creates `pci` model devices with BAR resources through fallible model publication: `pci-boot` maps per-arch BAR probes into `drv::Resource` records, publishes `drv::Device::new("pci", ...)` through `drv::try_device_add`, preserves matching duplicate identities without replacing the registry record, and hosted tests prove PCI BAR sizing, model resource preservation, duplicate rejection, sysfs `resourceN` exposure, plus x86_64/aarch64 fast driver-path smokes. |
 | VERIFIED | B430-pci-model-driver-registration | NVMe, AHCI, and virtio-pci register as PCI model drivers: `pci-boot` registers `drv_nvme::NVME_DRIVER`, `drv_ahci::AHCI_DRIVER`, and the `virtio-pci` model driver before publishing enumerated PCI devices; `uevent_probe` now proves `/sys/bus/pci/drivers/{nvme,ahci,virtio-pci}` are live with bound devices on x86_64 and aarch64 fast driver-path smokes. |
 | VERIFIED | B431-pci-driver-core-attach | PCI drivers attach through driver core, not enumeration-local direct bind calls: `pci-boot::enumerate_and_log` registers model drivers, publishes each PCI model device through `publish_pci_model_device`/`drv::try_device_add`, and source audit finds no `drv::bind`, `drv::bind_addr`, NVMe/AHCI init, or virtio child direct-probe call in PCI enumeration; B430 x86_64/aarch64 runtime logs prove resulting PCI driver bindings. |
-| ACTIVE | B432-pci-publication-idempotent-proof | PCI model-device publication is fallible and idempotent for repeated enumeration of matching `(pci, addr)` identity. |
+| VERIFIED | B432-pci-publication-idempotent-proof | PCI model-device publication is fallible and idempotent for repeated matching `(pci, addr)` enumeration: `publish_pci_model_device` publishes through `drv::try_device_add`, returns the existing record only for matching bus/addr/vendor/device/class on `Busy`, and duplicate/mismatch regressions prove repeated publication does not replace registry state or bind the wrong identity. |
 | VERIFIED | B421-pci-identity-mismatch-proof | PCI identity mismatch handling does not rebound a mismatched same-address function: hosted regression covers duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class, proves the original device remains bound, registry identity is not replaced, and the mismatched driver never probes. `cargo test -p drv pci_identity_mismatch_does_not_replace_or_rebind -- --nocapture`, full serial `cargo test -p drv -- --nocapture --test-threads=1`, and fast x86_64/aarch64 driver-path smokes pass with logs `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`. |
 | SOURCE OK |  | Model binding rejects already-bound devices. |
 | SOURCE OK |  | Model binding verifies bus/driver matching. |
