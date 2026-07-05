@@ -5,13 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B479-platform-boot-device-add-handling; VERIFIED; commit/PR/merge pending.
+Current marker: B480-platform-identity-reuse; IN AUDIT.
+
+## B480 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B480-platform-identity-reuse | IN AUDIT | Fresh main `0bb7a9ee` after PR #2537 merge; auditing matching existing platform identity reuse for boot-created platform devices and x86_64/aarch64 runtime proof. |
 
 ## B479 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B479-platform-boot-device-add-handling | VERIFIED | Fresh main `88ea9667` after PR #2536 merge; `crates/kernel/kmain/src/kmain/runtime.rs::init_serial_console` publishes `platform/serial0` through `platform_device_or_panic`, and x86_64 `init_ps2_keyboard` publishes `platform/i8042` through the same helper before driver registration. The helper now names the boot platform bus/address/identity constants, builds a `drv::Device`, calls `drv::try_device_add`, returns the published device on success, handles `Busy` through an explicit current-model identity lookup, and logs literal fatal boot-boundary failures without formatted panic paths. Checks pass: focused `cargo test -p drv try_device_add_rejects_duplicate_bus_identity -- --nocapture --test-threads=1`, `cargo test -q -p drv -p kmain -- --nocapture --test-threads=1` with drv 29/29 and kmain compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s, `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s, `git diff --check` clean, and line caps remain under limit. |
+| B479-platform-boot-device-add-handling | VERIFIED | Fresh main `88ea9667` after PR #2536 merge; merged as PR #2537 at `0bb7a9ee`. `crates/kernel/kmain/src/kmain/runtime.rs::init_serial_console` publishes `platform/serial0` through `platform_device_or_panic`, and x86_64 `init_ps2_keyboard` publishes `platform/i8042` through the same helper before driver registration. The helper now names the boot platform bus/address/identity constants, builds a `drv::Device`, calls `drv::try_device_add`, returns the published device on success, handles `Busy` through an explicit current-model identity lookup, and logs literal fatal boot-boundary failures without formatted panic paths. Checks pass: focused `cargo test -p drv try_device_add_rejects_duplicate_bus_identity -- --nocapture --test-threads=1`, `cargo test -q -p drv -p kmain -- --nocapture --test-threads=1` with drv 29/29 and kmain compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s, `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s, `git diff --check` clean, and line caps remain under limit. |
 
 ## B478 Current
 

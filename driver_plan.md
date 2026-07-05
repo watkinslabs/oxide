@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B479-platform-boot-device-add-handling; VERIFIED; commit/PR/merge pending.
+ACTIVE NOW: B480-platform-identity-reuse; IN AUDIT.
 
-Current active item: Boot-created serial/i8042 platform devices use explicit `try_device_add` handling with named platform identity constants and x86_64/aarch64 fast smokes.
+Current active item: Matching existing platform identities are reused.
 
-Next gate after merge: return to fresh `origin/main` before claiming B480 using
+Next gate after merge: return to fresh `origin/main` before claiming B481 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -113,7 +113,7 @@ Status legend:
 | VERIFIED | B477-console-tty-devnode-batch | Console/tty boot node publication has fallible `try_register_devnodes` batch path: `try_register_devnodes` builds a batch, `push_tty_node` rolls back already-published nodes on error, `add_tty_node` publishes through `drv::try_device_add` with model-owned devnode and node factory state, matching existing tty identities are reused on `Busy`, boot wires devtmpfs hooks before console node registration and default devfs population, and Linux tty/vcs/serial dev_t values are named in `console::devnum` instead of packed literals. Hosted console compile check passes with 0 tests; fast boot smokes reach `oxide login:` on x86_64 in 30s and aarch64 in 34s. |
 | VERIFIED | B478-console-tty-conflict-rollback | Console/tty conflict rollback verified for current main: console now calls shared `drv::rollback_devices` on `push_tty_node` failure, the rollback helper deletes partially published nodes in reverse publication order through `device_del`, and hosted regression `rollback_devices_after_conflict_removes_only_published_batch` forces a preexisting tty identity, publishes a new tty node, hits a duplicate conflict, then proves rollback removes only the new batch node while preserving the preexisting identity. Checks pass: focused drv regression, `cargo test -q -p drv -p console -- --nocapture --test-threads=1` with drv 29/29 and console compile-only 0 tests, and fast smokes reach `oxide login:` on x86_64 in 30s and aarch64 in 36s. |
 | VERIFIED | B479-platform-boot-device-add-handling | Boot-created serial/i8042 platform devices use explicit `try_device_add` handling: `init_serial_console` publishes `platform/serial0`, x86_64 `init_ps2_keyboard` publishes `platform/i8042`, and both go through `platform_device_or_panic`, which builds the model device with named platform identity constants, calls `drv::try_device_add`, returns the published device on success, handles `Busy` explicitly, and emits literal fatal boot-boundary failures for add/conflict errors. Checks pass: focused `try_device_add` duplicate regression, `cargo test -q -p drv -p kmain -- --nocapture --test-threads=1` with drv 29/29 and kmain compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
-| SOURCE OK |  | Matching existing platform identities are reused. |
+| ACTIVE | B480-platform-identity-reuse | Matching existing platform identities are reused. |
 | SOURCE OK |  | Platform identity conflicts report fatal boot-boundary error. |
 | SOURCE OK |  | PCI capability dumping is read-only for MSI-X. |
 | SOURCE OK |  | MSI-X programming for virtio devices belongs to virtio-pci transport path. |
