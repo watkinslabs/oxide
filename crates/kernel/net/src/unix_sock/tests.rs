@@ -1,4 +1,5 @@
 use super::*;
+use alloc::string::String;
 
 #[test]
 fn abstract_and_literal_at_paths_are_distinct() {
