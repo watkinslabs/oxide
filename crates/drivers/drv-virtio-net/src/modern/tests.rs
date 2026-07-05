@@ -298,8 +298,12 @@ use core::sync::atomic::Ordering;
         assert_eq!(dev2.device_key(), key(2));
         assert_eq!(dev1.name(), "eth0");
         assert_eq!(dev2.name(), "eth1");
-        assert_eq!(ensure_net_runtime(key(1)).name.as_str(), "eth0");
-        assert_eq!(ensure_net_runtime(key(2)).name.as_str(), "eth1");
+        let (rt1, rt2) = (ensure_net_runtime(key(1)), ensure_net_runtime(key(2)));
+        assert_eq!((rt1.name.as_str(), rt2.name.as_str()), ("eth0", "eth1"));
+        rt1.rx_packets.store(3, Ordering::Relaxed); rt1.rx_bytes.store(30, Ordering::Relaxed);
+        rt2.rx_packets.store(5, Ordering::Relaxed); rt2.rx_bytes.store(50, Ordering::Relaxed);
+        assert_eq!((dev1.stats().rx_packets, dev1.stats().rx_bytes), (3, 30));
+        assert_eq!((dev2.stats().rx_packets, dev2.stats().rx_bytes), (5, 50));
 
         let _ = remove_net_runtime(key(1));
         let rt3 = ensure_net_runtime(key(3));
