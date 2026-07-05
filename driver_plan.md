@@ -2,13 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B336-drm-card-node-publication` — CLAIMED.
+ACTIVE NOW: `B336-drm-card-node-publication` — VERIFIED, commit/PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B336-drm-card-node-publication`.
 
-Current B336 gate: prove or fix DRM `/dev/dri/cardN` publication for each
-stable DRM card slot, including devtmpfs model state and x86_64/aarch64
-runtime discovery.
+Current B336 gate: verified DRM `/dev/dri/cardN` publication for each stable
+DRM card slot, including devtmpfs model state and x86_64/aarch64 runtime
+discovery; commit/PR merge pending.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -267,7 +267,7 @@ Status legend:
 | VERIFIED | B333-virtio-gpu-device-state-key | Virtio-gpu installed device state is per child key; source audit, hosted key-vs-BDF tests, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
 | VERIFIED | B334-virtio-gpu-duplicate-key-reject | Virtio-gpu duplicate child-key install rejects `Error::Busy` before second DRM card/model publication; hosted duplicate-publication regression, full GPU crate tests, fast x86_64/aarch64 driver-path proof, and PR #2387 merge pass. |
 | VERIFIED | B335-drm-card-id-stable-slots | DRM card IDs are stable slots: registry stores `Vec<Option<Arc<dyn DrmDriver>>>`, node inodes tag the stable card id, ioctl routing uses that tag, lower-slot reuse does not reroute an existing higher-slot fd, full DRM crate tests pass, fast x86_64/aarch64 driver-path proof passes, and PR #2388 merge pass. |
-| CLAIMED | B336-drm-card-node-publication | DRM publishes `/dev/dri/cardN` per stable card slot. |
+| VERIFIED | B336-drm-card-node-publication | DRM publishes `/dev/dri/cardN` per stable card slot; source audit, hosted metadata regression, full DRM crate tests, fast x86_64/aarch64 driver-path proof, and line-cap check pass; commit/PR merge pending. |
 | NOT DONE |  | DRM render nodes withheld until real render/GEM UAPI exists. |
 | NOT DONE |  | DRM inode tag encodes card id. |
 | NOT DONE |  | DRM card ioctls route through matching backend slot. |

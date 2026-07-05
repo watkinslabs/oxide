@@ -323,7 +323,7 @@ Evidence:
 
 ## B336-drm-card-node-publication
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B336-drm-card-node-publication`
 
@@ -331,10 +331,17 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | DRM publishes `/dev/dri/cardN` per stable card slot. |
+| VERIFIED | DRM publishes `/dev/dri/cardN` per stable card slot. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `drm::node::publication::register` publishes `dri/card{card_id}` as class `drm`, dev_t `(226, card_id)`, and a `make_card_inode(card_id)` factory through `drv::try_device_add`; `drv::try_device_add` forwards that metadata to the devtmpfs hook, and `kmain` wires the hook to `devfs::add_device_node`. |
+| Hosted regression | PASS: `register_publishes_card_node_metadata_per_stable_slot` proves each stable card slot publishes the expected model device, devnode name, dev_t, char inode, and card-id inode tag. |
+| `cargo test -p drm register_publishes_card_node_metadata_per_stable_slot -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 57 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 394 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-arm.log`. |
