@@ -467,7 +467,7 @@ Evidence:
 
 ## B348-drm-master-open-file-state
 
-Status: `CLAIMED`.
+Status: `VERIFIED, commit/PR merge pending`.
 
 Branch: `B348-drm-master-open-file-state`
 
@@ -475,10 +475,17 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | DRM master state is per open file description. |
+| VERIFIED | DRM master state is per open file description. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `file_token(file)` uses the `File` object address, so duplicate fds sharing the same `Arc<File>` share one open-file-description token. `set_master_owner`, `drop_master_owner`, `is_master`, KMS ioctls, and `DrmCardFileOps::on_release_file` all use that token. Separate opens get distinct tokens; last `File` drop releases master ownership. |
+| Hosted regression | PASS: `drm_master_is_owned_by_open_file_description` now proves a cloned `Arc<File>` can re-SET_MASTER as the same owner, dropping only the clone keeps a separate open blocked with `EBUSY`, and dropping the last owner reference releases master so the separate open can acquire it. |
+| `cargo test -p drm drm_master_is_owned_by_open_file_description -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 61 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` 474 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-arm.log`. |
