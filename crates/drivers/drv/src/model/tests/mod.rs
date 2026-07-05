@@ -178,6 +178,20 @@ impl Driver for UnregisterDrv {
 }
 static UNREGISTER_DRV: UnregisterDrv = UnregisterDrv;
 
+static UNBIND_ORDER_REMOVE_SAW_BOUND: AtomicU32 = AtomicU32::new(0);
+struct UnbindOrderDrv;
+impl Driver for UnbindOrderDrv {
+    fn bus(&self) -> &'static str { "platform" }
+    fn name(&self) -> &'static str { "unbind-order-test" }
+    fn matches(&self, dev: &Device) -> bool { dev.device_id == 0x6204 }
+    fn remove(&self, dev: &Device) {
+        if dev.bound() == Some("unbind-order-test") {
+            UNBIND_ORDER_REMOVE_SAW_BOUND.store(1, Ordering::Release);
+        }
+    }
+}
+static UNBIND_ORDER_DRV: UnbindOrderDrv = UnbindOrderDrv;
+
 static ADD_ORDER: TestLock<Vec<&'static str>, DriverListClass> = TestLock::new(Vec::new());
 static ADD_PROBES: AtomicU32 = AtomicU32::new(0);
 static ADD_SYSFS_SAW_BOUND: AtomicU32 = AtomicU32::new(0);
