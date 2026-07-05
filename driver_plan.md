@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B417-virtio-net-live-multidev-proof` — CLAIMED.
+ACTIVE NOW: `B417-virtio-net-live-multidev-proof` — VERIFIED.
 
 Current active item: `>>> ACTIVE >>> B417-virtio-net-live-multidev-proof`.
 
@@ -350,7 +350,7 @@ Status legend:
 | VERIFIED | B414-driver-devnode-readd-loops | Existing hosted remove/readd loops cover block, evdev, fbdev, DRM, and hwrng; B414 adds same-owner sound card unregister/register restore coverage. Console tty nodes are boot-owned fixed nodes, not hot-remove loop devices; x86_64/aarch64 driver-path proof covers their boot publication path. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b414-x86-driver-path.log`, and aarch64 `/tmp/b414-arm-driver-path.log` pass. |
 | NOT DONE | B415-bind-unbind-readd-proof | Aggregate repeated bind/unbind/remove/readd proof remains unverified: `driver_anal.md` requires QEMU hotplug/rebind proof for PCI, virtio, block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2; existing driver-core and hosted devnode loops are useful but explicitly not a substitute. Complete the following concrete live-proof rows, then revisit this aggregate row. |
 | VERIFIED | B416-nvme-ahci-multicontroller-proof | NVMe/AHCI per-BDF source audit, opt-in two-controller QEMU harness, `/bin/storage_multictrl_probe`, hosted `drv/sysfs/block`, x86_64 `/tmp/b416-x86-storage-multictrl-3.log`, and aarch64 `/tmp/b416-arm-storage-multictrl.log` pass. |
-| >>> ACTIVE >>> CLAIMED | B417-virtio-net-live-multidev-proof | Virtio-net live multi-device proof missing; source audit, hosted tests, and x86_64/aarch64 runtime proof pending. |
+| >>> ACTIVE >>> VERIFIED | B417-virtio-net-live-multidev-proof | Existing virtio-net multidev probe and QEMU two-device mode satisfy the row: source audit confirms keyed install/remove/rebind path; hosted `drv-virtio-net/net/virtio/pci-boot`, x86_64 `/tmp/b417-x86-virtio-net-multidev.log`, and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
 | NOT DONE | TBD | Virtio-gpu live multi-card/multi-GPU proof missing. |
 | NOT DONE | TBD | Virtio-vsock primary compatibility route with multiple live endpoints needs live proof. |
 | NOT DONE | TBD | Virtio-snd live multi-card proof and broader event/control coverage missing. |
