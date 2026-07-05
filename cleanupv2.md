@@ -24,18 +24,18 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 | Item | Summary | Tier | Status | Branch | PR |
 |------|---------|------|--------|--------|-----|
 | 1.1 | PAM `PAM_SESSION_ERR` — `user@979.service` step PAM | 1 | INVESTIGATED (hypothesis disproven; see notes) | B423 + captures | #2477 |
-| 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | TODO | — | — |
+| 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | PARTIAL — UTS DONE (fleet: /proc/*/ns/uts + per-ns sethostname). net-ns full-stack isolation = large subsystem | fleet(uts) | — |
 | 2.1 | `PR_SET_MM` (all 15 subcmds) + fix reversed argv/env stack | 2 | DONE | B430-prctl-set-mm | #2498 |
-| 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO | — | — |
-| 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | TODO | — | — |
-| 2.4 | Module autoload alias no-op for built-ins | 2 | TODO | — | — |
+| 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO (hwdb.bin asset vs mmap ENODATA; medium) | — | — |
+| 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | TODO — **fleet's active virtio lane; do not overlap** | — | — |
+| 2.4 | Module autoload alias no-op for built-ins | 2 | TODO — **fleet's active virtio/uevent lane** | — | — |
 | 3.1 | `systemd-initctl` fifo `read()` EIO | 3 | DONE | B502-fifo-open-impl | #2562 |
-| 3.2 | Persistent journal EBUSY (mmap/flock) | 3 | TODO | — | — |
+| 3.2 | Persistent journal EBUSY (mmap/flock) | 3 | TODO (mmap/flock race; needs boot capture) | — | — |
 | 3.3 | `/proc/sys` writable sysctl leaves (core_pattern honored) | 3 | DONE | B512-sysctl-leaves | #2565 |
-| 3.4 | `/dev/null` ENXIO + `/dev/fuse` node missing | 3 | TODO | — | — |
-| 3.5 | userdb short-read message framing | 3 | TODO | — | — |
-| 3.6 | update-utmp-runlevel D-Bus (cascade of 1.1) | 3 | TODO | — | — |
-| 3.7 | PSI `/proc/pressure/*` memory-pressure watch | 3 | TODO | — | — |
+| 3.4 | `/dev/null` ENXIO (intermittent race) + `/dev/fuse` (needs full FUSE subsystem) | 3 | TODO (large/race) | — | — |
+| 3.5 | userdb short-read message framing | 3 | TODO (SEQPACKET exists; subtle framing bug — needs capture) | — | — |
+| 3.6 | update-utmp-runlevel D-Bus (cascade of 1.1) | 3 | BLOCKED-ON-1.1 (resolves when 1.1 lands) | — | — |
+| 3.7 | PSI `/proc/pressure/*` memory-pressure watch | 3 | TODO — **large subsystem** (stall accounting + poll/trigger; zero-stub = hack, rejected) | — | — |
 | 3.8 | `/dev/mem` / `/dev/kvm` | 3 | WONTFIX | — | expected nested-virt noise |
 
 ---
