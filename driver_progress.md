@@ -5,8 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B454-power-path-calls-driver-shutdown; VERIFIED pending PR
-merge.
+Current marker: B455-nvme-explicit-shutdown-callback; IN AUDIT.
+
+## B455 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B455-nvme-explicit-shutdown-callback | IN AUDIT | Fresh main `27f090f5` after PR #2512 merge; proving NVMe model driver implements an explicit shutdown callback that quiesces by controller identity. |
 
 ## B454 Current
 
