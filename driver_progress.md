@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B393-virtio-snd-install-remove-keyed`.
+Current marker: `>>> ACTIVE >>> B394-sound-card-owner-keyed-numbers`.
 
 ## Archived Completed B327-B330
 
@@ -481,15 +481,13 @@ recent-completed table above; main was synced after each merge through
 | B388-vsock-listener-backlogs-owner-port | VERIFIED | Same-port listener backlogs are owner-keyed; focused/full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2441 merge, and main sync `a7a5312f` pass. |
 | B389-vsock-close-releases-state | VERIFIED | Existing AF_VSOCK drop cleanup releases listener/backlog/connection state; cleanup/full vsock tests, x86_64/aarch64 driver-path proof, PR #2442 merge, and main sync `e3f505da` pass. |
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
-| B391-B392 virtio-rng closeout | VERIFIED | B391 just-bound seeding and B392 active-provider promotion/removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2445, main sync `197482f2`. |
+| B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B393-virtio-snd-install-remove-keyed
+## B394-sound-card-owner-keyed-numbers
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
+Status: `>>> ACTIVE >>> CLAIMED`.
 
-Branch: `B393-virtio-snd-install-remove-keyed`
+Branch: `B394-sound-card-owner-keyed-numbers`
 
-Evidence: source audit and hosted regression prove key0 removal leaves key1
-context, card, ops, and event softirq live. Full tests plus x86_64
-`/tmp/b393-x86-driver-path.log` and aarch64 `/tmp/b393-arm-driver-path.log`
-driver-path proofs pass.
+Scope: prove or fix sound-card number allocation so ALSA card numbers are
+stable per owner and independent across cards.
