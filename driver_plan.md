@@ -2,14 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B348-drm-master-open-file-state` — VERIFIED, PR merge pending.
+ACTIVE NOW: `B349-drm-page-flip-file-events` — VERIFIED, PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B348-drm-master-open-file-state`.
+Current active item: `>>> ACTIVE >>> B349-drm-page-flip-file-events`.
 
-Current B348 gate: source audit, hosted open-file-description master regression,
-full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and
-pre-push boot smoke pass. PR readiness, PR merge, and post-merge main sync
-remain.
+Current B349 gate: source audit, hosted PAGE_FLIP read/poll regression, full
+DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push
+boot smoke pass. PR merge and post-merge main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -281,8 +280,8 @@ Status legend:
 | VERIFIED | B345-drm-dumb-fb-card-owned | DRM dumb buffers and FB metadata are card-owned; source audit, hosted same-handle/same-FB-id card-isolation regression, full DRM tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, line-cap check, and PR #2398 merge pass. |
 | VERIFIED | B346-drm-fb-scanout-resource-lifetime | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister; source audit, hosted `clear_card_state` scanout-resource release regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2399 merge, and local main sync to `origin/main` at `6ffbc9b7` pass. |
 | VERIFIED | B347-drm-unregister-drops-card-state | DRM unregister drops that card CRTC and dumb-buffer state; source audit, hosted per-card unregister teardown regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2400 merge, and local main sync to `origin/main` at `a62a9129` pass. |
-| VERIFIED | B348-drm-master-open-file-state | DRM master state is per open file description; source audit, hosted dup/split-open/last-close master regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. PR merge pending. |
-| NOT DONE |  | DRM PAGE_FLIP events are per card open file and poll/read correctly. |
+| VERIFIED | B348-drm-master-open-file-state | DRM master state is per open file description; source audit, hosted dup/split-open/last-close master regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2401 merge, and local main sync to `origin/main` at `bdb8d725` pass. |
+| VERIFIED | B349-drm-page-flip-file-events | DRM PAGE_FLIP events are per card open file and poll/read correctly; source audit, hosted duplicate-open/split-open/split-card poll-read regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. PR merge pending. |
 | NOT DONE |  | DRM GET_MAGIC/AUTH_MAGIC allocate and authorize real per-open-file magic. |
 | NOT DONE |  | DRM GET_UNIQUE and SET_VERSION marshal Linux UAPI structs. |
 | NOT DONE | TBD | DRM MODE_ATOMIC accepts only internally gated empty state; real atomic property/object tables missing. |
