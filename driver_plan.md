@@ -3,7 +3,7 @@
 Date: 2026-07-04
 
 Current active item: `>>> ACTIVE >>>` row on branch
-`B002-single-machine-desktop-proof`.
+`B326-userspace-seat-driver-proof`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -22,8 +22,8 @@ Status legend:
 | Status | Branch | Description |
 |---|---|---|
 | SOURCE OK | B001-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
-| >>> ACTIVE >>> VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
-| NOT DONE | TBD | QEMU/userspace proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, uevent delivery, `/run/udev`, and seat state. |
+| VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
+| >>> ACTIVE >>> IN AUDIT | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME is final seat gate only. |
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
 | SOURCE OK |  | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
 | SOURCE OK |  | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |
@@ -236,22 +236,22 @@ Status legend:
 | SOURCE OK | TBD | NVMe duplicate binds rejected before controller bring-up; needs hosted/live proof. |
 | SOURCE OK | TBD | AHCI duplicate binds rejected before HBA bring-up; needs hosted/live proof. |
 | SOURCE OK |  | AHCI publishes ATA IDENTIFY serial into block registry. |
-| NOT DONE |  | Virtio-input supports multiple input device records. |
-| NOT DONE |  | Virtio-input publishes `/dev/input/eventN` through model-owned devices. |
-| NOT DONE |  | `/proc/bus/input/devices` derives from live input state. |
+| VERIFIED | B326-userspace-seat-driver-proof | Virtio-input supports multiple input device records. |
+| VERIFIED |  | Virtio-input publishes `/dev/input/eventN` through model-owned devices. |
+| VERIFIED |  | `/proc/bus/input/devices` derives from live input state. |
 | NOT DONE |  | Virtio-input clears event-queue bottom half when last queue removed. |
 | NOT DONE |  | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | NOT DONE |  | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-| NOT DONE |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
-| NOT DONE |  | Evdev `EVIOCGRAB` is per open file. |
-| NOT DONE |  | Competing evdev grabs fail with `EBUSY`. |
-| NOT DONE |  | Non-owner evdev clients do not drain/poll under another client's grab. |
-| NOT DONE |  | Last close releases evdev grab. |
-| NOT DONE |  | `EVIOCSCLOCKID` validates userspace clock id. |
-| NOT DONE |  | `EVIOCREVOKE` marks current open file revoked and later reads fail with `ENODEV`. |
-| NOT DONE |  | VFS has file-aware read/poll/release hooks for evdev semantics. |
-| NOT DONE |  | Obsolete crate-level EVIOC recognizer removed. |
-| NOT DONE |  | `EVIOCGREP`/`EVIOCSREP` implemented in real evdev file ioctl handler. |
+| VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
+| VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
+| VERIFIED |  | Competing evdev grabs fail with `EBUSY`. |
+| VERIFIED |  | Non-owner evdev clients do not drain/poll under another client's grab. |
+| VERIFIED |  | Last close releases evdev grab. |
+| VERIFIED |  | `EVIOCSCLOCKID` validates userspace clock id. |
+| VERIFIED |  | `EVIOCREVOKE` marks current open file revoked and later reads fail with `ENODEV`. |
+| VERIFIED |  | VFS has file-aware read/poll/release hooks for evdev semantics. |
+| VERIFIED | B326-userspace-seat-driver-proof | Obsolete crate-level EVIOC recognizer removed. |
+| VERIFIED |  | `EVIOCGREP`/`EVIOCSREP` implemented in real evdev file ioctl handler. |
 | NOT DONE |  | Virtio-gpu remove is keyed to owning child key. |
 | NOT DONE |  | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
 | NOT DONE | TBD | Virtio-gpu probe-failure unwind removes only failed child scanout. |

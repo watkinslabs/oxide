@@ -15,6 +15,32 @@ use core::sync::atomic::AtomicU32;
 #[cfg(target_arch = "aarch64")]
 pub static PERIOD: AtomicU32 = AtomicU32::new(0);
 
+const CNTKCTL_EL0PCTEN: u64 = 1 << 0;
+const CNTKCTL_EL0VCTEN: u64 = 1 << 1;
+const CNTKCTL_EL0_COUNTER_ACCESS: u64 = CNTKCTL_EL0PCTEN | CNTKCTL_EL0VCTEN;
+
+/// Enable EL0 reads of the architected physical/virtual counter.
+///
+/// # SAFETY: privileged sysreg RMW on this PE; caller runs during CPU
+/// bring-up before untrusted EL0 code executes on that PE.
+/// # C: O(1)
+/// # Ctx: CPU bring-up, IRQ-off
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn enable_el0_counter_access() {
+    // SAFETY: CNTKCTL_EL1 is this PE's EL1 timer-control register; RMW only sets Linux-compatible EL0 counter read enable bits.
+    unsafe {
+        core::arch::asm!(
+            "mrs x9, cntkctl_el1",
+            "orr x9, x9, {mask}",
+            "msr cntkctl_el1, x9",
+            "isb",
+            mask = in(reg) CNTKCTL_EL0_COUNTER_ACCESS,
+            out("x9") _,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
 /// Run a polled smoke and return (before, after) TVAL readings.
 /// Returns `None` if the kernel target lacks the timer (host).
 ///
