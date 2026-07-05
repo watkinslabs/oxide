@@ -414,7 +414,7 @@ Evidence:
 
 ## B346-drm-fb-scanout-resource-lifetime
 
-Status: `VERIFIED, commit/PR merge pending`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B346-drm-fb-scanout-resource-lifetime`
 
@@ -435,3 +435,4 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/dumb/tests.rs` 495 lines, `dumb/tables.rs` 203, `dumb/ioctl.rs` 142, `driver_progress.md` below markdown cap. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b346-drm-fb-scanout-resource-lifetime-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b346-drm-fb-scanout-resource-lifetime-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
