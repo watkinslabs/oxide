@@ -24,6 +24,13 @@ pub mod tree;
 pub(crate) mod hole;
 
 pub use address_space::{AddressSpace, MIN_USER_VA, MMAP_BASE_GAP};
+pub use address_space::{
+    prctl_mm_map_size, validate_mm_map, PrctlMmMap,
+    PR_SET_MM_ARG_END, PR_SET_MM_ARG_START, PR_SET_MM_AUXV, PR_SET_MM_BRK,
+    PR_SET_MM_END_CODE, PR_SET_MM_END_DATA, PR_SET_MM_ENV_END, PR_SET_MM_ENV_START,
+    PR_SET_MM_EXE_FILE, PR_SET_MM_MAP, PR_SET_MM_MAP_SIZE, PR_SET_MM_START_BRK,
+    PR_SET_MM_START_CODE, PR_SET_MM_START_DATA, PR_SET_MM_START_STACK,
+};
 pub use anon_vma::{AnonVma, RmapTarget};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
@@ -85,6 +92,11 @@ mod torture_tests;
 // PT walker. Pins the F156 boot fix in place.
 #[cfg(test)]
 mod tests_rmap_cow;
+
+// B430: prctl(PR_SET_MM) field storage / ordering validation / whole-map
+// apply + fork-copy of the mm layout.
+#[cfg(test)]
+mod tests_setmm;
 
 // fork+COW data-isolation + refcount-accuracy reproduction (multi-AS PTs).
 #[cfg(test)]

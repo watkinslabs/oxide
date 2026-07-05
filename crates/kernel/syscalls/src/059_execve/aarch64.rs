@@ -98,6 +98,10 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
+    // Record the ELF code/data bounds + initial brk (Linux mm->start_code..
+    // end_data + start_brk); /proc/<pid>/stat + PR_SET_MM validation read these.
+    new_as.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
+    new_as.set_start_brk(img.brk.as_u64());
     let rlim_stack: u64 = {
         // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU; we only read, no concurrent writer.
         let (rc, _) = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::STACK] };
@@ -166,7 +170,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         }
     }
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
-    let new_sp = match unsafe {
+    let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,
             &argv_slices[..argc],
@@ -178,9 +182,16 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
         )
     } {
-        Some(sp) => sp,
+        Some(l) => l,
         None => return -(Errno::Enomem.as_i32() as i64),
     };
+    let new_sp = layout.sp;
+    // Record argv/env string-block bounds + initial sp (Linux
+    // mm->arg_start..env_end + start_stack) for /proc + PR_SET_MM baseline.
+    // SAFETY: running task on this CPU; preempt-off; no concurrent execve.
+    if let Some(mm) = unsafe { cur.mm_ref() } {
+        mm.set_arg_env_stack(layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, new_sp);
+    }
     let _ = Ordering::Acquire;
     // SAFETY: caller is `oxide_syscall_dispatch` running on cur's per-task kernel stack; current_svc_frame() points at the live saved tail; the SVC asm restores ELR_EL1 / SP_EL0 / x0 from these same slots after we return; preempt-off, single-CPU UP.
     let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
