@@ -5,107 +5,16 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B344-drm-setcrtc-pageflip-card-route`.
+Current marker: `>>> ACTIVE >>> B345-drm-dumb-fb-card-owned`.
 
-## B327-virtio-input-queue-quiesce
+## Archived Completed B327-B330
 
-Status: `VERIFIED`, commit/PR pending.
-
-Branch: `B327-virtio-input-queue-quiesce`
-
-Target rows:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-input clears event-queue bottom half when last queue removed. |
-| VERIFIED | Virtio-input shutdown uses explicit event-queue quiesce path. |
-| VERIFIED | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| `cargo test -p drv-virtio-input drain::tests -- --nocapture` | PASS: targeted queue ownership tests prove removing one event queue keeps the shared drain handler, removing the last event queue clears it, and a missing child key does not remove another device queue. |
-| `cargo test -p drv-virtio-input` | PASS: 36 hosted tests. |
-| `make smoke-driver-path-x86` | DONE: PASS. Log: `/tmp/b327-queue-quiesce-x86.log`; runtime reported `driver_path_smoke: PASS - GPU input sound block net`. |
-| `make smoke-driver-path-arm` | PASS on clean rerun. Log: `/tmp/b327-queue-quiesce-arm-rerun.log`; runtime reported `driver_path_smoke: PASS - GPU input sound block net`. Earlier failed log `/tmp/b327-queue-quiesce-arm.log` is retained as an intermittent ARM no-progress follow-up. |
-| pre-push `boot-smoke` | PASS: x86 passed; ARM timed out on attempt 1 with the same no-progress watchdog, then reached `oxide login:` in 16s on attempt 2. Failed log: `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`. |
-
-Implementation note:
-
-| Item | Current finding |
-|---|---|
-| Queue ownership | `shutdown_eventq` and `uninstall_eventq` now use typed `VirtioChildDeviceKey` ownership through `take_eventq`; shared softirq release is centralized in `release_handler_if_last`. |
-| ARM intermittent finding | NOT DONE row recorded in `driver_plan.md`: ARM no-progress watchdog reproduced in fast driver-path and pre-push login smoke, but both gates passed on rerun; root-cause separately. |
-| Follow-up ledger | NOT DONE follow-up recorded in `driver_plan.md`: split `drain.rs` into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
-
-## B328-virtio-input-drain-split
-
-Status: `VERIFIED`; merged by PR #2390.
-
-Branch: `B328-virtio-input-drain-split`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source split | PASS: parent manifest `drain.rs` is 19 lines; child modules are `key_event.rs` 99, `queue.rs` 146, `ring.rs` 46, `tests.rs` 110. |
-| `cargo test -p drv-virtio-input` | PASS: 36 tests, 0 failed. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b328-drain-split-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b328-drain-split-arm.log`. |
-
-## B329-virtio-gpu-remove-child-key
-
-Status: `VERIFIED`; merged by PR #2389.
-
-Branch: `B329-virtio-gpu-remove-child-key`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-gpu remove is keyed to owning child key. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source fix | PASS: `VirtioGpuOps::remove_child` no longer calls the BDF-keyed `unpublish_console_scanout(device_key.raw())`; `drv_virtio_gpu::uninstall(device_key)` looks up the owner by child key and unpublishes the installed device BDF. |
-| `cargo test -p drv-virtio-gpu uninstall_selects_owner_by_child_key_not_raw_bdf -- --nocapture` | PASS: regression uses child-key raw values that differ from and overlap other device BDFs. |
-| `cargo test -p drv-virtio-gpu` | PASS: 27 tests, 0 failed. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b329-gpu-remove-key-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b329-gpu-remove-key-arm.log`. |
-| Line cap | PASS: `virtio_child.rs` 368 lines, `drv-virtio-gpu/src/tests.rs` 473 lines, `device.rs` 365 lines. |
-
-## B330-virtio-gpu-remove-teardown-order
-
-Status: `VERIFIED`; merged by PR #2391.
-
-Branch: `B330-virtio-gpu-remove-teardown-order`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `VirtioGpuOps::remove_child` calls `drv_virtio_gpu::uninstall(device_key)` before `post_init::uninstall_scanout(device_key)`. |
-| Teardown order | PASS: `uninstall` unregisters DRM hooks, unpublishes console scanout by installed BDF, clears klog/tty/fbcon/fbdev hooks through `unpublish_console_scanout`, then returns before `uninstall_scanout` resets/frees scanout backing. |
-| `cargo test -p drv-virtio-gpu uninstall_selects_owner_by_child_key_not_raw_bdf -- --nocapture` | PASS. |
-| `cargo test -p drv-virtio-gpu` | PASS: 27 tests, 0 failed. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b330-gpu-remove-teardown-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b330-gpu-remove-teardown-arm.log`. |
-| Line cap | PASS: `virtio_child.rs` 368 lines, `device.rs` 365, `post_init/scanout.rs` 278, `drv-virtio-gpu/src/tests.rs` 473. |
+| Branch | Status | Evidence |
+|---|---|---|
+| B327-virtio-input-queue-quiesce | VERIFIED | Queue ownership tests, full virtio-input tests, x86/ARM driver-path proof; ARM intermittent logged in `driver_plan.md`. |
+| B328-virtio-input-drain-split | VERIFIED | Drain split source audit, full virtio-input tests, x86/ARM driver-path proof. |
+| B329-virtio-gpu-remove-child-key | VERIFIED | Child-key remove regression, full virtio-gpu tests, x86/ARM driver-path proof. |
+| B330-virtio-gpu-remove-teardown-order | VERIFIED | Teardown-order source audit, full virtio-gpu tests, x86/ARM driver-path proof. |
 
 ## B331-virtio-gpu-probe-failure-unwind
 
@@ -452,7 +361,7 @@ Evidence:
 
 ## B344-drm-setcrtc-pageflip-card-route
 
-Status: `VERIFIED, commit/PR merge pending`.
+Status: `VERIFIED, PR #2397 merged`.
 
 Branch: `B344-drm-setcrtc-pageflip-card-route`
 
@@ -474,3 +383,30 @@ Evidence:
 | Line cap | PASS: `node/tests.rs` 472, `node/scanout.rs` 57, `crtc.rs` 433, `runtime.rs` 97, `driver_progress.md` under cap. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b344-drm-setcrtc-pageflip-card-route-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b344-drm-setcrtc-pageflip-card-route-arm.log`. |
+| Pre-push boot smoke | PASS: both arches reached `oxide login:` before push. |
+| PR | PASS: PR #2397 merged and local `main` synced to `origin/main` at `55488c5b`. |
+
+## B345-drm-dumb-fb-card-owned
+
+Status: `VERIFIED, commit/PR merge pending`.
+
+Branch: `B345-drm-dumb-fb-card-owned`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | DRM dumb buffers and FB metadata are card-owned. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `DumbBuf` and `FbObj` carry `card_id`; ioctl, mmap, scanout, RMFB, and unregister paths look up/remove by `card_id`; inode mmap routing decodes the owning card id before table lookup. |
+| `cargo test -p drm card_state_isolated -- --nocapture` | PASS: same numeric handle and same `fb_id` on two cards stay isolated across remove. |
+| `cargo test -p drm` | PASS: 59 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `dumb/tests.rs` 458, `dumb/tables.rs` 203, `dumb/ioctl.rs` 142, `driver_progress.md` under cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-arm.log`. |
+| Pre-push boot smoke | PASS: both arches reached `oxide login:` before push. |
