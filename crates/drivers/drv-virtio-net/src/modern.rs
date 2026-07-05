@@ -1,13 +1,13 @@
-// Modern virtio-net runtime state (arch-neutral). The boot-time probe
-// in `pci_boot::virtio_drv` brings up cap discovery, BAR mapping, queue
-// program, DRIVER_OK, and MSI-X bind; once that finishes it hands the
-// persistent kernel-side addresses here via `init_modern`. Runtime paths
+// Modern virtio-net runtime state (arch-neutral). The transport backend brings
+// up cap discovery, BAR mapping, queue program, DRIVER_OK, and MSI-X bind; once
+// that finishes it hands persistent kernel-side addresses here via
+// `init_modern`. Runtime paths
 // consume the stashed state to drive RX-poll, TX, and ARP through
 // `crate::net::stack`.
 //
 // Kept arch-neutral because every operation post-bring-up is MMIO
-// (notify_cap window) + HHDM (ring frames). `pci_boot::virtio_drv`
-// already speaks both arches, so the runtime side does too.
+// (notify_cap window) + HHDM (ring frames). The transport backend already
+// speaks both arches, so the runtime side does too.
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};

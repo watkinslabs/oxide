@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B488-pci-transport-no-child-driver-decls; VERIFIED pending PR merge.
+Current marker: B489-child-probes-no-transport-callback-imports; VERIFIED pending PR merge.
+
+## B489 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B489-child-probes-no-transport-callback-imports | VERIFIED | Fresh main `135f7977` after PR #2546 merge. Source audit proves child crates do not import PCI transport helper callbacks such as `VirtioPciTransport`, `VirtioPciAcquisition`, `VirtioProbe`, `bind_msix_vector`, queue programming, or transport MMIO publish/unpublish helpers; child probes consume `VirtioChildTransportSession` plus child crate profile/install/remove/shutdown APIs; the only transport cleanup callback is centralized in `virtio_child.rs` remove handling through `virtio::run_child_remove`; stale child-crate comments naming `pci_boot::virtio_drv` were replaced with generic transport-backend wording. Checks pass: `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 35s. |
 
 ## B488 Current
 
