@@ -148,7 +148,7 @@ Evidence:
 
 ## B329-virtio-gpu-remove-child-key
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B329-virtio-gpu-remove-child-key`
 
@@ -156,10 +156,15 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | Virtio-gpu remove is keyed to owning child key. |
+| VERIFIED | Virtio-gpu remove is keyed to owning child key. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source fix | PASS: `VirtioGpuOps::remove_child` no longer calls the BDF-keyed `unpublish_console_scanout(device_key.raw())`; `drv_virtio_gpu::uninstall(device_key)` looks up the owner by child key and unpublishes the installed device BDF. |
+| `cargo test -p drv-virtio-gpu uninstall_selects_owner_by_child_key_not_raw_bdf -- --nocapture` | PASS: regression uses child-key raw values that differ from and overlap other device BDFs. |
+| `cargo test -p drv-virtio-gpu` | PASS: 27 tests, 0 failed. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b329-gpu-remove-key-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b329-gpu-remove-key-arm.log`. |
+| Line cap | PASS: `virtio_child.rs` 368 lines, `drv-virtio-gpu/src/tests.rs` 473 lines, `device.rs` 365 lines. |
