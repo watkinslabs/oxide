@@ -36,5 +36,5 @@ pub use registry::{DevId, TtyRegistry};
 // devpts::allocate_pair, the VT registry). Per-module results use the
 // VfsError / ReadOutcome types in their own files.
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
 pub mod live;

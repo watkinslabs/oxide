@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B361-shutdown-scanout-quiesce-in-place`.
+Current marker: `>>> ACTIVE >>> B362-fbcon-foreground-owner`.
 
 ## Archived Completed B327-B330
 
@@ -471,8 +471,16 @@ Evidence: source audit found `publish_console_scanout` claimed `CONSOLE_OWNER_KE
 
 ## B361-shutdown-scanout-quiesce-in-place
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2414.
 
 Branch: `B361-shutdown-scanout-quiesce-in-place`
 
-Evidence: source audit found `shutdown_scanout` mutates the matching `ScanoutCtx` in place by setting `quiesced = true`, writes the device scanout disable register when live `cfg_va` exists, and does not remove CTX, fbdev idx, framebuffer VA/size, allocation count, command-buffer PA, or fbdev record. Added `shutdown_scanout_quiesces_without_dropping_publication_metadata`; focused regression, full `cargo test -p drv-virtio-gpu` with 35 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found `shutdown_scanout` mutates the matching `ScanoutCtx` in place by setting `quiesced = true`, writes the device scanout disable register when live `cfg_va` exists, and does not remove CTX, fbdev idx, framebuffer VA/size, allocation count, command-buffer PA, or fbdev record. Added `shutdown_scanout_quiesces_without_dropping_publication_metadata`; focused regression, full `cargo test -p drv-virtio-gpu` with 35 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2414, and main sync `380a7e00` pass.
+
+## B362-fbcon-foreground-owner
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B362-fbcon-foreground-owner`
+
+Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.

@@ -13,3 +13,6 @@ klog    = { path = "../../shared/klog" }
 sync    = { path = "../../shared/sync" }
 fbcon   = { path = "../../drivers/fbcon" }
 tty     = { path = "../../kernel/tty" }
+
+[dev-dependencies]
+tty     = { path = "../../kernel/tty", features = ["hosted"] }

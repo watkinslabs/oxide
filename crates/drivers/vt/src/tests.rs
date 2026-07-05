@@ -9,6 +9,8 @@ fn reset() -> sync::Guard<'static, (), DriverLockClass> {
     PENDING_SWITCH.store(0, Ordering::Release);
     OWNER_ALIVE.store(core::ptr::null_mut(), Ordering::Release);
     ON_SWITCH.store(core::ptr::null_mut(), Ordering::Release);
+    tty::live::set_foreground(1);
+    fbcon::kernel::kernel_unregister();
     {
         let mut g = SLOTS.lock();
         for s in g.iter_mut() {
@@ -45,6 +47,20 @@ fn activate_switches_and_allocates() {
     activate(3).unwrap();
     assert_eq!(active(), 3);
     assert!(slot(3).unwrap().allocated);
+}
+
+fn flush_stub(_pixels: &[u8]) {}
+
+#[test]
+fn activate_publishes_single_foreground_to_tty_and_fbcon() {
+    let _vts = reset();
+    fbcon::kernel::kernel_init(640, 480, flush_stub);
+    unsafe { init().unwrap(); }
+    activate(3).unwrap();
+    assert_eq!(active(), 3);
+    assert_eq!(tty::live::foreground(), 3);
+    assert_eq!(fbcon::kernel::foreground(), 3);
+    fbcon::kernel::kernel_unregister();
 }
 
 #[test]
