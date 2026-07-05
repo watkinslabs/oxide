@@ -20,6 +20,7 @@ use sync::{Devices as DevClass, Spinlock};
 use crate::inode::{Inode, InodeBuilder, InodeRef};
 use crate::inode_ops::InodeOps;
 use crate::file_ops::{FileOps, default_file_ops};
+use crate::poll_subs::PollSubscribers;
 use crate::superblock::SuperBlock;
 use crate::types::{FileType, Ino, KResult, VfsError};
 
@@ -322,12 +323,15 @@ pub fn make_device_node_inode(ino: Ino, ft: FileType, devt: Devt, perm: u16, sb:
 }
 
 /// Build a FIFO/named-pipe inode (Linux `S_IFIFO`): no `i_rdev`, the DEFAULT
-/// `i_fop` (the pipe buffer + read/write op bind at `open(2)` via `fifo_open`,
-/// not on the bare on-disk inode, so a direct read/write is `EINVAL`). # C: O(1)
+/// `i_fop` on the bare on-disk inode. The shared pipe ring + the pipe read/
+/// write/poll vtable bind PER-OPEN at `open(2)` via `fs::pipe::fifo_open`
+/// (which swaps `file->f_op` to `pipefifo_fops`); a `poll_subs` set is attached
+/// so epoll/poll on the FIFO can receive readiness edges. # C: O(1)
 pub fn make_fifo_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> InodeRef {
     let mode = (FileType::Fifo.to_ifmt() as u32) | (perm as u32 & 0o7777);
     InodeBuilder::new(ino, mode, Arc::new(SpecialInodeOps), default_file_ops())
-        .sb(sb).private(Arc::new(DeviceNodeData { ft: FileType::Fifo, devt: Devt(0) })).build()
+        .sb(sb).poll_subs(PollSubscribers::new())
+        .private(Arc::new(DeviceNodeData { ft: FileType::Fifo, devt: Devt(0) })).build()
 }
 
 /// Build a socket inode (Linux `S_IFSOCK`): no `i_rdev`, `open(2)` by path →
