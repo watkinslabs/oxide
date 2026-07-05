@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B476-driver-hardening-expansion; IN AUDIT.
+ACTIVE NOW: none; B476 verified pending PR merge.
 
-Current active item: Expand driver fault injection, hotplug stress, and multi-device hardening after single-device desktop proof.
+Current active item: none; next branch must be claimed from fresh `origin/main`.
 
 Next gate after merge: return to fresh `origin/main` before claiming B477 using
 `metadata/index.md`.
@@ -29,7 +29,7 @@ Status legend:
 | SOURCE OK | B001-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
 | VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
 | VERIFIED | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME remains final seat gate only. |
-| ACTIVE | B476-driver-hardening-expansion | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
+| VERIFIED | B476-driver-hardening-expansion | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening: added hosted driver-core stress regression `multi_device_fault_hotplug_cycle_keeps_model_state_consistent` covering repeated multi-device platform and PCI publication, automatic bind, duplicate rejection, explicit unbind/rebind, failed-probe retry while unbound, device_del teardown, and identity reuse. Remaining QEMU live hotplug breadth stays tracked by B415 and its concrete rows. |
 | VERIFIED | B425-no-flat-driverentry-probeall | Old flat `DriverEntry` / `probe_all(bdf)` live driver path is absent from current source: `rg` over `crates/`, `userspace/`, and `tools/` finds no live `DriverEntry` or `probe_all` symbols, and `crates/drivers/drv/src/model.rs` is the authoritative registry/bind/probe path. `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | VERIFIED | B426-drv-model-authoritative-proof | `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` are authoritative in `crates/drivers/drv/src/model.rs`: `drv/src/lib.rs` re-exports the model API, production driver/sysfs/devfs/block/sound/DRM call sites route through these functions, no public `auto_bind`/`register_device`/infallible `device_add` bypass remains, and `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | VERIFIED | B427-no-public-auto-bind | Public `drv::auto_bind` is removed; automatic attachment is internal to `try_device_add` and `register_driver`: source search finds no `auto_bind` API, `try_device_add` calls private `attach_device_to_registered_drivers`, `register_driver` calls private `attach_driver_to_existing_devices`, both helpers call private `bind_inner`, focused auto-attach/no-initial-bind-change tests pass, and full `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
