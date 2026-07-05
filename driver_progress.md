@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B466-i8042-keyboard-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: none; B467-remove-public-register-device-bypasses VERIFIED pending PR merge.
+
+## B467 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B467-remove-public-register-device-bypasses | VERIFIED | Fresh main `280498ff` after PR #2524 merge; source audit proves `crates/drivers/drv/src/lib.rs` re-exports the authoritative model surface through `register_driver`, fallible `try_device_add`, `device_del`, `bind_addr`, and `unbind`, with no public `register_device` API. `rg -n '\bregister_device\b' crates userspace tools --glob '*.rs' --glob '*.c' --glob '*.h'` and `rg -n 'pub .*register_device|fn register_device|register_device' crates/drivers/drv/src crates/kernel crates/drivers --glob '*.rs'` return no matches; production publication search shows hardware and class devices route through `drv::try_device_add`. Checks pass: `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B466 Current
 
