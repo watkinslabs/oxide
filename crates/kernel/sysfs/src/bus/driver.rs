@@ -90,6 +90,7 @@ struct DriverAttrOps;
 impl FileOps for DriverAttrOps {
     fn read(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Ok(0) }
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
         let data = inode.private::<DriverAttrData>().ok_or(VfsError::Einval)?;
         let addr = sysfs_write_token(buf)?;
         match data.attr {
