@@ -734,3 +734,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B444-i8042-platform-model-attach | VERIFIED | Fresh main `6fe6f3f6` after PR #2501 merge; source audit proves x86_64 `crates/kernel/kmain/src/kmain/runtime.rs::init_ps2_keyboard` gets `drv_ps2_keyboard::driver()`, installs probe data with `configure_probe`, publishes `platform/i8042` through `platform_device_or_panic` / `drv::try_device_add`, then calls `drv::register_driver(ps2_drv)`. `crates/drivers/drv-ps2-keyboard/src/lib.rs` implements `Ps2KbdDriver` as a `platform` model driver named `i8042-kbd` that matches only addr `i8042`; `probe` performs i8042 bring-up and IRQ1 setup, returning `ProbeFailed` on absent hardware so the model device remains unbound. The aarch64 boot hook is an explicit no-op and the driver crate uses the no-op shell outside `x86_64` `oxide-kernel`, which is correct because QEMU `virt` has no i8042. Hosted checks pass: `cargo test -p drv-ps2-keyboard -- --nocapture`, `cargo test -p drv -- driver_registration_binds_existing_matching_devices -- --nocapture`, and `cargo test -p drv -- try_device_add_rejects_duplicate_bus_identity -- --nocapture`. Runtime x86_64 proof passes: `SMOKE_KEEP_LOG=/tmp/b444-i8042-platform-model-attach-x86.log ./tools/boot-smoke.sh x86 240` reached `oxide login:` in 12s attempt 1, and the saved log contains `[INFO]  i8042 keyboard detected`. aarch64 runtime non-regression is inherited from B443 `make smoke-arm SMOKE_TIMEOUT=300` because B444 is docs/metadata only and the i8042 path is compiled out on aarch64. |
+
+## B445 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B445-sysfs-bind-entry-production | IN AUDIT | Fresh main `7e807a39` after PR #2502 merge; auditing production explicit bind entry at `/sys/bus/*/drivers/*/bind`. |
