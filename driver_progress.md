@@ -674,3 +674,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B434-model-binding-bus-driver-match | VERIFIED | Fresh main `b8ccf81a` after PR #2489 merge; source audit proves `match_driver` only considers drivers on `dev.bus`, `find_driver_on_bus` resolves explicit binds by `(bus, driver_name)`, and `driver_matches_device` rejects wrong-bus drivers before checking `driver_override` or `Driver::matches`. `bind_inner` then returns `drv::Error::NoMatch` when a same-bus driver exists but does not match the device. Added regression `bind_rejects_same_bus_driver_when_device_does_not_match`, including cleanup with `device_del` after an initial full-suite run exposed test registry leakage. Hosted proof passes: the new focused test, `cargo test -p drv bind_resolves_driver_on_device_bus -- --nocapture`, `cargo test -p drv driver_override_stays_on_device_bus -- --nocapture`, `cargo test -p drv driver_names_are_bus_scoped -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. Pre-push boot smoke passed on x86_64 and aarch64; ARM reached `oxide login:` in 26s on attempt 1. |
+
+## B435 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B435-model-binding-calls-probe | IN AUDIT | Fresh main `8f884b46` after PR #2490 merge; auditing the driver-core path that must call `Driver::probe` before recording a binding. |
