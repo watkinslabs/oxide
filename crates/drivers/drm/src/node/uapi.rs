@@ -1,5 +1,6 @@
 use crate::{
     DRM_MODE_ATOMIC_ALLOW_MODESET, DRM_MODE_ATOMIC_NONBLOCK, DRM_MODE_ATOMIC_TEST_ONLY,
+    DRM_MODE_PAGE_FLIP_ASYNC, DRM_MODE_PAGE_FLIP_EVENT,
 };
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
@@ -32,7 +33,7 @@ pub(super) struct DrmSetVersion {
     pub(super) drm_dd_minor: i32,
 }
 
-/// `struct drm_mode_atomic` Linux UAPI (56 bytes on 64-bit).
+/// `struct drm_mode_atomic` Linux UAPI (64 bytes on 64-bit).
 #[repr(C)]
 pub(super) struct DrmModeAtomic {
     pub(super) flags:           u32,
@@ -42,12 +43,14 @@ pub(super) struct DrmModeAtomic {
     pub(super) props_ptr:       u64,
     pub(super) prop_values_ptr: u64,
     pub(super) reserved:        u64,
+    pub(super) user_data:       u64,
 }
 
 pub(super) const DRM_IF_MAJOR: i32 = 1;
 pub(super) const DRM_IF_MINOR: i32 = 4;
 pub(super) const DRM_MODE_ATOMIC_SUPPORTED_FLAGS: u32 =
-    DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
+    DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC | DRM_MODE_ATOMIC_TEST_ONLY |
+    DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
 
 // Fallback strings used when no DrmDriver is registered (e.g.
 // QEMU launched without -device virtio-gpu-pci).

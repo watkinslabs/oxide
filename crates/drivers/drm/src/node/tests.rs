@@ -297,7 +297,7 @@ fn record_boot(driver_key: u32) -> u32 {
 
         clear_master_owner(0);
         let card = open_file(make_card_inode(0));
-        let mut atomic = [0u8; 56];
+        let mut atomic = [0u8; core::mem::size_of::<DrmModeAtomic>()];
         atomic[0..4].copy_from_slice(&DRM_MODE_ATOMIC_TEST_ONLY.to_le_bytes());
         let atomic_arg = atomic.as_mut_ptr() as u64;
         assert_eq!(
@@ -331,7 +331,14 @@ fn record_boot(driver_key: u32) -> u32 {
             props_ptr: 0,
             prop_values_ptr: 0,
             reserved: 0,
+            user_data: 0,
         };
+        assert_eq!(
+            handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut bad_flags as *mut DrmModeAtomic) as u64),
+            Some(-(Errno::Einval.as_i32() as i64))
+        );
+        bad_flags.flags = DRM_MODE_ATOMIC_TEST_ONLY;
+        bad_flags.reserved = 1;
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut bad_flags as *mut DrmModeAtomic) as u64),
             Some(-(Errno::Einval.as_i32() as i64))
@@ -345,6 +352,7 @@ fn record_boot(driver_key: u32) -> u32 {
             props_ptr: 0,
             prop_values_ptr: 0,
             reserved: 0,
+            user_data: 0,
         };
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut bad_arrays as *mut DrmModeAtomic) as u64),
@@ -363,6 +371,7 @@ fn record_boot(driver_key: u32) -> u32 {
             props_ptr: props.as_mut_ptr() as u64,
             prop_values_ptr: values.as_mut_ptr() as u64,
             reserved: 0,
+            user_data: 0,
         };
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut unsupported_commit as *mut DrmModeAtomic) as u64),

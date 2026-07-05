@@ -54,7 +54,7 @@ pub const DRM_IOCTL_MODE_ADDFB2:            u64 = 0xc06864b8;
 pub const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u64 = 0xc02064b9;
 pub const DRM_IOCTL_MODE_OBJ_SETPROPERTY:   u64 = 0xc01864ba;
 pub const DRM_IOCTL_MODE_CURSOR2:           u64 = 0xc02464bf;
-pub const DRM_IOCTL_MODE_ATOMIC:            u64 = 0xc03864bc;
+pub const DRM_IOCTL_MODE_ATOMIC:            u64 = 0xc04064bc;
 pub const DRM_IOCTL_MODE_CREATEPROPBLOB:    u64 = 0xc01064bd;
 pub const DRM_IOCTL_MODE_DESTROYPROPBLOB:   u64 = 0xc00464be;
 
