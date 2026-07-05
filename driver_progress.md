@@ -448,8 +448,8 @@ Evidence: source audit proves MODE_MAP_DUMB mmap pins through `drm::node::pin_mm
 
 ## B364-drm-map-dumb-cookie-validation
 
-Status: `CLAIMED`; source audit starting.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B364-drm-map-dumb-cookie-validation`
 
-Evidence: claimed from fresh `main` at `89ab2e44`; duplicate-lane check found no existing B364/MODE_MAP_DUMB cookie branch or worktree. Next: audit dumb-map offset encoding/decoding and prove cookies are high-tagged and validated.
+Evidence: source audit proves `cookie_for` sets tag bit 48 and handle bits 12..43, while `handle_of_cookie` rejects missing tag, zero handle, low page-offset bits, and out-of-layout bits before `pin_mmap`/`mmap_backing` lookup. Existing `cookie_round_trip`, full `cargo test -p drm`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass. First ARM attempts hit external vhost CID conflict and transient userspace watchdog; clean rerun passed.
