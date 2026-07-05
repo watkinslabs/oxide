@@ -74,8 +74,8 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     }
     // SAFETY: handler fn is 'static; pre-init single-CPU swap.
     unsafe { hal_x86_64::install_fault_handler(user_fault_handler); }
-    // Arm the LAPIC periodic timer so preemption + tick_poll_uart run under
-    // userspace (else login parks on read(0) forever).
+    // Arm the LAPIC periodic timer so preemption and deadline wakes run under
+    // userspace. UART RX is owned by the 8250 IRQ4 handler.
     // SAFETY: LAPIC enabled by smoke_device_map_x86; same period as boot.
     unsafe { let _ = arch_irq::lapic::timer_periodic(1_000_000); }
     // NB: IRQs stay MASKED across the init spawn below. `spawn_user_blob_
@@ -133,9 +133,9 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
 
     // Idle anchor. schedule() runs any runnable task (diverging into it); it
     // returns here only when nothing is runnable — then sti+hlt parks the CPU
-    // with IRQs ENABLED so the periodic timer keeps firing. The tick drains
-    // UART RX and runs tick_wake_expired, which rouses a task parked on a
-    // poll/select deadline (e.g. systemd's terminal-query ppoll) or on stdin.
+    // with IRQs ENABLED so the periodic timer keeps firing. UART IRQs deliver
+    // stdin bytes, while the timer tick runs tick_wake_expired for tasks parked
+    // on poll/select deadlines (e.g. systemd's terminal-query ppoll).
     // A bare `loop { schedule() }` spins with IF=0 after the first switch-back,
     // so no timer IRQ fires and deadline waits hang forever.
     loop {
@@ -306,8 +306,8 @@ unsafe fn spawn_user_blob_with_vpid(
     // when (a) the task exits via sys_exit, or (b) the task
     // parks (e.g. blocks on `read`) and no other runnable task
     // is on this CPU's runqueue. In case (b), run_as_task's
-    // schedule-forever loop (IRQs on) keeps timer IRQs firing,
-    // which drains UART RX + wakes the parked task next round.
+    // schedule-forever loop (IRQs on) keeps timer IRQs firing for deadlines;
+    // UART RX wakeups arrive through the owning serial IRQ handler.
     // SAFETY: process ctx; runqueue installed; preempt-off.
     unsafe { sched::live::schedule(); }
 }
