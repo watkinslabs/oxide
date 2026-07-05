@@ -139,4 +139,24 @@ mod tests {
         assert_eq!(crate::remove_device(device_key), Some(7));
         crate::registry::clear_devices_for_tests();
     }
+
+    #[test]
+    fn devices_body_lists_multiple_input_records_in_event_order() {
+        crate::registry::clear_devices_for_tests();
+        let later = key(0x2000_0000);
+        let first = key(0x1000_0000);
+        crate::install(test_dev(later, 1));
+        crate::install(test_dev(first, 0));
+
+        let body = String::from_utf8(devices_body()).expect("valid proc devices body");
+        let event0 = body.find("H: Handlers=event0\n").expect("event0 handler");
+        let event1 = body.find("H: Handlers=event1\n").expect("event1 handler");
+        assert!(event0 < event1);
+        assert!(body.contains("P: Phys=virtio/input0\n"));
+        assert!(body.contains("P: Phys=virtio/input1\n"));
+        assert!(body.contains("S: Sysfs=/devices/virtual/input/event0\n"));
+        assert!(body.contains("S: Sysfs=/devices/virtual/input/event1\n"));
+
+        crate::registry::clear_devices_for_tests();
+    }
 }

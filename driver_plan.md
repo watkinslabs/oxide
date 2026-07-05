@@ -236,7 +236,7 @@ Status legend:
 | SOURCE OK | TBD | NVMe duplicate binds rejected before controller bring-up; needs hosted/live proof. |
 | SOURCE OK | TBD | AHCI duplicate binds rejected before HBA bring-up; needs hosted/live proof. |
 | SOURCE OK |  | AHCI publishes ATA IDENTIFY serial into block registry. |
-| NOT DONE |  | Virtio-input supports multiple input device records. |
+| VERIFIED | B326-userspace-seat-driver-proof | Virtio-input supports multiple input device records. |
 | VERIFIED |  | Virtio-input publishes `/dev/input/eventN` through model-owned devices. |
 | VERIFIED |  | `/proc/bus/input/devices` derives from live input state. |
 | NOT DONE |  | Virtio-input clears event-queue bottom half when last queue removed. |
