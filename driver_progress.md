@@ -715,4 +715,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B441-initial-autoprobe-no-bind-change | IN AUDIT | Fresh main `32df2ea1` after PR #2496 merge; auditing that initial auto-probe suppresses separate bind-change events before add uevent. |
+| B441-initial-autoprobe-no-bind-change | VERIFIED | Fresh main `32df2ea1` after PR #2496 merge; source audit proves `try_device_add` calls `attach_device_to_registered_drivers(&d, false)`, and `bind_inner` only fires `BIND_HOOK` when `emit_bind_event` is true. Hosted checks pass: `cargo test -p drv device_add_initial_probe_precedes_add_uevent_without_bind_change -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. The focused regression installs a bind hook, auto-probes a matching registered driver, verifies the device is bound, verifies sysfs add sees the bound state, and verifies `ADD_BIND_EVENTS == 0`. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
