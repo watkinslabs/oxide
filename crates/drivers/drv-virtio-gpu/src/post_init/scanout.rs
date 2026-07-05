@@ -1,17 +1,21 @@
 use super::*;
 
-pub(super) fn console_owner_bdf() -> Option<u32> {
-    match CONSOLE_OWNER_BDF.load(Ordering::Acquire) {
-        NO_CONSOLE_OWNER => None,
-        bdf => Some(bdf),
+fn key_from_raw(raw: u32) -> virtio::VirtioChildDeviceKey {
+    virtio::VirtioChildDeviceKey::from_raw(raw)
+}
+
+pub(super) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
+    match CONSOLE_OWNER_KEY.load(Ordering::Acquire) {
+        NO_CONSOLE_OWNER_KEY => None,
+        raw => Some(key_from_raw(raw)),
     }
 }
 
 /// Copy `pixels` into the live framebuffer, then issue transfer+flush.
 pub fn fbcon_flush_pixels(pixels: &[u8]) {
     let g = CTX.lock();
-    let owner = match console_owner_bdf() { Some(bdf) => bdf, None => return };
-    let ctx = match g.iter().find(|ctx| ctx.bdf == owner) { Some(c) => c, None => return };
+    let owner = match console_owner_key() { Some(key) => key, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
     }
@@ -36,9 +40,10 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
     }
 }
 
-pub fn blank_scanout_for_bdf(bdf: u32) {
+pub fn blank_scanout_for_key(owner_raw: u32) {
+    let owner = key_from_raw(owner_raw);
     let g = CTX.lock();
-    let ctx = match g.iter().find(|ctx| ctx.bdf == bdf) { Some(c) => c, None => return };
+    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
     }
@@ -56,8 +61,8 @@ pub fn blank_scanout_for_bdf(bdf: u32) {
     }
 }
 
-pub fn unblank_scanout_for_bdf(bdf: u32) {
-    if console_owner_bdf() == Some(bdf) {
+pub fn unblank_scanout_for_key(owner_raw: u32) {
+    if console_owner_key().map(|key| key.raw()) == Some(owner_raw) {
         fbcon::kernel::force_repaint();
     }
 }
@@ -80,9 +85,9 @@ pub(super) fn install_scanout_ctx(
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn set_scanout_fbdev_idx(bdf: u32, fbdev_idx: Option<u32>) -> bool {
+fn set_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey, fbdev_idx: Option<u32>) -> bool {
     let mut ctxs = CTX.lock();
-    let Some(ctx) = ctxs.iter_mut().find(|ctx| ctx.bdf == bdf) else {
+    let Some(ctx) = ctxs.iter_mut().find(|ctx| ctx.device_key == device_key) else {
         return false;
     };
     ctx.fbdev_idx = fbdev_idx;
@@ -90,9 +95,9 @@ fn set_scanout_fbdev_idx(bdf: u32, fbdev_idx: Option<u32>) -> bool {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn take_scanout_fbdev_idx(bdf: u32) -> Option<u32> {
+fn take_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
     let mut ctxs = CTX.lock();
-    let ctx = ctxs.iter_mut().find(|ctx| ctx.bdf == bdf)?;
+    let ctx = ctxs.iter_mut().find(|ctx| ctx.device_key == device_key)?;
     ctx.fbdev_idx.take()
 }
 
@@ -170,58 +175,62 @@ pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDevic
 
 pub fn scanout_ready() -> bool { !CTX.lock().is_empty() }
 
-pub fn scanout_ready_for_bdf(bdf: u32) -> bool {
-    CTX.lock().iter().any(|ctx| ctx.bdf == bdf)
+pub fn scanout_ready_for_key(owner_raw: u32) -> bool {
+    let owner = key_from_raw(owner_raw);
+    CTX.lock().iter().any(|ctx| ctx.device_key == owner)
 }
 
 pub fn dimensions() -> Option<(u32, u32)> {
-    let owner = console_owner_bdf()?;
-    dimensions_for_bdf(owner)
+    let owner = console_owner_key()?;
+    dimensions_for_key(owner.raw())
 }
 
-pub fn dimensions_for_bdf(bdf: u32) -> Option<(u32, u32)> {
-    CTX.lock().iter().find(|c| c.bdf == bdf).map(|c| (c.w, c.h))
+pub fn dimensions_for_key(owner_raw: u32) -> Option<(u32, u32)> {
+    let owner = key_from_raw(owner_raw);
+    CTX.lock().iter().find(|c| c.device_key == owner).map(|c| (c.w, c.h))
 }
 
 pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
-    let owner = console_owner_bdf()?;
-    framebuffer_for_bdf(owner)
+    let owner = console_owner_key()?;
+    framebuffer_for_key(owner.raw())
 }
 
-pub fn framebuffer_for_bdf(bdf: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
+pub fn framebuffer_for_key(owner_raw: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
+    let owner = key_from_raw(owner_raw);
     let g = CTX.lock();
-    let c = g.iter().find(|ctx| ctx.bdf == bdf)?;
+    let c = g.iter().find(|ctx| ctx.device_key == owner)?;
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub fn publish_console_scanout(bdf: u32) {
-    let Some((w, h)) = dimensions_for_bdf(bdf) else { return };
-    if CONSOLE_OWNER_BDF
-        .compare_exchange(NO_CONSOLE_OWNER, bdf, Ordering::AcqRel, Ordering::Acquire)
+pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
+    let owner_raw = device_key.raw();
+    let Some((w, h)) = dimensions_for_key(owner_raw) else { return };
+    if CONSOLE_OWNER_KEY
+        .compare_exchange(NO_CONSOLE_OWNER_KEY, owner_raw, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return;
     }
 
-    let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer_for_bdf(bdf) else {
-        CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
+    let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer_for_key(owner_raw) else {
+        CONSOLE_OWNER_KEY.store(NO_CONSOLE_OWNER_KEY, Ordering::Release);
         return;
     };
     let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
     if idx == fbdev::INVALID_FB_INDEX
         || !fbdev::set_ops(idx, fbdev::FbOps {
-            driver_key: bdf,
-            flush: super::flush_scanout_for_bdf,
-            blank: blank_scanout_for_bdf,
-            unblank: unblank_scanout_for_bdf,
+            driver_key: owner_raw,
+            flush: super::flush_scanout_for_key,
+            blank: blank_scanout_for_key,
+            unblank: unblank_scanout_for_key,
         })
-        || !set_scanout_fbdev_idx(bdf, Some(idx))
+        || !set_scanout_fbdev_idx(device_key, Some(idx))
     {
         if idx != fbdev::INVALID_FB_INDEX {
             let _ = fbdev::unregister(idx);
         }
-        CONSOLE_OWNER_BDF.store(NO_CONSOLE_OWNER, Ordering::Release);
+        CONSOLE_OWNER_KEY.store(NO_CONSOLE_OWNER_KEY, Ordering::Release);
         return;
     }
 
@@ -235,17 +244,18 @@ pub fn publish_console_scanout(bdf: u32) {
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-pub fn publish_console_scanout(_bdf: u32) {}
+pub fn publish_console_scanout(_device_key: virtio::VirtioChildDeviceKey) {}
 
 #[cfg(target_os = "oxide-kernel")]
-pub fn unpublish_console_scanout(bdf: u32) {
-    if CONSOLE_OWNER_BDF
-        .compare_exchange(bdf, NO_CONSOLE_OWNER, Ordering::AcqRel, Ordering::Acquire)
+pub fn unpublish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
+    let owner_raw = device_key.raw();
+    if CONSOLE_OWNER_KEY
+        .compare_exchange(owner_raw, NO_CONSOLE_OWNER_KEY, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return;
     }
-    let fbdev_idx = take_scanout_fbdev_idx(bdf);
+    let fbdev_idx = take_scanout_fbdev_idx(device_key);
     klog::clear_aux_sink();
     tty::live::clear_vt_mode_queries();
     fbcon::kernel::kernel_unregister();
@@ -256,7 +266,7 @@ pub fn unpublish_console_scanout(bdf: u32) {
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-pub fn unpublish_console_scanout(_bdf: u32) {}
+pub fn unpublish_console_scanout(_device_key: virtio::VirtioChildDeviceKey) {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn fbdev_vsync_yield() {
