@@ -137,6 +137,7 @@ fn card_nodes_are_model_owned_and_removed() {
     assert!(has_node(&added, "snd/pcmC0D0c", (116, 24)));
     assert!(drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "controlC0" && d.devname.as_deref() == Some("snd/controlC0")));
     assert!(drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "pcmC0D0p" && d.devname.as_deref() == Some("snd/pcmC0D0p")));
+    assert_eq!(REMOVED.lock().len(), 0);
     assert!(has_node(&added, "dsp", (14, 3)));
     assert!(has_node(&added, "dsp0", (14, 3)));
     assert!(has_node(&added, "audio", (14, 4)));

@@ -5,6 +5,7 @@ use sync::{Spinlock, TaskList as SoundLockClass};
 struct SoundCard {
     owner: u32,
     card: u32,
+    publishing: bool,
     nodes: Vec<Arc<drv::Device>>,
 }
 
@@ -12,17 +13,24 @@ const NO_CARD_OWNER: u32 = u32::MAX;
 
 static CARDS: Spinlock<Vec<SoundCard>, SoundLockClass> = Spinlock::new(Vec::new());
 
+enum PublishClaim {
+    Start(u32),
+    AlreadyDone,
+    Busy,
+    Missing,
+}
+
 /// Register the ALSA (primary) + OSS (emulation) nodes for a probed card.
 /// Called from the sound card driver's probe after it has installed ops.
 /// # C: O(depth)
 pub fn register_card(owner: u32) -> bool {
     if crate::ops::ops_for(owner).is_none() { return false; }
     if !reserve_card(owner) { return false; }
-    let card = match card_number(owner) {
-        Some(card) => card,
-        None => return false,
+    let card = match claim_publication(owner) {
+        PublishClaim::Start(card) => card,
+        PublishClaim::AlreadyDone => return true,
+        PublishClaim::Busy | PublishClaim::Missing => return false,
     };
-    if CARDS.lock().iter().any(|record| record.owner == owner && !record.nodes.is_empty()) { return true; }
     let has_playback = crate::ops::pcm_caps(owner).is_some();
     let has_capture = crate::ops::cap_caps(owner).is_some();
     if has_playback { crate::pcm::register_card(owner); }
@@ -33,26 +41,39 @@ pub fn register_card(owner: u32) -> bool {
         rollback_card_registration(owner);
         return false;
     };
-    let mut published = Some(published);
-    {
-        let mut cards = CARDS.lock();
-        let Some(record) = cards.iter_mut().find(|record| record.owner == owner) else {
-            drop(cards);
-            if let Some(nodes) = published.take() {
-                crate::device::rollback_published_nodes(&nodes);
-            }
-            rollback_card_registration(owner);
-            return false;
-        };
-        if record.nodes.is_empty() {
-            record.nodes = published.take().unwrap_or_default();
-        }
-    }
-    if let Some(nodes) = published {
+    if let Err(nodes) = commit_publication(owner, published) {
         crate::device::rollback_published_nodes(&nodes);
         rollback_card_registration(owner);
+        return false;
     }
     true
+}
+
+fn claim_publication(owner: u32) -> PublishClaim {
+    let mut cards = CARDS.lock();
+    let Some(record) = cards.iter_mut().find(|record| record.owner == owner) else {
+        return PublishClaim::Missing;
+    };
+    if !record.nodes.is_empty() {
+        return PublishClaim::AlreadyDone;
+    }
+    if record.publishing {
+        return PublishClaim::Busy;
+    }
+    record.publishing = true;
+    PublishClaim::Start(record.card)
+}
+
+fn commit_publication(owner: u32, nodes: Vec<Arc<drv::Device>>) -> Result<(), Vec<Arc<drv::Device>>> {
+    let mut cards = CARDS.lock();
+    let Some(record) = cards
+        .iter_mut()
+        .find(|record| record.owner == owner && record.publishing && record.nodes.is_empty()) else {
+            return Err(nodes);
+        };
+    record.nodes = nodes;
+    record.publishing = false;
+    Ok(())
 }
 
 fn rollback_card_registration(owner: u32) {
@@ -78,7 +99,7 @@ pub fn reserve_card(owner: u32) -> bool {
     while cards.iter().any(|record| record.card == card) {
         card = card.checked_add(1).expect("sound card number overflow");
     }
-    cards.push(SoundCard { owner, card, nodes: Vec::new() });
+    cards.push(SoundCard { owner, card, publishing: false, nodes: Vec::new() });
     true
 }
 
@@ -87,7 +108,7 @@ pub fn reserve_card(owner: u32) -> bool {
 /// # C: O(cards)
 pub fn cancel_card_reservation(owner: u32) -> bool {
     let mut cards = CARDS.lock();
-    let Some(idx) = cards.iter().position(|record| record.owner == owner && record.nodes.is_empty()) else {
+    let Some(idx) = cards.iter().position(|record| record.owner == owner && !record.publishing && record.nodes.is_empty()) else {
         return false;
     };
     cards.remove(idx);

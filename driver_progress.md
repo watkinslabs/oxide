@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B399-virtio-snd-multicard-rebind-proof | VERIFIED | Two-device QEMU/rootfs/probe path passes hosted gates plus x86_64/aarch64 live rebind smoke, PR #2452, main sync `36d0b388`. |
 | B400-virtio-msix-child-owned-handlers | VERIFIED | Child-declared MSI-X handlers proven by source audit, hosted virtio/pci-boot tests, x86_64 driver-path proof, and aarch64 driver-path proof. |
 | B401-virtio-pci-probe-exit-unwind | VERIFIED | `VirtioProbe` now owns a one-shot lease for failed/unpublished cleanup; hosted virtio/pci-boot checks and x86_64/aarch64 driver-path proof pass. |
-| B402-sound-card-publication-model-owned | ACTIVE | Claimed from fresh main; audit/fix model-owned sound card publication and duplicate guard next. |
+| B402-sound-card-publication-model-owned | VERIFIED | Sound publication uses explicit reserved/publishing/published owner state; hosted tests and x86_64/aarch64 driver-path proof pass. |
