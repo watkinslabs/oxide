@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B397-sound-unregister-rejects-non-owners` — VERIFIED; COMMIT/PR PENDING.
+ACTIVE NOW: `B398-virtio-snd-eventq-owner-accounting` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B397-sound-unregister-rejects-non-owners`.
+Current active item: `>>> ACTIVE >>> B398-virtio-snd-eventq-owner-accounting`.
 
-Current B397 gate: source audit, focused non-owner unregister test, serial full
-sound tests, and x86_64/aarch64 runtime proof pass; commit/PR/merge/main-sync remains.
+Current B398 gate: prove or fix virtio-snd raw EVENTQ accounting so queued
+event buffers and completions are keyed to the owning transport/device, with
+hosted tests and x86_64/aarch64 runtime proof before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -330,8 +331,8 @@ Status legend:
 | VERIFIED | B396-sound-ops-route-by-owner | Sound ops route by owner: node dispatch carries `SndData.owner`, `ops_for(owner)` selects exact owner with live card reservation, PCM/capture/control/OSS paths pass the explicit owner through state lookup and backend callbacks, and focused owner-routing regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2449 merge, and local main sync to `origin/main` at `cac90846` pass. |
 | NOT DONE | TBD | Direct ALSA PCM `PCM_INFO` on PCM nodes must report the node card number instead of hard-coded/default card metadata. |
 | NOT DONE | TBD | Hosted `sound` tests share global card state and can fail under default parallel execution; serial `--test-threads=1` passes. |
-| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B397-sound-unregister-rejects-non-owners | Sound unregister rejects non-owners: `unregister_card(owner)` first requires an exact owner record before deleting stored node handles or clearing control/OSS/capture/PCM/ops state; focused non-owner unregister test, serial full sound tests, and x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | Virtio-snd raw EVENTQ accounting keyed by transport owner. |
+| VERIFIED | B397-sound-unregister-rejects-non-owners | Sound unregister rejects non-owners: `unregister_card(owner)` first requires an exact owner record before deleting stored node handles or clearing control/OSS/capture/PCM/ops state; focused non-owner unregister test, serial full sound tests, x86_64/aarch64 driver-path proof, PR #2450 merge, and local main sync to `origin/main` at `e5fe3f55` pass. |
+| >>> ACTIVE >>> CLAIMED | B398-virtio-snd-eventq-owner-accounting | Virtio-snd raw EVENTQ accounting keyed by transport owner. |
 | NOT DONE | TBD | Virtio-snd multi-card bind/unbind/rebind needs live QEMU proof. |
 | NOT DONE |  | Virtio MSI-X handler ownership is child-declared, not transport PCI-ID special-case dispatch. |
 | NOT DONE |  | Virtio-pci clears PCI MEM/BUS_MASTER and drops mappings on early transport probe exits after enable. |
