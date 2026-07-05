@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B402-sound-card-publication-model-owned` — VERIFIED.
+ACTIVE NOW: `B403-fbdev-publication-unwind-on-model-failure` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B402-sound-card-publication-model-owned`.
+Current active item: `>>> ACTIVE >>> B403-fbdev-publication-unwind-on-model-failure`.
 
-Current B402 gate: sound card publication now separates reserved, publishing,
-and published owner states so duplicate publication cannot create extra nodes;
-hosted sound and virtio-snd tests pass, x86_64/aarch64 driver-path proof pass.
+Current B403 gate: audit/fix fbdev publication so framebuffer records unwind
+when device-model publication fails; prove with hosted fbdev/model tests and
+x86_64/aarch64 driver-path proof before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -336,8 +336,8 @@ Status legend:
 | VERIFIED | B399-virtio-snd-multicard-rebind-proof | Virtio-snd multi-card live proof added: env-gated second QEMU sound device, rootfs probe, and `smoke-virtio-snd-multidev`; C probe compile, `cargo check -p xtask`, full `drv-virtio-snd` tests, serial full `sound` tests, and x86_64/aarch64 smoke logs pass; PR #2452 merge and local main sync to `origin/main` at `36d0b388` pass. |
 | VERIFIED | B400-virtio-msix-child-owned-handlers | Source audit shows `VirtioChildOps::profile()` supplies MSI-X handlers and PCI transport consumes profile fields without virtio-ID dispatch; added hosted profile-handler regression, `cargo test -p virtio`, `cargo test -p pci-boot`, x86_64 driver-path log `/tmp/b400-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b400-arm-driver-path.log` all pass. |
 | VERIFIED | B401-virtio-pci-probe-exit-unwind | Virtio-pci probe now carries `VirtioProbeLease` inside `VirtioProbe`: failed/unpublished drop paths release frames/MSI-X, clear PCI MEM/BUS_MASTER, and unmap transport mappings once; publish consumes the lease and transfers mappings/MSI-X/vring frames. Source audit, `cargo test -p virtio`, `cargo test -p pci-boot`, x86_64 driver-path log `/tmp/b401-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b401-arm-driver-path.log` all pass. |
-| >>> ACTIVE >>> VERIFIED | B402-sound-card-publication-model-owned | Sound card publication now tracks explicit owner publication state (`reserved`/`publishing`/`published`) so duplicate publication is guarded before devnode creation; duplicate register proof now asserts no rollback removals; `cargo test -p sound -- --nocapture --test-threads=1`, `cargo test -p drv-virtio-snd -- --nocapture`, x86_64 driver-path log `/tmp/b402-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b402-arm-driver-path.log` all pass. |
-| NOT DONE |  | Fbdev publication unwinds framebuffer record on model publication failure. |
+| VERIFIED | B402-sound-card-publication-model-owned | Sound card publication now tracks explicit owner publication state (`reserved`/`publishing`/`published`) so duplicate publication is guarded before devnode creation; duplicate register proof now asserts no rollback removals; `cargo test -p sound -- --nocapture --test-threads=1`, `cargo test -p drv-virtio-snd -- --nocapture`, x86_64 driver-path log `/tmp/b402-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b402-arm-driver-path.log` all pass. |
+| >>> ACTIVE >>> CLAIMED | B403-fbdev-publication-unwind-on-model-failure | Fbdev publication unwinds framebuffer record on model publication failure. |
 | NOT DONE |  | 8250 receive path is IRQ-owned rather than timer-poll fallback. |
 | NOT DONE |  | PL011 receive path is IRQ-owned rather than timer-poll fallback. |
 | NOT DONE |  | i8042 receive path is IRQ-owned. |
