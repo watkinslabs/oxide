@@ -2,13 +2,14 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B408-timer-registry-owned-ids` — VERIFIED.
+ACTIVE NOW: `B409-driver-model-setup-policy` — VERIFIED.
 
-Current active item: `>>> ACTIVE >>> B408-timer-registry-owned-ids`.
+Current active item: `>>> ACTIVE >>> B409-driver-model-setup-policy`.
 
-Current B408 gate: timer registry must return owned timer IDs and support
-explicit unregister. Source audit, hosted tests, and x86_64/aarch64 runtime
-proof pass.
+Current B409 gate: prove the driver model is authoritative at Device/Driver
+level and identify or remove remaining setup policy in bus/transport helper
+code. Source audit, hosted tests, and x86_64/aarch64 runtime proof pass; the
+remaining virtio transport/core split stays in the next specific rows.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -342,8 +343,8 @@ Status legend:
 | VERIFIED | B405-pl011-receive-irq-owned | PL011 runtime RX is SPI-33-owned: removed the PL011 `rx_poll` export and stale timer-poll comment, and `cargo test -p drv-uart-pl011 -p drv-serial -p serialtty -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b405-x86-driver-path.log` and aarch64 `/tmp/b405-arm-driver-path.log` runtime proof pass. |
 | VERIFIED | B406-i8042-receive-irq-owned | i8042 runtime RX is IRQ1-owned: source audit proves `probe()` installs IRQ1 handler/vector/I/O-APIC redirection before enabling the controller IRQ bit, corrected stale poll wording, and `cargo test -p drv-ps2-keyboard -p drv-virtio-input -p tty -p console -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b406-x86-driver-path.log` and aarch64 `/tmp/b406-arm-driver-path.log` runtime proof pass. |
 | VERIFIED | B407-serial-input-remove-rebind-state | Source audit shows 8250 remove clears RX enable, masks/free vector, resets IRQ pin/vector and BASE/PRESENT; PL011 remove disables RX/INTID, frees handler, clears BASE/PRESENT; i8042 bringdown disables scan/controller IRQ, masks/free vector, resets IRQ pin/vector and PRESENT. `cargo test -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -p drv-ps2-keyboard -p drv-virtio-input -p serialtty -p tty -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b407-x86-driver-path.log`, and aarch64 `/tmp/b407-arm-driver-path.log` pass. |
-| >>> ACTIVE >>> VERIFIED | B408-timer-registry-owned-ids | Timer registry returns opaque non-zero `TimerId`s from `register_periodic` and unregisters by exact owned ID; virtio-net stores its ARP GC timer ID and unregisters on remove. Added hosted timer ownership regressions. `cargo test -p timer -p drv-virtio-net -p net -p sched -- --nocapture --test-threads=1`, x86_64 `/tmp/b408-x86-driver-path.log`, and aarch64 `/tmp/b408-arm-driver-path.log` pass. |
-| NOT DONE | TBD | Driver model authoritative at Device/Driver level, but some setup policy remains in bus/transport helper code. |
+| VERIFIED | B408-timer-registry-owned-ids | Timer registry returns opaque non-zero `TimerId`s from `register_periodic` and unregisters by exact owned ID; virtio-net stores its ARP GC timer ID and unregisters on remove. Added hosted timer ownership regressions. `cargo test -p timer -p drv-virtio-net -p net -p sched -- --nocapture --test-threads=1`, x86_64 `/tmp/b408-x86-driver-path.log`, and aarch64 `/tmp/b408-arm-driver-path.log` pass. |
+| >>> ACTIVE >>> VERIFIED | B409-driver-model-setup-policy | Driver core is authoritative for Device/Driver add, bind, unbind, remove, shutdown, sysfs, and devtmpfs ordering; PCI publication uses `drv::try_device_add`, and virtio parent/child bring-up is owned by model `Driver::probe` wrappers. Remaining transport/core cleanup is tracked by the following virtio-specific rows. `cargo test -p drv -p pci-boot -p virtio -- --nocapture --test-threads=1`, x86_64 `/tmp/b409-x86-driver-path.log`, and aarch64 `/tmp/b409-arm-driver-path.log` pass. |
 | NOT DONE | TBD | Virtio common transport and child policy still too concentrated in `pci-boot` transport/session boundary. |
 | NOT DONE | TBD | Virtio IRQ callback ownership improved, but true virtio-core/bus split remains incomplete. |
 | NOT DONE | TBD | Probe failure unwind improved but lacks general devres stack and step-by-step fault injection proof. |
