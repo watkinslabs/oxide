@@ -20,9 +20,30 @@ use vfs::{Dentry, File, OpenFlags};
         fn cap(&self, cap: u64) -> u64 { crate::default_cap(cap) }
     }
 
+    struct UniqueDrv(&'static str);
+    impl crate::DrmDriver for UniqueDrv {
+        fn name(&self) -> &'static str { "unique_drm" }
+        fn version(&self) -> (u32, u32, u32) { (1, 0, 0) }
+        fn date(&self) -> &'static str { "20260704" }
+        fn desc(&self) -> &'static str { "stable slot route test" }
+        fn unique(&self) -> &str { self.0 }
+        fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 0, 0, 0) }
+        fn dim_bounds(&self) -> (u32, u32, u32, u32) { (0, 0, 0, 0) }
+        fn cap(&self, cap: u64) -> u64 { crate::default_cap(cap) }
+    }
+
     fn open_file(inode: vfs::InodeRef) -> Arc<File> {
         let dentry = Dentry::new_anon(Arc::clone(&inode));
         File::new(inode, dentry, OpenFlags::O_RDWR)
+    }
+
+    fn read_unique(file: &File, buf: &mut [u8; 32]) -> u64 {
+        let mut unique = DrmUnique { unique_len: buf.len() as u64, unique: buf.as_mut_ptr() as u64 };
+        assert_eq!(
+            handle_drm_ioctl(file, DRM_IOCTL_GET_UNIQUE, (&mut unique as *mut DrmUnique) as u64),
+            Some(0)
+        );
+        unique.unique_len
     }
 
     #[test]
@@ -295,6 +316,31 @@ use vfs::{Dentry, File, OpenFlags};
         assert_eq!(&buffer[..8], &expected[..8]);
         assert_eq!(buffer[8], 0);
         assert!(crate::unregister(card_id));
+    }
+
+    #[test]
+    fn drm_card_fd_routes_by_stable_slot_after_lower_slot_reuse() {
+        let _guard = crate::TEST_LOCK.lock();
+        unregister_all();
+        crate::registry::clear_cards_for_tests();
+        let slot0 = crate::register(Arc::new(UniqueDrv("pci:slot0")));
+        let slot1 = crate::register(Arc::new(UniqueDrv("pci:slot1")));
+        assert_eq!((slot0, slot1), (0, 1));
+        let card1 = open_file(make_card_inode(slot1));
+        assert!(crate::unregister(slot0));
+        let slot0_reused = crate::register(Arc::new(UniqueDrv("pci:slot0-reused")));
+        assert_eq!(slot0_reused, 0);
+
+        let mut buf1 = [0u8; 32];
+        assert_eq!(read_unique(&card1, &mut buf1), b"pci:slot1".len() as u64);
+        assert_eq!(&buf1[..b"pci:slot1".len()], b"pci:slot1");
+        let card0 = open_file(make_card_inode(slot0_reused));
+        let mut buf0 = [0u8; 32];
+        assert_eq!(read_unique(&card0, &mut buf0), b"pci:slot0-reused".len() as u64);
+        assert_eq!(&buf0[..b"pci:slot0-reused".len()], b"pci:slot0-reused");
+
+        assert!(crate::unregister(slot0_reused));
+        assert!(crate::unregister(slot1));
     }
 
     #[test]
