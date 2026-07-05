@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B331-virtio-gpu-probe-failure-unwind` (verified; merge pending).
+Current marker: `>>> ACTIVE >>> B332-virtio-gpu-hot-remove-cleanup` (verified; merge pending).
 
 ## B002-single-machine-desktop-proof
 
@@ -217,3 +217,28 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b331-gpu-probe-failure-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b331-gpu-probe-failure-arm.log`. |
 | Line cap | PASS: `lib.rs` 23 lines, `post_init.rs` 136, `post_init/tests.rs` 91, `post_init/scanout.rs` 278. |
+
+## B332-virtio-gpu-hot-remove-cleanup
+
+Status: `VERIFIED`; commit and PR merge pending.
+
+Branch: `B332-virtio-gpu-hot-remove-cleanup`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `drv_virtio_gpu::hot_remove` calls `uninstall(device_key)` and then `post_init::uninstall_scanout(device_key)` independently; `VirtioGpuOps::remove_child` now uses that central helper. `uninstall` still clears DRM hooks, console/fbdev/klog/tty scanout state, and DRM registration before scanout backing is freed. |
+| Hosted regression | PASS: `hot_remove_attempts_scanout_when_device_state_is_missing` proves scanout teardown still runs when the device table has no matching installed device; `hot_remove_attempts_device_and_scanout_cleanup` proves both paths run for a live installed device. |
+| `cargo test -p drv-virtio-gpu hot_remove_attempts -- --nocapture` | PASS: 2 tests passed, 29 filtered out. |
+| `cargo test -p drv-virtio-gpu` | PASS: 31 tests, 0 failed. |
+| `git diff --check` | PASS. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b332-gpu-hot-remove-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b332-gpu-hot-remove-arm.log`. |
+| Line cap | PASS: `device.rs` 384 lines, `post_init/tests.rs` 106, `drv-virtio-gpu/src/tests.rs` 473, `virtio_child.rs` 367. |
