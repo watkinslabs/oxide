@@ -137,6 +137,45 @@ fn try_device_add_rejects_duplicate_bus_identity() {
 }
 
 #[test]
+fn pci_identity_mismatch_does_not_replace_or_rebind() {
+    PCI_IDENTITY_PROBES.store(0, Ordering::Release);
+    PCI_MISMATCH_PROBES.store(0, Ordering::Release);
+    register_driver(&PCI_IDENTITY_DRV);
+    register_driver(&PCI_MISMATCH_DRV);
+    for (idx, addr) in ["0000:00:17.0", "0000:01:17.0"].iter().enumerate() {
+        let first = try_device_add(Arc::new(Device::new(
+            "pci", String::from(*addr), 0x1af4, 0x1041, 0x010000)))
+            .unwrap();
+
+        assert_eq!(first.bound(), Some("pci-identity-test"));
+        assert_eq!(PCI_IDENTITY_PROBES.load(Ordering::Acquire), (idx + 1) as u32);
+        assert_eq!(PCI_MISMATCH_PROBES.load(Ordering::Acquire), 0);
+
+        let mismatch = try_device_add(Arc::new(Device::new(
+            "pci", String::from(*addr), 0x1af4, 0x1042, 0x020000)));
+
+        assert!(matches!(mismatch, Err(crate::Error::Busy)));
+        assert_eq!(first.bound(), Some("pci-identity-test"));
+        assert_eq!(PCI_IDENTITY_PROBES.load(Ordering::Acquire), (idx + 1) as u32);
+        assert_eq!(PCI_MISMATCH_PROBES.load(Ordering::Acquire), 0);
+        assert_eq!(
+            devices().iter()
+                .filter(|d| d.bus == "pci" && d.addr == *addr)
+                .count(),
+            1
+        );
+        let dev = devices().into_iter()
+            .find(|d| d.bus == "pci" && d.addr == *addr)
+            .unwrap();
+        assert_eq!(dev.vendor_id, 0x1af4);
+        assert_eq!(dev.device_id, 0x1041);
+        assert_eq!(dev.class, 0x010000);
+
+        device_del(&first);
+    }
+}
+
+#[test]
 fn repeated_bind_unbind_keeps_model_state_consistent() {
     LOOP_PROBES.store(0, Ordering::Release);
     LOOP_REMOVES.store(0, Ordering::Release);

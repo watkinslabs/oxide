@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B421-pci-identity-mismatch-proof; IN AUDIT.
+ACTIVE NOW: B421-pci-identity-mismatch-proof; VERIFIED, commit/PR pending.
 
 Current active item: PCI identity mismatch handling must not rebound as the same function.
 
@@ -38,7 +38,7 @@ Status legend:
 | SOURCE OK |  | Register NVMe, AHCI, and virtio-pci as model drivers. |
 | SOURCE OK |  | Attach PCI drivers through driver core rather than enumeration-local direct bind calls. |
 | SOURCE OK |  | PCI model-device publication is fallible and idempotent for repeated enumeration of matching `(pci, addr)` identity. |
-| ACTIVE | B421-pci-identity-mismatch-proof | PCI identity mismatch handling must not rebound as the same function; needs live/multi-bus proof. |
+| VERIFIED | B421-pci-identity-mismatch-proof | PCI identity mismatch handling does not rebound a mismatched same-address function: hosted regression covers duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class, proves the original device remains bound, registry identity is not replaced, and the mismatched driver never probes. `cargo test -p drv pci_identity_mismatch_does_not_replace_or_rebind -- --nocapture`, full serial `cargo test -p drv -- --nocapture --test-threads=1`, and fast x86_64/aarch64 driver-path smokes pass with logs `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`. |
 | SOURCE OK |  | Model binding rejects already-bound devices. |
 | SOURCE OK |  | Model binding verifies bus/driver matching. |
 | SOURCE OK |  | Model binding calls `Driver::probe`. |
@@ -248,7 +248,7 @@ Status legend:
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-| NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed before `mouseprobe` then passed on rerun in B327, B337, and B383; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/oxide-boot-smoke-arm-jyMRB8.log`, `/tmp/oxide-boot-smoke-arm-vsmd0t.log`, `/tmp/b383-arm-driver-path.log`, `/tmp/oxide-boot-smoke-arm-WjMdLT.log`; passing logs `/tmp/b327-queue-quiesce-arm-rerun.log`, `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`, `/tmp/b383-arm-driver-path-rerun.log`, `/tmp/oxide-boot-smoke-arm-nJVaKr.log`, `/tmp/oxide-boot-smoke-arm-laxjZl.log`, `/tmp/oxide-boot-smoke-arm-76xmcA.log`; B419 showed the old systemd path could wedge before `/bin/vsock_probe` started, so the driver proof moved to direct `/init` and passed; root-cause of the broader systemd no-progress remains separate. |
+| NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed before `mouseprobe` then passed on rerun in B327, B337, B383, and B421; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/oxide-boot-smoke-arm-jyMRB8.log`, `/tmp/oxide-boot-smoke-arm-vsmd0t.log`, `/tmp/b383-arm-driver-path.log`, `/tmp/oxide-boot-smoke-arm-WjMdLT.log`, `/tmp/b421-pci-identity-mismatch-arm-noprogress.log`; passing logs `/tmp/b327-queue-quiesce-arm-rerun.log`, `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`, `/tmp/b383-arm-driver-path-rerun.log`, `/tmp/oxide-boot-smoke-arm-nJVaKr.log`, `/tmp/oxide-boot-smoke-arm-laxjZl.log`, `/tmp/oxide-boot-smoke-arm-76xmcA.log`, `/tmp/b421-pci-identity-mismatch-arm.log`; B419 showed the old systemd path could wedge before `/bin/vsock_probe` started, so the driver proof moved to direct `/init` and passed; root-cause of the broader systemd no-progress remains separate. |
 | VERIFIED | B328-virtio-input-drain-split | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth; `cargo test -p drv-virtio-input`, fast x86_64 driver path, and fast aarch64 driver path pass. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
