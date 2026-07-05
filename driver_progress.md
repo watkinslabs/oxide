@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B403-fbdev-publication-unwind-on-model-failure | VERIFIED | Hosted fbdev/model conflict proof and x86_64/aarch64 driver-path proof pass. |
 | B404-8250-receive-irq-owned | VERIFIED | 8250 serial-core poll fallback removed; hosted UART/serialtty tests and x86_64/aarch64 driver-path proof pass. |
 | B405-pl011-receive-irq-owned | VERIFIED | PL011 poll fallback export removed; hosted PL011/serialtty tests and x86_64/aarch64 driver-path proof pass. |
-| B406-i8042-receive-irq-owned | CLAIMED | Claimed from fresh main; audit/fix i8042 receive IRQ ownership next. |
+| B406-i8042-receive-irq-owned | VERIFIED | i8042 IRQ1 ownership source-audited; hosted PS/2/input/tty tests and x86_64/aarch64 driver-path proof pass. |

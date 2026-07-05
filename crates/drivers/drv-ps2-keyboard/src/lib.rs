@@ -176,7 +176,7 @@ mod imp {
     ///   6. keyboard reset (0xFF → 0xFA ACK, 0xAA BAT-pass)
     ///   7. select scancode set 1 (0xF0 0x01) + enable scanning (0xF4)
     /// A non-responding controller (no QEMU PS/2, real serial-only box)
-    /// leaves PRESENT=false and the poll becomes a no-op — harmless.
+    /// leaves PRESENT=false and the platform device unbound.
     ///
     /// # SAFETY: post-LAPIC boot, single-CPU, IRQs masked. Performs CPL=0
     /// port I/O to the i8042 controller; no other path touches 0x60/0x64.
