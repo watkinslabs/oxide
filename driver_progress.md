@@ -5,7 +5,8 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B446-model-unbind-remove-before-clear; IN AUDIT.
+Current marker: B446-model-unbind-remove-before-clear; VERIFIED pending PR
+merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -745,4 +746,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B446-model-unbind-remove-before-clear | IN AUDIT | Fresh main `c51f20f7` after PR #2503 merge; auditing model unbind ordering so `Driver::remove` runs before binding state is cleared. |
+| B446-model-unbind-remove-before-clear | VERIFIED | Fresh main `c51f20f7` after PR #2503 merge; source audit proves `crates/drivers/drv/src/model.rs::unbind` reads `dev.bound()`, resolves the registered driver on the same bus, calls `driver.remove(dev)`, then clears `*dev.driver.lock() = None` and emits `BindEvent::Unbound`. Added hosted regression `unbind_calls_remove_before_clearing_binding`, whose test driver records that `remove` sees `dev.bound() == Some("unbind-order-test")` before unbind returns with `d.bound() == None`. Checks pass: `cargo test -p drv unbind_calls_remove_before_clearing_binding -- --nocapture`, `cargo test -p drv device_del_unbinds_bound_driver_once -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from merged driver-path smokes because production unbind code is unchanged; this branch only adds the missing regression and updates tracking docs. |
