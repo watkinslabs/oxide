@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B431-pci-driver-core-attach; IN AUDIT.
+ACTIVE NOW: none; B431-pci-driver-core-attach VERIFIED pending PR merge.
 
-Current active item: Attach PCI drivers through driver core rather than enumeration-local direct bind calls.
+Current active item: none; next claim starts after B431 merge and fresh main sync.
 
-Next gate after B431: prove source, hosted tests, x86_64/aarch64 runtime
-evidence, PR merge, then fresh `origin/main` before claiming B432.
+Next gate after merge: return to fresh `origin/main` before claiming B432
+using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -36,7 +36,7 @@ Status legend:
 | VERIFIED | B428-sysfs-explicit-bind-route | Explicit binds route through sysfs driver `bind`: `/sys/bus/<bus>/drivers/<driver>/bind` parses the device address and calls `drv::bind_addr(bus, addr, driver)`, `unbind` resolves the currently bound model device and calls `drv::unbind`, driver directory links reflect bound model state, duplicate binds return `Ebusy`, and focused sysfs regressions `driver_bind_unbind_attrs_drive_drv_model` plus `bind_unbind_emit_change_uevents_from_current_model_state` pass. |
 | VERIFIED | B429-pci-model-bar-publication | PCI enumeration creates `pci` model devices with BAR resources through fallible model publication: `pci-boot` maps per-arch BAR probes into `drv::Resource` records, publishes `drv::Device::new("pci", ...)` through `drv::try_device_add`, preserves matching duplicate identities without replacing the registry record, and hosted tests prove PCI BAR sizing, model resource preservation, duplicate rejection, sysfs `resourceN` exposure, plus x86_64/aarch64 fast driver-path smokes. |
 | VERIFIED | B430-pci-model-driver-registration | NVMe, AHCI, and virtio-pci register as PCI model drivers: `pci-boot` registers `drv_nvme::NVME_DRIVER`, `drv_ahci::AHCI_DRIVER`, and the `virtio-pci` model driver before publishing enumerated PCI devices; `uevent_probe` now proves `/sys/bus/pci/drivers/{nvme,ahci,virtio-pci}` are live with bound devices on x86_64 and aarch64 fast driver-path smokes. |
-| ACTIVE | B431-pci-driver-core-attach | Attach PCI drivers through driver core rather than enumeration-local direct bind calls. |
+| VERIFIED | B431-pci-driver-core-attach | PCI drivers attach through driver core, not enumeration-local direct bind calls: `pci-boot::enumerate_and_log` registers model drivers, publishes each PCI model device through `publish_pci_model_device`/`drv::try_device_add`, and source audit finds no `drv::bind`, `drv::bind_addr`, NVMe/AHCI init, or virtio child direct-probe call in PCI enumeration; B430 x86_64/aarch64 runtime logs prove resulting PCI driver bindings. |
 | SOURCE OK |  | PCI model-device publication is fallible and idempotent for repeated enumeration of matching `(pci, addr)` identity. |
 | VERIFIED | B421-pci-identity-mismatch-proof | PCI identity mismatch handling does not rebound a mismatched same-address function: hosted regression covers duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class, proves the original device remains bound, registry identity is not replaced, and the mismatched driver never probes. `cargo test -p drv pci_identity_mismatch_does_not_replace_or_rebind -- --nocapture`, full serial `cargo test -p drv -- --nocapture --test-threads=1`, and fast x86_64/aarch64 driver-path smokes pass with logs `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`. |
 | SOURCE OK |  | Model binding rejects already-bound devices. |
