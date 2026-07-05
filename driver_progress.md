@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B390-virtio-rng-child-key-records`.
+Current marker: `>>> ACTIVE >>> B391-virtio-rng-seeds-bound-device`.
 
 ## Archived Completed B327-B330
 
@@ -480,16 +480,13 @@ recent-completed table above; main was synced after each merge through
 | B387-af-vsock-bind-specific-local-cid | VERIFIED | Specific local-CID bind resolves live endpoint owner and rejects dead/quiesced CIDs; focused/full vsock tests, `syscalls` check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2440 merge, and main sync `72aebeca` pass. |
 | B388-vsock-listener-backlogs-owner-port | VERIFIED | Same-port listener backlogs are owner-keyed; focused/full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2441 merge, and main sync `a7a5312f` pass. |
 | B389-vsock-close-releases-state | VERIFIED | Existing AF_VSOCK drop cleanup releases listener/backlog/connection state; cleanup/full vsock tests, x86_64/aarch64 driver-path proof, PR #2442 merge, and main sync `e3f505da` pass. |
+| B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 
-## B390-virtio-rng-child-key-records
+## B391-virtio-rng-seeds-bound-device
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
+Status: `>>> ACTIVE >>> CLAIMED`.
 
-Branch: `B390-virtio-rng-child-key-records`
+Branch: `B391-virtio-rng-seeds-bound-device`
 
-Evidence: source audit proves records are keyed by `VirtioChildDeviceKey`,
-install/uninstall/shutdown/find and `fill_from_device` select exact keys,
-active hwrng uses `active_key`, pci-boot passes `session.device_key()`, and
-focused plus full `drv-virtio-rng` hosted tests pass; x86_64
-`/tmp/b390-x86-driver-path.log` and aarch64 `/tmp/b390-arm-driver-path.log`
-driver-path proofs pass.
+Scope: prove or fix virtio-rng entropy seeding so initial bytes come from the
+just-bound child device, not a stale active/global provider.
