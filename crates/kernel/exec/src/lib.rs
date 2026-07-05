@@ -80,6 +80,15 @@ pub struct LoadedImage {
     /// when non-zero so the linker runs first; the linker reads
     /// AT_ENTRY to find the exec's actual entry.
     pub interp_entry: u64,
+    /// Linux `mm->start_code`..`end_data`: page-aligned bounds of the
+    /// first executable PT_LOAD (code) and first writable PT_LOAD
+    /// (data). Fed to `AddressSpace::set_code_data` so `/proc/<pid>/stat`
+    /// fields 26/27/45/46 and `prctl(PR_SET_MM)` validation are correct.
+    /// `0` when the image lacks a segment of that kind.
+    pub start_code: u64,
+    pub end_code:   u64,
+    pub start_data: u64,
+    pub end_data:   u64,
 }
 
 impl LoadedImage {
@@ -227,6 +236,11 @@ pub fn load_static_blob(
         phnum:        exec.phnum,
         interp_base,
         interp_entry,
+        // Code/data bounds come from the EXEC image, never the interp.
+        start_code:   exec.start_code,
+        end_code:     exec.end_code,
+        start_data:   exec.start_data,
+        end_data:     exec.end_data,
     })
 }
 

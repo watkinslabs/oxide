@@ -264,7 +264,7 @@ unsafe fn spawn_user_blob_with_vpid(
             0, // smoke: no vDSO mapped
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap(),
         )
-    }.unwrap_or(USER_STACK_TOP);
+    }.map(|l| l.sp).unwrap_or(USER_STACK_TOP);
     #[cfg(feature = "debug-boot")]
     klog::write_raw(b"[INFO]  user-blob: stack build ok\n");
 

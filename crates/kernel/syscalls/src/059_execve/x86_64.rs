@@ -141,6 +141,11 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
+    // Record the ELF code/data bounds + initial brk (Linux mm->start_code..
+    // end_data + start_brk) so /proc/<pid>/stat + PR_SET_MM validation see
+    // real values. arg/env/stack land after the stack is built below.
+    new_as.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
+    new_as.set_start_brk(img.brk.as_u64());
     let rlim_stack: u64 = {
         // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU; we only read, no concurrent writer.
         let (rc, _) = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::STACK] };
@@ -212,7 +217,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         }
     }
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
-    let new_sp = match unsafe {
+    let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,
             &argv_slices[..argc],
@@ -224,9 +229,17 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap(),
         )
     } {
-        Some(sp) => sp,
+        Some(l) => l,
         None => return -(Errno::Enomem.as_i32() as i64),
     };
+    let new_sp = layout.sp;
+    // Record argv/env string-block bounds + initial rsp (Linux
+    // mm->arg_start..env_end + start_stack); the source for
+    // /proc/<pid>/{cmdline,environ,stat} and the PR_SET_MM baseline.
+    // SAFETY: running task on this CPU; preempt-off; no concurrent execve.
+    if let Some(mm) = unsafe { cur.mm_ref() } {
+        mm.set_arg_env_stack(layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, new_sp);
+    }
     let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
     frame[0] = img.user_ip();
     frame[1] = 0x202;
