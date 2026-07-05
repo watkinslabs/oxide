@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B371-virtio-net-install-remove-keyed` — VERIFIED - PR READY.
+ACTIVE NOW: `B372-virtio-net-keyed-cursors` — VERIFIED - PR READY.
 
-Current active item: `>>> ACTIVE >>> B371-virtio-net-install-remove-keyed`.
+Current active item: `>>> ACTIVE >>> B372-virtio-net-keyed-cursors`.
 
-Current B371 gate: source audit, full virtio-net tests, and x86_64/aarch64 driver-path proof pass; push PR, merge, then sync local `main`.
+Current B372 gate: source audit, full virtio-net tests, and x86_64/aarch64 driver-path proof pass; push PR, merge, then sync local `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -301,8 +301,8 @@ Status legend:
 | VERIFIED | B368-virtio-net-netdev-publish-owner | Virtio-net owns netdev publication/removal: `init_modern_with_rx_pool` publishes by child `DeviceKey`, `VirtioNetDev` carries the key, `REGISTERED_NETDEVS`/`NET_RUNTIMES` are key-owned, and `uninstall_modern` removes only the named key; added hosted netdev-runtime owner regression, full virtio-net tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2421 merge, and local main sync to `origin/main` at `11a52b12` pass. |
 | VERIFIED | B369-virtio-net-rx-runtime-owner | Virtio-net owns RX runtime installation/removal: `install_rx_runtime` records iface/IP state by child `DeviceKey`, installs shared timers/softirq once, `remove_rx_runtime_for` removes only the named key and reports last-runtime state, and `uninstall_modern` releases shared RX resources only after the last runtime; extended hosted RX runtime regression, full virtio-net tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2422 merge, and local main sync to `origin/main` at `92bf93aa` pass. |
 | VERIFIED | B370-virtio-net-no-boot-ipv4-policy | Virtio-net old boot-probe default IPv4 policy removed: `install_rx_runtime` seeds RX softirq state with `0.0.0.0`, later iface address updates flow through `set_softirq_ip_for_iface`, added hosted regression `rx_runtime_install_does_not_seed_boot_ipv4_policy`, full `drv-virtio-net` tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2423 merge, and local main sync to `origin/main` at `c9a786f6` pass. |
-| >>> ACTIVE >>> VERIFIED - PR READY | B371-virtio-net-install-remove-keyed | Virtio-net install/remove keyed to owning child key: PCI child dispatch passes `session.device_key()` into `init_modern_with_rx_pool`, remove/shutdown pass the parent `VirtioChildDeviceKey`, `ModernNetState` stores that key, install rejects duplicate keys, and `uninstall_modern` removes only the matching key. Focused install/remove regressions, full `drv-virtio-net` tests, and fast x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | Virtio-net TX/RX cursors live in keyed device records. |
+| VERIFIED | B371-virtio-net-install-remove-keyed | Virtio-net install/remove keyed to owning child key: PCI child dispatch passes `session.device_key()` into `init_modern_with_rx_pool`, remove/shutdown pass the parent `VirtioChildDeviceKey`, `ModernNetState` stores that key, install rejects duplicate keys, and `uninstall_modern` removes only the matching key. Focused install/remove regressions, full `drv-virtio-net` tests, fast x86_64/aarch64 driver-path proof, PR #2424 merge, and local main sync to `origin/main` at `fb70eeb3` pass. |
+| >>> ACTIVE >>> VERIFIED - PR READY | B372-virtio-net-keyed-cursors | Virtio-net TX/RX cursors live in keyed device records: `ModernNetState` owns `tx_last_used`, `tx_next_avail`, `rx_last_used`, and `rx_next_avail`; `tx_frame_for` and `rx_poll_for` first select the matching `device_key`; RX pool install initializes per-device `rx_next_avail`. Focused RX-pool cursor regression, full `drv-virtio-net` tests, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | Published `NetDev` carries owning key. |
 | NOT DONE |  | Registered iface ownership and RX softirq runtime are keyed tables. |
 | NOT DONE |  | Netdev visible names allocated as `ethN`. |
