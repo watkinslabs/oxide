@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B498-virtio-child-device-ids; VERIFIED.
+Current marker: B499-virtio-gpu-placeholder-notify; IN AUDIT.
+
+## B499 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B499-virtio-gpu-placeholder-notify | IN AUDIT | Fresh main `039d8a21` after PR #2558 merge; auditing that virtio-gpu no longer carries placeholder notify pointer markers and instead uses the transport-supplied queue notify path consistently. Hosted and x86_64/aarch64 smoke gates required before merge. |
 
 ## B498 Current
 
