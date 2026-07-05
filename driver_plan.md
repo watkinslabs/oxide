@@ -2,11 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B496-virtio-child-shutdown-key is VERIFIED.
+ACTIVE NOW: none; B497-virtio-child-policy-only VERIFIED.
 
-Last completed item: Virtio child wrapper centralizes shutdown key lookup.
+Last verified item: Child drivers supply only profile, install, remove, and
+shutdown policy.
 
-Next gate after merge: return to fresh `origin/main` before claiming B497 using
+Next gate after merge: return to fresh `origin/main` before claiming B498 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -131,7 +132,7 @@ Status legend:
 | VERIFIED | B494-virtio-child-success-publish | Virtio child wrapper centralizes successful transport publish: shared `virtio::run_child_probe` calls `session.publish()` only after child `probe` returns `Ok(())`; pci-boot `VirtioChildSession::publish` consumes the transport lease and calls `VirtioPciTransport::publish`; `publish_transport_mmio` routes to `VirtioProbeDevres::publish`, which one-shot transfers transport mappings, vring frames, and MSI-X bindings into the persistent transport record. Checks pass: focused success-publish lifecycle test 1/1, hosted `pci-boot`/`virtio` with virtio 43/43 and pci-boot compile-only 0 tests, x86_64 smoke reached `oxide login:` in 12s, and aarch64 smoke reached `oxide login:` in 16s. |
 | VERIFIED | B495-virtio-child-remove-unpublish | Virtio child wrapper centralizes parent-key remove unpublish: generic `VirtioChildDriver<O>::remove` resolves the stable child key from the parent PCI model device, calls shared `virtio::run_child_remove(device_key, O::remove_child, unpublish_transport)`, and `run_child_remove` invokes child policy remove before transport unpublish; pci-boot `unpublish_transport` routes through `VirtioPciTransport::unpublish_key` to remove the persistent transport record and release transport-owned mappings, frames, and MSI-X bindings. Checks pass: focused remove/unpublish ordering test 1/1, hosted `pci-boot`/`virtio` with virtio 43/43 and pci-boot compile-only 0 tests, x86_64 smoke reached `oxide login:` in 12s, and aarch64 smoke reached `oxide login:` in 16s. |
 | VERIFIED | B496-virtio-child-shutdown-key | Virtio child wrapper centralizes shutdown key lookup: generic `VirtioChildDriver<O>::shutdown` resolves the stable child key through `parent_key(dev)` and calls shared `virtio::run_child_shutdown(device_key, O::shutdown_child)`; `parent_key` derives the `VirtioChildDeviceKey` from the parent PCI model device, and each child ops adapter receives only that stable key for its explicit shutdown policy without transport unpublish/remove side effects. Checks pass: focused shutdown-key lifecycle test 1/1, hosted `pci-boot`/`virtio` with virtio 43/43 and pci-boot compile-only 0 tests, x86_64 smoke reached `oxide login:` in 12s, and aarch64 smoke reached `oxide login:` in 16s. |
-| SOURCE OK |  | Child drivers supply only profile, install, remove, and shutdown policy. |
+| VERIFIED | B497-virtio-child-policy-only | Child drivers supply only profile, install, remove, and shutdown policy: source audit proves the only virtio child bus-facing `drv::Driver` wrapper, driver registration, match/probe/remove/shutdown lifecycle, publish/release/remove-unpublish, and shutdown-key routing live in `pci-boot::virtio_child` and shared `virtio`; child crates export `DRIVER_ID`, `transport_profile`, install/init, remove/uninstall, and shutdown policy entrypoints and do not define `drv::Driver`, register drivers, bind/unbind, import pci-boot transport, or call shared `run_child_*` lifecycle helpers. Checks pass: broad hosted gate for `pci-boot`, `virtio`, and all virtio child driver crates; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 | SOURCE OK |  | Virtio child device IDs for net/block/RNG/vsock/sound/input/GPU are supplied by child driver crates. |
 | SOURCE OK |  | Virtio-gpu placeholder notify pointer marker removed. |
 | VERIFIED |  | Shared `virtio` owns child bus/vendor matching through `VirtioChildDriverId`. |
