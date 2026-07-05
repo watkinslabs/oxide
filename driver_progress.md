@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B461-virtio-vsock-explicit-shutdown-callback; IN AUDIT.
+Current marker: none; B461-virtio-vsock-explicit-shutdown-callback VERIFIED pending PR merge.
 
 ## B461 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B461-virtio-vsock-explicit-shutdown-callback | IN AUDIT | Fresh main `8293ae62` after PR #2518 merge; proving virtio-vsock child driver implements explicit shutdown through the model child-driver path without unregistering socket publication during shutdown. |
+| B461-virtio-vsock-explicit-shutdown-callback | VERIFIED | Fresh main `8293ae62` after PR #2518 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioVsockOps::shutdown_child` calls `drv_virtio_vsock::shutdown`, and vsock shutdown quiesces the endpoint while removing only the matching context by `VirtioChildDeviceKey`, releasing shared RX softirq ownership only when the last context is gone, and freeing owned buffers. Code cleanup replaced raw common-cfg status offset writes in `crates/drivers/drv-virtio-vsock/src/registry.rs` with shared `virtio::reset_device`. Checks pass: `cargo test -p drv-virtio-vsock -- --nocapture` with 7/7 tests, `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B460 Current
 
