@@ -28,12 +28,13 @@ pub(super) fn ssh_fwd_netdev() -> String {
 /// D3.5: ensure a small raw NVMe scratch disk exists at
 /// `target/builds/<id>/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `nvme` QEMU device always has a backing file. Returns its path. # C: O(1)
-pub(super) fn ensure_nvme_img(
+fn ensure_storage_img(
     repo: &std::path::Path,
     id: Option<&str>,
     arch: &str,
+    stem: &str,
 ) -> std::path::PathBuf {
-    let img = crate::buildns::blobs_dir(repo, id).join(format!("nvme-{arch}.img"));
+    let img = crate::buildns::blobs_dir(repo, id).join(format!("{stem}-{arch}.img"));
     if !img.exists() {
         if let Some(parent) = img.parent() { let _ = std::fs::create_dir_all(parent); }
         if let Ok(f) = std::fs::File::create(&img) {
@@ -42,6 +43,22 @@ pub(super) fn ensure_nvme_img(
         }
     }
     img
+}
+
+pub(super) fn ensure_nvme_img(
+    repo: &std::path::Path,
+    id: Option<&str>,
+    arch: &str,
+) -> std::path::PathBuf {
+    ensure_storage_img(repo, id, arch, "nvme")
+}
+
+pub(super) fn ensure_nvme_extra_img(
+    repo: &std::path::Path,
+    id: Option<&str>,
+    arch: &str,
+) -> std::path::PathBuf {
+    ensure_storage_img(repo, id, arch, "nvme1")
 }
 
 /// D3.6: ensure a small raw AHCI/SATA scratch disk exists at
@@ -53,15 +70,15 @@ pub(super) fn ensure_ahci_img(
     id: Option<&str>,
     arch: &str,
 ) -> std::path::PathBuf {
-    let img = crate::buildns::blobs_dir(repo, id).join(format!("ahci-{arch}.img"));
-    if !img.exists() {
-        if let Some(parent) = img.parent() { let _ = std::fs::create_dir_all(parent); }
-        if let Ok(f) = std::fs::File::create(&img) {
-            // 16 MiB zeroed scratch volume (sparse where supported).
-            let _ = f.set_len(16 * 1024 * 1024);
-        }
-    }
-    img
+    ensure_storage_img(repo, id, arch, "ahci")
+}
+
+pub(super) fn ensure_ahci_extra_img(
+    repo: &std::path::Path,
+    id: Option<&str>,
+    arch: &str,
+) -> std::path::PathBuf {
+    ensure_storage_img(repo, id, arch, "ahci1")
 }
 
 /// `xtask image --arch <arch>` — build the bootable artifact
