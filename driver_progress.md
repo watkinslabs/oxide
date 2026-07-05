@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B457-virtio-pci-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: none; B458-virtio-blk-explicit-shutdown-callback VERIFIED pending PR merge.
+
+## B458 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B458-virtio-blk-explicit-shutdown-callback | VERIFIED | Fresh main `c1d88df1` after PR #2515 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioBlkOps::shutdown_child` calls `drv_virtio_blk::modern::shutdown_blk`, and `shutdown_blk` keeps the block publication/model record present while `BlkState::shutdown` poisons new I/O, waits for idle, and resets the device. Code cleanup replaced raw common-cfg status offset writes in `crates/drivers/drv-virtio-blk/src/modern/engine.rs` with shared `virtio::reset_device`. Checks pass: `cargo test -p drv-virtio-blk shutdown_blk_quiesces_without_unregistering_publication -- --nocapture`, full `cargo test -p drv-virtio-blk -- --nocapture` with 18/18 tests, `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B457 Current
 
