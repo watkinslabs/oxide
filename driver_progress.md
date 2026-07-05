@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B503-transport-neutral-child-key-proof; VERIFIED.
+Current marker: B504-vsock-owner-key-boundary; IN AUDIT.
+
+## B504 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B504-vsock-owner-key-boundary | ACTIVE | Fresh main `b2251d0a` after PR #2564 merge. Auditing `drv-virtio-vsock` and `net::vsock` owner boundary so raw `u32` conversion does not remain in the driver-facing vsock path. |
 
 ## B503 Current
 
