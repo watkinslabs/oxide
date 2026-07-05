@@ -294,6 +294,8 @@ use core::sync::atomic::Ordering;
         }
         let dev1 = VirtioNetDev::new_for(key(1)).unwrap();
         let dev2 = VirtioNetDev::new_for(key(2)).unwrap();
+        assert_eq!(dev1.device_key(), key(1));
+        assert_eq!(dev2.device_key(), key(2));
         assert_eq!(dev1.name(), "eth0");
         assert_eq!(dev2.name(), "eth1");
         assert_eq!(ensure_net_runtime(key(1)).name.as_str(), "eth0");

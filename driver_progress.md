@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B372-virtio-net-keyed-cursors`.
+Current marker: `>>> ACTIVE >>> B373-virtio-net-netdev-owning-key`.
 
 ## Archived Completed B327-B330
 
@@ -438,7 +438,7 @@ Branch: `B362-fbcon-foreground-owner`
 
 Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2415, and main sync `1b3a3d14` pass.
 
-## Recent Completed B363-B371
+## Recent Completed B363-B372
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -451,11 +451,12 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B369-virtio-net-rx-runtime-owner | VERIFIED | RX runtime install/removal and last-runtime shared teardown are child-key owned; full virtio-net tests, arch proof, PR #2422, main sync `92bf93aa`. |
 | B370-virtio-net-no-boot-ipv4-policy | VERIFIED | RX runtime install seeds `0.0.0.0`, iface address hook updates later; full virtio-net tests, arch proof, PR #2423, main sync `c9a786f6`. |
 | B371-virtio-net-install-remove-keyed | VERIFIED | Install/remove paths carry owning child key from PCI child dispatch into driver state; full virtio-net tests, arch proof, PR #2424, main sync `fb70eeb3`. |
+| B372-virtio-net-keyed-cursors | VERIFIED | TX/RX cursors live in keyed device records; full virtio-net tests, arch proof, PR #2425, main sync `ebf774cb`. |
 
-## B372-virtio-net-keyed-cursors
+## B373-virtio-net-netdev-owning-key
 
 Status: `VERIFIED - PR READY`.
 
-Branch: `B372-virtio-net-keyed-cursors`
+Branch: `B373-virtio-net-netdev-owning-key`
 
-Evidence: `ModernNetState` owns `tx_last_used`, `tx_next_avail`, `rx_last_used`, and `rx_next_avail`; `tx_frame_for` and `rx_poll_for` select `MODERN_DEVS` by `device_key` before mutating cursors; RX pool install initializes per-device `rx_next_avail` from the posted buffer count. Focused `init_modern_with_rx_pool_records_pool_and_rejects_duplicate_desc`, full `cargo test -p drv-virtio-net`, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: `VirtioNetDev::new_for(device_key)` reads the matching modern state, stores `device_key` in the published `NetDev`, creates the keyed `NetRuntime`, and all TX paths use that owner key for neighbor resolution and `tx_frame_for`. Added hosted assertions to `net_runtime_names_are_unique_and_reusable` proving two published netdevs retain distinct keys. Focused test, full `cargo test -p drv-virtio-net`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
