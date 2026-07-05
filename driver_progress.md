@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B469-sysfs-bus-driver-bind-unbind VERIFIED pending PR merge.
+Current marker: B470-sysfs-driver-links; IN AUDIT.
+
+## B470 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B470-sysfs-driver-links | IN AUDIT | Fresh main `792b3efe` after PR #2527 merge; proving sysfs exposes driver symlinks from model binding state. |
 
 ## B469 Current
 
