@@ -278,8 +278,11 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             }
             // SAFETY: arg..arg+4 was validated above; drm_auth is one u32.
             let magic = unsafe { core::ptr::read_volatile(arg as *const u32) };
-            authorize_magic(card_id, magic);
-            Some(0)
+            if authorize_magic(card_id, magic) {
+                Some(0)
+            } else {
+                Some(-(Errno::Einval.as_i32() as i64))
+            }
         }
         DRM_IOCTL_MODE_ATOMIC => {
             if !valid_user_range(arg, core::mem::size_of::<DrmModeAtomic>() as u64) {
