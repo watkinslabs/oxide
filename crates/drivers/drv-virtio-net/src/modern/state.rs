@@ -178,11 +178,7 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     if last_device {
         super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(super::rx::rx_runtime_empty));
     }
-    if state.cfg_va != 0 {
-        // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
-        // probe; device_status is an 8-bit register at offset 0x14.
-        unsafe { core::ptr::write_volatile((state.cfg_va + 0x14) as *mut u8, 0u8); }
-    }
+    virtio::reset_device(state.cfg_va);
     for rx_buf in state.rx_bufs {
         free_frame(rx_buf.pa);
     }
@@ -216,11 +212,7 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
     if last_device {
         super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(super::rx::rx_runtime_empty));
     }
-    if state.cfg_va != 0 {
-        // SAFETY: cfg_va is the mapped virtio common-cfg window captured at
-        // probe; device_status is an 8-bit register at offset 0x14.
-        unsafe { core::ptr::write_volatile((state.cfg_va + 0x14) as *mut u8, 0u8); }
-    }
+    virtio::reset_device(state.cfg_va);
     for rx_buf in state.rx_bufs {
         free_frame(rx_buf.pa);
     }
