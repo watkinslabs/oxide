@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B397-sound-unregister-rejects-non-owners`.
+Current marker: `>>> ACTIVE >>> B397-sound-unregister-rejects-non-owners` — verified; commit/PR pending.
 
 ## Archived Completed B327-B330
 
@@ -490,4 +490,4 @@ recent-completed table above; main was synced after each merge through
 | B394-sound-card-owner-keyed-numbers | VERIFIED | Owner-keyed card numbers proven by source audit, hosted sound tests, x86_64/aarch64 driver-path proof, PR #2447, main sync `db69465f`. |
 | B395-sound-card-per-card-node-publication | VERIFIED | Per-card ALSA/OSS publication proven by source audit, hosted sound tests, arch proof, PR #2448, main sync `a76db156`. |
 | B396-sound-ops-route-by-owner | VERIFIED | Owner-routed ops dispatch proven by focused/full sound tests, arch proof, PR #2449, main sync `cac90846`. |
-| B397-sound-unregister-rejects-non-owners | ACTIVE | Claimed from fresh main; prove unregister cannot remove another owner's card state. |
+| B397-sound-unregister-rejects-non-owners | ACTIVE | Source audit, focused non-owner unregister test, serial full sound tests, and x86_64/aarch64 driver-path proof pass. |
