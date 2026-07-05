@@ -89,6 +89,20 @@ pub trait FileOps: Send + Sync {
         Err(no_data_op_errno(inode.file_type()))
     }
 
+    /// `f_op->write` with access to the open file description. Backends whose
+    /// write target is per-open state (`/dev/fuse`: the reply channel is keyed by
+    /// the open `File`) override this; the default preserves inode-only drivers.
+    /// # C: backend-dependent
+    fn write_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.write(file.inode(), off, buf)
+    }
+
+    /// Non-blocking write with access to the open file description. Default
+    /// forwards to [`Self::write_nonblock`]. # C: backend-dependent
+    fn write_nonblock_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.write_nonblock(file.inode(), off, buf)
+    }
+
     /// Non-blocking read (`O_NONBLOCK`, `15§5`): `EAGAIN` rather than park.
     /// Default forwards to [`Self::read`] (correct for never-blocking inodes —
     /// regular files, tmpfs, procfs); pipes/ttys/sockets override. # C: backend
