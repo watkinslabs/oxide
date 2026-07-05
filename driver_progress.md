@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B505-sound-owner-key-boundary VERIFIED pending commit/PR/merge.
+Current marker: B506-gpu-owner-key-boundary; IN AUDIT.
+
+## B506 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B506-gpu-owner-key-boundary | ACTIVE | Fresh main `5755e327` after PR #2569 merge. Claimed `drv-virtio-gpu` BDF metadata/callback key use in DRM/fbdev private paths; `metadata/index.md` advanced B 506 -> 507. Read-only fanout is auditing `drv-virtio-gpu`, DRM, and fbdev identity paths before code changes. |
 
 ## B505 Current
 

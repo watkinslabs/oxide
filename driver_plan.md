@@ -2,11 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B505-sound-owner-key-boundary VERIFIED pending commit/PR/merge.
+ACTIVE NOW: B506-gpu-owner-key-boundary; IN AUDIT.
 
-Current active item: none.
+Current active item: `drv-virtio-gpu` BDF metadata/callback key use in DRM/fbdev
+private paths.
 
-Next gate after merge: return to fresh `origin/main` before claiming B506 using
+Next gate after merge: return to fresh `origin/main` before claiming B507 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -153,7 +154,7 @@ Status legend:
 | VERIFIED |  | `drv-virtio-net` consumes `VirtioChildDeviceKey` for modern init/transport identity/netdev/TX/RX/neighbor/remove/shutdown/tests. |
 | VERIFIED | B505-sound-owner-key-boundary | `drv-virtio-snd` no longer passes raw `u32` owner keys across the sound-core boundary: `sound::SoundOwnerKey` is a nonzero sound-owned owner type; sound card reservations, ALSA card lookup/removal, sound ops routing, inode-private sound data, PCM/capture/OSS runtime state, and `SoundOps` callbacks consume typed owners; `drv-virtio-snd` converts `VirtioChildDeviceKey` once through `sound_owner` before sound-core calls and callback context lookup. Checks pass: focused `cargo test -q -p sound -- --nocapture --test-threads=1` 16/16; `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` 8/8; broad hosted driver gate for `pci-boot`, `virtio`, and all virtio child driver crates; touched Rust files remain under 500 lines; `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 | VERIFIED |  | `drv-virtio-snd` consumes `VirtioChildDeviceKey` for install/context/hot-remove/shutdown/PCM scan/event teardown. |
-| NOT DONE | TBD | `drv-virtio-gpu` still uses BDF as metadata and callback key in some DRM/fbdev private paths. |
+| ACTIVE | B506-gpu-owner-key-boundary | `drv-virtio-gpu` still uses BDF as metadata and callback key in some DRM/fbdev private paths. |
 | VERIFIED |  | `drv-virtio-gpu` consumes `VirtioChildDeviceKey` for device table/install/hot-remove/shutdown/probe-failure unwind/scanout teardown. |
 | VERIFIED |  | Shared `virtio::run_child_probe` owns transport-neutral child probe lifecycle. |
 | VERIFIED |  | Shared `virtio::VirtioProbeLease` owns one-shot transport-state lease. |
