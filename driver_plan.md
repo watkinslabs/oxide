@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B484-msix-programming-virtio-transport; VERIFIED pending PR merge.
+ACTIVE NOW: B485-virtio-child-fallible-publication; VERIFIED pending PR merge.
 
-Current active item: MSI-X programming for virtio devices belongs to virtio-pci transport path is verified on branch.
+Current active item: Virtio-pci creates child `virtio` devices through fallible model publication is verified on branch.
 
-Next gate after merge: return to fresh `origin/main` before claiming B485 using
+Next gate after merge: return to fresh `origin/main` before claiming B486 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -119,7 +119,7 @@ Status legend:
 | VERIFIED | B484-msix-programming-virtio-transport | MSI-X programming for virtio devices belongs to virtio-pci transport path: MSI-X table/config programming is confined to private `virtio_transport::msix`, parent re-export is narrowed to the PCI transport/probe boundary, the only live `bind_msix_vector` caller is `virtio_drv::probe`, child drivers provide profiles/handlers instead of programming MSI-X, and hosted plus x86_64/aarch64 smokes pass. |
 | VERIFIED |  | Virtio-pci accepts modern virtio PCI IDs only. |
 | VERIFIED |  | Transitional virtio IDs are not mixed into modern cap-based path. |
-| SOURCE OK |  | Virtio-pci creates child `virtio` devices through fallible model publication. |
+| VERIFIED | B485-virtio-child-fallible-publication | Virtio-pci creates child `virtio` devices through fallible model publication: `VirtioPciDrv::probe` maps modern PCI identity to `VirtioChildModelIdentity`, publishes the child through `drv::try_device_add(...)?` with parent `pci`, driver-core invokes child `VirtioChildDriver::probe`, and `run_child_probe` publishes transport state only after child success while releasing failed probe resources on error/drop. Hosted lifecycle tests, full virtio/pci-boot gate, and x86_64/aarch64 smokes pass. |
 | SOURCE OK |  | Child virtio drivers bind through the model. |
 | SOURCE OK |  | Virtio child model-driver declarations are split into `pci-boot::virtio_child`. |
 | SOURCE OK |  | PCI transport file no longer owns every child `drv::Driver` declaration. |
