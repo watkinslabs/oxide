@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B354-drm-get-cap-supported-only`.
+Current marker: `>>> ACTIVE >>> B355-drm-raw-writes-rejected`.
 
 ## Archived Completed B327-B330
 
@@ -415,8 +415,16 @@ Evidence: source audit against Linux `drm_setclientcap` found unsupported caps m
 
 ## B354-drm-get-cap-supported-only
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2407.
 
 Branch: `B354-drm-get-cap-supported-only`
 
-Evidence: source audit found `GET_CAP` trusted `DrmDriver::cap` directly, allowing drivers to advertise unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps. Added DRM-core advertised-cap clamp and over-reporting-driver ioctl regression. Focused GET_CAP regression, full `cargo test -p drm` with 65 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass.
+Evidence: source audit found `GET_CAP` trusted `DrmDriver::cap` directly, allowing drivers to advertise unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps. Added DRM-core advertised-cap clamp and over-reporting-driver ioctl regression. Focused GET_CAP regression, full `cargo test -p drm` with 65 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2407, and main sync `7eadc40e` pass.
+
+## B355-drm-raw-writes-rejected
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B355-drm-raw-writes-rejected`
+
+Evidence: source audit found `DrmCardFileOps::write` and private `DrmSinkFileOps::write` both reject raw writes with `EINVAL`; no code change required. Existing `drm_nodes_do_not_acknowledge_raw_writes` covers card and render test inodes. Focused raw-write regression, full `cargo test -p drm` with 65 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass.
