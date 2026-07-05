@@ -38,15 +38,15 @@ impl VirtioChildSession {
             transport_lease: virtio::VirtioProbeLease::live(),
         })
     }
+
+    pub(super) fn pci_bdf(&self) -> pci::Bdf {
+        self.bdf
+    }
 }
 
 impl virtio::VirtioChildTransportSession for VirtioChildSession {
     fn device_key(&self) -> virtio::VirtioChildDeviceKey {
         self.device_key
-    }
-
-    fn location(&self) -> virtio::VirtioTransportLocation {
-        virtio::VirtioTransportLocation::new(self.bdf.bus, self.bdf.device, self.bdf.function)
     }
 
     fn device_addr(&self) -> &str { self.child_addr.as_str() }

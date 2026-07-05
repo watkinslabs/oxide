@@ -12,7 +12,10 @@ trait VirtioChildOps: Sync {
     const DRIVER_ID: virtio::VirtioChildDriverId;
 
     fn profile() -> virtio::VirtioTransportProfile;
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()>;
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()>;
     fn remove_child(device_key: virtio::VirtioChildDeviceKey);
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey);
 }
@@ -38,7 +41,8 @@ impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let session = VirtioChildSession::begin(dev, O::profile())?;
-        virtio::run_child_probe(session, |session| O::probe_child(session))
+        let pci_bdf = session.pci_bdf();
+        virtio::run_child_probe(session, |session| O::probe_child(session, pci_bdf))
     }
 
     fn remove(&self, dev: &drv::Device) {
@@ -62,17 +66,19 @@ impl VirtioChildOps for VirtioGpuOps {
         drv_virtio_gpu::transport_profile()
     }
 
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
-        let location = session.location();
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
         let ok = drv_virtio_gpu::post_init::get_display_info(
             device_key,
-            location.bus,
-            location.device,
-            location.function,
+            pci_bdf.bus,
+            pci_bdf.device,
+            pci_bdf.function,
             "virtio",
             alloc::string::String::from(session.device_addr()),
             session.drv_features(),
@@ -119,7 +125,10 @@ impl VirtioChildOps for VirtioInputOps {
         drv_virtio_input::transport_profile()
     }
 
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        _pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -173,8 +182,10 @@ impl VirtioChildOps for VirtioNetOps {
         drv_virtio_net::modern::transport_profile()
     }
 
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
-        let location = session.location();
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        _pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()> {
         let device_key = session.device_key();
         let payloads = session.net_boot_payloads();
         let Some(resources) = session.child_resources() else {
@@ -187,9 +198,6 @@ impl VirtioChildOps for VirtioNetOps {
         if !drv_virtio_net::modern::init_modern_with_rx_pool(
             device_key,
             resources,
-            location.bus,
-            location.device,
-            location.function,
             rx_bufs,
             payloads.tx_buf_pa,
         ) {
@@ -216,7 +224,10 @@ impl VirtioChildOps for VirtioBlkOps {
         drv_virtio_blk::modern::transport_profile()
     }
 
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        _pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -250,7 +261,10 @@ impl VirtioChildOps for VirtioRngOps {
         drv_virtio_rng::transport_profile()
     }
 
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        _pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -287,7 +301,10 @@ impl VirtioChildOps for VirtioVsockOps {
         drv_virtio_vsock::transport_profile()
     }
 
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        _pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -323,8 +340,10 @@ impl VirtioChildOps for VirtioSndOps {
         drv_virtio_snd::transport_profile()
     }
 
-    fn probe_child(session: &mut dyn virtio::VirtioChildTransportSession) -> drv::KResult<()> {
-        let location = session.location();
+    fn probe_child(
+        session: &mut dyn virtio::VirtioChildTransportSession,
+        _pci_bdf: pci::Bdf,
+    ) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -337,13 +356,11 @@ impl VirtioChildOps for VirtioSndOps {
             None => return Err(drv::Error::ProbeFailed),
         };
         #[cfg(not(feature = "debug-boot"))]
-        let _ = &location;
-        #[cfg(not(feature = "debug-boot"))]
         let _ = &sp;
         debug_boot! {
-            klog::write_raw(b"[INFO]  virtio-snd: bdf=0:");
-            klog::write_dec_u64(location.device as u64);
-            klog::write_raw(b".0 card=C0 streams=");
+            klog::write_raw(b"[INFO]  virtio-snd: key=");
+            klog::write_hex_u64(device_key.raw() as u64);
+            klog::write_raw(b" card=C0 streams=");
             klog::write_dec_u64(sp.streams as u64);
             klog::write_raw(b" out=");
             klog::write_dec_u64(sp.out as u64);

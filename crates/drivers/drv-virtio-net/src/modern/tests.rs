@@ -8,12 +8,9 @@ use core::sync::atomic::Ordering;
         DeviceKey::from_raw(raw)
     }
 
-    fn state(bus: u8) -> ModernNetState {
+    fn state(raw: u32) -> ModernNetState {
         ModernNetState {
-            device_key: key(bus as u32),
-            bus,
-            device: 1,
-            function: 0,
+            device_key: key(raw),
             cfg_va: 0,
             hhdm: 0,
             rxq: virtio::VirtQueueResource {
@@ -36,10 +33,10 @@ use core::sync::atomic::Ordering;
             },
             rx_bufs: alloc::vec![virtio::VirtioNetRxBuffer {
                 desc_id: 0,
-                pa: 0x9000 + bus as u64,
+                pa: 0x9000 + raw as u64,
                 len: 2048,
             }],
-            mac: [0x02, 0, 0, 0, 0, bus],
+            mac: [0x02, 0, 0, 0, 0, raw as u8],
             tx0_buf_pa: 0,
             tx_last_used: 0,
             tx_next_avail: 0,
@@ -89,9 +86,6 @@ use core::sync::atomic::Ordering;
         assert!(init_modern(
             key(1),
             resources_with_mac(&MAC1),
-            1,
-            1,
-            0,
             9,
             2048,
             10
@@ -101,22 +95,16 @@ use core::sync::atomic::Ordering;
         assert!(init_modern(
             key(2),
             resources_with_mac(&MAC2),
-            2,
-            1,
-            0,
             9,
             2048,
             10
         ));
         assert_eq!(mac_for(key(2)), Some(MAC2));
-        assert_eq!(modern_state_for(key(1)).unwrap().bus, 1);
-        assert_eq!(modern_state_for(key(2)).unwrap().bus, 2);
+        assert_eq!(modern_state_for(key(1)).unwrap().device_key, key(1));
+        assert_eq!(modern_state_for(key(2)).unwrap().device_key, key(2));
         assert!(!init_modern(
             key(2),
             resources_with_mac(&MAC2),
-            2,
-            1,
-            0,
             9,
             2048,
             10
@@ -135,9 +123,6 @@ use core::sync::atomic::Ordering;
         assert!(init_modern_with_rx_pool(
             key(3),
             resources_with_mac(&MAC1),
-            3,
-            1,
-            0,
             alloc::vec![
                 virtio::VirtioNetRxBuffer {
                     desc_id: 0,
@@ -162,9 +147,6 @@ use core::sync::atomic::Ordering;
         assert!(!init_modern_with_rx_pool(
             key(4),
             resources_with_mac(&MAC2),
-            4,
-            1,
-            0,
             alloc::vec![
                 virtio::VirtioNetRxBuffer {
                     desc_id: 0,
