@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B369-virtio-net-rx-runtime-owner`.
+Current marker: `>>> ACTIVE >>> B369-virtio-net-rx-runtime-owner` verified locally; PR #2422 ready to update/merge.
 
 ## Archived Completed B327-B330
 
@@ -488,8 +488,8 @@ Evidence: source audit found `init_modern_with_rx_pool` publishes kernel netdev 
 
 ## B369-virtio-net-rx-runtime-owner
 
-Status: `IN AUDIT`.
+Status: `VERIFIED`; PR #2422 ready to update/merge.
 
 Branch: `B369-virtio-net-rx-runtime-owner`
 
-Evidence: source audit of virtio-net RX runtime installation/removal ownership is in progress.
+Evidence: source audit found `install_rx_runtime` records iface/IP state by child `DeviceKey` and installs shared timers/NetRx softirq, while `remove_rx_runtime_for` removes only the named key and reports whether the last RX runtime was removed; `uninstall_modern` releases shared RX resources only on last runtime. Extended `rx_runtime_is_keyed_by_device` to prove install creates keyed records and iface IP updates do not cross keys. Focused regression, full `cargo test -p drv-virtio-net` with 16 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass. First x86 smoke attempt hit external `vhost-vsock` guest-CID conflict during parallel ARM run; clean rerun passed.

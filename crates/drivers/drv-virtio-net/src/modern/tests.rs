@@ -406,15 +406,19 @@ use core::sync::atomic::Ordering;
     #[test]
     fn rx_runtime_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
-        clear_rx_runtime();
-        set_softirq_iface(key(0x0012_0304), net::NetIfaceId::from_raw(9), [10, 0, 0, 2]);
-        assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(10, 0, 0, 2)));
+        clear_test_state();
+        install_rx_runtime(key(0x0012_0304), net::NetIfaceId::from_raw(9));
+        install_rx_runtime(key(0x0012_0305), net::NetIfaceId::from_raw(10));
+        assert!(SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+        assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(0, 0, 0, 0)));
+        assert_eq!(first_iface_ip_for(key(0x0012_0305)), Some(net::Ipv4Addr::new(0, 0, 0, 0)));
         assert!(set_softirq_ip_for_iface(net::NetIfaceId::from_raw(9), [10, 0, 0, 3]));
         assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
-        assert!(!set_softirq_ip_for_iface(net::NetIfaceId::from_raw(10), [10, 0, 0, 4]));
+        assert_eq!(first_iface_ip_for(key(0x0012_0305)), Some(net::Ipv4Addr::new(0, 0, 0, 0)));
+        assert!(!set_softirq_ip_for_iface(net::NetIfaceId::from_raw(11), [10, 0, 0, 4]));
         assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
-        clear_rx_runtime();
-        assert!(first_iface_ip_for(key(0x0012_0304)).is_none());
+        assert!(first_iface_ip_for(key(0x0012_0305)).is_some());
+        clear_test_state();
     }
 
     #[test]
