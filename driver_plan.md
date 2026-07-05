@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B499-virtio-gpu-placeholder-notify; IN AUDIT.
+ACTIVE NOW: none; B499-virtio-gpu-placeholder-notify VERIFIED.
 
-Current active item: Virtio-gpu placeholder notify pointer marker removed.
+Last verified item: Virtio-gpu placeholder notify pointer marker removed.
 
 Next gate after merge: return to fresh `origin/main` before claiming B500 using
 `metadata/index.md`.
@@ -133,7 +133,7 @@ Status legend:
 | VERIFIED | B496-virtio-child-shutdown-key | Virtio child wrapper centralizes shutdown key lookup: generic `VirtioChildDriver<O>::shutdown` resolves the stable child key through `parent_key(dev)` and calls shared `virtio::run_child_shutdown(device_key, O::shutdown_child)`; `parent_key` derives the `VirtioChildDeviceKey` from the parent PCI model device, and each child ops adapter receives only that stable key for its explicit shutdown policy without transport unpublish/remove side effects. Checks pass: focused shutdown-key lifecycle test 1/1, hosted `pci-boot`/`virtio` with virtio 43/43 and pci-boot compile-only 0 tests, x86_64 smoke reached `oxide login:` in 12s, and aarch64 smoke reached `oxide login:` in 16s. |
 | VERIFIED | B497-virtio-child-policy-only | Child drivers supply only profile, install, remove, and shutdown policy: source audit proves the only virtio child bus-facing `drv::Driver` wrapper, driver registration, match/probe/remove/shutdown lifecycle, publish/release/remove-unpublish, and shutdown-key routing live in `pci-boot::virtio_child` and shared `virtio`; child crates export `DRIVER_ID`, `transport_profile`, install/init, remove/uninstall, and shutdown policy entrypoints and do not define `drv::Driver`, register drivers, bind/unbind, import pci-boot transport, or call shared `run_child_*` lifecycle helpers. Checks pass: broad hosted gate for `pci-boot`, `virtio`, and all virtio child driver crates; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 | VERIFIED | B498-virtio-child-device-ids | Virtio child device IDs for net/block/RNG/vsock/sound/input/GPU are supplied by child driver crates: source audit proves child crates own named virtio device ID constants and `DRIVER_ID` descriptors (`net=1`, `blk=2`, `rng=4`, `gpu=16`, `input=18`, `vsock=19`, `snd=25`), shared `VirtioChildDriverId` matches bus/vendor/exact child device ID, and `pci-boot::virtio_child` consumes only each child crate `DRIVER_ID` through its ops adapter with no wrapper-local numeric child device IDs. Checks pass: broad hosted gate for `pci-boot`, `virtio`, and all virtio child driver crates; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 17s. |
-| ACTIVE | B499-virtio-gpu-placeholder-notify | Virtio-gpu placeholder notify pointer marker removed. |
+| VERIFIED | B499-virtio-gpu-placeholder-notify | Virtio-gpu placeholder notify pointer marker removed: source audit finds no production `placeholder`/stub notify marker in `drv-virtio-gpu`; GPU display probe and scanout command submission write queue indexes to `ctrlq.notify_va` from transport-supplied `VirtQueueResource`, while pci-boot maps notify addresses from the virtio-pci NOTIFY cap and shared virtio handoff carries those mapped addresses into child resources. Zero notify values in GPU are test/support fixtures only. Checks pass: hosted `cargo test -q -p pci-boot -p virtio -p drv-virtio-gpu -- --nocapture --test-threads=1` with GPU 36/36, virtio 43/43, and pci-boot compile-only 0 tests; GPU source files remain under 500 lines; x86_64 smoke reached `oxide login:` in 12s; aarch64 smoke reached `oxide login:` in 16s. |
 | VERIFIED |  | Shared `virtio` owns child bus/vendor matching through `VirtioChildDriverId`. |
 | SOURCE OK |  | Child driver crates export their own descriptors. |
 | SOURCE OK |  | PCI-backed child wrapper consumes child descriptors. |
