@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B494-virtio-child-success-publish; VERIFIED.
+Current marker: B495-virtio-child-remove-unpublish; IN AUDIT.
+
+## B495 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B495-virtio-child-remove-unpublish | IN AUDIT | Fresh main `01fec269` after PR #2554 merge; auditing that child remove uses the centralized parent-key path and unpublishes transport state after child policy remove, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B494 Current
 
