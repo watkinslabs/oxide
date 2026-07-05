@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B428-sysfs-explicit-bind-route; IN AUDIT.
+Current marker: B445-sysfs-bind-entry-production; VERIFIED pending PR merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -734,3 +734,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B444-i8042-platform-model-attach | VERIFIED | Fresh main `6fe6f3f6` after PR #2501 merge; source audit proves x86_64 `crates/kernel/kmain/src/kmain/runtime.rs::init_ps2_keyboard` gets `drv_ps2_keyboard::driver()`, installs probe data with `configure_probe`, publishes `platform/i8042` through `platform_device_or_panic` / `drv::try_device_add`, then calls `drv::register_driver(ps2_drv)`. `crates/drivers/drv-ps2-keyboard/src/lib.rs` implements `Ps2KbdDriver` as a `platform` model driver named `i8042-kbd` that matches only addr `i8042`; `probe` performs i8042 bring-up and IRQ1 setup, returning `ProbeFailed` on absent hardware so the model device remains unbound. The aarch64 boot hook is an explicit no-op and the driver crate uses the no-op shell outside `x86_64` `oxide-kernel`, which is correct because QEMU `virt` has no i8042. Hosted checks pass: `cargo test -p drv-ps2-keyboard -- --nocapture`, `cargo test -p drv -- driver_registration_binds_existing_matching_devices -- --nocapture`, and `cargo test -p drv -- try_device_add_rejects_duplicate_bus_identity -- --nocapture`. Runtime x86_64 proof passes: `SMOKE_KEEP_LOG=/tmp/b444-i8042-platform-model-attach-x86.log ./tools/boot-smoke.sh x86 240` reached `oxide login:` in 12s attempt 1, and the saved log contains `[INFO]  i8042 keyboard detected`. aarch64 runtime non-regression is inherited from B443 `make smoke-arm SMOKE_TIMEOUT=300` because B444 is docs/metadata only and the i8042 path is compiled out on aarch64. |
+
+## B445 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B445-sysfs-bind-entry-production | VERIFIED | Fresh main `7e807a39` after PR #2502 merge; source audit proves `crates/kernel/sysfs/src/bus/hooks.rs` registers `/sys/bus/{pci,virtio,platform}/drivers`, `crates/kernel/sysfs/src/bus/driver.rs` exposes `bind` and `unbind` under each driver dir, bind writes parse the device token and call `drv::bind_addr(bus, addr, driver)`, unbind resolves the currently bound model device before `drv::unbind`, and driver symlinks are derived from current model binding state. Focused hosted regressions pass: `cargo test -p sysfs driver_bind_unbind_attrs_drive_drv_model -- --nocapture`, `cargo test -p sysfs driver_bind_attr_preserves_unbound_state_on_probe_failure -- --nocapture`, and `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture`. Runtime arch proof is inherited from already-merged x86_64/aarch64 bind/unbind uevent and driver-path smokes because B445 changes only docs/metadata and the production sysfs code is unchanged on this branch. |
