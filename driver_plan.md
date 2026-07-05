@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B440-new-device-attach-after-publication VERIFIED pending PR merge.
+ACTIVE NOW: none; B441-initial-autoprobe-no-bind-change VERIFIED pending PR merge.
 
-Current active item: none; next claim starts after B440 merge and fresh main sync.
+Current active item: none; next claim starts after B441 merge and fresh main sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B441
+Next gate after merge: return to fresh `origin/main` before claiming B442
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -47,7 +47,7 @@ Status legend:
 | VERIFIED | B438-driver-registration-attaches-existing | Driver registration attaches newly registered drivers to existing unbound matching devices: `register_driver` publishes the driver then calls `attach_driver_to_existing_devices`, which skips bound/non-matching devices and calls `bind_inner` for existing unbound matches; hosted tests prove late registration binds once and duplicate registration does not reprobe. |
 | VERIFIED | B439-driver-unregistration-detaches-bound | Driver unregistration detaches devices bound to that driver before removing the driver from registry: `unregister_driver` walks bound devices and calls `unbind` while the driver is still registered, then removes the driver entry; hosted regression proves remove callback, cleared binding, disappearing driver name, and later bind failure. |
 | VERIFIED | B440-new-device-attach-after-publication | New model device attaches to already registered matching drivers after devtmpfs/sysfs publication setup and before add uevent: `try_device_add` publishes the model record, fires devtmpfs publication, auto-attaches with bind-change events suppressed, then fires sysfs add; hosted tests prove ordering and add uevent `DRIVER=` state. |
-| SOURCE OK |  | Initial auto-probe does not emit a separate bind-change event before add uevent. |
+| VERIFIED | B441-initial-autoprobe-no-bind-change | Initial auto-probe does not emit a separate bind-change event before add uevent: `try_device_add` passes `emit_bind_event=false` into initial auto-attach, and hosted bind-hook regression proves initial probe binds the device while `ADD_BIND_EVENTS` remains zero before the sysfs add event. |
 | SOURCE OK |  | Add uevent can carry current `DRIVER=<name>` state. |
 | SOURCE OK |  | Boot-time platform serial devices rely on model-owned attach path. |
 | SOURCE OK |  | Boot-time i8042 platform device relies on model-owned attach path. |
