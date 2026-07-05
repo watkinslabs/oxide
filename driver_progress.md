@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B381-virtio-net-ipv6-tx-stack-ndp`.
+Current marker: `>>> ACTIVE >>> B382-virtio-net-multidev-rebind-proof`.
 
 ## Archived Completed B327-B330
 
@@ -460,6 +460,7 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B378-virtio-net-hot-remove-key-cleanup | VERIFIED | Hot-remove clears keyed netdev/iface/RX runtime; full virtio-net tests, arch proof, PR #2431, main sync `3445c15a`. |
 | B379-virtio-net-shared-rx-last-runtime | VERIFIED | Shared NetRx/ARP-GC lifetime is last-runtime owned; full virtio-net tests, arch proof, PR #2432, main sync `2178cd35`. |
 | B380-virtio-net-ipv6-ndp-stack-owned | VERIFIED | IPv6 RX NDP learning is stack-owned; net NDP tests, virtio-net tests, arch proof, PR #2433, main sync `0fbf754b`. |
+| B381-virtio-net-ipv6-tx-stack-ndp | VERIFIED | IPv6 TX NDP lookup is registered-stack owned; net/virtio-net tests, arch proof, PR #2434, main sync `cdd8d243`. |
 
 ## B379-virtio-net-shared-rx-last-runtime
 
@@ -475,8 +476,16 @@ Evidence: virtio-net RX delivers IPv6 frames to `NetStack::deliver_rx_ipv6(iface
 
 ## B381-virtio-net-ipv6-tx-stack-ndp
 
-Status: `>>> ACTIVE >>> VERIFIED - PR READY`.
+Status: `VERIFIED`; merged by PR #2434.
 
 Branch: `B381-virtio-net-ipv6-tx-stack-ndp`
 
 Evidence: kernel `ndp_lookup_for_device` resolves by registered iface via `net::sock::stack().ndp_lookup(iface, next_hop)`, and `VirtioNetDev::xmit` calls `resolve_next_hop_mac` before `tx_frame_for`. `cargo test -p net f180c -- --nocapture`, `cargo test -p drv-virtio-net`, `git diff --check`, line caps, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
+
+## B382-virtio-net-multidev-rebind-proof
+
+Status: `>>> ACTIVE >>> IN AUDIT`.
+
+Branch: `B382-virtio-net-multidev-rebind-proof`
+
+Evidence: audit pending for multi-device bind/unbind/rebind proof.
