@@ -482,7 +482,7 @@ Evidence:
 
 ## B349-drm-page-flip-file-events
 
-Status: `VERIFIED, pre-push/PR merge pending`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B349-drm-page-flip-file-events`
 
@@ -496,4 +496,4 @@ Evidence:
 | `cargo test -p drm` | PASS: 62 passed. |
 | Line cap | PASS: `node/publication.rs` 255 lines, `node/tests.rs` 474, `crtc.rs` 438. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/oxide-driver-path-x86-aZmQuJ.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/oxide-driver-path-arm-hMbp8M.log`. |
+| `make smoke-driver-path-arm` / pre-push boot smoke | PASS: driver-path ARM passed; pre-push boot smoke reached `oxide login:` on x86_64 and aarch64. Driver-path ARM log: `/tmp/oxide-driver-path-arm-hMbp8M.log`. |
