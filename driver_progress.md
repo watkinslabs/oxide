@@ -5,13 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B462-virtio-net-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: B463-virtio-snd-explicit-shutdown-callback; IN AUDIT.
+
+## B463 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B463-virtio-snd-explicit-shutdown-callback | IN AUDIT | Fresh main `51bf1a1e` after PR #2520 merge; proving virtio-snd child driver implements explicit shutdown through the model child-driver path without tearing down user-visible sound publication during terminal shutdown. |
 
 ## B462 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B462-virtio-net-explicit-shutdown-callback | VERIFIED | Fresh main `ceff5704` after PR #2519 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioNetOps::shutdown_child` calls `drv_virtio_net::modern::shutdown_modern`, and virtio-net shutdown keeps netdev identity published while removing only the matching modern state by `VirtioChildDeviceKey`, releasing RX runtime/shared softirq state only when the last relevant runtime/device is gone, and freeing owned buffers. Code cleanup replaced raw common-cfg status offset writes in `crates/drivers/drv-virtio-net/src/modern/state.rs` with shared `virtio::reset_device`. Checks pass: `cargo test -p drv-virtio-net -- --nocapture` with 16/16 tests, `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
+| B462-virtio-net-explicit-shutdown-callback | VERIFIED | Merged PR #2520 into main `51bf1a1e`. Fresh main `ceff5704` after PR #2519 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioNetOps::shutdown_child` calls `drv_virtio_net::modern::shutdown_modern`, and virtio-net shutdown keeps netdev identity published while removing only the matching modern state by `VirtioChildDeviceKey`, releasing RX runtime/shared softirq state only when the last relevant runtime/device is gone, and freeing owned buffers. Code cleanup replaced raw common-cfg status offset writes in `crates/drivers/drv-virtio-net/src/modern/state.rs` with shared `virtio::reset_device`. Checks pass: `cargo test -p drv-virtio-net -- --nocapture` with 16/16 tests, `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B461 Current
 
