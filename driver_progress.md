@@ -5,13 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B463-virtio-snd-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: B464-8250-serial-explicit-shutdown-callback; IN AUDIT.
+
+## B464 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B464-8250-serial-explicit-shutdown-callback | IN AUDIT | Fresh main `3c6b0bdb` after PR #2521 merge; proving 8250 serial driver implements explicit shutdown through the model driver path without relying on remove/unbind side effects. |
 
 ## B463 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B463-virtio-snd-explicit-shutdown-callback | VERIFIED | Fresh main `51bf1a1e` after PR #2520 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioSndOps::shutdown_child` calls `drv_virtio_snd::shutdown`, and virtio-snd shutdown keeps sound card/ops publication visible while removing only the matching sound context by `VirtioChildDeviceKey`, releasing the shared SndEvent softirq only when the last context is gone, freeing owned buffers, and resetting the device through shared `virtio::reset_device`. Code cleanup replaced raw common-cfg status offset reads/writes and frame-size literals in `crates/drivers/drv-virtio-snd/src/{lifecycle.rs,pcm/playback.rs,pcm/capture.rs}` with shared `virtio::reset_device`, `virtio::read_status`, and `hal::PAGE_SIZE_BYTES`; added hosted regression `shutdown_removes_only_matching_snd_child_key_without_unpublishing_sound`. Checks pass: `cargo test -p drv-virtio-snd -- --nocapture` with 8/8 tests, `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
+| B463-virtio-snd-explicit-shutdown-callback | VERIFIED | Merged PR #2521 into main `3c6b0bdb`. Fresh main `51bf1a1e` after PR #2520 merge; source audit proves `crates/kernel/pci-boot/src/virtio_child.rs::VirtioChildDriver::shutdown` resolves the stable parent key and calls `virtio::run_child_shutdown(device_key, O::shutdown_child)`, `VirtioSndOps::shutdown_child` calls `drv_virtio_snd::shutdown`, and virtio-snd shutdown keeps sound card/ops publication visible while removing only the matching sound context by `VirtioChildDeviceKey`, releasing the shared SndEvent softirq only when the last context is gone, freeing owned buffers, and resetting the device through shared `virtio::reset_device`. Code cleanup replaced raw common-cfg status offset reads/writes and frame-size literals in `crates/drivers/drv-virtio-snd/src/{lifecycle.rs,pcm/playback.rs,pcm/capture.rs}` with shared `virtio::reset_device`, `virtio::read_status`, and `hal::PAGE_SIZE_BYTES`; added hosted regression `shutdown_removes_only_matching_snd_child_key_without_unpublishing_sound`. Checks pass: `cargo test -p drv-virtio-snd -- --nocapture` with 8/8 tests, `cargo test -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture`, full `cargo test -p virtio -- --nocapture` with 43/43 tests, `cargo test -p pci-boot -- --nocapture`, `make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B462 Current
 
