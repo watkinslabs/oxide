@@ -12,7 +12,7 @@ pub mod model;
 pub use model::{
     bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM, IORESOURCE_PREFETCH,
     register_driver, unregister_driver, devices, device_count,
-    try_device_add, device_del, driver_names, driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,
+    try_device_add, device_del, rollback_devices, driver_names, driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,
     shutdown_all, set_sysfs_hook, set_sysfs_remove_hook, set_bind_hook, set_driver_hook, set_devtmpfs_hook,
     set_devtmpfs_del_hook,
 };

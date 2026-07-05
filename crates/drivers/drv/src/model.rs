@@ -218,6 +218,14 @@ pub fn devices() -> Vec<Arc<Device>> { DEVICES.lock().clone() }
 /// Number of registered devices. # C: O(1)
 pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 
+/// Roll back a partially published device batch in reverse publication order.
+/// # C: O(N_published)
+pub fn rollback_devices(published: &[Arc<Device>]) {
+    for dev in published.iter().rev() {
+        device_del(dev);
+    }
+}
+
 /// Fallible unified device registration (Linux `device_add`). ONE call
 /// publishes a device to BOTH `/sys` and `/dev` from a single registration:
 ///   1. reject duplicate `(bus, addr)` identities before publishing anything;

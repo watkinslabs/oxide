@@ -196,6 +196,11 @@ static ADD_ORDER: TestLock<Vec<&'static str>, DriverListClass> = TestLock::new(V
 static ADD_PROBES: AtomicU32 = AtomicU32::new(0);
 static ADD_SYSFS_SAW_BOUND: AtomicU32 = AtomicU32::new(0);
 static ADD_BIND_EVENTS: AtomicU32 = AtomicU32::new(0);
+const ROLLBACK_KEEP_ADDR: &str = "rollback-existing-tty0";
+const ROLLBACK_DROP_ADDR: &str = "rollback-new-tty0";
+const ROLLBACK_KEEP_ID: u16 = 0x6600;
+const ROLLBACK_DROP_ID: u16 = 0x6601;
+const ROLLBACK_CONFLICT_ID: u16 = 0x6602;
 struct AddOrderDrv;
 impl Driver for AddOrderDrv {
     fn bus(&self) -> &'static str { "platform" }

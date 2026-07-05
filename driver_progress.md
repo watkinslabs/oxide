@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B478-console-tty-conflict-rollback; IN AUDIT.
+Current marker: B478-console-tty-conflict-rollback; VERIFIED; commit/PR/merge pending.
 
 ## B478 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B478-console-tty-conflict-rollback | IN AUDIT | Fresh main `e69bd9c0` after PR #2535 merge; auditing console/tty conflict rollback from current source and adding direct proof if hosted testability allows without stubs or hacks. |
+| B478-console-tty-conflict-rollback | VERIFIED | Fresh main `e69bd9c0` after PR #2535 merge; `crates/kernel/console/src/devnodes.rs::push_tty_node` now delegates error rollback to shared `drv::rollback_devices`, and `crates/drivers/drv/src/model.rs::rollback_devices` removes partially published devices in reverse publication order through `device_del`. Added hosted regression `rollback_devices_after_conflict_removes_only_published_batch`: preexisting tty identity stays registered, newly published tty node is removed, duplicate conflict remains `Busy`, and no second preexisting identity appears. Checks pass: focused drv regression, `cargo test -q -p drv -p console -- --nocapture --test-threads=1` with drv 29/29 and console compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B477 Current
 
