@@ -50,6 +50,9 @@ pub const LINUX_REBOOT_CMD_KEXEC:      u32 = 0x45584543;
 
 type DriverShutdownHook = fn();
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum TerminalCmd { Restart, PowerOff, Halt }
+
 static DRIVER_SHUTDOWN_HOOK: Spinlock<Option<DriverShutdownHook>, PowerListClass> = Spinlock::new(None);
 static DRIVER_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
 
@@ -66,6 +69,26 @@ fn shutdown_devices_once() {
     }
     if let Some(h) = *DRIVER_SHUTDOWN_HOOK.lock() {
         h();
+    }
+}
+
+fn prepare_cmd(c: u32) -> KResult<Option<TerminalCmd>> {
+    match c {
+        LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
+            shutdown_devices_once();
+            Ok(Some(TerminalCmd::Restart))
+        }
+        LINUX_REBOOT_CMD_POWER_OFF => {
+            shutdown_devices_once();
+            Ok(Some(TerminalCmd::PowerOff))
+        }
+        LINUX_REBOOT_CMD_HALT => {
+            shutdown_devices_once();
+            Ok(Some(TerminalCmd::Halt))
+        }
+        LINUX_REBOOT_CMD_CAD_ON | LINUX_REBOOT_CMD_CAD_OFF    => Ok(None),
+        LINUX_REBOOT_CMD_KEXEC | LINUX_REBOOT_CMD_SW_SUSPEND  => Err(Error::Inval),
+        _ => Err(Error::Inval),
     }
 }
 
@@ -182,31 +205,37 @@ pub unsafe fn power_off() -> ! {
 /// # SAFETY: caller has validated CAP_SYS_BOOT and the magic args.
 /// # C: O(1)
 pub unsafe fn cmd(c: u32) -> KResult<()> {
-    match c {
-        LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
-            shutdown_devices_once();
+    match prepare_cmd(c)? {
+        Some(TerminalCmd::Restart) => {
             // SAFETY: terminal-state primitive; caller validated CAP_SYS_BOOT + magic per `man 2 reboot`; irreversible by design.
             unsafe { restart() }
         }
-        LINUX_REBOOT_CMD_POWER_OFF => {
-            shutdown_devices_once();
+        Some(TerminalCmd::PowerOff) => {
             // SAFETY: caller validated CAP_SYS_BOOT + magic; power_off is irreversible per Linux reboot(2) POWER_OFF contract.
             unsafe { power_off() }
         }
-        LINUX_REBOOT_CMD_HALT => {
-            shutdown_devices_once();
+        Some(TerminalCmd::Halt) => {
             // SAFETY: caller validated CAP_SYS_BOOT + magic; halt parks every CPU; the kernel never resumes from this primitive.
             unsafe { halt() }
         }
-        LINUX_REBOOT_CMD_CAD_ON | LINUX_REBOOT_CMD_CAD_OFF    => Ok(()),
-        LINUX_REBOOT_CMD_KEXEC | LINUX_REBOOT_CMD_SW_SUSPEND  => Err(Error::Inval),
-        _ => Err(Error::Inval),
+        None => Ok(()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::AtomicU32;
+
+    static SHUTDOWN_HITS: AtomicU32 = AtomicU32::new(0);
+    fn shutdown_hook() { SHUTDOWN_HITS.fetch_add(1, Ordering::Release); }
+
+    fn reset_shutdown_hook() {
+        SHUTDOWN_HITS.store(0, Ordering::Release);
+        DRIVER_SHUTDOWN_DONE.store(false, Ordering::Release);
+        set_driver_shutdown_hook(shutdown_hook);
+    }
+
     // SAFETY: hosted-test path; init has no preconditions and the host build is a no-op Ok(()).
     #[test] fn init_ok() { unsafe { assert!(init().is_ok()); } }
     #[test] fn magic_validates() {
@@ -219,5 +248,33 @@ mod tests {
         // SAFETY: hosted-test path — host build of cmd() never reaches the asm blocks; the unknown branch returns Err immediately.
         let r = unsafe { cmd(0xDEADBEEF) };
         assert_eq!(r, Err(Error::Inval));
+    }
+
+    #[test] fn terminal_cmds_shutdown_drivers_before_power_transition() {
+        for (cmd, terminal) in [
+            (LINUX_REBOOT_CMD_RESTART, TerminalCmd::Restart),
+            (LINUX_REBOOT_CMD_RESTART2, TerminalCmd::Restart),
+            (LINUX_REBOOT_CMD_POWER_OFF, TerminalCmd::PowerOff),
+            (LINUX_REBOOT_CMD_HALT, TerminalCmd::Halt),
+        ] {
+            reset_shutdown_hook();
+            assert_eq!(prepare_cmd(cmd), Ok(Some(terminal)));
+            assert_eq!(SHUTDOWN_HITS.load(Ordering::Acquire), 1);
+            assert!(DRIVER_SHUTDOWN_DONE.load(Ordering::Acquire));
+        }
+    }
+
+    #[test] fn non_terminal_cmds_do_not_shutdown_drivers() {
+        for cmd in [
+            LINUX_REBOOT_CMD_CAD_ON,
+            LINUX_REBOOT_CMD_CAD_OFF,
+            LINUX_REBOOT_CMD_KEXEC,
+            LINUX_REBOOT_CMD_SW_SUSPEND,
+            0xDEADBEEF,
+        ] {
+            reset_shutdown_hook();
+            let _ = prepare_cmd(cmd);
+            assert_eq!(SHUTDOWN_HITS.load(Ordering::Acquire), 0);
+        }
     }
 }
