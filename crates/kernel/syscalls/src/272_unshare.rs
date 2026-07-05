@@ -79,10 +79,13 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) {
         task.ipc_ns.store(id, Ordering::Release);
     }
     if (bits & (1u64 << 5)) != 0 {
-        // CLONE_NEWNET — fresh net_ns id (F101).
+        // CLONE_NEWNET — fresh net_ns id (F101). B518: materialize the
+        // ns's isolated view — a loopback-only interface (lo, 127.0.0.1/8);
+        // its private AF_UNIX registry is created lazily on first bind.
         static NEXT_NET_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
         let id = NEXT_NET_NS.fetch_add(1, Ordering::AcqRel);
         task.net_ns.store(id, Ordering::Release);
+        net::net_ns::materialize_loopback(id);
     }
     if (bits & (1u64 << 4)) != 0 {
         // CLONE_NEWPID — pending bit; fork dispatcher allocates ns (F105).

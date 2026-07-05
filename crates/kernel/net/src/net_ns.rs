@@ -1,0 +1,225 @@
+// Per-net_ns (CLONE_NEWNET) isolated network-stack overlay.
+//
+// ADDITIVE + SAFE by construction: net_ns id 0 IS the pre-existing
+// global stack, byte-for-byte unchanged. The overlay is consulted
+// ONLY for a task whose net_ns != 0 — every id-0 code path keeps
+// using `crate::sock::UNIX_REGISTRY` / `crate::sock::stack()` exactly
+// as before. A non-zero net_ns gets a PRIVATE AF_UNIX path registry
+// (stream listeners + dgram queues) and a lazily-materialized
+// loopback-only interface view; its binds/connects can neither see nor
+// collide with any other ns (incl. the host, id 0). See systemd
+// `PrivateNetwork=`.
+//
+// Scope of REAL isolation (honest): AF_UNIX registry (this module) and
+// the loopback iface/addr view (via the already-ns-keyed
+// `IfaceRegistry` + `iface_addr`). The AF_INET/AF_INET6 port maps,
+// TCP/UDP connection tables and the IPv4 forwarding `RouteTable` stay
+// GLOBAL — those live on the single `NetStack` singleton and cannot be
+// split per-ns without a NetStack-per-ns refactor that would risk the
+// global data path. A non-zero ns's userspace route/addr *view* is
+// already empty-but-for-lo through the ns-keyed rtnetlink dump tables.
+//
+// Target split: the overlay core (`NsNet`, `ns_net`, the loopback
+// materializer) is target-agnostic so `cargo test -p net` (a HOSTED
+// build, which cfg-excludes `crate::sock`) can prove isolation. The
+// `UnixRegRef` resolver that folds in the id-0 global static is
+// kernel-only.
+
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+
+use sync::{Socket as SockLockClass, Spinlock};
+
+use crate::netdev::{IfaceRegistry, NetDev};
+use crate::{Ipv4Addr, LoopbackDev, UnixRegistry};
+
+/// Linux `RT_SCOPE_HOST` — loopback addresses are host-scoped.
+const RT_SCOPE_HOST: u8 = 254;
+
+/// Isolated state for one non-zero net_ns. Materialized lazily on first
+/// access; id 0 is NEVER stored here (it uses the process globals).
+pub struct NsNet {
+    /// Private AF_UNIX path registry. A bind/connect keyed into this
+    /// registry is invisible to every other net_ns and to id 0.
+    pub unix: UnixRegistry,
+}
+
+impl NsNet {
+    /// # C: O(1)
+    fn new() -> Arc<Self> {
+        Arc::new(Self { unix: UnixRegistry::new() })
+    }
+}
+
+/// net_ns id -> isolated state. id 0 is intentionally absent (global).
+static NET_NS: Spinlock<BTreeMap<u64, Arc<NsNet>>, SockLockClass> = Spinlock::new(BTreeMap::new());
+
+/// Fetch (lazily creating) the isolated state for a NON-ZERO net_ns.
+/// The same id always returns the same `Arc<NsNet>`. Panics on id 0 in
+/// debug — id 0 must never be routed here (it is the global stack).
+/// # C: O(log N)
+pub fn ns_net(ns: u64) -> Arc<NsNet> {
+    debug_assert!(ns != 0, "net_ns 0 is the global stack, not an overlay entry");
+    let mut g = NET_NS.lock();
+    if let Some(e) = g.get(&ns) {
+        return e.clone();
+    }
+    let e = NsNet::new();
+    g.insert(ns, e.clone());
+    e
+}
+
+/// Register `lo` (UP, 127.0.0.1/8) into `ifaces` under `ns` — the ONLY
+/// iface a `CLONE_NEWNET` task sees, matching Linux's empty-but-for-lo
+/// fresh netns. Idempotent; a no-op for id 0. Target-agnostic seam so
+/// the hosted tests can drive it against a private `IfaceRegistry`.
+/// # C: O(N ifaces)
+pub fn materialize_loopback_into(ifaces: &IfaceRegistry, ns: u64) {
+    if ns == 0 {
+        return;
+    }
+    if ifaces.lookup_name_in_ns("lo", ns).is_some() {
+        return;
+    }
+    let lo = Arc::new(LoopbackDev::new());
+    let id = ifaces.register_in_ns(lo as Arc<dyn NetDev>, ns);
+    crate::iface_addr::set_prefix(ns, id, Ipv4Addr::LOOPBACK, 8, RT_SCOPE_HOST);
+}
+
+/// Give a freshly-created non-zero net_ns its loopback interface in the
+/// global `NetStack`'s (ns-keyed) iface registry. Kernel-side wrapper
+/// over `materialize_loopback_into`. # C: O(N ifaces)
+#[cfg(target_os = "oxide-kernel")]
+pub fn materialize_loopback(ns: u64) {
+    materialize_loopback_into(&crate::sock::stack().ifaces, ns);
+}
+
+/// Resolved AF_UNIX registry for a net_ns: the global static for id 0
+/// (untouched), else that ns's private registry. Derefs to
+/// `UnixRegistry` so a call site is a single method call regardless of
+/// which side it lands on. Kernel-only: the id-0 global static lives in
+/// the cfg-gated `sock` module.
+#[cfg(target_os = "oxide-kernel")]
+pub enum UnixRegRef {
+    /// net_ns 0 — the process-global registry, semantics unchanged.
+    Global,
+    /// A non-zero net_ns — its private registry.
+    Ns(Arc<NsNet>),
+}
+
+#[cfg(target_os = "oxide-kernel")]
+impl core::ops::Deref for UnixRegRef {
+    type Target = UnixRegistry;
+    /// # C: O(1)
+    fn deref(&self) -> &UnixRegistry {
+        match self {
+            UnixRegRef::Global => &crate::sock::UNIX_REGISTRY,
+            UnixRegRef::Ns(e) => &e.unix,
+        }
+    }
+}
+
+/// AF_UNIX registry for an explicit net_ns (0 = global). # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
+pub fn ns_unix_registry(ns: u64) -> UnixRegRef {
+    if ns == 0 {
+        UnixRegRef::Global
+    } else {
+        UnixRegRef::Ns(ns_net(ns))
+    }
+}
+
+/// AF_UNIX registry for the CALLING task's net_ns. # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
+pub fn current_unix_registry() -> UnixRegRef {
+    ns_unix_registry(crate::netdev::current_net_ns())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+
+    // Statics persist across the whole test binary and tests run in
+    // parallel, so each test uses a UNIQUE ns id + path and cleans up.
+
+    #[test]
+    fn same_id_returns_the_same_state() {
+        let a = ns_net(0x5181_0001);
+        let b = ns_net(0x5181_0001);
+        assert!(Arc::ptr_eq(&a, &b), "one net_ns id -> one isolated state");
+    }
+
+    #[test]
+    fn same_path_binds_in_two_ns_and_connect_is_isolated() {
+        let p = String::from("/run/b518-iso.sock");
+        let n1 = ns_net(0x5181_0002);
+        let n2 = ns_net(0x5181_0003);
+        let l1 = n1.unix.bind(p.clone()).expect("bind ns1");
+        let l2 = n2.unix.bind(p.clone()).expect("same path in ns2 is free — isolated");
+        // A connect in ns1 reaches ns1's listener ONLY.
+        assert!(n1.unix.connect(&p).is_some());
+        assert_eq!(l1.accept_q.lock().len(), 1);
+        assert_eq!(l2.accept_q.lock().len(), 0, "ns2's listener is untouched");
+        n1.unix.unbind(&p);
+        n2.unix.unbind(&p);
+    }
+
+    #[test]
+    fn listener_in_one_ns_invisible_to_another() {
+        let p = String::from("/run/b518-cross.sock");
+        let n1 = ns_net(0x5181_0004);
+        let n2 = ns_net(0x5181_0005);
+        let _l = n1.unix.bind(p.clone()).expect("bind ns1");
+        // connect from ns2 finds nobody -> None (ECONNREFUSED at the ABI).
+        assert!(n2.unix.connect(&p).is_none(), "ns2 must not reach ns1's listener");
+        n1.unix.unbind(&p);
+    }
+
+    #[test]
+    fn fresh_ns_bind_is_free_even_when_a_peer_ns_holds_it() {
+        // ns0 double-bind semantics (EADDRINUSE) are proven on a plain
+        // UnixRegistry by the pre-existing unix_sock tests; here we prove
+        // a peer ns holding the path does NOT make a fresh ns's bind fail.
+        let p = String::from("/run/b518-dup.sock");
+        let n1 = ns_net(0x5181_0006);
+        let _held = n1.unix.bind(p.clone()).expect("first bind");
+        assert!(n1.unix.bind(p.clone()).is_err(), "double-bind in one ns is EADDRINUSE");
+        let n2 = ns_net(0x5181_0007);
+        assert!(n2.unix.bind(p.clone()).is_ok(), "a fresh ns sees the path as free");
+        n1.unix.unbind(&p);
+        n2.unix.unbind(&p);
+    }
+
+    #[test]
+    fn dgram_registry_is_per_ns() {
+        let p = String::from("/run/b518-dgram.sock");
+        let n1 = ns_net(0x5181_0008);
+        let n2 = ns_net(0x5181_0009);
+        n1.unix.dgram_bind(p.clone(), crate::UnixDgramQueue::new()).expect("dgram bind ns1");
+        assert!(n1.unix.dgram_lookup(&p).is_some());
+        assert!(n2.unix.dgram_lookup(&p).is_none(), "ns2 cannot see ns1's dgram bind");
+        assert!(n2.unix.dgram_bind(p.clone(), crate::UnixDgramQueue::new()).is_ok());
+        n1.unix.dgram_unbind(&p);
+        n2.unix.dgram_unbind(&p);
+    }
+
+    #[test]
+    fn fresh_ns_sees_loopback_only() {
+        let ns = 0x5181_000au64;
+        let ifaces = IfaceRegistry::new();
+        assert!(ifaces.snapshot_devs_in_ns(ns).is_empty(), "ns starts empty");
+        materialize_loopback_into(&ifaces, ns);
+        let devs = ifaces.snapshot_devs_in_ns(ns);
+        assert_eq!(devs.len(), 1, "loopback only");
+        assert_eq!(devs[0].1.name(), "lo");
+        // Idempotent — a second call does not duplicate lo.
+        materialize_loopback_into(&ifaces, ns);
+        assert_eq!(ifaces.snapshot_devs_in_ns(ns).len(), 1);
+        // And it carries the 127.0.0.1/8 host address, privately.
+        let addrs = crate::iface_addr::snapshot_ns(ns);
+        assert!(addrs.iter().any(|a| a.addr == Ipv4Addr::LOOPBACK && a.prefixlen == 8));
+    }
+}
