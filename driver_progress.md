@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B448-device-del-remove-visible; VERIFIED pending PR merge.
+Current marker: B449-device-del-devtmpfs-teardown; VERIFIED pending PR merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -758,3 +758,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B448-device-del-remove-visible | VERIFIED | Fresh main `fa17ea74` after PR #2505 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` fires `SYSFS_REMOVE_HOOK` before `DEVICES.retain(...)` removes the object from the registry. Hosted hook `device_del_order_sysfs_remove` asserts `dev.bound() == None` and `devices().iter().any(|d| d.bus == dev.bus && d.addr == dev.addr)` while the remove hook runs. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B448 changes only docs/metadata and production `device_del` code is unchanged. |
+
+## B449 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B449-device-del-devtmpfs-teardown | VERIFIED | Fresh main `8817dfc8` after PR #2506 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` clones `d.devname` and calls `DEVTMPFS_DEL_HOOK` with that owned name, `crates/kernel/kmain/src/kmain/early.rs` wires the hook to `devfs::del_device_node`, and `crates/kernel/devfs/src/lib.rs::del_device_node` maps the name to `/dev/<name>` then unregisters that subtree. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture`, `cargo test -p devfs add_device_node_creates_dev_entries -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B449 changes only docs/metadata and production devtmpfs teardown code is unchanged. |
