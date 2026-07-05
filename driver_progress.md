@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B497-virtio-child-policy-only; VERIFIED.
+Current marker: B498-virtio-child-device-ids; VERIFIED.
+
+## B498 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B498-virtio-child-device-ids | VERIFIED | Fresh main `083201b1` after PR #2557 merge. Source audit proves net/block/RNG/vsock/sound/input/GPU child crates own their virtio child device ID constants and `DRIVER_ID` descriptors: `drv-virtio-net::modern::VIRTIO_ID_NET = 1`, `drv-virtio-blk::modern::VIRTIO_ID_BLOCK = 2`, `drv-virtio-rng::VIRTIO_ID_RNG = 4`, `drv-virtio-gpu::VIRTIO_ID_GPU = 16`, `drv-virtio-input::VIRTIO_ID_INPUT = 18`, `drv-virtio-vsock::VIRTIO_ID_VSOCK = 19`, and `drv-virtio-snd::VIRTIO_ID_SOUND = 25`; shared `virtio::VirtioChildDriverId::new` carries the descriptor and `matches_device` checks virtio bus, Red Hat virtio vendor, and exact child device ID; `pci-boot::virtio_child` ops adapters set `O::DRIVER_ID` from the child crate constants and source search finds no wrapper-local numeric child `device_id` literals. Checks pass: `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with child suites 18/18, 36/36, 36/36, 16/16, 8/8, 8/8, 7/7, shared `virtio` 43/43, and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 17s. |
 
 ## B497 Current
 
