@@ -96,6 +96,20 @@ pub fn default_cap(cap: u64) -> u64 {
     }
 }
 
+pub fn advertised_cap(cap: u64, val: u64) -> u64 {
+    match cap {
+        DRM_CAP_PRIME
+        | DRM_CAP_ASYNC_PAGE_FLIP
+        | DRM_CAP_CURSOR_WIDTH
+        | DRM_CAP_CURSOR_HEIGHT
+        | DRM_CAP_ADDFB2_MODIFIERS
+        | DRM_CAP_PAGE_FLIP_TARGET
+        | DRM_CAP_SYNCOBJ
+        | DRM_CAP_SYNCOBJ_TIMELINE => 0,
+        _ => val,
+    }
+}
+
 pub fn is_master_only(req: u64) -> bool {
     matches!(req,
         DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_PAGE_FLIP
