@@ -453,8 +453,8 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B371-virtio-net-install-remove-keyed
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B371-virtio-net-install-remove-keyed`
 
-Evidence: source audit of virtio-net install/remove child-key ownership is in progress.
+Evidence: PCI child dispatch passes `session.device_key()` to `init_modern_with_rx_pool`; remove/shutdown pass the parent `VirtioChildDeviceKey` to `uninstall_modern`/`shutdown_modern`; `ModernNetState` stores the key; install rejects duplicate keys; remove searches `MODERN_DEVS` by key and preserves other devices. Focused `init_modern_accepts_distinct_devices_and_rejects_duplicate_key`, `uninstall_modern_removes_only_named_device`, full `cargo test -p drv-virtio-net`, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
