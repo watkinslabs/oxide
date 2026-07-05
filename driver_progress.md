@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B497-virtio-child-policy-only; VERIFIED.
+Current marker: B498-virtio-child-device-ids; IN AUDIT.
+
+## B498 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B498-virtio-child-device-ids | IN AUDIT | Fresh main `083201b1` after PR #2557 merge; auditing that net/block/RNG/vsock/sound/input/GPU child crates own their virtio child `DRIVER_ID` descriptors and that pci-boot consumes those child-supplied IDs instead of hard-coding IDs in the bus wrapper. Hosted and x86_64/aarch64 smoke gates required before merge. |
 
 ## B497 Current
 
