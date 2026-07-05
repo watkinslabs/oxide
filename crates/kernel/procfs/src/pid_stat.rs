@@ -21,8 +21,24 @@ pub fn body(tid: u32) -> Vec<u8> {
     // v1 doesn't split user/sys). Makes the scheduler's real runtime
     // accounting observable via `ps`/`top`/`cat /proc/<pid>/stat`.
     let utime = sched::clock::ns_to_clk_tck(task.sum_exec_runtime_ns.load(Ordering::Acquire));
+    // mm-layout numeric fields (Linux `/proc/pid/stat`): 26 startcode,
+    // 27 endcode, 28 startstack, 45 start_data, 46 end_data, 47 start_brk,
+    // 48 arg_start, 49 arg_end, 50 env_start, 51 env_end. Sourced from the
+    // AddressSpace bounds set at execve / rewritten by prctl(PR_SET_MM).
+    let mm = unsafe { (*task.mm.get()).as_ref().cloned() };
+    let mm_field = |f: u32| -> Option<u64> {
+        let m = mm.as_ref()?;
+        Some(match f {
+            26 => m.start_code(),  27 => m.end_code(),   28 => m.start_stack(),
+            45 => m.start_data(),  46 => m.end_data(),   47 => m.start_brk(),
+            48 => m.arg_start(),   49 => m.arg_end(),    50 => m.env_start(),
+            51 => m.env_end(),
+            _  => return None,
+        })
+    };
     for f in 5u32..=52 {
         if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
+        else if let Some(v) = mm_field(f) { push(&mut out, b" "); push_u64(&mut out, v); }
         else { push(&mut out, b" 0"); }
     }
     out.push(b'\n');

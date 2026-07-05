@@ -40,6 +40,20 @@ const PLATFORM: &[u8] = b"x86_64\0";
 #[cfg(target_arch = "aarch64")]
 const PLATFORM: &[u8] = b"aarch64\0";
 
+/// Result of `build_user_stack`: the initial user SP plus the argv/env
+/// string-block bounds the caller feeds to `AddressSpace::set_arg_env_stack`
+/// (Linux `mm->arg_start`..`env_end` + `start_stack`), the source for
+/// `/proc/<pid>/{cmdline,environ,stat}`. `arg_*`/`env_*` are `0` when the
+/// corresponding vector is empty.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct StackLayout {
+    pub sp:        u64,
+    pub arg_start: u64,
+    pub arg_end:   u64,
+    pub env_start: u64,
+    pub env_end:   u64,
+}
+
 /// Build the initial user stack at `[stack_top - SIZE, stack_top)`.
 /// `argv`/`envp` are slices of NUL-free byte strings; the builder
 /// adds the trailing NUL. Returns the new SP (16-byte aligned,
@@ -52,8 +66,8 @@ const PLATFORM: &[u8] = b"aarch64\0";
 ///                         │ random16 (AT_RANDOM target)
 ///                         │ platform string
 ///                         │ execfn string
-///                         │ envp[*] strings (NUL-terminated, higher VAs)
-///                         │ argv[*] strings (NUL-terminated, lower VAs)
+///                         │ envp[*] strings (NUL-term; envp[0] low→envp[last] high)
+///                         │ argv[*] strings (NUL-term; argv[0] low→argv[last] high)
 ///                         │ ── 16-byte alignment pad
 ///                         │ auxv [(AT_NULL,0)]   ← terminator
 ///                         │ auxv [...]
@@ -76,7 +90,7 @@ pub unsafe fn build_user_stack(
     exec_path: &[u8],
     vdso_ehdr: u64,
     hwcap: u64,
-) -> Option<u64> {
+) -> Option<StackLayout> {
     let mut cursor = stack_top;
 
     // 1. Strings region (top-down): random, platform, execfn,
@@ -94,25 +108,27 @@ pub unsafe fn build_user_stack(
     // SAFETY: same as above; bytes len is bounded by caller-supplied argv slice.
     let execfn_va = unsafe { push_cstr(&mut cursor, execfn_bytes) }?;
 
-    // Push envp strings FIRST (higher VAs) then argv strings (lower).
-    // This matches Linux fs/binfmt_elf.c copy_strings order so that
-    // envp[last] ends up at a HIGHER address than argv[0]. util-linux
-    // login's process_title_init relies on
-    //   argv_lth = envp[i-1] + strlen(envp[i-1]) - argv[0]
-    // being positive; if argv strings sit above envp strings, that
-    // subtraction underflows to a huge size_t and the subsequent
-    // memset(argv0[0], 0, argv_lth) faults the process.
-    let mut envp_vas: Heapless256 = Heapless256::new();
-    for s in envp {
+    // Push envp then argv, each from the LAST element to the FIRST. The
+    // cursor moves top-down, so pushing last→first makes the WITHIN-block
+    // memory order FORWARD — argv[0] at the LOWEST address, argv[last] just
+    // below envp[0] — byte-for-byte matching Linux `fs/exec.c copy_strings`
+    // (so `/proc/<pid>/cmdline` reads argv[0]\0argv[1]\0… in order). envp is
+    // pushed first so the env block sits ABOVE the argv block: util-linux
+    // login's process_title_init needs env strings above argv[0], else its
+    //   argv_lth = envp[last] + strlen(envp[last]) - argv[0]
+    // underflows to a huge size_t and the memset faults. VAs are stored at
+    // their ORIGINAL index so the pointer vectors below stay forward
+    // (argv[0] pointer first).
+    if argv.len() > 256 || envp.len() > 256 { return None; }
+    let mut envp_vas = [0u64; 256];
+    for i in (0..envp.len()).rev() {
         // SAFETY: same as above; envp element pushed onto stack.
-        let va = unsafe { push_cstr(&mut cursor, s) }?;
-        envp_vas.push(va)?;
+        envp_vas[i] = unsafe { push_cstr(&mut cursor, envp[i]) }?;
     }
-    let mut argv_vas: Heapless256 = Heapless256::new();
-    for s in argv {
+    let mut argv_vas = [0u64; 256];
+    for i in (0..argv.len()).rev() {
         // SAFETY: same as above; argv element pushed onto stack.
-        let va = unsafe { push_cstr(&mut cursor, s) }?;
-        argv_vas.push(va)?;
+        argv_vas[i] = unsafe { push_cstr(&mut cursor, argv[i]) }?;
     }
 
     // 2. Compute total size of the pointer/auxv vector area, then
@@ -162,9 +178,9 @@ pub unsafe fn build_user_stack(
     // SAFETY: caller activated the destination AS; sp is computed within the reserved range; each write_u64 advances by 8 bytes within bounds tracked above.
     unsafe {
         write_u64(&mut w, argv.len() as u64);   // argc
-        for &va in argv_vas.as_slice() { write_u64(&mut w, va); }
+        for i in 0..argv.len() { write_u64(&mut w, argv_vas[i]); }
         write_u64(&mut w, 0);                    // argv NULL
-        for &va in envp_vas.as_slice() { write_u64(&mut w, va); }
+        for i in 0..envp.len() { write_u64(&mut w, envp_vas[i]); }
         write_u64(&mut w, 0);                    // envp NULL
         for &(k, v) in auxv.iter() {
             write_u64(&mut w, k);
@@ -175,7 +191,22 @@ pub unsafe fn build_user_stack(
     }
 
     let _ = AT_IGNORE;                       // silence unused
-    Some(sp)
+
+    // argv/env string-block bounds (Linux `mm->arg_start`..`env_end`).
+    // Forward layout: argv[0] is the LOWEST arg VA (arg_start), argv[last]
+    // the highest; arg_end = past argv[last]'s NUL. Same for env. So
+    // `/proc/<pid>/cmdline` reads [arg_start,arg_end) = argv[0]\0…argv[last]\0
+    // in order, exactly like Linux. 0/0 when the vector is empty.
+    let bounds = |vas: &[u64; 256], v: &[&[u8]]| -> (u64, u64) {
+        if v.is_empty() { return (0, 0); }
+        let n = v.len();
+        let lo = vas[0];
+        let hi = vas[n - 1] + v[n - 1].len() as u64 + 1;
+        (lo, hi)
+    };
+    let (arg_start, arg_end) = bounds(&argv_vas, argv);
+    let (env_start, env_end) = bounds(&envp_vas, envp);
+    Some(StackLayout { sp, arg_start, arg_end, env_start, env_end })
 }
 
 /// Push a byte slice to the user stack at `*cursor`, decrementing
@@ -207,19 +238,4 @@ unsafe fn write_u64(w: &mut u64, val: u64) {
     // SAFETY: caller activated the destination AS; user_fault_handler resolves any not-present stack page; 8-byte aligned write into user mapping.
     unsafe { core::ptr::write_volatile(*w as *mut u64, val); }
     *w += 8;
-}
-
-/// Stack-allocated Vec<u64, CAP>. Avoids alloc::Vec inside the
-/// no_std stack builder (we run pre-`activate` and want zero
-/// alloc-side faults). CAP=256 covers normal-process argv+envp;
-/// 8 was a stub that broke real shell sessions whose env is
-/// PATH/HOME/USER/LOGNAME/SHELL/PWD/TERM/MAIL/PS1/... > 8.
-struct Heapless256 { items: [u64; 256], len: usize }
-
-impl Heapless256 {
-    const fn new() -> Self { Self { items: [0; 256], len: 0 } }
-    fn push(&mut self, v: u64) -> Option<()> {
-        if self.len == 256 { None } else { self.items[self.len] = v; self.len += 1; Some(()) }
-    }
-    fn as_slice(&self) -> &[u64] { &self.items[..self.len] }
 }

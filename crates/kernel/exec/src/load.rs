@@ -23,6 +23,10 @@ pub(crate) fn place_image(
     };
 
     let mut max_end: u64 = 0;
+    // Linux `mm->start_code`..`end_data`: first executable PT_LOAD is
+    // code, first writable PT_LOAD is data. Recorded page-aligned.
+    let (mut start_code, mut end_code): (u64, u64) = (0, 0);
+    let (mut start_data, mut end_data): (u64, u64) = (0, 0);
     let mut staging: alloc::vec::Vec<LoadStaging> = alloc::vec::Vec::with_capacity(parsed.loads.len());
     for seg in &parsed.loads {
         let vaddr = seg.vaddr.checked_add(bias).ok_or(LoadError::Einval)?;
@@ -56,6 +60,12 @@ pub(crate) fn place_image(
 
         if vend > max_end {
             max_end = vend;
+        }
+        if prot.contains(VmaProt::EXEC) && start_code == 0 {
+            start_code = vstart; end_code = vend;
+        }
+        if prot.contains(VmaProt::WRITE) && start_data == 0 {
+            start_data = vstart; end_data = vend;
         }
         staging.push(LoadStaging { vstart, vend, prot, padded, head_pad });
     }
@@ -122,6 +132,10 @@ pub(crate) fn place_image(
         phnum: parsed.phnum,
         interp_base: 0,
         interp_entry: 0,
+        start_code,
+        end_code,
+        start_data,
+        end_data,
     })
 }
 
