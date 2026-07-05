@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B498-virtio-child-device-ids; VERIFIED.
+Current marker: B499-virtio-gpu-placeholder-notify; VERIFIED.
+
+## B499 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B499-virtio-gpu-placeholder-notify | VERIFIED | Fresh main `039d8a21` after PR #2558 merge. Source audit finds no production `placeholder`/stub notify marker in `crates/drivers/drv-virtio-gpu`; production GPU display probe and scanout command submission write queue indexes to `ctrlq.notify_va` from transport-supplied `virtio::VirtQueueResource`; shared `VirtQueueResource::is_runtime_valid` requires nonzero `notify_va`; pci-boot maps notify addresses through `virtio::notify_pa` from the virtio-pci NOTIFY cap, `map_queue_notify_va`, and `resolve_planned_notify_mappings`; shared handoff builds child queue resources with those mapped notify VAs. Zero `notify_va` literals in GPU are test/support fixtures only. Checks pass: `cargo test -q -p pci-boot -p virtio -p drv-virtio-gpu -- --nocapture --test-threads=1` with GPU 36/36, shared `virtio` 43/43, and pci-boot compile-only 0 tests; GPU source files remain under 500 lines (`tests.rs` 477, `scanout.rs` 422, `wire.rs` 414, `device.rs` 380); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B498 Current
 
