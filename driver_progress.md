@@ -5,37 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B341-virtio-gpu-drm-real-parent`.
-
-## B002-single-machine-desktop-proof
-
-Status: `VERIFIED` and merged by PR #2378.
-
-Branch: `B002-single-machine-desktop-proof`
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| `cargo check -p drv-virtio-input` | PASS |
-| `cargo check -p xtask` | PASS |
-| `bash -n tools/boot-smoke-driver-path.sh` | PASS |
-| `make smoke-driver-path-arm` | PASS |
-| `make smoke-driver-path-x86` | PASS |
-
-Runtime proof:
-
-| Arch | Evidence |
-|---|---|
-| arm | `fbdev_probe: PASS`; `drm_probe: PASS res=1280x800 crtcs=1 conns=1`; `sysblock_probe: PASS vda_size=2097152`; `snd_probe: PASS`; `rtlink_probe: PASS RTM_GETLINK dump 2 links, NLMSG_DONE ok`; `b002_net_eth0: PASS`; `mouseprobe: ev0=4 ev1=7 motion=1 btn=1 syn=1`; `driver_path_smoke: PASS - GPU input sound block net`. |
-| x86 | `fbdev_probe: PASS`; `drm_probe: PASS res=1280x800 crtcs=1 conns=1`; `sysblock_probe: PASS vda_size=2097152`; `snd_probe: PASS`; `rtlink_probe: PASS RTM_GETLINK dump 2 links, NLMSG_DONE ok`; `b002_net_eth0: PASS`; `mouseprobe: ev0=9 ev1=9 motion=1 btn=1 syn=1`; `driver_path_smoke: PASS - GPU input sound block net`. |
-
-Notes:
-
-| Item | Current finding |
-|---|---|
-| ARM virtio-input | QMP events reach the virtio-input used ring. ARM did not raise the device MSI during the smoke; evdev read/poll now calls the shared input drain before readiness checks so queued events publish to userspace. |
-| ARM MSI/ITS | B326 now generalizes PCI MSI-X allocation on ARM to prefer GICv3 ITS/LPI and fall back to GICv2m only when no ITS doorbell is published. |
+Current marker: `>>> ACTIVE >>> B342-parented-drm-minors-links`.
 
 ## B326-userspace-seat-driver-proof
 
@@ -457,7 +427,7 @@ Evidence:
 
 ## B341-virtio-gpu-drm-real-parent
 
-Status: `VERIFIED`, commit/PR merge pending.
+Status: `VERIFIED` and merged by PR #2394.
 
 Branch: `B341-virtio-gpu-drm-real-parent`
 
@@ -482,3 +452,21 @@ Evidence:
 | Line cap | PASS: `drv-virtio-gpu/src/tests.rs` 477, `device.rs` 384, `pci-boot/src/virtio_child.rs` 367, `virtio_bus.rs` 144, `driver_progress.md` under cap. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b341-virtio-gpu-drm-real-parent-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b341-virtio-gpu-drm-real-parent-arm.log`. |
+
+## B342-parented-drm-minors-links
+
+Status: `CLAIMED`.
+
+Branch: `B342-parented-drm-minors-links`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Parented DRM minors live under owning device with class and `/sys/dev/char` links. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
