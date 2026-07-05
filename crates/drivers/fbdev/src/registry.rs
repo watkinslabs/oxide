@@ -25,10 +25,23 @@ pub static FBS: Spinlock<Vec<FbDev>, DriverLockClass> = Spinlock::new(Vec::new()
 
 #[derive(Copy, Clone)]
 pub struct FbOps {
-    pub driver_key: u32,
-    pub flush: fn(u32),
-    pub blank: fn(u32),
-    pub unblank: fn(u32),
+    pub driver_key: FbDriverKey,
+    pub flush: fn(FbDriverKey),
+    pub blank: fn(FbDriverKey),
+    pub unblank: fn(FbDriverKey),
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct FbDriverKey(u32);
+
+impl FbDriverKey {
+    /// Build an opaque fbdev callback key from driver-owned identity. # C: O(1)
+    pub fn from_raw(raw: u32) -> Option<Self> {
+        if raw == 0 { None } else { Some(Self(raw)) }
+    }
+
+    /// Expose the key only to the installing driver's callback adapter. # C: O(1)
+    pub fn raw(self) -> u32 { self.0 }
 }
 
 pub const INVALID_FB_INDEX: u32 = u32::MAX;

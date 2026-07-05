@@ -1,18 +1,20 @@
 use super::*;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-mod addfb2_modifiers;
-mod addfb_packed_rgb;
+mod addfb2_modifiers; mod addfb_packed_rgb;
 
 static DESTROYED_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 static DESTROYED_RES_ID: AtomicU32 = AtomicU32::new(0);
 
-fn test_create(_driver_key: u32, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> { None }
-fn test_set_scanout(_driver_key: u32, _res_id: u32, _w: u32, _h: u32) -> bool { true }
-fn test_restore(_driver_key: u32) -> bool { true }
-fn test_boot(_driver_key: u32) -> u32 { 0 }
-fn record_destroy(driver_key: u32, res_id: u32) -> bool {
-    DESTROYED_DRIVER_KEY.store(driver_key, Ordering::Release);
+type TestDriverKey = crate::node::ScanoutDriverKey;
+
+fn scanout_key(raw: u32) -> TestDriverKey { TestDriverKey::from_raw(raw).unwrap() }
+fn test_create(_driver_key: TestDriverKey, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> { None }
+fn test_set_scanout(_driver_key: TestDriverKey, _res_id: u32, _w: u32, _h: u32) -> bool { true }
+fn test_restore(_driver_key: TestDriverKey) -> bool { true }
+fn test_boot(_driver_key: TestDriverKey) -> u32 { 0 }
+fn record_destroy(driver_key: TestDriverKey, res_id: u32) -> bool {
+    DESTROYED_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     DESTROYED_RES_ID.store(res_id, Ordering::Release);
     true
 }
@@ -449,7 +451,7 @@ fn clear_card_state_releases_bound_scanout_resource() {
     DESTROYED_DRIVER_KEY.store(0, Ordering::Release);
     DESTROYED_RES_ID.store(0, Ordering::Release);
     crate::node::set_scanout_ops(3, crate::node::ScanoutOps {
-        driver_key: 0x3003, create_from_pa: test_create, destroy_resource: record_destroy,
+        driver_key: scanout_key(0x3003), create_from_pa: test_create, destroy_resource: record_destroy,
         set_scanout: test_set_scanout, restore_console: test_restore, boot_res_id: test_boot,
     });
     TABLES.lock().fbs.push(FbObj {
