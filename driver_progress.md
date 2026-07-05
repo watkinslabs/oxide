@@ -463,8 +463,8 @@ Evidence: source audit found `publish_console_scanout` claims `CONSOLE_OWNER_KEY
 
 ## B360-console-fbdev-transactional-publish
 
-Status: `CLAIMED`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B360-console-fbdev-transactional-publish`
 
-Evidence: claimed from synced main `91039d81`; source audit not started yet.
+Evidence: source audit found `publish_console_scanout` claimed `CONSOLE_OWNER_KEY` before fbdev registration, ops install, and stored-index commit completed, creating a partial owner-visible publication window on failure paths. Split publication into `install_console_fbdev` and `commit_console_owner_key`; fbdev record, ops, and stored idx now complete before owner-token commit, and owner-commit failure clears the stored idx and unregisters the fbdev record. Added `console_owner_commits_after_fbdev_idx_is_stored` and `console_owner_commit_failure_unwinds_stored_fbdev_idx`; focused regressions, full `cargo test -p drv-virtio-gpu` with 34 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
