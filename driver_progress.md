@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B391-virtio-rng-seeds-bound-device`.
+Current marker: `>>> ACTIVE >>> B392-virtio-rng-active-provider`.
 
 ## Archived Completed B327-B330
 
@@ -481,14 +481,13 @@ recent-completed table above; main was synced after each merge through
 | B388-vsock-listener-backlogs-owner-port | VERIFIED | Same-port listener backlogs are owner-keyed; focused/full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2441 merge, and main sync `a7a5312f` pass. |
 | B389-vsock-close-releases-state | VERIFIED | Existing AF_VSOCK drop cleanup releases listener/backlog/connection state; cleanup/full vsock tests, x86_64/aarch64 driver-path proof, PR #2442 merge, and main sync `e3f505da` pass. |
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
+| B391-virtio-rng-seeds-bound-device | VERIFIED | Just-bound-device seeding proven by source audit, requested-child fill regression/full tests, arch proof, pre-push boot smoke, PR #2444 merge, and main sync `75c9cfe8`. |
 
-## B391-virtio-rng-seeds-bound-device
+## B392-virtio-rng-active-provider
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
+Status: `>>> ACTIVE >>> CLAIMED`.
 
-Branch: `B391-virtio-rng-seeds-bound-device`
+Branch: `B392-virtio-rng-active-provider`
 
-Evidence: `install` seeds through `fill_from_device(device_key)`, hosted
-regression proves requested key1 fills from key1 while active key0 is untouched,
-full `drv-virtio-rng` tests pass, and x86_64 `/tmp/b391-x86-driver-path.log`
-plus aarch64 `/tmp/b391-arm-driver-path.log` driver-path proofs pass.
+Scope: prove or fix active `/dev/hwrng` provider promotion/removal so no stale
+active key remains after removal or publish failure.
