@@ -5,7 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B425-no-flat-driverentry-probeall; VERIFIED pending commit/PR.
+Current marker: B426-drv-model-authoritative-proof; IN AUDIT.
+
+## B426-drv-model-authoritative-proof
+
+Status: `IN AUDIT`; claim commit pending.
+
+Branch: `B426-drv-model-authoritative-proof`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| ACTIVE | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |
 
 ## B425-no-flat-driverentry-probeall
 
