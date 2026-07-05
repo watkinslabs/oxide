@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B496-virtio-child-shutdown-key; VERIFIED.
+Current marker: B497-virtio-child-policy-only; IN AUDIT.
+
+## B497 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B497-virtio-child-policy-only | IN AUDIT | Fresh main `d93b3a4a` after PR #2556 merge; auditing that child virtio driver crates only provide profile, install, remove, and shutdown policy while generic wrapper/shared virtio/pci-boot own matching, session lifecycle, publish/release/remove/unpublish, and shutdown key lookup; hosted and x86_64/aarch64 smoke gates required before merge. |
 
 ## B496 Current
 
