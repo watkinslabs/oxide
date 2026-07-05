@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B364-drm-map-dumb-cookie-validation`.
+Current marker: `>>> ACTIVE >>> B365-fbdev-fbio-usercopy-bounds`.
 
 ## Archived Completed B327-B330
 
@@ -448,8 +448,16 @@ Evidence: source audit proves MODE_MAP_DUMB mmap pins through `drm::node::pin_mm
 
 ## B364-drm-map-dumb-cookie-validation
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2417.
 
 Branch: `B364-drm-map-dumb-cookie-validation`
 
-Evidence: source audit proves `cookie_for` sets tag bit 48 and handle bits 12..43, while `handle_of_cookie` rejects missing tag, zero handle, low page-offset bits, and out-of-layout bits before `pin_mmap`/`mmap_backing` lookup. Existing `cookie_round_trip`, full `cargo test -p drm`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass. First ARM attempts hit external vhost CID conflict and transient userspace watchdog; clean rerun passed.
+Evidence: source audit proves `cookie_for` sets tag bit 48 and handle bits 12..43, while `handle_of_cookie` rejects missing tag, zero handle, low page-offset bits, and out-of-layout bits before `pin_mmap`/`mmap_backing` lookup. Existing `cookie_round_trip`, full `cargo test -p drm`, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, PR #2417, and main sync `a0cbb9bd` pass. First ARM attempts hit external vhost CID conflict and transient userspace watchdog; clean rerun passed.
+
+## B365-fbdev-fbio-usercopy-bounds
+
+Status: `CLAIMED`; source audit starting.
+
+Branch: `B365-fbdev-fbio-usercopy-bounds`
+
+Evidence: claimed from fresh `main` at `a0cbb9bd`; duplicate-lane check found no existing B365/fbdev FBIO user-copy branch or worktree. Next: audit FBIO ioctl user buffer range checks for checked exclusive-end arithmetic.
