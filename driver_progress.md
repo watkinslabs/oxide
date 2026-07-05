@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> VERIFIED B382-virtio-net-multidev-rebind-proof`.
+Current marker: `>>> ACTIVE >>> B383-core-ipv6-ndp-iface-cache`.
 
 ## Archived Completed B327-B330
 
@@ -468,31 +468,27 @@ Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
 recent-completed table above; main was synced after each merge through
 `cdd8d243`.
 
-## B382-virtio-net-multidev-rebind-proof
+## Recent Completed B382
 
-Status: `>>> ACTIVE >>> VERIFIED, push gate passed`.
+| Branch | Status | Evidence |
+|---|---|---|
+| B382-virtio-net-multidev-rebind-proof | VERIFIED | Fast `/init` multidev proof passes on x86_64/aarch64 for `eth0`/`eth1`, sysfs bind/unbind/rebind, restored virtio-net driver readdir state, and normal input tail; hosted checks, normal smoke, PR #2435 merge, and main sync `d09f5123` pass. Follow-up: stale direct driver symlink dcache after unbind. |
 
-Branch: `B382-virtio-net-multidev-rebind-proof`
+## B383-core-ipv6-ndp-iface-cache
 
-Evidence: fast live proof path now uses `/init` C probe when
-`OXIDE_VIRTIO_NET_MULTIDEV_SMOKE=1`; rootfs cache keys multidev mode; ARM PID1
-selection honors `/init`, then systemd, then `/sbin/init`. The probe mounts API
-fs, proves `eth0`/`eth1`, writes real sysfs
-`/sys/bus/virtio/drivers/virtio-net/{unbind,bind}`, verifies virtio-net driver
-readdir drops/restores the selected child, then runs the normal mouse tail.
+Status: `>>> ACTIVE >>> VERIFIED`; commit/PR/merge pending.
 
-x86_64 result: PASS `/tmp/b382-x86-multidev-fastinit-kmsg.log` with
-`b382_net_eth0_eth1`, unbind, rebind, and final driver-path PASS.
+Branch: `B383-core-ipv6-ndp-iface-cache`
 
-aarch64 result: PASS `/tmp/b382-arm-multidev-fastinit-kmsg.log` with
-`b382_net_eth0_eth1`, unbind, rebind, and final driver-path PASS.
+Scope: core IPv6 stack NDP cache keyed by `(NetIfaceId, Ipv6Addr)` with teardown
+purge for removed interfaces.
 
-Hosted result: `cargo check -p xtask`, `cargo check -p smoke`,
-`cargo test -p drv lifecycle -- --nocapture`,
-`cargo test -p drv-virtio-net -- --nocapture`, `cargo test -p sysfs bind
--- --nocapture --test-threads=1`, C syntax check, and `git diff --check` pass.
+Evidence:
 
-Pre-push result: x86 smoke reaches login in 22s; ARM smoke reaches login in 16s.
-
-Follow-up defect found: stale dcache can keep the old direct driver symlink path
-positive after unbind even though driver-dir readdir shows model state changed.
+| Check | Result |
+|---|---|
+| Source audit | PASS: `NetStack::ndp` is `BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>`; `ndp_insert`/`ndp_lookup` use `(iface, ip)` keys; NS/NA/RA handlers pass ingress iface; IPv6 TX routes to an iface before packet emission. |
+| Fix | PASS: `unregister_iface` now purges NDP entries for the removed iface along with routes, IPv4/IPv6 addresses, and multicast state. |
+| Hosted tests | PASS: `cargo test -p net f180c_ndp_cache_is_scoped_by_iface -- --nocapture`; `cargo test -p net f180c_unregister_iface_drops_only_its_ndp_entries -- --nocapture`; `cargo test -p net ndp -- --nocapture` (14 passed). |
+| Static checks | PASS: `git diff --check`; line cap OK (`stack/core.rs` 218, `tests_correctness/tcp_ipv6.rs` 461). |
+| Runtime | PASS: x86_64 fast driver-path rerun passed (`/tmp/b383-x86-driver-path-rerun.log`); first aarch64 run hit existing no-progress before `mouseprobe` (`/tmp/b383-arm-driver-path.log`), clean rerun passed (`/tmp/b383-arm-driver-path-rerun.log`). |

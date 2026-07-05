@@ -85,7 +85,7 @@ impl NetStack {
     }
 
     /// Remove per-interface network state and unregister the netdev.
-    /// # C: O(N routes + N addrs + N groups)
+    /// # C: O(N routes + N addrs + N groups + N ndp)
     pub fn unregister_iface(&self, iface: NetIfaceId) -> bool {
         let ns = crate::netdev::current_net_ns();
         self.routes.retain(|e| e.iface != iface);
@@ -94,6 +94,7 @@ impl NetStack {
         self.v6_addrs.lock().remove(&iface);
         self.v6_mcast.lock().remove(&iface);
         self.v4_mcast.lock().remove(&iface);
+        self.ndp.lock().retain(|(id, _), _| *id != iface);
         self.ifaces.unregister(iface).is_some()
     }
 
