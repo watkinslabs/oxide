@@ -679,4 +679,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B435-model-binding-calls-probe | IN AUDIT | Fresh main `8f884b46` after PR #2490 merge; auditing the driver-core path that must call `Driver::probe` before recording a binding. |
+| B435-model-binding-calls-probe | VERIFIED | Fresh main `8f884b46` after PR #2490 merge; source audit proves `bind_inner` calls `driver.probe(dev)?` after already-bound, bus lookup, and match validation, and before setting `dev.driver` or emitting the bind hook. Hosted probe-counter coverage passes: `cargo test -p drv driver_registration_binds_existing_matching_devices -- --nocapture`, `cargo test -p drv failed_probe_leaves_device_unbound_and_retriable -- --nocapture`, `cargo test -p drv repeated_bind_unbind_keeps_model_state_consistent -- --nocapture`, `cargo test -p drv device_add_initial_probe_precedes_add_uevent_without_bind_change -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
