@@ -478,9 +478,17 @@ recent-completed table above; main was synced after each merge through
 
 ## B385-virtio-vsock-rx-bh-installed
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B385-virtio-vsock-rx-bh-installed`
 
-Scope: prove or fix virtio-vsock `VsockRx` bottom-half teardown so only the
-installed transport controls handler lifetime.
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: install sets `SOFTIRQ_INSTALLED` only after endpoint publish, `uninstall`/`shutdown` clear `VsockRx` only when keyed ctx removal leaves no ctxs, and nonmatching removals do not clear the shared handler. |
+| Hosted regression | PASS: `uninstall_unpublished_context_keeps_live_softirq_installed` proves unpublished ctx teardown leaves live endpoint and RX bottom half installed. |
+| `cargo test -p drv-virtio-vsock uninstall_unpublished_context_keeps_live_softirq_installed -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drv-virtio-vsock -- --nocapture` | PASS: 7 passed. |
+| `./tools/boot-smoke-driver-path.sh x86 240` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b385-x86-driver-path.log`. |
+| `./tools/boot-smoke-driver-path.sh arm 300` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b385-arm-driver-path.log`. |
