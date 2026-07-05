@@ -456,8 +456,8 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B374-virtio-net-iface-rx-keyed-tables
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B374-virtio-net-iface-rx-keyed-tables`
 
-Evidence: source audit of registered iface ownership and RX softirq runtime keyed tables is in progress.
+Evidence: `REGISTERED_NETDEVS` stores `(DeviceKey, NetIfaceId)` and all iface helpers select/remove by `DeviceKey`. `RX_RUNTIMES` stores `device_key`, `set_softirq_iface` updates an existing key or appends a keyed runtime, `remove_rx_runtime_for` removes only the named key, and `rx_drain_softirq` polls each runtime with its own key/iface/IP tuple. Focused `registered_iface_is_keyed_by_device` and `rx_runtime_is_keyed_by_device`, full `cargo test -p drv-virtio-net`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
