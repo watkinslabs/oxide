@@ -126,6 +126,28 @@ use vfs::{Dentry, File, OpenFlags};
     }
 
     #[test]
+    fn register_publishes_card_node_metadata_per_stable_slot() {
+        let _guard = crate::TEST_LOCK.lock();
+        let card_id = 0x7ff3;
+        let card_name = format!("dri/card{card_id}");
+        unregister(card_id);
+
+        assert!(register(card_id, None));
+        let dev = drv::devices()
+            .into_iter()
+            .find(|d| d.bus == "drm" && d.addr == card_name)
+            .expect("drm card model device");
+        assert_eq!(dev.dev_class, "drm");
+        assert_eq!(dev.devname.as_deref(), Some(card_name.as_str()));
+        assert_eq!(dev.dev_t, Some((crate::DRM_MAJOR, card_id)));
+        let inode = dev.node_factory.as_ref().expect("drm card factory")();
+        assert_eq!(inode.file_type(), vfs::FileType::CharDev);
+        assert_eq!(super::publication::drm_inode_parts(&inode), Some((super::publication::DRM_CARD_INO, card_id)));
+
+        unregister(card_id);
+    }
+
+    #[test]
     fn render_node_rejects_master_only_ioctls() {
         let _guard = crate::TEST_LOCK.lock();
         use syscall::errno::Errno;
