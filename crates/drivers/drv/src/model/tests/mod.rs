@@ -227,6 +227,61 @@ static DEVICE_DEL_ORDER_DRV: DeviceDelOrderDrv = DeviceDelOrderDrv;
 static SHUTDOWN_REMOVES: AtomicU32 = AtomicU32::new(0);
 static SHUTDOWN_UNBOUND_EVENTS: AtomicU32 = AtomicU32::new(0);
 static SHUTDOWN_EVENT_ACTIVE: AtomicU32 = AtomicU32::new(0);
+const HARDEN_LOOP_COUNT: u32 = 8;
+const HARDEN_PLATFORM_ID: u16 = 0x6501;
+const HARDEN_PCI_VENDOR: u16 = 0x1af4;
+const HARDEN_PCI_ID: u16 = 0x6502;
+const HARDEN_FAIL_ID: u16 = 0x6503;
+const HARDEN_CLASS: u32 = 0x010000;
+const HARDEN_PLATFORM_ADDRS: [&str; 2] = ["hardening-platform0", "hardening-platform1"];
+const HARDEN_PCI_ADDR: &str = "0000:00:65.0";
+const HARDEN_FAIL_ADDR: &str = "hardening-fail0";
+static HARDEN_PLATFORM_PROBES: AtomicU32 = AtomicU32::new(0);
+static HARDEN_PLATFORM_REMOVES: AtomicU32 = AtomicU32::new(0);
+static HARDEN_PCI_PROBES: AtomicU32 = AtomicU32::new(0);
+static HARDEN_PCI_REMOVES: AtomicU32 = AtomicU32::new(0);
+static HARDEN_FAIL_PROBES: AtomicU32 = AtomicU32::new(0);
+
+struct HardeningPlatformDrv;
+impl Driver for HardeningPlatformDrv {
+    fn bus(&self) -> &'static str { "platform" }
+    fn name(&self) -> &'static str { "hardening-platform-test" }
+    fn matches(&self, dev: &Device) -> bool { dev.bus == "platform" && dev.device_id == HARDEN_PLATFORM_ID }
+    fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+        HARDEN_PLATFORM_PROBES.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+    fn remove(&self, _dev: &Device) {
+        HARDEN_PLATFORM_REMOVES.fetch_add(1, Ordering::Release);
+    }
+}
+static HARDENING_PLATFORM_DRV: HardeningPlatformDrv = HardeningPlatformDrv;
+
+struct HardeningPciDrv;
+impl Driver for HardeningPciDrv {
+    fn name(&self) -> &'static str { "hardening-pci-test" }
+    fn matches(&self, dev: &Device) -> bool { dev.bus == "pci" && dev.device_id == HARDEN_PCI_ID }
+    fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+        HARDEN_PCI_PROBES.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+    fn remove(&self, _dev: &Device) {
+        HARDEN_PCI_REMOVES.fetch_add(1, Ordering::Release);
+    }
+}
+static HARDENING_PCI_DRV: HardeningPciDrv = HardeningPciDrv;
+
+struct HardeningFailDrv;
+impl Driver for HardeningFailDrv {
+    fn bus(&self) -> &'static str { "platform" }
+    fn name(&self) -> &'static str { "hardening-fail-test" }
+    fn matches(&self, dev: &Device) -> bool { dev.bus == "platform" && dev.device_id == HARDEN_FAIL_ID }
+    fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+        HARDEN_FAIL_PROBES.fetch_add(1, Ordering::Release);
+        Err(crate::Error::ProbeFailed)
+    }
+}
+static HARDENING_FAIL_DRV: HardeningFailDrv = HardeningFailDrv;
 
 fn device_del_order_sysfs_remove(dev: &Device) {
     if DEVICE_DEL_ORDER_ACTIVE.load(Ordering::Acquire) == 0 {

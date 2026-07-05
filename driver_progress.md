@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B475 verified pending PR merge.
+Current marker: none; B476 verified pending PR merge.
+
+## B476 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B476-driver-hardening-expansion | VERIFIED | Fresh main `08063c2d` after PR #2533 merge; added driver-core hardening regression `multi_device_fault_hotplug_cycle_keeps_model_state_consistent` with named constants for all IDs/counts. It loops multi-device platform plus PCI publication, auto-bind, duplicate rejection, failed-probe retry, explicit unbind/rebind, device_del teardown, and identity reuse. Checks pass: focused drv test, full `cargo test -p drv -- --nocapture --test-threads=1` 28/28, `cargo test -q -p drv -p sysfs -p devfs -- --nocapture --test-threads=1` with devfs 9/9, drv 28/28, sysfs 28/28, x86_64 smoke login in 12s, and aarch64 smoke login in 16s. B415 and later rows remain the live QEMU hotplug breadth tracker. |
 
 ## B475 Current
 
