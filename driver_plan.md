@@ -2,13 +2,12 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B340-drm-sysfs-live-model-devices` — CLAIMED.
+ACTIVE NOW: `B340-drm-sysfs-live-model-devices` — VERIFIED, commit/PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B340-drm-sysfs-live-model-devices`.
 
-Current B340 gate: prove or fix `/sys/class/drm` and
-`/sys/devices/virtual/drm` deriving from live DRM model devices, with hosted
-source proof and x86_64/aarch64 runtime discovery.
+Current B340 gate: verified `/sys/class/drm` and `/sys/devices/virtual/drm`
+derive from live DRM model devices; commit/PR merge pending.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -271,7 +270,7 @@ Status legend:
 | VERIFIED | B337-drm-render-nodes-withheld | DRM render nodes withheld until real render/GEM UAPI exists; source audit, hosted no-render publication regression, updated runtime `drm_probe` ENOENT check, full DRM crate tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, line-cap check, and PR #2390 merge pass. |
 | VERIFIED | B338-drm-inode-tag-card-id | DRM inode tag encodes card id; source audit, hosted card/render inode-tag regression, full DRM crate tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, line-cap check, and PR #2391 merge pass. |
 | VERIFIED | B339-drm-card-ioctl-slot-routing | DRM card ioctls route through matching backend slot; source audit, hosted stable-slot ioctl regression, full DRM crate tests, fast x86_64/aarch64 driver-path proof, line-cap check, and PR #2392 merge pass. |
-| CLAIMED | B340-drm-sysfs-live-model-devices | `/sys/class/drm` and `/sys/devices/virtual/drm` derive from live DRM model devices. |
+| VERIFIED | B340-drm-sysfs-live-model-devices | `/sys/class/drm` and `/sys/devices/virtual/drm` derive from live DRM model devices; source audit, hosted sysfs DRM regressions, full sysfs crate tests, fast x86_64/aarch64 driver-path proof, line-cap check, and PR merge pending. |
 | NOT DONE |  | Virtio-gpu registers DRM card devices with real virtio child parent. |
 | NOT DONE |  | Parented DRM minors live under owning device with class and `/sys/dev/char` links. |
 | NOT DONE |  | Scanout backing state is BDF-keyed. |
