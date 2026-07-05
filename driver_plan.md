@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B359-virtio-gpu-fbdev-index-owner` — CLAIMED.
+ACTIVE NOW: `B359-virtio-gpu-fbdev-index-owner` — VERIFIED, PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B359-virtio-gpu-fbdev-index-owner`.
 
-Current B359 gate: audit virtio-gpu scanout fbdev index ownership and unpublish-by-owner behavior.
+Current B359 gate: PR update, merge, and main sync.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -289,7 +289,7 @@ Status legend:
 | VERIFIED | B356-drm-addfb2-modifier-reject | DRM ADDFB2 rejects modifier flag and nonzero modifier payloads while modifier support is absent; added focused hosted regression for nonzero modifier payload with flags clear; full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2409 merge, and local main sync to `origin/main` at `8c2d61e3` pass. |
 | VERIFIED | B357-drm-addfb-packed-rgb-validation | ADDFB/ADDFB2 validate packed-RGB metadata and bounds; added ADDFB2 unused-offset and legacy ADDFB backing-span regressions; full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2410 merge, and local main sync to `origin/main` at `dc05b71a` pass. |
 | VERIFIED | B358-fbdev-flush-blank-record | fbdev flush/blank ops are per `/dev/fbN` record; added hosted `/dev/fbN` FBIOBLANK/FBIO_WAITFORVSYNC regression proving selected inode routes to selected ops key; full fbdev tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2411 merge, and local main sync to `origin/main` at `4824dd77` pass. |
-| >>> ACTIVE >>> CLAIMED | B359-virtio-gpu-fbdev-index-owner | Virtio-gpu scanout context records exact fbdev index and unpublishes by owner token. |
+| >>> ACTIVE >>> VERIFIED, PR merge pending | B359-virtio-gpu-fbdev-index-owner | Virtio-gpu scanout context records exact fbdev index and unpublishes by owner token; added owner-keyed fbdev-index store/take regression and serialized post_init global-state tests; full virtio-gpu tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE | TBD | Console/fbdev publication transactional around stored fbdev index. |
 | NOT DONE | TBD | Shutdown quiesces scanout in place without dropping publication/backing metadata. |
 | NOT DONE | TBD | fbcon still has one explicit foreground console owner. |

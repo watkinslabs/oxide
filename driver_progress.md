@@ -439,7 +439,7 @@ Evidence: source audit found `addfb2` rejects any flags and separately rejects a
 
 ## B357-drm-addfb-packed-rgb-validation
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2410.
 
 Branch: `B357-drm-addfb-packed-rgb-validation`
 
@@ -447,7 +447,7 @@ Evidence: source audit found `fb_plane_fits_buf` rejects zero dimensions, unsupp
 
 ## B358-fbdev-flush-blank-record
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2411.
 
 Branch: `B358-fbdev-flush-blank-record`
 
@@ -455,8 +455,8 @@ Evidence: source audit found `/dev/fbN` inodes carry `FbData { idx }` for read/w
 
 ## B359-virtio-gpu-fbdev-index-owner
 
-Status: `CLAIMED`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B359-virtio-gpu-fbdev-index-owner`
 
-Evidence: claimed from synced main `4824dd77`; source audit not started yet.
+Evidence: source audit found `publish_console_scanout` claims `CONSOLE_OWNER_KEY`, publishes fbdev ops with the virtio child owner key, records the returned fbdev idx in `ScanoutCtx`, and unwinds both idx and owner token on failure. `unpublish_console_scanout` only clears the matching owner token and unregisters the exact stored idx. Added `fbdev_idx_is_stored_and_taken_by_owner_key` and serialized post_init global-state tests to remove the hosted race. Focused regression, full `cargo test -p drv-virtio-gpu` with 32 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.

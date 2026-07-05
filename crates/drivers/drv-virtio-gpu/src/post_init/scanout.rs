@@ -84,7 +84,7 @@ pub(super) fn install_scanout_ctx(
     true
 }
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 fn set_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey, fbdev_idx: Option<u32>) -> bool {
     let mut ctxs = CTX.lock();
     let Some(ctx) = ctxs.iter_mut().find(|ctx| ctx.device_key == device_key) else {
@@ -94,7 +94,7 @@ fn set_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey, fbdev_idx: Op
     true
 }
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 fn take_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
     let mut ctxs = CTX.lock();
     let ctx = ctxs.iter_mut().find(|ctx| ctx.device_key == device_key)?;
@@ -284,5 +284,64 @@ fn monotonic_now_ns() -> u64 {
     {
         use hal::TimerOps;
         hal_aarch64::ArmTimerOps::monotonic_ns().0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+        virtio::VirtioChildDeviceKey::from_raw(raw)
+    }
+
+    fn ctrlq() -> virtio::VirtQueueResource {
+        virtio::VirtQueueResource {
+            index: 0,
+            size: 1,
+            desc_pa: 0,
+            driver_pa: 0,
+            device_pa: 0,
+            notify_va: 0,
+            notify_off: 0,
+        }
+    }
+
+    fn ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
+        ScanoutCtx {
+            device_key,
+            bdf: device_key.raw(),
+            cfg_va: 0,
+            w: 640,
+            h: 480,
+            fb_va: 0,
+            fb_bytes: 0,
+            fb_pages_alloc: 0,
+            res_id: BOOT_SCANOUT_RES_ID,
+            ctrlq: ctrlq(),
+            cmd_buf_va: 0,
+            cmd_buf_pa: 0,
+            hhdm: 0,
+            fbdev_idx: None,
+            quiesced: false,
+        }
+    }
+
+    #[test]
+    fn fbdev_idx_is_stored_and_taken_by_owner_key() {
+        let _guard = super::super::TEST_LOCK.lock();
+        CTX.lock().clear();
+        CTX.lock().push(ctx(key(0x10)));
+        CTX.lock().push(ctx(key(0x20)));
+
+        assert!(set_scanout_fbdev_idx(key(0x10), Some(3)));
+        assert!(set_scanout_fbdev_idx(key(0x20), Some(7)));
+        assert!(!set_scanout_fbdev_idx(key(0x30), Some(9)));
+        assert_eq!(take_scanout_fbdev_idx(key(0x20)), Some(7));
+        assert_eq!(take_scanout_fbdev_idx(key(0x20)), None);
+        assert_eq!(take_scanout_fbdev_idx(key(0x10)), Some(3));
+        assert_eq!(take_scanout_fbdev_idx(key(0x30)), None);
+
+        CTX.lock().clear();
     }
 }
