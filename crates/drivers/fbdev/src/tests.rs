@@ -182,3 +182,44 @@ fn fb_ops_are_per_instance() {
     assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), u32::MAX);
     FBS.lock().clear();
 }
+
+#[test]
+fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
+    FBS.lock().clear();
+    LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
+    LAST_BLANK.store(u32::MAX, AtomicOrdering::SeqCst);
+    LAST_UNBLANK.store(u32::MAX, AtomicOrdering::SeqCst);
+
+    let bytes = 16u64;
+    let fb0 = init_scanout(0x3000, 0xffff_8000_0000_3000, bytes, 16, 1, 1);
+    let fb1 = init_scanout(0x4000, 0xffff_8000_0000_4000, bytes, 16, 1, 1);
+    assert_ne!(fb0, fb1);
+    assert!(set_ops(fb0, FbOps {
+        driver_key: 33,
+        flush: record_flush,
+        blank: record_blank,
+        unblank: record_unblank,
+    }));
+    assert!(set_ops(fb1, FbOps {
+        driver_key: 44,
+        flush: record_flush,
+        blank: record_blank,
+        unblank: record_unblank,
+    }));
+
+    let fb0_inode = devfs::make_fb_inode(fb0);
+    let fb1_inode = devfs::make_fb_inode(fb1);
+
+    assert_eq!(devfs::handle_fbdev_ioctl(&fb0_inode, FBIOBLANK, FB_BLANK_NORMAL as u64), Some(0));
+    assert_eq!(LAST_BLANK.load(AtomicOrdering::SeqCst), 33);
+    assert_eq!(devfs::handle_fbdev_ioctl(&fb1_inode, FBIOBLANK, FB_BLANK_NORMAL as u64), Some(0));
+    assert_eq!(LAST_BLANK.load(AtomicOrdering::SeqCst), 44);
+
+    set_yield_hook(vblank_tick);
+    assert_eq!(devfs::handle_fbdev_ioctl(&fb1_inode, FBIO_WAITFORVSYNC, 0), Some(0));
+    clear_wait_hooks();
+    assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), 44);
+    assert_eq!(LAST_UNBLANK.load(AtomicOrdering::SeqCst), u32::MAX);
+
+    FBS.lock().clear();
+}
