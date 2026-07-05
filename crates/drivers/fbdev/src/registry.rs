@@ -44,7 +44,7 @@ fn lowest_free_fb_idx(fbs: &[FbDev]) -> u32 {
 }
 
 fn publish_or_unwind(idx: u32) -> Option<u32> {
-    #[cfg(target_os = "oxide-kernel")]
+    #[cfg(any(target_os = "oxide-kernel", test))]
     if !devfs::register_node(idx) {
         let mut g = FBS.lock();
         if let Some(pos) = g.iter().position(|f| f.idx == idx) {
@@ -52,7 +52,7 @@ fn publish_or_unwind(idx: u32) -> Option<u32> {
         }
         return None;
     }
-    #[cfg(not(target_os = "oxide-kernel"))]
+    #[cfg(not(any(target_os = "oxide-kernel", test)))]
     let _ = idx;
     Some(idx)
 }
@@ -146,7 +146,7 @@ pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32,
 }
 
 pub fn unregister(idx: u32) -> bool {
-    #[cfg(target_os = "oxide-kernel")]
+    #[cfg(any(target_os = "oxide-kernel", test))]
     let _ = devfs::unregister_node(idx);
     let mut g = FBS.lock();
     let Some(pos) = g.iter().position(|f| f.idx == idx) else { return false };

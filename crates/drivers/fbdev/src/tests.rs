@@ -9,6 +9,11 @@ fn record_flush(key: u32) { LAST_FLUSH.store(key, AtomicOrdering::SeqCst); }
 fn record_blank(key: u32) { LAST_BLANK.store(key, AtomicOrdering::SeqCst); }
 fn record_unblank(key: u32) { LAST_UNBLANK.store(key, AtomicOrdering::SeqCst); }
 
+fn reset_fbdev() {
+    devfs::unregister_all_nodes();
+    FBS.lock().clear();
+}
+
 #[test]
 fn fb_var_default_bgra32() {
     let v = FbVarScreeninfo::default();
@@ -106,7 +111,7 @@ fn blank_level_validation() {
 
 #[test]
 fn init_scanout_populates_geometry_and_backing() {
-    FBS.lock().clear();
+    reset_fbdev();
     let bytes = 800u64 * 600 * 4;
     let idx = init_scanout(0xdead_0000, 0xffff_8000_dead_0000, bytes, 800 * 4, 800, 600);
     assert_eq!(idx, 0);
@@ -118,21 +123,21 @@ fn init_scanout_populates_geometry_and_backing() {
     assert_eq!(f.line_length, 800 * 4);
     assert_eq!(backing_of(0), Some((0xdead_0000, bytes)));
     assert_eq!(kva_of(0), Some((0xffff_8000_dead_0000, bytes)));
-    FBS.lock().clear();
+    reset_fbdev();
 }
 
 #[test]
 fn backing_none_without_real_fb() {
-    FBS.lock().clear();
+    reset_fbdev();
     register(0, 1, FbVarScreeninfo::default(), FbFixScreeninfo::default());
     assert_eq!(backing_of(0), None);
     assert_eq!(kva_of(0), None);
-    FBS.lock().clear();
+    reset_fbdev();
 }
 
 #[test]
 fn register_count_roundtrip() {
-    FBS.lock().clear();
+    reset_fbdev();
     let mut v = FbVarScreeninfo::default();
     v.xres = 800;
     v.yres = 600;
@@ -140,12 +145,37 @@ fn register_count_roundtrip() {
     assert_eq!(idx, 0);
     assert_eq!(count(), 1);
     assert_eq!(var_of(0).unwrap().xres, 800);
-    FBS.lock().clear();
+    reset_fbdev();
+}
+
+#[test]
+fn register_unwinds_record_when_model_publication_conflicts() {
+    reset_fbdev();
+    let conflict = drv::try_device_add(alloc::sync::Arc::new(
+        drv::Device::new("graphics", alloc::string::String::from("fb0"), 0, 0, 0)
+            .with_devnode("graphics", alloc::string::String::from("fb0"), Some((29, 0))),
+    ))
+    .expect("conflict device registration");
+
+    let idx = register(0, 1, FbVarScreeninfo::default(), FbFixScreeninfo::default());
+    assert_eq!(idx, INVALID_FB_INDEX);
+    assert_eq!(count(), 0);
+    assert!(var_of(0).is_none());
+    assert_eq!(
+        drv::devices()
+            .iter()
+            .filter(|d| d.bus == "graphics" && d.addr == "fb0")
+            .count(),
+        1
+    );
+
+    drv::device_del(&conflict);
+    reset_fbdev();
 }
 
 #[test]
 fn fb_ops_are_per_instance() {
-    FBS.lock().clear();
+    reset_fbdev();
     LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_BLANK.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_UNBLANK.store(u32::MAX, AtomicOrdering::SeqCst);
@@ -180,12 +210,12 @@ fn fb_ops_are_per_instance() {
     LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
     flush(fb1);
     assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), u32::MAX);
-    FBS.lock().clear();
+    reset_fbdev();
 }
 
 #[test]
 fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
-    FBS.lock().clear();
+    reset_fbdev();
     LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_BLANK.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_UNBLANK.store(u32::MAX, AtomicOrdering::SeqCst);
@@ -221,7 +251,7 @@ fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
     assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), 44);
     assert_eq!(LAST_UNBLANK.load(AtomicOrdering::SeqCst), u32::MAX);
 
-    FBS.lock().clear();
+    reset_fbdev();
 }
 
 #[test]
