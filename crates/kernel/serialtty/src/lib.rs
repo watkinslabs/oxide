@@ -11,9 +11,8 @@
 // console driver structure: a `TtyDriver` + an `assemble` factory + a
 // (major,minor) registry entry.
 //
-// ADDITIVE (tty-rebuild-plan §3-T6): does NOT rewire boot, does NOT
-// remove the existing timer-poll-to-`tty::live` RX path, does NOT touch
-// klog / ConsoleInode. The boot cutover onto this driver is a later task.
+// ADDITIVE (tty-rebuild-plan §3-T6): does NOT touch klog / ConsoleInode.
+// UART RX reaches this tty through the owning UART driver's IRQ handler.
 //
 // Generic over the UART sink (`U: SerialOut`) — monomorphized, never
 // `dyn` (07§5), mirroring the HAL-trait rule. The kernel impl
