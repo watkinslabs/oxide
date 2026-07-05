@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B367-virtio-gpu-probe-unwind-proof`.
+Current marker: `>>> ACTIVE >>> B368-virtio-net-netdev-publish-owner`.
 
 ## Archived Completed B327-B330
 
@@ -472,8 +472,16 @@ Evidence: source audit found `FBIOGETCMAP` validates nonzero `cm.transp` with th
 
 ## B367-virtio-gpu-probe-unwind-proof
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2420.
 
 Branch: `B367-virtio-gpu-probe-unwind-proof`
 
-Evidence: source audit found `ProbeCommandBuffer` and `ProbeFramebufferRun` own probe allocations until `setup_scanout` succeeds; `disarm()` transfers both into `ScanoutCtx`, and failed DRM/device install calls `uninstall_scanout_after_failed_probe` to remove the matching child scanout. Added `failed_probe_unwind_owns_probe_command_and_framebuffer_state`; focused regression, full `cargo test -p drv-virtio-gpu` with 36 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found `ProbeCommandBuffer` and `ProbeFramebufferRun` own probe allocations until `setup_scanout` succeeds; `disarm()` transfers both into `ScanoutCtx`, and failed DRM/device install calls `uninstall_scanout_after_failed_probe` to remove the matching child scanout. Added `failed_probe_unwind_owns_probe_command_and_framebuffer_state`; focused regression, full `cargo test -p drv-virtio-gpu` with 36 tests, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2420, and main sync `c2e8e3cf` pass.
+
+## B368-virtio-net-netdev-publish-owner
+
+Status: `IN AUDIT`.
+
+Branch: `B368-virtio-net-netdev-publish-owner`
+
+Evidence: source audit of virtio-net netdev publication/removal ownership is in progress.
