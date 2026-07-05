@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B400-virtio-msix-child-owned-handlers | VERIFIED | Child-declared MSI-X handlers proven by source audit, hosted virtio/pci-boot tests, x86_64 driver-path proof, and aarch64 driver-path proof. |
 | B401-virtio-pci-probe-exit-unwind | VERIFIED | `VirtioProbe` now owns a one-shot lease for failed/unpublished cleanup; hosted virtio/pci-boot checks and x86_64/aarch64 driver-path proof pass. |
 | B402-sound-card-publication-model-owned | VERIFIED | Sound publication uses explicit reserved/publishing/published owner state; hosted tests and x86_64/aarch64 driver-path proof pass. |
-| B403-fbdev-publication-unwind-on-model-failure | ACTIVE | Claimed from fresh main; audit/fix fbdev publication unwind on model publication failure next. |
+| B403-fbdev-publication-unwind-on-model-failure | VERIFIED | Hosted fbdev/model conflict proof and x86_64/aarch64 driver-path proof pass. |

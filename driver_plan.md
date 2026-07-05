@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B403-fbdev-publication-unwind-on-model-failure` — CLAIMED.
+ACTIVE NOW: `B403-fbdev-publication-unwind-on-model-failure` — VERIFIED.
 
 Current active item: `>>> ACTIVE >>> B403-fbdev-publication-unwind-on-model-failure`.
 
-Current B403 gate: audit/fix fbdev publication so framebuffer records unwind
-when device-model publication fails; prove with hosted fbdev/model tests and
-x86_64/aarch64 driver-path proof before merge.
+Current B403 gate: fbdev registration now uses the real hosted model
+publication path in tests and unwinds framebuffer records on model conflicts;
+hosted fbdev tests pass, x86_64/aarch64 driver-path proof pass.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -337,7 +337,7 @@ Status legend:
 | VERIFIED | B400-virtio-msix-child-owned-handlers | Source audit shows `VirtioChildOps::profile()` supplies MSI-X handlers and PCI transport consumes profile fields without virtio-ID dispatch; added hosted profile-handler regression, `cargo test -p virtio`, `cargo test -p pci-boot`, x86_64 driver-path log `/tmp/b400-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b400-arm-driver-path.log` all pass. |
 | VERIFIED | B401-virtio-pci-probe-exit-unwind | Virtio-pci probe now carries `VirtioProbeLease` inside `VirtioProbe`: failed/unpublished drop paths release frames/MSI-X, clear PCI MEM/BUS_MASTER, and unmap transport mappings once; publish consumes the lease and transfers mappings/MSI-X/vring frames. Source audit, `cargo test -p virtio`, `cargo test -p pci-boot`, x86_64 driver-path log `/tmp/b401-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b401-arm-driver-path.log` all pass. |
 | VERIFIED | B402-sound-card-publication-model-owned | Sound card publication now tracks explicit owner publication state (`reserved`/`publishing`/`published`) so duplicate publication is guarded before devnode creation; duplicate register proof now asserts no rollback removals; `cargo test -p sound -- --nocapture --test-threads=1`, `cargo test -p drv-virtio-snd -- --nocapture`, x86_64 driver-path log `/tmp/b402-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b402-arm-driver-path.log` all pass. |
-| >>> ACTIVE >>> CLAIMED | B403-fbdev-publication-unwind-on-model-failure | Fbdev publication unwinds framebuffer record on model publication failure. |
+| >>> ACTIVE >>> VERIFIED | B403-fbdev-publication-unwind-on-model-failure | Fbdev registration now routes hosted tests through model publication, and the model-conflict regression proves `register()` returns `INVALID_FB_INDEX` with no stale framebuffer record when `drv::try_device_add` rejects `fb0`; `cargo test -p fbdev -- --nocapture --test-threads=1`, x86_64 driver-path log `/tmp/b403-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b403-arm-driver-path.log` all pass. |
 | NOT DONE |  | 8250 receive path is IRQ-owned rather than timer-poll fallback. |
 | NOT DONE |  | PL011 receive path is IRQ-owned rather than timer-poll fallback. |
 | NOT DONE |  | i8042 receive path is IRQ-owned. |
