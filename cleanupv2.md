@@ -129,6 +129,22 @@ Expected for a monolithic kernel (no loadable modules), but the aliases for **bu
 
 ---
 
+## Udev scan (2026-07-05, post-keyring-fix boot reaching the greeter)
+
+Full sweep of `systemd-udevd` / `(udev-worker)` output from a live-gnome boot that reaches the greeter (keyring 1.1a fixed, B529 #2587). udev now runs and processes every device to "Device ready for processing" (vda, event0/1, i8042, serial0, virtio0, kmsg, null, random, zero, autofs) with **no worker hangs** ("taking a long time" count 10→0 after the keyring fix). Remaining concrete failures, in login-path priority:
+
+| # | Symptom (verbatim from boot) | Root-cause lead | Overlaps | Status |
+|---|---|---|---|---|
+| U1 | **hwdb**: on-disk trie LOADS (file 13.76 MB, header 80 B, strings 2.83 MB, nodes 109300) but EVERY lookup → `No entry found from hwdb` / `Failed to run builtin 'hwdb --subsystem=…': No data available` (pci, input `evdev:`, `id-input:modalias:`, virtio) | hwdb.bin is mmap'd and the HEADER (page 0) parses, yet trie traversal into deeper offsets returns no match → strong signal of a **large-file mmap bug** (page-0 correct, later pages wrong/zero). Verify with a hosted mmap-of-13 MB-file read test comparing every page vs `pread`. | 2.2 | OPEN — highest-value code-findable udev target |
+| U2 | **path_id**: `71-seat.rules:75 Failed to run builtin 'path_id': No such file or directory` (ENOENT) | path_id walks `/sys/devices/**` to build the persistent by-path; a sysfs node it opens is missing (ENOENT). Gates `/dev/disk/by-path` and **seat0 assignment** (71-seat.rules → logind CanGraphical → greeter). | 2.2 | OPEN — on the login path |
+| U3 | `Failed to find module 'pci:v…' / 'virtio:d…' / 'platform:i8042' / 'platform:serial0'` (16×) | Built-in drivers have no `.ko`; kmod finds no alias. Populate `modules.builtin.alias` in the image (depmod from `modules.builtin.modinfo`) or emit built-in `MODULE_ALIAS`. Device already bound → cosmetic. | 2.4 | OPEN — cosmetic |
+| U4 | `sd-device-monitor: Unable to get network namespace of udev netlink socket` | udev can't read the netns of its `NETLINK_KOBJECT_UEVENT` socket (`SO_NETNS_COOKIE` / `/proc/self/ns/net` of the socket). Degrades filtering, continues. | 1.2 net-ns | OPEN — non-fatal |
+| U5 | `Failed to get D-Bus connection, ignoring: No data available` | udev's optional D-Bus link fails ENODATA; cascades to 3.6 (utmp/bus). Non-fatal. | 3.6 | OPEN — non-fatal |
+
+**Login-path priority:** U2 (path_id ENOENT) gates seat0 → the greeter session; U1 (hwdb) gates input/device tagging. U1's large-file-mmap lead is the single highest-value code-findable target — one mm bug likely explains every hwdb miss. Both are separate from the `user@979` mount-EPERM (1.1 part b).
+
+---
+
 ## TIER 3 — Noise / robustness (silence so real failures surface)
 
 | # | Symptom | Evidence | Nature |
