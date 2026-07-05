@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B377-virtio-net-ipv4-arp-runtime-owned`.
+Current marker: `>>> ACTIVE >>> B378-virtio-net-hot-remove-key-cleanup`.
 
 ## Archived Completed B327-B330
 
@@ -456,26 +456,11 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B374-virtio-net-iface-rx-keyed-tables | VERIFIED | Registered iface and RX runtime tables are child-key owned; full virtio-net tests, arch proof, PR #2427, main sync `df4907d0`. |
 | B375-virtio-net-ethn-visible-names | VERIFIED | Visible `ethN` names are child-runtime owned; full virtio-net tests, arch proof, PR #2428, main sync `66cf1bff`. |
 | B376-virtio-net-rx-stats-per-netdev | VERIFIED | RX stats are child-runtime owned; full virtio-net tests, arch proof, PR #2429, main sync `b3643ee6`. |
-
-## B376-virtio-net-rx-stats-per-netdev
-
-Status: `VERIFIED`; merged by PR #2429.
-
-Branch: `B376-virtio-net-rx-stats-per-netdev`
-
-Evidence: `NetRuntime` owns RX counters by child `DeviceKey`, `rx_poll_for`
-loads the runtime with `net_runtime_for(device_key)` before accounting, and
-`VirtioNetDev::stats()` reads from that runtime. Extended
-`net_runtime_names_are_unique_and_reusable` proves two netdevs report different
-runtime RX counters.
-
-Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
-PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
-PASS, and `make smoke-driver-path-arm` PASS.
+| B377-virtio-net-ipv4-arp-runtime-owned | VERIFIED | IPv4 ARP cache is child-runtime owned; full virtio-net tests, arch proof, PR #2430, main sync `a81c39de`. |
 
 ## B377-virtio-net-ipv4-arp-runtime-owned
 
-Status: `VERIFIED - PR READY`.
+Status: `VERIFIED`; merged by PR #2430.
 
 Branch: `B377-virtio-net-ipv4-arp-runtime-owned`
 
@@ -487,3 +472,11 @@ keyed runtime, and ARP GC walks each runtime cache. Existing
 Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
 PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
 PASS, and `make smoke-driver-path-arm` PASS.
+
+## B378-virtio-net-hot-remove-key-cleanup
+
+Status: `IN AUDIT`.
+
+Branch: `B378-virtio-net-hot-remove-key-cleanup`
+
+Evidence: audit pending for hot-remove keyed netdev/interface/RX cleanup.
