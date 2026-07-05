@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B422-bind-unbind-uevent-stability; IN AUDIT.
+ACTIVE NOW: B422-bind-unbind-uevent-stability; VERIFIED pending commit/PR.
 
-Current active item: Bind/unbind change uevents must be stable under parallel tests and live udev monitor.
+Current active item: Bind/unbind change uevents are verified stable under parallel tests and live udev monitor.
 
 Next gate after merge: return to fresh `origin/main` before claiming B423
 using `metadata/index.md`.
@@ -92,8 +92,8 @@ Status legend:
 | VERIFIED |  | Model-backed `graphics` character devices publish Linux-style `/sys/class/graphics` and virtual device directories. |
 | VERIFIED |  | `/sys/dev/char` resolves to real pseudo, misc, ALSA/OSS, fbdev, input, and DRM device objects. |
 | VERIFIED |  | Model-backed virtual input, DRM, and character class devices expose `device` link when parent exists. |
-| ACTIVE | B422-bind-unbind-uevent-stability | Bind/unbind change uevents must be stable under parallel tests and live udev monitor; current source passes serial hosted tests, parallel hosted run exposed shared listener/test isolation issue. |
-| NOT DONE | TBD | Intermittent hosted sysfs uevent test isolation: full `cargo test -p sysfs` failed in B342 on `device_del_emits_remove_uevent_before_model_disappears` missing `ACTION=remove`, then the test passed alone; a later full run failed `bind_unbind_emit_change_uevents_from_current_model_state` missing `DEVPATH=/devices/platform/sysfs-bind-uevent0`. Root-cause separately. |
+| VERIFIED | B422-bind-unbind-uevent-stability | Bind/unbind change uevents are stable under parallel hosted tests and live netlink monitor: sysfs tests filter the shared uevent stream by event content and isolate unregister remove counters; `uevent_probe` now performs real `/sys/bus/virtio/drivers/virtio-snd/{unbind,bind}` while subscribed to `NETLINK_KOBJECT_UEVENT`, proving unbind emits `ACTION=change` without stale `DRIVER=virtio-snd` and rebind emits `ACTION=change` with `DRIVER=virtio-snd`. Evidence: `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture`, full parallel `cargo test -p sysfs -- --nocapture`, both musl probe compiles, x86_64 log `/tmp/b422-bind-unbind-uevent-stability-x86.log`, and aarch64 log `/tmp/b422-bind-unbind-uevent-stability-arm.log`. |
+| VERIFIED | B422-bind-unbind-uevent-stability | Intermittent hosted sysfs uevent test isolation root cause fixed: parallel tests no longer assume their event is first in the global uevent broadcast queue, and the unregister-driver test no longer shares `BIND_REMOVES`; full parallel `cargo test -p sysfs -- --nocapture` passed 25/25. |
 | SOURCE OK |  | Bound change uevents include `DRIVER=<name>`. |
 | SOURCE OK |  | Unbound change uevents do not carry stale driver ownership. |
 | VERIFIED |  | Block `uevent` attributes are writable and re-emit current model event. |
