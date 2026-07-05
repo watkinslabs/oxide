@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B414-driver-devnode-readd-loops` — VERIFIED.
+ACTIVE NOW: `B415-bind-unbind-readd-proof` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B414-driver-devnode-readd-loops`.
+Current active item: `>>> ACTIVE >>> B415-bind-unbind-readd-proof`.
 
-Current B414 gate: broaden driver-owned devnode remove/readd hosted loops
-across block, evdev, fbdev, DRM, hwrng, sound, console, and other subsystem
-nodes; then run hosted tests plus x86_64/aarch64 runtime proof.
+Current B415 gate: prove repeated bind/unbind/remove/readd behavior across
+subsystems; then run hosted tests plus x86_64/aarch64 runtime proof.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -347,9 +346,9 @@ Status legend:
 | VERIFIED | B410-virtio-transport-policy-boundary | Current source has shared virtio policy at the child/core boundary: child drivers export `VirtioTransportProfile`s; shared `virtio` owns child requirements, queue plans, early payload policy, resource readiness, runtime handoff, and probe/remove/shutdown lifecycle helpers; `pci-boot` supplies the concrete PCI session and MMIO/MSI lifetime. `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`, x86_64 `/tmp/b410-x86-driver-path.log`, and aarch64 `/tmp/b410-arm-driver-path.log` pass. |
 | VERIFIED | B411-virtio-irq-core-bus-split | Child drivers declare IRQ callbacks through shared `VirtioTransportProfile`; `pci-boot` only consumes those profiles to bind/program/release MSI-X and register the supplied handler. Shared profile tests prove callback placement, hosted `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-vsock -p drv-virtio-input -p drv-virtio-snd -- --nocapture --test-threads=1` passes, and x86_64 `/tmp/b411-x86-driver-path.log` plus aarch64 `/tmp/b411-arm-driver-path.log` pass. Remaining full virtio bus/core extraction stays in later row. |
 | VERIFIED | B412-probe-failure-devres-proof | Added `VirtioProbeDevres` as the single virtio-pci probe resource owner for cfg reset, frame release, MSI-X release, PCI command disable, mapping unmap, and successful publish transfer. Added child-probe fault-point lifecycle coverage proving failures release once and never publish. `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`, x86_64 `/tmp/b412-x86-driver-path.log`, and aarch64 `/tmp/b412-arm-driver-path.log` pass. |
-| >>> ACTIVE >>> VERIFIED | B413-devtmpfs-model-owned-publication | Source audit proves hardware-backed nodes publish through `drv::try_device_add`: block, evdev, fbdev, DRM, hwrng, sound, console, and boot pseudo devices; direct `devfs::register*` users are fixed dirs, ptys, coredumps, or other non-hardware namespace entries. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b413-x86-driver-path.log`, and aarch64 `/tmp/b413-arm-driver-path.log` pass. |
-| >>> ACTIVE >>> VERIFIED | B414-driver-devnode-readd-loops | Existing hosted remove/readd loops cover block, evdev, fbdev, DRM, and hwrng; B414 adds same-owner sound card unregister/register restore coverage. Console tty nodes are boot-owned fixed nodes, not hot-remove loop devices; x86_64/aarch64 driver-path proof covers their boot publication path. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b414-x86-driver-path.log`, and aarch64 `/tmp/b414-arm-driver-path.log` pass. |
-| NOT DONE | TBD | Repeated bind/unbind/remove/readd behavior not proven across all subsystems. |
+| VERIFIED | B413-devtmpfs-model-owned-publication | Source audit proves hardware-backed nodes publish through `drv::try_device_add`: block, evdev, fbdev, DRM, hwrng, sound, console, and boot pseudo devices; direct `devfs::register*` users are fixed dirs, ptys, coredumps, or other non-hardware namespace entries. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b413-x86-driver-path.log`, and aarch64 `/tmp/b413-arm-driver-path.log` pass. |
+| VERIFIED | B414-driver-devnode-readd-loops | Existing hosted remove/readd loops cover block, evdev, fbdev, DRM, and hwrng; B414 adds same-owner sound card unregister/register restore coverage. Console tty nodes are boot-owned fixed nodes, not hot-remove loop devices; x86_64/aarch64 driver-path proof covers their boot publication path. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b414-x86-driver-path.log`, and aarch64 `/tmp/b414-arm-driver-path.log` pass. |
+| >>> ACTIVE >>> CLAIMED | B415-bind-unbind-readd-proof | Repeated bind/unbind/remove/readd behavior not proven across all subsystems. Source audit, hosted tests, and x86_64/aarch64 runtime proof pending. |
 | NOT DONE | TBD | NVMe/AHCI multi-controller QEMU bind/unbind/rebind proof missing. |
 | NOT DONE | TBD | Virtio-net live multi-device proof missing. |
 | NOT DONE | TBD | Virtio-gpu live multi-card/multi-GPU proof missing. |
