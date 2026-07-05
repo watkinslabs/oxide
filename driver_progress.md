@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B398-virtio-snd-eventq-owner-accounting` — verified; commit/PR pending.
+Current marker: `>>> ACTIVE >>> B399-virtio-snd-multicard-rebind-proof`.
 
 ## Archived Completed B327-B330
 
@@ -483,7 +483,7 @@ recent-completed table above; main was synced after each merge through
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 | B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B394-B398 Current
+## B394-B399 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -491,4 +491,5 @@ recent-completed table above; main was synced after each merge through
 | B395-sound-card-per-card-node-publication | VERIFIED | Per-card ALSA/OSS publication proven by source audit, hosted sound tests, arch proof, PR #2448, main sync `a76db156`. |
 | B396-sound-ops-route-by-owner | VERIFIED | Owner-routed ops dispatch proven by focused/full sound tests, arch proof, PR #2449, main sync `cac90846`. |
 | B397-sound-unregister-rejects-non-owners | VERIFIED | Non-owner unregister rejection proven by focused/serial full sound tests, arch proof, PR #2450, main sync `e5fe3f55`. |
-| B398-virtio-snd-eventq-owner-accounting | ACTIVE | Source audit, focused EVENTQ drain regression, full drv-virtio-snd tests, and x86_64/aarch64 driver-path proof pass. |
+| B398-virtio-snd-eventq-owner-accounting | VERIFIED | EVENTQ owner accounting proven by focused/full virtio-snd tests, arch proof, PR #2451, main sync `a6506b42`. |
+| B399-virtio-snd-multicard-rebind-proof | VERIFIED | Two-device QEMU/rootfs/probe path passes hosted gates plus x86_64/aarch64 live rebind smoke. |
