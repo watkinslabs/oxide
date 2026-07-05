@@ -20,7 +20,12 @@ pub enum BoundAddr {
 pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), NetError> {
     match addr {
         BoundAddr::UnixListener(path) => {
-            let listener = UNIX_REGISTRY.bind(path).map_err(|_| NetError::Eaddrinuse)?;
+            // B518: bind into the calling task's net_ns registry (id 0 = the
+            // untouched global static). Record the ns so Drop unbinds here.
+            let ns = crate::netdev::current_net_ns();
+            let listener = crate::net_ns::current_unix_registry()
+                .bind(path).map_err(|_| NetError::Eaddrinuse)?;
+            sock.unix_ns.store(ns, core::sync::atomic::Ordering::Release);
             // Link the listener socket's epoll subscribers so connect() can wake an
             // epoll_wait-blocked accept loop (dbus-broker) on a new connection.
             listener.register_subs(&sock.poll_subs);
@@ -28,7 +33,11 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             Ok(())
         }
         BoundAddr::UnixDgram { path, queue } => {
-            UNIX_REGISTRY.dgram_bind(path, queue).map_err(|_| NetError::Eaddrinuse)
+            let ns = crate::netdev::current_net_ns();
+            crate::net_ns::current_unix_registry()
+                .dgram_bind(path, queue).map_err(|_| NetError::Eaddrinuse)?;
+            sock.unix_ns.store(ns, core::sync::atomic::Ordering::Release);
+            Ok(())
         }
         BoundAddr::Inet { ip, port } => {
             stack().bind_udp_with_iface(ip, port, bound_iface(sock)?)?;
@@ -68,7 +77,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
     match addr {
         RemoteAddr::UnixPath(path) => {
             if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
-                if UNIX_REGISTRY.dgram_lookup(&path).is_none() {
+                // B518: resolve within the connecting task's net_ns.
+                if crate::net_ns::current_unix_registry().dgram_lookup(&path).is_none() {
                     return Err(NetError::Econnrefused);
                 }
                 q.set_peer(path);
@@ -79,7 +89,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // ENOBUFS which dhcpcd treated as fatal "out of buffer
             // memory" instead of "nobody home, I'll create my own
             // socket and listen".
-            let pair = UNIX_REGISTRY.connect(&path).ok_or(NetError::Econnrefused)?;
+            let pair = crate::net_ns::current_unix_registry()
+                .connect(&path).ok_or(NetError::Econnrefused)?;
             // F181a: client end is B; register subscribers before
             // setting kind so peer-A writes find live subs.
             pair.register_end_subs(crate::UnixEnd::B, &sock.poll_subs);
@@ -297,7 +308,7 @@ pub fn sendto(
             Some(RemoteAddr::UnixPath(p)) => p,
             _ => q.peer().ok_or(NetError::Eaddrnotavail)?,
         };
-        let q = UNIX_REGISTRY.dgram_lookup(&path).ok_or(NetError::Enobufs)?;
+        let q = crate::net_ns::current_unix_registry().dgram_lookup(&path).ok_or(NetError::Enobufs)?;
         crate::trace_dgram_journal(&path, payload);
         q.push(crate::UnixDgram {
             payload: payload.to_vec(),

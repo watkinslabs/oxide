@@ -40,6 +40,7 @@ pub use unix_sock::{
     UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
     unix_path_display, unix_path_is_abstract,
 };
+pub mod net_ns;
 pub mod route;
 pub mod route6;
 pub mod policy_rule;

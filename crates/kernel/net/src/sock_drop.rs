@@ -59,7 +59,10 @@ impl Drop for InetSocket {
         // daemon (systemd-networkd's varlink listener) hits EADDRINUSE on
         // rebind → "Could not set up manager: Address in use".
         if let SockKind::UnixListener(l) = &*self.kind.lock() {
-            crate::sock::UNIX_REGISTRY.unbind(&l.path);
+            // B518: unbind from the SAME net_ns registry the bind used
+            // (recorded at bind time), not the closer's current ns.
+            let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
+            crate::net_ns::ns_unix_registry(ns).unbind(&l.path);
         }
     }
 }

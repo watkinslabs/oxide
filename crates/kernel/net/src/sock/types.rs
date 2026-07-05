@@ -123,6 +123,11 @@ pub struct InetSocket {
     pub recv_waiters: sched::live::WaitList,
     /// F181: per-fd epoll subscribers.
     pub poll_subs: Arc<vfs::PollSubscribers>,
+    /// B518: net_ns id this socket bound its AF_UNIX path in (0 = the
+    /// global registry). Captured at bind so Drop unbinds from the SAME
+    /// per-ns registry regardless of the closing task's ns. Untouched
+    /// (0) for every non-AF_UNIX-bound socket → global semantics.
+    pub unix_ns: core::sync::atomic::AtomicU64,
 }
 
 /// SOL_SOCKET options — Linux `int`-shaped cells. SO_LINGER pair.
@@ -218,6 +223,7 @@ impl InetSocket {
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
+            unix_ns:   core::sync::atomic::AtomicU64::new(0),
         };
         _s
     }
@@ -240,6 +246,7 @@ impl InetSocket {
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
+            unix_ns:   core::sync::atomic::AtomicU64::new(0),
         };
         _s
     }
