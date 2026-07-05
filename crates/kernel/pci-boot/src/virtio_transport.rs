@@ -11,7 +11,7 @@ mod msix;
 mod devres;
 
 pub(crate) use devres::VirtioProbeDevres;
-pub(crate) use msix::{
+pub(super) use msix::{
     MsixBinding, bind_msix_vector, disable_pci_command, publish_transport_record,
     release_failed_probe, release_msix_bindings, unpublish_transport_record,
 };
