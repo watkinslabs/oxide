@@ -471,8 +471,8 @@ Evidence: source audit found `publish_console_scanout` claimed `CONSOLE_OWNER_KE
 
 ## B361-shutdown-scanout-quiesce-in-place
 
-Status: `CLAIMED`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B361-shutdown-scanout-quiesce-in-place`
 
-Evidence: claimed from synced main `e0c60058`; source audit not started yet.
+Evidence: source audit found `shutdown_scanout` mutates the matching `ScanoutCtx` in place by setting `quiesced = true`, writes the device scanout disable register when live `cfg_va` exists, and does not remove CTX, fbdev idx, framebuffer VA/size, allocation count, command-buffer PA, or fbdev record. Added `shutdown_scanout_quiesces_without_dropping_publication_metadata`; focused regression, full `cargo test -p drv-virtio-gpu` with 35 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
