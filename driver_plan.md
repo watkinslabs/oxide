@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B424-bound-unbound-uevent-state-proof; IN AUDIT.
+ACTIVE NOW: B424-bound-unbound-uevent-state-proof; VERIFIED pending commit/PR.
 
-Current active item: Bound and unbound change uevent driver-state rows.
+Current active item: Bound and unbound change uevent driver-state rows are verified.
 
 Next gate after merge: return to fresh `origin/main` before claiming B425
 using `metadata/index.md`.
@@ -94,8 +94,8 @@ Status legend:
 | VERIFIED |  | Model-backed virtual input, DRM, and character class devices expose `device` link when parent exists. |
 | VERIFIED | B422-bind-unbind-uevent-stability | Bind/unbind change uevents are stable under parallel hosted tests and live netlink monitor: sysfs tests filter the shared uevent stream by event content and isolate unregister remove counters; `uevent_probe` now performs real `/sys/bus/virtio/drivers/virtio-snd/{unbind,bind}` while subscribed to `NETLINK_KOBJECT_UEVENT`, proving unbind emits `ACTION=change` without stale `DRIVER=virtio-snd` and rebind emits `ACTION=change` with `DRIVER=virtio-snd`. Evidence: `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture`, full parallel `cargo test -p sysfs -- --nocapture`, both musl probe compiles, x86_64 log `/tmp/b422-bind-unbind-uevent-stability-x86.log`, and aarch64 log `/tmp/b422-bind-unbind-uevent-stability-arm.log`. |
 | VERIFIED | B422-bind-unbind-uevent-stability | Intermittent hosted sysfs uevent test isolation root cause fixed: parallel tests no longer assume their event is first in the global uevent broadcast queue, and the unregister-driver test no longer shares `BIND_REMOVES`; full parallel `cargo test -p sysfs -- --nocapture` passed 25/25. |
-| ACTIVE | B424-bound-unbound-uevent-state-proof | Bound change uevents include `DRIVER=<name>`; B422 live x86_64/aarch64 logs already show `uevent_probe_bind_change: PASS`, but this row is being audited separately before marking verified. |
-| ACTIVE | B424-bound-unbound-uevent-state-proof | Unbound change uevents do not carry stale driver ownership; B422 live x86_64/aarch64 logs already show `uevent_probe_unbind_change: PASS`, but this row is being audited separately before marking verified. |
+| VERIFIED | B424-bound-unbound-uevent-state-proof | Bound change uevents include `DRIVER=<name>`: current source requires `uevent_probe_bind_change` to match `ACTION=change`, `SUBSYSTEM=virtio`, `DEVPATH=/devices/virtio/<dev>`, and `DRIVER=virtio-snd`; hosted bind/unbind sysfs regression passes and both x86_64/aarch64 live logs contain `uevent_probe_bind_change: PASS`. |
+| VERIFIED | B424-bound-unbound-uevent-state-proof | Unbound change uevents do not carry stale driver ownership: current source requires `uevent_probe_unbind_change` to match `ACTION=change`, `SUBSYSTEM=virtio`, and `DEVPATH=/devices/virtio/<dev>` while rejecting `DRIVER=virtio-snd`; hosted bind/unbind sysfs regression passes and both x86_64/aarch64 live logs contain `uevent_probe_unbind_change: PASS`. |
 | VERIFIED |  | Block `uevent` attributes are writable and re-emit current model event. |
 | VERIFIED |  | Input `uevent` attributes are writable and re-emit current model event. |
 | VERIFIED |  | Model-backed virtual character class `uevent` attributes are writable. |
