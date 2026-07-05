@@ -232,7 +232,9 @@ fn net_unix_body() -> alloc::vec::Vec<u8> {
     // St 01 (UNCONNECTED for listener / bound dgram), Inode 0
     // (no inode table linkage), Path.
     let mut num: u64 = 1;
-    for (kind, path) in net::sock::UNIX_REGISTRY.snapshot_paths() {
+    // B518: `/proc/net/unix` reflects the reader's net_ns (id 0 = the
+    // untouched global registry).
+    for (kind, path) in net::net_ns::current_unix_registry().snapshot_paths() {
         let flags = if kind == 0x0001 { 0x10000u32 } else { 0u32 };
         let path = net::unix_path_display(&path);
         let _ = writeln!(s, "{:016x}: 00000002 00000000 {:08x} {:04x} 01 0 {}",
