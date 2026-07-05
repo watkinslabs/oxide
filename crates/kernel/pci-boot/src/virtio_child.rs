@@ -90,8 +90,6 @@ impl VirtioChildOps for VirtioGpuOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        #[cfg(target_os = "oxide-kernel")]
-        drv_virtio_gpu::post_init::unpublish_console_scanout(device_key.raw());
         let _ = drv_virtio_gpu::uninstall(device_key);
         let _ = drv_virtio_gpu::post_init::uninstall_scanout(device_key);
     }
