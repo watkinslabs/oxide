@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B373-virtio-net-netdev-owning-key` — VERIFIED - PR READY.
+ACTIVE NOW: `B374-virtio-net-iface-rx-keyed-tables` — VERIFIED - PR READY.
 
-Current active item: `>>> ACTIVE >>> B373-virtio-net-netdev-owning-key`.
+Current active item: `>>> ACTIVE >>> B374-virtio-net-iface-rx-keyed-tables`.
 
-Current B373 gate: published `NetDev` owner-key regression, full virtio-net tests, and x86_64/aarch64 driver-path proof pass; push PR, merge, then sync local `main`.
+Current B374 gate: registered iface/RX runtime keyed-table regressions, full virtio-net tests, and x86_64/aarch64 driver-path proof pass; push PR, merge, then sync local `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -303,8 +303,8 @@ Status legend:
 | VERIFIED | B370-virtio-net-no-boot-ipv4-policy | Virtio-net old boot-probe default IPv4 policy removed: `install_rx_runtime` seeds RX softirq state with `0.0.0.0`, later iface address updates flow through `set_softirq_ip_for_iface`, added hosted regression `rx_runtime_install_does_not_seed_boot_ipv4_policy`, full `drv-virtio-net` tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2423 merge, and local main sync to `origin/main` at `c9a786f6` pass. |
 | VERIFIED | B371-virtio-net-install-remove-keyed | Virtio-net install/remove keyed to owning child key: PCI child dispatch passes `session.device_key()` into `init_modern_with_rx_pool`, remove/shutdown pass the parent `VirtioChildDeviceKey`, `ModernNetState` stores that key, install rejects duplicate keys, and `uninstall_modern` removes only the matching key. Focused install/remove regressions, full `drv-virtio-net` tests, fast x86_64/aarch64 driver-path proof, PR #2424 merge, and local main sync to `origin/main` at `fb70eeb3` pass. |
 | VERIFIED | B372-virtio-net-keyed-cursors | Virtio-net TX/RX cursors live in keyed device records: `ModernNetState` owns `tx_last_used`, `tx_next_avail`, `rx_last_used`, and `rx_next_avail`; `tx_frame_for` and `rx_poll_for` first select the matching `device_key`; RX pool install initializes per-device `rx_next_avail`. Focused RX-pool cursor regression, full `drv-virtio-net` tests, fast x86_64/aarch64 driver-path proof, PR #2425 merge, and local main sync to `origin/main` at `ebf774cb` pass. |
-| >>> ACTIVE >>> VERIFIED - PR READY | B373-virtio-net-netdev-owning-key | Published `NetDev` carries owning key: `VirtioNetDev` stores `device_key`, constructs runtime state with the same key, and uses the key for TX/neighbor paths. Added hosted owner-key assertions, full `drv-virtio-net` tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | Registered iface ownership and RX softirq runtime are keyed tables. |
+| VERIFIED | B373-virtio-net-netdev-owning-key | Published `NetDev` carries owning key: `VirtioNetDev` stores `device_key`, constructs runtime state with the same key, and uses the key for TX/neighbor paths. Added hosted owner-key assertions, full `drv-virtio-net` tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2426 merge, and local main sync to `origin/main` at `b03912d3` pass. |
+| >>> ACTIVE >>> VERIFIED - PR READY | B374-virtio-net-iface-rx-keyed-tables | Registered iface ownership and RX softirq runtime are keyed tables: `REGISTERED_NETDEVS` stores `(DeviceKey, NetIfaceId)`, `set_registered_iface`/`registered_iface_for`/`remove_registered_iface` select by key, `RX_RUNTIMES` stores `device_key`, and RX install/update/remove paths preserve per-key state. Focused iface/RX regressions, full `drv-virtio-net` tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | Netdev visible names allocated as `ethN`. |
 | NOT DONE |  | RX stats are per netdev. |
 | NOT DONE |  | IPv4 ARP cache entries owned by virtio-net runtime. |
