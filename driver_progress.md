@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B353-drm-client-cap-rejects-unsupported`.
+Current marker: `>>> ACTIVE >>> B354-drm-get-cap-supported-only`.
 
 ## Archived Completed B327-B330
 
@@ -407,8 +407,16 @@ Evidence: source audit found `struct drm_mode_atomic` missing `user_data` and io
 
 ## B353-drm-client-cap-rejects-unsupported
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2406.
 
 Branch: `B353-drm-client-cap-rejects-unsupported`
 
-Evidence: source audit against Linux `drm_setclientcap` found unsupported caps must error before file-state mutation; fixed `SET_CLIENT_CAP` so stereo/atomic/aspect/writeback/cursor-hotspot reject value 0 and 1, leaving private cap state untouched. Focused unsupported-cap regression, full `cargo test -p drm` with 64 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass.
+Evidence: source audit against Linux `drm_setclientcap` found unsupported caps must error before file-state mutation; fixed `SET_CLIENT_CAP` so stereo/atomic/aspect/writeback/cursor-hotspot reject value 0 and 1, leaving private cap state untouched. Focused unsupported-cap regression, full `cargo test -p drm` with 64 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2406, and main sync `f910022a` pass.
+
+## B354-drm-get-cap-supported-only
+
+Status: `IN AUDIT`.
+
+Branch: `B354-drm-get-cap-supported-only`
+
+Evidence: source audit started for `DRM_IOCTL_GET_CAP` advertised values for unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps; no completion claim yet.
