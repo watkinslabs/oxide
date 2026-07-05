@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B374-virtio-net-iface-rx-keyed-tables`.
+Current marker: `>>> ACTIVE >>> B375-virtio-net-ethn-visible-names`.
 
 ## Archived Completed B327-B330
 
@@ -438,7 +438,7 @@ Branch: `B362-fbcon-foreground-owner`
 
 Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2415, and main sync `1b3a3d14` pass.
 
-## Recent Completed B363-B373
+## Recent Completed B363-B374
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -453,11 +453,20 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B371-virtio-net-install-remove-keyed | VERIFIED | Install/remove paths carry owning child key from PCI child dispatch into driver state; full virtio-net tests, arch proof, PR #2424, main sync `fb70eeb3`. |
 | B372-virtio-net-keyed-cursors | VERIFIED | TX/RX cursors live in keyed device records; full virtio-net tests, arch proof, PR #2425, main sync `ebf774cb`. |
 | B373-virtio-net-netdev-owning-key | VERIFIED | Published NetDev stores owning child key; full virtio-net tests, arch proof, PR #2426, main sync `b03912d3`. |
+| B374-virtio-net-iface-rx-keyed-tables | VERIFIED | Registered iface and RX runtime tables are child-key owned; full virtio-net tests, arch proof, PR #2427, main sync `df4907d0`. |
 
-## B374-virtio-net-iface-rx-keyed-tables
+## B375-virtio-net-ethn-visible-names
 
 Status: `VERIFIED - PR READY`.
 
-Branch: `B374-virtio-net-iface-rx-keyed-tables`
+Branch: `B375-virtio-net-ethn-visible-names`
 
-Evidence: `REGISTERED_NETDEVS` stores `(DeviceKey, NetIfaceId)` and all iface helpers select/remove by `DeviceKey`. `RX_RUNTIMES` stores `device_key`, `set_softirq_iface` updates an existing key or appends a keyed runtime, `remove_rx_runtime_for` removes only the named key, and `rx_drain_softirq` polls each runtime with its own key/iface/IP tuple. Focused `registered_iface_is_keyed_by_device` and `rx_runtime_is_keyed_by_device`, full `cargo test -p drv-virtio-net`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: `allocate_net_name` returns the first free `ethN`, `ensure_net_runtime`
+stores that name in the runtime for the child `DeviceKey`, and
+`VirtioNetDev::name()` exposes the runtime-owned string. The focused
+`net_runtime_names_are_unique_and_reusable` regression proves `eth0`/`eth1`
+allocation and reuse after removal.
+
+Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
+PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
+PASS, and `make smoke-driver-path-arm` PASS.
