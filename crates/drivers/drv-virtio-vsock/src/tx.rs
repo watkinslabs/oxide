@@ -4,9 +4,9 @@ use crate::consts::TX_POLL_BUDGET;
 use crate::registry::CTX;
 
 /// TX hook installed into `net::vsock`.
-pub fn tx_packet(owner: u32, frame: &[u8]) -> bool {
+pub fn tx_packet(owner: net::vsock::VsockOwner, frame: &[u8]) -> bool {
     let mut g = CTX.lock();
-    let ctx = match g.iter_mut().find(|ctx| ctx.device_key.raw() == owner) {
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key.raw() == owner.raw()) {
         Some(c) => c,
         None => return false,
     };
