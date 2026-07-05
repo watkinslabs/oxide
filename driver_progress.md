@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B409-driver-model-setup-policy | VERIFIED | Driver-core authority source audit, drv/pci-boot/virtio hosted tests, and x86_64/aarch64 driver-path proof pass; remaining virtio split stays in later rows. |
 | B410-virtio-transport-policy-boundary | VERIFIED | Shared virtio profile/resource/handoff boundary source-audited; virtio plus child-driver hosted tests and x86_64/aarch64 driver-path proof pass. |
 | B411-virtio-irq-core-bus-split | VERIFIED | Child-declared virtio IRQ callbacks flow through shared `VirtioTransportProfile`; PCI transport owns MSI-X programming/teardown; hosted virtio/pci/child tests and x86_64/aarch64 driver-path proof pass. |
-| B412-probe-failure-devres-proof | CLAIMED | Probe failure unwind/devres proof claimed; source audit, hosted fault tests, and x86_64/aarch64 driver-path proof pending. |
+| B412-probe-failure-devres-proof | VERIFIED | `VirtioProbeDevres` owns virtio-pci failed-probe cleanup/publish transfer; hosted fault-point lifecycle tests plus broad virtio child-driver tests and x86_64/aarch64 driver-path proof pass. |

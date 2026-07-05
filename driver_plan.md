@@ -2,14 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B412-probe-failure-devres-proof` — CLAIMED.
+ACTIVE NOW: `B412-probe-failure-devres-proof` — VERIFIED.
 
 Current active item: `>>> ACTIVE >>> B412-probe-failure-devres-proof`.
 
-Current B412 gate: audit probe failure unwind/devres ownership; add or prove
-step-by-step allocation, mapping, registration, IRQ/MSI, queue setup, and
-publication failure cleanup; then run hosted tests plus x86_64/aarch64 runtime
-proof.
+Current B412 gate: virtio-pci probe failure cleanup now routes through
+`VirtioProbeDevres`; hosted fault-point tests and x86_64/aarch64 driver-path
+proof pass.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -347,7 +346,7 @@ Status legend:
 | VERIFIED | B409-driver-model-setup-policy | Driver core is authoritative for Device/Driver add, bind, unbind, remove, shutdown, sysfs, and devtmpfs ordering; PCI publication uses `drv::try_device_add`, and virtio parent/child bring-up is owned by model `Driver::probe` wrappers. Remaining transport/core cleanup is tracked by the following virtio-specific rows. `cargo test -p drv -p pci-boot -p virtio -- --nocapture --test-threads=1`, x86_64 `/tmp/b409-x86-driver-path.log`, and aarch64 `/tmp/b409-arm-driver-path.log` pass. |
 | VERIFIED | B410-virtio-transport-policy-boundary | Current source has shared virtio policy at the child/core boundary: child drivers export `VirtioTransportProfile`s; shared `virtio` owns child requirements, queue plans, early payload policy, resource readiness, runtime handoff, and probe/remove/shutdown lifecycle helpers; `pci-boot` supplies the concrete PCI session and MMIO/MSI lifetime. `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`, x86_64 `/tmp/b410-x86-driver-path.log`, and aarch64 `/tmp/b410-arm-driver-path.log` pass. |
 | VERIFIED | B411-virtio-irq-core-bus-split | Child drivers declare IRQ callbacks through shared `VirtioTransportProfile`; `pci-boot` only consumes those profiles to bind/program/release MSI-X and register the supplied handler. Shared profile tests prove callback placement, hosted `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-vsock -p drv-virtio-input -p drv-virtio-snd -- --nocapture --test-threads=1` passes, and x86_64 `/tmp/b411-x86-driver-path.log` plus aarch64 `/tmp/b411-arm-driver-path.log` pass. Remaining full virtio bus/core extraction stays in later row. |
-| >>> ACTIVE >>> CLAIMED | B412-probe-failure-devres-proof | Probe failure unwind improved but lacks general devres stack and step-by-step fault injection proof. Source audit, hosted tests, and x86_64/aarch64 runtime proof pending. |
+| >>> ACTIVE >>> VERIFIED | B412-probe-failure-devres-proof | Added `VirtioProbeDevres` as the single virtio-pci probe resource owner for cfg reset, frame release, MSI-X release, PCI command disable, mapping unmap, and successful publish transfer. Added child-probe fault-point lifecycle coverage proving failures release once and never publish. `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`, x86_64 `/tmp/b412-x86-driver-path.log`, and aarch64 `/tmp/b412-arm-driver-path.log` pass. |
 | NOT DONE | TBD | Devtmpfs publication model-owned for hardware-backed nodes; direct devfs users must stay limited to fixed pseudo/non-hardware namespace cases. |
 | NOT DONE | TBD | Driver-owned devnode remove/readd hosted loops cover block, evdev, fbdev, DRM, hwrng; broaden to all subsystem nodes. |
 | NOT DONE | TBD | Repeated bind/unbind/remove/readd behavior not proven across all subsystems. |

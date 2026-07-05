@@ -89,7 +89,7 @@ fn default_probe_lease_is_empty() {
 #[derive(Default)]
 struct ProbeLifecycle {
     published: bool,
-    released: bool,
+    release_count: usize,
 }
 
 struct ProbeSession {
@@ -128,7 +128,7 @@ impl VirtioChildTransportSession for ProbeSession {
     }
 
     fn release_failed_child(&mut self) {
-        self.lifecycle.lock().unwrap().released = true;
+        self.lifecycle.lock().unwrap().release_count += 1;
     }
 
     fn publish(self) {
@@ -147,7 +147,7 @@ fn child_probe_lifecycle_publishes_only_after_success() {
     assert_eq!(result, Ok(()));
     let lifecycle = lifecycle.lock().unwrap();
     assert!(lifecycle.published);
-    assert!(!lifecycle.released);
+    assert_eq!(lifecycle.release_count, 0);
 }
 
 #[test]
@@ -160,7 +160,28 @@ fn child_probe_lifecycle_releases_on_child_error() {
     assert_eq!(result, Err(7));
     let lifecycle = lifecycle.lock().unwrap();
     assert!(!lifecycle.published);
-    assert!(lifecycle.released);
+    assert_eq!(lifecycle.release_count, 1);
+}
+
+#[test]
+fn child_probe_lifecycle_releases_once_at_each_fault_point() {
+    for fail_step in 0..4 {
+        let lifecycle = Arc::new(Mutex::new(ProbeLifecycle::default()));
+        let result = run_child_probe(ProbeSession::new(lifecycle.clone()), |session| {
+            if fail_step == 0 { return Err::<(), usize>(fail_step); }
+            let _ = session.device_key();
+            if fail_step == 1 { return Err::<(), usize>(fail_step); }
+            let _ = session.location();
+            if fail_step == 2 { return Err::<(), usize>(fail_step); }
+            let _ = session.child_resources();
+            Err::<(), usize>(fail_step)
+        });
+
+        assert_eq!(result, Err(fail_step));
+        let lifecycle = lifecycle.lock().unwrap();
+        assert!(!lifecycle.published);
+        assert_eq!(lifecycle.release_count, 1);
+    }
 }
 
 #[test]
