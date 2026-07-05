@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B347-drm-unregister-drops-card-state`.
+Current marker: `>>> ACTIVE >>> B348-drm-master-open-file-state`.
 
 ## Archived Completed B327-B330
 
@@ -440,7 +440,7 @@ Evidence:
 
 ## B347-drm-unregister-drops-card-state
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2400.
 
 Branch: `B347-drm-unregister-drops-card-state`
 
@@ -462,4 +462,31 @@ Evidence:
 | Line cap | PASS: `crtc.rs` 438 lines, `tests.rs` 224, `dumb/tests.rs` 495. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR | PASS: PR #2400 merged and local `main` synced to `origin/main` at `a62a9129`. |
+
+## B348-drm-master-open-file-state
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B348-drm-master-open-file-state`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | DRM master state is per open file description. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `file_token(file)` uses the `File` object address, so duplicate fds sharing the same `Arc<File>` share one open-file-description token. `set_master_owner`, `drop_master_owner`, `is_master`, KMS ioctls, and `DrmCardFileOps::on_release_file` all use that token. Separate opens get distinct tokens; last `File` drop releases master ownership. |
+| Hosted regression | PASS: `drm_master_is_owned_by_open_file_description` now proves a cloned `Arc<File>` can re-SET_MASTER as the same owner, dropping only the clone keeps a separate open blocked with `EBUSY`, and dropping the last owner reference releases master so the separate open can acquire it. |
+| `cargo test -p drm drm_master_is_owned_by_open_file_description -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 61 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` 474 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-arm.log`. |
 | Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
