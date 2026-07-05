@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B465-pl011-serial-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: B466-i8042-keyboard-explicit-shutdown-callback; IN AUDIT.
+
+## B466 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B466-i8042-keyboard-explicit-shutdown-callback | IN AUDIT | Fresh main `5e017b01` after PR #2523 merge; proving i8042 keyboard driver implements explicit shutdown through the model driver path without relying on remove/unbind side effects. |
 
 ## B465 Current
 
