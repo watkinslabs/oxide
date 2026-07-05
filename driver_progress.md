@@ -5,7 +5,8 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B449-device-del-devtmpfs-teardown; VERIFIED pending PR merge.
+Current marker: B450-device-del-registry-drop-after-teardown; VERIFIED pending
+PR merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -764,3 +765,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B449-device-del-devtmpfs-teardown | VERIFIED | Fresh main `8817dfc8` after PR #2506 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` clones `d.devname` and calls `DEVTMPFS_DEL_HOOK` with that owned name, `crates/kernel/kmain/src/kmain/early.rs` wires the hook to `devfs::del_device_node`, and `crates/kernel/devfs/src/lib.rs::del_device_node` maps the name to `/dev/<name>` then unregisters that subtree. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture`, `cargo test -p devfs add_device_node_creates_dev_entries -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B449 changes only docs/metadata and production devtmpfs teardown code is unchanged. |
+
+## B450 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B450-device-del-registry-drop-after-teardown | VERIFIED | Fresh main `4df7512a` after PR #2507 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` calls `unbind(d)`, `SYSFS_REMOVE_HOOK`, and `DEVTMPFS_DEL_HOOK` before entering the `DEVICES.retain(|x| !Arc::ptr_eq(x, d))` block and decrementing `DEV_COUNT`. Hosted `device_del_orders_remove_event_and_devtmpfs_teardown` proves callback order `driver-remove`, `sysfs-remove`, `devtmpfs-del`, then asserts the device is absent from `drv::devices()` after teardown. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture`, `cargo test -p drv device_del_unbinds_bound_driver_once -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B450 changes only docs/metadata and production `device_del` code is unchanged. |
