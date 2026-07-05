@@ -36,6 +36,9 @@ struct sockaddr_nl_ {
 };
 
 static const char *snd_driver = "/sys/bus/virtio/drivers/virtio-snd";
+static const char *pci_nvme_driver = "/sys/bus/pci/drivers/nvme";
+static const char *pci_ahci_driver = "/sys/bus/pci/drivers/ahci";
+static const char *pci_virtio_driver = "/sys/bus/pci/drivers/virtio-pci";
 
 static int has_entry(const char *buf, int n, const char *want) {
     int wl = strlen(want);
@@ -104,6 +107,37 @@ static int list_bound(char names[MAX_DEVS][MAX_NAME]) {
     return n;
 }
 
+static int driver_bound_count(const char *driver, const char *name) {
+    DIR *d = opendir(driver);
+    if (!d) {
+        printf("uevent_probe: FAIL opendir pci driver %s errno=%d\n", name, errno);
+        return -1;
+    }
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (!strcmp(e->d_name, "bind") || !strcmp(e->d_name, "unbind")) continue;
+        n++;
+    }
+    closedir(d);
+    if (n <= 0) {
+        printf("uevent_probe: FAIL pci driver %s bound count=%d\n", name, n);
+        return -1;
+    }
+    return n;
+}
+
+static int prove_pci_model_drivers(void) {
+    int nvme = driver_bound_count(pci_nvme_driver, "nvme");
+    int ahci = driver_bound_count(pci_ahci_driver, "ahci");
+    int virtio = driver_bound_count(pci_virtio_driver, "virtio-pci");
+    if (nvme < 0 || ahci < 0 || virtio < 0) return 1;
+    printf("uevent_probe_pci_drivers: PASS nvme=%d ahci=%d virtio-pci=%d\n",
+           nvme, ahci, virtio);
+    return 0;
+}
+
 static int device_bound(const char *name) {
     char names[MAX_DEVS][MAX_NAME];
     int n = list_bound(names);
@@ -144,6 +178,7 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int s = open_uevent_socket();
     if (s < 0) return 1;
+    if (prove_pci_model_drivers()) return 1;
 
     if (write_token("/sys/class/net/eth0/uevent", "change\n",
                     "uevent_probe_net_trigger")) return 1;
