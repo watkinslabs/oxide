@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B330-virtio-gpu-remove-teardown-order`.
+Current marker: `>>> ACTIVE >>> B331-virtio-gpu-probe-failure-unwind`.
 
 ## B002-single-machine-desktop-proof
 
@@ -192,3 +192,21 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b330-gpu-remove-teardown-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b330-gpu-remove-teardown-arm.log`. |
 | Line cap | PASS: `virtio_child.rs` 368 lines, `device.rs` 365, `post_init/scanout.rs` 278, `drv-virtio-gpu/src/tests.rs` 473. |
+
+## B331-virtio-gpu-probe-failure-unwind
+
+Status: `CLAIMED`.
+
+Branch: `B331-virtio-gpu-probe-failure-unwind`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Virtio-gpu probe-failure unwind removes only failed child scanout. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
