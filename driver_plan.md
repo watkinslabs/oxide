@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B420-virtio-snd-event-control-proof; VERIFIED, commit/PR pending.
+ACTIVE NOW: B421-pci-identity-mismatch-proof; IN AUDIT.
 
-Current active item: Virtio-snd live multi-card proof and broader event/control coverage.
+Current active item: PCI identity mismatch handling must not rebound as the same function.
 
-Next gate after merge: return to fresh `origin/main` before claiming B421
+Next gate after merge: return to fresh `origin/main` before claiming B422
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -38,7 +38,7 @@ Status legend:
 | SOURCE OK |  | Register NVMe, AHCI, and virtio-pci as model drivers. |
 | SOURCE OK |  | Attach PCI drivers through driver core rather than enumeration-local direct bind calls. |
 | SOURCE OK |  | PCI model-device publication is fallible and idempotent for repeated enumeration of matching `(pci, addr)` identity. |
-| NOT DONE | TBD | PCI identity mismatch handling must not rebound as the same function; needs live/multi-bus proof. |
+| ACTIVE | B421-pci-identity-mismatch-proof | PCI identity mismatch handling must not rebound as the same function; needs live/multi-bus proof. |
 | SOURCE OK |  | Model binding rejects already-bound devices. |
 | SOURCE OK |  | Model binding verifies bus/driver matching. |
 | SOURCE OK |  | Model binding calls `Driver::probe`. |
