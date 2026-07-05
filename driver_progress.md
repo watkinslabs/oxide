@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B499-virtio-gpu-placeholder-notify; VERIFIED.
+Current marker: B500-virtio-child-descriptor-exports; VERIFIED.
+
+## B500 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B500-virtio-child-descriptor-exports | VERIFIED | Fresh main `37e7b2ff` after PR #2559 merge. Source audit proves each virtio child driver crate exports its own descriptor/profile surface: GPU re-exports `wire::*` for `DRIVER_ID` and `device::*` for `transport_profile`; Input re-exports `consts::*`; RNG and Vsock re-export `consts::{transport_profile, wanted_features, DRIVER_ID, ...}`; Sound defines `pub const DRIVER_ID` and `pub const fn transport_profile` at crate root; Net and Block expose `modern::DRIVER_ID` and `modern::transport_profile` from public `modern` modules. `pci-boot::virtio_child` consumes only those child exports for GPU/Input/Net/Block/RNG/Vsock/Sound ops adapters. Checks pass: `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with child suites 18/18, 36/36, 36/36, 16/16, 8/8, 8/8, 7/7, shared `virtio` 43/43, and pci-boot compile-only 0 tests; child driver source files remain under 500 lines; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 15s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B499 Current
 
