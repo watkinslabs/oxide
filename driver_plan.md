@@ -2,12 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B343-scanout-backing-bdf-keyed` — VERIFIED, commit/PR merge pending.
+ACTIVE NOW: `B344-drm-setcrtc-pageflip-card-route` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B343-scanout-backing-bdf-keyed`.
+Current active item: `>>> ACTIVE >>> B344-drm-setcrtc-pageflip-card-route`.
 
-Current B343 gate: scanout backing runtime ownership is keyed by virtio child
-key, not PCI BDF; commit/PR merge pending.
+Current B344 gate: audit and fix DRM SETCRTC/PAGE_FLIP hooks so runtime
+scanout calls route by DRM card id to the owning GPU, then prove on x86_64 and
+aarch64.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -274,8 +275,8 @@ Status legend:
 | VERIFIED | B340-drm-sysfs-live-model-devices | `/sys/class/drm` and `/sys/devices/virtual/drm` derive from live DRM model devices; source audit, hosted sysfs DRM regressions, full sysfs crate tests, fast x86_64/aarch64 driver-path proof, line-cap check, and PR #2393 merge pass. |
 | VERIFIED | B341-virtio-gpu-drm-real-parent | Virtio-gpu registers DRM card devices with real virtio child parent; source audit, hosted parent regression, full virtio-gpu crate tests, virtio child identity/session tests, pci-boot compile test, fast x86_64/aarch64 driver-path proof, line-cap check, and PR #2394 merge pass. |
 | VERIFIED | B342-parented-drm-minors-links | Parented DRM minors live under owning device with class and `/sys/dev/char` links; source audit, focused hosted sysfs regressions, fast x86_64/aarch64 driver-path proof, line-cap check, and PR #2395 merge pass. |
-| VERIFIED | B343-scanout-backing-bdf-keyed | Scanout backing runtime state is keyed by virtio child key instead of PCI BDF; source audit, hosted key-vs-BDF regression, full virtio-gpu and DRM tests, fast x86_64/aarch64 driver-path proof, line-cap check, and PR merge pending. |
-| NOT DONE |  | DRM SETCRTC/PAGE_FLIP hooks route by DRM card id to owning GPU. |
+| VERIFIED | B343-scanout-backing-bdf-keyed | Scanout backing runtime state is keyed by virtio child key instead of PCI BDF; source audit, hosted key-vs-BDF regression, full virtio-gpu and DRM tests, fast x86_64/aarch64 driver-path proof, line-cap check, and PR #2396 merge pass. |
+| CLAIMED | B344-drm-setcrtc-pageflip-card-route | DRM SETCRTC/PAGE_FLIP hooks route by DRM card id to owning GPU. |
 | NOT DONE |  | DRM dumb buffers and FB metadata are card-owned. |
 | NOT DONE |  | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister. |
 | NOT DONE |  | DRM unregister drops that card CRTC and dumb-buffer state. |
