@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B468-remove-public-infallible-device-add VERIFIED pending PR merge.
+Current marker: B469-sysfs-bus-driver-bind-unbind; IN AUDIT.
+
+## B469 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B469-sysfs-bus-driver-bind-unbind | IN AUDIT | Fresh main `8a5c54f2` after PR #2526 merge; proving sysfs bus driver `bind`/`unbind` controls call the driver model `bind_addr`/`unbind` path and publish model-derived state. |
 
 ## B468 Current
 
