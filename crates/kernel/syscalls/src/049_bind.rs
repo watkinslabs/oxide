@@ -22,13 +22,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         let (_fam, port, cid) = match read_sockaddr_vm(addr_p) {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };
-        let owner = if cid == net::vsock::VMADDR_CID_ANY {
-            0
-        } else {
-            match net::vsock::driver_owner_for_cid(cid) {
-                Some(owner) => owner,
-                None => return -(Errno::Eaddrnotavail.as_i32() as i64),
-            }
+        let owner = match net::vsock::bind_owner_for_cid(cid) {
+            Ok(owner) => owner,
+            Err(_) => return -(Errno::Eaddrnotavail.as_i32() as i64),
         };
         *vs.kind.lock() = net::vsock_socket::VsockKind::Bound { port, owner };
         return 0;
