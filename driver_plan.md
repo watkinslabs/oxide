@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B426-drv-model-authoritative-proof; VERIFIED pending commit/PR.
+ACTIVE NOW: B427-no-public-auto-bind; VERIFIED pending commit/PR.
 
-Current active item: `drv` model API authority proof verified.
+Current active item: Public `drv::auto_bind` removal and internal auto-attach proof verified.
 
-Next gate after merge: return to fresh `origin/main` before claiming B427
+Next gate after merge: return to fresh `origin/main` before claiming B428
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -32,7 +32,7 @@ Status legend:
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
 | VERIFIED | B425-no-flat-driverentry-probeall | Old flat `DriverEntry` / `probe_all(bdf)` live driver path is absent from current source: `rg` over `crates/`, `userspace/`, and `tools/` finds no live `DriverEntry` or `probe_all` symbols, and `crates/drivers/drv/src/model.rs` is the authoritative registry/bind/probe path. `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | VERIFIED | B426-drv-model-authoritative-proof | `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` are authoritative in `crates/drivers/drv/src/model.rs`: `drv/src/lib.rs` re-exports the model API, production driver/sysfs/devfs/block/sound/DRM call sites route through these functions, no public `auto_bind`/`register_device`/infallible `device_add` bypass remains, and `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
-| SOURCE OK |  | Remove public `drv::auto_bind`; keep automatic attachment internal to `try_device_add` and `register_driver`. |
+| VERIFIED | B427-no-public-auto-bind | Public `drv::auto_bind` is removed; automatic attachment is internal to `try_device_add` and `register_driver`: source search finds no `auto_bind` API, `try_device_add` calls private `attach_device_to_registered_drivers`, `register_driver` calls private `attach_driver_to_existing_devices`, both helpers call private `bind_inner`, focused auto-attach/no-initial-bind-change tests pass, and full `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | SOURCE OK |  | Route explicit binds through sysfs driver `bind` control path. |
 | SOURCE OK |  | PCI enumeration creates `pci` model devices with BAR resources through fallible model publication. |
 | SOURCE OK |  | Register NVMe, AHCI, and virtio-pci as model drivers. |
