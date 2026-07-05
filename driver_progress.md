@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B329-virtio-gpu-remove-child-key`.
+Current marker: `>>> ACTIVE >>> B330-virtio-gpu-remove-teardown-order`.
 
 ## B002-single-machine-desktop-proof
 
@@ -168,3 +168,21 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b329-gpu-remove-key-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b329-gpu-remove-key-arm.log`. |
 | Line cap | PASS: `virtio_child.rs` 368 lines, `drv-virtio-gpu/src/tests.rs` 473 lines, `device.rs` 365 lines. |
+
+## B330-virtio-gpu-remove-teardown-order
+
+Status: `CLAIMED`.
+
+Branch: `B330-virtio-gpu-remove-teardown-order`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
