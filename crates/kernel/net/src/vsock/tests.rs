@@ -4,11 +4,22 @@
 // (tools/boot-smoke-vsock.sh), not here.
 
 use super::*;
+use std::sync::atomic::{AtomicU32 as TestAtomicU32, Ordering as TestOrdering};
 use std::sync::Mutex;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+static TX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
+static TX_B_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 
 fn tx_ok(_owner: u32, _frame: &[u8]) -> bool { true }
+fn tx_a(owner: u32, _frame: &[u8]) -> bool {
+    TX_A_OWNER.store(owner, TestOrdering::Relaxed);
+    true
+}
+fn tx_b(owner: u32, _frame: &[u8]) -> bool {
+    TX_B_OWNER.store(owner, TestOrdering::Relaxed);
+    true
+}
 
 fn cleanup_driver_state() {
     loop {
@@ -88,6 +99,29 @@ fn driver_endpoints_are_owner_keyed() {
         assert!(driver_up_for(42));
         assert_eq!(guest_cid_for(42), 4);
         assert!(driver_uninstall(42));
+    });
+}
+
+#[test]
+fn tx_for_routes_through_matching_owner_endpoint() {
+    with_vsock_state(|| {
+        TX_A_OWNER.store(0, TestOrdering::Relaxed);
+        TX_B_OWNER.store(0, TestOrdering::Relaxed);
+        assert!(driver_install(61, 3, tx_a));
+        assert!(driver_install(62, 4, tx_b));
+        let h = VsockHdr::default();
+
+        assert!(tx_for(62, &h, &[]));
+        assert_eq!(TX_A_OWNER.load(TestOrdering::Relaxed), 0);
+        assert_eq!(TX_B_OWNER.load(TestOrdering::Relaxed), 62);
+
+        assert!(tx_for(61, &h, &[]));
+        assert_eq!(TX_A_OWNER.load(TestOrdering::Relaxed), 61);
+        assert_eq!(TX_B_OWNER.load(TestOrdering::Relaxed), 62);
+        assert!(!tx_for(63, &h, &[]));
+
+        assert!(driver_uninstall(61));
+        assert!(driver_uninstall(62));
     });
 }
 
