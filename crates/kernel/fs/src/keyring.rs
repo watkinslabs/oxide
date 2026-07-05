@@ -218,6 +218,37 @@ pub fn add_key_core(t: TaskIds, key_type: &str, desc: &str, payload: Vec<u8>, de
     serial as i64
 }
 
+/// `KEYCTL_LINK` core: resolve BOTH the child key and the destination keyring
+/// before linking. Special ids (e.g. `KEY_SPEC_USER_KEYRING`) are created on
+/// demand, mirroring Linux `lookup_user_key(..., KEY_LOOKUP_CREATE)`. pam_keyinit
+/// links the user keyring (`-4`) into the session keyring (`-3`); passing the raw
+/// special id `-4` as the child made `link()` return ENOKEY (no key has serial
+/// `-4`), so gdm/PAM logged "Failed to link user keyring into session keyring:
+/// Required key not available". # C: O(N)
+pub fn link_core(t: TaskIds, child: i32, ring: i32) -> i64 {
+    let mut g = STORE.lock();
+    let c = match g.resolve(child, t) { Some(c) => c, None => return -(ENOKEY as i64) };
+    let r = match g.resolve(ring, t)  { Some(r) => r, None => return -(ENOKEY as i64) };
+    match g.link(r, c) { Ok(()) => 0, Err(e) => -(e as i64) }
+}
+
+/// `KEYCTL_UNLINK` core: resolve child + ring (same as [`link_core`]), then drop
+/// the child from the ring's member list. ENOKEY if the child was not a member.
+/// # C: O(members)
+pub fn unlink_core(t: TaskIds, child: i32, ring: i32) -> i64 {
+    let mut g = STORE.lock();
+    let c = match g.resolve(child, t) { Some(c) => c, None => return -(ENOKEY as i64) };
+    let r = match g.resolve(ring, t)  { Some(r) => r, None => return -(ENOKEY as i64) };
+    match g.keys.get_mut(&r) {
+        Some(k) if k.key_type == "keyring" => {
+            let before = k.members.len();
+            k.members.retain(|&m| m != c);
+            if k.members.len() == before { -(ENOKEY as i64) } else { 0 }
+        }
+        _ => -(ENOKEY as i64),
+    }
+}
+
 /// Snapshot a keyring's member serials (Linux `KEYCTL_READ` on a keyring).
 /// `None` if the serial isn't a keyring. # C: O(members)
 pub fn members_of(serial: i32) -> Option<Vec<i32>> {
@@ -298,22 +329,11 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         }
         KEYCTL_LINK => {
             let (child, ring) = (args.a1 as i32, args.a2 as i32);
-            let mut g = STORE.lock();
-            let r = match g.resolve(ring, t) { Some(r) => r, None => return -(ENOKEY as i64) };
-            match g.link(r, child) { Ok(()) => 0, Err(e) => -(e as i64) }
+            link_core(t, child, ring)
         }
         KEYCTL_UNLINK => {
             let (child, ring) = (args.a1 as i32, args.a2 as i32);
-            let mut g = STORE.lock();
-            let r = match g.resolve(ring, t) { Some(r) => r, None => return -(ENOKEY as i64) };
-            match g.keys.get_mut(&r) {
-                Some(k) if k.key_type == "keyring" => {
-                    let before = k.members.len();
-                    k.members.retain(|&m| m != child);
-                    if k.members.len() == before { -(ENOKEY as i64) } else { 0 }
-                }
-                _ => -(ENOKEY as i64),
-            }
+            unlink_core(t, child, ring)
         }
         KEYCTL_REVOKE => {
             let mut g = STORE.lock();
