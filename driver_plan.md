@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B396-sound-ops-route-by-owner` — VERIFIED; COMMIT/PR PENDING.
+ACTIVE NOW: `B397-sound-unregister-rejects-non-owners` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B396-sound-ops-route-by-owner`.
+Current active item: `>>> ACTIVE >>> B397-sound-unregister-rejects-non-owners`.
 
-Current B396 gate: source audit, hosted owner-routing regression, full sound
-tests, and x86_64/aarch64 runtime proof pass; commit/PR/merge/main-sync remains.
+Current B397 gate: prove or fix sound unregister so non-owners cannot remove
+another card's nodes, ops, or runtime state, with hosted tests and
+x86_64/aarch64 runtime proof before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -327,9 +328,9 @@ Status legend:
 | VERIFIED | B393-virtio-snd-install-remove-keyed | Virtio-snd install/remove keyed to owning child key: source audit proves pci-boot passes `session.device_key()`, `SndInstall` stores `device_key`, `CTX` records are keyed, duplicate install rejects exact key, `uninstall` clears sound card/ops by `sound_owner(device_key)` and removes context by exact key; hosted keyed-removal regression, full drv-virtio-snd tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2446 merge, and local main sync to `origin/main` at `6f09ae22` pass. |
 | VERIFIED | B394-sound-card-owner-keyed-numbers | Sound card layer allocates owner-keyed ALSA card numbers: `SoundCard` stores `owner` and `card`, `reserve_card(owner)` is idempotent per owner and allocates first free card for new owners, `card_number(owner)` selects by owner, and `unregister_card(owner)` removes only that owner; focused owner/card regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2447 merge, and local main sync to `origin/main` at `db69465f` pass. |
 | VERIFIED | B395-sound-card-per-card-node-publication | Sound card layer publishes per-card ALSA/OSS nodes: `publish_card_nodes(owner, card, ...)` emits `snd/controlC<N>`, direction-gated `snd/pcmC<N>D0[p|c]`, card-scaled OSS nodes, and card-0 legacy aliases; `register_card(owner)` stores published node handles and `unregister_card(owner)` deletes only those handles; focused per-card node regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2448 merge, and local main sync to `origin/main` at `a76db156` pass. |
-| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B396-sound-ops-route-by-owner | Sound ops route by owner: node dispatch carries `SndData.owner`, `ops_for(owner)` selects exact owner with live card reservation, PCM/capture/control/OSS paths pass the explicit owner through state lookup and backend callbacks, and focused owner-routing regression, full sound tests, x86_64/aarch64 driver-path proof pass. |
+| VERIFIED | B396-sound-ops-route-by-owner | Sound ops route by owner: node dispatch carries `SndData.owner`, `ops_for(owner)` selects exact owner with live card reservation, PCM/capture/control/OSS paths pass the explicit owner through state lookup and backend callbacks, and focused owner-routing regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2449 merge, and local main sync to `origin/main` at `cac90846` pass. |
 | NOT DONE | TBD | Direct ALSA PCM `PCM_INFO` on PCM nodes must report the node card number instead of hard-coded/default card metadata. |
-| NOT DONE |  | Sound unregister rejects non-owners. |
+| >>> ACTIVE >>> CLAIMED | B397-sound-unregister-rejects-non-owners | Sound unregister rejects non-owners. |
 | NOT DONE |  | Virtio-snd raw EVENTQ accounting keyed by transport owner. |
 | NOT DONE | TBD | Virtio-snd multi-card bind/unbind/rebind needs live QEMU proof. |
 | NOT DONE |  | Virtio MSI-X handler ownership is child-declared, not transport PCI-ID special-case dispatch. |
