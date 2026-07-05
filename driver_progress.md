@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B376-virtio-net-rx-stats-per-netdev`.
+Current marker: `>>> ACTIVE >>> B377-virtio-net-ipv4-arp-runtime-owned`.
 
 ## Archived Completed B327-B330
 
@@ -455,26 +455,11 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B373-virtio-net-netdev-owning-key | VERIFIED | Published NetDev stores owning child key; full virtio-net tests, arch proof, PR #2426, main sync `b03912d3`. |
 | B374-virtio-net-iface-rx-keyed-tables | VERIFIED | Registered iface and RX runtime tables are child-key owned; full virtio-net tests, arch proof, PR #2427, main sync `df4907d0`. |
 | B375-virtio-net-ethn-visible-names | VERIFIED | Visible `ethN` names are child-runtime owned; full virtio-net tests, arch proof, PR #2428, main sync `66cf1bff`. |
-
-## B375-virtio-net-ethn-visible-names
-
-Status: `VERIFIED`; merged by PR #2428.
-
-Branch: `B375-virtio-net-ethn-visible-names`
-
-Evidence: `allocate_net_name` returns the first free `ethN`, `ensure_net_runtime`
-stores that name in the runtime for the child `DeviceKey`, and
-`VirtioNetDev::name()` exposes the runtime-owned string. The focused
-`net_runtime_names_are_unique_and_reusable` regression proves `eth0`/`eth1`
-allocation and reuse after removal.
-
-Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
-PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
-PASS, and `make smoke-driver-path-arm` PASS.
+| B376-virtio-net-rx-stats-per-netdev | VERIFIED | RX stats are child-runtime owned; full virtio-net tests, arch proof, PR #2429, main sync `b3643ee6`. |
 
 ## B376-virtio-net-rx-stats-per-netdev
 
-Status: `VERIFIED - PR READY`.
+Status: `VERIFIED`; merged by PR #2429.
 
 Branch: `B376-virtio-net-rx-stats-per-netdev`
 
@@ -487,3 +472,11 @@ runtime RX counters.
 Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
 PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
 PASS, and `make smoke-driver-path-arm` PASS.
+
+## B377-virtio-net-ipv4-arp-runtime-owned
+
+Status: `IN AUDIT`.
+
+Branch: `B377-virtio-net-ipv4-arp-runtime-owned`
+
+Evidence: audit pending for per-runtime IPv4 ARP cache ownership.
