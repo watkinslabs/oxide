@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B349-drm-page-flip-file-events`.
+Current marker: `>>> ACTIVE >>> B350-drm-magic-open-file-auth`.
 
 ## Archived Completed B327-B330
 
@@ -392,12 +392,6 @@ Status: `VERIFIED, PR #2398 merged`.
 
 Branch: `B345-drm-dumb-fb-card-owned`
 
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | DRM dumb buffers and FB metadata are card-owned. |
-
 Evidence:
 
 | Check | Result |
@@ -417,12 +411,6 @@ Evidence:
 Status: `VERIFIED`; merged by PR #2399.
 
 Branch: `B346-drm-fb-scanout-resource-lifetime`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister. |
 
 Evidence:
 
@@ -461,7 +449,7 @@ Evidence:
 
 ## B348-drm-master-open-file-state
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2401.
 
 Branch: `B348-drm-master-open-file-state`
 
@@ -482,7 +470,7 @@ Evidence:
 
 ## B349-drm-page-flip-file-events
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2402.
 
 Branch: `B349-drm-page-flip-file-events`
 
@@ -497,3 +485,10 @@ Evidence:
 | Line cap | PASS: `node/publication.rs` 255 lines, `node/tests.rs` 474, `crtc.rs` 438. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/oxide-driver-path-x86-aZmQuJ.log`. |
 | `make smoke-driver-path-arm` / pre-push boot smoke | PASS: driver-path ARM passed; pre-push boot smoke reached `oxide login:` on x86_64 and aarch64. Driver-path ARM log: `/tmp/oxide-driver-path-arm-hMbp8M.log`. |
+| PR merge + main sync | PASS: PR #2402 merged; local `main` equals `origin/main` at `3287909f`. |
+
+## B350-drm-magic-open-file-auth
+
+Status: `CLAIMED, audit starting`.
+
+Branch: `B350-drm-magic-open-file-auth`
