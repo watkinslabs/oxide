@@ -89,3 +89,35 @@ fn fork_inherits_session_keyring() {
     inherit_session(parent.tid, child.tid);
     assert_eq!(get_keyring_id(child, KEY_SPEC_SESSION_KEYRING, true), ps as i64);
 }
+
+// THE 1.1 fix: KEYCTL_LINK must resolve the CHILD special id, not just the ring.
+// pam_keyinit does keyctl(LINK, KEY_SPEC_USER_KEYRING, KEY_SPEC_SESSION_KEYRING);
+// passing the raw special id (-4) as the child made link() ENOKEY (gdm logged
+// "Failed to link user keyring into session keyring: Required key not available").
+#[test]
+fn link_resolves_special_child_into_session() {
+    let t = ids(1009, 1009);
+    let sess = get_keyring_id(t, KEY_SPEC_SESSION_KEYRING, true);
+    let user = get_keyring_id(t, KEY_SPEC_USER_KEYRING, true);
+    // The pam_keyinit call, verbatim by special id — must succeed (0), not ENOKEY.
+    assert_eq!(link_core(t, KEY_SPEC_USER_KEYRING, KEY_SPEC_SESSION_KEYRING), 0,
+        "link(user→session) by special id resolves both ends");
+    let members = members_of(sess as i32).expect("session is a keyring");
+    assert!(members.contains(&(user as i32)),
+        "the resolved user keyring serial is now a session member: {members:?}");
+}
+
+// UNLINK likewise resolves the child special id and removes it.
+#[test]
+fn unlink_resolves_special_child() {
+    let t = ids(1010, 1010);
+    let sess = get_keyring_id(t, KEY_SPEC_SESSION_KEYRING, true);
+    let user = get_keyring_id(t, KEY_SPEC_USER_KEYRING, true);
+    assert_eq!(link_core(t, KEY_SPEC_USER_KEYRING, KEY_SPEC_SESSION_KEYRING), 0);
+    assert_eq!(unlink_core(t, KEY_SPEC_USER_KEYRING, KEY_SPEC_SESSION_KEYRING), 0,
+        "unlink by special id resolves + removes the member");
+    let members = members_of(sess as i32).expect("session is a keyring");
+    assert!(!members.contains(&(user as i32)), "user keyring unlinked: {members:?}");
+    // Unlinking again is ENOKEY (no longer a member).
+    assert_eq!(unlink_core(t, KEY_SPEC_USER_KEYRING, KEY_SPEC_SESSION_KEYRING), -(ENOKEY as i64));
+}
