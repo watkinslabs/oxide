@@ -19,5 +19,5 @@ pub use device::*;
 #[cfg(test)]
 mod tests;
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod post_init;
