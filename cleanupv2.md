@@ -32,7 +32,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 | 3.1 | `systemd-initctl` fifo `read()` EIO | 3 | DONE | B502-fifo-open-impl | #2562 |
 | 3.2 | Persistent journal EBUSY (mmap/flock) | 3 | TODO (mmap/flock race; needs boot capture) | — | — |
 | 3.3 | `/proc/sys` writable sysctl leaves (core_pattern honored) | 3 | DONE | B512-sysctl-leaves | #2565 |
-| 3.4 | `/dev/null` ENXIO (intermittent race) + `/dev/fuse` (needs full FUSE subsystem) | 3 | TODO (large/race) | — | — |
+| 3.4 | `/dev/fuse` (real FUSE subsystem) DONE; `/dev/null` ENXIO = separate intermittent race | 3 | PARTIAL — FUSE done (B518 #2581); /dev/null race remains (needs capture) | B518-fuse | #2581 |
 | 3.5 | userdb short-read message framing | 3 | TODO (SEQPACKET exists; subtle framing bug — needs capture) | — | — |
 | 3.6 | update-utmp-runlevel D-Bus (cascade of 1.1) | 3 | BLOCKED-ON-1.1 (resolves when 1.1 lands) | — | — |
 | 3.7 | PSI `/proc/pressure/*` (cpu live; mem/io honest-zero hook-ready) | 3 | DONE | B517-psi-pressure | #2576 |
