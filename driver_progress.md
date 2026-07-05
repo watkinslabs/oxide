@@ -5,7 +5,20 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B422-bind-unbind-uevent-stability; VERIFIED pending commit/PR.
+Current marker: B424-bound-unbound-uevent-state-proof; IN AUDIT.
+
+## B424-bound-unbound-uevent-state-proof
+
+Status: `IN AUDIT`; claim commit pending.
+
+Branch: `B424-bound-unbound-uevent-state-proof`
+
+Target rows:
+
+| Status | Item |
+|---|---|
+| ACTIVE | Bound change uevents include `DRIVER=<name>`. |
+| ACTIVE | Unbound change uevents do not carry stale driver ownership. |
 
 ## B422-bind-unbind-uevent-stability
 
