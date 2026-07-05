@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B398-virtio-snd-eventq-owner-accounting`.
+Current marker: `>>> ACTIVE >>> B398-virtio-snd-eventq-owner-accounting` — verified; commit/PR pending.
 
 ## Archived Completed B327-B330
 
@@ -491,4 +491,4 @@ recent-completed table above; main was synced after each merge through
 | B395-sound-card-per-card-node-publication | VERIFIED | Per-card ALSA/OSS publication proven by source audit, hosted sound tests, arch proof, PR #2448, main sync `a76db156`. |
 | B396-sound-ops-route-by-owner | VERIFIED | Owner-routed ops dispatch proven by focused/full sound tests, arch proof, PR #2449, main sync `cac90846`. |
 | B397-sound-unregister-rejects-non-owners | VERIFIED | Non-owner unregister rejection proven by focused/serial full sound tests, arch proof, PR #2450, main sync `e5fe3f55`. |
-| B398-virtio-snd-eventq-owner-accounting | ACTIVE | Claimed from fresh main; prove EVENTQ accounting is transport-owner keyed. |
+| B398-virtio-snd-eventq-owner-accounting | ACTIVE | Source audit, focused EVENTQ drain regression, full drv-virtio-snd tests, and x86_64/aarch64 driver-path proof pass. |

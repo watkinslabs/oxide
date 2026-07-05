@@ -12,6 +12,23 @@ use super::*;
         TEST_EVENT_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn put_u16(buf: &mut [u8], off: usize, value: u16) {
+        buf[off..off + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn get_u16(buf: &[u8], off: usize) -> u16 {
+        u16::from_le_bytes(buf[off..off + 2].try_into().unwrap())
+    }
+
+    fn put_u32(buf: &mut [u8], off: usize, value: u32) {
+        buf[off..off + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_event(buf: &mut [u8], desc_id: usize, value: u64) {
+        let off = desc_id * EVENT_SIZE;
+        buf[off..off + EVENT_SIZE].copy_from_slice(&value.to_le_bytes());
+    }
+
     fn queue(index: u16) -> virtio::VirtQueueResource {
         virtio::VirtQueueResource {
             index,
@@ -111,6 +128,59 @@ use super::*;
         assert_eq!(LAST_EVENT.load(Ordering::Relaxed), 0xbbbb_0000_0000_0003);
         assert_eq!(eventq_state_for(key(0x0010_0000)), Some((8, 0, 0)));
         assert_eq!(eventq_state_for(key(0x0020_0000)), Some((8, 0, 0)));
+        reset_test_state();
+    }
+
+    #[test]
+    fn eventq_drain_accounting_is_keyed_by_snd_context() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        const USED_BYTES: usize = 4 + 8 * 8;
+        const AVAIL_BYTES: usize = 4 + 8 * 2;
+        let mut used0 = [0u8; USED_BYTES];
+        let mut avail0 = [0u8; AVAIL_BYTES];
+        let mut events0 = [0u8; 8 * EVENT_SIZE];
+        let mut notify0 = 0u16;
+        let mut used1 = [0u8; USED_BYTES];
+        let mut avail1 = [0u8; AVAIL_BYTES];
+        let mut events1 = [0u8; 8 * EVENT_SIZE];
+        let mut notify1 = 0u16;
+        put_u16(&mut used1, 2, 2);
+        put_u32(&mut used1, 4, 3);
+        put_u32(&mut used1, 12, 4);
+        put_event(&mut events1, 3, 0xcccc_0000_0000_0003);
+        put_event(&mut events1, 4, 0xcccc_0000_0000_0004);
+
+        let mut c0 = ctx(key(0x0010_0000));
+        let mut q0 = queue(1);
+        q0.device_pa = used0.as_mut_ptr() as u64;
+        q0.driver_pa = avail0.as_mut_ptr() as u64;
+        q0.notify_va = (&mut notify0 as *mut u16) as u64;
+        c0.eventq = Some(q0);
+        c0.event_buf_pa = events0.as_mut_ptr() as u64;
+        let mut c1 = ctx(key(0x0020_0000));
+        let mut q1 = queue(1);
+        q1.device_pa = used1.as_mut_ptr() as u64;
+        q1.driver_pa = avail1.as_mut_ptr() as u64;
+        q1.notify_va = (&mut notify1 as *mut u16) as u64;
+        c1.eventq = Some(q1);
+        c1.event_buf_pa = events1.as_mut_ptr() as u64;
+        CTX.lock().extend([c0, c1]);
+
+        event_softirq();
+
+        assert_eq!(event_stats_for(key(0x0010_0000)), Some((0, 0)));
+        assert_eq!(event_stats_for(key(0x0020_0000)), Some((2, 0xcccc_0000_0000_0004)));
+        assert_eq!(eventq_state_for(key(0x0010_0000)), Some((8, 0, 0)));
+        assert_eq!(eventq_state_for(key(0x0020_0000)), Some((8, 2, 2)));
+        assert_eq!(get_u16(&avail0, 2), 0);
+        assert_eq!(get_u16(&avail1, 2), 2);
+        assert_eq!(get_u16(&avail1, 4), 3);
+        assert_eq!(get_u16(&avail1, 6), 4);
+        assert_eq!(notify0, 0);
+        assert_eq!(notify1, 1);
+        assert_eq!(DRAINED_EVENTS.load(Ordering::Relaxed), 2);
+        assert_eq!(LAST_EVENT.load(Ordering::Relaxed), 0xcccc_0000_0000_0004);
         reset_test_state();
     }
 
