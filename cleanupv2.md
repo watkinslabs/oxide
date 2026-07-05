@@ -25,7 +25,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 |------|---------|------|--------|--------|-----|
 | 1.1 | PAM/keyring EPERM — `user@979.service` step PAM | 1 | INVESTIGATED (blocked: needs boot capture) | B423-pam-session-keyring-eperm | #2477 |
 | 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | TODO | — | — |
-| 2.1 | `PR_SET_MM_ARG_START/END` prctl setters | 2 | TODO | — | — |
+| 2.1 | `PR_SET_MM` (all 15 subcmds) + fix reversed argv/env stack | 2 | DONE | B430-prctl-set-mm | #2498 |
 | 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO | — | — |
 | 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | TODO | — | — |
 | 2.4 | Module autoload alias no-op for built-ins | 2 | TODO | — | — |
