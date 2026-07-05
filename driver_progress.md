@@ -423,8 +423,8 @@ Evidence: source audit found `GET_CAP` trusted `DrmDriver::cap` directly, allowi
 
 ## B355-drm-raw-writes-rejected
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B355-drm-raw-writes-rejected`
 
-Evidence: source audit started for DRM card/render raw write rejection; no completion claim yet.
+Evidence: source audit found `DrmCardFileOps::write` and private `DrmSinkFileOps::write` both reject raw writes with `EINVAL`; no code change required. Existing `drm_nodes_do_not_acknowledge_raw_writes` covers card and render test inodes. Focused raw-write regression, full `cargo test -p drm` with 65 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass.
