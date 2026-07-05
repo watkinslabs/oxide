@@ -457,8 +457,16 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B375-virtio-net-ethn-visible-names
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B375-virtio-net-ethn-visible-names`
 
-Evidence: source audit of visible `ethN` name allocation is in progress.
+Evidence: `allocate_net_name` returns the first free `ethN`, `ensure_net_runtime`
+stores that name in the runtime for the child `DeviceKey`, and
+`VirtioNetDev::name()` exposes the runtime-owned string. The focused
+`net_runtime_names_are_unique_and_reusable` regression proves `eth0`/`eth1`
+allocation and reuse after removal.
+
+Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
+PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
+PASS, and `make smoke-driver-path-arm` PASS.
