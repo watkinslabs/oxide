@@ -250,3 +250,25 @@ fn fbio_usercopy_rejects_overflowing_user_ranges() {
         Some(efault)
     );
 }
+
+#[test]
+fn fbio_getcmap_rejects_invalid_transparency_pointer() {
+    let fb0_inode = devfs::make_fb_inode(0);
+    let efault = -(syscall::errno::Errno::Efault.as_i32() as i64);
+    let mut red = [0u16; 1];
+    let mut green = [0u16; 1];
+    let mut blue = [0u16; 1];
+    let cm = FbCmap {
+        start: 0,
+        len: 1,
+        red: red.as_mut_ptr() as u64,
+        green: green.as_mut_ptr() as u64,
+        blue: blue.as_mut_ptr() as u64,
+        transp: hal::USER_VA_END - 1,
+    };
+
+    assert_eq!(
+        devfs::handle_fbdev_ioctl(&fb0_inode, FBIOGETCMAP, (&cm as *const FbCmap) as u64),
+        Some(efault)
+    );
+}
