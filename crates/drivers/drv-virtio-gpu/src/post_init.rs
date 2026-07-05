@@ -87,6 +87,8 @@ struct ScanoutCtx {
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
+#[cfg(test)]
+static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
 const NO_CONSOLE_OWNER_KEY: u32 = u32::MAX;
 static CONSOLE_OWNER_KEY: AtomicU32 = AtomicU32::new(NO_CONSOLE_OWNER_KEY);
 
