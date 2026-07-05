@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B487-virtio-child-declarations-split; IN AUDIT.
+ACTIVE NOW: B487-virtio-child-declarations-split; VERIFIED pending PR merge.
 
 Current active item: Virtio child model-driver declarations are split into `pci-boot::virtio_child`.
 
@@ -121,7 +121,7 @@ Status legend:
 | VERIFIED |  | Transitional virtio IDs are not mixed into modern cap-based path. |
 | VERIFIED | B485-virtio-child-fallible-publication | Virtio-pci creates child `virtio` devices through fallible model publication: `VirtioPciDrv::probe` maps modern PCI identity to `VirtioChildModelIdentity`, publishes the child through `drv::try_device_add(...)?` with parent `pci`, driver-core invokes child `VirtioChildDriver::probe`, and `run_child_probe` publishes transport state only after child success while releasing failed probe resources on error/drop. Hosted lifecycle tests, full virtio/pci-boot gate, and x86_64/aarch64 smokes pass. |
 | VERIFIED | B486-virtio-child-drivers-model-bind | Child virtio drivers bind through the model: source audit proves `pci-boot::register_pci_model_drivers` reaches `virtio_drv::register_model_drivers`, which registers the virtio-pci model driver and all child wrappers through `drv::register_driver`; `VirtioChildDriver<O>` supplies the bus/name/matches/probe bridge, routes probe through `VirtioChildSession::begin` and `virtio::run_child_probe`, and search finds no direct child `drv::bind`/`bind_addr` bypass. Hosted tests plus x86_64/aarch64 fast smokes pass. |
-| ACTIVE | B487-virtio-child-declarations-split | Virtio child model-driver declarations are split into `pci-boot::virtio_child`. |
+| VERIFIED | B487-virtio-child-declarations-split | Virtio child model-driver declarations are split into `pci-boot::virtio_child`: source audit proves `virtio_child.rs` owns `VirtioChildDriver<O>`, every child `Virtio*Ops` adapter, all static child driver declarations, and the child `drv::register_driver` list; `virtio_drv::driver` owns only `VIRTIO_PCI_DRV`, publishes child model devices, and delegates child registration to `virtio_child::register_model_drivers`. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
 | SOURCE OK |  | PCI transport file no longer owns every child `drv::Driver` declaration. |
 | SOURCE OK |  | Child probes do not import transport helper callbacks directly. |
 | SOURCE OK |  | Virtio child binding uses one bus-facing `VirtioChildDriver` wrapper. |
