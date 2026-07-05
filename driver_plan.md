@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B485-virtio-child-fallible-publication; VERIFIED pending PR merge.
+ACTIVE NOW: B486-virtio-child-drivers-model-bind; IN AUDIT.
 
-Current active item: Virtio-pci creates child `virtio` devices through fallible model publication is verified on branch.
+Current active item: Child virtio drivers bind through the model.
 
-Next gate after merge: return to fresh `origin/main` before claiming B486 using
+Next gate after merge: return to fresh `origin/main` before claiming B487 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -120,7 +120,7 @@ Status legend:
 | VERIFIED |  | Virtio-pci accepts modern virtio PCI IDs only. |
 | VERIFIED |  | Transitional virtio IDs are not mixed into modern cap-based path. |
 | VERIFIED | B485-virtio-child-fallible-publication | Virtio-pci creates child `virtio` devices through fallible model publication: `VirtioPciDrv::probe` maps modern PCI identity to `VirtioChildModelIdentity`, publishes the child through `drv::try_device_add(...)?` with parent `pci`, driver-core invokes child `VirtioChildDriver::probe`, and `run_child_probe` publishes transport state only after child success while releasing failed probe resources on error/drop. Hosted lifecycle tests, full virtio/pci-boot gate, and x86_64/aarch64 smokes pass. |
-| SOURCE OK |  | Child virtio drivers bind through the model. |
+| ACTIVE | B486-virtio-child-drivers-model-bind | Child virtio drivers bind through the model. |
 | SOURCE OK |  | Virtio child model-driver declarations are split into `pci-boot::virtio_child`. |
 | SOURCE OK |  | PCI transport file no longer owns every child `drv::Driver` declaration. |
 | SOURCE OK |  | Child probes do not import transport helper callbacks directly. |
