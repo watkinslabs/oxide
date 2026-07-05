@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B434-model-binding-bus-driver-match VERIFIED pending PR merge.
+ACTIVE NOW: none; B435-model-binding-calls-probe VERIFIED pending PR merge.
 
-Current active item: none; next claim starts after B434 merge and fresh main sync.
+Current active item: none; next claim starts after B435 merge and fresh main sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B435
+Next gate after merge: return to fresh `origin/main` before claiming B436
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -41,7 +41,7 @@ Status legend:
 | VERIFIED | B421-pci-identity-mismatch-proof | PCI identity mismatch handling does not rebound a mismatched same-address function: hosted regression covers duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class, proves the original device remains bound, registry identity is not replaced, and the mismatched driver never probes. `cargo test -p drv pci_identity_mismatch_does_not_replace_or_rebind -- --nocapture`, full serial `cargo test -p drv -- --nocapture --test-threads=1`, and fast x86_64/aarch64 driver-path smokes pass with logs `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`. |
 | VERIFIED | B433-model-binding-rejects-bound-devices | Model binding rejects already-bound devices: `bind_inner` returns `drv::Error::AlreadyBound` before driver lookup, match, or probe when `dev.bound()` is already set; automatic attach loops skip bound devices; sysfs maps `AlreadyBound` to `EBUSY`; focused model/sysfs tests and full driver-model tests pass, with x86_64/aarch64 runtime inherited from unchanged merged fast driver-path smokes. |
 | VERIFIED | B434-model-binding-bus-driver-match | Model binding verifies bus/driver matching: `match_driver`, `find_driver_on_bus`, and `driver_matches_device` require bus equality before matching/override/bind; `bind_inner` rejects same-bus non-matching devices with `NoMatch`; hosted regressions cover bus-scoped driver names, wrong-bus bind rejection, driver override bus scoping, and same-bus ID mismatch without binding; pre-push boot smoke passed on x86_64 and aarch64. |
-| SOURCE OK |  | Model binding calls `Driver::probe`. |
+| VERIFIED | B435-model-binding-calls-probe | Model binding calls `Driver::probe`: `bind_inner` invokes `driver.probe(dev)?` after already-bound, bus, and match validation and before storing `dev.driver`; hosted probe counters prove auto-attach, explicit bind retry, failed-probe retry, and add-event ordering paths all execute the probe hook. |
 | SOURCE OK |  | Model binding records binding only after successful probe. |
 | SOURCE OK |  | Probe failure leaves device unbound and retriable. |
 | SOURCE OK |  | Driver registration attaches newly registered driver to existing unbound matching devices. |
