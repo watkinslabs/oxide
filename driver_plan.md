@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B410-virtio-transport-policy-boundary` — CLAIMED.
+ACTIVE NOW: `B410-virtio-transport-policy-boundary` — VERIFIED.
 
 Current active item: `>>> ACTIVE >>> B410-virtio-transport-policy-boundary`.
 
 Current B410 gate: prove or improve the virtio common transport and child
 policy boundary so policy is not concentrated in `pci-boot` transport/session
-code. Source audit, hosted tests, and x86_64/aarch64 runtime proof pending.
+code. Source audit, hosted tests, and x86_64/aarch64 runtime proof pass.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -344,7 +344,7 @@ Status legend:
 | VERIFIED | B407-serial-input-remove-rebind-state | Source audit shows 8250 remove clears RX enable, masks/free vector, resets IRQ pin/vector and BASE/PRESENT; PL011 remove disables RX/INTID, frees handler, clears BASE/PRESENT; i8042 bringdown disables scan/controller IRQ, masks/free vector, resets IRQ pin/vector and PRESENT. `cargo test -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -p drv-ps2-keyboard -p drv-virtio-input -p serialtty -p tty -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b407-x86-driver-path.log`, and aarch64 `/tmp/b407-arm-driver-path.log` pass. |
 | VERIFIED | B408-timer-registry-owned-ids | Timer registry returns opaque non-zero `TimerId`s from `register_periodic` and unregisters by exact owned ID; virtio-net stores its ARP GC timer ID and unregisters on remove. Added hosted timer ownership regressions. `cargo test -p timer -p drv-virtio-net -p net -p sched -- --nocapture --test-threads=1`, x86_64 `/tmp/b408-x86-driver-path.log`, and aarch64 `/tmp/b408-arm-driver-path.log` pass. |
 | VERIFIED | B409-driver-model-setup-policy | Driver core is authoritative for Device/Driver add, bind, unbind, remove, shutdown, sysfs, and devtmpfs ordering; PCI publication uses `drv::try_device_add`, and virtio parent/child bring-up is owned by model `Driver::probe` wrappers. Remaining transport/core cleanup is tracked by the following virtio-specific rows. `cargo test -p drv -p pci-boot -p virtio -- --nocapture --test-threads=1`, x86_64 `/tmp/b409-x86-driver-path.log`, and aarch64 `/tmp/b409-arm-driver-path.log` pass. |
-| >>> ACTIVE >>> CLAIMED | B410-virtio-transport-policy-boundary | Virtio common transport and child policy still too concentrated in `pci-boot` transport/session boundary. Source audit, hosted tests, and x86_64/aarch64 runtime proof pending. |
+| >>> ACTIVE >>> VERIFIED | B410-virtio-transport-policy-boundary | Current source has shared virtio policy at the child/core boundary: child drivers export `VirtioTransportProfile`s; shared `virtio` owns child requirements, queue plans, early payload policy, resource readiness, runtime handoff, and probe/remove/shutdown lifecycle helpers; `pci-boot` supplies the concrete PCI session and MMIO/MSI lifetime. `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`, x86_64 `/tmp/b410-x86-driver-path.log`, and aarch64 `/tmp/b410-arm-driver-path.log` pass. |
 | NOT DONE | TBD | Virtio IRQ callback ownership improved, but true virtio-core/bus split remains incomplete. |
 | NOT DONE | TBD | Probe failure unwind improved but lacks general devres stack and step-by-step fault injection proof. |
 | NOT DONE | TBD | Devtmpfs publication model-owned for hardware-backed nodes; direct devfs users must stay limited to fixed pseudo/non-hardware namespace cases. |
