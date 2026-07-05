@@ -2,13 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B333-virtio-gpu-device-state-key` — CLAIMED.
+ACTIVE NOW: `B333-virtio-gpu-device-state-key` — VERIFIED; commit/PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B333-virtio-gpu-device-state-key`.
+Current active item: `>>> ACTIVE >>> B333-virtio-gpu-device-state-key` (verified; merge pending).
 
-Current B333 gate: prove or fix virtio-gpu installed device state so lookup,
-install, duplicate rejection, remove, and shutdown ownership are keyed by
-`VirtioChildDeviceKey`, not BDF.
+Current B333 gate: DONE. Source audit plus hosted key-vs-BDF regressions and
+fast x86_64/aarch64 driver-path smokes prove installed virtio-gpu device state
+is keyed by `VirtioChildDeviceKey`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -264,7 +264,7 @@ Status legend:
 | VERIFIED | B330-virtio-gpu-remove-teardown-order | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release; source order is `uninstall(device_key)` before `uninstall_scanout(device_key)`, with hosted GPU tests and fast x86_64/aarch64 driver-path proof passing. |
 | VERIFIED | B331-virtio-gpu-probe-failure-unwind | Virtio-gpu probe-failure unwind removes only failed child scanout; hosted post-init regression now runs, full GPU crate tests pass, and fast x86_64/aarch64 driver-path proof passes. |
 | VERIFIED | B332-virtio-gpu-hot-remove-cleanup | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup; hosted hot-remove regressions, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
-| CLAIMED | B333-virtio-gpu-device-state-key | Virtio-gpu installed device state is per child key. |
+| VERIFIED | B333-virtio-gpu-device-state-key | Virtio-gpu installed device state is per child key; source audit, hosted key-vs-BDF tests, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | Virtio-gpu duplicate child-key install rejected before publication. |
 | NOT DONE |  | DRM card IDs are stable slots. |
 | NOT DONE |  | DRM publishes `/dev/dri/cardN` per stable card slot. |
