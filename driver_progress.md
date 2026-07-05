@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B397-sound-unregister-rejects-non-owners | VERIFIED | Non-owner unregister rejection proven by focused/serial full sound tests, arch proof, PR #2450, main sync `e5fe3f55`. |
 | B398-virtio-snd-eventq-owner-accounting | VERIFIED | EVENTQ owner accounting proven by focused/full virtio-snd tests, arch proof, PR #2451, main sync `a6506b42`. |
 | B399-virtio-snd-multicard-rebind-proof | VERIFIED | Two-device QEMU/rootfs/probe path passes hosted gates plus x86_64/aarch64 live rebind smoke, PR #2452, main sync `36d0b388`. |
-| B400-virtio-msix-child-owned-handlers | ACTIVE | Claimed from fresh main; audit/fix child-declared MSI-X handler ownership next. |
+| B400-virtio-msix-child-owned-handlers | VERIFIED | Child-declared MSI-X handlers proven by source audit, hosted virtio/pci-boot tests, x86_64 driver-path proof, and aarch64 driver-path proof. |
