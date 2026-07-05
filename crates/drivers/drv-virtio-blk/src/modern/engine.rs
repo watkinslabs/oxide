@@ -8,14 +8,10 @@ impl BlkState {
         #[cfg(target_os = "oxide-kernel")]
         BLK_COMPL.wake_all();
         if !self.wait_idle_for_remove() {
-            if self.cfg_va != 0 {
-                unsafe { core::ptr::write_volatile((self.cfg_va + 0x14) as *mut u8, 0u8); }
-            }
+            virtio::reset_device(self.cfg_va);
             return;
         }
-        if self.cfg_va != 0 {
-            unsafe { core::ptr::write_volatile((self.cfg_va + 0x14) as *mut u8, 0u8); }
-        }
+        virtio::reset_device(self.cfg_va);
         if self.bounce_pa != 0 {
             unsafe { pmm::setup::free_contig(self.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
         }
@@ -28,9 +24,7 @@ impl BlkState {
         #[cfg(target_os = "oxide-kernel")]
         BLK_COMPL.wake_all();
         let idle = self.wait_idle_for_remove();
-        if self.cfg_va != 0 {
-            unsafe { core::ptr::write_volatile((self.cfg_va + 0x14) as *mut u8, 0u8); }
-        }
+        virtio::reset_device(self.cfg_va);
         if !idle {
             klog::write_raw(b"[BLK-SHUTDOWN] reset with busy request quarantined\n");
         }
