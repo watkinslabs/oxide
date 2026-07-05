@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B501-pci-backed-child-wrapper-descriptors; IN AUDIT.
+Current marker: B501-pci-backed-child-wrapper-descriptors; VERIFIED.
 
 ## B501 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B501-pci-backed-child-wrapper-descriptors | ACTIVE | Fresh main `b9fd51db` after PR #2560 merge. Auditing whether the PCI-backed child wrapper consumes child driver descriptors for name, matching, profile, and typed registration on x86_64 and aarch64. |
+| B501-pci-backed-child-wrapper-descriptors | VERIFIED | Fresh main `b9fd51db` after PR #2560 merge. Source audit proves the PCI-backed child wrapper consumes child driver descriptors for all wrapper-facing identity and profile paths: `VirtioChildOps::DRIVER_ID` is the descriptor contract, `VirtioChildDriver<O>::name` returns `O::DRIVER_ID.name`, `matches` delegates to `O::DRIVER_ID.matches_device(&dev.bus, dev.vendor_id, dev.device_id)`, `probe` begins the session with `O::profile()`, and each GPU/Input/Net/Block/RNG/Vsock/Sound ops adapter sets `DRIVER_ID` and `profile` from child crate exports. `register_model_drivers` registers typed `VirtioChildDriver<Ops>` statics; source search finds no wrapper-local `VirtioChildDriverId::new` or child `device_id` literals in `pci-boot::virtio_child`. Checks pass: `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with child suites 18/18, 36/36, 36/36, 16/16, 8/8, 8/8, 7/7, shared `virtio` 43/43, and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 14s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B500 Current
 
