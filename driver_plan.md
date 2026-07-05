@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B394-sound-card-owner-keyed-numbers` — CLAIMED.
+ACTIVE NOW: `B394-sound-card-owner-keyed-numbers` — VERIFIED; COMMIT/PR PENDING.
 
 Current active item: `>>> ACTIVE >>> B394-sound-card-owner-keyed-numbers`.
 
-Current B394 gate: prove or fix sound-card allocation so ALSA card numbers are
-stable and owner-keyed, with hosted tests and x86_64/aarch64 runtime proof
-before merge.
+Current B394 gate: source audit, hosted sound tests, and x86_64/aarch64
+runtime proof pass; commit/PR/merge/main-sync remains.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -326,7 +325,7 @@ Status legend:
 | VERIFIED | B391-virtio-rng-seeds-bound-device | Virtio-rng seeds from just-bound device: source audit proves `install(device_key, resources)` seeds via `fill_from_device(device_key, &mut seed)` after registering that child, while active hwrng reads still use `fill()`/`active_handle()`; hosted requested-child fill regression, full drv-virtio-rng tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2444 merge, and local main sync to `origin/main` at `75c9cfe8` pass. |
 | VERIFIED | B392-virtio-rng-active-provider | Virtio-rng active `/dev/hwrng` provider promotion/removal: source audit proves `uninstall` removes by exact key, promotes only live records through `promote_active_locked`, clears hwrng when no live provider remains, and publish failure clears matching `active_key`; hosted active-provider regressions, full drv-virtio-rng tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2445 merge, and local main sync to `origin/main` at `197482f2` pass. |
 | VERIFIED | B393-virtio-snd-install-remove-keyed | Virtio-snd install/remove keyed to owning child key: source audit proves pci-boot passes `session.device_key()`, `SndInstall` stores `device_key`, `CTX` records are keyed, duplicate install rejects exact key, `uninstall` clears sound card/ops by `sound_owner(device_key)` and removes context by exact key; hosted keyed-removal regression, full drv-virtio-snd tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2446 merge, and local main sync to `origin/main` at `6f09ae22` pass. |
-| >>> ACTIVE >>> CLAIMED | B394-sound-card-owner-keyed-numbers | Sound card layer allocates owner-keyed ALSA card numbers. |
+| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B394-sound-card-owner-keyed-numbers | Sound card layer allocates owner-keyed ALSA card numbers: `SoundCard` stores `owner` and `card`, `reserve_card(owner)` is idempotent per owner and allocates first free card for new owners, `card_number(owner)` selects by owner, and `unregister_card(owner)` removes only that owner; focused owner/card regression, full sound tests, and x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | Sound card layer publishes per-card ALSA/OSS nodes. |
 | NOT DONE |  | Sound ops route by owner. |
 | NOT DONE |  | Sound unregister rejects non-owners. |

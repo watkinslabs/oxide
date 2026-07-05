@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B394-sound-card-owner-keyed-numbers`.
+Current marker: `>>> ACTIVE >>> B394-sound-card-owner-keyed-numbers` — verified; commit/PR pending.
 
 ## Archived Completed B327-B330
 
@@ -485,9 +485,11 @@ recent-completed table above; main was synced after each merge through
 
 ## B394-sound-card-owner-keyed-numbers
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B394-sound-card-owner-keyed-numbers`
 
 Scope: prove or fix sound-card number allocation so ALSA card numbers are
 stable per owner and independent across cards.
+
+Evidence: source audit found owner-keyed allocation in `crates/kernel/sound/src/cards.rs`; `reserve_card(owner)` is per-owner idempotent, `card_number(owner)` selects by owner, and `unregister_card(owner)` tears down only that owner. Focused regression, full `cargo test -p sound -- --nocapture` with 15 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
