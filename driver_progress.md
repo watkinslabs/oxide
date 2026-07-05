@@ -5,8 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B452-shutdown-all-reverse-registration; VERIFIED pending PR
-merge.
+Current marker: B453-shutdown-no-unbind-or-events; VERIFIED pending PR merge.
+
+## B453 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B453-shutdown-no-unbind-or-events | VERIFIED | Fresh main `ea573702` after PR #2510 merge; source audit proves `crates/drivers/drv/src/model.rs::shutdown_all` snapshots devices, reverses the list, skips unbound devices, resolves the bound driver, and calls only `driver.shutdown(&dev)`. Added regression `shutdown_all_quiesces_bound_devices_in_reverse_registration_order` now also records `remove` calls and `BindEvent::Unbound` events, proving shutdown keeps bindings intact and emits no unbind/change event. Checks pass: `cargo test -p drv shutdown_all_quiesces_bound_devices_in_reverse_registration_order -- --nocapture`, full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests, and pre-push boot-smoke PASS on x86_64 and aarch64. |
 
 ## B428-sysfs-explicit-bind-route
 
