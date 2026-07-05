@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B392-virtio-rng-active-provider` — CLAIMED.
+ACTIVE NOW: `B392-virtio-rng-active-provider` — VERIFIED; COMMIT/PR PENDING.
 
 Current active item: `>>> ACTIVE >>> B392-virtio-rng-active-provider`.
 
-Current B392 gate: prove or fix virtio-rng active `/dev/hwrng` provider
-promotion/removal so no stale active key remains, with hosted tests and
-x86_64/aarch64 runtime proof before merge.
+Current B392 gate: source audit, hosted tests, and x86_64/aarch64 driver-path
+runtime proof pass; commit, push, PR, merge, and main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -324,7 +323,7 @@ Status legend:
 | VERIFIED | B389-vsock-close-releases-state | AF_VSOCK close releases listener/backlog/connection state: source audit proves `Drop for VsockSocket` removes listeners via `TABLE.remove_listener(owner, port)` and closes connected sockets via `vsock::close`; `remove_listener` drains pending backlog keys, closes those conns, removes table records, and deletes the listener; focused drop cleanup tests, full vsock tests, fast x86_64/aarch64 driver-path smokes, PR #2442 merge, and local main sync to `origin/main` at `e3f505da` pass. |
 | VERIFIED | B390-virtio-rng-child-key-records | Virtio-rng keeps per-child-key records: source audit proves `RngState` stores `VirtioChildDeviceKey`, registry records are per-device handles, install/uninstall/shutdown/find and `fill_from_device` select exact keys, active provider uses `active_key`, and pci-boot passes `session.device_key()`; hosted child-key regression, full drv-virtio-rng tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and local main sync to `origin/main` at `68940f57` pass. |
 | VERIFIED | B391-virtio-rng-seeds-bound-device | Virtio-rng seeds from just-bound device: source audit proves `install(device_key, resources)` seeds via `fill_from_device(device_key, &mut seed)` after registering that child, while active hwrng reads still use `fill()`/`active_handle()`; hosted requested-child fill regression, full drv-virtio-rng tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2444 merge, and local main sync to `origin/main` at `75c9cfe8` pass. |
-| >>> ACTIVE >>> CLAIMED | B392-virtio-rng-active-provider | Virtio-rng active `/dev/hwrng` provider promotion/removal must pass hosted tests and not leave stale active key. |
+| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B392-virtio-rng-active-provider | Virtio-rng active `/dev/hwrng` provider promotion/removal: source audit proves `uninstall` removes by exact key, promotes only live records through `promote_active_locked`, clears hwrng when no live provider remains, and publish failure clears matching `active_key`; hosted regressions cover publish failure, no-live clear, active removal promotion to next live provider, republish, full drv-virtio-rng tests, x86_64 driver-path log `/tmp/b392-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b392-arm-driver-path.log` pass. |
 | NOT DONE |  | Virtio-snd install/remove keyed to owning child key. |
 | NOT DONE |  | Sound card layer allocates owner-keyed ALSA card numbers. |
 | NOT DONE |  | Sound card layer publishes per-card ALSA/OSS nodes. |

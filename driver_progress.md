@@ -485,9 +485,11 @@ recent-completed table above; main was synced after each merge through
 
 ## B392-virtio-rng-active-provider
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B392-virtio-rng-active-provider`
 
-Scope: prove or fix active `/dev/hwrng` provider promotion/removal so no stale
-active key remains after removal or publish failure.
+Evidence: hosted regressions prove publish failure clears the matching active
+key, no-live removal clears hwrng, and active removal promotes the next live
+provider. Full tests plus x86_64 `/tmp/b392-x86-driver-path.log` and aarch64
+`/tmp/b392-arm-driver-path.log` driver-path proofs pass.
