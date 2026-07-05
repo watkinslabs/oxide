@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B481-platform-conflict-fatal-boundary; IN AUDIT.
+Current marker: B481-platform-conflict-fatal-boundary; VERIFIED pending PR merge.
 
 ## B481 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B481-platform-conflict-fatal-boundary | IN AUDIT | Fresh main `447e7c68` after PR #2538 merge; auditing platform identity conflict reporting as a fatal boot-boundary error and x86_64/aarch64 runtime proof. |
+| B481-platform-conflict-fatal-boundary | VERIFIED | Fresh main `447e7c68` after PR #2538 merge. `crates/kernel/kmain/src/kmain/runtime.rs::platform_device_or_panic` handles `drv::try_device_add` `Busy` by reusing only `drv::find_matching_device_identity(&candidate)` matches; otherwise `panic_platform_device_conflict` logs the platform address and panics with literal `conflicting platform device registration`. Added hosted regression `platform_identity_conflict_is_busy_but_not_reusable`, proving same platform bus/address with different devnode identity returns `Busy`, is not reusable, and preserves the original registry record. Checks pass: focused regression, `cargo test -q -p drv -p kmain -- --nocapture --test-threads=1` with drv 31/31 and kmain compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B480 Current
 
