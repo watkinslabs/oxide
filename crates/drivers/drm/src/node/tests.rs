@@ -11,6 +11,8 @@ use vfs::{Dentry, File, OpenFlags};
 
 #[path = "tests/client_cap.rs"]
 mod client_cap;
+#[path = "tests/get_cap.rs"]
+mod get_cap;
 
 static LAST_SCANOUT_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 
