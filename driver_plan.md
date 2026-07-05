@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B466-i8042-keyboard-explicit-shutdown-callback; IN AUDIT.
+ACTIVE NOW: none; B466-i8042-keyboard-explicit-shutdown-callback VERIFIED pending PR merge.
 
-Current active item: i8042 keyboard has explicit shutdown callback.
+Current active item: none; next claim starts after B466 merge and fresh main sync.
 
 Next gate after merge: return to fresh `origin/main` before claiming B467 using
 `metadata/index.md`.
@@ -73,7 +73,7 @@ Status legend:
 | VERIFIED | B463-virtio-snd-explicit-shutdown-callback | virtio-snd has explicit shutdown callback: virtio child model shutdown resolves the stable parent key and calls `drv_virtio_snd::shutdown`; shutdown removes only the matching sound context by `VirtioChildDeviceKey`, releases the shared sound event softirq only when the last context is gone, keeps sound card and ops publication visible during terminal shutdown, frees owned buffers, resets the device through shared `virtio::reset_device`, and uses shared `virtio::read_status`/`hal::PAGE_SIZE_BYTES` instead of raw common-cfg status offsets or frame-size literals. Hosted `drv-virtio-snd` tests pass 8/8, shared `virtio` tests pass 43/43, `pci-boot` compiles, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B464-8250-serial-explicit-shutdown-callback | 8250 serial has explicit shutdown callback: platform `serial0` binds through the driver model to `8250-serial` on x86_64; `Uart16550Drv::shutdown` calls `imp::shutdown`, disables RX delivery, masks UART RX interrupt delivery, and keeps the detected console base/present state intact for late shutdown logging, while `remove` remains the full unbind teardown path that frees the vector and clears publication state. On non-x86_64 the 8250 backend is an empty shell and aarch64 uses PL011 through `drv-serial`. Hosted `drv-uart-16550` and `drv-serial` compiles pass, driver-core shutdown ordering regression passes, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B465-pl011-serial-explicit-shutdown-callback | PL011 serial has explicit shutdown callback: platform `serial0` binds through the driver model to `pl011-serial` on aarch64; `UartPl011Drv::shutdown` calls `imp::shutdown`, disables RX delivery, disables PL011 RX IRQ generation, and masks GIC INTID 33 while preserving the detected console base/present state for late shutdown logging, while `remove` remains the full unbind teardown path that frees the IRQ handler and clears publication state. On non-aarch64 the PL011 backend is an empty shell and x86_64 uses 8250 through `drv-serial`. Hosted `drv-uart-pl011` and `drv-serial` compiles pass, driver-core shutdown ordering regression passes, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
-| ACTIVE | B466-i8042-keyboard-explicit-shutdown-callback | i8042 keyboard has explicit shutdown callback. |
+| VERIFIED | B466-i8042-keyboard-explicit-shutdown-callback | i8042 keyboard has explicit shutdown callback: x86_64 boot publishes `platform/i8042` and registers the `i8042-kbd` platform driver; `Ps2KbdDriver::shutdown` calls `shutdown_hw`, disables IRQ1 delivery, disables keyboard scanning, flushes pending output, and masks the I/O APIC pin while preserving `PRESENT` and allocated vector/pin state, while `remove` remains the full unbind teardown path that disables the port, frees the vector, clears IRQ state, and clears publication state. On aarch64 the boot hook is intentionally no-op because QEMU virt has no i8042. Hosted `drv-ps2-keyboard` tests pass, driver-core shutdown ordering regression passes, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | SOURCE OK |  | Remove public `register_device` bypasses from driver model. |
 | SOURCE OK |  | Remove public infallible `device_add` wrapper; production callers handle `try_device_add` errors. |
 | SOURCE OK |  | Sysfs bus-driver controls are backed by model bind/unbind. |
