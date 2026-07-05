@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B348-drm-master-open-file-state`.
+Current marker: `>>> ACTIVE >>> B349-drm-page-flip-file-events`.
 
 ## Archived Completed B327-B330
 
@@ -490,3 +490,10 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-arm.log`. |
 | Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR merge + main sync | PASS: PR #2401 merged; local `main` equals `origin/main` at `bdb8d725`. |
+
+## B349-drm-page-flip-file-events
+
+Status: `CLAIMED, audit starting`.
+
+Branch: `B349-drm-page-flip-file-events`
