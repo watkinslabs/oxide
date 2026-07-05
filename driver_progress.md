@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B447-device-del-unbinds-first; IN AUDIT.
+Current marker: B447-device-del-unbinds-first; VERIFIED pending PR merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -751,4 +751,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B447-device-del-unbinds-first | IN AUDIT | Fresh main `ffe736bc` after PR #2504 merge; auditing `device_del` teardown order so bound devices are unbound before sysfs remove, devtmpfs teardown, and registry removal. |
+| B447-device-del-unbinds-first | VERIFIED | Fresh main `ffe736bc` after PR #2504 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` first confirms the device is registered, calls `unbind(d)` whenever `d.bound().is_some()`, then fires `SYSFS_REMOVE_HOOK`, then `DEVTMPFS_DEL_HOOK`, then drops the device from `DEVICES`. Focused hosted checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture` and `cargo test -p drv device_del_unbinds_bound_driver_once -- --nocapture`. Full hosted driver-model regression passes: `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B447 changes only docs/metadata and production `device_del` code is unchanged. |
