@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B366-fbdev-getcmap-transp-efault`.
+Current marker: `>>> ACTIVE >>> B367-virtio-gpu-probe-unwind-proof`.
 
 ## Archived Completed B327-B330
 
@@ -464,8 +464,16 @@ Evidence: source audit found FBIO fixed-size args and cmap arrays use `p.checked
 
 ## B366-fbdev-getcmap-transp-efault
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2419.
 
 Branch: `B366-fbdev-getcmap-transp-efault`
 
-Evidence: source audit found `FBIOGETCMAP` validates nonzero `cm.transp` with the same checked exclusive-end user range as red/green/blue before any transparency writes. Added `fbio_getcmap_rejects_invalid_transparency_pointer`; focused regression, full `cargo test -p fbdev` with 22 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found `FBIOGETCMAP` validates nonzero `cm.transp` with the same checked exclusive-end user range as red/green/blue before any transparency writes. Added `fbio_getcmap_rejects_invalid_transparency_pointer`; focused regression, full `cargo test -p fbdev` with 22 tests, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2419, and main sync `50f507dc` pass.
+
+## B367-virtio-gpu-probe-unwind-proof
+
+Status: `IN AUDIT`.
+
+Branch: `B367-virtio-gpu-probe-unwind-proof`
+
+Evidence: source audit of display-info command buffer ownership and scanout framebuffer failure unwind is in progress.
