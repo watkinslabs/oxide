@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B495-virtio-child-remove-unpublish; VERIFIED.
+Current marker: B496-virtio-child-shutdown-key; VERIFIED.
+
+## B496 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B496-virtio-child-shutdown-key | VERIFIED | Fresh main `c0b2c792` after PR #2555 merge. Source audit proves child shutdown resolves the stable parent-derived child key through the centralized wrapper path and only invokes child shutdown policy: generic `VirtioChildDriver<O>::shutdown` calls `parent_key(dev)` and shared `virtio::run_child_shutdown(device_key, O::shutdown_child)`; `parent_key` derives the `VirtioChildDeviceKey` from the parent PCI model device; GPU/input/net/block/RNG/vsock/sound child ops adapters receive only that key and call their explicit shutdown callbacks. Checks pass: `cargo test -q -p virtio child_shutdown_lifecycle_passes_stable_key -- --nocapture --test-threads=1` 1/1; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B495 Current
 
