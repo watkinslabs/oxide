@@ -2,14 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B443-platform-serial-model-attach; IN AUDIT.
+ACTIVE NOW: none; B443-platform-serial-model-attach VERIFIED pending PR merge.
 
-Current active item: Boot-time platform serial devices rely on model-owned
-attach path.
+Current active item: none; next claim starts after B443 merge and fresh main
+sync.
 
-Next gate after B443: prove source, hosted tests where available, decide
-whether runtime proof is inherited or needs fresh x86_64/aarch64 smoke, PR
-merge, then fresh `origin/main` before claiming B444.
+Next gate after merge: return to fresh `origin/main` before claiming B444 using
+`metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -51,7 +50,7 @@ Status legend:
 | VERIFIED | B440-new-device-attach-after-publication | New model device attaches to already registered matching drivers after devtmpfs/sysfs publication setup and before add uevent: `try_device_add` publishes the model record, fires devtmpfs publication, auto-attaches with bind-change events suppressed, then fires sysfs add; hosted tests prove ordering and add uevent `DRIVER=` state. |
 | VERIFIED | B441-initial-autoprobe-no-bind-change | Initial auto-probe does not emit a separate bind-change event before add uevent: `try_device_add` passes `emit_bind_event=false` into initial auto-attach, and hosted bind-hook regression proves initial probe binds the device while `ADD_BIND_EVENTS` remains zero before the sysfs add event. |
 | VERIFIED | B442-add-uevent-driver-state | Add uevent carries current `DRIVER=<name>` state: `dev_uevent_env` appends `DRIVER=` only from `dev.bound()`, sysfs add/remove/change hooks emit the current model-derived environment, hosted add-uevent regression proves initial bound devices emit `ACTION=add` with `DRIVER=`, and hosted bind/unbind regression proves change events add `DRIVER=` when bound and omit stale driver state after unbind. |
-| ACTIVE | B443-platform-serial-model-attach | Boot-time platform serial devices rely on model-owned attach path. |
+| VERIFIED | B443-platform-serial-model-attach | Boot-time platform serial devices rely on model-owned attach path: `init_serial_console` publishes `platform/serial0` through `platform_device_or_panic` / `drv::try_device_add`, registers the per-arch UART model driver through `drv::register_driver`, and only installs `drv_serial::emit` when model binding records the expected driver; x86_64 uses `8250-serial`, aarch64 uses `pl011-serial`, hosted model/UART checks pass, and fast boot smokes reach serial login on both arches. |
 | SOURCE OK |  | Boot-time i8042 platform device relies on model-owned attach path. |
 | SOURCE OK |  | Production explicit bind entry remains sysfs `/sys/bus/*/drivers/*/bind`. |
 | SOURCE OK |  | Model unbind calls `Driver::remove` before clearing binding. |
