@@ -309,6 +309,12 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             if (atomic.flags & !DRM_MODE_ATOMIC_SUPPORTED_FLAGS) != 0 {
                 return Some(-(Errno::Einval.as_i32() as i64));
             }
+            if atomic.reserved != 0
+                || (atomic.flags & crate::DRM_MODE_PAGE_FLIP_ASYNC) != 0
+                || (atomic.flags & crate::DRM_MODE_PAGE_FLIP_EVENT) != 0
+            {
+                return Some(-(Errno::Einval.as_i32() as i64));
+            }
             if atomic.count_objs == 0 {
                 return Some(0);
             }
