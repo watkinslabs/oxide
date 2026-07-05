@@ -5,9 +5,11 @@ static LAST_FLUSH: AtomicU32 = AtomicU32::new(u32::MAX);
 static LAST_BLANK: AtomicU32 = AtomicU32::new(u32::MAX);
 static LAST_UNBLANK: AtomicU32 = AtomicU32::new(u32::MAX);
 
-fn record_flush(key: u32) { LAST_FLUSH.store(key, AtomicOrdering::SeqCst); }
-fn record_blank(key: u32) { LAST_BLANK.store(key, AtomicOrdering::SeqCst); }
-fn record_unblank(key: u32) { LAST_UNBLANK.store(key, AtomicOrdering::SeqCst); }
+fn fb_key(raw: u32) -> FbDriverKey { FbDriverKey::from_raw(raw).unwrap() }
+
+fn record_flush(key: FbDriverKey) { LAST_FLUSH.store(key.raw(), AtomicOrdering::SeqCst); }
+fn record_blank(key: FbDriverKey) { LAST_BLANK.store(key.raw(), AtomicOrdering::SeqCst); }
+fn record_unblank(key: FbDriverKey) { LAST_UNBLANK.store(key.raw(), AtomicOrdering::SeqCst); }
 
 fn reset_fbdev() {
     devfs::unregister_all_nodes();
@@ -185,13 +187,13 @@ fn fb_ops_are_per_instance() {
     let fb1 = init_scanout(0x2000, 0xffff_8000_0000_2000, bytes, 16, 1, 1);
     assert_ne!(fb0, fb1);
     assert!(set_ops(fb0, FbOps {
-        driver_key: 11,
+        driver_key: fb_key(11),
         flush: record_flush,
         blank: record_blank,
         unblank: record_unblank,
     }));
     assert!(set_ops(fb1, FbOps {
-        driver_key: 22,
+        driver_key: fb_key(22),
         flush: record_flush,
         blank: record_blank,
         unblank: record_unblank,
@@ -225,13 +227,13 @@ fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
     let fb1 = init_scanout(0x4000, 0xffff_8000_0000_4000, bytes, 16, 1, 1);
     assert_ne!(fb0, fb1);
     assert!(set_ops(fb0, FbOps {
-        driver_key: 33,
+        driver_key: fb_key(33),
         flush: record_flush,
         blank: record_blank,
         unblank: record_unblank,
     }));
     assert!(set_ops(fb1, FbOps {
-        driver_key: 44,
+        driver_key: fb_key(44),
         flush: record_flush,
         blank: record_blank,
         unblank: record_unblank,
