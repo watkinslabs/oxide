@@ -5,11 +5,11 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B426-drv-model-authoritative-proof; IN AUDIT.
+Current marker: B426-drv-model-authoritative-proof; VERIFIED pending commit/PR.
 
 ## B426-drv-model-authoritative-proof
 
-Status: `IN AUDIT`; claim commit pending.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B426-drv-model-authoritative-proof`
 
@@ -17,7 +17,17 @@ Target row:
 
 | Status | Item |
 |---|---|
-| ACTIVE | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |
+| VERIFIED | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Public API audit | PASS: `crates/drivers/drv/src/lib.rs` re-exports `Device`, `Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` from `model`. |
+| Model source audit | PASS: `model.rs` owns `DEVICES`, `MODEL_DRIVERS`, registration, automatic attachment, explicit bind/unbind, remove, devtmpfs/sysfs hooks, and shutdown traversal. |
+| Production call sites | PASS: pci-boot, kmain platform devices, sysfs bus driver controls, devfs defaults, block, sound, DRM, fbdev, virtio-input, and virtio-rng route through `drv::register_driver`, `drv::try_device_add`, `drv::device_del`, `drv::bind_addr`, or `drv::unbind`. |
+| Bypass search | PASS: no public `auto_bind`, `register_device`, or infallible `device_add` API remains in `crates/drivers/drv`, `crates/kernel`, or `crates/drivers`. |
+| Hosted regression | PASS: `cargo test -p drv -- --nocapture --test-threads=1` passed 24/24. |
 
 ## B425-no-flat-driverentry-probeall
 

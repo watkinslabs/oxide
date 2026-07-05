@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B426-drv-model-authoritative-proof; IN AUDIT.
+ACTIVE NOW: B426-drv-model-authoritative-proof; VERIFIED pending commit/PR.
 
-Current active item: `drv` model API authority proof.
+Current active item: `drv` model API authority proof verified.
 
 Next gate after merge: return to fresh `origin/main` before claiming B427
 using `metadata/index.md`.
@@ -31,7 +31,7 @@ Status legend:
 | VERIFIED | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME remains final seat gate only. |
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
 | VERIFIED | B425-no-flat-driverentry-probeall | Old flat `DriverEntry` / `probe_all(bdf)` live driver path is absent from current source: `rg` over `crates/`, `userspace/`, and `tools/` finds no live `DriverEntry` or `probe_all` symbols, and `crates/drivers/drv/src/model.rs` is the authoritative registry/bind/probe path. `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
-| ACTIVE | B426-drv-model-authoritative-proof | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |
+| VERIFIED | B426-drv-model-authoritative-proof | `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` are authoritative in `crates/drivers/drv/src/model.rs`: `drv/src/lib.rs` re-exports the model API, production driver/sysfs/devfs/block/sound/DRM call sites route through these functions, no public `auto_bind`/`register_device`/infallible `device_add` bypass remains, and `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | SOURCE OK |  | Remove public `drv::auto_bind`; keep automatic attachment internal to `try_device_add` and `register_driver`. |
 | SOURCE OK |  | Route explicit binds through sysfs driver `bind` control path. |
 | SOURCE OK |  | PCI enumeration creates `pci` model devices with BAR resources through fallible model publication. |
