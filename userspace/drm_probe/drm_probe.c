@@ -14,6 +14,7 @@
 // inline, copied from linux/include/uapi/drm/drm_mode.h EXACTLY.
 
 #include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdint.h>
@@ -98,6 +99,17 @@ static int putdec(char *p, unsigned v) {
 }
 
 int main(void) {
+    int render = open("/dev/dri/renderD128", O_RDWR);
+    if (render >= 0) {
+        close(render);
+        emit("drm_probe: FAIL render node published without render/GEM UAPI\n");
+        return 1;
+    }
+    if (errno != ENOENT) {
+        emit("drm_probe: FAIL render node absence errno\n");
+        return 1;
+    }
+
     int fd = open("/dev/dri/card0", O_RDWR);
     if (fd < 0) { emit("drm_probe: FAIL open /dev/dri/card0\n"); return 1; }
 

@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B336-drm-card-node-publication`.
+Current marker: `>>> ACTIVE >>> B337-drm-render-nodes-withheld`.
 
 ## B002-single-machine-desktop-proof
 
@@ -148,7 +148,7 @@ Evidence:
 
 ## B329-virtio-gpu-remove-child-key
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2389.
 
 Branch: `B329-virtio-gpu-remove-child-key`
 
@@ -323,7 +323,7 @@ Evidence:
 
 ## B336-drm-card-node-publication
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2389.
 
 Branch: `B336-drm-card-node-publication`
 
@@ -345,3 +345,33 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 394 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. |
+| PR merge | PASS: PR #2389 merged to `main` at `3ab38c75`. |
+
+## B337-drm-render-nodes-withheld
+
+Status: `VERIFIED`; commit and PR merge pending.
+
+Branch: `B337-drm-render-nodes-withheld`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | DRM render nodes withheld until real render/GEM UAPI exists. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `drm::node::publication::register` only calls `add_node` for `dri/card{card_id}`; no production path publishes `dri/renderD*`. `make_render_inode` remains private test-only coverage for render-fd ioctl classification and is not exported through `register`. |
+| Hosted regression | PASS: `register_does_not_publish_render_node` proves registering a card publishes no `dri/renderD128+N` model device. |
+| Runtime probe | PASS: `userspace/drm_probe` now requires `open("/dev/dri/renderD128")` to fail with `ENOENT` before it runs the normal card0 KMS checks. |
+| `cargo test -p drm register_does_not_publish_render_node -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 57 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `userspace/drm_probe/drm_probe.c` is 193 lines; `crates/drivers/drm/src/node/tests.rs` is 394 lines. |
+| `make smoke-driver-path-x86` | PASS: updated `drm_probe` passed and driver path reported `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b337-drm-render-nodes-withheld-x86.log`. |
+| `make smoke-driver-path-arm` | PASS on rerun: updated `drm_probe` passed and driver path reported `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`. |
+| ARM intermittent note | First ARM run hit existing no-progress watchdog before `mouseprobe`; failed log `/tmp/b337-drm-render-nodes-withheld-arm.log` recorded in `driver_plan.md` follow-up row. |
+| Pre-push boot smoke | PASS: x86_64 reached `oxide login:` in 22s on attempt 1 (`/tmp/oxide-boot-smoke-x86-35N3Zg.log`); aarch64 hit existing no-progress on attempt 1 (`/tmp/oxide-boot-smoke-arm-jyMRB8.log`) then reached `oxide login:` in 16s on attempt 2 (`/tmp/oxide-boot-smoke-arm-nJVaKr.log`). |
