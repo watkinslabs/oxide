@@ -5,7 +5,34 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B421-pci-identity-mismatch-proof; VERIFIED, commit/PR pending.
+Current marker: B422-bind-unbind-uevent-stability; VERIFIED pending commit/PR.
+
+## B422-bind-unbind-uevent-stability
+
+Status: `VERIFIED`; commit and PR merge pending.
+
+Branch: `B422-bind-unbind-uevent-stability`
+
+Target rows:
+
+| Status | Item |
+|---|---|
+| VERIFIED | Bind/unbind change uevents must be stable under parallel tests and live udev monitor. |
+| VERIFIED | Intermittent hosted sysfs uevent test isolation root cause. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: sysfs hosted tests now filter the shared `NETLINK_KOBJECT_UEVENT` stream for matching `ACTION`, `DEVPATH`, `SUBSYSTEM`, and driver-state entries; unregister-driver remove accounting uses a dedicated counter instead of the bind/unbind counter. |
+| Live monitor proof | PASS: `/bin/uevent_probe` subscribes to the real kobject uevent netlink group, writes `/sys/bus/virtio/drivers/virtio-snd/unbind`, proves the matching unbind `change` event has no stale `DRIVER=virtio-snd`, writes `bind`, and proves the matching bind `change` event carries `DRIVER=virtio-snd`. |
+| `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p sysfs -- --nocapture` | PASS: 25 passed, including the previously intermittent parallel uevent tests. |
+| Musl userspace compile | PASS: `uevent_probe.c` compiles with repo x86_64 and aarch64 musl GCC using `-Wall -Wextra -Werror -static -no-pie`. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `uevent_probe.c` 176, `rootfs.rs` 370, `bus/tests.rs` 449, `char_class/tests.rs` 240. |
+| `make smoke-driver-path-x86` | PASS: fast driver path plus live uevent proof; log `/tmp/b422-bind-unbind-uevent-stability-x86.log` contains `uevent_probe_unbind_change: PASS`, `uevent_probe_bind_change: PASS`, and `uevent_probe: PASS netlink KOBJECT_UEVENT bind/unbind`. |
+| `make smoke-driver-path-arm` | PASS: fast driver path plus live uevent proof; log `/tmp/b422-bind-unbind-uevent-stability-arm.log` contains the same B422 live proof lines. |
 
 ## Archived Completed B327-B330
 
@@ -502,3 +529,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B421-pci-identity-mismatch-proof | VERIFIED | Fresh main `9e8594ad`; source audit found `try_device_add` rejects duplicate `(bus, addr)` and PCI publication only reuses an existing model device when vendor/device/class match. Added hosted regression `pci_identity_mismatch_does_not_replace_or_rebind` covering duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class; it proves the original model device remains bound, registry identity is not replaced, and the mismatched driver never probes. Focused regression and full serial `cargo test -p drv -- --nocapture --test-threads=1` pass. Fast x86_64 and aarch64 driver-path proofs pass in `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`; first ARM attempt hit the tracked systemd no-progress wedge and was recorded as `/tmp/b421-pci-identity-mismatch-arm-noprogress.log`. |
+
+## B422 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B422-bind-unbind-uevent-stability | IN AUDIT | Fresh main `c36158b7`; auditing sysfs bind/unbind change uevent delivery, hosted test isolation, and live udev-monitor proof requirements. |
