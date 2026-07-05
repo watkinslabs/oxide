@@ -175,9 +175,7 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
     if empty_after {
         clear_rx_softirq_handler();
     }
-    if ctx.cfg_va != 0 {
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8) };
-    }
+    virtio::reset_device(ctx.cfg_va);
     free_rx_bufs(&mut ctx.rx_bufs);
     if ctx.tx_buf_pa != 0 {
         unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
@@ -193,9 +191,7 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
     if empty_after {
         clear_rx_softirq_handler();
     }
-    if ctx.cfg_va != 0 {
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8) };
-    }
+    virtio::reset_device(ctx.cfg_va);
     free_rx_bufs(&mut ctx.rx_bufs);
     if ctx.tx_buf_pa != 0 {
         unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
