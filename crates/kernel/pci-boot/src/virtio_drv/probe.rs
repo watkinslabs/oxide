@@ -1,9 +1,8 @@
 use super::address::{bdf_from_word, bdf_word};
 use super::runtime::VirtioPciRuntime;
 use super::{
-    bind_msix_vector, disable_pci_command, kick_queue_notify, publish_transport_record,
-    release_failed_probe, release_msix_bindings, unpublish_transport_record, MsixBinding,
-    NetRxBootBuffer, ProgrammedQueues, QueueRing, TransportMappings, Vec,
+    bind_msix_vector, disable_pci_command, kick_queue_notify, unpublish_transport_record,
+    MsixBinding, NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
 };
 
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
@@ -363,14 +362,16 @@ impl VirtioProbeState {
         let child_facts = result.child_facts();
         let owned_frames = virtio::VirtioProbeOwnedFrames::from_probe_result(&result);
         VirtioProbe {
-            bdf_word: self.bdf_word,
-            mappings: self.mappings,
-            msix: self.msix,
             child_facts,
             trace,
-            cfg_va: self.cfg_va,
-            owned_frames,
-            transport_lease: virtio::VirtioProbeLease::live(),
+            devres: VirtioProbeDevres::new(
+                bdf_from_word(self.bdf_word),
+                self.bdf_word,
+                self.cfg_va,
+                self.mappings,
+                self.msix,
+                owned_frames,
+            ),
         }
     }
 }
@@ -396,14 +397,9 @@ pub(crate) struct VirtioPciProbeTrace {
 }
 
 pub(crate) struct VirtioProbe {
-    pub(super) bdf_word: u32,
-    mappings: TransportMappings,
-    msix: Vec<MsixBinding>,
     pub(crate) child_facts: virtio::VirtioChildProbeFacts,
     pub(crate) trace: VirtioPciProbeTrace,
-    pub(super) cfg_va: u64,
-    owned_frames: virtio::VirtioProbeOwnedFrames,
-    transport_lease: virtio::VirtioProbeLease,
+    devres: VirtioProbeDevres,
 }
 
 impl VirtioProbe {
@@ -415,14 +411,7 @@ impl VirtioProbe {
     }
 
     fn release_failed_transport(&mut self) {
-        if !self.transport_lease.take() {
-            return;
-        }
-        let frames = self.owned_frames.take_all();
-        release_failed_probe(self.cfg_va, &frames);
-        release_probe_msix(self);
-        disable_pci_command(bdf_from_word(self.bdf_word));
-        self.mappings.unmap_all();
+        self.devres.release_failed();
     }
 
     pub(crate) fn release_failed_child(&mut self) {
@@ -437,23 +426,11 @@ impl Drop for VirtioProbe {
 }
 
 pub(super) fn publish_transport_mmio(p: &mut VirtioProbe) {
-    if !p.transport_lease.take() {
-        return;
-    }
-    publish_transport_record(
-        p.bdf_word,
-        core::mem::take(&mut p.mappings),
-        p.owned_frames.take_vring_frames(),
-        core::mem::take(&mut p.msix),
-    );
+    p.devres.publish();
 }
 
 pub(super) fn unpublish_transport_mmio(bdf: u32) {
     unpublish_transport_record(bdf);
-}
-
-fn release_probe_msix(p: &mut VirtioProbe) {
-    release_msix_bindings(bdf_from_word(p.bdf_word), &mut p.msix);
 }
 
 fn abandon_probe_transport<T>(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<T> {
