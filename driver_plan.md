@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B368-virtio-net-netdev-publish-owner` — IN AUDIT.
+ACTIVE NOW: `B368-virtio-net-netdev-publish-owner` — VERIFIED; PR READY.
 
-Current active item: `>>> ACTIVE >>> B368-virtio-net-netdev-publish-owner`.
+Current active item: `>>> ACTIVE >>> B368-virtio-net-netdev-publish-owner` verified locally; PR #2421 ready to update/merge.
 
-Current B368 gate: prove virtio-net owns netdev publication/removal by child key, add focused regression if missing, run virtio-net tests, x86_64/aarch64 driver-path proof, push PR, merge, then sync local `main`.
+Current B368 gate: source proof, focused hosted regression, full virtio-net tests, and x86_64/aarch64 driver-path proof pass; update PR #2421, merge, then sync local `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -298,7 +298,7 @@ Status legend:
 | VERIFIED | B365-fbdev-fbio-usercopy-bounds | fbdev FBIO fixed-size args and cmap arrays use checked exclusive-end user range validation before read/write copies; added overflow regression, full fbdev tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2418 merge, and local main sync to `origin/main` at `70ac7dff` pass. |
 | VERIFIED | B366-fbdev-getcmap-transp-efault | FBIOGETCMAP rejects invalid transparency pointer with `EFAULT`; added focused hosted regression, full fbdev tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2419 merge, and local main sync to `origin/main` at `50f507dc` pass. |
 | VERIFIED | B367-virtio-gpu-probe-unwind-proof | Display-info probe command buffer and scanout framebuffer ownership/unwind have RAII transfer plus failed-probe cleanup proof; added focused hosted regression, full virtio-gpu tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2420 merge, and local main sync to `origin/main` at `c2e8e3cf` pass. |
-| >>> ACTIVE >>> IN AUDIT | B368-virtio-net-netdev-publish-owner | Virtio-net owns netdev publication/removal. |
+| >>> ACTIVE >>> VERIFIED - PR READY | B368-virtio-net-netdev-publish-owner | Virtio-net owns netdev publication/removal: `init_modern_with_rx_pool` publishes by child `DeviceKey`, `VirtioNetDev` carries the key, `REGISTERED_NETDEVS`/`NET_RUNTIMES` are key-owned, and `uninstall_modern` removes only the named key; added hosted netdev-runtime owner regression, full virtio-net tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. PR #2421 merge/main-sync pending. |
 | NOT DONE |  | Virtio-net owns RX runtime installation/removal. |
 | NOT DONE |  | Virtio-net old boot-probe default IPv4 policy removed. |
 | NOT DONE |  | Virtio-net install/remove keyed to owning child key. |
