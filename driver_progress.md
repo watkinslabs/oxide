@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B346-drm-fb-scanout-resource-lifetime`.
+Current marker: `>>> ACTIVE >>> B347-drm-unregister-drops-card-state`.
 
 ## Archived Completed B327-B330
 
@@ -414,7 +414,7 @@ Evidence:
 
 ## B346-drm-fb-scanout-resource-lifetime
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2399.
 
 Branch: `B346-drm-fb-scanout-resource-lifetime`
 
@@ -436,3 +436,22 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b346-drm-fb-scanout-resource-lifetime-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b346-drm-fb-scanout-resource-lifetime-arm.log`. |
 | Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR | PASS: PR #2399 merged and local `main` synced to `origin/main` at `6ffbc9b7`. |
+
+## B347-drm-unregister-drops-card-state
+
+Status: `CLAIMED`.
+
+Branch: `B347-drm-unregister-drops-card-state`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | DRM unregister drops that card CRTC and dumb-buffer state. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
