@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B474-graphics-fbdev-coldplug VERIFIED pending PR merge.
+Current marker: none; B475 verified pending PR merge.
+
+## B475 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B475-misc-mem-coldplug | VERIFIED | Fresh main `c32cfb7c` after PR #2532 merge; added `misc_and_mem_uevent_writes_reemit_model_events`, proving writable mem and misc class `uevent` attrs re-emit current model events with requested action, devpath, subsystem, devname, major, and minor. Checks pass: focused sysfs regression, `cargo test -q -p sysfs -p devfs -p drv -- --nocapture --test-threads=1` with devfs 9/9, drv 27/27, sysfs 28/28, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B474 Current
 
