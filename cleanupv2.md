@@ -31,7 +31,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 | 2.4 | Module autoload alias no-op for built-ins | 2 | TODO | — | — |
 | 3.1 | `systemd-initctl` fifo `read()` EIO | 3 | DONE | B502-fifo-open-impl | #2562 |
 | 3.2 | Persistent journal EBUSY (mmap/flock) | 3 | TODO | — | — |
-| 3.3 | `/proc/sys` writable sysctl leaves | 3 | TODO | — | — |
+| 3.3 | `/proc/sys` writable sysctl leaves (core_pattern honored) | 3 | DONE | B512-sysctl-leaves | #2565 |
 | 3.4 | `/dev/null` ENXIO + `/dev/fuse` node missing | 3 | TODO | — | — |
 | 3.5 | userdb short-read message framing | 3 | TODO | — | — |
 | 3.6 | update-utmp-runlevel D-Bus (cascade of 1.1) | 3 | TODO | — | — |
