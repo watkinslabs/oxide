@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject`.
+Current marker: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject` — VERIFIED; commit/PR merge pending.
 
 ## B002-single-machine-desktop-proof
 
@@ -268,7 +268,7 @@ Evidence:
 
 ## B334-virtio-gpu-duplicate-key-reject
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit/PR merge pending.
 
 Branch: `B334-virtio-gpu-duplicate-key-reject`
 
@@ -276,10 +276,17 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | Virtio-gpu duplicate child-key install rejected before publication. |
+| VERIFIED | Virtio-gpu duplicate child-key install rejected before publication. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `install_with_drm` calls keyed `install(dev)?` before DRM registration; `install` rejects duplicate `device_key` with `Error::Busy` before pushing state. |
+| Hosted regression | PASS: `install_with_drm_tracks_each_bdf_card_id` now asserts duplicate key returns `Error::Busy` and does not increase `drm::card_count()` or published DRM model devices. |
+| `cargo test -p drv-virtio-gpu install_with_drm_tracks_each_bdf_card_id -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drv-virtio-gpu` | PASS: 31 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drv-virtio-gpu/src/tests.rs` is 477 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b334-gpu-duplicate-key-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b334-gpu-duplicate-key-arm.log`. |
