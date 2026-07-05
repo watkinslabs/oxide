@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B476 verified pending PR merge.
+ACTIVE NOW: B477-console-tty-devnode-batch; IN AUDIT.
 
-Current active item: none; next branch must be claimed from fresh `origin/main`.
+Current active item: Console/tty boot node publication has fallible `try_register_devnodes` batch path.
 
-Next gate after merge: return to fresh `origin/main` before claiming B477 using
+Next gate after merge: return to fresh `origin/main` before claiming B478 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -110,7 +110,7 @@ Status legend:
 | VERIFIED |  | Built-in devfs pseudo-device publication has fallible `try_populate_defaults`. |
 | VERIFIED |  | Built-in devfs pseudo-device population treats matching existing pseudo devices idempotently. |
 | VERIFIED |  | Built-in devfs pseudo-device conflicts return driver-model error. |
-| SOURCE OK |  | Console/tty boot node publication has fallible `try_register_devnodes` batch path. |
+| ACTIVE | B477-console-tty-devnode-batch | Console/tty boot node publication has fallible `try_register_devnodes` batch path. |
 | SOURCE OK | TBD | Console/tty conflict rollback must be verified in source/tests for current main. |
 | SOURCE OK |  | Boot-created serial/i8042 platform devices use explicit `try_device_add` handling. |
 | SOURCE OK |  | Matching existing platform identities are reused. |
