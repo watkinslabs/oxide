@@ -477,9 +477,18 @@ recent-completed table above; main was synced after each merge through
 
 ## B384-virtio-vsock-remove-keyed
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B384-virtio-vsock-remove-keyed`
 
-Scope: prove or fix virtio-vsock remove so teardown selects the owning
-`VirtioChildDeviceKey` and cannot clear another live transport.
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `pci-boot` probe/remove/shutdown passes `VirtioChildDeviceKey`; `drv-virtio-vsock` contexts store the key; endpoint install/uninstall/quiesce, TX, RX prepost, and RX delivery use `device_key.raw()` as owner. |
+| Hosted regression | PASS: `uninstall_removes_only_matching_vsock_context_and_endpoint` proves removing key1 leaves key2 ctx and `net::vsock` endpoint live. |
+| `cargo test -p drv-virtio-vsock uninstall_removes_only_matching_vsock_context_and_endpoint -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drv-virtio-vsock -- --nocapture` | PASS: 6 passed. |
+| Static checks | PASS: `git diff --check`; line cap OK (`tests.rs` 137, `driver_plan.md` 384, `driver_progress.md` under cap). |
+| `./tools/boot-smoke-driver-path.sh x86 240` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b384-x86-driver-path.log`. |
+| `./tools/boot-smoke-driver-path.sh arm 300` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b384-arm-driver-path.log`. |
