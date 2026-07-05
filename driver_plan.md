@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B439-driver-unregistration-detaches-bound VERIFIED pending PR merge.
+ACTIVE NOW: none; B440-new-device-attach-after-publication VERIFIED pending PR merge.
 
-Current active item: none; next claim starts after B439 merge and fresh main sync.
+Current active item: none; next claim starts after B440 merge and fresh main sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B440
+Next gate after merge: return to fresh `origin/main` before claiming B441
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -46,7 +46,7 @@ Status legend:
 | VERIFIED | B437-probe-failure-unbound-retriable | Probe failure leaves device unbound and retriable: `bind_inner` propagates `Driver::probe` failure before recording binding state, and hosted regression proves auto-probe plus repeated explicit bind attempts each increment the failing probe counter while `dev.bound()` remains `None`. |
 | VERIFIED | B438-driver-registration-attaches-existing | Driver registration attaches newly registered drivers to existing unbound matching devices: `register_driver` publishes the driver then calls `attach_driver_to_existing_devices`, which skips bound/non-matching devices and calls `bind_inner` for existing unbound matches; hosted tests prove late registration binds once and duplicate registration does not reprobe. |
 | VERIFIED | B439-driver-unregistration-detaches-bound | Driver unregistration detaches devices bound to that driver before removing the driver from registry: `unregister_driver` walks bound devices and calls `unbind` while the driver is still registered, then removes the driver entry; hosted regression proves remove callback, cleared binding, disappearing driver name, and later bind failure. |
-| SOURCE OK |  | New model device attaches to already registered matching drivers after devtmpfs/sysfs publication setup and before add uevent. |
+| VERIFIED | B440-new-device-attach-after-publication | New model device attaches to already registered matching drivers after devtmpfs/sysfs publication setup and before add uevent: `try_device_add` publishes the model record, fires devtmpfs publication, auto-attaches with bind-change events suppressed, then fires sysfs add; hosted tests prove ordering and add uevent `DRIVER=` state. |
 | SOURCE OK |  | Initial auto-probe does not emit a separate bind-change event before add uevent. |
 | SOURCE OK |  | Add uevent can carry current `DRIVER=<name>` state. |
 | SOURCE OK |  | Boot-time platform serial devices rely on model-owned attach path. |
