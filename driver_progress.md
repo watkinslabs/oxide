@@ -468,7 +468,7 @@ Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
 recent-completed table above; main was synced after each merge through
 `cdd8d243`.
 
-## Recent Completed B382-B385
+## Recent Completed B382-B386
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -476,20 +476,13 @@ recent-completed table above; main was synced after each merge through
 | B383-core-ipv6-ndp-iface-cache | VERIFIED | Core NDP map is `(iface, IPv6)` keyed and `unregister_iface` purges removed-iface entries; focused/NDP tests, line cap, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2436 merge, and main sync `505521d8` pass. First ARM driver-path run hit existing no-progress; rerun passed. |
 | B384-virtio-vsock-remove-keyed | VERIFIED | Owner-keyed remove regression, full virtio-vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2437 merge, and main sync `2efc98f8` pass. |
 | B385-virtio-vsock-rx-bh-installed | VERIFIED | RX bottom-half ownership regression, full virtio-vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2438 merge, and main sync `4db141ad` pass. |
+| B386-net-vsock-owner-keyed-endpoints | VERIFIED | Owner-keyed endpoint TX routing regression, full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2439 merge, and main sync `947cb224` pass. |
 
-## B386-net-vsock-owner-keyed-endpoints
+## B387-af-vsock-bind-specific-local-cid
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
+Status: `>>> ACTIVE >>> CLAIMED`.
 
-Branch: `B386-net-vsock-owner-keyed-endpoints`
+Branch: `B387-af-vsock-bind-specific-local-cid`
 
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `ENDPOINTS` stores `{ owner, guest_cid, tx }`; reserve/publish/cancel/quiesce/uninstall, `guest_cid_for`, `driver_owner_for_cid`, `tx_for`, and RX delivery select by owner. |
-| Hosted regression | PASS: `tx_for_routes_through_matching_owner_endpoint` proves two live endpoints route through the matching owner's TX hook. |
-| `cargo test -p net tx_for_routes_through_matching_owner_endpoint -- --nocapture` | PASS: 1 passed. |
-| `cargo test -p net vsock -- --nocapture` | PASS: 25 passed. |
-| `./tools/boot-smoke-driver-path.sh x86 240` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b386-x86-driver-path.log`. |
-| `./tools/boot-smoke-driver-path.sh arm 300` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b386-arm-driver-path.log`. |
+Scope: prove or fix AF_VSOCK bind so a non-any local CID selects the matching
+live endpoint instead of silently using the primary endpoint.

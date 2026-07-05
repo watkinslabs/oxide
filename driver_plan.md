@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B386-net-vsock-owner-keyed-endpoints` — VERIFIED; COMMIT/PR PENDING.
+ACTIVE NOW: `B387-af-vsock-bind-specific-local-cid` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B386-net-vsock-owner-keyed-endpoints`.
+Current active item: `>>> ACTIVE >>> B387-af-vsock-bind-specific-local-cid`.
 
-Current B386 gate: source audit, hosted tests, and x86_64/aarch64 runtime proof
-pass; commit/PR/merge/main sync remain.
+Current B387 gate: prove or fix AF_VSOCK bind for a specific local CID by
+resolving the matching live endpoint, with hosted tests and x86_64/aarch64
+runtime proof before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -317,8 +318,8 @@ Status legend:
 | VERIFIED | B383-core-ipv6-ndp-iface-cache | Core IPv6 stack NDP cache is keyed by `(iface, IPv6 address)` and unregister purges the removed iface's entries; source audit, hosted NDP tests, line-cap check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2436 merge, and local main sync to `origin/main` at `505521d8` pass. |
 | VERIFIED | B384-virtio-vsock-remove-keyed | Virtio-vsock remove is keyed to the owning child device: source audit proves probe/remove/shutdown pass `VirtioChildDeviceKey`, driver ctx/endpoint/TX/RX select by owner key, hosted regression proves `uninstall(key1)` leaves `key2` ctx/endpoint live, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2437 merge, and local main sync to `origin/main` at `2efc98f8` pass. |
 | VERIFIED | B385-virtio-vsock-rx-bh-installed | Virtio-vsock clears `VsockRx` bottom half only for installed transport: source audit proves `SOFTIRQ_INSTALLED` gates handler install/clear and removal clears only after last ctx, hosted regression proves unpublished ctx teardown leaves live endpoint/RX bottom half installed, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2438 merge, and local main sync to `origin/main` at `4db141ad` pass. |
-| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B386-net-vsock-owner-keyed-endpoints | Upper `net::vsock` endpoint records are owner-keyed: source audit proves `ENDPOINTS` stores `{ owner, guest_cid, tx }` and install/reserve/publish/quiesce/uninstall/CID/TX/RX paths select by owner; hosted TX routing regression, full vsock tests, and fast x86_64/aarch64 driver-path smokes pass. |
-| NOT DONE |  | AF_VSOCK bind honors specific local CID by resolving live endpoint. |
+| VERIFIED | B386-net-vsock-owner-keyed-endpoints | Upper `net::vsock` endpoint records are owner-keyed: source audit proves `ENDPOINTS` stores `{ owner, guest_cid, tx }` and install/reserve/publish/quiesce/uninstall/CID/TX/RX paths select by owner; hosted TX routing regression, full vsock tests, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2439 merge, and local main sync to `origin/main` at `947cb224` pass. |
+| >>> ACTIVE >>> CLAIMED | B387-af-vsock-bind-specific-local-cid | AF_VSOCK bind honors specific local CID by resolving live endpoint. |
 | NOT DONE |  | Listener backlogs keyed by `(owner, port)`. |
 | NOT DONE |  | AF_VSOCK close releases listener/backlog/connection state. |
 | NOT DONE |  | Virtio-rng keeps per-child-key records. |
