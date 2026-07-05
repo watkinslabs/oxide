@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B408-timer-registry-owned-ids | VERIFIED | Timer owned-ID/unregister regressions, broader timer/net/sched tests, and x86_64/aarch64 driver-path proof pass. |
 | B409-driver-model-setup-policy | VERIFIED | Driver-core authority source audit, drv/pci-boot/virtio hosted tests, and x86_64/aarch64 driver-path proof pass; remaining virtio split stays in later rows. |
 | B410-virtio-transport-policy-boundary | VERIFIED | Shared virtio profile/resource/handoff boundary source-audited; virtio plus child-driver hosted tests and x86_64/aarch64 driver-path proof pass. |
-| B411-virtio-irq-core-bus-split | CLAIMED | Virtio IRQ callback/core-bus split audit claimed; source audit, hosted tests, and x86_64/aarch64 driver-path proof pending. |
+| B411-virtio-irq-core-bus-split | VERIFIED | Child-declared virtio IRQ callbacks flow through shared `VirtioTransportProfile`; PCI transport owns MSI-X programming/teardown; hosted virtio/pci/child tests and x86_64/aarch64 driver-path proof pass. |
