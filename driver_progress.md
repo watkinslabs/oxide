@@ -5,7 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B427-no-public-auto-bind; VERIFIED pending commit/PR.
+Current marker: B428-sysfs-explicit-bind-route; IN AUDIT.
+
+## B428-sysfs-explicit-bind-route
+
+Status: `IN AUDIT`; claim commit pending.
+
+Branch: `B428-sysfs-explicit-bind-route`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| ACTIVE | Route explicit binds through sysfs driver `bind` control path. |
 
 ## B427-no-public-auto-bind
 
@@ -620,3 +632,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B422-bind-unbind-uevent-stability | IN AUDIT | Fresh main `c36158b7`; auditing sysfs bind/unbind change uevent delivery, hosted test isolation, and live udev-monitor proof requirements. |
+
+## B428 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B428-sysfs-explicit-bind-route | VERIFIED | Fresh main `bbe06158`; source audit proves `/sys/bus/<bus>/drivers/<driver>/bind` uses `drv::bind_addr(bus, addr, driver)` and `unbind` resolves the bound model device before `drv::unbind`. Driver directory symlinks are derived from current model binding state. Focused hosted regressions `cargo test -p sysfs driver_bind_unbind_attrs_drive_drv_model -- --nocapture` and `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture` pass. Runtime arch proof is inherited from B422 live x86_64/aarch64 bind/unbind uevent probe because this branch is docs/metadata only and does not change kernel or userspace code. |

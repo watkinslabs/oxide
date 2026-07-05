@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B427-no-public-auto-bind; VERIFIED pending commit/PR.
+ACTIVE NOW: none; B428-sysfs-explicit-bind-route VERIFIED pending PR merge.
 
-Current active item: Public `drv::auto_bind` removal and internal auto-attach proof verified.
+Current active item: none; next claim starts after B428 merge and fresh main sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B428
+Next gate after merge: return to fresh `origin/main` before claiming B429
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -33,7 +33,7 @@ Status legend:
 | VERIFIED | B425-no-flat-driverentry-probeall | Old flat `DriverEntry` / `probe_all(bdf)` live driver path is absent from current source: `rg` over `crates/`, `userspace/`, and `tools/` finds no live `DriverEntry` or `probe_all` symbols, and `crates/drivers/drv/src/model.rs` is the authoritative registry/bind/probe path. `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | VERIFIED | B426-drv-model-authoritative-proof | `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` are authoritative in `crates/drivers/drv/src/model.rs`: `drv/src/lib.rs` re-exports the model API, production driver/sysfs/devfs/block/sound/DRM call sites route through these functions, no public `auto_bind`/`register_device`/infallible `device_add` bypass remains, and `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | VERIFIED | B427-no-public-auto-bind | Public `drv::auto_bind` is removed; automatic attachment is internal to `try_device_add` and `register_driver`: source search finds no `auto_bind` API, `try_device_add` calls private `attach_device_to_registered_drivers`, `register_driver` calls private `attach_driver_to_existing_devices`, both helpers call private `bind_inner`, focused auto-attach/no-initial-bind-change tests pass, and full `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
-| SOURCE OK |  | Route explicit binds through sysfs driver `bind` control path. |
+| VERIFIED | B428-sysfs-explicit-bind-route | Explicit binds route through sysfs driver `bind`: `/sys/bus/<bus>/drivers/<driver>/bind` parses the device address and calls `drv::bind_addr(bus, addr, driver)`, `unbind` resolves the currently bound model device and calls `drv::unbind`, driver directory links reflect bound model state, duplicate binds return `Ebusy`, and focused sysfs regressions `driver_bind_unbind_attrs_drive_drv_model` plus `bind_unbind_emit_change_uevents_from_current_model_state` pass. |
 | SOURCE OK |  | PCI enumeration creates `pci` model devices with BAR resources through fallible model publication. |
 | SOURCE OK |  | Register NVMe, AHCI, and virtio-pci as model drivers. |
 | SOURCE OK |  | Attach PCI drivers through driver core rather than enumeration-local direct bind calls. |
