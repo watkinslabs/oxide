@@ -2,14 +2,14 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B350-drm-magic-open-file-auth` — VERIFIED, PR merge pending.
+ACTIVE NOW: `B351-drm-unique-version-uapi` — VERIFIED, PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B350-drm-magic-open-file-auth`.
+Current active item: `>>> ACTIVE >>> B351-drm-unique-version-uapi`.
 
-Current B350 gate: source audit, forged-magic fix, hosted magic-state/ioctl
-regressions, full DRM tests, line-cap check, and fast x86_64/aarch64
-driver-path proof pass. Pre-push boot smoke, PR merge, and post-merge main
-sync remain.
+Current B351 gate: source audit, Linux UAPI behavior fix, hosted GET_UNIQUE
+and SET_VERSION regressions, full DRM tests, line-cap check, fast
+x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. PR merge and
+post-merge main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -283,8 +283,8 @@ Status legend:
 | VERIFIED | B347-drm-unregister-drops-card-state | DRM unregister drops that card CRTC and dumb-buffer state; source audit, hosted per-card unregister teardown regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2400 merge, and local main sync to `origin/main` at `a62a9129` pass. |
 | VERIFIED | B348-drm-master-open-file-state | DRM master state is per open file description; source audit, hosted dup/split-open/last-close master regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2401 merge, and local main sync to `origin/main` at `bdb8d725` pass. |
 | VERIFIED | B349-drm-page-flip-file-events | DRM PAGE_FLIP events are per card open file and poll/read correctly; source audit, hosted duplicate-open/split-open/split-card poll-read regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2402 merge, and local main sync to `origin/main` at `3287909f` pass. |
-| VERIFIED | B350-drm-magic-open-file-auth | DRM GET_MAGIC/AUTH_MAGIC allocate and authorize real per-open-file magic; forged `AUTH_MAGIC` now rejects unallocated magic, hosted magic-state/ioctl regressions, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. PR merge pending. |
-| NOT DONE |  | DRM GET_UNIQUE and SET_VERSION marshal Linux UAPI structs. |
+| VERIFIED | B350-drm-magic-open-file-auth | DRM GET_MAGIC/AUTH_MAGIC allocate and authorize real per-open-file magic; forged `AUTH_MAGIC` now rejects unallocated magic, hosted magic-state/ioctl regressions, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2403 merge, and local main sync to `origin/main` at `8e78fe0d` pass. |
+| >>> ACTIVE >>> VERIFIED | B351-drm-unique-version-uapi | DRM GET_UNIQUE and SET_VERSION marshal Linux UAPI structs; fixed GET_UNIQUE to stay empty until SET_VERSION, avoid partial undersized-buffer copies, and return driver version negotiation fields. Hosted regressions, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. PR merge pending. |
 | NOT DONE | TBD | DRM MODE_ATOMIC accepts only internally gated empty state; real atomic property/object tables missing. |
 | NOT DONE |  | DRM SET_CLIENT_CAP rejects unsupported atomic/writeback/aspect/stereo/cursor hotspot caps. |
 | NOT DONE |  | DRM GET_CAP stops advertising unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps. |

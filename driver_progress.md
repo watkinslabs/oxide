@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B350-drm-magic-open-file-auth`.
+Current marker: `>>> ACTIVE >>> B351-drm-unique-version-uapi`.
 
 ## Archived Completed B327-B330
 
@@ -468,29 +468,24 @@ Evidence:
 | Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
 | PR merge + main sync | PASS: PR #2401 merged; local `main` equals `origin/main` at `bdb8d725`. |
 
-## B349-drm-page-flip-file-events
+## Archived Completed B349
 
-Status: `VERIFIED`; merged by PR #2402.
-
-Branch: `B349-drm-page-flip-file-events`
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `page_flip` queues `DRM_EVENT_FLIP_COMPLETE` with `(card_id, file_token)`, `DrmCardFileOps::read_file` drains that same key, `poll_open_file` reports `POLL_IN` only for that key, and release clears unread events for the closing open file description. |
-| Hosted regression | PASS: `page_flip_events_are_open_file_poll_read_state` proves duplicate refs to the same open file description share readiness, separate opens and separate cards stay unreadable, short reads leave the event pending, and full reads drain only the owner record. |
-| `cargo test -p drm page_flip_events_are_open_file_poll_read_state -- --nocapture` | PASS: 1 passed. |
-| `cargo test -p drm` | PASS: 62 passed. |
-| Line cap | PASS: `node/publication.rs` 255 lines, `node/tests.rs` 474, `crtc.rs` 438. |
-| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/oxide-driver-path-x86-aZmQuJ.log`. |
-| `make smoke-driver-path-arm` / pre-push boot smoke | PASS: driver-path ARM passed; pre-push boot smoke reached `oxide login:` on x86_64 and aarch64. Driver-path ARM log: `/tmp/oxide-driver-path-arm-hMbp8M.log`. |
-| PR merge + main sync | PASS: PR #2402 merged; local `main` equals `origin/main` at `3287909f`. |
+| Branch | Status | Evidence |
+|---|---|---|
+| B349-drm-page-flip-file-events | VERIFIED | Per-card open-file page-flip poll/read regression, full DRM tests, x86/ARM driver-path, pre-push boot smoke, PR #2402, main sync `3287909f`. |
 
 ## B350-drm-magic-open-file-auth
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2403.
 
 Branch: `B350-drm-magic-open-file-auth`
 
 Evidence: source audit found forged `AUTH_MAGIC` accepted; fixed `authorize_magic` to require a live `GET_MAGIC` allocation. `magic_is_live_open_file_state`, `drm_auth_magic_requires_master_and_records_requested_magic`, full `cargo test -p drm` with 63 tests, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass. Line cap pass: `node/auth.rs` 210, `node.rs` 355, `node/tests.rs` 480.
+
+## B351-drm-unique-version-uapi
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B351-drm-unique-version-uapi`
+
+Evidence: source audit found `GET_UNIQUE` exposed bus id before `SET_VERSION` and copied partial undersized buffers; fixed per-open-file unique enable, release/unregister cleanup, Linux no-partial-copy behavior, and SET_VERSION driver/interface negotiation writeback. `drm_get_unique_copies_driver_bus_id_and_reports_full_length`, `drm_set_version_negotiates_supported_core_interface`, full `cargo test -p drm` with 63 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass.
