@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B468-remove-public-infallible-device-add VERIFIED pending PR merge.
+Current marker: none; B469-sysfs-bus-driver-bind-unbind VERIFIED pending PR merge.
+
+## B469 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B469-sysfs-bus-driver-bind-unbind | VERIFIED | Fresh main `8a5c54f2` after PR #2526 merge; source audit proves `crates/kernel/sysfs/src/bus/driver.rs::DriverAttrOps::write` maps driver `bind` writes to `drv::bind_addr(data.bus, addr, data.driver)`, maps `unbind` writes through a current model lookup requiring `d.bus`, `d.addr`, and `d.bound() == Some(data.driver)`, then calls `drv::unbind(&dev)`. `DriverDirOps` exposes `bind`/`unbind` attrs and bound-device symlinks only from current `drv::devices()` state; `drv_error_to_vfs` maps driver-model failures to Linux-style VFS errors. Source audit also proves `drv::bind_addr` resolves `(bus, addr)` and calls model `bind`, while `drv::unbind` calls driver `remove`, clears bound state, and emits the bind hook that `sysfs::bind_device_cb` uses for change uevents. Checks pass: `cargo test -p sysfs -p drv -- --nocapture --test-threads=1` with sysfs 25/25 and drv 27/27, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B468 Current
 
