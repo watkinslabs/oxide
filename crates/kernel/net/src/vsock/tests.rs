@@ -84,6 +84,24 @@ fn driver_owner_for_cid_resolves_only_live_endpoint() {
 }
 
 #[test]
+fn bind_owner_for_cid_requires_matching_live_endpoint() {
+    with_vsock_state(|| {
+        assert_eq!(bind_owner_for_cid(VMADDR_CID_ANY), Ok(0));
+        assert_eq!(bind_owner_for_cid(3), Err(NetError::Eaddrnotavail));
+        assert!(driver_install(73, 3, tx_ok));
+        assert!(driver_install(74, 4, tx_ok));
+        assert_eq!(bind_owner_for_cid(3), Ok(73));
+        assert_eq!(bind_owner_for_cid(4), Ok(74));
+
+        assert!(driver_quiesce(73));
+        assert_eq!(bind_owner_for_cid(3), Err(NetError::Eaddrnotavail));
+        assert_eq!(bind_owner_for_cid(4), Ok(74));
+        assert!(driver_cancel_reserved(73));
+        assert!(driver_uninstall(74));
+    });
+}
+
+#[test]
 fn driver_endpoints_are_owner_keyed() {
     with_vsock_state(|| {
         assert!(driver_install(41, 3, tx_ok));

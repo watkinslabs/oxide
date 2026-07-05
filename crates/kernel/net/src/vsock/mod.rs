@@ -177,6 +177,16 @@ pub fn driver_owner_for_cid(cid: u64) -> Option<u32> {
         .map(|e| e.owner)
 }
 
+/// Resolve a bind local CID to an endpoint owner. `VMADDR_CID_ANY` stays
+/// wildcard owner 0; a specific CID must name a live endpoint.
+/// # C: O(N endpoints)
+pub fn bind_owner_for_cid(cid: u64) -> Result<u32, NetError> {
+    if cid == VMADDR_CID_ANY {
+        return Ok(0);
+    }
+    driver_owner_for_cid(cid).ok_or(NetError::Eaddrnotavail)
+}
+
 /// Primary driver instance for the compatibility socket path, or 0 if none.
 /// # C: O(N endpoints)
 pub fn driver_owner() -> u32 {
