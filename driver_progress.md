@@ -455,7 +455,7 @@ Evidence:
 
 ## B342-parented-drm-minors-links
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit/PR merge pending.
 
 Branch: `B342-parented-drm-minors-links`
 
@@ -463,10 +463,19 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | Parented DRM minors live under owning device with class and `/sys/dev/char` links. |
+| VERIFIED | Parented DRM minors live under owning device with class and `/sys/dev/char` links. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: DRM minors are synthesized from live `drv::devices()` records with parent bus/address, parent device dirs expose `drm` when parented minors exist, `/sys/class/drm/cardN` links to `../../devices/virtio/.../drm/cardN`, minor dirs expose `dev`/`device`/`subsystem`, and `/sys/dev/char/226:N` uses the DRM target helper for the parented path. |
+| Hosted parented DRM/sysdev regressions | PASS: focused class, parent-dir, and `/sys/dev/char` tests prove the row. |
+| `cargo test -p sysfs sys_dev_char_indexes_parented_drm_under_parent_device -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p sysfs drm_class_device_links_to_model_parent_when_present -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p sysfs drm_class_enumerates_live_model_devices -- --nocapture` | PASS: 1 passed. |
+| Full `cargo test -p sysfs` | NOT USED as B342 pass: unrelated intermittent uevent isolation failed two different full-run tests, and a failing test passed alone; recorded in `driver_plan.md`. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `sysfs/src/drm.rs` 443, `bus/tests.rs` 420, `bus/index.rs` 95, `bus/device.rs` 309, `driver_progress.md` under cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b342-parented-drm-minors-links-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b342-parented-drm-minors-links-arm.log`. |
