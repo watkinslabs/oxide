@@ -23,7 +23,7 @@ Status legend:
 |---|---|---|
 | SOURCE OK | B001-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
 | VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
-| >>> ACTIVE >>> BLOCKED | B326-userspace-seat-driver-proof | QEMU/userspace proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, uevent delivery, `/run/udev`, and seat state. |
+| >>> ACTIVE >>> IN AUDIT | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME is final seat gate only. |
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
 | SOURCE OK |  | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
 | SOURCE OK |  | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |

@@ -76,10 +76,9 @@ fn export_arch(
     }
 
     if arch == "aarch64" {
-        let image = crate::buildns::arm_image(repo, id);
-        if copy_optional(&image, &arch_out.join("kernel.Image"))? {
-            manifest.push_str("aarch64.kernel_image=aarch64/kernel.Image\n");
-        }
+        let image = crate::image_qemu::build_arm_image(repo, id, &elf)?;
+        copy_required(&image, &arch_out.join("kernel.Image"))?;
+        manifest.push_str("aarch64.kernel_image=aarch64/kernel.Image\n");
     }
     Ok(())
 }

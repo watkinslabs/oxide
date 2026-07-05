@@ -223,11 +223,11 @@ pub fn invoke_arm_irq_handler(intid: u32) -> bool {
     false
 }
 
-/// Per-SPI handler table for the GICv2m / LPI MSI range. Two
+/// Per-INTID handler table for the GICv2m SPI / GICv3 LPI MSI range. Two
 /// parallel atomic arrays so the storage stays Send+Sync without
-/// a lock: SPIs[i] holds the INTID for slot i (0 = empty), HANDS[i]
+/// a lock: SPIS[i] holds the INTID for slot i (0 = empty), HANDS[i]
 /// holds the fn pointer cast through `*mut ()`. Lookup scans the
-/// fixed-size table — B002 boots enough MSI devices that eight slots is too
+/// fixed-size table: B002 boots enough MSI devices that eight slots is too
 /// small; the scan stays cheap at this size.
 #[cfg(target_arch = "aarch64")]
 const ARM_MSI_SLOTS: usize = 32;
@@ -322,6 +322,37 @@ pub fn alloc_arm_spi() -> Option<u32> {
                 .is_ok()
             {
                 return Some(spi);
+            }
+        }
+    }
+    None
+}
+
+/// Allocate one LPI INTID for a GICv3 ITS-backed MSI/MSI-X vector.
+/// LPI 8192 is reserved for the early ITS self-test mapping; runtime
+/// drivers start at 8193.
+/// # C: O(N²) over the small MSI table.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub fn alloc_arm_lpi() -> Option<u32> {
+    let first = crate::gic::LPI_BASE + 1;
+    let limit = first + ARM_MSI_SLOTS as u32;
+    for lpi in first..limit {
+        let mut seen = false;
+        for i in 0..ARM_MSI_SLOTS {
+            if ARM_MSI_SPIS[i].load(Ordering::Acquire) == lpi {
+                seen = true;
+                break;
+            }
+        }
+        if seen {
+            continue;
+        }
+        for i in 0..ARM_MSI_SLOTS {
+            if ARM_MSI_SPIS[i]
+                .compare_exchange(0, lpi, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Some(lpi);
             }
         }
     }

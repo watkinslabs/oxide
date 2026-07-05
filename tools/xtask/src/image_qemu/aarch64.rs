@@ -8,7 +8,7 @@ use super::common::{ensure_ahci_img, ensure_nvme_img, ssh_fwd_netdev, which};
 /// header + PE32+/EFI header + MMU trampoline at byte 0). The artifact is
 /// what GRUB `linux`, UEFI LoadImage, U-Boot `booti`, and QEMU `-kernel`
 /// all load.
-pub(super) fn build_arm_image(
+pub(crate) fn build_arm_image(
     repo: &std::path::Path,
     id: Option<&str>,
     kernel_elf: &std::path::Path,

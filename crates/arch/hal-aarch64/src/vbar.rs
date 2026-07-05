@@ -71,6 +71,40 @@ extern "C" {
 /// each CPU stores/reads its own slot, so concurrent syscalls on two CPUs
 /// never clobber each other's frame pointer (the SP_EL0-poison bug).
 const PERCPU_SVC_FRAME_OFF: usize = 24;
+const AARCH64_INSN_BYTES: u64 = 4;
+const ESR_EC_SHIFT: u64 = 26;
+const ESR_EC_MASK: u64 = 0x3f;
+const ESR_EC_SYSREG_TRAP: u64 = 0x18;
+const SYSREG_ISS_DIR_READ: u64 = 1;
+const SYSREG_ISS_DIR_SHIFT: u64 = 0;
+const SYSREG_ISS_RT_SHIFT: u64 = 5;
+const SYSREG_ISS_RT_MASK: u64 = 0x1f;
+const SYSREG_ISS_CRN_SHIFT: u64 = 10;
+const SYSREG_ISS_CRM_SHIFT: u64 = 1;
+const SYSREG_ISS_OP1_SHIFT: u64 = 14;
+const SYSREG_ISS_OP2_SHIFT: u64 = 17;
+const SYSREG_ISS_OP0_SHIFT: u64 = 20;
+const SYSREG_OP0_MASK: u64 = 0x3;
+const SYSREG_OP_MASK: u64 = 0x7;
+const SYSREG_CR_MASK: u64 = 0xf;
+const SYSREG_XZR_RT: u64 = 31;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct SysReg {
+    op0: u64,
+    op1: u64,
+    crn: u64,
+    crm: u64,
+    op2: u64,
+}
+
+const SYSREG_CNTFRQ_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 0 };
+const SYSREG_CNTVCT_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 2 };
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+extern "C" {
+    fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64;
+}
 
 /// Read this CPU's per-CPU area base (`TPIDR_EL1`).
 /// # SAFETY: boot/ap_main set TPIDR_EL1 to a ≥4 KiB per-CPU page; EL1-only.
@@ -148,6 +182,86 @@ pub fn set_current_svc_frame(frame_base: u64) {
     unsafe { core::ptr::write_volatile((base as usize + PERCPU_SVC_FRAME_OFF) as *mut u64, frame_base); }
 }
 
+fn sysreg_ec(esr: u64) -> u64 {
+    (esr >> ESR_EC_SHIFT) & ESR_EC_MASK
+}
+
+fn sysreg_iss_reg(esr: u64) -> SysReg {
+    SysReg {
+        op0: (esr >> SYSREG_ISS_OP0_SHIFT) & SYSREG_OP0_MASK,
+        op1: (esr >> SYSREG_ISS_OP1_SHIFT) & SYSREG_OP_MASK,
+        crn: (esr >> SYSREG_ISS_CRN_SHIFT) & SYSREG_CR_MASK,
+        crm: (esr >> SYSREG_ISS_CRM_SHIFT) & SYSREG_CR_MASK,
+        op2: (esr >> SYSREG_ISS_OP2_SHIFT) & SYSREG_OP_MASK,
+    }
+}
+
+fn sysreg_iss_rt(esr: u64) -> u64 {
+    (esr >> SYSREG_ISS_RT_SHIFT) & SYSREG_ISS_RT_MASK
+}
+
+fn sysreg_iss_is_read(esr: u64) -> bool {
+    ((esr >> SYSREG_ISS_DIR_SHIFT) & SYSREG_ISS_DIR_READ) == SYSREG_ISS_DIR_READ
+}
+
+fn write_saved_rt(frame: &mut SvcFrame, rt: u64, value: u64) {
+    match rt {
+        0..=17 => frame.gp[rt as usize] = value,
+        18 => frame.x18_x29[0] = value,
+        19..=28 => frame.x19_x28[(rt - 19) as usize] = value,
+        29 => frame.x18_x29[1] = value,
+        30 => frame.x30 = value,
+        SYSREG_XZR_RT => {}
+        _ => {}
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+fn read_cntfrq_el0() -> u64 {
+    let v: u64;
+    // SAFETY: `mrs CNTFRQ_EL0` reads the architected counter frequency and has no memory side effects.
+    unsafe { core::arch::asm!("mrs {v}, cntfrq_el0", v = out(reg) v, options(nomem, nostack, preserves_flags)); }
+    v
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+fn read_cntvct_el0() -> u64 {
+    let v: u64;
+    // SAFETY: `mrs CNTVCT_EL0` reads the architected virtual counter and has no memory side effects.
+    unsafe { core::arch::asm!("mrs {v}, cntvct_el0", v = out(reg) v, options(nomem, nostack, preserves_flags)); }
+    v
+}
+
+/// Handle EL0 trapped MRS/MSR instructions. Linux exposes the architected
+/// counter registers to userspace; unsupported trapped sysregs stay SIGILL.
+/// # SAFETY: `frame` is the live 288 B lower-EL sync frame owned by this CPU.
+/// # C: O(1)
+/// # Ctx: synchronous exception, IRQs masked
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+#[no_mangle]
+pub unsafe extern "C" fn oxide_arm_sysreg_trap_handler(frame: *mut SvcFrame, esr: u64) -> u64 {
+    // SAFETY: caller passed the live lower-EL sync frame for this exception.
+    let f = unsafe { &mut *frame };
+    if sysreg_ec(esr) != ESR_EC_SYSREG_TRAP || !sysreg_iss_is_read(esr) {
+        // SAFETY: the frame is byte-identical to the undef frame expected by the SIGILL delivery path.
+        return unsafe { oxide_arm_undef_handler(frame.cast::<u8>()) };
+    }
+    let reg = sysreg_iss_reg(esr);
+    let value = if reg == SYSREG_CNTVCT_EL0 {
+        read_cntvct_el0()
+    } else if reg == SYSREG_CNTFRQ_EL0 {
+        read_cntfrq_el0()
+    } else {
+        // SAFETY: the frame is byte-identical to the undef frame expected by the SIGILL delivery path.
+        return unsafe { oxide_arm_undef_handler(frame.cast::<u8>()) };
+    };
+    let rt = sysreg_iss_rt(esr);
+    let saved_x0 = f.gp[0];
+    write_saved_rt(f, rt, value);
+    f.elr_el1 = f.elr_el1.wrapping_add(AARCH64_INSN_BYTES);
+    if rt == 0 { value } else { saved_x0 }
+}
+
 /// Address of the vector table, or 0 on host where the asm symbol
 /// doesn't exist.
 fn vector_table_addr() -> u64 {
@@ -206,5 +320,14 @@ mod tests {
         // SAFETY: hosted test; the asm path is cfg'd out, so install
         // exercises only the no-op fallback branch.
         unsafe { install_default() };
+    }
+
+    #[test]
+    fn sysreg_iss_decodes_cntvct_el0() {
+        let esr = (ESR_EC_SYSREG_TRAP << ESR_EC_SHIFT) | 0x34f841;
+        assert_eq!(sysreg_ec(esr), ESR_EC_SYSREG_TRAP);
+        assert!(sysreg_iss_is_read(esr));
+        assert_eq!(sysreg_iss_rt(esr), 2);
+        assert!(sysreg_iss_reg(esr) == SYSREG_CNTVCT_EL0);
     }
 }
