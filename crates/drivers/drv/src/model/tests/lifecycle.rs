@@ -152,6 +152,32 @@ fn try_device_add_rejects_duplicate_bus_identity() {
 }
 
 #[test]
+fn rollback_devices_after_conflict_removes_only_published_batch() {
+    let existing = try_device_add(Arc::new(Device::new(
+        "tty", String::from(ROLLBACK_KEEP_ADDR), 0, ROLLBACK_KEEP_ID, 0)))
+        .unwrap();
+    let published = try_device_add(Arc::new(Device::new(
+        "tty", String::from(ROLLBACK_DROP_ADDR), 0, ROLLBACK_DROP_ID, 0)))
+        .unwrap();
+    let conflict = try_device_add(Arc::new(Device::new(
+        "tty", String::from(ROLLBACK_KEEP_ADDR), 0, ROLLBACK_CONFLICT_ID, 0)));
+
+    assert!(matches!(conflict, Err(crate::Error::Busy)));
+    rollback_devices(&[Arc::clone(&published)]);
+
+    assert!(devices().iter().any(|d| Arc::ptr_eq(d, &existing)));
+    assert!(!devices().iter().any(|d| Arc::ptr_eq(d, &published)));
+    assert_eq!(
+        devices().iter()
+            .filter(|d| d.bus == "tty" && d.addr == ROLLBACK_KEEP_ADDR)
+            .count(),
+        1
+    );
+
+    device_del(&existing);
+}
+
+#[test]
 fn try_device_add_preserves_pci_bar_resources_and_rejects_republish() {
     let first = try_device_add(Arc::new(
         Device::new("pci", String::from("0000:00:18.0"), 0x1234, 0x5678, 0x010601)

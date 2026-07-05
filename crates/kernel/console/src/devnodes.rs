@@ -63,9 +63,7 @@ fn push_tty_node(
         }
         Ok(None) => Ok(()),
         Err(e) => {
-            for dev in published.iter().rev() {
-                drv::device_del(dev);
-            }
+            drv::rollback_devices(published);
             Err(e)
         }
     }
