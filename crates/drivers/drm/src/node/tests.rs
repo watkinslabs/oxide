@@ -9,6 +9,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::DRM_MODE_ATOMIC_TEST_ONLY;
 use vfs::{Dentry, File, OpenFlags};
 
+#[path = "tests/client_cap.rs"]
+mod client_cap;
+
 static LAST_SCANOUT_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 
 fn record_create(driver_key: u32, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> {

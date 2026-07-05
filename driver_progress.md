@@ -407,8 +407,8 @@ Evidence: source audit found `struct drm_mode_atomic` missing `user_data` and io
 
 ## B353-drm-client-cap-rejects-unsupported
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, pre-push/PR merge pending`.
 
 Branch: `B353-drm-client-cap-rejects-unsupported`
 
-Evidence: source audit started for `DRM_IOCTL_SET_CLIENT_CAP` rejection of unsupported atomic/writeback/aspect/stereo/cursor-hotspot caps; no completion claim yet.
+Evidence: source audit against Linux `drm_setclientcap` found unsupported caps must error before file-state mutation; fixed `SET_CLIENT_CAP` so stereo/atomic/aspect/writeback/cursor-hotspot reject value 0 and 1, leaving private cap state untouched. Focused unsupported-cap regression, full `cargo test -p drm` with 64 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass.
