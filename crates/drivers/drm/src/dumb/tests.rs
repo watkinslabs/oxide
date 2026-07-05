@@ -2,6 +2,7 @@ use super::*;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 mod addfb2_modifiers;
+mod addfb_packed_rgb;
 
 static DESTROYED_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 static DESTROYED_RES_ID: AtomicU32 = AtomicU32::new(0);
