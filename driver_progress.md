@@ -426,7 +426,7 @@ Evidence:
 
 ## B343-scanout-backing-bdf-keyed
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit/PR merge pending.
 
 Branch: `B343-scanout-backing-bdf-keyed`
 
@@ -434,10 +434,18 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | Scanout backing state is BDF-keyed. |
+| VERIFIED | Scanout backing state is BDF-keyed. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `ScanoutCtx` still keeps BDF only as PCI identity metadata, but console owner, fbdev ops, DRM scanout ops, runtime create/destroy/set/restore/flush, dimensions, framebuffer, readiness, publish, and unpublish now resolve by `VirtioChildDeviceKey` raw owner key. |
+| Hosted key-vs-BDF regression | PASS: `failed_probe_unwind_removes_only_matching_child_scanout` now creates two scanout contexts with the same BDF and distinct child keys, proves dimensions resolve by key, and removes only the requested key. |
+| `cargo test -p drv-virtio-gpu failed_probe_unwind_removes_only_matching_child_scanout -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drv-virtio-gpu` | PASS: 31 passed. |
+| `cargo test -p drm` | PASS: 58 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `post_init.rs` 136, `scanout.rs` 288, `runtime.rs` 97, `post_init/tests.rs` 114, `device.rs` 384, `driver_progress.md` under cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b343-scanout-backing-bdf-keyed-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b343-scanout-backing-bdf-keyed-arm.log`. |

@@ -106,7 +106,7 @@ pub fn get_display_info(
             return false;
         }
     }
-    publish_console_scanout(bdf_word);
+    publish_console_scanout(device_key);
     true
 }
 
