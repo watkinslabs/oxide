@@ -23,9 +23,22 @@ pub unsafe fn init(info: &BootInfo) {
 }
 
 #[cfg(target_os = "oxide-kernel")]
+const PLATFORM_BUS: &str = "platform";
+#[cfg(target_os = "oxide-kernel")]
+const SERIAL_PLATFORM_ADDR: &str = "serial0";
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+const I8042_PLATFORM_ADDR: &str = "i8042";
+#[cfg(target_os = "oxide-kernel")]
+const BOOT_PLATFORM_VENDOR_ID: u16 = 0;
+#[cfg(target_os = "oxide-kernel")]
+const BOOT_PLATFORM_DEVICE_ID: u16 = 0;
+#[cfg(target_os = "oxide-kernel")]
+const BOOT_PLATFORM_CLASS: u32 = 0;
+
+#[cfg(target_os = "oxide-kernel")]
 fn init_serial_console() {
     let uart_drv = drv_serial::uart_driver();
-    let dev = platform_device_or_panic("serial0");
+    let dev = platform_device_or_panic(SERIAL_PLATFORM_ADDR);
     drv::register_driver(uart_drv);
     if dev.bound() == Some(drv::Driver::name(uart_drv)) {
         klog::set_byte_sink(drv_serial::emit);
@@ -36,7 +49,7 @@ fn init_serial_console() {
 fn init_ps2_keyboard(info: &BootInfo) {
     let ps2_drv = drv_ps2_keyboard::driver();
     drv_ps2_keyboard::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
-    platform_device_or_panic("i8042");
+    platform_device_or_panic(I8042_PLATFORM_ADDR);
     drv::register_driver(ps2_drv);
 }
 
@@ -159,31 +172,51 @@ fn init_network_and_pci() {
 #[cfg(target_os = "oxide-kernel")]
 fn platform_device_or_panic(addr: &'static str) -> alloc::sync::Arc<drv::Device> {
     let candidate = alloc::sync::Arc::new(drv::Device::new(
-        "platform",
+        PLATFORM_BUS,
         alloc::string::String::from(addr),
-        0,
-        0,
-        0,
+        BOOT_PLATFORM_VENDOR_ID,
+        BOOT_PLATFORM_DEVICE_ID,
+        BOOT_PLATFORM_CLASS,
     ));
     match drv::try_device_add(alloc::sync::Arc::clone(&candidate)) {
         Ok(dev) => dev,
         Err(drv::Error::Busy) => {
-            if let Some(existing) = drv::devices().into_iter().find(|d| {
-                d.bus == "platform"
-                    && d.addr == addr
-                    && d.parent_bus.is_none()
-                    && d.parent_addr.is_none()
-                    && d.vendor_id == 0
-                    && d.device_id == 0
-                    && d.class == 0
-                    && d.devname.is_none()
-                    && d.resources.is_empty()
-            }) {
+            if let Some(existing) = drv::devices().into_iter()
+                .find(|d| boot_platform_identity_matches(d, addr)) {
                 existing
             } else {
-                panic!("conflicting platform device registration: {}", addr);
+                panic_platform_device_conflict(addr);
             }
         }
-        Err(e) => panic!("platform device registration failed for {}: {:?}", addr, e),
+        Err(_) => panic_platform_device_failure(addr),
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn boot_platform_identity_matches(d: &drv::Device, addr: &'static str) -> bool {
+    d.bus == PLATFORM_BUS
+        && d.addr == addr
+        && d.parent_bus.is_none()
+        && d.parent_addr.is_none()
+        && d.vendor_id == BOOT_PLATFORM_VENDOR_ID
+        && d.device_id == BOOT_PLATFORM_DEVICE_ID
+        && d.class == BOOT_PLATFORM_CLASS
+        && d.devname.is_none()
+        && d.resources.is_empty()
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn panic_platform_device_conflict(addr: &'static str) -> ! {
+    klog::write_raw(b"[ERR] platform device conflict: ");
+    klog::write_raw(addr.as_bytes());
+    klog::write_raw(b"\n");
+    panic!("conflicting platform device registration");
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn panic_platform_device_failure(addr: &'static str) -> ! {
+    klog::write_raw(b"[ERR] platform device add failed: ");
+    klog::write_raw(addr.as_bytes());
+    klog::write_raw(b"\n");
+    panic!("platform device registration failed");
 }
