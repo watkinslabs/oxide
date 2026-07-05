@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B506-gpu-owner-key-boundary; IN AUDIT.
+Current marker: B506-gpu-owner-key-boundary; VERIFIED.
 
 ## B506 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B506-gpu-owner-key-boundary | ACTIVE | Fresh main `5755e327` after PR #2569 merge. Claimed `drv-virtio-gpu` BDF metadata/callback key use in DRM/fbdev private paths; `metadata/index.md` advanced B 506 -> 507. Read-only fanout is auditing `drv-virtio-gpu`, DRM, and fbdev identity paths before code changes. |
+| B506-gpu-owner-key-boundary | VERIFIED | Fresh main `5755e327` after PR #2569 merge. Added typed DRM/fbdev callback keys: `drm::node::ScanoutDriverKey` and `fbdev::FbDriverKey`; `drv-virtio-gpu` converts from `VirtioChildDeviceKey` only at hook install and callback adapters, with BDF retained only as metadata/unique-string input. Private scanout helpers now consume `VirtioChildDeviceKey` instead of raw owner integers. Checks pass: `cargo test -q -p drm -p fbdev -- --nocapture --test-threads=1` with DRM 68/68 and fbdev 23/23; `cargo test -q -p drv-virtio-gpu -- --nocapture --test-threads=1` 36/36; broad hosted `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with child suites 18/18, 36/36, 36/36, 16/16, 8/8, 8/8, 7/7, shared `virtio` 43/43, and pci-boot compile-only 0 tests; `git diff --check`; touched Rust files remain at or under 500 lines (`drm/src/dumb/tests.rs` 500, `drm/src/node/tests.rs` 496, `drv-virtio-gpu/src/post_init/scanout.rs` 423, `runtime.rs` 105, `fbdev/src/registry.rs` 263); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 54s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 58s. |
 
 ## B505 Current
 
@@ -29,7 +29,7 @@ Current marker: B506-gpu-owner-key-boundary; IN AUDIT.
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B506-next-driver-row | PENDING | Claim next unverified row only after B505 commit, PR, merge, and fresh `main` sync. Use `metadata/index.md` before opening the branch. |
+| B507-next-driver-row | PENDING | Claim next unverified row only after B506 commit, PR, merge, and fresh `main` sync. Use `metadata/index.md` before opening the branch. |
 
 ## B503 Current
 

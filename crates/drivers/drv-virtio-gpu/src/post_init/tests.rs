@@ -75,8 +75,8 @@ fn failed_probe_unwind_removes_only_matching_child_scanout() {
     CTX.lock().push(first);
     CTX.lock().push(second);
 
-    assert_eq!(dimensions_for_key(key(1).raw()), Some((640, 480)));
-    assert_eq!(dimensions_for_key(key(2).raw()), Some((800, 600)));
+    assert_eq!(dimensions_for_key(key(1)), Some((640, 480)));
+    assert_eq!(dimensions_for_key(key(2)), Some((800, 600)));
     assert!(uninstall_scanout_after_failed_probe(key(1)));
     let guard = CTX.lock();
     assert_eq!(guard.len(), 1);

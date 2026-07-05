@@ -4,6 +4,10 @@ fn key_from_raw(raw: u32) -> virtio::VirtioChildDeviceKey {
     virtio::VirtioChildDeviceKey::from_raw(raw)
 }
 
+fn key_from_fb_driver(driver_key: fbdev::FbDriverKey) -> virtio::VirtioChildDeviceKey {
+    key_from_raw(driver_key.raw())
+}
+
 pub(super) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
     match CONSOLE_OWNER_KEY.load(Ordering::Acquire) {
         NO_CONSOLE_OWNER_KEY => None,
@@ -40,8 +44,8 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
     }
 }
 
-pub fn blank_scanout_for_key(owner_raw: u32) {
-    let owner = key_from_raw(owner_raw);
+pub fn blank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
+    let owner = key_from_fb_driver(driver_key);
     let g = CTX.lock();
     let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
@@ -61,8 +65,8 @@ pub fn blank_scanout_for_key(owner_raw: u32) {
     }
 }
 
-pub fn unblank_scanout_for_key(owner_raw: u32) {
-    if console_owner_key().map(|key| key.raw()) == Some(owner_raw) {
+pub fn unblank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
+    if console_owner_key().map(|key| key.raw()) == Some(driver_key.raw()) {
         fbcon::kernel::force_repaint();
     }
 }
@@ -102,12 +106,13 @@ fn take_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey) -> Option<u3
 }
 
 #[cfg(any(target_os = "oxide-kernel", test))]
-fn install_console_fbdev(device_key: virtio::VirtioChildDeviceKey, owner_raw: u32) -> Option<u32> {
-    let (base_pa, fb_va, bytes, pitch, fw, fh) = framebuffer_for_key(owner_raw)?;
+fn install_console_fbdev(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+    let (base_pa, fb_va, bytes, pitch, fw, fh) = framebuffer_for_key(device_key)?;
+    let driver_key = fbdev::FbDriverKey::from_raw(device_key.raw())?;
     let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
     if idx == fbdev::INVALID_FB_INDEX
         || !fbdev::set_ops(idx, fbdev::FbOps {
-            driver_key: owner_raw,
+            driver_key,
             flush: super::flush_scanout_for_key,
             blank: blank_scanout_for_key,
             unblank: unblank_scanout_for_key,
@@ -206,38 +211,34 @@ pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDevic
 
 pub fn scanout_ready() -> bool { !CTX.lock().is_empty() }
 
-pub fn scanout_ready_for_key(owner_raw: u32) -> bool {
-    let owner = key_from_raw(owner_raw);
-    CTX.lock().iter().any(|ctx| ctx.device_key == owner)
+pub fn scanout_ready_for_key(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
 }
 
 pub fn dimensions() -> Option<(u32, u32)> {
     let owner = console_owner_key()?;
-    dimensions_for_key(owner.raw())
+    dimensions_for_key(owner)
 }
 
-pub fn dimensions_for_key(owner_raw: u32) -> Option<(u32, u32)> {
-    let owner = key_from_raw(owner_raw);
-    CTX.lock().iter().find(|c| c.device_key == owner).map(|c| (c.w, c.h))
+pub fn dimensions_for_key(device_key: virtio::VirtioChildDeviceKey) -> Option<(u32, u32)> {
+    CTX.lock().iter().find(|c| c.device_key == device_key).map(|c| (c.w, c.h))
 }
 
 pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
     let owner = console_owner_key()?;
-    framebuffer_for_key(owner.raw())
+    framebuffer_for_key(owner)
 }
 
-pub fn framebuffer_for_key(owner_raw: u32) -> Option<(u64, u64, u64, u32, u32, u32)> {
-    let owner = key_from_raw(owner_raw);
+pub fn framebuffer_for_key(device_key: virtio::VirtioChildDeviceKey) -> Option<(u64, u64, u64, u32, u32, u32)> {
     let g = CTX.lock();
-    let c = g.iter().find(|ctx| ctx.device_key == owner)?;
+    let c = g.iter().find(|ctx| ctx.device_key == device_key)?;
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
-    let owner_raw = device_key.raw();
-    let Some((w, h)) = dimensions_for_key(owner_raw) else { return };
-    let Some(idx) = install_console_fbdev(device_key, owner_raw) else { return };
+    let Some((w, h)) = dimensions_for_key(device_key) else { return };
+    let Some(idx) = install_console_fbdev(device_key) else { return };
     if !commit_console_owner_key(device_key, idx) { return; }
 
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
@@ -363,7 +364,7 @@ mod tests {
         reset_publication_state();
         CTX.lock().push(ctx(key(0x10)));
 
-        let idx = install_console_fbdev(key(0x10), key(0x10).raw()).unwrap();
+        let idx = install_console_fbdev(key(0x10)).unwrap();
 
         assert_eq!(console_owner_key(), None);
         assert_eq!(CTX.lock()[0].fbdev_idx, Some(idx));
@@ -381,7 +382,7 @@ mod tests {
         CTX.lock().push(ctx(key(0x10)));
         CONSOLE_OWNER_KEY.store(key(0x20).raw(), Ordering::Release);
 
-        let idx = install_console_fbdev(key(0x10), key(0x10).raw()).unwrap();
+        let idx = install_console_fbdev(key(0x10)).unwrap();
 
         assert!(!commit_console_owner_key(key(0x10), idx));
         assert_eq!(console_owner_key(), Some(key(0x20)));

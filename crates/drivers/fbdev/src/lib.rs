@@ -20,7 +20,7 @@ pub use registry::{
     apply_blank, backing_of, blank_of, clear_ops, count, fix_of, flush, init_scanout,
     is_blank_level, kva_of, line_length, pack_pseudo, palette_at, pan_check, register,
     set_blank, set_ops, set_palette, set_var, unregister, unregister_by_base, unpack_pseudo,
-    var_of, Error, FbDev, FbOps, KResult, FBS, INVALID_FB_INDEX,
+    var_of, Error, FbDev, FbDriverKey, FbOps, KResult, FBS, INVALID_FB_INDEX,
 };
 
 mod vblank;
