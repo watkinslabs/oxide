@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B437-probe-failure-unbound-retriable; IN AUDIT.
+ACTIVE NOW: none; B437-probe-failure-unbound-retriable VERIFIED pending PR merge.
 
-Current active item: Probe failure leaves device unbound and retriable.
+Current active item: none; next claim starts after B437 merge and fresh main sync.
 
-Next gate after B437: prove source, hosted tests, decide whether runtime proof
-is inherited or needs fresh x86_64/aarch64 smoke, PR merge, then fresh
-`origin/main` before claiming B438.
+Next gate after merge: return to fresh `origin/main` before claiming B438
+using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -44,7 +43,7 @@ Status legend:
 | VERIFIED | B434-model-binding-bus-driver-match | Model binding verifies bus/driver matching: `match_driver`, `find_driver_on_bus`, and `driver_matches_device` require bus equality before matching/override/bind; `bind_inner` rejects same-bus non-matching devices with `NoMatch`; hosted regressions cover bus-scoped driver names, wrong-bus bind rejection, driver override bus scoping, and same-bus ID mismatch without binding; pre-push boot smoke passed on x86_64 and aarch64. |
 | VERIFIED | B435-model-binding-calls-probe | Model binding calls `Driver::probe`: `bind_inner` invokes `driver.probe(dev)?` after already-bound, bus, and match validation and before storing `dev.driver`; hosted probe counters prove auto-attach, explicit bind retry, failed-probe retry, and add-event ordering paths all execute the probe hook. |
 | VERIFIED | B436-model-binding-records-after-probe | Model binding records binding only after successful probe: `bind_inner` uses fallible `driver.probe(dev)?` before assigning `dev.driver`, successful probe paths show bound state, failed probe paths leave devices unbound and retriable, and add-event ordering sees the bound state only after successful probe. |
-| ACTIVE | B437-probe-failure-unbound-retriable | Probe failure leaves device unbound and retriable. |
+| VERIFIED | B437-probe-failure-unbound-retriable | Probe failure leaves device unbound and retriable: `bind_inner` propagates `Driver::probe` failure before recording binding state, and hosted regression proves auto-probe plus repeated explicit bind attempts each increment the failing probe counter while `dev.bound()` remains `None`. |
 | SOURCE OK |  | Driver registration attaches newly registered driver to existing unbound matching devices. |
 | SOURCE OK |  | Driver unregistration detaches devices bound to that driver before removing the driver from registry. |
 | SOURCE OK |  | New model device attaches to already registered matching drivers after devtmpfs/sysfs publication setup and before add uevent. |
