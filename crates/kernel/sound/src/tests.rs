@@ -166,6 +166,16 @@ fn card_nodes_are_model_owned_and_removed() {
     assert_eq!(REMOVED.lock().len(), CARD0_NODE_COUNT);
     assert_eq!(owner(), None);
     assert!(ops::ops_for(0x10).is_none());
+
+    ADDED.lock().clear();
+    REMOVED.lock().clear();
+    assert!(reserve_card(0x10));
+    assert!(ops::register(0x10, &TEST_OPS));
+    assert!(register_card(0x10));
+    assert_eq!(ADDED.lock().len(), CARD0_NODE_COUNT);
+    assert!(drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "controlC0"));
+    assert!(unregister_card(0x10));
+    assert_eq!(REMOVED.lock().len(), CARD0_NODE_COUNT);
     let _ = ops::clear(0x10);
 }
 
