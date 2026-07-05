@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B379-virtio-net-shared-rx-last-runtime`.
+Current marker: `>>> ACTIVE >>> B379-virtio-net-shared-rx-last-runtime` - VERIFIED - PR READY.
 
 ## Archived Completed B327-B330
 
@@ -476,9 +476,17 @@ Verification: focused uninstall/RX regressions PASS, full
 
 ## B379-virtio-net-shared-rx-last-runtime
 
-Status: `IN AUDIT`.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B379-virtio-net-shared-rx-last-runtime`
 
-Evidence: audit pending for shared NetRx bottom-half and ARP-GC timer lifetime
-across partial and final RX runtime removal.
+Evidence: `install_rx_runtime` arms the shared NetRx handler and ARP-GC timer.
+`remove_rx_runtime_for` returns whether the keyed runtime table is empty, and
+`release_rx_shared_runtime_if_last` tears both shared resources down only when
+the last runtime is gone. Regression
+`removing_one_rx_runtime_keeps_shared_rx_runtime_owned` now asserts the softirq
+and ARP-GC timer survive first removal and clear after final removal.
+
+Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
+PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
+PASS, and `make smoke-driver-path-arm` PASS.

@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B379-virtio-net-shared-rx-last-runtime` — IN AUDIT.
+ACTIVE NOW: `B379-virtio-net-shared-rx-last-runtime` — VERIFIED - PR READY.
 
 Current active item: `>>> ACTIVE >>> B379-virtio-net-shared-rx-last-runtime`.
 
-Current B379 gate: prove shared NetRx bottom half and ARP-GC timer stay
-installed until the last RX runtime is removed, from current source plus hosted
-and x86_64/aarch64 driver-path proof.
+Current B379 gate: shared NetRx bottom half and ARP-GC timer lifetime is
+verified by focused hosted regression, full virtio-net tests, line-cap check,
+and x86_64/aarch64 driver-path proof; PR merge and local `main` sync are next.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -311,7 +311,7 @@ Status legend:
 | VERIFIED | B376-virtio-net-rx-stats-per-netdev | RX stats are per netdev/runtime: `NetRuntime` owns RX counters by child key, `rx_poll_for` increments the runtime selected by `device_key`, and `VirtioNetDev::stats()` exposes those counters; extended focused regression, full virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2429 merge, and local main sync to `origin/main` at `b3643ee6` pass. |
 | VERIFIED | B377-virtio-net-ipv4-arp-runtime-owned | IPv4 ARP cache entries are runtime-owned: `NetRuntime` embeds `ArpCache`, RX ARP/IP learning inserts through `net_runtime_for(device_key)`, TX lookup reads that keyed runtime, and ARP GC walks runtime caches; focused `arp_cache_is_keyed_by_device`, full virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, PR #2430 merge, and local main sync to `origin/main` at `a81c39de` pass. |
 | VERIFIED | B378-virtio-net-hot-remove-key-cleanup | Hot-remove clears netdev/interface/RX runtime by child key: PCI child remove calls `uninstall_modern(device_key)`, uninstall unregisters/removes iface and net runtime by key, removes only the matching RX runtime, and releases shared RX state only after the last runtime; focused uninstall/RX regressions, full virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, PR #2431 merge, and local main sync to `origin/main` at `3445c15a` pass. |
-| >>> ACTIVE >>> IN AUDIT | B379-virtio-net-shared-rx-last-runtime | Shared NetRx bottom half and ARP-GC timer stay installed until last RX runtime removed. |
+| >>> ACTIVE >>> VERIFIED - PR READY | B379-virtio-net-shared-rx-last-runtime | Shared NetRx bottom half and ARP-GC timer stay installed until last RX runtime removed: `install_rx_runtime` arms both shared resources, `remove_rx_runtime_for` reports whether removal emptied the keyed runtime table, and `release_rx_shared_runtime_if_last` tears down softirq/timer only when the table is empty; tightened regression proves timer and softirq survive first removal and clear after final removal, with full virtio-net tests and x86_64/aarch64 driver-path proof passing. |
 | NOT DONE |  | IPv6 NDP learning goes through stack-owned interface table. |
 | NOT DONE |  | Virtio-net TX resolves IPv6 neighbors through registered interface stack NDP table. |
 | NOT DONE | TBD | Virtio-net multi-device bind/unbind/rebind needs live QEMU proof. |
