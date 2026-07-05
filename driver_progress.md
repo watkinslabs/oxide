@@ -662,3 +662,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B432-pci-publication-idempotent-proof | VERIFIED | Fresh main `20a8dce9` after PR #2487 merge; source audit proves `publish_pci_model_device` constructs `drv::Device::new("pci", ...)` with BAR resources and publishes only through fallible `drv::try_device_add`. On `drv::Error::Busy`, it returns an existing model record only when bus, addr, vendor, device, and class all match; other errors return `None`, so publication is fallible rather than forced. Hosted regressions pass: `cargo test -p drv try_device_add_preserves_pci_bar_resources_and_rejects_republish -- --nocapture`, `cargo test -p drv pci_identity_mismatch_does_not_replace_or_rebind -- --nocapture`, and `cargo test -p pci-boot -- --nocapture`. Runtime proof is inherited from unchanged B429/B430 code and passed x86_64/aarch64 fast driver-path logs with PCI driver bindings. |
+
+## B433 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B433-model-binding-rejects-bound-devices | IN AUDIT | Fresh main `114fdf3d` after PR #2488 merge; auditing the driver-core already-bound rejection path before marking the row verified. |
