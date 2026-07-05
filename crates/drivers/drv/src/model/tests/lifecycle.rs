@@ -278,6 +278,9 @@ fn shutdown_all_quiesces_bound_devices_in_reverse_registration_order() {
     impl Driver for OrderedShutdownDrv {
         fn name(&self) -> &'static str { "ordered-shutdown-test" }
         fn matches(&self, dev: &Device) -> bool { dev.device_id == 0x7779 }
+        fn remove(&self, _dev: &Device) {
+            SHUTDOWN_REMOVES.fetch_add(1, Ordering::Release);
+        }
         fn shutdown(&self, dev: &Device) {
             ORDER.lock().push(dev.addr.clone());
         }
@@ -285,6 +288,10 @@ fn shutdown_all_quiesces_bound_devices_in_reverse_registration_order() {
     static ORDERED_SHUTDOWN_DRV: OrderedShutdownDrv = OrderedShutdownDrv;
 
     ORDER.lock().clear();
+    SHUTDOWN_REMOVES.store(0, Ordering::Release);
+    SHUTDOWN_UNBOUND_EVENTS.store(0, Ordering::Release);
+    SHUTDOWN_EVENT_ACTIVE.store(1, Ordering::Release);
+    set_bind_hook(shutdown_all_bind_event);
     register_driver(&ORDERED_SHUTDOWN_DRV);
     let first = device_add(Arc::new(Device::new(
         "pci", String::from("0000:00:15.0"), 0x1234, 0x7779, 0)));
@@ -301,4 +308,7 @@ fn shutdown_all_quiesces_bound_devices_in_reverse_registration_order() {
     );
     assert_eq!(first.bound(), Some("ordered-shutdown-test"));
     assert_eq!(second.bound(), Some("ordered-shutdown-test"));
+    assert_eq!(SHUTDOWN_REMOVES.load(Ordering::Acquire), 0);
+    assert_eq!(SHUTDOWN_UNBOUND_EVENTS.load(Ordering::Acquire), 0);
+    SHUTDOWN_EVENT_ACTIVE.store(0, Ordering::Release);
 }
