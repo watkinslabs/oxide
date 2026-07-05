@@ -6,8 +6,8 @@ use vfs::File;
 use crate::uapi::{DRM_MAJOR, DRM_NODE_MODE};
 
 use super::auth::{
-    clear_authorized_for_card, clear_master_owner, file_token, release_file_magic,
-    release_master_owner,
+    clear_authorized_for_card, clear_master_owner, clear_unique_ready_for_card, file_token,
+    release_file_magic, release_master_owner, release_unique_ready,
 };
 #[cfg(test)]
 use super::auth::reset_test_state;
@@ -64,6 +64,7 @@ impl vfs::FileOps for DrmCardFileOps {
         let token = file_token(file);
         release_master_owner(card_id, token);
         release_file_magic(token);
+        release_unique_ready(card_id, token);
         crate::crtc::clear_file_events(card_id, token);
         if crate::crtc::is_owner(card_id, token) {
             if let Some(ops) = scanout_ops(card_id) {
@@ -83,7 +84,11 @@ impl vfs::FileOps for DrmSinkFileOps {
         Err(vfs::VfsError::Einval)
     }
     fn on_release_file(&self, file: &File) {
-        release_file_magic(file_token(file));
+        let token = file_token(file);
+        release_file_magic(token);
+        if let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) {
+            release_unique_ready(card_id, token);
+        }
     }
 }
 
@@ -172,6 +177,7 @@ pub fn unregister(card_id: u32) {
     if let Some(pair) = pair {
         clear_master_owner(card_id);
         clear_authorized_for_card(card_id);
+        clear_unique_ready_for_card(card_id);
         drv::device_del(&pair.card);
     }
 }

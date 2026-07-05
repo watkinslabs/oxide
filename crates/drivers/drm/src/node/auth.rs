@@ -8,6 +8,7 @@ pub(super) const DRM_FILE_CAP_ATOMIC: u64 = 1 << crate::DRM_CLIENT_CAP_ATOMIC;
 static MASTER_OWNERS: Spinlock<Vec<u64>, OpsLockClass> = Spinlock::new(Vec::new());
 static FILE_MAGICS: Spinlock<Vec<(u64, u32)>, OpsLockClass> = Spinlock::new(Vec::new());
 static AUTHORIZED_MAGICS: Spinlock<Vec<(u32, u32)>, OpsLockClass> = Spinlock::new(Vec::new());
+static UNIQUE_READY: Spinlock<Vec<(u32, u64)>, OpsLockClass> = Spinlock::new(Vec::new());
 static NEXT_MAGIC: Spinlock<u32, OpsLockClass> = Spinlock::new(1);
 
 pub(super) fn file_token(file: &File) -> u64 {
@@ -53,6 +54,25 @@ pub(super) fn authorize_magic(card_id: u32, magic: u32) -> bool {
 
 pub(super) fn clear_authorized_for_card(card_id: u32) {
     AUTHORIZED_MAGICS.lock().retain(|(card, _)| *card != card_id);
+}
+
+pub(super) fn set_unique_ready(card_id: u32, token: u64) {
+    let mut ready = UNIQUE_READY.lock();
+    if ready.iter().all(|(card, t)| *card != card_id || *t != token) {
+        ready.push((card_id, token));
+    }
+}
+
+pub(super) fn unique_ready(card_id: u32, token: u64) -> bool {
+    UNIQUE_READY.lock().iter().any(|(card, t)| *card == card_id && *t == token)
+}
+
+pub(super) fn release_unique_ready(card_id: u32, token: u64) {
+    UNIQUE_READY.lock().retain(|(card, t)| *card != card_id || *t != token);
+}
+
+pub(super) fn clear_unique_ready_for_card(card_id: u32) {
+    UNIQUE_READY.lock().retain(|(card, _)| *card != card_id);
 }
 
 #[cfg(test)]
@@ -166,6 +186,7 @@ pub(super) fn reset_test_state() {
     MASTER_OWNERS.lock().clear();
     FILE_MAGICS.lock().clear();
     AUTHORIZED_MAGICS.lock().clear();
+    UNIQUE_READY.lock().clear();
     *NEXT_MAGIC.lock() = 1;
 }
 

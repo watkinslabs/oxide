@@ -67,6 +67,11 @@ fn record_boot(driver_key: u32) -> u32 {
 
     fn read_unique(file: &File, buf: &mut [u8; 32]) -> u64 {
         let mut unique = DrmUnique { unique_len: buf.len() as u64, unique: buf.as_mut_ptr() as u64 };
+        let mut version = DrmSetVersion { drm_di_major: DRM_IF_MAJOR, drm_di_minor: DRM_IF_MINOR, drm_dd_major: -1, drm_dd_minor: -1 };
+        assert_eq!(
+            handle_drm_ioctl(file, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64),
+            Some(0)
+        );
         assert_eq!(
             handle_drm_ioctl(file, DRM_IOCTL_GET_UNIQUE, (&mut unique as *mut DrmUnique) as u64),
             Some(0)
@@ -410,19 +415,18 @@ fn record_boot(driver_key: u32) -> u32 {
         let card = open_file(make_card_inode(card_id));
         let expected = b"pci:0000:01:02.3";
         let mut buffer = [0u8; 32];
-        let mut unique = DrmUnique {
-            unique_len: 8,
-            unique: buffer.as_mut_ptr() as u64,
-        };
-
-        assert_eq!(
-            handle_drm_ioctl(&card, DRM_IOCTL_GET_UNIQUE, (&mut unique as *mut DrmUnique) as u64),
-            Some(0)
-        );
-
+        let mut unique = DrmUnique { unique_len: 8, unique: buffer.as_mut_ptr() as u64 };
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_GET_UNIQUE, (&mut unique as *mut DrmUnique) as u64), Some(0));
+        assert_eq!(unique.unique_len, 0);
+        assert_eq!(buffer[0], 0);
+        let mut version = DrmSetVersion { drm_di_major: DRM_IF_MAJOR, drm_di_minor: DRM_IF_MINOR, drm_dd_major: -1, drm_dd_minor: -1 };
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64), Some(0));
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_GET_UNIQUE, (&mut unique as *mut DrmUnique) as u64), Some(0));
         assert_eq!(unique.unique_len, expected.len() as u64);
-        assert_eq!(&buffer[..8], &expected[..8]);
-        assert_eq!(buffer[8], 0);
+        assert_eq!(&buffer[..8], &[0u8; 8]);
+        unique.unique_len = buffer.len() as u64;
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_GET_UNIQUE, (&mut unique as *mut DrmUnique) as u64), Some(0));
+        assert_eq!(&buffer[..expected.len()], expected);
         assert!(crate::unregister(card_id));
     }
 
@@ -456,25 +460,21 @@ fn record_boot(driver_key: u32) -> u32 {
         let _guard = crate::TEST_LOCK.lock();
         use syscall::errno::Errno;
 
-        let card = open_file(make_card_inode(0));
-        let mut version = DrmSetVersion {
-            drm_di_major: DRM_IF_MAJOR,
-            drm_di_minor: DRM_IF_MINOR,
-            drm_dd_major: 9,
-            drm_dd_minor: 9,
-        };
-        assert_eq!(
-            handle_drm_ioctl(&card, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64),
-            Some(0)
-        );
+        unregister_all();
+        let card_id = crate::register(Arc::new(TestDrv));
+        let card = open_file(make_card_inode(card_id));
+        let mut version = DrmSetVersion { drm_di_major: DRM_IF_MAJOR, drm_di_minor: DRM_IF_MINOR, drm_dd_major: -1, drm_dd_minor: -1 };
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64), Some(0));
         assert_eq!(version.drm_di_major, DRM_IF_MAJOR);
         assert_eq!(version.drm_di_minor, DRM_IF_MINOR);
-        assert_eq!(version.drm_dd_major, 0);
-        assert_eq!(version.drm_dd_minor, 0);
+        assert_eq!(version.drm_dd_major, 1);
+        assert_eq!(version.drm_dd_minor, 2);
 
-        version.drm_di_minor = DRM_IF_MINOR + 1;
-        assert_eq!(
-            handle_drm_ioctl(&card, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64),
-            Some(-(Errno::Einval.as_i32() as i64))
-        );
+        version.drm_di_major = -1;
+        version.drm_di_minor = -1;
+        version.drm_dd_major = 1;
+        version.drm_dd_minor = 3;
+        assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_SET_VERSION, (&mut version as *mut DrmSetVersion) as u64), Some(-(Errno::Einval.as_i32() as i64)));
+        assert_eq!(version.drm_dd_minor, 2);
+        assert!(crate::unregister(card_id));
     }
