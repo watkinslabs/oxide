@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B465-pl011-serial-explicit-shutdown-callback; IN AUDIT.
+Current marker: none; B465-pl011-serial-explicit-shutdown-callback VERIFIED pending PR merge.
 
 ## B465 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B465-pl011-serial-explicit-shutdown-callback | IN AUDIT | Fresh main `bfe8037c` after PR #2522 merge; proving PL011 serial driver implements explicit shutdown through the model driver path without relying on remove/unbind side effects. |
+| B465-pl011-serial-explicit-shutdown-callback | VERIFIED | Fresh main `bfe8037c` after PR #2522 merge; source audit proves `crates/kernel/kmain/src/kmain/runtime.rs::init_serial_console` publishes `platform/serial0` and registers `drv_serial::uart_driver`, `drv-serial` selects `drv_uart_pl011::UART_DRIVER` on aarch64, and `crates/drivers/drv-uart-pl011/src/lib.rs::UartPl011Drv::shutdown` calls `imp::shutdown`. The aarch64 shutdown path disables RX delivery, disables PL011 RX IRQ generation, masks GIC INTID 33, and preserves `BASE`/`PRESENT` for late console TX; `remove` remains the full teardown path that disables IRQ delivery, frees the IRQ handler, and clears singleton state. Non-aarch64 PL011 is an empty shell, and x86_64 serial uses 8250 via `drv-serial`. Checks pass: `cargo test -p drv-uart-pl011 -- --nocapture` hosted compile, `cargo test -p drv-serial -- --nocapture` hosted compile, `cargo test -p drv shutdown_all_quiesces_bound_devices_in_reverse_registration_order -- --nocapture`, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B464 Current
 
