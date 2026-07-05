@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B486-virtio-child-drivers-model-bind; VERIFIED pending PR merge.
+Current marker: B487-virtio-child-declarations-split; VERIFIED pending PR merge.
+
+## B487 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B487-virtio-child-declarations-split | VERIFIED | Fresh main `349bba3e` after PR #2544 merge. Source audit proves `crates/kernel/pci-boot/src/virtio_child.rs` owns `VirtioChildDriver<O>`, every child `Virtio*Ops` adapter, static child declarations for net/blk/rng/vsock/snd/input/gpu, and the child `drv::register_driver` list; `virtio_drv::driver` owns only the `VIRTIO_PCI_DRV` PCI transport model driver, publishes child model devices, and delegates child registration to `virtio_child::register_model_drivers`; search finds no child `drv::Driver` static declarations in `virtio_drv` or `virtio_transport`. Checks pass: `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B486 Current
 
