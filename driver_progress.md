@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B384-virtio-vsock-remove-keyed`.
+Current marker: `>>> ACTIVE >>> B387-af-vsock-bind-specific-local-cid`.
 
 ## Archived Completed B327-B330
 
@@ -480,9 +480,16 @@ recent-completed table above; main was synced after each merge through
 
 ## B387-af-vsock-bind-specific-local-cid
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B387-af-vsock-bind-specific-local-cid`
 
-Scope: prove or fix AF_VSOCK bind so a non-any local CID selects the matching
-live endpoint instead of silently using the primary endpoint.
+Evidence: source audit proves AF_VSOCK `sys_bind` reads `sockaddr_vm`, calls
+`net::vsock::bind_owner_for_cid`, stores `VsockKind::Bound { port, owner }`,
+and listen/connect reuse that owner; ANY maps to owner 0, live specific CIDs
+map to the endpoint owner, and dead/quiesced CIDs return `EADDRNOTAVAIL`.
+Hosted regression `bind_owner_for_cid_requires_matching_live_endpoint`,
+`cargo test -p net bind_owner_for_cid_requires_matching_live_endpoint`,
+`cargo test -p net vsock` with 26 tests, and `cargo check -p syscalls` pass.
+Fast driver-path runtime proof passes on x86_64 (`/tmp/b387-x86-driver-path.log`)
+and aarch64 (`/tmp/b387-arm-driver-path.log`).
