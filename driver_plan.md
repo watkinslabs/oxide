@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B407-serial-input-remove-rebind-state` — CLAIMED.
+ACTIVE NOW: `B407-serial-input-remove-rebind-state` — VERIFIED.
 
 Current active item: `>>> ACTIVE >>> B407-serial-input-remove-rebind-state`.
 
-Current B407 gate: audit/fix 8250, PL011, and i8042 remove paths so driver
-state is cleared for later rebind attempts; prove with hosted tests and
-x86_64/aarch64 driver-path proof before merge.
+Current B407 gate: 8250, PL011, and i8042 remove paths clear bound driver
+state for later rebind attempts. Source audit, hosted tests, and
+x86_64/aarch64 runtime proof pass.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -341,7 +341,7 @@ Status legend:
 | VERIFIED | B404-8250-receive-irq-owned | 8250 runtime RX is IRQ4-owned: removed the serial-core poll fallback and 8250 `rx_poll` export, corrected timer-driven UART comments, and `cargo test -p drv-uart-16550 -p drv-serial -p serialtty -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b404-x86-driver-path.log` and aarch64 `/tmp/b404-arm-driver-path.log` runtime proof pass. |
 | VERIFIED | B405-pl011-receive-irq-owned | PL011 runtime RX is SPI-33-owned: removed the PL011 `rx_poll` export and stale timer-poll comment, and `cargo test -p drv-uart-pl011 -p drv-serial -p serialtty -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b405-x86-driver-path.log` and aarch64 `/tmp/b405-arm-driver-path.log` runtime proof pass. |
 | VERIFIED | B406-i8042-receive-irq-owned | i8042 runtime RX is IRQ1-owned: source audit proves `probe()` installs IRQ1 handler/vector/I/O-APIC redirection before enabling the controller IRQ bit, corrected stale poll wording, and `cargo test -p drv-ps2-keyboard -p drv-virtio-input -p tty -p console -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b406-x86-driver-path.log` and aarch64 `/tmp/b406-arm-driver-path.log` runtime proof pass. |
-| >>> ACTIVE >>> CLAIMED | B407-serial-input-remove-rebind-state | 8250/PL011/i8042 remove paths clear driver state for later rebind. |
+| >>> ACTIVE >>> VERIFIED | B407-serial-input-remove-rebind-state | Source audit shows 8250 remove clears RX enable, masks/free vector, resets IRQ pin/vector and BASE/PRESENT; PL011 remove disables RX/INTID, frees handler, clears BASE/PRESENT; i8042 bringdown disables scan/controller IRQ, masks/free vector, resets IRQ pin/vector and PRESENT. `cargo test -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -p drv-ps2-keyboard -p drv-virtio-input -p serialtty -p tty -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b407-x86-driver-path.log`, and aarch64 `/tmp/b407-arm-driver-path.log` pass. |
 | NOT DONE |  | Timer registry returns owned timer IDs and supports explicit unregister. |
 | NOT DONE | TBD | Driver model authoritative at Device/Driver level, but some setup policy remains in bus/transport helper code. |
 | NOT DONE | TBD | Virtio common transport and child policy still too concentrated in `pci-boot` transport/session boundary. |

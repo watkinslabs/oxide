@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B399-virtio-snd-multicard-rebind-proof`.
+Current marker: `>>> ACTIVE >>> B407-serial-input-remove-rebind-state`.
 
 ## Archived Completed B327-B330
 
@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B404-8250-receive-irq-owned | VERIFIED | 8250 serial-core poll fallback removed; hosted UART/serialtty tests and x86_64/aarch64 driver-path proof pass. |
 | B405-pl011-receive-irq-owned | VERIFIED | PL011 poll fallback export removed; hosted PL011/serialtty tests and x86_64/aarch64 driver-path proof pass. |
 | B406-i8042-receive-irq-owned | VERIFIED | i8042 IRQ1 ownership source-audited; hosted PS/2/input/tty tests and x86_64/aarch64 driver-path proof pass. |
-| B407-serial-input-remove-rebind-state | CLAIMED | Claimed from fresh main; audit/fix 8250, PL011, and i8042 remove state next. |
+| B407-serial-input-remove-rebind-state | VERIFIED | 8250/PL011/i8042 remove state source-audited; hosted serial/input tests and x86_64/aarch64 driver-path proof pass. |
