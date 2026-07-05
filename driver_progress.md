@@ -483,14 +483,14 @@ recent-completed table above; main was synced after each merge through
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 | B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B399-B405 Current
+## B400-B406 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B399-virtio-snd-multicard-rebind-proof | VERIFIED | Two-device QEMU/rootfs/probe path passes hosted gates plus x86_64/aarch64 live rebind smoke, PR #2452, main sync `36d0b388`. |
 | B400-virtio-msix-child-owned-handlers | VERIFIED | Child-declared MSI-X handlers proven by source audit, hosted virtio/pci-boot tests, x86_64 driver-path proof, and aarch64 driver-path proof. |
 | B401-virtio-pci-probe-exit-unwind | VERIFIED | `VirtioProbe` now owns a one-shot lease for failed/unpublished cleanup; hosted virtio/pci-boot checks and x86_64/aarch64 driver-path proof pass. |
 | B402-sound-card-publication-model-owned | VERIFIED | Sound publication uses explicit reserved/publishing/published owner state; hosted tests and x86_64/aarch64 driver-path proof pass. |
 | B403-fbdev-publication-unwind-on-model-failure | VERIFIED | Hosted fbdev/model conflict proof and x86_64/aarch64 driver-path proof pass. |
 | B404-8250-receive-irq-owned | VERIFIED | 8250 serial-core poll fallback removed; hosted UART/serialtty tests and x86_64/aarch64 driver-path proof pass. |
 | B405-pl011-receive-irq-owned | VERIFIED | PL011 poll fallback export removed; hosted PL011/serialtty tests and x86_64/aarch64 driver-path proof pass. |
+| B406-i8042-receive-irq-owned | CLAIMED | Claimed from fresh main; audit/fix i8042 receive IRQ ownership next. |

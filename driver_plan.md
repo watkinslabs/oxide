@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B405-pl011-receive-irq-owned` — VERIFIED.
+ACTIVE NOW: `B406-i8042-receive-irq-owned` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B405-pl011-receive-irq-owned`.
+Current active item: `>>> ACTIVE >>> B406-i8042-receive-irq-owned`.
 
-Current B405 gate: PL011 receive no longer exposes a poll fallback; runtime
-RX remains owned by SPI 33. Hosted PL011/serialtty tests and x86_64/aarch64
-runtime proof pass.
+Current B406 gate: audit/fix i8042 receive so keyboard input delivery is
+IRQ-owned; prove with hosted input/tty tests and x86_64/aarch64 driver-path
+proof before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -339,8 +339,8 @@ Status legend:
 | VERIFIED | B402-sound-card-publication-model-owned | Sound card publication now tracks explicit owner publication state (`reserved`/`publishing`/`published`) so duplicate publication is guarded before devnode creation; duplicate register proof now asserts no rollback removals; `cargo test -p sound -- --nocapture --test-threads=1`, `cargo test -p drv-virtio-snd -- --nocapture`, x86_64 driver-path log `/tmp/b402-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b402-arm-driver-path.log` all pass. |
 | VERIFIED | B403-fbdev-publication-unwind-on-model-failure | Fbdev registration now routes hosted tests through model publication, and the model-conflict regression proves `register()` returns `INVALID_FB_INDEX` with no stale framebuffer record when `drv::try_device_add` rejects `fb0`; `cargo test -p fbdev -- --nocapture --test-threads=1`, x86_64 driver-path log `/tmp/b403-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b403-arm-driver-path.log` all pass. |
 | VERIFIED | B404-8250-receive-irq-owned | 8250 runtime RX is IRQ4-owned: removed the serial-core poll fallback and 8250 `rx_poll` export, corrected timer-driven UART comments, and `cargo test -p drv-uart-16550 -p drv-serial -p serialtty -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b404-x86-driver-path.log` and aarch64 `/tmp/b404-arm-driver-path.log` runtime proof pass. |
-| >>> ACTIVE >>> VERIFIED | B405-pl011-receive-irq-owned | PL011 runtime RX is SPI-33-owned: removed the PL011 `rx_poll` export and stale timer-poll comment, and `cargo test -p drv-uart-pl011 -p drv-serial -p serialtty -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b405-x86-driver-path.log` and aarch64 `/tmp/b405-arm-driver-path.log` runtime proof pass. |
-| NOT DONE |  | i8042 receive path is IRQ-owned. |
+| VERIFIED | B405-pl011-receive-irq-owned | PL011 runtime RX is SPI-33-owned: removed the PL011 `rx_poll` export and stale timer-poll comment, and `cargo test -p drv-uart-pl011 -p drv-serial -p serialtty -- --nocapture --test-threads=1` passes; x86_64 `/tmp/b405-x86-driver-path.log` and aarch64 `/tmp/b405-arm-driver-path.log` runtime proof pass. |
+| >>> ACTIVE >>> CLAIMED | B406-i8042-receive-irq-owned | i8042 receive path is IRQ-owned. |
 | NOT DONE |  | 8250/PL011/i8042 remove paths clear driver state for later rebind. |
 | NOT DONE |  | Timer registry returns owned timer IDs and supports explicit unregister. |
 | NOT DONE | TBD | Driver model authoritative at Device/Driver level, but some setup policy remains in bus/transport helper code. |
