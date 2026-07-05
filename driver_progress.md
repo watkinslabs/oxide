@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B395-sound-card-per-card-node-publication`.
+Current marker: `>>> ACTIVE >>> B395-sound-card-per-card-node-publication` — verified; commit/PR pending.
 
 ## Archived Completed B327-B330
 
@@ -488,4 +488,4 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B394-sound-card-owner-keyed-numbers | VERIFIED | Owner-keyed card numbers proven by source audit, hosted sound tests, x86_64/aarch64 driver-path proof, PR #2447, main sync `db69465f`. |
-| B395-sound-card-per-card-node-publication | ACTIVE | Claimed from fresh main; prove per-card ALSA/OSS nodes are published and owner-cleaned. |
+| B395-sound-card-per-card-node-publication | ACTIVE | Source audit, hosted sound tests, and x86_64/aarch64 driver-path proof pass for per-card ALSA/OSS publication. |
