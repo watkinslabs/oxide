@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B340-drm-sysfs-live-model-devices`.
+Current marker: `>>> ACTIVE >>> B341-virtio-gpu-drm-real-parent`.
 
 ## B002-single-machine-desktop-proof
 
@@ -432,7 +432,7 @@ Evidence:
 
 ## B340-drm-sysfs-live-model-devices
 
-Status: `VERIFIED`, commit/PR merge pending.
+Status: `VERIFIED` and merged by PR #2393.
 
 Branch: `B340-drm-sysfs-live-model-devices`
 
@@ -454,3 +454,31 @@ Evidence:
 | Line cap | PASS: `crates/kernel/sysfs/src/drm.rs` 443 lines; `crates/kernel/sysfs/src/bus/tests.rs` 420 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b340-drm-sysfs-live-model-devices-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b340-drm-sysfs-live-model-devices-arm.log`. |
+
+## B341-virtio-gpu-drm-real-parent
+
+Status: `VERIFIED`, commit/PR merge pending.
+
+Branch: `B341-virtio-gpu-drm-real-parent`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | Virtio-gpu registers DRM card devices with real virtio child parent. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `virtio-pci` publishes child model devices on bus `virtio`; `VirtioChildSession` stores `dev.addr`; `VirtioGpuOps` passes `Some(("virtio", session.device_addr()))`; DRM `register_with_parent` forwards to node publication and `add_node()` records `with_parent` on the DRM model device. |
+| Hosted parent regression | PASS: `install_with_drm_records_model_parent` verifies the DRM card model device keeps the virtio parent tuple. |
+| `cargo test -p drv-virtio-gpu install_with_drm_records_model_parent -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drv-virtio-gpu` | PASS: 31 passed. |
+| `cargo test -p virtio child_model_identity -- --nocapture` | PASS: 2 passed. |
+| `cargo test -p virtio child_probe_lifecycle -- --nocapture` | PASS: 2 passed. |
+| `cargo test -p pci-boot virtio -- --nocapture` | PASS: compile/test harness, 0 tests. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `drv-virtio-gpu/src/tests.rs` 477, `device.rs` 384, `pci-boot/src/virtio_child.rs` 367, `virtio_bus.rs` 144, `driver_progress.md` under cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b341-virtio-gpu-drm-real-parent-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b341-virtio-gpu-drm-real-parent-arm.log`. |
