@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B388-vsock-listener-backlogs-owner-port` — CLAIMED.
+ACTIVE NOW: `B388-vsock-listener-backlogs-owner-port` — VERIFIED; COMMIT/PR PENDING.
 
 Current active item: `>>> ACTIVE >>> B388-vsock-listener-backlogs-owner-port`.
 
-Current B388 gate: prove or fix AF_VSOCK listener backlog state so it is keyed
-by `(owner, port)`, with hosted tests and x86_64/aarch64 runtime proof before
-merge.
+Current B388 gate: source audit, hosted tests, and x86_64/aarch64 driver-path
+runtime proof pass; commit, push, PR, merge, and main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -320,7 +319,7 @@ Status legend:
 | VERIFIED | B385-virtio-vsock-rx-bh-installed | Virtio-vsock clears `VsockRx` bottom half only for installed transport: source audit proves `SOFTIRQ_INSTALLED` gates handler install/clear and removal clears only after last ctx, hosted regression proves unpublished ctx teardown leaves live endpoint/RX bottom half installed, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2438 merge, and local main sync to `origin/main` at `4db141ad` pass. |
 | VERIFIED | B386-net-vsock-owner-keyed-endpoints | Upper `net::vsock` endpoint records are owner-keyed: source audit proves `ENDPOINTS` stores `{ owner, guest_cid, tx }` and install/reserve/publish/quiesce/uninstall/CID/TX/RX paths select by owner; hosted TX routing regression, full vsock tests, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2439 merge, and local main sync to `origin/main` at `947cb224` pass. |
 | VERIFIED | B387-af-vsock-bind-specific-local-cid | AF_VSOCK bind honors specific local CID: source audit proves `sys_bind` resolves `sockaddr_vm` cid through `net::vsock::bind_owner_for_cid`, ANY maps to owner 0, live specific CID maps to owning endpoint, dead/quiesced CID returns `EADDRNOTAVAIL`; hosted bind-owner regression, full vsock tests, `syscalls` check, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2440 merge, and local main sync to `origin/main` at `72aebeca` pass. |
-| >>> ACTIVE >>> CLAIMED | B388-vsock-listener-backlogs-owner-port | Listener backlogs keyed by `(owner, port)`. |
+| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B388-vsock-listener-backlogs-owner-port | Listener backlogs are keyed by `(owner, port)`: source audit proves `Listener { owner, local_port, backlog }`, `add_listener` rejects duplicates only for the same pair, inbound requests queue through exact owner before wildcard, and `pop_accept` reads only the matching owner/port backlog; hosted same-port dual-owner regression, full vsock tests, and fast x86_64/aarch64 driver-path smokes pass. |
 | NOT DONE |  | AF_VSOCK close releases listener/backlog/connection state. |
 | NOT DONE |  | Virtio-rng keeps per-child-key records. |
 | NOT DONE |  | Virtio-rng seeds from just-bound device. |

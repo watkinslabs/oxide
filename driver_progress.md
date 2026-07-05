@@ -481,9 +481,15 @@ recent-completed table above; main was synced after each merge through
 
 ## B388-vsock-listener-backlogs-owner-port
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B388-vsock-listener-backlogs-owner-port`
 
-Scope: prove or fix AF_VSOCK listener backlog state so pending connections are
-keyed by `(owner, port)` and cannot cross-talk between endpoints sharing a port.
+Evidence: source audit proves `Listener { owner, local_port, backlog }`,
+`add_listener` rejects duplicates only for the same pair, inbound requests
+queue through exact owner before wildcard, and `pop_accept` reads only the
+matching owner/port backlog. Hosted regression
+`same_port_listener_backlogs_are_owner_keyed` and `cargo test -p net vsock`
+with 27 tests pass. Fast driver-path runtime proof passes on x86_64
+(`/tmp/b388-x86-driver-path.log`) and aarch64
+(`/tmp/b388-arm-driver-path.log`).
