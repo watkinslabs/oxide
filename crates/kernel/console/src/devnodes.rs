@@ -8,7 +8,7 @@ use crate::vt_console::{console_rdev, make_console_inode};
 pub fn try_register_devnodes() -> drv::KResult<()> {
     let mut published = Vec::new();
 
-    push_tty_node(&mut published, "console", 0x0501, Arc::new(|| crate::system_console_inode()))?;
+    push_tty_node(&mut published, "console", crate::devnum::system_console_rdev(), Arc::new(|| crate::system_console_inode()))?;
 
     let fg: vfs::InodeRef = make_console_inode(0);
     let fg2 = Arc::clone(&fg);
@@ -34,13 +34,13 @@ pub fn try_register_devnodes() -> drv::KResult<()> {
 
     let vcs: vfs::InodeRef = make_vcs_inode(false);
     let vcs2 = Arc::clone(&vcs);
-    push_tty_node(&mut published, "vcs", 0x0700, Arc::new(move || Arc::clone(&vcs)))?;
-    push_tty_node(&mut published, "vcs0", 0x0700, Arc::new(move || Arc::clone(&vcs2)))?;
+    push_tty_node(&mut published, "vcs", crate::devnum::vcs_rdev(false), Arc::new(move || Arc::clone(&vcs)))?;
+    push_tty_node(&mut published, "vcs0", crate::devnum::vcs_rdev(false), Arc::new(move || Arc::clone(&vcs2)))?;
 
     let vcsa: vfs::InodeRef = make_vcs_inode(true);
     let vcsa2 = Arc::clone(&vcsa);
-    push_tty_node(&mut published, "vcsa", 0x0780, Arc::new(move || Arc::clone(&vcsa)))?;
-    push_tty_node(&mut published, "vcsa0", 0x0780, Arc::new(move || Arc::clone(&vcsa2)))?;
+    push_tty_node(&mut published, "vcsa", crate::devnum::vcs_rdev(true), Arc::new(move || Arc::clone(&vcsa)))?;
+    push_tty_node(&mut published, "vcsa0", crate::devnum::vcs_rdev(true), Arc::new(move || Arc::clone(&vcsa2)))?;
     Ok(())
 }
 
@@ -76,7 +76,7 @@ fn add_tty_node(
     rdev: u32,
     factory: drv::NodeFactory,
 ) -> drv::KResult<Option<Arc<drv::Device>>> {
-    let dev_t = (rdev >> 8, rdev & 0xff);
+    let dev_t = crate::devnum::dev_t(rdev);
     match drv::try_device_add(Arc::new(
         drv::Device::new("tty", String::from(name), 0, 0, 0)
             .with_devnode("tty", String::from(name), Some(dev_t))
