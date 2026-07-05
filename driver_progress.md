@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B356-drm-addfb2-modifier-reject`.
+Current marker: `>>> ACTIVE >>> B357-drm-addfb-packed-rgb-validation`.
 
 ## Archived Completed B327-B330
 
@@ -431,8 +431,16 @@ Evidence: source audit found `DrmCardFileOps::write` and private `DrmSinkFileOps
 
 ## B356-drm-addfb2-modifier-reject
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2409.
 
 Branch: `B356-drm-addfb2-modifier-reject`
 
-Evidence: source audit found `addfb2` rejects any flags and separately rejects any nonzero `modifier[]` payload before handle lookup or FB allocation. Existing modifier-flag regression passed; added `addfb2_rejects_nonzero_modifier_even_without_modifier_flag` to prove modifiers cannot be silently ignored when flags are clear. Focused modifier regressions, full `cargo test -p drm` with 66 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; rerun passed.
+Evidence: source audit found `addfb2` rejects any flags and separately rejects any nonzero `modifier[]` payload before handle lookup or FB allocation. Existing modifier-flag regression passed; added `addfb2_rejects_nonzero_modifier_even_without_modifier_flag` to prove modifiers cannot be silently ignored when flags are clear. Focused modifier regressions, full `cargo test -p drm` with 66 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2409, and main sync `8c2d61e3` pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; rerun passed.
+
+## B357-drm-addfb-packed-rgb-validation
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B357-drm-addfb-packed-rgb-validation`
+
+Evidence: source audit found `fb_plane_fits_buf` rejects zero dimensions, unsupported formats, short pitch, checked span overflow, and backing-buffer overflow for packed RGB. `addfb2` rejects nonzero flags, modifier payloads, missing handles, extra handles/pitches/offsets, and routes bounds through that helper; legacy `addfb` maps depth/bpp to packed RGB and uses the same bounds helper. Added `addfb2_rejects_unused_plane_offset_for_packed_rgb` and `legacy_addfb_rejects_framebuffer_larger_than_backing_buffer`; focused regressions, full `cargo test -p drm` with 68 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; no stale QEMU process was found and rerun passed.
