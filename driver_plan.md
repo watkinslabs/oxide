@@ -7,8 +7,8 @@ ACTIVE NOW: `B327-virtio-input-queue-quiesce` — VERIFIED, commit/PR pending.
 Current active item: `>>> ACTIVE >>> B327-virtio-input-queue-quiesce`.
 
 Current B327 gate: hosted tests plus x86_64 and aarch64 fast driver-path
-smokes passed. Earlier ARM no-progress watchdog reproduced once and is tracked
-below as a separate intermittent follow-up, not a B327 verification blocker.
+smokes passed. ARM no-progress watchdog is tracked below as a separate
+intermittent follow-up, not a B327 verification blocker.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -248,7 +248,7 @@ Status legend:
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-| NOT DONE | TBD | Intermittent ARM fast driver-path no-progress watchdog observed once before `mouseprobe`; rerun passed. Failed log `/tmp/b327-queue-quiesce-arm.log`, passing log `/tmp/b327-queue-quiesce-arm-rerun.log`; root-cause separately. |
+| NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed once before `mouseprobe` then passed on rerun; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` in 16s on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`; passing log `/tmp/b327-queue-quiesce-arm-rerun.log`; root-cause separately. |
 | NOT DONE | TBD | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
