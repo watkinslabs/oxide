@@ -2,13 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B327-virtio-input-queue-quiesce` — VERIFIED, commit/PR pending.
+ACTIVE NOW: `B328-virtio-input-drain-split` — VERIFIED, ready to commit/PR merge.
 
-Current active item: `>>> ACTIVE >>> B327-virtio-input-queue-quiesce`.
+Current active item: `>>> ACTIVE >>> B328-virtio-input-drain-split`.
 
-Current B327 gate: hosted tests plus x86_64 and aarch64 fast driver-path
-smokes passed. ARM no-progress watchdog is tracked below as a separate
-intermittent follow-up, not a B327 verification blocker.
+Current B328 gate: split virtio-input drain into focused queue lifetime,
+key-event, and ring-drain modules without changing runtime behavior; hosted
+tests and fast x86_64/aarch64 driver-path proof pass.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -249,7 +249,7 @@ Status legend:
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
 | NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed once before `mouseprobe` then passed on rerun; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` in 16s on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`; passing log `/tmp/b327-queue-quiesce-arm-rerun.log`; root-cause separately. |
-| NOT DONE | TBD | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
+| VERIFIED | B328-virtio-input-drain-split | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth; `cargo test -p drv-virtio-input`, fast x86_64 driver path, and fast aarch64 driver path pass. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
 | VERIFIED |  | Competing evdev grabs fail with `EBUSY`. |
