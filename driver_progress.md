@@ -431,8 +431,8 @@ Evidence: source audit found `DrmCardFileOps::write` and private `DrmSinkFileOps
 
 ## B356-drm-addfb2-modifier-reject
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B356-drm-addfb2-modifier-reject`
 
-Evidence: source audit started for DRM ADDFB2 modifier rejection; no completion claim yet.
+Evidence: source audit found `addfb2` rejects any flags and separately rejects any nonzero `modifier[]` payload before handle lookup or FB allocation. Existing modifier-flag regression passed; added `addfb2_rejects_nonzero_modifier_even_without_modifier_flag` to prove modifiers cannot be silently ignored when flags are clear. Focused modifier regressions, full `cargo test -p drm` with 66 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; rerun passed.
