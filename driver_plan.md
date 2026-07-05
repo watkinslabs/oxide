@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B503-transport-neutral-child-key-proof VERIFIED.
+ACTIVE NOW: B504-vsock-owner-key-boundary; IN AUDIT.
 
-Last verified item: Current PCI-backed bus no longer derives child key from
-BDF; transport-neutral child model address proof passes.
+Current active item: `drv-virtio-vsock` raw conversion remains at `net::vsock`
+owner-key boundary.
 
-Next gate after merge: return to fresh `origin/main` before claiming B504 using
+Next gate after merge: return to fresh `origin/main` before claiming B505 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -149,7 +149,7 @@ Status legend:
 | VERIFIED |  | `drv-virtio-rng` consumes `VirtioChildDeviceKey` for install/remove/shutdown/active promotion/probe seeding. |
 | VERIFIED |  | `drv-virtio-input` consumes `VirtioChildDeviceKey` for install/remove/evdev lookup. |
 | VERIFIED |  | `drv-virtio-vsock` consumes `VirtioChildDeviceKey` for install/remove/shutdown/context lookup/RX preposting. |
-| NOT DONE | TBD | `drv-virtio-vsock` raw conversion remains at `net::vsock` owner-key boundary. |
+| ACTIVE | B504-vsock-owner-key-boundary | `drv-virtio-vsock` raw conversion remains at `net::vsock` owner-key boundary. |
 | VERIFIED |  | `drv-virtio-blk` consumes `VirtioChildDeviceKey` for block init/registry/hot-remove/shutdown/tests. |
 | VERIFIED |  | `drv-virtio-net` consumes `VirtioChildDeviceKey` for modern init/transport identity/netdev/TX/RX/neighbor/remove/shutdown/tests. |
 | NOT DONE | TBD | `drv-virtio-snd` raw conversion remains at sound-core owner-key boundary. |
