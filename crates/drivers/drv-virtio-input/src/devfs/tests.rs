@@ -137,18 +137,18 @@ fn register_node_leaves_slot_free_when_model_publication_conflicts() {
 #[test]
 fn evdev_clockid_ioctl_accepts_only_monotonic_clock() {
     let file = test_file(0);
-    let mut monotonic = 1i32;
+    let mut monotonic = crate::EVDEV_CLOCK_MONOTONIC;
     let mut realtime = 0i32;
     assert_eq!(
-        handle_evdev_ioctl(&file, 0x400445a0, (&mut monotonic as *mut i32) as u64),
+        handle_evdev_ioctl(&file, crate::EVIOCSCLOCKID, (&mut monotonic as *mut i32) as u64),
         Some(0)
     );
     assert_eq!(
-        handle_evdev_ioctl(&file, 0x400445a0, (&mut realtime as *mut i32) as u64),
+        handle_evdev_ioctl(&file, crate::EVIOCSCLOCKID, (&mut realtime as *mut i32) as u64),
         Some(-(syscall::errno::Errno::Einval.as_i32() as i64))
     );
     assert_eq!(
-        handle_evdev_ioctl(&file, 0x400445a0, 0),
+        handle_evdev_ioctl(&file, crate::EVIOCSCLOCKID, 0),
         Some(-(syscall::errno::Errno::Efault.as_i32() as i64))
     );
 }
@@ -178,6 +178,16 @@ fn evdev_repeat_ioctl_round_trips_real_device_state() {
     );
 
     assert_eq!(crate::remove_device(key), Some(id));
+}
+
+#[test]
+fn evdev_force_feedback_ioctl_is_not_absinfo_alias() {
+    let file = test_file(0);
+    let mut effect = [0u8; crate::EVDEV_FF_EFFECT_BYTES];
+    assert_eq!(
+        handle_evdev_ioctl(&file, crate::EVIOCSFF, effect.as_mut_ptr() as u64),
+        Some(-(syscall::errno::Errno::Enotty.as_i32() as i64))
+    );
 }
 
 #[test]
