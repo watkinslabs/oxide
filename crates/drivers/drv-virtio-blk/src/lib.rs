@@ -1,5 +1,5 @@
 //! virtio-blk driver per `34§*` / `17§2`. The model driver's `probe`
-//! in `pci_boot::virtio_drv` executes modern transport negotiation using
+//! in the transport backend executes modern transport negotiation using
 //! this driver's wanted feature policy, programs queue 0, reaches DRIVER_OK,
 //! and hands the persistent ring addresses + device-cfg here via
 //! `modern::init_blk`, which builds a `BlkState` request engine and registers

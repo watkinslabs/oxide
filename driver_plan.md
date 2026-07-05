@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B489-child-probes-no-transport-callback-imports; IN AUDIT.
+ACTIVE NOW: B489-child-probes-no-transport-callback-imports; VERIFIED pending PR merge.
 
 Current active item: Child probes do not import transport helper callbacks directly.
 
@@ -123,7 +123,7 @@ Status legend:
 | VERIFIED | B486-virtio-child-drivers-model-bind | Child virtio drivers bind through the model: source audit proves `pci-boot::register_pci_model_drivers` reaches `virtio_drv::register_model_drivers`, which registers the virtio-pci model driver and all child wrappers through `drv::register_driver`; `VirtioChildDriver<O>` supplies the bus/name/matches/probe bridge, routes probe through `VirtioChildSession::begin` and `virtio::run_child_probe`, and search finds no direct child `drv::bind`/`bind_addr` bypass. Hosted tests plus x86_64/aarch64 fast smokes pass. |
 | VERIFIED | B487-virtio-child-declarations-split | Virtio child model-driver declarations are split into `pci-boot::virtio_child`: source audit proves `virtio_child.rs` owns `VirtioChildDriver<O>`, every child `Virtio*Ops` adapter, all static child driver declarations, and the child `drv::register_driver` list; `virtio_drv::driver` owns only `VIRTIO_PCI_DRV`, publishes child model devices, and delegates child registration to `virtio_child::register_model_drivers`. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
 | VERIFIED | B488-pci-transport-no-child-driver-decls | PCI transport file no longer owns every child `drv::Driver` declaration: source audit/search proves `virtio_drv` and `virtio_transport` contain only the PCI transport driver declaration `VirtioPciDrv`/`VIRTIO_PCI_DRV`, while all child `VirtioChildDriver` statics, child `Virtio*Ops` adapters, and child `drv::register_driver` calls live in `pci-boot::virtio_child`. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
-| ACTIVE | B489-child-probes-no-transport-callback-imports | Child probes do not import transport helper callbacks directly. |
+| VERIFIED | B489-child-probes-no-transport-callback-imports | Child probes do not import transport helper callbacks directly: source audit proves child crates do not import PCI transport callbacks/helpers, child probes consume `VirtioChildTransportSession` and child crate profile/install/remove/shutdown APIs, and the only transport cleanup callback remains centralized in `pci-boot::virtio_child` remove handling; stale child-crate comments naming `pci_boot::virtio_drv` were replaced with transport-backend wording. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
 | SOURCE OK |  | Virtio child binding uses one bus-facing `VirtioChildDriver` wrapper. |
 | SOURCE OK |  | Virtio child wrapper centralizes matching by virtio device ID. |
 | SOURCE OK |  | Virtio child wrapper centralizes child session begin. |

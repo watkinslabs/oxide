@@ -1,7 +1,7 @@
-// Modern virtio-blk runtime engine (arch-neutral). The model driver's
-// `probe` in `pci_boot::virtio_drv` brings up cap discovery, BAR mapping,
-// queue-0 program, and DRIVER_OK; once that finishes it hands the
-// persistent kernel-side addresses + device-cfg here via `init_blk`.
+// Modern virtio-blk runtime engine (arch-neutral). The transport backend brings
+// up cap discovery, BAR mapping, queue-0 program, and DRIVER_OK; once that
+// finishes it hands persistent kernel-side addresses + device-cfg here via
+// `init_blk`.
 
 extern crate alloc;
 
