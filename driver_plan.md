@@ -2,14 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B450-device-del-registry-drop-after-teardown VERIFIED pending
-PR merge.
+ACTIVE NOW: B451-driver-core-teardown-order-tests; IN AUDIT.
 
-Current active item: none; next claim starts after B450 merge and fresh main
-sync.
+Current active item: Driver-core tests assert remove/sysfs/devtmpfs/registry
+disappearance order.
 
-Next gate after merge: return to fresh `origin/main` before claiming B451 using
-`metadata/index.md`.
+Next gate after B451: prove hosted regression coverage, runtime arch relevance,
+PR merge, then fresh `origin/main` before claiming B452.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -59,7 +58,7 @@ Status legend:
 | VERIFIED | B448-device-del-remove-visible | `device_del` emits remove while object is still visible: `drv::device_del` fires `SYSFS_REMOVE_HOOK` before retaining the device out of the registry, and the hosted teardown-order regression proves the remove hook observes the device unbound but still present in `drv::devices()`. |
 | VERIFIED | B449-device-del-devtmpfs-teardown | `device_del` removes devtmpfs state: model teardown calls `DEVTMPFS_DEL_HOOK` with the owned device name after sysfs remove and before registry removal, boot wires that hook to `devfs::del_device_node`, and devfs deletes the `/dev/<name>` subtree. |
 | VERIFIED | B450-device-del-registry-drop-after-teardown | `device_del` drops device from registry after remove/devtmpfs teardown: `drv::device_del` calls unbind, sysfs remove, and devtmpfs delete before retaining the device out of `DEVICES`, and hosted teardown-order tests prove callbacks run before final registry disappearance. |
-| SOURCE OK |  | Driver-core tests assert remove/sysfs/devtmpfs/registry disappearance order. |
+| ACTIVE | B451-driver-core-teardown-order-tests | Driver-core tests assert remove/sysfs/devtmpfs/registry disappearance order. |
 | SOURCE OK |  | `drv::shutdown_all` walks bound model devices in reverse registration order. |
 | SOURCE OK |  | `drv::shutdown_all` calls `Driver::shutdown` without unbinding or emitting remove events. |
 | SOURCE OK | TBD | Power/reboot/halt path must call driver shutdown hook before restart/poweroff/halt. |

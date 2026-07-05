@@ -5,8 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B450-device-del-registry-drop-after-teardown; VERIFIED pending
-PR merge.
+Current marker: B451-driver-core-teardown-order-tests; IN AUDIT.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -771,3 +770,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B450-device-del-registry-drop-after-teardown | VERIFIED | Fresh main `4df7512a` after PR #2507 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` calls `unbind(d)`, `SYSFS_REMOVE_HOOK`, and `DEVTMPFS_DEL_HOOK` before entering the `DEVICES.retain(|x| !Arc::ptr_eq(x, d))` block and decrementing `DEV_COUNT`. Hosted `device_del_orders_remove_event_and_devtmpfs_teardown` proves callback order `driver-remove`, `sysfs-remove`, `devtmpfs-del`, then asserts the device is absent from `drv::devices()` after teardown. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture`, `cargo test -p drv device_del_unbinds_bound_driver_once -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B450 changes only docs/metadata and production `device_del` code is unchanged. |
+
+## B451 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B451-driver-core-teardown-order-tests | IN AUDIT | Fresh main `c0e89136` after PR #2508 merge; auditing hosted driver-core regression coverage for remove/sysfs/devtmpfs/registry disappearance order. |
