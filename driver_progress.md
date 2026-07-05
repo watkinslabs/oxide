@@ -409,3 +409,4 @@ Evidence:
 | Line cap | PASS: `dumb/tests.rs` 458, `dumb/tables.rs` 203, `dumb/ioctl.rs` 142, `driver_progress.md` under cap. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-arm.log`. |
+| Pre-push boot smoke | PASS: both arches reached `oxide login:` before push. |
