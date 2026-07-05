@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B449-device-del-devtmpfs-teardown VERIFIED pending PR merge.
+ACTIVE NOW: none; B450-device-del-registry-drop-after-teardown VERIFIED pending
+PR merge.
 
-Current active item: none; next claim starts after B449 merge and fresh main
+Current active item: none; next claim starts after B450 merge and fresh main
 sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B450 using
+Next gate after merge: return to fresh `origin/main` before claiming B451 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -57,7 +58,7 @@ Status legend:
 | VERIFIED | B447-device-del-unbinds-first | `device_del` unbinds first: `drv::device_del` checks the device is still registered, calls `unbind(d)` before sysfs remove, devtmpfs teardown, or registry removal when the device is bound, and hosted lifecycle regressions prove driver remove runs once, bound state clears, remove event follows driver removal, devtmpfs teardown follows sysfs remove, and the registry entry disappears after teardown. |
 | VERIFIED | B448-device-del-remove-visible | `device_del` emits remove while object is still visible: `drv::device_del` fires `SYSFS_REMOVE_HOOK` before retaining the device out of the registry, and the hosted teardown-order regression proves the remove hook observes the device unbound but still present in `drv::devices()`. |
 | VERIFIED | B449-device-del-devtmpfs-teardown | `device_del` removes devtmpfs state: model teardown calls `DEVTMPFS_DEL_HOOK` with the owned device name after sysfs remove and before registry removal, boot wires that hook to `devfs::del_device_node`, and devfs deletes the `/dev/<name>` subtree. |
-| SOURCE OK |  | `device_del` drops device from registry after remove/devtmpfs teardown. |
+| VERIFIED | B450-device-del-registry-drop-after-teardown | `device_del` drops device from registry after remove/devtmpfs teardown: `drv::device_del` calls unbind, sysfs remove, and devtmpfs delete before retaining the device out of `DEVICES`, and hosted teardown-order tests prove callbacks run before final registry disappearance. |
 | SOURCE OK |  | Driver-core tests assert remove/sysfs/devtmpfs/registry disappearance order. |
 | SOURCE OK |  | `drv::shutdown_all` walks bound model devices in reverse registration order. |
 | SOURCE OK |  | `drv::shutdown_all` calls `Driver::shutdown` without unbinding or emitting remove events. |
