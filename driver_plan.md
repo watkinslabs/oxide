@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B421-pci-identity-mismatch-proof; VERIFIED, commit/PR pending.
+ACTIVE NOW: B422-bind-unbind-uevent-stability; IN AUDIT.
 
-Current active item: PCI identity mismatch handling must not rebound as the same function.
+Current active item: Bind/unbind change uevents must be stable under parallel tests and live udev monitor.
 
-Next gate after merge: return to fresh `origin/main` before claiming B422
+Next gate after merge: return to fresh `origin/main` before claiming B423
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -92,7 +92,7 @@ Status legend:
 | VERIFIED |  | Model-backed `graphics` character devices publish Linux-style `/sys/class/graphics` and virtual device directories. |
 | VERIFIED |  | `/sys/dev/char` resolves to real pseudo, misc, ALSA/OSS, fbdev, input, and DRM device objects. |
 | VERIFIED |  | Model-backed virtual input, DRM, and character class devices expose `device` link when parent exists. |
-| NOT DONE | TBD | Bind/unbind change uevents must be stable under parallel tests and live udev monitor; current source passes serial hosted tests, parallel hosted run exposed shared listener/test isolation issue. |
+| ACTIVE | B422-bind-unbind-uevent-stability | Bind/unbind change uevents must be stable under parallel tests and live udev monitor; current source passes serial hosted tests, parallel hosted run exposed shared listener/test isolation issue. |
 | NOT DONE | TBD | Intermittent hosted sysfs uevent test isolation: full `cargo test -p sysfs` failed in B342 on `device_del_emits_remove_uevent_before_model_disappears` missing `ACTION=remove`, then the test passed alone; a later full run failed `bind_unbind_emit_change_uevents_from_current_model_state` missing `DEVPATH=/devices/platform/sysfs-bind-uevent0`. Root-cause separately. |
 | SOURCE OK |  | Bound change uevents include `DRIVER=<name>`. |
 | SOURCE OK |  | Unbound change uevents do not carry stale driver ownership. |
