@@ -452,7 +452,7 @@ Evidence:
 
 ## B344-drm-setcrtc-pageflip-card-route
 
-Status: `CLAIMED`.
+Status: `VERIFIED, commit/PR merge pending`.
 
 Branch: `B344-drm-setcrtc-pageflip-card-route`
 
@@ -460,10 +460,17 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | DRM SETCRTC/PAGE_FLIP hooks route by DRM card id to owning GPU. |
+| VERIFIED | DRM SETCRTC/PAGE_FLIP hooks route by DRM card id to owning GPU. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: card inode tags decode to stable `card_id`; DRM ioctl dispatch passes that id to SETCRTC/PAGE_FLIP; handlers select `scanout_ops(card_id)` and virtio-gpu installs each card with owner `VirtioChildDeviceKey.raw()`. |
+| `cargo test -p drm scanout_ops_route_by_card_id_to_driver_key -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 59 passed. |
+| `cargo test -p drv-virtio-gpu` | PASS: 31 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `node/tests.rs` 472, `node/scanout.rs` 57, `crtc.rs` 433, `runtime.rs` 97, `driver_progress.md` under cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b344-drm-setcrtc-pageflip-card-route-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b344-drm-setcrtc-pageflip-card-route-arm.log`. |

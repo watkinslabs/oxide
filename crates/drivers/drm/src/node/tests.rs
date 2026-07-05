@@ -5,8 +5,36 @@ use super::*;
 use crate::uapi::DRM_RENDER_MINOR_BASE;
 use alloc::format;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::DRM_MODE_ATOMIC_TEST_ONLY;
 use vfs::{Dentry, File, OpenFlags};
+
+static LAST_SCANOUT_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
+
+fn record_create(driver_key: u32, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+    Some(driver_key.wrapping_add(1))
+}
+
+fn record_destroy(driver_key: u32, _res_id: u32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+    true
+}
+
+fn record_set_scanout(driver_key: u32, _res_id: u32, _w: u32, _h: u32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+    true
+}
+
+fn record_restore(driver_key: u32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+    true
+}
+
+fn record_boot(driver_key: u32) -> u32 {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+    driver_key
+}
 
     struct TestDrv;
     impl crate::DrmDriver for TestDrv {
@@ -44,6 +72,41 @@ use vfs::{Dentry, File, OpenFlags};
             Some(0)
         );
         unique.unique_len
+    }
+
+    #[test]
+    fn scanout_ops_route_by_card_id_to_driver_key() {
+        let _guard = crate::TEST_LOCK.lock();
+        clear_scanout_ops(7);
+        clear_scanout_ops(8);
+        set_scanout_ops(7, ScanoutOps {
+            driver_key: 0x7001,
+            create_from_pa: record_create,
+            destroy_resource: record_destroy,
+            set_scanout: record_set_scanout,
+            restore_console: record_restore,
+            boot_res_id: record_boot,
+        });
+        set_scanout_ops(8, ScanoutOps {
+            driver_key: 0x8002,
+            create_from_pa: record_create,
+            destroy_resource: record_destroy,
+            set_scanout: record_set_scanout,
+            restore_console: record_restore,
+            boot_res_id: record_boot,
+        });
+
+        let ops7 = scanout_ops(7).unwrap();
+        let ops8 = scanout_ops(8).unwrap();
+        assert_eq!(ops7.driver_key, 0x7001);
+        assert_eq!(ops8.driver_key, 0x8002);
+        assert!((ops7.set_scanout)(ops7.driver_key, 42, 640, 480));
+        assert_eq!(LAST_SCANOUT_DRIVER_KEY.load(Ordering::Acquire), 0x7001);
+        assert!((ops8.restore_console)(ops8.driver_key));
+        assert_eq!(LAST_SCANOUT_DRIVER_KEY.load(Ordering::Acquire), 0x8002);
+
+        clear_scanout_ops(7);
+        clear_scanout_ops(8);
     }
 
     #[test]

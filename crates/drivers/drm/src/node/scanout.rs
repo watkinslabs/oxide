@@ -11,7 +11,7 @@ use sync::{Spinlock, TaskList as OpsLockClass};
 /// binding is a function-pointer table plus an opaque driver key.
 #[derive(Copy, Clone)]
 pub struct ScanoutOps {
-    /// Driver-owned runtime key, currently the owning virtio-gpu parent BDF.
+    /// Driver-owned runtime key for the owning GPU.
     pub driver_key: u32,
     /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
     pub create_from_pa: fn(driver_key: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
