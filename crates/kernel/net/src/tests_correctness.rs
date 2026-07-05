@@ -31,6 +31,7 @@ mod tests_ipv6_ext;
 
 #[path = "tests_correctness/helpers.rs"]
 mod helpers;
+use helpers::*;
 #[path = "tests_correctness/tcp_basics.rs"]
 mod tcp_basics;
 #[path = "tests_correctness/tcp_ipv6.rs"]
