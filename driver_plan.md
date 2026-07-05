@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B498-virtio-child-device-ids; IN AUDIT.
+ACTIVE NOW: none; B498-virtio-child-device-ids VERIFIED.
 
-Current active item: Virtio child device IDs for net/block/RNG/vsock/sound/input/GPU are supplied by child driver crates.
+Last verified item: Virtio child device IDs for net/block/RNG/vsock/sound/input/GPU are supplied by child driver crates.
 
 Next gate after merge: return to fresh `origin/main` before claiming B499 using
 `metadata/index.md`.
@@ -132,7 +132,7 @@ Status legend:
 | VERIFIED | B495-virtio-child-remove-unpublish | Virtio child wrapper centralizes parent-key remove unpublish: generic `VirtioChildDriver<O>::remove` resolves the stable child key from the parent PCI model device, calls shared `virtio::run_child_remove(device_key, O::remove_child, unpublish_transport)`, and `run_child_remove` invokes child policy remove before transport unpublish; pci-boot `unpublish_transport` routes through `VirtioPciTransport::unpublish_key` to remove the persistent transport record and release transport-owned mappings, frames, and MSI-X bindings. Checks pass: focused remove/unpublish ordering test 1/1, hosted `pci-boot`/`virtio` with virtio 43/43 and pci-boot compile-only 0 tests, x86_64 smoke reached `oxide login:` in 12s, and aarch64 smoke reached `oxide login:` in 16s. |
 | VERIFIED | B496-virtio-child-shutdown-key | Virtio child wrapper centralizes shutdown key lookup: generic `VirtioChildDriver<O>::shutdown` resolves the stable child key through `parent_key(dev)` and calls shared `virtio::run_child_shutdown(device_key, O::shutdown_child)`; `parent_key` derives the `VirtioChildDeviceKey` from the parent PCI model device, and each child ops adapter receives only that stable key for its explicit shutdown policy without transport unpublish/remove side effects. Checks pass: focused shutdown-key lifecycle test 1/1, hosted `pci-boot`/`virtio` with virtio 43/43 and pci-boot compile-only 0 tests, x86_64 smoke reached `oxide login:` in 12s, and aarch64 smoke reached `oxide login:` in 16s. |
 | VERIFIED | B497-virtio-child-policy-only | Child drivers supply only profile, install, remove, and shutdown policy: source audit proves the only virtio child bus-facing `drv::Driver` wrapper, driver registration, match/probe/remove/shutdown lifecycle, publish/release/remove-unpublish, and shutdown-key routing live in `pci-boot::virtio_child` and shared `virtio`; child crates export `DRIVER_ID`, `transport_profile`, install/init, remove/uninstall, and shutdown policy entrypoints and do not define `drv::Driver`, register drivers, bind/unbind, import pci-boot transport, or call shared `run_child_*` lifecycle helpers. Checks pass: broad hosted gate for `pci-boot`, `virtio`, and all virtio child driver crates; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
-| ACTIVE | B498-virtio-child-device-ids | Virtio child device IDs for net/block/RNG/vsock/sound/input/GPU are supplied by child driver crates. |
+| VERIFIED | B498-virtio-child-device-ids | Virtio child device IDs for net/block/RNG/vsock/sound/input/GPU are supplied by child driver crates: source audit proves child crates own named virtio device ID constants and `DRIVER_ID` descriptors (`net=1`, `blk=2`, `rng=4`, `gpu=16`, `input=18`, `vsock=19`, `snd=25`), shared `VirtioChildDriverId` matches bus/vendor/exact child device ID, and `pci-boot::virtio_child` consumes only each child crate `DRIVER_ID` through its ops adapter with no wrapper-local numeric child device IDs. Checks pass: broad hosted gate for `pci-boot`, `virtio`, and all virtio child driver crates; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 17s. |
 | SOURCE OK |  | Virtio-gpu placeholder notify pointer marker removed. |
 | VERIFIED |  | Shared `virtio` owns child bus/vendor matching through `VirtioChildDriverId`. |
 | SOURCE OK |  | Child driver crates export their own descriptors. |
