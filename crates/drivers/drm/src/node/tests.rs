@@ -164,6 +164,21 @@ use vfs::{Dentry, File, OpenFlags};
     }
 
     #[test]
+    fn drm_inode_tags_encode_stable_card_id() {
+        let _guard = crate::TEST_LOCK.lock();
+        for card_id in [0u32, 7, 0x7ffe] {
+            assert_eq!(
+                super::publication::drm_inode_parts(&make_card_inode(card_id)),
+                Some((super::publication::DRM_CARD_INO, card_id))
+            );
+            assert_eq!(
+                super::publication::drm_inode_parts(&make_render_inode(card_id)),
+                Some((super::publication::DRM_RENDER_INO, card_id))
+            );
+        }
+    }
+
+    #[test]
     fn drm_nodes_do_not_acknowledge_raw_writes() {
         let _guard = crate::TEST_LOCK.lock();
         let card = open_file(make_card_inode(0));
