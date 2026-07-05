@@ -27,7 +27,7 @@ pub use scanout::{clear_scanout_ops, scanout_ops, set_scanout_ops, ScanoutOps};
 use auth::{
     atomic_property_count, authorize_magic, client_cap_atomic, copy_bytes_to_user,
     drop_master_owner, file_magic, file_token, ioctl_takes_user_ptr, is_master, set_master_owner,
-    valid_user_range,
+    set_unique_ready, unique_ready, valid_user_range,
 };
 use publication::{drm_inode_parts, DRM_CARD_INO, DRM_RENDER_INO};
 use uapi::{
@@ -138,14 +138,16 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             if !valid_user_range(arg, core::mem::size_of::<DrmUnique>() as u64) {
                 return Some(-(Errno::Efault.as_i32() as i64));
             }
-            let unique = match driver.as_ref() {
-                Some(d) => d.unique(),
-                None    => FALLBACK_UNIQUE,
-            };
+            let unique = if unique_ready(card_id, token) {
+                match driver.as_ref() {
+                    Some(d) => d.unique(),
+                    None    => FALLBACK_UNIQUE,
+                }
+            } else { "" };
             // SAFETY: the full drm_unique user struct was validated above.
             let mut u: DrmUnique = unsafe { core::ptr::read_volatile(arg as *const DrmUnique) };
-            if u.unique != 0 && u.unique_len > 0 {
-                if copy_bytes_to_user(u.unique, u.unique_len, unique.as_bytes()).is_err() {
+            if u.unique_len >= unique.len() as u64 && !unique.is_empty() {
+                if copy_bytes_to_user(u.unique, unique.len() as u64, unique.as_bytes()).is_err() {
                     return Some(-(Errno::Efault.as_i32() as i64));
                 }
             }
@@ -160,16 +162,27 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             }
             // SAFETY: the full drm_set_version user struct was validated above.
             let mut v: DrmSetVersion = unsafe { core::ptr::read_volatile(arg as *const DrmSetVersion) };
-            if v.drm_di_major != DRM_IF_MAJOR || v.drm_di_minor > DRM_IF_MINOR {
-                return Some(-(Errno::Einval.as_i32() as i64));
+            let (drv_major, drv_minor, _) = driver.as_ref().map(|d| d.version()).unwrap_or((0, 0, 0));
+            let mut ret = 0;
+            if v.drm_di_major != -1 {
+                if v.drm_di_major != DRM_IF_MAJOR || v.drm_di_minor < 0 || v.drm_di_minor > DRM_IF_MINOR {
+                    ret = -(Errno::Einval.as_i32() as i64);
+                } else if v.drm_di_minor >= 1 {
+                    set_unique_ready(card_id, token);
+                }
+            }
+            if ret == 0 && v.drm_dd_major != -1 {
+                if v.drm_dd_major != drv_major as i32 || v.drm_dd_minor < 0 || v.drm_dd_minor > drv_minor as i32 {
+                    ret = -(Errno::Einval.as_i32() as i64);
+                }
             }
             v.drm_di_major = DRM_IF_MAJOR;
             v.drm_di_minor = DRM_IF_MINOR;
-            v.drm_dd_major = 0;
-            v.drm_dd_minor = 0;
+            v.drm_dd_major = drv_major as i32;
+            v.drm_dd_minor = drv_minor as i32;
             // SAFETY: the full drm_set_version user struct was validated above.
             unsafe { core::ptr::write_volatile(arg as *mut DrmSetVersion, v); }
-            Some(0)
+            Some(ret)
         }
         DRM_IOCTL_MODE_GETRESOURCES => {
             // Real 2-pass enumeration when a card is registered;

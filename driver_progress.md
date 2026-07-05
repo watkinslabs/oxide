@@ -484,8 +484,8 @@ Evidence: source audit found forged `AUTH_MAGIC` accepted; fixed `authorize_magi
 
 ## B351-drm-unique-version-uapi
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, pre-push/PR merge pending`.
 
 Branch: `B351-drm-unique-version-uapi`
 
-Evidence: source audit in progress for `DRM_IOCTL_GET_UNIQUE` and `DRM_IOCTL_SET_VERSION` UAPI struct marshalling; no completion claim yet.
+Evidence: source audit found `GET_UNIQUE` exposed bus id before `SET_VERSION` and copied partial undersized buffers; fixed per-open-file unique enable, release/unregister cleanup, Linux no-partial-copy behavior, and SET_VERSION driver/interface negotiation writeback. `drm_get_unique_copies_driver_bus_id_and_reports_full_length`, `drm_set_version_negotiates_supported_core_interface`, full `cargo test -p drm` with 63 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass.
