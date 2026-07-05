@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B347-drm-unregister-drops-card-state`.
+Current marker: `>>> ACTIVE >>> B348-drm-master-open-file-state`.
 
 ## Archived Completed B327-B330
 
@@ -440,7 +440,7 @@ Evidence:
 
 ## B347-drm-unregister-drops-card-state
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2400.
 
 Branch: `B347-drm-unregister-drops-card-state`
 
@@ -463,3 +463,22 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-arm.log`. |
 | Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR | PASS: PR #2400 merged and local `main` synced to `origin/main` at `a62a9129`. |
+
+## B348-drm-master-open-file-state
+
+Status: `CLAIMED`.
+
+Branch: `B348-drm-master-open-file-state`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | DRM master state is per open file description. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
