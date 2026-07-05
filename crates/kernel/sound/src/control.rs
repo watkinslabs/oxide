@@ -10,24 +10,24 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// Owner-keyed OSS mixer bridge. No mixer exists until a driver registers
 /// real controls; report absence instead of fabricating a Master control.
-pub fn mixer_level(owner: u32) -> Option<u32> {
+pub fn mixer_level(owner: crate::SoundOwnerKey) -> Option<u32> {
     let _ = owner;
     None
 }
 
-pub fn set_mixer_level(owner: u32, packed: u32) -> bool {
+pub fn set_mixer_level(owner: crate::SoundOwnerKey, packed: u32) -> bool {
     let _ = (owner, packed);
     false
 }
 
 /// Drop card-local ALSA/OSS control state when the owning sound card is
 /// removed or probe publication rolls back.
-pub(crate) fn unregister_card(owner: u32) {
+pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     let _ = owner;
 }
 
 /// Handle one `SNDRV_CTL_IOCTL_*` (magic 'U' stripped → `nr`). # C: O(1)
-pub fn handle(owner: u32, card: u32, nr: u64, arg: u64) -> i64 {
+pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 {
     if crate::ops::ops_for(owner).is_none() {
         return err(Errno::Enodev);
     }
@@ -63,7 +63,7 @@ fn card_info(card: u32, arg: u64) -> i64 {
 /// SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE: given a starting device number, return
 /// the next existing one (or -1). ALSA device 0 exists when the card has
 /// either playback or capture caps registered.
-fn pcm_next_device(owner: u32, arg: u64) -> i64 {
+fn pcm_next_device(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
     let from = b.r32(0) as i32;
     let has_device = crate::ops::pcm_caps(owner).is_some() || crate::ops::cap_caps(owner).is_some();
@@ -75,7 +75,7 @@ fn pcm_next_device(owner: u32, arg: u64) -> i64 {
 /// SNDRV_CTL_IOCTL_PCM_INFO: fill snd_pcm_info for the device/stream selected
 /// in the struct's `device`/`stream` fields. Device 0 exposes the playback
 /// and capture streams that the registered card ops report.
-fn pcm_info(owner: u32, card: u32, arg: u64) -> i64 {
+fn pcm_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let device = b.r32(PI_DEVICE);
     let stream = b.r32(PI_STREAM) as i32;
@@ -114,19 +114,19 @@ fn elem_info(arg: u64) -> i64 {
     err(Errno::Enoent)
 }
 
-fn elem_read(owner: u32, arg: u64) -> i64 {
+fn elem_read(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let _ = owner;
     let _ = match UserBuf::new(arg, CTL_ELEM_VALUE_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     err(Errno::Enoent)
 }
 
-fn elem_write(owner: u32, arg: u64) -> i64 {
+fn elem_write(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let _ = owner;
     let _ = match UserBuf::new(arg, CTL_ELEM_VALUE_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     err(Errno::Enoent)
 }
 
-fn subscribe(owner: u32, arg: u64) -> i64 {
+fn subscribe(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let _ = owner;
     let _ = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
     0
@@ -136,14 +136,14 @@ fn subscribe(owner: u32, arg: u64) -> i64 {
 mod tests {
     use super::*;
 
-    fn cfg(_owner: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
-    fn caps(_owner: u32) -> crate::ops::Caps { Some((0, 0, 1, 2)) }
-    fn period(_owner: u32) -> usize { 2048 }
-    fn hw_params(_owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
-    fn yes(_owner: u32) -> bool { true }
-    fn trigger(_owner: u32, _start: bool) -> bool { true }
-    fn submit(_owner: u32, b: &[u8]) -> usize { b.len() }
-    fn recv(_owner: u32, b: &mut [u8]) -> usize { b.len() }
+    fn cfg(_owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
+    fn caps(_owner: crate::SoundOwnerKey) -> crate::ops::Caps { Some((0, 0, 1, 2)) }
+    fn period(_owner: crate::SoundOwnerKey) -> usize { 2048 }
+    fn hw_params(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+    fn yes(_owner: crate::SoundOwnerKey) -> bool { true }
+    fn trigger(_owner: crate::SoundOwnerKey, _start: bool) -> bool { true }
+    fn submit(_owner: crate::SoundOwnerKey, b: &[u8]) -> usize { b.len() }
+    fn recv(_owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { b.len() }
 
     static TEST_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
         config: cfg,
@@ -178,10 +178,11 @@ mod tests {
         put_u32(buf, CEI_NUMID, numid);
         put_u32(buf, CEI_IFACE, CTL_ELEM_IFACE_MIXER);
     }
+    fn key(raw: u32) -> crate::SoundOwnerKey { crate::SoundOwnerKey::from_raw(raw).unwrap() }
 
     #[test]
     fn control_pcm_info_reports_playback_and_capture_streams() {
-        let owner = 0x5102;
+        let owner = key(0x5102);
         let _ = crate::ops::clear(owner);
         let _ = crate::cancel_card_reservation(owner);
         assert!(crate::reserve_card(owner));
@@ -217,7 +218,7 @@ mod tests {
 
     #[test]
     fn missing_mixer_controls_are_not_fabricated() {
-        let owner = 0x5100;
+        let owner = key(0x5100);
         let _ = crate::ops::clear(owner);
         let _ = crate::cancel_card_reservation(owner);
         assert!(crate::reserve_card(owner));
@@ -246,7 +247,7 @@ mod tests {
 
     #[test]
     fn missing_mixer_controls_reject_reads_writes_and_oss_mixer() {
-        let owner = 0x5101;
+        let owner = key(0x5101);
         let _ = crate::ops::clear(owner);
         let _ = crate::cancel_card_reservation(owner);
         assert!(crate::reserve_card(owner));

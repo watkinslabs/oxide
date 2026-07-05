@@ -64,7 +64,7 @@ pub(crate) fn formats_to_afmt(formats: u64) -> u32 {
     out
 }
 
-pub(crate) fn caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
+pub(crate) fn caps(owner: crate::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
     match (crate::ops::pcm_caps(owner), crate::ops::cap_caps(owner)) {
         (Some((pf, pr, pcmin, pcmax)), Some((cf, cr, ccmin, ccmax))) => {
             let formats = pf & cf;
@@ -78,7 +78,7 @@ pub(crate) fn caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
     }
 }
 
-pub(crate) fn initial_params(owner: u32) -> (u8, u8, u8) {
+pub(crate) fn initial_params(owner: crate::SoundOwnerKey) -> (u8, u8, u8) {
     let Some((formats, rates, ch_min, ch_max)) = caps(owner) else {
         return (6, V_S16, 2);
     };
@@ -100,7 +100,7 @@ pub(crate) fn fragment_geometry(o: &Oss) -> Option<(u32, u32)> {
     Some((period, maxfrags))
 }
 
-pub(crate) fn oss_period_buffer(owner: u32) -> Option<(u32, u32)> {
+pub(crate) fn oss_period_buffer(owner: crate::SoundOwnerKey) -> Option<(u32, u32)> {
     let guard = OSS.lock();
     let o = guard.iter().find(|o| o.owner == owner)?;
     let (period, maxfrags) = fragment_geometry(o)?;

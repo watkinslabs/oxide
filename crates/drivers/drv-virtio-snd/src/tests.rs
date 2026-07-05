@@ -98,7 +98,11 @@ use super::*;
         let _ = softirq::clear_handler(softirq::Slot::SndEvent);
     }
 
-    fn publish_test_card(owner: u32) {
+    fn owner_key(device_key: DeviceKey) -> sound::SoundOwnerKey {
+        sound_owner(device_key).expect("test device key must map to sound owner")
+    }
+
+    fn publish_test_card(owner: sound::SoundOwnerKey) {
         let _ = sound::unregister_card(owner);
         let _ = sound::ops::clear(owner);
         assert!(sound::reserve_card(owner));
@@ -188,7 +192,7 @@ use super::*;
     fn caps_exist_only_for_scanned_stream_directions() {
         let _guard = TEST_LOCK.lock();
         reset_test_state();
-        let owner = sound_owner(key(0x0010_0000));
+        let owner = owner_key(key(0x0010_0000));
         let mut c = ctx(key(0x0010_0000));
         CTX.lock().push(c);
         assert!(pcm_caps(owner).is_none());
@@ -262,7 +266,7 @@ use super::*;
         let _guard = TEST_LOCK.lock();
         reset_test_state();
         let device_key = key(0x0030_0000);
-        let owner = sound_owner(device_key);
+        let owner = owner_key(device_key);
         let _ = sound::unregister_card(owner);
         let _ = sound::ops::clear(owner);
 
@@ -285,8 +289,8 @@ use super::*;
         reset_test_state();
         let key0 = key(0x0040_0000);
         let key1 = key(0x0050_0000);
-        let owner0 = sound_owner(key0);
-        let owner1 = sound_owner(key1);
+        let owner0 = owner_key(key0);
+        let owner1 = owner_key(key1);
         publish_test_card(owner0);
         publish_test_card(owner1);
         {
@@ -321,8 +325,8 @@ use super::*;
         reset_test_state();
         let key0 = key(0x0060_0000);
         let key1 = key(0x0070_0000);
-        let owner0 = sound_owner(key0);
-        let owner1 = sound_owner(key1);
+        let owner0 = owner_key(key0);
+        let owner1 = owner_key(key1);
         publish_test_card(owner0);
         publish_test_card(owner1);
         {

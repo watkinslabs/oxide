@@ -18,7 +18,7 @@ use crate::pcm::{refine_params, fmt_alsa_to_virtio, rate_hz_to_enum};
 const BOUNDARY: u64 = 0x4000_0000_0000;
 
 struct Cap {
-    owner: u32,
+    owner: crate::SoundOwnerKey,
     state: u32,
     frame_bytes: u32,
     buffer_frames: u32,
@@ -27,18 +27,18 @@ struct Cap {
 }
 static CAP: Spinlock<Vec<Cap>, L> = Spinlock::new(Vec::new());
 
-fn initial(owner: u32) -> Cap {
+fn initial(owner: crate::SoundOwnerKey) -> Cap {
     Cap { owner, state: STATE_OPEN, frame_bytes: 4, buffer_frames: 1024, appl_ptr: 0, hw_ptr: 0 }
 }
 
-pub(crate) fn register_card(owner: u32) {
+pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     let mut guard = CAP.lock();
     if !guard.iter().any(|c| c.owner == owner) {
         guard.push(initial(owner));
     }
 }
 
-pub(crate) fn unregister_card(owner: u32) {
+pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     let mut guard = CAP.lock();
     guard.retain(|c| c.owner != owner);
 }
@@ -48,21 +48,21 @@ pub(crate) fn registered_count() -> usize {
     CAP.lock().len()
 }
 
-fn is_registered(owner: u32) -> bool {
+fn is_registered(owner: crate::SoundOwnerKey) -> bool {
     CAP.lock().iter().any(|c| c.owner == owner)
 }
 
 #[cfg(test)]
-pub(crate) fn has_card(owner: u32) -> bool { is_registered(owner) }
+pub(crate) fn has_card(owner: crate::SoundOwnerKey) -> bool { is_registered(owner) }
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// Device INPUT caps `(virtio_formats, virtio_rates, ch_min, ch_max)`.
-fn caps(owner: u32) -> Option<(u64, u64, u8, u8)> { crate::ops::cap_caps(owner) }
+fn caps(owner: crate::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> { crate::ops::cap_caps(owner) }
 
 /// Capture HW_REFINE/HW_PARAMS: refine against the INPUT caps; on commit
 /// apply via the capture ops + record geometry. # C: O(CONTROLQ)
-fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
+fn refine(owner: crate::SoundOwnerKey, b: &UserBuf, commit: bool) -> i64 {
     let Some((vf, vr, ch_min, ch_max)) = caps(owner) else {
         return err(Errno::Enodev);
     };
@@ -87,7 +87,7 @@ fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
 
 /// Handle one `SNDRV_PCM_IOCTL_*` on the capture substream. # C: O(1)
 /// excluding the blocking transfer in READI
-pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
+pub fn handle(owner: crate::SoundOwnerKey, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => match UserBuf::new(arg, 4) { Some(b) => { b.w32(0, SNDRV_PCM_VERSION); 0 } None => err(Errno::Efault) },
         PCM_INFO => pcm_info(owner, arg),
@@ -142,7 +142,7 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
     }
 }
 
-fn pcm_info(owner: u32, arg: u64) -> i64 {
+fn pcm_info(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     if caps(owner).is_none() || !is_registered(owner) {
         return err(Errno::Enodev);
     }
@@ -157,7 +157,7 @@ fn pcm_info(owner: u32, arg: u64) -> i64 {
     0
 }
 
-fn status(owner: u32, arg: u64) -> i64 {
+fn status(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, STATUS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let guard = CAP.lock();
     let Some(c) = guard.iter().find(|c| c.owner == owner) else {
@@ -172,7 +172,7 @@ fn status(owner: u32, arg: u64) -> i64 {
     0
 }
 
-fn sync_ptr(owner: u32, arg: u64) -> i64 {
+fn sync_ptr(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SYNC_PTR_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let flags = b.r32(SP_FLAGS);
     let mut guard = CAP.lock();
@@ -189,7 +189,7 @@ fn sync_ptr(owner: u32, arg: u64) -> i64 {
 /// SNDRV_PCM_IOCTL_READI_FRAMES — interleaved blocking capture. Auto-starts a
 /// PREPARED stream, pulls frames from the device, copies them into the app
 /// buffer, advances appl_ptr/hw_ptr. Returns frames captured.
-fn readi(owner: u32, arg: u64) -> i64 {
+fn readi(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let xf = match UserBuf::new(arg, XFERI_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let ubuf = xf.r64(XFERI_BUF);
     let frames = xf.r64(XFERI_FRAMES);
@@ -238,7 +238,7 @@ fn readi(owner: u32, arg: u64) -> i64 {
 
 /// Raw `read(2)` on the capture fd — the byte-stream equivalent of READI.
 /// Auto-starts a PREPARED stream and returns captured bytes. # C: O(bytes/period)
-pub fn read_bytes(owner: u32, buf: &mut [u8]) -> usize {
+pub fn read_bytes(owner: crate::SoundOwnerKey, buf: &mut [u8]) -> usize {
     let state = {
         let guard = CAP.lock();
         let Some(c) = guard.iter().find(|c| c.owner == owner) else {

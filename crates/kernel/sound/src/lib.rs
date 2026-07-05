@@ -16,7 +16,7 @@ mod capture;
 mod control;
 mod oss;
 
-pub use cards::{cancel_card_reservation, card_number, owner, register_card, reserve_card, unregister_card};
+pub use cards::{cancel_card_reservation, card_number, owner, register_card, reserve_card, unregister_card, SoundOwnerKey};
 pub use device::handle_ioctl;
 
 #[cfg(test)]
