@@ -2,13 +2,12 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B333-virtio-gpu-device-state-key` — VERIFIED; commit/PR merge pending.
+ACTIVE NOW: `B334-virtio-gpu-duplicate-key-reject` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B333-virtio-gpu-device-state-key` (verified; merge pending).
+Current active item: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject`.
 
-Current B333 gate: DONE. Source audit plus hosted key-vs-BDF regressions and
-fast x86_64/aarch64 driver-path smokes prove installed virtio-gpu device state
-is keyed by `VirtioChildDeviceKey`.
+Current B334 gate: prove or fix virtio-gpu duplicate child-key install rejection
+before any second publication side effects.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -265,7 +264,7 @@ Status legend:
 | VERIFIED | B331-virtio-gpu-probe-failure-unwind | Virtio-gpu probe-failure unwind removes only failed child scanout; hosted post-init regression now runs, full GPU crate tests pass, and fast x86_64/aarch64 driver-path proof passes. |
 | VERIFIED | B332-virtio-gpu-hot-remove-cleanup | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup; hosted hot-remove regressions, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
 | VERIFIED | B333-virtio-gpu-device-state-key | Virtio-gpu installed device state is per child key; source audit, hosted key-vs-BDF tests, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | Virtio-gpu duplicate child-key install rejected before publication. |
+| CLAIMED | B334-virtio-gpu-duplicate-key-reject | Virtio-gpu duplicate child-key install rejected before publication. |
 | NOT DONE |  | DRM card IDs are stable slots. |
 | NOT DONE |  | DRM publishes `/dev/dri/cardN` per stable card slot. |
 | NOT DONE |  | DRM render nodes withheld until real render/GEM UAPI exists. |

@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B333-virtio-gpu-device-state-key` (verified; merge pending).
+Current marker: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject`.
 
 ## B002-single-machine-desktop-proof
 
@@ -265,3 +265,21 @@ Evidence:
 | `git diff --check` | PASS. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b333-gpu-device-key-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b333-gpu-device-key-arm.log`. |
+
+## B334-virtio-gpu-duplicate-key-reject
+
+Status: `CLAIMED`.
+
+Branch: `B334-virtio-gpu-duplicate-key-reject`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Virtio-gpu duplicate child-key install rejected before publication. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
