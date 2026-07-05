@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B475 verified pending PR merge.
+Current marker: B476-driver-hardening-expansion; IN AUDIT.
+
+## B476 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B476-driver-hardening-expansion | IN AUDIT | Fresh main `08063c2d` after PR #2533 merge; auditing the broad post-single-device row for concrete fault-injection, hotplug stress, and multi-device hardening requirements across driver core, sysfs/devfs teardown, PCI, virtio child publication, and x86_64/aarch64 fast boot proof. |
 
 ## B475 Current
 
