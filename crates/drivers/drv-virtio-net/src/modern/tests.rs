@@ -213,12 +213,36 @@ use core::sync::atomic::Ordering;
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
+        let _ = ensure_net_runtime(key(1));
         set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
 
         assert!(uninstall_modern(key(1)));
         assert!(registered_iface_for(key(1)).is_none());
+        assert!(net_runtime_for(key(1)).is_none());
         assert!(first_iface_ip_for(key(1)).is_none());
         assert!(!uninstall_modern(key(1)));
+    }
+
+    #[test]
+    fn uninstall_modern_removes_only_named_netdev_runtime() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        {
+            let mut devices = MODERN_DEVS.lock();
+            devices.push(state(1));
+            devices.push(state(2));
+        }
+        set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
+        set_registered_iface(key(2), net::NetIfaceId::from_raw(88));
+        assert_eq!(ensure_net_runtime(key(1)).name.as_str(), "eth0");
+        assert_eq!(ensure_net_runtime(key(2)).name.as_str(), "eth1");
+
+        assert!(uninstall_modern(key(1)));
+        assert!(registered_iface_for(key(1)).is_none());
+        assert!(net_runtime_for(key(1)).is_none());
+        assert_eq!(registered_iface_for(key(2)).unwrap().raw(), 88);
+        assert_eq!(net_runtime_for(key(2)).unwrap().name.as_str(), "eth1");
+        clear_test_state();
     }
 
     #[test]
