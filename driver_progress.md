@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B381-virtio-net-ipv6-tx-stack-ndp`.
+Current marker: `>>> ACTIVE >>> VERIFIED B382-virtio-net-multidev-rebind-proof`.
 
 ## Archived Completed B327-B330
 
@@ -460,23 +460,39 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B378-virtio-net-hot-remove-key-cleanup | VERIFIED | Hot-remove clears keyed netdev/iface/RX runtime; full virtio-net tests, arch proof, PR #2431, main sync `3445c15a`. |
 | B379-virtio-net-shared-rx-last-runtime | VERIFIED | Shared NetRx/ARP-GC lifetime is last-runtime owned; full virtio-net tests, arch proof, PR #2432, main sync `2178cd35`. |
 | B380-virtio-net-ipv6-ndp-stack-owned | VERIFIED | IPv6 RX NDP learning is stack-owned; net NDP tests, virtio-net tests, arch proof, PR #2433, main sync `0fbf754b`. |
+| B381-virtio-net-ipv6-tx-stack-ndp | VERIFIED | IPv6 TX NDP lookup is registered-stack owned; net/virtio-net tests, arch proof, PR #2434, main sync `cdd8d243`. |
 
-## B379-virtio-net-shared-rx-last-runtime
+## B379-B381 Recent Verified
 
-Status: `VERIFIED`; merged by PR #2432. Evidence: shared NetRx/ARP-GC lifetime is last-runtime owned; focused/full virtio-net tests, line check, and x86_64/aarch64 driver-path proof passed.
+Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
+recent-completed table above; main was synced after each merge through
+`cdd8d243`.
 
-## B380-virtio-net-ipv6-ndp-stack-owned
+## B382-virtio-net-multidev-rebind-proof
 
-Status: `VERIFIED`; merged by PR #2433.
+Status: `>>> ACTIVE >>> VERIFIED, push gate passed`.
 
-Branch: `B380-virtio-net-ipv6-ndp-stack-owned`
+Branch: `B382-virtio-net-multidev-rebind-proof`
 
-Evidence: virtio-net RX delivers IPv6 frames to `NetStack::deliver_rx_ipv6(iface, ...)`; removed stale driver-private `learn_ndp_from_ipv6` learner/test; `cargo test -p net f180c -- --nocapture` proves stack-owned `(iface, IPv6)` NDP learning; `cargo test -p drv-virtio-net`, `git diff --check`, line caps, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
+Evidence: fast live proof path now uses `/init` C probe when
+`OXIDE_VIRTIO_NET_MULTIDEV_SMOKE=1`; rootfs cache keys multidev mode; ARM PID1
+selection honors `/init`, then systemd, then `/sbin/init`. The probe mounts API
+fs, proves `eth0`/`eth1`, writes real sysfs
+`/sys/bus/virtio/drivers/virtio-net/{unbind,bind}`, verifies virtio-net driver
+readdir drops/restores the selected child, then runs the normal mouse tail.
 
-## B381-virtio-net-ipv6-tx-stack-ndp
+x86_64 result: PASS `/tmp/b382-x86-multidev-fastinit-kmsg.log` with
+`b382_net_eth0_eth1`, unbind, rebind, and final driver-path PASS.
 
-Status: `>>> ACTIVE >>> VERIFIED - PR READY`.
+aarch64 result: PASS `/tmp/b382-arm-multidev-fastinit-kmsg.log` with
+`b382_net_eth0_eth1`, unbind, rebind, and final driver-path PASS.
 
-Branch: `B381-virtio-net-ipv6-tx-stack-ndp`
+Hosted result: `cargo check -p xtask`, `cargo check -p smoke`,
+`cargo test -p drv lifecycle -- --nocapture`,
+`cargo test -p drv-virtio-net -- --nocapture`, `cargo test -p sysfs bind
+-- --nocapture --test-threads=1`, C syntax check, and `git diff --check` pass.
 
-Evidence: kernel `ndp_lookup_for_device` resolves by registered iface via `net::sock::stack().ndp_lookup(iface, next_hop)`, and `VirtioNetDev::xmit` calls `resolve_next_hop_mac` before `tx_frame_for`. `cargo test -p net f180c -- --nocapture`, `cargo test -p drv-virtio-net`, `git diff --check`, line caps, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
+Pre-push result: x86 smoke reaches login in 22s; ARM smoke reaches login in 16s.
+
+Follow-up defect found: stale dcache can keep the old direct driver symlink path
+positive after unbind even though driver-dir readdir shows model state changed.
