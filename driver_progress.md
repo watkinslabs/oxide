@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B405-pl011-receive-irq-owned | VERIFIED | PL011 poll fallback export removed; hosted PL011/serialtty tests and x86_64/aarch64 driver-path proof pass. |
 | B406-i8042-receive-irq-owned | VERIFIED | i8042 IRQ1 ownership source-audited; hosted PS/2/input/tty tests and x86_64/aarch64 driver-path proof pass. |
 | B407-serial-input-remove-rebind-state | VERIFIED | 8250/PL011/i8042 remove state source-audited; hosted serial/input tests and x86_64/aarch64 driver-path proof pass. |
-| B408-timer-registry-owned-ids | CLAIMED | Timer registry owned-ID/unregister audit claimed; source audit, hosted tests, and x86_64/aarch64 driver-path proof pending. |
+| B408-timer-registry-owned-ids | VERIFIED | Timer owned-ID/unregister regressions, broader timer/net/sched tests, and x86_64/aarch64 driver-path proof pass. |
