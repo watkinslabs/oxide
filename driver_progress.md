@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B335-drm-card-id-stable-slots` — VERIFIED; commit/PR merge pending.
+Current marker: `>>> ACTIVE >>> B336-drm-card-node-publication`.
 
 ## B002-single-machine-desktop-proof
 
@@ -295,7 +295,7 @@ Evidence:
 
 ## B335-drm-card-id-stable-slots
 
-Status: `VERIFIED`; commit/PR merge pending.
+Status: `VERIFIED`; merged by PR #2388.
 
 Branch: `B335-drm-card-id-stable-slots`
 
@@ -318,3 +318,30 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 372 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR merge | PASS: PR #2388 merged to `main` at `934792db`. |
+
+## B336-drm-card-node-publication
+
+Status: `VERIFIED`; commit and PR merge pending.
+
+Branch: `B336-drm-card-node-publication`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | DRM publishes `/dev/dri/cardN` per stable card slot. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `drm::node::publication::register` publishes `dri/card{card_id}` as class `drm`, dev_t `(226, card_id)`, and a `make_card_inode(card_id)` factory through `drv::try_device_add`; `drv::try_device_add` forwards that metadata to the devtmpfs hook, and `kmain` wires the hook to `devfs::add_device_node`. |
+| Hosted regression | PASS: `register_publishes_card_node_metadata_per_stable_slot` proves each stable card slot publishes the expected model device, devnode name, dev_t, char inode, and card-id inode tag. |
+| `cargo test -p drm register_publishes_card_node_metadata_per_stable_slot -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 57 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 394 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-arm.log`. |
