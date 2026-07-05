@@ -47,7 +47,7 @@ pub(crate) fn bind_msix_vector(
     let tbar_pa = bars.get(m.table_bir as usize).and_then(|b| b.mem_base())?;
     let entry_pa = tbar_pa
         .wrapping_add(m.table_offset as u64)
-        .wrapping_add((queue_vector as u64) * 16);
+        .wrapping_add((queue_vector as u64) * pci::MSIX_TABLE_ENTRY_BYTES);
     let page_pa = entry_pa & !0xFFF;
     let page_off = entry_pa - page_pa;
 
@@ -66,7 +66,7 @@ pub(crate) fn bind_msix_vector(
         core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & 0xFFFF_FFFF) as u32);
         core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
         core::ptr::write_volatile((entry_va + 8) as *mut u32, msg_data);
-        core::ptr::write_volatile((entry_va + 12) as *mut u32, 0);
+        core::ptr::write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, 0);
     }
     set_msix_enabled_arch(d.bdf, c.cfg_off, true);
     Some(MsixBinding {
@@ -77,21 +77,39 @@ pub(crate) fn bind_msix_vector(
     })
 }
 
-fn release_msix_binding(bdf: pci::Bdf, binding: MsixBinding) {
+fn mask_msix_binding(binding: MsixBinding) {
     // SAFETY: entry_va was recorded from the MSI-X table mapping while the
     // transport was bound and is still mapped until the caller releases the
     // transport MMIO mappings.
     unsafe {
-        core::ptr::write_volatile((binding.entry_va + 12) as *mut u32, 1);
+        core::ptr::write_volatile(
+            (binding.entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
+            pci::MSIX_VECTOR_CONTROL_MASKED,
+        );
     }
-    set_msix_enabled_arch(bdf, binding.cap_off, false);
-    free_msi_id(binding.id);
+}
+
+fn disable_bound_msix_caps(bdf: pci::Bdf, bindings: &[MsixBinding]) {
+    let mut cap_offs = Vec::new();
+    for binding in bindings {
+        if !cap_offs.iter().any(|cap_off| *cap_off == binding.cap_off) {
+            cap_offs.push(binding.cap_off);
+        }
+    }
+    for cap_off in cap_offs {
+        set_msix_enabled_arch(bdf, cap_off, false);
+    }
 }
 
 pub(crate) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBinding>) {
     let bindings = core::mem::take(bindings);
+    pci::emit_msix_teardown_steps(bindings.len(), |step| match step {
+        pci::MsixTeardownStep::MaskEntry(idx) => mask_msix_binding(bindings[idx]),
+        pci::MsixTeardownStep::DisableFunction => disable_bound_msix_caps(bdf, &bindings),
+        pci::MsixTeardownStep::DisableMemBusMaster => {}
+    });
     for binding in bindings {
-        release_msix_binding(bdf, binding);
+        free_msi_id(binding.id);
     }
 }
 
@@ -145,9 +163,8 @@ pub(crate) fn unpublish_transport_record_by_bdf(bdf: u32) {
 
 fn release_transport_record(rec: TransportRecord) {
     let bdf = bdf_from_word(rec.bdf);
-    for binding in rec.msix {
-        release_msix_binding(bdf, binding);
-    }
+    let mut msix = rec.msix;
+    release_msix_bindings(bdf, &mut msix);
     disable_pci_command(bdf);
     for frame in rec.vring_frames.iter().copied() {
         if frame == 0 {
@@ -162,8 +179,11 @@ fn release_transport_record(rec: TransportRecord) {
     }
 }
 
-pub(crate) fn release_failed_probe(cfg_va: u64, frames: &[u64]) {
+pub(crate) fn reset_failed_probe(cfg_va: u64) {
     virtio::reset_device(cfg_va);
+}
+
+pub(crate) fn release_failed_probe_frames(frames: &[u64]) {
     for frame in frames.iter().copied() {
         if frame == 0 {
             continue;
@@ -221,18 +241,12 @@ fn decode_msix_cap_arch(bdf: pci::Bdf, cfg_off: u8) -> Option<pci::MsixCap> {
 
 fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
     let off = cfg_off & 0xFC;
-    const MSIX_ENABLE: u32 = 1u32 << 31;
-    const MSIX_FUNCTION_MASK: u32 = 1u32 << 30;
     #[cfg(target_arch = "x86_64")]
     {
         let r = hal_x86_64::pci::LegacyPci;
         use pci::ConfigSpaceReader as _;
         let cur = r.read32(bdf, off);
-        let new = if enabled {
-            (cur | MSIX_ENABLE) & !MSIX_FUNCTION_MASK
-        } else {
-            (cur & !MSIX_ENABLE) | MSIX_FUNCTION_MASK
-        };
+        let new = pci::msix_control_value(cur, enabled);
         r.write32(bdf, off, new);
     }
     #[cfg(target_arch = "aarch64")]
@@ -240,11 +254,7 @@ fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
         if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
             let cur =
                 <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, off);
-            let new = if enabled {
-                (cur | MSIX_ENABLE) & !MSIX_FUNCTION_MASK
-            } else {
-                (cur & !MSIX_ENABLE) | MSIX_FUNCTION_MASK
-            };
+            let new = pci::msix_control_value(cur, enabled);
             <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, off, new);
         }
     }

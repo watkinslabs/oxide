@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use super::{
     MsixBinding, TransportMappings, disable_pci_command, publish_transport_record,
-    release_failed_probe, release_msix_bindings,
+    release_failed_probe_frames, release_msix_bindings, reset_failed_probe,
 };
 
 pub(crate) struct VirtioProbeDevres {
@@ -40,10 +40,11 @@ impl VirtioProbeDevres {
             return;
         }
         let frames = self.frames.take_all();
-        release_failed_probe(self.cfg_va, &frames);
+        reset_failed_probe(self.cfg_va);
         release_msix_bindings(self.bdf, &mut self.msix);
         disable_pci_command(self.bdf);
         self.mappings.unmap_all();
+        release_failed_probe_frames(&frames);
     }
 
     pub(crate) fn publish(&mut self, device_key: virtio::VirtioChildDeviceKey) {
