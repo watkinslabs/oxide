@@ -3,6 +3,7 @@ use super::*;
 pub const VIRTIO_CHILD_BUS: &str = "virtio";
 pub const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
 pub const VIRTIO_CHILD_CLASS: u32 = 0;
+pub const VIRTIO_CHILD_ADDR_PREFIX: &str = "virtio";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VirtioChildModelIdentity {
@@ -26,7 +27,7 @@ impl VirtioChildModelIdentity {
 }
 
 pub fn virtio_child_addr(index: u32) -> String {
-    format!("virtio{}", index)
+    format!("{}{}", VIRTIO_CHILD_ADDR_PREFIX, index)
 }
 
 pub fn virtio_child_has_parent(
@@ -52,12 +53,13 @@ impl VirtioChildDeviceKey {
         Self(raw)
     }
 
-    pub const fn from_location(location: VirtioTransportLocation) -> Self {
-        Self(
-            ((location.bus as u32) << 16)
-                | ((location.device as u32) << 8)
-                | location.function as u32,
-        )
+    pub fn from_child_index(index: u32) -> Option<Self> {
+        index.checked_add(1).map(Self)
+    }
+
+    pub fn from_child_addr(addr: &str) -> Option<Self> {
+        let index = addr.strip_prefix(VIRTIO_CHILD_ADDR_PREFIX)?.parse::<u32>().ok()?;
+        Self::from_child_index(index)
     }
 
     pub const fn raw(self) -> u32 {

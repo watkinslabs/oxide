@@ -60,12 +60,16 @@ fn child_parent_match_requires_virtio_bus_and_matching_parent() {
 }
 
 #[test]
-fn child_device_key_is_constructed_from_transport_location() {
-    let location = VirtioTransportLocation::new(0x12, 0x03, 0x04);
-    let key = VirtioChildDeviceKey::from_location(location);
+fn child_device_key_is_constructed_from_child_model_address() {
+    let child = VirtioChildModelIdentity::modern_from_pci(0x1AF4, 0x1042, 7)
+        .expect("modern virtio block id");
+    let key = VirtioChildDeviceKey::from_child_addr(&child.addr).expect("virtio child key");
 
-    assert_eq!(key.raw(), 0x0012_0304);
-    assert_eq!(VirtioChildDeviceKey::from_raw(0x0012_0304), key);
+    assert_eq!(child.addr, "virtio7");
+    assert_eq!(key.raw(), 8);
+    assert_eq!(VirtioChildDeviceKey::from_child_addr("virtio0").unwrap().raw(), 1);
+    assert!(VirtioChildDeviceKey::from_child_addr("pci0").is_none());
+    assert!(VirtioChildDeviceKey::from_child_addr("virtio").is_none());
 }
 
 #[test]
