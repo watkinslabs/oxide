@@ -489,8 +489,8 @@ Evidence:
 
 ## B350-drm-magic-open-file-auth
 
-Status: `VERIFIED, pre-push/PR merge pending`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B350-drm-magic-open-file-auth`
 
-Evidence: source audit found forged `AUTH_MAGIC` accepted; fixed `authorize_magic` to require a live `GET_MAGIC` allocation. `magic_is_live_open_file_state`, `drm_auth_magic_requires_master_and_records_requested_magic`, full `cargo test -p drm` with 63 tests, and x86_64/aarch64 driver-path smokes pass. Line cap pass: `node/auth.rs` 210, `node.rs` 355, `node/tests.rs` 480.
+Evidence: source audit found forged `AUTH_MAGIC` accepted; fixed `authorize_magic` to require a live `GET_MAGIC` allocation. `magic_is_live_open_file_state`, `drm_auth_magic_requires_master_and_records_requested_magic`, full `cargo test -p drm` with 63 tests, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass. Line cap pass: `node/auth.rs` 210, `node.rs` 355, `node/tests.rs` 480.
