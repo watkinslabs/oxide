@@ -32,7 +32,8 @@ pub fn entry(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) {
         // (and the op/uaddr) while a peer spins on sched_yield.
         let interesting = matches!(nr,
             24 | 56 | 57 | 58 | 435 | 59 | 60 | 61
-            | 202 | 231 | 247 | 449 | 454 | 455 | 456);   // yield/proc lifecycle/wait/futex
+            | 202 | 231 | 247 | 449 | 454 | 455 | 456
+            | 112 | 116 | 117 | 119 | 126 | 157 | 248 | 249 | 250 | 272 | 302 | 308);   // yield/proc lifecycle/wait/futex + PAM keyring/ns/cred
         if !interesting { return; }
         klog::write_raw(b"[SYS] vpid=");
         klog::write_dec_u64(vpid as u64);
@@ -64,9 +65,13 @@ pub fn ret(nr: u64, rv: i64) {
         };
         let interesting = matches!(nr,
             24 | 56 | 57 | 58 | 435 | 59 | 60 | 61
-            | 202 | 231 | 247 | 449 | 454 | 455 | 456);   // yield/proc lifecycle/wait/futex
-        if !interesting { return; }
-        klog::write_raw(b"[RET] vpid=");
+            | 202 | 231 | 247 | 449 | 454 | 455 | 456
+            | 112 | 116 | 117 | 119 | 126 | 157 | 248 | 249 | 250 | 272 | 302 | 308);   // yield/proc lifecycle/wait/futex + PAM keyring/ns/cred
+        // Also surface ANY syscall returning EPERM (rv==-1) across all tasks —
+        // the errno behind synthetic failures like the user@UID.service step-PAM
+        // "Operation not permitted". Rare, so no boot slowdown; tagged [RETERR].
+        if !interesting && rv != -1 { return; }
+        klog::write_raw(if interesting { b"[RET] vpid=" } else { b"[RETERR] vpid=" });
         klog::write_dec_u64(vpid as u64);
         klog::write_raw(b" pid=");
         klog::write_dec_u64(pid as u64);
