@@ -4,11 +4,11 @@
 // the CONTROLQ request/response engine and the device-config-driven probe
 // (query the PCM stream table via VIRTIO_SND_R_PCM_INFO).
 //
-// The boot probe in `pci_boot::virtio_drv` performs the generic virtio
-// bring-up (reset → ACK/DRIVER → feature negotiate → FEATURES_OK → q0
-// desc/driver/device PA program + DRIVER_OK), then hands persistent queue
-// resources here via `install`. This driver reads virtio_snd_config itself
-// and owns CONTROLQ/EVENTQ/TXQ/RXQ resource state.
+// The transport backend performs generic virtio bring-up (reset →
+// ACK/DRIVER → feature negotiate → FEATURES_OK → queue PA program +
+// DRIVER_OK), then hands persistent queue resources here via `install`.
+// This driver reads virtio_snd_config itself and owns
+// CONTROLQ/EVENTQ/TXQ/RXQ resource state.
 //
 // Arch-neutral: every op is MMIO (notify_cap window) + HHDM (ring +
 // control scratch frame), mirroring drv-virtio-rng / drv-virtio-blk.
