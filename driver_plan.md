@@ -2,12 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B329-virtio-gpu-remove-child-key` — VERIFIED, ready to commit/PR merge.
+ACTIVE NOW: `B330-virtio-gpu-remove-teardown-order` — VERIFIED, ready to commit/PR merge.
 
-Current active item: `>>> ACTIVE >>> B329-virtio-gpu-remove-child-key`.
+Current active item: `>>> ACTIVE >>> B330-virtio-gpu-remove-teardown-order`.
 
-Current B329 gate: virtio-gpu remove selects the owning virtio child key;
-hosted regression and fast x86_64/aarch64 driver-path proof pass.
+Current B330 gate: virtio-gpu remove teardown order proven: child remove runs
+GPU unregister/console detach before scanout backing release; hosted and fast
+x86_64/aarch64 driver-path proof pass.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -260,7 +261,7 @@ Status legend:
 | VERIFIED | B326-userspace-seat-driver-proof | Obsolete crate-level EVIOC recognizer removed. |
 | VERIFIED |  | `EVIOCGREP`/`EVIOCSREP` implemented in real evdev file ioctl handler. |
 | VERIFIED | B329-virtio-gpu-remove-child-key | Virtio-gpu remove is keyed to owning child key; removed BDF-keyed child-remove pre-unpublish and added hosted key-vs-BDF regression plus fast x86_64/aarch64 driver-path proof. |
-| NOT DONE |  | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
+| VERIFIED | B330-virtio-gpu-remove-teardown-order | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release; source order is `uninstall(device_key)` before `uninstall_scanout(device_key)`, with hosted GPU tests and fast x86_64/aarch64 driver-path proof passing. |
 | NOT DONE | TBD | Virtio-gpu probe-failure unwind removes only failed child scanout. |
 | NOT DONE | TBD | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup. |
 | NOT DONE |  | Virtio-gpu installed device state is per child key. |
