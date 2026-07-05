@@ -5,8 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B451-driver-core-teardown-order-tests; VERIFIED pending PR
-merge.
+Current marker: B452-shutdown-all-reverse-registration; IN AUDIT.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -777,3 +776,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B451-driver-core-teardown-order-tests | VERIFIED | Fresh main `c0e89136` after PR #2508 merge; source/test audit proves hosted regression `crates/drivers/drv/src/model/tests/lifecycle.rs::device_del_orders_remove_event_and_devtmpfs_teardown` installs a driver remove hook, sysfs remove hook, and devtmpfs delete hook, then asserts callback order `driver-remove`, `sysfs-remove`, `devtmpfs-del`, and final absence from `drv::devices()`. The hook helpers in `tests/mod.rs` assert sysfs remove observes an unbound but still registered device and devtmpfs delete follows sysfs remove for the owned node name. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B451 changes only docs/metadata and production driver-core code is unchanged. |
+
+## B452 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B452-shutdown-all-reverse-registration | IN AUDIT | Fresh main `2343195a` after PR #2509 merge; auditing `drv::shutdown_all` reverse registration order for bound model devices. |
