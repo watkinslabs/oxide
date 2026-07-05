@@ -474,8 +474,16 @@ PASS, and `make smoke-driver-path-arm` PASS.
 
 ## B376-virtio-net-rx-stats-per-netdev
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B376-virtio-net-rx-stats-per-netdev`
 
-Evidence: audit pending for per-netdev RX stats ownership.
+Evidence: `NetRuntime` owns RX counters by child `DeviceKey`, `rx_poll_for`
+loads the runtime with `net_runtime_for(device_key)` before accounting, and
+`VirtioNetDev::stats()` reads from that runtime. Extended
+`net_runtime_names_are_unique_and_reusable` proves two netdevs report different
+runtime RX counters.
+
+Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
+PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
+PASS, and `make smoke-driver-path-arm` PASS.
