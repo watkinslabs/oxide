@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B332-virtio-gpu-hot-remove-cleanup` (verified; merge pending).
+Current marker: `>>> ACTIVE >>> B333-virtio-gpu-device-state-key` (verified; merge pending).
 
 ## B002-single-machine-desktop-proof
 
@@ -242,3 +242,26 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b332-gpu-hot-remove-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b332-gpu-hot-remove-arm.log`. |
 | Line cap | PASS: `device.rs` 384 lines, `post_init/tests.rs` 106, `drv-virtio-gpu/src/tests.rs` 473, `virtio_child.rs` 367. |
+
+## B333-virtio-gpu-device-state-key
+
+Status: `VERIFIED`; commit and PR merge pending.
+
+Branch: `B333-virtio-gpu-device-state-key`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | Virtio-gpu installed device state is per child key. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `VirtioGpuDev` carries `device_key`; `install` rejects duplicates by `device_key`; `uninstall` removes by `device_key`; `hot_remove` and `shutdown` consume the same typed key. BDF remains display/DRM metadata, not installed-device ownership. |
+| `cargo test -p drv-virtio-gpu key -- --nocapture` | PASS: `install_accepts_multiple_keys_and_rejects_duplicate_key` and `uninstall_selects_owner_by_child_key_not_raw_bdf` passed. |
+| `cargo test -p drv-virtio-gpu` | PASS: 31 tests, 0 failed. |
+| `git diff --check` | PASS. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b333-gpu-device-key-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b333-gpu-device-key-arm.log`. |
