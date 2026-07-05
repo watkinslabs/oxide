@@ -479,9 +479,17 @@ recent-completed table above; main was synced after each merge through
 
 ## B386-net-vsock-owner-keyed-endpoints
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B386-net-vsock-owner-keyed-endpoints`
 
-Scope: prove or fix upper `net::vsock` endpoint records so endpoint lookup,
-publish, quiesce, uninstall, CID lookup, and TX routing are keyed by owner.
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `ENDPOINTS` stores `{ owner, guest_cid, tx }`; reserve/publish/cancel/quiesce/uninstall, `guest_cid_for`, `driver_owner_for_cid`, `tx_for`, and RX delivery select by owner. |
+| Hosted regression | PASS: `tx_for_routes_through_matching_owner_endpoint` proves two live endpoints route through the matching owner's TX hook. |
+| `cargo test -p net tx_for_routes_through_matching_owner_endpoint -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p net vsock -- --nocapture` | PASS: 25 passed. |
+| `./tools/boot-smoke-driver-path.sh x86 240` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b386-x86-driver-path.log`. |
+| `./tools/boot-smoke-driver-path.sh arm 300` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b386-arm-driver-path.log`. |
