@@ -373,43 +373,6 @@ use core::sync::atomic::Ordering;
     }
 
     #[test]
-    fn rx_ndp_learning_is_keyed_by_device() {
-        let _guard = TEST_STATE_LOCK.lock();
-        clear_test_state();
-        let rt1 = ensure_net_runtime(key(1));
-        let rt2 = ensure_net_runtime(key(2));
-        let router = net::Ipv6Addr::from_segments([0xfe80, 0, 0, 0, 0, 0, 0, 1]);
-        let all_nodes = net::ndp::IPV6_ALL_NODES;
-        let prefix = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0xabcd, 0, 0, 0, 0, 0]);
-        let mac1 = net::MacAddr([0x02, 0, 0, 0, 0, 1]);
-        let mac2 = net::MacAddr([0x02, 0, 0, 0, 0, 2]);
-        let ra1 = net::ndp::RouterAdvertisement::build_one_prefix(
-            router, all_nodes, mac1, 1800, prefix, 64, net::ndp::NDP_PIO_FLAG_AUTO,
-        );
-        let ra2 = net::ndp::RouterAdvertisement::build_one_prefix(
-            router, all_nodes, mac2, 1800, prefix, 64, net::ndp::NDP_PIO_FLAG_AUTO,
-        );
-        let mut frame1 = alloc::vec![0u8; net::ipv6::IPV6_HDR_LEN + ra1.len()];
-        net::ipv6::Ipv6Hdr::build(
-            router, all_nodes, net::IpProto::Icmpv6, ra1.len() as u16,
-        )
-        .write_to(&mut frame1[..net::ipv6::IPV6_HDR_LEN]);
-        frame1[net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ra1);
-        let mut frame2 = alloc::vec![0u8; net::ipv6::IPV6_HDR_LEN + ra2.len()];
-        net::ipv6::Ipv6Hdr::build(
-            router, all_nodes, net::IpProto::Icmpv6, ra2.len() as u16,
-        )
-        .write_to(&mut frame2[..net::ipv6::IPV6_HDR_LEN]);
-        frame2[net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ra2);
-
-        learn_ndp_from_ipv6(key(1), &frame1);
-        learn_ndp_from_ipv6(key(2), &frame2);
-        assert_eq!(rt1.ndp.lookup(router), Some(mac1));
-        assert_eq!(rt2.ndp.lookup(router), Some(mac2));
-        clear_test_state();
-    }
-
-    #[test]
     fn rx_runtime_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();

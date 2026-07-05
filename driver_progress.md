@@ -462,26 +462,12 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B379-virtio-net-shared-rx-last-runtime
 
-Status: `VERIFIED`; merged by PR #2432.
-
-Branch: `B379-virtio-net-shared-rx-last-runtime`
-
-Evidence: `install_rx_runtime` arms the shared NetRx handler and ARP-GC timer.
-`remove_rx_runtime_for` returns whether the keyed runtime table is empty, and
-`release_rx_shared_runtime_if_last` tears both shared resources down only when
-the last runtime is gone. Regression
-`removing_one_rx_runtime_keeps_shared_rx_runtime_owned` now asserts the softirq
-and ARP-GC timer survive first removal and clear after final removal.
-
-Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
-PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
-PASS, and `make smoke-driver-path-arm` PASS.
+Status: `VERIFIED`; merged by PR #2432. Evidence: shared NetRx/ARP-GC lifetime is last-runtime owned; focused/full virtio-net tests, line check, and x86_64/aarch64 driver-path proof passed.
 
 ## B380-virtio-net-ipv6-ndp-stack-owned
 
-Status: `IN AUDIT`.
+Status: `>>> ACTIVE >>> VERIFIED - PR READY`.
 
 Branch: `B380-virtio-net-ipv6-ndp-stack-owned`
 
-Evidence: audit pending for virtio-net IPv6 NDP learning through the
-stack-owned interface table.
+Evidence: virtio-net RX delivers IPv6 frames to `NetStack::deliver_rx_ipv6(iface, ...)`; removed stale driver-private `learn_ndp_from_ipv6` learner/test; `cargo test -p net f180c -- --nocapture` proves stack-owned `(iface, IPv6)` NDP learning; `cargo test -p drv-virtio-net`, `git diff --check`, line caps, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
