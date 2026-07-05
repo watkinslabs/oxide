@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B328-virtio-input-drain-split`.
+Current marker: `>>> ACTIVE >>> B328-virtio-input-drain-split` verified; commit and PR merge pending.
 
 ## B002-single-machine-desktop-proof
 
@@ -127,7 +127,7 @@ Implementation note:
 
 ## B328-virtio-input-drain-split
 
-Status: `CLAIMED`.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B328-virtio-input-drain-split`
 
@@ -135,10 +135,13 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
+| VERIFIED | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source claim | CLAIMED before code. |
+| Source split | PASS: parent manifest `drain.rs` is 19 lines; child modules are `key_event.rs` 99, `queue.rs` 146, `ring.rs` 46, `tests.rs` 110. |
+| `cargo test -p drv-virtio-input` | PASS: 36 tests, 0 failed. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b328-drain-split-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b328-drain-split-arm.log`. |
