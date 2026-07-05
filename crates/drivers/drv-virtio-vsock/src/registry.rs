@@ -26,6 +26,10 @@ pub struct Ctx {
 pub(crate) static CTX: Spinlock<Vec<Ctx>, DriverLockClass> = Spinlock::new(Vec::new());
 pub(crate) static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 
+fn vsock_owner(device_key: virtio::VirtioChildDeviceKey) -> Option<net::vsock::VsockOwner> {
+    net::vsock::VsockOwner::from_raw(device_key.raw())
+}
+
 struct VsockProbeState {
     device_key: virtio::VirtioChildDeviceKey,
     rx_bufs: [u64; RX_RING_BUFS],
@@ -36,7 +40,8 @@ struct VsockProbeState {
 
 impl VsockProbeState {
     fn reserve_and_alloc(device_key: virtio::VirtioChildDeviceKey) -> Option<Self> {
-        if !net::vsock::driver_reserve(device_key.raw()) {
+        let owner = vsock_owner(device_key)?;
+        if !net::vsock::driver_reserve(owner) {
             return None;
         }
         let mut state = Self {
@@ -72,7 +77,9 @@ impl Drop for VsockProbeState {
             }
         }
         if self.reserved_endpoint {
-            let _ = net::vsock::driver_cancel_reserved(self.device_key.raw());
+            if let Some(owner) = vsock_owner(self.device_key) {
+                let _ = net::vsock::driver_cancel_reserved(owner);
+            }
         }
     }
 }
@@ -106,7 +113,10 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
     let Some(guest_cid) = read_guest_cid(resources) else {
         return false;
     };
-    if device_key.raw() == 0 || CTX.lock().iter().any(|ctx| ctx.device_key == device_key) {
+    let Some(owner) = vsock_owner(device_key) else {
+        return false;
+    };
+    if CTX.lock().iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
     let mut probe = match VsockProbeState::reserve_and_alloc(device_key) {
@@ -147,7 +157,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
 
     crate::rx::prepost_all(device_key);
 
-    if !net::vsock::driver_publish_reserved(device_key.raw(), guest_cid, crate::tx_packet, rx_poll_for_owner) {
+    if !net::vsock::driver_publish_reserved(owner, guest_cid, crate::tx_packet, rx_poll_for_owner) {
         let _ = uninstall(device_key);
         return false;
     }
@@ -168,7 +178,9 @@ fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
 }
 
 pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
-    let endpoint_removed = net::vsock::driver_uninstall(device_key.raw());
+    let endpoint_removed = vsock_owner(device_key)
+        .map(net::vsock::driver_uninstall)
+        .unwrap_or(false);
     let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
         return endpoint_removed;
     };
@@ -184,7 +196,9 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
 }
 
 pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
-    let endpoint_quiesced = net::vsock::driver_quiesce(device_key.raw());
+    let endpoint_quiesced = vsock_owner(device_key)
+        .map(net::vsock::driver_quiesce)
+        .unwrap_or(false);
     let Some((mut ctx, empty_after)) = remove_ctx(device_key) else {
         return endpoint_quiesced;
     };
@@ -222,7 +236,9 @@ pub fn guest_cid_for(device_key: virtio::VirtioChildDeviceKey) -> u64 {
 }
 
 pub fn guest_cid() -> u64 {
-    guest_cid_for(virtio::VirtioChildDeviceKey::from_raw(net::vsock::driver_owner()))
+    net::vsock::driver_owner()
+        .map(|owner| guest_cid_for(virtio::VirtioChildDeviceKey::from_raw(owner.raw())))
+        .unwrap_or(0)
 }
 
 pub fn raise_rx() {
@@ -237,7 +253,7 @@ pub fn rx_drain() -> usize {
     crate::rx::drain()
 }
 
-fn rx_poll_for_owner(_owner: u32) -> usize {
+fn rx_poll_for_owner(_owner: net::vsock::VsockOwner) -> usize {
     crate::rx::drain()
 }
 

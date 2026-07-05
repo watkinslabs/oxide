@@ -23,7 +23,11 @@ fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
     virtio::VirtioChildDeviceKey::from_raw(raw)
 }
 
-fn rx_noop(_owner: u32) -> usize { 0 }
+fn owner(raw: u32) -> net::vsock::VsockOwner {
+    net::vsock::VsockOwner::from_raw(raw).expect("test owner is nonzero")
+}
+
+fn rx_noop(_owner: net::vsock::VsockOwner) -> usize { 0 }
 
 fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
     Ctx {
@@ -88,14 +92,14 @@ fn missing_vsock_context_removal_leaves_live_contexts() {
 
 #[test]
 fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
-    fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+    fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
     let _guard = TEST_LOCK.lock();
     crate::registry::clear_ctxs_for_tests();
     let key1 = key(0x0010_0000);
     let key2 = key(0x0020_0000);
-    assert!(net::vsock::driver_install(key1.raw(), 3, tx_stub, rx_noop));
-    assert!(net::vsock::driver_install(key2.raw(), 4, tx_stub, rx_noop));
+    assert!(net::vsock::driver_install(owner(key1.raw()), 3, tx_stub, rx_noop));
+    assert!(net::vsock::driver_install(owner(key2.raw()), 4, tx_stub, rx_noop));
     {
         let mut ctxs = crate::registry::CTX.lock();
         ctxs.push(ctx(key1));
@@ -105,9 +109,9 @@ fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
     assert!(uninstall(key1));
     assert!(!present_for(key1));
     assert!(present_for(key2));
-    assert!(!net::vsock::driver_up_for(key1.raw()));
-    assert!(net::vsock::driver_up_for(key2.raw()));
-    assert_eq!(net::vsock::guest_cid_for(key2.raw()), 4);
+    assert!(!net::vsock::driver_up_for(owner(key1.raw())));
+    assert!(net::vsock::driver_up_for(owner(key2.raw())));
+    assert_eq!(net::vsock::guest_cid_for(owner(key2.raw())), 4);
 
     assert!(uninstall(key2));
     crate::registry::clear_ctxs_for_tests();
@@ -115,14 +119,14 @@ fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
 
 #[test]
 fn uninstall_unpublished_context_keeps_live_softirq_installed() {
-    fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+    fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
     let _guard = TEST_LOCK.lock();
     crate::registry::clear_ctxs_for_tests();
     crate::registry::clear_rx_softirq_handler();
     let unpublished = key(0x0010_0000);
     let live = key(0x0020_0000);
-    assert!(net::vsock::driver_install(live.raw(), 4, tx_stub, rx_noop));
+    assert!(net::vsock::driver_install(owner(live.raw()), 4, tx_stub, rx_noop));
     {
         let mut ctxs = crate::registry::CTX.lock();
         ctxs.push(ctx(unpublished));
@@ -133,7 +137,7 @@ fn uninstall_unpublished_context_keeps_live_softirq_installed() {
     assert!(uninstall(unpublished));
     assert!(!present_for(unpublished));
     assert!(present_for(live));
-    assert!(net::vsock::driver_up_for(live.raw()));
+    assert!(net::vsock::driver_up_for(owner(live.raw())));
     assert!(crate::registry::SOFTIRQ_INSTALLED.load(Ordering::Acquire));
 
     assert!(uninstall(live));
@@ -143,26 +147,26 @@ fn uninstall_unpublished_context_keeps_live_softirq_installed() {
 
 #[test]
 fn uninstall_clears_endpoint_without_primary_context() {
-    fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+    fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
     let _guard = TEST_LOCK.lock();
     crate::registry::clear_ctxs_for_tests();
-    assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub, rx_noop));
+    assert!(net::vsock::driver_install(owner(0x0010_0000), 3, tx_stub, rx_noop));
 
     assert!(uninstall(key(0x0010_0000)));
-    assert!(!net::vsock::driver_uninstall(0x0010_0000));
+    assert!(!net::vsock::driver_uninstall(owner(0x0010_0000)));
     assert!(!uninstall(key(0x0010_0000)));
 }
 
 #[test]
 fn shutdown_quiesces_endpoint_without_primary_context() {
-    fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+    fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
     let _guard = TEST_LOCK.lock();
     crate::registry::clear_ctxs_for_tests();
-    assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub, rx_noop));
+    assert!(net::vsock::driver_install(owner(0x0010_0000), 3, tx_stub, rx_noop));
 
     assert!(shutdown(key(0x0010_0000)));
     assert!(shutdown(key(0x0010_0000)));
-    let _ = net::vsock::driver_uninstall(0x0010_0000);
+    let _ = net::vsock::driver_uninstall(owner(0x0010_0000));
 }
