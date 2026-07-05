@@ -452,8 +452,8 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B370-virtio-net-no-boot-ipv4-policy
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B370-virtio-net-no-boot-ipv4-policy`
 
-Evidence: source audit of old boot-probe default IPv4 policy removal is in progress.
+Evidence: `install_rx_runtime` seeds RX softirq state with `0.0.0.0`; iface address updates are explicit through `set_softirq_ip_for_iface`. Added `rx_runtime_install_does_not_seed_boot_ipv4_policy`; targeted test, full `cargo test -p drv-virtio-net`, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.

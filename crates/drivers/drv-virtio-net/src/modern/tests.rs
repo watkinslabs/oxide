@@ -422,6 +422,18 @@ use core::sync::atomic::Ordering;
     }
 
     #[test]
+    fn rx_runtime_install_does_not_seed_boot_ipv4_policy() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        let iface = net::NetIfaceId::from_raw(77);
+        install_rx_runtime(key(1), iface);
+        assert_eq!(first_iface_ip_for(key(1)), Some(net::Ipv4Addr::new(0, 0, 0, 0)));
+        assert!(set_softirq_ip_for_iface(iface, [10, 0, 0, 3]));
+        assert_eq!(first_iface_ip_for(key(1)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
+        clear_test_state();
+    }
+
+    #[test]
     fn removing_one_rx_runtime_keeps_shared_softirq_owned() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
