@@ -75,3 +75,66 @@ pub fn run_due(now_ns: u64) {
     }
     for f in due { f(now_ns); }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static A: AtomicU64 = AtomicU64::new(0);
+    static B: AtomicU64 = AtomicU64::new(0);
+
+    fn reset() {
+        TIMERS.lock().clear();
+        NEXT_ID.store(1, Ordering::Relaxed);
+        A.store(0, Ordering::Relaxed);
+        B.store(0, Ordering::Relaxed);
+    }
+
+    fn tick_a(now_ns: u64) { A.fetch_add(now_ns, Ordering::Relaxed); }
+    fn tick_b(now_ns: u64) { B.fetch_add(now_ns, Ordering::Relaxed); }
+
+    #[test]
+    fn register_returns_owned_nonzero_ids() {
+        reset();
+
+        let a = register_periodic(10, tick_a);
+        let b = register_periodic(10, tick_b);
+
+        assert_ne!(a.raw(), 0);
+        assert_ne!(b.raw(), 0);
+        assert_ne!(a, b);
+        assert_eq!(TimerId::from_raw(a.raw()), Some(a));
+        assert_eq!(TimerId::from_raw(0), None);
+    }
+
+    #[test]
+    fn unregister_removes_only_matching_timer() {
+        reset();
+
+        let a = register_periodic(10, tick_a);
+        let b = register_periodic(10, tick_b);
+
+        assert!(unregister_periodic(a));
+        assert!(!unregister_periodic(a));
+        run_due(10);
+
+        assert_eq!(A.load(Ordering::Relaxed), 0);
+        assert_eq!(B.load(Ordering::Relaxed), 10);
+        assert!(unregister_periodic(b));
+    }
+
+    #[test]
+    fn unregister_stops_future_due_runs() {
+        reset();
+
+        let a = register_periodic(10, tick_a);
+        run_due(10);
+        assert_eq!(A.load(Ordering::Relaxed), 10);
+
+        assert!(unregister_periodic(a));
+        run_due(20);
+
+        assert_eq!(A.load(Ordering::Relaxed), 10);
+    }
+}
