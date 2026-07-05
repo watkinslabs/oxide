@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B399-virtio-snd-multicard-rebind-proof` — CLAIMED.
+ACTIVE NOW: `B399-virtio-snd-multicard-rebind-proof` — VERIFIED, COMMITTING.
 
 Current active item: `>>> ACTIVE >>> B399-virtio-snd-multicard-rebind-proof`.
 
@@ -333,7 +333,7 @@ Status legend:
 | NOT DONE | TBD | Hosted `sound` tests share global card state and can fail under default parallel execution; serial `--test-threads=1` passes. |
 | VERIFIED | B397-sound-unregister-rejects-non-owners | Sound unregister rejects non-owners: `unregister_card(owner)` first requires an exact owner record before deleting stored node handles or clearing control/OSS/capture/PCM/ops state; focused non-owner unregister test, serial full sound tests, x86_64/aarch64 driver-path proof, PR #2450 merge, and local main sync to `origin/main` at `e5fe3f55` pass. |
 | VERIFIED | B398-virtio-snd-eventq-owner-accounting | Virtio-snd raw EVENTQ accounting is keyed by transport owner: EVENTQ rings, buffer PA, last-used, avail idx, and raw/drained counters live in `Ctx` records selected by `device_key`; focused drain regression proves only the advanced context records/requeues events, full drv-virtio-snd tests, x86_64/aarch64 driver-path proof, PR #2451 merge, and local main sync to `origin/main` at `a6506b42` pass. |
-| >>> ACTIVE >>> CLAIMED | B399-virtio-snd-multicard-rebind-proof | Virtio-snd multi-card bind/unbind/rebind needs live QEMU proof. |
+| >>> ACTIVE >>> VERIFIED | B399-virtio-snd-multicard-rebind-proof | Virtio-snd multi-card live proof added: env-gated second QEMU sound device, rootfs probe, and `smoke-virtio-snd-multidev`; C probe compile, `cargo check -p xtask`, full `drv-virtio-snd` tests, serial full `sound` tests, and x86_64/aarch64 smoke logs pass. |
 | NOT DONE |  | Virtio MSI-X handler ownership is child-declared, not transport PCI-ID special-case dispatch. |
 | NOT DONE |  | Virtio-pci clears PCI MEM/BUS_MASTER and drops mappings on early transport probe exits after enable. |
 | NOT DONE |  | Sound card publication is model-owned and duplicate publication guarded. |

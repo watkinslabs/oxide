@@ -166,6 +166,8 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
     if std::env::var_os("OXIDE_DRIVER_PATH_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0virtio-net-multidev-smoke=");
     if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() { h.write(b"1"); }
+    h.write(b"\0virtio-snd-multidev-smoke=");
+    if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0userspace-seat-smoke=");
     if std::env::var_os("OXIDE_USERSPACE_SEAT_SMOKE").is_some() { h.write(b"1"); }
     for (p, len, mt) in &entries {

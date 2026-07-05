@@ -169,6 +169,12 @@ pub(super) fn qemu_run_aarch64_grub(
             "-device", "virtio-net-pci-non-transitional,netdev=net1,bus=pcie.0",
         ]);
     }
+    if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() {
+        c.args([
+            "-audiodev", "none,id=snd1",
+            "-device", "virtio-sound-pci,audiodev=snd1,disable-legacy=on,bus=pcie.0",
+        ]);
+    }
     eprintln!("xtask grub: launching qemu-system-aarch64 (OVMF→GRUB→EFI-stub), smp={smp}, headless={headless}");
     run(c)
 }
