@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B493-virtio-child-failed-probe-release; IN AUDIT.
+Current marker: B493-virtio-child-failed-probe-release; VERIFIED.
 
 ## B493 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B493-virtio-child-failed-probe-release | IN AUDIT | Fresh main `cc4fca3c` after PR #2551 merge; auditing that failed child probes release transport-owned probe state through the centralized wrapper/session path instead of child-specific cleanup, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
+| B493-virtio-child-failed-probe-release | VERIFIED | Fresh main `cc4fca3c` after PR #2551 merge. Source audit proves failed child probes release transport-owned probe state through the centralized wrapper/session path: `virtio::run_child_probe` calls `session.release_failed_child()` on child probe errors and publishes only on success; `VirtioChildSession::release_failed_child` consumes the transport lease and calls pci-boot failed-child release; session `Drop` covers early exits; pci-boot `VirtioProbeDevres` one-shot release resets the device, frees frames, releases MSI-X bindings, disables PCI command, and unmaps mappings. Checks pass: `cargo test -q -p virtio child_probe_lifecycle_releases -- --nocapture --test-threads=1` 2/2; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B492 Current
 
