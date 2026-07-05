@@ -27,8 +27,8 @@ pub(crate) unsafe fn init_boot_uart() {
 /// `_start_rust` after `BOOT_UART::init()`.
 ///
 /// Uses `lock_irqsave` per `06§3.1` because klog can be called from
-/// IRQ context (timer ISR's `tick_poll_uart`, fault handlers, panic
-/// path). A plain `lock()` would deadlock if a kernel-mode klog
+/// IRQ context (timer ISR diagnostics, fault handlers, panic path). A
+/// plain `lock()` would deadlock if a kernel-mode klog
 /// holder were preempted by an IRQ that itself klogs.
 /// # C: O(len)
 #[cfg(feature = "debug-boot")]
