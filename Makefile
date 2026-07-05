@@ -6,6 +6,19 @@ CARGO    ?= cargo
 XTASK    := $(CARGO) run -p xtask --
 FEATURES ?=
 
+# ---- rootfs-cache bounding -------------------------------------------------
+# target/rootfs-cache holds one content-addressed root+home image pair
+# (~426MB) per distinct boot-config. On the `make qemu-*` path it was never
+# auto-trimmed (only `make clean-builds` did, which nothing invoked), so it grew
+# unbounded (observed 33G / 324 images). The qemu targets below run this trim
+# BEFORE building — it always fires even when the previous boot was Ctrl-C'd —
+# keeping the ROOTFS_CACHE_KEEP most-recent pairs. `--keep` is set high so ONLY
+# the image cache is trimmed, never build namespaces (use `make clean-builds`
+# for those). Reuses the guarded LRU trim in `xtask gc`.
+# Override the working-set size, e.g.:  make qemu-x86 ROOTFS_CACHE_KEEP=10
+ROOTFS_CACHE_KEEP ?= 6
+TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP)
+
 # `make build`           — kernel libs + bin shims, both arches, default features.
 # `make x86 / arm`       — single arch.
 # `make *-debug`         — same with `--features debug-all`.
@@ -112,23 +125,28 @@ SMP ?= 1
 # on --arch). The old `xtask qemu` (Limine ISO + check_vendor for
 # vendor/limine/*) is dead. `cmd_grub` takes --arch/--smp/--features.
 qemu-x86:
+	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
 
 qemu-arm:
+	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
 
 # GRUB self-bootstrap path: build a GRUB ISO that multiboot2-loads the
 # kernel directly (replacing Limine) and boot it. WIP — see F372.
 qemu-x86-grub:
+	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64 --smp $(SMP)
 
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you
 # want when just trying to log in and use it.
 qemu-x86-debug:
+	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64  --features debug-all
 
 qemu-arm-debug:
+	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch aarch64 --features debug-all
 
 # Boot-smoke gates — run kernel under qemu headless and wait for
