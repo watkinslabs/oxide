@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B355-drm-raw-writes-rejected`.
+Current marker: `>>> ACTIVE >>> B356-drm-addfb2-modifier-reject`.
 
 ## Archived Completed B327-B330
 
@@ -423,8 +423,16 @@ Evidence: source audit found `GET_CAP` trusted `DrmDriver::cap` directly, allowi
 
 ## B355-drm-raw-writes-rejected
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2408.
 
 Branch: `B355-drm-raw-writes-rejected`
 
-Evidence: source audit found `DrmCardFileOps::write` and private `DrmSinkFileOps::write` both reject raw writes with `EINVAL`; no code change required. Existing `drm_nodes_do_not_acknowledge_raw_writes` covers card and render test inodes. Focused raw-write regression, full `cargo test -p drm` with 65 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found `DrmCardFileOps::write` and private `DrmSinkFileOps::write` both reject raw writes with `EINVAL`; no code change required. Existing `drm_nodes_do_not_acknowledge_raw_writes` covers card and render test inodes. Focused raw-write regression, full `cargo test -p drm` with 65 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, PR #2408, and main sync `21e0a9ba` pass.
+
+## B356-drm-addfb2-modifier-reject
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B356-drm-addfb2-modifier-reject`
+
+Evidence: source audit found `addfb2` rejects any flags and separately rejects any nonzero `modifier[]` payload before handle lookup or FB allocation. Existing modifier-flag regression passed; added `addfb2_rejects_nonzero_modifier_even_without_modifier_flag` to prove modifiers cannot be silently ignored when flags are clear. Focused modifier regressions, full `cargo test -p drm` with 66 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; rerun passed.
