@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B345-drm-dumb-fb-card-owned`.
+Current marker: `>>> ACTIVE >>> B346-drm-fb-scanout-resource-lifetime`.
 
 ## Archived Completed B327-B330
 
@@ -388,7 +388,7 @@ Evidence:
 
 ## B345-drm-dumb-fb-card-owned
 
-Status: `VERIFIED, commit/PR merge pending`.
+Status: `VERIFIED, PR #2398 merged`.
 
 Branch: `B345-drm-dumb-fb-card-owned`
 
@@ -410,3 +410,22 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-arm.log`. |
 | Pre-push boot smoke | PASS: both arches reached `oxide login:` before push. |
+| PR | PASS: PR #2398 merged and local `main` synced to `origin/main` at `16bd0bee`. |
+
+## B346-drm-fb-scanout-resource-lifetime
+
+Status: `CLAIMED`.
+
+Branch: `B346-drm-fb-scanout-resource-lifetime`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
