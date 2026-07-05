@@ -127,7 +127,7 @@ pub fn beep_diag(hz: u32, ms: u32) -> u8 {
 }
 
 pub fn pcm_hw_params(
-    owner: u32, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32,
+    owner: sound::SoundOwnerKey, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32,
 ) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
@@ -148,7 +148,7 @@ pub fn pcm_hw_params(
     true
 }
 
-pub fn pcm_prepare(owner: u32) -> bool {
+pub fn pcm_prepare(owner: sound::SoundOwnerKey) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.pcm_state == PcmState::Idle { return false; }
@@ -158,7 +158,7 @@ pub fn pcm_prepare(owner: u32) -> bool {
     true
 }
 
-pub fn pcm_trigger(owner: u32, start: bool) -> bool {
+pub fn pcm_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
@@ -168,7 +168,7 @@ pub fn pcm_trigger(owner: u32, start: bool) -> bool {
     true
 }
 
-pub fn pcm_hw_free(owner: u32) -> bool {
+pub fn pcm_hw_free(owner: sound::SoundOwnerKey) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.pcm_state == PcmState::Idle { return true; }
@@ -180,7 +180,7 @@ pub fn pcm_hw_free(owner: u32) -> bool {
     true
 }
 
-pub fn pcm_submit(owner: u32, bytes: &[u8]) -> usize {
+pub fn pcm_submit(owner: sound::SoundOwnerKey, bytes: &[u8]) -> usize {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.pcm_state != PcmState::Running { return 0; }

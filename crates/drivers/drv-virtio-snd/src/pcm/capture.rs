@@ -57,7 +57,7 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
 }
 
 pub fn cap_hw_params(
-    owner: u32, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32,
+    owner: sound::SoundOwnerKey, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32,
 ) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
@@ -78,7 +78,7 @@ pub fn cap_hw_params(
     true
 }
 
-pub fn cap_prepare(owner: u32) -> bool {
+pub fn cap_prepare(owner: sound::SoundOwnerKey) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.cap_state == PcmState::Idle { return false; }
@@ -88,7 +88,7 @@ pub fn cap_prepare(owner: u32) -> bool {
     true
 }
 
-pub fn cap_trigger(owner: u32, start: bool) -> bool {
+pub fn cap_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
@@ -98,7 +98,7 @@ pub fn cap_trigger(owner: u32, start: bool) -> bool {
     true
 }
 
-pub fn cap_hw_free(owner: u32) -> bool {
+pub fn cap_hw_free(owner: sound::SoundOwnerKey) -> bool {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.cap_state == PcmState::Idle { return true; }
@@ -110,7 +110,7 @@ pub fn cap_hw_free(owner: u32) -> bool {
     true
 }
 
-pub fn pcm_recv(owner: u32, out: &mut [u8]) -> usize {
+pub fn pcm_recv(owner: sound::SoundOwnerKey, out: &mut [u8]) -> usize {
     let mut g = CTX.lock();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.cap_state != PcmState::Running { return 0; }

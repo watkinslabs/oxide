@@ -20,7 +20,7 @@ const MINOR_MIXER: u64 = 0x22;
 /// plus the device minor that routes `controlC0`/`pcmC0D0p`/… dispatch.
 /// # C: O(1)
 struct SndData {
-    owner: u32,
+    owner: crate::SoundOwnerKey,
     card: u32,
     minor: u64,
 }
@@ -58,7 +58,7 @@ impl FileOps for SndFileOps {
 
 /// Build a `/dev/snd/*` (or OSS) char-device inode for `minor`.
 /// # C: O(1)
-fn make_snd_inode(owner: u32, card: u32, minor: u64) -> InodeRef {
+fn make_snd_inode(owner: crate::SoundOwnerKey, card: u32, minor: u64) -> InodeRef {
     InodeBuilder::new(SND_INO_BASE | ((card as Ino) << 8) | minor, mk_mode(FileType::CharDev, 0o666),
                       default_inode_ops(), Arc::new(SndFileOps))
         .private(Arc::new(SndData { owner, card, minor }))
@@ -121,7 +121,7 @@ fn sound_addr(dev_name: &str) -> String {
     }
 }
 
-fn add_sound_node(owner: u32, card: u32, class: &'static str, dev_name: String, dev_t: (u32, u32), minor: u64) -> Option<Arc<drv::Device>> {
+fn add_sound_node(owner: crate::SoundOwnerKey, card: u32, class: &'static str, dev_name: String, dev_t: (u32, u32), minor: u64) -> Option<Arc<drv::Device>> {
     let factory: drv::NodeFactory = Arc::new(move || make_snd_inode(owner, card, minor));
     let addr = sound_addr(&dev_name);
     drv::try_device_add(Arc::new(
@@ -133,7 +133,7 @@ fn add_sound_node(owner: u32, card: u32, class: &'static str, dev_name: String, 
 
 fn push_sound_node(
     published: &mut Vec<Arc<drv::Device>>,
-    owner: u32,
+    owner: crate::SoundOwnerKey,
     card: u32,
     class: &'static str,
     dev_name: String,
@@ -155,7 +155,7 @@ pub(crate) fn rollback_published_nodes(published: &[Arc<drv::Device>]) {
     }
 }
 
-pub(crate) fn publish_card_nodes(owner: u32, card: u32, has_playback: bool, has_capture: bool) -> Option<Vec<Arc<drv::Device>>> {
+pub(crate) fn publish_card_nodes(owner: crate::SoundOwnerKey, card: u32, has_playback: bool, has_capture: bool) -> Option<Vec<Arc<drv::Device>>> {
     let mut published = Vec::new();
     let control_name = alsa_node_name(card, MINOR_CONTROL);
     if !push_sound_node(&mut published, owner, card, "sound", control_name, alsa_dev_t(card, MINOR_CONTROL), MINOR_CONTROL) {

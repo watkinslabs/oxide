@@ -8,9 +8,9 @@ const BOUNDARY: u64 = 0x4000_0000_0000;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn caps(owner: u32) -> Option<(u64, u64, u8, u8)> { crate::ops::pcm_caps(owner) }
+fn caps(owner: crate::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> { crate::ops::pcm_caps(owner) }
 
-fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
+fn refine(owner: crate::SoundOwnerKey, b: &UserBuf, commit: bool) -> i64 {
     let Some((vf, vr, ch_min, ch_max)) = caps(owner) else { return err(Errno::Enodev); };
     let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
     if commit {
@@ -35,7 +35,7 @@ fn refine(owner: u32, b: &UserBuf, commit: bool) -> i64 {
 
 /// Handle one `SNDRV_PCM_IOCTL_*` on the playback substream.
 /// # C: O(1) excluding the blocking transfer in WRITEI
-pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
+pub fn handle(owner: crate::SoundOwnerKey, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => write_int(arg, SNDRV_PCM_VERSION),
         PCM_INFO => pcm_info(owner, arg),
@@ -60,7 +60,7 @@ pub fn handle(owner: u32, nr: u64, arg: u64) -> i64 {
 
 /// Raw `write(2)` on the pcm fd.
 /// # C: O(bytes/period × TXQ round-trip)
-pub fn write_bytes(owner: u32, buf: &[u8]) -> usize {
+pub fn write_bytes(owner: crate::SoundOwnerKey, buf: &[u8]) -> usize {
     let (fb, state) = {
         let guard = PCM.lock();
         let Some(p) = guard.iter().find(|p| p.owner == owner) else { return 0; };
@@ -84,7 +84,7 @@ pub fn write_bytes(owner: u32, buf: &[u8]) -> usize {
     n
 }
 
-fn hw_free(owner: u32) -> i64 {
+fn hw_free(owner: crate::SoundOwnerKey) -> i64 {
     if !crate::ops::pcm_hw_free(owner) { return err(Errno::Eio); }
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
@@ -92,7 +92,7 @@ fn hw_free(owner: u32) -> i64 {
     0
 }
 
-fn prepare(owner: u32) -> i64 {
+fn prepare(owner: crate::SoundOwnerKey) -> i64 {
     if !crate::ops::pcm_prepare(owner) { return err(Errno::Eio); }
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
@@ -102,7 +102,7 @@ fn prepare(owner: u32) -> i64 {
     0
 }
 
-fn start(owner: u32) -> i64 {
+fn start(owner: crate::SoundOwnerKey) -> i64 {
     if !crate::ops::pcm_trigger(owner, true) { return err(Errno::Eio); }
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
@@ -110,7 +110,7 @@ fn start(owner: u32) -> i64 {
     0
 }
 
-fn drop_stream(owner: u32) -> i64 {
+fn drop_stream(owner: crate::SoundOwnerKey) -> i64 {
     if !crate::ops::pcm_trigger(owner, false) { return err(Errno::Eio); }
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
@@ -128,7 +128,7 @@ fn write_long(arg: u64, v: u64) -> i64 {
     match UserBuf::new(arg, 8) { Some(b) => { b.w64(0, v); 0 } None => err(Errno::Efault) }
 }
 
-fn pcm_info(owner: u32, arg: u64) -> i64 {
+fn pcm_info(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     if caps(owner).is_none() || !is_registered(owner) { return err(Errno::Enodev); }
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     b.zero(0, PCM_INFO_SIZE);
@@ -144,7 +144,7 @@ fn pcm_info(owner: u32, arg: u64) -> i64 {
     0
 }
 
-fn sw_params(owner: u32, arg: u64) -> i64 {
+fn sw_params(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SW_PARAMS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let st = b.r64(SWP_START_THRESHOLD);
     let mut guard = PCM.lock();
@@ -154,7 +154,7 @@ fn sw_params(owner: u32, arg: u64) -> i64 {
     0
 }
 
-fn pcm_status(owner: u32, arg: u64) -> i64 {
+fn pcm_status(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, STATUS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let guard = PCM.lock();
     let Some(p) = guard.iter().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
@@ -168,7 +168,7 @@ fn pcm_status(owner: u32, arg: u64) -> i64 {
     0
 }
 
-fn sync_ptr(owner: u32, arg: u64) -> i64 {
+fn sync_ptr(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SYNC_PTR_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let flags = b.r32(SP_FLAGS);
     let mut guard = PCM.lock();
@@ -182,7 +182,7 @@ fn sync_ptr(owner: u32, arg: u64) -> i64 {
     0
 }
 
-fn writei(owner: u32, arg: u64) -> i64 {
+fn writei(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let xf = match UserBuf::new(arg, XFERI_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let ubuf = xf.r64(XFERI_BUF);
     let frames = xf.r64(XFERI_FRAMES);
