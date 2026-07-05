@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B491-virtio-child-device-id-matching; VERIFIED.
+Current marker: B492-virtio-child-session-begin; VERIFIED.
+
+## B492 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B492-virtio-child-session-begin | VERIFIED | Fresh main `4675c773` after PR #2549 merge. Source audit proves child probe session setup is centralized in the wrapper: the only child wrapper `probe` calls `VirtioChildSession::begin(dev, O::profile())?` and then `virtio::run_child_probe(session, |session| O::probe_child(session))`; `VirtioChildSession::begin` owns parent PCI lookup, `VirtioPciTransport::probe_child` acquisition, probe tracing, child address capture, profile storage, and live `VirtioProbeLease` setup before any child-specific policy runs; child crates only receive `&mut dyn VirtioChildTransportSession`. Checks pass: `cargo test -q -p virtio child_probe_lifecycle -- --nocapture --test-threads=1` 3/3; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B491 Current
 
