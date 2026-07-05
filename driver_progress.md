@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B412-probe-failure-devres-proof`.
+Current marker: `>>> ACTIVE >>> B413-devtmpfs-model-owned-publication`.
 
 ## Archived Completed B327-B330
 
@@ -483,14 +483,14 @@ recent-completed table above; main was synced after each merge through
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 | B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B406-B412 Current
+## B407-B413 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B406-i8042-receive-irq-owned | VERIFIED | i8042 IRQ1 ownership source-audited; hosted PS/2/input/tty tests and x86_64/aarch64 driver-path proof pass. |
 | B407-serial-input-remove-rebind-state | VERIFIED | 8250/PL011/i8042 remove state source-audited; hosted serial/input tests and x86_64/aarch64 driver-path proof pass. |
 | B408-timer-registry-owned-ids | VERIFIED | Timer owned-ID/unregister regressions, broader timer/net/sched tests, and x86_64/aarch64 driver-path proof pass. |
 | B409-driver-model-setup-policy | VERIFIED | Driver-core authority source audit, drv/pci-boot/virtio hosted tests, and x86_64/aarch64 driver-path proof pass; remaining virtio split stays in later rows. |
 | B410-virtio-transport-policy-boundary | VERIFIED | Shared virtio profile/resource/handoff boundary source-audited; virtio plus child-driver hosted tests and x86_64/aarch64 driver-path proof pass. |
 | B411-virtio-irq-core-bus-split | VERIFIED | Child-declared virtio IRQ callbacks flow through shared `VirtioTransportProfile`; PCI transport owns MSI-X programming/teardown; hosted virtio/pci/child tests and x86_64/aarch64 driver-path proof pass. |
 | B412-probe-failure-devres-proof | VERIFIED | `VirtioProbeDevres` owns virtio-pci failed-probe cleanup/publish transfer; hosted fault-point lifecycle tests plus broad virtio child-driver tests and x86_64/aarch64 driver-path proof pass. |
+| B413-devtmpfs-model-owned-publication | CLAIMED | Devtmpfs model-owned hardware publication proof claimed; source audit, hosted tests, and x86_64/aarch64 driver-path proof pending. |
