@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B486-virtio-child-drivers-model-bind; IN AUDIT.
+Current marker: B486-virtio-child-drivers-model-bind; VERIFIED pending PR merge.
 
 ## B486 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B486-virtio-child-drivers-model-bind | IN AUDIT | Fresh main `d2657a13` after PR #2543 merge; auditing child virtio driver binding to prove child virtio drivers are registered as model drivers and are reached through driver-core matching/probe, with x86_64 and aarch64 smoke gates required before merge. |
+| B486-virtio-child-drivers-model-bind | VERIFIED | Fresh main `d2657a13` after PR #2543 merge. Source audit proves `pci-boot::register_pci_model_drivers` reaches `virtio_drv::register_model_drivers`, which registers `VIRTIO_PCI_DRV` and all child wrappers through `drv::register_driver`; `VirtioChildDriver<O>` exposes the virtio child bus/name/matches/probe bridge and routes successful matches through `VirtioChildSession::begin` plus `virtio::run_child_probe`; search finds no direct child `drv::bind`/`bind_addr` bypass, only child subsystem publications such as hwrng/devfs. Checks pass: `cargo test -q -p virtio child_driver_id_matches_virtio_child_devices -- --nocapture --test-threads=1` 1/1; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B485 Current
 
