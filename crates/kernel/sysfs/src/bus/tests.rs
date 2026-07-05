@@ -102,12 +102,19 @@ extern crate alloc;
         assert_eq!(
             bound_link.readlink().expect("readlink"),
             b"../../../../devices/platform/sysfs-bind-dev0".to_vec());
+        let devices = make_devices_root_inode("platform");
+        let device_dir = devices.lookup("sysfs-bind-dev0").expect("device dir");
+        let driver_link = device_dir.lookup("driver").expect("device driver symlink");
+        assert_eq!(
+            driver_link.readlink().expect("readlink"),
+            b"../../../bus/platform/drivers/sysfs-bind-test".to_vec());
 
         let unbind = dir.lookup("unbind").expect("unbind attr");
         assert_eq!(unbind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
         assert_eq!(dev.bound(), None);
         assert_eq!(BIND_REMOVES.load(Ordering::Acquire), 1);
         assert_eq!(dir.lookup("sysfs-bind-dev0").err(), Some(VfsError::Enoent));
+        assert_eq!(device_dir.lookup("driver").err(), Some(VfsError::Enoent));
 
         assert_eq!(bind.write(0, b"sysfs-bind-dev0\n"), Ok("sysfs-bind-dev0\n".len()));
         assert_eq!(dev.bound(), Some("sysfs-bind-test"));
@@ -116,6 +123,10 @@ extern crate alloc;
         assert_eq!(
             rebound_link.readlink().expect("readlink"),
             b"../../../../devices/platform/sysfs-bind-dev0".to_vec());
+        let rebound_driver_link = device_dir.lookup("driver").expect("device rebound driver symlink");
+        assert_eq!(
+            rebound_driver_link.readlink().expect("readlink"),
+            b"../../../bus/platform/drivers/sysfs-bind-test".to_vec());
     }
 
     #[test]
