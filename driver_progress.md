@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B490-virtio-child-single-bus-facing-wrapper; VERIFIED.
+Current marker: B491-virtio-child-device-id-matching; VERIFIED.
+
+## B491 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B491-virtio-child-device-id-matching | VERIFIED | Fresh main `60b781a1` after PR #2548 merge. Source audit proves child matching is centralized through shared virtio child device IDs: `virtio::VirtioChildDriverId::matches_device` requires `VIRTIO_CHILD_BUS`, `VIRTIO_VENDOR_ID`, and exact `device_id`; `VirtioChildDriver<O>::matches` delegates directly to `O::DRIVER_ID.matches_device(&dev.bus, dev.vendor_id, dev.device_id)`; GPU/input/net/blk/rng/vsock/snd child crates export named `DRIVER_ID` descriptors with their virtio device IDs; search finds no child crate bus-facing `drv::Driver` match implementation. Checks pass: `cargo test -q -p virtio child_driver_id_matches_virtio_child_devices -- --nocapture --test-threads=1` 1/1; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B490 Current
 
