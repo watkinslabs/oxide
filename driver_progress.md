@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B343-scanout-backing-bdf-keyed`.
+Current marker: `>>> ACTIVE >>> B344-drm-setcrtc-pageflip-card-route`.
 
 ## B327-virtio-input-queue-quiesce
 
@@ -426,7 +426,7 @@ Evidence:
 
 ## B343-scanout-backing-bdf-keyed
 
-Status: `VERIFIED`; commit/PR merge pending.
+Status: `VERIFIED` and merged by PR #2396.
 
 Branch: `B343-scanout-backing-bdf-keyed`
 
@@ -449,3 +449,28 @@ Evidence:
 | Line cap | PASS: `post_init.rs` 136, `scanout.rs` 288, `runtime.rs` 97, `post_init/tests.rs` 114, `device.rs` 384, `driver_progress.md` under cap. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b343-scanout-backing-bdf-keyed-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b343-scanout-backing-bdf-keyed-arm.log`. |
+
+## B344-drm-setcrtc-pageflip-card-route
+
+Status: `VERIFIED, commit/PR merge pending`.
+
+Branch: `B344-drm-setcrtc-pageflip-card-route`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | DRM SETCRTC/PAGE_FLIP hooks route by DRM card id to owning GPU. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: card inode tags decode to stable `card_id`; DRM ioctl dispatch passes that id to SETCRTC/PAGE_FLIP; handlers select `scanout_ops(card_id)` and virtio-gpu installs each card with owner `VirtioChildDeviceKey.raw()`. |
+| `cargo test -p drm scanout_ops_route_by_card_id_to_driver_key -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 59 passed. |
+| `cargo test -p drv-virtio-gpu` | PASS: 31 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `node/tests.rs` 472, `node/scanout.rs` 57, `crtc.rs` 433, `runtime.rs` 97, `driver_progress.md` under cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b344-drm-setcrtc-pageflip-card-route-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b344-drm-setcrtc-pageflip-card-route-arm.log`. |
