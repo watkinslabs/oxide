@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B474-graphics-fbdev-coldplug VERIFIED pending PR merge.
+Current marker: B475-misc-mem-coldplug; IN AUDIT.
+
+## B475 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B475-misc-mem-coldplug | IN AUDIT | Fresh main `c32cfb7c` after PR #2532 merge; auditing misc and mem class `uevent` read/write paths for model-backed current-state coldplug, with x86_64 and aarch64 proof required before VERIFIED. |
 
 ## B474 Current
 
