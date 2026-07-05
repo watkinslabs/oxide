@@ -2,14 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B400-virtio-msix-child-owned-handlers` — VERIFIED.
+ACTIVE NOW: `B401-virtio-pci-probe-exit-unwind` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B400-virtio-msix-child-owned-handlers`.
+Current active item: `>>> ACTIVE >>> B401-virtio-pci-probe-exit-unwind`.
 
-Current B400 gate: source audit, hosted regression, and x86_64/aarch64 driver
-proof show virtio MSI-X handler ownership is child-declared and not transport
-PCI/virtio ID special-case dispatch; commit, push, PR, merge, then sync main
-before claiming B401.
+Current B401 gate: audit/fix virtio-pci early transport-probe exits after PCI
+enable so MEM/BUS_MASTER and MMIO mappings unwind on all failure paths; prove
+with hosted tests plus x86_64/aarch64 driver-path proof before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -336,7 +335,7 @@ Status legend:
 | VERIFIED | B398-virtio-snd-eventq-owner-accounting | Virtio-snd raw EVENTQ accounting is keyed by transport owner: EVENTQ rings, buffer PA, last-used, avail idx, and raw/drained counters live in `Ctx` records selected by `device_key`; focused drain regression proves only the advanced context records/requeues events, full drv-virtio-snd tests, x86_64/aarch64 driver-path proof, PR #2451 merge, and local main sync to `origin/main` at `a6506b42` pass. |
 | VERIFIED | B399-virtio-snd-multicard-rebind-proof | Virtio-snd multi-card live proof added: env-gated second QEMU sound device, rootfs probe, and `smoke-virtio-snd-multidev`; C probe compile, `cargo check -p xtask`, full `drv-virtio-snd` tests, serial full `sound` tests, and x86_64/aarch64 smoke logs pass; PR #2452 merge and local main sync to `origin/main` at `36d0b388` pass. |
 | >>> ACTIVE >>> VERIFIED | B400-virtio-msix-child-owned-handlers | Source audit shows `VirtioChildOps::profile()` supplies MSI-X handlers and PCI transport consumes profile fields without virtio-ID dispatch; added hosted profile-handler regression, `cargo test -p virtio`, `cargo test -p pci-boot`, x86_64 driver-path log `/tmp/b400-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b400-arm-driver-path.log` all pass. |
-| NOT DONE |  | Virtio-pci clears PCI MEM/BUS_MASTER and drops mappings on early transport probe exits after enable. |
+| >>> ACTIVE >>> CLAIMED | B401-virtio-pci-probe-exit-unwind | Virtio-pci clears PCI MEM/BUS_MASTER and drops mappings on early transport probe exits after enable. |
 | NOT DONE |  | Sound card publication is model-owned and duplicate publication guarded. |
 | NOT DONE |  | Fbdev publication unwinds framebuffer record on model publication failure. |
 | NOT DONE |  | 8250 receive path is IRQ-owned rather than timer-poll fallback. |
