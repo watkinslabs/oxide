@@ -440,7 +440,7 @@ Evidence:
 
 ## B347-drm-unregister-drops-card-state
 
-Status: `VERIFIED, commit/PR merge pending`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B347-drm-unregister-drops-card-state`
 
@@ -462,3 +462,4 @@ Evidence:
 | Line cap | PASS: `crtc.rs` 438 lines, `tests.rs` 224, `dumb/tests.rs` 495. |
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
