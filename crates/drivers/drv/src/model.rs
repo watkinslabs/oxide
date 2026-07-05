@@ -110,6 +110,23 @@ impl Device {
     pub fn parent(&self) -> Option<(&'static str, &str)> {
         Some((self.parent_bus?, self.parent_addr.as_deref()?))
     }
+    /// Full model identity equality used when a publisher handles `Busy` by
+    /// reusing a preexisting object instead of masking a conflicting one. # C: O(n)
+    pub fn identity_eq(&self, other: &Device) -> bool {
+        self.bus == other.bus
+            && self.addr == other.addr
+            && self.parent_bus == other.parent_bus
+            && self.parent_addr == other.parent_addr
+            && self.vendor_id == other.vendor_id
+            && self.device_id == other.device_id
+            && self.class == other.class
+            && self.dev_class == other.dev_class
+            && self.devname == other.devname
+            && self.dev_t == other.dev_t
+            && self.node_factory.is_none()
+            && other.node_factory.is_none()
+            && self.resources == other.resources
+    }
     /// Builder: attach a parent device identity. # C: O(1)
     pub fn with_parent(mut self, bus: &'static str, addr: String) -> Self {
         self.parent_bus = Some(bus);
@@ -217,6 +234,11 @@ pub fn devices() -> Vec<Arc<Device>> { DEVICES.lock().clone() }
 
 /// Number of registered devices. # C: O(1)
 pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
+
+/// Current device with full model identity matching `candidate`, if any. # C: O(N_devices)
+pub fn find_matching_device_identity(candidate: &Device) -> Option<Arc<Device>> {
+    devices().into_iter().find(|d| d.identity_eq(candidate))
+}
 
 /// Roll back a partially published device batch in reverse publication order.
 /// # C: O(N_published)

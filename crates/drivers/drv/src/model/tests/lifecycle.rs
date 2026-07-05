@@ -178,6 +178,70 @@ fn rollback_devices_after_conflict_removes_only_published_batch() {
 }
 
 #[test]
+fn find_matching_device_identity_reuses_only_exact_platform_identity() {
+    let existing = try_device_add(Arc::new(Device::new(
+        "platform",
+        String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID,
+        PLATFORM_REUSE_DEVICE_ID,
+        PLATFORM_REUSE_CLASS,
+    )))
+    .unwrap();
+    let same = Device::new(
+        "platform",
+        String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID,
+        PLATFORM_REUSE_DEVICE_ID,
+        PLATFORM_REUSE_CLASS,
+    );
+    let with_parent = Device::new(
+        "platform",
+        String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID,
+        PLATFORM_REUSE_DEVICE_ID,
+        PLATFORM_REUSE_CLASS,
+    )
+        .with_parent("platform", String::from(PLATFORM_REUSE_PARENT_ADDR));
+    let with_devnode = Device::new(
+        "platform",
+        String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID,
+        PLATFORM_REUSE_DEVICE_ID,
+        PLATFORM_REUSE_CLASS,
+    )
+        .with_devnode(
+            PLATFORM_REUSE_DEVNODE_CLASS,
+            String::from(PLATFORM_REUSE_DEVNODE_NAME),
+            Some((PLATFORM_REUSE_DEV_MAJOR, PLATFORM_REUSE_DEV_MINOR)),
+        );
+    let with_resource = Device::new(
+        "platform",
+        String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID,
+        PLATFORM_REUSE_DEVICE_ID,
+        PLATFORM_REUSE_CLASS,
+    )
+        .with_resources(Vec::from([
+            Resource {
+                bar: PLATFORM_REUSE_RESOURCE_BAR,
+                start: PLATFORM_REUSE_RESOURCE_START,
+                end: PLATFORM_REUSE_RESOURCE_END,
+                flags: IORESOURCE_MEM,
+            },
+        ]));
+
+    assert!(Arc::ptr_eq(&find_matching_device_identity(&same).unwrap(), &existing));
+    assert!(!existing.identity_eq(&with_parent));
+    assert!(!existing.identity_eq(&with_devnode));
+    assert!(!existing.identity_eq(&with_resource));
+    assert!(find_matching_device_identity(&with_parent).is_none());
+    assert!(find_matching_device_identity(&with_devnode).is_none());
+    assert!(find_matching_device_identity(&with_resource).is_none());
+
+    device_del(&existing);
+}
+
+#[test]
 fn try_device_add_preserves_pci_bar_resources_and_rejects_republish() {
     let first = try_device_add(Arc::new(
         Device::new("pci", String::from("0000:00:18.0"), 0x1234, 0x5678, 0x010601)

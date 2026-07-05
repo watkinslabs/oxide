@@ -181,8 +181,7 @@ fn platform_device_or_panic(addr: &'static str) -> alloc::sync::Arc<drv::Device>
     match drv::try_device_add(alloc::sync::Arc::clone(&candidate)) {
         Ok(dev) => dev,
         Err(drv::Error::Busy) => {
-            if let Some(existing) = drv::devices().into_iter()
-                .find(|d| boot_platform_identity_matches(d, addr)) {
+            if let Some(existing) = drv::find_matching_device_identity(&candidate) {
                 existing
             } else {
                 panic_platform_device_conflict(addr);
@@ -190,19 +189,6 @@ fn platform_device_or_panic(addr: &'static str) -> alloc::sync::Arc<drv::Device>
         }
         Err(_) => panic_platform_device_failure(addr),
     }
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn boot_platform_identity_matches(d: &drv::Device, addr: &'static str) -> bool {
-    d.bus == PLATFORM_BUS
-        && d.addr == addr
-        && d.parent_bus.is_none()
-        && d.parent_addr.is_none()
-        && d.vendor_id == BOOT_PLATFORM_VENDOR_ID
-        && d.device_id == BOOT_PLATFORM_DEVICE_ID
-        && d.class == BOOT_PLATFORM_CLASS
-        && d.devname.is_none()
-        && d.resources.is_empty()
 }
 
 #[cfg(target_os = "oxide-kernel")]
