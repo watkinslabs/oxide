@@ -2,13 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B456-ahci-explicit-shutdown-callback VERIFIED pending PR
-merge.
+ACTIVE NOW: none; B457-virtio-pci-explicit-shutdown-callback VERIFIED pending PR merge.
 
-Current active item: none; next claim starts after B456 merge and fresh main
-sync.
+Current active item: none; next claim starts after B457 merge and fresh main sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B457 using
+Next gate after merge: return to fresh `origin/main` before claiming B458 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -65,7 +63,7 @@ Status legend:
 | VERIFIED | B454-power-path-calls-driver-shutdown | Power/reboot/halt path calls driver shutdown before restart/poweroff/halt: `kmain` installs `power::set_driver_shutdown_hook(drv::shutdown_all)`, `power::cmd` routes terminal reboot commands through `prepare_cmd`, `prepare_cmd` calls the hook once before selecting restart/poweroff/halt, hosted power tests pass 5/5, and pre-push boot smoke passes on x86_64 and aarch64. |
 | VERIFIED | B455-nvme-explicit-shutdown-callback | NVMe has explicit shutdown callback: `NvmeDriver::shutdown` parses the bound PCI BDF and calls controller-keyed `imp::shutdown`, which keeps block publication intact while marking the controller removed and running `shutdown_and_free`; hosted `drv-nvme` register-helper tests pass 5/5 and x86_64/aarch64 boot-smoke proof is inherited from unchanged B454 production source. |
 | VERIFIED | B456-ahci-explicit-shutdown-callback | AHCI has explicit shutdown callback: `AhciDriver::shutdown` parses the bound PCI BDF and calls controller-keyed `imp::shutdown`, which keeps block publication intact while marking the controller removed and running `shutdown_and_free`; hosted `drv-ahci` register/FIS/identify tests pass 10/10 and x86_64/aarch64 boot-smoke proof is inherited from unchanged B454 production source. |
-| SOURCE OK |  | virtio-pci has explicit shutdown callback. |
+| VERIFIED | B457-virtio-pci-explicit-shutdown-callback | virtio-pci has explicit shutdown callback: `VirtioPciDrv::shutdown` parses the model PCI device and calls `disable_pci_command(d.bdf)`, giving the parent transport an explicit terminal quiesce path without child unbind/remove; child virtio drivers use explicit shutdown callbacks through `run_child_shutdown` with a stable key. `cargo test -p virtio -- --nocapture` passes 43/43 and `cargo test -p pci-boot -- --nocapture` compiles; runtime arch proof is inherited from B454 pre-push because B457 changes only docs/metadata and virtio-pci production source is unchanged from that booted main. |
 | SOURCE OK |  | virtio-blk has explicit shutdown callback. |
 | SOURCE OK |  | virtio-input has explicit shutdown callback. |
 | SOURCE OK |  | virtio-gpu has explicit shutdown callback. |
