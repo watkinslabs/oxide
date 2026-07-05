@@ -370,6 +370,7 @@ impl VirtioProbeState {
             trace,
             cfg_va: self.cfg_va,
             owned_frames,
+            transport_lease: virtio::VirtioProbeLease::live(),
         }
     }
 }
@@ -402,6 +403,7 @@ pub(crate) struct VirtioProbe {
     pub(crate) trace: VirtioPciProbeTrace,
     pub(super) cfg_va: u64,
     owned_frames: virtio::VirtioProbeOwnedFrames,
+    transport_lease: virtio::VirtioProbeLease,
 }
 
 impl VirtioProbe {
@@ -413,6 +415,9 @@ impl VirtioProbe {
     }
 
     fn release_failed_transport(&mut self) {
+        if !self.transport_lease.take() {
+            return;
+        }
         let frames = self.owned_frames.take_all();
         release_failed_probe(self.cfg_va, &frames);
         release_probe_msix(self);
@@ -425,7 +430,16 @@ impl VirtioProbe {
     }
 }
 
+impl Drop for VirtioProbe {
+    fn drop(&mut self) {
+        self.release_failed_transport();
+    }
+}
+
 pub(super) fn publish_transport_mmio(p: &mut VirtioProbe) {
+    if !p.transport_lease.take() {
+        return;
+    }
     publish_transport_record(
         p.bdf_word,
         core::mem::take(&mut p.mappings),
