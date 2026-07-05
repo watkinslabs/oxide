@@ -2,9 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B455-nvme-explicit-shutdown-callback; IN AUDIT.
+ACTIVE NOW: none; B455-nvme-explicit-shutdown-callback VERIFIED pending PR
+merge.
 
-Current active item: NVMe has explicit shutdown callback.
+Current active item: none; next claim starts after B455 merge and fresh main
+sync.
 
 Next gate after merge: return to fresh `origin/main` before claiming B456 using
 `metadata/index.md`.
@@ -61,7 +63,7 @@ Status legend:
 | VERIFIED | B452-shutdown-all-reverse-registration | `drv::shutdown_all` walks bound model devices in reverse registration order: the model snapshots devices, reverses the snapshot, skips unbound devices, calls each bound driver's `shutdown`, and hosted regression proves later-registered devices shut down before earlier ones. |
 | VERIFIED | B453-shutdown-no-unbind-or-events | `drv::shutdown_all` calls `Driver::shutdown` without unbinding or emitting remove events: source audit proves `shutdown_all` calls only `driver.shutdown(&dev)` for bound devices, and hosted regression proves shutdown order while bindings remain, driver `remove` is not called, and no `BindEvent::Unbound` fires; full driver-model tests pass 27/27 and pre-push boot smoke passes on x86_64 and aarch64. |
 | VERIFIED | B454-power-path-calls-driver-shutdown | Power/reboot/halt path calls driver shutdown before restart/poweroff/halt: `kmain` installs `power::set_driver_shutdown_hook(drv::shutdown_all)`, `power::cmd` routes terminal reboot commands through `prepare_cmd`, `prepare_cmd` calls the hook once before selecting restart/poweroff/halt, hosted power tests pass 5/5, and pre-push boot smoke passes on x86_64 and aarch64. |
-| ACTIVE | B455-nvme-explicit-shutdown-callback | NVMe has explicit shutdown callback. |
+| VERIFIED | B455-nvme-explicit-shutdown-callback | NVMe has explicit shutdown callback: `NvmeDriver::shutdown` parses the bound PCI BDF and calls controller-keyed `imp::shutdown`, which keeps block publication intact while marking the controller removed and running `shutdown_and_free`; hosted `drv-nvme` register-helper tests pass 5/5 and x86_64/aarch64 boot-smoke proof is inherited from unchanged B454 production source. |
 | SOURCE OK |  | AHCI has explicit shutdown callback. |
 | SOURCE OK |  | virtio-pci has explicit shutdown callback. |
 | SOURCE OK |  | virtio-blk has explicit shutdown callback. |
