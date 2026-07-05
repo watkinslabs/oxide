@@ -54,6 +54,30 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     if let Some(rv) = crate::af_packet::sendto(&sock, bufp, len, dest_p) {
         return rv;
     }
+    // SAFETY: ptr range validated; user page mapped under caller's AS.
+    let payload: alloc::vec::Vec<u8> = unsafe {
+        core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
+    };
+    send_over_socket(&sock, &payload, dest_p, dest_len, flags, fd)
+}
+
+/// Send one kernel-space `payload` as a SINGLE message over an already-resolved
+/// socket — the shared core of `sendto` and the `sendmsg` iovec-coalescing path.
+/// A `sendmsg(2)` iovec array is ONE message (Linux: the datagram is the
+/// concatenation of every iovec), so `sendmsg` coalesces into one buffer and
+/// calls this once instead of emitting one datagram per iovec.
+/// # C: O(payload bytes)
+pub fn send_over_socket(
+    sock: &alloc::sync::Arc<net::sock::InetSocket>,
+    payload: &[u8],
+    dest_p: u64,
+    dest_len: u64,
+    flags: u64,
+    fd: u64,
+) -> i64 {
+    use hal::TimerOps;
+    use core::sync::atomic::Ordering;
+    const MSG_DONTWAIT: u64 = 0x40;
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
     let timeo = sock.opts.sndtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
@@ -61,10 +85,6 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     #[cfg(target_arch = "aarch64")]
     let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
-    // SAFETY: ptr range validated; user page mapped under caller's AS.
-    let payload: alloc::vec::Vec<u8> = unsafe {
-        core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
-    };
     // Parse optional destination based on socket family.
     let dest = if dest_p == 0 {
         None
@@ -99,7 +119,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
         None => net::sock::SenderCreds::default(),
     };
     loop {
-        match net::sock::sendto(&sock, &payload, dest.clone(), creds) {
+        match net::sock::sendto(sock, payload, dest.clone(), creds) {
             Ok(n)  => return n as i64,
             Err(net::NetError::Eagain) => {
                 if nonblock { return -(Errno::Eagain.as_i32() as i64); }
