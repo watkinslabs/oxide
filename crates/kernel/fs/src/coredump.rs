@@ -20,6 +20,58 @@
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::format;
+use sync::{Spinlock, Tty as CoreClass};
+
+/// Linux `kernel.core_pattern`: the template for the coredump path. Written via
+/// the `/proc/sys/kernel/core_pattern` sysctl hook, read by `write_for_current`.
+/// Empty = the Linux default `"core"`. A leading `|` (pipe-to-program, e.g.
+/// systemd-coredump) is not yet honored — the usermode-helper coredump exec is a
+/// follow-up; a `|`-pattern falls back to a literal `/core.<tid>` so a dump is
+/// still written (never silently dropped).
+static CORE_PATTERN: Spinlock<Vec<u8>, CoreClass> = Spinlock::new(Vec::new());
+
+/// `/proc/sys/kernel/core_pattern` read hook. # C: O(len)
+pub fn core_pattern() -> Vec<u8> {
+    let g = CORE_PATTERN.lock();
+    if g.is_empty() { b"core\n".to_vec() } else { g.clone() }
+}
+/// `/proc/sys/kernel/core_pattern` write hook. # C: O(len)
+pub fn set_core_pattern(b: &[u8]) {
+    let mut g = CORE_PATTERN.lock();
+    g.clear();
+    g.extend_from_slice(b);
+}
+/// Install the core_pattern get/set hooks into procfs at boot (Linux registers
+/// the ctl_table leaf against the same variable). # C: O(1)
+pub fn register_core_hooks() {
+    procfs::hooks::set_core_pattern_hooks(core_pattern, set_core_pattern);
+}
+
+/// Expand a `core_pattern` template into a concrete coredump path, honoring the
+/// Linux `%`-specifiers we can fill (`%p`/`%P`→tid, `%e`/`%E`→exe name, `%s`→
+/// signo, `%%`→`%`); unknown specifiers are dropped like Linux. A leading `|`
+/// (pipe) or an empty result falls back to `/core.<tid>`. Relative patterns are
+/// rooted at `/`. # C: O(len)
+fn expand_core_path(pattern: &[u8], tid: u32, name: &str, signo: i32) -> String {
+    let pat = core::str::from_utf8(pattern).unwrap_or("core").trim_end_matches('\n');
+    if pat.is_empty() || pat.starts_with('|') { return format!("/core.{tid}"); }
+    let mut out = String::new();
+    let mut it = pat.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '%' { out.push(c); continue; }
+        match it.next() {
+            Some('p') | Some('P') => out.push_str(&format!("{tid}")),
+            Some('e') | Some('E') => out.push_str(name),
+            Some('s')             => out.push_str(&format!("{signo}")),
+            Some('%')             => out.push('%'),
+            Some(_) | None        => {} // unknown/other specifier → drop (Linux)
+        }
+    }
+    if out.is_empty() { return format!("/core.{tid}"); }
+    if !out.starts_with('/') { out.insert(0, '/'); }
+    out
+}
+
 
 const ELFCLASS64:   u8 = 2;
 const ELFDATA2LSB:  u8 = 1;
@@ -156,9 +208,43 @@ pub fn write_for_current(signo: i32) {
     let cur = match sched::current() { Some(c) => c, None => return };
     let name = cur.name;
     let body = build_coredump(signo, name);
-    let path: String = format!("/core.{}", cur.tid);
+    // Linux: the dump path comes from `kernel.core_pattern` (%-expanded), not a
+    // fixed name. A `|pipe` pattern falls back to a file (usermode-helper exec
+    // is a follow-up) so a core is still produced.
+    let path: String = expand_core_path(&core_pattern(), cur.tid, name, signo);
     // Write through the tmpfs lookup-or-create path.
     let inode = crate::tmpfs::tmpfs_anon_file();
     let _ = inode.write(0, &body);
     devfs::register(alloc::boxed::Box::leak(path.into_boxed_str()), inode);
+}
+
+#[cfg(test)]
+mod core_pattern_tests {
+    use super::expand_core_path;
+    // core_pattern is honored (not store-and-ignore): the dump PATH is derived
+    // from it, exactly like Linux `format_corename`.
+    #[test]
+    fn literal_relative_is_rooted() {
+        assert_eq!(expand_core_path(b"core", 42, "bash", 11), "/core");
+    }
+    #[test]
+    fn specifiers_expand() {
+        // %e→exe, %p/%P→pid, %s→signo, trailing NL trimmed.
+        assert_eq!(expand_core_path(b"core.%e.%p.sig%s\n", 42, "bash", 11), "/core.bash.42.sig11");
+    }
+    #[test]
+    fn absolute_pattern_preserved() {
+        assert_eq!(expand_core_path(b"/var/crash/%e-%P", 3, "app", 6), "/var/crash/app-3");
+    }
+    #[test]
+    fn pipe_pattern_falls_back_to_file() {
+        // systemd-coredump uses a |pipe pattern; usermode-helper exec is a
+        // follow-up, so we still WRITE a core (never silently drop it).
+        assert_eq!(expand_core_path(b"|/usr/lib/systemd/systemd-coredump %P %u", 42, "x", 6), "/core.42");
+    }
+    #[test]
+    fn double_percent_and_unknown_specifier() {
+        // %% → literal %, unknown %z dropped (Linux format_corename).
+        assert_eq!(expand_core_path(b"c%%%z%e", 7, "x", 6), "/c%x");
+    }
 }
