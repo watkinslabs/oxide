@@ -29,6 +29,7 @@ pub unsafe fn init(info: &BootInfo) {
     procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
     procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
     procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
+    fs::coredump::register_core_hooks();
     hal::zerotrap::set_tid_hook(zerotrap_tid);
     ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
     drv::set_devtmpfs_hook(devfs::add_device_node);
