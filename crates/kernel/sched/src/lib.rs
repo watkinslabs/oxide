@@ -19,6 +19,7 @@ pub mod cmdline;
 pub mod cputime;
 pub mod cpustat;
 pub mod loadavg;
+pub mod psi;
 pub mod diag;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
