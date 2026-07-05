@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B470-sysfs-driver-links VERIFIED pending PR merge.
+ACTIVE NOW: B471-sysfs-driver-override; IN AUDIT.
 
-Current active item: none; next claim starts after B470 merge and fresh main sync.
+Current active item: Sysfs exposes `driver_override`.
 
-Next gate after merge: return to fresh `origin/main` before claiming B471 using
+Next gate after merge: return to fresh `origin/main` before claiming B472 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -78,7 +78,7 @@ Status legend:
 | VERIFIED | B468-remove-public-infallible-device-add | Public infallible `device_add` wrapper is absent: `drv/src/lib.rs` re-exports only fallible `try_device_add`, the only `fn device_add` symbol is the private hosted driver-model test helper, and production publication sites call `drv::try_device_add` with explicit `Result` handling or conversion to failure/rollback state. Hosted publication suites pass for driver core, sound, DRM, fbdev, block, devfs, virtio-input, virtio-rng, and console, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B469-sysfs-bus-driver-bind-unbind | Sysfs bus-driver controls are backed by model bind/unbind: `/sys/bus/<bus>/drivers/<driver>/bind` writes call `drv::bind_addr`, `unbind` writes resolve the currently bound model device and call `drv::unbind`, error mapping preserves Linux-style failures, driver directory symlinks are derived from current model binding state, and bind/unbind change uevents carry model-derived `DRIVER=` state. Full sysfs and driver-model hosted suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B470-sysfs-driver-links | Sysfs exposes driver links from current model binding state: `/sys/devices/<root>/<addr>/driver` appears only while the model device is bound and targets `../../../bus/<bus>/drivers/<driver>`, while `/sys/bus/<bus>/drivers/<driver>/<addr>` appears only for devices currently bound to that driver and targets `../../../../devices/<root>/<addr>`. Added hosted regression coverage for the device-side driver symlink, existing driver-dir symlink coverage proves link disappearance on unbind and restoration on rebind, full sysfs and driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
-| SOURCE OK |  | Sysfs exposes `driver_override`. |
+| ACTIVE | B471-sysfs-driver-override | Sysfs exposes `driver_override`. |
 | VERIFIED |  | Sysfs exposes `modalias`. |
 | SOURCE OK |  | Sysfs exposes aggregate PCI `resource`. |
 | VERIFIED |  | Sysfs exposes indexed PCI `resourceN` BAR attributes. |
