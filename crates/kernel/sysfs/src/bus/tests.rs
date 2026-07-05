@@ -130,6 +130,29 @@ extern crate alloc;
     }
 
     #[test]
+    fn driver_override_attr_tracks_model_state() {
+        let dev = platform_device("sysfs-override-dev0");
+        let devices = make_devices_root_inode("platform");
+        let device_dir = devices.lookup("sysfs-override-dev0").expect("device dir");
+        let attr = device_dir.lookup("driver_override").expect("driver_override attr");
+
+        let mut buf = [0u8; 64];
+        let n = attr.read(0, &mut buf).expect("read default override");
+        assert_eq!(&buf[..n], b"(null)\n");
+        assert_eq!(dev.driver_override(), None);
+
+        assert_eq!(attr.write(0, b"sysfs-override-driver\n"), Ok("sysfs-override-driver\n".len()));
+        assert_eq!(dev.driver_override().as_deref(), Some("sysfs-override-driver"));
+        let n = attr.read(0, &mut buf).expect("read written override");
+        assert_eq!(&buf[..n], b"sysfs-override-driver\n");
+
+        assert_eq!(attr.write(0, b"(null)\n"), Ok("(null)\n".len()));
+        assert_eq!(dev.driver_override(), None);
+        let n = attr.read(0, &mut buf).expect("read cleared override");
+        assert_eq!(&buf[..n], b"(null)\n");
+    }
+
+    #[test]
     fn bind_unbind_emit_change_uevents_from_current_model_state() {
         use netlink::{proto, NetlinkSocket};
 
