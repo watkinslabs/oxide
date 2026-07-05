@@ -159,6 +159,21 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         tag.push_str(" fst="); tag.push_str(&fst);
         tag.push_str(" fl=");
         crate::mount_common::mnt_log_hex("mount", &tag, args.a3, rv);
+        // 1.1 mount-EPERM: log the caller's cred/cap state so an EPERM at the
+        // CAP_SYS_ADMIN gate reveals whether the caller is root-without-the-cap
+        // (cap-tracking bug) or an already-dropped uid (expected).
+        if let Some(c) = sched::live::current() {
+            use core::sync::atomic::Ordering::Acquire;
+            klog::write_raw(b"[mnt-cap] euid=");
+            klog::write_dec_u64(c.creds.euid.load(Acquire) as u64);
+            klog::write_raw(b" ruid=");
+            klog::write_dec_u64(c.creds.ruid.load(Acquire) as u64);
+            klog::write_raw(b" sysadmin=");
+            klog::write_dec_u64(if c.has_cap(sched::cap::SYS_ADMIN) { 1 } else { 0 });
+            klog::write_raw(b" vpid=");
+            klog::write_dec_u64(c.visible_pid() as u64);
+            klog::write_raw(b"\n");
+        }
         }
     }
     rv
