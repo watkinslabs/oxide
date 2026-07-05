@@ -130,6 +130,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 Some(d) => d.cap(cap),
                 None    => crate::default_cap(cap),
             };
+            let val = crate::advertised_cap(cap, val);
             // SAFETY: arg validated; cap struct is 16 bytes; value at +8.
             unsafe { core::ptr::write_volatile((arg + 8) as *mut u64, val); }
             Some(0)
