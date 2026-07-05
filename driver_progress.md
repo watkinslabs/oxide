@@ -5,11 +5,11 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B425-no-flat-driverentry-probeall; IN AUDIT.
+Current marker: B425-no-flat-driverentry-probeall; VERIFIED pending commit/PR.
 
 ## B425-no-flat-driverentry-probeall
 
-Status: `IN AUDIT`; claim commit pending.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B425-no-flat-driverentry-probeall`
 
@@ -17,7 +17,15 @@ Target row:
 
 | Status | Item |
 |---|---|
-| ACTIVE | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
+| VERIFIED | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source search | PASS: `rg '\bDriverEntry\b|\bprobe_all\b|probe_all\(' crates userspace tools --glob '!target/**'` returns no live source hits. Remaining mentions are docs/history only. |
+| Source audit | PASS: `crates/drivers/drv/src/model.rs` owns `Device`, `Driver`, `try_device_add`, `register_driver`, `bind_inner`, `attach_device_to_registered_drivers`, and `attach_driver_to_existing_devices`; binding resolves registered model drivers and calls `Driver::probe`. |
+| Hosted regression | PASS: `cargo test -p drv -- --nocapture --test-threads=1` passed 24/24. |
 
 ## B424-bound-unbound-uevent-state-proof
 
