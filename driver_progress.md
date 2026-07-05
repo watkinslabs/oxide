@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B507-virtio-child-transport-session-contract; VERIFIED; PR pending.
+Current marker: B508-msix-teardown-order; VERIFIED; PR pending.
+
+## B508 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B508-msix-teardown-order | VERIFIED | Fresh main `c9e67dd0` after PR #2573 merge. `metadata/index.md` advanced B 508 -> 509. Added PCI-owned MSI-X constants, `msix_control_value`, and `emit_msix_teardown_steps` with hosted regressions for enable/disable bits and teardown ordering. `pci-boot` now releases bound MSI-X by masking all live table entries first, disabling each MSI-X capability once, freeing MSI IDs only after function disable, and then dropping PCI command memory/bus-master decode in the caller. Failed-probe devres now resets the device, releases MSI-X, disables PCI command, unmaps transport mappings, then frees probe frames. Checks pass: `cargo test -q -p pci -- --nocapture --test-threads=1` 14/14; broad hosted `pci-boot`/`virtio`/all virtio-child driver gate; `git diff --check`; touched files under line caps; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B507 Current
 

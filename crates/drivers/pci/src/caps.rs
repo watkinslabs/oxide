@@ -5,6 +5,11 @@ pub const CAP_ID_MSI: u8 = 0x05;
 pub const CAP_ID_VENDOR: u8 = 0x09;
 pub const CAP_ID_PCIE: u8 = 0x10;
 pub const CAP_ID_MSIX: u8 = 0x11;
+pub const MSIX_ENABLE: u32 = 1u32 << 31;
+pub const MSIX_FUNCTION_MASK: u32 = 1u32 << 30;
+pub const MSIX_VECTOR_CONTROL_MASKED: u32 = 1;
+pub const MSIX_TABLE_ENTRY_BYTES: u64 = 16;
+pub const MSIX_VECTOR_CONTROL_OFF: u64 = 12;
 
 /// One PCI capability descriptor as the walker observed it. Body reads
 /// (cap-specific) are left to the caller via `r.read32` at `cfg_off + 4..`.
@@ -63,6 +68,43 @@ pub fn decode_msix_cap<R: ConfigSpaceReader>(r: &R, bdf: Bdf, cfg_off: u8) -> Op
         pba_bir,
         pba_offset,
     })
+}
+
+/// Compute the MSI-X message-control update for enable/disable.
+///
+/// Enabling clears the function mask after table entries have been programmed;
+/// disabling sets the function mask while clearing MSI-X enable.
+/// # C: O(1)
+pub const fn msix_control_value(cur: u32, enabled: bool) -> u32 {
+    if enabled {
+        (cur | MSIX_ENABLE) & !MSIX_FUNCTION_MASK
+    } else {
+        (cur & !MSIX_ENABLE) | MSIX_FUNCTION_MASK
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MsixTeardownStep {
+    MaskEntry(usize),
+    DisableFunction,
+    DisableMemBusMaster,
+}
+
+/// Emit Linux-style MSI-X teardown ordering for one PCI function.
+///
+/// All table entries are masked before function MSI-X is disabled; PCI command
+/// memory/bus-master decode drops only after MSI-X is off.
+/// # C: O(N_entries)
+pub fn emit_msix_teardown_steps<F: FnMut(MsixTeardownStep)>(entries: usize, mut f: F) {
+    let mut idx = 0usize;
+    while idx < entries {
+        f(MsixTeardownStep::MaskEntry(idx));
+        idx += 1;
+    }
+    if entries != 0 {
+        f(MsixTeardownStep::DisableFunction);
+    }
+    f(MsixTeardownStep::DisableMemBusMaster);
 }
 
 /// Walk a device's capability chain. Returns up to 16 caps in order; silently
