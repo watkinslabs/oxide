@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B363-drm-dumb-mmap-pins-object`.
+Current marker: `>>> ACTIVE >>> B364-drm-map-dumb-cookie-validation`.
 
 ## Archived Completed B327-B330
 
@@ -25,59 +25,12 @@ Current marker: `>>> ACTIVE >>> B363-drm-dumb-mmap-pins-object`.
 | B333-virtio-gpu-device-state-key | VERIFIED | Per-child-key device-state regressions, full virtio-gpu tests, x86/ARM driver-path proof. |
 | B334-virtio-gpu-duplicate-key-reject | VERIFIED | Duplicate-key publication regression, full virtio-gpu tests, x86/ARM driver-path, pre-push boot smoke, PR #2387. |
 
-## B335-drm-card-id-stable-slots
+## Archived Completed B335-B336
 
-Status: `VERIFIED`; merged by PR #2388.
-
-Branch: `B335-drm-card-id-stable-slots`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | DRM card IDs are stable slots. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `drm::registry` stores cards as `Vec<Option<Arc<dyn DrmDriver>>>`; `register_with_parent` fills the first empty slot or appends; `card(card_id)` indexes that stable slot; `unregister(card_id)` clears only that slot and trims trailing empty slots. |
-| Node routing audit | PASS: DRM card inodes encode `DRM_CARD_INO | card_id`; `handle_drm_ioctl` decodes the inode card id and calls `crate::card(card_id)`, so ioctl routing uses the stable slot instead of live-card count/order. |
-| Hosted regression | PASS: `drm_card_fd_routes_by_stable_slot_after_lower_slot_reuse` keeps a card1 fd open, unregisters/reuses card0, and proves `GET_UNIQUE` still routes card1 to the original driver while card0 routes to the reused slot driver. |
-| `cargo test -p drm drm_card_fd_routes_by_stable_slot_after_lower_slot_reuse -- --nocapture` | PASS: 1 passed. |
-| `cargo test -p drm` | PASS: 56 passed. |
-| `git diff --check` | PASS. |
-| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 372 lines. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-arm.log`. |
-| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
-| PR merge | PASS: PR #2388 merged to `main` at `934792db`. |
-
-## B336-drm-card-node-publication
-
-Status: `VERIFIED`; merged by PR #2389.
-
-Branch: `B336-drm-card-node-publication`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | DRM publishes `/dev/dri/cardN` per stable card slot. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `drm::node::publication::register` publishes `dri/card{card_id}` as class `drm`, dev_t `(226, card_id)`, and a `make_card_inode(card_id)` factory through `drv::try_device_add`; `drv::try_device_add` forwards that metadata to the devtmpfs hook, and `kmain` wires the hook to `devfs::add_device_node`. |
-| Hosted regression | PASS: `register_publishes_card_node_metadata_per_stable_slot` proves each stable card slot publishes the expected model device, devnode name, dev_t, char inode, and card-id inode tag. |
-| `cargo test -p drm register_publishes_card_node_metadata_per_stable_slot -- --nocapture` | PASS: 1 passed. |
-| `cargo test -p drm` | PASS: 57 passed. |
-| `git diff --check` | PASS. |
-| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 394 lines. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-arm.log`. |
-| Pre-push boot smoke | PASS: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. |
+| Branch | Status | Evidence |
+|---|---|---|
+| B335-drm-card-id-stable-slots | VERIFIED | Stable-slot routing regression, full DRM tests, x86/ARM driver-path proof, PR #2388. |
+| B336-drm-card-node-publication | VERIFIED | Card-node publication regression, full DRM tests, x86/ARM driver-path proof, PR #2389. |
 | PR merge | PASS: PR #2389 merged to `main` at `3ab38c75`. |
 
 ## B337-drm-render-nodes-withheld
@@ -487,8 +440,16 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B363-drm-dumb-mmap-pins-object
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2416.
 
 Branch: `B363-drm-dumb-mmap-pins-object`
 
-Evidence: source audit proves MODE_MAP_DUMB mmap pins through `drm::node::pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; `mmap_pin_survives_card_remove_until_unpin`, full `cargo test -p drm`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit proves MODE_MAP_DUMB mmap pins through `drm::node::pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; `mmap_pin_survives_card_remove_until_unpin`, full `cargo test -p drm`, `git diff --check`, line caps, fast x86_64/aarch64 driver-path smokes, PR #2416, and main sync `89ab2e44` pass.
+
+## B364-drm-map-dumb-cookie-validation
+
+Status: `CLAIMED`; source audit starting.
+
+Branch: `B364-drm-map-dumb-cookie-validation`
+
+Evidence: claimed from fresh `main` at `89ab2e44`; duplicate-lane check found no existing B364/MODE_MAP_DUMB cookie branch or worktree. Next: audit dumb-map offset encoding/decoding and prove cookies are high-tagged and validated.
