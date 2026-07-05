@@ -39,6 +39,13 @@ pub struct Resource {
     pub flags: u64,
 }
 
+/// Linux `IORESOURCE_IO` flag for [`Resource::flags`]. # C: O(1)
+pub const IORESOURCE_IO: u64 = 0x0000_0100;
+/// Linux `IORESOURCE_MEM` flag for [`Resource::flags`]. # C: O(1)
+pub const IORESOURCE_MEM: u64 = 0x0000_0200;
+/// Linux `IORESOURCE_PREFETCH` flag for [`Resource::flags`]. # C: O(1)
+pub const IORESOURCE_PREFETCH: u64 = 0x0000_2000;
+
 /// One enumerated device on a bus. `driver` names the bound driver
 /// (None = unbound). Held as `Arc<Device>` so the registry, the bound
 /// driver, and the sysfs inode tree all share one instance.
