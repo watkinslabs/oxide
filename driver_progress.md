@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B388-vsock-listener-backlogs-owner-port`.
+Current marker: `>>> ACTIVE >>> B389-vsock-close-releases-state`.
 
 ## Archived Completed B327-B330
 
@@ -468,7 +468,7 @@ Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
 recent-completed table above; main was synced after each merge through
 `cdd8d243`.
 
-## Recent Completed B382-B387
+## Recent Completed B382-B388
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -478,18 +478,13 @@ recent-completed table above; main was synced after each merge through
 | B385-virtio-vsock-rx-bh-installed | VERIFIED | RX bottom-half ownership regression, full virtio-vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2438 merge, and main sync `4db141ad` pass. |
 | B386-net-vsock-owner-keyed-endpoints | VERIFIED | Owner-keyed endpoint TX routing regression, full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2439 merge, and main sync `947cb224` pass. |
 | B387-af-vsock-bind-specific-local-cid | VERIFIED | Specific local-CID bind resolves live endpoint owner and rejects dead/quiesced CIDs; focused/full vsock tests, `syscalls` check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2440 merge, and main sync `72aebeca` pass. |
+| B388-vsock-listener-backlogs-owner-port | VERIFIED | Same-port listener backlogs are owner-keyed; focused/full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2441 merge, and main sync `a7a5312f` pass. |
 
-## B388-vsock-listener-backlogs-owner-port
+## B389-vsock-close-releases-state
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
+Status: `>>> ACTIVE >>> CLAIMED`.
 
-Branch: `B388-vsock-listener-backlogs-owner-port`
+Branch: `B389-vsock-close-releases-state`
 
-Evidence: source audit proves `Listener { owner, local_port, backlog }`,
-`add_listener` rejects duplicates only for the same pair, inbound requests
-queue through exact owner before wildcard, and `pop_accept` reads only the
-matching owner/port backlog. Hosted regression
-`same_port_listener_backlogs_are_owner_keyed` and `cargo test -p net vsock`
-with 27 tests pass. Fast driver-path runtime proof passes on x86_64
-(`/tmp/b388-x86-driver-path.log`) and aarch64
-(`/tmp/b388-arm-driver-path.log`).
+Scope: prove or fix AF_VSOCK close/drop cleanup so listener, backlog, and
+connection table state are released.
