@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B471-sysfs-driver-override VERIFIED pending PR merge.
+Current marker: none; B472-sysfs-pci-resource VERIFIED pending PR merge.
+
+## B472 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B472-sysfs-pci-resource | VERIFIED | Fresh main `fdf5fd2c` after PR #2529 merge; source audit proves `crates/kernel/sysfs/src/bus/device.rs` includes `resource` in PCI device attrs, `dev_attr` handles `resource` only for PCI devices, and renders every `drv::Resource` in `dev.resources` as `0x<start> 0x<end> 0x<flags>` lines through the shared model state. Indexed `resourceN` lookup still requires a matching BAR and returns `ENOENT` for absent BARs. Extended hosted regression `pci_device_exposes_indexed_bar_resource_attrs` to assert aggregate `resource` readback for two BAR resources before the existing `resource2`/`resource5`/missing `resource0` checks. Checks pass: `cargo test -p sysfs pci_device_exposes_indexed_bar_resource_attrs -- --nocapture --test-threads=1`, `cargo test -p sysfs -p drv -- --nocapture --test-threads=1` with sysfs 26/26 and drv 27/27, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B471 Current
 
