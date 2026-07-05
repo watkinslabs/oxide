@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B336-drm-card-node-publication`.
+Current marker: `>>> ACTIVE >>> B337-drm-render-nodes-withheld`.
 
 ## B002-single-machine-desktop-proof
 
@@ -148,7 +148,7 @@ Evidence:
 
 ## B329-virtio-gpu-remove-child-key
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2389.
 
 Branch: `B329-virtio-gpu-remove-child-key`
 
@@ -323,7 +323,7 @@ Evidence:
 
 ## B336-drm-card-node-publication
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2389.
 
 Branch: `B336-drm-card-node-publication`
 
@@ -345,3 +345,23 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 394 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b336-drm-card-node-publication-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. |
+| PR merge | PASS: PR #2389 merged to `main` at `3ab38c75`. |
+
+## B337-drm-render-nodes-withheld
+
+Status: `CLAIMED`.
+
+Branch: `B337-drm-render-nodes-withheld`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | DRM render nodes withheld until real render/GEM UAPI exists. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
