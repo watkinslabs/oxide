@@ -5,13 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B454-power-path-calls-driver-shutdown; IN AUDIT.
+Current marker: B454-power-path-calls-driver-shutdown; VERIFIED pending PR
+merge.
 
 ## B454 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B454-power-path-calls-driver-shutdown | IN AUDIT | Fresh main `b9175b88` after PR #2511 merge; proving restart/poweroff/halt paths call `drv::shutdown_all` before platform power transition. |
+| B454-power-path-calls-driver-shutdown | VERIFIED | Fresh main `b9175b88` after PR #2511 merge; source audit proves `crates/kernel/kmain/src/kmain/runtime.rs::init_runtime_subsystems` installs `drv::shutdown_all` via `power::set_driver_shutdown_hook`, and `crates/kernel/power/src/lib.rs::cmd` now routes restart, restart2, poweroff, and halt through shared `prepare_cmd` before invoking the terminal arch primitive. Added hosted tests prove terminal commands call the driver shutdown hook once before selecting restart/poweroff/halt and non-terminal commands do not. Checks pass: `cargo test -p power -- --nocapture` with 5/5 tests, pre-push `make smoke-x86` reached `oxide login:` in 30s, and pre-push `make smoke-arm` reached `oxide login:` in 36s. |
 
 ## B453 Current
 
