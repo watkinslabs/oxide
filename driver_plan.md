@@ -2,12 +2,12 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B346-drm-fb-scanout-resource-lifetime` — VERIFIED, commit/PR merge pending.
+ACTIVE NOW: `B347-drm-unregister-drops-card-state` — VERIFIED, commit/PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B346-drm-fb-scanout-resource-lifetime`.
+Current active item: `>>> ACTIVE >>> B347-drm-unregister-drops-card-state`.
 
-Current B346 gate: source audit, hosted unregister-release regression, full DRM
-tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push
+Current B347 gate: source audit, hosted unregister teardown regression, full
+DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push
 boot smoke pass. PR readiness, PR merge, and post-merge main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -278,8 +278,8 @@ Status legend:
 | VERIFIED | B343-scanout-backing-bdf-keyed | Scanout backing runtime state is keyed by virtio child key instead of PCI BDF; source audit, hosted key-vs-BDF regression, full virtio-gpu and DRM tests, fast x86_64/aarch64 driver-path proof, line-cap check, and PR #2396 merge pass. |
 | VERIFIED | B344-drm-setcrtc-pageflip-card-route | DRM SETCRTC/PAGE_FLIP hooks route by DRM card id to owning GPU; source audit, hosted card-id-to-driver-key regression, full DRM and virtio-gpu tests, fast x86_64/aarch64 driver-path proof, line-cap check, pre-push boot smoke, and PR #2397 merge pass. |
 | VERIFIED | B345-drm-dumb-fb-card-owned | DRM dumb buffers and FB metadata are card-owned; source audit, hosted same-handle/same-FB-id card-isolation regression, full DRM tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, line-cap check, and PR #2398 merge pass. |
-| VERIFIED | B346-drm-fb-scanout-resource-lifetime | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister; source audit, hosted `clear_card_state` scanout-resource release regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. PR merge pending. |
-| NOT DONE |  | DRM unregister drops that card CRTC and dumb-buffer state. |
+| VERIFIED | B346-drm-fb-scanout-resource-lifetime | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister; source audit, hosted `clear_card_state` scanout-resource release regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2399 merge, and local main sync to `origin/main` at `6ffbc9b7` pass. |
+| VERIFIED | B347-drm-unregister-drops-card-state | DRM unregister drops that card CRTC and dumb-buffer state; source audit, hosted per-card unregister teardown regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. PR merge pending. |
 | NOT DONE |  | DRM master state is per open file description. |
 | NOT DONE |  | DRM PAGE_FLIP events are per card open file and poll/read correctly. |
 | NOT DONE |  | DRM GET_MAGIC/AUTH_MAGIC allocate and authorize real per-open-file magic. |
