@@ -475,8 +475,15 @@ PASS, and `make smoke-driver-path-arm` PASS.
 
 ## B377-virtio-net-ipv4-arp-runtime-owned
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B377-virtio-net-ipv4-arp-runtime-owned`
 
-Evidence: audit pending for per-runtime IPv4 ARP cache ownership.
+Evidence: `NetRuntime` embeds an `ArpCache`; RX ARP and IPv4 source learning
+insert through `net_runtime_for(device_key)`, TX next-hop lookup reads the same
+keyed runtime, and ARP GC walks each runtime cache. Existing
+`arp_cache_is_keyed_by_device` proves distinct entries survive independently.
+
+Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
+PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
+PASS, and `make smoke-driver-path-arm` PASS.
