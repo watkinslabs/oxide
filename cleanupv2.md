@@ -23,7 +23,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 
 | Item | Summary | Tier | Status | Branch | PR |
 |------|---------|------|--------|--------|-----|
-| 1.1 | PAM `PAM_SESSION_ERR` — `user@979.service` step PAM | 1 | BLOCKED — no causative syscall (semantic bug; ~15 captures exhausted boot-capture) | B423 + captures | #2477 |
+| 1.1 | PAM `PAM_SESSION_ERR` — `user@979.service` step PAM | 1 | **ADVANCED (was mislabeled "BLOCKED, no causative syscall").** Two real causes found via boot capture: (a) **keyring** — `keyctl(LINK)` didn't resolve the child special-id, so pam_keyinit's `keyctl(LINK, USER_KEYRING, SESSION_KEYRING)` → ENOKEY ("Failed to link user keyring into session keyring" ×15). **FIXED + boot-verified 15→0** (B529 #2587), which advanced the boot so gnome-shell + the greeter now start. (b) **New exposed frontier:** `user@979.service` PAM session setup calls `mount(2)` which returns **EPERM** (debug-syscall trace: `nr#165 = -1`, exactly once) at `165_mount.rs:176` (global CAP_SYS_ADMIN check). Next: determine the caller's uid/caps + mount args at that call (root-pre-drop child that lost caps? userns-relative-cap gap? mount that shouldn't need the cap) — do NOT hack-remove the check. | keyring: B529 #2587 (done); mount-EPERM: open | #2587 |
 | 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | MOSTLY DONE — UTS (fleet) + net-ns AF_UNIX/loopback isolation (B518 #2579); inet-per-ns + mount-ns-tolerance = documented follow-ups | B518-netns-isolation | #2579 |
 | 2.1 | `PR_SET_MM` (all 15 subcmds) + fix reversed argv/env stack | 2 | DONE | B430-prctl-set-mm | #2498 |
 | 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO (hwdb.bin asset vs mmap ENODATA; medium) | — | — |
