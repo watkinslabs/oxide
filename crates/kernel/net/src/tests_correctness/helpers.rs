@@ -294,7 +294,7 @@ pub(super) fn build_synack_with_options(
     buf
 }
 
-fn build_plain_ack(peer_seq: u32, peer_ack: u32, window: u16) -> Vec<u8> {
+pub(super) fn build_plain_ack(peer_seq: u32, peer_ack: u32, window: u16) -> Vec<u8> {
     let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN];
     let mut h = TcpHdr {
         src_port: 80, dst_port: 5000,
@@ -307,7 +307,7 @@ fn build_plain_ack(peer_seq: u32, peer_ack: u32, window: u16) -> Vec<u8> {
     buf
 }
 
-fn build_data_segment(seq: u32, peer_ack: u32, payload: &[u8]) -> Vec<u8> {
+pub(super) fn build_data_segment(seq: u32, peer_ack: u32, payload: &[u8]) -> Vec<u8> {
     let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + payload.len()];
     buf[TCP_HDR_MIN_LEN..].copy_from_slice(payload);
     let mut h = TcpHdr {
