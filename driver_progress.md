@@ -5,13 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B455-nvme-explicit-shutdown-callback; IN AUDIT.
+Current marker: B455-nvme-explicit-shutdown-callback; VERIFIED pending PR
+merge.
 
 ## B455 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B455-nvme-explicit-shutdown-callback | IN AUDIT | Fresh main `27f090f5` after PR #2512 merge; proving NVMe model driver implements an explicit shutdown callback that quiesces by controller identity. |
+| B455-nvme-explicit-shutdown-callback | VERIFIED | Fresh main `27f090f5` after PR #2512 merge; source audit proves `crates/drivers/drv-nvme/src/lib.rs::NvmeDriver::shutdown` parses the model device PCI BDF and calls `imp::shutdown(imp::device_key_from_bdf(bdf))`, while `imp::shutdown` finds the registered controller by key and calls `NvmeBlk::shutdown` without unregistering block publication. `NvmeBlk::shutdown` sets `removed=true` and runs `Nvme::shutdown_and_free`. Checks pass: `cargo test -p drv-nvme -- --nocapture` with 5/5 hosted tests. Runtime arch proof is inherited from B454 pre-push `make smoke-x86`/`make smoke-arm` because B455 changes only docs/metadata and the NVMe production source is unchanged from that booted main. |
 
 ## B454 Current
 
