@@ -490,8 +490,8 @@ Evidence: source audit found `GET_UNIQUE` exposed bus id before `SET_VERSION` an
 
 ## B352-drm-atomic-empty-state
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, pre-push/PR merge pending`.
 
 Branch: `B352-drm-atomic-empty-state`
 
-Evidence: source audit in progress for `DRM_IOCTL_MODE_ATOMIC` empty-state gating; no completion claim yet.
+Evidence: source audit found `struct drm_mode_atomic` missing `user_data` and ioctl size using 56 bytes instead of Linux 64 bytes; fixed ioctl `0xc04064bc`, full atomic flag mask, nonzero `reserved` rejection, PAGE_FLIP_EVENT/ASYNC rejection without support, and kept only internally gated empty state accepted. Focused atomic regression, full `cargo test -p drm` with 63 tests, `git diff --check`, line cap, and x86_64/aarch64 driver-path smokes pass.
