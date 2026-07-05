@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B470-sysfs-driver-links; IN AUDIT.
+Current marker: none; B470-sysfs-driver-links VERIFIED pending PR merge.
 
 ## B470 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B470-sysfs-driver-links | IN AUDIT | Fresh main `792b3efe` after PR #2527 merge; proving sysfs exposes driver symlinks from model binding state. |
+| B470-sysfs-driver-links | VERIFIED | Fresh main `792b3efe` after PR #2527 merge; source audit proves `crates/kernel/sysfs/src/bus/device.rs::DeviceDirOps::lookup` resolves `driver` only from the current model binding (`dev.bound()`), returns `ENOENT` when unbound, and builds `../../../bus/<bus>/drivers/<driver>`; `DeviceDirOps::iterate` lists the `driver` symlink only while bound. `crates/kernel/sysfs/src/bus/driver.rs::DriverDirOps` exposes bound-device links only when `drv::devices()` contains a device with matching bus/address and `bound() == Some(driver)`, targeting `../../../../devices/<root>/<addr>`. Added hosted coverage to `driver_bind_unbind_attrs_drive_drv_model` for `/sys/devices/platform/sysfs-bind-dev0/driver`: present while bound, absent after unbind, and restored after rebind. Checks pass: `cargo test -p sysfs driver_bind_unbind_attrs_drive_drv_model -- --nocapture --test-threads=1`, `cargo test -p sysfs -p drv -- --nocapture --test-threads=1` with sysfs 25/25 and drv 27/27, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B469 Current
 
