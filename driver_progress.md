@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B352-drm-atomic-empty-state`.
+Current marker: `>>> ACTIVE >>> B353-drm-client-cap-rejects-unsupported`.
 
 ## Archived Completed B327-B330
 
@@ -16,105 +16,14 @@ Current marker: `>>> ACTIVE >>> B352-drm-atomic-empty-state`.
 | B329-virtio-gpu-remove-child-key | VERIFIED | Child-key remove regression, full virtio-gpu tests, x86/ARM driver-path proof. |
 | B330-virtio-gpu-remove-teardown-order | VERIFIED | Teardown-order source audit, full virtio-gpu tests, x86/ARM driver-path proof. |
 
-## B331-virtio-gpu-probe-failure-unwind
+## Archived Completed B331-B334
 
-Status: `VERIFIED`; merged by PR #2392.
-
-Branch: `B331-virtio-gpu-probe-failure-unwind`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-gpu probe-failure unwind removes only failed child scanout. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `get_display_info` calls `uninstall_scanout_after_failed_probe(device_key)` after post-scanout `install_with_drm_parent` failure; `uninstall_scanout_after_failed_probe` finds/removes by exact `VirtioChildDeviceKey`, not BDF, and frees only that removed context backing. |
-| Hosted regression | PASS: `post_init` is compiled under `#[cfg(any(target_os = "oxide-kernel", test))]`, so `post_init::tests::failed_probe_unwind_removes_only_matching_child_scanout` now runs and proves one failed child key leaves the other scanout context intact. |
-| `cargo test -p drv-virtio-gpu failed_probe_unwind_removes_only_matching_child_scanout -- --nocapture` | PASS: 1 test passed, 28 filtered out. |
-| `cargo test -p drv-virtio-gpu` | PASS: 29 tests, 0 failed. |
-| `git diff --check` | PASS. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b331-gpu-probe-failure-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b331-gpu-probe-failure-arm.log`. |
-| Line cap | PASS: `lib.rs` 23 lines, `post_init.rs` 136, `post_init/tests.rs` 91, `post_init/scanout.rs` 278. |
-
-## B332-virtio-gpu-hot-remove-cleanup
-
-Status: `VERIFIED`; commit and PR merge pending.
-
-Branch: `B332-virtio-gpu-hot-remove-cleanup`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `drv_virtio_gpu::hot_remove` calls `uninstall(device_key)` and then `post_init::uninstall_scanout(device_key)` independently; `VirtioGpuOps::remove_child` now uses that central helper. `uninstall` still clears DRM hooks, console/fbdev/klog/tty scanout state, and DRM registration before scanout backing is freed. |
-| Hosted regression | PASS: `hot_remove_attempts_scanout_when_device_state_is_missing` proves scanout teardown still runs when the device table has no matching installed device; `hot_remove_attempts_device_and_scanout_cleanup` proves both paths run for a live installed device. |
-| `cargo test -p drv-virtio-gpu hot_remove_attempts -- --nocapture` | PASS: 2 tests passed, 29 filtered out. |
-| `cargo test -p drv-virtio-gpu` | PASS: 31 tests, 0 failed. |
-| `git diff --check` | PASS. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b332-gpu-hot-remove-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b332-gpu-hot-remove-arm.log`. |
-| Line cap | PASS: `device.rs` 384 lines, `post_init/tests.rs` 106, `drv-virtio-gpu/src/tests.rs` 473, `virtio_child.rs` 367. |
-
-## B333-virtio-gpu-device-state-key
-
-Status: `VERIFIED`; commit and PR merge pending.
-
-Branch: `B333-virtio-gpu-device-state-key`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-gpu installed device state is per child key. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `VirtioGpuDev` carries `device_key`; `install` rejects duplicates by `device_key`; `uninstall` removes by `device_key`; `hot_remove` and `shutdown` consume the same typed key. BDF remains display/DRM metadata, not installed-device ownership. |
-| `cargo test -p drv-virtio-gpu key -- --nocapture` | PASS: `install_accepts_multiple_keys_and_rejects_duplicate_key` and `uninstall_selects_owner_by_child_key_not_raw_bdf` passed. |
-| `cargo test -p drv-virtio-gpu` | PASS: 31 tests, 0 failed. |
-| `git diff --check` | PASS. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b333-gpu-device-key-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b333-gpu-device-key-arm.log`. |
-
-## B334-virtio-gpu-duplicate-key-reject
-
-Status: `VERIFIED`; merged by PR #2387.
-
-Branch: `B334-virtio-gpu-duplicate-key-reject`
-
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | Virtio-gpu duplicate child-key install rejected before publication. |
-
-Evidence:
-
-| Check | Result |
-|---|---|
-| Source audit | PASS: `install_with_drm` calls keyed `install(dev)?` before DRM registration; `install` rejects duplicate `device_key` with `Error::Busy` before pushing state. |
-| Hosted regression | PASS: `install_with_drm_tracks_each_bdf_card_id` now asserts duplicate key returns `Error::Busy` and does not increase `drm::card_count()` or published DRM model devices. |
-| `cargo test -p drv-virtio-gpu install_with_drm_tracks_each_bdf_card_id -- --nocapture` | PASS: 1 passed. |
-| `cargo test -p drv-virtio-gpu` | PASS: 31 passed. |
-| `git diff --check` | PASS. |
-| Line cap | PASS: `crates/drivers/drv-virtio-gpu/src/tests.rs` is 477 lines. |
-| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b334-gpu-duplicate-key-x86.log`. |
-| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b334-gpu-duplicate-key-arm.log`. |
-| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
-| PR merge | PASS: PR #2387 merged to `main` at `a9fabf21`. |
+| Branch | Status | Evidence |
+|---|---|---|
+| B331-virtio-gpu-probe-failure-unwind | VERIFIED | Failed-probe unwind regression, full virtio-gpu tests, x86/ARM driver-path proof, PR #2392. |
+| B332-virtio-gpu-hot-remove-cleanup | VERIFIED | Independent hot-remove cleanup regressions, full virtio-gpu tests, x86/ARM driver-path proof. |
+| B333-virtio-gpu-device-state-key | VERIFIED | Per-child-key device-state regressions, full virtio-gpu tests, x86/ARM driver-path proof. |
+| B334-virtio-gpu-duplicate-key-reject | VERIFIED | Duplicate-key publication regression, full virtio-gpu tests, x86/ARM driver-path, pre-push boot smoke, PR #2387. |
 
 ## B335-drm-card-id-stable-slots
 
@@ -490,8 +399,16 @@ Evidence: source audit found `GET_UNIQUE` exposed bus id before `SET_VERSION` an
 
 ## B352-drm-atomic-empty-state
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2405.
 
 Branch: `B352-drm-atomic-empty-state`
 
-Evidence: source audit found `struct drm_mode_atomic` missing `user_data` and ioctl size using 56 bytes instead of Linux 64 bytes; fixed ioctl `0xc04064bc`, full atomic flag mask, nonzero `reserved` rejection, PAGE_FLIP_EVENT/ASYNC rejection without support, and kept only internally gated empty state accepted. Focused atomic regression, full `cargo test -p drm` with 63 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass.
+Evidence: source audit found `struct drm_mode_atomic` missing `user_data` and ioctl size using 56 bytes instead of Linux 64 bytes; fixed ioctl `0xc04064bc`, full atomic flag mask, nonzero `reserved` rejection, PAGE_FLIP_EVENT/ASYNC rejection without support, and kept only internally gated empty state accepted. Focused atomic regression, full `cargo test -p drm` with 63 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2405, and main sync `be5399d3` pass.
+
+## B353-drm-client-cap-rejects-unsupported
+
+Status: `IN AUDIT`.
+
+Branch: `B353-drm-client-cap-rejects-unsupported`
+
+Evidence: source audit started for `DRM_IOCTL_SET_CLIENT_CAP` rejection of unsupported atomic/writeback/aspect/stereo/cursor-hotspot caps; no completion claim yet.
