@@ -5,8 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B446-model-unbind-remove-before-clear; VERIFIED pending PR
-merge.
+Current marker: B447-device-del-unbinds-first; IN AUDIT.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -747,3 +746,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B446-model-unbind-remove-before-clear | VERIFIED | Fresh main `c51f20f7` after PR #2503 merge; source audit proves `crates/drivers/drv/src/model.rs::unbind` reads `dev.bound()`, resolves the registered driver on the same bus, calls `driver.remove(dev)`, then clears `*dev.driver.lock() = None` and emits `BindEvent::Unbound`. Added hosted regression `unbind_calls_remove_before_clearing_binding`, whose test driver records that `remove` sees `dev.bound() == Some("unbind-order-test")` before unbind returns with `d.bound() == None`. Checks pass: `cargo test -p drv unbind_calls_remove_before_clearing_binding -- --nocapture`, `cargo test -p drv device_del_unbinds_bound_driver_once -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Pre-push boot-smoke PASS on both x86_64 and aarch64. |
+
+## B447 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B447-device-del-unbinds-first | IN AUDIT | Fresh main `ffe736bc` after PR #2504 merge; auditing `device_del` teardown order so bound devices are unbound before sysfs remove, devtmpfs teardown, and registry removal. |
