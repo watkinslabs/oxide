@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B378-virtio-net-hot-remove-key-cleanup` - VERIFIED - PR READY.
+Current marker: `>>> ACTIVE >>> B379-virtio-net-shared-rx-last-runtime` - VERIFIED - PR READY.
 
 ## Archived Completed B327-B330
 
@@ -457,25 +457,11 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B375-virtio-net-ethn-visible-names | VERIFIED | Visible `ethN` names are child-runtime owned; full virtio-net tests, arch proof, PR #2428, main sync `66cf1bff`. |
 | B376-virtio-net-rx-stats-per-netdev | VERIFIED | RX stats are child-runtime owned; full virtio-net tests, arch proof, PR #2429, main sync `b3643ee6`. |
 | B377-virtio-net-ipv4-arp-runtime-owned | VERIFIED | IPv4 ARP cache is child-runtime owned; full virtio-net tests, arch proof, PR #2430, main sync `a81c39de`. |
-
-## B377-virtio-net-ipv4-arp-runtime-owned
-
-Status: `VERIFIED`; merged by PR #2430.
-
-Branch: `B377-virtio-net-ipv4-arp-runtime-owned`
-
-Evidence: `NetRuntime` embeds an `ArpCache`; RX ARP and IPv4 source learning
-insert through `net_runtime_for(device_key)`, TX next-hop lookup reads the same
-keyed runtime, and ARP GC walks each runtime cache. Existing
-`arp_cache_is_keyed_by_device` proves distinct entries survive independently.
-
-Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
-PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
-PASS, and `make smoke-driver-path-arm` PASS.
+| B378-virtio-net-hot-remove-key-cleanup | VERIFIED | Hot-remove clears keyed netdev/iface/RX runtime; full virtio-net tests, arch proof, PR #2431, main sync `3445c15a`. |
 
 ## B378-virtio-net-hot-remove-key-cleanup
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2431.
 
 Branch: `B378-virtio-net-hot-remove-key-cleanup`
 
@@ -487,3 +473,20 @@ only once the last runtime is gone.
 Verification: focused uninstall/RX regressions PASS, full
 `cargo test -p drv-virtio-net` PASS, `git diff --check` PASS, line caps PASS,
 `make smoke-driver-path-x86` PASS, and `make smoke-driver-path-arm` PASS.
+
+## B379-virtio-net-shared-rx-last-runtime
+
+Status: `VERIFIED`; commit and PR merge pending.
+
+Branch: `B379-virtio-net-shared-rx-last-runtime`
+
+Evidence: `install_rx_runtime` arms the shared NetRx handler and ARP-GC timer.
+`remove_rx_runtime_for` returns whether the keyed runtime table is empty, and
+`release_rx_shared_runtime_if_last` tears both shared resources down only when
+the last runtime is gone. Regression
+`removing_one_rx_runtime_keeps_shared_rx_runtime_owned` now asserts the softirq
+and ARP-GC timer survive first removal and clear after final removal.
+
+Verification: focused regression PASS, full `cargo test -p drv-virtio-net`
+PASS, `git diff --check` PASS, line caps PASS, `make smoke-driver-path-x86`
+PASS, and `make smoke-driver-path-arm` PASS.
