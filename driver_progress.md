@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B337-drm-render-nodes-withheld`.
+Current marker: `>>> ACTIVE >>> B338-drm-inode-tag-card-id`.
 
 ## B002-single-machine-desktop-proof
 
@@ -127,7 +127,7 @@ Implementation note:
 
 ## B328-virtio-input-drain-split
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2390.
 
 Branch: `B328-virtio-input-drain-split`
 
@@ -375,3 +375,22 @@ Evidence:
 | `make smoke-driver-path-arm` | PASS on rerun: updated `drm_probe` passed and driver path reported `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`. |
 | ARM intermittent note | First ARM run hit existing no-progress watchdog before `mouseprobe`; failed log `/tmp/b337-drm-render-nodes-withheld-arm.log` recorded in `driver_plan.md` follow-up row. |
 | Pre-push boot smoke | PASS: x86_64 reached `oxide login:` in 22s on attempt 1 (`/tmp/oxide-boot-smoke-x86-35N3Zg.log`); aarch64 hit existing no-progress on attempt 1 (`/tmp/oxide-boot-smoke-arm-jyMRB8.log`) then reached `oxide login:` in 16s on attempt 2 (`/tmp/oxide-boot-smoke-arm-nJVaKr.log`). |
+| PR merge | PASS: PR #2390 merged to `main` at `716e8b66`. |
+
+## B338-drm-inode-tag-card-id
+
+Status: `CLAIMED`.
+
+Branch: `B338-drm-inode-tag-card-id`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | DRM inode tag encodes card id. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
