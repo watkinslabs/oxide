@@ -692,3 +692,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B437-probe-failure-unbound-retriable | VERIFIED | Fresh main `e92b7401` after PR #2492 merge; source audit proves `bind_inner` propagates `Driver::probe` failure through `driver.probe(dev)?` before assigning `dev.driver`. Hosted regression `failed_probe_leaves_device_unbound_and_retriable` proves automatic probe failure leaves `dev.bound() == None`, then two explicit `bind` retries each return `drv::Error::ProbeFailed`, increment the failing probe counter, and still leave the device unbound. Checks pass: `cargo test -p drv failed_probe_leaves_device_unbound_and_retriable -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
+
+## B438 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B438-driver-registration-attaches-existing | VERIFIED | Fresh main `424d9245` after PR #2493 merge; source audit proves `register_driver` inserts the new driver, publishes the driver hook, then calls `attach_driver_to_existing_devices`, which scans current devices, skips already-bound or non-matching entries, and calls `bind_inner` for existing unbound matches. Hosted checks pass: `cargo test -p drv driver_registration_binds_existing_matching_devices -- --nocapture`, `cargo test -p drv duplicate_driver_registration_does_not_reprobe_existing_devices -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
