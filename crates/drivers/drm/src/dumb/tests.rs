@@ -1,4 +1,18 @@
 use super::*;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static DESTROYED_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
+static DESTROYED_RES_ID: AtomicU32 = AtomicU32::new(0);
+
+fn test_create(_driver_key: u32, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> { None }
+fn test_set_scanout(_driver_key: u32, _res_id: u32, _w: u32, _h: u32) -> bool { true }
+fn test_restore(_driver_key: u32) -> bool { true }
+fn test_boot(_driver_key: u32) -> u32 { 0 }
+fn record_destroy(driver_key: u32, res_id: u32) -> bool {
+    DESTROYED_DRIVER_KEY.store(driver_key, Ordering::Release);
+    DESTROYED_RES_ID.store(res_id, Ordering::Release);
+    true
+}
 
 #[test]
 fn create_dumb_layout() { assert_eq!(core::mem::size_of::<DrmModeCreateDumb>(), 32); }
@@ -422,6 +436,29 @@ fn card_remove_returns_scanout_resources() {
     assert_eq!(t.remove_card(0), (alloc::vec![(0x10_0000, 0)], alloc::vec![42]));
     assert!(t.find_fb(0, 7).is_none());
     assert!(t.find_buf(0, 1).is_none());
+}
+
+#[test]
+fn clear_card_state_releases_bound_scanout_resource() {
+    let _guard = crate::TEST_LOCK.lock();
+    reset_global_tables();
+    crate::node::clear_scanout_ops(3);
+    DESTROYED_DRIVER_KEY.store(0, Ordering::Release);
+    DESTROYED_RES_ID.store(0, Ordering::Release);
+    crate::node::set_scanout_ops(3, crate::node::ScanoutOps {
+        driver_key: 0x3003, create_from_pa: test_create, destroy_resource: record_destroy,
+        set_scanout: test_set_scanout, restore_console: test_restore, boot_res_id: test_boot,
+    });
+    TABLES.lock().fbs.push(FbObj {
+        card_id: 3, fb_id: 9, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
+        handles: [0; 4], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 77,
+    });
+    clear_card_state(3);
+    assert_eq!(DESTROYED_DRIVER_KEY.load(Ordering::Acquire), 0x3003);
+    assert_eq!(DESTROYED_RES_ID.load(Ordering::Acquire), 77);
+    assert!(TABLES.lock().find_fb(3, 9).is_none());
+    crate::node::clear_scanout_ops(3);
+    reset_global_tables();
 }
 
 #[test]
