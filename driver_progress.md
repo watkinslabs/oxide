@@ -650,3 +650,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B430-pci-model-driver-registration | VERIFIED | Fresh main `7936535e` after PR #2484 merge; source audit proves `pci-boot::register_pci_model_drivers` registers `drv_nvme::NVME_DRIVER`, `drv_ahci::AHCI_DRIVER`, and `virtio_drv::register_model_drivers` before enumerated PCI devices are published through `drv::try_device_add`; `virtio_drv` registers the `virtio-pci` `drv::Driver`, and source search found no NVMe/AHCI direct PCI-enumeration probe bypass. Added `uevent_probe_pci_drivers` to the fast driver-path userspace proof. Validation passes: x86_64 and aarch64 static-musl `uevent_probe.c` builds with `-Wall -Wextra -Werror -static -no-pie`, `cargo test -p pci-boot -- --nocapture` compile-check, full `cargo test -p drv -- --nocapture --test-threads=1` with 25 tests, `KEEP_LOG=/tmp/b430-pci-model-driver-registration-x86.log make smoke-driver-path-x86`, and `KEEP_LOG=/tmp/b430-pci-model-driver-registration-arm.log make smoke-driver-path-arm`. Both runtime logs contain `uevent_probe_pci_drivers: PASS nvme=1 ahci=1 virtio-pci=9` and `driver_path_smoke: PASS - GPU input sound block net`. |
+
+## B431 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B431-pci-driver-core-attach | IN AUDIT | Fresh main `26eff5af` after PR #2486 merge; auditing PCI attachment to prove drivers bind through `drv::register_driver`/`drv::try_device_add` driver-core paths rather than enumeration-local direct probe/bind calls. |
