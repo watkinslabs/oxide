@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B348-drm-master-open-file-state`.
+Current marker: `>>> ACTIVE >>> B349-drm-page-flip-file-events`.
 
 ## Archived Completed B327-B330
 
@@ -444,12 +444,6 @@ Status: `VERIFIED`; merged by PR #2400.
 
 Branch: `B347-drm-unregister-drops-card-state`
 
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | DRM unregister drops that card CRTC and dumb-buffer state. |
-
 Evidence:
 
 | Check | Result |
@@ -471,12 +465,6 @@ Status: `VERIFIED, PR merge pending`.
 
 Branch: `B348-drm-master-open-file-state`
 
-Target row:
-
-| Status | Item |
-|---|---|
-| VERIFIED | DRM master state is per open file description. |
-
 Evidence:
 
 | Check | Result |
@@ -490,3 +478,22 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b348-drm-master-open-file-state-arm.log`. |
 | Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR merge + main sync | PASS: PR #2401 merged; local `main` equals `origin/main` at `bdb8d725`. |
+
+## B349-drm-page-flip-file-events
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B349-drm-page-flip-file-events`
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `page_flip` queues `DRM_EVENT_FLIP_COMPLETE` with `(card_id, file_token)`, `DrmCardFileOps::read_file` drains that same key, `poll_open_file` reports `POLL_IN` only for that key, and release clears unread events for the closing open file description. |
+| Hosted regression | PASS: `page_flip_events_are_open_file_poll_read_state` proves duplicate refs to the same open file description share readiness, separate opens and separate cards stay unreadable, short reads leave the event pending, and full reads drain only the owner record. |
+| `cargo test -p drm page_flip_events_are_open_file_poll_read_state -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 62 passed. |
+| Line cap | PASS: `node/publication.rs` 255 lines, `node/tests.rs` 474, `crtc.rs` 438. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/oxide-driver-path-x86-aZmQuJ.log`. |
+| `make smoke-driver-path-arm` / pre-push boot smoke | PASS: driver-path ARM passed; pre-push boot smoke reached `oxide login:` on x86_64 and aarch64. Driver-path ARM log: `/tmp/oxide-driver-path-arm-hMbp8M.log`. |
