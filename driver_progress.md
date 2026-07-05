@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B345-drm-dumb-fb-card-owned`.
+Current marker: `>>> ACTIVE >>> B346-drm-fb-scanout-resource-lifetime`.
 
 ## Archived Completed B327-B330
 
@@ -388,7 +388,7 @@ Evidence:
 
 ## B345-drm-dumb-fb-card-owned
 
-Status: `VERIFIED, commit/PR merge pending`.
+Status: `VERIFIED, PR #2398 merged`.
 
 Branch: `B345-drm-dumb-fb-card-owned`
 
@@ -410,3 +410,29 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b345-drm-dumb-fb-card-owned-arm.log`. |
 | Pre-push boot smoke | PASS: both arches reached `oxide login:` before push. |
+| PR | PASS: PR #2398 merged and local `main` synced to `origin/main` at `16bd0bee`. |
+
+## B346-drm-fb-scanout-resource-lifetime
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B346-drm-fb-scanout-resource-lifetime`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `FbObj.scanout_res_id` owns the runtime resource id; SETCRTC/PAGE_FLIP reuse it through `fb_scanout_resource`; bind refuses missing, zero, or already-bound resources and destroys newly created resources on bind failure; RMFB detaches CRTC state then releases the scanout resource; unregister `clear_card_state` releases all card scanout resources. |
+| `cargo test -p drm clear_card_state_releases_bound_scanout_resource -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 60 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drm/src/dumb/tests.rs` 495 lines, `dumb/tables.rs` 203, `dumb/ioctl.rs` 142, `driver_progress.md` below markdown cap. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b346-drm-fb-scanout-resource-lifetime-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b346-drm-fb-scanout-resource-lifetime-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
