@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B473-model-uevent-driver-state; IN AUDIT.
+Current marker: none; B473-model-uevent-driver-state VERIFIED pending PR merge.
 
 ## B473 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B473-model-uevent-driver-state | IN AUDIT | Fresh main `26aea317` after PR #2530 merge; auditing current model-derived uevent environment for bound and unbound driver state, with x86_64 and aarch64 proof required before VERIFIED. |
+| B473-model-uevent-driver-state | VERIFIED | Fresh main `26aea317` after PR #2530 merge; source audit proves `crates/kernel/sysfs/src/bus/device.rs::dev_uevent_env` builds env entries from the live model device and appends `DRIVER=<name>` only when `dev.bound()` is set. `crates/drivers/drv/src/model.rs::try_device_add` publishes the device, runs initial auto-probe through `attach_device_to_registered_drivers(&d, false)`, then fires the sysfs add hook, so add uevents observe the post-probe bound state without a separate bind-change event. `bind_inner` sets `dev.driver` before firing `BIND_HOOK`, while `unbind` clears it before firing the hook; `crates/kernel/sysfs/src/bus/hooks.rs::{publish_device_cb,remove_device_cb,bind_device_cb}` all call `dev_uevent_env` at emission time. Checks pass: `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture --test-threads=1`, `cargo test -p sysfs device_add_uevent_includes_initial_bound_driver_state -- --nocapture --test-threads=1`, `cargo test -q -p sysfs -p drv -- --nocapture --test-threads=1` with drv 27/27 and sysfs 26/26, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B472 Current
 

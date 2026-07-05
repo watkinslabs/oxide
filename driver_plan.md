@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B473-model-uevent-driver-state; IN AUDIT.
+ACTIVE NOW: none; B473-model-uevent-driver-state VERIFIED pending PR merge.
 
-Current active item: Model-derived uevent environment includes current bound driver state.
+Current active item: none; next claim starts after B473 merge and fresh main sync.
 
 Next gate after merge: return to fresh `origin/main` before claiming B474 using
 `metadata/index.md`.
@@ -82,7 +82,7 @@ Status legend:
 | VERIFIED |  | Sysfs exposes `modalias`. |
 | VERIFIED | B472-sysfs-pci-resource | Sysfs exposes aggregate PCI `resource` from the current model resource list: PCI device attrs include `resource`, reads emit one Linux-style `start end flags` line per `drv::Resource`, absent BARs remain absent from indexed `resourceN`, and indexed BAR attrs still expose matching single-resource bodies. Added hosted regression coverage for aggregate multi-BAR readback in the existing PCI resource fixture; full sysfs and driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED |  | Sysfs exposes indexed PCI `resourceN` BAR attributes. |
-| ACTIVE | B473-model-uevent-driver-state | Model-derived uevent environment includes current bound driver state. |
+| VERIFIED | B473-model-uevent-driver-state | Model-derived uevent environment includes current bound driver state: sysfs builds add/remove/change uevent env from the live `drv::Device`, `dev_uevent_env` appends `DRIVER=<name>` only from current `dev.bound()`, initial `try_device_add` auto-probe runs before the add uevent, bind change events emit after bound state is set, and unbind change events emit after bound state is cleared. Focused hosted uevent regressions, full sysfs/driver-model suites, and x86_64/aarch64 boot smokes pass. |
 | VERIFIED |  | Model devices with `dev_t` expose `dev` attribute. |
 | VERIFIED |  | Dynamic `/sys/dev/char` reverse index derives from model devices. |
 | VERIFIED |  | Dynamic `/sys/dev/block` reverse index derives from model devices. |
