@@ -331,8 +331,14 @@ extern crate alloc;
         let dir = devices.lookup("0000:00:1f.0").expect("pci device dir");
         assert_eq!(dir.lookup("resource0").err(), Some(VfsError::Enoent));
 
+        let resource = dir.lookup("resource").expect("aggregate resource attr");
+        let mut buf = [0u8; 160];
+        let n = resource.read(0, &mut buf).expect("read aggregate resource");
+        assert_eq!(
+            &buf[..n],
+            b"0x0000000000001000 0x0000000000001fff 0x0000000000000200\n0x00000000febc0000 0x00000000febc0fff 0x0000000000002200\n");
+
         let res2 = dir.lookup("resource2").expect("resource2 attr");
-        let mut buf = [0u8; 96];
         let n = res2.read(0, &mut buf).expect("read resource2");
         assert_eq!(
             &buf[..n],
