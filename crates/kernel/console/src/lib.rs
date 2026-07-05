@@ -16,6 +16,7 @@ extern crate alloc;
 // into the kmsg ring — the dmesg/shell-output split.
 
 pub mod devnodes;
+mod devnum;
 pub mod jobctl;
 pub mod routing;
 pub mod serial;

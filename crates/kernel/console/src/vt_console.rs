@@ -1,10 +1,11 @@
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use tty::ReadOutcome;
 use vfs::{default_inode_ops, mk_mode, Dentry, FdTable, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError};
 
 use crate::jobctl;
+use crate::devnum;
 use crate::routing::{foreground_vt, FG_VT_INO_LB, TTY_INO_BASE};
 use crate::serial;
 use crate::vt_tty;
@@ -28,7 +29,7 @@ pub(crate) fn console_ino(vt: u8) -> Ino {
 }
 
 pub(crate) fn console_rdev(vt: u8) -> u32 {
-    if vt == 0 { 0x0500 } else { 0x0400 | vt as u32 }
+    if vt == 0 { devnum::tty_alias_rdev() } else { devnum::vt_rdev(vt) }
 }
 
 pub(crate) fn console_perm(vt: u8) -> u16 {
@@ -189,13 +190,13 @@ impl FileOps for SystemConsoleFileOps {
 /// Build the `/dev/console` (preferred-console, 5:1) inode. # C: O(1)
 pub fn make_system_console_inode() -> InodeRef {
     InodeBuilder::new(
-        TTY_INO_BASE | 0x01,
+        TTY_INO_BASE | crate::routing::SYSTEM_CONSOLE_INO_LB as Ino,
         mk_mode(FileType::CharDev, 0o600),
         default_inode_ops(),
         Arc::new(SystemConsoleFileOps),
     )
     .fsid(devfs::DEVFS_FSID)
-    .rdev(0x0501)
+    .rdev(devnum::system_console_rdev())
     .build()
 }
 

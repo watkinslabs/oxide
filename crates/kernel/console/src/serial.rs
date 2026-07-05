@@ -10,13 +10,8 @@ fn serial_ino() -> Ino {
     TTY_INO_BASE | SERIAL_INO_LB as Ino
 }
 
-#[cfg(target_arch = "x86_64")]
-const SERIAL_RDEV: u32 = 0x0440;
-#[cfg(target_arch = "aarch64")]
-const SERIAL_RDEV: u32 = 0xcc40;
-
 pub(crate) const fn serial_rdev() -> u32 {
-    SERIAL_RDEV
+    crate::devnum::serial_rdev()
 }
 
 pub(crate) fn session() -> u32 {
@@ -98,7 +93,7 @@ pub fn make_serial_inode() -> InodeRef {
         alloc::sync::Arc::new(SerialFileOps),
     )
     .fsid(devfs::DEVFS_FSID)
-    .rdev(SERIAL_RDEV)
+    .rdev(serial_rdev())
     .build()
 }
 

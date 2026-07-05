@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B477-console-tty-devnode-batch; IN AUDIT.
+ACTIVE NOW: B477-console-tty-devnode-batch; VERIFIED; commit/PR/merge pending.
 
-Current active item: Console/tty boot node publication has fallible `try_register_devnodes` batch path.
+Current active item: Console/tty boot node publication has fallible `try_register_devnodes` batch path; verified on x86_64 and aarch64 fast smokes.
 
 Next gate after merge: return to fresh `origin/main` before claiming B478 using
 `metadata/index.md`.
@@ -110,7 +110,7 @@ Status legend:
 | VERIFIED |  | Built-in devfs pseudo-device publication has fallible `try_populate_defaults`. |
 | VERIFIED |  | Built-in devfs pseudo-device population treats matching existing pseudo devices idempotently. |
 | VERIFIED |  | Built-in devfs pseudo-device conflicts return driver-model error. |
-| ACTIVE | B477-console-tty-devnode-batch | Console/tty boot node publication has fallible `try_register_devnodes` batch path. |
+| VERIFIED | B477-console-tty-devnode-batch | Console/tty boot node publication has fallible `try_register_devnodes` batch path: `try_register_devnodes` builds a batch, `push_tty_node` rolls back already-published nodes on error, `add_tty_node` publishes through `drv::try_device_add` with model-owned devnode and node factory state, matching existing tty identities are reused on `Busy`, boot wires devtmpfs hooks before console node registration and default devfs population, and Linux tty/vcs/serial dev_t values are named in `console::devnum` instead of packed literals. Hosted console compile check passes with 0 tests; fast boot smokes reach `oxide login:` on x86_64 in 30s and aarch64 in 34s. |
 | SOURCE OK | TBD | Console/tty conflict rollback must be verified in source/tests for current main. |
 | SOURCE OK |  | Boot-created serial/i8042 platform devices use explicit `try_device_add` handling. |
 | SOURCE OK |  | Matching existing platform identities are reused. |
