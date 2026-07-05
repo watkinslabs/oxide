@@ -484,9 +484,11 @@ recent-completed table above; main was synced after each merge through
 
 ## B391-virtio-rng-seeds-bound-device
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B391-virtio-rng-seeds-bound-device`
 
-Scope: prove or fix virtio-rng entropy seeding so initial bytes come from the
-just-bound child device, not a stale active/global provider.
+Evidence: `install` seeds through `fill_from_device(device_key)`, hosted
+regression proves requested key1 fills from key1 while active key0 is untouched,
+full `drv-virtio-rng` tests pass, and x86_64 `/tmp/b391-x86-driver-path.log`
+plus aarch64 `/tmp/b391-arm-driver-path.log` driver-path proofs pass.
