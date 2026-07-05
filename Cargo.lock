@@ -63,6 +63,7 @@ dependencies = [
  "klog",
  "sched",
  "sync",
+ "vfs",
 ]
 
 [[package]]

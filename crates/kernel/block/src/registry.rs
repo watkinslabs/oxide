@@ -45,7 +45,7 @@ pub fn register(name: &str, dev: Arc<dyn BlockDevice>) -> u32 {
 /// into the driver model; the disk table is rolled back in that case.
 /// # C: O(N_disks)
 pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn BlockDevice>) -> u32 {
-    let index = {
+    let (index, bridge_dev) = {
         let mut t = TABLE.lock();
         if let Some(d) = t.iter().find(|d| d.name == name) {
             return d.index;
@@ -54,6 +54,9 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
         // Wrap the driver device in the stats-counting decorator so every I/O
         // through the registry is accounted at one central point (Linux blk-stat).
         let (dev, stats) = crate::stats::StatsDev::wrap(dev);
+        // Keep a handle to the wrapped device so `open("/dev/<name>")` dispatches
+        // its I/O (stats-counted) once the /dev node is published below.
+        let bridge_dev = dev.clone();
         t.push(Arc::new(Disk {
             name: name.to_string(),
             index,
@@ -61,7 +64,7 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
             dev,
             stats,
         }));
-        index
+        (index, bridge_dev)
     }; // release TABLE before firing the device-model hooks (avoids holding the
        // registry lock across the devtmpfs /dev-node insertion).
     // device-model Stage C (D27): publish the disk as a `drv::try_device_add`
@@ -77,7 +80,14 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
     match drv::try_device_add(Arc::new(
         drv::Device::new("block", name.to_string(), 0, 0, 0)
             .with_devnode("block", name.to_string(), Some(dt)))) {
-        Ok(_) => index,
+        Ok(_) => {
+            // Publish into the VFS BLKDEV dispatch table so `open("/dev/<name>")`
+            // from userspace (blkid/udev/fsck) resolves to this disk instead of
+            // ENXIO (Linux `add_disk`/`blkdev_open`). Node minting above only
+            // created the devtmpfs inode; without this the fops had no driver.
+            crate::devbridge::publish(name, index, bridge_dev);
+            index
+        }
         Err(_) => {
             let mut t = TABLE.lock();
             if let Some(pos) = t.iter().position(|d| d.name == name && d.index == index) {
@@ -101,6 +111,9 @@ pub fn unregister(name: &str) -> bool {
         let mut t = TABLE.lock();
         match t.iter().position(|d| d.name == name) {
             Some(i) => {
+                // Drop the VFS BLKDEV region so future opens ENXIO again
+                // (Linux `del_gendisk`), before the disk leaves the table.
+                crate::devbridge::unpublish(name, t[i].index);
                 t.remove(i);
                 true
             }

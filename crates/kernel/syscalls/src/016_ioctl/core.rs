@@ -4,6 +4,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use super::autofs::handle_autofs_dev_ioctl;
+use super::blk::handle_blk_ioctl;
 use super::tty_ioctl::handle_tty_ioctl;
 
 /// `sys_ioctl(fd, request, arg)` - slot 16.
@@ -94,6 +95,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             Ok(())  => 0,
             Err(e)  => crate::namei_common::errno_from_vfs(e),
         };
+    }
+    // Block-device geometry ioctls (BLKGETSIZE64/BLKGETSIZE/BLKSSZGET/BLKBSZGET).
+    // A block node is not a CharDev, so answer these before the generic
+    // non-CharDev path returns ENOTTY — blkid/mkfs/udev probe them on /dev/vda.
+    if file.inode().file_type() == vfs::FileType::BlockDev {
+        if let Some(rv) = handle_blk_ioctl(&file.inode(), req, arg) { return rv; }
     }
     if file.inode().file_type() != vfs::FileType::CharDev {
         // Socket/pipe ioctls (Linux `sock_ioctl`): a socket is NOT a CharDev but
