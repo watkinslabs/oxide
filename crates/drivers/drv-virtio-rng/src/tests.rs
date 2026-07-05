@@ -300,3 +300,47 @@ fn uninstall_then_republish_restores_single_hwrng_model_device() {
     assert!(uninstall(key0));
     assert_eq!(RNGS.lock().active_key, None);
 }
+
+#[test]
+fn uninstall_active_promotes_next_live_hwrng_provider() {
+    let _guard = TEST_LOCK.lock();
+    cleanup_hwrng_devices();
+    {
+        let mut registry = RNGS.lock();
+        registry.records.clear();
+        registry.active_key = None;
+    }
+    let key0 = key(0x0040_0000);
+    let key1 = key(0x0050_0000);
+    let mut cfg0 = [0u8; 0x20];
+    let mut cfg1 = [0u8; 0x20];
+    let first = test_hwrng_device();
+    let second = test_hwrng_device();
+    {
+        let mut registry = RNGS.lock();
+        registry.records.push(test_record_with_device(key0, cfg0.as_mut_ptr() as u64, Arc::clone(&first)));
+        registry.records.push(test_record_with_device(key1, cfg1.as_mut_ptr() as u64, Arc::clone(&second)));
+        registry.active_key = Some(key0);
+    }
+
+    assert!(publish_hwrng_or_clear_active(key0, first));
+    assert!(uninstall(key0));
+    assert_eq!(RNGS.lock().active_key, Some(key1));
+    assert_eq!(
+        drv::devices()
+            .iter()
+            .filter(|dev| dev.bus == "misc" && dev.addr == "hwrng")
+            .count(),
+        1
+    );
+
+    assert!(uninstall(key1));
+    assert_eq!(RNGS.lock().active_key, None);
+    assert_eq!(
+        drv::devices()
+            .iter()
+            .filter(|dev| dev.bus == "misc" && dev.addr == "hwrng")
+            .count(),
+        0
+    );
+}
