@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B495-virtio-child-remove-unpublish; VERIFIED.
+Current marker: B496-virtio-child-shutdown-key; IN AUDIT.
+
+## B496 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B496-virtio-child-shutdown-key | IN AUDIT | Fresh main `c0b2c792` after PR #2555 merge; auditing that child shutdown resolves the stable parent-derived child key through the centralized wrapper path and only invokes child shutdown policy, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B495 Current
 
