@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B327-virtio-input-queue-quiesce`.
+Current marker: `>>> ACTIVE >>> B328-virtio-input-drain-split`.
 
 ## B002-single-machine-desktop-proof
 
@@ -124,3 +124,21 @@ Implementation note:
 | Queue ownership | `shutdown_eventq` and `uninstall_eventq` now use typed `VirtioChildDeviceKey` ownership through `take_eventq`; shared softirq release is centralized in `release_handler_if_last`. |
 | ARM intermittent finding | NOT DONE row recorded in `driver_plan.md`: ARM no-progress watchdog reproduced in fast driver-path and pre-push login smoke, but both gates passed on rerun; root-cause separately. |
 | Follow-up ledger | NOT DONE follow-up recorded in `driver_plan.md`: split `drain.rs` into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
+
+## B328-virtio-input-drain-split
+
+Status: `CLAIMED`.
+
+Branch: `B328-virtio-input-drain-split`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source claim | CLAIMED before code. |
