@@ -29,7 +29,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 | 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO | — | — |
 | 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | TODO | — | — |
 | 2.4 | Module autoload alias no-op for built-ins | 2 | TODO | — | — |
-| 3.1 | `systemd-initctl` fifo `read()` EIO | 3 | TODO | — | — |
+| 3.1 | `systemd-initctl` fifo `read()` EIO | 3 | DONE | B502-fifo-open-impl | #2562 |
 | 3.2 | Persistent journal EBUSY (mmap/flock) | 3 | TODO | — | — |
 | 3.3 | `/proc/sys` writable sysctl leaves | 3 | TODO | — | — |
 | 3.4 | `/dev/null` ENXIO + `/dev/fuse` node missing | 3 | TODO | — | — |
