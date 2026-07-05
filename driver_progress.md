@@ -5,7 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B426-drv-model-authoritative-proof; VERIFIED pending commit/PR.
+Current marker: B427-no-public-auto-bind; IN AUDIT.
+
+## B427-no-public-auto-bind
+
+Status: `IN AUDIT`; claim commit pending.
+
+Branch: `B427-no-public-auto-bind`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| ACTIVE | Remove public `drv::auto_bind`; keep automatic attachment internal to `try_device_add` and `register_driver`. |
 
 ## B426-drv-model-authoritative-proof
 
