@@ -86,7 +86,7 @@ use control::{pcm_info_scan, submit_ctl};
 mod event;
 pub use event::raise_event;
 #[cfg(test)]
-use event::record_event;
+use event::{event_softirq, record_event};
 
 mod lifecycle;
 pub use lifecycle::{
