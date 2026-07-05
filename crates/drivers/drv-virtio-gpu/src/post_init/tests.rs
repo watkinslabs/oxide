@@ -64,16 +64,24 @@ fn uninstall_scanout_removes_context_without_live_mmio_or_frames() {
 #[test]
 fn failed_probe_unwind_removes_only_matching_child_scanout() {
     CTX.lock().clear();
-    CTX.lock().push(test_scanout_ctx(key(0x0010_0000), 0x0010_0000));
-    CTX.lock().push(test_scanout_ctx(key(0x0020_0000), 0x0020_0000));
+    let mut first = test_scanout_ctx(key(1), 0x0010_0000);
+    first.w = 640;
+    first.h = 480;
+    let mut second = test_scanout_ctx(key(2), 0x0010_0000);
+    second.w = 800;
+    second.h = 600;
+    CTX.lock().push(first);
+    CTX.lock().push(second);
 
-    assert!(uninstall_scanout_after_failed_probe(key(0x0010_0000)));
+    assert_eq!(dimensions_for_key(key(1).raw()), Some((640, 480)));
+    assert_eq!(dimensions_for_key(key(2).raw()), Some((800, 600)));
+    assert!(uninstall_scanout_after_failed_probe(key(1)));
     let guard = CTX.lock();
     assert_eq!(guard.len(), 1);
-    assert_eq!(guard[0].device_key, key(0x0020_0000));
-    assert_eq!(guard[0].bdf, 0x0020_0000);
+    assert_eq!(guard[0].device_key, key(2));
+    assert_eq!(guard[0].bdf, 0x0010_0000);
     drop(guard);
-    assert!(uninstall_scanout_after_failed_probe(key(0x0020_0000)));
+    assert!(uninstall_scanout_after_failed_probe(key(2)));
     assert!(CTX.lock().is_empty());
 }
 
