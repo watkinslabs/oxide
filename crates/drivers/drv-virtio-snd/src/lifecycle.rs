@@ -71,7 +71,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
             continue;
         }
         let va = p.resources.hhdm.wrapping_add(pa) as *mut u8;
-        unsafe { for i in 0..0x1000usize { core::ptr::write_volatile(va.add(i), 0); } }
+        unsafe { for i in 0..SND_FRAME_BYTES { core::ptr::write_volatile(va.add(i), 0); } }
     }
     let used = p.resources.hhdm.wrapping_add(controlq.device_pa) as *const u16;
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
@@ -196,9 +196,7 @@ pub(super) fn stop_reset_free(mut ctx: Ctx) {
             let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
         }
     }
-    if ctx.cfg_va != 0 {
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8); }
-    }
+    virtio::reset_device(ctx.cfg_va);
     free_frame(ctx.event_buf_pa);
     free_frame(ctx.rx_buf_pa);
     free_frame(ctx.rx_scratch_pa);

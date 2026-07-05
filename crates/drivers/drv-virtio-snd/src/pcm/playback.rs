@@ -36,7 +36,7 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
     let Some(txq) = ctx.txq else { return false };
     if ctx.tx_buf_pa == 0 || ctx.tx_scratch_pa == 0 { return false; }
     let h = ctx.hhdm;
-    let n = pcm.len().min(0x1000);
+    let n = pcm.len().min(SND_FRAME_BYTES);
     let xfer = h.wrapping_add(ctx.tx_scratch_pa) as *mut u32;
     let buf = h.wrapping_add(ctx.tx_buf_pa) as *mut u8;
     unsafe {
@@ -76,7 +76,7 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
         if uidx == target { return true; }
         if polls >= TX_POLL_BUDGET { return false; }
         if ctx.cfg_va != 0 {
-            let _ = unsafe { core::ptr::read_volatile((ctx.cfg_va + 0x14) as *const u32) };
+            let _ = virtio::read_status(ctx.cfg_va);
         }
         polls += 1;
         core::hint::spin_loop();
