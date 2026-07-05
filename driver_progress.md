@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B491-virtio-child-device-id-matching; VERIFIED.
+Current marker: B492-virtio-child-session-begin; IN AUDIT.
+
+## B492 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B492-virtio-child-session-begin | IN AUDIT | Fresh main `4675c773` after PR #2549 merge; auditing that child probe session setup is centralized in `VirtioChildDriver<O>::probe` through `VirtioChildSession::begin` before child policy runs, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B491 Current
 
