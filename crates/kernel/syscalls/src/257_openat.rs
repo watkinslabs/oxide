@@ -81,7 +81,7 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         klog::write_raw(s.as_bytes());
         klog::write_raw(b"\n");
     }
-    #[cfg(feature = "debug-syscall")]
+    #[cfg(feature = "debug-openat")]
     {
         klog::write_raw(b"[OPENAT] dirfd=");
         let dirfd = args.a0 as i64;
