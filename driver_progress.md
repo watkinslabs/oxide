@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B380-virtio-net-ipv6-ndp-stack-owned`.
+Current marker: `>>> ACTIVE >>> B381-virtio-net-ipv6-tx-stack-ndp`.
 
 ## Archived Completed B327-B330
 
@@ -459,6 +459,7 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B377-virtio-net-ipv4-arp-runtime-owned | VERIFIED | IPv4 ARP cache is child-runtime owned; full virtio-net tests, arch proof, PR #2430, main sync `a81c39de`. |
 | B378-virtio-net-hot-remove-key-cleanup | VERIFIED | Hot-remove clears keyed netdev/iface/RX runtime; full virtio-net tests, arch proof, PR #2431, main sync `3445c15a`. |
 | B379-virtio-net-shared-rx-last-runtime | VERIFIED | Shared NetRx/ARP-GC lifetime is last-runtime owned; full virtio-net tests, arch proof, PR #2432, main sync `2178cd35`. |
+| B380-virtio-net-ipv6-ndp-stack-owned | VERIFIED | IPv6 RX NDP learning is stack-owned; net NDP tests, virtio-net tests, arch proof, PR #2433, main sync `0fbf754b`. |
 
 ## B379-virtio-net-shared-rx-last-runtime
 
@@ -466,8 +467,16 @@ Status: `VERIFIED`; merged by PR #2432. Evidence: shared NetRx/ARP-GC lifetime i
 
 ## B380-virtio-net-ipv6-ndp-stack-owned
 
-Status: `>>> ACTIVE >>> VERIFIED - PR READY`.
+Status: `VERIFIED`; merged by PR #2433.
 
 Branch: `B380-virtio-net-ipv6-ndp-stack-owned`
 
 Evidence: virtio-net RX delivers IPv6 frames to `NetStack::deliver_rx_ipv6(iface, ...)`; removed stale driver-private `learn_ndp_from_ipv6` learner/test; `cargo test -p net f180c -- --nocapture` proves stack-owned `(iface, IPv6)` NDP learning; `cargo test -p drv-virtio-net`, `git diff --check`, line caps, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
+
+## B381-virtio-net-ipv6-tx-stack-ndp
+
+Status: `>>> ACTIVE >>> IN AUDIT`.
+
+Branch: `B381-virtio-net-ipv6-tx-stack-ndp`
+
+Evidence: audit pending for virtio-net IPv6 TX neighbor resolution through the registered interface stack NDP table.
