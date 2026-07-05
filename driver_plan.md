@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B490-virtio-child-single-bus-facing-wrapper; VERIFIED.
+ACTIVE NOW: B491-virtio-child-device-id-matching; IN AUDIT.
 
-Current active item: Virtio child binding uses one bus-facing `VirtioChildDriver` wrapper.
+Current active item: Virtio child wrapper centralizes matching by virtio device ID.
 
-Next gate after merge: return to fresh `origin/main` before claiming B491 using
+Next gate after merge: return to fresh `origin/main` before claiming B492 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -125,7 +125,7 @@ Status legend:
 | VERIFIED | B488-pci-transport-no-child-driver-decls | PCI transport file no longer owns every child `drv::Driver` declaration: source audit/search proves `virtio_drv` and `virtio_transport` contain only the PCI transport driver declaration `VirtioPciDrv`/`VIRTIO_PCI_DRV`, while all child `VirtioChildDriver` statics, child `Virtio*Ops` adapters, and child `drv::register_driver` calls live in `pci-boot::virtio_child`. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
 | VERIFIED | B489-child-probes-no-transport-callback-imports | Child probes do not import transport helper callbacks directly: source audit proves child crates do not import PCI transport callbacks/helpers, child probes consume `VirtioChildTransportSession` and child crate profile/install/remove/shutdown APIs, and the only transport cleanup callback remains centralized in `pci-boot::virtio_child` remove handling; stale child-crate comments naming `pci_boot::virtio_drv` were replaced with transport-backend wording. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
 | VERIFIED | B490-virtio-child-single-bus-facing-wrapper | Virtio child binding uses one bus-facing `VirtioChildDriver<O>` wrapper: source audit proves the only virtio child bus-facing `drv::Driver` impl is `impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O>` in `virtio_child.rs`, child GPU/input/net/blk/rng/vsock/snd registrations are typed instances of that wrapper, and the only other virtio `drv::Driver` impl is the PCI transport parent `VirtioPciDrv`; hosted `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` passes with virtio 43/43 and pci-boot compile-only 0 tests; fast boot smokes reach `oxide login:` on x86_64 in 30s and aarch64 in 34s. |
-| SOURCE OK |  | Virtio child wrapper centralizes matching by virtio device ID. |
+| ACTIVE | B491-virtio-child-device-id-matching | Virtio child wrapper centralizes matching by virtio device ID. |
 | SOURCE OK |  | Virtio child wrapper centralizes child session begin. |
 | SOURCE OK |  | Virtio child wrapper centralizes failed-probe transport release. |
 | SOURCE OK |  | Virtio child wrapper centralizes successful transport publish. |

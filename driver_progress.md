@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B490-virtio-child-single-bus-facing-wrapper; VERIFIED.
+Current marker: B491-virtio-child-device-id-matching; IN AUDIT.
+
+## B491 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B491-virtio-child-device-id-matching | IN AUDIT | Fresh main `60b781a1` after PR #2548 merge; auditing that virtio child matching is centralized through shared virtio child device IDs instead of per-child or PCI-only matching logic, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B490 Current
 
