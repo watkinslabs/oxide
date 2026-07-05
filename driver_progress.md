@@ -455,8 +455,8 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B373-virtio-net-netdev-owning-key
 
-Status: `IN AUDIT`.
+Status: `VERIFIED - PR READY`.
 
 Branch: `B373-virtio-net-netdev-owning-key`
 
-Evidence: source audit of published `NetDev` owner-key storage is in progress.
+Evidence: `VirtioNetDev::new_for(device_key)` reads the matching modern state, stores `device_key` in the published `NetDev`, creates the keyed `NetRuntime`, and all TX paths use that owner key for neighbor resolution and `tx_frame_for`. Added hosted assertions to `net_runtime_names_are_unique_and_reusable` proving two published netdevs retain distinct keys. Focused test, full `cargo test -p drv-virtio-net`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.
