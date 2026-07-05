@@ -476,10 +476,19 @@ recent-completed table above; main was synced after each merge through
 
 ## B383-core-ipv6-ndp-iface-cache
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED`; commit/PR/merge pending.
 
 Branch: `B383-core-ipv6-ndp-iface-cache`
 
-Scope: prove or fix core IPv6 stack NDP cache ownership so entries are keyed by
-`(NetIfaceId, Ipv6Addr)` and identical neighbors on different interfaces cannot
-collide or bleed TX lookup across devices.
+Scope: core IPv6 stack NDP cache keyed by `(NetIfaceId, Ipv6Addr)` with teardown
+purge for removed interfaces.
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `NetStack::ndp` is `BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>`; `ndp_insert`/`ndp_lookup` use `(iface, ip)` keys; NS/NA/RA handlers pass ingress iface; IPv6 TX routes to an iface before packet emission. |
+| Fix | PASS: `unregister_iface` now purges NDP entries for the removed iface along with routes, IPv4/IPv6 addresses, and multicast state. |
+| Hosted tests | PASS: `cargo test -p net f180c_ndp_cache_is_scoped_by_iface -- --nocapture`; `cargo test -p net f180c_unregister_iface_drops_only_its_ndp_entries -- --nocapture`; `cargo test -p net ndp -- --nocapture` (14 passed). |
+| Static checks | PASS: `git diff --check`; line cap OK (`stack/core.rs` 218, `tests_correctness/tcp_ipv6.rs` 461). |
+| Runtime | PASS: x86_64 fast driver-path rerun passed (`/tmp/b383-x86-driver-path-rerun.log`); first aarch64 run hit existing no-progress before `mouseprobe` (`/tmp/b383-arm-driver-path.log`), clean rerun passed (`/tmp/b383-arm-driver-path-rerun.log`). |

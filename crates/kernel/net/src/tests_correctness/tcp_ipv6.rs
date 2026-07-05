@@ -169,6 +169,24 @@ fn f180c_ndp_cache_is_scoped_by_iface() {
 }
 
 #[test]
+fn f180c_unregister_iface_drops_only_its_ndp_entries() {
+    use crate::addr::{Ipv6Addr, MacAddr};
+    let stack = NetStack::new();
+    let (id1, _lo1) = stack.register_loopback();
+    let (id2, _lo2) = stack.register_loopback();
+    let target = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,2]);
+    let mac1 = MacAddr([0x02,0,0,0,0,1]);
+    let mac2 = MacAddr([0x02,0,0,0,0,2]);
+
+    stack.ndp_insert(id1, target, mac1);
+    stack.ndp_insert(id2, target, mac2);
+    assert!(stack.unregister_iface(id1));
+
+    assert_eq!(stack.ndp_lookup(id1, target), None);
+    assert_eq!(stack.ndp_lookup(id2, target), Some(mac2));
+}
+
+#[test]
 fn f180c_ns_for_owned_addr_emits_na() {
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
