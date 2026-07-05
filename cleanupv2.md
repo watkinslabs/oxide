@@ -27,7 +27,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 | 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | MOSTLY DONE — UTS (fleet) + net-ns AF_UNIX/loopback isolation (B518 #2579); inet-per-ns + mount-ns-tolerance = documented follow-ups | B518-netns-isolation | #2579 |
 | 2.1 | `PR_SET_MM` (all 15 subcmds) + fix reversed argv/env stack | 2 | DONE | B430-prctl-set-mm | #2498 |
 | 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO (hwdb.bin asset vs mmap ENODATA; medium) | — | — |
-| 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | TODO — **fleet's active virtio lane; do not overlap** | — | — |
+| 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | **DONE** — root cause was the block-registry↔VFS-BLKDEV table split (NOT a virtio driver gap; disjoint from the fleet's virtio lane) | B525-blkdev-open | #2583 |
 | 2.4 | Module autoload alias no-op for built-ins | 2 | TODO — **fleet's active virtio/uevent lane** | — | — |
 | 3.1 | `systemd-initctl` fifo `read()` EIO | 3 | DONE | B502-fifo-open-impl | #2562 |
 | 3.2 | Persistent journal EBUSY (mmap/flock) | 3 | TODO (mmap/flock race; needs boot capture) | — | — |
@@ -117,7 +117,9 @@ Failed to open '/dev/vda', ignoring: No such device or address
 Failed to open block device /dev/vda, ignoring: No such device or address
 systemd-remount-fs[37]: mount: /: can't find LABEL=oxide
 ```
-The virtio-blk root disk node exists but `open()` returns **ENXIO**, so `LABEL=oxide` is never found and the real disk is never mounted (system runs entirely off the boot/overlay). This is a real virtio-blk / device-open gap and will block any persistent-storage work. Cross-ref the `virtio:d*` module-alias misses (2.4).
+The virtio-blk root disk node exists but `open()` returns **ENXIO**, so `LABEL=oxide` is never found and the real disk is never mounted (system runs entirely off the boot/overlay).
+
+**FIXED (B525 #2583).** Root cause was NOT a virtio-blk driver gap — it was a two-table split: the `block::registry` mints the devtmpfs `/dev/<name>` node via `drv::try_device_add` but never registered a `vfs::BlockDevOps` for the disk's dev_t, so `DeviceFileOps` in vfs hit `lookup_blkdev(devt) == None` → ENXIO on every path-based open. The kernel booted regardless because ext4 mounts by-serial (`by_serial("oxide-root")`), bypassing the node. Fix bridges the tables (`block/src/devbridge.rs`): `register`/`unregister` now publish/drop a `DiskBlkOps` adapter into the VFS BLKDEV region (Linux `add_disk`/`del_gendisk`); adapter does whole-sector RMW byte I/O; added BLKGETSIZE64/BLKGETSIZE/BLKSSZGET/BLKBSZGET so blkid/mkfs probes succeed. Because the fix lives entirely in `vfs/devnode` + `block/registry` (NOT the virtio driver), it was disjoint from the fleet's virtio lane. Hosted-tested + both arches build.
 
 ### 2.4 Module autoload alias misses (16×)
 ```
