@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B351-drm-unique-version-uapi`.
+Current marker: `>>> ACTIVE >>> B352-drm-atomic-empty-state`.
 
 ## Archived Completed B327-B330
 
@@ -474,18 +474,24 @@ Evidence:
 |---|---|---|
 | B349-drm-page-flip-file-events | VERIFIED | Per-card open-file page-flip poll/read regression, full DRM tests, x86/ARM driver-path, pre-push boot smoke, PR #2402, main sync `3287909f`. |
 
-## B350-drm-magic-open-file-auth
+## Archived Completed B350
 
-Status: `VERIFIED`; merged by PR #2403.
-
-Branch: `B350-drm-magic-open-file-auth`
-
-Evidence: source audit found forged `AUTH_MAGIC` accepted; fixed `authorize_magic` to require a live `GET_MAGIC` allocation. `magic_is_live_open_file_state`, `drm_auth_magic_requires_master_and_records_requested_magic`, full `cargo test -p drm` with 63 tests, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass. Line cap pass: `node/auth.rs` 210, `node.rs` 355, `node/tests.rs` 480.
+| Branch | Status | Evidence |
+|---|---|---|
+| B350-drm-magic-open-file-auth | VERIFIED | Live GET_MAGIC/AUTH_MAGIC allocation regressions, full DRM tests, x86/ARM driver-path, pre-push boot smoke, PR #2403, main sync `8e78fe0d`. |
 
 ## B351-drm-unique-version-uapi
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2404.
 
 Branch: `B351-drm-unique-version-uapi`
 
-Evidence: source audit found `GET_UNIQUE` exposed bus id before `SET_VERSION` and copied partial undersized buffers; fixed per-open-file unique enable, release/unregister cleanup, Linux no-partial-copy behavior, and SET_VERSION driver/interface negotiation writeback. `drm_get_unique_copies_driver_bus_id_and_reports_full_length`, `drm_set_version_negotiates_supported_core_interface`, full `cargo test -p drm` with 63 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, and pre-push boot smoke pass.
+Evidence: source audit found `GET_UNIQUE` exposed bus id before `SET_VERSION` and copied partial undersized buffers; fixed per-open-file unique enable, release/unregister cleanup, Linux no-partial-copy behavior, and SET_VERSION driver/interface negotiation writeback. `drm_get_unique_copies_driver_bus_id_and_reports_full_length`, `drm_set_version_negotiates_supported_core_interface`, full `cargo test -p drm` with 63 tests, `git diff --check`, line cap, x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2404, and main sync `66d5c727` pass.
+
+## B352-drm-atomic-empty-state
+
+Status: `IN AUDIT`.
+
+Branch: `B352-drm-atomic-empty-state`
+
+Evidence: source audit in progress for `DRM_IOCTL_MODE_ATOMIC` empty-state gating; no completion claim yet.
