@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B449-device-del-devtmpfs-teardown; IN AUDIT.
+Current marker: B449-device-del-devtmpfs-teardown; VERIFIED pending PR merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -763,4 +763,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B449-device-del-devtmpfs-teardown | IN AUDIT | Fresh main `8817dfc8` after PR #2506 merge; auditing that `device_del` removes owned devtmpfs `/dev` state. |
+| B449-device-del-devtmpfs-teardown | VERIFIED | Fresh main `8817dfc8` after PR #2506 merge; source audit proves `crates/drivers/drv/src/model.rs::device_del` clones `d.devname` and calls `DEVTMPFS_DEL_HOOK` with that owned name, `crates/kernel/kmain/src/kmain/early.rs` wires the hook to `devfs::del_device_node`, and `crates/kernel/devfs/src/lib.rs::del_device_node` maps the name to `/dev/<name>` then unregisters that subtree. Checks pass: `cargo test -p drv device_del_orders_remove_event_and_devtmpfs_teardown -- --nocapture`, `cargo test -p devfs add_device_node_creates_dev_entries -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B449 changes only docs/metadata and production devtmpfs teardown code is unchanged. |
