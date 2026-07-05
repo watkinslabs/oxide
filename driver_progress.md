@@ -5,13 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B456-ahci-explicit-shutdown-callback; IN AUDIT.
+Current marker: B456-ahci-explicit-shutdown-callback; VERIFIED pending PR
+merge.
 
 ## B456 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B456-ahci-explicit-shutdown-callback | IN AUDIT | Fresh main `1fec0317` after PR #2513 merge; proving AHCI model driver implements an explicit shutdown callback that quiesces by controller identity. |
+| B456-ahci-explicit-shutdown-callback | VERIFIED | Fresh main `1fec0317` after PR #2513 merge; source audit proves `crates/drivers/drv-ahci/src/lib.rs::AhciDriver::shutdown` parses the model device PCI BDF and calls `imp::shutdown(imp::device_key_from_bdf(bdf))`, while `imp::shutdown` finds the registered controller by key and calls `AhciBlk::shutdown` without unregistering block publication. `AhciBlk::shutdown` sets `removed=true` and runs `Ahci::shutdown_and_free`. Checks pass: `cargo test -p drv-ahci -- --nocapture` with 10/10 hosted tests. Runtime arch proof is inherited from B454 pre-push `make smoke-x86`/`make smoke-arm` because B456 changes only docs/metadata and AHCI production source is unchanged from that booted main. |
 
 ## B455 Current
 
