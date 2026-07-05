@@ -440,7 +440,7 @@ Evidence:
 
 ## B347-drm-unregister-drops-card-state
 
-Status: `CLAIMED`.
+Status: `VERIFIED, commit/PR merge pending`.
 
 Branch: `B347-drm-unregister-drops-card-state`
 
@@ -448,10 +448,17 @@ Target row:
 
 | Status | Item |
 |---|---|
-| CLAIMED | DRM unregister drops that card CRTC and dumb-buffer state. |
+| VERIFIED | DRM unregister drops that card CRTC and dumb-buffer state. |
 
 Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | PENDING. |
+| Source audit | PASS: `registry::unregister(card_id)` removes the card slot, trims empty tail slots, then calls `crtc::clear_card_state(card_id)`, `dumb::clear_card_state(card_id)`, and `node::unregister(card_id)`. CRTC clear drops owner, current FB, and queued flip events for that card only. Dumb clear removes that card's FBs and buffers while leaving other cards' state intact. |
+| Hosted regression | PASS: `unregister_drops_only_that_card_runtime_state` proves unregister clears owner/current-FB/events and FB table state for card0 without clearing card1. |
+| `cargo test -p drm unregister_drops_only_that_card_runtime_state -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 61 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crtc.rs` 438 lines, `tests.rs` 224, `dumb/tests.rs` 495. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b347-drm-unregister-drops-card-state-arm.log`. |

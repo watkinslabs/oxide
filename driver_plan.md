@@ -2,12 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B347-drm-unregister-drops-card-state` — CLAIMED.
+ACTIVE NOW: `B347-drm-unregister-drops-card-state` — VERIFIED, commit/PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B347-drm-unregister-drops-card-state`.
 
-Current B347 gate: audit DRM unregister teardown for CRTC, FB, and dumb-buffer
-state; add focused hosted proof, then prove x86_64 and aarch64 driver path.
+Current B347 gate: source audit, hosted unregister teardown regression, full
+DRM tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass.
+Commit, push, PR readiness, PR merge, and post-merge main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -278,7 +279,7 @@ Status legend:
 | VERIFIED | B344-drm-setcrtc-pageflip-card-route | DRM SETCRTC/PAGE_FLIP hooks route by DRM card id to owning GPU; source audit, hosted card-id-to-driver-key regression, full DRM and virtio-gpu tests, fast x86_64/aarch64 driver-path proof, line-cap check, pre-push boot smoke, and PR #2397 merge pass. |
 | VERIFIED | B345-drm-dumb-fb-card-owned | DRM dumb buffers and FB metadata are card-owned; source audit, hosted same-handle/same-FB-id card-isolation regression, full DRM tests, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, line-cap check, and PR #2398 merge pass. |
 | VERIFIED | B346-drm-fb-scanout-resource-lifetime | Runtime scanout resources attach to DRM FB object and detach/unref on RMFB/unregister; source audit, hosted `clear_card_state` scanout-resource release regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2399 merge, and local main sync to `origin/main` at `6ffbc9b7` pass. |
-| CLAIMED | B347-drm-unregister-drops-card-state | DRM unregister drops that card CRTC and dumb-buffer state. |
+| VERIFIED | B347-drm-unregister-drops-card-state | DRM unregister drops that card CRTC and dumb-buffer state; source audit, hosted per-card unregister teardown regression, full DRM tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. Commit/PR merge pending. |
 | NOT DONE |  | DRM master state is per open file description. |
 | NOT DONE |  | DRM PAGE_FLIP events are per card open file and poll/read correctly. |
 | NOT DONE |  | DRM GET_MAGIC/AUTH_MAGIC allocate and authorize real per-open-file magic. |
