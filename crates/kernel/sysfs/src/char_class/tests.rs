@@ -4,6 +4,10 @@ use netlink::{proto, NetlinkSocket};
 
 const GRAPHICS_MAJOR: u32 = 29;
 const FBDEV_TEST_MINOR: u32 = 9;
+const MEM_MAJOR: u32 = 1;
+const MISC_MAJOR: u32 = 10;
+const MEM_TEST_MINOR: u32 = 8;
+const MISC_TEST_MINOR: u32 = 235;
 
 fn add_char(class: &'static str, addr: &str, devname: &str, dt: (u32, u32)) -> Arc<drv::Device> {
     let dev = Arc::new(
@@ -105,6 +109,54 @@ fn misc_class_autofs_is_model_backed_with_linux_dev_t() {
 
     drv::device_del(&dev);
     assert_eq!(class.lookup("autofs").err(), Some(VfsError::Enoent));
+}
+
+#[test]
+fn misc_and_mem_uevent_writes_reemit_model_events() {
+    let mem = add_char("mem", "random-test", "random-test", (MEM_MAJOR, MEM_TEST_MINOR));
+    let misc = add_char("misc", "autofs-trigger", "autofs-trigger", (MISC_MAJOR, MISC_TEST_MINOR));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    listener.set_group_mask(1);
+    netlink::register_uevent_listener(&listener);
+
+    let mem_root = make_virtual_class_inode("mem", INO_VIRT_MEM);
+    let mem_dir = mem_root.lookup("random-test").expect("mem device dir");
+    let mem_uevent = mem_dir.lookup("uevent").expect("mem uevent attr");
+    assert_eq!(mem_uevent.write(0, b"change\n"), Ok("change\n".len()));
+
+    let misc_root = make_virtual_class_inode("misc", INO_VIRT_MISC);
+    let misc_dir = misc_root.lookup("autofs-trigger").expect("misc device dir");
+    let misc_uevent = misc_dir.lookup("uevent").expect("misc uevent attr");
+    assert_eq!(misc_uevent.write(0, b"add\n"), Ok("add\n".len()));
+
+    let mem_major = alloc::format!("MAJOR={}", MEM_MAJOR);
+    let mem_minor = alloc::format!("MINOR={}", MEM_TEST_MINOR);
+    let misc_major = alloc::format!("MAJOR={}", MISC_MAJOR);
+    let misc_minor = alloc::format!("MINOR={}", MISC_TEST_MINOR);
+    let mem_msg = (0..64)
+        .filter_map(|_| listener.dequeue().map(|(msg, _src)| msg))
+        .find(|msg| msg.windows(b"DEVPATH=/devices/virtual/mem/random-test".len())
+            .any(|w| w == b"DEVPATH=/devices/virtual/mem/random-test"))
+        .expect("matching mem uevent");
+    assert!(mem_msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
+    assert!(mem_msg.windows(b"SUBSYSTEM=mem".len()).any(|w| w == b"SUBSYSTEM=mem"));
+    assert!(mem_msg.windows(b"DEVNAME=random-test".len()).any(|w| w == b"DEVNAME=random-test"));
+    assert!(mem_msg.windows(mem_major.len()).any(|w| w == mem_major.as_bytes()));
+    assert!(mem_msg.windows(mem_minor.len()).any(|w| w == mem_minor.as_bytes()));
+
+    let misc_msg = (0..64)
+        .filter_map(|_| listener.dequeue().map(|(msg, _src)| msg))
+        .find(|msg| msg.windows(b"DEVPATH=/devices/virtual/misc/autofs-trigger".len())
+            .any(|w| w == b"DEVPATH=/devices/virtual/misc/autofs-trigger"))
+        .expect("matching misc uevent");
+    assert!(misc_msg.windows(b"ACTION=add".len()).any(|w| w == b"ACTION=add"));
+    assert!(misc_msg.windows(b"SUBSYSTEM=misc".len()).any(|w| w == b"SUBSYSTEM=misc"));
+    assert!(misc_msg.windows(b"DEVNAME=autofs-trigger".len()).any(|w| w == b"DEVNAME=autofs-trigger"));
+    assert!(misc_msg.windows(misc_major.len()).any(|w| w == misc_major.as_bytes()));
+    assert!(misc_msg.windows(misc_minor.len()).any(|w| w == misc_minor.as_bytes()));
+
+    drv::device_del(&mem);
+    drv::device_del(&misc);
 }
 
 #[test]

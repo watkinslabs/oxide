@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B475-misc-mem-coldplug; IN AUDIT.
+ACTIVE NOW: none; B475 verified pending PR merge.
 
-Current active item: Misc and mem coldplug can re-emit model-backed class events from current state.
+Current active item: none; next branch must be claimed from fresh `origin/main`.
 
 Next gate after merge: return to fresh `origin/main` before claiming B476 using
 `metadata/index.md`.
@@ -103,7 +103,7 @@ Status legend:
 | VERIFIED |  | Evdev coldplug can re-emit input event from current state. |
 | VERIFIED |  | Sound coldplug can re-emit model-backed class event from current state. |
 | VERIFIED | B474-graphics-fbdev-coldplug | Graphics/fbdev coldplug can re-emit model-backed class event from current state: fbdev nodes publish through `drv::try_device_add` as `graphics/fbN`, `/sys/class/graphics` and `/sys/devices/virtual/graphics` are synthesized from the live model registry, and writable `uevent` attrs re-emit `ACTION`, `DEVPATH`, `SUBSYSTEM=graphics`, `DEVNAME=fbN`, and current dev_t values from the model device. Added focused hosted regression coverage for graphics/fbdev uevent write-trigger; sysfs/fbdev/driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
-| ACTIVE | B475-misc-mem-coldplug | Misc and mem coldplug can re-emit model-backed class events from current state. |
+| VERIFIED | B475-misc-mem-coldplug | Misc and mem coldplug can re-emit model-backed class events from current state: hosted regression `misc_and_mem_uevent_writes_reemit_model_events` proves writable `/sys/devices/virtual/{mem,misc}/.../uevent` emits requested action plus model-derived `DEVPATH`, `SUBSYSTEM`, `DEVNAME`, `MAJOR`, and `MINOR`; `cargo test -q -p sysfs -p devfs -p drv -- --nocapture --test-threads=1` passed devfs 9/9, drv 27/27, sysfs 28/28, and fast smokes reached `oxide login:` on x86_64 in 12s and aarch64 in 16s. |
 | VERIFIED |  | Character-class remove/readd tests prove class symlink, parent link, and `/sys/dev/char` index disappear/reappear. |
 | VERIFIED |  | Static procfs-era `/sys/class/misc/autofs` registration removed; autofs comes from model-owned misc device. |
 | VERIFIED |  | Autofs exposes Linux `10:235` dev_t matching `/dev/autofs`. |
