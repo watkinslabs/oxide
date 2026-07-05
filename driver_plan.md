@@ -2,15 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B375-virtio-net-ethn-visible-names` — VERIFIED - PR READY.
+ACTIVE NOW: `B376-virtio-net-rx-stats-per-netdev` — IN AUDIT.
 
-Current active item: `>>> ACTIVE >>> B375-virtio-net-ethn-visible-names`.
+Current active item: `>>> ACTIVE >>> B376-virtio-net-rx-stats-per-netdev`.
 
-Current B375 gate: verified that `allocate_net_name` returns the first free
-`ethN`, `ensure_net_runtime` stores that name per child key, and
-`VirtioNetDev::name()` exposes it. Focused regression, full virtio-net tests,
-line-cap check, x86_64/aarch64 fast driver-path proof pass; push PR, merge,
-then sync local `main`.
+Current B376 gate: prove RX stats are owned per netdev/runtime from current
+source, add focused regression if missing, run virtio-net tests, x86_64/aarch64
+driver-path proof, push PR, merge, then sync local `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -309,8 +307,8 @@ Status legend:
 | VERIFIED | B372-virtio-net-keyed-cursors | Virtio-net TX/RX cursors live in keyed device records: `ModernNetState` owns `tx_last_used`, `tx_next_avail`, `rx_last_used`, and `rx_next_avail`; `tx_frame_for` and `rx_poll_for` first select the matching `device_key`; RX pool install initializes per-device `rx_next_avail`. Focused RX-pool cursor regression, full `drv-virtio-net` tests, fast x86_64/aarch64 driver-path proof, PR #2425 merge, and local main sync to `origin/main` at `ebf774cb` pass. |
 | VERIFIED | B373-virtio-net-netdev-owning-key | Published `NetDev` carries owning key: `VirtioNetDev` stores `device_key`, constructs runtime state with the same key, and uses the key for TX/neighbor paths. Added hosted owner-key assertions, full `drv-virtio-net` tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2426 merge, and local main sync to `origin/main` at `b03912d3` pass. |
 | VERIFIED | B374-virtio-net-iface-rx-keyed-tables | Registered iface ownership and RX softirq runtime are keyed tables: `REGISTERED_NETDEVS` stores `(DeviceKey, NetIfaceId)`, `set_registered_iface`/`registered_iface_for`/`remove_registered_iface` select by key, `RX_RUNTIMES` stores `device_key`, and RX install/update/remove paths preserve per-key state. Focused iface/RX regressions, full `drv-virtio-net` tests, fast x86_64/aarch64 driver-path proof, PR #2427 merge, and local main sync to `origin/main` at `df4907d0` pass. |
-| >>> ACTIVE >>> VERIFIED - PR READY | B375-virtio-net-ethn-visible-names | Visible netdev names are child-runtime owned: `allocate_net_name` returns first free `ethN`, `ensure_net_runtime` stores it per child key, and `VirtioNetDev::name()` exposes it; focused `net_runtime_names_are_unique_and_reusable`, full virtio-net tests, line-cap check, and x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | RX stats are per netdev. |
+| VERIFIED | B375-virtio-net-ethn-visible-names | Visible netdev names are child-runtime owned: `allocate_net_name` returns first free `ethN`, `ensure_net_runtime` stores it per child key, and `VirtioNetDev::name()` exposes it; focused `net_runtime_names_are_unique_and_reusable`, full virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, PR #2428 merge, and local main sync to `origin/main` at `66cf1bff` pass. |
+| >>> ACTIVE >>> IN AUDIT | B376-virtio-net-rx-stats-per-netdev | RX stats are per netdev. |
 | NOT DONE |  | IPv4 ARP cache entries owned by virtio-net runtime. |
 | NOT DONE |  | Hot-remove clears netdev/interface/RX runtime by child key. |
 | NOT DONE |  | Shared NetRx bottom half and ARP-GC timer stay installed until last RX runtime removed. |
