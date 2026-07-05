@@ -2,7 +2,7 @@ use std::process::Command;
 
 use crate::run;
 
-use super::common::{ensure_ahci_img, ensure_nvme_img, ssh_fwd_netdev, which};
+use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ssh_fwd_netdev, which};
 
 /// Stage `boot/oxide-<arch>` + a `grub.cfg` that `multiboot2`-loads it,
 /// then `grub2-mkrescue` into a hybrid BIOS+UEFI ISO.
@@ -169,6 +169,19 @@ pub(super) fn qemu_run_grub_x86_64(
         c.args([
             "-audiodev", "none,id=snd1",
             "-device", "virtio-sound-pci,audiodev=snd1,disable-legacy=on,bus=pcie.0",
+        ]);
+    }
+    if std::env::var_os("OXIDE_STORAGE_MULTICTRL_SMOKE").is_some() {
+        let nvme1 = ensure_nvme_extra_img(repo, id, "x86_64");
+        let ahci1 = ensure_ahci_extra_img(repo, id, "x86_64");
+        let nvme1_drive = format!("id=nvm1,if=none,format=raw,file={}", nvme1.display());
+        let ahci1_drive = format!("id=sata1,if=none,format=raw,file={}", ahci1.display());
+        c.args([
+            "-drive", nvme1_drive.as_str(),
+            "-device", "nvme,serial=oxnvme1,drive=nvm1,bus=pcie.0",
+            "-device", "ich9-ahci,id=ahci1,bus=pcie.0",
+            "-drive", ahci1_drive.as_str(),
+            "-device", "ide-hd,drive=sata1,bus=ahci1.0",
         ]);
     }
     eprintln!("xtask grub: launching qemu (GRUB→multiboot2), smp={smp}, accel={accel}, headless={headless}");
