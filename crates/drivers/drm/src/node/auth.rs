@@ -40,11 +40,15 @@ pub(super) fn release_file_magic(token: u64) {
     }
 }
 
-pub(super) fn authorize_magic(card_id: u32, magic: u32) {
+pub(super) fn authorize_magic(card_id: u32, magic: u32) -> bool {
+    if !FILE_MAGICS.lock().iter().any(|(_, m)| *m == magic) {
+        return false;
+    }
     let mut auth = AUTHORIZED_MAGICS.lock();
     if auth.iter().all(|(card, m)| *card != card_id || *m != magic) {
         auth.push((card_id, magic));
     }
+    true
 }
 
 pub(super) fn clear_authorized_for_card(card_id: u32) {
@@ -163,4 +167,44 @@ pub(super) fn reset_test_state() {
     FILE_MAGICS.lock().clear();
     AUTHORIZED_MAGICS.lock().clear();
     *NEXT_MAGIC.lock() = 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use vfs::{Dentry, File, InodeBuilder, OpenFlags};
+
+    fn open_file() -> Arc<File> {
+        let inode = InodeBuilder::new(
+            0x4452_4d41,
+            vfs::mk_mode(vfs::FileType::CharDev, 0o666),
+            vfs::default_inode_ops(),
+            vfs::default_file_ops(),
+        ).build();
+        let dentry = Dentry::new_anon(Arc::clone(&inode));
+        File::new(inode, dentry, OpenFlags::O_RDWR)
+    }
+
+    #[test]
+    fn magic_is_live_open_file_state() {
+        reset_test_state();
+        let client = open_file();
+        let client_dup = Arc::clone(&client);
+        let other = open_file();
+        let magic = file_magic(&client);
+
+        assert_ne!(magic, 0);
+        assert_eq!(file_magic(&client_dup), magic);
+        assert_ne!(file_magic(&other), magic);
+        assert!(!authorize_magic(0, magic.wrapping_add(1000)));
+        assert!(!is_magic_authorized(0, magic.wrapping_add(1000)));
+        assert!(authorize_magic(0, magic));
+        assert!(is_magic_authorized(0, magic));
+        assert!(!is_magic_authorized(1, magic));
+
+        release_file_magic(file_token(&client));
+        assert!(!is_magic_authorized(0, magic));
+        reset_test_state();
+    }
 }
