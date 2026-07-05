@@ -5,8 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B452-shutdown-all-reverse-registration; VERIFIED pending PR
-merge.
+Current marker: B453-shutdown-no-unbind-or-events; IN AUDIT.
+
+## B453 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B453-shutdown-no-unbind-or-events | IN AUDIT | Fresh main `ea573702` after PR #2510 merge; proving `drv::shutdown_all` calls bound drivers' shutdown hooks without calling remove, clearing bindings, or emitting unbound/change events. |
 
 ## B428-sysfs-explicit-bind-route
 
