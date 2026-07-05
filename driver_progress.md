@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B421-pci-identity-mismatch-proof; IN AUDIT.
+Current marker: B421-pci-identity-mismatch-proof; VERIFIED, commit/PR pending.
 
 ## Archived Completed B327-B330
 
@@ -501,4 +501,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B421-pci-identity-mismatch-proof | IN AUDIT | Fresh main `9e8594ad`; auditing PCI model-device identity mismatch handling and designing a live/hosted proof that a mismatched PCI identity cannot be rebound as the same function. |
+| B421-pci-identity-mismatch-proof | VERIFIED | Fresh main `9e8594ad`; source audit found `try_device_add` rejects duplicate `(bus, addr)` and PCI publication only reuses an existing model device when vendor/device/class match. Added hosted regression `pci_identity_mismatch_does_not_replace_or_rebind` covering duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class; it proves the original model device remains bound, registry identity is not replaced, and the mismatched driver never probes. Focused regression and full serial `cargo test -p drv -- --nocapture --test-threads=1` pass. Fast x86_64 and aarch64 driver-path proofs pass in `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`; first ARM attempt hit the tracked systemd no-progress wedge and was recorded as `/tmp/b421-pci-identity-mismatch-arm-noprogress.log`. |
