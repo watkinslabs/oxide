@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B418 verified, pending commit/PR/merge/sync.
+ACTIVE NOW: B419-virtio-vsock-live-multiendpoint-proof; IN AUDIT.
 
-Current active item: none until B418 merges and fresh main is pulled.
+Current active item: Virtio-vsock primary compatibility route with multiple live endpoints needs live proof.
 
-Next gate after merge: claim B419 from fresh `origin/main` using
-`metadata/index.md`.
+Next gate after merge: return to fresh `origin/main` before claiming B420
+using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -352,7 +352,7 @@ Status legend:
 | VERIFIED | B416-nvme-ahci-multicontroller-proof | NVMe/AHCI per-BDF source audit, opt-in two-controller QEMU harness, `/bin/storage_multictrl_probe`, hosted `drv/sysfs/block`, x86_64 `/tmp/b416-x86-storage-multictrl-3.log`, and aarch64 `/tmp/b416-arm-storage-multictrl.log` pass. |
 | VERIFIED | B417-virtio-net-live-multidev-proof | Existing virtio-net multidev probe and QEMU two-device mode satisfy the row: source audit confirms keyed install/remove/rebind path; hosted `drv-virtio-net/net/virtio/pci-boot`, x86_64 `/tmp/b417-x86-virtio-net-multidev.log`, and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
 | VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
-| NOT DONE | TBD | Virtio-vsock primary compatibility route with multiple live endpoints needs live proof. |
+| ACTIVE | B419-virtio-vsock-live-multiendpoint-proof | Virtio-vsock primary compatibility route with multiple live endpoints needs live proof. |
 | NOT DONE | TBD | Virtio-snd live multi-card proof and broader event/control coverage missing. |
 | NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
 | NOT DONE | TBD | QEMU-visible runtime bind/unbind/rebind certification incomplete. |
