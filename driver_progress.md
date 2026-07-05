@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B339-drm-card-ioctl-slot-routing`.
+Current marker: `>>> ACTIVE >>> B340-drm-sysfs-live-model-devices`.
 
 ## B002-single-machine-desktop-proof
 
@@ -195,7 +195,7 @@ Evidence:
 
 ## B331-virtio-gpu-probe-failure-unwind
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2392.
 
 Branch: `B331-virtio-gpu-probe-failure-unwind`
 
@@ -428,3 +428,22 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 409 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b339-drm-card-ioctl-slot-routing-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b339-drm-card-ioctl-slot-routing-arm.log`. |
+| PR merge | PASS: PR #2392 merged to `main` at `0a82d42a`. |
+
+## B340-drm-sysfs-live-model-devices
+
+Status: `CLAIMED`.
+
+Branch: `B340-drm-sysfs-live-model-devices`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | `/sys/class/drm` and `/sys/devices/virtual/drm` derive from live DRM model devices. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
