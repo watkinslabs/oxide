@@ -16,29 +16,31 @@ mod get_cap;
 
 static LAST_SCANOUT_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 
-fn record_create(driver_key: u32, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> {
-    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
-    Some(driver_key.wrapping_add(1))
+fn scanout_key(raw: u32) -> ScanoutDriverKey { ScanoutDriverKey::from_raw(raw).unwrap() }
+
+fn record_create(driver_key: ScanoutDriverKey, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
+    Some(driver_key.raw().wrapping_add(1))
 }
 
-fn record_destroy(driver_key: u32, _res_id: u32) -> bool {
-    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+fn record_destroy(driver_key: ScanoutDriverKey, _res_id: u32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     true
 }
 
-fn record_set_scanout(driver_key: u32, _res_id: u32, _w: u32, _h: u32) -> bool {
-    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+fn record_set_scanout(driver_key: ScanoutDriverKey, _res_id: u32, _w: u32, _h: u32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     true
 }
 
-fn record_restore(driver_key: u32) -> bool {
-    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
+fn record_restore(driver_key: ScanoutDriverKey) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     true
 }
 
-fn record_boot(driver_key: u32) -> u32 {
-    LAST_SCANOUT_DRIVER_KEY.store(driver_key, Ordering::Release);
-    driver_key
+fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
+    driver_key.raw()
 }
 
     struct TestDrv;
@@ -90,7 +92,7 @@ fn record_boot(driver_key: u32) -> u32 {
         clear_scanout_ops(7);
         clear_scanout_ops(8);
         set_scanout_ops(7, ScanoutOps {
-            driver_key: 0x7001,
+            driver_key: scanout_key(0x7001),
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             set_scanout: record_set_scanout,
@@ -98,7 +100,7 @@ fn record_boot(driver_key: u32) -> u32 {
             boot_res_id: record_boot,
         });
         set_scanout_ops(8, ScanoutOps {
-            driver_key: 0x8002,
+            driver_key: scanout_key(0x8002),
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             set_scanout: record_set_scanout,
@@ -108,8 +110,8 @@ fn record_boot(driver_key: u32) -> u32 {
 
         let ops7 = scanout_ops(7).unwrap();
         let ops8 = scanout_ops(8).unwrap();
-        assert_eq!(ops7.driver_key, 0x7001);
-        assert_eq!(ops8.driver_key, 0x8002);
+        assert_eq!(ops7.driver_key.raw(), 0x7001);
+        assert_eq!(ops8.driver_key.raw(), 0x8002);
         assert!((ops7.set_scanout)(ops7.driver_key, 42, 640, 480));
         assert_eq!(LAST_SCANOUT_DRIVER_KEY.load(Ordering::Acquire), 0x7001);
         assert!((ops8.restore_console)(ops8.driver_key));

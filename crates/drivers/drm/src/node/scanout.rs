@@ -12,17 +12,30 @@ use sync::{Spinlock, TaskList as OpsLockClass};
 #[derive(Copy, Clone)]
 pub struct ScanoutOps {
     /// Driver-owned runtime key for the owning GPU.
-    pub driver_key: u32,
+    pub driver_key: ScanoutDriverKey,
     /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
-    pub create_from_pa: fn(driver_key: u32, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
+    pub create_from_pa: fn(driver_key: ScanoutDriverKey, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
     /// Drop a previously-created runtime scanout resource.
-    pub destroy_resource: fn(driver_key: u32, res_id: u32) -> bool,
+    pub destroy_resource: fn(driver_key: ScanoutDriverKey, res_id: u32) -> bool,
     /// Switch scanout 0 to `res_id` + transfer + flush.
-    pub set_scanout: fn(driver_key: u32, res_id: u32, w: u32, h: u32) -> bool,
+    pub set_scanout: fn(driver_key: ScanoutDriverKey, res_id: u32, w: u32, h: u32) -> bool,
     /// Restore the boot fbcon scanout + repaint the console.
-    pub restore_console: fn(driver_key: u32) -> bool,
+    pub restore_console: fn(driver_key: ScanoutDriverKey) -> bool,
     /// The boot fbcon scanout resource id.
-    pub boot_res_id: fn(driver_key: u32) -> u32,
+    pub boot_res_id: fn(driver_key: ScanoutDriverKey) -> u32,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ScanoutDriverKey(u32);
+
+impl ScanoutDriverKey {
+    /// Build an opaque DRM scanout callback key from driver-owned identity. # C: O(1)
+    pub fn from_raw(raw: u32) -> Option<Self> {
+        if raw == 0 { None } else { Some(Self(raw)) }
+    }
+
+    /// Expose the key only to the installing driver's callback adapter. # C: O(1)
+    pub fn raw(self) -> u32 { self.0 }
 }
 
 static SCANOUT_OPS: Spinlock<Vec<Option<ScanoutOps>>, OpsLockClass> = Spinlock::new(Vec::new());
