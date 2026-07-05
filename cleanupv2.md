@@ -23,7 +23,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 
 | Item | Summary | Tier | Status | Branch | PR |
 |------|---------|------|--------|--------|-----|
-| 1.1 | PAM/keyring EPERM — `user@979.service` step PAM | 1 | INVESTIGATED (blocked: needs boot capture) | B423-pam-session-keyring-eperm | #2477 |
+| 1.1 | PAM `PAM_SESSION_ERR` — `user@979.service` step PAM | 1 | INVESTIGATED (hypothesis disproven; see notes) | B423 + captures | #2477 |
 | 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | TODO | — | — |
 | 2.1 | `PR_SET_MM` (all 15 subcmds) + fix reversed argv/env stack | 2 | DONE | B430-prctl-set-mm | #2498 |
 | 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO | — | — |
@@ -64,6 +64,12 @@ The concrete kernel signal is **EPERM at the PAM session step**. `systemd --user
 - `setns`/`unshare`/`clone(CLONE_NEW*)` → no cap gate; all NS bits implemented (`syscalls/src/272_unshare.rs`, `308_setns.rs`, `056_clone.rs`). Not the cause.
 - The ONLY cap-gated EPERM reachable in a fresh PAM stack is **`setgroups`** (`crates/kernel/sched/src/cred.rs:388`, needs `CAP_SETGID`). Root gets `CAP_FULL` (`creds.rs:47`), so this only fires **if exec has already dropped to uid 979 before the PAM step**. Real systemd runs `setup_pam()` while still root (before `enforce_user()`), so setgroups should succeed — meaning either our exec drops privileges too early, OR the EPERM is a syscall that EPERMs even for root.
 - **Disambiguation requires a capture-first boot** with `--features debug-syscall` (+`debug-mount`): reproduce, grep pid-182's window for the syscall returning `rv=-1`/EPERM (errno 1). debug-syscall already logs every `(nr, rv)` — no new probe needed (`syscalls/src/dispatch/core.rs:38`). **Blocker: needs an exclusive live-gnome boot** (main tree is occupied by the parallel agent; boot-verify reads main-tree artifacts).
+
+**Live-gnome capture findings (2026-07-05, debug-syscall, 11 boots via the isolated `OXIDE_KERNEL_DIR` pipeline):**
+- The cleanupv2 EPERM-syscall hypothesis is **DISPROVEN**. systemd's "Failed at step PAM ... Operation not permitted" is a **synthetic** EPERM systemd reports for ANY PAM-step failure. The real failure is a PAM module returning **`PAM_SESSION_ERR`** ("Cannot make/remove an entry for the specified session").
+- In the failing `user@979` manager: `keyctl(JOIN_SESSION_KEYRING)`→serial, `add_key`→serial, `KEYCTL_SETPERM`→0, all `prctl` (incl. the `PR_CAPBSET_READ` cap_last_cap probe, EINVAL at cap 64 is normal), and logind "New session c2" **all succeed**. NO abnormal syscall error in the traced set. Manager `exit_group(224)` after an ~18s window of untraced file/socket ops.
+- `pam_keyinit` is `session optional` (cannot fail the session); **`pam_loginuid` is `session required`** — prime suspect. Root cause is an untraced file/socket op (loginuid write, or a dbus/socket op), OR a semantic divergence (our `keyctl JOIN_SESSION_KEYRING` returns the single global serial instead of a fresh per-session keyring). NEXT: surgical in-kernel probe on the loginuid write path (boot-capture flooding hit diminishing returns).
+- Reusable pipeline built: `tools/boot-iso.sh` (#2485), imagectl `OXIDE_KERNEL_DIR` override (oxide-images), enhanced `debug-syscall` probe + `debug-openat` split (#2550), `oxide-images` live-gnome capture harness.
 
 **Plan of attack:** capture-first, per house method. Add/extend a `debug-pam` (or reuse `debug-syscall`) gate to log the exact syscall returning EPERM in pid 182's window. Prime suspects to audit in kernel: `keyctl`/`add_key` session-keyring semantics, `/proc/self/loginuid` write path, and `setns`/`unshare` used by pam_namespace. Fixing this single item is expected to unblock the whole desktop.
 
