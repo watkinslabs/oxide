@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B335-drm-card-id-stable-slots` — VERIFIED; commit/PR merge pending.
+Current marker: `>>> ACTIVE >>> B336-drm-card-node-publication`.
 
 ## B002-single-machine-desktop-proof
 
@@ -295,7 +295,7 @@ Evidence:
 
 ## B335-drm-card-id-stable-slots
 
-Status: `VERIFIED`; commit/PR merge pending.
+Status: `VERIFIED`; merged by PR #2388.
 
 Branch: `B335-drm-card-id-stable-slots`
 
@@ -318,3 +318,23 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 372 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR merge | PASS: PR #2388 merged to `main` at `934792db`. |
+
+## B336-drm-card-node-publication
+
+Status: `CLAIMED`.
+
+Branch: `B336-drm-card-node-publication`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| CLAIMED | DRM publishes `/dev/dri/cardN` per stable card slot. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PENDING. |
