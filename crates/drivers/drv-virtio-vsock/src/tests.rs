@@ -23,6 +23,8 @@ fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
     virtio::VirtioChildDeviceKey::from_raw(raw)
 }
 
+fn rx_noop(_owner: u32) -> usize { 0 }
+
 fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
     Ctx {
         device_key,
@@ -92,8 +94,8 @@ fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
     crate::registry::clear_ctxs_for_tests();
     let key1 = key(0x0010_0000);
     let key2 = key(0x0020_0000);
-    assert!(net::vsock::driver_install(key1.raw(), 3, tx_stub));
-    assert!(net::vsock::driver_install(key2.raw(), 4, tx_stub));
+    assert!(net::vsock::driver_install(key1.raw(), 3, tx_stub, rx_noop));
+    assert!(net::vsock::driver_install(key2.raw(), 4, tx_stub, rx_noop));
     {
         let mut ctxs = crate::registry::CTX.lock();
         ctxs.push(ctx(key1));
@@ -120,7 +122,7 @@ fn uninstall_unpublished_context_keeps_live_softirq_installed() {
     crate::registry::clear_rx_softirq_handler();
     let unpublished = key(0x0010_0000);
     let live = key(0x0020_0000);
-    assert!(net::vsock::driver_install(live.raw(), 4, tx_stub));
+    assert!(net::vsock::driver_install(live.raw(), 4, tx_stub, rx_noop));
     {
         let mut ctxs = crate::registry::CTX.lock();
         ctxs.push(ctx(unpublished));
@@ -145,7 +147,7 @@ fn uninstall_clears_endpoint_without_primary_context() {
 
     let _guard = TEST_LOCK.lock();
     crate::registry::clear_ctxs_for_tests();
-    assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub));
+    assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub, rx_noop));
 
     assert!(uninstall(key(0x0010_0000)));
     assert!(!net::vsock::driver_uninstall(0x0010_0000));
@@ -158,7 +160,7 @@ fn shutdown_quiesces_endpoint_without_primary_context() {
 
     let _guard = TEST_LOCK.lock();
     crate::registry::clear_ctxs_for_tests();
-    assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub));
+    assert!(net::vsock::driver_install(0x0010_0000, 3, tx_stub, rx_noop));
 
     assert!(shutdown(key(0x0010_0000)));
     assert!(shutdown(key(0x0010_0000)));

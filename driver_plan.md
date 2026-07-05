@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B418 verified, pending commit/PR/merge/sync.
+ACTIVE NOW: B419-virtio-vsock-live-multiendpoint-proof; VERIFIED, commit/PR pending.
 
-Current active item: none until B418 merges and fresh main is pulled.
+Current active item: Virtio-vsock primary compatibility route with multiple live endpoints needs live proof.
 
-Next gate after merge: claim B419 from fresh `origin/main` using
-`metadata/index.md`.
+Next gate after merge: return to fresh `origin/main` before claiming B420
+using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -248,7 +248,7 @@ Status legend:
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-| NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed before `mouseprobe` then passed on rerun in B327, B337, and B383; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/oxide-boot-smoke-arm-jyMRB8.log`, `/tmp/oxide-boot-smoke-arm-vsmd0t.log`, `/tmp/b383-arm-driver-path.log`, `/tmp/oxide-boot-smoke-arm-WjMdLT.log`; passing logs `/tmp/b327-queue-quiesce-arm-rerun.log`, `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`, `/tmp/b383-arm-driver-path-rerun.log`, `/tmp/oxide-boot-smoke-arm-nJVaKr.log`, `/tmp/oxide-boot-smoke-arm-laxjZl.log`, `/tmp/oxide-boot-smoke-arm-76xmcA.log`; root-cause separately. |
+| NOT DONE | TBD | Intermittent ARM no-progress watchdog: fast driver-path failed before `mouseprobe` then passed on rerun in B327, B337, and B383; pre-push login smoke also timed out on attempt 1 then reached `oxide login:` on attempt 2. Failed logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/oxide-boot-smoke-arm-jyMRB8.log`, `/tmp/oxide-boot-smoke-arm-vsmd0t.log`, `/tmp/b383-arm-driver-path.log`, `/tmp/oxide-boot-smoke-arm-WjMdLT.log`; passing logs `/tmp/b327-queue-quiesce-arm-rerun.log`, `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`, `/tmp/b383-arm-driver-path-rerun.log`, `/tmp/oxide-boot-smoke-arm-nJVaKr.log`, `/tmp/oxide-boot-smoke-arm-laxjZl.log`, `/tmp/oxide-boot-smoke-arm-76xmcA.log`; B419 showed the old systemd path could wedge before `/bin/vsock_probe` started, so the driver proof moved to direct `/init` and passed; root-cause of the broader systemd no-progress remains separate. |
 | VERIFIED | B328-virtio-input-drain-split | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth; `cargo test -p drv-virtio-input`, fast x86_64 driver path, and fast aarch64 driver path pass. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
@@ -352,7 +352,7 @@ Status legend:
 | VERIFIED | B416-nvme-ahci-multicontroller-proof | NVMe/AHCI per-BDF source audit, opt-in two-controller QEMU harness, `/bin/storage_multictrl_probe`, hosted `drv/sysfs/block`, x86_64 `/tmp/b416-x86-storage-multictrl-3.log`, and aarch64 `/tmp/b416-arm-storage-multictrl.log` pass. |
 | VERIFIED | B417-virtio-net-live-multidev-proof | Existing virtio-net multidev probe and QEMU two-device mode satisfy the row: source audit confirms keyed install/remove/rebind path; hosted `drv-virtio-net/net/virtio/pci-boot`, x86_64 `/tmp/b417-x86-virtio-net-multidev.log`, and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
 | VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
-| NOT DONE | TBD | Virtio-vsock primary compatibility route with multiple live endpoints needs live proof. |
+| VERIFIED | B419-virtio-vsock-live-multiendpoint-proof | Virtio-vsock primary compatibility route works with multiple live endpoints: direct `/init` proof installs cid=3/cid=4 and completes host round-trip on x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log`; hosted `net`, `drv-virtio-vsock`, and `pci-boot` tests pass. |
 | NOT DONE | TBD | Virtio-snd live multi-card proof and broader event/control coverage missing. |
 | NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
 | NOT DONE | TBD | QEMU-visible runtime bind/unbind/rebind certification incomplete. |
