@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B485-virtio-child-fallible-publication; IN AUDIT.
+Current marker: B485-virtio-child-fallible-publication; VERIFIED pending PR merge.
 
 ## B485 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B485-virtio-child-fallible-publication | IN AUDIT | Fresh main `bc9921df` after PR #2542 merge; auditing virtio-pci child-device publication to prove child `virtio` devices are created through fallible driver-model publication, with x86_64 and aarch64 smoke gates required before merge. |
+| B485-virtio-child-fallible-publication | VERIFIED | Fresh main `bc9921df` after PR #2542 merge; source audit proves `VirtioPciDrv::probe` maps modern PCI identity through `VirtioChildModelIdentity::modern_from_pci`, publishes the child with `drv::try_device_add(Arc::new(drv::Device::new(...).with_parent("pci", ...)))?`, and relies on driver-core to invoke child `VirtioChildDriver::probe`; `run_child_probe` publishes transport state only after child success and releases failed probe resources on error/drop. Checks pass: `cargo test -q -p virtio child_probe_lifecycle -- --nocapture --test-threads=1` 3/3; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 
 ## B484 Current
 
