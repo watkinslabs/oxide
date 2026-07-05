@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B354-drm-get-cap-supported-only` — VERIFIED, pre-push/PR merge pending.
+ACTIVE NOW: `B354-drm-get-cap-supported-only` — VERIFIED, PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B354-drm-get-cap-supported-only`.
 
-Current B354 gate: pre-push boot smoke, PR update, merge, and main sync.
+Current B354 gate: PR update, merge, and main sync.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -284,7 +284,7 @@ Status legend:
 | VERIFIED | B351-drm-unique-version-uapi | DRM GET_UNIQUE and SET_VERSION marshal Linux UAPI structs; fixed GET_UNIQUE to stay empty until SET_VERSION, avoid partial undersized-buffer copies, and return driver version negotiation fields. Hosted regressions, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2404 merge, and local main sync to `origin/main` at `66d5c727` pass. |
 | VERIFIED | B352-drm-atomic-empty-state | DRM MODE_ATOMIC empty-state gate now uses Linux 64-byte UAPI/ioctl, rejects reserved/event/async, keeps non-empty commits unsupported; hosted DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2405 merge, and local main sync to `origin/main` at `be5399d3` pass. |
 | VERIFIED | B353-drm-client-cap-rejects-unsupported | DRM SET_CLIENT_CAP rejects unsupported atomic/writeback/aspect/stereo/cursor hotspot caps for enable and disable without mutating file state; hosted regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2406 merge, and local main sync to `origin/main` at `f910022a` pass. |
-| >>> ACTIVE >>> VERIFIED, pre-push/PR merge pending | B354-drm-get-cap-supported-only | DRM GET_CAP clamps unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps to zero even when drivers over-report; hosted regression, full DRM tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
+| >>> ACTIVE >>> VERIFIED, PR merge pending | B354-drm-get-cap-supported-only | DRM GET_CAP clamps unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps to zero even when drivers over-report; hosted regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, and pre-push boot smoke pass. |
 | NOT DONE |  | DRM raw writes rejected. |
 | NOT DONE |  | DRM modifier-bearing ADDFB2 rejected. |
 | NOT DONE |  | ADDFB/ADDFB2 validate packed-RGB metadata and bounds. |
