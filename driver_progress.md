@@ -492,4 +492,4 @@ recent-completed table above; main was synced after each merge through
 | B396-sound-ops-route-by-owner | VERIFIED | Owner-routed ops dispatch proven by focused/full sound tests, arch proof, PR #2449, main sync `cac90846`. |
 | B397-sound-unregister-rejects-non-owners | VERIFIED | Non-owner unregister rejection proven by focused/serial full sound tests, arch proof, PR #2450, main sync `e5fe3f55`. |
 | B398-virtio-snd-eventq-owner-accounting | VERIFIED | EVENTQ owner accounting proven by focused/full virtio-snd tests, arch proof, PR #2451, main sync `a6506b42`. |
-| B399-virtio-snd-multicard-rebind-proof | ACTIVE | Claimed from fresh main; live multi-card bind/unbind/rebind proof next. |
+| B399-virtio-snd-multicard-rebind-proof | VERIFIED | Two-device QEMU/rootfs/probe path passes hosted gates plus x86_64/aarch64 live rebind smoke. |

@@ -165,6 +165,12 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "virtio-net-pci-non-transitional,netdev=net1,bus=pcie.0",
         ]);
     }
+    if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() {
+        c.args([
+            "-audiodev", "none,id=snd1",
+            "-device", "virtio-sound-pci,audiodev=snd1,disable-legacy=on,bus=pcie.0",
+        ]);
+    }
     eprintln!("xtask grub: launching qemu (GRUB→multiboot2), smp={smp}, accel={accel}, headless={headless}");
     run(c)
 }
