@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B468-remove-public-infallible-device-add VERIFIED pending PR merge.
+ACTIVE NOW: B469-sysfs-bus-driver-bind-unbind; IN AUDIT.
 
-Current active item: none; next claim starts after B468 merge and fresh main sync.
+Current active item: Sysfs bus-driver controls are backed by model bind/unbind.
 
-Next gate after merge: return to fresh `origin/main` before claiming B469 using
+Next gate after merge: return to fresh `origin/main` before claiming B470 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -76,7 +76,7 @@ Status legend:
 | VERIFIED | B466-i8042-keyboard-explicit-shutdown-callback | i8042 keyboard has explicit shutdown callback: x86_64 boot publishes `platform/i8042` and registers the `i8042-kbd` platform driver; `Ps2KbdDriver::shutdown` calls `shutdown_hw`, disables IRQ1 delivery, disables keyboard scanning, flushes pending output, and masks the I/O APIC pin while preserving `PRESENT` and allocated vector/pin state, while `remove` remains the full unbind teardown path that disables the port, frees the vector, clears IRQ state, and clears publication state. On aarch64 the boot hook is intentionally no-op because QEMU virt has no i8042. Hosted `drv-ps2-keyboard` tests pass, driver-core shutdown ordering regression passes, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B467-remove-public-register-device-bypasses | Public `register_device` bypasses are absent from the driver model: source search over live Rust/C/H code finds no `register_device` API or call site, `drv/src/lib.rs` exposes the authoritative model surface through `register_driver`, fallible `try_device_add`, `device_del`, `bind_addr`, and `unbind`, and production publication call sites route through `drv::try_device_add`. Full driver-model hosted tests pass 27/27, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B468-remove-public-infallible-device-add | Public infallible `device_add` wrapper is absent: `drv/src/lib.rs` re-exports only fallible `try_device_add`, the only `fn device_add` symbol is the private hosted driver-model test helper, and production publication sites call `drv::try_device_add` with explicit `Result` handling or conversion to failure/rollback state. Hosted publication suites pass for driver core, sound, DRM, fbdev, block, devfs, virtio-input, virtio-rng, and console, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
-| SOURCE OK |  | Sysfs bus-driver controls are backed by model bind/unbind. |
+| ACTIVE | B469-sysfs-bus-driver-bind-unbind | Sysfs bus-driver controls are backed by model bind/unbind. |
 | SOURCE OK |  | Sysfs exposes driver links. |
 | SOURCE OK |  | Sysfs exposes `driver_override`. |
 | VERIFIED |  | Sysfs exposes `modalias`. |
