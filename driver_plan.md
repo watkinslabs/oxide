@@ -2,11 +2,12 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B356-drm-addfb2-modifier-reject` — VERIFIED, PR merge pending.
+ACTIVE NOW: `B357-drm-addfb-packed-rgb-validation` — IN AUDIT.
 
-Current active item: `>>> ACTIVE >>> B356-drm-addfb2-modifier-reject`.
+Current active item: `>>> ACTIVE >>> B357-drm-addfb-packed-rgb-validation`.
 
-Current B356 gate: PR update, merge, and main sync.
+Current B357 gate: audit ADDFB/ADDFB2 packed-RGB metadata and bounds,
+add or confirm hosted regressions, then x86_64/aarch64 driver-path proof.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -286,8 +287,8 @@ Status legend:
 | VERIFIED | B353-drm-client-cap-rejects-unsupported | DRM SET_CLIENT_CAP rejects unsupported atomic/writeback/aspect/stereo/cursor hotspot caps for enable and disable without mutating file state; hosted regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2406 merge, and local main sync to `origin/main` at `f910022a` pass. |
 | VERIFIED | B354-drm-get-cap-supported-only | DRM GET_CAP clamps unsupported PRIME/syncobj/async/page-flip-target/modifiers/cursor caps to zero even when drivers over-report; hosted regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2407 merge, and local main sync to `origin/main` at `7eadc40e` pass. |
 | VERIFIED | B355-drm-raw-writes-rejected | DRM card and private render-node raw writes return `EINVAL`; source audit, existing hosted regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, PR #2408 merge, and local main sync to `origin/main` at `21e0a9ba` pass. |
-| >>> ACTIVE >>> VERIFIED, PR merge pending | B356-drm-addfb2-modifier-reject | DRM ADDFB2 rejects modifier flag and nonzero modifier payloads while modifier support is absent; added focused hosted regression for nonzero modifier payload with flags clear; full DRM tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | ADDFB/ADDFB2 validate packed-RGB metadata and bounds. |
+| VERIFIED | B356-drm-addfb2-modifier-reject | DRM ADDFB2 rejects modifier flag and nonzero modifier payloads while modifier support is absent; added focused hosted regression for nonzero modifier payload with flags clear; full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2409 merge, and local main sync to `origin/main` at `8c2d61e3` pass. |
+| >>> ACTIVE >>> IN AUDIT | B357-drm-addfb-packed-rgb-validation | ADDFB/ADDFB2 validate packed-RGB metadata and bounds. |
 | NOT DONE |  | fbdev flush/blank ops are per `/dev/fbN` record. |
 | NOT DONE |  | Virtio-gpu scanout context records exact fbdev index and unpublishes by owner token. |
 | NOT DONE | TBD | Console/fbdev publication transactional around stored fbdev index. |
