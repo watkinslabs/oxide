@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B472-sysfs-pci-resource VERIFIED pending PR merge.
+Current marker: B473-model-uevent-driver-state; IN AUDIT.
+
+## B473 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B473-model-uevent-driver-state | IN AUDIT | Fresh main `26aea317` after PR #2530 merge; auditing current model-derived uevent environment for bound and unbound driver state, with x86_64 and aarch64 proof required before VERIFIED. |
 
 ## B472 Current
 
