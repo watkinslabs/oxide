@@ -27,6 +27,17 @@ fn matches_on_device_id() {
 }
 
 #[test]
+fn bind_rejects_same_bus_driver_when_device_does_not_match() {
+    register_driver(&FAKE);
+    let dev = device_add(Arc::new(Device::new(
+        "pci", String::from("0000:00:11.0"), 0x1AF4, 0x1041, 0)));
+    assert_eq!(dev.bound(), None);
+    assert_eq!(bind(&dev, "fake-virtio-blk"), Err(crate::Error::NoMatch));
+    assert_eq!(dev.bound(), None);
+    device_del(&dev);
+}
+
+#[test]
 fn driver_override_controls_matching_and_bind() {
     register_driver(&FAKE);
     register_driver(&OVERRIDE);
