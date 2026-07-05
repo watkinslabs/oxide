@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B493-virtio-child-failed-probe-release; VERIFIED.
+Current marker: B494-virtio-child-success-publish; VERIFIED.
+
+## B494 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B494-virtio-child-success-publish | VERIFIED | Fresh main `5ce39617` after PR #2553 merge. Source audit proves successful child probes publish transport-owned runtime state only through the centralized wrapper/session path: shared `virtio::run_child_probe` calls `session.publish()` only after child `probe` returns `Ok(())`; pci-boot `VirtioChildSession::publish` consumes the live transport lease before calling `VirtioPciTransport::publish`; `publish_transport_mmio` delegates to `VirtioProbeDevres::publish`, which one-shot transfers mappings, vring frames, and MSI-X bindings into `publish_transport_record`. Checks pass: `cargo test -q -p virtio child_probe_lifecycle_publishes_only_after_success -- --nocapture --test-threads=1` 1/1; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B493 Current
 
