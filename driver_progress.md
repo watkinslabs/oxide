@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B370-virtio-net-no-boot-ipv4-policy`.
+Current marker: `>>> ACTIVE >>> B371-virtio-net-install-remove-keyed`.
 
 ## Archived Completed B327-B330
 
@@ -438,7 +438,7 @@ Branch: `B362-fbcon-foreground-owner`
 
 Evidence: source audit found VT activation published fbcon renderer foreground and tty keyboard foreground only behind `target_os = "oxide-kernel"`, leaving hosted tests unable to prove the single foreground publication path. Added `publish_foreground`, called by `init` and completed switches, and made `tty::live` visible through the existing hosted feature for VT dev-tests only. Regression `activate_publishes_single_foreground_to_tty_and_fbcon` initializes fbcon and proves `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` all move to VT3. `cargo check -p vt`, focused regression, full `cargo test -p vt` with 31 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2415, and main sync `1b3a3d14` pass.
 
-## Recent Completed B363-B369
+## Recent Completed B363-B370
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -449,11 +449,12 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 | B367-virtio-gpu-probe-unwind-proof | VERIFIED | Probe command/framebuffer allocations transfer or unwind by child key; full virtio-gpu tests, arch proof, PR #2420, main sync `c2e8e3cf`. |
 | B368-virtio-net-netdev-publish-owner | VERIFIED | Netdev iface/runtime publication and removal are child-key owned; full virtio-net tests, arch proof, PR #2421, main sync `11a52b12`. |
 | B369-virtio-net-rx-runtime-owner | VERIFIED | RX runtime install/removal and last-runtime shared teardown are child-key owned; full virtio-net tests, arch proof, PR #2422, main sync `92bf93aa`. |
+| B370-virtio-net-no-boot-ipv4-policy | VERIFIED | RX runtime install seeds `0.0.0.0`, iface address hook updates later; full virtio-net tests, arch proof, PR #2423, main sync `c9a786f6`. |
 
-## B370-virtio-net-no-boot-ipv4-policy
+## B371-virtio-net-install-remove-keyed
 
-Status: `VERIFIED - PR READY`.
+Status: `IN AUDIT`.
 
-Branch: `B370-virtio-net-no-boot-ipv4-policy`
+Branch: `B371-virtio-net-install-remove-keyed`
 
-Evidence: `install_rx_runtime` seeds RX softirq state with `0.0.0.0`; iface address updates are explicit through `set_softirq_ip_for_iface`. Added `rx_runtime_install_does_not_seed_boot_ipv4_policy`; targeted test, full `cargo test -p drv-virtio-net`, `make smoke-driver-path-x86`, and `make smoke-driver-path-arm` pass.
+Evidence: source audit of virtio-net install/remove child-key ownership is in progress.
