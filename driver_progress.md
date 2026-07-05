@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B497-virtio-child-policy-only; IN AUDIT.
+Current marker: B497-virtio-child-policy-only; VERIFIED.
 
 ## B497 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B497-virtio-child-policy-only | IN AUDIT | Fresh main `d93b3a4a` after PR #2556 merge; auditing that child virtio driver crates only provide profile, install, remove, and shutdown policy while generic wrapper/shared virtio/pci-boot own matching, session lifecycle, publish/release/remove/unpublish, and shutdown key lookup; hosted and x86_64/aarch64 smoke gates required before merge. |
+| B497-virtio-child-policy-only | VERIFIED | Fresh main `d93b3a4a` after PR #2556 merge. Source audit proves child virtio driver crates only supply profile, install/init, remove/uninstall, and shutdown policy: the only bus-facing child `drv::Driver` implementation, driver registration, matching, probe/remove/shutdown wrapper, parent-key lookup, transport session lifecycle, publish, failed-probe release, remove-unpublish, and shutdown-key dispatch live in `crates/kernel/pci-boot/src/virtio_child.rs` and shared `crates/drivers/virtio/src`; GPU/input/net/block/RNG/vsock/sound crates export `DRIVER_ID`, `transport_profile`, install/init, remove/uninstall, and shutdown entrypoints, and source search finds no child crate `drv::Driver`, `drv::register_driver`, bind/unbind, pci-boot transport import, `VirtioPciTransport`, `VirtioChildSession`, or shared `run_child_*` lifecycle call. Checks pass: `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B496 Current
 
