@@ -21,9 +21,6 @@ fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; 6]> {
 pub fn init_modern(
     device_key: DeviceKey,
     resources: virtio::VirtioResources,
-    bus: u8,
-    device: u8,
-    function: u8,
     rx0_buf_pa: u64,
     rx0_buf_len: u16,
     tx0_buf_pa: u64,
@@ -39,9 +36,6 @@ pub fn init_modern(
     init_modern_with_rx_pool(
         device_key,
         resources,
-        bus,
-        device,
-        function,
         rx_bufs,
         tx0_buf_pa,
     )
@@ -53,9 +47,6 @@ pub fn init_modern(
 pub fn init_modern_with_rx_pool(
     device_key: DeviceKey,
     resources: virtio::VirtioResources,
-    bus: u8,
-    device: u8,
-    function: u8,
     rx_bufs: alloc::vec::Vec<virtio::VirtioNetRxBuffer>,
     tx0_buf_pa: u64,
 ) -> bool {
@@ -91,9 +82,6 @@ pub fn init_modern_with_rx_pool(
     let rx_next_avail = rx_bufs.len() as u16;
     let state = super::ModernNetState {
         device_key,
-        bus,
-        device,
-        function,
         cfg_va: resources.cfg_va,
         hhdm: resources.hhdm,
         rxq,
@@ -121,12 +109,8 @@ pub fn init_modern_with_rx_pool(
     }
     #[cfg(feature = "debug-boot")]
     {
-        klog::write_raw(b"[INFO]  virtio-net-modern ");
-        klog::write_dec_u64(state.bus as u64);
-        klog::write_raw(b":");
-        klog::write_dec_u64(state.device as u64);
-        klog::write_raw(b".");
-        klog::write_dec_u64(state.function as u64);
+        klog::write_raw(b"[INFO]  virtio-net-modern key=");
+        klog::write_hex_u64(state.device_key.raw() as u64);
         klog::write_raw(b" cfg_va=");
         klog::write_hex_u64(state.cfg_va);
         klog::write_raw(b" rxq_size=");

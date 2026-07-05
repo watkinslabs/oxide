@@ -26,7 +26,19 @@ fn child_model_identity_maps_modern_pci_device() {
 }
 
 #[test]
+fn child_model_identity_can_be_constructed_without_pci_identity() {
+    let child = VirtioChildModelIdentity::modern(2, 5);
+
+    assert_eq!(child.bus, VIRTIO_CHILD_BUS);
+    assert_eq!(child.addr, "virtio5");
+    assert_eq!(child.vendor_id, VIRTIO_VENDOR_ID);
+    assert_eq!(child.device_id, 2);
+    assert_eq!(child.class, VIRTIO_CHILD_CLASS);
+}
+
+#[test]
 fn child_model_identity_rejects_non_modern_pci_device() {
+    assert!(VirtioChildModelIdentity::modern_from_pci(0x1234, 0x1041, 0).is_none());
     assert!(VirtioChildModelIdentity::modern_from_pci(0x1AF4, 0x1000, 0).is_none());
     assert!(VirtioChildModelIdentity::modern_from_pci(0x1AF4, 0x9999, 0).is_none());
 }
@@ -111,10 +123,6 @@ impl VirtioChildTransportSession for ProbeSession {
         VirtioChildDeviceKey::from_raw(1)
     }
 
-    fn location(&self) -> VirtioTransportLocation {
-        VirtioTransportLocation::new(0, 1, 0)
-    }
-
     fn device_addr(&self) -> &str {
         "virtio-test0"
     }
@@ -175,7 +183,7 @@ fn child_probe_lifecycle_releases_once_at_each_fault_point() {
             if fail_step == 0 { return Err::<(), usize>(fail_step); }
             let _ = session.device_key();
             if fail_step == 1 { return Err::<(), usize>(fail_step); }
-            let _ = session.location();
+            let _ = session.device_addr();
             if fail_step == 2 { return Err::<(), usize>(fail_step); }
             let _ = session.child_resources();
             Err::<(), usize>(fail_step)

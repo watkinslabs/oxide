@@ -2,11 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B506-gpu-owner-key-boundary VERIFIED.
+ACTIVE NOW: B507-virtio-child-transport-session-contract; VERIFIED; PR pending.
 
-Current active item: none; next claim is B507 after fresh `main` sync.
+Current active item: Shared `VirtioChildTransportSession` contract is now
+child-visible transport-neutral; PCI BDF remains only in the PCI-backed wrapper
+for GPU metadata.
 
-Next gate after merge: return to fresh `origin/main` before claiming B507 using
+Next gate after merge: return to fresh `origin/main` before claiming B508 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -162,7 +164,7 @@ Status legend:
 | VERIFIED |  | Failed child probes drain still-owned frames including net boot payload frames. |
 | VERIFIED |  | Shared `run_child_remove` owns remove-before-unpublish sequencing. |
 | VERIFIED |  | Shared `run_child_shutdown` owns typed-key shutdown dispatch. |
-| NOT DONE | TBD | Shared `VirtioChildTransportSession` contract exists, but current implementation is still boot PCI-backed. |
+| VERIFIED | B507-virtio-child-transport-session-contract | Shared `VirtioChildTransportSession` no longer exposes PCI-shaped location data to child drivers: child-visible session contract carries child key/address/features/resources only; pci-boot keeps BDF as wrapper-local metadata for GPU display registration; virtio-net runtime state/init no longer stores or accepts BDF; virtio-blk debug output logs opaque child keys instead of decoding them as BDF. Checks pass: focused shared virtio/net/block tests; broad hosted driver gate; line caps; `git diff --check`; x86_64 and aarch64 smoke boots. |
 | SOURCE OK |  | PCI-backed child session carries explicit `VirtioPciTransport` backend. |
 | SOURCE OK |  | Raw virtio-pci probe/publish/unpublish helpers are private to transport module. |
 | VERIFIED |  | Shared `VirtioChildResourceState` owns transport-neutral readiness/resource policy. |

@@ -1,8 +1,7 @@
 // Modern virtio-net runtime state (arch-neutral). The transport backend brings
 // up cap discovery, BAR mapping, queue program, DRIVER_OK, and MSI-X bind; once
 // that finishes it hands persistent kernel-side addresses here via
-// `init_modern`. Runtime paths
-// consume the stashed state to drive RX-poll, TX, and ARP through
+// `init_modern`. Runtime paths consume the stashed state to drive RX-poll, TX, and ARP through
 // `crate::net::stack`.
 //
 // Kept arch-neutral because every operation post-bring-up is MMIO
@@ -47,15 +46,12 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 
 /// Persistent runtime state for one modern virtio-net device. Queue resources
 /// reference VAs/PAs already programmed into the device by the transport
-/// probe. `bus`/`device`/`function` mirror the PCI BDF for log lines and
-/// later sysfs export.
+/// probe. Identity is the transport-neutral virtio child key; backend-specific
+/// coordinates stay in the transport wrapper.
 #[derive(Clone)]
 pub struct ModernNetState {
     /// Owning virtio child identity supplied by the transport bus.
     pub device_key: DeviceKey,
-    pub bus:      u8,
-    pub device:   u8,
-    pub function: u8,
     pub cfg_va:   u64,
     pub hhdm:     u64,
     pub rxq:      virtio::VirtQueueResource,

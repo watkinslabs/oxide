@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B506-gpu-owner-key-boundary; VERIFIED.
+Current marker: B507-virtio-child-transport-session-contract; VERIFIED; PR pending.
+
+## B507 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B507-virtio-child-transport-session-contract | VERIFIED | Fresh main `2658868e` after PR #2570 merge. `metadata/index.md` advanced B 507 -> 508. Removed `location()` from shared `virtio::VirtioChildTransportSession`; non-PCI probe-session tests no longer fabricate BDF-shaped location; shared `VirtioChildModelIdentity::modern` constructs child identities without PCI input. `pci-boot::VirtioChildSession` keeps `pci_bdf()` as a concrete PCI-wrapper method, and `VirtioChildOps::probe_child` receives BDF only inside the pci-boot wrapper; GPU still uses it for display metadata, while net/sound no longer consume PCI location. `drv-virtio-net` init/runtime state now uses only `VirtioChildDeviceKey` plus transport resources and removed its stale `pci` dependency. `drv-virtio-blk` debug output logs opaque child keys instead of decoding synthetic keys as BDF. Checks pass: `cargo test -q -p virtio -- --nocapture --test-threads=1` 44/44; `cargo test -q -p drv-virtio-net -- --nocapture --test-threads=1` 16/16; `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` 18/18; broad hosted driver gate for `pci-boot`, `virtio`, and all virtio child driver crates; `git diff --check`; touched Rust files remain under 500 lines; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B506 Current
 
@@ -29,7 +35,7 @@ Current marker: B506-gpu-owner-key-boundary; VERIFIED.
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B507-next-driver-row | PENDING | Claim next unverified row only after B506 commit, PR, merge, and fresh `main` sync. Use `metadata/index.md` before opening the branch. |
+| B508-next-driver-row | PENDING | Claim next unverified row only after B507 commit, PR, merge, and fresh `main` sync. Use `metadata/index.md` before opening the branch. Fanout audits found next MSI-X teardown and `VirtioProbeState` ownership rows are still `NOT DONE`, while MSI-X function-mask clearing is `SOURCE OK` but lacks live interrupt proof; vsock and sound ownership rows are `SOURCE OK` but need hosted fault-injection proof before `VERIFIED`. |
 
 ## B503 Current
 
