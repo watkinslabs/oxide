@@ -250,7 +250,7 @@ Status legend:
 | VERIFIED |  | `EVIOCSCLOCKID` validates userspace clock id. |
 | VERIFIED |  | `EVIOCREVOKE` marks current open file revoked and later reads fail with `ENODEV`. |
 | VERIFIED |  | VFS has file-aware read/poll/release hooks for evdev semantics. |
-| NOT DONE |  | Obsolete crate-level EVIOC recognizer removed. |
+| VERIFIED | B326-userspace-seat-driver-proof | Obsolete crate-level EVIOC recognizer removed. |
 | VERIFIED |  | `EVIOCGREP`/`EVIOCSREP` implemented in real evdev file ioctl handler. |
 | NOT DONE |  | Virtio-gpu remove is keyed to owning child key. |
 | NOT DONE |  | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release. |
