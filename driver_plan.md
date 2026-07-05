@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B472-sysfs-pci-resource VERIFIED pending PR merge.
+ACTIVE NOW: B473-model-uevent-driver-state; IN AUDIT.
 
-Current active item: none; next claim starts after B472 merge and fresh main sync.
+Current active item: Model-derived uevent environment includes current bound driver state.
 
-Next gate after merge: return to fresh `origin/main` before claiming B473 using
+Next gate after merge: return to fresh `origin/main` before claiming B474 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -82,7 +82,7 @@ Status legend:
 | VERIFIED |  | Sysfs exposes `modalias`. |
 | VERIFIED | B472-sysfs-pci-resource | Sysfs exposes aggregate PCI `resource` from the current model resource list: PCI device attrs include `resource`, reads emit one Linux-style `start end flags` line per `drv::Resource`, absent BARs remain absent from indexed `resourceN`, and indexed BAR attrs still expose matching single-resource bodies. Added hosted regression coverage for aggregate multi-BAR readback in the existing PCI resource fixture; full sysfs and driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED |  | Sysfs exposes indexed PCI `resourceN` BAR attributes. |
-| SOURCE OK |  | Model-derived uevent environment includes current bound driver state. |
+| ACTIVE | B473-model-uevent-driver-state | Model-derived uevent environment includes current bound driver state. |
 | VERIFIED |  | Model devices with `dev_t` expose `dev` attribute. |
 | VERIFIED |  | Dynamic `/sys/dev/char` reverse index derives from model devices. |
 | VERIFIED |  | Dynamic `/sys/dev/block` reverse index derives from model devices. |
