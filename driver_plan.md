@@ -2,13 +2,13 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B331-virtio-gpu-probe-failure-unwind` — VERIFIED; commit/PR merge pending.
+ACTIVE NOW: `B332-virtio-gpu-hot-remove-cleanup` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B331-virtio-gpu-probe-failure-unwind` (verified; merge pending).
+Current active item: `>>> ACTIVE >>> B332-virtio-gpu-hot-remove-cleanup`.
 
-Current B331 gate: DONE. Hosted regression plus fast x86_64/aarch64 driver-path
-smokes prove virtio-gpu probe-failure unwind removes only the failed child
-scanout, with no cross-device teardown.
+Current B332 gate: prove or fix virtio-gpu hot-remove so console/fbdev, DRM,
+and scanout cleanup are each attempted independently instead of one failed
+cleanup preventing the later teardown paths.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -263,7 +263,7 @@ Status legend:
 | VERIFIED | B329-virtio-gpu-remove-child-key | Virtio-gpu remove is keyed to owning child key; removed BDF-keyed child-remove pre-unpublish and added hosted key-vs-BDF regression plus fast x86_64/aarch64 driver-path proof. |
 | VERIFIED | B330-virtio-gpu-remove-teardown-order | Virtio-gpu remove tears down fbcon/fbdev/DRM/klog/tty scanout before backing release; source order is `uninstall(device_key)` before `uninstall_scanout(device_key)`, with hosted GPU tests and fast x86_64/aarch64 driver-path proof passing. |
 | VERIFIED | B331-virtio-gpu-probe-failure-unwind | Virtio-gpu probe-failure unwind removes only failed child scanout; hosted post-init regression now runs, full GPU crate tests pass, and fast x86_64/aarch64 driver-path proof passes. |
-| NOT DONE | TBD | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup. |
+| CLAIMED | B332-virtio-gpu-hot-remove-cleanup | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup. |
 | NOT DONE |  | Virtio-gpu installed device state is per child key. |
 | NOT DONE |  | Virtio-gpu duplicate child-key install rejected before publication. |
 | NOT DONE |  | DRM card IDs are stable slots. |
