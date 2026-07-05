@@ -2,12 +2,12 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B334-virtio-gpu-duplicate-key-reject` — VERIFIED; commit/PR merge pending.
+ACTIVE NOW: `B335-drm-card-id-stable-slots` — VERIFIED; commit/PR merge pending.
 
-Current active item: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject` — verified locally; commit/PR merge pending.
+Current active item: `>>> ACTIVE >>> B335-drm-card-id-stable-slots` — verified locally; commit/PR merge pending.
 
-Current B334 gate: duplicate child-key rejection is proven before second DRM
-card/model publication side effects; hosted tests and x86_64/aarch64
+Current B335 gate: DRM card IDs are stable slots across register, lookup,
+ioctl routing, and unregister/reuse behavior; hosted tests and x86_64/aarch64
 driver-path smokes passed.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -265,8 +265,8 @@ Status legend:
 | VERIFIED | B331-virtio-gpu-probe-failure-unwind | Virtio-gpu probe-failure unwind removes only failed child scanout; hosted post-init regression now runs, full GPU crate tests pass, and fast x86_64/aarch64 driver-path proof passes. |
 | VERIFIED | B332-virtio-gpu-hot-remove-cleanup | Virtio-gpu hot-remove independently attempts console/fbdev, DRM, and scanout cleanup; hosted hot-remove regressions, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
 | VERIFIED | B333-virtio-gpu-device-state-key | Virtio-gpu installed device state is per child key; source audit, hosted key-vs-BDF tests, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
-| VERIFIED; commit/PR merge pending | B334-virtio-gpu-duplicate-key-reject | Virtio-gpu duplicate child-key install rejects `Error::Busy` before second DRM card/model publication; hosted duplicate-publication regression, full GPU crate tests, and fast x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | DRM card IDs are stable slots. |
+| VERIFIED | B334-virtio-gpu-duplicate-key-reject | Virtio-gpu duplicate child-key install rejects `Error::Busy` before second DRM card/model publication; hosted duplicate-publication regression, full GPU crate tests, fast x86_64/aarch64 driver-path proof, and PR #2387 merge pass. |
+| VERIFIED; commit/PR merge pending | B335-drm-card-id-stable-slots | DRM card IDs are stable slots: registry stores `Vec<Option<Arc<dyn DrmDriver>>>`, node inodes tag the stable card id, ioctl routing uses that tag, lower-slot reuse does not reroute an existing higher-slot fd, full DRM crate tests pass, and fast x86_64/aarch64 driver-path proof passes. |
 | NOT DONE |  | DRM publishes `/dev/dri/cardN` per stable card slot. |
 | NOT DONE |  | DRM render nodes withheld until real render/GEM UAPI exists. |
 | NOT DONE |  | DRM inode tag encodes card id. |
