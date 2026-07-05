@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # D3.3 virtio-vsock host↔guest round-trip smoke. Starts a HOST AF_VSOCK
 # echo server on port 1234 (socat, else a python3 fallback), boots the
-# kernel, logs in over serial (alice/swordfish), runs /bin/vsock_probe,
-# and asserts BOTH:
+# kernel with an opt-in direct /init that runs /bin/vsock_probe, and
+# asserts BOTH:
 #   1. the kernel enumerated the device (`virtio-vsock installed cid=3`)
 #   2. the guest probe prints `vsock_probe: PASS`
 #
 # The guest connects to {cid=2 (VMADDR_CID_HOST), port=1234}; the host
 # echo server replies the bytes verbatim → the probe asserts echo==sent.
-# Driven via the serial-login FIFO (the rcS smoke path does not run under
-# the systemd boot), so this exercises the real OP_REQUEST/RESPONSE/RW
-# datapath end to end.
+# Driven via the same UART-socket capture path as the driver proof smokes,
+# so it exercises the real OP_REQUEST/RESPONSE/RW datapath without waiting
+# for the full systemd desktop path.
 #
 # Requires /dev/vhost-vsock on the host. Skips cleanly (exit 0 with a
 # clear message) if neither socat-with-VSOCK nor python3 is available.
@@ -29,6 +29,7 @@ case "$ARCH" in
 esac
 TIMEOUT="${2:-600}"
 HOST_PORT=1234
+MULTIDEV="${OXIDE_VIRTIO_VSOCK_MULTIDEV_SMOKE:-}"
 
 # vhost-vsock kernel module / dev node is mandatory for the host peer.
 if [ ! -e /dev/vhost-vsock ]; then
@@ -78,9 +79,10 @@ if ! start_host_peer; then
 fi
 
 LOG="$(mktemp /tmp/oxide-smoke-vsock-${ARCH}-XXXXXX.log)"
+KEEP_LOG="${KEEP_LOG:-}"
 PIDFILE="$(mktemp /tmp/oxide-smoke-vsock-${ARCH}-XXXXXX.pid)"
-QIN="$(mktemp -u /tmp/oxide-smoke-vsock-${ARCH}-qin-XXXXXX)"
-mkfifo "$QIN"
+UART="$(mktemp -u /tmp/oxide-smoke-vsock-${ARCH}-uart-XXXXXX.sock)"
+UART_BRIDGE_PID=""
 cleanup() {
     if [ -n "$HOST_PEER_PID" ] && kill -0 "$HOST_PEER_PID" 2>/dev/null; then
         kill -TERM "$HOST_PEER_PID" 2>/dev/null || true
@@ -93,18 +95,41 @@ cleanup() {
             kill -KILL "-$pid" 2>/dev/null || true
         fi
     fi
-    exec 9>&- 2>/dev/null || true
-    rm -f "$LOG" "$PIDFILE" "$QIN" "$PY_SERVER"
+    [ -n "$UART_BRIDGE_PID" ] && kill "$UART_BRIDGE_PID" 2>/dev/null || true
+    if [ -n "$KEEP_LOG" ]; then
+        cp "$LOG" "$KEEP_LOG" 2>/dev/null || true
+        echo "boot-smoke-vsock: kept log at $KEEP_LOG"
+        rm -f "$PIDFILE" "$UART" "$PY_SERVER"
+    else
+        rm -f "$LOG" "$PIDFILE" "$UART" "$PY_SERVER"
+    fi
 }
 trap cleanup EXIT
 
-echo "boot-smoke-vsock: arch=$ARCH timeout=${TIMEOUT}s log=$LOG"
+echo "boot-smoke-vsock: arch=$ARCH timeout=${TIMEOUT}s uart=$UART log=$LOG"
 
-# Hold the FIFO open writable so qemu doesn't see EOF after our printfs.
-exec 9<>"$QIN"
-
-OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make '$MAKE_TARGET' > '$LOG' 2>&1 < '$QIN'" &
+OXIDE_DRIVER_PATH_SMOKE=1 OXIDE_VSOCK_SMOKE=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_UART_SOCK="$UART" OXIDE_QEMU_KVM="${OXIDE_QEMU_KVM:-1}" \
+    setsid bash -c "exec make '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
+for _ in $(seq 1 600); do
+    [ -S "$UART" ] && break
+    sleep 0.1
+done
+[ -S "$UART" ] || { echo "boot-smoke-vsock: FAIL — UART socket absent" >&2; exit 1; }
+python3 - "$UART" "$LOG" <<'PY' &
+import socket, sys
+
+uart, log_path = sys.argv[1:3]
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect(uart)
+with open(log_path, "ab", buffering=0) as log:
+    while True:
+        data = sock.recv(4096)
+        if not data:
+            break
+        log.write(data)
+PY
+UART_BRIDGE_PID=$!
 
 wait_for() {
     local pat="$1" label="$2" deadline="$3"
@@ -113,6 +138,11 @@ wait_for() {
         if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
             echo "boot-smoke-vsock: FAIL — qemu exited before $label" >&2
             tail -n 60 "$LOG" >&2
+            exit 1
+        fi
+        if grep -aqE 'vsock_probe: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
+            echo "boot-smoke-vsock: FAIL — service reported failure before $label" >&2
+            grep -aE "virtio-vsock installed|vsock_probe:|driver-path-smoke.service" "$LOG" >&2
             exit 1
         fi
         if grep -aq "$pat" "$LOG" 2>/dev/null; then return 0; fi
@@ -126,18 +156,18 @@ wait_for() {
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 wait_for "virtio-vsock installed cid=" "device bring-up" "$deadline"
-wait_for "oxide login:" "login prompt" "$deadline"
-sleep 1
-printf 'alice\n'     >&9
-sleep 2
-printf 'swordfish\n' >&9
-wait_for 'oxide:~\$' "shell prompt" "$deadline"
-# Run the round-trip probe: connect to the host echo server over vsock.
-printf '/bin/vsock_probe\n' >&9
+if [ -n "$MULTIDEV" ]; then
+    wait_for "virtio-vsock installed cid=3" "primary vsock endpoint" "$deadline"
+    wait_for "virtio-vsock installed cid=4" "secondary vsock endpoint" "$deadline"
+fi
 while [ "$(date +%s)" -lt "$deadline" ]; do
     if grep -aq 'vsock_probe: PASS' "$LOG" 2>/dev/null; then
-        echo "boot-smoke-vsock: PASS — device cid=3 + host round-trip OK"
-        grep -aE "virtio-vsock installed|vsock_probe:" "$LOG" | tail -3
+        if [ -n "$MULTIDEV" ]; then
+            echo "boot-smoke-vsock: PASS — devices cid=3,cid=4 + primary host round-trip OK"
+        else
+            echo "boot-smoke-vsock: PASS — device cid=3 + host round-trip OK"
+        fi
+        grep -aE "virtio-vsock installed|vsock_probe:" "$LOG" | tail -5
         exit 0
     fi
     if grep -aq 'vsock_probe: FAIL' "$LOG" 2>/dev/null; then

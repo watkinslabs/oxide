@@ -201,6 +201,11 @@ b"#!/bin/sh
 set -eu
 exec /bin/virtio_net_multidev_probe
 "
+        } else if std::env::var_os("OXIDE_VSOCK_SMOKE").is_some() {
+b"#!/bin/sh
+set -eu
+exec /bin/vsock_probe
+"
         } else {
 b"#!/bin/sh
 set -eu
@@ -259,6 +264,9 @@ ExecStart=/bin/driver_path_smoke.sh
         }
         if std::env::var_os("OXIDE_VIRTIO_GPU_MULTIDEV_SMOKE").is_some() {
             put(&user("virtio_gpu_multidev_probe"), "/init")?;
+        }
+        if std::env::var_os("OXIDE_VSOCK_SMOKE").is_some() {
+            put(&user("vsock_probe"), "/init")?;
         }
     }
     if std::env::var_os("OXIDE_USERSPACE_SEAT_SMOKE").is_some() {

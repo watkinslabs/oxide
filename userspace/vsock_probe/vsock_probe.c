@@ -9,6 +9,7 @@
 // data over the virtio-vsock TX/RX queues, not a loopback fake.
 
 #include <unistd.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/socket.h>
 
@@ -26,14 +27,23 @@ struct sockaddr_vm {
                             sizeof(unsigned int) - sizeof(unsigned int)];
 };
 
-static void emit(const char *m) { write(1, m, strlen(m)); }
+static void emit(const char *m) {
+    write(1, m, strlen(m));
+    int fd = open("/dev/kmsg", O_WRONLY);
+    if (fd >= 0) {
+        write(fd, m, strlen(m));
+        close(fd);
+    }
+}
 
 #define HOST_CID  2u      /* VMADDR_CID_HOST */
 #define HOST_PORT 1234u
 
 int main(void) {
+    emit("vsock_probe: START\n");
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (fd < 0) { emit("vsock_probe: FAIL socket(AF_VSOCK)\n"); return 1; }
+    emit("vsock_probe: socket OK\n");
 
     struct sockaddr_vm addr;
     memset(&addr, 0, sizeof addr);
@@ -41,19 +51,23 @@ int main(void) {
     addr.svm_cid    = HOST_CID;
     addr.svm_port   = HOST_PORT;
 
+    emit("vsock_probe: connect START\n");
     if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
         emit("vsock_probe: FAIL connect cid=2 port=1234\n");
         close(fd);
         return 1;
     }
+    emit("vsock_probe: connect OK\n");
 
     static const char ping[] = "oxide-vsock-ping";
     size_t plen = sizeof(ping) - 1;
+    emit("vsock_probe: write START\n");
     if (write(fd, ping, plen) != (ssize_t)plen) {
         emit("vsock_probe: FAIL write\n");
         close(fd);
         return 1;
     }
+    emit("vsock_probe: read START\n");
 
     char buf[64];
     size_t got = 0;

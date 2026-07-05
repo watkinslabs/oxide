@@ -295,11 +295,13 @@ impl VirtioChildOps for VirtioVsockOps {
         if !drv_virtio_vsock::install(device_key, resources) {
             return Err(drv::Error::ProbeFailed);
         }
+        let cid = drv_virtio_vsock::guest_cid_for(device_key);
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-vsock installed cid=");
-            klog::write_dec_u64(drv_virtio_vsock::guest_cid());
+            klog::write_dec_u64(cid);
             klog::write_raw(b"\n");
         }
+        let _ = cid;
         Ok(())
     }
 
