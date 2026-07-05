@@ -298,6 +298,14 @@ pub fn unregister_node(idx: u32) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn unregister_all_nodes() {
+    let ids: Vec<u32> = FB_DEVICES.lock().iter().map(|(idx, _)| *idx).collect();
+    for idx in ids {
+        let _ = unregister_node(idx);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
