@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B393-virtio-snd-install-remove-keyed` — CLAIMED.
+ACTIVE NOW: `B393-virtio-snd-install-remove-keyed` — VERIFIED; COMMIT/PR PENDING.
 
 Current active item: `>>> ACTIVE >>> B393-virtio-snd-install-remove-keyed`.
 
-Current B393 gate: prove or fix virtio-snd install/remove ownership so teardown
-selects the owning child key, with hosted tests and x86_64/aarch64 runtime proof
-before merge.
+Current B393 gate: source audit, hosted tests, and x86_64/aarch64 driver-path
+runtime proof pass; commit, push, PR, merge, and main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -325,7 +324,7 @@ Status legend:
 | VERIFIED | B390-virtio-rng-child-key-records | Virtio-rng keeps per-child-key records: source audit proves `RngState` stores `VirtioChildDeviceKey`, registry records are per-device handles, install/uninstall/shutdown/find and `fill_from_device` select exact keys, active provider uses `active_key`, and pci-boot passes `session.device_key()`; hosted child-key regression, full drv-virtio-rng tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and local main sync to `origin/main` at `68940f57` pass. |
 | VERIFIED | B391-virtio-rng-seeds-bound-device | Virtio-rng seeds from just-bound device: source audit proves `install(device_key, resources)` seeds via `fill_from_device(device_key, &mut seed)` after registering that child, while active hwrng reads still use `fill()`/`active_handle()`; hosted requested-child fill regression, full drv-virtio-rng tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2444 merge, and local main sync to `origin/main` at `75c9cfe8` pass. |
 | VERIFIED | B392-virtio-rng-active-provider | Virtio-rng active `/dev/hwrng` provider promotion/removal: source audit proves `uninstall` removes by exact key, promotes only live records through `promote_active_locked`, clears hwrng when no live provider remains, and publish failure clears matching `active_key`; hosted active-provider regressions, full drv-virtio-rng tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2445 merge, and local main sync to `origin/main` at `197482f2` pass. |
-| >>> ACTIVE >>> CLAIMED | B393-virtio-snd-install-remove-keyed | Virtio-snd install/remove keyed to owning child key. |
+| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B393-virtio-snd-install-remove-keyed | Virtio-snd install/remove keyed to owning child key: source audit proves pci-boot passes `session.device_key()`, `SndInstall` stores `device_key`, `CTX` records are keyed, duplicate install rejects exact key, `uninstall` clears sound card/ops by `sound_owner(device_key)` and removes context by exact key; hosted regression proves uninstalling key0 leaves key1 context/card/ops/event softirq live, full drv-virtio-snd tests, x86_64 driver-path log `/tmp/b393-x86-driver-path.log`, and aarch64 driver-path log `/tmp/b393-arm-driver-path.log` pass. |
 | NOT DONE |  | Sound card layer allocates owner-keyed ALSA card numbers. |
 | NOT DONE |  | Sound card layer publishes per-card ALSA/OSS nodes. |
 | NOT DONE |  | Sound ops route by owner. |

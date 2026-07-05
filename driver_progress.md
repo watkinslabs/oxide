@@ -485,9 +485,11 @@ recent-completed table above; main was synced after each merge through
 
 ## B393-virtio-snd-install-remove-keyed
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B393-virtio-snd-install-remove-keyed`
 
-Scope: prove or fix virtio-snd install/remove so removal selects the owning
-child key and cannot tear down another child.
+Evidence: source audit and hosted regression prove key0 removal leaves key1
+context, card, ops, and event softirq live. Full tests plus x86_64
+`/tmp/b393-x86-driver-path.log` and aarch64 `/tmp/b393-arm-driver-path.log`
+driver-path proofs pass.
