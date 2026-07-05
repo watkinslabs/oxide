@@ -3,13 +3,24 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as SoundLockClass};
 
 struct SoundCard {
-    owner: u32,
+    owner: SoundOwnerKey,
     card: u32,
     publishing: bool,
     nodes: Vec<Arc<drv::Device>>,
 }
 
-const NO_CARD_OWNER: u32 = u32::MAX;
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct SoundOwnerKey(u32);
+
+impl SoundOwnerKey {
+    /// Build from a driver-owned stable sound endpoint key. # C: O(1)
+    pub fn from_raw(raw: u32) -> Option<Self> {
+        if raw == 0 { None } else { Some(Self(raw)) }
+    }
+
+    /// Raw key for driver-local reverse lookup and hosted assertions. # C: O(1)
+    pub fn raw(self) -> u32 { self.0 }
+}
 
 static CARDS: Spinlock<Vec<SoundCard>, SoundLockClass> = Spinlock::new(Vec::new());
 
@@ -23,7 +34,7 @@ enum PublishClaim {
 /// Register the ALSA (primary) + OSS (emulation) nodes for a probed card.
 /// Called from the sound card driver's probe after it has installed ops.
 /// # C: O(depth)
-pub fn register_card(owner: u32) -> bool {
+pub fn register_card(owner: SoundOwnerKey) -> bool {
     if crate::ops::ops_for(owner).is_none() { return false; }
     if !reserve_card(owner) { return false; }
     let card = match claim_publication(owner) {
@@ -49,7 +60,7 @@ pub fn register_card(owner: u32) -> bool {
     true
 }
 
-fn claim_publication(owner: u32) -> PublishClaim {
+fn claim_publication(owner: SoundOwnerKey) -> PublishClaim {
     let mut cards = CARDS.lock();
     let Some(record) = cards.iter_mut().find(|record| record.owner == owner) else {
         return PublishClaim::Missing;
@@ -64,7 +75,7 @@ fn claim_publication(owner: u32) -> PublishClaim {
     PublishClaim::Start(record.card)
 }
 
-fn commit_publication(owner: u32, nodes: Vec<Arc<drv::Device>>) -> Result<(), Vec<Arc<drv::Device>>> {
+fn commit_publication(owner: SoundOwnerKey, nodes: Vec<Arc<drv::Device>>) -> Result<(), Vec<Arc<drv::Device>>> {
     let mut cards = CARDS.lock();
     let Some(record) = cards
         .iter_mut()
@@ -76,7 +87,7 @@ fn commit_publication(owner: u32, nodes: Vec<Arc<drv::Device>>) -> Result<(), Ve
     Ok(())
 }
 
-fn rollback_card_registration(owner: u32) {
+fn rollback_card_registration(owner: SoundOwnerKey) {
     crate::control::unregister_card(owner);
     crate::oss::unregister_card(owner);
     crate::capture::unregister_card(owner);
@@ -91,8 +102,7 @@ fn rollback_card_registration(owner: u32) {
 /// Reserve a stable ALSA card number before the transport probe allocates or
 /// publishes userspace-visible sound state. Same-owner calls are idempotent.
 /// # C: O(cards)
-pub fn reserve_card(owner: u32) -> bool {
-    if owner == NO_CARD_OWNER { return false; }
+pub fn reserve_card(owner: SoundOwnerKey) -> bool {
     let mut cards = CARDS.lock();
     if cards.iter().any(|record| record.owner == owner) { return true; }
     let mut card = 0u32;
@@ -106,7 +116,7 @@ pub fn reserve_card(owner: u32) -> bool {
 /// Cancel a reserved-but-unpublished card number. This is the probe-failure
 /// path before ALSA/OSS nodes have been made visible.
 /// # C: O(cards)
-pub fn cancel_card_reservation(owner: u32) -> bool {
+pub fn cancel_card_reservation(owner: SoundOwnerKey) -> bool {
     let mut cards = CARDS.lock();
     let Some(idx) = cards.iter().position(|record| record.owner == owner && !record.publishing && record.nodes.is_empty()) else {
         return false;
@@ -117,20 +127,20 @@ pub fn cancel_card_reservation(owner: u32) -> bool {
 
 /// Stable card number assigned to `owner`.
 /// # C: O(cards)
-pub fn card_number(owner: u32) -> Option<u32> {
+pub fn card_number(owner: SoundOwnerKey) -> Option<u32> {
     CARDS.lock().iter().find(|record| record.owner == owner).map(|record| record.card)
 }
 
 /// First registered sound-card owner. Kept for diagnostics that still need a
 /// default card, not for data-path dispatch.
 /// # C: O(1)
-pub fn owner() -> Option<u32> {
+pub fn owner() -> Option<SoundOwnerKey> {
     CARDS.lock().first().map(|record| record.owner)
 }
 
 /// Remove ALSA/OSS nodes for the card being removed.
 /// # C: O(nodes * depth)
-pub fn unregister_card(owner: u32) -> bool {
+pub fn unregister_card(owner: SoundOwnerKey) -> bool {
     let record = {
         let mut cards = CARDS.lock();
         let Some(idx) = cards.iter().position(|record| record.owner == owner) else {

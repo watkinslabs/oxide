@@ -10,14 +10,14 @@ pub(super) fn frame_bytes(format: u8, channels: u8) -> usize {
 
 pub fn output_stream() -> Option<u32> { active_ctx(&CTX.lock()).and_then(|c| c.out_stream) }
 
-pub fn pcm_caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
+pub fn pcm_caps(owner: sound::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
     active_ctx_for(&CTX.lock(), owner).and_then(|c| {
         c.out_stream?;
         Some((c.out_formats, c.out_rates, c.out_ch_min, c.out_ch_max))
     })
 }
 
-pub fn period_bytes(_owner: u32) -> usize { PERIOD_BYTES }
+pub fn period_bytes(_owner: sound::SoundOwnerKey) -> usize { PERIOD_BYTES }
 
 pub fn playback_ready() -> (bool, bool, bool) {
     let g = CTX.lock();
@@ -39,7 +39,7 @@ pub fn frame_size() -> usize {
     active_ctx(&CTX.lock()).map(|c| frame_bytes(c.cfg_format, c.cfg_channels)).unwrap_or(4)
 }
 
-pub fn cap_caps(owner: u32) -> Option<(u64, u64, u8, u8)> {
+pub fn cap_caps(owner: sound::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
     active_ctx_for(&CTX.lock(), owner).and_then(|c| {
         c.in_stream?;
         Some((c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))

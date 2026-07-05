@@ -27,8 +27,8 @@ pub const VIRTIO_ID_SOUND: u16 = 25;
 
 type DeviceKey = virtio::VirtioChildDeviceKey;
 
-fn sound_owner(device_key: DeviceKey) -> u32 {
-    device_key.raw()
+fn sound_owner(device_key: DeviceKey) -> Option<sound::SoundOwnerKey> {
+    sound::SoundOwnerKey::from_raw(device_key.raw())
 }
 
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
