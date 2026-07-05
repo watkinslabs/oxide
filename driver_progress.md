@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B493-virtio-child-failed-probe-release; VERIFIED.
+Current marker: B494-virtio-child-success-publish; IN AUDIT.
+
+## B494 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B494-virtio-child-success-publish | IN AUDIT | Fresh main `5ce39617` after PR #2553 merge; auditing that successful child probes publish transport-owned runtime state only through the centralized wrapper/session path, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B493 Current
 
