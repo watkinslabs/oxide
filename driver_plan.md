@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B483-pci-msix-capability-readonly-audit; IN AUDIT.
+ACTIVE NOW: B483-pci-msix-capability-readonly-audit; VERIFIED pending PR merge.
 
-Current active item: PCI capability dumping is read-only for MSI-X.
+Current active item: PCI capability dumping is read-only for MSI-X is verified on branch.
 
 Next gate after merge: return to fresh `origin/main` before claiming B484 using
 `metadata/index.md`.
@@ -115,7 +115,7 @@ Status legend:
 | VERIFIED | B479-platform-boot-device-add-handling | Boot-created serial/i8042 platform devices use explicit `try_device_add` handling: `init_serial_console` publishes `platform/serial0`, x86_64 `init_ps2_keyboard` publishes `platform/i8042`, and both go through `platform_device_or_panic`, which builds the model device with named platform identity constants, calls `drv::try_device_add`, returns the published device on success, handles `Busy` explicitly, and emits literal fatal boot-boundary failures for add/conflict errors. Checks pass: focused `try_device_add` duplicate regression, `cargo test -q -p drv -p kmain -- --nocapture --test-threads=1` with drv 29/29 and kmain compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 | VERIFIED | B480-platform-identity-reuse | Matching existing platform identities are reused through `drv::find_matching_device_identity`: `platform_device_or_panic` handles `try_device_add` `Busy` by returning the current model object only when `Device::identity_eq` proves the full bus/address/parent/vendor/device/class/devnode/resource identity matches the candidate. Added hosted regression `find_matching_device_identity_reuses_only_exact_platform_identity`, proving exact platform reuse returns the existing `Arc` while parent, devnode, and resource shape changes do not match. Checks pass: focused regression, `cargo test -q -p drv -p kmain -- --nocapture --test-threads=1` with drv 30/30 and kmain compile-only 0 tests, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 | VERIFIED | B481-platform-conflict-fatal-boundary | Platform identity conflicts report fatal boot-boundary error: `platform_device_or_panic` routes `try_device_add` `Busy` through full model identity reuse and reaches literal fatal conflict reporting when same bus/address is busy but identity differs; hosted conflict regression plus x86_64/aarch64 fast smokes pass. |
-| ACTIVE | B483-pci-msix-capability-readonly-audit | PCI capability dumping is read-only for MSI-X. |
+| VERIFIED | B483-pci-msix-capability-readonly-audit | PCI capability dumping is read-only for MSI-X: source audit proves `pci::capabilities` and `pci::decode_msix_cap` only issue config-space reads, PCI cap dump/trace logs MSI-X metadata without programming device state, and MSI-X table writes are isolated to the virtio-pci transport bind/release path. Added regression `capability_walk_and_msix_decode_do_not_write_config_space`; focused PCI test, `cargo test -q -p pci -p pci-boot -- --nocapture --test-threads=1`, and fast x86_64/aarch64 smokes pass. |
 | SOURCE OK |  | MSI-X programming for virtio devices belongs to virtio-pci transport path. |
 | VERIFIED |  | Virtio-pci accepts modern virtio PCI IDs only. |
 | VERIFIED |  | Transitional virtio IDs are not mixed into modern cap-based path. |
