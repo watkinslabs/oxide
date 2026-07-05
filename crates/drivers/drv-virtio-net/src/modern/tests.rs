@@ -440,18 +440,18 @@ use core::sync::atomic::Ordering;
     }
 
     #[test]
-    fn removing_one_rx_runtime_keeps_shared_softirq_owned() {
+    fn removing_one_rx_runtime_keeps_shared_rx_runtime_owned() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        install_rx_softirq_handler();
-        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
-        set_softirq_iface(key(2), net::NetIfaceId::from_raw(88), [10, 0, 0, 2]);
+        install_rx_runtime(key(1), net::NetIfaceId::from_raw(77));
+        install_rx_runtime(key(2), net::NetIfaceId::from_raw(88));
 
         let empty_after_first = remove_rx_runtime_for(key(1))
             .expect("expected first RX runtime removal");
         assert!(!empty_after_first);
         release_rx_shared_runtime_if_last(empty_after_first);
         assert!(SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+        assert_ne!(ARP_GC_TIMER_ID.load(Ordering::Acquire), 0);
         assert!(first_iface_ip_for(key(2)).is_some());
 
         let empty_after_last = remove_rx_runtime_for(key(2))
@@ -459,6 +459,7 @@ use core::sync::atomic::Ordering;
         assert!(empty_after_last);
         release_rx_shared_runtime_if_last(empty_after_last);
         assert!(!SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+        assert_eq!(ARP_GC_TIMER_ID.load(Ordering::Acquire), 0);
         clear_test_state();
     }
 
