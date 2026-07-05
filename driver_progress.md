@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B417-virtio-net-live-multidev-proof`.
+Current marker: none; B418 verified, pending commit/PR/merge/sync.
 
 ## Archived Completed B327-B330
 
@@ -483,14 +483,14 @@ recent-completed table above; main was synced after each merge through
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 | B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B411-B417 Current
+## B412-B418 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B411-virtio-irq-core-bus-split | VERIFIED | Child-declared virtio IRQ callbacks flow through shared `VirtioTransportProfile`; PCI transport owns MSI-X programming/teardown; hosted virtio/pci/child tests and x86_64/aarch64 driver-path proof pass. |
 | B412-probe-failure-devres-proof | VERIFIED | `VirtioProbeDevres` owns virtio-pci failed-probe cleanup/publish transfer; hosted fault-point lifecycle tests plus broad virtio child-driver tests and x86_64/aarch64 driver-path proof pass. |
 | B413-devtmpfs-model-owned-publication | VERIFIED | Hardware-backed devtmpfs publication is model-owned across block, evdev, fbdev, DRM, hwrng, sound, console, and boot pseudo devices; remaining direct devfs users are non-hardware namespace entries. Hosted publication tests plus x86_64 `/tmp/b413-x86-driver-path.log` and aarch64 `/tmp/b413-arm-driver-path.log` pass. |
 | B414-driver-devnode-readd-loops | VERIFIED | Added sound card unregister/register restore coverage; existing block, evdev, fbdev, DRM, and hwrng remove/readd loops pass. Hosted gate plus x86_64 `/tmp/b414-x86-driver-path.log` and aarch64 `/tmp/b414-arm-driver-path.log` pass; console tty nodes remain fixed boot-owned nodes covered by runtime. |
 | B415-bind-unbind-readd-proof | NOT DONE | Audit found this is the aggregate QEMU hotplug/rebind acceptance row, not a hosted-only fix. Existing driver-core loops pass, but per-subsystem live-proof rows below must complete before B415 can become VERIFIED. |
 | B416-nvme-ahci-multicontroller-proof | VERIFIED | Added opt-in two-NVMe/two-AHCI QEMU harness and `/bin/storage_multictrl_probe`; source audit confirms per-BDF state, hosted `cargo test -p drv -p sysfs -p block` passes, x86_64 `/tmp/b416-x86-storage-multictrl-3.log` and aarch64 `/tmp/b416-arm-storage-multictrl.log` prove sysfs unbind/rebind restores `/sys/block`. |
 | B417-virtio-net-live-multidev-proof | VERIFIED | Existing `/bin/virtio_net_multidev_probe` and `OXIDE_VIRTIO_NET_MULTIDEV_SMOKE` QEMU mode prove two virtio-net devices, `eth0`/`eth1`, sysfs unbind/rebind, restored driver readdir state, and input tail. Hosted `cargo test -p drv-virtio-net -p net -p virtio -p pci-boot` plus x86_64 `/tmp/b417-x86-virtio-net-multidev.log` and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
+| B418-virtio-gpu-live-multigpu-proof | VERIFIED | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
