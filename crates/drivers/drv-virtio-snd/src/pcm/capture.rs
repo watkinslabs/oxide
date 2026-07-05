@@ -4,7 +4,7 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
     let Some(rxq) = ctx.rxq else { return 0 };
     if ctx.rx_buf_pa == 0 || ctx.rx_scratch_pa == 0 { return 0; }
     let h = ctx.hhdm;
-    let n = out.len().min(0x1000);
+    let n = out.len().min(SND_FRAME_BYTES);
     let xfer = h.wrapping_add(ctx.rx_scratch_pa) as *mut u32;
     unsafe { core::ptr::write_volatile(xfer, stream_id); }
     let desc = h.wrapping_add(rxq.desc_pa) as *mut u64;
@@ -42,7 +42,7 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
         if uidx == target { break; }
         if polls >= TX_POLL_BUDGET { return 0; }
         if ctx.cfg_va != 0 {
-            let _ = unsafe { core::ptr::read_volatile((ctx.cfg_va + 0x14) as *const u32) };
+            let _ = virtio::read_status(ctx.cfg_va);
         }
         polls += 1;
         core::hint::spin_loop();
@@ -73,7 +73,7 @@ pub fn cap_hw_params(
     ctx.cap_rate = rate;
     ctx.cap_format = format;
     ctx.cap_channels = ch;
-    ctx.cap_period_bytes = period_bytes.max(1).min(0x1000);
+    ctx.cap_period_bytes = period_bytes.max(1).min(SND_FRAME_BYTES as u32);
     ctx.cap_state = PcmState::Configured;
     true
 }

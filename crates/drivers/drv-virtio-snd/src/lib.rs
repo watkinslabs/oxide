@@ -58,7 +58,8 @@ const SND_HDR_SIZE: usize = 4;
 const CTL_POLL_BUDGET: u32 = 2_000_000;
 const TX_POLL_BUDGET: u32 = 4_000_000;
 const EVENT_SIZE: usize = 8;
-const MAX_EVENTQ_DESCS: u16 = (0x1000 / EVENT_SIZE) as u16;
+const SND_FRAME_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
+const MAX_EVENTQ_DESCS: u16 = (SND_FRAME_BYTES / EVENT_SIZE) as u16;
 
 const REQ_OFF: u64 = 0;
 const RESP_OFF: u64 = 0x200;
