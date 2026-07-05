@@ -294,6 +294,8 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     // Vector table (HAL-local) so this PE can take exceptions/IRQs.
     // SAFETY: AP at EL1, IRQs masked; install_default writes VBAR_EL1.
     unsafe { crate::vbar::install_default(); }
+    // SAFETY: AP bring-up before this PE runs EL0; enables architected counter reads.
+    unsafe { crate::timer::enable_el0_counter_access(); }
     // Kernel AP-init hook: GIC CPU interface + resched SGI + runqueue.
     #[cfg(target_os = "oxide-kernel")]
     {

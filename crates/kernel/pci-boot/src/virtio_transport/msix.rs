@@ -3,6 +3,15 @@ use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 
 use super::TransportMappings;
 
+#[cfg(target_arch = "aarch64")]
+const ITS_DEVICE_SLOTS: usize = 32;
+#[cfg(target_arch = "aarch64")]
+static ITS_DEVICE_IDS: [core::sync::atomic::AtomicU32; ITS_DEVICE_SLOTS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; ITS_DEVICE_SLOTS];
+#[cfg(target_arch = "aarch64")]
+static ITS_DEVICE_ITTS: [core::sync::atomic::AtomicU64; ITS_DEVICE_SLOTS] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; ITS_DEVICE_SLOTS];
+
 #[derive(Clone, Copy)]
 pub(crate) struct MsixBinding {
     id: u32,
@@ -41,7 +50,7 @@ pub(crate) fn bind_msix_vector(
     let page_pa = entry_pa & !0xFFF;
     let page_off = entry_pa - page_pa;
 
-    let (id, msg_addr, msg_data) = alloc_msi_message()?;
+    let (id, msg_addr, msg_data) = alloc_msi_message(d.bdf, queue_vector)?;
     if !register_msi_handler(id, handler) {
         free_msi_id(id);
         return None;
@@ -225,13 +234,17 @@ fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
     }
 }
 
-fn alloc_msi_message() -> Option<(u32, u64, u32)> {
+fn alloc_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, u32)> {
     #[cfg(target_arch = "x86_64")]
     {
+        let _ = (bdf, queue_vector);
         arch_irq::alloc_x86_vector().map(|vec| (vec as u32, 0xFEE0_0000u64, vec as u32))
     }
     #[cfg(target_arch = "aarch64")]
     {
+        if let Some(msg) = alloc_its_msi_message(bdf, queue_vector) {
+            return Some(msg);
+        }
         let spi = arch_irq::alloc_arm_spi()?;
         // SAFETY: SPI was allocated from arch-irq's GICv2m MSI range.
         unsafe {
@@ -245,6 +258,119 @@ fn alloc_msi_message() -> Option<(u32, u64, u32)> {
         }
         Some((spi, v2m_pa + 0x40, spi))
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn alloc_its_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, u32)> {
+    let msg_addr = arch_irq::its::translater_pa();
+    if msg_addr == 0 {
+        return None;
+    }
+    let device_id = its_device_id(bdf);
+    ensure_its_device(device_id)?;
+    let event_id = queue_vector as u32;
+    let lpi = arch_irq::alloc_arm_lpi()?;
+    let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
+    let mapti = arch_irq::its::cmd_mapti(device_id, event_id, lpi, 0);
+    // SAFETY: ITS was enabled by ARM device-map bring-up before PCI virtio
+    // probing, and HHDM covers the command queue frame.
+    if !its_cmd_ok(unsafe { arch_irq::its::cmd_post(hhdm, mapti) }) {
+        let _ = arch_irq::free_arm_spi(lpi);
+        return None;
+    }
+    // SAFETY: lpis_enable published the prop table and hhdm maps it.
+    let prop_ok = unsafe {
+        arch_irq::gic::lpi_set_config(hhdm, lpi, arch_irq::gic::LPI_PROP_DEFAULT)
+    };
+    if !prop_ok {
+        let _ = arch_irq::free_arm_spi(lpi);
+        return None;
+    }
+    // SAFETY: MAPTI was posted above; INV and SYNC use the same command
+    // queue protocol and target the boot CPU collection.
+    let inv_ok = its_cmd_ok(unsafe {
+        arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_inv(device_id, event_id))
+    });
+    let sync_ok = its_cmd_ok(unsafe {
+        arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(0))
+    });
+    if !inv_ok || !sync_ok {
+        let _ = arch_irq::free_arm_spi(lpi);
+        return None;
+    }
+    Some((lpi, msg_addr, event_id))
+}
+
+#[cfg(target_arch = "aarch64")]
+fn ensure_its_device(device_id: u32) -> Option<()> {
+    use core::sync::atomic::Ordering;
+
+    for i in 0..ITS_DEVICE_SLOTS {
+        if ITS_DEVICE_IDS[i].load(Ordering::Acquire) == device_id {
+            return (ITS_DEVICE_ITTS[i].load(Ordering::Acquire) != 0).then_some(());
+        }
+    }
+    for i in 0..ITS_DEVICE_SLOTS {
+        if ITS_DEVICE_IDS[i]
+            .compare_exchange(0, device_id, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            continue;
+        }
+        let itt_pa = match pmm::setup::alloc_one_frame() {
+            Some(pa) => pa,
+            None => {
+                ITS_DEVICE_IDS[i].store(0, Ordering::Release);
+                return None;
+            }
+        };
+        let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
+        if hhdm != 0 {
+            // SAFETY: freshly allocated frame is HHDM mapped and u64 aligned.
+            unsafe {
+                let p = hhdm.wrapping_add(itt_pa) as *mut u64;
+                for n in 0..(0x1000 / 8) {
+                    core::ptr::write_volatile(p.add(n), 0);
+                }
+            }
+        }
+        // Size=4 gives 32 EventIDs, enough for the virtio MSI-X queue vectors
+        // used by the boot drivers.
+        let cmd = arch_irq::its::cmd_mapd(device_id, itt_pa, 4);
+        // SAFETY: ITS is enabled and the ITT frame is zeroed and aligned.
+        if !its_cmd_ok(unsafe { arch_irq::its::cmd_post(hhdm, cmd) }) {
+            // SAFETY: frame has not been published to users after failed MAPD.
+            unsafe { pmm::setup::free_one_frame(itt_pa); }
+            ITS_DEVICE_IDS[i].store(0, Ordering::Release);
+            return None;
+        }
+        // SAFETY: MAPC is idempotent for ICID 0 -> boot CPU and keeps this
+        // dynamic path independent from early smoke self-test ordering.
+        let mapc_ok = its_cmd_ok(unsafe {
+            arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_mapc(0, 0))
+        });
+        if !mapc_ok {
+            ITS_DEVICE_IDS[i].store(0, Ordering::Release);
+            return None;
+        }
+        ITS_DEVICE_ITTS[i].store(itt_pa, Ordering::Release);
+        return Some(());
+    }
+    None
+}
+
+#[cfg(target_arch = "aarch64")]
+fn its_device_id(bdf: pci::Bdf) -> u32 {
+    if bdf.bus == 0 && bdf.function == 0 {
+        bdf.device as u32
+    } else {
+        ((bdf.bus as u32) << 8) | ((bdf.device as u32) << 3) | bdf.function as u32
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn its_cmd_ok(status: arch_irq::its::CmdStatus) -> bool {
+    matches!(status, arch_irq::its::CmdStatus::Posted { .. })
 }
 
 fn register_msi_handler(id: u32, handler: fn()) -> bool {

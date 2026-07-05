@@ -151,6 +151,13 @@ smoke-driver-path-arm: arm
 	./tools/boot-smoke-driver-path.sh arm $(DRIVER_PATH_SMOKE_TIMEOUT)
 smoke-driver-path: smoke-driver-path-x86 smoke-driver-path-arm
 
+USERSPACE_SEAT_SMOKE_TIMEOUT ?= 900
+smoke-userspace-seat-x86: x86
+	./tools/boot-smoke-userspace-seat.sh x86 $(USERSPACE_SEAT_SMOKE_TIMEOUT)
+smoke-userspace-seat-arm: arm
+	./tools/boot-smoke-userspace-seat.sh arm $(USERSPACE_SEAT_SMOKE_TIMEOUT)
+smoke-userspace-seat: smoke-userspace-seat-x86 smoke-userspace-seat-arm
+
 # GRUB self-bootstrap smoke (F372). Boots the GRUB multiboot2 ISO
 # headless and waits for $SMOKE_MARKER (default `oxide login:`). During
 # bring-up, override the marker for an intermediate milestone, e.g.

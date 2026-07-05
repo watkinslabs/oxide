@@ -67,6 +67,26 @@ fn lookup_and_remove_use_typed_child_key() {
 }
 
 #[test]
+fn multiple_input_records_remain_independent() {
+    crate::registry::clear_devices_for_tests();
+    let keyboard = key(0x0010_0000);
+    let pointer = key(0x0020_0000);
+
+    install(test_dev(keyboard, 0));
+    install(test_dev(pointer, 1));
+
+    let devices = crate::devices_snapshot();
+    assert_eq!(devices.len(), 2);
+    assert_eq!(evdev_id_for_device(keyboard), Some(0));
+    assert_eq!(evdev_id_for_device(pointer), Some(1));
+    assert_eq!(remove_device(keyboard), Some(0));
+    assert_eq!(evdev_id_for_device(pointer), Some(1));
+    assert_eq!(count(), 1);
+
+    crate::registry::clear_devices_for_tests();
+}
+
+#[test]
 fn repeat_state_is_keyed_by_evdev_device() {
     crate::registry::clear_devices_for_tests();
     install(test_dev(key(0x0010_0000), 3));

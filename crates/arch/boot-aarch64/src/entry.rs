@@ -33,6 +33,8 @@ unsafe extern "C" fn _start_rust() -> ! {
     // enable unconditionally so user binaries built with NEON
     // intrinsics (memcpy, glibc strxx, etc.) don't trap.
     hal_aarch64::fpu_enable();
+    // SAFETY: BSP bring-up before EL0 starts; enables architected counter reads for userspace.
+    unsafe { hal_aarch64::timer::enable_el0_counter_access(); }
 
     // The self-bootstrap Image trampoline installs the HHDM; hand its
     // offset to the PL011 driver so the UART is reachable after the MMU
