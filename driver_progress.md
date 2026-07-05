@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B459-virtio-input-explicit-shutdown-callback VERIFIED pending PR merge.
+Current marker: B460-virtio-gpu-explicit-shutdown-callback; IN AUDIT.
+
+## B460 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B460-virtio-gpu-explicit-shutdown-callback | IN AUDIT | Fresh main `d9353a03` after PR #2517 merge; proving virtio-gpu child driver implements explicit shutdown through the model child-driver path without unregistering DRM/fbdev publication during shutdown. |
 
 ## B459 Current
 

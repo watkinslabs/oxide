@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B459-virtio-input-explicit-shutdown-callback VERIFIED pending PR merge.
+ACTIVE NOW: B460-virtio-gpu-explicit-shutdown-callback; IN AUDIT.
 
-Current active item: none; next claim starts after B459 merge and fresh main sync.
+Current active item: virtio-gpu has explicit shutdown callback.
 
-Next gate after merge: return to fresh `origin/main` before claiming B460 using
+Next gate after merge: return to fresh `origin/main` before claiming B461 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -66,7 +66,7 @@ Status legend:
 | VERIFIED | B457-virtio-pci-explicit-shutdown-callback | virtio-pci has explicit shutdown callback: `VirtioPciDrv::shutdown` parses the model PCI device and calls `disable_pci_command(d.bdf)`, giving the parent transport an explicit terminal quiesce path without child unbind/remove; child virtio drivers use explicit shutdown callbacks through `run_child_shutdown` with a stable key. `cargo test -p virtio -- --nocapture` passes 43/43 and `cargo test -p pci-boot -- --nocapture` compiles; runtime arch proof is inherited from B454 pre-push because B457 changes only docs/metadata and virtio-pci production source is unchanged from that booted main. |
 | VERIFIED | B458-virtio-blk-explicit-shutdown-callback | virtio-blk has explicit shutdown callback: virtio child model `shutdown` resolves the stable parent key and calls `drv_virtio_blk::modern::shutdown_blk`; `shutdown_blk` keeps the block publication and model record present while `BlkState::shutdown` poisons new I/O, waits for idle, and resets the device via shared `virtio::reset_device` instead of a raw common-cfg offset. Hosted `drv-virtio-blk` tests pass 18/18, shared `virtio` tests pass 43/43, `pci-boot` compiles, and pre-push boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B459-virtio-input-explicit-shutdown-callback | virtio-input has explicit shutdown callback: virtio child model shutdown resolves the stable parent key and calls `drv_virtio_input::drain::shutdown_eventq`; shutdown removes only the matching event queue by `VirtioChildDeviceKey`, resets the device through shared `virtio::reset_device`, releases the shared input drain handler only when the last queue is gone, and leaves evdev/devfs/input publication teardown to remove. Hosted `drv-virtio-input` tests pass 36/36, shared `virtio` tests pass 43/43, `pci-boot` compiles, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
-| SOURCE OK |  | virtio-gpu has explicit shutdown callback. |
+| ACTIVE | B460-virtio-gpu-explicit-shutdown-callback | virtio-gpu has explicit shutdown callback. |
 | VERIFIED | B325-virtio-rng-active-provider | virtio-rng active-provider teardown and hwrng promotion semantics. |
 | SOURCE OK |  | virtio-vsock has explicit shutdown callback. |
 | SOURCE OK |  | virtio-net has explicit shutdown callback. |
