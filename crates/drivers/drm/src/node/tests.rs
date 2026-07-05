@@ -388,6 +388,12 @@ fn record_boot(driver_key: u32) -> u32 {
         );
 
         assert_eq!(handle_drm_ioctl(&master, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        let mut forged = magic.wrapping_add(1000);
+        assert_eq!(
+            handle_drm_ioctl(&master, DRM_IOCTL_AUTH_MAGIC, (&mut forged as *mut u32) as u64),
+            Some(-(Errno::Einval.as_i32() as i64))
+        );
+        assert!(!is_magic_authorized(0, forged));
         assert_eq!(
             handle_drm_ioctl(&master, DRM_IOCTL_AUTH_MAGIC, (&mut magic as *mut u32) as u64),
             Some(0)
