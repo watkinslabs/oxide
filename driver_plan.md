@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B433-model-binding-rejects-bound-devices; IN AUDIT.
+ACTIVE NOW: none; B433-model-binding-rejects-bound-devices VERIFIED pending PR merge.
 
-Current active item: Model binding rejects already-bound devices.
+Current active item: none; next claim starts after B433 merge and fresh main sync.
 
-Next gate after B433: prove source, hosted tests, decide whether runtime proof
-is inherited or needs fresh x86_64/aarch64 smoke, PR merge, then fresh
-`origin/main` before claiming B434.
+Next gate after merge: return to fresh `origin/main` before claiming B434
+using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -40,7 +39,7 @@ Status legend:
 | VERIFIED | B431-pci-driver-core-attach | PCI drivers attach through driver core, not enumeration-local direct bind calls: `pci-boot::enumerate_and_log` registers model drivers, publishes each PCI model device through `publish_pci_model_device`/`drv::try_device_add`, and source audit finds no `drv::bind`, `drv::bind_addr`, NVMe/AHCI init, or virtio child direct-probe call in PCI enumeration; B430 x86_64/aarch64 runtime logs prove resulting PCI driver bindings. |
 | VERIFIED | B432-pci-publication-idempotent-proof | PCI model-device publication is fallible and idempotent for repeated matching `(pci, addr)` enumeration: `publish_pci_model_device` publishes through `drv::try_device_add`, returns the existing record only for matching bus/addr/vendor/device/class on `Busy`, and duplicate/mismatch regressions prove repeated publication does not replace registry state or bind the wrong identity. |
 | VERIFIED | B421-pci-identity-mismatch-proof | PCI identity mismatch handling does not rebound a mismatched same-address function: hosted regression covers duplicate PCI addresses on bus 0 and bus 1 forms with different vendor/device/class, proves the original device remains bound, registry identity is not replaced, and the mismatched driver never probes. `cargo test -p drv pci_identity_mismatch_does_not_replace_or_rebind -- --nocapture`, full serial `cargo test -p drv -- --nocapture --test-threads=1`, and fast x86_64/aarch64 driver-path smokes pass with logs `/tmp/b421-pci-identity-mismatch-x86.log` and `/tmp/b421-pci-identity-mismatch-arm.log`. |
-| ACTIVE | B433-model-binding-rejects-bound-devices | Model binding rejects already-bound devices. |
+| VERIFIED | B433-model-binding-rejects-bound-devices | Model binding rejects already-bound devices: `bind_inner` returns `drv::Error::AlreadyBound` before driver lookup, match, or probe when `dev.bound()` is already set; automatic attach loops skip bound devices; sysfs maps `AlreadyBound` to `EBUSY`; focused model/sysfs tests and full driver-model tests pass, with x86_64/aarch64 runtime inherited from unchanged merged fast driver-path smokes. |
 | SOURCE OK |  | Model binding verifies bus/driver matching. |
 | SOURCE OK |  | Model binding calls `Driver::probe`. |
 | SOURCE OK |  | Model binding records binding only after successful probe. |
