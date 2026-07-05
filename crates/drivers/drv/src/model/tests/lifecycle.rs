@@ -270,6 +270,64 @@ fn remove_readd_rebind_loop_reuses_bus_identity_after_device_del() {
 }
 
 #[test]
+fn multi_device_fault_hotplug_cycle_keeps_model_state_consistent() {
+    HARDEN_PLATFORM_PROBES.store(0, Ordering::Release);
+    HARDEN_PLATFORM_REMOVES.store(0, Ordering::Release);
+    HARDEN_PCI_PROBES.store(0, Ordering::Release);
+    HARDEN_PCI_REMOVES.store(0, Ordering::Release);
+    HARDEN_FAIL_PROBES.store(0, Ordering::Release);
+    register_driver(&HARDENING_PLATFORM_DRV);
+    register_driver(&HARDENING_PCI_DRV);
+    register_driver(&HARDENING_FAIL_DRV);
+
+    for cycle in 1..=HARDEN_LOOP_COUNT {
+        let first = try_device_add(Arc::new(Device::new(
+            "platform", String::from(HARDEN_PLATFORM_ADDRS[0]), 0, HARDEN_PLATFORM_ID, 0)))
+            .unwrap();
+        let second = try_device_add(Arc::new(Device::new(
+            "platform", String::from(HARDEN_PLATFORM_ADDRS[1]), 0, HARDEN_PLATFORM_ID, 0)))
+            .unwrap();
+        let pci = try_device_add(Arc::new(Device::new(
+            "pci", String::from(HARDEN_PCI_ADDR), HARDEN_PCI_VENDOR, HARDEN_PCI_ID, HARDEN_CLASS)))
+            .unwrap();
+        let failing = try_device_add(Arc::new(Device::new(
+            "platform", String::from(HARDEN_FAIL_ADDR), 0, HARDEN_FAIL_ID, 0)))
+            .unwrap();
+
+        assert_eq!(first.bound(), Some("hardening-platform-test"));
+        assert_eq!(second.bound(), Some("hardening-platform-test"));
+        assert_eq!(pci.bound(), Some("hardening-pci-test"));
+        assert_eq!(failing.bound(), None);
+        assert!(matches!(
+            try_device_add(Arc::new(Device::new(
+                "platform", String::from(HARDEN_PLATFORM_ADDRS[0]), 0, HARDEN_PLATFORM_ID, 0))),
+            Err(crate::Error::Busy)
+        ));
+        assert_eq!(bind(&failing, "hardening-fail-test"), Err(crate::Error::ProbeFailed));
+        assert_eq!(failing.bound(), None);
+
+        assert_eq!(unbind(&first), Ok(()));
+        assert_eq!(bind(&first, "hardening-platform-test"), Ok(()));
+        assert_eq!(unbind(&pci), Ok(()));
+        assert_eq!(bind(&pci, "hardening-pci-test"), Ok(()));
+
+        device_del(&first);
+        device_del(&second);
+        device_del(&pci);
+        device_del(&failing);
+        assert!(!devices().iter().any(|dev| {
+            dev.addr == HARDEN_PLATFORM_ADDRS[0] || dev.addr == HARDEN_PLATFORM_ADDRS[1]
+                || dev.addr == HARDEN_PCI_ADDR || dev.addr == HARDEN_FAIL_ADDR
+        }));
+        assert_eq!(HARDEN_PLATFORM_PROBES.load(Ordering::Acquire), cycle * 3);
+        assert_eq!(HARDEN_PLATFORM_REMOVES.load(Ordering::Acquire), cycle * 3);
+        assert_eq!(HARDEN_PCI_PROBES.load(Ordering::Acquire), cycle * 2);
+        assert_eq!(HARDEN_PCI_REMOVES.load(Ordering::Acquire), cycle * 2);
+        assert_eq!(HARDEN_FAIL_PROBES.load(Ordering::Acquire), cycle * 2);
+    }
+}
+
+#[test]
 fn shutdown_all_quiesces_bound_devices_in_reverse_registration_order() {
     use sync::Spinlock as TestLock;
     static ORDER: TestLock<Vec<String>, DriverListClass> = TestLock::new(Vec::new());
