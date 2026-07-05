@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B424-bound-unbound-uevent-state-proof; VERIFIED pending commit/PR.
+ACTIVE NOW: B425-no-flat-driverentry-probeall; VERIFIED pending commit/PR.
 
-Current active item: Bound and unbound change uevent driver-state rows are verified.
+Current active item: Old flat `DriverEntry` / `probe_all(bdf)` live driver path removal verified.
 
-Next gate after merge: return to fresh `origin/main` before claiming B425
+Next gate after merge: return to fresh `origin/main` before claiming B426
 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -30,7 +30,7 @@ Status legend:
 | VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
 | VERIFIED | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME remains final seat gate only. |
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
-| SOURCE OK |  | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
+| VERIFIED | B425-no-flat-driverentry-probeall | Old flat `DriverEntry` / `probe_all(bdf)` live driver path is absent from current source: `rg` over `crates/`, `userspace/`, and `tools/` finds no live `DriverEntry` or `probe_all` symbols, and `crates/drivers/drv/src/model.rs` is the authoritative registry/bind/probe path. `cargo test -p drv -- --nocapture --test-threads=1` passes 24/24. |
 | SOURCE OK |  | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |
 | SOURCE OK |  | Remove public `drv::auto_bind`; keep automatic attachment internal to `try_device_add` and `register_driver`. |
 | SOURCE OK |  | Route explicit binds through sysfs driver `bind` control path. |
