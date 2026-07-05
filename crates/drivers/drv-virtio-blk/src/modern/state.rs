@@ -105,11 +105,7 @@ pub(super) fn child_key(bus: u8, device: u8, function: u8) -> virtio::VirtioChil
 }
 
 #[cfg(feature = "debug-boot")]
-pub(super) fn key_bus(key: virtio::VirtioChildDeviceKey) -> u8 { ((key.raw() >> 16) & 0xff) as u8 }
-#[cfg(feature = "debug-boot")]
-pub(super) fn key_device(key: virtio::VirtioChildDeviceKey) -> u8 { ((key.raw() >> 8) & 0xff) as u8 }
-#[cfg(feature = "debug-boot")]
-pub(super) fn key_function(key: virtio::VirtioChildDeviceKey) -> u8 { (key.raw() & 0xff) as u8 }
+pub(super) fn key_raw(key: virtio::VirtioChildDeviceKey) -> u32 { key.raw() }
 
 pub(super) fn same_device(rec: &BlkRecord, device_key: virtio::VirtioChildDeviceKey) -> bool {
     rec.device_key == device_key

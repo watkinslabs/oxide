@@ -356,7 +356,6 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "net",
- "pci",
  "pmm",
  "softirq",
  "sync",

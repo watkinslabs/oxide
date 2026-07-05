@@ -15,14 +15,21 @@ pub struct VirtioChildModelIdentity {
 }
 
 impl VirtioChildModelIdentity {
-    pub fn modern_from_pci(pci_vendor_id: u16, pci_device_id: u16, index: u32) -> Option<Self> {
-        Some(Self {
+    pub fn modern(device_id: u16, index: u32) -> Self {
+        Self {
             bus: VIRTIO_CHILD_BUS,
             addr: virtio_child_addr(index),
-            vendor_id: pci_vendor_id,
-            device_id: crate::modern_device_id(pci_device_id)?,
+            vendor_id: VIRTIO_VENDOR_ID,
+            device_id,
             class: VIRTIO_CHILD_CLASS,
-        })
+        }
+    }
+
+    pub fn modern_from_pci(pci_vendor_id: u16, pci_device_id: u16, index: u32) -> Option<Self> {
+        if pci_vendor_id != VIRTIO_VENDOR_ID {
+            return None;
+        }
+        Some(Self::modern(crate::modern_device_id(pci_device_id)?, index))
     }
 }
 
