@@ -266,10 +266,12 @@ fn record_boot(driver_key: u32) -> u32 {
 
         clear_master_owner(0);
         let owner = open_file(make_card_inode(0));
+        let owner_dup = Arc::clone(&owner);
         let other = open_file(make_card_inode(0));
 
         assert_eq!(handle_drm_ioctl(&owner, DRM_IOCTL_SET_MASTER, 0), Some(0));
-        assert_eq!(handle_drm_ioctl(&owner, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        assert_eq!(handle_drm_ioctl(&owner_dup, DRM_IOCTL_SET_MASTER, 0), Some(0));
+        drop(owner_dup);
         assert_eq!(
             handle_drm_ioctl(&other, DRM_IOCTL_SET_MASTER, 0),
             Some(-(Errno::Ebusy.as_i32() as i64))
@@ -278,7 +280,7 @@ fn record_boot(driver_key: u32) -> u32 {
             handle_drm_ioctl(&other, DRM_IOCTL_DROP_MASTER, 0),
             Some(-(Errno::Einval.as_i32() as i64))
         );
-        assert_eq!(handle_drm_ioctl(&owner, DRM_IOCTL_DROP_MASTER, 0), Some(0));
+        drop(owner);
         assert_eq!(handle_drm_ioctl(&other, DRM_IOCTL_SET_MASTER, 0), Some(0));
         clear_master_owner(0);
     }
