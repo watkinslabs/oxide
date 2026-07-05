@@ -482,9 +482,15 @@ recent-completed table above; main was synced after each merge through
 
 ## B389-vsock-close-releases-state
 
-Status: `>>> ACTIVE >>> CLAIMED`.
+Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
 
 Branch: `B389-vsock-close-releases-state`
 
-Scope: prove or fix AF_VSOCK close/drop cleanup so listener, backlog, and
-connection table state are released.
+Evidence: source audit proves `Drop for VsockSocket` removes listener sockets
+with `TABLE.remove_listener(owner, port)` and closes connected sockets with
+`vsock::close`; `remove_listener` drains pending backlog keys, closes those
+conns, removes table records, and deletes the listener. `cargo test -p net
+drop_` passes both cleanup tests, and `cargo test -p net vsock` passes 27
+tests. Fast driver-path runtime proof passes on x86_64
+(`/tmp/b389-x86-driver-path.log`) and aarch64
+(`/tmp/b389-arm-driver-path.log`).
