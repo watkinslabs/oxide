@@ -101,6 +101,41 @@ fn take_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey) -> Option<u3
     ctx.fbdev_idx.take()
 }
 
+#[cfg(any(target_os = "oxide-kernel", test))]
+fn install_console_fbdev(device_key: virtio::VirtioChildDeviceKey, owner_raw: u32) -> Option<u32> {
+    let (base_pa, fb_va, bytes, pitch, fw, fh) = framebuffer_for_key(owner_raw)?;
+    let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
+    if idx == fbdev::INVALID_FB_INDEX
+        || !fbdev::set_ops(idx, fbdev::FbOps {
+            driver_key: owner_raw,
+            flush: super::flush_scanout_for_key,
+            blank: blank_scanout_for_key,
+            unblank: unblank_scanout_for_key,
+        })
+        || !set_scanout_fbdev_idx(device_key, Some(idx))
+    {
+        if idx != fbdev::INVALID_FB_INDEX {
+            let _ = fbdev::unregister(idx);
+        }
+        return None;
+    }
+    Some(idx)
+}
+
+#[cfg(any(target_os = "oxide-kernel", test))]
+fn commit_console_owner_key(device_key: virtio::VirtioChildDeviceKey, idx: u32) -> bool {
+    let owner_raw = device_key.raw();
+    if CONSOLE_OWNER_KEY
+        .compare_exchange(NO_CONSOLE_OWNER_KEY, owner_raw, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        return true;
+    }
+    let _ = set_scanout_fbdev_idx(device_key, None);
+    let _ = fbdev::unregister(idx);
+    false
+}
+
 pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let ctx = {
         let mut guard = CTX.lock();
@@ -206,33 +241,8 @@ pub fn framebuffer_for_key(owner_raw: u32) -> Option<(u64, u64, u64, u32, u32, u
 pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
     let owner_raw = device_key.raw();
     let Some((w, h)) = dimensions_for_key(owner_raw) else { return };
-    if CONSOLE_OWNER_KEY
-        .compare_exchange(NO_CONSOLE_OWNER_KEY, owner_raw, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-
-    let Some((base_pa, fb_va, bytes, pitch, fw, fh)) = framebuffer_for_key(owner_raw) else {
-        CONSOLE_OWNER_KEY.store(NO_CONSOLE_OWNER_KEY, Ordering::Release);
-        return;
-    };
-    let idx = fbdev::init_scanout(base_pa, fb_va, bytes, pitch, fw, fh);
-    if idx == fbdev::INVALID_FB_INDEX
-        || !fbdev::set_ops(idx, fbdev::FbOps {
-            driver_key: owner_raw,
-            flush: super::flush_scanout_for_key,
-            blank: blank_scanout_for_key,
-            unblank: unblank_scanout_for_key,
-        })
-        || !set_scanout_fbdev_idx(device_key, Some(idx))
-    {
-        if idx != fbdev::INVALID_FB_INDEX {
-            let _ = fbdev::unregister(idx);
-        }
-        CONSOLE_OWNER_KEY.store(NO_CONSOLE_OWNER_KEY, Ordering::Release);
-        return;
-    }
+    let Some(idx) = install_console_fbdev(device_key, owner_raw) else { return };
+    if !commit_console_owner_key(device_key, idx) { return; }
 
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
     fbdev::set_yield_hook(fbdev_vsync_yield);
@@ -327,10 +337,16 @@ mod tests {
         }
     }
 
+    fn reset_publication_state() {
+        CONSOLE_OWNER_KEY.store(NO_CONSOLE_OWNER_KEY, Ordering::Release);
+        CTX.lock().clear();
+        fbdev::FBS.lock().clear();
+    }
+
     #[test]
     fn fbdev_idx_is_stored_and_taken_by_owner_key() {
         let _guard = super::super::TEST_LOCK.lock();
-        CTX.lock().clear();
+        reset_publication_state();
         CTX.lock().push(ctx(key(0x10)));
         CTX.lock().push(ctx(key(0x20)));
 
@@ -342,6 +358,40 @@ mod tests {
         assert_eq!(take_scanout_fbdev_idx(key(0x10)), Some(3));
         assert_eq!(take_scanout_fbdev_idx(key(0x30)), None);
 
-        CTX.lock().clear();
+        reset_publication_state();
+    }
+
+    #[test]
+    fn console_owner_commits_after_fbdev_idx_is_stored() {
+        let _guard = super::super::TEST_LOCK.lock();
+        reset_publication_state();
+        CTX.lock().push(ctx(key(0x10)));
+
+        let idx = install_console_fbdev(key(0x10), key(0x10).raw()).unwrap();
+
+        assert_eq!(console_owner_key(), None);
+        assert_eq!(CTX.lock()[0].fbdev_idx, Some(idx));
+        assert_eq!(fbdev::count(), 1);
+        assert!(commit_console_owner_key(key(0x10), idx));
+        assert_eq!(console_owner_key(), Some(key(0x10)));
+
+        reset_publication_state();
+    }
+
+    #[test]
+    fn console_owner_commit_failure_unwinds_stored_fbdev_idx() {
+        let _guard = super::super::TEST_LOCK.lock();
+        reset_publication_state();
+        CTX.lock().push(ctx(key(0x10)));
+        CONSOLE_OWNER_KEY.store(key(0x20).raw(), Ordering::Release);
+
+        let idx = install_console_fbdev(key(0x10), key(0x10).raw()).unwrap();
+
+        assert!(!commit_console_owner_key(key(0x10), idx));
+        assert_eq!(console_owner_key(), Some(key(0x20)));
+        assert_eq!(CTX.lock()[0].fbdev_idx, None);
+        assert_eq!(fbdev::count(), 0);
+
+        reset_publication_state();
     }
 }

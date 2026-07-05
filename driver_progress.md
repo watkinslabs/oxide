@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B359-virtio-gpu-fbdev-index-owner`.
+Current marker: `>>> ACTIVE >>> B360-console-fbdev-transactional-publish`.
 
 ## Archived Completed B327-B330
 
@@ -455,8 +455,16 @@ Evidence: source audit found `/dev/fbN` inodes carry `FbData { idx }` for read/w
 
 ## B359-virtio-gpu-fbdev-index-owner
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2412.
 
 Branch: `B359-virtio-gpu-fbdev-index-owner`
 
-Evidence: source audit found `publish_console_scanout` claims `CONSOLE_OWNER_KEY`, publishes fbdev ops with the virtio child owner key, records the returned fbdev idx in `ScanoutCtx`, and unwinds both idx and owner token on failure. `unpublish_console_scanout` only clears the matching owner token and unregisters the exact stored idx. Added `fbdev_idx_is_stored_and_taken_by_owner_key` and serialized post_init global-state tests to remove the hosted race. Focused regression, full `cargo test -p drv-virtio-gpu` with 32 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found `publish_console_scanout` claims `CONSOLE_OWNER_KEY`, publishes fbdev ops with the virtio child owner key, records the returned fbdev idx in `ScanoutCtx`, and unwinds both idx and owner token on failure. `unpublish_console_scanout` only clears the matching owner token and unregisters the exact stored idx. Added `fbdev_idx_is_stored_and_taken_by_owner_key` and serialized post_init global-state tests to remove the hosted race. Focused regression, full `cargo test -p drv-virtio-gpu` with 32 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2412, and main sync `91039d81` pass.
+
+## B360-console-fbdev-transactional-publish
+
+Status: `VERIFIED, PR merge pending`.
+
+Branch: `B360-console-fbdev-transactional-publish`
+
+Evidence: source audit found `publish_console_scanout` claimed `CONSOLE_OWNER_KEY` before fbdev registration, ops install, and stored-index commit completed, creating a partial owner-visible publication window on failure paths. Split publication into `install_console_fbdev` and `commit_console_owner_key`; fbdev record, ops, and stored idx now complete before owner-token commit, and owner-commit failure clears the stored idx and unregisters the fbdev record. Added `console_owner_commits_after_fbdev_idx_is_stored` and `console_owner_commit_failure_unwinds_stored_fbdev_idx`; focused regressions, full `cargo test -p drv-virtio-gpu` with 34 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
