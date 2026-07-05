@@ -487,8 +487,8 @@ Evidence: source audit found VT activation published fbcon renderer foreground a
 
 ## B363-drm-dumb-mmap-pins-object
 
-Status: `CLAIMED`; source audit starting.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B363-drm-dumb-mmap-pins-object`
 
-Evidence: claimed from fresh `main` at `1b3a3d14`; duplicate-lane check found no existing B363/dumb-buffer mmap branch or worktree. Next: inspect DRM GEM/dumb mmap lifetime and prove file-backed VMA/PMM refs keep the object alive across destroy/unregister.
+Evidence: source audit proves MODE_MAP_DUMB mmap pins through `drm::node::pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; `mmap_pin_survives_card_remove_until_unpin`, full `cargo test -p drm`, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass.

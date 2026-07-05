@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B363-drm-dumb-mmap-pins-object` — CLAIMED, source audit starting.
+ACTIVE NOW: `B363-drm-dumb-mmap-pins-object` — VERIFIED, PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B363-drm-dumb-mmap-pins-object`.
 
-Current B363 gate: source audit, focused hosted proof, x86_64/aarch64 driver-path proof.
+Current B363 gate: PR update, merge, then sync local `main` to `origin/main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -293,7 +293,7 @@ Status legend:
 | VERIFIED | B360-console-fbdev-transactional-publish | Console/fbdev publication now installs fbdev, ops, and stored idx before committing console owner token; lost owner commits unwind stored idx and fbdev record; hosted transactional regressions, full virtio-gpu tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2413 merge, and local main sync to `origin/main` at `e0c60058` pass. |
 | VERIFIED | B361-shutdown-scanout-quiesce-in-place | Shutdown quiesces scanout in place without dropping publication/backing metadata; added hosted regression proving CTX, fbdev idx, framebuffer VA/size, allocation count, command-buffer PA, and fbdev record survive shutdown; full virtio-gpu tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2414 merge, and local main sync to `origin/main` at `380a7e00` pass. |
 | VERIFIED | B362-fbcon-foreground-owner | VT foreground publication now uses one normal helper for fbcon renderer foreground and tty keyboard foreground; added hosted regression proving `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` switch together; normal host check, full VT tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2415 merge, and local main sync to `origin/main` at `1b3a3d14` pass. |
-| >>> ACTIVE >>> CLAIMED | B363-drm-dumb-mmap-pins-object | Dumb-buffer mmap pins DRM object through file-backed shared VMA and PMM refs; audit GEM/dumb mmap lifetime, add focused proof, then run hosted and x86_64/aarch64 driver-path gates. |
+| >>> ACTIVE >>> VERIFIED, PR merge pending | B363-drm-dumb-mmap-pins-object | MODE_MAP_DUMB mmap uses `pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; existing table regression, full DRM tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | MODE_MAP_DUMB cookies are high-tagged and validated. |
 | NOT DONE |  | fbdev FBIO user-copy validation uses checked exclusive-end arithmetic. |
 | NOT DONE |  | FBIOGETCMAP rejects invalid transparency pointer with `EFAULT`. |
