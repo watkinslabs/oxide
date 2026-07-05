@@ -437,6 +437,30 @@ fn exact_owner_listener_wins_over_wildcard_listener() {
 }
 
 #[test]
+fn same_port_listener_backlogs_are_owner_keyed() {
+    with_vsock_state(|| {
+        assert!(driver_install(83, 3, tx_ok));
+        assert!(driver_install(84, 4, tx_ok));
+        TABLE.add_listener(83, 9999); TABLE.add_listener(84, 9999);
+        let req = VsockHdr {
+            src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 9999,
+            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+            op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
+        };
+        deliver_rx_from(83, &req, &[]);
+        deliver_rx_from(84, &VsockHdr { dst_cid: 4, src_port: 5555, ..req }, &[]);
+        let a = TABLE.pop_accept(83, 9999).expect("owner 83 queued");
+        let b = TABLE.pop_accept(84, 9999).expect("owner 84 queued");
+        assert_eq!((a.owner, a.peer_port), (83, 4444));
+        assert_eq!((b.owner, b.peer_port), (84, 5555));
+        assert!(TABLE.pop_accept(83, 9999).is_none());
+        assert!(TABLE.pop_accept(84, 9999).is_none());
+        TABLE.remove(a); TABLE.remove(b);
+        assert!(driver_uninstall(83)); assert!(driver_uninstall(84));
+    });
+}
+
+#[test]
 fn connect_from_uses_requested_live_endpoint_and_local_port() {
     with_vsock_state(|| {
         assert!(driver_install(91, 3, tx_ok));
