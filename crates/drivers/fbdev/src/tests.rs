@@ -223,3 +223,30 @@ fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
 
     FBS.lock().clear();
 }
+
+#[test]
+fn fbio_usercopy_rejects_overflowing_user_ranges() {
+    let fb0_inode = devfs::make_fb_inode(0);
+    let efault = -(syscall::errno::Errno::Efault.as_i32() as i64);
+
+    assert_eq!(
+        devfs::handle_fbdev_ioctl(&fb0_inode, FBIOGET_VSCREENINFO, hal::USER_VA_END - 80),
+        Some(efault)
+    );
+
+    let mut green = [0u16; 1];
+    let mut blue = [0u16; 1];
+    let cm = FbCmap {
+        start: 0,
+        len: 1,
+        red: hal::USER_VA_END - 1,
+        green: green.as_mut_ptr() as u64,
+        blue: blue.as_mut_ptr() as u64,
+        transp: 0,
+    };
+
+    assert_eq!(
+        devfs::handle_fbdev_ioctl(&fb0_inode, FBIOPUTCMAP, (&cm as *const FbCmap) as u64),
+        Some(efault)
+    );
+}

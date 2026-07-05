@@ -456,8 +456,8 @@ Evidence: source audit proves `cookie_for` sets tag bit 48 and handle bits 12..4
 
 ## B365-fbdev-fbio-usercopy-bounds
 
-Status: `CLAIMED`; source audit starting.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B365-fbdev-fbio-usercopy-bounds`
 
-Evidence: claimed from fresh `main` at `a0cbb9bd`; duplicate-lane check found no existing B365/fbdev FBIO user-copy branch or worktree. Next: audit FBIO ioctl user buffer range checks for checked exclusive-end arithmetic.
+Evidence: source audit found FBIO fixed-size args and cmap arrays use `p.checked_add(len)` exclusive-end validation against `USER_VA_END` before any read/write copy. Added `fbio_usercopy_rejects_overflowing_user_ranges` for fixed-struct and cmap-channel overflow. Focused regression, full `cargo test -p fbdev` with 21 tests, `git diff --check`, line caps, and fast x86_64/aarch64 driver-path smokes pass. First ARM attempt hit external vhost CID conflict; clean rerun passed.

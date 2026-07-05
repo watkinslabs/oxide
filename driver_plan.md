@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B365-fbdev-fbio-usercopy-bounds` — CLAIMED, source audit starting.
+ACTIVE NOW: `B365-fbdev-fbio-usercopy-bounds` — VERIFIED, PR merge pending.
 
 Current active item: `>>> ACTIVE >>> B365-fbdev-fbio-usercopy-bounds`.
 
-Current B365 gate: source audit, focused hosted proof, x86_64/aarch64 driver-path proof.
+Current B365 gate: PR update, merge, then sync local `main` to `origin/main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -295,7 +295,7 @@ Status legend:
 | VERIFIED | B362-fbcon-foreground-owner | VT foreground publication now uses one normal helper for fbcon renderer foreground and tty keyboard foreground; added hosted regression proving `ACTIVE_VT`, `tty::live::foreground()`, and `fbcon::kernel::foreground()` switch together; normal host check, full VT tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2415 merge, and local main sync to `origin/main` at `1b3a3d14` pass. |
 | VERIFIED | B363-drm-dumb-mmap-pins-object | MODE_MAP_DUMB mmap uses `pin_mmap_backing`, VMA-owned `DrmDumbBacking`/`FileBacking`, shared-frame lookup, and Drop/unpin; existing table regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, PR #2416 merge, and local main sync to `origin/main` at `89ab2e44` pass. |
 | VERIFIED | B364-drm-map-dumb-cookie-validation | MODE_MAP_DUMB cookies are high-tagged at bit 48 with handle bits 12..43; decoder rejects zero handle, low page-offset bits, and out-of-layout bits. Source audit, existing cookie regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, PR #2417 merge, and local main sync to `origin/main` at `a0cbb9bd` pass. |
-| >>> ACTIVE >>> CLAIMED | B365-fbdev-fbio-usercopy-bounds | fbdev FBIO user-copy validation uses checked exclusive-end arithmetic; audit ioctl user buffer range checks, add focused proof if needed, then run hosted and x86_64/aarch64 driver-path gates. |
+| >>> ACTIVE >>> VERIFIED, PR merge pending | B365-fbdev-fbio-usercopy-bounds | fbdev FBIO fixed-size args and cmap arrays use checked exclusive-end user range validation before read/write copies; added overflow regression, full fbdev tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
 | NOT DONE |  | FBIOGETCMAP rejects invalid transparency pointer with `EFAULT`. |
 | NOT DONE | TBD | Display-info probe command buffer and scanout framebuffer ownership/unwind need fault proof. |
 | NOT DONE |  | Virtio-net owns netdev publication/removal. |
