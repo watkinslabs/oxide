@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B447-device-del-unbinds-first VERIFIED pending PR merge.
+ACTIVE NOW: B448-device-del-remove-visible; IN AUDIT.
 
-Current active item: none; next claim starts after B447 merge and fresh main
-sync.
+Current active item: `device_del` emits remove while object is still visible.
 
-Next gate after merge: return to fresh `origin/main` before claiming B448 using
-`metadata/index.md`.
+Next gate after B448: prove source ordering, hosted driver-model regressions,
+runtime arch relevance, PR merge, then fresh `origin/main` before claiming B449.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -55,7 +54,7 @@ Status legend:
 | VERIFIED | B445-sysfs-bind-entry-production | Production explicit bind entry remains sysfs `/sys/bus/*/drivers/*/bind`: sysfs registers per-bus driver directories for pci/virtio/platform, each driver dir exposes bind/unbind attrs, bind writes call `drv::bind_addr(bus, addr, driver)`, unbind resolves the currently bound model device then calls `drv::unbind`, errors map to Linux-style errno, and focused sysfs regressions prove bind/unbind state, symlink, probe-failure, and uevent behavior. |
 | VERIFIED | B446-model-unbind-remove-before-clear | Model unbind calls `Driver::remove` before clearing binding: `drv::unbind` reads the current bound driver, resolves the registered driver, calls `driver.remove(dev)`, then clears `dev.driver` and emits the unbound change hook; hosted regression `unbind_calls_remove_before_clearing_binding` proves `remove` observes the device still bound, and full driver-model tests pass 27/27. |
 | VERIFIED | B447-device-del-unbinds-first | `device_del` unbinds first: `drv::device_del` checks the device is still registered, calls `unbind(d)` before sysfs remove, devtmpfs teardown, or registry removal when the device is bound, and hosted lifecycle regressions prove driver remove runs once, bound state clears, remove event follows driver removal, devtmpfs teardown follows sysfs remove, and the registry entry disappears after teardown. |
-| SOURCE OK |  | `device_del` emits remove while object is still visible. |
+| ACTIVE | B448-device-del-remove-visible | `device_del` emits remove while object is still visible. |
 | SOURCE OK |  | `device_del` removes devtmpfs state. |
 | SOURCE OK |  | `device_del` drops device from registry after remove/devtmpfs teardown. |
 | SOURCE OK |  | Driver-core tests assert remove/sysfs/devtmpfs/registry disappearance order. |
