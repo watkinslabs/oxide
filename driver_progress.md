@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B476 verified pending PR merge.
+Current marker: B477-console-tty-devnode-batch; IN AUDIT.
+
+## B477 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B477-console-tty-devnode-batch | IN AUDIT | Fresh main `80c07049` after PR #2534 merge; auditing console/tty boot node publication for a fallible batch path, rollback/error behavior, and x86_64/aarch64 fast boot proof. |
 
 ## B476 Current
 
