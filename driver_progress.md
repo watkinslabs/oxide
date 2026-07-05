@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B418-virtio-gpu-live-multigpu-proof`.
+Current marker: none; B418 verified, pending commit/PR/merge/sync.
 
 ## Archived Completed B327-B330
 
@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B415-bind-unbind-readd-proof | NOT DONE | Audit found this is the aggregate QEMU hotplug/rebind acceptance row, not a hosted-only fix. Existing driver-core loops pass, but per-subsystem live-proof rows below must complete before B415 can become VERIFIED. |
 | B416-nvme-ahci-multicontroller-proof | VERIFIED | Added opt-in two-NVMe/two-AHCI QEMU harness and `/bin/storage_multictrl_probe`; source audit confirms per-BDF state, hosted `cargo test -p drv -p sysfs -p block` passes, x86_64 `/tmp/b416-x86-storage-multictrl-3.log` and aarch64 `/tmp/b416-arm-storage-multictrl.log` prove sysfs unbind/rebind restores `/sys/block`. |
 | B417-virtio-net-live-multidev-proof | VERIFIED | Existing `/bin/virtio_net_multidev_probe` and `OXIDE_VIRTIO_NET_MULTIDEV_SMOKE` QEMU mode prove two virtio-net devices, `eth0`/`eth1`, sysfs unbind/rebind, restored driver readdir state, and input tail. Hosted `cargo test -p drv-virtio-net -p net -p virtio -p pci-boot` plus x86_64 `/tmp/b417-x86-virtio-net-multidev.log` and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
-| B418-virtio-gpu-live-multigpu-proof | CLAIMED | Virtio-gpu live multi-card/multi-GPU proof claimed; source audit, hosted tests, and x86_64/aarch64 runtime proof pending. |
+| B418-virtio-gpu-live-multigpu-proof | VERIFIED | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |

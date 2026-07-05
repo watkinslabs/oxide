@@ -90,7 +90,19 @@ impl VirtioChildOps for VirtioGpuOps {
     }
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
-        let _ = drv_virtio_gpu::hot_remove(device_key);
+        let result = drv_virtio_gpu::hot_remove(device_key);
+        let removed = result.device_removed;
+        let scanout = result.scanout_removed;
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-gpu remove key=");
+            klog::write_hex_u64(device_key.raw() as u64);
+            klog::write_raw(b" device=");
+            klog::write_dec_u64(removed as u64);
+            klog::write_raw(b" scanout=");
+            klog::write_dec_u64(scanout as u64);
+            klog::write_raw(b"\n");
+        }
+        let _ = (removed, scanout);
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {

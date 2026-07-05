@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B418-virtio-gpu-live-multigpu-proof` — CLAIMED.
+ACTIVE NOW: none; B418 verified, pending commit/PR/merge/sync.
 
-Current active item: `>>> ACTIVE >>> B418-virtio-gpu-live-multigpu-proof`.
+Current active item: none until B418 merges and fresh main is pulled.
 
-Current B418 gate: prove virtio-gpu live multi-card/multi-GPU QEMU bind/unbind/rebind
-behavior on x86_64 and aarch64 using the fast driver-system path.
+Next gate after merge: claim B419 from fresh `origin/main` using
+`metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -351,7 +351,7 @@ Status legend:
 | NOT DONE | B415-bind-unbind-readd-proof | Aggregate repeated bind/unbind/remove/readd proof remains unverified: `driver_anal.md` requires QEMU hotplug/rebind proof for PCI, virtio, block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2; existing driver-core and hosted devnode loops are useful but explicitly not a substitute. Complete the following concrete live-proof rows, then revisit this aggregate row. |
 | VERIFIED | B416-nvme-ahci-multicontroller-proof | NVMe/AHCI per-BDF source audit, opt-in two-controller QEMU harness, `/bin/storage_multictrl_probe`, hosted `drv/sysfs/block`, x86_64 `/tmp/b416-x86-storage-multictrl-3.log`, and aarch64 `/tmp/b416-arm-storage-multictrl.log` pass. |
 | VERIFIED | B417-virtio-net-live-multidev-proof | Existing virtio-net multidev probe and QEMU two-device mode satisfy the row: source audit confirms keyed install/remove/rebind path; hosted `drv-virtio-net/net/virtio/pci-boot`, x86_64 `/tmp/b417-x86-virtio-net-multidev.log`, and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
-| >>> ACTIVE >>> CLAIMED | B418-virtio-gpu-live-multigpu-proof | Virtio-gpu live multi-card/multi-GPU proof missing; source audit, hosted tests, and x86_64/aarch64 runtime proof pending. |
+| VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
 | NOT DONE | TBD | Virtio-vsock primary compatibility route with multiple live endpoints needs live proof. |
 | NOT DONE | TBD | Virtio-snd live multi-card proof and broader event/control coverage missing. |
 | NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
@@ -370,7 +370,7 @@ Status legend:
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for RNG. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for UART. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for PS/2. |
-| NOT DONE | TBD | Finish Linux-visible sysfs/devtmpfs/class contracts across every class. |
+| NOT DONE | TBD | Finish Linux-visible sysfs/devtmpfs/class contracts across every class; B418 found `/dev/dri/card1` remains openable after virtio-gpu model hot-remove even though `hot_remove` reports device/scanout removed. |
 | NOT DONE | TBD | `/sys/dev/{char,block}` exists and resolves; needs live udev proof. |
 | NOT DONE | TBD | `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape exists; needs live proof. |
 | NOT DONE | TBD | Driver-directory device symlinks resolve to canonical `/sys/devices/...`; needs live proof. |

@@ -171,6 +171,11 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "virtio-sound-pci,audiodev=snd1,disable-legacy=on,bus=pcie.0",
         ]);
     }
+    if std::env::var_os("OXIDE_VIRTIO_GPU_MULTIDEV_SMOKE").is_some() {
+        c.args([
+            "-device", "virtio-gpu-pci,id=gpu1,bus=pcie.0",
+        ]);
+    }
     if std::env::var_os("OXIDE_STORAGE_MULTICTRL_SMOKE").is_some() {
         let nvme1 = ensure_nvme_extra_img(repo, id, "x86_64");
         let ahci1 = ensure_ahci_extra_img(repo, id, "x86_64");
