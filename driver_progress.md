@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B488-pci-transport-no-child-driver-decls; IN AUDIT.
+Current marker: B488-pci-transport-no-child-driver-decls; VERIFIED pending PR merge.
 
 ## B488 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B488-pci-transport-no-child-driver-decls | IN AUDIT | Fresh main `3c0c2b61` after PR #2545 merge; auditing that the PCI transport files no longer own every child `drv::Driver` declaration, with source search, hosted pci-boot/virtio evidence, and x86_64/aarch64 smoke gates required before merge. |
+| B488-pci-transport-no-child-driver-decls | VERIFIED | Fresh main `3c0c2b61` after PR #2545 merge. Source audit/search over `crates/kernel/pci-boot/src/virtio_drv`, `virtio_transport`, and `virtio_child.rs` proves the PCI transport files contain only `VirtioPciDrv`, `impl drv::Driver for VirtioPciDrv`, and `VIRTIO_PCI_DRV`; every child `VirtioChildDriver` static, `Virtio*Ops` adapter, and child `drv::register_driver(&VIRTIO_*_DRV)` call lives in `virtio_child.rs`; `virtio_drv::driver::register_model_drivers` registers only `VIRTIO_PCI_DRV` before delegating to `virtio_child::register_model_drivers`. Checks pass: `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with virtio 43/43 and pci-boot compile-only 0 tests; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B487 Current
 
