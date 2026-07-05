@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B493-virtio-child-failed-probe-release is VERIFIED.
+ACTIVE NOW: B494-virtio-child-success-publish; IN AUDIT.
 
-Last completed item: Virtio child wrapper centralizes failed-probe transport
-release.
+Current active item: Virtio child wrapper centralizes successful transport
+publish.
 
-Next gate after merge: return to fresh `origin/main` before claiming B494 using
+Next gate after merge: return to fresh `origin/main` before claiming B495 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -129,7 +129,7 @@ Status legend:
 | VERIFIED | B491-virtio-child-device-id-matching | Virtio child wrapper centralizes matching by virtio device ID: shared `virtio::VirtioChildDriverId::matches_device` is the only child-ID matcher, requiring `virtio` bus, virtio vendor, and exact child device ID; generic `VirtioChildDriver<O>::matches` delegates to `O::DRIVER_ID.matches_device(&dev.bus, dev.vendor_id, dev.device_id)`; GPU/input/net/blk/rng/vsock/snd child crates export named `DRIVER_ID` descriptors with their virtio device IDs. Focused identity test passes 1/1, full pci-boot/virtio gate passes with virtio 43/43 and pci-boot compile-only 0 tests, and fast smokes reach `oxide login:` on x86_64 in 12s and aarch64 in 16s. |
 | VERIFIED | B492-virtio-child-session-begin | Virtio child wrapper centralizes child session begin: generic `VirtioChildDriver<O>::probe` is the only child wrapper probe entry and calls `VirtioChildSession::begin(dev, O::profile())?` before `virtio::run_child_probe`; `VirtioChildSession::begin` owns parent PCI lookup, transport `probe_child` acquisition, probe tracing, child address capture, profile storage, and live transport lease setup before child policy runs. Focused child probe lifecycle tests pass 3/3, full pci-boot/virtio gate passes with virtio 43/43 and pci-boot compile-only 0 tests, and fast smokes reach `oxide login:` on x86_64 in 12s and aarch64 in 16s. |
 | VERIFIED | B493-virtio-child-failed-probe-release | Virtio child wrapper centralizes failed-probe transport release: `virtio::run_child_probe` releases failed child probes through `VirtioChildSession::release_failed_child`, session `Drop` covers early exits, `VirtioProbeLease`/`VirtioProbeDevres` make failed release one-shot, and pci-boot devres resets the device, frees frames, releases MSI-X bindings, disables PCI command, and unmaps transport mappings. Checks pass: focused virtio lifecycle release tests 2/2, hosted `pci-boot`/`virtio` with virtio 43/43 and pci-boot compile-only 0 tests, x86_64 smoke reached `oxide login:` in 34s, and aarch64 smoke reached `oxide login:` in 38s. |
-| SOURCE OK |  | Virtio child wrapper centralizes successful transport publish. |
+| ACTIVE | B494-virtio-child-success-publish | Virtio child wrapper centralizes successful transport publish. |
 | SOURCE OK |  | Virtio child wrapper centralizes parent-key remove unpublish. |
 | SOURCE OK |  | Virtio child wrapper centralizes shutdown key lookup. |
 | SOURCE OK |  | Child drivers supply only profile, install, remove, and shutdown policy. |
