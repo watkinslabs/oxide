@@ -374,3 +374,4 @@ Evidence:
 | `make smoke-driver-path-x86` | PASS: updated `drm_probe` passed and driver path reported `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b337-drm-render-nodes-withheld-x86.log`. |
 | `make smoke-driver-path-arm` | PASS on rerun: updated `drm_probe` passed and driver path reported `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b337-drm-render-nodes-withheld-arm-rerun.log`. |
 | ARM intermittent note | First ARM run hit existing no-progress watchdog before `mouseprobe`; failed log `/tmp/b337-drm-render-nodes-withheld-arm.log` recorded in `driver_plan.md` follow-up row. |
+| Pre-push boot smoke | PASS: x86_64 reached `oxide login:` in 22s on attempt 1 (`/tmp/oxide-boot-smoke-x86-35N3Zg.log`); aarch64 hit existing no-progress on attempt 1 (`/tmp/oxide-boot-smoke-arm-jyMRB8.log`) then reached `oxide login:` in 16s on attempt 2 (`/tmp/oxide-boot-smoke-arm-nJVaKr.log`). |
