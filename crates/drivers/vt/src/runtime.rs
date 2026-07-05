@@ -4,6 +4,7 @@ pub unsafe fn init() -> KResult<()> {
     let mut g = SLOTS.lock();
     g[0].allocated = true;
     ACTIVE_VT.store(1, Ordering::Release);
+    publish_foreground(1);
     Ok(())
 }
 
@@ -64,13 +65,15 @@ fn do_switch(n: u8) {
         }
     };
     ACTIVE_VT.store(n, Ordering::Release);
-    #[cfg(target_os = "oxide-kernel")]
-    {
-        fbcon::kernel::switch_vt(n);
-        tty::live::set_foreground(n);
-    }
+    publish_foreground(n);
     fire_signal(acq_pid, acq_sig);
     fire_switch(n);
+}
+
+fn publish_foreground(n: u8) {
+    fbcon::kernel::switch_vt(n);
+    #[cfg(any(target_os = "oxide-kernel", test))]
+    tty::live::set_foreground(n);
 }
 
 pub fn reldisp(ack: i32, caller_vpid: u32, caller_tid: u32) -> KResult<()> {
