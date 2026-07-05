@@ -2,9 +2,9 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B472-sysfs-pci-resource; IN AUDIT.
+ACTIVE NOW: none; B472-sysfs-pci-resource VERIFIED pending PR merge.
 
-Current active item: Sysfs exposes aggregate PCI `resource`.
+Current active item: none; next claim starts after B472 merge and fresh main sync.
 
 Next gate after merge: return to fresh `origin/main` before claiming B473 using
 `metadata/index.md`.
@@ -80,7 +80,7 @@ Status legend:
 | VERIFIED | B470-sysfs-driver-links | Sysfs exposes driver links from current model binding state: `/sys/devices/<root>/<addr>/driver` appears only while the model device is bound and targets `../../../bus/<bus>/drivers/<driver>`, while `/sys/bus/<bus>/drivers/<driver>/<addr>` appears only for devices currently bound to that driver and targets `../../../../devices/<root>/<addr>`. Added hosted regression coverage for the device-side driver symlink, existing driver-dir symlink coverage proves link disappearance on unbind and restoration on rebind, full sysfs and driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED | B471-sysfs-driver-override | Sysfs exposes Linux-style `driver_override` from model state: platform/virtio/PCI device groups include writable `driver_override`, reads return the current model override or `(null)`, writes set or clear `drv::Device::driver_override`, and driver-model matching consumes the override only for drivers registered on the same bus. Added hosted sysfs regression proving default read, write/readback, model state, and `(null)` clear; full sysfs and driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED |  | Sysfs exposes `modalias`. |
-| ACTIVE | B472-sysfs-pci-resource | Sysfs exposes aggregate PCI `resource`. |
+| VERIFIED | B472-sysfs-pci-resource | Sysfs exposes aggregate PCI `resource` from the current model resource list: PCI device attrs include `resource`, reads emit one Linux-style `start end flags` line per `drv::Resource`, absent BARs remain absent from indexed `resourceN`, and indexed BAR attrs still expose matching single-resource bodies. Added hosted regression coverage for aggregate multi-BAR readback in the existing PCI resource fixture; full sysfs and driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | VERIFIED |  | Sysfs exposes indexed PCI `resourceN` BAR attributes. |
 | SOURCE OK |  | Model-derived uevent environment includes current bound driver state. |
 | VERIFIED |  | Model devices with `dev_t` expose `dev` attribute. |
