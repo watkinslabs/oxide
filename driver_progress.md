@@ -698,3 +698,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B438-driver-registration-attaches-existing | VERIFIED | Fresh main `424d9245` after PR #2493 merge; source audit proves `register_driver` inserts the new driver, publishes the driver hook, then calls `attach_driver_to_existing_devices`, which scans current devices, skips already-bound or non-matching entries, and calls `bind_inner` for existing unbound matches. Hosted checks pass: `cargo test -p drv driver_registration_binds_existing_matching_devices -- --nocapture`, `cargo test -p drv duplicate_driver_registration_does_not_reprobe_existing_devices -- --nocapture`, and full `cargo test -p drv -- --nocapture --test-threads=1` with 26/26 tests. Branch is docs/metadata only; x86_64/aarch64 runtime proof is inherited from unchanged B434 pre-push boot-smoke PASS. |
+
+## B439 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B439-driver-unregistration-detaches-bound | IN AUDIT | Fresh main `583c456b` after PR #2494 merge; auditing driver unregistration detach-before-registry-removal behavior. |

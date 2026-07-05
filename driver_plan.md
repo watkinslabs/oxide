@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B438-driver-registration-attaches-existing VERIFIED pending PR merge.
+ACTIVE NOW: B439-driver-unregistration-detaches-bound; IN AUDIT.
 
-Current active item: none; next claim starts after B438 merge and fresh main sync.
+Current active item: Driver unregistration detaches devices bound to that driver before removing the driver from registry.
 
-Next gate after merge: return to fresh `origin/main` before claiming B439
-using `metadata/index.md`.
+Next gate after B439: prove source, hosted tests, decide whether runtime proof
+is inherited or needs fresh x86_64/aarch64 smoke, PR merge, then fresh
+`origin/main` before claiming B440.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -45,7 +46,7 @@ Status legend:
 | VERIFIED | B436-model-binding-records-after-probe | Model binding records binding only after successful probe: `bind_inner` uses fallible `driver.probe(dev)?` before assigning `dev.driver`, successful probe paths show bound state, failed probe paths leave devices unbound and retriable, and add-event ordering sees the bound state only after successful probe. |
 | VERIFIED | B437-probe-failure-unbound-retriable | Probe failure leaves device unbound and retriable: `bind_inner` propagates `Driver::probe` failure before recording binding state, and hosted regression proves auto-probe plus repeated explicit bind attempts each increment the failing probe counter while `dev.bound()` remains `None`. |
 | VERIFIED | B438-driver-registration-attaches-existing | Driver registration attaches newly registered drivers to existing unbound matching devices: `register_driver` publishes the driver then calls `attach_driver_to_existing_devices`, which skips bound/non-matching devices and calls `bind_inner` for existing unbound matches; hosted tests prove late registration binds once and duplicate registration does not reprobe. |
-| SOURCE OK |  | Driver unregistration detaches devices bound to that driver before removing the driver from registry. |
+| ACTIVE | B439-driver-unregistration-detaches-bound | Driver unregistration detaches devices bound to that driver before removing the driver from registry. |
 | SOURCE OK |  | New model device attaches to already registered matching drivers after devtmpfs/sysfs publication setup and before add uevent. |
 | SOURCE OK |  | Initial auto-probe does not emit a separate bind-change event before add uevent. |
 | SOURCE OK |  | Add uevent can carry current `DRIVER=<name>` state. |
