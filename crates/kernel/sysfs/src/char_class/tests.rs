@@ -2,6 +2,9 @@ use super::*;
 use alloc::sync::Arc;
 use netlink::{proto, NetlinkSocket};
 
+const GRAPHICS_MAJOR: u32 = 29;
+const FBDEV_TEST_MINOR: u32 = 9;
+
 fn add_char(class: &'static str, addr: &str, devname: &str, dt: (u32, u32)) -> Arc<drv::Device> {
     let dev = Arc::new(
         drv::Device::new(class, String::from(addr), 0, 0, 0)
@@ -151,6 +154,34 @@ fn graphics_class_resolves_fbdev_nodes() {
 
     drv::device_del(&dev);
     assert_eq!(class.lookup("fb7").err(), Some(VfsError::Enoent));
+}
+
+#[test]
+fn graphics_uevent_write_reemits_fbdev_model_event() {
+    let dev = add_char("graphics", "fb9", "fb9", (GRAPHICS_MAJOR, FBDEV_TEST_MINOR));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    listener.set_group_mask(1);
+    netlink::register_uevent_listener(&listener);
+
+    let root = make_virtual_class_inode("graphics", INO_VIRT_GRAPHICS);
+    let dir = root.lookup("fb9").expect("graphics device dir");
+    let uevent = dir.lookup("uevent").expect("uevent attr");
+    assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
+
+    let msg = (0..64)
+        .filter_map(|_| listener.dequeue().map(|(msg, _src)| msg))
+        .find(|msg| msg.windows(b"DEVPATH=/devices/virtual/graphics/fb9".len())
+            .any(|w| w == b"DEVPATH=/devices/virtual/graphics/fb9"))
+        .expect("matching graphics uevent");
+    let major = alloc::format!("MAJOR={}", GRAPHICS_MAJOR);
+    let minor = alloc::format!("MINOR={}", FBDEV_TEST_MINOR);
+    assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
+    assert!(msg.windows(b"SUBSYSTEM=graphics".len()).any(|w| w == b"SUBSYSTEM=graphics"));
+    assert!(msg.windows(b"DEVNAME=fb9".len()).any(|w| w == b"DEVNAME=fb9"));
+    assert!(msg.windows(major.len()).any(|w| w == major.as_bytes()));
+    assert!(msg.windows(minor.len()).any(|w| w == minor.as_bytes()));
+
+    drv::device_del(&dev);
 }
 
 #[test]
