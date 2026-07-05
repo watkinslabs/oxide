@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B394-sound-card-owner-keyed-numbers` — verified; commit/PR pending.
+Current marker: `>>> ACTIVE >>> B395-sound-card-per-card-node-publication`.
 
 ## Archived Completed B327-B330
 
@@ -483,13 +483,9 @@ recent-completed table above; main was synced after each merge through
 | B390-virtio-rng-child-key-records | VERIFIED | Per-child-key virtio-rng records proven by source audit, hosted regression/full tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2443 merge, and main sync `68940f57`. |
 | B391-B393 closeout | VERIFIED | B391/B392 virtio-rng and B393 virtio-snd keyed removal; hosted tests, arch proof, pre-push smoke, PRs #2444-#2446, main sync `6f09ae22`. |
 
-## B394-sound-card-owner-keyed-numbers
+## B394-B395 Current
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
-
-Branch: `B394-sound-card-owner-keyed-numbers`
-
-Scope: prove or fix sound-card number allocation so ALSA card numbers are
-stable per owner and independent across cards.
-
-Evidence: source audit found owner-keyed allocation in `crates/kernel/sound/src/cards.rs`; `reserve_card(owner)` is per-owner idempotent, `card_number(owner)` selects by owner, and `unregister_card(owner)` tears down only that owner. Focused regression, full `cargo test -p sound -- --nocapture` with 15 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
+| Branch | Status | Evidence |
+|---|---|---|
+| B394-sound-card-owner-keyed-numbers | VERIFIED | Owner-keyed card numbers proven by source audit, hosted sound tests, x86_64/aarch64 driver-path proof, PR #2447, main sync `db69465f`. |
+| B395-sound-card-per-card-node-publication | ACTIVE | Claimed from fresh main; prove per-card ALSA/OSS nodes are published and owner-cleaned. |
