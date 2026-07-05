@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B467-remove-public-register-device-bypasses VERIFIED pending PR merge.
+Current marker: none; B468-remove-public-infallible-device-add VERIFIED pending PR merge.
+
+## B468 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B468-remove-public-infallible-device-add | VERIFIED | Fresh main `cdef381e` after PR #2525 merge; source audit proves `crates/drivers/drv/src/lib.rs` exposes fallible `try_device_add` and not `device_add`, while `rg -n 'pub (fn|use).*device_add|fn device_add\(' crates/drivers/drv/src crates/kernel crates/drivers --glob '*.rs'` finds only `try_device_add` plus the private hosted test helper at `crates/drivers/drv/src/model/tests/mod.rs`. Production call sites use `drv::try_device_add` and handle errors by returning failure, reusing the matching existing model device on `Busy`, clearing active publication, or rolling back partial node publication; checked call sites include hwrng, fbdev, console, sound, devfs pseudo devices, block, evdev, DRM, platform, PCI, and virtio child publication. Checks pass: `cargo test -p drv -p sound -p drm -p fbdev -p block -p devfs -p drv-virtio-input -p drv-virtio-rng -p console -- --nocapture --test-threads=1`, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B467 Current
 
