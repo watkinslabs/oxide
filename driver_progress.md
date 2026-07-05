@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B389-vsock-close-releases-state`.
+Current marker: `>>> ACTIVE >>> B390-virtio-rng-child-key-records`.
 
 ## Archived Completed B327-B330
 
@@ -468,7 +468,7 @@ Status: `VERIFIED`; merged by PRs #2432-#2434. Evidence is retained in the
 recent-completed table above; main was synced after each merge through
 `cdd8d243`.
 
-## Recent Completed B382-B388
+## Recent Completed B382-B389
 
 | Branch | Status | Evidence |
 |---|---|---|
@@ -479,18 +479,13 @@ recent-completed table above; main was synced after each merge through
 | B386-net-vsock-owner-keyed-endpoints | VERIFIED | Owner-keyed endpoint TX routing regression, full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2439 merge, and main sync `947cb224` pass. |
 | B387-af-vsock-bind-specific-local-cid | VERIFIED | Specific local-CID bind resolves live endpoint owner and rejects dead/quiesced CIDs; focused/full vsock tests, `syscalls` check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2440 merge, and main sync `72aebeca` pass. |
 | B388-vsock-listener-backlogs-owner-port | VERIFIED | Same-port listener backlogs are owner-keyed; focused/full vsock tests, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2441 merge, and main sync `a7a5312f` pass. |
+| B389-vsock-close-releases-state | VERIFIED | Existing AF_VSOCK drop cleanup releases listener/backlog/connection state; cleanup/full vsock tests, x86_64/aarch64 driver-path proof, PR #2442 merge, and main sync `e3f505da` pass. |
 
-## B389-vsock-close-releases-state
+## B390-virtio-rng-child-key-records
 
-Status: `>>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING`.
+Status: `>>> ACTIVE >>> CLAIMED`.
 
-Branch: `B389-vsock-close-releases-state`
+Branch: `B390-virtio-rng-child-key-records`
 
-Evidence: source audit proves `Drop for VsockSocket` removes listener sockets
-with `TABLE.remove_listener(owner, port)` and closes connected sockets with
-`vsock::close`; `remove_listener` drains pending backlog keys, closes those
-conns, removes table records, and deletes the listener. `cargo test -p net
-drop_` passes both cleanup tests, and `cargo test -p net vsock` passes 27
-tests. Fast driver-path runtime proof passes on x86_64
-(`/tmp/b389-x86-driver-path.log`) and aarch64
-(`/tmp/b389-arm-driver-path.log`).
+Scope: prove or fix virtio-rng state so every live record is keyed by
+`VirtioChildDeviceKey`, with no singleton device state reused across children.
