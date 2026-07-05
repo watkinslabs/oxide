@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B486-virtio-child-drivers-model-bind; VERIFIED pending PR merge.
+Current marker: B487-virtio-child-declarations-split; IN AUDIT.
+
+## B487 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B487-virtio-child-declarations-split | IN AUDIT | Fresh main `349bba3e` after PR #2544 merge; auditing that child virtio model-driver declarations live in `pci-boot::virtio_child` instead of the PCI transport path, with hosted evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B486 Current
 
