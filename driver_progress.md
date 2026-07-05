@@ -5,7 +5,8 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B452-shutdown-all-reverse-registration; IN AUDIT.
+Current marker: B452-shutdown-all-reverse-registration; VERIFIED pending PR
+merge.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -781,4 +782,4 @@ recent-completed table above; main was synced after each merge through
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B452-shutdown-all-reverse-registration | IN AUDIT | Fresh main `2343195a` after PR #2509 merge; auditing `drv::shutdown_all` reverse registration order for bound model devices. |
+| B452-shutdown-all-reverse-registration | VERIFIED | Fresh main `2343195a` after PR #2509 merge; source audit proves `crates/drivers/drv/src/model.rs::shutdown_all` snapshots `devices()`, reverses that snapshot, skips unbound devices, resolves the bound driver, and calls `driver.shutdown(&dev)`. Hosted regression `shutdown_all_quiesces_bound_devices_in_reverse_registration_order` registers two bound devices in order, calls `shutdown_all`, and asserts shutdown order `0000:00:16.0` then `0000:00:15.0` while both bindings remain intact. Checks pass: `cargo test -p drv shutdown_all_quiesces_bound_devices_in_reverse_registration_order -- --nocapture` and full `cargo test -p drv -- --nocapture --test-threads=1` with 27/27 tests. Runtime x86_64/aarch64 proof is inherited from B446 pre-push boot-smoke PASS because B452 changes only docs/metadata and production shutdown traversal code is unchanged. |

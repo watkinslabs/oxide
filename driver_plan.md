@@ -2,14 +2,14 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B452-shutdown-all-reverse-registration; IN AUDIT.
+ACTIVE NOW: none; B452-shutdown-all-reverse-registration VERIFIED pending PR
+merge.
 
-Current active item: `drv::shutdown_all` walks bound model devices in reverse
-registration order.
+Current active item: none; next claim starts after B452 merge and fresh main
+sync.
 
-Next gate after B452: prove source traversal order, hosted driver-model
-regressions, runtime arch relevance, PR merge, then fresh `origin/main` before
-claiming B453.
+Next gate after merge: return to fresh `origin/main` before claiming B453 using
+`metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -60,7 +60,7 @@ Status legend:
 | VERIFIED | B449-device-del-devtmpfs-teardown | `device_del` removes devtmpfs state: model teardown calls `DEVTMPFS_DEL_HOOK` with the owned device name after sysfs remove and before registry removal, boot wires that hook to `devfs::del_device_node`, and devfs deletes the `/dev/<name>` subtree. |
 | VERIFIED | B450-device-del-registry-drop-after-teardown | `device_del` drops device from registry after remove/devtmpfs teardown: `drv::device_del` calls unbind, sysfs remove, and devtmpfs delete before retaining the device out of `DEVICES`, and hosted teardown-order tests prove callbacks run before final registry disappearance. |
 | VERIFIED | B451-driver-core-teardown-order-tests | Driver-core tests assert remove/sysfs/devtmpfs/registry disappearance order: hosted regression `device_del_orders_remove_event_and_devtmpfs_teardown` proves driver remove, sysfs remove, devtmpfs delete, and final registry disappearance in one sequence, and the full driver-model suite passes 27/27. |
-| ACTIVE | B452-shutdown-all-reverse-registration | `drv::shutdown_all` walks bound model devices in reverse registration order. |
+| VERIFIED | B452-shutdown-all-reverse-registration | `drv::shutdown_all` walks bound model devices in reverse registration order: the model snapshots devices, reverses the snapshot, skips unbound devices, calls each bound driver's `shutdown`, and hosted regression proves later-registered devices shut down before earlier ones. |
 | SOURCE OK |  | `drv::shutdown_all` calls `Driver::shutdown` without unbinding or emitting remove events. |
 | SOURCE OK | TBD | Power/reboot/halt path must call driver shutdown hook before restart/poweroff/halt. |
 | SOURCE OK |  | NVMe has explicit shutdown callback. |
