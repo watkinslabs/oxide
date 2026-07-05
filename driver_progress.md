@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B464-8250-serial-explicit-shutdown-callback; IN AUDIT.
+Current marker: none; B464-8250-serial-explicit-shutdown-callback VERIFIED pending PR merge.
 
 ## B464 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B464-8250-serial-explicit-shutdown-callback | IN AUDIT | Fresh main `3c6b0bdb` after PR #2521 merge; proving 8250 serial driver implements explicit shutdown through the model driver path without relying on remove/unbind side effects. |
+| B464-8250-serial-explicit-shutdown-callback | VERIFIED | Fresh main `3c6b0bdb` after PR #2521 merge; source audit proves `crates/kernel/kmain/src/kmain/runtime.rs::init_serial_console` publishes `platform/serial0` and registers `drv_serial::uart_driver`, `drv-serial` selects `drv_uart_16550::UART_DRIVER` on x86_64, and `crates/drivers/drv-uart-16550/src/lib.rs::Uart16550Drv::shutdown` calls `imp::shutdown`. The x86 shutdown path disables RX delivery, masks UART RX interrupt delivery, and preserves `BASE`/`PRESENT` for late console TX; `remove` remains the full teardown path that masks/free vectors and clears singleton state. Non-x86_64 8250 is an empty shell, and aarch64 serial uses PL011 via `drv-serial`. Checks pass: `cargo test -p drv-uart-16550 -- --nocapture` hosted compile, `cargo test -p drv-serial -- --nocapture` hosted compile, `cargo test -p drv shutdown_all_quiesces_bound_devices_in_reverse_registration_order -- --nocapture`, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s, and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 
 ## B463 Current
 
