@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B358-fbdev-flush-blank-record`.
+Current marker: `>>> ACTIVE >>> B359-virtio-gpu-fbdev-index-owner`.
 
 ## Archived Completed B327-B330
 
@@ -452,3 +452,11 @@ Status: `VERIFIED, PR merge pending`.
 Branch: `B358-fbdev-flush-blank-record`
 
 Evidence: source audit found `/dev/fbN` inodes carry `FbData { idx }` for read/write and `FB0_INO_BASE | idx` ioctl routing; `registry::ops_of`, `flush`, and `apply_blank` resolve `FbOps` by framebuffer idx, while virtio-gpu publishes ops with owner-key callbacks and stores the published fbdev idx in scanout context. Added `fbdev_ioctls_route_flush_blank_by_fb_inode_record` to prove FBIOBLANK and FBIO_WAITFORVSYNC entered through distinct `/dev/fbN` inodes call the selected record's ops key. Focused regression, full `cargo test -p fbdev` with 20 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; no stale QEMU process was found and rerun passed.
+
+## B359-virtio-gpu-fbdev-index-owner
+
+Status: `CLAIMED`.
+
+Branch: `B359-virtio-gpu-fbdev-index-owner`
+
+Evidence: claimed from synced main `4824dd77`; source audit not started yet.

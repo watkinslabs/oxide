@@ -2,11 +2,11 @@
 
 Date: 2026-07-04
 
-ACTIVE NOW: `B358-fbdev-flush-blank-record` — VERIFIED, PR merge pending.
+ACTIVE NOW: `B359-virtio-gpu-fbdev-index-owner` — CLAIMED.
 
-Current active item: `>>> ACTIVE >>> B358-fbdev-flush-blank-record`.
+Current active item: `>>> ACTIVE >>> B359-virtio-gpu-fbdev-index-owner`.
 
-Current B358 gate: PR update, merge, and main sync.
+Current B359 gate: audit virtio-gpu scanout fbdev index ownership and unpublish-by-owner behavior.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -288,8 +288,8 @@ Status legend:
 | VERIFIED | B355-drm-raw-writes-rejected | DRM card and private render-node raw writes return `EINVAL`; source audit, existing hosted regression, full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, PR #2408 merge, and local main sync to `origin/main` at `21e0a9ba` pass. |
 | VERIFIED | B356-drm-addfb2-modifier-reject | DRM ADDFB2 rejects modifier flag and nonzero modifier payloads while modifier support is absent; added focused hosted regression for nonzero modifier payload with flags clear; full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2409 merge, and local main sync to `origin/main` at `8c2d61e3` pass. |
 | VERIFIED | B357-drm-addfb-packed-rgb-validation | ADDFB/ADDFB2 validate packed-RGB metadata and bounds; added ADDFB2 unused-offset and legacy ADDFB backing-span regressions; full DRM tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2410 merge, and local main sync to `origin/main` at `dc05b71a` pass. |
-| >>> ACTIVE >>> VERIFIED, PR merge pending | B358-fbdev-flush-blank-record | fbdev flush/blank ops are per `/dev/fbN` record; added hosted `/dev/fbN` FBIOBLANK/FBIO_WAITFORVSYNC regression proving selected inode routes to selected ops key; full fbdev tests, line-cap check, and fast x86_64/aarch64 driver-path proof pass. |
-| NOT DONE |  | Virtio-gpu scanout context records exact fbdev index and unpublishes by owner token. |
+| VERIFIED | B358-fbdev-flush-blank-record | fbdev flush/blank ops are per `/dev/fbN` record; added hosted `/dev/fbN` FBIOBLANK/FBIO_WAITFORVSYNC regression proving selected inode routes to selected ops key; full fbdev tests, line-cap check, fast x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2411 merge, and local main sync to `origin/main` at `4824dd77` pass. |
+| >>> ACTIVE >>> CLAIMED | B359-virtio-gpu-fbdev-index-owner | Virtio-gpu scanout context records exact fbdev index and unpublishes by owner token. |
 | NOT DONE | TBD | Console/fbdev publication transactional around stored fbdev index. |
 | NOT DONE | TBD | Shutdown quiesces scanout in place without dropping publication/backing metadata. |
 | NOT DONE | TBD | fbcon still has one explicit foreground console owner. |
