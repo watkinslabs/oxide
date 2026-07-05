@@ -24,7 +24,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 | Item | Summary | Tier | Status | Branch | PR |
 |------|---------|------|--------|--------|-----|
 | 1.1 | PAM `PAM_SESSION_ERR` — `user@979.service` step PAM | 1 | BLOCKED — no causative syscall (semantic bug; ~15 captures exhausted boot-capture) | B423 + captures | #2477 |
-| 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | PARTIAL — UTS DONE (fleet: /proc/*/ns/uts + per-ns sethostname). net-ns full-stack isolation = large subsystem | fleet(uts) | — |
+| 1.2 | Namespaces: UTS + net + mount-ns tolerance | 1 | MOSTLY DONE — UTS (fleet) + net-ns AF_UNIX/loopback isolation (B518 #2579); inet-per-ns + mount-ns-tolerance = documented follow-ups | B518-netns-isolation | #2579 |
 | 2.1 | `PR_SET_MM` (all 15 subcmds) + fix reversed argv/env stack | 2 | DONE | B430-prctl-set-mm | #2498 |
 | 2.2 | udev `hwdb` + `path_id` builtins | 2 | TODO (hwdb.bin asset vs mmap ENODATA; medium) | — | — |
 | 2.3 | `/dev/vda` ENXIO (virtio-blk open) | 2 | TODO — **fleet's active virtio lane; do not overlap** | — | — |
