@@ -439,8 +439,8 @@ Evidence: source audit found `addfb2` rejects any flags and separately rejects a
 
 ## B357-drm-addfb-packed-rgb-validation
 
-Status: `IN AUDIT`.
+Status: `VERIFIED, PR merge pending`.
 
 Branch: `B357-drm-addfb-packed-rgb-validation`
 
-Evidence: source audit started for ADDFB/ADDFB2 packed-RGB metadata and bounds; no completion claim yet.
+Evidence: source audit found `fb_plane_fits_buf` rejects zero dimensions, unsupported formats, short pitch, checked span overflow, and backing-buffer overflow for packed RGB. `addfb2` rejects nonzero flags, modifier payloads, missing handles, extra handles/pitches/offsets, and routes bounds through that helper; legacy `addfb` maps depth/bpp to packed RGB and uses the same bounds helper. Added `addfb2_rejects_unused_plane_offset_for_packed_rgb` and `legacy_addfb_rejects_framebuffer_larger_than_backing_buffer`; focused regressions, full `cargo test -p drm` with 68 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass. First ARM smoke attempt failed before kernel boot on external `vhost-vsock` guest-CID conflict; no stale QEMU process was found and rerun passed.
