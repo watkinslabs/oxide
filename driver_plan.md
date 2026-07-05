@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: `B384-virtio-vsock-remove-keyed` — VERIFIED; COMMIT/PR PENDING.
+ACTIVE NOW: `B385-virtio-vsock-rx-bh-installed` — VERIFIED; COMMIT/PR PENDING.
 
-Current active item: `>>> ACTIVE >>> B384-virtio-vsock-remove-keyed`.
+Current active item: `>>> ACTIVE >>> B385-virtio-vsock-rx-bh-installed`.
 
-Current B384 gate: source audit, hosted regression, and x86_64/aarch64 runtime
+Current B385 gate: source audit, hosted regression, and x86_64/aarch64 runtime
 proof pass; commit/PR/merge/main sync remain.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -315,8 +315,8 @@ Status legend:
 | VERIFIED | B381-virtio-net-ipv6-tx-stack-ndp | Virtio-net TX resolves IPv6 neighbors through registered interface stack NDP table: kernel `ndp_lookup_for_device` maps `DeviceKey` to `registered_iface_for(device_key)` and calls `net::sock::stack().ndp_lookup(iface, next_hop)`, `VirtioNetDev::xmit` uses that resolver before `tx_frame_for`, hosted stack NDP tests, virtio-net tests, line-cap check, x86_64/aarch64 driver-path proof, PR #2434 merge, and local main sync to `origin/main` at `cdd8d243` pass. |
 | VERIFIED | B382-virtio-net-multidev-rebind-proof | Fast-init live proof passes on x86_64 and aarch64 for two virtio-net devices, `eth0`/`eth1`, sysfs driver `unbind`/`bind`, restored virtio-net driver readdir state, and normal input tail; ARM PID1 selection now honors `/init`, rootfs cache keys multidev mode; normal x86_64/aarch64 smoke, PR #2435 merge, and local main sync to `origin/main` at `d09f5123` pass. |
 | VERIFIED | B383-core-ipv6-ndp-iface-cache | Core IPv6 stack NDP cache is keyed by `(iface, IPv6 address)` and unregister purges the removed iface's entries; source audit, hosted NDP tests, line-cap check, x86_64/aarch64 driver-path proof, pre-push boot smoke, PR #2436 merge, and local main sync to `origin/main` at `505521d8` pass. |
-| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B384-virtio-vsock-remove-keyed | Virtio-vsock remove is keyed to the owning child device: source audit proves probe/remove/shutdown pass `VirtioChildDeviceKey`, driver ctx/endpoint/TX/RX select by owner key, hosted regression proves `uninstall(key1)` leaves `key2` ctx/endpoint live, and fast x86_64/aarch64 driver-path smokes pass. |
-| NOT DONE |  | Virtio-vsock clears `VsockRx` bottom half only for installed transport. |
+| VERIFIED | B384-virtio-vsock-remove-keyed | Virtio-vsock remove is keyed to the owning child device: source audit proves probe/remove/shutdown pass `VirtioChildDeviceKey`, driver ctx/endpoint/TX/RX select by owner key, hosted regression proves `uninstall(key1)` leaves `key2` ctx/endpoint live, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2437 merge, and local main sync to `origin/main` at `2efc98f8` pass. |
+| >>> ACTIVE >>> VERIFIED; COMMIT/PR PENDING | B385-virtio-vsock-rx-bh-installed | Virtio-vsock clears `VsockRx` bottom half only for installed transport: source audit proves `SOFTIRQ_INSTALLED` gates handler install/clear and removal clears only after last ctx, hosted regression proves unpublished ctx teardown leaves live endpoint/RX bottom half installed, and fast x86_64/aarch64 driver-path smokes pass. |
 | NOT DONE |  | Upper `net::vsock` stores owner-keyed endpoint records. |
 | NOT DONE |  | AF_VSOCK bind honors specific local CID by resolving live endpoint. |
 | NOT DONE |  | Listener backlogs keyed by `(owner, port)`. |

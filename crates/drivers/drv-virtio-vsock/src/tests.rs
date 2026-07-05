@@ -1,3 +1,4 @@
+use core::sync::atomic::Ordering;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::{
@@ -107,6 +108,34 @@ fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
     assert_eq!(net::vsock::guest_cid_for(key2.raw()), 4);
 
     assert!(uninstall(key2));
+    crate::registry::clear_ctxs_for_tests();
+}
+
+#[test]
+fn uninstall_unpublished_context_keeps_live_softirq_installed() {
+    fn tx_stub(_owner: u32, _packet: &[u8]) -> bool { true }
+
+    let _guard = TEST_LOCK.lock();
+    crate::registry::clear_ctxs_for_tests();
+    crate::registry::clear_rx_softirq_handler();
+    let unpublished = key(0x0010_0000);
+    let live = key(0x0020_0000);
+    assert!(net::vsock::driver_install(live.raw(), 4, tx_stub));
+    {
+        let mut ctxs = crate::registry::CTX.lock();
+        ctxs.push(ctx(unpublished));
+        ctxs.push(ctx(live));
+    }
+    crate::registry::SOFTIRQ_INSTALLED.store(true, Ordering::Release);
+
+    assert!(uninstall(unpublished));
+    assert!(!present_for(unpublished));
+    assert!(present_for(live));
+    assert!(net::vsock::driver_up_for(live.raw()));
+    assert!(crate::registry::SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+
+    assert!(uninstall(live));
+    assert!(!crate::registry::SOFTIRQ_INSTALLED.load(Ordering::Acquire));
     crate::registry::clear_ctxs_for_tests();
 }
 
