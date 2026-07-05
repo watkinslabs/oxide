@@ -121,18 +121,6 @@ mod imp {
         }
     }
 
-    /// Bounded RX poll for explicit diagnostics. Runtime RX uses IRQ4.
-    /// # SAFETY: port I/O at CPL=0; single-CPU.
-    /// # C: O(1)
-    pub unsafe fn rx_poll(dlv: fn(u8)) {
-        let b = base(); if b == 0 { return; }
-        // SAFETY: LSR read at the detected COM base.
-        if unsafe { inb(b + LSR) } & 0x01 == 0 { return; }
-        // SAFETY: LSR.DR set ⇒ RBR has a byte.
-        let c = unsafe { inb(b + RBR) };
-        dlv(c);
-    }
-
     /// COM RX interrupt handler — drains the FIFO into `dlv`.
     /// # C: O(bytes pending)
     pub fn rx_isr(dlv: fn(u8)) {
@@ -251,10 +239,6 @@ mod imp {
     /// # C: O(1)
     pub fn emit(_bytes: &[u8]) {}
     /// No 16550 on non-x86 arches.
-    /// # SAFETY: shell; no side effects.
-    /// # C: O(1)
-    pub unsafe fn rx_poll(_dlv: fn(u8)) {}
-    /// No 16550 on non-x86 arches.
     /// # C: O(1)
     pub fn rx_isr(_dlv: fn(u8)) {}
     /// No 16550 on non-x86 arches; detect fails.
@@ -271,7 +255,7 @@ mod imp {
     pub(super) unsafe fn shutdown() {}
 }
 
-pub use imp::{emit, rx_isr, rx_poll};
+pub use imp::{emit, rx_isr};
 
 // ------------------------------------------------ drv model
 /// The 16550 console as a drv model driver. Probe performs detection and

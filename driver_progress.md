@@ -493,4 +493,4 @@ recent-completed table above; main was synced after each merge through
 | B401-virtio-pci-probe-exit-unwind | VERIFIED | `VirtioProbe` now owns a one-shot lease for failed/unpublished cleanup; hosted virtio/pci-boot checks and x86_64/aarch64 driver-path proof pass. |
 | B402-sound-card-publication-model-owned | VERIFIED | Sound publication uses explicit reserved/publishing/published owner state; hosted tests and x86_64/aarch64 driver-path proof pass. |
 | B403-fbdev-publication-unwind-on-model-failure | VERIFIED | Hosted fbdev/model conflict proof and x86_64/aarch64 driver-path proof pass. |
-| B404-8250-receive-irq-owned | ACTIVE | Claimed from fresh main; audit/fix 8250 receive IRQ ownership next. |
+| B404-8250-receive-irq-owned | VERIFIED | 8250 serial-core poll fallback removed; hosted UART/serialtty tests and x86_64/aarch64 driver-path proof pass. |

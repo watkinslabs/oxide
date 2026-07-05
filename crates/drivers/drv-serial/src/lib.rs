@@ -6,7 +6,7 @@
 //! crates (`drv-uart-16550` on x86, `drv-uart-pl011` on arm; docs/35§3).
 //! This crate keeps the tty RX sink + sysrq prefilter + `deliver` (which
 //! has no place in a per-device driver), and re-exposes the unchanged
-//! public API (`emit`/`poll`/`rx_isr`/`present`) by delegating to the
+//! public API (`emit`/`rx_isr`/`present`) by delegating to the
 //! cfg-appropriate UART crate. `configure_probe` passes this crate's own
 //! `deliver` fn down as the RX callback — that parameter is the cycle-break
 //! that lets the UART crates avoid depending on `drv-serial`.
@@ -66,16 +66,6 @@ pub fn present() -> bool { uart::present() }
 /// Console TX — delegates to the active UART crate.
 /// # C: O(len(bytes))
 pub fn emit(bytes: &[u8]) { uart::emit(bytes); }
-
-/// Bounded RX poll entry retained for explicit diagnostic callers; the
-/// normal runtime RX path is the active UART driver's interrupt handler.
-/// # SAFETY: forwards to the UART crate's poll; same single-CPU / port-
-/// I/O / published-MMIO-VA invariants documented on that crate's rx_poll.
-/// # C: O(N_bytes_drained)
-pub unsafe fn poll() {
-    // SAFETY: UART crate rx_poll owns its device invariants; deliver is a valid fn(u8).
-    unsafe { uart::rx_poll(deliver); }
-}
 
 /// RX interrupt drain — delegates to the active UART crate, passing this
 /// crate's `deliver` as the byte callback.
