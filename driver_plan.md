@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B490-virtio-child-single-bus-facing-wrapper; IN AUDIT.
+ACTIVE NOW: B490-virtio-child-single-bus-facing-wrapper; VERIFIED.
 
 Current active item: Virtio child binding uses one bus-facing `VirtioChildDriver` wrapper.
 
@@ -124,7 +124,7 @@ Status legend:
 | VERIFIED | B487-virtio-child-declarations-split | Virtio child model-driver declarations are split into `pci-boot::virtio_child`: source audit proves `virtio_child.rs` owns `VirtioChildDriver<O>`, every child `Virtio*Ops` adapter, all static child driver declarations, and the child `drv::register_driver` list; `virtio_drv::driver` owns only `VIRTIO_PCI_DRV`, publishes child model devices, and delegates child registration to `virtio_child::register_model_drivers`. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
 | VERIFIED | B488-pci-transport-no-child-driver-decls | PCI transport file no longer owns every child `drv::Driver` declaration: source audit/search proves `virtio_drv` and `virtio_transport` contain only the PCI transport driver declaration `VirtioPciDrv`/`VIRTIO_PCI_DRV`, while all child `VirtioChildDriver` statics, child `Virtio*Ops` adapters, and child `drv::register_driver` calls live in `pci-boot::virtio_child`. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
 | VERIFIED | B489-child-probes-no-transport-callback-imports | Child probes do not import transport helper callbacks directly: source audit proves child crates do not import PCI transport callbacks/helpers, child probes consume `VirtioChildTransportSession` and child crate profile/install/remove/shutdown APIs, and the only transport cleanup callback remains centralized in `pci-boot::virtio_child` remove handling; stale child-crate comments naming `pci_boot::virtio_drv` were replaced with transport-backend wording. Hosted pci-boot/virtio gate and x86_64/aarch64 fast smokes pass. |
-| ACTIVE | B490-virtio-child-single-bus-facing-wrapper | Virtio child binding uses one bus-facing `VirtioChildDriver` wrapper. |
+| VERIFIED | B490-virtio-child-single-bus-facing-wrapper | Virtio child binding uses one bus-facing `VirtioChildDriver<O>` wrapper: source audit proves the only virtio child bus-facing `drv::Driver` impl is `impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O>` in `virtio_child.rs`, child GPU/input/net/blk/rng/vsock/snd registrations are typed instances of that wrapper, and the only other virtio `drv::Driver` impl is the PCI transport parent `VirtioPciDrv`; hosted `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` passes with virtio 43/43 and pci-boot compile-only 0 tests; fast boot smokes reach `oxide login:` on x86_64 in 30s and aarch64 in 34s. |
 | SOURCE OK |  | Virtio child wrapper centralizes matching by virtio device ID. |
 | SOURCE OK |  | Virtio child wrapper centralizes child session begin. |
 | SOURCE OK |  | Virtio child wrapper centralizes failed-probe transport release. |
