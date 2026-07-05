@@ -11,7 +11,7 @@ use hal::USER_VA_END;
 pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
-    let _flags = args.a2;
+    let flags  = args.a2;
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // SAFETY: msgp range validated; user page mapped under caller's AS.
     let (name, namelen, iov, iovlen, control, controllen) = unsafe {
@@ -54,6 +54,40 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
             msg.extend_from_slice(src);
         }
         return crate::netlink_fd::send_coalesced(fd, &msg, name, namelen as u64);
+    }
+    // Linux `sendmsg(2)`: the iovec array forms ONE message — the datagram is the
+    // concatenation of every iovec. For a message-boundary socket (inet UDP or
+    // AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET), emitting one datagram per iovec (the
+    // stream loop below) fragments a single message into N. systemd userdb sends
+    // a header iovec + body iovec over a message socket, so the reader saw only
+    // iovec[0] ("Received too short user lookup message, ignoring"). Coalesce the
+    // iovecs into one buffer and send once. Stream sockets (TCP / AF_UNIX STREAM)
+    // fall through — the resulting byte stream is identical either way.
+    if let Some(sock) = crate::net_common::socket_from_fd(fd) {
+        let msg_boundary = matches!(
+            &*sock.kind.lock(),
+            net::sock::SockKind::Udp
+                | net::sock::SockKind::UnixDgram(_)
+                | net::sock::SockKind::UnixMsgPair(_, _)
+        );
+        if msg_boundary {
+            let mut msg: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            for i in 0..iovlen {
+                let iov_i = iov + i * 16;
+                if iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+                // SAFETY: iov_i in user range; {base@0,len@8} per LP64 iovec ABI.
+                let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+                let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) } as usize;
+                if len == 0 { continue; }
+                if base == 0 || base.saturating_add(len as u64) >= USER_VA_END {
+                    return -(Errno::Efault.as_i32() as i64);
+                }
+                // SAFETY: base..base+len validated < USER_VA_END; CPL=0 read of caller AS.
+                let src = unsafe { core::slice::from_raw_parts(base as *const u8, len) };
+                msg.extend_from_slice(src);
+            }
+            return crate::s044_sendto::send_over_socket(&sock, &msg, name, namelen as u64, flags, fd);
+        }
     }
     let mut total: i64 = 0;
     for i in 0..iovlen {
