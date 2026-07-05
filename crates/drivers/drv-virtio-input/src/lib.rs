@@ -20,7 +20,7 @@ pub mod procfs;
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod devfs;
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod drain;
 
 #[cfg(any(target_os = "oxide-kernel", test))]

@@ -2,8 +2,13 @@
 
 Date: 2026-07-04
 
-Current active item: `>>> ACTIVE >>>` row on branch
-`B326-userspace-seat-driver-proof`.
+ACTIVE NOW: `B327-virtio-input-queue-quiesce` — VERIFIED, commit/PR pending.
+
+Current active item: `>>> ACTIVE >>> B327-virtio-input-queue-quiesce`.
+
+Current B327 gate: hosted tests plus x86_64 and aarch64 fast driver-path
+smokes passed. Earlier ARM no-progress watchdog reproduced once and is tracked
+below as a separate intermittent follow-up, not a B327 verification blocker.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -13,6 +18,7 @@ compliance is proven.
 Status legend:
 
 - `NOT DONE`: default state; row has not yet been freshly proven from current source and required runtime evidence.
+- `ACTIVE`: row is the current branch target; status text records latest arch gate.
 - `IN AUDIT`: row is actively being checked on the named branch.
 - `SOURCE OK`: current source proves the implementation shape, but runtime/Linux compliance proof may still be needed.
 - `VERIFIED`: current source plus appropriate hosted/QEMU/userspace evidence proves the row.
@@ -23,7 +29,7 @@ Status legend:
 |---|---|---|
 | SOURCE OK | B001-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
 | VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
-| >>> ACTIVE >>> IN AUDIT | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME is final seat gate only. |
+| VERIFIED | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME remains final seat gate only. |
 | NOT DONE | TBD | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening. |
 | SOURCE OK |  | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
 | SOURCE OK |  | Make `drv::Device`, `drv::Driver`, `try_device_add`, `device_del`, `bind`, `bind_addr`, and `unbind` authoritative in `crates/drivers/drv/src/model.rs`. |
@@ -239,9 +245,11 @@ Status legend:
 | VERIFIED | B326-userspace-seat-driver-proof | Virtio-input supports multiple input device records. |
 | VERIFIED |  | Virtio-input publishes `/dev/input/eventN` through model-owned devices. |
 | VERIFIED |  | `/proc/bus/input/devices` derives from live input state. |
-| CLAIMED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
-| CLAIMED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
-| CLAIMED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
+| VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
+| VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
+| VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
+| NOT DONE | TBD | Intermittent ARM fast driver-path no-progress watchdog observed once before `mouseprobe`; rerun passed. Failed log `/tmp/b327-queue-quiesce-arm.log`, passing log `/tmp/b327-queue-quiesce-arm-rerun.log`; root-cause separately. |
+| NOT DONE | TBD | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
 | VERIFIED |  | Competing evdev grabs fail with `EBUSY`. |
