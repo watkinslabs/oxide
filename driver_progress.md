@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B504-vsock-owner-key-boundary; VERIFIED pending PR/merge.
+Current marker: B505-sound-owner-key-boundary; IN AUDIT.
+
+## B505 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B505-sound-owner-key-boundary | ACTIVE | Fresh main `269e02a2` after PR #2567 merge. Claimed `drv-virtio-snd` raw conversion at the sound-core owner-key boundary; `metadata/index.md` advanced B 505 -> 506. Read-only prep found raw boundary at `drv-virtio-snd::sound_owner(DeviceKey) -> u32` and sound-core owner `u32` storage in card, ops, inode-private, PCM/capture/OSS state. |
 
 ## B504 Current
 
@@ -17,7 +23,7 @@ Current marker: B504-vsock-owner-key-boundary; VERIFIED pending PR/merge.
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B505 candidate | PREP ONLY | Read-only fanout mapped the next narrow unverified row to `drv-virtio-snd` -> `sound` raw owner identity. Raw boundary starts at `drv-virtio-snd::sound_owner(DeviceKey) -> u32`; sound-core currently stores owner `u32` in card, ops, inode-private, PCM/capture/OSS state. Proposed next branch: add sound-owned opaque `SoundOwnerKey`, keep `sound` independent of `virtio`, convert only in `drv-virtio-snd`, and run focused `sound` plus `drv-virtio-snd` suites before x86_64/aarch64 smokes. Not claimed; wait for B504 merge and fresh main. |
+| B505-sound-owner-key-boundary | CLAIMED | Read-only fanout mapped the next narrow unverified row to `drv-virtio-snd` -> `sound` raw owner identity. Raw boundary starts at `drv-virtio-snd::sound_owner(DeviceKey) -> u32`; sound-core currently stores owner `u32` in card, ops, inode-private, PCM/capture/OSS state. Proposed fix: add sound-owned opaque `SoundOwnerKey`, keep `sound` independent of `virtio`, convert only in `drv-virtio-snd`, and run focused `sound` plus `drv-virtio-snd` suites before x86_64/aarch64 smokes. |
 
 ## B503 Current
 
