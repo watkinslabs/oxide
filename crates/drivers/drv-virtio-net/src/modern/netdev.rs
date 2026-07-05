@@ -110,6 +110,9 @@ impl VirtioNetDev {
             tx_dropped: AtomicU64::new(0),
         }))
     }
+
+    #[cfg(test)]
+    pub(crate) fn device_key(&self) -> DeviceKey { self.device_key }
 }
 
 /// Register this virtio-net device with the kernel net stack and install the
