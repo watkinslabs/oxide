@@ -5,7 +5,19 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B424-bound-unbound-uevent-state-proof; VERIFIED pending commit/PR.
+Current marker: B425-no-flat-driverentry-probeall; IN AUDIT.
+
+## B425-no-flat-driverentry-probeall
+
+Status: `IN AUDIT`; claim commit pending.
+
+Branch: `B425-no-flat-driverentry-probeall`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| ACTIVE | Remove old flat `DriverEntry` / `probe_all(bdf)` live driver path. |
 
 ## B424-bound-unbound-uevent-state-proof
 
