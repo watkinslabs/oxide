@@ -5,7 +5,7 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B445-sysfs-bind-entry-production; VERIFIED pending PR merge.
+Current marker: B446-model-unbind-remove-before-clear; IN AUDIT.
 
 ## B428-sysfs-explicit-bind-route
 
@@ -740,3 +740,9 @@ recent-completed table above; main was synced after each merge through
 | Branch | Status | Evidence |
 |---|---|---|
 | B445-sysfs-bind-entry-production | VERIFIED | Fresh main `7e807a39` after PR #2502 merge; source audit proves `crates/kernel/sysfs/src/bus/hooks.rs` registers `/sys/bus/{pci,virtio,platform}/drivers`, `crates/kernel/sysfs/src/bus/driver.rs` exposes `bind` and `unbind` under each driver dir, bind writes parse the device token and call `drv::bind_addr(bus, addr, driver)`, unbind resolves the currently bound model device before `drv::unbind`, and driver symlinks are derived from current model binding state. Focused hosted regressions pass: `cargo test -p sysfs driver_bind_unbind_attrs_drive_drv_model -- --nocapture`, `cargo test -p sysfs driver_bind_attr_preserves_unbound_state_on_probe_failure -- --nocapture`, and `cargo test -p sysfs bind_unbind_emit_change_uevents_from_current_model_state -- --nocapture`. Runtime arch proof is inherited from already-merged x86_64/aarch64 bind/unbind uevent and driver-path smokes because B445 changes only docs/metadata and the production sysfs code is unchanged on this branch. |
+
+## B446 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B446-model-unbind-remove-before-clear | IN AUDIT | Fresh main `c51f20f7` after PR #2503 merge; auditing model unbind ordering so `Driver::remove` runs before binding state is cleared. |
