@@ -63,11 +63,13 @@ pub(crate) fn drain() -> usize {
     // Snapshot the work under the lock, copy out the payloads, release
     // the lock, THEN call deliver_rx (which may re-enter the TX hook to
     // send RST/credit — re-entering CTX.lock() would deadlock).
-    let mut pkts: alloc::vec::Vec<(u32, VsockHdr, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
+    let mut pkts: alloc::vec::Vec<(net::vsock::VsockOwner, VsockHdr, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
     {
         let mut g = CTX.lock();
         for ctx in g.iter_mut() {
-            let owner = ctx.device_key.raw();
+            let Some(owner) = net::vsock::VsockOwner::from_raw(ctx.device_key.raw()) else {
+                continue;
+            };
             let h = ctx.hhdm;
             let qsz = ctx.rxq.size;
             let used = h.wrapping_add(ctx.rxq.device_pa) as *const u16;

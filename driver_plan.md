@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B503-transport-neutral-child-key-proof VERIFIED.
+ACTIVE NOW: none; B504-vsock-owner-key-boundary VERIFIED pending PR/merge.
 
-Last verified item: Current PCI-backed bus no longer derives child key from
-BDF; transport-neutral child model address proof passes.
+Current active item: none. Next unverified target after merge/sync is
+`drv-virtio-snd` raw conversion at the sound-core owner-key boundary.
 
-Next gate after merge: return to fresh `origin/main` before claiming B504 using
+Next gate after merge: return to fresh `origin/main` before claiming B505 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -149,7 +149,7 @@ Status legend:
 | VERIFIED |  | `drv-virtio-rng` consumes `VirtioChildDeviceKey` for install/remove/shutdown/active promotion/probe seeding. |
 | VERIFIED |  | `drv-virtio-input` consumes `VirtioChildDeviceKey` for install/remove/evdev lookup. |
 | VERIFIED |  | `drv-virtio-vsock` consumes `VirtioChildDeviceKey` for install/remove/shutdown/context lookup/RX preposting. |
-| NOT DONE | TBD | `drv-virtio-vsock` raw conversion remains at `net::vsock` owner-key boundary. |
+| VERIFIED | B504-vsock-owner-key-boundary | `drv-virtio-vsock` no longer passes raw `u32` owner keys across the `net::vsock` driver boundary: `net::vsock::VsockOwner` is a transport-neutral nonzero owner type, wildcard bind state is `Option<VsockOwner>`, TX/RX hooks and driver install/remove/quiesce APIs consume `VsockOwner`, and `drv-virtio-vsock` converts `VirtioChildDeviceKey` once through `vsock_owner` before calling net. Checks pass: focused `cargo test -q -p net vsock -- --nocapture --test-threads=1` 28/28; `cargo test -q -p drv-virtio-vsock -- --nocapture --test-threads=1` 7/7; broad hosted driver gate for `pci-boot`, `virtio`, and all virtio child driver crates; `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 42s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 | VERIFIED |  | `drv-virtio-blk` consumes `VirtioChildDeviceKey` for block init/registry/hot-remove/shutdown/tests. |
 | VERIFIED |  | `drv-virtio-net` consumes `VirtioChildDeviceKey` for modern init/transport identity/netdev/TX/RX/neighbor/remove/shutdown/tests. |
 | NOT DONE | TBD | `drv-virtio-snd` raw conversion remains at sound-core owner-key boundary. |

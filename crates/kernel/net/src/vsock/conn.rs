@@ -16,6 +16,23 @@ use alloc::collections::VecDeque;
 use sync::{Spinlock, Socket as SockLockClass};
 use super::hdr::*;
 
+/// No concrete driver owner; used only for VMADDR_CID_ANY wildcard binds.
+pub const VSOCK_OWNER_ANY_RAW: u32 = 0;
+
+/// Transport-neutral vsock driver endpoint owner. Nonzero by construction.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct VsockOwner(u32);
+
+impl VsockOwner {
+    /// Build from a driver-provided stable owner key. # C: O(1)
+    pub fn from_raw(raw: u32) -> Option<Self> {
+        if raw == VSOCK_OWNER_ANY_RAW { None } else { Some(Self(raw)) }
+    }
+
+    /// Raw key for local table comparisons and transport callbacks. # C: O(1)
+    pub fn raw(self) -> u32 { self.0 }
+}
+
 /// Per-connection RX buffer budget advertised to the peer. Matches the
 /// driver's RX ring in-flight capacity (8 × 4 KiB buffers, refilled each
 /// tick) so the credit we grant never overcommits what the device ring
@@ -38,7 +55,7 @@ pub enum VsockState {
 /// One vsock STREAM connection. Keyed in the table by owner plus the 4-tuple
 /// (local_cid, local_port, peer_cid, peer_port). # C: O(1)
 pub struct VsockConn {
-    pub owner:      u32,
+    pub owner:      VsockOwner,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
@@ -96,7 +113,7 @@ impl Credit {
 
 impl VsockConn {
     /// New connection in `st`. # C: O(1)
-    pub fn new(owner: u32, local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
+    pub fn new(owner: VsockOwner, local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
                st: VsockState) -> Self {
         VsockConn {
             owner,
@@ -140,7 +157,7 @@ impl VsockConn {
 /// Owner-keyed 4-tuple connection key. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ConnKey {
-    pub owner:      u32,
+    pub owner:      VsockOwner,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
@@ -152,7 +169,7 @@ pub struct ConnKey {
 pub struct VsockTable {
     conns: Spinlock<Vec<alloc::sync::Arc<VsockConn>>, SockLockClass>,
     /// Bound listeners: (owner, local_port) → accept backlog of pending peers.
-    /// owner 0 is VMADDR_CID_ANY.
+    /// None is VMADDR_CID_ANY.
     listeners: Spinlock<Vec<Listener>, SockLockClass>,
     /// Ephemeral local-port allocator (1024..).
     ephem_next: core::sync::atomic::AtomicU32,
@@ -161,7 +178,7 @@ pub struct VsockTable {
 /// A bound listener + its accept backlog of inbound OP_REQUESTs that
 /// haven't been accept()ed yet. # C: O(1)
 pub struct Listener {
-    pub owner: u32,
+    pub owner: Option<VsockOwner>,
     pub local_port: u32,
     pub backlog: Spinlock<VecDeque<ConnKey>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
@@ -199,7 +216,7 @@ impl VsockTable {
     /// Look up by the *local* 2-tuple regardless of peer — used by the
     /// RX dispatcher which keys on (dst_cid, dst_port, src_cid, src_port)
     /// of the incoming packet. # C: O(N conns)
-    pub fn find_for_rx(&self, owner: u32, local_cid: u64, local_port: u32,
+    pub fn find_for_rx(&self, owner: VsockOwner, local_cid: u64, local_port: u32,
                        peer_cid: u64, peer_port: u32)
         -> Option<alloc::sync::Arc<VsockConn>>
     {
@@ -235,7 +252,7 @@ impl VsockTable {
     /// records, and prune that owner's accept backlog entries. Other transport
     /// owners must keep running across a single device remove.
     /// # C: O(N conns + N listeners + backlog)
-    pub fn close_owner(&self, owner: u32) {
+    pub fn close_owner(&self, owner: VsockOwner) {
         let mut conns = self.conns.lock();
         for c in conns.iter().filter(|c| c.owner == owner) {
             *c.st.lock() = VsockState::Closed;
@@ -251,9 +268,9 @@ impl VsockTable {
         }
     }
 
-    /// Register a listener on `port` for `owner`; owner 0 is VMADDR_CID_ANY.
+    /// Register a listener on `port` for `owner`; None is VMADDR_CID_ANY.
     /// # C: O(1)
-    pub fn add_listener(&self, owner: u32, port: u32) {
+    pub fn add_listener(&self, owner: Option<VsockOwner>, port: u32) {
         let mut g = self.listeners.lock();
         if g.iter().any(|l| l.owner == owner && l.local_port == port) { return; }
         g.push(Listener {
@@ -268,7 +285,7 @@ impl VsockTable {
     /// Remove the listener owned by `(owner, port)` and discard pending accepts.
     /// Called when the listening AF_VSOCK fd is closed.
     /// # C: O(N listeners + N pending + N conns)
-    pub fn remove_listener(&self, owner: u32, port: u32) -> bool {
+    pub fn remove_listener(&self, owner: Option<VsockOwner>, port: u32) -> bool {
         let mut pending = Vec::new();
         let removed = {
             let mut g = self.listeners.lock();
@@ -298,19 +315,19 @@ impl VsockTable {
 
     /// True iff `port` has an exact owner listener or a wildcard listener.
     /// # C: O(N listeners)
-    pub fn is_listening(&self, owner: u32, port: u32) -> bool {
+    pub fn is_listening(&self, owner: VsockOwner, port: u32) -> bool {
         self.listeners.lock().iter().any(|l| {
-            l.local_port == port && (l.owner == owner || l.owner == 0)
+            l.local_port == port && (l.owner == Some(owner) || l.owner.is_none())
         })
     }
 
     /// Queue an accepted-but-not-yet-accept()ed peer key on `port`'s
     /// listener backlog + wake any accept() parker. Exact owner listeners win
     /// over wildcard listeners. # C: O(N listeners)
-    pub fn queue_accept(&self, owner: u32, port: u32, k: ConnKey) {
+    pub fn queue_accept(&self, owner: VsockOwner, port: u32, k: ConnKey) {
         let g = self.listeners.lock();
-        let listener = g.iter().find(|l| l.owner == owner && l.local_port == port)
-            .or_else(|| g.iter().find(|l| l.owner == 0 && l.local_port == port));
+        let listener = g.iter().find(|l| l.owner == Some(owner) && l.local_port == port)
+            .or_else(|| g.iter().find(|l| l.owner.is_none() && l.local_port == port));
         if let Some(l) = listener {
             l.backlog.lock().push_back(k);
             #[cfg(target_os = "oxide-kernel")]
@@ -319,7 +336,7 @@ impl VsockTable {
     }
 
     /// Pop one pending peer key from `port`'s accept backlog. # C: O(N)
-    pub fn pop_accept(&self, owner: u32, port: u32) -> Option<ConnKey> {
+    pub fn pop_accept(&self, owner: Option<VsockOwner>, port: u32) -> Option<ConnKey> {
         let g = self.listeners.lock();
         let k = g.iter()
             .find(|l| l.owner == owner && l.local_port == port)?
@@ -330,7 +347,7 @@ impl VsockTable {
 
     /// True iff `port`'s accept backlog is non-empty (poll readability).
     /// # C: O(N listeners)
-    pub fn pop_accept_peek(&self, owner: u32, port: u32) -> bool {
+    pub fn pop_accept_peek(&self, owner: Option<VsockOwner>, port: u32) -> bool {
         let g = self.listeners.lock();
         g.iter().find(|l| l.owner == owner && l.local_port == port)
             .map(|l| !l.backlog.lock().is_empty()).unwrap_or(false)

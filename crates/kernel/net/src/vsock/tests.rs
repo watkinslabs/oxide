@@ -15,31 +15,32 @@ static TX_B_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 static RX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 static RX_B_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 
-fn tx_ok(_owner: u32, _frame: &[u8]) -> bool { true }
-fn rx_noop(_owner: u32) -> usize { 0 }
-fn tx_a(owner: u32, _frame: &[u8]) -> bool {
-    TX_A_OWNER.store(owner, TestOrdering::Relaxed);
+fn tx_ok(_owner: VsockOwner, _frame: &[u8]) -> bool { true }
+fn rx_noop(_owner: VsockOwner) -> usize { 0 }
+fn tx_a(owner: VsockOwner, _frame: &[u8]) -> bool {
+    TX_A_OWNER.store(owner.raw(), TestOrdering::Relaxed);
     true
 }
-fn tx_b(owner: u32, _frame: &[u8]) -> bool {
-    TX_B_OWNER.store(owner, TestOrdering::Relaxed);
+fn tx_b(owner: VsockOwner, _frame: &[u8]) -> bool {
+    TX_B_OWNER.store(owner.raw(), TestOrdering::Relaxed);
     true
 }
-fn rx_a(owner: u32) -> usize {
-    RX_A_OWNER.store(owner, TestOrdering::Relaxed);
+fn rx_a(owner: VsockOwner) -> usize {
+    RX_A_OWNER.store(owner.raw(), TestOrdering::Relaxed);
     1
 }
-fn rx_b(owner: u32) -> usize {
-    RX_B_OWNER.store(owner, TestOrdering::Relaxed);
+fn rx_b(owner: VsockOwner) -> usize {
+    RX_B_OWNER.store(owner.raw(), TestOrdering::Relaxed);
     1
+}
+
+fn owner(raw: u32) -> VsockOwner {
+    VsockOwner::from_raw(raw).expect("test owner is nonzero")
 }
 
 fn cleanup_driver_state() {
     loop {
-        let owner = driver_owner();
-        if owner == 0 {
-            break;
-        }
+        let Some(owner) = driver_owner() else { break; };
         let _ = driver_uninstall(owner);
         let _ = driver_cancel_reserved(owner);
     }
@@ -53,7 +54,7 @@ fn with_vsock_state<T>(f: impl FnOnce() -> T) -> T {
     out
 }
 
-fn with_driver<T>(owner: u32, guest_cid: u64, f: impl FnOnce() -> T) -> T {
+fn with_driver<T>(owner: VsockOwner, guest_cid: u64, f: impl FnOnce() -> T) -> T {
     with_vsock_state(|| {
         assert!(driver_install(owner, guest_cid, tx_ok, rx_noop));
         let out = f();
@@ -65,71 +66,71 @@ fn with_driver<T>(owner: u32, guest_cid: u64, f: impl FnOnce() -> T) -> T {
 #[test]
 fn driver_reservation_is_not_live_until_publish() {
     with_vsock_state(|| {
-        assert!(driver_reserve(7));
+        assert!(driver_reserve(owner(7)));
         assert!(!driver_up());
         assert_eq!(guest_cid(), 0);
-        assert_eq!(driver_owner(), 0);
-        assert!(driver_reserve(8));
-        assert!(!driver_reserve(7));
-        assert!(!driver_cancel_reserved(9));
-        assert!(driver_cancel_reserved(8));
-        assert!(driver_cancel_reserved(7));
+        assert_eq!(driver_owner(), None);
+        assert!(driver_reserve(owner(8)));
+        assert!(!driver_reserve(owner(7)));
+        assert!(!driver_cancel_reserved(owner(9)));
+        assert!(driver_cancel_reserved(owner(8)));
+        assert!(driver_cancel_reserved(owner(7)));
         assert!(!driver_up());
-        assert_eq!(driver_owner(), 0);
+        assert_eq!(driver_owner(), None);
     });
 }
 
 #[test]
 fn driver_owner_for_cid_resolves_only_live_endpoint() {
     with_vsock_state(|| {
-        assert!(driver_install(71, 3, tx_ok, rx_noop));
-        assert!(driver_install(72, 4, tx_ok, rx_noop));
-        assert_eq!(driver_owner_for_cid(3), Some(71));
-        assert_eq!(driver_owner_for_cid(4), Some(72));
+        assert!(driver_install(owner(71), 3, tx_ok, rx_noop));
+        assert!(driver_install(owner(72), 4, tx_ok, rx_noop));
+        assert_eq!(driver_owner_for_cid(3), Some(owner(71)));
+        assert_eq!(driver_owner_for_cid(4), Some(owner(72)));
         assert_eq!(driver_owner_for_cid(5), None);
 
-        assert!(driver_quiesce(71));
+        assert!(driver_quiesce(owner(71)));
         assert_eq!(driver_owner_for_cid(3), None);
-        assert_eq!(driver_owner_for_cid(4), Some(72));
-        assert!(driver_cancel_reserved(71));
-        assert!(driver_uninstall(72));
+        assert_eq!(driver_owner_for_cid(4), Some(owner(72)));
+        assert!(driver_cancel_reserved(owner(71)));
+        assert!(driver_uninstall(owner(72)));
     });
 }
 
 #[test]
 fn bind_owner_for_cid_requires_matching_live_endpoint() {
     with_vsock_state(|| {
-        assert_eq!(bind_owner_for_cid(VMADDR_CID_ANY), Ok(0));
+        assert_eq!(bind_owner_for_cid(VMADDR_CID_ANY), Ok(None));
         assert_eq!(bind_owner_for_cid(3), Err(NetError::Eaddrnotavail));
-        assert!(driver_install(73, 3, tx_ok, rx_noop));
-        assert!(driver_install(74, 4, tx_ok, rx_noop));
-        assert_eq!(bind_owner_for_cid(3), Ok(73));
-        assert_eq!(bind_owner_for_cid(4), Ok(74));
+        assert!(driver_install(owner(73), 3, tx_ok, rx_noop));
+        assert!(driver_install(owner(74), 4, tx_ok, rx_noop));
+        assert_eq!(bind_owner_for_cid(3), Ok(Some(owner(73))));
+        assert_eq!(bind_owner_for_cid(4), Ok(Some(owner(74))));
 
-        assert!(driver_quiesce(73));
+        assert!(driver_quiesce(owner(73)));
         assert_eq!(bind_owner_for_cid(3), Err(NetError::Eaddrnotavail));
-        assert_eq!(bind_owner_for_cid(4), Ok(74));
-        assert!(driver_cancel_reserved(73));
-        assert!(driver_uninstall(74));
+        assert_eq!(bind_owner_for_cid(4), Ok(Some(owner(74))));
+        assert!(driver_cancel_reserved(owner(73)));
+        assert!(driver_uninstall(owner(74)));
     });
 }
 
 #[test]
 fn driver_endpoints_are_owner_keyed() {
     with_vsock_state(|| {
-        assert!(driver_install(41, 3, tx_ok, rx_noop));
-        assert!(driver_install(42, 4, tx_ok, rx_noop));
-        assert!(!driver_install(41, 5, tx_ok, rx_noop));
-        assert!(!driver_install(43, 4, tx_ok, rx_noop));
-        assert!(driver_up_for(41));
-        assert!(driver_up_for(42));
-        assert_eq!(guest_cid_for(41), 3);
-        assert_eq!(guest_cid_for(42), 4);
-        assert!(driver_uninstall(41));
-        assert!(!driver_up_for(41));
-        assert!(driver_up_for(42));
-        assert_eq!(guest_cid_for(42), 4);
-        assert!(driver_uninstall(42));
+        assert!(driver_install(owner(41), 3, tx_ok, rx_noop));
+        assert!(driver_install(owner(42), 4, tx_ok, rx_noop));
+        assert!(!driver_install(owner(41), 5, tx_ok, rx_noop));
+        assert!(!driver_install(owner(43), 4, tx_ok, rx_noop));
+        assert!(driver_up_for(owner(41)));
+        assert!(driver_up_for(owner(42)));
+        assert_eq!(guest_cid_for(owner(41)), 3);
+        assert_eq!(guest_cid_for(owner(42)), 4);
+        assert!(driver_uninstall(owner(41)));
+        assert!(!driver_up_for(owner(41)));
+        assert!(driver_up_for(owner(42)));
+        assert_eq!(guest_cid_for(owner(42)), 4);
+        assert!(driver_uninstall(owner(42)));
     });
 }
 
@@ -138,21 +139,21 @@ fn tx_for_routes_through_matching_owner_endpoint() {
     with_vsock_state(|| {
         TX_A_OWNER.store(0, TestOrdering::Relaxed);
         TX_B_OWNER.store(0, TestOrdering::Relaxed);
-        assert!(driver_install(61, 3, tx_a, rx_noop));
-        assert!(driver_install(62, 4, tx_b, rx_noop));
+        assert!(driver_install(owner(61), 3, tx_a, rx_noop));
+        assert!(driver_install(owner(62), 4, tx_b, rx_noop));
         let h = VsockHdr::default();
 
-        assert!(tx_for(62, &h, &[]));
+        assert!(tx_for(owner(62), &h, &[]));
         assert_eq!(TX_A_OWNER.load(TestOrdering::Relaxed), 0);
         assert_eq!(TX_B_OWNER.load(TestOrdering::Relaxed), 62);
 
-        assert!(tx_for(61, &h, &[]));
+        assert!(tx_for(owner(61), &h, &[]));
         assert_eq!(TX_A_OWNER.load(TestOrdering::Relaxed), 61);
         assert_eq!(TX_B_OWNER.load(TestOrdering::Relaxed), 62);
-        assert!(!tx_for(63, &h, &[]));
+        assert!(!tx_for(owner(63), &h, &[]));
 
-        assert!(driver_uninstall(61));
-        assert!(driver_uninstall(62));
+        assert!(driver_uninstall(owner(61)));
+        assert!(driver_uninstall(owner(62)));
     });
 }
 
@@ -161,79 +162,79 @@ fn rx_poll_routes_through_matching_owner_endpoint() {
     with_vsock_state(|| {
         RX_A_OWNER.store(0, TestOrdering::Relaxed);
         RX_B_OWNER.store(0, TestOrdering::Relaxed);
-        assert!(driver_install(63, 3, tx_ok, rx_a));
-        assert!(driver_install(64, 4, tx_ok, rx_b));
+        assert!(driver_install(owner(63), 3, tx_ok, rx_a));
+        assert!(driver_install(owner(64), 4, tx_ok, rx_b));
 
-        assert_eq!(poll_rx_for(64), 1);
+        assert_eq!(poll_rx_for(owner(64)), 1);
         assert_eq!(RX_A_OWNER.load(TestOrdering::Relaxed), 0);
         assert_eq!(RX_B_OWNER.load(TestOrdering::Relaxed), 64);
 
-        assert_eq!(poll_rx_for(63), 1);
+        assert_eq!(poll_rx_for(owner(63)), 1);
         assert_eq!(RX_A_OWNER.load(TestOrdering::Relaxed), 63);
         assert_eq!(RX_B_OWNER.load(TestOrdering::Relaxed), 64);
-        assert_eq!(poll_rx_for(65), 0);
+        assert_eq!(poll_rx_for(owner(65)), 0);
 
-        assert!(driver_uninstall(63));
-        assert!(driver_uninstall(64));
+        assert!(driver_uninstall(owner(63)));
+        assert!(driver_uninstall(owner(64)));
     });
 }
 
 #[test]
 fn driver_endpoint_uninstall_is_owner_keyed() {
     with_vsock_state(|| {
-        assert!(driver_install(11, 3, tx_ok, rx_noop));
+        assert!(driver_install(owner(11), 3, tx_ok, rx_noop));
         assert!(driver_up());
         assert_eq!(guest_cid(), 3);
-        assert_eq!(driver_owner(), 11);
-        assert!(!driver_uninstall(12));
+        assert_eq!(driver_owner(), Some(owner(11)));
+        assert!(!driver_uninstall(owner(12)));
         assert!(driver_up());
         assert_eq!(guest_cid(), 3);
-        assert!(driver_uninstall(11));
+        assert!(driver_uninstall(owner(11)));
         assert!(!driver_up());
         assert_eq!(guest_cid(), 0);
-        assert_eq!(driver_owner(), 0);
+        assert_eq!(driver_owner(), None);
     });
 }
 
 #[test]
 fn driver_quiesce_stops_tx_but_keeps_owner_reserved() {
     with_vsock_state(|| {
-        assert!(driver_install(21, 9, tx_ok, rx_noop));
+        assert!(driver_install(owner(21), 9, tx_ok, rx_noop));
         assert!(driver_up());
         assert_eq!(guest_cid(), 9);
-        assert_eq!(driver_owner(), 21);
-        assert!(!driver_quiesce(22));
+        assert_eq!(driver_owner(), Some(owner(21)));
+        assert!(!driver_quiesce(owner(22)));
         assert!(driver_up());
         assert_eq!(guest_cid(), 9);
 
-        assert!(driver_quiesce(21));
+        assert!(driver_quiesce(owner(21)));
         assert!(!driver_up());
         assert_eq!(guest_cid(), 0);
-        assert_eq!(driver_owner(), 0);
-        assert!(!driver_reserve(21));
-        assert!(driver_cancel_reserved(21));
-        assert_eq!(driver_owner(), 0);
+        assert_eq!(driver_owner(), None);
+        assert!(!driver_reserve(owner(21)));
+        assert!(driver_cancel_reserved(owner(21)));
+        assert_eq!(driver_owner(), None);
     });
 }
 
 #[test]
 fn quiesced_endpoint_does_not_hide_remaining_live_endpoint() {
     with_vsock_state(|| {
-        assert!(driver_install(31, 3, tx_ok, rx_noop));
-        assert!(driver_install(32, 4, tx_ok, rx_noop));
-        assert_eq!(driver_owner(), 31);
+        assert!(driver_install(owner(31), 3, tx_ok, rx_noop));
+        assert!(driver_install(owner(32), 4, tx_ok, rx_noop));
+        assert_eq!(driver_owner(), Some(owner(31)));
         assert_eq!(guest_cid(), 3);
 
-        assert!(driver_quiesce(31));
-        assert!(!driver_up_for(31));
-        assert!(driver_up_for(32));
-        assert_eq!(driver_owner(), 32);
+        assert!(driver_quiesce(owner(31)));
+        assert!(!driver_up_for(owner(31)));
+        assert!(driver_up_for(owner(32)));
+        assert_eq!(driver_owner(), Some(owner(32)));
         assert_eq!(guest_cid(), 4);
-        assert!(!driver_reserve(31));
+        assert!(!driver_reserve(owner(31)));
 
-        assert!(driver_cancel_reserved(31));
-        assert!(driver_uninstall(32));
-        assert_eq!(driver_owner(), 0);
+        assert!(driver_cancel_reserved(owner(31)));
+        assert!(driver_uninstall(owner(32)));
+        assert_eq!(driver_owner(), None);
     });
 }
 
@@ -267,7 +268,7 @@ fn hdr_decode_short_buffer_none() {
 
 #[test]
 fn build_request_header() {
-    let c = VsockConn::new(31, 3, 1024, 2, 1234, VsockState::Connecting);
+    let c = VsockConn::new(owner(31), 3, 1024, 2, 1234, VsockState::Connecting);
     let h = c.make_hdr(VIRTIO_VSOCK_OP_REQUEST, 0, 0);
     assert_eq!(h.src_cid, 3);
     assert_eq!(h.dst_cid, 2);
@@ -281,9 +282,9 @@ fn build_request_header() {
 
 #[test]
 fn parse_response_promotes_state() {
-    with_driver(31, 3, || {
+    with_driver(owner(31), 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(31, 3, 2000, 2, 1234, VsockState::Connecting));
+            VsockConn::new(owner(31), 3, 2000, 2, 1234, VsockState::Connecting));
         TABLE.insert(c.clone());
         let resp = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2000,
@@ -317,9 +318,9 @@ fn credit_update_math() {
 
 #[test]
 fn rw_buffers_payload_and_recv_drains() {
-    with_driver(32, 3, || {
+    with_driver(owner(32), 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(32, 3, 2001, 2, 1234, VsockState::Connected));
+            VsockConn::new(owner(32), 3, 2001, 2, 1234, VsockState::Connected));
         TABLE.insert(c.clone());
         let payload = b"oxide-vsock-ping";
         let rw = VsockHdr {
@@ -340,9 +341,9 @@ fn rw_buffers_payload_and_recv_drains() {
 
 #[test]
 fn shutdown_then_eof() {
-    with_driver(33, 3, || {
+    with_driver(owner(33), 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(33, 3, 2002, 2, 1234, VsockState::Connected));
+            VsockConn::new(owner(33), 3, 2002, 2, 1234, VsockState::Connected));
         TABLE.insert(c.clone());
         let sh = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2002,
@@ -361,9 +362,9 @@ fn shutdown_then_eof() {
 
 #[test]
 fn rst_closes_connection() {
-    with_driver(34, 3, || {
+    with_driver(owner(34), 3, || {
         let c = alloc::sync::Arc::new(
-            VsockConn::new(34, 3, 2003, 2, 1234, VsockState::Connected));
+            VsockConn::new(owner(34), 3, 2003, 2, 1234, VsockState::Connected));
         TABLE.insert(c.clone());
         let rst = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2003,
@@ -379,7 +380,7 @@ fn rst_closes_connection() {
 #[test]
 fn send_blocked_when_no_peer_credit() {
     with_vsock_state(|| {
-        let c = VsockConn::new(0, 3, 2004, 2, 1234, VsockState::Connected);
+        let c = VsockConn::new(owner(39), 3, 2004, 2, 1234, VsockState::Connected);
         // peer_buf_alloc stays 0 → no credit → Eagain.
         assert_eq!(send(&c, b"data"), Err(crate::NetError::Eagain));
         // Open a window and it sends (tx hook is a no-op because no driver is
@@ -392,15 +393,15 @@ fn send_blocked_when_no_peer_credit() {
 
 #[test]
 fn listener_request_queues_accept() {
-    with_driver(35, 3, || {
-        TABLE.add_listener(35, 5555);
+    with_driver(owner(35), 3, || {
+        TABLE.add_listener(Some(owner(35)), 5555);
         let req = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 5555,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
             op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
         };
         deliver_rx(&req, &[]);
-        let k = TABLE.pop_accept(35, 5555).expect("accept queued");
+        let k = TABLE.pop_accept(Some(owner(35)), 5555).expect("accept queued");
         assert_eq!(k.peer_cid, 2);
         assert_eq!(k.peer_port, 4444);
         assert_eq!(k.local_port, 5555);
@@ -413,30 +414,30 @@ fn listener_request_queues_accept() {
 
 #[test]
 fn rx_for_wrong_guest_cid_is_dropped() {
-    with_driver(36, 3, || {
-        TABLE.add_listener(36, 6666);
+    with_driver(owner(36), 3, || {
+        TABLE.add_listener(Some(owner(36)), 6666);
         let req = VsockHdr {
             src_cid: 2, dst_cid: 99, src_port: 4444, dst_port: 6666,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
             op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
         };
         deliver_rx(&req, &[]);
-        assert!(TABLE.pop_accept(36, 6666).is_none());
+        assert!(TABLE.pop_accept(Some(owner(36)), 6666).is_none());
     });
 }
 
 #[test]
 fn rx_from_wrong_owner_is_dropped() {
-    with_driver(37, 3, || {
-        TABLE.add_listener(37, 7777);
+    with_driver(owner(37), 3, || {
+        TABLE.add_listener(Some(owner(37)), 7777);
         let req = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 7777,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
             op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
         };
-        deliver_rx_from(38, &req, &[]);
-        assert!(TABLE.pop_accept(37, 7777).is_none());
-        deliver_rx_from(37, &req, &[]);
-        assert!(TABLE.pop_accept(37, 7777).is_some());
+        deliver_rx_from(owner(38), &req, &[]);
+        assert!(TABLE.pop_accept(Some(owner(37)), 7777).is_none());
+        deliver_rx_from(owner(37), &req, &[]);
+        assert!(TABLE.pop_accept(Some(owner(37)), 7777).is_some());
     });
 }

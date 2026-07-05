@@ -27,49 +27,48 @@ pub static TABLE: VsockTable = VsockTable::new();
 /// TX hook: hand an owning device key plus a fully-encoded header + payload to
 /// the driver, which builds a TX descriptor, kicks q1, and polls the used ring.
 /// Returns true if the frame went out. # C: O(payload)
-pub type TxFn = fn(u32, &[u8]) -> bool;
+pub type TxFn = fn(VsockOwner, &[u8]) -> bool;
 /// RX poll hook: let the owning transport drain completed RX descriptors.
 /// This is an opportunistic progress hook for syscall waits; IRQ/softirq
 /// remains the normal delivery path. # C: O(device RX completions)
-pub type RxPollFn = fn(u32) -> usize;
+pub type RxPollFn = fn(VsockOwner) -> usize;
 
 struct Endpoint {
-    owner: u32,
+    owner: VsockOwner,
     guest_cid: u64,
     tx: Option<TxFn>,
     rx_poll: Option<RxPollFn>,
 }
 
 static ENDPOINTS: Spinlock<Vec<Endpoint>, SockLockClass> = Spinlock::new(Vec::new());
-static PRIMARY_OWNER: AtomicU32 = AtomicU32::new(0);
+static PRIMARY_OWNER: AtomicU32 = AtomicU32::new(VSOCK_OWNER_ANY_RAW);
 
 fn choose_primary_locked(endpoints: &[Endpoint]) -> u32 {
     endpoints.iter().find(|e| e.tx.is_some()).map(|e| e.owner)
         .or_else(|| endpoints.first().map(|e| e.owner))
-        .unwrap_or(0)
+        .map(VsockOwner::raw)
+        .unwrap_or(VSOCK_OWNER_ANY_RAW)
 }
 
 fn refresh_primary_locked(endpoints: &[Endpoint]) {
     let current = PRIMARY_OWNER.load(Ordering::Acquire);
-    if current != 0 && endpoints.iter().any(|e| e.owner == current && e.tx.is_some()) {
-        return;
+    if let Some(owner) = VsockOwner::from_raw(current) {
+        if endpoints.iter().any(|e| e.owner == owner && e.tx.is_some()) { return; }
     }
     PRIMARY_OWNER.store(choose_primary_locked(endpoints), Ordering::Release);
 }
 
-fn primary_endpoint() -> Option<(u32, u64)> {
+fn primary_endpoint() -> Option<(VsockOwner, u64)> {
     let endpoints = ENDPOINTS.lock();
-    let primary = PRIMARY_OWNER.load(Ordering::Acquire);
+    let primary = VsockOwner::from_raw(PRIMARY_OWNER.load(Ordering::Acquire));
     endpoints.iter()
-        .find(|e| e.owner == primary && e.tx.is_some())
+        .find(|e| Some(e.owner) == primary && e.tx.is_some())
         .or_else(|| endpoints.iter().find(|e| e.tx.is_some()))
         .map(|e| (e.owner, e.guest_cid))
 }
 
-fn endpoint_by_owner(owner: u32) -> Option<(u32, u64)> {
-    if owner == 0 {
-        return primary_endpoint();
-    }
+fn endpoint_by_owner(owner: Option<VsockOwner>) -> Option<(VsockOwner, u64)> {
+    let Some(owner) = owner else { return primary_endpoint(); };
     ENDPOINTS.lock().iter()
         .find(|e| e.owner == owner && e.tx.is_some())
         .map(|e| (e.owner, e.guest_cid))
@@ -79,24 +78,21 @@ fn endpoint_by_owner(owner: u32) -> Option<(u32, u64)> {
 /// pre-posts DMA state. Multiple owners may coexist; duplicate owner keys are
 /// rejected so a later probe cannot overwrite an existing endpoint.
 /// # C: O(N endpoints)
-pub fn driver_reserve(owner: u32) -> bool {
-    if owner == 0 {
-        return false;
-    }
+pub fn driver_reserve(owner: VsockOwner) -> bool {
     let mut endpoints = ENDPOINTS.lock();
     if endpoints.iter().any(|e| e.owner == owner) {
         return false;
     }
     endpoints.push(Endpoint { owner, guest_cid: 0, tx: None, rx_poll: None });
-    if PRIMARY_OWNER.load(Ordering::Acquire) == 0 {
-        PRIMARY_OWNER.store(owner, Ordering::Release);
+    if PRIMARY_OWNER.load(Ordering::Acquire) == VSOCK_OWNER_ANY_RAW {
+        PRIMARY_OWNER.store(owner.raw(), Ordering::Release);
     }
     true
 }
 
 /// Publish guest CID + install the TX hook after the transport context exists.
 /// # C: O(N endpoints)
-pub fn driver_publish_reserved(owner: u32, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -> bool {
+pub fn driver_publish_reserved(owner: VsockOwner, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -> bool {
     let mut endpoints = ENDPOINTS.lock();
     if endpoints.iter().any(|e| e.owner != owner && e.tx.is_some() && e.guest_cid == guest_cid) {
         return false;
@@ -113,7 +109,7 @@ pub fn driver_publish_reserved(owner: u32, guest_cid: u64, tx: TxFn, rx_poll: Rx
 
 /// Cancel a reservation that failed before the endpoint became live.
 /// # C: O(N endpoints)
-pub fn driver_cancel_reserved(owner: u32) -> bool {
+pub fn driver_cancel_reserved(owner: VsockOwner) -> bool {
     let mut endpoints = ENDPOINTS.lock();
     let before = endpoints.len();
     endpoints.retain(|e| e.owner != owner);
@@ -126,7 +122,7 @@ pub fn driver_cancel_reserved(owner: u32) -> bool {
 
 /// Driver bring-up entry: reserve and publish in one step.
 /// # C: O(N endpoints)
-pub fn driver_install(owner: u32, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -> bool {
+pub fn driver_install(owner: VsockOwner, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -> bool {
     if !driver_reserve(owner) {
         return false;
     }
@@ -139,7 +135,7 @@ pub fn driver_install(owner: u32, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -
 
 /// Driver remove entry: stop new TX, reset CID, and close live connections.
 /// # C: O(N endpoints + N conns)
-pub fn driver_uninstall(owner: u32) -> bool {
+pub fn driver_uninstall(owner: VsockOwner) -> bool {
     let removed = driver_cancel_reserved(owner);
     if removed {
         TABLE.close_owner(owner);
@@ -152,7 +148,7 @@ pub fn driver_uninstall(owner: u32) -> bool {
 /// late operation cannot reuse the same owner during shutdown, but makes the
 /// endpoint unusable immediately.
 /// # C: O(N endpoints + N conns)
-pub fn driver_quiesce(owner: u32) -> bool {
+pub fn driver_quiesce(owner: VsockOwner) -> bool {
     let mut endpoints = ENDPOINTS.lock();
     let Some(endpoint) = endpoints.iter_mut().find(|e| e.owner == owner) else {
         return false;
@@ -169,7 +165,7 @@ pub fn driver_quiesce(owner: u32) -> bool {
 pub fn guest_cid() -> u64 { primary_endpoint().map(|(_, cid)| cid).unwrap_or(0) }
 
 /// Guest CID for a specific owning driver instance. # C: O(N endpoints)
-pub fn guest_cid_for(owner: u32) -> u64 {
+pub fn guest_cid_for(owner: VsockOwner) -> u64 {
     ENDPOINTS.lock().iter()
         .find(|e| e.owner == owner && e.tx.is_some())
         .map(|e| e.guest_cid)
@@ -178,7 +174,7 @@ pub fn guest_cid_for(owner: u32) -> u64 {
 
 /// Owning driver instance for a live local CID.
 /// # C: O(N endpoints)
-pub fn driver_owner_for_cid(cid: u64) -> Option<u32> {
+pub fn driver_owner_for_cid(cid: u64) -> Option<VsockOwner> {
     ENDPOINTS.lock().iter()
         .find(|e| e.guest_cid == cid && e.tx.is_some())
         .map(|e| e.owner)
@@ -187,26 +183,24 @@ pub fn driver_owner_for_cid(cid: u64) -> Option<u32> {
 /// Resolve a bind local CID to an endpoint owner. `VMADDR_CID_ANY` stays
 /// wildcard owner 0; a specific CID must name a live endpoint.
 /// # C: O(N endpoints)
-pub fn bind_owner_for_cid(cid: u64) -> Result<u32, NetError> {
+pub fn bind_owner_for_cid(cid: u64) -> Result<Option<VsockOwner>, NetError> {
     if cid == VMADDR_CID_ANY {
-        return Ok(0);
+        return Ok(None);
     }
-    driver_owner_for_cid(cid).ok_or(NetError::Eaddrnotavail)
+    driver_owner_for_cid(cid).map(Some).ok_or(NetError::Eaddrnotavail)
 }
 
-/// Primary driver instance for the compatibility socket path, or 0 if none.
+/// Primary driver instance for the compatibility socket path.
 /// # C: O(N endpoints)
-pub fn driver_owner() -> u32 {
+pub fn driver_owner() -> Option<VsockOwner> {
     let endpoints = ENDPOINTS.lock();
-    let primary = PRIMARY_OWNER.load(Ordering::Acquire);
-    if primary != 0 && endpoints.iter().any(|e| e.owner == primary && e.tx.is_some()) {
-        return primary;
+    if let Some(primary) = VsockOwner::from_raw(PRIMARY_OWNER.load(Ordering::Acquire)) {
+        if endpoints.iter().any(|e| e.owner == primary && e.tx.is_some()) { return Some(primary); }
     }
     endpoints
         .iter()
         .find(|endpoint| endpoint.tx.is_some())
         .map(|endpoint| endpoint.owner)
-        .unwrap_or(0)
 }
 
 /// True iff a virtio-vsock device is installed and usable. # C: O(1)
@@ -214,13 +208,13 @@ pub fn driver_up() -> bool { primary_endpoint().is_some() }
 
 /// True iff `owner` owns an installed and usable virtio-vsock endpoint.
 /// # C: O(N endpoints)
-pub fn driver_up_for(owner: u32) -> bool {
-    owner != 0 && ENDPOINTS.lock().iter().any(|e| e.owner == owner && e.tx.is_some())
+pub fn driver_up_for(owner: VsockOwner) -> bool {
+    ENDPOINTS.lock().iter().any(|e| e.owner == owner && e.tx.is_some())
 }
 
 /// Emit one packet via the owning driver's TX hook. False if no driver.
 /// # C: O(len)
-pub fn tx_for(owner: u32, hdr: &VsockHdr, payload: &[u8]) -> bool {
+pub fn tx_for(owner: VsockOwner, hdr: &VsockHdr, payload: &[u8]) -> bool {
     let f = {
         let endpoints = ENDPOINTS.lock();
         let Some(endpoint) = endpoints.iter().find(|e| e.owner == owner) else {
@@ -239,7 +233,7 @@ pub fn tx_for(owner: u32, hdr: &VsockHdr, payload: &[u8]) -> bool {
 
 /// Ask the owning transport to drain completed RX buffers, if it exposes a
 /// poll hook. # C: O(device RX completions)
-pub(crate) fn poll_rx_for(owner: u32) -> usize {
+pub(crate) fn poll_rx_for(owner: VsockOwner) -> usize {
     let f = {
         let endpoints = ENDPOINTS.lock();
         let Some(endpoint) = endpoints.iter().find(|e| e.owner == owner) else {
@@ -273,7 +267,7 @@ fn send_credit_update(c: &VsockConn) {
 /// All credit fields in every inbound header are folded into our peer
 /// view (virtio 1.2 §5.10.6.3: every packet carries live credit).
 /// # C: O(N conns)
-pub fn deliver_rx_from(owner: u32, h: &VsockHdr, payload: &[u8]) {
+pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
     // The packet's dst is us; src is the peer.
     let local_cid  = h.dst_cid;
     let local_port = h.dst_port;
@@ -374,7 +368,7 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
 /// Client connect: allocate a local port, register the connection, send
 /// OP_REQUEST, and (kernel) park until OP_RESPONSE / RST. Returns the
 /// connection on success. # C: O(RTT)
-pub fn connect_from(owner: u32, local_port: Option<u32>, peer_cid: u64, peer_port: u32)
+pub fn connect_from(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64, peer_port: u32)
     -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
     let Some((owner, local_cid)) = endpoint_by_owner(owner) else {
@@ -416,7 +410,7 @@ pub fn connect_from(owner: u32, local_port: Option<u32>, peer_cid: u64, peer_por
 pub fn connect(peer_cid: u64, peer_port: u32)
     -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
-    connect_from(0, None, peer_cid, peer_port)
+    connect_from(None, None, peer_cid, peer_port)
 }
 
 /// Connect-poll budget (tick_yield iterations) before giving up. Named,
