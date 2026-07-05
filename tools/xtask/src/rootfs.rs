@@ -223,6 +223,7 @@ check_read() {
 /bin/drm_probe
 /bin/sysblock_probe
 /bin/snd_probe
+/bin/uevent_probe
 /bin/rtlink_probe
 check_read /sys/class/net/eth0/address b002_eth0_address
 check_read /sys/class/net/eth0/statistics/rx_packets b002_eth0_rx_packets

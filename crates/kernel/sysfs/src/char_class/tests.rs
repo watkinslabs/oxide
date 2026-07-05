@@ -69,7 +69,11 @@ fn class_uevent_write_reemits_model_event() {
     let dir = root.lookup("controlC12").expect("sound device dir");
     let uevent = dir.lookup("uevent").expect("uevent attr");
     assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
-    let (msg, _src) = listener.dequeue().expect("uevent message");
+    let msg = (0..64)
+        .filter_map(|_| listener.dequeue().map(|(msg, _src)| msg))
+        .find(|msg| msg.windows(b"DEVPATH=/devices/virtual/sound/controlC12".len())
+            .any(|w| w == b"DEVPATH=/devices/virtual/sound/controlC12"))
+        .expect("matching uevent message");
     assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
     assert!(msg.windows(b"DEVPATH=/devices/virtual/sound/controlC12".len()).any(|w| w == b"DEVPATH=/devices/virtual/sound/controlC12"));
     assert!(msg.windows(b"SUBSYSTEM=sound".len()).any(|w| w == b"SUBSYSTEM=sound"));
