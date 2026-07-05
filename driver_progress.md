@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B339-drm-card-ioctl-slot-routing`.
+Current marker: `>>> ACTIVE >>> B340-drm-sysfs-live-model-devices`.
 
 ## B002-single-machine-desktop-proof
 
@@ -195,7 +195,7 @@ Evidence:
 
 ## B331-virtio-gpu-probe-failure-unwind
 
-Status: `VERIFIED`; commit and PR merge pending.
+Status: `VERIFIED`; merged by PR #2392.
 
 Branch: `B331-virtio-gpu-probe-failure-unwind`
 
@@ -428,3 +428,29 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 409 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b339-drm-card-ioctl-slot-routing-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b339-drm-card-ioctl-slot-routing-arm.log`. |
+| PR merge | PASS: PR #2392 merged to `main` at `0a82d42a`. |
+
+## B340-drm-sysfs-live-model-devices
+
+Status: `VERIFIED`, commit/PR merge pending.
+
+Branch: `B340-drm-sysfs-live-model-devices`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | `/sys/class/drm` and `/sys/devices/virtual/drm` derive from live DRM model devices. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `drm_minors()` snapshots `drv::devices()` live, filters DRM class/dev_t/devname, derives the sysfs leaf and parent fields, and backs `/sys/class/drm`, `/sys/devices/virtual/drm`, and parented DRM directories for lookup and iteration. |
+| Hosted regressions | PASS: `drm_class_enumerates_live_model_devices` and `drm_class_device_links_to_model_parent_when_present` cover model-backed class entries, virtual device entries, parented device links, and cleanup misses after model delete. |
+| `cargo test -p sysfs drm_class -- --nocapture` | PASS: 2 passed. |
+| `cargo test -p sysfs` | PASS: 25 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/kernel/sysfs/src/drm.rs` 443 lines; `crates/kernel/sysfs/src/bus/tests.rs` 420 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b340-drm-sysfs-live-model-devices-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver_path_smoke: PASS - GPU input sound block net`. Log: `/tmp/b340-drm-sysfs-live-model-devices-arm.log`. |
