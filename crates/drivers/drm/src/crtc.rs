@@ -111,6 +111,11 @@ fn set_current_fb(card_id: u32, fb_id: u32) {
     current[idx] = fb_id;
 }
 
+#[cfg(test)]
+pub(crate) fn set_current_fb_for_tests(card_id: u32, fb_id: u32) {
+    set_current_fb(card_id, fb_id);
+}
+
 fn clear_current_fb(card_id: u32) {
     if let Some(fb_id) = CURRENT_FB.lock().get_mut(card_id as usize) {
         *fb_id = 0;

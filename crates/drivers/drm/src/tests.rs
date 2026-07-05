@@ -183,3 +183,42 @@ fn register_rolls_back_card_slot_when_node_publication_fails() {
     assert_eq!(idx, 0);
     assert!(unregister(idx));
 }
+
+#[test]
+fn unregister_drops_only_that_card_runtime_state() {
+    let _guard = crate::TEST_LOCK.lock();
+    crate::registry::clear_cards_for_tests();
+    node::unregister_all();
+    crate::dumb::TABLES.lock().fbs.clear();
+    let card0 = register(Arc::new(DummyDrv));
+    let card1 = register(Arc::new(DummyDrv));
+    assert_eq!((card0, card1), (0, 1));
+
+    crate::crtc::set_owner(card0, 0x1000);
+    crate::crtc::set_owner(card1, 0x2000);
+    crate::crtc::set_current_fb_for_tests(card0, 77);
+    crate::crtc::set_current_fb_for_tests(card1, 88);
+    crate::crtc::queue_flip_event(card0, 0x1000, crtc_id_for(0), 0xaaaa);
+    crate::crtc::queue_flip_event(card1, 0x2000, crtc_id_for(0), 0xbbbb);
+    crate::dumb::TABLES.lock().fbs.push(crate::dumb::FbObj {
+        card_id: card0, fb_id: 77, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
+        handles: [0; 4], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 0,
+    });
+    crate::dumb::TABLES.lock().fbs.push(crate::dumb::FbObj {
+        card_id: card1, fb_id: 88, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
+        handles: [0; 4], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 0,
+    });
+
+    assert!(unregister(card0));
+    assert_eq!(crate::crtc::owner(card0), 0);
+    assert_eq!(crate::crtc::current_fb(card0), 0);
+    assert!(!crate::crtc::has_events(card0, 0x1000));
+    assert!(crate::dumb::TABLES.lock().find_fb(card0, 77).is_none());
+    assert_eq!(crate::crtc::owner(card1), 0x2000);
+    assert_eq!(crate::crtc::current_fb(card1), 88);
+    assert!(crate::crtc::has_events(card1, 0x2000));
+    assert!(crate::dumb::TABLES.lock().find_fb(card1, 88).is_some());
+
+    assert!(unregister(card1));
+    crate::dumb::TABLES.lock().fbs.clear();
+}
