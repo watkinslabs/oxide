@@ -285,7 +285,7 @@ pub fn install_with_drm_parent(
     // post_init queue plumbing). No crate cycle: drm exposes the hook
     // setter, this crate fills it.
     #[cfg(target_os = "oxide-kernel")]
-    post_init::register_drm_hooks(card_id, bdf);
+    post_init::register_drm_hooks(card_id, device_key);
     Ok(card_id)
 }
 
@@ -308,7 +308,7 @@ pub fn uninstall(device_key: DeviceKey) -> Option<VirtioGpuDev> {
             #[cfg(target_os = "oxide-kernel")]
             {
                 post_init::unregister_drm_hooks(dev.card_id);
-                post_init::unpublish_console_scanout(dev.bdf);
+                post_init::unpublish_console_scanout(dev.device_key);
             }
             let _ = drm::unregister(dev.card_id);
             Some(dev)

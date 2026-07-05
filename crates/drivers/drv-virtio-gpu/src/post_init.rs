@@ -87,8 +87,8 @@ struct ScanoutCtx {
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
-const NO_CONSOLE_OWNER: u32 = u32::MAX;
-static CONSOLE_OWNER_BDF: AtomicU32 = AtomicU32::new(NO_CONSOLE_OWNER);
+const NO_CONSOLE_OWNER_KEY: u32 = u32::MAX;
+static CONSOLE_OWNER_KEY: AtomicU32 = AtomicU32::new(NO_CONSOLE_OWNER_KEY);
 
 /// Boot fbcon scanout resource id (set up by `setup_scanout`).
 pub const BOOT_SCANOUT_RES_ID: u32 = 1;
@@ -103,33 +103,33 @@ use probe::submit_one;
 
 mod scanout;
 pub use scanout::{
-    blank_scanout_for_bdf,
+    blank_scanout_for_key,
     dimensions,
-    dimensions_for_bdf,
+    dimensions_for_key,
     fbcon_flush_pixels,
     framebuffer,
-    framebuffer_for_bdf,
+    framebuffer_for_key,
     publish_console_scanout,
     scanout_ready,
-    scanout_ready_for_bdf,
+    scanout_ready_for_key,
     shutdown_scanout,
-    unblank_scanout_for_bdf,
+    unblank_scanout_for_key,
     uninstall_scanout,
     uninstall_scanout_after_failed_probe,
     unpublish_console_scanout,
 };
-use scanout::{console_owner_bdf, install_scanout_ctx};
+use scanout::install_scanout_ctx;
 
 mod runtime;
 pub use runtime::{
-    boot_scanout_res_id_for_bdf,
-    create_scanout_from_pa_for_bdf,
-    flush_scanout_for_bdf,
+    boot_scanout_res_id_for_key,
+    create_scanout_from_pa_for_key,
+    flush_scanout_for_key,
     register_drm_hooks,
-    restore_console_scanout_for_bdf,
-    set_scanout_for_bdf,
+    restore_console_scanout_for_key,
+    set_scanout_for_key,
     unregister_drm_hooks,
-    unref_scanout_resource_for_bdf,
+    unref_scanout_resource_for_key,
 };
 
 #[cfg(test)]
