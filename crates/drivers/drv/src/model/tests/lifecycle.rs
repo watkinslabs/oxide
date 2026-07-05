@@ -137,6 +137,39 @@ fn try_device_add_rejects_duplicate_bus_identity() {
 }
 
 #[test]
+fn try_device_add_preserves_pci_bar_resources_and_rejects_republish() {
+    let first = try_device_add(Arc::new(
+        Device::new("pci", String::from("0000:00:18.0"), 0x1234, 0x5678, 0x010601)
+            .with_resources(Vec::from([
+                Resource { bar: 0, start: 0x8000_0000, end: 0x8000_0fff, flags: IORESOURCE_MEM },
+                Resource { bar: 5, start: 0x0000_c000, end: 0x0000_c0ff, flags: IORESOURCE_IO },
+            ]))))
+        .unwrap();
+
+    assert_eq!(first.resources.len(), 2);
+    assert_eq!(
+        first.resources[0],
+        Resource { bar: 0, start: 0x8000_0000, end: 0x8000_0fff, flags: IORESOURCE_MEM });
+    assert_eq!(
+        first.resources[1],
+        Resource { bar: 5, start: 0x0000_c000, end: 0x0000_c0ff, flags: IORESOURCE_IO });
+
+    let duplicate = try_device_add(Arc::new(
+        Device::new("pci", String::from("0000:00:18.0"), 0x1234, 0x5678, 0x010601)
+            .with_resources(Vec::from([
+                Resource { bar: 0, start: 0x9000_0000, end: 0x9000_0fff, flags: IORESOURCE_MEM },
+            ]))));
+
+    assert!(matches!(duplicate, Err(crate::Error::Busy)));
+    let dev = devices().into_iter()
+        .find(|d| d.bus == "pci" && d.addr == "0000:00:18.0")
+        .unwrap();
+    assert_eq!(dev.resources, first.resources);
+
+    device_del(&first);
+}
+
+#[test]
 fn pci_identity_mismatch_does_not_replace_or_rebind() {
     PCI_IDENTITY_PROBES.store(0, Ordering::Release);
     PCI_MISMATCH_PROBES.store(0, Ordering::Release);
