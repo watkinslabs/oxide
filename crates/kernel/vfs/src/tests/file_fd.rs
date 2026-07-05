@@ -342,7 +342,7 @@ fn install_open_o_cloexec_sets_fd_flag_not_file_flag() {
     let t = FdTable::new();
     let i: InodeRef = MemFile::new(2);
     let fd = crate::file::install_open(&t, Arc::clone(&i), "/tmp/created",
-        OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC, 0, crate::namei::Cred::root(), usize::MAX).unwrap();
+        OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC, 0, crate::namei::Cred::root(), usize::MAX, None).unwrap();
     assert!(t.cloexec(fd).unwrap());
     assert!(!t.get(fd).unwrap().flags().contains(OpenFlags::O_CLOEXEC));
     assert!(t.get(fd).unwrap().flags().contains(OpenFlags::O_RDWR));

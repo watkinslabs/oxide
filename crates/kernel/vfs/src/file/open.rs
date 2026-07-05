@@ -10,6 +10,10 @@ use super::File;
 /// `FdTable`. Per `docs/53§3` work fn. Handles the common
 /// post-lookup sequence: O_DIRECTORY check, O_TRUNC, Dentry wrap,
 /// File construction, fd allocation.
+///
+/// `fop_override` installs a per-open `f_op` OTHER than the inode's `i_fop`
+/// (Linux `f_op->open` swapping the vtable) — the named-FIFO path passes the
+/// `pipefifo_fops` returned by `fifo_open`; `None` snapshots `inode->i_fop`.
 /// # C: O(1) + fd_table alloc
 pub fn install_open(
     fdt: &crate::fdtable::FdTable,
@@ -19,6 +23,7 @@ pub fn install_open(
     mnt_id: u64,
     cred: Cred,
     limit: usize,
+    fop_override: Option<alloc::sync::Arc<dyn crate::file_ops::FileOps>>,
 ) -> Result<i32, VfsError> {
     if flags.contains(OpenFlags::O_DIRECTORY)
         && !matches!(inode.file_type(), crate::types::FileType::Directory)
@@ -35,7 +40,10 @@ pub fn install_open(
     let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
     let file_flags = flags - OpenFlags::O_CLOEXEC;
     let dentry = open_dentry(path, &inode);
-    let file = File::new_at(inode, dentry, file_flags, mnt_id, cred);
+    let file = match fop_override {
+        Some(fop) => File::new_at_fop(inode, dentry, file_flags, mnt_id, cred, fop),
+        None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
+    };
     let fd = fdt.alloc_limit(file, limit).map_err(|_| VfsError::Emfile)?;
     if cloexec {
         fdt.set_cloexec(fd, true)?;

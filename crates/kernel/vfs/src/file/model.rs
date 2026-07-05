@@ -6,6 +6,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::Spinlock;
 
 use crate::dentry::Dentry;
+use crate::file_ops::FileOps;
 use crate::inode::InodeRef;
 use crate::namei::Cred;
 use crate::types::{FileType, OpenFlags};
@@ -35,6 +36,28 @@ impl File {
         mnt_id: u64,
         cred: Cred,
     ) -> Arc<Self> {
+        // D2: default binding snapshots `inode->i_fop` into `file->f_op`.
+        let f_op = inode.i_fop().clone();
+        Self::new_at_fop(inode, dentry, flags, mnt_id, cred, f_op)
+    }
+
+    /// `f_op`-OVERRIDE constructor — Linux `fifo_open` (and any `f_op->open`
+    /// that swaps the vtable) sets `filp->f_op` to something OTHER than the
+    /// inode's `i_fop` for the life of this open description. The FIFO open path
+    /// resolves a named-pipe inode (whose on-disk `i_fop` is a metadata-only /
+    /// EIO stub) and installs the pipe read/write/poll vtable ON THIS FILE ONLY
+    /// via `pipefifo_fops`, so the returned fd's data path goes through the pipe
+    /// ring while the inode's other opens/aliases are untouched. `f_op` is the
+    /// already-resolved vtable to snapshot into `file->f_op` (Linux `f->f_op =
+    /// fops`); everything else matches [`Self::new_at`]. # C: O(1)
+    pub fn new_at_fop(
+        inode: InodeRef,
+        dentry: Arc<Dentry>,
+        flags: OpenFlags,
+        mnt_id: u64,
+        cred: Cred,
+        f_op: Arc<dyn FileOps>,
+    ) -> Arc<Self> {
         fire_open_hook(&inode);
         let mut f_mode = fmode_from_flags(flags);
         // FMODE_LSEEK/PREAD/PWRITE (Linux `do_dentry_open`): a seekable backing
@@ -50,10 +73,6 @@ impl File {
         // `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`);
         // the matching `dput` is in `File::drop`.
         let dentry = crate::dcache::dget(&dentry);
-        // D2: snapshot `inode->i_fop` into `file->f_op` so the data path
-        // dispatches through the per-open cached vtable (Linux do_dentry_open:
-        // `f->f_op = fops_get(inode->i_fop)`).
-        let f_op = inode.i_fop().clone();
         // D3: the open file description takes an `i_count` reference on its inode
         // (Linux `struct file` pins the inode; iget/igrab supplies the ref). The
         // matching `iput`/dec is in `File::drop`.

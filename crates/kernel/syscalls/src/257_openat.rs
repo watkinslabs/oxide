@@ -301,6 +301,19 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     let dentry_path = if (flags & O_TMPFILE) != 0 { "/" } else { path_str };
     let dentry = vfs::file::open_dentry(dentry_path, &inode);
     let oflags = OpenFlags::from_bits_truncate(flags) - OpenFlags::O_CLOEXEC;
+    // fifo(7): opening a named-pipe (S_IFIFO) inode binds the shared pipe ring
+    // to the inode and runs the reader/writer rendezvous (Linux
+    // `def_fifo_fops.open = fifo_open`), then this open's data path dispatches
+    // through `pipefifo_fops`. Without it a FIFO read hits the backend's stub
+    // (tmpfs `TmpfsErrFileOps` → EIO), which is the systemd-initctl failure.
+    // O_PATH is a pure fd-reference and never runs the open hook.
+    let fifo_fop: Option<alloc::sync::Arc<dyn vfs::FileOps>> =
+        if (flags & O_PATH) == 0 && ::fs::pipe::is_named_fifo(&inode) {
+            match ::fs::pipe::fifo_open(&inode, flags) {
+                Ok(fop) => Some(fop),
+                Err(e)  => return -(e as i64),
+            }
+        } else { None };
     // D3/D37: a freshly CREATED inode (incl. O_TMPFILE) carries the build/born
     // `i_count` reference. `open_dentry` bound it to a dentry (`d_add` grab) and
     // `File::new_at` takes the open file's `igrab`; release the born ref once the
@@ -313,7 +326,10 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // logged — the same path resolving to different inos across calls = lookup race.
     #[cfg(feature = "debug-atexit")]
     let probe_ino = if path_str.contains(".so") { Some(inode.ino()) } else { None };
-    let file = File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
+    let file = match fifo_fop {
+        Some(fop) => File::new_at_fop(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred(), fop),
+        None      => File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred()),
+    };
     if let Some(i) = created_ref { vfs::file::iput(i); }
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
     // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
