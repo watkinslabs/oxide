@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B489-child-probes-no-transport-callback-imports; VERIFIED pending PR merge.
+Current marker: B490-virtio-child-single-bus-facing-wrapper; IN AUDIT.
+
+## B490 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B490-virtio-child-single-bus-facing-wrapper | IN AUDIT | Fresh main `458afcd1` after PR #2547 merge; auditing that virtio child binding is driven by one generic bus-facing `VirtioChildDriver<O>` wrapper instead of per-child bespoke bus-facing driver implementations, with hosted pci-boot/virtio evidence and x86_64/aarch64 smoke gates required before merge. |
 
 ## B489 Current
 
