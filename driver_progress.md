@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B500-virtio-child-descriptor-exports; VERIFIED.
+Current marker: B501-pci-backed-child-wrapper-descriptors; IN AUDIT.
+
+## B501 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B501-pci-backed-child-wrapper-descriptors | ACTIVE | Fresh main `b9fd51db` after PR #2560 merge. Auditing whether the PCI-backed child wrapper consumes child driver descriptors for name, matching, profile, and typed registration on x86_64 and aarch64. |
 
 ## B500 Current
 
