@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B471-sysfs-driver-override VERIFIED pending PR merge.
+Current marker: B472-sysfs-pci-resource; IN AUDIT.
+
+## B472 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B472-sysfs-pci-resource | IN AUDIT | Fresh main `fdf5fd2c` after PR #2529 merge; proving aggregate PCI `resource` reads every model BAR resource with Linux-style start/end/flags lines. |
 
 ## B471 Current
 
