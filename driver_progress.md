@@ -5,11 +5,11 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B427-no-public-auto-bind; IN AUDIT.
+Current marker: B427-no-public-auto-bind; VERIFIED pending commit/PR.
 
 ## B427-no-public-auto-bind
 
-Status: `IN AUDIT`; claim commit pending.
+Status: `VERIFIED`; commit and PR merge pending.
 
 Branch: `B427-no-public-auto-bind`
 
@@ -17,7 +17,16 @@ Target row:
 
 | Status | Item |
 |---|---|
-| ACTIVE | Remove public `drv::auto_bind`; keep automatic attachment internal to `try_device_add` and `register_driver`. |
+| VERIFIED | Remove public `drv::auto_bind`; keep automatic attachment internal to `try_device_add` and `register_driver`. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Public API search | PASS: `rg auto_bind crates/drivers/drv/src crates/kernel crates/drivers --glob '*.rs'` finds no public or live `auto_bind` API. |
+| Source audit | PASS: `try_device_add` calls private `attach_device_to_registered_drivers`; `register_driver` calls private `attach_driver_to_existing_devices`; both helpers call private `bind_inner`, so automatic attachment remains internal. |
+| Focused hosted tests | PASS: `driver_registration_binds_existing_matching_devices`, `device_add_and_bind`, and `device_add_initial_probe_precedes_add_uevent_without_bind_change` each pass. |
+| Full hosted regression | PASS: `cargo test -p drv -- --nocapture --test-threads=1` passed 24/24. |
 
 ## B426-drv-model-authoritative-proof
 
