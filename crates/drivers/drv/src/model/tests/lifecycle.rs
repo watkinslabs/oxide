@@ -180,34 +180,22 @@ fn rollback_devices_after_conflict_removes_only_published_batch() {
 #[test]
 fn find_matching_device_identity_reuses_only_exact_platform_identity() {
     let existing = try_device_add(Arc::new(Device::new(
-        "platform",
-        String::from(PLATFORM_REUSE_ADDR),
-        PLATFORM_REUSE_VENDOR_ID,
-        PLATFORM_REUSE_DEVICE_ID,
-        PLATFORM_REUSE_CLASS,
+        "platform", String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
     )))
     .unwrap();
     let same = Device::new(
-        "platform",
-        String::from(PLATFORM_REUSE_ADDR),
-        PLATFORM_REUSE_VENDOR_ID,
-        PLATFORM_REUSE_DEVICE_ID,
-        PLATFORM_REUSE_CLASS,
+        "platform", String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
     );
     let with_parent = Device::new(
-        "platform",
-        String::from(PLATFORM_REUSE_ADDR),
-        PLATFORM_REUSE_VENDOR_ID,
-        PLATFORM_REUSE_DEVICE_ID,
-        PLATFORM_REUSE_CLASS,
+        "platform", String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
     )
         .with_parent("platform", String::from(PLATFORM_REUSE_PARENT_ADDR));
     let with_devnode = Device::new(
-        "platform",
-        String::from(PLATFORM_REUSE_ADDR),
-        PLATFORM_REUSE_VENDOR_ID,
-        PLATFORM_REUSE_DEVICE_ID,
-        PLATFORM_REUSE_CLASS,
+        "platform", String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
     )
         .with_devnode(
             PLATFORM_REUSE_DEVNODE_CLASS,
@@ -215,11 +203,8 @@ fn find_matching_device_identity_reuses_only_exact_platform_identity() {
             Some((PLATFORM_REUSE_DEV_MAJOR, PLATFORM_REUSE_DEV_MINOR)),
         );
     let with_resource = Device::new(
-        "platform",
-        String::from(PLATFORM_REUSE_ADDR),
-        PLATFORM_REUSE_VENDOR_ID,
-        PLATFORM_REUSE_DEVICE_ID,
-        PLATFORM_REUSE_CLASS,
+        "platform", String::from(PLATFORM_REUSE_ADDR),
+        PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
     )
         .with_resources(Vec::from([
             Resource {
@@ -237,6 +222,39 @@ fn find_matching_device_identity_reuses_only_exact_platform_identity() {
     assert!(find_matching_device_identity(&with_parent).is_none());
     assert!(find_matching_device_identity(&with_devnode).is_none());
     assert!(find_matching_device_identity(&with_resource).is_none());
+
+    device_del(&existing);
+}
+
+#[test]
+fn platform_identity_conflict_is_busy_but_not_reusable() {
+    let existing = try_device_add(Arc::new(Device::new(
+        "platform", String::from(PLATFORM_CONFLICT_ADDR),
+        PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
+    )))
+    .unwrap();
+    let conflict = Arc::new(Device::new(
+        "platform", String::from(PLATFORM_CONFLICT_ADDR),
+        PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
+    )
+    .with_devnode(
+        PLATFORM_CONFLICT_DEVNODE_CLASS,
+        String::from(PLATFORM_CONFLICT_DEVNODE_NAME),
+        Some((PLATFORM_CONFLICT_DEV_MAJOR, PLATFORM_CONFLICT_DEV_MINOR)),
+    ));
+
+    assert!(matches!(
+        try_device_add(Arc::clone(&conflict)),
+        Err(crate::Error::Busy)
+    ));
+    assert!(find_matching_device_identity(&conflict).is_none());
+    assert!(devices().iter().any(|d| Arc::ptr_eq(d, &existing)));
+    assert_eq!(
+        devices().iter()
+            .filter(|d| d.bus == "platform" && d.addr == PLATFORM_CONFLICT_ADDR)
+            .count(),
+        1
+    );
 
     device_del(&existing);
 }
