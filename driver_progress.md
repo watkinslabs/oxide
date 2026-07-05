@@ -115,11 +115,12 @@ Evidence:
 | `cargo test -p drv-virtio-input` | PASS: 36 hosted tests. |
 | `make smoke-driver-path-x86` | DONE: PASS. Log: `/tmp/b327-queue-quiesce-x86.log`; runtime reported `driver_path_smoke: PASS - GPU input sound block net`. |
 | `make smoke-driver-path-arm` | PASS on clean rerun. Log: `/tmp/b327-queue-quiesce-arm-rerun.log`; runtime reported `driver_path_smoke: PASS - GPU input sound block net`. Earlier failed log `/tmp/b327-queue-quiesce-arm.log` is retained as an intermittent ARM no-progress follow-up. |
+| pre-push `boot-smoke` | PASS: x86 passed; ARM timed out on attempt 1 with the same no-progress watchdog, then reached `oxide login:` in 16s on attempt 2. Failed log: `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`. |
 
 Implementation note:
 
 | Item | Current finding |
 |---|---|
 | Queue ownership | `shutdown_eventq` and `uninstall_eventq` now use typed `VirtioChildDeviceKey` ownership through `take_eventq`; shared softirq release is centralized in `release_handler_if_last`. |
-| ARM intermittent finding | NOT DONE row recorded in `driver_plan.md`: ARM fast driver-path smoke once reached systemd, then watchdog reported no progress before `mouseprobe`; clean rerun passed, so root-cause separately. |
+| ARM intermittent finding | NOT DONE row recorded in `driver_plan.md`: ARM no-progress watchdog reproduced in fast driver-path and pre-push login smoke, but both gates passed on rerun; root-cause separately. |
 | Follow-up ledger | NOT DONE follow-up recorded in `driver_plan.md`: split `drain.rs` into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
