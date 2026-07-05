@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B326-userspace-seat-driver-proof`.
+Current marker: `>>> ACTIVE >>> B327-virtio-input-queue-quiesce`.
 
 ## B002-single-machine-desktop-proof
 
@@ -39,7 +39,7 @@ Notes:
 
 ## B326-userspace-seat-driver-proof
 
-Status: `>>> ACTIVE >>> IN AUDIT`.
+Status: `VERIFIED` and merged by PR #2379.
 
 Branch: `B326-userspace-seat-driver-proof`
 
@@ -60,7 +60,7 @@ Evidence:
 
 | Check | Result |
 |---|---|
-| Source audit | ACTIVE: per-item validation is fast driver smoke and targeted driver probes on both arches; GNOME is final proof only. |
+| Source audit | DONE for B326: per-item validation used fast driver smoke and targeted driver probes on both arches; GNOME remains final proof only. |
 | `cargo check -p xtask` | PASS |
 | `bash -n tools/boot-smoke-userspace-seat.sh` | PASS |
 | `git diff --check` | PASS |
@@ -92,3 +92,35 @@ Next required work:
 | Evdev ioctl constants | DONE: evdev ioctl dispatch now uses named uapi constants for `_IOC` fields, request numbers, event ranges, clock id, and fixed struct sizes; regression keeps `EVIOCSFF` out of the `EVIOCGABS` range. Verified by `cargo test -p drv-virtio-input` plus x86_64/ARM driver-path smokes. |
 | Virtio-input multi-device records | DONE: hosted tests prove multiple typed child-key records remain independent and `/proc/bus/input/devices` emits ordered `event0`/`event1` records. Fast x86_64 and ARM driver-path logs show `virtio-keyboard-pci` as `evdev_id=0 keyboard` and `virtio-mouse-pci` as `evdev_id=1 pointer`, with mouseprobe passing on both arches. |
 | Obsolete EVIOC recognizer | DONE by source audit: `rg` finds evdev ioctl handling only in `drv_virtio_input::devfs::handle_evdev_ioctl(&File, ...)`, routed from `sys_ioctl` with the open file. There is no remaining crate-level EVIOC recognizer that bypasses file-aware grab/revoke semantics. |
+
+## B327-virtio-input-queue-quiesce
+
+Status: `VERIFIED`, commit/PR pending.
+
+Branch: `B327-virtio-input-queue-quiesce`
+
+Target rows:
+
+| Status | Item |
+|---|---|
+| VERIFIED | Virtio-input clears event-queue bottom half when last queue removed. |
+| VERIFIED | Virtio-input shutdown uses explicit event-queue quiesce path. |
+| VERIFIED | Virtio-input hot-remove/shutdown address drain state by owning child key. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| `cargo test -p drv-virtio-input drain::tests -- --nocapture` | PASS: targeted queue ownership tests prove removing one event queue keeps the shared drain handler, removing the last event queue clears it, and a missing child key does not remove another device queue. |
+| `cargo test -p drv-virtio-input` | PASS: 36 hosted tests. |
+| `make smoke-driver-path-x86` | DONE: PASS. Log: `/tmp/b327-queue-quiesce-x86.log`; runtime reported `driver_path_smoke: PASS - GPU input sound block net`. |
+| `make smoke-driver-path-arm` | PASS on clean rerun. Log: `/tmp/b327-queue-quiesce-arm-rerun.log`; runtime reported `driver_path_smoke: PASS - GPU input sound block net`. Earlier failed log `/tmp/b327-queue-quiesce-arm.log` is retained as an intermittent ARM no-progress follow-up. |
+| pre-push `boot-smoke` | PASS: x86 passed; ARM timed out on attempt 1 with the same no-progress watchdog, then reached `oxide login:` in 16s on attempt 2. Failed log: `/tmp/oxide-boot-smoke-arm-IdW5Zh.log`. |
+
+Implementation note:
+
+| Item | Current finding |
+|---|---|
+| Queue ownership | `shutdown_eventq` and `uninstall_eventq` now use typed `VirtioChildDeviceKey` ownership through `take_eventq`; shared softirq release is centralized in `release_handler_if_last`. |
+| ARM intermittent finding | NOT DONE row recorded in `driver_plan.md`: ARM no-progress watchdog reproduced in fast driver-path and pre-push login smoke, but both gates passed on rerun; root-cause separately. |
+| Follow-up ledger | NOT DONE follow-up recorded in `driver_plan.md`: split `drain.rs` into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth. |
