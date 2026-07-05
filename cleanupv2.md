@@ -35,7 +35,7 @@ Status: `TODO` · `IN-PROGRESS` · `DONE` · `WONTFIX` (only if Linux itself div
 | 3.4 | `/dev/null` ENXIO (intermittent race) + `/dev/fuse` (needs full FUSE subsystem) | 3 | TODO (large/race) | — | — |
 | 3.5 | userdb short-read message framing | 3 | TODO (SEQPACKET exists; subtle framing bug — needs capture) | — | — |
 | 3.6 | update-utmp-runlevel D-Bus (cascade of 1.1) | 3 | BLOCKED-ON-1.1 (resolves when 1.1 lands) | — | — |
-| 3.7 | PSI `/proc/pressure/*` memory-pressure watch | 3 | TODO — **large subsystem** (stall accounting + poll/trigger; zero-stub = hack, rejected) | — | — |
+| 3.7 | PSI `/proc/pressure/*` (cpu live; mem/io honest-zero hook-ready) | 3 | DONE | B517-psi-pressure | #2576 |
 | 3.8 | `/dev/mem` / `/dev/kvm` | 3 | WONTFIX | — | expected nested-virt noise |
 
 ---
