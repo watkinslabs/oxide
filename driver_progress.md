@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B482-userspace-discovery-model-owned; IN AUDIT.
+Current marker: B482-userspace-discovery-model-owned; VERIFIED pending PR merge.
 
 ## B482 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B482-userspace-discovery-model-owned | IN AUDIT | Fresh main `9eee2ea0` after PR #2539 merge; auditing model-owned userspace discovery across `/dev`, `/sys`, class, `/sys/dev`, and uevent state before deciding whether source/test gaps remain. |
+| B482-userspace-discovery-model-owned | VERIFIED | Fresh main `9eee2ea0` after PR #2539 merge. Source audit proves `drv::try_device_add` inserts the model record, mints devtmpfs nodes before initial probe/sysfs add uevent, and `device_del` emits remove before devtmpfs teardown and final registry drop; kmain wires devtmpfs hooks before console/default device publication and sysfs add/remove/bind hooks before hardware discovery; sysfs bus, class, `/sys/dev/{char,block}`, and uevent views derive from current `drv::devices()` state. Checks pass: `cargo test -q -p drv -p devfs -p sysfs -p block -p sound -p drm -p fbdev -p drv-virtio-input -p drv-virtio-rng -- --nocapture --test-threads=1` with drv 29/29, devfs 9/9, sysfs 68/68, block 31/31, sound 36/36, drm 8/8, fbdev 23/23, virtio-input 16/16, virtio-rng 28/28; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B481 Current
 

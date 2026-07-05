@@ -2,7 +2,7 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B482-userspace-discovery-model-owned; IN AUDIT.
+ACTIVE NOW: B482-userspace-discovery-model-owned; VERIFIED pending PR merge.
 
 Current active item: Userspace discovery must see model-owned driver state.
 
@@ -26,7 +26,7 @@ Status legend:
 
 | Status | Branch | Description |
 |---|---|---|
-| ACTIVE | B482-userspace-discovery-model-owned | Userspace discovery must see model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state for GNOME/systemd/udev/logind/libinput/Mesa/ALSA; no kernel userspace-policy shortcuts. |
+| VERIFIED | B482-userspace-discovery-model-owned | Userspace discovery sees model-owned `/dev`, `/sys`, class, `dev`, `/sys/dev`, and uevent state without kernel userspace-policy shortcuts: source audit proves `drv::try_device_add` owns publication order, kmain wires devtmpfs/sysfs hooks before discovery, sysfs derives bus/class/reverse-index state from `drv::devices()`, and hosted aggregate plus x86_64/aarch64 smokes pass. |
 | VERIFIED | B002-single-machine-desktop-proof | Single-machine desktop path must be proven for one virtio GPU, one input stack, one sound card, one root disk, and one network device. |
 | VERIFIED | B326-userspace-seat-driver-proof | Fast driver-system proof for DRM/fbdev nodes, evdev nodes, ALSA nodes, block/net discovery, and uevent delivery on x86_64 and aarch64; `../oxide-images` GNOME remains final seat gate only. |
 | VERIFIED | B476-driver-hardening-expansion | After single-device desktop works, expand fault injection, hotplug stress, and multi-device hardening: added hosted driver-core stress regression `multi_device_fault_hotplug_cycle_keeps_model_state_consistent` covering repeated multi-device platform and PCI publication, automatic bind, duplicate rejection, explicit unbind/rebind, failed-probe retry while unbound, device_del teardown, and identity reuse. Remaining QEMU live hotplug breadth stays tracked by B415 and its concrete rows. |
