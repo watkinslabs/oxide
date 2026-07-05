@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B467-remove-public-register-device-bypasses VERIFIED pending PR merge.
+Current marker: B468-remove-public-infallible-device-add; IN AUDIT.
+
+## B468 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B468-remove-public-infallible-device-add | IN AUDIT | Fresh main `cdef381e` after PR #2525 merge; proving no public infallible `device_add` wrapper remains and production callers handle fallible `drv::try_device_add` errors. |
 
 ## B467 Current
 
