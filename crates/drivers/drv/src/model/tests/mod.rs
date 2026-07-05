@@ -57,6 +57,34 @@ impl Driver for FailingProbeDrv {
 }
 static FAILING_PROBE_DRV: FailingProbeDrv = FailingProbeDrv;
 
+static PCI_IDENTITY_PROBES: AtomicU32 = AtomicU32::new(0);
+struct PciIdentityDrv;
+impl Driver for PciIdentityDrv {
+    fn name(&self) -> &'static str { "pci-identity-test" }
+    fn matches(&self, dev: &Device) -> bool {
+        dev.bus == "pci" && dev.vendor_id == 0x1af4 && dev.device_id == 0x1041 && dev.class == 0x010000
+    }
+    fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+        PCI_IDENTITY_PROBES.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+}
+static PCI_IDENTITY_DRV: PciIdentityDrv = PciIdentityDrv;
+
+static PCI_MISMATCH_PROBES: AtomicU32 = AtomicU32::new(0);
+struct PciMismatchDrv;
+impl Driver for PciMismatchDrv {
+    fn name(&self) -> &'static str { "pci-mismatch-test" }
+    fn matches(&self, dev: &Device) -> bool {
+        dev.bus == "pci" && dev.vendor_id == 0x1af4 && dev.device_id == 0x1042 && dev.class == 0x020000
+    }
+    fn probe(&self, _dev: &Arc<Device>) -> KResult<()> {
+        PCI_MISMATCH_PROBES.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+}
+static PCI_MISMATCH_DRV: PciMismatchDrv = PciMismatchDrv;
+
 static LOOP_PROBES: AtomicU32 = AtomicU32::new(0);
 static LOOP_REMOVES: AtomicU32 = AtomicU32::new(0);
 struct LoopLifecycleDrv;
