@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B359-virtio-gpu-fbdev-index-owner`.
+Current marker: `>>> ACTIVE >>> B360-console-fbdev-transactional-publish`.
 
 ## Archived Completed B327-B330
 
@@ -455,8 +455,16 @@ Evidence: source audit found `/dev/fbN` inodes carry `FbData { idx }` for read/w
 
 ## B359-virtio-gpu-fbdev-index-owner
 
-Status: `VERIFIED, PR merge pending`.
+Status: `VERIFIED`; merged by PR #2412.
 
 Branch: `B359-virtio-gpu-fbdev-index-owner`
 
-Evidence: source audit found `publish_console_scanout` claims `CONSOLE_OWNER_KEY`, publishes fbdev ops with the virtio child owner key, records the returned fbdev idx in `ScanoutCtx`, and unwinds both idx and owner token on failure. `unpublish_console_scanout` only clears the matching owner token and unregisters the exact stored idx. Added `fbdev_idx_is_stored_and_taken_by_owner_key` and serialized post_init global-state tests to remove the hosted race. Focused regression, full `cargo test -p drv-virtio-gpu` with 32 tests, `git diff --check`, line cap, and fast x86_64/aarch64 driver-path smokes pass.
+Evidence: source audit found `publish_console_scanout` claims `CONSOLE_OWNER_KEY`, publishes fbdev ops with the virtio child owner key, records the returned fbdev idx in `ScanoutCtx`, and unwinds both idx and owner token on failure. `unpublish_console_scanout` only clears the matching owner token and unregisters the exact stored idx. Added `fbdev_idx_is_stored_and_taken_by_owner_key` and serialized post_init global-state tests to remove the hosted race. Focused regression, full `cargo test -p drv-virtio-gpu` with 32 tests, `git diff --check`, line cap, fast x86_64/aarch64 driver-path smokes, pre-push boot smoke, PR #2412, and main sync `91039d81` pass.
+
+## B360-console-fbdev-transactional-publish
+
+Status: `CLAIMED`.
+
+Branch: `B360-console-fbdev-transactional-publish`
+
+Evidence: claimed from synced main `91039d81`; source audit not started yet.
