@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B448-device-del-remove-visible VERIFIED pending PR merge.
+ACTIVE NOW: B449-device-del-devtmpfs-teardown; IN AUDIT.
 
-Current active item: none; next claim starts after B448 merge and fresh main
-sync.
+Current active item: `device_del` removes devtmpfs state.
 
-Next gate after merge: return to fresh `origin/main` before claiming B449 using
-`metadata/index.md`.
+Next gate after B449: prove source ordering, hosted driver-model/devfs
+regressions, runtime arch relevance, PR merge, then fresh `origin/main` before
+claiming B450.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -56,7 +56,7 @@ Status legend:
 | VERIFIED | B446-model-unbind-remove-before-clear | Model unbind calls `Driver::remove` before clearing binding: `drv::unbind` reads the current bound driver, resolves the registered driver, calls `driver.remove(dev)`, then clears `dev.driver` and emits the unbound change hook; hosted regression `unbind_calls_remove_before_clearing_binding` proves `remove` observes the device still bound, and full driver-model tests pass 27/27. |
 | VERIFIED | B447-device-del-unbinds-first | `device_del` unbinds first: `drv::device_del` checks the device is still registered, calls `unbind(d)` before sysfs remove, devtmpfs teardown, or registry removal when the device is bound, and hosted lifecycle regressions prove driver remove runs once, bound state clears, remove event follows driver removal, devtmpfs teardown follows sysfs remove, and the registry entry disappears after teardown. |
 | VERIFIED | B448-device-del-remove-visible | `device_del` emits remove while object is still visible: `drv::device_del` fires `SYSFS_REMOVE_HOOK` before retaining the device out of the registry, and the hosted teardown-order regression proves the remove hook observes the device unbound but still present in `drv::devices()`. |
-| SOURCE OK |  | `device_del` removes devtmpfs state. |
+| ACTIVE | B449-device-del-devtmpfs-teardown | `device_del` removes devtmpfs state. |
 | SOURCE OK |  | `device_del` drops device from registry after remove/devtmpfs teardown. |
 | SOURCE OK |  | Driver-core tests assert remove/sysfs/devtmpfs/registry disappearance order. |
 | SOURCE OK |  | `drv::shutdown_all` walks bound model devices in reverse registration order. |
