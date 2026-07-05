@@ -25,7 +25,7 @@ pub(crate) fn fstype_ok(t: &str) -> bool {
         "tmpfs" | "ramfs" | "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup2"
         | "ext4"
         | "securityfs" | "efivarfs" | "pstore" | "bpf" | "configfs" | "debugfs"
-        | "tracefs" | "fusectl" | "mqueue" | "hugetlbfs" | "autofs" | "binfmt_misc")
+        | "tracefs" | "fuse" | "fusectl" | "mqueue" | "hugetlbfs" | "autofs" | "binfmt_misc")
 }
 
 fn source_disk_name(source: &str) -> &str {
@@ -68,6 +68,7 @@ const PSTOREFS_MAGIC: u64 = 0x6165_676C;
 const BPF_FS_MAGIC: u64 = 0xcafe_4a11;
 const CONFIGFS_MAGIC: u64 = 0x6265_6570;
 const FUSE_CTL_MAGIC: u64 = 0x6573_5546;
+const FUSE_SUPER_MAGIC: u64 = 0x6573_5546;
 const MQUEUE_MAGIC: u64 = 0x1980_0202;
 const HUGETLBFS_MAGIC: u64 = 0x9584_58f6;
 const EXT4_MAGIC: u64 = 0xef53;
@@ -134,6 +135,10 @@ fn register_filesystems() {
     let _ = register_fs(FsType::new("binfmt_misc", 0, FsFlags::empty(), Box::new(|_, _, _| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
         Ok(MountSpec { fs, bind_root: None, strict: true })
+    })));
+    let _ = register_fs(FsType::new("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|_s: &str, _t: &str, data: &str| -> R {
+        let (fs, root) = ::fs::fuse::mount_from_data(data)?;
+        Ok(MountSpec { fs, bind_root: Some(root), strict: true })
     })));
     let _ = register_fs(FsType::new("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|_, _, _| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = devpts::devpts_fs();
