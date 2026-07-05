@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as L};
 
 pub(crate) struct Oss {
-    pub owner: u32,
+    pub owner: crate::SoundOwnerKey,
     pub rate: u8,
     pub format: u8,
     pub channels: u8,
@@ -15,19 +15,19 @@ pub(crate) struct Oss {
 
 pub(crate) static OSS: Spinlock<Vec<Oss>, L> = Spinlock::new(Vec::new());
 
-pub(crate) fn initial(owner: u32) -> Oss {
+pub(crate) fn initial(owner: crate::SoundOwnerKey) -> Oss {
     let (rate, format, channels) = crate::oss::oss_params::initial_params(owner);
     Oss { owner, rate, format, channels, subdivision: 0, fragshift: 0, maxfrags: 2, running: false, cap_running: false }
 }
 
-pub(crate) fn register_card(owner: u32) {
+pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     let mut guard = OSS.lock();
     if !guard.iter().any(|o| o.owner == owner) {
         guard.push(initial(owner));
     }
 }
 
-pub(crate) fn unregister_card(owner: u32) {
+pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     crate::oss::oss_ioctl::reset(owner);
     let mut guard = OSS.lock();
     guard.retain(|o| o.owner != owner);
@@ -39,6 +39,6 @@ pub(crate) fn registered_count() -> usize {
 }
 
 #[cfg(test)]
-pub(crate) fn has_card(owner: u32) -> bool {
+pub(crate) fn has_card(owner: crate::SoundOwnerKey) -> bool {
     OSS.lock().iter().any(|o| o.owner == owner)
 }

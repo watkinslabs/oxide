@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B505-sound-owner-key-boundary; IN AUDIT.
+Current marker: none; B505-sound-owner-key-boundary VERIFIED pending commit/PR/merge.
 
 ## B505 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B505-sound-owner-key-boundary | ACTIVE | Fresh main `269e02a2` after PR #2567 merge. Claimed `drv-virtio-snd` raw conversion at the sound-core owner-key boundary; `metadata/index.md` advanced B 505 -> 506. Read-only prep found raw boundary at `drv-virtio-snd::sound_owner(DeviceKey) -> u32` and sound-core owner `u32` storage in card, ops, inode-private, PCM/capture/OSS state. |
+| B505-sound-owner-key-boundary | VERIFIED | Fresh main `269e02a2` after PR #2567 merge. Added `sound::SoundOwnerKey`, a sound-owned nonzero owner identity, and moved sound card reservations, ALSA card lookup/removal, sound ops bindings, `SndData`, PCM/capture/OSS state, and `SoundOps` callbacks from raw `u32` to typed owner keys. `drv-virtio-snd::sound_owner` now converts `VirtioChildDeviceKey` to `Option<sound::SoundOwnerKey>` once before install/uninstall and callback context lookup, keeping sound-core independent of virtio. Checks pass: `cargo test -q -p sound -- --nocapture --test-threads=1` 16/16; `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` 8/8; broad hosted `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with child suites 18/18, 36/36, 36/36, 16/16, 8/8, 8/8, 7/7, shared `virtio` 43/43, and pci-boot compile-only 0 tests; `git diff --check`; touched Rust files remain under 500 lines (`sound/src/tests.rs` 491, `drv-virtio-snd/src/tests.rs` 354, `lifecycle.rs` 235, `cards.rs` 155, `ops.rs` 123); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B504 Current
 
@@ -23,7 +23,7 @@ Current marker: B505-sound-owner-key-boundary; IN AUDIT.
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B505-sound-owner-key-boundary | CLAIMED | Read-only fanout mapped the next narrow unverified row to `drv-virtio-snd` -> `sound` raw owner identity. Raw boundary starts at `drv-virtio-snd::sound_owner(DeviceKey) -> u32`; sound-core currently stores owner `u32` in card, ops, inode-private, PCM/capture/OSS state. Proposed fix: add sound-owned opaque `SoundOwnerKey`, keep `sound` independent of `virtio`, convert only in `drv-virtio-snd`, and run focused `sound` plus `drv-virtio-snd` suites before x86_64/aarch64 smokes. |
+| B506-next-driver-row | PENDING | Claim next unverified row only after B505 commit, PR, merge, and fresh `main` sync. Use `metadata/index.md` before opening the branch. |
 
 ## B503 Current
 

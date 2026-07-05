@@ -4,19 +4,19 @@ use crate::oss::oss_state::OSS;
 use core::sync::atomic::{AtomicU32, Ordering};
 use syscall::errno::Errno;
 
-fn cfg(_owner: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
-fn caps(_owner: u32) -> crate::ops::Caps { Some((1 << V_S16, 1 << 6, 1, 2)) }
-fn period(_owner: u32) -> usize { 2048 }
-fn hw_params(_owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
-fn hw_params_record(_owner: u32, _rate: u8, _format: u8, _channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
+fn cfg(_owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
+fn caps(_owner: crate::SoundOwnerKey) -> crate::ops::Caps { Some((1 << V_S16, 1 << 6, 1, 2)) }
+fn period(_owner: crate::SoundOwnerKey) -> usize { 2048 }
+fn hw_params(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+fn hw_params_record(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
     LAST_PERIOD.store(period_bytes, Ordering::SeqCst);
     LAST_BUFFER.store(buffer_bytes, Ordering::SeqCst);
     true
 }
-fn yes(_owner: u32) -> bool { true }
-fn start_only(_owner: u32, start: bool) -> bool { start }
-fn submit(_owner: u32, b: &[u8]) -> usize { b.len() }
-fn recv(_owner: u32, b: &mut [u8]) -> usize { b.len() }
+fn yes(_owner: crate::SoundOwnerKey) -> bool { true }
+fn start_only(_owner: crate::SoundOwnerKey, start: bool) -> bool { start }
+fn submit(_owner: crate::SoundOwnerKey, b: &[u8]) -> usize { b.len() }
+fn recv(_owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { b.len() }
 
 static LAST_PERIOD: AtomicU32 = AtomicU32::new(0);
 static LAST_BUFFER: AtomicU32 = AtomicU32::new(0);
@@ -34,10 +34,11 @@ static GEOM_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
 };
 
 fn test_err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+fn key(raw: u32) -> crate::SoundOwnerKey { crate::SoundOwnerKey::from_raw(raw).unwrap() }
 
 #[test]
 fn parameter_change_does_not_clear_running_state_when_reset_fails() {
-    let owner = 0x7100;
+    let owner = key(0x7100);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);
     let _ = crate::cancel_card_reservation(owner);
@@ -87,7 +88,7 @@ fn parameter_change_does_not_clear_running_state_when_reset_fails() {
 
 #[test]
 fn fragment_ioctl_sets_backend_period_and_space_geometry() {
-    let owner = 0x7101;
+    let owner = key(0x7101);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);
     let _ = crate::cancel_card_reservation(owner);
@@ -129,7 +130,7 @@ fn fragment_ioctl_sets_backend_period_and_space_geometry() {
 
 #[test]
 fn subdivide_ioctl_updates_fragment_size_once() {
-    let owner = 0x7102;
+    let owner = key(0x7102);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);
     let _ = crate::cancel_card_reservation(owner);
@@ -170,7 +171,7 @@ fn subdivide_ioctl_updates_fragment_size_once() {
 
 #[test]
 fn missing_ops_do_not_report_fake_fragment_size() {
-    let owner = 0x7103;
+    let owner = key(0x7103);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);
     let _ = crate::cancel_card_reservation(owner);

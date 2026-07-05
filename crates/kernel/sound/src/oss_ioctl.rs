@@ -6,7 +6,7 @@ use crate::uapi::UserBuf;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-pub(crate) fn set_subdivision(owner: u32, subdivision: u32) -> i64 {
+pub(crate) fn set_subdivision(owner: crate::SoundOwnerKey, subdivision: u32) -> i64 {
     if subdivision == 0 {
         let guard = OSS.lock();
         let Some(o) = guard.iter().find(|o| o.owner == owner) else { return err(Errno::Enodev); };
@@ -25,7 +25,7 @@ pub(crate) fn set_subdivision(owner: u32, subdivision: u32) -> i64 {
     i64::from(subdivision)
 }
 
-pub(crate) fn set_fragment(owner: u32, val: u32) -> i64 {
+pub(crate) fn set_fragment(owner: crate::SoundOwnerKey, val: u32) -> i64 {
     let mut fragshift = (val & 0xffff) as u8;
     if fragshift >= 25 { return err(Errno::Einval); }
     if fragshift < 4 { fragshift = 4; }
@@ -46,7 +46,7 @@ pub(crate) fn set_fragment(owner: u32, val: u32) -> i64 {
 
 /// Stop + release both directions and disarm, so the next I/O re-applies
 /// params (SNDCTL_DSP_RESET / a param change).
-pub(crate) fn reset(owner: u32) -> bool {
+pub(crate) fn reset(owner: crate::SoundOwnerKey) -> bool {
     let (running, cap_running) = {
         let mut guard = OSS.lock();
         let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else { return false; };
@@ -69,7 +69,7 @@ pub(crate) fn reset(owner: u32) -> bool {
 
 /// /dev/dsp read(2): lazily arm capture then receive.
 /// # C: O(bytes/period × RXQ round-trip)
-pub fn read(owner: u32, buf: &mut [u8]) -> usize {
+pub fn read(owner: crate::SoundOwnerKey, buf: &mut [u8]) -> usize {
     if buf.is_empty() { return 0; }
     let (rate, fmt, ch, cap_running) = {
         let guard = OSS.lock();
@@ -90,7 +90,7 @@ pub fn read(owner: u32, buf: &mut [u8]) -> usize {
 
 /// /dev/dsp write(2): lazily arm playback then submit.
 /// # C: O(bytes/period × TXQ round-trip)
-pub fn write(owner: u32, buf: &[u8]) -> usize {
+pub fn write(owner: crate::SoundOwnerKey, buf: &[u8]) -> usize {
     if buf.is_empty() { return 0; }
     let (rate, fmt, ch, running) = {
         let guard = OSS.lock();
@@ -111,7 +111,7 @@ pub fn write(owner: u32, buf: &[u8]) -> usize {
 
 /// Handle a SNDCTL_DSP_* (`/dev/dsp`, minor=DSP/AUDIO) or SOUND_MIXER_* ioctl.
 /// # C: O(1)
-pub fn handle(owner: u32, is_mixer: bool, req: u64, arg: u64) -> i64 {
+pub fn handle(owner: crate::SoundOwnerKey, is_mixer: bool, req: u64, arg: u64) -> i64 {
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
     let dir = (req >> 30) & 0x3;

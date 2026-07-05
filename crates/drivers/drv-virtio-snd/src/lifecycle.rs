@@ -24,7 +24,7 @@ pub fn present_for(device_key: DeviceKey) -> bool {
     CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
 }
 
-pub fn config(owner: u32) -> Option<(u32, u32, u32, u32)> {
+pub fn config(owner: sound::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> {
     active_ctx_for(&CTX.lock(), owner).map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
 }
 
@@ -60,7 +60,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     if CTX.lock().iter().any(|ctx| ctx.device_key == p.device_key) {
         return None;
     }
-    let owner = sound_owner(p.device_key);
+    let owner = sound_owner(p.device_key)?;
     let mut card_reservation = SoundCardReservation::reserve(owner)?;
     if eventq.size == 0 || eventq.size > MAX_EVENTQ_DESCS {
         return None;
@@ -153,9 +153,10 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
 }
 
 pub fn uninstall(device_key: DeviceKey) -> bool {
-    let owner = sound_owner(device_key);
-    let card_removed = sound::unregister_card(owner);
-    let ops_removed = sound::ops::clear(owner);
+    let (card_removed, ops_removed) = match sound_owner(device_key) {
+        Some(owner) => (sound::unregister_card(owner), sound::ops::clear(owner)),
+        None => (false, false),
+    };
     let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
         return card_removed || ops_removed;
     };

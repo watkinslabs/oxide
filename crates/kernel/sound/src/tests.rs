@@ -13,7 +13,7 @@ const CARD1_NODE_COUNT: usize = 6;
 static TEST_LOCK: AtomicU32 = AtomicU32::new(0);
 static ADDED: Spinlock<Vec<(String, Option<(u32, u32)>, bool)>, SoundLockClass> = Spinlock::new(Vec::new());
 static REMOVED: Spinlock<Vec<String>, SoundLockClass> = Spinlock::new(Vec::new());
-static ROUTED: Spinlock<Vec<u32>, SoundLockClass> = Spinlock::new(Vec::new());
+static ROUTED: Spinlock<Vec<crate::SoundOwnerKey>, SoundLockClass> = Spinlock::new(Vec::new());
 
 struct TestGuard;
 
@@ -30,25 +30,25 @@ fn test_guard() -> TestGuard {
     TestGuard
 }
 
-fn cfg(_owner: u32) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
-fn caps(_owner: u32) -> ops::Caps { Some((0, 0, 1, 2)) }
-fn no_caps(_owner: u32) -> ops::Caps { None }
-fn period(_owner: u32) -> usize { 2048 }
-fn hw_params(_owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
-fn yes(_owner: u32) -> bool { true }
-fn no(_owner: u32) -> bool { false }
-fn trigger(_owner: u32, _start: bool) -> bool { true }
-fn fail_trigger(_owner: u32, _start: bool) -> bool { false }
-fn submit(_owner: u32, b: &[u8]) -> usize { b.len() }
-fn recv(_owner: u32, b: &mut [u8]) -> usize { b.len() }
-fn route_cfg(owner: u32) -> Option<(u32, u32, u32, u32)> { ROUTED.lock().push(owner); Some((0, 0, 0, 0)) }
-fn route_caps(owner: u32) -> ops::Caps { ROUTED.lock().push(owner); Some((1u64 << 5, 1u64 << 6, 1, 2)) }
-fn route_period(owner: u32) -> usize { ROUTED.lock().push(owner); 2048 }
-fn route_yes(owner: u32) -> bool { ROUTED.lock().push(owner); true }
-fn route_trigger(owner: u32, _start: bool) -> bool { ROUTED.lock().push(owner); true }
-fn route_submit(owner: u32, b: &[u8]) -> usize { ROUTED.lock().push(owner); b.len() }
-fn route_recv(owner: u32, b: &mut [u8]) -> usize { ROUTED.lock().push(owner); b.len() }
-fn route_hw_params(owner: u32, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool {
+fn cfg(_owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
+fn caps(_owner: crate::SoundOwnerKey) -> ops::Caps { Some((0, 0, 1, 2)) }
+fn no_caps(_owner: crate::SoundOwnerKey) -> ops::Caps { None }
+fn period(_owner: crate::SoundOwnerKey) -> usize { 2048 }
+fn hw_params(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+fn yes(_owner: crate::SoundOwnerKey) -> bool { true }
+fn no(_owner: crate::SoundOwnerKey) -> bool { false }
+fn trigger(_owner: crate::SoundOwnerKey, _start: bool) -> bool { true }
+fn fail_trigger(_owner: crate::SoundOwnerKey, _start: bool) -> bool { false }
+fn submit(_owner: crate::SoundOwnerKey, b: &[u8]) -> usize { b.len() }
+fn recv(_owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { b.len() }
+fn route_cfg(owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { ROUTED.lock().push(owner); Some((0, 0, 0, 0)) }
+fn route_caps(owner: crate::SoundOwnerKey) -> ops::Caps { ROUTED.lock().push(owner); Some((1u64 << 5, 1u64 << 6, 1, 2)) }
+fn route_period(owner: crate::SoundOwnerKey) -> usize { ROUTED.lock().push(owner); 2048 }
+fn route_yes(owner: crate::SoundOwnerKey) -> bool { ROUTED.lock().push(owner); true }
+fn route_trigger(owner: crate::SoundOwnerKey, _start: bool) -> bool { ROUTED.lock().push(owner); true }
+fn route_submit(owner: crate::SoundOwnerKey, b: &[u8]) -> usize { ROUTED.lock().push(owner); b.len() }
+fn route_recv(owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { ROUTED.lock().push(owner); b.len() }
+fn route_hw_params(owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool {
     ROUTED.lock().push(owner);
     true
 }
@@ -112,6 +112,7 @@ fn test_err(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 fn put_u32(buf: &mut [u8], off: usize, value: u32) { buf[off..off + 4].copy_from_slice(&value.to_le_bytes()); }
 fn put_u64(buf: &mut [u8], off: usize, value: u64) { buf[off..off + 8].copy_from_slice(&value.to_le_bytes()); }
 fn get_u64(buf: &[u8], off: usize) -> u64 { u64::from_le_bytes(buf[off..off + 8].try_into().unwrap()) }
+fn key(raw: u32) -> crate::SoundOwnerKey { crate::SoundOwnerKey::from_raw(raw).unwrap() }
 
 #[test]
 fn card_nodes_are_model_owned_and_removed() {
@@ -120,15 +121,15 @@ fn card_nodes_are_model_owned_and_removed() {
     drv::set_devtmpfs_del_hook(del_hook);
     ADDED.lock().clear();
     REMOVED.lock().clear();
-    let _ = unregister_card(0x10);
-    let _ = ops::clear(0x10);
+    let _ = unregister_card(key(0x10));
+    let _ = ops::clear(key(0x10));
 
-    assert!(reserve_card(0x10));
-    assert!(ops::register(0x10, &TEST_OPS));
-    assert!(register_card(0x10));
-    assert_eq!(owner(), Some(0x10));
-    assert_eq!(card_number(0x10), Some(0));
-    assert!(register_card(0x10));
+    assert!(reserve_card(key(0x10)));
+    assert!(ops::register(key(0x10), &TEST_OPS));
+    assert!(register_card(key(0x10)));
+    assert_eq!(owner(), Some(key(0x10)));
+    assert_eq!(card_number(key(0x10)), Some(0));
+    assert!(register_card(key(0x10)));
 
     let added = ADDED.lock().clone();
     assert_eq!(added.len(), CARD0_NODE_COUNT);
@@ -145,11 +146,11 @@ fn card_nodes_are_model_owned_and_removed() {
     assert!(has_node(&added, "mixer", (14, 0)));
     assert!(has_node(&added, "mixer0", (14, 0)));
 
-    assert!(!unregister_card(0x20));
+    assert!(!unregister_card(key(0x20)));
     assert_eq!(REMOVED.lock().len(), 0);
-    assert_eq!(owner(), Some(0x10));
+    assert_eq!(owner(), Some(key(0x10)));
 
-    assert!(unregister_card(0x10));
+    assert!(unregister_card(key(0x10)));
     let removed = REMOVED.lock().clone();
     assert_eq!(removed.len(), CARD0_NODE_COUNT);
     assert!(removed.iter().any(|n| n == "snd/controlC0"));
@@ -162,21 +163,21 @@ fn card_nodes_are_model_owned_and_removed() {
     assert!(removed.iter().any(|n| n == "mixer"));
     assert!(removed.iter().any(|n| n == "mixer0"));
 
-    assert!(!unregister_card(0x10));
+    assert!(!unregister_card(key(0x10)));
     assert_eq!(REMOVED.lock().len(), CARD0_NODE_COUNT);
     assert_eq!(owner(), None);
-    assert!(ops::ops_for(0x10).is_none());
+    assert!(ops::ops_for(key(0x10)).is_none());
 
     ADDED.lock().clear();
     REMOVED.lock().clear();
-    assert!(reserve_card(0x10));
-    assert!(ops::register(0x10, &TEST_OPS));
-    assert!(register_card(0x10));
+    assert!(reserve_card(key(0x10)));
+    assert!(ops::register(key(0x10), &TEST_OPS));
+    assert!(register_card(key(0x10)));
     assert_eq!(ADDED.lock().len(), CARD0_NODE_COUNT);
     assert!(drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "controlC0"));
-    assert!(unregister_card(0x10));
+    assert!(unregister_card(key(0x10)));
     assert_eq!(REMOVED.lock().len(), CARD0_NODE_COUNT);
-    let _ = ops::clear(0x10);
+    let _ = ops::clear(key(0x10));
 }
 
 #[test]
@@ -186,9 +187,9 @@ fn card_nodes_follow_reported_stream_directions() {
     drv::set_devtmpfs_del_hook(del_hook);
 
     for (owner_id, ops_table, expect_playback, expect_capture, expect_count) in [
-        (0x41, &PLAYBACK_ONLY_OPS, true, false, 8usize),
-        (0x42, &CAPTURE_ONLY_OPS, false, true, 8usize),
-        (0x43, &NO_PCM_OPS, false, false, 3usize),
+        (key(0x41), &PLAYBACK_ONLY_OPS, true, false, 8usize),
+        (key(0x42), &CAPTURE_ONLY_OPS, false, true, 8usize),
+        (key(0x43), &NO_PCM_OPS, false, false, 3usize),
     ] {
         ADDED.lock().clear();
         REMOVED.lock().clear();
@@ -218,7 +219,7 @@ fn card_nodes_follow_reported_stream_directions() {
 #[test]
 fn pcm_control_ops_propagate_backend_failures() {
     let _guard = test_guard();
-    let owner_id = 0x44;
+    let owner_id = key(0x44);
     let _ = pcm::unregister_card(owner_id);
     let _ = capture::unregister_card(owner_id);
     let _ = cancel_card_reservation(owner_id);
@@ -243,7 +244,7 @@ fn pcm_control_ops_propagate_backend_failures() {
 #[test]
 fn pcm_sync_ptr_does_not_fabricate_hardware_progress() {
     let _guard = test_guard();
-    let owner_id = 0x45;
+    let owner_id = key(0x45);
     let _ = pcm::unregister_card(owner_id);
     let _ = capture::unregister_card(owner_id);
     let _ = cancel_card_reservation(owner_id);
@@ -287,23 +288,23 @@ fn card_reservation_allocates_per_owner_cards_before_publication() {
     drv::set_devtmpfs_del_hook(del_hook);
     ADDED.lock().clear();
     REMOVED.lock().clear();
-    let _ = unregister_card(0x10);
-    let _ = unregister_card(0x20);
-    let _ = ops::clear(0x10);
-    let _ = ops::clear(0x20);
+    let _ = unregister_card(key(0x10));
+    let _ = unregister_card(key(0x20));
+    let _ = ops::clear(key(0x10));
+    let _ = ops::clear(key(0x20));
 
-    assert!(reserve_card(0x10));
-    assert_eq!(owner(), Some(0x10));
-    assert_eq!(card_number(0x10), Some(0));
-    assert!(reserve_card(0x10));
-    assert!(reserve_card(0x20));
-    assert_eq!(card_number(0x20), Some(1));
+    assert!(reserve_card(key(0x10)));
+    assert_eq!(owner(), Some(key(0x10)));
+    assert_eq!(card_number(key(0x10)), Some(0));
+    assert!(reserve_card(key(0x10)));
+    assert!(reserve_card(key(0x20)));
+    assert_eq!(card_number(key(0x20)), Some(1));
     assert_eq!(ADDED.lock().len(), 0);
 
-    assert!(ops::register(0x10, &TEST_OPS));
-    assert!(ops::register(0x20, &TEST_OPS));
-    assert!(register_card(0x10));
-    assert!(register_card(0x20));
+    assert!(ops::register(key(0x10), &TEST_OPS));
+    assert!(ops::register(key(0x20), &TEST_OPS));
+    assert!(register_card(key(0x10)));
+    assert!(register_card(key(0x20)));
 
     let added = ADDED.lock().clone();
     assert_eq!(added.len(), CARD0_NODE_COUNT + CARD1_NODE_COUNT);
@@ -317,23 +318,23 @@ fn card_reservation_allocates_per_owner_cards_before_publication() {
     assert!(has_node(&added, "audio1", (14, 20)));
     assert!(has_node(&added, "mixer1", (14, 16)));
 
-    assert!(unregister_card(0x10));
-    assert_eq!(owner(), Some(0x20));
-    assert_eq!(card_number(0x20), Some(1));
-    assert!(ops::ops_for(0x10).is_none());
-    assert!(ops::ops_for(0x20).is_some());
-    assert!(unregister_card(0x20));
+    assert!(unregister_card(key(0x10)));
+    assert_eq!(owner(), Some(key(0x20)));
+    assert_eq!(card_number(key(0x20)), Some(1));
+    assert!(ops::ops_for(key(0x10)).is_none());
+    assert!(ops::ops_for(key(0x20)).is_some());
+    assert!(unregister_card(key(0x20)));
     assert_eq!(owner(), None);
-    assert!(ops::ops_for(0x10).is_none());
-    assert!(ops::ops_for(0x20).is_none());
+    assert!(ops::ops_for(key(0x10)).is_none());
+    assert!(ops::ops_for(key(0x20)).is_none());
 }
 
 #[test]
 fn sound_data_paths_route_ops_by_explicit_owner() {
     let _guard = test_guard();
-    const OWNER0: u32 = 0x7100;
-    const OWNER1: u32 = 0x7101;
-    for owner_id in [OWNER0, OWNER1] {
+    let owner0 = key(0x7100);
+    let owner1 = key(0x7101);
+    for owner_id in [owner0, owner1] {
         let _ = unregister_card(owner_id);
         let _ = ops::clear(owner_id);
         assert!(reserve_card(owner_id));
@@ -344,20 +345,20 @@ fn sound_data_paths_route_ops_by_explicit_owner() {
     }
     ROUTED.lock().clear();
 
-    assert_eq!(pcm::handle(OWNER1, uapi::PCM_PREPARE, 0), 0);
-    assert_eq!(pcm::write_bytes(OWNER1, &[1, 2, 3, 4]), 4);
-    assert_eq!(capture::handle(OWNER1, uapi::PCM_PREPARE, 0), 0);
+    assert_eq!(pcm::handle(owner1, uapi::PCM_PREPARE, 0), 0);
+    assert_eq!(pcm::write_bytes(owner1, &[1, 2, 3, 4]), 4);
+    assert_eq!(capture::handle(owner1, uapi::PCM_PREPARE, 0), 0);
     let mut input = [0u8; 4];
-    assert_eq!(capture::read_bytes(OWNER1, &mut input), 4);
-    assert_eq!(oss::write(OWNER1, &[5, 6, 7, 8]), 4);
+    assert_eq!(capture::read_bytes(owner1, &mut input), 4);
+    assert_eq!(oss::write(owner1, &[5, 6, 7, 8]), 4);
     let mut next = [0u8; 4];
-    assert_eq!(crate::control::handle(OWNER1, 1, uapi::CTL_PCM_NEXT_DEVICE, next.as_mut_ptr() as u64), 0);
+    assert_eq!(crate::control::handle(owner1, 1, uapi::CTL_PCM_NEXT_DEVICE, next.as_mut_ptr() as u64), 0);
 
     let routed = ROUTED.lock().clone();
     assert!(!routed.is_empty());
-    assert!(routed.iter().all(|owner_id| *owner_id == OWNER1));
+    assert!(routed.iter().all(|owner_id| *owner_id == owner1));
 
-    for owner_id in [OWNER0, OWNER1] {
+    for owner_id in [owner0, owner1] {
         pcm::unregister_card(owner_id);
         capture::unregister_card(owner_id);
         oss::unregister_card(owner_id);
@@ -373,26 +374,26 @@ fn cancel_card_reservation_only_releases_unpublished_cards() {
     drv::set_devtmpfs_del_hook(del_hook);
     ADDED.lock().clear();
     REMOVED.lock().clear();
-    let _ = unregister_card(0x10);
-    let _ = unregister_card(0x20);
-    let _ = ops::clear(0x10);
-    let _ = ops::clear(0x20);
+    let _ = unregister_card(key(0x10));
+    let _ = unregister_card(key(0x20));
+    let _ = ops::clear(key(0x10));
+    let _ = ops::clear(key(0x20));
 
-    assert!(reserve_card(0x10));
-    assert!(cancel_card_reservation(0x10));
-    assert_eq!(card_number(0x10), None);
-    assert!(!cancel_card_reservation(0x10));
+    assert!(reserve_card(key(0x10)));
+    assert!(cancel_card_reservation(key(0x10)));
+    assert_eq!(card_number(key(0x10)), None);
+    assert!(!cancel_card_reservation(key(0x10)));
     assert_eq!(ADDED.lock().len(), 0);
     assert_eq!(REMOVED.lock().len(), 0);
 
-    assert!(reserve_card(0x20));
-    assert!(ops::register(0x20, &TEST_OPS));
-    assert!(register_card(0x20));
-    assert!(!cancel_card_reservation(0x20));
-    assert_eq!(card_number(0x20), Some(0));
-    assert!(unregister_card(0x20));
-    assert!(ops::ops_for(0x20).is_none());
-    let _ = ops::clear(0x20);
+    assert!(reserve_card(key(0x20)));
+    assert!(ops::register(key(0x20), &TEST_OPS));
+    assert!(register_card(key(0x20)));
+    assert!(!cancel_card_reservation(key(0x20)));
+    assert_eq!(card_number(key(0x20)), Some(0));
+    assert!(unregister_card(key(0x20)));
+    assert!(ops::ops_for(key(0x20)).is_none());
+    let _ = ops::clear(key(0x20));
 }
 
 #[test]
@@ -402,12 +403,12 @@ fn card_publication_conflict_rolls_back_partial_nodes_and_owner_state() {
     drv::set_devtmpfs_del_hook(del_hook);
     ADDED.lock().clear();
     REMOVED.lock().clear();
-    let _ = unregister_card(0x10);
-    let _ = unregister_card(0x20);
-    let _ = unregister_card(0x30);
-    let _ = ops::clear(0x10);
-    let _ = ops::clear(0x20);
-    let _ = ops::clear(0x30);
+    let _ = unregister_card(key(0x10));
+    let _ = unregister_card(key(0x20));
+    let _ = unregister_card(key(0x30));
+    let _ = ops::clear(key(0x10));
+    let _ = ops::clear(key(0x20));
+    let _ = ops::clear(key(0x30));
 
     let conflict = drv::try_device_add(Arc::new(
         drv::Device::new("sound", String::from("pcmC0D0p"), 0, 0, crate::device::MINOR_PCM_P as u32)
@@ -416,9 +417,9 @@ fn card_publication_conflict_rolls_back_partial_nodes_and_owner_state() {
     ADDED.lock().clear();
     REMOVED.lock().clear();
 
-    assert!(reserve_card(0x30));
-    assert!(ops::register(0x30, &TEST_OPS));
-    assert!(!register_card(0x30));
+    assert!(reserve_card(key(0x30)));
+    assert!(ops::register(key(0x30), &TEST_OPS));
+    assert!(!register_card(key(0x30)));
 
     let added = ADDED.lock().clone();
     assert_eq!(added.len(), 1);
@@ -429,62 +430,62 @@ fn card_publication_conflict_rolls_back_partial_nodes_and_owner_state() {
     assert!(!drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "controlC0"));
     assert!(drv::devices().iter().any(|d| d.bus == "sound" && d.addr == "pcmC0D0p"));
     assert_eq!(owner(), None);
-    assert_eq!(card_number(0x30), None);
-    assert!(ops::ops_for(0x30).is_none());
-    assert!(!pcm::has_card(0x30));
-    assert!(!capture::has_card(0x30));
-    assert!(!oss::has_card(0x30));
+    assert_eq!(card_number(key(0x30)), None);
+    assert!(ops::ops_for(key(0x30)).is_none());
+    assert!(!pcm::has_card(key(0x30)));
+    assert!(!capture::has_card(key(0x30)));
+    assert!(!oss::has_card(key(0x30)));
 
     drv::device_del(&conflict);
-    let _ = ops::clear(0x30);
+    let _ = ops::clear(key(0x30));
 }
 
 #[test]
 fn substream_runtime_state_is_owner_keyed() {
     let _guard = test_guard();
 
-    pcm::unregister_card(0x10);
-    pcm::unregister_card(0x20);
-    capture::unregister_card(0x10);
-    capture::unregister_card(0x20);
-    oss::unregister_card(0x10);
-    oss::unregister_card(0x20);
+    pcm::unregister_card(key(0x10));
+    pcm::unregister_card(key(0x20));
+    capture::unregister_card(key(0x10));
+    capture::unregister_card(key(0x20));
+    oss::unregister_card(key(0x10));
+    oss::unregister_card(key(0x20));
 
-    pcm::register_card(0x10);
-    pcm::register_card(0x20);
-    pcm::register_card(0x10);
-    capture::register_card(0x10);
-    capture::register_card(0x20);
-    capture::register_card(0x10);
-    oss::register_card(0x10);
-    oss::register_card(0x20);
-    oss::register_card(0x10);
+    pcm::register_card(key(0x10));
+    pcm::register_card(key(0x20));
+    pcm::register_card(key(0x10));
+    capture::register_card(key(0x10));
+    capture::register_card(key(0x20));
+    capture::register_card(key(0x10));
+    oss::register_card(key(0x10));
+    oss::register_card(key(0x20));
+    oss::register_card(key(0x10));
 
     assert_eq!(pcm::registered_count(), 2);
-    assert!(pcm::has_card(0x10));
-    assert!(pcm::has_card(0x20));
+    assert!(pcm::has_card(key(0x10)));
+    assert!(pcm::has_card(key(0x20)));
     assert_eq!(capture::registered_count(), 2);
-    assert!(capture::has_card(0x10));
-    assert!(capture::has_card(0x20));
+    assert!(capture::has_card(key(0x10)));
+    assert!(capture::has_card(key(0x20)));
     assert_eq!(oss::registered_count(), 2);
-    assert!(oss::has_card(0x10));
-    assert!(oss::has_card(0x20));
+    assert!(oss::has_card(key(0x10)));
+    assert!(oss::has_card(key(0x20)));
 
-    pcm::unregister_card(0x10);
-    capture::unregister_card(0x10);
-    oss::unregister_card(0x10);
+    pcm::unregister_card(key(0x10));
+    capture::unregister_card(key(0x10));
+    oss::unregister_card(key(0x10));
 
     assert_eq!(pcm::registered_count(), 1);
-    assert!(!pcm::has_card(0x10));
-    assert!(pcm::has_card(0x20));
+    assert!(!pcm::has_card(key(0x10)));
+    assert!(pcm::has_card(key(0x20)));
     assert_eq!(capture::registered_count(), 1);
-    assert!(!capture::has_card(0x10));
-    assert!(capture::has_card(0x20));
+    assert!(!capture::has_card(key(0x10)));
+    assert!(capture::has_card(key(0x20)));
     assert_eq!(oss::registered_count(), 1);
-    assert!(!oss::has_card(0x10));
-    assert!(oss::has_card(0x20));
+    assert!(!oss::has_card(key(0x10)));
+    assert!(oss::has_card(key(0x20)));
 
-    pcm::unregister_card(0x20);
-    capture::unregister_card(0x20);
-    oss::unregister_card(0x20);
+    pcm::unregister_card(key(0x20));
+    capture::unregister_card(key(0x20));
+    oss::unregister_card(key(0x20));
 }

@@ -134,12 +134,12 @@ impl Drop for SndProbeFrames {
 }
 
 pub(super) struct SoundCardReservation {
-    owner: u32,
+    owner: sound::SoundOwnerKey,
     active: bool,
 }
 
 impl SoundCardReservation {
-    pub fn reserve(owner: u32) -> Option<Self> {
+    pub fn reserve(owner: sound::SoundOwnerKey) -> Option<Self> {
         if !sound::reserve_card(owner) {
             return None;
         }
@@ -177,12 +177,12 @@ pub(super) fn active_ctx(ctxs: &[Ctx]) -> Option<&Ctx> {
     active_ctx_for(ctxs, owner)
 }
 
-pub(super) fn active_ctx_mut_for(ctxs: &mut [Ctx], owner: u32) -> Option<&mut Ctx> {
-    ctxs.iter_mut().find(|ctx| sound_owner(ctx.device_key) == owner)
+pub(super) fn active_ctx_mut_for(ctxs: &mut [Ctx], owner: sound::SoundOwnerKey) -> Option<&mut Ctx> {
+    ctxs.iter_mut().find(|ctx| sound_owner(ctx.device_key) == Some(owner))
 }
 
-pub(super) fn active_ctx_for(ctxs: &[Ctx], owner: u32) -> Option<&Ctx> {
-    ctxs.iter().find(|ctx| sound_owner(ctx.device_key) == owner)
+pub(super) fn active_ctx_for(ctxs: &[Ctx], owner: sound::SoundOwnerKey) -> Option<&Ctx> {
+    ctxs.iter().find(|ctx| sound_owner(ctx.device_key) == Some(owner))
 }
 
 pub(super) fn free_frame(pa: u64) {
