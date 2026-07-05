@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::vec;
+use std::vec::Vec;
 
 struct MapReader {
     m: Mutex<HashMap<(Bdf, u8), u32>>,
@@ -259,6 +261,44 @@ fn capability_walk_and_msix_decode_do_not_write_config_space() {
     assert!(msix.enabled);
     assert!(msix.function_mask);
     assert_eq!(r.writes.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[test]
+fn msix_control_value_clears_function_mask_when_enabling() {
+    let cur = MSIX_FUNCTION_MASK | 0x03;
+
+    assert_eq!(msix_control_value(cur, true), MSIX_ENABLE | 0x03);
+    assert_eq!(
+        msix_control_value(MSIX_ENABLE | 0x03, false),
+        MSIX_FUNCTION_MASK | 0x03
+    );
+}
+
+#[test]
+fn msix_teardown_masks_all_entries_before_disabling_function_and_command() {
+    let mut steps = Vec::new();
+
+    emit_msix_teardown_steps(3, |step| steps.push(step));
+
+    assert_eq!(
+        steps,
+        vec![
+            MsixTeardownStep::MaskEntry(0),
+            MsixTeardownStep::MaskEntry(1),
+            MsixTeardownStep::MaskEntry(2),
+            MsixTeardownStep::DisableFunction,
+            MsixTeardownStep::DisableMemBusMaster,
+        ]
+    );
+}
+
+#[test]
+fn msix_teardown_without_entries_only_drops_command_decode() {
+    let mut steps = Vec::new();
+
+    emit_msix_teardown_steps(0, |step| steps.push(step));
+
+    assert_eq!(steps, vec![MsixTeardownStep::DisableMemBusMaster]);
 }
 
 #[test]
