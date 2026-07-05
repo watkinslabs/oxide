@@ -59,10 +59,11 @@ extern crate alloc;
         fn name(&self) -> &'static str { "sysfs-unregister-test" }
         fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-unregister0" }
         fn remove(&self, _dev: &drv::Device) {
-            BIND_REMOVES.fetch_add(1, Ordering::Release);
+            UNREGISTER_REMOVES.fetch_add(1, Ordering::Release);
         }
     }
     static SYSFS_UNREGISTER_DRIVER: SysfsUnregisterDriver = SysfsUnregisterDriver;
+    static UNREGISTER_REMOVES: AtomicU32 = AtomicU32::new(0);
 
     fn platform_device(addr: &str) -> Arc<drv::Device> {
         let d = Arc::new(drv::Device::new("platform", String::from(addr), 0, 0, 0));
@@ -72,6 +73,16 @@ extern crate alloc;
 
     fn uevent_has_entry(msg: &[u8], needle: &[u8]) -> bool {
         msg.split(|b| *b == 0).any(|entry| entry == needle)
+    }
+
+    fn next_uevent_matching(listener: &netlink::NetlinkSocket, needles: &[&[u8]]) -> Vec<u8> {
+        for _ in 0..64 {
+            let Some((msg, _src)) = listener.dequeue() else { break; };
+            if needles.iter().all(|needle| uevent_has_entry(&msg, needle)) {
+                return msg;
+            }
+        }
+        panic!("matching uevent not delivered");
     }
 
     #[test]
@@ -119,7 +130,12 @@ extern crate alloc;
         let dev = platform_device("sysfs-bind-uevent0");
         drv::register_driver(&SYSFS_BIND_UEVENT_DRIVER);
 
-        let (bound, _src) = listener.dequeue().expect("bind change uevent");
+        let bound = next_uevent_matching(&listener, &[
+            b"ACTION=change",
+            b"DEVPATH=/devices/platform/sysfs-bind-uevent0",
+            b"SUBSYSTEM=platform",
+            b"DRIVER=sysfs-bind-uevent-test",
+        ]);
         assert!(uevent_has_entry(&bound, b"ACTION=change"));
         assert!(uevent_has_entry(&bound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
         assert!(uevent_has_entry(&bound, b"SUBSYSTEM=platform"));
@@ -131,7 +147,11 @@ extern crate alloc;
         let unbind = dir.lookup("unbind").expect("unbind attr");
         assert_eq!(unbind.write(0, b"sysfs-bind-uevent0\n"), Ok("sysfs-bind-uevent0\n".len()));
 
-        let (unbound, _src) = listener.dequeue().expect("unbind change uevent");
+        let unbound = next_uevent_matching(&listener, &[
+            b"ACTION=change",
+            b"DEVPATH=/devices/platform/sysfs-bind-uevent0",
+            b"SUBSYSTEM=platform",
+        ]);
         assert!(uevent_has_entry(&unbound, b"ACTION=change"));
         assert!(uevent_has_entry(&unbound, b"DEVPATH=/devices/platform/sysfs-bind-uevent0"));
         assert!(uevent_has_entry(&unbound, b"SUBSYSTEM=platform"));
@@ -153,7 +173,12 @@ extern crate alloc;
 
         let dev = platform_device("sysfs-add-uevent0");
 
-        let (added, _src) = listener.dequeue().expect("add uevent");
+        let added = next_uevent_matching(&listener, &[
+            b"ACTION=add",
+            b"DEVPATH=/devices/platform/sysfs-add-uevent0",
+            b"SUBSYSTEM=platform",
+            b"DRIVER=sysfs-add-uevent-test",
+        ]);
         assert!(uevent_has_entry(&added, b"ACTION=add"));
         assert!(uevent_has_entry(&added, b"DEVPATH=/devices/platform/sysfs-add-uevent0"));
         assert!(uevent_has_entry(&added, b"SUBSYSTEM=platform"));
@@ -186,7 +211,11 @@ extern crate alloc;
 
         drv::device_del(&dev);
 
-        let (removed, _src) = listener.dequeue().expect("remove uevent");
+        let removed = next_uevent_matching(&listener, &[
+            b"ACTION=remove",
+            b"DEVPATH=/devices/platform/sysfs-remove-uevent0",
+            b"SUBSYSTEM=platform",
+        ]);
         assert!(uevent_has_entry(&removed, b"ACTION=remove"));
         assert!(uevent_has_entry(
             &removed,
@@ -200,7 +229,7 @@ extern crate alloc;
 
     #[test]
     fn driver_unregister_removes_sysfs_driver_dir_and_unbinds_devices() {
-        BIND_REMOVES.store(0, Ordering::Release);
+        UNREGISTER_REMOVES.store(0, Ordering::Release);
         drv::register_driver(&SYSFS_UNREGISTER_DRIVER);
         let dev = platform_device("sysfs-unregister0");
 
@@ -210,7 +239,7 @@ extern crate alloc;
 
         assert_eq!(drv::unregister_driver(&SYSFS_UNREGISTER_DRIVER), Ok(()));
         assert_eq!(dev.bound(), None);
-        assert_eq!(BIND_REMOVES.load(Ordering::Acquire), 1);
+        assert_eq!(UNREGISTER_REMOVES.load(Ordering::Acquire), 1);
         assert_eq!(root.lookup("sysfs-unregister-test").err(), Some(VfsError::Enoent));
 
         drv::device_del(&dev);
