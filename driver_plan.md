@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B473-model-uevent-driver-state VERIFIED pending PR merge.
+ACTIVE NOW: none; B474-graphics-fbdev-coldplug VERIFIED pending PR merge.
 
-Current active item: none; next claim starts after B473 merge and fresh main sync.
+Current active item: none; next claim starts after B474 merge and fresh main sync.
 
-Next gate after merge: return to fresh `origin/main` before claiming B474 using
+Next gate after merge: return to fresh `origin/main` before claiming B475 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -102,7 +102,7 @@ Status legend:
 | VERIFIED |  | Root disk coldplug can re-emit block event from current state. |
 | VERIFIED |  | Evdev coldplug can re-emit input event from current state. |
 | VERIFIED |  | Sound coldplug can re-emit model-backed class event from current state. |
-| SOURCE OK |  | Graphics/fbdev coldplug can re-emit model-backed class event from current state. |
+| VERIFIED | B474-graphics-fbdev-coldplug | Graphics/fbdev coldplug can re-emit model-backed class event from current state: fbdev nodes publish through `drv::try_device_add` as `graphics/fbN`, `/sys/class/graphics` and `/sys/devices/virtual/graphics` are synthesized from the live model registry, and writable `uevent` attrs re-emit `ACTION`, `DEVPATH`, `SUBSYSTEM=graphics`, `DEVNAME=fbN`, and current dev_t values from the model device. Added focused hosted regression coverage for graphics/fbdev uevent write-trigger; sysfs/fbdev/driver-model suites pass, and boot smoke reaches `oxide login:` on x86_64 and aarch64. |
 | SOURCE OK |  | Misc and mem coldplug can re-emit model-backed class events from current state. |
 | VERIFIED |  | Character-class remove/readd tests prove class symlink, parent link, and `/sys/dev/char` index disappear/reappear. |
 | VERIFIED |  | Static procfs-era `/sys/class/misc/autofs` registration removed; autofs comes from model-owned misc device. |
