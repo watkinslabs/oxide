@@ -16,6 +16,9 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
         #[cfg(target_arch = "aarch64")]
         let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         sched::loadavg::tick(now);
+        // PSI (`/proc/pressure/*`): charge cpu SOME from runqueue contention,
+        // resample the ~2s ring, wake any triggered pressure poll waiters.
+        sched::psi::tick(now);
     }
     fbcon::kernel::tick_drain();
     // D6: advance the pseudo-vblank counter at the tick rate — the honest
