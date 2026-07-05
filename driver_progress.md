@@ -5,7 +5,7 @@ Date: 2026-07-04
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: `>>> ACTIVE >>> B334-virtio-gpu-duplicate-key-reject` — VERIFIED; commit/PR merge pending.
+Current marker: `>>> ACTIVE >>> B335-drm-card-id-stable-slots` — VERIFIED; commit/PR merge pending.
 
 ## B002-single-machine-desktop-proof
 
@@ -268,7 +268,7 @@ Evidence:
 
 ## B334-virtio-gpu-duplicate-key-reject
 
-Status: `VERIFIED`; commit/PR merge pending.
+Status: `VERIFIED`; merged by PR #2387.
 
 Branch: `B334-virtio-gpu-duplicate-key-reject`
 
@@ -290,3 +290,31 @@ Evidence:
 | Line cap | PASS: `crates/drivers/drv-virtio-gpu/src/tests.rs` is 477 lines. |
 | `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b334-gpu-duplicate-key-x86.log`. |
 | `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b334-gpu-duplicate-key-arm.log`. |
+| Pre-push boot smoke | PASS: x86_64 and aarch64 reached `oxide login:` before push. |
+| PR merge | PASS: PR #2387 merged to `main` at `a9fabf21`. |
+
+## B335-drm-card-id-stable-slots
+
+Status: `VERIFIED`; commit/PR merge pending.
+
+Branch: `B335-drm-card-id-stable-slots`
+
+Target row:
+
+| Status | Item |
+|---|---|
+| VERIFIED | DRM card IDs are stable slots. |
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| Source audit | PASS: `drm::registry` stores cards as `Vec<Option<Arc<dyn DrmDriver>>>`; `register_with_parent` fills the first empty slot or appends; `card(card_id)` indexes that stable slot; `unregister(card_id)` clears only that slot and trims trailing empty slots. |
+| Node routing audit | PASS: DRM card inodes encode `DRM_CARD_INO | card_id`; `handle_drm_ioctl` decodes the inode card id and calls `crate::card(card_id)`, so ioctl routing uses the stable slot instead of live-card count/order. |
+| Hosted regression | PASS: `drm_card_fd_routes_by_stable_slot_after_lower_slot_reuse` keeps a card1 fd open, unregisters/reuses card0, and proves `GET_UNIQUE` still routes card1 to the original driver while card0 routes to the reused slot driver. |
+| `cargo test -p drm drm_card_fd_routes_by_stable_slot_after_lower_slot_reuse -- --nocapture` | PASS: 1 passed. |
+| `cargo test -p drm` | PASS: 56 passed. |
+| `git diff --check` | PASS. |
+| Line cap | PASS: `crates/drivers/drm/src/node/tests.rs` is 372 lines. |
+| `make smoke-driver-path-x86` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-x86.log`. |
+| `make smoke-driver-path-arm` | PASS: `driver-path-smoke: PASS - GPU input sound block net`; log `/tmp/b335-drm-card-id-stable-slots-arm.log`. |
