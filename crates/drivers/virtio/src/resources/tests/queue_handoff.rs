@@ -186,6 +186,34 @@ fn transport_profiles_describe_child_queue_policy() {
     assert!(snd.child_requirements.needs_device_cfg);
 }
 
+fn fake_config_irq() {}
+fn fake_event_irq() {}
+
+fn same_fn(left: Option<fn()>, right: fn()) -> bool {
+    left.map(|f| core::ptr::fn_addr_eq(f, right)).unwrap_or(false)
+}
+
+#[test]
+fn transport_profiles_carry_child_declared_msix_handlers() {
+    let net = VirtioTransportProfile::net(0x55, Some(fake_config_irq));
+    assert!(same_fn(net.msix0_handler, fake_config_irq));
+    assert!(net.queue_plans[1].and_then(|q| q.msix_handler).is_none());
+
+    let input = VirtioTransportProfile::q0_device_cfg(0x66, Some(fake_config_irq));
+    assert!(same_fn(input.msix0_handler, fake_config_irq));
+    assert!(input.queue_plans.iter().all(|plan| plan.is_none()));
+
+    let snd = VirtioTransportProfile::snd(0x77, None, Some(fake_event_irq));
+    assert!(snd.msix0_handler.is_none());
+    assert!(same_fn(snd.queue_plans[1].and_then(|q| q.msix_handler), fake_event_irq));
+    assert!(snd.queue_plans[2].and_then(|q| q.msix_handler).is_none());
+    assert!(snd.queue_plans[3].and_then(|q| q.msix_handler).is_none());
+
+    let rng = VirtioTransportProfile::q0(0x88, None);
+    assert!(rng.msix0_handler.is_none());
+    assert!(rng.queue_plans.iter().all(|plan| plan.is_none()));
+}
+
 #[test]
 fn child_session_data_is_transport_neutral() {
     let loc = VirtioTransportLocation::new(0, 3, 1);
