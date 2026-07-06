@@ -5,8 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B511-vsock-failed-install-ownership VERIFIED; next row
-not claimed yet.
+Current marker: B513-virtio-snd-frame-teardown-proof ACTIVE; auditing
+virtio-snd frame ownership and teardown proof gaps.
+
+## B513 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B513-virtio-snd-frame-teardown-proof | ACTIVE | Fresh `main` at merge commit `9c4d27ad` after B511 PR #2605 merge and local/remote branch cleanup. `metadata/index.md` advanced B 512 -> 514 because remote branch `origin/B512-sysctl-leaves` already occupies B512. Target row: prove virtio-snd probe scratch/event/TX/RX frame ownership and teardown with hosted fault-injection evidence plus x86_64/aarch64 fast smokes; no code change yet. |
 
 ## B511 Current
 

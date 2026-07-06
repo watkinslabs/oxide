@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B511 verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: B513-virtio-snd-frame-teardown-proof; auditing virtio-snd frame ownership and teardown proof.
 
-Current active item: none. Claim next row only after B511 commit, PR, merge,
-fresh main sync, and `metadata/index.md` branch number check.
+Current active item: B513-virtio-snd-frame-teardown-proof. B512 is occupied
+by remote branch `origin/B512-sysctl-leaves`, so this driver lane uses the
+next free B-number.
 
-Next gate after merge: return to fresh `origin/main` before claiming B512 using
+Next gate after merge: return to fresh `origin/main` before claiming B514 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -223,7 +224,7 @@ Status legend:
 | SOURCE OK |  | Virtio-snd drains EVENTQ from sound softirq. |
 | SOURCE OK |  | Virtio-snd recycles used event descriptors. |
 | SOURCE OK |  | Dead pci-boot sound config pass-through removed. |
-| NOT DONE | TBD | Virtio-snd probe scratch/event/TX/RX frame ownership and teardown need fault-injection proof. |
+| ACTIVE | B513-virtio-snd-frame-teardown-proof | Virtio-snd probe scratch/event/TX/RX frame ownership and teardown need fault-injection proof. |
 | SOURCE OK |  | Virtio-input reads identity/capability from generic config resource. |
 | VERIFIED |  | Virtio-input owns `/dev/input/eventN` publication/removal in child install/remove path. |
 | SOURCE OK |  | Virtio-net no longer has PCI-transport-owned MAC config harvest. |
