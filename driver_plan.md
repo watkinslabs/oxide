@@ -2,10 +2,10 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B528-virtio-debug-probe-trace-indexed-handoff-proof
+ACTIVE NOW: B530-virtio-net-late-registration-failed-probe-cleanup-proof
 
-Current active item: row 198, Virtio-pci debug probe trace carries indexed
-handoff records.
+Current active item: row 205, Virtio-net late netdev registration failure
+unwinds transport failed-probe release after child runtime uninstall.
 
 Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
 return to fresh `origin/main`.
@@ -202,7 +202,7 @@ Status legend:
 | VERIFIED |  | Virtio common-cfg FAILED helper exists. |
 | VERIFIED |  | Virtio-pci marks FAILED on rejected FEATURES_OK or mandatory q0 programming failure. |
 | VERIFIED |  | Failed virtio child probes release transport vring frames through recorded queue state. |
-| SOURCE OK |  | Virtio-net late netdev registration failure unwinds transport failed-probe release after child runtime uninstall. |
+| >>> ACTIVE >>> IN AUDIT | B530-virtio-net-late-registration-failed-probe-cleanup-proof | Virtio-net late netdev registration failure unwinds transport failed-probe release after child runtime uninstall. |
 | SOURCE OK |  | Virtio-blk reads capacity/block size in child driver from generic config resource. |
 | VERIFIED |  | Virtio-net reads MAC in child driver from generic config resource. |
 | VERIFIED |  | Virtio-gpu feature mask comes from GPU child driver. |

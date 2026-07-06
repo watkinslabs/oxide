@@ -5,15 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B529-virtio-child-session-failed-probe-cleanup-proof verifies row
-199, PCI-backed virtio child session owns failed-probe transport cleanup as
-idempotent session lifetime rule.
+Current marker: B530-virtio-net-late-registration-failed-probe-cleanup-proof
+audits row 205, virtio-net late netdev registration failure unwind after child
+runtime uninstall.
+
+## B530 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B530-virtio-net-late-registration-failed-probe-cleanup-proof | IN AUDIT | Fresh `main` at merge commit `313d4cc3` after B529 PR #2626 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 530 -> 531. Source audit starting for virtio-net late netdev registration failure unwind after child runtime uninstall. |
 
 ## B529 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B529-virtio-child-session-failed-probe-cleanup-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `42bd985e` after B528 PR #2625 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s; aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 529 -> 530. Source audit proves `VirtioChildSession::begin()` creates a PCI-backed `VirtioProbe` plus live `VirtioProbeLease`; `virtio::run_child_probe()` publishes only after child success and calls `release_failed_child()` on child error; `VirtioChildSession::drop()` releases any still-live failed child; `VirtioProbeDevres::release_failed()` is separately lease-guarded before reset, MSI-X release, PCI command disable, MMIO unmap, and failed-probe frame release. Child probes return `ProbeFailed` through the shared session path, and partial child-side installs unwind their own child state before returning error. Checks pass: `cargo test -q -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 including child-probe lifecycle and owned-frame release tests; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`virtio_bus.rs` 145, `virtio_child.rs` 398, `virtio_drv/probe.rs` 178, `virtio_transport/devres.rs` 68, `resources/child.rs` 377, `resources/tests/identity.rs` 229, `resources/tests/child_state.rs` 143); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
+| B529-virtio-child-session-failed-probe-cleanup-proof | VERIFIED MERGED | Fresh `main` at merge commit `42bd985e` after B528 PR #2625 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s; aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 529 -> 530. Source audit proves `VirtioChildSession::begin()` creates a PCI-backed `VirtioProbe` plus live `VirtioProbeLease`; `virtio::run_child_probe()` publishes only after child success and calls `release_failed_child()` on child error; `VirtioChildSession::drop()` releases any still-live failed child; `VirtioProbeDevres::release_failed()` is separately lease-guarded before reset, MSI-X release, PCI command disable, MMIO unmap, and failed-probe frame release. Child probes return `ProbeFailed` through the shared session path, and partial child-side installs unwind their own child state before returning error. Checks pass: `cargo test -q -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 including child-probe lifecycle and owned-frame release tests; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`virtio_bus.rs` 145, `virtio_child.rs` 398, `virtio_drv/probe.rs` 178, `virtio_transport/devres.rs` 68, `resources/child.rs` 377, `resources/tests/identity.rs` 229, `resources/tests/child_state.rs` 143); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s; pre-push hook skipped boot-smoke because docs/metadata only; PR #2626 merged as `313d4cc3`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B528 Current
 
