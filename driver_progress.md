@@ -5,9 +5,17 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: D135-b587-ledger-merged records B587 as VERIFIED MERGED. B587
-merged as PR #2698 at `abf97cd1`; fresh-main post-merge smoke passed on
-x86_64 and aarch64. Push/PR/merge of this ledger branch remains.
+Current marker: B588-sys-dev-char-block-proof is VERIFIED on branch
+`B588-sys-dev-char-block-proof`. Targeted x86_64 and aarch64 live proofs show
+`/sys/dev/char` and `/sys/dev/block` reverse indexes resolve to model-owned
+device objects. Proof commit `100b40ba` is in this branch; push, PR/merge,
+fresh-main smoke, and D136 ledger remain.
+
+## B588 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B588-sys-dev-char-block-proof | VERIFIED | Fresh `main` at D135 ledger merge `16b69d5d`; B587 PR #2698 and ledger PR #2699 are merged, and `metadata/index.md` advanced B 588 -> 589 on this branch. Existing detached worktrees `DRI-validate`, `cap-livegnome`, `live-0706`, and `show-livegnome` were observed during lane check and are not touched by this branch. B588 extends `/bin/sysblock_probe` to prove `/sys/dev/block/<vda-dev>` resolves to `../../devices/virtual/block/vda`, `/sys/dev/char/1:3` resolves to `../../devices/virtual/mem/null`, `/sys/dev/char/226:0` resolves to a real `/drm/card0` model object, the resolved `dev` attrs match, and the checked entries are enumerable from `/sys/dev/{block,char}`. It adds focused `smoke-sysblock-{x86,arm}` targets through the normal rootfs mode/cache and systemd oneshot path. Checks pass: `cargo test -q -p sysfs -p block -p devfs -- --nocapture --test-threads=1` with block 33/33, devfs 13/13, and sysfs 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-driver-path.sh tools/boot-smoke-sysblock.sh`; host `cc -Wall -Wextra -Werror` for `sysblock_probe.c`; line caps (`sysblock_probe.c` 148, `boot-smoke-sysblock.sh` 90, `boot-smoke-driver-path.sh` 146, `rootfs.rs` 431, `rootfs_cache.rs` 288, `Makefile` 350). Targeted x86_64 proof `/tmp/b588-x86-sysblock.log` and targeted aarch64 proof `/tmp/b588-arm-sysblock.log` both show `b588_sys_dev_block_vda`, `b588_sys_dev_char_null`, and `b588_sys_dev_char_drm_card0` PASS before `sysblock_probe: PASS`; full pre-push `make smoke SMOKE_TIMEOUT=300` passed with aarch64 reaching `oxide login:` in 28s after x86_64 passed in the same run. Broad `smoke-driver-path-x86` also showed B588 PASS, then failed later in unrelated `uevent_probe_unbind_change`; carry that forward as follow-up debt. Proof committed as `100b40ba`. Pending push, PR, merge, fresh-main smoke, and D136 ledger. |
 
 ## B587 Current
 
