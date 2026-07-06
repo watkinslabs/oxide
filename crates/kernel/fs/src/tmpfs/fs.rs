@@ -60,14 +60,37 @@ impl TmpfsFs {
     pub fn new(name: String) -> Arc<Self> {
         Self::with_limits(name, TmpfsSb::default_limits())
     }
-    /// As [`TmpfsFs::new`] but with explicit accounting (the hook a future
-    /// `mount -o size=,nr_inodes=` parser fills — the syscall layer that parses
-    /// the option string is the only remaining piece, cross-lane). `_name` is
-    /// ignored for SB identity (target-independent). # C: O(1)
+    /// As [`TmpfsFs::new`] but with explicit accounting. The root inode keeps
+    /// the Linux tmpfs default (mode 0755, owned by 0:0); callers wanting the
+    /// `-o mode=/uid=/gid=` root ownership use [`TmpfsFs::from_mount_data`].
+    /// `_name` is ignored for SB identity (target-independent). # C: O(1)
     pub fn with_limits(_name: String, acct: Arc<TmpfsSb>) -> Arc<Self> {
+        Self::with_root(0o755, 0, 0, acct)
+    }
+    /// Build an instance whose ROOT inode has the given `perm`/`uid`/`gid` and
+    /// the given accounting. # C: O(1)
+    fn with_root(perm: u16, uid: u32, gid: u32, acct: Arc<TmpfsSb>) -> Arc<Self> {
         acct.charge_inode(); // the root inode itself counts (Linux shmem)
-        let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), acct.clone());
+        let root = make_tmpfs_dir_inode(ROOT_INO, perm, uid, gid, Weak::new(), acct.clone());
         Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct })
+    }
+    /// Build a tmpfs instance honouring a `mount(2)` `-o` option string
+    /// (`data`) — `mode=`/`uid=`/`gid=` set the ROOT inode's permission bits
+    /// and owner, `size=`/`nr_blocks=`/`nr_inodes=` set the accounting caps.
+    /// This is what the mount-syscall tmpfs constructor calls so, e.g.,
+    /// `/run/user/979` mounts mode 0700 owned by 979:979 as pam_systemd and
+    /// `systemd --user` require (Linux `shmem_fill_super`). Unspecified options
+    /// take the Linux defaults (0755, 0:0, half-RAM). `_name` is informational.
+    /// # C: O(len(data))
+    pub fn from_mount_data(_name: String, data: &str) -> Arc<Self> {
+        let opts = super::mount_opts::TmpfsOpts::parse(data, TmpfsSb::total_ram_pages());
+        let acct = TmpfsSb::from_opts(&opts);
+        Self::with_root(
+            opts.mode.unwrap_or(0o755),
+            opts.uid.unwrap_or(0),
+            opts.gid.unwrap_or(0),
+            acct,
+        )
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
     /// `register_bind` so the path walk crosses into the tree. # C: O(1)
