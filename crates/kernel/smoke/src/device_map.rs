@@ -11,7 +11,7 @@
 // per-arch IRQ infrastructure (LAPIC enable, GIC enable, IRQ
 // periodic-timer arm/disarm) lives in `lapic.rs` / `gic.rs`.
 
-use hal::PageFlags;
+use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 #[cfg(target_arch = "aarch64")]
 mod arm;
@@ -28,6 +28,14 @@ pub use x86::smoke_device_map_x86;
 /// Disjoint from HHDM (L4[0..0x100]) and kernel image (L4[0x1FF]).
 #[cfg(target_os = "oxide-kernel")]
 pub const KERNEL_DEVICE_BASE: u64 = 0xffff_ff00_0000_0000;
+#[cfg(target_os = "oxide-kernel")]
+pub const ECAM_BASE_VA: u64 = 0xffff_fe00_0000_0000;
+#[cfg(target_os = "oxide-kernel")]
+const ECAM_BUS_BYTES: u64 = 0x10_0000;
+#[cfg(target_os = "oxide-kernel")]
+const ECAM_PAGE_BYTES: u64 = 0x1000;
+#[cfg(target_os = "oxide-kernel")]
+const ECAM_BLOCK_BYTES: u64 = 0x20_0000;
 
 /// Device-MMIO leaf flags: writable kernel mapping, no-cache,
 /// write-through (so x86 packs PCD|PWT = Strong UC; arm packs
@@ -48,4 +56,31 @@ fn device_flags() -> PageFlags {
         | PageFlags::NO_CACHE
         | PageFlags::WRITE_THROUGH
         | PageFlags::GLOBAL
+}
+
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn map_ecam_window<M: MmuOps>(base_pa: u64, bus_cap: u16) {
+    let mut off = 0u64;
+    let total = (bus_cap as u64) * ECAM_BUS_BYTES;
+    while off < total {
+        let left = total - off;
+        if ((base_pa + off) & (ECAM_BLOCK_BYTES - 1)) == 0
+            && ((ECAM_BASE_VA + off) & (ECAM_BLOCK_BYTES - 1)) == 0
+            && left >= ECAM_BLOCK_BYTES
+        {
+            // SAFETY: caller selected boot-only ECAM publication; PA/VA are
+            // block-aligned and the whole block lies inside the MCFG window.
+            unsafe {
+                M::map(Va(ECAM_BASE_VA + off), Pa(base_pa + off), device_flags(), PageSize::P2M);
+            }
+            off += ECAM_BLOCK_BYTES;
+        } else {
+            // SAFETY: caller selected boot-only ECAM publication; this page is
+            // inside the MCFG window and is mapped with device attributes.
+            unsafe {
+                M::map(Va(ECAM_BASE_VA + off), Pa(base_pa + off), device_flags(), PageSize::P4K);
+            }
+            off += ECAM_PAGE_BYTES;
+        }
+    }
 }

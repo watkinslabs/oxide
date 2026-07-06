@@ -15,7 +15,7 @@ impl VirtioPciAcquisition {
         let (caps, vcaps, bars, cmd_orig) = {
             #[cfg(target_arch = "x86_64")]
             {
-                let r = hal_x86_64::pci::LegacyPci;
+                let r = hal_x86_64::pci::EcamPci::from_published()?;
                 let caps = pci::capabilities(&r, bdf);
                 let vcaps = virtio::decode_all(&r, bdf, &caps);
                 let bars = pci::decode_bars(&r, bdf);
