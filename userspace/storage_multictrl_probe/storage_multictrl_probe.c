@@ -45,6 +45,24 @@ static int count_block_prefix(const char *prefix) {
     return n;
 }
 
+static int block_name_exists(const char *name) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "/sys/block/%s", name);
+    int fd = open(path, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) return 0;
+    close(fd);
+    return 1;
+}
+
+static int require_block_name(const char *name, const char *tag) {
+    if (!block_name_exists(name)) {
+        printf("%s: FAIL missing /sys/block/%s\n", tag, name);
+        return 1;
+    }
+    printf("%s: PASS /sys/block/%s\n", tag, name);
+    return 0;
+}
+
 static int wait_count(const char *prefix, int want) {
     for (int i = 0; i < RETRIES; i++) {
         if (count_block_prefix(prefix) == want) return 0;
@@ -146,6 +164,8 @@ int main(void) {
     emit_line("storage_multictrl_probe: START\n");
     mount_api_fs();
     if (require_count("nvme", 2, "storage_nvme_initial") ||
+        require_block_name("nvme0n1", "storage_nvme0n1_initial") ||
+        require_block_name("nvme1n1", "storage_nvme1n1_initial") ||
         require_count("sd", 2, "storage_ahci_initial")) return 1;
     if (exercise("nvme", "/sys/bus/pci/drivers/nvme", "nvme") ||
         exercise("ahci", "/sys/bus/pci/drivers/ahci", "sd")) return 1;
