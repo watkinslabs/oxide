@@ -69,6 +69,8 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
                                                   "userspace/virtio_rng_rebind_probe/virtio_rng_rebind_probe.c"),
     ("userspace/virtio_parent_child_rebind_probe/virtio_parent_child_rebind_probe",
                                                   "userspace/virtio_parent_child_rebind_probe/virtio_parent_child_rebind_probe.c"),
+    ("userspace/uart_rebind_probe/uart_rebind_probe",
+                                                  "userspace/uart_rebind_probe/uart_rebind_probe.c"),
     ("userspace/virtio_input_rebind_probe/virtio_input_rebind_probe",
                                                   "userspace/virtio_input_rebind_probe/virtio_input_rebind_probe.c"),
     ("userspace/netstats_probe/netstats_probe",   "userspace/netstats_probe/netstats_probe.c"),
