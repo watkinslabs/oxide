@@ -5,16 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B568-arm-noprogress-watchdog-audit is verified locally from
-fresh `main` at B567 PR #2659 merge commit `23d538f7`; next gate is
-commit/push, PR merge, fresh-main sync, and post-merge lockstep driver-path
-proof.
+Current marker: B569-x86-login-cgroup-audit is VERIFIED LOCAL on branch
+`B569-x86-login-cgroup-audit`; next gate is commit, push, PR, merge, fresh-main
+sync, and post-merge x86_64/aarch64 normal-login smokes.
+
+## B569 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B569-x86-login-cgroup-audit | VERIFIED LOCAL | Fresh `main` at B568 PR #2660 merge commit `81b94914`; B568 post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. `metadata/index.md` advanced B 569 -> 570. Current main did not reproduce the old x86_64 `console-getty.service` cgroup attach/spawn failure across three durable x86_64 normal-login runs (`/tmp/b569-x86-login-smoke-1.log`, `/tmp/b569-x86-login-smoke-2.log`, `/tmp/b569-x86-login-smoke-3.log`). Lockstep ARM normal-login exposed a real scheduler no-progress failure after `g19_glibc_smoke` exit: `/tmp/b569-arm-login-smoke.log` and `/tmp/b569-arm-login-smoke-after-ttwu.log` timed out with PID 1 `Runnable` but not queued/running after `clone`, while the vfork child was zombie. B569 fixes scheduler ownership and wake placement by stamping `Task::cpu` at enqueue/switch, preferring the prior owning runqueue for legal wake placement, repairing Runnable-not-queued wake placement, and completing stale `on_cpu` switch handoff before wake-list drain/reuse. Checks pass: `cargo test -q -p sched -- --nocapture --test-threads=1` with 121/121 tests, `git diff --check`, line caps (`switch.rs` 358, `ttwu.rs` 264, `runqueue.rs` 102, `queues.rs` 223), aarch64 normal-login `/tmp/b569-arm-login-smoke-after-cpu-owner.log` reached `oxide login:` in 50s, and x86_64 normal-login `/tmp/b569-x86-login-smoke-after-cpu-owner.log` reached `oxide login:` in 46s. |
 
 ## B568 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B568-arm-noprogress-watchdog-audit | VERIFIED LOCAL | Fresh `main` at B567 PR #2659 merge commit `23d538f7`; B567 post-merge fresh-main storage multicontroller proof passed with x86_64 log `/tmp/b567-postmerge-x86-storage-multictrl.log` and aarch64 log `/tmp/b567-postmerge-arm-storage-multictrl.log`. `metadata/index.md` advanced B 568 -> 569. Historical failing logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/b383-arm-driver-path.log`, and `/tmp/b421-pci-identity-mismatch-arm-noprogress.log` stop after QEMU launches and GRUB prints `Booting oxide (EFI-stub)`, before any `driver_path_smoke` service output or `mouseprobe` start marker. Current main does not reproduce the no-progress failure: five sequential durable ARM driver-path runs passed (`/tmp/b568-arm-driver-path-1.log` through `/tmp/b568-arm-driver-path-5.log`), each reaching `driver_path_smoke: START`, all driver probes, `driver_path_smoke: run mouseprobe`, `mouseprobe: PASS`, and final `driver_path_smoke: PASS - GPU input sound block net`. Lockstep x86_64 driver-path proof also passed with `/tmp/b568-x86-driver-path.log`. No current kernel-side failure reproduced; PR/merge and post-merge lockstep proof remain pending. |
+| B568-arm-noprogress-watchdog-audit | VERIFIED MERGED | Fresh `main` at B567 PR #2659 merge commit `23d538f7`; B567 post-merge fresh-main storage multicontroller proof passed with x86_64 log `/tmp/b567-postmerge-x86-storage-multictrl.log` and aarch64 log `/tmp/b567-postmerge-arm-storage-multictrl.log`. `metadata/index.md` advanced B 568 -> 569. Historical failing logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/b383-arm-driver-path.log`, and `/tmp/b421-pci-identity-mismatch-arm-noprogress.log` stop after QEMU launches and GRUB prints `Booting oxide (EFI-stub)`, before any `driver_path_smoke` service output or `mouseprobe` start marker. Current main does not reproduce the no-progress failure: five sequential durable ARM driver-path runs passed (`/tmp/b568-arm-driver-path-1.log` through `/tmp/b568-arm-driver-path-5.log`), each reaching `driver_path_smoke: START`, all driver probes, `driver_path_smoke: run mouseprobe`, `mouseprobe: PASS`, and final `driver_path_smoke: PASS - GPU input sound block net`. Lockstep x86_64 driver-path proof also passed with `/tmp/b568-x86-driver-path.log`; PR #2660 merged as `81b94914`; post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. |
 
 ## B567 Current
 

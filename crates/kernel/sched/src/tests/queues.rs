@@ -198,6 +198,14 @@ fn rq_enqueue_skips_frozen_task() {
 }
 
 #[test]
+fn rq_enqueue_stamps_task_cpu_owner() {
+    let mut rq = RunqueueInner::new(3, idle(0));
+    let t = normal(9, 100, 1024);
+    rq.enqueue(Arc::clone(&t));
+    assert_eq!(t.cpu.load(Ordering::Acquire), 3);
+}
+
+#[test]
 fn cfs_rotation_is_round_robin_for_equal_weight() {
     let mut q = CfsRunqueue::new();
     let tasks = [normal(1, 0, 1024), normal(2, 0, 1024), normal(3, 0, 1024)];
