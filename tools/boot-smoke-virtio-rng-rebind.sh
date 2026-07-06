@@ -70,13 +70,13 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         exit 1
     fi
     if grep -aq 'driver_path_smoke: PASS - virtio-rng-rebind' "$LOG" 2>/dev/null; then
-        grep -aE 'virtio_rng_rebind_probe:|b574_|driver_path_smoke:' "$LOG" | tail -40
+        grep -aE 'virtio_rng_rebind_probe:|b574_|b584_|driver_path_smoke:' "$LOG" | tail -80
         echo "virtio-rng-rebind-smoke: PASS"
         exit 0
     fi
-    if grep -aqE 'virtio_rng_rebind_probe: FAIL|b574_.*: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
+    if grep -aqE 'virtio_rng_rebind_probe: FAIL|b574_.*: FAIL|b584_.*: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
         echo "virtio-rng-rebind-smoke: FAIL - probe reported failure" >&2
-        grep -aE 'virtio_rng_rebind_probe:|b574_|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
+        grep -aE 'virtio_rng_rebind_probe:|b574_|b584_|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
         exit 1
     fi
     sleep 2
