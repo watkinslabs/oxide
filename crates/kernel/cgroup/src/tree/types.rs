@@ -25,6 +25,27 @@ pub struct Node {
     pub name: String,
     pub parent: Option<u64>,
     pub children: BTreeMap<String, u64>,
+    /// DAC owner `(i_uid, i_gid)` of the cgroup DIRECTORY inode. Stamped to the
+    /// creating task's fsuid/fsgid at `mkdir` (Linux `cgroup_create` uses
+    /// `current_fsuid`/`current_fsgid`) and re-writable via `chown(2)` on the
+    /// dir — systemd's cgroup delegation chowns the delegated subtree's
+    /// directory to the target uid so the unprivileged user manager owns it
+    /// (`26§4`). Default root (0).
+    pub uid: u32,
+    pub gid: u32,
+    /// FROZEN creation owner — the DEFAULT owner of this node's control-file
+    /// inodes that were not individually chowned (Linux kernfs stamps each
+    /// interface file with the creating task's uid). Kept separate from `uid`
+    /// so a delegation boundary whose DIRECTORY is later chowned to the user
+    /// keeps its resource-control files (`memory.max`, …) root-owned — only the
+    /// explicitly delegated files become user-writable.
+    pub file_uid: u32,
+    pub file_gid: u32,
+    /// Per-control-file `chown(2)` overrides `(uid, gid)` keyed by file name.
+    /// systemd delegates ONLY `cgroup.procs`/`cgroup.threads`/
+    /// `cgroup.subtree_control` by chowning them to the user; the rest stay at
+    /// the frozen creation owner.
+    pub file_owner: BTreeMap<String, (u32, u32)>,
     /// Member process pids directly in this cgroup (cgroup.procs).
     pub procs: BTreeSet<u64>,
     /// Non-leader thread count directly in this cgroup. pids.current counts
@@ -74,6 +95,7 @@ impl Node {
     pub(super) fn new(name: String, parent: Option<u64>, avail: u8) -> Self {
         Self {
             name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
+            uid: 0, gid: 0, file_uid: 0, file_gid: 0, file_owner: BTreeMap::new(),
             threads: 0,
             subtree_control: 0, avail, frozen: false,
             pids_max: None,

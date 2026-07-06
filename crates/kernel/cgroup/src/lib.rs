@@ -46,6 +46,26 @@ pub fn node_has_file(cgid: u64, name: &str) -> bool { TREE.lock().has_file(cgid,
 /// # C: O(log n)
 pub fn node_child_id(cgid: u64, name: &str) -> Option<u64> { TREE.lock().child_id(cgid, name) }
 
+/// DAC owner `(uid, gid)` of cgroup `cgid`'s DIRECTORY inode. The inode is
+/// synthesized fresh on every lookup, so its owner is read back from the
+/// hierarchy here. # C: O(log n)
+pub fn node_dir_owner(cgid: u64) -> (u32, u32) { TREE.lock().dir_owner(cgid) }
+
+/// DAC owner `(uid, gid)` of the control file `(cgid, file)`. # C: O(log n)
+pub fn node_file_owner(cgid: u64, file: &str) -> (u32, u32) { TREE.lock().file_owner(cgid, file) }
+
+/// `chown(2)` write-through for a cgroup DIRECTORY inode — persists the owner
+/// in the hierarchy so systemd's delegation survives inode re-synthesis.
+/// # C: O(log n)
+pub fn chown_dir(cgid: u64, uid: u32, gid: u32) -> KResult<()> {
+    TREE.lock().set_dir_owner(cgid, uid, gid)
+}
+
+/// `chown(2)` write-through for a cgroup CONTROL-FILE inode. # C: O(log n)
+pub fn chown_file(cgid: u64, file: &str, uid: u32, gid: u32) -> KResult<()> {
+    TREE.lock().set_file_owner(cgid, file, uid, gid)
+}
+
 /// Ordered control-file names of cgroup `cgid` (for readdir).
 /// # C: O(controllers)
 pub fn node_file_names(cgid: u64) -> Vec<&'static str> { TREE.lock().node_files(cgid) }
@@ -185,11 +205,15 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
 }
 
 /// `mkdir(2)` on a cgroup directory: create the child node in `tree.rs`.
-/// Its inodes are synthesized on lookup, so nothing is registered.
-/// Returns the new child's cgid.
-/// # C: O(log n)
-pub fn mkdir_child(parent_cgid: u64, name: &str) -> KResult<u64> {
-    let (id, _avail) = TREE.lock().create(parent_cgid, name)?;
+/// Its inodes are synthesized on lookup, so nothing is registered. `uid`/`gid`
+/// are the creating task's fsuid/fsgid (Linux `cgroup_create` stamps
+/// `current_fsuid`/`current_fsgid` on the new dir + its interface files), so a
+/// delegated user's own sub-cgroups are user-owned and writable. Returns the
+/// new child's cgid. # C: O(log n)
+pub fn mkdir_child(parent_cgid: u64, name: &str, uid: u32, gid: u32) -> KResult<u64> {
+    let mut t = TREE.lock();
+    let (id, _avail) = t.create(parent_cgid, name)?;
+    t.set_created_owner(id, uid, gid);
     Ok(id)
 }
 

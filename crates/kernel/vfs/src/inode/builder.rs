@@ -14,7 +14,7 @@ use crate::poll_subs::PollSubscribers;
 use crate::superblock::SuperBlock;
 use crate::types::{Ino, S_IFDIR};
 
-use super::model::{Inode, SealCarrier};
+use super::model::{Inode, OwnerPersist, SealCarrier};
 
 /// Builder for [`Inode`] — the one constructor every `make_*_inode` / `iget`
 /// build closure funnels through.
@@ -42,6 +42,7 @@ pub struct InodeBuilder {
     private:      Arc<dyn Any + Send + Sync>,
     poll_subs:    Option<Arc<PollSubscribers>>,
     seal_carrier: Option<Arc<dyn SealCarrier>>,
+    owner_persist:Option<Arc<dyn OwnerPersist>>,
     link:         Option<Box<[u8]>>,
     xattrs:       Option<crate::xattr::SimpleXattrs>,
 }
@@ -53,7 +54,7 @@ impl InodeBuilder {
             ino, mode, i_op, i_fop, sb: Weak::new(), size: 0, blocks: 0, nlink: None, uid: 0, gid: 0,
             flags: 0, rdev: 0, generation: 0, fsid: 0, atime: 0, mtime: 0, ctime: 0, btime: 0,
             version: 0, mapping: None, private: Arc::new(()), poll_subs: None, seal_carrier: None,
-            link: None, xattrs: None,
+            owner_persist: None, link: None, xattrs: None,
         }
     }
     pub fn sb(mut self, sb: Weak<SuperBlock>) -> Self { self.sb = sb; self }
@@ -73,6 +74,9 @@ impl InodeBuilder {
     pub fn poll_subs(mut self, p: PollSubscribers) -> Self { self.poll_subs = Some(Arc::new(p)); self }
     pub fn poll_subs_arc(mut self, p: Arc<PollSubscribers>) -> Self { self.poll_subs = Some(p); self }
     pub fn seal_carrier(mut self, c: Arc<dyn SealCarrier>) -> Self { self.seal_carrier = Some(c); self }
+    /// Install a backend chown write-through ([`OwnerPersist`]) — a synthesized
+    /// inode (cgroupfs) uses it so `chown(2)` persists to the backing store. # C: O(1)
+    pub fn owner_persist(mut self, p: Arc<dyn OwnerPersist>) -> Self { self.owner_persist = Some(p); self }
     pub fn link(mut self, body: Box<[u8]>) -> Self { self.link = Some(body); self }
     pub fn xattrs(mut self, x: crate::xattr::SimpleXattrs) -> Self { self.xattrs = Some(x); self }
 
@@ -105,6 +109,7 @@ impl InodeBuilder {
             i_private: self.private,
             poll_subs: self.poll_subs,
             seal_carrier: self.seal_carrier,
+            owner_persist: self.owner_persist,
             i_link: self.link,
             i_xattrs: self.xattrs,
             i_rwsem: RwLock::new(()),
