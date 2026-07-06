@@ -16,6 +16,7 @@ mod hooks;
 mod ids;
 mod index;
 
+pub(crate) use device::dev_canon;
 pub use hooks::{bind_device_cb, init, publish_device_cb, publish_driver_cb, remove_device_cb};
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use vfs::{mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps,
 use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
 use crate::{make_symlink_inode_ino, DIR_PERM, RO_PERM, RW_PERM};
 
-use super::ids::{dev_root_canon, dev_root_leaf, INO_ATTR, INO_DEVICE_DIR, INO_SYMLINK};
+use super::ids::{dev_root_canon, INO_ATTR, INO_DEVICE_DIR, INO_SYMLINK};
 
 const DEV_ATTR: Attribute = Attribute { name: "dev", mode: RO_PERM };
 const PCI_RESOURCE_ATTRS: [Attribute; 6] = [
@@ -215,22 +215,34 @@ impl InodeOps for DeviceDirOps {
         let dev = find_dev(data.bus, &data.addr).ok_or(VfsError::Enoent)?;
         if name == "driver" {
             let drvname = dev.bound().ok_or(VfsError::Enoent)?;
-            // ../../../bus/<bus>/drivers/<name>  (from /sys/devices/<root>/<addr>)
-            let t = alloc::format!("../../../bus/{}/drivers/{}", data.bus, drvname);
+            let canon = dev_canon(data.bus, &data.addr);
+            let t = alloc::format!("{}bus/{}/drivers/{}", ups_prefix(&canon), data.bus, drvname);
             return Ok(make_link_inode(t.into_bytes()));
         }
         if name == "subsystem" {
-            // ../../../bus/<bus>  (from /sys/devices/<root>/<addr>)
-            let t = alloc::format!("../../../bus/{}", data.bus);
+            let canon = dev_canon(data.bus, &data.addr);
+            let t = alloc::format!("{}bus/{}", ups_prefix(&canon), data.bus);
             return Ok(make_link_inode(t.into_bytes()));
         }
         if name == "parent" {
             let (parent_bus, parent_addr) = dev.parent().ok_or(VfsError::Enoent)?;
-            let t = alloc::format!("../../{}/{}", dev_root_leaf(parent_bus), parent_addr);
+            let canon = dev_canon(data.bus, &data.addr);
+            let t = alloc::format!("{}{}", ups_prefix(&canon), dev_canon(parent_bus, parent_addr));
             return Ok(make_link_inode(t.into_bytes()));
         }
         if name == "drm" && crate::drm::has_parented_minors(data.bus, &data.addr) {
             return Ok(crate::drm::make_parent_drm_inode(data.bus, data.addr.clone()));
+        }
+        // Nested child-device directory: a device whose model parent is this
+        // one lives *under* it (Linux sysfs topology), e.g. `virtioN` under its
+        // PCI function. Only nesting-bus children are placed here; class devices
+        // keep their `/sys/devices/virtual/<class>` home.
+        if let Some(child) = drv::devices().into_iter().find(|c| {
+            c.addr == name
+                && is_nesting_bus(c.bus)
+                && c.parent() == Some((data.bus, data.addr.as_str()))
+        }) {
+            return Ok(make_device_dir_inode(child.addr.clone(), child.bus));
         }
         if name == "dev" {
             if dev.dev_t.is_none() { return Err(VfsError::Enoent); }
@@ -286,10 +298,21 @@ impl FileOps for DeviceDirOps {
         if bound {
             entries.push(("driver", FileType::Symlink));
         }
+        // Nested child-device dirs (owned names; e.g. `virtioN` under a PCI fn).
+        let child_names: Vec<String> = drv::devices().into_iter()
+            .filter(|c| is_nesting_bus(c.bus)
+                && c.parent() == Some((data.bus, data.addr.as_str())))
+            .map(|c| c.addr.clone())
+            .collect();
+        let total = entries.len() + child_names.len();
         let mut idx = ctx.pos as usize;
-        while idx < entries.len() {
+        while idx < total {
             let next = idx as u64 + 1;
-            let (name, file_type) = entries[idx];
+            let (name, file_type): (&str, FileType) = if idx < entries.len() {
+                entries[idx]
+            } else {
+                (child_names[idx - entries.len()].as_str(), FileType::Directory)
+            };
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, file_type, next) { return Ok(()); }
             idx += 1;
@@ -306,4 +329,41 @@ pub(super) fn make_device_dir_inode(addr: String, bus: &'static str) -> InodeRef
 
 pub(super) fn find_dev(bus: &str, addr: &str) -> Option<Arc<drv::Device>> {
     drv::devices().into_iter().find(|d| d.bus == bus && d.addr == addr)
+}
+
+/// Buses whose devices live in the dynamic `/sys/devices/{pci0000:00,virtio,
+/// platform}` tree (as opposed to `/sys/devices/virtual/<class>`). Only these
+/// participate in parent nesting: a PCI-backed virtio function is placed under
+/// its PCI parent's directory, exactly like Linux. # C: O(1)
+pub(super) fn is_nesting_bus(bus: &str) -> bool {
+    matches!(bus, "pci" | "virtio" | "platform")
+}
+
+/// Canonical nested `/sys/devices/...` path (no leading slash) for a device,
+/// walking the model parent chain so a child sits under its parent's directory
+/// exactly as Linux lays sysfs out (e.g. a PCI-backed virtio function lands at
+/// `devices/pci0000:00/<bdf>/virtioN`, so `path_id`'s parent walk reaches the
+/// PCI transport). Falls back to the flat bus root when the device — or a
+/// claimed parent — is absent from the model. # C: O(depth)
+pub(crate) fn dev_canon(bus: &str, addr: &str) -> String {
+    match find_dev(bus, addr) {
+        Some(dev) => dev_canon_dev(&dev),
+        None => alloc::format!("{}/{}", dev_root_canon(bus), addr),
+    }
+}
+
+fn dev_canon_dev(dev: &drv::Device) -> String {
+    match dev.parent() {
+        Some((pb, pa)) if find_dev(pb, pa).is_some() => {
+            alloc::format!("{}/{}", dev_canon(pb, pa), dev.addr)
+        }
+        _ => alloc::format!("{}/{}", dev_root_canon(dev.bus), dev.addr),
+    }
+}
+
+/// `../` sequence that climbs from a device directory at `canon` back to
+/// `/sys`, so relative `subsystem`/`driver`/`parent` links resolve at any
+/// nesting depth. # C: O(depth)
+fn ups_prefix(canon: &str) -> String {
+    "../".repeat(canon.split('/').count())
 }

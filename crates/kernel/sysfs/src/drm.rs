@@ -96,29 +96,35 @@ fn minor_of_parent(parent_bus: &str, parent_addr: &str, name: &str) -> Option<Dr
         .find(|m| m.name == name)
 }
 
-fn parent_root_leaf(bus: &str) -> &'static str {
-    match bus {
-        "pci" => "pci0000:00",
-        "virtio" => "virtio",
-        "platform" => "platform",
-        "drm" => "virtual/drm",
-        _ => "platform",
-    }
-}
-
 fn drm_device_path(minor: &DrmMinor) -> String {
     if let (Some(parent_bus), Some(parent_addr)) =
         (minor.parent_bus, minor.parent_addr.as_deref())
     {
-        alloc::format!(
-            "devices/{}/{}/drm/{}",
-            parent_root_leaf(parent_bus),
-            parent_addr,
-            minor.name
-        )
+        // Nest the card under its parent's canonical sysfs directory, so a
+        // PCI-backed virtio-gpu lands at `devices/pci0000:00/<bdf>/virtioN/drm/
+        // cardN`. udev's `path_id` builtin walks the card's parent chain and
+        // needs to reach the PCI transport (it sets `supported_parent`); a flat
+        // `devices/virtio/virtioN` parent has no PCI ancestor and path_id fails
+        // ENOENT (empty ID_PATH), which breaks `71-seat.rules`.
+        alloc::format!("{}/drm/{}", crate::bus::dev_canon(parent_bus, parent_addr), minor.name)
     } else {
         alloc::format!("devices/virtual/drm/{}", minor.name)
     }
+}
+
+/// The leading-slash `/sys` DEVPATH for a DRM card `drv::Device` (bus `drm`),
+/// matching its synthesised sysfs directory so udevd reads the right `uevent`.
+/// # C: O(devices)
+pub(crate) fn card_devpath(dev: &drv::Device) -> Option<String> {
+    if dev.dev_class != "drm" {
+        return None;
+    }
+    let (major, minor_num) = dev.dev_t?;
+    if major != DRM_MAJOR {
+        return None;
+    }
+    let minor = drm_minors().into_iter().find(|m| m.minor == minor_num)?;
+    Some(alloc::format!("/{}", drm_device_path(&minor)))
 }
 
 pub(crate) fn dev_index_target(dev: &drv::Device) -> Option<Vec<u8>> {
@@ -359,6 +365,11 @@ fn make_drm_uevent_inode(name: String, minor: u32, devtype: &'static str) -> Ino
 pub fn init() {
     register("/sys/class/drm", make_sys_class_drm_inode());
     register("/sys/devices/virtual/drm", make_sys_devices_virtual_drm_inode());
+}
+
+#[cfg(test)]
+pub(crate) fn make_sys_class_drm_inode_for_test() -> InodeRef {
+    make_sys_class_drm_inode()
 }
 
 #[cfg(test)]
