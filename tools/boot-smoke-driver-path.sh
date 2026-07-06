@@ -74,9 +74,9 @@ wait_for() {
             tail -n 60 "$LOG" >&2
             exit 1
         fi
-        if grep -aqE 'fbdev_probe: FAIL|drm_probe: FAIL|sysblock_probe: FAIL|snd_probe: FAIL|rtlink_probe: FAIL|mouseprobe: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
+        if grep -aqE 'fbdev_probe: FAIL|drm_probe: FAIL|sysblock_probe: FAIL|b588_.*: FAIL|snd_probe: FAIL|rtlink_probe: FAIL|mouseprobe: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
             echo "driver-path-smoke: FAIL - service failed before $label" >&2
-            grep -aE 'fbdev_probe:|drm_probe:|sysblock_probe:|snd_probe:|rtlink_probe:|b002_net_eth0:|mouseprobe:|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
+            grep -aE 'fbdev_probe:|drm_probe:|sysblock_probe:|b588_|snd_probe:|rtlink_probe:|b002_net_eth0:|mouseprobe:|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
             exit 1
         fi
         grep -aqE "$pat" "$LOG" 2>/dev/null && return 0
@@ -129,13 +129,13 @@ for idx in range(6):
 PY
 while [ "$(date +%s)" -lt "$deadline" ]; do
     if grep -aq 'driver_path_smoke: PASS - GPU input sound block net' "$LOG" 2>/dev/null; then
-        grep -aE 'fbdev_probe:|drm_probe:|sysblock_probe:|snd_probe:|rtlink_probe:|b002_net_eth0:|mouseprobe:|driver_path_smoke:' "$LOG" | tail -16
+        grep -aE 'fbdev_probe:|drm_probe:|sysblock_probe:|b588_|snd_probe:|rtlink_probe:|b002_net_eth0:|mouseprobe:|driver_path_smoke:' "$LOG" | tail -20
         echo "driver-path-smoke: PASS - GPU input sound block net"
         exit 0
     fi
-    if grep -aqE 'fbdev_probe: FAIL|drm_probe: FAIL|sysblock_probe: FAIL|snd_probe: FAIL|rtlink_probe: FAIL|mouseprobe: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
+    if grep -aqE 'fbdev_probe: FAIL|drm_probe: FAIL|sysblock_probe: FAIL|b588_.*: FAIL|snd_probe: FAIL|rtlink_probe: FAIL|mouseprobe: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
         echo "driver-path-smoke: FAIL - service reported failure" >&2
-        grep -aE 'fbdev_probe:|drm_probe:|sysblock_probe:|snd_probe:|rtlink_probe:|b002_net_eth0:|mouseprobe:|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
+        grep -aE 'fbdev_probe:|drm_probe:|sysblock_probe:|b588_|snd_probe:|rtlink_probe:|b002_net_eth0:|mouseprobe:|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
         exit 1
     fi
     sleep 2
