@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B509 verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: B510-virtio-probe-state-boundary; ACTIVE; source audit starting.
 
-Current active item: none. Claim next row only after B509 commit, PR, merge,
-fresh main sync, and `metadata/index.md` branch number check.
+Current active item: move remaining virtio-pci transport ownership behind an
+explicit `VirtioProbeState` boundary or prove current source already does so.
 
-Next gate after merge: return to fresh `origin/main` before claiming B510 using
+Next gate after merge: return to fresh `origin/main` before claiming B511 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -175,7 +175,7 @@ Status legend:
 | SOURCE OK |  | Virtio-pci owns vring frame publication/teardown records for successful child probes. |
 | SOURCE OK |  | Virtio-pci MSI-X state is owned optional/plural binding rather than zero-sentinel fields. |
 | VERIFIED | B508-msix-teardown-order | MSI-X teardown masks all bound table entries before disabling MSI-X, disables each function capability once, frees MSI IDs only after function disable, and drops PCI command memory/bus-master decode after MSI-X teardown on both persistent remove and failed-probe devres cleanup. Added named PCI MSI-X constants/control helper/teardown step planner with hosted regressions. Checks pass: `cargo test -q -p pci -- --nocapture --test-threads=1` 14/14; broad hosted pci-boot/virtio/all virtio-child driver gate; `git diff --check`; touched files under line caps; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
-| NOT DONE | TBD | `VirtioProbeState` exists; remaining transport ownership should move behind explicit state/boundary. |
+| ACTIVE | B510-virtio-probe-state-boundary | >>> ACTIVE >>> `VirtioProbeState` exists; audit current `pci-boot` virtio probe/transport code and move remaining transport ownership behind the explicit state/boundary if gaps remain. Do not mark VERIFIED from old ledger claims; require source proof, focused hosted coverage where practical, line-cap check, `git diff --check`, and x86_64/aarch64 smoke evidence before merge. |
 | VERIFIED |  | Shared `VirtioResources` / `VirtQueueResource` handoff exists. |
 | VERIFIED |  | Queue lookup validation centralized through `require_queue`. |
 | VERIFIED |  | Child probes declare `VirtioChildRequirements`. |
