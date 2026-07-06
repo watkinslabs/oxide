@@ -23,3 +23,7 @@ hosted  = []
 # walk source vs the strict `__lookup_mnt(cur_mnt,d)` at every real-boot crossing
 # (verdict OK/GAP) — the D24 Stage-1b flip gate. Off ⇒ zero hot-path bytes.
 debug-mnt = []
+# [EACCES] DAC-denial probe in generic_permission: logs inode ino/uid/gid/mode +
+# requested mask + caller uid/gid at every EACCES return (login-frontier
+# permission hunt). Off => zero hot-path bytes.
+debug-eacces = []

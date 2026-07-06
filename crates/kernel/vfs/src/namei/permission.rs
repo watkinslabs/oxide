@@ -29,6 +29,29 @@ pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -
     if cred.cap_dac_read_search && mask & MAY_WRITE == 0 && (is_dir || mask & MAY_EXEC == 0) {
         return Ok(());
     }
+    #[cfg(feature = "debug-eacces")]
+    {
+        // [EACCES] DAC denial: inode identity + owner/mode vs caller creds +
+        // requested access mask (r=4/w=2/x=1). Correlate with the [OPENAT] path
+        // line logged for the same syscall to pin the exact file + why.
+        klog::write_raw(b"[EACCES] ino=");
+        klog::write_hex_u64(inode.ino() as u64);
+        klog::write_raw(b" i_uid=");
+        klog::write_dec_u64(uid as u64);
+        klog::write_raw(b" i_gid=");
+        klog::write_dec_u64(gid as u64);
+        klog::write_raw(b" mode=");
+        klog::write_hex_u64((mode & 0o7777) as u64);
+        klog::write_raw(b" mask=");
+        klog::write_hex_u64(mask as u64);
+        klog::write_raw(b" c_uid=");
+        klog::write_dec_u64(cred.uid as u64);
+        klog::write_raw(b" c_gid=");
+        klog::write_dec_u64(cred.gid as u64);
+        klog::write_raw(b" dac_ovr=");
+        klog::write_dec_u64(cred.cap_dac_override as u64);
+        klog::write_raw(b"\n");
+    }
     Err(VfsError::Eacces)
 }
 
