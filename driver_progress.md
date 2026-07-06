@@ -5,8 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B523-virtio-pci-msix-plural-binding-proof verified row 176
-locally; commit, PR, merge, and fresh `main` sync remain.
+Current marker: B524-virtio-device-cfg-resource-proof verified locally for row
+182, Generic mapped `DEVICE_CFG` window is carried to child drivers; pending
+commit, PR, merge, and fresh-main sync.
+
+## B524 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B524-virtio-device-cfg-resource-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `a2887bf2` after B523 PR #2620 merge and branch cleanup. `metadata/index.md` advanced B 524 -> 525. Source audit proves pci-boot maps `VIRTIO_PCI_CAP_DEVICE_CFG` through transport-owned `TransportMappings`, carries `device_cfg_va` through `VirtioTransportProbeResult` / `VirtioChildResourceState`, rejects missing config when `VirtioChildRequirements::needs_device_cfg` is true, and builds child `VirtioResources` with the mapped config VA. Blk/net/input/vsock/snd child drivers consume `resources.device_cfg_va`; touched blk/net/input/snd config readers now use named config layout constants instead of inline protocol literals. Checks pass: focused virtio/PCI/child hosted gate; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`drv-virtio-blk` init 196, `drv-virtio-input` registry 294, `drv-virtio-net` state 296, `drv-virtio-snd` lifecycle 240); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B523 Current
 
