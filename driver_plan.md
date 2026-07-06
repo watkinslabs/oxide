@@ -2,10 +2,10 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B532-virtio-blk-feature-mask-proof
+ACTIVE NOW: B533-virtio-child-feature-mask-proof
 
-Current active item: row 209 verified locally; PR/merge/post-merge smoke
-pending.
+Current active item: row 210 in audit; prove virtio-input/rng/vsock/snd
+feature masks come from child drivers.
 
 Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
 return to fresh `origin/main`.
@@ -207,7 +207,7 @@ Status legend:
 | VERIFIED |  | Virtio-net reads MAC in child driver from generic config resource. |
 | VERIFIED |  | Virtio-gpu feature mask comes from GPU child driver. |
 | VERIFIED | B532-virtio-blk-feature-mask-proof | Virtio-blk feature mask includes `VIRTIO_BLK_F_BLK_SIZE`: source audit proves child-owned `drv_virtio_blk::modern::wanted_features()` returns `VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_BLK_SIZE`, `transport_profile()` carries that mask through `VirtioTransportProfile::q0_device_cfg`, and pci-boot consumes the child profile via `drv_virtio_blk::modern::transport_profile()` before passing negotiated `session.drv_features()` into `BlkInit`. Hosted regression `blk_transport_profile_declares_blk_size_feature` proves the mask includes `VIRTIO_BLK_F_BLK_SIZE`, the profile carries exactly that mask, and the child requires q0 plus device config. Focused `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` passes 24/24; broad PCI/virtio child gate passes; `git diff --check`; line caps (`tests/config.rs` 61, `state.rs` 181, `virtio_child.rs` 398); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
-| SOURCE OK |  | Virtio-input/rng/vsock/snd feature masks come from child drivers. |
+| >>> ACTIVE >>> IN AUDIT | B533-virtio-child-feature-mask-proof | Virtio-input/rng/vsock/snd feature masks come from child drivers. |
 | SOURCE OK |  | Virtio-pci MSI-X setup names `NO_VECTOR`. |
 | SOURCE OK |  | Virtio-pci records q0 queue vector in MSI-X binding. |
 | VERIFIED | B509-msix-function-mask-live-proof | Virtio-pci MSI-X live RX proof now passes on both architectures. Transport enables MSI-X with the function mask held, writes and reads back table entries, programs virtqueue MSI-X vectors before `DRIVER_OK`, clears the function mask only after queue setup, and preserves transport-owned MSI-X teardown. ARM fix was the architectural ITS translation-frame doorbell: `GITS_TRANSLATER = ITS_BASE + 0x10040`, not the control-frame `0x0040`; the failing ARM diagnostic had proved q0 RX completion without a PCI-originated MSI, and the corrected table readback now targets `msg_addr=0x8090040` on this QEMU. Checks pass: `cargo check -q -p arch-irq -p firmware -p pci-boot -p virtio -p drv-virtio-net`; `git diff --check`; clean aarch64 smoke `/tmp/b509-arm-msix-net-rx-final.log` shows `msix_net_rx_probe: PASS rx=103 bytes from 10.0.2.3`; clean x86_64 smoke `/tmp/b509-x86-msix-net-rx-final.log` shows the same PASS. |
