@@ -105,11 +105,11 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioPciProbeTrace) {
             klog::write_hex_u64(p.post_notify_status as u64);
             klog::write_raw(b"\n");
         }
-        //: read back queue_msix_vector (high u16 of dword at 0x18)
+        //: read back queue_msix_vector (high u16 of queue_size/msix dword)
         // and report MSI delivery count seen by the IRQ dispatcher.
         // SAFETY: cfg_va Device-attr mapped during init; aligned u32 read.
         let qmv_word = unsafe {
-            core::ptr::read_volatile((p.cfg_va + 0x18) as *const u32)
+            core::ptr::read_volatile((p.cfg_va + virtio::queue_cfg::CFG_QUEUE_SIZE) as *const u32)
         };
         let qmv = (qmv_word >> 16) as u16;
         let fires = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);

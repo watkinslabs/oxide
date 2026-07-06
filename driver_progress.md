@@ -5,10 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active row. B518-virtio-probe-devres-lifetime-proof is
-VERIFIED on branch `B518-virtio-probe-devres-lifetime-proof`; pending commit,
-push, PR, merge, branch cleanup, and fresh `main` sync before claiming the next
-row.
+Current marker: no active row. B519-virtio-probe-trace-debug-proof is VERIFIED
+on branch `B519-virtio-probe-trace-debug-proof`; pending commit, push, PR,
+merge, branch cleanup, and fresh `main` sync before claiming the next row.
+
+## B519 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B519-virtio-probe-trace-debug-proof | VERIFIED | Fresh `main` at merge commit `398acd13` after B518 PR #2614 merge and branch cleanup. `metadata/index.md` advanced B 519 -> 520. Source audit proves trace data is built once in `virtio_drv::probe_child` beside the real child facts/devres, stored separately from `VirtioProbeDevres`, and only consumed by `virtio_trace::trace_probe()` from `VirtioChildSession::begin`; `trace_probe()` is gated by `debug_boot!` with a non-debug no-op binding, child drivers do not receive the trace object, and persistent publish/remove uses devres/transport records instead. Patch replaces the inline debug queue MSI-X readback offset with shared `virtio::queue_cfg::CFG_QUEUE_SIZE`. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate with child suites 20/20, 36/36, 36/36, 16/16, 8/8, 11/11, 9/9 plus shared virtio 44/44; line caps (`virtio_trace.rs` 145, `virtio_drv/probe.rs` 178, `virtio_bus.rs` 145); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B518 Current
 
