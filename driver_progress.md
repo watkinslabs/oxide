@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B548-virtio-snd-eventq-prepost-proof is active for proving
-virtio-snd preposts writable EVENTQ descriptors from fresh `main` at B547 PR
-#2639 merge commit `a72bf571`.
+Current marker: B548-virtio-snd-eventq-prepost-proof is verified locally for
+virtio-snd preposted writable EVENTQ descriptors from fresh `main` at B547 PR
+#2639 merge commit `a72bf571`; PR/merge gate is next.
 
 ## B548 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B548-virtio-snd-eventq-prepost-proof | CLAIMED | Fresh `main` at B547 PR #2639 merge commit `a72bf571`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 548 -> 549. Target row: prove virtio-snd preposts writable EVENTQ descriptors. |
+| B548-virtio-snd-eventq-prepost-proof | VERIFIED LOCALLY | Fresh `main` at B547 PR #2639 merge commit `a72bf571`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 548 -> 549. Source audit proves `drv-virtio-snd::install()` requires EVENTQ(1), rejects zero/oversized EVENTQ with `MAX_EVENTQ_DESCS`, zeros owned event storage, reads EVENTQ used idx, derives `event_avail_idx = event_used_seen + eventq.size`, and calls `prepost_eventq()` before publishing `Ctx`; `prepost_eventq()` uses named virtqueue descriptor/avail layout constants, writes each EVENTQ descriptor to `event_buf_pa + desc_id * EVENT_SIZE`, marks each descriptor device-writable with `VRING_DESC_F_WRITE`, clears descriptor `next` and avail flags through named constants, fills the avail ring with every descriptor id, release-fences before publishing avail idx, and notifies `eventq.index`. Added hosted regression `eventq_prepost_writes_writable_descriptors_and_notifies`. Checks pass: focused `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` with snd 14/14; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests.rs` 477, `tests/prepost.rs` 71, `lifecycle.rs` 251, `lib.rs` 130); branch smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 36s. |
 
 ## B547 Current
 

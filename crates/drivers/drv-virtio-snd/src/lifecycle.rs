@@ -6,6 +6,16 @@ const SND_CFG_JACKS_OFF: u64 = 0;
 const SND_CFG_STREAMS_OFF: u64 = 4;
 const SND_CFG_CHMAPS_OFF: u64 = 8;
 const SND_CFG_CONTROLS_OFF: u64 = 12;
+const VIRTQ_DESC_ENTRY_BYTES: usize = 16;
+const VIRTQ_DESC_LEN_OFF: usize = 8;
+const VIRTQ_DESC_FLAGS_OFF: usize = 12;
+const VIRTQ_DESC_NEXT_OFF: usize = 14;
+const VIRTQ_AVAIL_FLAGS_OFF: usize = 0;
+const VIRTQ_AVAIL_IDX_OFF: usize = 2;
+const VIRTQ_AVAIL_RING_OFF: usize = 4;
+const VIRTQ_AVAIL_RING_ENTRY_BYTES: usize = 2;
+const VIRTQ_AVAIL_NO_FLAGS: u16 = 0;
+const VIRTQ_DESC_NO_NEXT: u16 = 0;
 
 pub(super) fn read_device_config(resources: virtio::VirtioResources) -> Option<SndDeviceConfig> {
     let cfg = resources.device_cfg_va;
@@ -222,19 +232,20 @@ pub(super) fn prepost_eventq(
     unsafe {
         for i in 0..qsize {
             let entry_pa = event_buf_pa.wrapping_add((i as u64) * EVENT_SIZE as u64);
-            let off = i * 16;
+            let off = i * VIRTQ_DESC_ENTRY_BYTES;
             core::ptr::write_volatile(desc_va.add(off) as *mut u64, entry_pa);
-            core::ptr::write_volatile(desc_va.add(off + 8) as *mut u32, EVENT_SIZE as u32);
-            core::ptr::write_volatile(desc_va.add(off + 12) as *mut u16, VRING_DESC_F_WRITE);
-            core::ptr::write_volatile(desc_va.add(off + 14) as *mut u16, 0u16);
+            core::ptr::write_volatile(desc_va.add(off + VIRTQ_DESC_LEN_OFF) as *mut u32, EVENT_SIZE as u32);
+            core::ptr::write_volatile(desc_va.add(off + VIRTQ_DESC_FLAGS_OFF) as *mut u16, VRING_DESC_F_WRITE);
+            core::ptr::write_volatile(desc_va.add(off + VIRTQ_DESC_NEXT_OFF) as *mut u16, VIRTQ_DESC_NO_NEXT);
         }
         let avail_va = hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
-        core::ptr::write_volatile(avail_va as *mut u16, 0u16);
+        core::ptr::write_volatile(avail_va.add(VIRTQ_AVAIL_FLAGS_OFF) as *mut u16, VIRTQ_AVAIL_NO_FLAGS);
         for i in 0..qsize {
-            core::ptr::write_volatile(avail_va.add(4 + i * 2) as *mut u16, i as u16);
+            let ring_off = VIRTQ_AVAIL_RING_OFF + i * VIRTQ_AVAIL_RING_ENTRY_BYTES;
+            core::ptr::write_volatile(avail_va.add(ring_off) as *mut u16, i as u16);
         }
         core::sync::atomic::fence(Ordering::Release);
-        core::ptr::write_volatile(avail_va.add(2) as *mut u16, avail_idx);
+        core::ptr::write_volatile(avail_va.add(VIRTQ_AVAIL_IDX_OFF) as *mut u16, avail_idx);
         core::ptr::write_volatile(eventq.notify_va as *mut u16, eventq.index);
     }
 }
