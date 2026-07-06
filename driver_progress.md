@@ -5,10 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. B599-driver-shutdown-coverage is merged as
-PR #2721 at `5df821ab`; fresh-main `make smoke SMOKE_TIMEOUT=300` passed with
-x86_64 reaching `oxide login:` in 50s and aarch64 reaching `oxide login:` in
-56s. Next branch should claim the next concrete NOT DONE driver row.
+Current marker: B601-driver-model-live-probe-audit is VERIFIED LOCAL /
+PR PENDING from fresh `main` at D146 ledger merge `385498f3`. B600 is already
+occupied by existing branch/worktree `B600-gnome-session-diag`, so this driver
+lane uses the next free B number and advances `metadata/index.md` B 600 -> 602.
+
+## B601 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B601-driver-model-live-probe-audit | VERIFIED LOCAL / PR PENDING | Old claim that live hardware bring-up mostly bypasses the true driver model is stale on current source. Source audit proves `drv::try_device_add` plus `drv::register_driver` own PCI, NVMe, AHCI, virtio-pci, virtio child, and platform attach paths: `drv::model::bind_inner` calls `Driver::probe` before recording binding; `pci-boot` publishes PCI devices and registers NVMe/AHCI/virtio-pci model drivers; `VirtioPciDrv::probe` publishes `virtio` child devices; `VirtioChildDriver::probe` owns child install and transport publication; kmain platform serial/i8042 publication routes through `platform_device_or_panic` and model registration. Source search finds no live `virtio_probe_arch`, `nvme_probe`, `ahci_probe`, or direct boot install bypass outside virtio child driver probes. Hosted gate passes: `cargo test -q -p drv -p pci-boot -p virtio -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1`. Runtime proof passes: x86_64 `/tmp/b601-x86-driver-model-shutdown.log` and aarch64 `/tmp/b601-arm-driver-model-shutdown.log` show `power_cmd restart`, `driver_shutdown` for AHCI, NVMe, virtio-pci parents, virtio-snd, virtio-vsock, virtio-rng, two virtio-input devices, virtio-gpu, virtio-net, virtio-blk, and the per-arch platform driver (`i8042-kbd`/`8250-serial` on x86_64, `pl011-serial` on aarch64), then `shutdown-smoke: PASS`. `git diff --check -- driver_plan.md driver_progress.md metadata/index.md` passes. Duplicate-lane check found existing `B600-gnome-session-diag` in `/home/nd/oxide-wt/gnome-diag`, so this lane does not touch B600 and uses B601. No existing B601/driver-model-live-probe branch or worktree was found. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B599 Current
 
