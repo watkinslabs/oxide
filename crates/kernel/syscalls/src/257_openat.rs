@@ -113,6 +113,24 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         }
     };
     let path_str: &str = resolved.as_str();
+    // DIAG (debug-cgroup): trace every open of /proc/<pid>/cgroup + whether the
+    // path resolves. logind's GetSessionByPID reads this to map a pid to its
+    // session-cN.scope; a MISSING result means the queried pid does not exist in
+    // the kernel's pid view (a pid/vpid-namespace mismatch), which yields
+    // NoSessionForPID even though the real process IS in a session scope.
+    #[cfg(feature = "debug-cgroup")]
+    if path_str.starts_with("/proc/") && path_str.ends_with("/cgroup") {
+        let exists = crate::pathresolve::resolve_path(path_str, false).is_some();
+        klog::write_raw(b"[OPENCG ");
+        klog::write_raw(path_str.as_bytes());
+        klog::write_raw(if exists { b" EXISTS by=" } else { b" MISSING by=" });
+        if let Some(c) = sched::live::current() {
+            klog::write_dec_u64(c.tid as u64);
+            klog::write_raw(b"/");
+            klog::write_raw(c.name.as_bytes());
+        }
+        klog::write_raw(b"]\n");
+    }
     #[cfg(feature = "debug-atexit")]
     if dyn_trace_path(path_str) {
         klog::write_raw(b"[DYNOPEN] resolved=");
