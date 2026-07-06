@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 mod address;
 mod driver;
 mod probe;
+mod probe_state;
 mod runtime;
 
 pub(super) use driver::{register_model_drivers, VirtioPciTransport};
