@@ -129,7 +129,7 @@ impl NetStack {
                         remote_ip: IpAddr::V6(Ipv6Addr::ANY),
                         remote_port: 0,
                         ifindex: q.bound_ifindex.load(Ordering::Acquire),
-                        rqueue: q.q.lock().iter().map(|(_, _, p)| p.len() as u32).sum(),
+                        rqueue: q.q.lock().iter().map(|(.., p)| p.len() as u32).sum(),
                         wqueue: 0,
                     });
                 }

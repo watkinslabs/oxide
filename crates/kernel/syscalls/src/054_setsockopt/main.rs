@@ -128,6 +128,43 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             sock.opts.ipv6_v6only.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
+        (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.ipv6_ucast_hops.store(v, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.ipv6_mcast_hops.store(v, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ipv6_mcast_loop.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_MULTICAST_IF) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(idx) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if idx < 0 { return -(Errno::Einval.as_i32() as i64); }
+            let idx = idx as u32;
+            if idx != 0 && net::sock::stack().ifaces.lookup(net::NetIfaceId::from_raw(idx)).is_none() {
+                return -(Errno::Enodev.as_i32() as i64);
+            }
+            sock.opts.ipv6_mcast_ifindex.store(idx, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_RECVPKTINFO) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ipv6_recvpktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ipv6_recvhoplimit.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
         (IPPROTO_IPV6, IPV6_JOIN_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, true),
         (IPPROTO_IPV6, IPV6_LEAVE_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, false),
         (IPPROTO_TCP, 1) => if let Some(v) = read_i32(optval) { sock.opts.tcp_nodelay.store(v, Ordering::Release); },
@@ -184,6 +221,15 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
 
 fn ipv4_mcast_membership_result(rv: i64) -> i64 {
     rv
+}
+
+/// Gate IPPROTO_IPV6 options to AF_INET6 sockets, matching the family
+/// check already used by the v6 multicast-membership helpers. # C: O(1)
+fn require_v6(sock: &Arc<net::sock::InetSocket>) -> Result<(), i64> {
+    if sock.family.load(Ordering::Acquire) != net::sock::AF_INET6 {
+        return Err(-(Errno::Eafnosupport.as_i32() as i64));
+    }
+    Ok(())
 }
 
 pub(super) fn read_u8_or_i32(optval: u64, optlen: u32) -> Option<i32> {

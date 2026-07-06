@@ -49,6 +49,52 @@ fn f180a_ipv6_udp_no_bind_silent_drop() {
     assert!(stack.recv_udp6(9999).is_none());
 }
 
+// SW2: IPv6 recvmsg ancillary — RX captures (dst, iface, hop_limit) so
+// recvmsg can emit IPV6_PKTINFO + IPV6_HOPLIMIT (avahi enforces hop==255).
+#[test]
+fn sw2_ipv6_udp_rx_captures_pktinfo_and_hoplimit() {
+    use crate::addr::Ipv6Addr;
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::udp::{UDP_HDR_LEN, build_into_v6};
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    stack.bind_udp6(Ipv6Addr::LOOPBACK, 5353).unwrap();
+    let payload = b"mdns";
+    let l4_len  = UDP_HDR_LEN + payload.len();
+    let total   = IPV6_HDR_LEN + l4_len;
+    let mut frame = alloc::vec![0u8; total];
+    build_into_v6(5353, 5353, Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK,
+        payload, &mut frame[IPV6_HDR_LEN..]);
+    let mut h = Ipv6Hdr::build(Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK,
+        crate::addr::IpProto::Udp, l4_len as u16);
+    h.hop_limit = 255; // on-link mDNS
+    h.write_to(&mut frame[..IPV6_HDR_LEN]);
+    stack.deliver_rx_ipv6(id, &frame).unwrap();
+    let (src, sport, dst, iface, hop, body) =
+        stack.recv_udp6_meta_opts(5353, false).expect("meta datagram delivered");
+    assert_eq!(src, Ipv6Addr::LOOPBACK);
+    assert_eq!(sport, 5353);
+    assert_eq!(dst, Ipv6Addr::LOOPBACK);
+    assert_eq!(iface, id);
+    assert_eq!(hop, 255);
+    assert_eq!(body, payload);
+}
+
+// SW2: IPV6_MULTICAST_HOPS / IPV6_UNICAST_HOPS reach the wire — the TX
+// header carries the requested hop limit rather than the fixed default.
+#[test]
+fn sw2_ipv6_tx_header_carries_requested_hop_limit() {
+    use crate::addr::{Ipv6Addr, IpProto};
+    use crate::ipv6::{push_ipv6_header_hop, IPV6_DEFAULT_HOP_LIMIT};
+    use crate::pkt::Pkt;
+    let mut p = Pkt::with_capacity(crate::ipv6::IPV6_HDR_LEN, 64);
+    p.put(4).unwrap().copy_from_slice(b"abcd");
+    push_ipv6_header_hop(&mut p, Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK, IpProto::Udp, 255).unwrap();
+    // hop_limit is byte 7 of the IPv6 header (front of the packet).
+    assert_eq!(p.data()[7], 255);
+    assert_ne!(255, IPV6_DEFAULT_HOP_LIMIT, "test is meaningful only if 255 != default");
+}
+
 // ----- netfilter hook wiring: PRE_ROUTING/LOCAL_IN (RX), LOCAL_OUT/
 //        POST_ROUTING (TX) must fire on the real IPv4 AND IPv6 paths -----
 

@@ -105,7 +105,7 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
         }
     }
     let mut msg_flags: u32 = if rcv.full_len > off { MSG_TRUNC as u32 } else { 0 };
-    let ctrl = write_ip_pktinfo(&sock, &rcv, control, controllen, &mut msg_flags);
+    let ctrl = write_cmsgs(&sock, &rcv, control, controllen, &mut msg_flags);
     // SAFETY: msghdr pointer was validated and these fields are fixed offsets in msghdr.
     unsafe {
         core::ptr::write_volatile((msgp + 40) as *mut u64, ctrl);
@@ -173,7 +173,57 @@ fn recvmsg_blocking(
     }
 }
 
-fn write_ip_pktinfo(
+const MSG_CTRUNC: u32 = 0x08;
+const IPPROTO_IP: i32 = 0;
+const IPPROTO_IPV6: i32 = 41;
+const IP_PKTINFO: i32 = 8;
+const IPV6_PKTINFO: i32 = 50;
+const IPV6_HOPLIMIT: i32 = 52;
+/// sizeof(struct cmsghdr): size_t cmsg_len + int cmsg_level + int cmsg_type.
+const CMSGHDR_LEN: u64 = 16;
+
+/// Sequential cmsg emitter over the user `msg_control` buffer. Lays out
+/// each control message as `cmsghdr` + data padded to `CMSG_ALIGN` (8),
+/// exactly like Linux `put_cmsg`, and raises MSG_CTRUNC when a message
+/// cannot fit. # C: O(cmsgs)
+struct CmsgWriter {
+    base: u64,
+    cap: u64,
+    off: u64,
+}
+
+impl CmsgWriter {
+    fn new(base: u64, cap: u64) -> Self {
+        Self { base, cap, off: 0 }
+    }
+
+    fn push(&mut self, level: i32, ty: i32, data: &[u8], msg_flags: &mut u32) {
+        let cmsg_len = CMSGHDR_LEN + data.len() as u64;
+        let step = (cmsg_len + 7) & !7; // CMSG_ALIGN(cmsg_len)
+        let start = self.base + self.off;
+        if self.base == 0
+            || self.off + step > self.cap
+            || start.saturating_add(cmsg_len) > USER_VA_END
+        {
+            *msg_flags |= MSG_CTRUNC;
+            return;
+        }
+        // SAFETY: [start, start+cmsg_len) validated within the user control
+        // buffer (cap) and below USER_VA_END; writes go through the caller AS.
+        unsafe {
+            core::ptr::write_volatile(start as *mut u64, cmsg_len);
+            core::ptr::write_volatile((start + 8) as *mut i32, level);
+            core::ptr::write_volatile((start + 12) as *mut i32, ty);
+            core::ptr::copy_nonoverlapping(data.as_ptr(), (start + CMSGHDR_LEN) as *mut u8, data.len());
+        }
+        self.off += step;
+    }
+}
+
+/// Emit the recvmsg ancillary data enabled on this socket: IP_PKTINFO
+/// (IPv4), IPV6_PKTINFO and IPV6_HOPLIMIT (IPv6). Returns the number of
+/// control bytes written. # C: O(cmsgs)
+fn write_cmsgs(
     sock: &alloc::sync::Arc<net::sock::InetSocket>,
     rcv: &net::sock::Received,
     control: u64,
@@ -181,24 +231,32 @@ fn write_ip_pktinfo(
     msg_flags: &mut u32,
 ) -> u64 {
     use core::sync::atomic::Ordering;
-    const IPPROTO_IP: i32 = 0;
-    const IP_PKTINFO: i32 = 8;
-    const MSG_CTRUNC: u32 = 0x08;
-    if sock.opts.ip_pktinfo.load(Ordering::Acquire) == 0 { return 0; }
-    let Some((dst, iface)) = rcv.pktinfo else { return 0; };
-    if control == 0 || controllen < 28 || control.saturating_add(28) > USER_VA_END {
-        *msg_flags |= MSG_CTRUNC;
-        return 0;
+    let mut w = CmsgWriter::new(control, controllen);
+    if sock.opts.ip_pktinfo.load(Ordering::Acquire) != 0 {
+        if let Some((dst, iface)) = rcv.pktinfo {
+            // struct in_pktinfo { int ipi_ifindex; in_addr ipi_spec_dst; in_addr ipi_addr; }
+            let mut data = [0u8; 12];
+            data[0..4].copy_from_slice(&(iface.raw() as i32).to_ne_bytes());
+            let oct = dst.octets();
+            data[4..8].copy_from_slice(&oct);
+            data[8..12].copy_from_slice(&oct);
+            w.push(IPPROTO_IP, IP_PKTINFO, &data, msg_flags);
+        }
     }
-    // SAFETY: control buffer has space for cmsghdr plus in_pktinfo and is user VA bounded.
-    unsafe {
-        core::ptr::write_volatile(control as *mut u64, 28);
-        core::ptr::write_volatile((control + 8) as *mut i32, IPPROTO_IP);
-        core::ptr::write_volatile((control + 12) as *mut i32, IP_PKTINFO);
-        core::ptr::write_volatile((control + 16) as *mut i32, iface.raw() as i32);
-        let oct = dst.octets();
-        core::ptr::copy_nonoverlapping(oct.as_ptr(), (control + 20) as *mut u8, 4);
-        core::ptr::copy_nonoverlapping(oct.as_ptr(), (control + 24) as *mut u8, 4);
+    if sock.opts.ipv6_recvpktinfo.load(Ordering::Acquire) != 0 {
+        if let Some((dst6, iface)) = rcv.pktinfo6 {
+            // struct in6_pktinfo { in6_addr ipi6_addr; unsigned int ipi6_ifindex; }
+            let mut data = [0u8; 20];
+            data[0..16].copy_from_slice(&dst6.0);
+            data[16..20].copy_from_slice(&(iface.raw()).to_ne_bytes());
+            w.push(IPPROTO_IPV6, IPV6_PKTINFO, &data, msg_flags);
+        }
     }
-    32
+    if sock.opts.ipv6_recvhoplimit.load(Ordering::Acquire) != 0 {
+        if let Some(hop) = rcv.hoplimit {
+            let data = (hop as i32).to_ne_bytes();
+            w.push(IPPROTO_IPV6, IPV6_HOPLIMIT, &data, msg_flags);
+        }
+    }
+    w.off
 }
