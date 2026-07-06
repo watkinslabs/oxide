@@ -357,6 +357,16 @@ fn make_sys_class_block_inode() -> InodeRef {
         Arc::new(SysClassBlockOps), Arc::new(SysClassBlockOps)).build()
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn invalidate_block_paths(name: &str) {
+    for path in ["/sys/block/", "/sys/devices/virtual/block/", "/sys/class/block/"] {
+        let full = alloc::format!("{}{}", path, name);
+        if let Some(dentry) = vfs::resolve_path_dentry(&full) {
+            vfs::d_invalidate(&dentry);
+        }
+    }
+}
+
 /// # C: O(1)
 pub fn init() {
     crate::register("/sys/block", make_sys_block_inode());
@@ -365,6 +375,8 @@ pub fn init() {
     // /sys path that did not exist and udevd processed no disk.
     crate::register("/sys/devices/virtual/block", make_sys_devices_virtual_block_inode());
     crate::register("/sys/class/block", make_sys_class_block_inode());
+    #[cfg(target_os = "oxide-kernel")]
+    block::registry::set_remove_hook(invalidate_block_paths);
 }
 
 #[cfg(test)]

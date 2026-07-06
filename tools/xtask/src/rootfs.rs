@@ -107,7 +107,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
         "socketpair_fork_probe", "tty_reset_probe", "dsr_probe", "vtswitch_probe", "vtmode_probe", "vtresize_probe", "kdfont_probe", "fbdev_probe", "fbdev_probe2", "vcs_probe", "ptyhup_probe", "hwrng_probe", "virtio_rng_rebind_probe", "virtio_input_rebind_probe", "netstats_probe", "vsock_probe", "drm_probe", "drm_probe2", "drm_probe3", "sysblock_probe", "snd_probe", "mouseprobe",
-        "msix_net_rx_probe", "virtio_net_multidev_probe", "virtio_snd_multidev_probe", "virtio_gpu_multidev_probe", "storage_multictrl_probe",
+        "msix_net_rx_probe", "virtio_net_multidev_probe", "virtio_snd_multidev_probe", "virtio_gpu_multidev_probe", "virtio_blk_multidev_probe", "storage_multictrl_probe",
     ] {
         put(&user(b), &format!("/bin/{b}"))?;
     }
@@ -211,6 +211,11 @@ b"#!/bin/sh
 set -eu
 exec /bin/virtio_net_multidev_probe
 "
+        } else if std::env::var_os("OXIDE_VIRTIO_BLK_MULTIDEV_SMOKE").is_some() {
+b"#!/bin/sh
+set -eu
+exec /bin/virtio_blk_multidev_probe
+"
         } else if std::env::var_os("OXIDE_MSIX_NET_RX_SMOKE").is_some() {
 b"#!/bin/sh
 set -eu
@@ -274,6 +279,9 @@ ExecStart=/bin/driver_path_smoke.sh
         dbg("symlink /usr/lib/systemd/system/default.target.wants/driver-path-smoke.service ../driver-path-smoke.service")?;
         if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() {
             put(&user("virtio_net_multidev_probe"), "/init")?;
+        }
+        if std::env::var_os("OXIDE_VIRTIO_BLK_MULTIDEV_SMOKE").is_some() {
+            put(&user("virtio_blk_multidev_probe"), "/init")?;
         }
         if std::env::var_os("OXIDE_VIRTIO_RNG_REBIND_SMOKE").is_some() {
             put(&user("virtio_rng_rebind_probe"), "/init")?;

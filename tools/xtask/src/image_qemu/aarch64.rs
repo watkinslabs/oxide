@@ -2,7 +2,7 @@ use std::process::Command;
 
 use crate::run;
 
-use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ssh_fwd_netdev, which};
+use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
 
 /// objcopy the aarch64 kernel ELF → flat arm64 `Image` (arm64 Image
 /// header + PE32+/EFI header + MMU trampoline at byte 0). The artifact is
@@ -172,6 +172,14 @@ pub(super) fn qemu_run_aarch64_grub(
     if std::env::var_os("OXIDE_VIRTIO_RNG_REBIND_SMOKE").is_some() {
         c.args([
             "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
+        ]);
+    }
+    if std::env::var_os("OXIDE_VIRTIO_BLK_MULTIDEV_SMOKE").is_some() {
+        let scratch = ensure_virtio_blk_extra_img(repo, id, "aarch64");
+        let drive = format!("if=none,id=blkscratch,format=raw,file={}", scratch.display());
+        c.args([
+            "-drive", drive.as_str(),
+            "-device", "virtio-blk-pci,drive=blkscratch,bus=pcie.0,serial=oxide-scratch,disable-legacy=on",
         ]);
     }
     if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() {
