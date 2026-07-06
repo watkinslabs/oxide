@@ -5,7 +5,7 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B593-driver-fault-injection-coverage is CLAIMED / IN AUDIT.
+Current marker: B593-driver-fault-injection-coverage is VERIFIED / READY TO PUSH.
 B593 audits explicit driver fault-injection coverage after allocations,
 mappings, registration, IRQ/MSI, queue setup, and userspace publication; B415
 remains aggregate-only until the concrete live-proof rows are closed.
@@ -14,7 +14,7 @@ remains aggregate-only until the concrete live-proof rows are closed.
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B593-driver-fault-injection-coverage | CLAIMED / IN AUDIT | Fresh `main` at D140 ledger merge `0d92e87a`; B592 PR #2708 and ledger PR #2709 are merged, and `metadata/index.md` advances B 593 -> 594 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. First pass is source audit across existing driver fault hooks/tests in `crates/drivers/drv`, `crates/drivers/virtio`, `crates/kernel/pci-boot`, PCI/NVMe/AHCI/virtio child drivers, sysfs/devfs publication hooks, and targeted QEMU probes to identify the smallest real missing coverage set. Required proof is focused hosted regressions plus x86_64 and aarch64 boot smoke. |
+| B593-driver-fault-injection-coverage | VERIFIED / READY TO PUSH | Fresh `main` at D140 ledger merge `0d92e87a`; B592 PR #2708 and ledger PR #2709 are merged, and `metadata/index.md` advances B 593 -> 594 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Audit found current hosted proof for `drv` rollback/failure retry, virtqueue partial allocation unwind, child lifecycle release-on-failure, net late registration failure, and vsock publish failure. B593 adds `child_model_driver_faults_release_without_transport_publish`, proving the B592 shared `VirtioChildDriver<B,O>` adapter through real `drv::Driver` registration/bind: begin-session failure leaves the device unbound with no release/publish, child probe failure releases without publishing, explicit retry succeeds and publishes, and unbind removes before transport unpublish. Focused test passes; broad hosted gate passes with `drv` 31/31, `virtio` 49/49, `drv-virtio-net` 25/25, `drv-virtio-blk` 36/36, `drv-virtio-gpu` 38/38, `drv-virtio-input` 17/17, `drv-virtio-rng` 9/9, `drv-virtio-vsock` 15/15, `drv-virtio-snd` 11/11, and `pci-boot` hosted compile-only targets ok. `git diff --check` passes; line caps: `identity.rs` 444, `child.rs` 467, `pci-boot/src/virtio_child.rs` 350, `pci-boot/src/virtio_transport/msix.rs` 470. `make smoke SMOKE_TIMEOUT=300` passes; preserved x86_64 proof `/tmp/b593-x86-login-smoke.log` reaches `oxide login:` in 12s, and preserved aarch64 proof `/tmp/b593-arm-login-smoke.log` reaches `oxide login:` in 16s. |
 
 ## B592 Current
 
