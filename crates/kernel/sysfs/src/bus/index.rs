@@ -30,12 +30,21 @@ pub(super) fn find_dev_by_index(kind: DevIndexKind, name: &str) -> Option<Arc<dr
 
 /// Canonical `/sys` DEVPATH for a device's uevent (Linux `add@<devpath>`).
 /// udevd reads `/sys<DEVPATH>/uevent`, so this MUST match the real sysfs dir.
-/// DRM cards live at `/devices/virtual/drm/<sysname>` (sysfs::drm), NOT the
-/// `dev_root_canon("drm")` fallthrough `devices/platform/dri/card0`. # C: O(1)
+/// DRM cards live under their model parent (`crate::drm`), so a PCI-backed card
+/// resolves to `devices/pci0000:00/<bdf>/virtioN/drm/cardN` — the nested path
+/// `path_id`'s parent walk needs. Nesting-bus devices (pci/virtio/platform) use
+/// their canonical nested path; class devices keep the flat `virtual/<class>`
+/// root. # C: O(depth)
 pub(super) fn dev_devpath(dev: &drv::Device) -> String {
     if dev.bus == "drm" {
+        if let Some(path) = crate::drm::card_devpath(dev) {
+            return path;
+        }
         let sysname = dev.addr.rsplit('/').next().unwrap_or(dev.addr.as_str());
         return alloc::format!("/devices/virtual/drm/{}", sysname);
+    }
+    if super::device::is_nesting_bus(dev.bus) {
+        return alloc::format!("/{}", super::device::dev_canon(dev.bus, &dev.addr));
     }
     alloc::format!("/{}/{}", dev_root_canon(dev.bus), dev.addr)
 }

@@ -458,6 +458,63 @@ extern crate alloc;
         assert_eq!(index.lookup("226:89").err(), Some(VfsError::Enoent));
     }
 
+    /// A PCI-backed virtio-gpu DRM card must nest under the PCI transport so
+    /// udev's `path_id` builtin (71-seat.rules) reaches a PCI ancestor and
+    /// resolves ID_PATH instead of failing ENOENT. Reproduces the seat card0
+    /// topology and walks it exactly as `path_id`'s parent walk does.
+    #[test]
+    fn drm_card_nests_under_pci_transport_for_path_id() {
+        let pci = Arc::new(
+            drv::Device::new("pci", String::from("0000:00:04.0"), 0x1af4, 0x1050, 0x030000));
+        let virtio = Arc::new(
+            drv::Device::new("virtio", String::from("virtio7"), 0x1af4, 16, 0)
+                .with_parent("pci", String::from("0000:00:04.0")));
+        let card = Arc::new(
+            drv::Device::new("drm", String::from("card7"), 0, 0, 0)
+                .with_parent("virtio", String::from("virtio7"))
+                .with_devnode("drm", String::from("dri/card7"), Some((226, 7))));
+        drv::try_device_add(Arc::clone(&pci)).expect("pci registration");
+        drv::try_device_add(Arc::clone(&virtio)).expect("virtio registration");
+        drv::try_device_add(Arc::clone(&card)).expect("drm registration");
+
+        // /sys/class/drm/card7 -> nested path under the PCI function.
+        let class = crate::drm::make_sys_class_drm_inode_for_test();
+        assert_eq!(
+            class.lookup("card7").expect("class link").readlink().expect("readlink"),
+            b"../../devices/pci0000:00/0000:00:04.0/virtio7/drm/card7".to_vec());
+
+        // Walk the physical directory chain the way udev/path_id does, from the
+        // PCI root down to card7, and verify each device dir's `subsystem`
+        // basename (path_id classifies parents by that basename only).
+        let pci_root = make_devices_root_inode("pci");
+        let pci_dir = pci_root.lookup("0000:00:04.0").expect("pci device dir");
+        assert!(subsystem_basename(&pci_dir) == b"pci");
+
+        let virtio_dir = pci_dir.lookup("virtio7").expect("virtio nested under pci");
+        assert!(subsystem_basename(&virtio_dir) == b"virtio");
+        // The virtio function is NO LONGER at the flat /sys/devices/virtio root.
+        assert_eq!(
+            make_devices_root_inode("virtio").lookup("virtio7").err(),
+            Some(VfsError::Enoent));
+
+        let drm_dir = virtio_dir.lookup("drm").expect("drm container under virtio");
+        assert!(drm_dir.lookup("card7").is_ok());
+
+        // path_id parent walk: card7 -> drm(container) -> virtio7(virtio,skip)
+        // -> 0000:00:04.0(pci) => supported_parent, ID_PATH=pci-0000:00:04.0.
+        // The chain reaching a "pci" subsystem is what the walk above proves.
+
+        drv::device_del(&card);
+        drv::device_del(&virtio);
+        drv::device_del(&pci);
+    }
+
+    fn subsystem_basename(dir: &vfs::InodeRef) -> Vec<u8> {
+        let link = dir.lookup("subsystem").expect("subsystem symlink");
+        let target = link.readlink().expect("readlink");
+        target.rsplit(|b| *b == b'/').next().unwrap_or(&target).to_vec()
+    }
+
     #[test]
     fn sys_dev_char_index_tracks_remove_readd_same_devt() {
         let index = make_sys_dev_index_inode(DevIndexKind::Char);
