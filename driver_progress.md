@@ -5,8 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B522-virtio-pci-vring-frame-record-proof verified row 177
-locally; commit, PR, merge, and fresh `main` sync remain.
+Current marker: B523-virtio-pci-msix-plural-binding-proof audits row 176,
+Virtio-pci MSI-X state is owned optional/plural binding rather than
+zero-sentinel fields.
+
+## B523 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B523-virtio-pci-msix-plural-binding-proof | IN AUDIT | Fresh `main` at merge commit `de757062` after B522 PR #2619 merge, branch cleanup, and post-merge x86_64/aarch64 smoke proof. `metadata/index.md` advanced B 523 -> 524. Source audit in progress for optional/plural MSI-X binding state and absence of zero-sentinel MSI-X ownership fields. |
 
 ## B522 Current
 
