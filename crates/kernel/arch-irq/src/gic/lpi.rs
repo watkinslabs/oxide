@@ -118,6 +118,8 @@ pub unsafe fn lpis_enable(hhdm: u64) -> LpisStatus {
                 core::ptr::write_volatile(pend_va.add(i), 0);
             }
         }
+        crate::cache::clean_to_poc(hhdm.wrapping_add(prop_pa), 0x4000);
+        crate::cache::clean_to_poc(hhdm.wrapping_add(pend_pa), 0x10000);
     }
     let propbaser = PROPBASER_IC_NC
                   | PROPBASER_INNER_SH
@@ -163,5 +165,6 @@ pub unsafe fn lpi_set_config(hhdm: u64, lpi_id: u32, byte: u8) -> bool {
             byte,
         );
     }
+    crate::cache::clean_to_poc(hhdm.wrapping_add(prop_pa + off), core::mem::size_of::<u8>());
     true
 }

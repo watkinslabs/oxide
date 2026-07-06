@@ -108,7 +108,7 @@ use super::*;
               | CBASER_SIZE_1PG
               | (pa & 0x0000_FFFF_FFFF_F000);
         assert!(v & (1 << 63) != 0);            // Valid
-        assert!(v & (1 << 56) != 0);            // Inner-NC
+        assert!(v & (1 << 59) != 0);            // Inner-NC
         assert!(v & (1 << 10) != 0);            // Inner-Sh
         assert_eq!(v & 0xFF, 0);                // Size=0
         assert_eq!(v & 0x300, 0);               // PageSize=0

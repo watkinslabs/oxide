@@ -4,9 +4,24 @@ use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 use super::TransportMappings;
 
 mod arch;
+mod log;
 
 #[cfg(target_arch = "aarch64")]
 const ITS_DEVICE_SLOTS: usize = 32;
+#[cfg(target_arch = "aarch64")]
+const ITS_ITT_FRAME_BYTES: usize = 0x1000;
+#[cfg(target_arch = "aarch64")]
+const ITS_ITT_WORD_BYTES: usize = core::mem::size_of::<u64>();
+#[cfg(target_arch = "aarch64")]
+const ITS_EVENT_ID_BITS: u32 = 4;
+#[cfg(target_arch = "aarch64")]
+const ITS_BOOT_COLLECTION: u16 = 0;
+#[cfg(target_arch = "aarch64")]
+const ITS_BOOT_RDBASE: u32 = 0;
+#[cfg(target_arch = "aarch64")]
+const PCI_BDF_BUS_SHIFT: u32 = 8;
+#[cfg(target_arch = "aarch64")]
+const PCI_BDF_DEVICE_SHIFT: u32 = 3;
 #[cfg(target_arch = "aarch64")]
 static ITS_DEVICE_IDS: [core::sync::atomic::AtomicU32; ITS_DEVICE_SLOTS] =
     [const { core::sync::atomic::AtomicU32::new(0) }; ITS_DEVICE_SLOTS];
@@ -63,7 +78,7 @@ pub(crate) fn bind_msix_vector(
 
     arch::set_enabled_masked(d.bdf, c.cfg_off);
     write_msix_entry(entry_va, msg_addr, msg_data);
-    arch::clear_function_mask(d.bdf, c.cfg_off);
+    log::binding(d.bdf, queue_vector, entry_va, msg_addr, msg_data);
     Some(MsixBinding {
         id,
         entry_va,
@@ -116,6 +131,18 @@ fn disable_bound_msix_caps(bdf: pci::Bdf, bindings: &[MsixBinding]) {
     }
     for cap_off in cap_offs {
         arch::set_enabled(bdf, cap_off, false);
+    }
+}
+
+pub(crate) fn unmask_msix_bindings(bdf: pci::Bdf, bindings: &[MsixBinding]) {
+    let mut cap_offs = Vec::new();
+    for binding in bindings {
+        if !cap_offs.iter().any(|cap_off| *cap_off == binding.cap_off) {
+            cap_offs.push(binding.cap_off);
+        }
+    }
+    for cap_off in cap_offs {
+        arch::clear_function_mask(bdf, cap_off);
     }
 }
 
@@ -281,18 +308,19 @@ fn alloc_its_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, 
     let event_id = queue_vector as u32;
     let lpi = arch_irq::alloc_arm_lpi()?;
     let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
-    let mapti = arch_irq::its::cmd_mapti(device_id, event_id, lpi, 0);
-    // SAFETY: ITS was enabled by ARM device-map bring-up before PCI virtio
-    // probing, and HHDM covers the command queue frame.
-    if !its_cmd_ok(unsafe { arch_irq::its::cmd_post(hhdm, mapti) }) {
-        let _ = arch_irq::free_arm_spi(lpi);
-        return None;
-    }
+    log::its_alloc(bdf, pci_requester_id(bdf), device_id, event_id, lpi, msg_addr);
     // SAFETY: lpis_enable published the prop table and hhdm maps it.
     let prop_ok = unsafe {
         arch_irq::gic::lpi_set_config(hhdm, lpi, arch_irq::gic::LPI_PROP_DEFAULT)
     };
     if !prop_ok {
+        let _ = arch_irq::free_arm_spi(lpi);
+        return None;
+    }
+    let mapti = arch_irq::its::cmd_mapti(device_id, event_id, lpi, ITS_BOOT_COLLECTION);
+    // SAFETY: ITS was enabled by ARM device-map bring-up before PCI virtio
+    // probing, and HHDM covers the command queue frame.
+    if !its_cmd_ok(unsafe { arch_irq::its::cmd_post(hhdm, mapti) }) {
         let _ = arch_irq::free_arm_spi(lpi);
         return None;
     }
@@ -302,7 +330,7 @@ fn alloc_its_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, 
         arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_inv(device_id, event_id))
     });
     let sync_ok = its_cmd_ok(unsafe {
-        arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(0))
+        arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(ITS_BOOT_RDBASE))
     });
     if !inv_ok || !sync_ok {
         let _ = arch_irq::free_arm_spi(lpi);
@@ -339,14 +367,31 @@ fn ensure_its_device(device_id: u32) -> Option<()> {
             // SAFETY: freshly allocated frame is HHDM mapped and u64 aligned.
             unsafe {
                 let p = hhdm.wrapping_add(itt_pa) as *mut u64;
-                for n in 0..(0x1000 / 8) {
+                for n in 0..(ITS_ITT_FRAME_BYTES / ITS_ITT_WORD_BYTES) {
                     core::ptr::write_volatile(p.add(n), 0);
                 }
             }
+            arch_irq::cache::clean_to_poc(hhdm.wrapping_add(itt_pa), ITS_ITT_FRAME_BYTES);
         }
-        // Size=4 gives 32 EventIDs, enough for the virtio MSI-X queue vectors
-        // used by the boot drivers.
-        let cmd = arch_irq::its::cmd_mapd(device_id, itt_pa, 4);
+        // SAFETY: MAPC is idempotent for ICID 0 -> boot CPU and keeps this
+        // dynamic path independent from early smoke self-test ordering.
+        let mapc_ok = its_cmd_ok(unsafe {
+            arch_irq::its::cmd_post(
+                hhdm,
+                arch_irq::its::cmd_mapc(ITS_BOOT_COLLECTION, ITS_BOOT_RDBASE),
+            )
+        });
+        // SAFETY: MAPC was posted above; SYNC targets the same boot RDbase.
+        let mapc_sync_ok = its_cmd_ok(unsafe {
+            arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(ITS_BOOT_RDBASE))
+        });
+        if !mapc_ok || !mapc_sync_ok {
+            // SAFETY: frame has not been published after failed MAPC/SYNC.
+            unsafe { pmm::setup::free_one_frame(itt_pa); }
+            ITS_DEVICE_IDS[i].store(0, Ordering::Release);
+            return None;
+        }
+        let cmd = arch_irq::its::cmd_mapd(device_id, itt_pa, ITS_EVENT_ID_BITS);
         // SAFETY: ITS is enabled and the ITT frame is zeroed and aligned.
         if !its_cmd_ok(unsafe { arch_irq::its::cmd_post(hhdm, cmd) }) {
             // SAFETY: frame has not been published to users after failed MAPD.
@@ -354,12 +399,13 @@ fn ensure_its_device(device_id: u32) -> Option<()> {
             ITS_DEVICE_IDS[i].store(0, Ordering::Release);
             return None;
         }
-        // SAFETY: MAPC is idempotent for ICID 0 -> boot CPU and keeps this
-        // dynamic path independent from early smoke self-test ordering.
-        let mapc_ok = its_cmd_ok(unsafe {
-            arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_mapc(0, 0))
+        // SAFETY: MAPD was posted above; SYNC targets the boot RDbase.
+        let mapd_sync_ok = its_cmd_ok(unsafe {
+            arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(ITS_BOOT_RDBASE))
         });
-        if !mapc_ok {
+        if !mapd_sync_ok {
+            // SAFETY: frame has not been recorded in the local device table.
+            unsafe { pmm::setup::free_one_frame(itt_pa); }
             ITS_DEVICE_IDS[i].store(0, Ordering::Release);
             return None;
         }
@@ -371,11 +417,15 @@ fn ensure_its_device(device_id: u32) -> Option<()> {
 
 #[cfg(target_arch = "aarch64")]
 fn its_device_id(bdf: pci::Bdf) -> u32 {
-    if bdf.bus == 0 && bdf.function == 0 {
-        bdf.device as u32
-    } else {
-        ((bdf.bus as u32) << 8) | ((bdf.device as u32) << 3) | bdf.function as u32
-    }
+    let rid = pci_requester_id(bdf);
+    firmware::acpi::iort_msi_device_id(rid).unwrap_or(rid)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn pci_requester_id(bdf: pci::Bdf) -> u32 {
+    ((bdf.bus as u32) << PCI_BDF_BUS_SHIFT)
+        | ((bdf.device as u32) << PCI_BDF_DEVICE_SHIFT)
+        | bdf.function as u32
 }
 
 #[cfg(target_arch = "aarch64")]

@@ -159,6 +159,7 @@ pub fn program_queue<A: VirtioQueueAllocator>(
     w16(CFG_QUEUE_SELECT, qi);
     let notify_off = r16(CFG_QUEUE_NOTIFY);
     w16(CFG_QUEUE_MSIX, msix_vec);
+    let _ = r16(CFG_QUEUE_MSIX);
     w32(CFG_QUEUE_DESC, (desc_pa & 0xFFFF_FFFF) as u32);
     w32(CFG_QUEUE_DESC + 4, (desc_pa >> 32) as u32);
     w32(CFG_QUEUE_DRIVER, (driver_pa & 0xFFFF_FFFF) as u32);
@@ -166,6 +167,7 @@ pub fn program_queue<A: VirtioQueueAllocator>(
     w32(CFG_QUEUE_DEVICE, (device_pa & 0xFFFF_FFFF) as u32);
     w32(CFG_QUEUE_DEVICE + 4, (device_pa >> 32) as u32);
     w16(CFG_QUEUE_ENABLE, 1);
+    let _ = r16(CFG_QUEUE_ENABLE);
     w16(CFG_QUEUE_SELECT, 0);
 
     Some(QueueRing {

@@ -3,7 +3,7 @@ use super::runtime::VirtioPciRuntime;
 use super::{
     bind_msix_vector, disable_pci_command, kick_queue_notify, unpublish_transport_record,
     unpublish_transport_record_by_bdf, MsixBinding, NetRxBootBuffer, ProgrammedQueues,
-    TransportMappings, VirtioProbeDevres, Vec,
+    TransportMappings, VirtioProbeDevres, Vec, unmask_msix_bindings,
 };
 
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
@@ -214,13 +214,17 @@ impl VirtioProbeState {
         profile: virtio::VirtioTransportProfile,
         runtime: VirtioPciRuntime,
     ) -> virtio::CommonCfgBringup<ProgrammedQueues> {
-        virtio::bring_up_common_cfg(self.cfg_va, profile.drv_features, || {
+        let bringup = virtio::bring_up_common_cfg(self.cfg_va, profile.drv_features, || {
             let q0_msix_vec = self
                 .bind_msix0(d, caps, bars, profile.msix0_handler)
                 .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
             let queue_plans = self.resolve_queue_plan_msix(d, caps, bars, &profile.queue_plans);
             runtime.program_queue_set(self.cfg_va, q0_msix_vec, &queue_plans)
-        })
+        });
+        if (bringup.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+            unmask_msix_bindings(d.bdf, &self.msix);
+        }
+        bringup
     }
 
     fn map_notify(
