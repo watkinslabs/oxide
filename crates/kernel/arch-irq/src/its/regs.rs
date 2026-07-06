@@ -3,7 +3,7 @@
 // The ITS (Interrupt Translation Service) is the GICv3 unit that
 // turns PCI MSI/MSI-X writes into LPIs delivered through the
 // Redistributor. Devices write 32 bits of EventID to the
-// `GITS_TRANSLATER` doorbell (PA = ITS_BASE + 0x0040); the ITS
+// `GITS_TRANSLATER` doorbell (PA = ITS_BASE + 0x10040); the ITS
 // looks up `(DeviceID, EventID)` in its device + interrupt-translation
 // tables and forwards the resulting LPI INTID to the per-PE pending
 // table.
@@ -38,8 +38,8 @@ pub(super) const GITS_CREADR:  usize = 0x0090;
 
 // CBASER bit composition (ARM IHI 0069 §11.5.4):
 //   [63]   Valid
-//   [58:56] InnerCache  — 0b001 = Normal Inner Non-Cacheable
-//   [55:53] OuterCache  — 0b000 = same-as-Inner
+//   [61:59] InnerCache  — 0b001 = Normal Inner Non-Cacheable
+//   [58:56] OuterCache  — 0b000 = same-as-Inner
 //   [47:12] PA bits 47..12 (4 KiB-aligned)
 //   [11:10] Shareability — 0b01 = Inner-Shareable
 //   [9:8]  PageSize     — 0b00 = 4 KiB
@@ -47,7 +47,7 @@ pub(super) const GITS_CREADR:  usize = 0x0090;
 #[cfg(target_arch = "aarch64")]
 pub(super) const CBASER_VALID:    u64 = 1 << 63;
 #[cfg(target_arch = "aarch64")]
-pub(super) const CBASER_IC_NC:    u64 = 1 << 56;       // Normal Inner Non-Cacheable
+pub(super) const CBASER_IC_NC:    u64 = 1 << 59;       // Normal Inner Non-Cacheable
 #[cfg(target_arch = "aarch64")]
 pub(super) const CBASER_INNER_SH: u64 = 1 << 10;       // Inner-Shareable
 #[cfg(target_arch = "aarch64")]
@@ -58,10 +58,10 @@ pub(super) const CBASER_SIZE_1PG: u64 = 0;             // 1 page (N-1 = 0)
 #[cfg(target_arch = "aarch64")]
 pub(super) const GITS_BASER0:  usize = 0x0100;
 
-/// GITS_TRANSLATER doorbell offset within the ITS frame. Devices
+/// GITS_TRANSLATER doorbell offset within the ITS translation frame. Devices
 /// write 32-bit EventID here; the ITS routes the resulting LPI.
 #[cfg(target_arch = "aarch64")]
-pub const GITS_TRANSLATER: usize = 0x0040;
+pub const GITS_TRANSLATER: usize = 0x10040;
 
 /// Stash the ITS control-frame VA so MSI-binding code can compute the
 /// `GITS_TRANSLATER` PA + ITS commands can post.

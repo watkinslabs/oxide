@@ -55,6 +55,7 @@ pub unsafe fn cmdq_setup(hhdm: u64) -> CmdqStatus {
                 core::ptr::write_volatile(va.add(i), 0);
             }
         }
+        crate::cache::clean_to_poc(hhdm.wrapping_add(pa), 0x1000);
     }
     let cbaser_wr = CBASER_VALID
         | CBASER_IC_NC
