@@ -12,7 +12,9 @@ fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> 
 
     let mut capb = [0u8; BLK_CFG_CAPACITY_BYTES];
     for i in 0..BLK_CFG_CAPACITY_BYTES {
-        capb[i] = unsafe { core::ptr::read_volatile((cfg + i as u64) as *const u8) };
+        let off = virtio::BLK_CFG_OFF_CAPACITY + i as u64;
+        // SAFETY: read_device_config uses a transport-mapped virtio device config byte address.
+        capb[i] = unsafe { core::ptr::read_volatile((cfg + off) as *const u8) };
     }
     let capacity = u64::from_le_bytes(capb);
 
@@ -20,10 +22,10 @@ fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> 
     if drv_features & virtio::VIRTIO_BLK_F_BLK_SIZE != 0 {
         let mut bsb = [0u8; BLK_CFG_BLK_SIZE_BYTES];
         for i in 0..BLK_CFG_BLK_SIZE_BYTES {
+            let off = virtio::BLK_CFG_OFF_BLK_SIZE + i as u64;
+            // SAFETY: read_device_config uses a transport-mapped virtio device config byte address.
             bsb[i] = unsafe {
-                core::ptr::read_volatile(
-                    (cfg + virtio::BLK_CFG_OFF_BLK_SIZE + i as u64) as *const u8,
-                )
+                core::ptr::read_volatile((cfg + off) as *const u8)
             };
         }
         let bs = u32::from_le_bytes(bsb);
@@ -33,6 +35,14 @@ fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> 
     }
 
     Some(BlkDeviceConfig { capacity, blk_size })
+}
+
+#[cfg(test)]
+pub(crate) fn test_read_device_config(
+    resources: virtio::VirtioResources,
+    drv_features: u64,
+) -> Option<(u64, u32)> {
+    read_device_config(resources, drv_features).map(|cfg| (cfg.capacity, cfg.blk_size))
 }
 
 pub fn disk_name(index: u32) -> String {
