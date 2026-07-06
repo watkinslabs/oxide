@@ -4,8 +4,8 @@ Date: 2026-07-06
 
 ACTIVE NOW: B532-virtio-blk-feature-mask-proof
 
-Current active item: row 209 in audit; virtio-blk feature mask includes
-`VIRTIO_BLK_F_BLK_SIZE`.
+Current active item: row 209 verified locally; PR/merge/post-merge smoke
+pending.
 
 Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
 return to fresh `origin/main`.
@@ -206,7 +206,7 @@ Status legend:
 | VERIFIED | B531-virtio-blk-generic-config-capacity-proof | Virtio-blk reads capacity/block size in child driver from generic config resource: `drv-virtio-blk` now reads capacity with named `BLK_CFG_OFF_CAPACITY` and block size with `BLK_CFG_OFF_BLK_SIZE` from `VirtioResources.device_cfg_va`, and hosted regression `blk_capacity_and_block_size_read_from_child_config_resource` proves a generic child config resource fixture drives the child capacity/block-size result. The same test module proves missing `device_cfg_va` rejects install input and absent `VIRTIO_BLK_F_BLK_SIZE` falls back to 512-byte sectors. Focused `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` passes 23/23; broad PCI/virtio child gate passes; `git diff --check`; line caps (`init.rs` 206, `modern.rs` 39, `tests/config.rs` 49, `virtio_child.rs` 398); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 | VERIFIED |  | Virtio-net reads MAC in child driver from generic config resource. |
 | VERIFIED |  | Virtio-gpu feature mask comes from GPU child driver. |
-| >>> ACTIVE >>> IN AUDIT | B532-virtio-blk-feature-mask-proof | Virtio-blk feature mask includes `VIRTIO_BLK_F_BLK_SIZE`. |
+| VERIFIED | B532-virtio-blk-feature-mask-proof | Virtio-blk feature mask includes `VIRTIO_BLK_F_BLK_SIZE`: source audit proves child-owned `drv_virtio_blk::modern::wanted_features()` returns `VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_BLK_SIZE`, `transport_profile()` carries that mask through `VirtioTransportProfile::q0_device_cfg`, and pci-boot consumes the child profile via `drv_virtio_blk::modern::transport_profile()` before passing negotiated `session.drv_features()` into `BlkInit`. Hosted regression `blk_transport_profile_declares_blk_size_feature` proves the mask includes `VIRTIO_BLK_F_BLK_SIZE`, the profile carries exactly that mask, and the child requires q0 plus device config. Focused `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` passes 24/24; broad PCI/virtio child gate passes; `git diff --check`; line caps (`tests/config.rs` 61, `state.rs` 181, `virtio_child.rs` 398); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 | SOURCE OK |  | Virtio-input/rng/vsock/snd feature masks come from child drivers. |
 | SOURCE OK |  | Virtio-pci MSI-X setup names `NO_VECTOR`. |
 | SOURCE OK |  | Virtio-pci records q0 queue vector in MSI-X binding. |
