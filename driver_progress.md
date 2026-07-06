@@ -5,10 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B601-driver-model-live-probe-audit is VERIFIED MERGED as
-PR #2724 at `ea997888`. Fresh-main post-merge
-`make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in
-35s and aarch64 reaching `oxide login:` in 38s.
+Current marker: B602-no-direct-pci-boot-probes is ACTIVE / IN AUDIT from fresh
+`main` at D147 ledger merge `afe96654`. B602 advances `metadata/index.md` B
+602 -> 603.
+
+## B602 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B602-no-direct-pci-boot-probes | ACTIVE / IN AUDIT | Claimed from fresh `main` at D147 ledger merge `afe96654`; target row is the old claim that `pci-boot` directly calls `virtio_probe_arch`, `nvme_probe`, and `ahci_probe`. No existing B602/direct-pci-boot-probe branch or worktree was found. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B601 Current
 
