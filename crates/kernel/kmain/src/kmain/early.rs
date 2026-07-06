@@ -95,6 +95,14 @@ fn log_boot_info(info: &BootInfo) {
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
+    // SMBIOS/DMI decode (independent of ACPI/RSDP): populate /sys/class/dmi/id/*
+    // so systemd-detect-virt identifies the QEMU/KVM VM via `sys_vendor`/
+    // `product_name`. Without it detect_vm() returns NONE.
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the legacy BIOS ROM area [0xF0000,0x100000) is HHDM-mapped readable
+    // per the boot handoff; init_x86 bounds every read to that window and to the
+    // SMBIOS structure-table length declared in the anchor.
+    unsafe { firmware::smbios::init_x86(info.hhdm_offset); }
     if info.memmap_count != 0 {
         debug_boot! { klog::kinfo!("memmap: present"); }
         debug_pmm! {
