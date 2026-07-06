@@ -7,6 +7,7 @@ mod arch;
 mod log;
 
 const MSI_MESSAGE_ADDRESS_LOW_MASK: u64 = 0xFFFF_FFFF;
+const MSI_MESSAGE_ADDRESS_HIGH_SHIFT: u32 = 32;
 #[cfg(target_arch = "x86_64")]
 const X86_APIC_MSI_MESSAGE_ADDRESS: u64 = 0xFEE0_0000;
 #[cfg(target_arch = "aarch64")]
@@ -103,10 +104,16 @@ fn write_msix_entry(entry_va: u64, msg_addr: u64, msg_data: u32) {
             pci::MSIX_VECTOR_CONTROL_MASKED,
         );
         let _ = core::ptr::read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
-        core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & MSI_MESSAGE_ADDRESS_LOW_MASK) as u32);
-        core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
-        core::ptr::write_volatile((entry_va + 8) as *mut u32, msg_data);
-        let _ = core::ptr::read_volatile((entry_va + 8) as *const u32);
+        core::ptr::write_volatile(
+            (entry_va + pci::MSIX_MESSAGE_ADDR_LOW_OFF) as *mut u32,
+            (msg_addr & MSI_MESSAGE_ADDRESS_LOW_MASK) as u32,
+        );
+        core::ptr::write_volatile(
+            (entry_va + pci::MSIX_MESSAGE_ADDR_HIGH_OFF) as *mut u32,
+            (msg_addr >> MSI_MESSAGE_ADDRESS_HIGH_SHIFT) as u32,
+        );
+        core::ptr::write_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *mut u32, msg_data);
+        let _ = core::ptr::read_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *const u32);
         core::ptr::write_volatile(
             (entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
             MSIX_VECTOR_CONTROL_UNMASKED,
@@ -230,9 +237,7 @@ fn release_transport_record(rec: TransportRecord) {
     disable_pci_command(bdf);
     mappings.unmap_all();
     for frame in vring_frames.iter().copied() {
-        if frame == 0 {
-            continue;
-        }
+        debug_assert!(frame != 0);
         // SAFETY: these frames were allocated and programmed by the virtio-pci
         // transport for the child device. Child remove resets/quiesces the
         // device before unpublishing this transport record.
@@ -248,11 +253,9 @@ pub(crate) fn reset_failed_probe(cfg_va: u64) {
 
 pub(crate) fn release_failed_probe_frames(frames: &[u64]) {
     for frame in frames.iter().copied() {
-        if frame == 0 {
-            continue;
-        }
-        // SAFETY: non-zero frames passed here were allocated by the failed
-        // virtio probe and have not been retained by runtime driver state.
+        debug_assert!(frame != 0);
+        // SAFETY: frames passed here were allocated by the failed virtio probe
+        // and have not been retained by runtime driver state.
         unsafe {
             pmm::setup::free_one_frame(frame);
         }

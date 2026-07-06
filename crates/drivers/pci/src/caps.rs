@@ -9,6 +9,9 @@ pub const MSIX_ENABLE: u32 = 1u32 << 31;
 pub const MSIX_FUNCTION_MASK: u32 = 1u32 << 30;
 pub const MSIX_VECTOR_CONTROL_MASKED: u32 = 1;
 pub const MSIX_TABLE_ENTRY_BYTES: u64 = 16;
+pub const MSIX_MESSAGE_ADDR_LOW_OFF: u64 = 0;
+pub const MSIX_MESSAGE_ADDR_HIGH_OFF: u64 = 4;
+pub const MSIX_MESSAGE_DATA_OFF: u64 = 8;
 pub const MSIX_VECTOR_CONTROL_OFF: u64 = 12;
 
 /// One PCI capability descriptor as the walker observed it. Body reads
