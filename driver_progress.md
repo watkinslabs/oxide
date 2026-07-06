@@ -5,15 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B522-virtio-pci-vring-frame-record-proof audits row 177,
-Virtio-pci owns vring frame publication/teardown records for successful child
-probes.
+Current marker: B522-virtio-pci-vring-frame-record-proof verified row 177
+locally; commit, PR, merge, and fresh `main` sync remain.
 
 ## B522 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B522-virtio-pci-vring-frame-record-proof | IN AUDIT | Fresh `main` at merge commit `610321de` after B521 PR #2618 merge, branch cleanup, and post-merge x86_64/aarch64 smoke proof. `metadata/index.md` advanced B 522 -> 523. Source audit in progress for successful-probe vring frame ownership, publish handoff, persistent teardown records, and failed-probe frame cleanup separation. |
+| B522-virtio-pci-vring-frame-record-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `610321de` after B521 PR #2618 merge, branch cleanup, and post-merge x86_64/aarch64 smoke proof. `metadata/index.md` advanced B 522 -> 523. Source audit proves `virtio::program_queue` allocates exactly desc/driver/device frames per programmed queue, frees already allocated queue frames on partial allocation failure, zeroes queue frames before device exposure, and returns `QueueRing` PAs; `build_runtime_handoff` copies those PAs into `VirtQueueResource`; `VirtioTransportProbeResult::vring_frames()` deduplicates non-zero desc/driver/device frames; failed `VirtioProbeDevres::release_failed()` drains all still-owned vring and payload frames after reset/MSI-X/PCI/MMIO teardown; successful `publish()` transfers only vring frames into the persistent `TransportRecord`, leaving payload frames with child runtime state, and transport unpublish frees recorded vring frames. Patch names common-cfg queue PA split/enable/select values, moves MSI-X table address/data offsets into the PCI contract, and removes zero-sentinel skips from frame teardown in favor of the owned-frame invariant. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; line caps (`queue_cfg.rs` 292, `pci/caps.rs` 213, `pci/lib.rs` 33, `virtio_transport/msix.rs` 474, `virtio_transport/devres.rs` 68, `virtio/resources/child.rs` 377); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B521 Current
 
