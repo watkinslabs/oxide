@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -56,11 +57,59 @@ static int link_present(const char *driver) {
     return lstat_path(path);
 }
 
+static int starts_with(const char *s, const char *prefix) {
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
 static const char *active_driver(void) {
     for (size_t i = 0; i < sizeof drivers / sizeof drivers[0]; i++) {
         if (link_present(drivers[i])) return drivers[i];
     }
     return NULL;
+}
+
+static int prove_uart_singleton(const char *driver) {
+    DIR *d = opendir("/sys/bus/platform/devices");
+    if (!d) {
+        emitf("b590_uart_singleton_device: FAIL opendir errno=%d\n", errno);
+        return 1;
+    }
+    int serial_count = 0;
+    int serial0_seen = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        if (!starts_with(de->d_name, "serial")) continue;
+        serial_count++;
+        if (strcmp(de->d_name, "serial0") == 0) {
+            serial0_seen = 1;
+        } else {
+            emitf("b590_uart_singleton_device: FAIL unexpected=%s\n", de->d_name);
+        }
+    }
+    closedir(d);
+    if (serial_count != 1 || !serial0_seen) {
+        emitf("b590_uart_singleton_device: FAIL count=%d serial0=%d\n",
+              serial_count, serial0_seen);
+        return 1;
+    }
+
+    int driver_dirs = 0;
+    for (size_t i = 0; i < sizeof drivers / sizeof drivers[0]; i++) {
+        char path[128];
+        driver_path(path, sizeof path, drivers[i], "");
+        size_t n = strlen(path);
+        if (n > 0 && path[n - 1] == '/') path[n - 1] = '\0';
+        if (lstat_path(path)) driver_dirs++;
+    }
+    if (driver_dirs != 1) {
+        emitf("b590_uart_singleton_driver: FAIL count=%d active=%s\n",
+              driver_dirs, driver);
+        return 1;
+    }
+    emitf("b590_uart_singleton_device: PASS device=serial0 count=%d\n", serial_count);
+    emitf("b590_uart_singleton_driver: PASS driver=%s count=%d\n", driver, driver_dirs);
+    return 0;
 }
 
 static int writable_attr(const char *driver, const char *leaf, const char *tag) {
@@ -170,6 +219,7 @@ int main(void) {
         return 1;
     }
     emitf("b585_active_uart_driver: PASS driver=%s\n", driver);
+    if (prove_uart_singleton(driver)) return 1;
     if (writable_attr(driver, "bind", "b585_bind_attr") ||
         writable_attr(driver, "unbind", "b585_unbind_attr") ||
         prove_bound_links(driver, 0) ||

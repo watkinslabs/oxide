@@ -150,6 +150,8 @@ fn rootfs_mode() -> String {
     push_env_mode(&mut mode, "storage-multictrl", "OXIDE_STORAGE_MULTICTRL_SMOKE");
     push_env_mode(&mut mode, "virtio-rng-rebind", "OXIDE_VIRTIO_RNG_REBIND_SMOKE");
     push_env_mode(&mut mode, "virtio-parent-child-rebind", "OXIDE_VIRTIO_PARENT_CHILD_REBIND_SMOKE");
+    push_env_mode(&mut mode, "uart-rebind", "OXIDE_UART_REBIND_SMOKE");
+    push_env_mode(&mut mode, "ps2-rebind", "OXIDE_PS2_REBIND_SMOKE");
     push_env_mode(&mut mode, "virtio-input-rebind", "OXIDE_VIRTIO_INPUT_REBIND_SMOKE");
     push_env_mode(&mut mode, "virtio-net-multidev", "OXIDE_VIRTIO_NET_MULTIDEV_SMOKE");
     push_env_mode(&mut mode, "virtio-blk-multidev", "OXIDE_VIRTIO_BLK_MULTIDEV_SMOKE");
@@ -241,6 +243,10 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
     if std::env::var_os("OXIDE_VIRTIO_RNG_REBIND_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0virtio-parent-child-rebind-smoke=");
     if std::env::var_os("OXIDE_VIRTIO_PARENT_CHILD_REBIND_SMOKE").is_some() { h.write(b"1"); }
+    h.write(b"\0uart-rebind-smoke=");
+    if std::env::var_os("OXIDE_UART_REBIND_SMOKE").is_some() { h.write(b"1"); }
+    h.write(b"\0ps2-rebind-smoke=");
+    if std::env::var_os("OXIDE_PS2_REBIND_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0virtio-input-rebind-smoke=");
     if std::env::var_os("OXIDE_VIRTIO_INPUT_REBIND_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0msix-net-rx-smoke=");
