@@ -5,14 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B558-ahci-model-probe-proof is verified locally from fresh
-`main` at B557 PR #2649 merge commit `80d2d358`.
+Current marker: B559-nvme-per-bdf-state-proof is claimed from fresh `main` at
+B558 PR #2650 merge commit `84595206`.
+
+## B559 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B559-nvme-per-bdf-state-proof | CLAIMED | Fresh `main` at B558 PR #2650 merge commit `84595206`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 559 -> 560. Next gate: audit NVMe typed per-BDF state, strengthen proof if needed, then run hosted storage/PCI gates plus x86_64/aarch64 smokes. |
 
 ## B558 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B558-ahci-model-probe-proof | VERIFIED LOCAL | Fresh `main` at B557 PR #2649 merge commit `80d2d358`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 13s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 558 -> 559. Source audit proves `pci-boot::register_pci_model_drivers()` registers `drv_ahci::AHCI_DRIVER`, PCI enumeration publishes each PCI function through `publish_pci_model_device()` / `drv::try_device_add()` with BAR resources, driver-core initial attach routes through `attach_device_to_registered_drivers()` / `bind_inner()` and calls `driver.probe(dev)`, and `AhciDriver::probe()` matches only `pci` devices with `AHCI_CLASS24`, parses the model address, enables PCI MEM/BUS_MASTER, maps BAR5/ABAR with named page masks, and calls `drv-ahci` controller bring-up from the probe path. Negative search finds no direct boot-time `drv_ahci::init`, `ahci_probe`, or `init_ahci` bypass; only `AHCI_DRIVER` definition and pci-boot registration remain. Checks pass: `cargo test -q -p drv-ahci -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-ahci 12/12, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-ahci/lib.rs` 444, `lifecycle.rs` 67, `port.rs` 441, `regs.rs` 302, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
+| B558-ahci-model-probe-proof | VERIFIED MERGED | Fresh `main` at B557 PR #2649 merge commit `80d2d358`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 13s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 558 -> 559. Source audit proves `pci-boot::register_pci_model_drivers()` registers `drv_ahci::AHCI_DRIVER`, PCI enumeration publishes each PCI function through `publish_pci_model_device()` / `drv::try_device_add()` with BAR resources, driver-core initial attach routes through `attach_device_to_registered_drivers()` / `bind_inner()` and calls `driver.probe(dev)`, and `AhciDriver::probe()` matches only `pci` devices with `AHCI_CLASS24`, parses the model address, enables PCI MEM/BUS_MASTER, maps BAR5/ABAR with named page masks, and calls `drv-ahci` controller bring-up from the probe path. Negative search finds no direct boot-time `drv_ahci::init`, `ahci_probe`, or `init_ahci` bypass; only `AHCI_DRIVER` definition and pci-boot registration remain. Checks pass: `cargo test -q -p drv-ahci -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-ahci 12/12, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-ahci/lib.rs` 444, `lifecycle.rs` 67, `port.rs` 441, `regs.rs` 302, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s; PR #2650 merged as `84595206`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B557 Current
 
