@@ -121,6 +121,19 @@ impl SndProbeFrames {
     pub fn disarm(&mut self) {
         self.owned = false;
     }
+
+    #[cfg(test)]
+    pub fn for_tests(base: u64) -> Self {
+        Self {
+            scratch_pa: test_frame_pa(base),
+            event_buf_pa: test_frame_pa(base + 1),
+            tx_buf_pa: test_frame_pa(base + 2),
+            tx_scratch_pa: test_frame_pa(base + 3),
+            rx_buf_pa: test_frame_pa(base + 4),
+            rx_scratch_pa: test_frame_pa(base + 5),
+            owned: true,
+        }
+    }
 }
 
 impl Drop for SndProbeFrames {
@@ -185,8 +198,41 @@ pub(super) fn active_ctx_for(ctxs: &[Ctx], owner: sound::SoundOwnerKey) -> Optio
     ctxs.iter().find(|ctx| sound_owner(ctx.device_key) == Some(owner))
 }
 
+#[cfg(test)]
+const TEST_FRAME_TAG: u64 = 0xf500_0000_0000_0000;
+#[cfg(test)]
+const TEST_FRAME_SHIFT: u64 = 12;
+
+#[cfg(test)]
+static TEST_FREED_FRAMES: Spinlock<Vec<u64>, DriverLockClass> = Spinlock::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) fn test_frame_pa(slot: u64) -> u64 {
+    TEST_FRAME_TAG | (slot << TEST_FRAME_SHIFT)
+}
+
+#[cfg(test)]
+fn is_test_frame(pa: u64) -> bool {
+    (pa & TEST_FRAME_TAG) == TEST_FRAME_TAG
+}
+
+#[cfg(test)]
+pub(crate) fn clear_freed_frames_for_tests() {
+    TEST_FREED_FRAMES.lock().clear();
+}
+
+#[cfg(test)]
+pub(crate) fn freed_frames_for_tests() -> Vec<u64> {
+    TEST_FREED_FRAMES.lock().clone()
+}
+
 pub(super) fn free_frame(pa: u64) {
     if pa != 0 {
+        #[cfg(test)]
+        if is_test_frame(pa) {
+            TEST_FREED_FRAMES.lock().push(pa);
+            return;
+        }
         unsafe { pmm::setup::free_one_frame(pa); }
     }
 }

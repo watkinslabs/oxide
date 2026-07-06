@@ -96,9 +96,9 @@ pub use lifecycle::{
 };
 pub use state::SndInstall;
 #[cfg(test)]
-use lifecycle::remove_ctx_and_release_event_handler;
+use lifecycle::{remove_ctx_and_release_event_handler, stop_reset_free};
 #[cfg(test)]
-use state::remove_ctx;
+use state::{clear_freed_frames_for_tests, freed_frames_for_tests, remove_ctx, test_frame_pa};
 
 static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
     config,
