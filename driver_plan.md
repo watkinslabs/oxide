@@ -2,11 +2,11 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B591-pci-lifecycle-runtime-semantics VERIFIED MERGED; D139 ledger branch active
+ACTIVE NOW: B592-virtio-bus-core-extraction CLAIMED / IN AUDIT
 
-Current active item: D139-b591-ledger-merged. B591 fixed the generic PCI
-bridge-window enumeration path from fresh `main`; ECAM parity and deeper
-runtime lifecycle work remain explicit NOT DONE rows.
+Current active item: B592-virtio-bus-core-extraction. Extract remaining real
+virtio bus/core split from `pci-boot`; B415 remains aggregate-only until its
+concrete live-proof rows are closed.
 
 Last verified branch: B591-pci-lifecycle-runtime-semantics. PCI bridge-window
 enumeration passed hosted topology regressions plus x86_64/aarch64 boot smoke,
@@ -18,8 +18,10 @@ PR #2706 merged at `b0fbe90f`, and fresh-main post-merge
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: push/merge D139 ledger, refresh main, select B592 from fresh main,
-mark the active row, and start the next driver-system proof.
+Next gate: finish source audit across `pci-boot` virtio bus/child/transport
+code, implement coherent virtio bus/core extraction without hacks, prove hosted
+virtio suites plus x86_64/aarch64 boot smoke, then push/PR/merge and refresh
+main.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -372,7 +374,7 @@ Status legend:
 | VERIFIED MERGED | B574-qemu-rebind-certification-audit | QEMU-visible virtio-rng runtime bind/unbind/rebind proof added without touching local `B573-mem-chardev`: opt-in QEMU mode adds a second `virtio-rng-pci`, `/bin/virtio_rng_rebind_probe` verifies two bound virtio-rng children, writable sysfs `bind`/`unbind`, `/dev/hwrng` entropy before unbind, provider promotion after unbind, and restored entropy after rebind. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b574-x86-virtio-rng-rebind.log`, aarch64 `/tmp/b574-arm-virtio-rng-rebind.log`, PR #2668 merged as `1ff61f7d`, and fresh-main post-merge login smokes x86_64 `/tmp/b574-postmerge-x86-login-smoke.log` plus aarch64 `/tmp/b574-postmerge-arm-login-smoke.log`. |
 | VERIFIED MERGED | B591-pci-lifecycle-runtime-semantics | PCI enumeration now walks the reachable topology from root bus 0 through PCI-PCI bridge secondary/subordinate windows instead of flat-scanning every bus up to the arch cap. Hosted regressions prove a child behind a bridge window is discovered, an orphan device on an unbridged bus is ignored, and the arch bus cap is honored for aarch64's current mapped ECAM window. Boot comments now describe bridge-window enumeration plus arch addressability caps instead of stale "bus 0 only" text. Checks pass: `cargo test -q -p pci -- --nocapture --test-threads=1` 19/19; `cargo test -q -p pci -p drv -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1` with pci 19/19, drv 31/31, drv-nvme 12/12, and drv-ahci 7/7; `cargo check -q -p pci-boot`; `git diff --check`; line caps (`scan.rs` 96, `tests.rs` 442, `pci-boot/src/lib.rs` 300). Full branch `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 34s and aarch64 reaching `oxide login:` in 41s; pre-push smoke passed both arches; PR #2706 merged as `b0fbe90f`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 34s and aarch64 reaching `oxide login:` in 40s. Claim made from fresh `main` at D138 ledger merge `be0afcea`; `metadata/index.md` advanced B 591 -> 592 on this branch. Remaining PCI gaps found during B591 and not fixed here are tracked below: x86 still needs ECAM instead of CF8/CFC, aarch64 still maps only bus 0 ECAM, and broader command/BAR/MSI/runtime semantics remain separate NOT DONE work. D139 records the merged state and advances D 139 -> 140. |
 | SOURCE OK |  | Production model drivers in current source have explicit shutdown callbacks; default shutdown remains test-only. |
-| NOT DONE | TBD | Extract remaining real virtio bus/core split from `pci-boot`. |
+| >>> ACTIVE >>> IN AUDIT | B592-virtio-bus-core-extraction | Extract remaining real virtio bus/core split from `pci-boot`. B592 is claimed from fresh main after D139 merge `015e2f76`; `metadata/index.md` advances B 592 -> 593 on this branch. |
 | NOT DONE | TBD | Add explicit fault-injection coverage after every allocation, mapping, registration, IRQ/MSI step, queue setup, and userspace publication. |
 | VERIFIED MERGED | B582-pci-live-rebind-loops-proof | PCI repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B582 extends `/bin/storage_multictrl_probe` to run three sysfs bind/unbind loops for the selected NVMe and AHCI PCI functions, requires duplicate bind to fail with `EBUSY` without changing block counts, verifies `/sys/bus/pci/drivers/{nvme,ahci}/<addr>` and `/sys/devices/pci0000:00/<addr>/driver` while bound, verifies both symlinks disappear after unbind, and re-proves block count restoration plus symlink restoration after rebind. Kernel fix: sysfs bus bind hooks now invalidate both exact resolved paths and parent/name cached dentries for dynamic driver symlinks, covering symlink-target resolution and negative/positive dentry caching. Checks pass: `cargo test -q -p sysfs -p drv -p pci -- --nocapture --test-threads=1` with drv 31/31, pci 17/17, and sysfs 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-storage-multictrl.sh`; line caps (`Makefile` 322, `storage_multictrl_probe.c` 293, `sysfs/src/bus/hooks.rs` 95); x86_64 `/tmp/b582-x86-storage-multictrl.log`; aarch64 `/tmp/b582-arm-storage-multictrl.log`; pre-push smoke reached x86_64 `oxide login:` in 24s and aarch64 `oxide login:` in 28s; PR #2685 merged as `cadd82d2`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` reached x86_64 `oxide login:` in 45s and aarch64 `oxide login:` in 50s. D130 records the merged state and advances D 130 -> 131. |
 | VERIFIED MERGED | B583-virtio-parent-child-rebind-proof | Virtio parent/child repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B583 adds `/bin/virtio_parent_child_rebind_probe`, targeted smoke wrapper/Make targets, rootfs/cache wiring, and opt-in second `virtio-rng-pci` QEMU device for both arches. The probe runs three PCI parent sysfs unbind/rebind loops against a `virtio-pci` parent with device id `0x1044`, proves the old virtio-rng child disappears from `/sys/bus/virtio/devices/<child>` and `/sys/devices/virtio/<child>`, proves `/sys/bus/pci/drivers/virtio-pci/<parent>` disappears while unbound, keeps `/dev/hwrng` readable through the remaining provider, and re-proves entropy after every rebind. Checks pass: `cargo test -q -p virtio -p pci-boot -p drv-virtio-rng -- --nocapture --test-threads=1` with 57 tests passed; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-parent-child-rebind.sh`; line caps (`Makefile` 329, `virtio_parent_child_rebind_probe.c` 221, `boot-smoke-virtio-parent-child-rebind.sh` 87, `rootfs.rs` 407); x86_64 `/tmp/b583-x86-virtio-parent-child-rebind.log`; aarch64 `/tmp/b583-arm-virtio-parent-child-rebind.log`; pre-push smoke on both arches; PR #2687 merged as `51fae5c4`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 and aarch64, including aarch64 reaching `oxide login:` in 28s. D131 records the merged state and advances D 131 -> 132. |
