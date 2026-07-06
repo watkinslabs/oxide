@@ -143,6 +143,20 @@ use super::*;
         sound_owner(device_key).expect("test device key must map to sound owner")
     }
 
+    #[test]
+    fn transport_profile_carries_child_feature_mask() {
+        let profile = transport_profile();
+
+        assert_eq!(profile.drv_features, wanted_features());
+        assert_eq!(profile.drv_features, virtio::VIRTIO_F_VERSION_1);
+        assert!(profile.child_requirements.needs_device_cfg);
+        assert!(profile.child_requirements.required_queues[0]);
+        assert!(profile.child_requirements.required_queues[1]);
+        assert!(profile.child_requirements.required_queues[2]);
+        assert!(profile.child_requirements.required_queues[3]);
+        assert!(profile.child_requirements.required_queues[4..].iter().all(|required| !required));
+    }
+
     fn publish_test_card(owner: sound::SoundOwnerKey) {
         let _ = sound::unregister_card(owner);
         let _ = sound::ops::clear(owner);
