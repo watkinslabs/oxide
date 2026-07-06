@@ -5,9 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B517-virtio-pci-helper-privacy-proof VERIFIED. Next row
-not claimed until B517 is committed, pushed, merged, and fresh `main` is
-synced.
+Current marker: B518-virtio-probe-devres-lifetime-proof IN AUDIT. Fresh `main`
+is merge commit `988afe60` after B517 PR #2612 merge and branch cleanup.
+
+## B518 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B518-virtio-probe-devres-lifetime-proof | IN AUDIT | Claim branch from fresh `main` at `988afe60`; `metadata/index.md` advanced B 518 -> 519. Target row: `VirtioProbe` owns PCI/MMIO/MSI-X lifetime and opaque frame-release records. Pending source audit, hosted proof, broad pci-boot/virtio gate, line-cap check, `git diff --check`, and x86_64/aarch64 fast smokes. |
 
 ## B517 Current
 
