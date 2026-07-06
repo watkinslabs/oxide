@@ -296,6 +296,13 @@ smoke-uart-rebind-arm: arm
 	./tools/boot-smoke-uart-rebind.sh arm $(UART_REBIND_SMOKE_TIMEOUT)
 smoke-uart-rebind: smoke-uart-rebind-x86 smoke-uart-rebind-arm
 
+PS2_REBIND_SMOKE_TIMEOUT ?= 600
+smoke-ps2-rebind-x86: x86
+	./tools/boot-smoke-ps2-rebind.sh x86 $(PS2_REBIND_SMOKE_TIMEOUT)
+smoke-ps2-rebind-arm: arm
+	./tools/boot-smoke-ps2-rebind.sh arm $(PS2_REBIND_SMOKE_TIMEOUT)
+smoke-ps2-rebind: smoke-ps2-rebind-x86 smoke-ps2-rebind-arm
+
 VIRTIO_INPUT_REBIND_SMOKE_TIMEOUT ?= 600
 smoke-virtio-input-rebind-x86: x86
 	./tools/boot-smoke-virtio-input-rebind.sh x86 $(VIRTIO_INPUT_REBIND_SMOKE_TIMEOUT)

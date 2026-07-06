@@ -5,16 +5,17 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B586-ps2-live-rebind-loops-proof is ACTIVE on branch
+Current marker: B586-ps2-live-rebind-loops-proof is VERIFIED on branch
 `B586-ps2-live-rebind-loops-proof`. Target: repeated PS/2/i8042
 bind/unbind/remove/readd proof under QEMU on x86_64 plus correct aarch64
-no-device behavior.
+no-device behavior. Commit, PR, merge, fresh-main smoke, and D134 ledger
+remain.
 
 ## B586 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B586-ps2-live-rebind-loops-proof | ACTIVE | Fresh `main` at D133 ledger merge `9fbf1155`; B585 PR #2693 and ledger PR #2694 are merged, and `metadata/index.md` advanced B 586 -> 587 on this branch. Audit/code/test pending. |
+| B586-ps2-live-rebind-loops-proof | VERIFIED | Fresh `main` at D133 ledger merge `9fbf1155`; B585 PR #2693 and ledger PR #2694 are merged, and `metadata/index.md` advanced B 586 -> 587 on this branch. B586 adds `/bin/ps2_rebind_probe`, `smoke-ps2-rebind-{x86,arm}` Make targets, and rootfs direct-init wiring. x86_64 targeted proof `/tmp/b586-x86-ps2-rebind.log` passes three sysfs loops against `platform/i8042` bound to `i8042-kbd`, rejects duplicate bind with `errno=16`, proves `/sys/bus/platform/drivers/i8042-kbd/i8042` and `/sys/devices/platform/i8042/driver` disappear while unbound, proves `/sys/devices/platform/i8042` persists, and re-proves both symlink targets after every bind. aarch64 targeted proof `/tmp/b586-arm-ps2-rebind.log` passes the correct QEMU virt absence contract: no `/sys/devices/platform/i8042` and no `/sys/bus/platform/drivers/i8042-kbd`. Checks pass: `cargo test -q -p drv -p sysfs -p drv-ps2-keyboard -- --nocapture --test-threads=1` with drv 31/31, sysfs 34/34, and drv-ps2-keyboard 6/6; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-ps2-rebind.sh`; line caps (`ps2_rebind_probe.c` 213, `boot-smoke-ps2-rebind.sh` 87, `rootfs.rs` 423, `rootfs_lists.rs` 106, `Makefile` 343, `driver_plan.md` 398, `driver_progress.md` 588). Pending commit, PR, merge, fresh-main smoke, and D134 ledger. |
 
 ## B585 Current
 
