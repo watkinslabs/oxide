@@ -75,14 +75,17 @@ fn shutdown_devices_once() {
 fn prepare_cmd(c: u32) -> KResult<Option<TerminalCmd>> {
     match c {
         LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
+            klog::write_raw(b"power_cmd restart\n");
             shutdown_devices_once();
             Ok(Some(TerminalCmd::Restart))
         }
         LINUX_REBOOT_CMD_POWER_OFF => {
+            klog::write_raw(b"power_cmd poweroff\n");
             shutdown_devices_once();
             Ok(Some(TerminalCmd::PowerOff))
         }
         LINUX_REBOOT_CMD_HALT => {
+            klog::write_raw(b"power_cmd halt\n");
             shutdown_devices_once();
             Ok(Some(TerminalCmd::Halt))
         }

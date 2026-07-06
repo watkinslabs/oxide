@@ -5,10 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none. B598-driver-side-effects-audit is VERIFIED MERGED; next
-branch is not claimed. Post-B598 fresh-main `make smoke SMOKE_TIMEOUT=300`
-passed with x86_64 reaching `oxide login:` in 32s and aarch64 reaching `oxide
-login:` in 36s.
+Current marker: B599-driver-shutdown-coverage is VERIFIED LOCAL / PR PENDING
+from fresh `main` at D145 ledger merge `7a12d540`. x86_64 and aarch64
+shutdown smokes pass; push, PR, merge, and fresh-main smoke are next.
+
+## B599 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B599-driver-shutdown-coverage | VERIFIED LOCAL / PR PENDING | Claim starts from fresh `main` at D145 ledger merge `7a12d540`; B599 adds concrete per-driver shutdown coverage where hardware quiesce differs from hot-unplug remove and proves reboot/poweroff path on x86_64 and aarch64. Source proof: `power::prepare_cmd` emits `power_cmd restart|poweroff|halt` immediately before `drv::shutdown_devices_once()`, and `drv::shutdown_all()` emits `driver_shutdown bus=<bus> addr=<addr> driver=<driver>` before invoking each registered shutdown callback. Live proof: `OXIDE_SHUTDOWN_SMOKE=1` installs `/init` from `userspace/shutdown_probe/shutdown_probe.c`; the probe invokes the glibc-visible `reboot(RB_AUTOBOOT)` interface, which reaches the Linux reboot syscall restart path; `tools/boot-smoke-shutdown.sh` requires the power marker and each shutdown marker, then observes QEMU exit through `-no-reboot`. x86_64 `/tmp/b599-x86-shutdown.log` shows AHCI, NVMe, virtio-pci parents, virtio-snd, virtio-vsock, virtio-rng, two virtio-input devices, virtio-gpu, virtio-net, virtio-blk, i8042-kbd, and `8250-serial`, then `shutdown-smoke: PASS`. aarch64 `/tmp/b599-arm-shutdown.log` shows the same PCI/virtio coverage plus `pl011-serial`, then `shutdown-smoke: PASS`. Checks pass: `cargo test -q -p drv -p power -- --nocapture --test-threads=1`; `cargo check -q -p xtask`; `bash -n tools/boot-smoke-shutdown.sh`; host `cc -Wall -Wextra -Werror` for `shutdown_probe.c`; line caps (`model.rs` 488, `power/lib.rs` 283, `rootfs.rs` 436, `rootfs_cache.rs` 300, `rootfs_lists.rs` 108, `boot-smoke-shutdown.sh` 104, `shutdown_probe.c` 12, `Makefile` 364). Duplicate-lane check found no existing B599/shutdown branch or worktree; existing detached worktrees `/home/nd/oxide-wt/cap-livegnome` and `/home/nd/oxide-wt/live-0706` are unrelated and are not touched. `metadata/index.md` advances B 599 -> 600 on this branch. Existing staged files not owned by this branch are not touched or staged: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B598 Current
 
