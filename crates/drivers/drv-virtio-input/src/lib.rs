@@ -12,6 +12,8 @@ pub use registry::{
     count, device, devices_snapshot, evdev_id_for_device, install, install_device, is_pointer,
     name_of, remove_device, repeat, set_repeat, CapBitmap, Error, KResult, VirtioInputDev,
 };
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub use registry::{install_device_with_parent, remove_device_with_node, ModelParent};
 pub use types::{InputEvent, VirtioInputAbsInfo, VirtioInputDevIds, VirtioInputEvent};
 
 #[cfg(any(target_os = "oxide-kernel", test))]

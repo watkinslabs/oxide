@@ -41,6 +41,8 @@ pub enum Error {
 }
 
 pub type KResult<T> = core::result::Result<T, Error>;
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub type ModelParent = Option<(&'static str, alloc::string::String)>;
 
 #[derive(Clone, Debug)]
 pub struct CapBitmap {
@@ -165,12 +167,51 @@ pub fn install_device(
     install_device_with_config(device_key, &mut cfg)
 }
 
+/// # C: install virtio-input state and publish the owned input model node
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub fn install_device_with_parent(
+    device_key: virtio::VirtioChildDeviceKey,
+    resources: virtio::VirtioResources,
+    parent: ModelParent,
+) -> Option<u32> {
+    let cfg_va = resources.device_cfg_va;
+    if cfg_va == 0 {
+        return None;
+    }
+    let mut cfg = MmioInputConfig { cfg_va };
+    install_device_with_config_and_parent(device_key, &mut cfg, parent)
+}
+
 #[cfg(test)]
 pub(crate) fn install_device_with_config_for_tests<C: InputConfigAccess>(
     device_key: virtio::VirtioChildDeviceKey,
     cfg: &mut C,
 ) -> Option<u32> {
     install_device_with_config(device_key, cfg)
+}
+
+#[cfg(test)]
+pub(crate) fn install_device_with_config_and_parent_for_tests<C: InputConfigAccess>(
+    device_key: virtio::VirtioChildDeviceKey,
+    cfg: &mut C,
+    parent: ModelParent,
+) -> Option<u32> {
+    install_device_with_config_and_parent(device_key, cfg, parent)
+}
+
+#[cfg(any(target_os = "oxide-kernel", test))]
+fn install_device_with_config_and_parent<C: InputConfigAccess>(
+    device_key: virtio::VirtioChildDeviceKey,
+    cfg: &mut C,
+    parent: ModelParent,
+) -> Option<u32> {
+    let evdev_id = install_device_with_config(device_key, cfg)?;
+    if crate::devfs::register_node(evdev_id, parent) {
+        Some(evdev_id)
+    } else {
+        let _ = remove_device(device_key);
+        None
+    }
 }
 
 fn install_device_with_config<C: InputConfigAccess>(
@@ -285,6 +326,14 @@ pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
         g.remove(idx).evdev_id
     };
     Some(evdev_id)
+}
+
+/// # C: remove the owned input model node and clear virtio-input state
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub fn remove_device_with_node(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+    let evdev_id = evdev_id_for_device(device_key)?;
+    let _ = crate::devfs::unregister_node(evdev_id);
+    remove_device(device_key)
 }
 
 pub fn evdev_id_for_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
