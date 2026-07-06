@@ -64,6 +64,73 @@ fn enumerate_finds_one_device() {
 }
 
 #[test]
+fn enumerate_follows_bridge_windows_only() {
+    let r = MapReader {
+        m: Mutex::new(HashMap::new()),
+    };
+    let bridge = Bdf {
+        bus: 0,
+        device: 1,
+        function: 0,
+    };
+    let child = Bdf {
+        bus: 2,
+        device: 3,
+        function: 0,
+    };
+    let orphan = Bdf {
+        bus: 4,
+        device: 3,
+        function: 0,
+    };
+    r.write32(bridge, 0x00, 0x0001_1234);
+    r.write32(bridge, 0x08, 0x0604_0000);
+    r.write32(bridge, 0x0C, 0x0001_0000);
+    r.write32(bridge, 0x18, 0x0002_0100);
+    r.write32(child, 0x00, 0x1001_1AF4);
+    r.write32(child, 0x08, 0x0200_0000);
+    r.write32(child, 0x0C, 0);
+    r.write32(orphan, 0x00, 0x1002_1AF4);
+    r.write32(orphan, 0x08, 0x0200_0000);
+    r.write32(orphan, 0x0C, 0);
+
+    let v = enumerate_buses(&r, 5);
+
+    assert!(v.iter().any(|d| d.bdf == bridge));
+    assert!(v.iter().any(|d| d.bdf == child));
+    assert!(!v.iter().any(|d| d.bdf == orphan));
+}
+
+#[test]
+fn enumerate_honors_bus_cap_for_bridge_windows() {
+    let r = MapReader {
+        m: Mutex::new(HashMap::new()),
+    };
+    let bridge = Bdf {
+        bus: 0,
+        device: 1,
+        function: 0,
+    };
+    let child = Bdf {
+        bus: 2,
+        device: 3,
+        function: 0,
+    };
+    r.write32(bridge, 0x00, 0x0001_1234);
+    r.write32(bridge, 0x08, 0x0604_0000);
+    r.write32(bridge, 0x0C, 0x0001_0000);
+    r.write32(bridge, 0x18, 0x0002_0100);
+    r.write32(child, 0x00, 0x1001_1AF4);
+    r.write32(child, 0x08, 0x0200_0000);
+    r.write32(child, 0x0C, 0);
+
+    let v = enumerate_buses(&r, 1);
+
+    assert!(v.iter().any(|d| d.bdf == bridge));
+    assert!(!v.iter().any(|d| d.bdf == child));
+}
+
+#[test]
 fn parse_bdf_addr_kernel_model_form() {
     assert_eq!(
         parse_bdf_addr("0000:00:1f.2"),

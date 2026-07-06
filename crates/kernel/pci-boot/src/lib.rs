@@ -71,8 +71,8 @@ fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
 }
 
 /// Enumerate the live PCI bus and emit a `[INFO] pci ...` line per
-/// device under `debug-boot`. v1 only walks bus 0 (single segment);
-/// multi-bus discovery rides alongside the real driver work.
+/// device under `debug-boot`. The PCI crate walks bridge windows; arch
+/// setup still determines which config-space buses are addressable.
 /// # SAFETY: caller is the boot path; per-arch ConfigSpaceReader
 /// has been brought up (CF8/CFC available on x86; ECAM device-mapped
 /// + `ECAM_BASE_VA` published on aarch64).
@@ -87,8 +87,8 @@ pub fn enumerate_and_log() {
         #[cfg(target_arch = "aarch64")]
         {
             match hal_aarch64::pci::EcamPci::from_published() {
-                // ECAM mapping is bus 0 only on aarch64 v1 (1 MiB
-                // device-mapped at boot); enumerate cap matches.
+                // Current aarch64 ECAM setup maps bus 0 only; bridge-window
+                // enumeration honors that cap until full-segment ECAM lands.
                 Some(r) => pci::enumerate_buses(&r, 1),
                 None    => alloc::vec::Vec::new(),
             }
