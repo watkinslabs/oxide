@@ -2,6 +2,16 @@ use super::{DeviceKey, MODERN_DEVS, REGISTERED_NETDEVS};
 
 const NET_CFG_MAC_BYTES: usize = 6;
 
+#[cfg(test)]
+static FAIL_NEXT_NETDEV_REGISTRATION: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static TEST_RELEASED_FRAMES: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static TEST_RESETS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
 fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; NET_CFG_MAC_BYTES]> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
@@ -102,11 +112,8 @@ pub fn init_modern_with_rx_pool(
     }
     g.push(state);
     drop(g);
-    #[cfg(target_os = "oxide-kernel")]
-    if super::netdev::register_netdev(device_key).is_none() {
-        MODERN_DEVS
-            .lock()
-            .retain(|installed| installed.device_key != device_key);
+    if !register_netdev_after_install(device_key) {
+        let _ = uninstall_modern(device_key);
         return false;
     }
     #[cfg(feature = "debug-boot")]
@@ -131,6 +138,44 @@ pub fn init_modern_with_rx_pool(
         klog::write_raw(b"\n");
     }
     true
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn register_netdev_after_install(device_key: DeviceKey) -> bool {
+    super::netdev::register_netdev(device_key).is_some()
+}
+
+#[cfg(all(not(target_os = "oxide-kernel"), not(test)))]
+fn register_netdev_after_install(_device_key: DeviceKey) -> bool { true }
+
+#[cfg(test)]
+fn register_netdev_after_install(device_key: DeviceKey) -> bool {
+    let _ = device_key;
+    if FAIL_NEXT_NETDEV_REGISTRATION.swap(false, core::sync::atomic::Ordering::AcqRel) {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_netdev_registration() {
+    FAIL_NEXT_NETDEV_REGISTRATION.store(true, core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_released_frames() {
+    TEST_RELEASED_FRAMES.store(0, core::sync::atomic::Ordering::Release);
+    TEST_RESETS.store(0, core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+pub(crate) fn test_released_frames() -> u64 {
+    TEST_RELEASED_FRAMES.load(core::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) fn test_resets() -> u64 {
+    TEST_RESETS.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Remove the installed modern virtio-net transport. This owns netdev
@@ -164,7 +209,7 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     if last_device {
         super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(super::rx::rx_runtime_empty));
     }
-    virtio::reset_device(state.cfg_va);
+    reset_transport(state.cfg_va);
     for rx_buf in state.rx_bufs {
         free_frame(rx_buf.pa);
     }
@@ -198,7 +243,7 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
     if last_device {
         super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(super::rx::rx_runtime_empty));
     }
-    virtio::reset_device(state.cfg_va);
+    reset_transport(state.cfg_va);
     for rx_buf in state.rx_bufs {
         free_frame(rx_buf.pa);
     }
@@ -208,12 +253,30 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
 
 fn free_frame(pa: u64) {
     if pa != 0 {
+        #[cfg(test)]
+        {
+            TEST_RELEASED_FRAMES.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+            return;
+        }
+        #[cfg(not(test))]
+        {
         // SAFETY: non-zero PAs passed here are pages allocated by the PMM for
         // this driver's payload buffers and are no longer reachable after
         // reset. Vring frames are transport-owned after successful probe and
         // are released when the transport is unpublished.
         unsafe { pmm::setup::free_one_frame(pa); }
+        }
     }
+}
+
+#[cfg(test)]
+fn reset_transport(_cfg_va: u64) {
+    TEST_RESETS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+}
+
+#[cfg(not(test))]
+fn reset_transport(cfg_va: u64) {
+    virtio::reset_device(cfg_va);
 }
 
 /// Remember the net stack ifindex registered for this transport.
