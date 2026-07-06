@@ -2,16 +2,17 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: none. Last completed: B574-qemu-rebind-certification-audit verified merged.
+ACTIVE NOW: B576-virtio-input-live-rebind-proof in audit
 
 Current active item: QEMU-visible runtime bind/unbind/rebind certification is
-extended for virtio-rng live bind/unbind/rebind; B574 is merged.
+still incomplete for input; B576 is auditing and closing virtio-input live
+sysfs rebind proof on x86_64 and aarch64.
 Last verified branch:
 `B574-qemu-rebind-certification-audit` merged as PR #2668 at `1ff61f7d`;
 fresh-main post-merge x86_64/aarch64 normal-login smokes passed.
 
-Next gate: choose the next NOT DONE driver-system row from fresh `main`, use
-the authoritative branch counter, and create a new short-lived branch.
+Next gate: prove virtio-input sysfs bind/unbind/rebind restores evdev state on
+x86_64 and aarch64, then PR/merge/sync main.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -371,7 +372,7 @@ Status legend:
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for block. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for net. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for DRM/fbdev. |
-| NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for input. |
+| ACTIVE | B576-virtio-input-live-rebind-proof | Prove virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for sound. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for RNG. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for UART. |
