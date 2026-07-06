@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B582-pci-live-rebind-loops-proof is VERIFIED MERGED. PR #2685
-merged at `cadd82d2`; fresh-main post-merge smoke passed on x86_64 and
-aarch64. No active row is claimed.
+Current marker: B583-virtio-parent-child-rebind-proof is ACTIVE on branch
+`B583-virtio-parent-child-rebind-proof`. Target: repeated virtio parent/child
+bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+
+## B583 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B583-virtio-parent-child-rebind-proof | ACTIVE | Fresh `main` at D130 ledger merge `b048bd02`; B582 PR #2685 and ledger PR #2686 are merged, and `metadata/index.md` advanced B 583 -> 584 on this branch. Audit/code/test pending. |
 
 ## B582 Current
 
