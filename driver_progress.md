@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B571-sound-tests-global-state-proof is ACTIVE on branch
-`B571-sound-tests-global-state-proof`; source audit is checking hosted sound
-test isolation under default parallel execution.
+Current marker: B571-sound-tests-global-state-proof is VERIFIED LOCAL on branch
+`B571-sound-tests-global-state-proof`; next gate is commit, push, PR, merge,
+fresh-main sync, and post-merge x86_64/aarch64 normal-login smokes.
 
 ## B571 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B571-sound-tests-global-state-proof | ACTIVE | Fresh `main` at B570 PR #2662 merge commit `44d17275`; B570 post-merge fresh-main virtio-snd multidev proof passed with x86_64 log `/tmp/b570-postmerge-x86-virtio-snd-multidev.log` and aarch64 log `/tmp/b570-postmerge-arm-virtio-snd-multidev.log`. `metadata/index.md` advanced B 571 -> 572. Source audit in progress for hosted `sound` tests sharing global card state under default parallel execution. |
+| B571-sound-tests-global-state-proof | VERIFIED LOCAL | Fresh `main` at B570 PR #2662 merge commit `44d17275`; B570 post-merge fresh-main virtio-snd multidev proof passed with x86_64 log `/tmp/b570-postmerge-x86-virtio-snd-multidev.log` and aarch64 log `/tmp/b570-postmerge-arm-virtio-snd-multidev.log`. `metadata/index.md` advanced B 571 -> 572. Source audit proves every integration test in `sound/src/tests.rs` and child module `sound/src/tests/pcm_info.rs` takes `test_guard()`, which serializes access to shared hosted globals (`CARDS`, `OPS`, `PCM`, `CAP`, `OSS`, devtmpfs hooks, and test vectors) with `TEST_LOCK`; focused grep finds all integration tests guarded. Checks pass: default-parallel `cargo test -q -p sound -- --nocapture`, 10 repeated default-parallel sound test runs (`/tmp/b571-sound-default-1.log` through `/tmp/b571-sound-default-10.log`), and serial `cargo test -q -p sound -- --nocapture --test-threads=1` with 17/17. No kernel/userspace runtime surface changed beyond docs/ledger; x86_64/aarch64 runtime baseline remains B570 post-merge fresh-main virtio-snd multidev proof. |
 
 ## B570 Current
 

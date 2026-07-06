@@ -2,7 +2,7 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B571-sound-tests-global-state-proof in source audit
+ACTIVE NOW: B571-sound-tests-global-state-proof verified locally; PR/merge pending
 
 Current active item: Hosted `sound` tests share global card state and can fail
 under default parallel execution; serial `--test-threads=1` passes.
@@ -10,8 +10,8 @@ Last verified branch:
 `B569-x86-login-cgroup-audit` merged as PR #2661 and passed fresh-main
 x86_64/aarch64 normal-login smokes.
 
-Next gate: audit hosted sound test isolation/global state, fix the root cause,
-and prove default-parallel plus serial hosted sound tests.
+Next gate: commit, push, open PR, merge, sync fresh `main`, then run
+post-merge x86_64/aarch64 normal-login smokes.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -334,7 +334,7 @@ Status legend:
 | VERIFIED | B395-sound-card-per-card-node-publication | Sound card layer publishes per-card ALSA/OSS nodes: `publish_card_nodes(owner, card, ...)` emits `snd/controlC<N>`, direction-gated `snd/pcmC<N>D0[p|c]`, card-scaled OSS nodes, and card-0 legacy aliases; `register_card(owner)` stores published node handles and `unregister_card(owner)` deletes only those handles; focused per-card node regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2448 merge, and local main sync to `origin/main` at `a76db156` pass. |
 | VERIFIED | B396-sound-ops-route-by-owner | Sound ops route by owner: node dispatch carries `SndData.owner`, `ops_for(owner)` selects exact owner with live card reservation, PCM/capture/control/OSS paths pass the explicit owner through state lookup and backend callbacks, and focused owner-routing regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2449 merge, and local main sync to `origin/main` at `cac90846` pass. |
 | VERIFIED MERGED | B570-alsa-pcm-info-card-proof | Direct ALSA PCM `PCM_INFO` on PCM nodes now reports the node card number instead of hard-coded/default card metadata: production `/dev/snd/pcmC<N>D0p` and `/dev/snd/pcmC<N>D0c` dispatch passes the model-owned `SndData.card` into playback/capture PCM ioctl handlers, playback writes `PI_CARD=card`, and capture writes `PI_DEVICE=0`, `PI_SUBDEVICE=0`, `PI_STREAM=capture`, and `PI_CARD=card`. Checks pass: focused hosted regression `direct_pcm_info_reports_node_card_number`, serial `cargo test -q -p sound -- --nocapture --test-threads=1` with 17/17, serial `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` with sound 17/17 and drv-virtio-snd 15/15, `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 virtio-snd multidev live proof `/tmp/b570-x86-virtio-snd-multidev.log`, and aarch64 virtio-snd multidev live proof `/tmp/b570-arm-virtio-snd-multidev.log`; both live logs pass direct `b570_pcmC{0,1}D0{p,c}` PCM_INFO checks before and after rebind. PR #2662 merged as `44d17275`; post-merge fresh-main virtio-snd multidev proof passed on x86_64 (`/tmp/b570-postmerge-x86-virtio-snd-multidev.log`) and aarch64 (`/tmp/b570-postmerge-arm-virtio-snd-multidev.log`). |
-| ACTIVE | B571-sound-tests-global-state-proof | Hosted `sound` tests share global card state and can fail under default parallel execution; serial `--test-threads=1` passes. Source audit started on fresh `main` after B570 PR #2662 merge; `metadata/index.md` advanced B 571 -> 572. |
+| VERIFIED LOCAL | B571-sound-tests-global-state-proof | Hosted `sound` tests now pass under default parallel execution: source audit proves every integration test in `sound/src/tests.rs` and child module `sound/src/tests/pcm_info.rs` takes `test_guard()`, which serializes access to shared hosted globals (`CARDS`, `OPS`, `PCM`, `CAP`, `OSS`, devtmpfs hooks, and test vectors) with `TEST_LOCK`; focused grep finds all integration tests guarded. Checks pass: default-parallel `cargo test -q -p sound -- --nocapture`, 10 repeated default-parallel sound test runs (`/tmp/b571-sound-default-1.log` through `/tmp/b571-sound-default-10.log`), and serial `cargo test -q -p sound -- --nocapture --test-threads=1` with 17/17. No kernel/userspace runtime surface changed beyond docs/ledger; x86_64/aarch64 runtime baseline remains B570 post-merge fresh-main virtio-snd multidev proof. PR/merge pending. |
 | VERIFIED | B397-sound-unregister-rejects-non-owners | Sound unregister rejects non-owners: `unregister_card(owner)` first requires an exact owner record before deleting stored node handles or clearing control/OSS/capture/PCM/ops state; focused non-owner unregister test, serial full sound tests, x86_64/aarch64 driver-path proof, PR #2450 merge, and local main sync to `origin/main` at `e5fe3f55` pass. |
 | VERIFIED | B398-virtio-snd-eventq-owner-accounting | Virtio-snd raw EVENTQ accounting is keyed by transport owner: EVENTQ rings, buffer PA, last-used, avail idx, and raw/drained counters live in `Ctx` records selected by `device_key`; focused drain regression proves only the advanced context records/requeues events, full drv-virtio-snd tests, x86_64/aarch64 driver-path proof, PR #2451 merge, and local main sync to `origin/main` at `a6506b42` pass. |
 | VERIFIED | B399-virtio-snd-multicard-rebind-proof | Virtio-snd multi-card live proof added: env-gated second QEMU sound device, rootfs probe, and `smoke-virtio-snd-multidev`; C probe compile, `cargo check -p xtask`, full `drv-virtio-snd` tests, serial full `sound` tests, and x86_64/aarch64 smoke logs pass; PR #2452 merge and local main sync to `origin/main` at `36d0b388` pass. |
