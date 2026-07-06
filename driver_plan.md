@@ -2,12 +2,12 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B551-dead-snd-config-pass-through verified locally; pending PR/merge
+ACTIVE NOW: B552-virtio-input-generic-config-proof in audit
 
-Current active item: Dead pci-boot sound config pass-through removed. Last verified branch:
-`B550-virtio-snd-eventq-recycle-proof` merged as PR #2642 and passed fresh-main x86_64/aarch64 smokes.
+Current active item: Virtio-input reads identity/capability from generic config resource. Last verified branch:
+`B551-dead-snd-config-pass-through` merged as PR #2643 and passed fresh-main x86_64/aarch64 smokes.
 
-Next gate: commit, push, PR/merge, sync fresh main, then claim the next row.
+Next gate: audit pci-boot/virtio-input config ownership, add focused proof if needed, run hosted gates plus x86_64/aarch64 smokes, then PR/merge and sync fresh main.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -223,7 +223,7 @@ Status legend:
 | VERIFIED | B550-virtio-snd-eventq-recycle-proof | Virtio-snd recycles used event descriptors: source audit proves `drain_eventq()` consumes each new EVENTQ used-ring entry by `event_last_used % eventq.size`, accepts only descriptor ids below queue size, records the event payload, writes the used descriptor id back into the avail ring at `event_avail_idx % eventq.size`, increments `event_avail_idx`, release-fences before publishing the avail idx, and notifies EVENTQ. Added hosted regression `eventq_drain_recycles_used_descriptors_with_avail_wrap`, proving descriptors are recycled at the current avail slot, wrap to slot 0, publish the final avail idx, and notify EVENTQ. Checks pass: focused `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` with snd 15/15; broad PCI/virtio child gate; `git diff --check`; line caps (`tests/drain.rs` 125, `tests.rs` 425, `event.rs` 64); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 | VERIFIED | B551-dead-snd-config-pass-through | Dead pci-boot sound config pass-through removed: source audit proves `VirtioSndOps::probe_child()` passes only `session.child_resources()` into `drv_virtio_snd::install(SndInstall { device_key, resources })`, pci-boot has no sound-specific config/pass-through struct or config-harvest path, generic `DEVICE_CFG` is carried transport-neutrally through `VirtioTransportProbeResult` / `VirtioChildResourceState` into `VirtioResources.device_cfg_va`, and `drv-virtio-snd::read_device_config()` owns the virtio-snd config reads through named `SND_CFG_*_OFF` offsets. Negative search finds no pci-boot `virtio_snd_config`, `snd_config`, `SndConfig`, `SoundConfig`, `sound_config`, `snd_cfg`, `SND_CFG`, or snd-specific `device_cfg` path. Existing hosted regression `snd_config_reads_generic_device_config_resource` proves the child driver reads all four config fields from generic `VirtioResources.device_cfg_va` and rejects missing generic config. Checks pass: focused `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` with snd 15/15; `cargo test -q -p pci-boot -p virtio -p drv-virtio-snd -- --nocapture --test-threads=1` with virtio 48/48 and snd 15/15; broad PCI/virtio child gate; `git diff --check`; line caps (`virtio_child.rs` 398, `virtio_bus.rs` 145, `virtio_drv/probe.rs` 178, `virtio_drv/probe_state.rs` 298, `drv-virtio-snd/lib.rs` 130, `lifecycle.rs` 251, `state.rs` 238, `tests.rs` 425); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 17s. |
 | VERIFIED | B513-virtio-snd-frame-teardown-proof | Virtio-snd probe scratch/event/TX/RX frame ownership and teardown are proven by hosted fault-injection tests: owned probe frames free on `Drop`, disarmed probe frames transfer cleanup to context teardown, and failed scan context removal frees scratch/event/TX/RX frames while clearing the sound softirq. Checks pass: `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` 11/11; `cargo test -q -p sound -- --nocapture --test-threads=1` 16/16; broad hosted virtio driver gate; `git diff --check`; touched Rust files under 500 lines (`lib.rs` 130, `state.rs` 238, `tests.rs` 443); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 40s. |
-| SOURCE OK |  | Virtio-input reads identity/capability from generic config resource. |
+| ACTIVE | B552-virtio-input-generic-config-proof | Virtio-input reads identity/capability from generic config resource. |
 | VERIFIED |  | Virtio-input owns `/dev/input/eventN` publication/removal in child install/remove path. |
 | SOURCE OK |  | Virtio-net no longer has PCI-transport-owned MAC config harvest. |
 | SOURCE OK |  | Virtio-blk has per-device records. |
