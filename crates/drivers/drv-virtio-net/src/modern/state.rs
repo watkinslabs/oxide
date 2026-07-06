@@ -1,14 +1,16 @@
 use super::{DeviceKey, MODERN_DEVS, REGISTERED_NETDEVS};
 
-fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; 6]> {
+const NET_CFG_MAC_BYTES: usize = 6;
+
+fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; NET_CFG_MAC_BYTES]> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
         return None;
     }
-    let mut mac = [0u8; 6];
+    let mut mac = [0u8; NET_CFG_MAC_BYTES];
     for (i, byte) in mac.iter_mut().enumerate() {
         // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
-        // virtio-net config window. The MAC occupies bytes 0..6 when
+        // virtio-net config window. The MAC occupies the first six bytes when
         // VIRTIO_NET_F_MAC was negotiated by the transport.
         *byte = unsafe { core::ptr::read_volatile((cfg + i as u64) as *const u8) };
     }

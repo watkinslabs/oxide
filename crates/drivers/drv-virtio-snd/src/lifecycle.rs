@@ -2,6 +2,11 @@ use super::*;
 use super::event::event_softirq;
 use super::state::remove_ctx;
 
+const SND_CFG_JACKS_OFF: u64 = 0;
+const SND_CFG_STREAMS_OFF: u64 = 4;
+const SND_CFG_CHMAPS_OFF: u64 = 8;
+const SND_CFG_CONTROLS_OFF: u64 = 12;
+
 pub(super) fn read_device_config(resources: virtio::VirtioResources) -> Option<SndDeviceConfig> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
@@ -9,10 +14,10 @@ pub(super) fn read_device_config(resources: virtio::VirtioResources) -> Option<S
     }
     let (jacks, streams, chmaps, controls) = unsafe {
         (
-            core::ptr::read_volatile(cfg as *const u32),
-            core::ptr::read_volatile((cfg + 4) as *const u32),
-            core::ptr::read_volatile((cfg + 8) as *const u32),
-            core::ptr::read_volatile((cfg + 12) as *const u32),
+            core::ptr::read_volatile((cfg + SND_CFG_JACKS_OFF) as *const u32),
+            core::ptr::read_volatile((cfg + SND_CFG_STREAMS_OFF) as *const u32),
+            core::ptr::read_volatile((cfg + SND_CFG_CHMAPS_OFF) as *const u32),
+            core::ptr::read_volatile((cfg + SND_CFG_CONTROLS_OFF) as *const u32),
         )
     };
     Some(SndDeviceConfig { jacks, streams, chmaps, controls })

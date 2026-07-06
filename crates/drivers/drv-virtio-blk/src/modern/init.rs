@@ -1,21 +1,25 @@
 use super::*;
 
+const BLK_CFG_CAPACITY_BYTES: usize = 8;
+const BLK_CFG_BLK_SIZE_BYTES: usize = 4;
+const DISK_NAME_BUF_BYTES: usize = 8;
+
 fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> Option<BlkDeviceConfig> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
         return None;
     }
 
-    let mut capb = [0u8; 8];
-    for i in 0..8 {
+    let mut capb = [0u8; BLK_CFG_CAPACITY_BYTES];
+    for i in 0..BLK_CFG_CAPACITY_BYTES {
         capb[i] = unsafe { core::ptr::read_volatile((cfg + i as u64) as *const u8) };
     }
     let capacity = u64::from_le_bytes(capb);
 
     let mut blk_size = blk::VIRTIO_BLK_SECTOR_BYTES;
     if drv_features & virtio::VIRTIO_BLK_F_BLK_SIZE != 0 {
-        let mut bsb = [0u8; 4];
-        for i in 0..4 {
+        let mut bsb = [0u8; BLK_CFG_BLK_SIZE_BYTES];
+        for i in 0..BLK_CFG_BLK_SIZE_BYTES {
             bsb[i] = unsafe {
                 core::ptr::read_volatile(
                     (cfg + virtio::BLK_CFG_OFF_BLK_SIZE + i as u64) as *const u8,
@@ -32,7 +36,7 @@ fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> 
 }
 
 pub fn disk_name(index: u32) -> String {
-    let mut buf = [0u8; 8];
+    let mut buf = [0u8; DISK_NAME_BUF_BYTES];
     let n = blk::vd_name(index, &mut buf);
     String::from_utf8_lossy(&buf[..n]).into_owned()
 }
