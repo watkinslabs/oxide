@@ -10,11 +10,11 @@ use alloc::vec::Vec;
 mod msix;
 mod devres;
 
-const VIRTIO_FRAME_BYTES: usize = 0x1000;
+const VIRTIO_FRAME_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 const VIRTQ_DESC_BYTES: usize = 16;
 const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
 const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
-pub(super) const VIRTIO_PCI_PAGE_SIZE: u64 = 0x1000;
+pub(super) const VIRTIO_PCI_PAGE_SIZE: u64 = hal::PAGE_SIZE_BYTES;
 pub(super) const VIRTIO_PCI_PAGE_OFFSET_MASK: u64 = VIRTIO_PCI_PAGE_SIZE - 1;
 pub(super) const VIRTIO_PCI_PAGE_BASE_MASK: u64 = !VIRTIO_PCI_PAGE_OFFSET_MASK;
 
