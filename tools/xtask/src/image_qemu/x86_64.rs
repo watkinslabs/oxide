@@ -165,6 +165,11 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "virtio-net-pci-non-transitional,netdev=net1,bus=pcie.0",
         ]);
     }
+    if std::env::var_os("OXIDE_VIRTIO_RNG_REBIND_SMOKE").is_some() {
+        c.args([
+            "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
+        ]);
+    }
     if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() {
         c.args([
             "-audiodev", "none,id=snd1",
