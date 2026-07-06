@@ -5,10 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none. B598-driver-side-effects-audit is VERIFIED MERGED; next
-branch is not claimed. Post-B598 fresh-main `make smoke SMOKE_TIMEOUT=300`
-passed with x86_64 reaching `oxide login:` in 32s and aarch64 reaching `oxide
-login:` in 36s.
+Current marker: B599-driver-shutdown-coverage is ACTIVE / IN AUDIT from fresh
+`main` at D145 ledger merge `7a12d540`. Post-B598 fresh-main `make smoke
+SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 32s and
+aarch64 reaching `oxide login:` in 36s.
+
+## B599 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B599-driver-shutdown-coverage | ACTIVE / IN AUDIT | Claim starts from fresh `main` at D145 ledger merge `7a12d540`; B599 adds concrete per-driver shutdown coverage where hardware quiesce differs from hot-unplug remove and proves reboot/poweroff path on x86_64 and aarch64. Duplicate-lane check found no existing B599/shutdown branch or worktree; existing detached worktrees `/home/nd/oxide-wt/cap-livegnome` and `/home/nd/oxide-wt/live-0706` are unrelated and are not touched. `metadata/index.md` advances B 599 -> 600 on this branch. Existing staged files not owned by this branch are not touched or staged: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B598 Current
 
