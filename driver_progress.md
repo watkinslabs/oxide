@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B542-vsock-cid-generic-config-proof audits row 216; branch
-claimed from fresh `main` at B540 merge commit `bb07beb0`.
+Current marker: B542-vsock-cid-generic-config-proof verified locally for row
+216; PR/merge/post-merge fresh-main smokes pending.
 
 ## B542 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B542-vsock-cid-generic-config-proof | IN AUDIT | Fresh `main` at B540 PR #2635 merge commit `bb07beb0`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 541 -> 544 because local branches `B541-scm-stream-fds` and `B543-cgroup-deleg` already occupy those counters; B542 was the next free B lane. Target row: prove virtio-vsock reads guest CID in child driver from generic config resource. |
+| B542-vsock-cid-generic-config-proof | VERIFIED LOCALLY | Fresh `main` at B540 PR #2635 merge commit `bb07beb0`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 541 -> 544 because local branches `B541-scm-stream-fds` and `B543-cgroup-deleg` already occupy those counters; B542 was the next free B lane. Source audit proves pci-boot carries generic `DEVICE_CFG` into `VirtioResources.device_cfg_va`, `VirtioVsockOps::probe_child()` passes only `session.child_resources()` to `drv_virtio_vsock::install()`, and `drv-virtio-vsock` reads the guest CID through named `VSOCK_CFG_OFF_GUEST_CID` before publishing the reserved net endpoint. pci-boot only calls `guest_cid_for(device_key)` after install for debug logging, so no dead config pass-through is reintroduced. Added hosted regression `guest_cid_reads_generic_device_config_resource` proving CID comes from `VirtioResources.device_cfg_va` and missing generic config returns `None`. Checks pass: focused `cargo test -q -p drv-virtio-vsock -- --nocapture --test-threads=1` with vsock 11/11; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`consts.rs` 21, `registry.rs` 356, `tests.rs` 236, `virtio_child.rs` 398, `resources/transport.rs` 126); branch smokes reached x86_64 `oxide login:` in 46s and aarch64 `oxide login:` in 52s. |
 
 ## B540 Current
 
