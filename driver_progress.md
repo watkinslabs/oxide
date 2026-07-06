@@ -5,8 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B584-rng-live-rebind-loops-proof is VERIFIED MERGED. PR #2691
-merged at `55ad7477`; D132 records the merge and advances D 132 -> 133.
+Current marker: B585-uart-live-rebind-loops-proof is ACTIVE on branch
+`B585-uart-live-rebind-loops-proof`. Target: repeated UART/serial
+bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+
+## B585 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B585-uart-live-rebind-loops-proof | ACTIVE | Fresh `main` at D132 ledger merge `2abcbb80`; B584 PR #2691 and ledger PR #2692 are merged, and `metadata/index.md` advanced B 585 -> 586 on this branch. Audit/code/test pending. |
 
 ## B584 Current
 
