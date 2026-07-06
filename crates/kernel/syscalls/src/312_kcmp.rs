@@ -7,8 +7,17 @@ use syscall::errno::Errno;
 use crate::misc::misc_common::errno;
 
 /// kcmp(2): compare two tasks' resources by pointer identity.
-/// Returns 0/1/-1 (equal/greater/less); ESRCH for missing pids;
-/// EINVAL for unknown type.
+///
+/// Return encoding is Linux's ordered, NON-NEGATIVE triple (kernel
+/// `kcmp_ptr` via `kptr_obfuscate`): 0 = same resource, 1 = idx1's
+/// resource orders before idx2's, 2 = idx1 orders after idx2. A raw
+/// syscall return in `[-4095,-1]` is read by musl/glibc as `-errno`,
+/// so a valid ordering result MUST NOT be negative — the previous
+/// `-1` for "less than" was seen by userspace as EPERM. systemd's
+/// `same_fd()` does `r = kcmp(...); if (r >= 0) return !r;`, i.e. it
+/// requires a non-negative result and only reaches its fstat fallback
+/// on a (spurious) error. ESRCH for missing pids; EINVAL for unknown
+/// type; EBADF when a KCMP_FILE fd is not allocated (Linux guarantee).
 /// # C: O(1)
 pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
     let pid1 = args.a0 as u32;
@@ -24,14 +33,19 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
         Some(t) => t, None => return errno(Errno::Esrch),
     };
     // KCMP_FILE = 0: compare File at fd idx1 in t1 vs fd idx2 in t2.
-    let cmp = match ty {
+    match ty {
         0 => {
             // SAFETY: fd_table slot single-mutator per `13§5`; snapshot via Arc clone.
             unsafe {
                 let f1 = (*t1.fd_table.get()).as_ref().and_then(|t| t.get(idx1 as i32).ok());
                 let f2 = (*t2.fd_table.get()).as_ref().and_then(|t| t.get(idx2 as i32).ok());
-                ptr_cmp(f1.map(|f| alloc::sync::Arc::as_ptr(&f) as usize),
-                        f2.map(|f| alloc::sync::Arc::as_ptr(&f) as usize))
+                // Linux guarantees -EBADF if either fd is not allocated.
+                match (f1, f2) {
+                    (Some(f1), Some(f2)) => ptr_cmp(
+                        alloc::sync::Arc::as_ptr(&f1) as usize,
+                        alloc::sync::Arc::as_ptr(&f2) as usize),
+                    _ => errno(Errno::Ebadf),
+                }
             }
         },
         // KCMP_FILES = 1: compare fd_table identity.
@@ -40,7 +54,7 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
             unsafe {
                 let p1 = (*t1.fd_table.get()).as_ref().map(|t| alloc::sync::Arc::as_ptr(t) as usize);
                 let p2 = (*t2.fd_table.get()).as_ref().map(|t| alloc::sync::Arc::as_ptr(t) as usize);
-                ptr_cmp(p1, p2)
+                opt_cmp(p1, p2)
             }
         },
         // KCMP_VM = 2: address-space identity.
@@ -49,25 +63,31 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
             unsafe {
                 let p1 = t1.mm_ref().map(|m| alloc::sync::Arc::as_ptr(m) as usize);
                 let p2 = t2.mm_ref().map(|m| alloc::sync::Arc::as_ptr(m) as usize);
-                ptr_cmp(p1, p2)
+                opt_cmp(p1, p2)
             }
         },
         // KCMP_FS=3 / KCMP_SIGHAND=4 / KCMP_IO=5 / KCMP_SYSVSEM=6:
         // v1 ties these to the task identity since we don't yet
         // share these resources across CLONE_FS / CLONE_SIGHAND.
-        _ => ptr_cmp(Some(pid1 as usize), Some(pid2 as usize)),
-    };
-    cmp as i64
+        _ => ptr_cmp(pid1 as usize, pid2 as usize),
+    }
 }
 
+/// Linux kcmp ordering of two present resource ids: 0 equal, 1 less,
+/// 2 greater. Never negative (see `sys_kcmp` return-encoding note).
 /// # C: O(1)
-fn ptr_cmp(a: Option<usize>, b: Option<usize>) -> i64 {
+fn ptr_cmp(a: usize, b: usize) -> i64 {
+    if a == b { 0 } else if a < b { 1 } else { 2 }
+}
+
+/// Ordering when a resource id may be absent (task without the slot).
+/// Absent sorts before present; both-absent is "equal". Non-negative.
+/// # C: O(1)
+fn opt_cmp(a: Option<usize>, b: Option<usize>) -> i64 {
     match (a, b) {
-        (Some(x), Some(y)) if x == y => 0,
-        (Some(x), Some(y)) if x  < y => -1,
-        (Some(_), Some(_))           => 1,
-        (None,    None)              => 0,
-        (None,    Some(_))           => -1,
-        (Some(_), None)              => 1,
+        (Some(x), Some(y)) => ptr_cmp(x, y),
+        (None,    None)    => 0,
+        (None,    Some(_)) => 1,
+        (Some(_), None)    => 2,
     }
 }
