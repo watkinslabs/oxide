@@ -5,15 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B578-sound-live-rebind-proof is ACTIVE on branch
-`B578-sound-live-rebind-proof`; prove sound live bind/unbind/remove/readd on
-x86_64 and aarch64.
+Current marker: B578-sound-live-rebind-proof is VERIFIED LOCAL on branch
+`B578-sound-live-rebind-proof`; PR/merge/post-merge smoke still pending.
 
 ## B578 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B578-sound-live-rebind-proof | ACTIVE | Fresh `main` at D125 counter sync merge `6d3c257c`; B576 PR #2674 and ledger PR #2675 are merged, B577 is already merged, and `metadata/index.md` advanced B 578 -> 579 on this branch. Active row is QEMU-visible sound bind/unbind/remove/readd proof; existing virtio-snd multidev coverage proves ALSA card/node behavior but this row still needs a fresh audit and x86_64/aarch64 live proof. |
+| B578-sound-live-rebind-proof | VERIFIED LOCAL | Fresh `main` at D125 counter sync merge `6d3c257c`; B576 PR #2674 and ledger PR #2675 are merged, B577 is already merged, and `metadata/index.md` advanced B 578 -> 579 on this branch. B578 extends the existing virtio-snd multidev live probe to run three bind/unbind/rebind loops against the second virtio-snd child, prove card-1 ALSA and OSS devnodes disappear after unbind, and re-prove two ALSA cards plus control and direct playback/capture PCM_INFO state after every rebind. Checks pass: `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_snd_multidev_probe.c` 418, `boot-smoke-virtio-snd-multidev.sh` 87), x86_64 targeted proof `/tmp/b578-x86-virtio-snd-multidev.log`, and aarch64 targeted proof `/tmp/b578-arm-virtio-snd-multidev.log`. PR/merge/post-merge smoke pending. |
 
 ## B576 Current
 
