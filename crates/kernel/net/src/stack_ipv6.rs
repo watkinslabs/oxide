@@ -11,4 +11,4 @@ mod udp;
 mod rx;
 mod tx;
 
-pub use types::{Ipv6IfaceAddr, Udp6RxQueue};
+pub use types::{Ipv6IfaceAddr, Udp6Datagram, Udp6RxQueue};

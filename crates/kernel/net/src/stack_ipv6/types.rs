@@ -3,12 +3,18 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, Socket as StackLockClass};
 
-use crate::addr::Ipv6Addr;
+use crate::addr::{Ipv6Addr, NetIfaceId};
+
+/// A queued IPv6 UDP datagram plus the ancillary metadata Linux exposes
+/// via recvmsg: `(src, src_port, dst, recv_iface, hop_limit, payload)`.
+/// `dst` + `iface` back IPV6_PKTINFO; `hop_limit` backs IPV6_HOPLIMIT
+/// (avahi enforces == 255 for on-link mDNS, RFC 6762 §11).
+pub type Udp6Datagram = (Ipv6Addr, u16, Ipv6Addr, NetIfaceId, u8, Vec<u8>);
 
 pub struct Udp6RxQueue {
     pub bound_ip: Ipv6Addr,
     pub bound_port: u16,
-    pub q: Spinlock<VecDeque<(Ipv6Addr, u16, Vec<u8>)>, StackLockClass>,
+    pub q: Spinlock<VecDeque<Udp6Datagram>, StackLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
     pub error_eno: core::sync::atomic::AtomicI32,

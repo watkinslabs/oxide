@@ -59,6 +59,17 @@ impl NetStack {
         dst_ip: Ipv6Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>)
         -> NetResult<()>
     {
+        self.send_udp6_to_bound_opts(src_ip, src_port, dst_ip, dst_port, payload, bound,
+            crate::ipv6::IPV6_DEFAULT_HOP_LIMIT)
+    }
+
+    /// `send_udp6_to_bound` with an explicit hop limit resolved from the
+    /// socket's IPV6_UNICAST_HOPS / IPV6_MULTICAST_HOPS. # C: O(payload + N)
+    pub fn send_udp6_to_bound_opts(&self, src_ip: Ipv6Addr, src_port: u16,
+        dst_ip: Ipv6Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
+        hop_limit: u8)
+        -> NetResult<()>
+    {
         let src_ip = if src_ip == Ipv6Addr::ANY && dst_ip == Ipv6Addr::LOOPBACK {
             Ipv6Addr::LOOPBACK
         } else {
@@ -72,7 +83,8 @@ impl NetStack {
         let mut p = Pkt::with_capacity(0, l4_len);
         let body = p.put(l4_len).map_err(|_| NetError::Enobufs)?;
         crate::udp::build_into_v6(src_port, dst_port, src_ip, dst_ip, payload, body);
-        self.xmit_ipv6_l4_on_iface(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data())
+        self.xmit_ipv6_l4_on_iface_opts(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(),
+            hop_limit)
     }
 
     /// Active TCP open with a socket-bound egress interface. # C: O(log N + payload)
