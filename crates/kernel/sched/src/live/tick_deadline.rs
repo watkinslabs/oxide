@@ -43,6 +43,10 @@ pub fn tick_wake_expired(now_ns: u64) {
     let last = LAST_SCAN_NS.load(Ordering::Relaxed);
     if now_ns.saturating_sub(last) < SCAN_PERIOD_NS { return; }
     LAST_SCAN_NS.store(now_ns, Ordering::Relaxed);
+    // debug-wakelat: record the effective scan cadence; a gap far over the
+    // 100 ms throttle means the driving tick stalled (H3).
+    #[cfg(feature = "debug-wakelat")]
+    super::wakelat::note_scan(now_ns);
     let tids = crate::registry::live_tids();
     for tid in tids {
         let t = match crate::registry::lookup(tid) { Some(t) => t, None => continue };

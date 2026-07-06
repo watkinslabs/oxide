@@ -36,6 +36,8 @@ pub mod wait_list;
 pub mod zombies;
 pub mod sigpend;
 pub mod tick_deadline;
+#[cfg(feature = "debug-wakelat")]
+pub mod wakelat;
 
 pub use chroot_refs::chroot_fs_refs;
 pub use ttwu::{try_to_wake_up, ttwu_deferred, select_task_rq, resched_curr, relocate_for_affinity};
@@ -43,7 +45,7 @@ pub use ttwu::{try_to_wake_up, ttwu_deferred, select_task_rq, resched_curr, relo
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
     current, current_mount_ns, current_chroot_root, mark_done, schedule,
-    oxide_finish_task_switch, tick_yield,
+    oxide_finish_task_switch, park_yield, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
     install_sched_switch_hook, SchedSwitchFn,
 };
