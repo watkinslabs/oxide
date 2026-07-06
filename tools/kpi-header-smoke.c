@@ -1,8 +1,12 @@
 #include <linux/bitmap.h>
+#include <linux/gfp.h>
 #include <linux/idr.h>
 #include <linux/list.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/rbtree.h>
+#include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 struct sample {
     int value;
@@ -23,6 +27,19 @@ static int __init sample_init(void)
     set_bit(3, sample_bits);
     pr_info("sample %d\n", test_bit(3, sample_bits));
     (void)container_of(&s.link, struct sample, link);
+    (void)kmalloc(16, GFP_KERNEL);
+    (void)kzalloc(16, GFP_KERNEL);
+    (void)kcalloc(2, 8, GFP_KERNEL);
+    kfree(NULL);
+    (void)vmalloc(4096);
+    vfree(NULL);
+    (void)alloc_pages(GFP_KERNEL | __GFP_ZERO, 0);
+    (void)__get_free_pages(GFP_KERNEL, 0);
+    free_pages(0, 0);
+    (void)page_address(NULL);
+    (void)page_to_phys(NULL);
+    (void)kstrdup("driver", GFP_KERNEL);
+    (void)kasprintf(GFP_KERNEL, "driver %d", 1);
     (void)sample_xa;
     (void)sample_idr;
     return 0;
