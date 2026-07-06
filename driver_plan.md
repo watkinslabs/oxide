@@ -4,14 +4,13 @@ Date: 2026-07-06
 
 ACTIVE NOW: none
 
-Current active item: none. B576 has local x86_64/aarch64 proof and is ready for
-PR/merge.
+Current active item: none. B576 is merged and post-merge smoke-verified on
+fresh `main`.
 Last verified branch:
-`B576-virtio-input-live-rebind-proof` has local x86_64/aarch64 targeted proof;
-PR/merge/post-merge sync still pending.
+`B576-virtio-input-live-rebind-proof` merged as PR #2674 at `1753d2b1`;
+fresh-main post-merge x86_64/aarch64 normal-login smokes passed.
 
-Next gate: PR/merge B576, sync `main`, run post-merge x86_64/aarch64 smoke,
-then claim the next row from fresh `main`.
+Next gate: claim the next row from fresh `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -371,7 +370,7 @@ Status legend:
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for block. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for net. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for DRM/fbdev. |
-| VERIFIED LOCAL | B576-virtio-input-live-rebind-proof | Virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. B576 adds `/bin/virtio_input_rebind_probe`, targeted smoke wrapper/Make targets, and rootfs mode/cache wiring. Kernel fixes: devtmpfs hot-unplug invalidates stale `/dev/input/eventN` dentries and sysfs model remove invalidates stale `/sys/devices/virtual/input/eventN` plus `/sys/class/input/eventN` dentries. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, line caps, x86_64 `/tmp/b576-x86-virtio-input-rebind.log`, and aarch64 `/tmp/b576-arm-virtio-input-rebind.log`. PR/merge pending. |
+| VERIFIED MERGED | B576-virtio-input-live-rebind-proof | Virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. B576 adds `/bin/virtio_input_rebind_probe`, targeted smoke wrapper/Make targets, and rootfs mode/cache wiring. Kernel fixes: devtmpfs hot-unplug invalidates stale `/dev/input/eventN` dentries and sysfs model remove invalidates stale `/sys/devices/virtual/input/eventN` plus `/sys/class/input/eventN` dentries. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b576-x86-virtio-input-rebind.log`, aarch64 `/tmp/b576-arm-virtio-input-rebind.log`, PR #2674 merged as `1753d2b1`, and fresh-main post-merge login smokes reached `oxide login:` on x86_64 in 46s and aarch64 in 52s. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for sound. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for RNG. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for UART. |
