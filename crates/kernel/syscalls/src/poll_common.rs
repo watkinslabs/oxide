@@ -51,11 +51,11 @@ impl PollWaiter {
     /// `deadline_ns` passes (the latter only matters for polled fds with no
     /// event source — e.g. timerfd — and for the caller's timeout).
     /// # SAFETY: process ctx; preempt-off across the syscall; park marks
-    /// Sleeping + stamps the deadline; tick_yield yields into the scheduler.
+    /// Sleeping + stamps the deadline; park_yield yields into the scheduler.
     /// # C: O(1) + ctxsw
     pub(crate) unsafe fn park_until(&self, deadline_ns: u64) {
-        // SAFETY: caller (sys_poll/sys_select) is the running task on this CPU in process context, preempt-off; park_with_deadline marks it Sleeping + stamps the deadline, tick_yield reschedules.
-        unsafe { self.wq.park_with_deadline(deadline_ns); sched::live::tick_yield(); }
+        // SAFETY: caller (sys_poll/sys_select) is the running task on this CPU in process context, preempt-off; park_with_deadline marks it Sleeping + stamps the deadline; park_yield yields WITHOUT halting (this task is Sleeping — idle provides the IRQ-window; avoids the one-task-per-tick wake-latency stall).
+        unsafe { self.wq.park_with_deadline(deadline_ns); sched::live::park_yield(); }
     }
 }
 

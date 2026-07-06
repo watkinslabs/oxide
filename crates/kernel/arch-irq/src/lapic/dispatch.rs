@@ -41,6 +41,13 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
         hal_x86_64::VEC_TIMER => {
             TICK_COUNT.fetch_add(1, Ordering::Relaxed);
             crate::irqstat::hit_timer();
+            // debug-wakelat: measure the real LAPIC periodic-tick period +
+            // flag any stalled inter-tick gap (H3).
+            #[cfg(feature = "debug-wakelat")]
+            {
+                use hal::TimerOps;
+                sched::live::wakelat::note_tick(hal_x86_64::X86TimerOps::monotonic_ns().0);
+            }
             // Per-CPU heartbeat + cross-CPU hard-lockup scan (runs on every
             // CPU that ticks, so a frozen CPU is observed by another).
             sched::diag::percpu::tick();
