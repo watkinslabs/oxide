@@ -59,6 +59,7 @@ struct snd_ctl_elem_info {
 #define CTL_SUBSCRIBE  _IOWR('U', 0x16, int)
 #define CTL_PCM_NEXT   _IOWR('U', 0x30, int)
 #define CTL_PCM_INFO   _IOWR('U', 0x31, struct snd_pcm_info)
+#define PCM_INFO       _IOR('A', 0x01, struct snd_pcm_info)
 
 static const char *driver = "/sys/bus/virtio/drivers/virtio-snd";
 
@@ -205,6 +206,46 @@ static int prove_two_cards(const char *tag) {
     return 0;
 }
 
+static int prove_pcm_node(const char *path, int want_card, int want_stream, const char *tag) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        printf("%s: FAIL open %s errno=%d\n", tag, path, errno);
+        emit_status(tag, "FAIL");
+        return 1;
+    }
+    struct snd_pcm_info pi;
+    memset(&pi, 0, sizeof pi);
+    if (ioctl(fd, PCM_INFO, &pi) < 0) {
+        printf("%s: FAIL PCM_INFO path=%s errno=%d\n", tag, path, errno);
+        emit_status(tag, "FAIL");
+        close(fd);
+        return 1;
+    }
+    close(fd);
+    if ((int)pi.card != want_card || (int)pi.stream != want_stream || pi.device != 0 || pi.subdevice != 0) {
+        printf("%s: FAIL direct route card=%u dev=%u sub=%u stream=%u want_card=%d want_stream=%d\n",
+               tag, pi.card, pi.device, pi.subdevice, pi.stream, want_card, want_stream);
+        emit_status(tag, "FAIL");
+        return 1;
+    }
+    printf("%s: PASS\n", tag);
+    emit_status(tag, "PASS");
+    return 0;
+}
+
+static int prove_direct_pcm_nodes(const char *phase) {
+    char tag[64];
+    snprintf(tag, sizeof tag, "b570_pcmC0D0p_%s", phase);
+    if (prove_pcm_node("/dev/snd/pcmC0D0p", 0, STREAM_PLAYBACK, tag)) return 1;
+    snprintf(tag, sizeof tag, "b570_pcmC1D0p_%s", phase);
+    if (prove_pcm_node("/dev/snd/pcmC1D0p", 1, STREAM_PLAYBACK, tag)) return 1;
+    snprintf(tag, sizeof tag, "b570_pcmC0D0c_%s", phase);
+    if (prove_pcm_node("/dev/snd/pcmC0D0c", 0, STREAM_CAPTURE, tag)) return 1;
+    snprintf(tag, sizeof tag, "b570_pcmC1D0c_%s", phase);
+    if (prove_pcm_node("/dev/snd/pcmC1D0c", 1, STREAM_CAPTURE, tag)) return 1;
+    return 0;
+}
+
 static int expect_missing_elem(int fd, const char *tag) {
     struct snd_ctl_elem_info info;
     memset(&info, 0, sizeof info);
@@ -310,6 +351,7 @@ int main(void) {
         prove_two_cards("b399_snd_cards_initial")) return 1;
     if (prove_control_card("/dev/snd/controlC0", 0, "b420_controlC0_initial") ||
         prove_control_card("/dev/snd/controlC1", 1, "b420_controlC1_initial")) return 1;
+    if (prove_direct_pcm_nodes("initial")) return 1;
 
     char names[MAX_DEVS][MAX_NAME];
     int n = list_bound(names);
@@ -333,6 +375,7 @@ int main(void) {
     if (prove_two_cards("b399_snd_cards_after_rebind")) return 1;
     if (prove_control_card("/dev/snd/controlC0", 0, "b420_controlC0_after_rebind") ||
         prove_control_card("/dev/snd/controlC1", 1, "b420_controlC1_after_rebind")) return 1;
+    if (prove_direct_pcm_nodes("after_rebind")) return 1;
     if (run_probe("/bin/snd_probe")) return 1;
 
     emit_line("driver_path_smoke: PASS - GPU sound block net virtio-snd-multidev-rebind\n");

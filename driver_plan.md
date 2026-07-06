@@ -2,7 +2,7 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B570-alsa-pcm-info-card-proof in source audit
+ACTIVE NOW: B570-alsa-pcm-info-card-proof verified locally; PR/merge pending
 
 Current active item: Direct ALSA PCM `PCM_INFO` on PCM nodes must report the
 node card number instead of hard-coded/default card metadata.
@@ -10,8 +10,8 @@ Last verified branch:
 `B569-x86-login-cgroup-audit` merged as PR #2661 and passed fresh-main
 x86_64/aarch64 normal-login smokes.
 
-Next gate: audit sound PCM_INFO source, fix any hard-coded/default card metadata,
-run focused hosted sound tests, then prove x86_64/aarch64 runtime behavior.
+Next gate: commit, push, open PR, merge, sync fresh `main`, then run
+post-merge x86_64/aarch64 virtio-snd multidev smokes.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -333,7 +333,7 @@ Status legend:
 | VERIFIED | B394-sound-card-owner-keyed-numbers | Sound card layer allocates owner-keyed ALSA card numbers: `SoundCard` stores `owner` and `card`, `reserve_card(owner)` is idempotent per owner and allocates first free card for new owners, `card_number(owner)` selects by owner, and `unregister_card(owner)` removes only that owner; focused owner/card regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2447 merge, and local main sync to `origin/main` at `db69465f` pass. |
 | VERIFIED | B395-sound-card-per-card-node-publication | Sound card layer publishes per-card ALSA/OSS nodes: `publish_card_nodes(owner, card, ...)` emits `snd/controlC<N>`, direction-gated `snd/pcmC<N>D0[p|c]`, card-scaled OSS nodes, and card-0 legacy aliases; `register_card(owner)` stores published node handles and `unregister_card(owner)` deletes only those handles; focused per-card node regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2448 merge, and local main sync to `origin/main` at `a76db156` pass. |
 | VERIFIED | B396-sound-ops-route-by-owner | Sound ops route by owner: node dispatch carries `SndData.owner`, `ops_for(owner)` selects exact owner with live card reservation, PCM/capture/control/OSS paths pass the explicit owner through state lookup and backend callbacks, and focused owner-routing regression, full sound tests, x86_64/aarch64 driver-path proof, PR #2449 merge, and local main sync to `origin/main` at `cac90846` pass. |
-| ACTIVE | B570-alsa-pcm-info-card-proof | Direct ALSA PCM `PCM_INFO` on PCM nodes must report the node card number instead of hard-coded/default card metadata. Source audit started on fresh `main` after B569 PR #2661 merge; `metadata/index.md` advanced B 570 -> 571. |
+| VERIFIED LOCAL | B570-alsa-pcm-info-card-proof | Direct ALSA PCM `PCM_INFO` on PCM nodes now reports the node card number instead of hard-coded/default card metadata: production `/dev/snd/pcmC<N>D0p` and `/dev/snd/pcmC<N>D0c` dispatch passes the model-owned `SndData.card` into playback/capture PCM ioctl handlers, playback writes `PI_CARD=card`, and capture writes `PI_DEVICE=0`, `PI_SUBDEVICE=0`, `PI_STREAM=capture`, and `PI_CARD=card`. Checks pass: focused hosted regression `direct_pcm_info_reports_node_card_number`, serial `cargo test -q -p sound -- --nocapture --test-threads=1` with 17/17, serial `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` with sound 17/17 and drv-virtio-snd 15/15, `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 virtio-snd multidev live proof `/tmp/b570-x86-virtio-snd-multidev.log`, and aarch64 virtio-snd multidev live proof `/tmp/b570-arm-virtio-snd-multidev.log`; both live logs pass direct `b570_pcmC{0,1}D0{p,c}` PCM_INFO checks before and after rebind. PR/merge pending. |
 | NOT DONE | TBD | Hosted `sound` tests share global card state and can fail under default parallel execution; serial `--test-threads=1` passes. |
 | VERIFIED | B397-sound-unregister-rejects-non-owners | Sound unregister rejects non-owners: `unregister_card(owner)` first requires an exact owner record before deleting stored node handles or clearing control/OSS/capture/PCM/ops state; focused non-owner unregister test, serial full sound tests, x86_64/aarch64 driver-path proof, PR #2450 merge, and local main sync to `origin/main` at `e5fe3f55` pass. |
 | VERIFIED | B398-virtio-snd-eventq-owner-accounting | Virtio-snd raw EVENTQ accounting is keyed by transport owner: EVENTQ rings, buffer PA, last-used, avail idx, and raw/drained counters live in `Ctx` records selected by `device_key`; focused drain regression proves only the advanced context records/requeues events, full drv-virtio-snd tests, x86_64/aarch64 driver-path proof, PR #2451 merge, and local main sync to `origin/main` at `a6506b42` pass. |

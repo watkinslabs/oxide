@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B570-alsa-pcm-info-card-proof is ACTIVE on branch
-`B570-alsa-pcm-info-card-proof`; source audit is checking direct ALSA PCM
-`PCM_INFO` card-number reporting.
+Current marker: B570-alsa-pcm-info-card-proof is VERIFIED LOCAL on branch
+`B570-alsa-pcm-info-card-proof`; next gate is commit, push, PR, merge, fresh-main
+sync, and post-merge x86_64/aarch64 virtio-snd multidev smokes.
 
 ## B570 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B570-alsa-pcm-info-card-proof | ACTIVE | Fresh `main` at B569 PR #2661 merge commit `4909421e`; B569 post-merge fresh-main normal-login proof passed with x86_64 log `/tmp/b569-postmerge-x86-login-smoke.log` and aarch64 log `/tmp/b569-postmerge-arm-login-smoke.log`. `metadata/index.md` advanced B 570 -> 571. Source audit in progress for direct ALSA PCM `PCM_INFO` on PCM nodes. |
+| B570-alsa-pcm-info-card-proof | VERIFIED LOCAL | Fresh `main` at B569 PR #2661 merge commit `4909421e`; B569 post-merge fresh-main normal-login proof passed with x86_64 log `/tmp/b569-postmerge-x86-login-smoke.log` and aarch64 log `/tmp/b569-postmerge-arm-login-smoke.log`. `metadata/index.md` advanced B 570 -> 571. Source audit found direct playback PCM_INFO hard-coded `PI_CARD=0` and direct capture PCM_INFO left the zeroed card/device/subdevice fields as defaults. Production `/dev/snd/pcmC<N>D0p` and `/dev/snd/pcmC<N>D0c` dispatch now passes model-owned `SndData.card` into playback/capture PCM ioctl handlers; playback writes `PI_CARD=card`; capture writes `PI_DEVICE=0`, `PI_SUBDEVICE=0`, `PI_STREAM=capture`, and `PI_CARD=card`. Hosted checks pass: focused `direct_pcm_info_reports_node_card_number`, serial `cargo test -q -p sound -- --nocapture --test-threads=1` with 17/17, serial `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` with sound 17/17 and drv-virtio-snd 15/15, `cargo check -q -p xtask`, `git diff --check`, and line caps. Live proof passes on x86_64 (`/tmp/b570-x86-virtio-snd-multidev.log`) and aarch64 (`/tmp/b570-arm-virtio-snd-multidev.log`), including direct `b570_pcmC0D0p`, `b570_pcmC1D0p`, `b570_pcmC0D0c`, and `b570_pcmC1D0c` PCM_INFO card checks before and after rebind. |
 
 ## B569 Current
 

@@ -35,10 +35,10 @@ fn refine(owner: crate::SoundOwnerKey, b: &UserBuf, commit: bool) -> i64 {
 
 /// Handle one `SNDRV_PCM_IOCTL_*` on the playback substream.
 /// # C: O(1) excluding the blocking transfer in WRITEI
-pub fn handle(owner: crate::SoundOwnerKey, nr: u64, arg: u64) -> i64 {
+pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 {
     match nr {
         PCM_PVERSION => write_int(arg, SNDRV_PCM_VERSION),
-        PCM_INFO => pcm_info(owner, arg),
+        PCM_INFO => pcm_info(owner, card, arg),
         PCM_TSTAMP | PCM_TTSTAMP => err(Errno::Enotty),
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, false), None => err(Errno::Efault) },
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, true), None => err(Errno::Efault) },
@@ -128,14 +128,14 @@ fn write_long(arg: u64, v: u64) -> i64 {
     match UserBuf::new(arg, 8) { Some(b) => { b.w64(0, v); 0 } None => err(Errno::Efault) }
 }
 
-fn pcm_info(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
+fn pcm_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
     if caps(owner).is_none() || !is_registered(owner) { return err(Errno::Enodev); }
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     b.zero(0, PCM_INFO_SIZE);
     b.w32(PI_DEVICE, 0);
     b.w32(PI_SUBDEVICE, 0);
     b.w32(PI_STREAM, STREAM_PLAYBACK as u32);
-    b.w32(PI_CARD, 0);
+    b.w32(PI_CARD, card);
     b.wstr(PI_ID, b"virtio-snd", 64);
     b.wstr(PI_NAME, b"virtio-snd PCM", 80);
     b.wstr(PI_SUBNAME, b"subdevice #0", 32);
