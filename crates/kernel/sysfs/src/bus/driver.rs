@@ -4,9 +4,9 @@ use alloc::vec::Vec;
 
 use vfs::{mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use super::device::make_link_inode;
+use super::device::{dev_canon, make_link_inode};
 use crate::{DIR_PERM, RW_PERM};
-use super::ids::{dev_root_canon, INO_DRIVER_ATTR, INO_DRIVER_DIR};
+use super::ids::{INO_DRIVER_ATTR, INO_DRIVER_DIR};
 
 struct DriverDirData { bus: &'static str, driver: &'static str }
 
@@ -27,7 +27,7 @@ impl InodeOps for DriverDirOps {
         if !is_bound { return Err(VfsError::Enoent); }
         // from /sys/bus/<bus>/drivers/<driver>/<addr>
         // to /sys/devices/<root>/<addr>
-        let t = alloc::format!("../../../../{}/{}", dev_root_canon(data.bus), name);
+        let t = alloc::format!("../../../../{}", dev_canon(data.bus, name));
         Ok(make_link_inode(t.into_bytes()))
     }
 }

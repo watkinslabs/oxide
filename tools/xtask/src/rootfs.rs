@@ -106,7 +106,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "mtmalloc_smoke", "sigmalloc_smoke", "mremap_alias_smoke", "rawecho_smoke", "termios_rt_smoke", "isatty_smoke", "pollecho_smoke",
         "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
-        "socketpair_fork_probe", "tty_reset_probe", "dsr_probe", "vtswitch_probe", "vtmode_probe", "vtresize_probe", "kdfont_probe", "fbdev_probe", "fbdev_probe2", "vcs_probe", "ptyhup_probe", "hwrng_probe", "virtio_rng_rebind_probe", "virtio_parent_child_rebind_probe", "uart_rebind_probe", "ps2_rebind_probe", "virtio_input_rebind_probe", "netstats_probe", "vsock_probe", "drm_probe", "drm_probe2", "drm_probe3", "sysblock_probe", "snd_probe", "mouseprobe",
+        "socketpair_fork_probe", "tty_reset_probe", "dsr_probe", "vtswitch_probe", "vtmode_probe", "vtresize_probe", "kdfont_probe", "fbdev_probe", "fbdev_probe2", "vcs_probe", "ptyhup_probe", "hwrng_probe", "virtio_rng_rebind_probe", "virtio_parent_child_rebind_probe", "uart_rebind_probe", "ps2_rebind_probe", "virtio_input_rebind_probe", "netstats_probe", "vsock_probe", "drm_probe", "drm_probe2", "drm_probe3", "sysblock_probe", "sysbus_bind_probe", "snd_probe", "mouseprobe",
         "msix_net_rx_probe", "virtio_net_multidev_probe", "virtio_snd_multidev_probe", "virtio_gpu_multidev_probe", "virtio_blk_multidev_probe", "storage_multictrl_probe",
     ] {
         put(&user(b), &format!("/bin/{b}"))?;
@@ -235,6 +235,11 @@ exec /bin/virtio_blk_multidev_probe
 b"#!/bin/sh
 set -eu
 exec /bin/sysblock_probe
+"
+        } else if std::env::var_os("OXIDE_SYSBUS_BIND_SMOKE").is_some() {
+b"#!/bin/sh
+set -eu
+exec /bin/sysbus_bind_probe
 "
         } else if std::env::var_os("OXIDE_MSIX_NET_RX_SMOKE").is_some() {
 b"#!/bin/sh
