@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B514-virtio-blk-io-freeze-proof verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: none; B515-nvme-ahci-bar-devres-proof verified on x86_64 and aarch64, next row not claimed yet.
 
-Current active item: none. B514 remains on branch
-`B514-virtio-blk-io-freeze-proof` until commit, PR, merge, fresh main sync, and
+Current active item: none. B515 remains on branch
+`B515-nvme-ahci-bar-devres-proof` until commit, PR, merge, fresh main sync, and
 metadata/index.md branch number check complete.
 
-Next gate after merge: return to fresh `origin/main` before claiming B515 using
+Next gate after merge: return to fresh `origin/main` before claiming B516 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -238,7 +238,7 @@ Status legend:
 | SOURCE OK |  | AHCI keeps typed per-BDF block-device state. |
 | SOURCE OK |  | NVMe remove unregisters disks, quiesces hardware, returns queue/bounce frames. |
 | SOURCE OK |  | AHCI remove unregisters disks, quiesces hardware, returns queue/bounce frames. |
-| NOT DONE | TBD | NVMe/AHCI BAR mappings are dropped on probe failure/remove; needs leak/fault proof. |
+| VERIFIED | B515-nvme-ahci-bar-devres-proof | NVMe/AHCI BAR mappings are dropped on probe failure/remove: NVMe/AHCI probe failure after PCI command enable now disables PCI command on missing BAR or failed init; remove/shutdown now release the controller first so `shutdown_and_free` can quiesce hardware and unmap the owned `mmio_map::Mapping` before PCI MEM/BUS_MASTER decode is disabled; BAR alignment uses named page masks instead of inline `0xFFF`. Hosted lifecycle regressions prove remove/shutdown cleanup releases the controller before PCI command disable and failed-probe cleanup disables PCI command. Checks pass: `cargo test -q -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1` with NVMe 12/12 and AHCI 7/7; storage gate `cargo test -q -p drv-nvme -p drv-ahci -p block -- --nocapture --test-threads=1` with block 33/33; broad hosted driver gate for pci/pci-boot/block/NVMe/AHCI/virtio and all virtio child drivers; `git diff --check`; touched Rust files under 500 lines (`drv-nvme/lib.rs` 416, `drv-nvme/lifecycle.rs` 67, `drv-nvme/queue.rs` 462, `drv-ahci/lib.rs` 443, `drv-ahci/lifecycle.rs` 67, `drv-ahci/port.rs` 441); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 48s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 54s. |
 | SOURCE OK |  | NVMe publication is per PCI function with `nvmeXn1` names. |
 | SOURCE OK |  | AHCI publication is per PCI function with `sdX` names. |
 | SOURCE OK | TBD | NVMe duplicate binds rejected before controller bring-up; needs hosted/live proof. |

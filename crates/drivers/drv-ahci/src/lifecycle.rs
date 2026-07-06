@@ -1,0 +1,67 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupStep {
+    ReleaseController,
+    DisablePciCommand,
+}
+
+const REMOVE_CLEANUP_STEPS: [CleanupStep; 2] = [
+    CleanupStep::ReleaseController,
+    CleanupStep::DisablePciCommand,
+];
+
+const PROBE_FAILURE_CLEANUP_STEPS: [CleanupStep; 1] = [
+    CleanupStep::DisablePciCommand,
+];
+
+/// Run remove/shutdown cleanup in Linux teardown order: quiesce owned hardware
+/// and drop BAR mappings before disabling PCI command decode.
+/// # C: O(release + disable)
+pub(crate) fn run_remove_cleanup<R, D>(mut release_controller: R, mut disable_pci_command: D)
+where
+    R: FnMut(),
+    D: FnMut(),
+{
+    for step in REMOVE_CLEANUP_STEPS {
+        match step {
+            CleanupStep::ReleaseController => release_controller(),
+            CleanupStep::DisablePciCommand => disable_pci_command(),
+        }
+    }
+}
+
+/// Run failed-probe cleanup after an attempted controller init has returned and
+/// any owned BAR mapping passed to it has dropped through RAII.
+/// # C: O(disable)
+pub(crate) fn run_probe_failure_cleanup<D>(mut disable_pci_command: D)
+where
+    D: FnMut(),
+{
+    for step in PROBE_FAILURE_CLEANUP_STEPS {
+        match step {
+            CleanupStep::ReleaseController => {}
+            CleanupStep::DisablePciCommand => disable_pci_command(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{run_probe_failure_cleanup, run_remove_cleanup};
+
+    #[test]
+    fn remove_cleanup_releases_controller_before_pci_command_disable() {
+        let steps = core::cell::Cell::new(0u16);
+        run_remove_cleanup(
+            || { steps.set((steps.get() << 8) | b'R' as u16); },
+            || { steps.set((steps.get() << 8) | b'D' as u16); },
+        );
+        assert_eq!(steps.get(), u16::from_be_bytes(*b"RD"));
+    }
+
+    #[test]
+    fn probe_failure_cleanup_disables_pci_command() {
+        let mut disabled = false;
+        run_probe_failure_cleanup(|| { disabled = true; });
+        assert!(disabled);
+    }
+}
