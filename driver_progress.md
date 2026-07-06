@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B585-uart-live-rebind-loops-proof is ACTIVE on branch
-`B585-uart-live-rebind-loops-proof`. Target: repeated UART/serial
-bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+Current marker: B585-uart-live-rebind-loops-proof is VERIFIED on branch
+`B585-uart-live-rebind-loops-proof`. Next: commit, push, PR, merge, refresh
+main, post-merge smoke, then D133 ledger update.
 
 ## B585 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B585-uart-live-rebind-loops-proof | ACTIVE | Fresh `main` at D132 ledger merge `2abcbb80`; B584 PR #2691 and ledger PR #2692 are merged, and `metadata/index.md` advanced B 585 -> 586 on this branch. Audit/code/test pending. |
+| B585-uart-live-rebind-loops-proof | VERIFIED | Fresh `main` at D132 ledger merge `2abcbb80`; B584 PR #2691 and ledger PR #2692 are merged, and `metadata/index.md` advanced B 585 -> 586 on this branch. B585 adds `/bin/uart_rebind_probe`, `smoke-uart-rebind-{x86,arm}` Make targets, and rootfs direct-init wiring. The probe discovers the active platform UART driver (`8250-serial` on x86_64, `pl011-serial` on aarch64), runs three sysfs unbind/rebind loops for `platform/serial0`, records that `/sys/bus/platform/drivers/<driver>/serial0` and `/sys/devices/platform/serial0/driver` disappear while unbound, re-proves both symlink targets after every bind, and writes through `/dev/ttyS0` after each restore. Checks pass: `cargo test -q -p drv -p sysfs -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -- --nocapture --test-threads=1` with drv 31/31 and sysfs 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-uart-rebind.sh`; line caps (`uart_rebind_probe.c` 199, `boot-smoke-uart-rebind.sh` 87, `rootfs.rs` 415, `rootfs_lists.rs` 104, `Makefile` 336); x86_64 `/tmp/b585-x86-uart-rebind.log`; aarch64 `/tmp/b585-arm-uart-rebind.log`. |
 
 ## B584 Current
 
