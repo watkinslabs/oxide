@@ -5,15 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B555-virtio-blk-remove-unregisters-disks-proof is verified
-locally from fresh `main` at B554 PR #2646 merge commit `24cf9dcd`;
-PR/merge and fresh-main smokes remain.
+Current marker: B556-virtio-blk-dead-config-pass-through-proof is claimed
+from fresh `main` at B555 PR #2647 merge commit `6d5c455c`.
+
+## B556 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B556-virtio-blk-dead-config-pass-through-proof | CLAIMED | Fresh `main` at B555 PR #2647 merge commit `6d5c455c`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 556 -> 557. Next gate: audit virtio-blk config handoff for generic `DEVICE_CFG` ownership and absence of transport-specific pass-through, strengthen hosted proof if needed, then run hosted PCI/virtio gates plus x86_64/aarch64 smokes. |
 
 ## B555 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B555-virtio-blk-remove-unregisters-disks-proof | VERIFIED LOCAL | Fresh `main` at B554 PR #2646 merge commit `24cf9dcd`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 555 -> 556. Source audit proves `VirtioBlkOps::remove_child()` calls `drv_virtio_blk::modern::remove_blk(device_key)`, `remove_blk` removes only the matching `BlkRecord`, calls `BlkState::remove()` to freeze/reset stale I/O, and routes disk teardown through `block::registry::unregister(&rec.name)`. The block registry unregister path removes the disk table entry, unpublishes the block-device bridge, and calls `drv::device_del` for the owned block model device/devtmpfs node. Strengthened hosted lifecycle regressions prove `remove_blk` drops name and `dev_t` lookup, removes the block model device, poisons stale disk I/O, permits same-key rebind with clean unregister, and preserves a second virtio-blk disk's record/name/`dev_t` until that disk is removed by its own key. Checks pass: focused `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` with blk 25/25; `cargo test -q -p pci-boot -p virtio -p drv-virtio-blk -- --nocapture --test-threads=1` with blk 25/25 and virtio 48/48; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests/lifecycle.rs` 163, `modern/init.rs` 206, `modern/state.rs` 181, `modern/engine.rs` 297, `block/src/registry.rs` 426); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. Next gate: commit, push, PR/merge, sync fresh main, and run fresh-main x86_64/aarch64 smokes. |
+| B555-virtio-blk-remove-unregisters-disks-proof | VERIFIED MERGED | Fresh `main` at B554 PR #2646 merge commit `24cf9dcd`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 555 -> 556. Source audit proves `VirtioBlkOps::remove_child()` calls `drv_virtio_blk::modern::remove_blk(device_key)`, `remove_blk` removes only the matching `BlkRecord`, calls `BlkState::remove()` to freeze/reset stale I/O, and routes disk teardown through `block::registry::unregister(&rec.name)`. The block registry unregister path removes the disk table entry, unpublishes the block-device bridge, and calls `drv::device_del` for the owned block model device/devtmpfs node. Strengthened hosted lifecycle regressions prove `remove_blk` drops name and `dev_t` lookup, removes the block model device, poisons stale disk I/O, permits same-key rebind with clean unregister, and preserves a second virtio-blk disk's record/name/`dev_t` until that disk is removed by its own key. Checks pass: focused `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` with blk 25/25; `cargo test -q -p pci-boot -p virtio -p drv-virtio-blk -- --nocapture --test-threads=1` with blk 25/25 and virtio 48/48; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests/lifecycle.rs` 163, `modern/init.rs` 206, `modern/state.rs` 181, `modern/engine.rs` 297, `block/src/registry.rs` 426); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s; PR #2647 merged as `6d5c455c`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B554 Current
 
