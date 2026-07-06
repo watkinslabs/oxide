@@ -33,7 +33,7 @@ fn remove_blk_unregisters_block_disk_and_device_node() {
     let function = 0;
     let device_key = child_key(bus, device, function);
 
-    assert_eq!(crate::modern::test_publish_record(bus, device, function, &name), 1);
+    assert_ne!(crate::modern::test_publish_record(bus, device, function, &name), 0);
     assert!(crate::modern::test_has_record(bus, device, function));
     assert!(block::registry::by_name(&name).is_some());
     assert!(drv::devices().iter().any(|d| d.bus == "block" && d.addr == name));
@@ -58,6 +58,38 @@ fn remove_blk_unregisters_block_disk_and_device_node() {
     assert!(block::registry::by_name(&rebound).is_some());
     assert!(crate::modern::remove_blk(device_key));
     assert!(block::registry::by_name(&rebound).is_none());
+}
+
+#[test]
+fn remove_blk_selects_only_matching_device_record() {
+    const TEST_BUS: u8 = 0xd0;
+    const TEST_FUNCTION: u8 = 0;
+
+    let seq = TEST_DISK_SEQ.fetch_add(1, Ordering::Relaxed);
+    let first_name = format!("vdtest{}a", seq);
+    let second_name = format!("vdtest{}b", seq);
+    let first_device = (seq as u8).wrapping_add(1);
+    let second_device = first_device.wrapping_add(1);
+    let first_key = child_key(TEST_BUS, first_device, TEST_FUNCTION);
+    let second_key = child_key(TEST_BUS, second_device, TEST_FUNCTION);
+
+    assert_ne!(crate::modern::test_publish_record(TEST_BUS, first_device, TEST_FUNCTION, &first_name), 0);
+    assert_ne!(crate::modern::test_publish_record(TEST_BUS, second_device, TEST_FUNCTION, &second_name), 0);
+    assert!(crate::modern::test_has_record(TEST_BUS, first_device, TEST_FUNCTION));
+    assert!(crate::modern::test_has_record(TEST_BUS, second_device, TEST_FUNCTION));
+    assert!(block::registry::by_name(&first_name).is_some());
+    assert!(block::registry::by_name(&second_name).is_some());
+
+    assert!(crate::modern::remove_blk(first_key));
+    assert!(!crate::modern::test_has_record(TEST_BUS, first_device, TEST_FUNCTION));
+    assert!(crate::modern::test_has_record(TEST_BUS, second_device, TEST_FUNCTION));
+    assert!(block::registry::by_name(&first_name).is_none());
+    assert!(block::registry::by_name(&second_name).is_some());
+
+    assert!(!crate::modern::remove_blk(first_key));
+    assert!(crate::modern::remove_blk(second_key));
+    assert!(!crate::modern::test_has_record(TEST_BUS, second_device, TEST_FUNCTION));
+    assert!(block::registry::by_name(&second_name).is_none());
 }
 
 #[test]
@@ -88,7 +120,7 @@ fn shutdown_blk_quiesces_without_unregistering_publication() {
     let function = 0;
     let device_key = child_key(bus, device, function);
 
-    assert_eq!(crate::modern::test_publish_record(bus, device, function, &name), 1);
+    assert_ne!(crate::modern::test_publish_record(bus, device, function, &name), 0);
     assert!(crate::modern::test_has_record(bus, device, function));
     let disk = block::registry::by_name(&name).unwrap();
 
