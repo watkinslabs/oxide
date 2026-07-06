@@ -2,13 +2,13 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B524-virtio-device-cfg-resource-proof
+ACTIVE NOW: B524-virtio-device-cfg-resource-proof verified locally; pending commit, PR, merge, and fresh-main sync.
 
-Current active item: row 182, Generic mapped `DEVICE_CFG` window is carried to
-child drivers.
+Current active item: none. Last verified item: row 182, Generic mapped
+`DEVICE_CFG` window is carried to child drivers.
 
-Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
-return to fresh `origin/main`.
+Next gate: commit B524 evidence, push PR, merge, return to fresh `origin/main`,
+then claim the next row with the metadata branch counter.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -179,7 +179,7 @@ Status legend:
 | VERIFIED |  | Shared `VirtioResources` / `VirtQueueResource` handoff exists. |
 | VERIFIED |  | Queue lookup validation centralized through `require_queue`. |
 | VERIFIED |  | Child probes declare `VirtioChildRequirements`. |
-| >>> ACTIVE >>> IN AUDIT | B524-virtio-device-cfg-resource-proof | Generic mapped `DEVICE_CFG` window is carried to child drivers. |
+| VERIFIED | B524-virtio-device-cfg-resource-proof | Generic mapped `DEVICE_CFG` window is carried to child drivers: source audit proves pci-boot maps `VIRTIO_PCI_CAP_DEVICE_CFG` through transport-owned `TransportMappings`, carries `device_cfg_va` through `VirtioTransportProbeResult` / `VirtioChildResourceState`, rejects missing config when `VirtioChildRequirements::needs_device_cfg` is true, and builds child `VirtioResources` with the mapped config VA; blk/net/input/vsock/snd child drivers consume `resources.device_cfg_va` directly with named config layout constants instead of pci-boot pass-through or inline protocol literals. Checks pass: focused virtio/PCI/child hosted gate; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`drv-virtio-blk` init 196, `drv-virtio-input` registry 294, `drv-virtio-net` state 296, `drv-virtio-snd` lifecycle 240); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 | VERIFIED |  | Virtio extra queue setup uses transport queue plan rather than `needs_q1/q2/q3` booleans. |
 | VERIFIED |  | Shared `virtio::queue_cfg` owns common-cfg queue programming protocol. |
 | SOURCE OK |  | Virtio-pci supplies PMM/HHDM queue allocator adapter. |
