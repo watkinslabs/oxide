@@ -2,17 +2,16 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B576-virtio-input-live-rebind-proof in audit
+ACTIVE NOW: none
 
-Current active item: QEMU-visible runtime bind/unbind/rebind certification is
-still incomplete for input; B576 is auditing and closing virtio-input live
-sysfs rebind proof on x86_64 and aarch64.
+Current active item: none. B576 has local x86_64/aarch64 proof and is ready for
+PR/merge.
 Last verified branch:
-`B574-qemu-rebind-certification-audit` merged as PR #2668 at `1ff61f7d`;
-fresh-main post-merge x86_64/aarch64 normal-login smokes passed.
+`B576-virtio-input-live-rebind-proof` has local x86_64/aarch64 targeted proof;
+PR/merge/post-merge sync still pending.
 
-Next gate: prove virtio-input sysfs bind/unbind/rebind restores evdev state on
-x86_64 and aarch64, then PR/merge/sync main.
+Next gate: PR/merge B576, sync `main`, run post-merge x86_64/aarch64 smoke,
+then claim the next row from fresh `main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -372,7 +371,7 @@ Status legend:
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for block. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for net. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for DRM/fbdev. |
-| ACTIVE | B576-virtio-input-live-rebind-proof | Prove virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. |
+| VERIFIED LOCAL | B576-virtio-input-live-rebind-proof | Virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. B576 adds `/bin/virtio_input_rebind_probe`, targeted smoke wrapper/Make targets, and rootfs mode/cache wiring. Kernel fixes: devtmpfs hot-unplug invalidates stale `/dev/input/eventN` dentries and sysfs model remove invalidates stale `/sys/devices/virtual/input/eventN` plus `/sys/class/input/eventN` dentries. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, line caps, x86_64 `/tmp/b576-x86-virtio-input-rebind.log`, and aarch64 `/tmp/b576-arm-virtio-input-rebind.log`. PR/merge pending. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for sound. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for RNG. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for UART. |
