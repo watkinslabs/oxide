@@ -2,13 +2,13 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B523-virtio-pci-msix-plural-binding-proof
+ACTIVE NOW: B524-virtio-device-cfg-resource-proof
 
-Current active item: row 176, VERIFIED locally; pending commit, PR, merge, and
-fresh `main` sync.
+Current active item: row 182, Generic mapped `DEVICE_CFG` window is carried to
+child drivers.
 
-Next gate: commit B523 proof, push PR, merge, return to fresh `origin/main`,
-then claim the next row.
+Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
+return to fresh `origin/main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -179,7 +179,7 @@ Status legend:
 | VERIFIED |  | Shared `VirtioResources` / `VirtQueueResource` handoff exists. |
 | VERIFIED |  | Queue lookup validation centralized through `require_queue`. |
 | VERIFIED |  | Child probes declare `VirtioChildRequirements`. |
-| SOURCE OK |  | Generic mapped `DEVICE_CFG` window is carried to child drivers. |
+| >>> ACTIVE >>> IN AUDIT | B524-virtio-device-cfg-resource-proof | Generic mapped `DEVICE_CFG` window is carried to child drivers. |
 | VERIFIED |  | Virtio extra queue setup uses transport queue plan rather than `needs_q1/q2/q3` booleans. |
 | VERIFIED |  | Shared `virtio::queue_cfg` owns common-cfg queue programming protocol. |
 | SOURCE OK |  | Virtio-pci supplies PMM/HHDM queue allocator adapter. |
