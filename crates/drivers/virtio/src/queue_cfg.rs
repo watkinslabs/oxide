@@ -299,6 +299,47 @@ mod tests {
     }
 
     #[test]
+    fn program_queue_set_writes_extra_queue_msix_vector_by_plan_index() {
+        const TEST_Q0_MSIX_VECTOR: u16 = 3;
+        const TEST_EXTRA_QUEUE_INDEX: u16 = 3;
+        const TEST_UNPLANNED_QUEUE_INDEX: u16 = 1;
+        const TEST_EXTRA_MSIX_VECTOR: u16 = 7;
+        const TEST_QUEUE_SIZE: u16 = 128;
+        const TEST_COMMON_CFG_WORDS: usize = 8;
+        const TEST_PROGRAMMED_QUEUE_FRAMES: usize = 6;
+        let mut cfg = [0u64; TEST_COMMON_CFG_WORDS];
+        let base = cfg.as_mut_ptr() as u64;
+        // SAFETY: base points at this test's fake common-cfg register block
+        // and CFG_QUEUE_SIZE is the aligned u16 queue-size field.
+        unsafe {
+            core::ptr::write_volatile((base + CFG_QUEUE_SIZE) as *mut u16, TEST_QUEUE_SIZE);
+        }
+        let mut extra_plans = [None; MAX_RESOURCE_QUEUES];
+        extra_plans[TEST_EXTRA_QUEUE_INDEX as usize] =
+            Some(VirtioQueuePlan::new(TEST_EXTRA_QUEUE_INDEX, None, true)
+                .with_msix_vec(TEST_EXTRA_MSIX_VECTOR));
+        let mut allocator = TestAllocator::new(TEST_PROGRAMMED_QUEUE_FRAMES);
+
+        let queues = program_queue_set(base, &mut allocator, TEST_Q0_MSIX_VECTOR, &extra_plans)
+            .expect("q0 and planned extra queue should program");
+        // SAFETY: base points at this test's fake common-cfg register block
+        // and CFG_QUEUE_MSIX is the aligned u16 queue MSI-X field.
+        let programmed_msix = unsafe {
+            core::ptr::read_volatile((base + CFG_QUEUE_MSIX) as *const u16)
+        };
+        // SAFETY: base points at this test's fake common-cfg register block
+        // and CFG_QUEUE_SELECT is the aligned u16 queue-select field.
+        let selected_queue = unsafe {
+            core::ptr::read_volatile((base + CFG_QUEUE_SELECT) as *const u16)
+        };
+
+        assert!(queues.extra_queue(TEST_EXTRA_QUEUE_INDEX).is_some());
+        assert!(queues.extra_queue(TEST_UNPLANNED_QUEUE_INDEX).is_none());
+        assert_eq!(programmed_msix, TEST_EXTRA_MSIX_VECTOR);
+        assert_eq!(selected_queue, QUEUE_ZERO);
+    }
+
+    #[test]
     fn programmed_queues_are_indexed_by_virtqueue() {
         let ring = |index: u16| QueueRing {
             desc_pa: 0x1000 + index as u64,

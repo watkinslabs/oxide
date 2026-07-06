@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B540-msix-queue-indexed-callback-proof audits row 215; branch
-claimed from fresh `main` at B538 merge commit `b33998e5`.
+Current marker: B540-msix-queue-indexed-callback-proof verified locally for row
+215; PR/merge/post-merge fresh-main smokes pending.
 
 ## B540 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B540-msix-queue-indexed-callback-proof | IN AUDIT | Fresh `main` at B538 PR #2634 merge commit `b33998e5`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 539 -> 541 because local branch `B539-tmpfs-mount-opts` already occupies B539, so reusing B539 would violate the no-reused-counter rule. Target row: prove extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |
+| B540-msix-queue-indexed-callback-proof | VERIFIED LOCALLY | Fresh `main` at B538 PR #2634 merge commit `b33998e5`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 539 -> 541 because local branch `B539-tmpfs-mount-opts` already occupies B539, so reusing B539 would violate the no-reused-counter rule. Source audit proves `VirtioQueuePlan` carries queue `index`, optional `msix_handler`, resolved `msix_vec`, and notify-mapping policy; child transport profiles place handlers on the intended queue plans, including virtio-snd EVENTQ(1). `VirtioProbeState::resolve_queue_plan_msix()` walks planned extra queues, calls `bind_msix_queue(d, caps, bars, plan.index, plan.msix_handler)`, falls back to `VIRTIO_MSI_NO_VECTOR` when no handler/vector exists, and writes the result back with `plan.with_msix_vec(msix_vec)`. Shared `virtio::program_queue_set()` then programs each planned extra queue with `program_queue(cfg_va, plan.index, plan.msix_vec, allocator)`. Added hosted regression `program_queue_set_writes_extra_queue_msix_vector_by_plan_index` proving a planned extra queue writes its resolved MSI-X vector through the queue-indexed common-cfg path while leaving unplanned queues absent. Checks pass: focused `cargo test -q -p virtio -- --nocapture --test-threads=1` with shared virtio 47/47; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`queue_cfg.rs` 362, `queue_handoff.rs` 243, `virtio_drv/probe_state.rs` 298, `resources/profile.rs` 157); branch smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 36s. |
 
 ## B538 Current
 
