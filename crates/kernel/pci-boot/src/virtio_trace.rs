@@ -74,35 +74,32 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioPciProbeTrace) {
             klog::write_hex_u64(p.isr_status as u64);
             klog::write_raw(b"\n");
         }
-        let q0 = p.queue_resources[0];
-        let q1 = p.queue_resources[1];
-
-        if q1.notify_va != 0 {
-            klog::write_raw(b"[INFO]  virtio-tx ");
+        for q in p.queue_resources.iter() {
+            if q.size == 0 && q.desc_pa == 0 && q.notify_va == 0 { continue; }
+            klog::write_raw(b"[INFO]  virtio-qres ");
             klog::write_dec_u64(bdf.bus as u64);
             klog::write_raw(b":");
             klog::write_dec_u64(bdf.device as u64);
             klog::write_raw(b".");
             klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" q1_notify_off=");
-            klog::write_dec_u64(q1.notify_off as u64);
-            klog::write_raw(b" q1_notify_va=");
-            klog::write_hex_u64(q1.notify_va);
-            klog::write_raw(b"\n");
-        }
-        if q0.notify_va != 0 {
-            klog::write_raw(b"[INFO]  virtio-notify ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" q=0 off=");
-            klog::write_hex_u64(q0.notify_off as u64);
-            klog::write_raw(b" va=");
-            klog::write_hex_u64(q0.notify_va);
+            klog::write_raw(b" q=");
+            klog::write_dec_u64(q.index as u64);
+            klog::write_raw(b" size=");
+            klog::write_dec_u64(q.size as u64);
+            klog::write_raw(b" desc_pa=");
+            klog::write_hex_u64(q.desc_pa);
+            klog::write_raw(b" driver_pa=");
+            klog::write_hex_u64(q.driver_pa);
+            klog::write_raw(b" device_pa=");
+            klog::write_hex_u64(q.device_pa);
+            klog::write_raw(b" notify_off=");
+            klog::write_hex_u64(q.notify_off as u64);
+            klog::write_raw(b" notify_va=");
+            klog::write_hex_u64(q.notify_va);
             klog::write_raw(b" post_status=");
             klog::write_hex_u64(p.post_notify_status as u64);
+            klog::write_raw(b" final_status=");
+            klog::write_hex_u64(p.final_status as u64);
             klog::write_raw(b"\n");
         }
         //: read back queue_msix_vector (high u16 of queue_size/msix dword)
@@ -124,22 +121,5 @@ pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioPciProbeTrace) {
         klog::write_raw(b" msi_fires=");
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
-        if q0.desc_pa != 0 {
-            klog::write_raw(b"[INFO]  virtio-q0-prog ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" desc_pa=");
-            klog::write_hex_u64(q0.desc_pa);
-            klog::write_raw(b" driver_pa=");
-            klog::write_hex_u64(q0.driver_pa);
-            klog::write_raw(b" device_pa=");
-            klog::write_hex_u64(q0.device_pa);
-            klog::write_raw(b" final_status=");
-            klog::write_hex_u64(p.final_status as u64);
-            klog::write_raw(b"\n");
-        }
     }
 }
