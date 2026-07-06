@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: D134-b586-ledger-merged is ACTIVE on branch
-`D134-b586-ledger-merged`. Target: record B586 merged state and advance
-D 134 -> 135; next driver row starts only after this ledger PR merges.
+Current marker: B587-dri-devnode-hotremove-proof is ACTIVE on branch
+`B587-dri-devnode-hotremove-proof`. Target: fix/prove the concrete
+`/dev/dri/card1` stale-open case named by the class-contract row.
+
+## B587 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B587-dri-devnode-hotremove-proof | ACTIVE | Fresh `main` at D134 ledger merge `aa75f941`; B586 PR #2695 and ledger PR #2696 are merged, and `metadata/index.md` advanced B 587 -> 588 on this branch. Audit/code/test pending. Existing local branches `B576-pathid-sysfs-nest` and `S1b-devfs-nsvis` were observed during lane check and are not touched by this branch. |
 
 ## B586 Current
 
