@@ -9,7 +9,7 @@
 // responsible for device-mapping the relevant range into kernel VA
 // before constructing `EcamPci` with the matching base VA.
 //
-// Mirrors `hal_x86_64::pci::LegacyPci` so `pci::ConfigSpaceReader`
+// Mirrors `hal_x86_64::pci::EcamPci` so `pci::ConfigSpaceReader`
 // drives both arches uniformly from `pci::enumerate`.
 
 #[cfg(target_arch = "aarch64")]

@@ -1,4 +1,4 @@
-use super::{device_flags, KERNEL_DEVICE_BASE};
+use super::{device_flags, map_ecam_window, ECAM_BASE_VA, KERNEL_DEVICE_BASE};
 use hal::{MmuOps, Pa, PageSize, Va};
 
 /// HPET phys base on QEMU q35 (matches MADT log).
@@ -94,5 +94,16 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
                 klog::write_raw(b"\n");
             }
         }
+    }
+
+    let ecam_pa = firmware::acpi::ECAM_BASE_PA
+        .load(core::sync::atomic::Ordering::Acquire);
+    let ecam_bus_cap = firmware::acpi::ecam_bus_cap();
+    if ecam_pa != 0 && ecam_bus_cap != 0 {
+        // SAFETY: ACPI MCFG provided the ECAM physical aperture; this boot-only
+        // mapping publishes Device-attr config-space MMIO before PCI enum.
+        unsafe { map_ecam_window::<X86Mmu>(ecam_pa, ecam_bus_cap); }
+        hal_x86_64::pci::ECAM_BASE_VA
+            .store(ECAM_BASE_VA, core::sync::atomic::Ordering::Release);
     }
 }

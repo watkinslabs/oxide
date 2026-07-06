@@ -1,4 +1,4 @@
-use super::{device_flags, KERNEL_DEVICE_BASE};
+use super::{device_flags, map_ecam_window, ECAM_BASE_VA, KERNEL_DEVICE_BASE};
 use hal::{MmuOps, Pa, PageSize, Va};
 
 #[path = "its.rs"]
@@ -220,27 +220,18 @@ use hal_aarch64::{timer as arm_timer, pl011};
     }
 
     // PCIe ECAM device-mapping. After acpi::decode_mcfg published
-    // the segment-0 base PA, map bus 0 (256 × 4 KiB = 1 MiB) at a
-    // dedicated kernel VA so `hal_aarch64::pci::EcamPci` can MMIO
-    // the per-BDF config space. v1 only enumerates bus 0 (one
-    // segment, one bus is enough for QEMU virt's host + virtio
-    // devices); higher buses fault if probed and need a follow-up.
+    // the segment-0 base PA and bus range, map the advertised first
+    // segment window at a dedicated kernel VA so all reachable bridge
+    // buses can be probed through `hal_aarch64::pci::EcamPci`.
     let ecam_pa = firmware::acpi::ECAM_BASE_PA
         .load(core::sync::atomic::Ordering::Acquire);
-    if ecam_pa != 0 {
-        // Disjoint VA from KERNEL_DEVICE_BASE so the (pa & 0xffff_ffff)
-        // convention there isn't aliased.
-        const ECAM_BUS0_VA: u64 = 0xffff_fe00_0000_0000;
-        for page in 0..256u64 {
-            let pa = ecam_pa + page * 0x1000;
-            let va = ECAM_BUS0_VA + page * 0x1000;
-            // SAFETY: same contract as the GICD/PL011 maps above —
-            // single-CPU pre-init, MmuOps state initialised; ECAM_PA
-            // came from ACPI MCFG so QEMU has the matching device.
-            unsafe { <ArmMmu as MmuOps>::map(Va(va), Pa(pa), device_flags(), PageSize::P4K); }
-        }
+    let ecam_bus_cap = firmware::acpi::ecam_bus_cap();
+    if ecam_pa != 0 && ecam_bus_cap != 0 {
+        // SAFETY: same contract as the GICD/PL011 maps above — single-CPU
+        // pre-init, MmuOps state initialised, and ECAM_PA came from ACPI MCFG.
+        unsafe { map_ecam_window::<ArmMmu>(ecam_pa, ecam_bus_cap); }
         hal_aarch64::pci::ECAM_BASE_VA
-            .store(ECAM_BUS0_VA, core::sync::atomic::Ordering::Release);
+            .store(ECAM_BASE_VA, core::sync::atomic::Ordering::Release);
     }
 
     // F36: GICv2m MSI frame device-map (1 page) + read MSI_TYPER at +0x008.
@@ -251,7 +242,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
         .load(core::sync::atomic::Ordering::Acquire);
     if v2m_pa != 0 {
         const V2M_VA: u64 = 0xffff_fc00_0000_0000;
-        // SAFETY: GICv2m frame map: single-CPU pre-init, MmuOps state initialised, v2m_pa came from MADT type-13 entry, V2M_VA disjoint from KERNEL_DEVICE_BASE and ECAM_BUS0_VA.
+        // SAFETY: GICv2m frame map: single-CPU pre-init, MmuOps state initialised, v2m_pa came from MADT type-13 entry, V2M_VA disjoint from KERNEL_DEVICE_BASE and ECAM_BASE_VA.
         unsafe { <ArmMmu as MmuOps>::map(Va(V2M_VA), Pa(v2m_pa), device_flags(), PageSize::P4K); }
         // F45: publish VA so pci_boot self-fire diagnostic can write SETSPI_NS directly.
         arch_irq::GICV2M_VA.store(V2M_VA, core::sync::atomic::Ordering::Release);

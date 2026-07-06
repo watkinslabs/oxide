@@ -4,8 +4,7 @@
 extern crate alloc;
 
 // PCI enumeration boot helper — wraps `pci::enumerate` with per-arch
-// `ConfigSpaceReader` selection (x86 LegacyPci CF8/CFC, aarch64
-// EcamPci MMIO seeded by `device_map_smoke_arm`). Split out of
+// ECAM `ConfigSpaceReader` selection seeded by device-map bring-up. Split out of
 // `lib.rs` to keep that file under the 1000-line cap (08§7).
 
 /// Map `n_pages` of MMIO at PA `pa` (4K-aligned) into kernel VA space.
@@ -47,8 +46,10 @@ fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
     let resources = {
         #[cfg(target_arch = "x86_64")]
         {
-            let r = hal_x86_64::pci::LegacyPci;
-            pci::probe_bar_resources(&r, bdf)
+            match hal_x86_64::pci::EcamPci::from_published() {
+                Some(r) => pci::probe_bar_resources(&r, bdf),
+                None => [None; 6],
+            }
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -74,22 +75,21 @@ fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
 /// device under `debug-boot`. The PCI crate walks bridge windows; arch
 /// setup still determines which config-space buses are addressable.
 /// # SAFETY: caller is the boot path; per-arch ConfigSpaceReader
-/// has been brought up (CF8/CFC available on x86; ECAM device-mapped
-/// + `ECAM_BASE_VA` published on aarch64).
+/// has been brought up and `ECAM_BASE_VA` published.
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
     let devs = {
         #[cfg(target_arch = "x86_64")]
         {
-            let r = hal_x86_64::pci::LegacyPci;
-            pci::enumerate(&r)
+            match hal_x86_64::pci::EcamPci::from_published() {
+                Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
+                None => alloc::vec::Vec::new(),
+            }
         }
         #[cfg(target_arch = "aarch64")]
         {
             match hal_aarch64::pci::EcamPci::from_published() {
-                // Current aarch64 ECAM setup maps bus 0 only; bridge-window
-                // enumeration honors that cap until full-segment ECAM lands.
-                Some(r) => pci::enumerate_buses(&r, 1),
+                Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
                 None    => alloc::vec::Vec::new(),
             }
         }
