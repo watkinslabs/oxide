@@ -5,15 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B604-synthetic-virtio-child-binding-audit is VERIFIED LOCAL /
-PR PENDING from fresh `main` at D149 ledger merge `a896b387`. B604 advances
-`metadata/index.md` B 604 -> 605.
+Current marker: no active branch. Claim the next NOT DONE row from fresh
+`main`. B604-synthetic-virtio-child-binding-audit is merged as PR #2730 at
+`6dfdb24b`; D150 records the merged state and advances `metadata/index.md` D
+150 -> 151.
 
 ## B604 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B604-synthetic-virtio-child-binding-audit | VERIFIED LOCAL / PR PENDING | Claimed from fresh `main` at D149 ledger merge `a896b387`; target row is the old claim that synthetic virtio devices are registered but runtime binding still direct PCI boot. Duplicate-lane check found no B604/synthetic-virtio branch or worktree. Source audit proves `VirtioPciDrv::probe` publishes child model devices on the `virtio` bus with PCI parent links through `drv::try_device_add`; `virtio_drv::register_model_drivers()` registers the virtio-pci parent and then the virtio child drivers; `VirtioChildDriver<B,O>` matches by `virtio` bus plus `VirtioChildDriverId` device ID, opens a `VirtioChildSession`, runs child-specific `probe_child`, and publishes transport state only after child probe succeeds. pci-boot registers child wrappers for net, blk, rng, vsock, snd, input, and gpu. Hosted gate passes: `cargo test -q -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with net 25/25, blk 36/36, gpu 39/39, input 17/17, rng 9/9, vsock 15/15, snd 11/11, virtio 49/49, and pci-boot compile-only. B604 changes docs/metadata only, so x86_64/aarch64 runtime state is inherited from fresh `main` at D149 ledger merge `a896b387`, where the merged driver-model/virtio proofs kept live boot green on both arches. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
+| B604-synthetic-virtio-child-binding-audit | VERIFIED MERGED | Claimed from fresh `main` at D149 ledger merge `a896b387`; target row is the old claim that synthetic virtio devices are registered but runtime binding still direct PCI boot. Duplicate-lane check found no B604/synthetic-virtio branch or worktree. Source audit proves `VirtioPciDrv::probe` publishes child model devices on the `virtio` bus with PCI parent links through `drv::try_device_add`; `virtio_drv::register_model_drivers()` registers the virtio-pci parent and then the virtio child drivers; `VirtioChildDriver<B,O>` matches by `virtio` bus plus `VirtioChildDriverId` device ID, opens a `VirtioChildSession`, runs child-specific `probe_child`, and publishes transport state only after child probe succeeds. pci-boot registers child wrappers for net, blk, rng, vsock, snd, input, and gpu. Hosted gate passes: `cargo test -q -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with net 25/25, blk 36/36, gpu 39/39, input 17/17, rng 9/9, vsock 15/15, snd 11/11, virtio 49/49, and pci-boot compile-only. B604 changes docs/metadata only, so x86_64/aarch64 runtime state is inherited from fresh `main` at D149 ledger merge `a896b387`, where the merged driver-model/virtio proofs kept live boot green on both arches. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. PR #2730 merged at `6dfdb24b`; D150 records the merged state and advances D 150 -> 151. |
 
 ## B603 Current
 
