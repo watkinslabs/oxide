@@ -18,6 +18,18 @@ fn add_char(class: &'static str, addr: &str, devname: &str, dt: (u32, u32)) -> A
     dev
 }
 
+fn add_char_env(class: &'static str, addr: &str, devname: &str, dt: (u32, u32), env: &str)
+    -> Arc<drv::Device>
+{
+    let dev = Arc::new(
+        drv::Device::new(class, String::from(addr), 0, 0, 0)
+            .with_devnode(class, String::from(devname), Some(dt))
+            .with_uevent_env(alloc::vec![String::from(env)]),
+    );
+    drv::try_device_add(Arc::clone(&dev)).expect("test device registration");
+    dev
+}
+
 #[test]
 fn mem_class_resolves_model_backed_char_device() {
     let dev = add_char("mem", "sysfs-null-test", "null-test", (1, 3));
@@ -210,7 +222,8 @@ fn graphics_class_resolves_fbdev_nodes() {
 
 #[test]
 fn graphics_uevent_write_reemits_fbdev_model_event() {
-    let dev = add_char("graphics", "fb9", "fb9", (GRAPHICS_MAJOR, FBDEV_TEST_MINOR));
+    let dev = add_char_env(
+        "graphics", "fb9", "fb9", (GRAPHICS_MAJOR, FBDEV_TEST_MINOR), "DEVTYPE=fb");
     let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
     listener.set_group_mask(1);
     netlink::register_uevent_listener(&listener);
@@ -218,6 +231,9 @@ fn graphics_uevent_write_reemits_fbdev_model_event() {
     let root = make_virtual_class_inode("graphics", INO_VIRT_GRAPHICS);
     let dir = root.lookup("fb9").expect("graphics device dir");
     let uevent = dir.lookup("uevent").expect("uevent attr");
+    let mut buf = [0u8; 80];
+    let n = uevent.read(0, &mut buf).expect("read graphics uevent");
+    assert!(buf[..n].windows(b"DEVTYPE=fb".len()).any(|w| w == b"DEVTYPE=fb"));
     assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
 
     let msg = (0..64)
@@ -230,6 +246,7 @@ fn graphics_uevent_write_reemits_fbdev_model_event() {
     assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
     assert!(msg.windows(b"SUBSYSTEM=graphics".len()).any(|w| w == b"SUBSYSTEM=graphics"));
     assert!(msg.windows(b"DEVNAME=fb9".len()).any(|w| w == b"DEVNAME=fb9"));
+    assert!(msg.windows(b"DEVTYPE=fb".len()).any(|w| w == b"DEVTYPE=fb"));
     assert!(msg.windows(major.len()).any(|w| w == major.as_bytes()));
     assert!(msg.windows(minor.len()).any(|w| w == minor.as_bytes()));
 
