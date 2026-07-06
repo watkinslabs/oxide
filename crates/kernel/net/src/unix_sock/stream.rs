@@ -194,6 +194,22 @@ impl UnixPair {
         // Tag the burst to the offset of the first byte of THIS write so a
         // reader delivers it with (never before) that byte.
         if !fds.is_empty() {
+            // [SCMW] AF_UNIX SOCK_STREAM SCM_RIGHTS send probe: logs the
+            // sender vpid + fd count of every fd-carrying write. On the
+            // D-Bus system bus the only fd-carrying stream messages are
+            // logind's CreateSessionWithPIDFD (leader pidfd) and its reply
+            // (session_fd), so this maps every hop of the two-hop broker
+            // relay with near-zero noise. Kept permanently behind the
+            // `debug-scmfd` cargo feature (default-off).
+            #[cfg(feature = "debug-scmfd")]
+            {
+                let vpid = sched::live::current().map(|c| c.visible_pid()).unwrap_or(0);
+                klog::write_raw(b"[SCMW pid=");
+                klog::write_dec_u64(vpid as u64);
+                klog::write_raw(b" nfds=");
+                klog::write_dec_u64(fds.len() as u64);
+                klog::write_raw(b"]\n");
+            }
             let off = g.produced;
             g.fds.push_back((off, fds));
         }
