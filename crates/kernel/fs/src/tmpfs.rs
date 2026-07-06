@@ -30,6 +30,7 @@ mod flags;
 mod fs;
 mod inode;
 mod limits;
+mod mount_opts;
 mod special;
 mod symlink;
 mod uapi;
