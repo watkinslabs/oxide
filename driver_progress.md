@@ -5,8 +5,7 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B591-pci-lifecycle-runtime-semantics is VERIFIED, pending
-commit/push/PR/merge.
+Current marker: D139-b591-ledger-merged records B591 as VERIFIED MERGED.
 PCI lifecycle/runtime semantics are the first concrete unverified driver gap
 after B415; B415 remains aggregate-only until the concrete live-proof rows are
 closed. This branch starts from D138 merge `be0afcea` and fixes the generic
@@ -16,7 +15,7 @@ PCI bridge-window enumeration path.
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B591-pci-lifecycle-runtime-semantics | VERIFIED | Fresh `main` at D138 ledger merge `be0afcea`; B590 PR #2704 and ledger PR #2705 are merged, and `metadata/index.md` advances B 591 -> 592 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. B591 fixes generic PCI enumeration so it starts at root bus 0, discovers PCI-PCI bridge secondary/subordinate bus windows, queues only reachable bus numbers, ignores unbridged orphan buses, and still honors the arch bus cap for currently mapped ECAM. Hosted tests prove bridge-child discovery, orphan-bus rejection, and cap behavior. Checks pass: `cargo test -q -p pci -- --nocapture --test-threads=1` 19/19; `cargo test -q -p pci -p drv -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1` with pci 19/19, drv 31/31, drv-nvme 12/12, and drv-ahci 7/7; `cargo check -q -p pci-boot`; `git diff --check`; line caps (`scan.rs` 96, `tests.rs` 442, `pci-boot/src/lib.rs` 300). Full branch `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 34s and aarch64 reaching `oxide login:` in 41s. Source audit also found remaining PCI gaps not fixed by B591 and now recorded in `driver_plan.md`: x86_64 still uses CF8/CFC instead of ECAM, aarch64 still maps only bus 0 ECAM, and broader command/BAR/MSI/runtime semantics remain NOT DONE. Pending commit, push, PR, merge, fresh-main smoke, and D139 ledger. |
+| B591-pci-lifecycle-runtime-semantics | VERIFIED MERGED | Fresh `main` at D138 ledger merge `be0afcea`; B590 PR #2704 and ledger PR #2705 are merged, and `metadata/index.md` advanced B 591 -> 592 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. B591 fixes generic PCI enumeration so it starts at root bus 0, discovers PCI-PCI bridge secondary/subordinate bus windows, queues only reachable bus numbers, ignores unbridged orphan buses, and still honors the arch bus cap for currently mapped ECAM. Hosted tests prove bridge-child discovery, orphan-bus rejection, and cap behavior. Checks pass: `cargo test -q -p pci -- --nocapture --test-threads=1` 19/19; `cargo test -q -p pci -p drv -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1` with pci 19/19, drv 31/31, drv-nvme 12/12, and drv-ahci 7/7; `cargo check -q -p pci-boot`; `git diff --check`; line caps (`scan.rs` 96, `tests.rs` 442, `pci-boot/src/lib.rs` 300). Full branch `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 34s and aarch64 reaching `oxide login:` in 41s; pre-push smoke passed both arches; PR #2706 merged as `b0fbe90f`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 34s and aarch64 reaching `oxide login:` in 40s. Source audit also found remaining PCI gaps not fixed by B591 and now recorded in `driver_plan.md`: x86_64 still uses CF8/CFC instead of ECAM, aarch64 still maps only bus 0 ECAM, and broader command/BAR/MSI/runtime semantics remain NOT DONE. D139 records the merged state and advances D 139 -> 140. |
 
 ## B590 Current
 
