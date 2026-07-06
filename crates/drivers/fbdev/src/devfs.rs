@@ -274,6 +274,7 @@ pub fn register_node(idx: u32) -> bool {
     let dev = match drv::try_device_add(Arc::new(
         drv::Device::new("graphics", alloc::format!("fb{idx}"), 0, 0, idx)
             .with_devnode("graphics", alloc::format!("fb{idx}"), Some((29, idx)))
+            .with_uevent_env(alloc::vec![alloc::string::String::from("DEVTYPE=fb")])
             .with_node_factory(Arc::new(move || make_fb_inode(idx))),
     )) {
         Ok(dev) => dev,

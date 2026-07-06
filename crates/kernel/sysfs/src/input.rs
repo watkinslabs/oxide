@@ -24,6 +24,7 @@ struct InputDevInfo {
     addr: String,
     dev_t: (u32, u32),
     devname: String,
+    uevent_env: Vec<String>,
     parent_bus: Option<&'static str>,
     parent_addr: Option<String>,
 }
@@ -40,6 +41,7 @@ fn input_devs() -> Vec<InputDevInfo> {
                 addr: d.addr.clone(),
                 dev_t: dt,
                 devname: dn,
+                uevent_env: d.uevent_env.clone(),
                 parent_bus: d.parent_bus,
                 parent_addr: d.parent_addr.clone(),
             })
@@ -75,11 +77,15 @@ fn parent_device_target(info: &InputDevInfo) -> Option<Vec<u8>> {
 struct InputDevDirData { addr: String }
 
 fn input_uevent_body(info: &InputDevInfo) -> Vec<u8> {
-    alloc::format!(
+    let mut body = alloc::format!(
         "MAJOR={}\nMINOR={}\nDEVNAME={}\n",
         info.dev_t.0, info.dev_t.1, info.devname,
-    )
-    .into_bytes()
+    );
+    for entry in info.uevent_env.iter() {
+        body.push_str(entry);
+        body.push('\n');
+    }
+    body.into_bytes()
 }
 
 struct InputUeventData { info: InputDevInfo }
@@ -95,8 +101,10 @@ impl FileOps for InputUeventOps {
         let devname = alloc::format!("DEVNAME={}", d.info.devname);
         let maj = alloc::format!("MAJOR={}", d.info.dev_t.0);
         let min = alloc::format!("MINOR={}", d.info.dev_t.1);
+        let mut env = Vec::from([devname.as_str(), maj.as_str(), min.as_str()]);
+        env.extend(d.info.uevent_env.iter().map(|entry| entry.as_str()));
         ::netlink::emit_uevent_with_env(
-            crate::uevent_action(b), &devpath, "input", &[&devname, &maj, &min]);
+            crate::uevent_action(b), &devpath, "input", &env);
         Ok(b.len())
     }
 }
@@ -280,7 +288,12 @@ mod tests {
     fn input_uevent_write_reemits_model_event() {
         let input = Arc::new(
             drv::Device::new("input", String::from("event-trigger0"), 0, 0, 0)
-                .with_devnode("input", String::from("input/event-trigger0"), Some((13, 82))),
+                .with_devnode("input", String::from("input/event-trigger0"), Some((13, 82)))
+                .with_uevent_env(alloc::vec![
+                    String::from("PRODUCT=3/1234/5678/9abc"),
+                    String::from("NAME=\"oxide keyboard\""),
+                    String::from("UNIQ=\"input-serial\""),
+                ]),
         );
         drv::try_device_add(Arc::clone(&input)).expect("test input registration");
         let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
@@ -296,12 +309,23 @@ mod tests {
         .build();
         let dir = root.lookup("event-trigger0").expect("input device dir");
         let uevent = dir.lookup("uevent").expect("uevent attr");
+        let mut buf = [0u8; 160];
+        let n = uevent.read(0, &mut buf).expect("read uevent");
+        assert!(buf[..n].windows(b"PRODUCT=3/1234/5678/9abc".len())
+            .any(|w| w == b"PRODUCT=3/1234/5678/9abc"));
+        assert!(buf[..n].windows(b"NAME=\"oxide keyboard\"".len())
+            .any(|w| w == b"NAME=\"oxide keyboard\""));
+        assert!(buf[..n].windows(b"UNIQ=\"input-serial\"".len())
+            .any(|w| w == b"UNIQ=\"input-serial\""));
         assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
         let (msg, _src) = listener.dequeue().expect("uevent message");
         assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
         assert!(msg.windows(b"DEVPATH=/devices/virtual/input/event-trigger0".len()).any(|w| w == b"DEVPATH=/devices/virtual/input/event-trigger0"));
         assert!(msg.windows(b"SUBSYSTEM=input".len()).any(|w| w == b"SUBSYSTEM=input"));
         assert!(msg.windows(b"DEVNAME=input/event-trigger0".len()).any(|w| w == b"DEVNAME=input/event-trigger0"));
+        assert!(msg.windows(b"PRODUCT=3/1234/5678/9abc".len()).any(|w| w == b"PRODUCT=3/1234/5678/9abc"));
+        assert!(msg.windows(b"NAME=\"oxide keyboard\"".len()).any(|w| w == b"NAME=\"oxide keyboard\""));
+        assert!(msg.windows(b"UNIQ=\"input-serial\"".len()).any(|w| w == b"UNIQ=\"input-serial\""));
 
         drv::device_del(&input);
     }
