@@ -5,14 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B556-virtio-blk-dead-config-pass-through-proof is claimed
-from fresh `main` at B555 PR #2647 merge commit `6d5c455c`.
+Current marker: B556-virtio-blk-dead-config-pass-through-proof is verified
+locally from fresh `main` at B555 PR #2647 merge commit `6d5c455c`;
+PR/merge pending.
 
 ## B556 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B556-virtio-blk-dead-config-pass-through-proof | CLAIMED | Fresh `main` at B555 PR #2647 merge commit `6d5c455c`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 556 -> 557. Next gate: audit virtio-blk config handoff for generic `DEVICE_CFG` ownership and absence of transport-specific pass-through, strengthen hosted proof if needed, then run hosted PCI/virtio gates plus x86_64/aarch64 smokes. |
+| B556-virtio-blk-dead-config-pass-through-proof | VERIFIED LOCAL | Fresh `main` at B555 PR #2647 merge commit `6d5c455c`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 556 -> 557. Source audit proves `VirtioBlkOps::probe_child()` passes only generic `session.child_resources()` plus `device_key`/features into `drv_virtio_blk::modern::init_blk`, pci-boot maps `VIRTIO_PCI_CAP_DEVICE_CFG` into generic `VirtioResources.device_cfg_va` through `VirtioTransportProbeResult` / `VirtioChildResourceState`, and `drv-virtio-blk::modern::read_device_config()` owns capacity/block-size reads through named shared virtio blk config offsets. Negative search finds no pci-boot blk-specific config/pass-through struct or harvest path. Existing hosted config regressions prove capacity and negotiated block size are read from generic child config, default sector size is used without `VIRTIO_BLK_F_BLK_SIZE`, missing generic config is rejected, and the blk transport profile declares queue 0 plus generic device config requirements. Checks pass: focused `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` with blk 25/25; `cargo test -q -p pci-boot -p virtio -p drv-virtio-blk -- --nocapture --test-threads=1` with blk 25/25 and virtio 48/48; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests/config.rs` 61, `modern/init.rs` 206, `modern/state.rs` 181, `modern/engine.rs` 297, `virtio_child.rs` 398, `virtio_drv/probe_state.rs` 298, `virtio_drv/probe.rs` 178, `resources/child.rs` 377); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B555 Current
 
