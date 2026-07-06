@@ -2,15 +2,16 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B568-arm-noprogress-watchdog-audit verified local; PR/merge pending
+ACTIVE NOW: B569-x86-login-cgroup-audit claimed
 
-Current active item: Intermittent ARM no-progress watchdog.
+Current active item: x86_64 normal login smoke cgroup/getty failure.
 Last verified branch:
-`B567-ahci-identify-serial-proof` merged as PR #2659 and passed
-fresh-main x86_64/aarch64 storage smokes.
+`B568-arm-noprogress-watchdog-audit` merged as PR #2660 and passed
+fresh-main x86_64/aarch64 driver-path smokes.
 
-Next gate: commit/push B568 audit proof, open/merge PR, sync fresh main, run
-post-merge lockstep driver-path proof, then claim the next unverified row.
+Next gate: reproduce B569 with durable x86_64 normal-login logs, identify the
+cgroup/getty failure path, fix root cause if current main still reproduces,
+then verify lockstep.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -251,8 +252,8 @@ Status legend:
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input clears event-queue bottom half when last queue removed. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input shutdown uses explicit event-queue quiesce path. |
 | VERIFIED | B327-virtio-input-queue-quiesce | Virtio-input hot-remove/shutdown address drain state by owning child key. |
-| VERIFIED LOCAL | B568-arm-noprogress-watchdog-audit | Intermittent ARM no-progress watchdog audit: historical failing logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/b383-arm-driver-path.log`, and `/tmp/b421-pci-identity-mismatch-arm-noprogress.log` stop after QEMU launches and GRUB prints `Booting oxide (EFI-stub)`, before any `driver_path_smoke` service output or `mouseprobe` start marker. Current fresh main at B567 PR #2659 merge commit `23d538f7` does not reproduce the no-progress failure: five sequential durable ARM driver-path runs passed (`/tmp/b568-arm-driver-path-1.log` through `/tmp/b568-arm-driver-path-5.log`), each reaching `driver_path_smoke: START`, `fbdev_probe`, `drm_probe`, `sysblock_probe`, `snd_probe`, `rtlink_probe`, `b002_net_eth0`, `driver_path_smoke: run mouseprobe`, `mouseprobe: PASS`, and final `driver_path_smoke: PASS - GPU input sound block net`. Lockstep x86_64 driver-path proof also passed with `/tmp/b568-x86-driver-path.log`. No current kernel-side failure reproduced; PR/merge and post-merge lockstep proof remain pending. |
-| NOT DONE | TBD | x86_64 normal login smoke can miss `oxide login:` while targeted driver-path/storage smokes pass: during B563, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` timed out all three attempts after the storage multicontroller x86 proof passed. Captured output from attempt 1 showed systemd/getty still alive but failing `console-getty.service` cgroup attach/spawn (`Failed to attach to cgroup /system.slice/console-getty.service`, `Failed at step CGROUP`) rather than an NVMe/storage failure. Temp logs were removed by the harness; rerun with durable `KEEP_LOG` when investigating. |
+| VERIFIED MERGED | B568-arm-noprogress-watchdog-audit | Intermittent ARM no-progress watchdog audit: historical failing logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/b383-arm-driver-path.log`, and `/tmp/b421-pci-identity-mismatch-arm-noprogress.log` stop after QEMU launches and GRUB prints `Booting oxide (EFI-stub)`, before any `driver_path_smoke` service output or `mouseprobe` start marker. Current fresh main at B567 PR #2659 merge commit `23d538f7` does not reproduce the no-progress failure: five sequential durable ARM driver-path runs passed (`/tmp/b568-arm-driver-path-1.log` through `/tmp/b568-arm-driver-path-5.log`), each reaching `driver_path_smoke: START`, `fbdev_probe`, `drm_probe`, `sysblock_probe`, `snd_probe`, `rtlink_probe`, `b002_net_eth0`, `driver_path_smoke: run mouseprobe`, `mouseprobe: PASS`, and final `driver_path_smoke: PASS - GPU input sound block net`. Lockstep x86_64 driver-path proof also passed with `/tmp/b568-x86-driver-path.log`; PR #2660 merged as `81b94914`; post-merge fresh-main driver-path proof passed on x86_64 (`/tmp/b568-postmerge-x86-driver-path.log`) and aarch64 (`/tmp/b568-postmerge-arm-driver-path.log`). |
+| ACTIVE | B569-x86-login-cgroup-audit | x86_64 normal login smoke can miss `oxide login:` while targeted driver-path/storage smokes pass: during B563, `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` timed out all three attempts after the storage multicontroller x86 proof passed. Captured output from attempt 1 showed systemd/getty still alive but failing `console-getty.service` cgroup attach/spawn (`Failed to attach to cgroup /system.slice/console-getty.service`, `Failed at step CGROUP`) rather than an NVMe/storage failure. Temp logs were removed by the harness. B569 target: rerun with durable logs, determine whether current main still reproduces, and fix the cgroup/getty path if kernel-side failure remains. |
 | VERIFIED | B328-virtio-input-drain-split | Virtio-input `drain.rs` split into focused keymap pipeline, queue lifetime, and ring-drain modules before more growth; `cargo test -p drv-virtio-input`, fast x86_64 driver path, and fast aarch64 driver path pass. |
 | VERIFIED |  | `/proc/bus/input/devices` advertises `/devices/virtual/input/eventN`. |
 | VERIFIED |  | Evdev `EVIOCGRAB` is per open file. |
