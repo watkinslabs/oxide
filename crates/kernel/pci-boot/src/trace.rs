@@ -1,3 +1,4 @@
+#[cfg(feature = "debug-boot")]
 use crate::map_mmio_pages;
 
 /// Emit one `[INFO] pci-bar <bdf> N <kind>=...` line per programmed BAR.
@@ -9,8 +10,10 @@ pub(crate) fn bar_dump_arch(bdf: pci::Bdf) {
         let bars = {
             #[cfg(target_arch = "x86_64")]
             {
-                let r = hal_x86_64::pci::LegacyPci;
-                pci::decode_bars(&r, bdf)
+                match hal_x86_64::pci::EcamPci::from_published() {
+                    Some(r) => pci::decode_bars(&r, bdf),
+                    None    => [pci::Bar::None; 6],
+                }
             }
             #[cfg(target_arch = "aarch64")]
             {
@@ -82,8 +85,10 @@ pub(crate) fn cap_dump_arch(d: &pci::PciDevice) {
         let caps = {
             #[cfg(target_arch = "x86_64")]
             {
-                let r = hal_x86_64::pci::LegacyPci;
-                pci::capabilities(&r, bdf)
+                match hal_x86_64::pci::EcamPci::from_published() {
+                    Some(r) => pci::capabilities(&r, bdf),
+                    None    => pci::heapless_caps::CapVec::new(),
+                }
             }
             #[cfg(target_arch = "aarch64")]
             {
@@ -109,8 +114,10 @@ pub(crate) fn cap_dump_arch(d: &pci::PciDevice) {
                 let mx = {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let r = hal_x86_64::pci::LegacyPci;
-                        pci::decode_msix_cap(&r, bdf, c.cfg_off)
+                        match hal_x86_64::pci::EcamPci::from_published() {
+                            Some(r) => pci::decode_msix_cap(&r, bdf, c.cfg_off),
+                            None => None,
+                        }
                     }
                     #[cfg(target_arch = "aarch64")]
                     {
@@ -146,8 +153,10 @@ pub(crate) fn cap_dump_arch(d: &pci::PciDevice) {
                     let bars2 = {
                         #[cfg(target_arch = "x86_64")]
                         {
-                            let r = hal_x86_64::pci::LegacyPci;
-                            pci::decode_bars(&r, bdf)
+                            match hal_x86_64::pci::EcamPci::from_published() {
+                                Some(r) => pci::decode_bars(&r, bdf),
+                                None => [pci::Bar::None; 6],
+                            }
                         }
                         #[cfg(target_arch = "aarch64")]
                         {
@@ -197,8 +206,10 @@ pub(crate) fn cap_dump_arch(d: &pci::PciDevice) {
             let vcaps = {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    let r = hal_x86_64::pci::LegacyPci;
-                    virtio::decode_all(&r, bdf, &caps)
+                    match hal_x86_64::pci::EcamPci::from_published() {
+                        Some(r) => virtio::decode_all(&r, bdf, &caps),
+                        None => virtio::pci::heapless_v::VCapVec::new(),
+                    }
                 }
                 #[cfg(target_arch = "aarch64")]
                 {

@@ -45,8 +45,10 @@ pub(super) fn pci_device_from_pci_model(dev: &drv::Device) -> Option<pci::PciDev
 pub(super) fn pci_device_from_bdf(bdf: pci::Bdf) -> Option<pci::PciDevice> {
     #[cfg(target_arch = "x86_64")]
     {
-        let r = hal_x86_64::pci::LegacyPci;
-        pci::PciDevice::from_config(&r, bdf)
+        match hal_x86_64::pci::EcamPci::from_published() {
+            Some(r) => pci::PciDevice::from_config(&r, bdf),
+            None => None,
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {

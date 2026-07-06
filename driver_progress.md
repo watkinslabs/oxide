@@ -5,10 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B595-pci-runtime-semantics is VERIFIED MERGED as PR #2714 at
-`eb0fcead`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed on
-x86_64 and aarch64. B415 remains aggregate-only until the concrete live-proof
-rows are closed.
+Current marker: B597-pci-ecam-parity is VERIFIED on branch and pending
+PR/merge. Claim started from fresh `main` at D143 ledger merge `6c538c6a`.
+B596 is already occupied by `B596-debug-stderr`, so this lane uses B597 and
+advances B 596 -> 598.
+
+## B597 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B597-pci-ecam-parity | VERIFIED | PCI config access is ECAM-only on current production paths. Firmware publishes MCFG ECAM base plus bus start/end bounds; `smoke::device_map` maps the first ECAM segment window on both x86_64 and aarch64 with 2 MiB blocks and 4 KiB fallback; x86_64 uses `hal_x86_64::pci::EcamPci` instead of CF8/CFC `LegacyPci`; aarch64 no longer maps only bus 0; PCI enumeration, virtio-pci, NVMe, AHCI, BAR/cap/MSI-X traces, and BDF helpers use the published ECAM reader and `firmware::acpi::ecam_bus_cap()`. Source audit finds no production `LegacyPci`/CF8/CFC refs and no live `enumerate_buses(&r, 1)` cap outside the hosted test. Checks pass: `cargo test -q -p pci -p pci-boot -p firmware -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1`; `make x86`; `make arm`; `git diff --check`; line caps all touched `.rs` files under 500 (`msix.rs` 482, `drv-ahci/lib.rs` 465, `drv-nvme/lib.rs` 438). Live login proof passes on x86_64 at `/tmp/b597-x86-ecam-smoke.log` in 34s and aarch64 at `/tmp/b597-arm-ecam-smoke.log` in 38s. Claim starts from fresh `main` at D143 ledger merge `6c538c6a`; post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 36s and aarch64 reaching `oxide login:` in 40s. Duplicate-lane check found existing worktree `/home/nd/oxide-wt/B594-debug-stderr` on `B596-debug-stderr`, so this driver lane does not touch B596 and uses the next free branch number. Existing staged files not owned by this branch are not touched or staged: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B595 Current
 
