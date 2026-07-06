@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B554-virtio-blk-per-device-records-proof is claimed for
-virtio-blk per-device records audit from fresh `main` at B553 PR #2645 merge
-commit `4a0c1eb6`.
+Current marker: B554-virtio-blk-per-device-records-proof is verified locally
+for virtio-blk per-device records from fresh `main` at B553 PR #2645 merge
+commit `4a0c1eb6`; PR/merge and fresh-main smokes remain.
 
 ## B554 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B554-virtio-blk-per-device-records-proof | CLAIMED | Fresh `main` at B553 PR #2645 merge commit `4a0c1eb6`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 554 -> 555. Next gate: audit virtio-blk state ownership and pci-boot handoff, add focused proof if needed, run hosted gates plus x86_64/aarch64 smokes, then PR/merge and sync fresh main. |
+| B554-virtio-blk-per-device-records-proof | VERIFIED LOCAL | Fresh `main` at B553 PR #2645 merge commit `4a0c1eb6`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 554 -> 555. Source audit proves `BlkRecord` stores `VirtioChildDeviceKey`, disk name, and `Arc<BlkState>` in the virtio-blk registry; `VirtioBlkOps::probe_child()` passes `session.device_key()` plus generic `session.child_resources()` into `drv_virtio_blk::modern::init_blk`; duplicate same-key publication is rejected; `remove_blk` and `shutdown_blk` select records by exact child key. Added hosted regression `remove_blk_selects_only_matching_device_record`, proving two distinct virtio-blk child records coexist, removing one key unregisters only that disk/model record, and the second record remains live until removed by its own key. Also fixed existing lifecycle assertions to treat `register_with_serial` return as nonzero publish success instead of a fixed global index. Checks pass: focused `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` with blk 25/25; `cargo test -q -p pci-boot -p virtio -p drv-virtio-blk -- --nocapture --test-threads=1` with virtio 48/48; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests/lifecycle.rs` 155, `modern/init.rs` 206, `modern/state.rs` 181, `modern/engine.rs` 297, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 13s and aarch64 `oxide login:` in 16s. Next gate: commit, push, PR/merge, sync fresh main, and run fresh-main x86_64/aarch64 smokes. |
 
 ## B553 Current
 
