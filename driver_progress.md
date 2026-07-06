@@ -5,9 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active B branch. B593-driver-fault-injection-coverage is
-VERIFIED MERGED as PR #2710 at `cda82645`; B415 remains aggregate-only until
-the concrete live-proof rows are closed.
+Current marker: B594-driver-directory-symlink-proof is CLAIMED / IN AUDIT.
+B594 audits the remaining driver-directory canonical symlink live-proof row
+after B589/B593 merges; B415 remains aggregate-only until the concrete
+live-proof rows are closed.
+
+## B594 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B594-driver-directory-symlink-proof | CLAIMED / IN AUDIT | Fresh `main` at D141 ledger merge `e5d8f882`; B593 PR #2710 and ledger PR #2711 are merged, and `metadata/index.md` advances B 594 -> 595 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. First pass is source audit of sysfs driver-directory symlink generation, bind/unbind dentry invalidation, existing `sysbus_bind_probe` live proof, and any gaps for x86_64/aarch64 canonical `/sys/devices/...` targets. |
 
 ## B593 Current
 
