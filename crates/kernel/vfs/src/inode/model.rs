@@ -26,6 +26,21 @@ pub trait SealCarrier: Send + Sync {
     fn seal_word(&self) -> &AtomicU32;
 }
 
+/// Backend write-through for `chown(2)` on a SYNTHESIZED inode whose owner
+/// lives in the backing store, not the in-core inode (Linux kernfs persists
+/// chown to `kernfs_node->iattr` via `->setattr`; cgroupfs/sysfs re-create the
+/// inode on every lookup, so a plain `i_uid`/`i_gid` store would be lost). When
+/// present, [`Inode::set_owner`] invokes `persist_owner` so the new uid/gid is
+/// recorded in the backend and re-applied on the next synthesis — the mechanism
+/// that makes systemd cgroup delegation (chown of the delegated subtree to the
+/// target uid) actually take effect. Absent (`None`) on every native-storage
+/// inode, so their chown path is byte-for-byte unchanged.
+pub trait OwnerPersist: Send + Sync {
+    /// Record `(uid, gid)` in the backing store keyed by this inode's identity.
+    /// # C: backend-dependent
+    fn persist_owner(&self, uid: u32, gid: u32);
+}
+
 /// `struct inode` (`16§2`). One per in-core inode; shared by every dentry alias
 /// (hardlinks) and every open `File` on it.
 pub struct Inode {
@@ -54,6 +69,7 @@ pub struct Inode {
     pub(super) i_private:      Arc<dyn Any + Send + Sync>,
     pub(super) poll_subs:      Option<Arc<PollSubscribers>>,
     pub(super) seal_carrier:   Option<Arc<dyn SealCarrier>>,
+    pub(super) owner_persist:  Option<Arc<dyn OwnerPersist>>,
     pub(super) i_link:         Option<Box<[u8]>>,
     pub(super) i_xattrs:       Option<crate::xattr::SimpleXattrs>,
     pub(super) i_rwsem:        RwLock<(), InodeLockClass>,
