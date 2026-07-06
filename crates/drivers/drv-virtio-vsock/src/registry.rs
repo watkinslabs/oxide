@@ -58,11 +58,11 @@ impl VsockProbeState {
         Some(state)
     }
 
-    fn disarm_frames(&mut self) {
+    fn transfer_frames_to_ctx(&mut self) {
         self.owned_frames = false;
     }
 
-    fn disarm_endpoint(&mut self) {
+    fn transfer_endpoint_to_net(&mut self) {
         self.reserved_endpoint = false;
     }
 }
@@ -152,7 +152,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
         return false;
     }
     g.push(ctx);
-    probe.disarm_frames();
+    probe.transfer_frames_to_ctx();
     drop(g);
 
     crate::rx::prepost_all(device_key);
@@ -161,7 +161,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
         let _ = uninstall(device_key);
         return false;
     }
-    probe.disarm_endpoint();
+    probe.transfer_endpoint_to_net();
     if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
         softirq::set_handler(softirq::Slot::VsockRx, rx_drain_softirq);
     }
@@ -260,4 +260,91 @@ fn rx_poll_for_owner(_owner: net::vsock::VsockOwner) -> usize {
 #[cfg(test)]
 pub(crate) fn clear_ctxs_for_tests() {
     CTX.lock().clear();
+}
+
+#[cfg(test)]
+fn test_queue(index: u16) -> virtio::VirtQueueResource {
+    virtio::VirtQueueResource {
+        index,
+        size: 8,
+        desc_pa: 0,
+        driver_pa: 0,
+        device_pa: 0,
+        notify_va: 0,
+        notify_off: 0,
+    }
+}
+
+#[cfg(test)]
+fn reserve_endpoint_only_for_tests(device_key: virtio::VirtioChildDeviceKey) -> Option<VsockProbeState> {
+    let owner = vsock_owner(device_key)?;
+    if !net::vsock::driver_reserve(owner) {
+        return None;
+    }
+    Some(VsockProbeState {
+        device_key,
+        rx_bufs: [0u64; RX_RING_BUFS],
+        tx_buf_pa: 0,
+        reserved_endpoint: true,
+        owned_frames: false,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn reserved_probe_drop_releases_endpoint_for_tests(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    let Some(owner) = vsock_owner(device_key) else {
+        return false;
+    };
+    {
+        let Some(_probe) = reserve_endpoint_only_for_tests(device_key) else {
+            return false;
+        };
+        if net::vsock::driver_up_for(owner) || net::vsock::driver_reserve(owner) {
+            return false;
+        }
+    }
+    let reservable = net::vsock::driver_reserve(owner);
+    if reservable {
+        let _ = net::vsock::driver_cancel_reserved(owner);
+    }
+    reservable
+}
+
+#[cfg(test)]
+pub(crate) fn publish_failure_releases_context_and_endpoint_for_tests(
+    device_key: virtio::VirtioChildDeviceKey,
+    guest_cid: u64,
+) -> bool {
+    let Some(owner) = vsock_owner(device_key) else {
+        return false;
+    };
+    let mut probe = match reserve_endpoint_only_for_tests(device_key) {
+        Some(probe) => probe,
+        None => return false,
+    };
+    CTX.lock().push(Ctx {
+        device_key,
+        cfg_va: 0,
+        hhdm: 0,
+        guest_cid,
+        rxq: test_queue(0),
+        txq: test_queue(1),
+        rx_avail_idx: 0,
+        rx_used_seen: 0,
+        rx_bufs: probe.rx_bufs,
+        tx_avail_idx: 0,
+        tx_used_seen: 0,
+        tx_buf_pa: probe.tx_buf_pa,
+    });
+    probe.transfer_frames_to_ctx();
+    if net::vsock::driver_publish_reserved(owner, guest_cid, crate::tx_packet, rx_poll_for_owner) {
+        return false;
+    }
+    let removed = uninstall(device_key);
+    drop(probe);
+    let reservable = net::vsock::driver_reserve(owner);
+    if reservable {
+        let _ = net::vsock::driver_cancel_reserved(owner);
+    }
+    removed && reservable && !present_for(device_key) && !net::vsock::driver_up_for(owner)
 }
