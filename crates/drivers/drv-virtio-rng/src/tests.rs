@@ -98,6 +98,17 @@ fn ready_queue_record(
 }
 
 #[test]
+fn transport_profile_carries_child_feature_mask() {
+    let profile = crate::transport_profile();
+
+    assert_eq!(profile.drv_features, crate::wanted_features());
+    assert_eq!(profile.drv_features, virtio::VIRTIO_F_VERSION_1);
+    assert!(!profile.child_requirements.needs_device_cfg);
+    assert!(profile.child_requirements.required_queues[0]);
+    assert!(profile.child_requirements.required_queues[1..].iter().all(|required| !required));
+}
+
+#[test]
 fn registry_records_are_child_keyed() {
     let _guard = TEST_LOCK.lock();
     let key0 = key(0x0001_0000);

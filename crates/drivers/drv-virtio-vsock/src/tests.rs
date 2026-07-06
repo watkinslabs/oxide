@@ -47,6 +47,18 @@ fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
 }
 
 #[test]
+fn transport_profile_carries_child_feature_mask() {
+    let profile = crate::transport_profile();
+
+    assert_eq!(profile.drv_features, crate::wanted_features());
+    assert_eq!(profile.drv_features, virtio::VIRTIO_F_VERSION_1);
+    assert!(profile.child_requirements.needs_device_cfg);
+    assert!(profile.child_requirements.required_queues[0]);
+    assert!(profile.child_requirements.required_queues[1]);
+    assert!(profile.child_requirements.required_queues[2..].iter().all(|required| !required));
+}
+
+#[test]
 fn removing_one_vsock_context_keeps_shared_softirq_owned() {
     let _guard = TEST_LOCK.lock();
     crate::registry::clear_ctxs_for_tests();
