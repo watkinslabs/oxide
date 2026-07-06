@@ -5,15 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B553-virtio-net-mac-config-proof is verified locally for
-virtio-net MAC config ownership from fresh `main` at B552 PR #2644 merge
-commit `27cd782e`; PR/merge and fresh-main smokes remain.
+Current marker: B554-virtio-blk-per-device-records-proof is claimed for
+virtio-blk per-device records audit from fresh `main` at B553 PR #2645 merge
+commit `4a0c1eb6`.
+
+## B554 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B554-virtio-blk-per-device-records-proof | CLAIMED | Fresh `main` at B553 PR #2645 merge commit `4a0c1eb6`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 554 -> 555. Next gate: audit virtio-blk state ownership and pci-boot handoff, add focused proof if needed, run hosted gates plus x86_64/aarch64 smokes, then PR/merge and sync fresh main. |
 
 ## B553 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B553-virtio-net-mac-config-proof | VERIFIED LOCAL | Fresh `main` at B552 PR #2644 merge commit `27cd782e`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 553 -> 554. Source audit proves `VirtioNetOps::probe_child()` passes generic `session.child_resources()` into `drv_virtio_net::modern::init_modern_with_rx_pool`, pci-boot has no net-specific MAC harvest/pass-through path, `drv-virtio-net::modern::state::read_device_mac()` reads the MAC from generic `VirtioResources.device_cfg_va`, and `drv-virtio-net::modern::wanted_features()` requests `VIRTIO_NET_F_MAC`. Shared virtio net child requirements now require `DEVICE_CFG` before resource handoff, and profile regressions assert that transport contract. Existing hosted net regression proves MAC reads from generic config. Checks pass: focused `cargo test -q -p virtio -p drv-virtio-net -- --nocapture --test-threads=1` with virtio 48/48 and net 17/17; `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -- --nocapture --test-threads=1`; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`resources/profile.rs` 157, `resources/tests/queue_handoff.rs` 321, `resources/tests/child_state.rs` 143, `drv-virtio-net/src/modern/state.rs` 359, `drv-virtio-net/src/modern/tests.rs` 472, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 37s. Next gate: commit, push, PR/merge, sync fresh main, and run fresh-main x86_64/aarch64 smokes. |
+| B553-virtio-net-mac-config-proof | VERIFIED MERGED | Fresh `main` at B552 PR #2644 merge commit `27cd782e`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 553 -> 554. Source audit proves `VirtioNetOps::probe_child()` passes generic `session.child_resources()` into `drv_virtio_net::modern::init_modern_with_rx_pool`, pci-boot has no net-specific MAC harvest/pass-through path, `drv-virtio-net::modern::state::read_device_mac()` reads the MAC from generic `VirtioResources.device_cfg_va`, and `drv-virtio-net::modern::wanted_features()` requests `VIRTIO_NET_F_MAC`. Shared virtio net child requirements now require `DEVICE_CFG` before resource handoff, and profile regressions assert that transport contract. Existing hosted net regression proves MAC reads from generic config. Checks pass: focused `cargo test -q -p virtio -p drv-virtio-net -- --nocapture --test-threads=1` with virtio 48/48 and net 17/17; `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -- --nocapture --test-threads=1`; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`resources/profile.rs` 157, `resources/tests/queue_handoff.rs` 321, `resources/tests/child_state.rs` 143, `drv-virtio-net/src/modern/state.rs` 359, `drv-virtio-net/src/modern/tests.rs` 472, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 37s; PR #2645 merged as `4a0c1eb6`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 36s. |
 
 ## B552 Current
 
