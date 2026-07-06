@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B524-virtio-device-cfg-resource-proof verified locally for row
-182, Generic mapped `DEVICE_CFG` window is carried to child drivers; pending
+Current marker: B525-virtio-pci-queue-allocator-adapter-proof verified locally
+for row 185, Virtio-pci supplies PMM/HHDM queue allocator adapter; pending
 commit, PR, merge, and fresh-main sync.
+
+## B525 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B525-virtio-pci-queue-allocator-adapter-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `54f634b8` after B524 PR #2621 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s; aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 525 -> 526. Source audit proves shared `virtio::queue_cfg` owns common-cfg queue programming behind `VirtioQueueAllocator`; pci-boot `VirtioPciRuntime::program_queue_set` is the production bridge; `BootQueueAllocator` allocates queue frames through PMM, zeros through HHDM, cleans for device visibility, and unwinds failed frame allocation through the allocator `free_frame` callback. Child virtio drivers consume handed-off `VirtQueueResource` records and do not program virtqueue frames directly. Queue/page sizing now uses `hal::PAGE_SIZE_BYTES` instead of a local frame-size literal. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate; `git diff --check`; line caps (`virtio_transport.rs` 274, `queue_cfg.rs` 292, `virtio_drv/runtime.rs` 45, `virtio_drv/probe_state.rs` 299); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 
 ## B524 Current
 
