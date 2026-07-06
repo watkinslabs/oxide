@@ -17,6 +17,12 @@ pub const CFG_QUEUE_DESC: u64 = 0x20;
 pub const CFG_QUEUE_DRIVER: u64 = 0x28;
 pub const CFG_QUEUE_DEVICE: u64 = 0x30;
 
+const QUEUE_ZERO: u16 = 0;
+const QUEUE_ENABLE_READY: u16 = 1;
+const QUEUE_ADDR_HIGH_OFF: u64 = 4;
+const QUEUE_ADDR_LOW_MASK: u64 = 0xFFFF_FFFF;
+const QUEUE_ADDR_HIGH_SHIFT: u32 = 32;
+
 /// Queue memory provider used by the shared common-cfg queue protocol.
 pub trait VirtioQueueAllocator {
     /// Allocate one zeroable 4 KiB frame usable by the device for a split
@@ -90,7 +96,7 @@ pub fn program_queue_set<A: VirtioQueueAllocator>(
     q0_msix_vec: u16,
     extra_plans: &[Option<VirtioQueuePlan>],
 ) -> Option<ProgrammedQueues> {
-    let q0 = program_queue(cfg_va, 0, q0_msix_vec, allocator)?;
+    let q0 = program_queue(cfg_va, QUEUE_ZERO, q0_msix_vec, allocator)?;
     let mut extra = [None; MAX_RESOURCE_QUEUES];
     for plan in extra_plans.iter().copied().flatten() {
         let index = plan.index as usize;
@@ -160,15 +166,15 @@ pub fn program_queue<A: VirtioQueueAllocator>(
     let notify_off = r16(CFG_QUEUE_NOTIFY);
     w16(CFG_QUEUE_MSIX, msix_vec);
     let _ = r16(CFG_QUEUE_MSIX);
-    w32(CFG_QUEUE_DESC, (desc_pa & 0xFFFF_FFFF) as u32);
-    w32(CFG_QUEUE_DESC + 4, (desc_pa >> 32) as u32);
-    w32(CFG_QUEUE_DRIVER, (driver_pa & 0xFFFF_FFFF) as u32);
-    w32(CFG_QUEUE_DRIVER + 4, (driver_pa >> 32) as u32);
-    w32(CFG_QUEUE_DEVICE, (device_pa & 0xFFFF_FFFF) as u32);
-    w32(CFG_QUEUE_DEVICE + 4, (device_pa >> 32) as u32);
-    w16(CFG_QUEUE_ENABLE, 1);
+    w32(CFG_QUEUE_DESC, queue_addr_low(desc_pa));
+    w32(CFG_QUEUE_DESC + QUEUE_ADDR_HIGH_OFF, queue_addr_high(desc_pa));
+    w32(CFG_QUEUE_DRIVER, queue_addr_low(driver_pa));
+    w32(CFG_QUEUE_DRIVER + QUEUE_ADDR_HIGH_OFF, queue_addr_high(driver_pa));
+    w32(CFG_QUEUE_DEVICE, queue_addr_low(device_pa));
+    w32(CFG_QUEUE_DEVICE + QUEUE_ADDR_HIGH_OFF, queue_addr_high(device_pa));
+    w16(CFG_QUEUE_ENABLE, QUEUE_ENABLE_READY);
     let _ = r16(CFG_QUEUE_ENABLE);
-    w16(CFG_QUEUE_SELECT, 0);
+    w16(CFG_QUEUE_SELECT, QUEUE_ZERO);
 
     Some(QueueRing {
         desc_pa,
@@ -177,6 +183,14 @@ pub fn program_queue<A: VirtioQueueAllocator>(
         notify_off,
         size,
     })
+}
+
+const fn queue_addr_low(pa: u64) -> u32 {
+    (pa & QUEUE_ADDR_LOW_MASK) as u32
+}
+
+const fn queue_addr_high(pa: u64) -> u32 {
+    (pa >> QUEUE_ADDR_HIGH_SHIFT) as u32
 }
 
 #[cfg(test)]
