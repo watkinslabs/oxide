@@ -114,6 +114,8 @@ fn put_u64(buf: &mut [u8], off: usize, value: u64) { buf[off..off + 8].copy_from
 fn get_u64(buf: &[u8], off: usize) -> u64 { u64::from_le_bytes(buf[off..off + 8].try_into().unwrap()) }
 fn key(raw: u32) -> crate::SoundOwnerKey { crate::SoundOwnerKey::from_raw(raw).unwrap() }
 
+mod pcm_info;
+
 #[test]
 fn card_nodes_are_model_owned_and_removed() {
     let _guard = test_guard();
@@ -230,10 +232,10 @@ fn pcm_control_ops_propagate_backend_failures() {
     pcm::register_card(owner_id);
     capture::register_card(owner_id);
 
-    assert_eq!(pcm::handle(owner_id, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
-    assert_eq!(pcm::handle(owner_id, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
-    assert_eq!(capture::handle(owner_id, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
-    assert_eq!(capture::handle(owner_id, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_HW_FREE, 0), test_err(syscall::errno::Errno::Eio));
+    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_DROP, 0), test_err(syscall::errno::Errno::Eio));
 
     let _ = pcm::unregister_card(owner_id);
     let _ = capture::unregister_card(owner_id);
@@ -258,22 +260,22 @@ fn pcm_sync_ptr_does_not_fabricate_hardware_progress() {
     let mut sync = [0u8; uapi::SYNC_PTR_SIZE];
     put_u32(&mut sync, uapi::SP_FLAGS, 0);
     put_u64(&mut sync, uapi::SP_CONTROL_APPL_PTR, 77);
-    assert_eq!(pcm::handle(owner_id, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
+    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
     assert_eq!(get_u64(&sync, uapi::SP_CONTROL_APPL_PTR), 77);
     assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
 
     sync.fill(0);
     put_u32(&mut sync, uapi::SP_FLAGS, 0);
     put_u64(&mut sync, uapi::SP_CONTROL_APPL_PTR, 33);
-    assert_eq!(capture::handle(owner_id, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
+    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_SYNC_PTR, sync.as_mut_ptr() as u64), 0);
     assert_eq!(get_u64(&sync, uapi::SP_CONTROL_APPL_PTR), 33);
     assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
 
-    assert_eq!(pcm::handle(owner_id, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enotty));
-    assert_eq!(pcm::handle(owner_id, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
-    assert_eq!(pcm::handle(owner_id, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
-    assert_eq!(capture::handle(owner_id, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
-    assert_eq!(capture::handle(owner_id, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enotty));
+    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
+    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
 
     let _ = pcm::unregister_card(owner_id);
     let _ = capture::unregister_card(owner_id);
@@ -345,9 +347,9 @@ fn sound_data_paths_route_ops_by_explicit_owner() {
     }
     ROUTED.lock().clear();
 
-    assert_eq!(pcm::handle(owner1, uapi::PCM_PREPARE, 0), 0);
+    assert_eq!(pcm::handle(owner1, 1, uapi::PCM_PREPARE, 0), 0);
     assert_eq!(pcm::write_bytes(owner1, &[1, 2, 3, 4]), 4);
-    assert_eq!(capture::handle(owner1, uapi::PCM_PREPARE, 0), 0);
+    assert_eq!(capture::handle(owner1, 1, uapi::PCM_PREPARE, 0), 0);
     let mut input = [0u8; 4];
     assert_eq!(capture::read_bytes(owner1, &mut input), 4);
     assert_eq!(oss::write(owner1, &[5, 6, 7, 8]), 4);
