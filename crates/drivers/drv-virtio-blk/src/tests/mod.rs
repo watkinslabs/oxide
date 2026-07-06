@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::vec;
 use std::vec::Vec;
 
-use block::{BlockError, BlockRequest};
+use block::{BlockDevice, BlockError, BlockRequest};
 use virtio::blk;
 use virtio::queue::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
 use virtio::VirtioChildDeviceKey;

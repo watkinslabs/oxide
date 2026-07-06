@@ -5,14 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B514-virtio-blk-io-freeze-proof ACTIVE; auditing virtio-blk
-new-I/O freeze and in-flight reset ownership from fresh `main`.
+Current marker: none; B514-virtio-blk-io-freeze-proof VERIFIED. Next row not
+claimed until B514 is committed, pushed, merged, and fresh `main` is synced.
 
 ## B514 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B514-virtio-blk-io-freeze-proof | ACTIVE | Fresh `main` at merge commit `a651b530` after B513 PR #2608 merge and branch cleanup. `metadata/index.md` advanced B 514 -> 515. Target row: prove virtio-blk freezes new I/O and waits for in-flight owner before reset with Linux-style hosted fault proof plus x86_64/aarch64 fast smokes; code audit not started yet. |
+| B514-virtio-blk-io-freeze-proof | VERIFIED | Fresh `main` at merge commit `a651b530` after B513 PR #2608 merge and branch cleanup. `metadata/index.md` advanced B 514 -> 515. Patch makes virtio-blk teardown freeze new I/O before reset, wait for the in-flight owner to release the queue turn, and reject frozen submits before touching runtime queue/MMIO resources. Hosted regressions hold an in-flight owner while remove/shutdown start, prove common-cfg status is not reset until owner release, and prove new read/write submits fail while frozen. Checks pass: `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` 20/20; `cargo test -q -p block -- --nocapture --test-threads=1` 33/33; broad hosted virtio driver gate; `git diff --check`; touched Rust files under 500 lines (`engine.rs` 297, `state.rs` 181, `lifecycle.rs` 124, `mod.rs` 24); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 56s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 62s. |
 
 ## B513 Current
 

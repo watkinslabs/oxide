@@ -2,10 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B514-virtio-blk-io-freeze-proof; auditing virtio-blk new-I/O freeze and in-flight reset ownership.
+ACTIVE NOW: none; B514-virtio-blk-io-freeze-proof verified on x86_64 and aarch64, next row not claimed yet.
 
-Current active item: B514-virtio-blk-io-freeze-proof. Claimed from fresh
-`origin/main` at `a651b530` after B513 PR #2608 merge and branch cleanup.
+Current active item: none. B514 remains on branch
+`B514-virtio-blk-io-freeze-proof` until commit, PR, merge, fresh main sync, and
+metadata/index.md branch number check complete.
 
 Next gate after merge: return to fresh `origin/main` before claiming B515 using
 `metadata/index.md`.
@@ -229,7 +230,7 @@ Status legend:
 | SOURCE OK |  | Virtio-net no longer has PCI-transport-owned MAC config harvest. |
 | SOURCE OK |  | Virtio-blk has per-device records. |
 | SOURCE OK |  | Virtio-blk unregisters disks on remove. |
-| ACTIVE | B514-virtio-blk-io-freeze-proof | Virtio-blk freezes new I/O and waits for in-flight owner before reset; needs live and fault proof. |
+| VERIFIED | B514-virtio-blk-io-freeze-proof | Virtio-blk freezes new I/O before teardown reset and waits for the in-flight owner to drop the queue turn before resetting common-cfg: `BlkState::remove` and `shutdown` route through explicit freeze/reset helpers, submit rejects frozen I/O before touching runtime queue/MMIO resources, and hosted regressions hold an in-flight owner while remove/shutdown start, prove common-cfg status is not reset until owner release, and prove new read/write submits fail while frozen. Checks pass: `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` 20/20; `cargo test -q -p block -- --nocapture --test-threads=1` 33/33; broad hosted virtio driver gate; `git diff --check`; touched Rust files under 500 lines (`engine.rs` 297, `state.rs` 181, `lifecycle.rs` 124, `mod.rs` 24); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 56s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 62s. |
 | SOURCE OK |  | Virtio-blk dead config pass-through removed. |
 | SOURCE OK |  | NVMe binds through model probe. |
 | SOURCE OK |  | AHCI binds through model probe. |
