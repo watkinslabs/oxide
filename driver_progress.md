@@ -5,11 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B588-sys-dev-char-block-proof is VERIFIED MERGED on `main`.
-Targeted x86_64 and aarch64 live proofs show
-`/sys/dev/char` and `/sys/dev/block` reverse indexes resolve to model-owned
-device objects. PR #2700 merged as `fa9894f4`; fresh-main smoke passed after
-merge. D136 records the merged state and the next work lane is B589.
+Current marker: B589-sys-bus-driver-bind-proof is ACTIVE IN AUDIT on branch
+`B589-sys-bus-driver-bind-proof`. The target is live proof for
+`/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape on both x86_64
+and aarch64. Claim is from fresh `main` at D136 ledger merge `9c0eff87`.
+
+## B589 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B589-sys-bus-driver-bind-proof | >>> ACTIVE >>> IN AUDIT | Fresh `main` at D136 ledger merge `9c0eff87`; B588 PR #2700 and ledger PR #2701 are merged, and `metadata/index.md` advances B 589 -> 590 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Need source audit and focused x86_64/aarch64 live proof for `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape. |
 
 ## B588 Current
 
