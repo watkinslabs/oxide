@@ -1,5 +1,12 @@
 use super::*;
 
+const VIRTQ_DESC_BYTES: usize = 16;
+const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
+const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
+const VIRTQ_USED_HEADER_BYTES: usize = 4;
+const VIRTQ_USED_ELEM_BYTES: usize = 8;
+const TX_COMPLETION_SPINS: usize = 1_000_000;
+
 // -------- F59-05: TX on the modern transport ---------------------------
 //
 // One scratch buffer pinned to queue 1 descriptor 0; tx_frame rewrites
@@ -97,11 +104,17 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
         core::ptr::write_volatile((desc_va + 12) as *mut u16, 0u16); // flags
         core::ptr::write_volatile((desc_va + 14) as *mut u16, 0u16); // next
     }
+    virtio::dma::clean_to_device(buf_va, total_len as usize);
+    virtio::dma::clean_to_device(desc_va, VIRTQ_DESC_BYTES);
 
     // Read q1 used.idx BEFORE the kick so we can poll for a real
     // post-kick change. The device may already have unrelated used.idx
     // movement, so the live pre-kick value is the only reliable cursor.
     // SAFETY: HHDM-mapped q1 used ring; aligned u16 load at +2.
+    virtio::dma::invalidate_from_device(
+        used_va,
+        VIRTQ_USED_HEADER_BYTES + s.txq.size as usize * VIRTQ_USED_ELEM_BYTES,
+    );
     let pre_used = unsafe {
         core::ptr::read_volatile((used_va + 2) as *const u16)
     };
@@ -123,6 +136,10 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
     unsafe {
         core::ptr::write_volatile((avail_va + 2) as *mut u16, new_idx);
     }
+    virtio::dma::clean_to_device(
+        avail_va,
+        VIRTQ_AVAIL_HEADER_BYTES + txq_size * VIRTQ_AVAIL_ELEM_BYTES,
+    );
     core::sync::atomic::fence(Ordering::Release);
     s.tx_next_avail = new_idx;
 
@@ -134,7 +151,11 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
     // Brief observation window: poll q1 used.idx for the device to
     // advance past pre_used. Returns Confirmed on real completion,
     // Timeout if the device didn't move.
-    for _ in 0..1_000_000usize {
+    for _ in 0..TX_COMPLETION_SPINS {
+        virtio::dma::invalidate_from_device(
+            used_va,
+            VIRTQ_USED_HEADER_BYTES + s.txq.size as usize * VIRTQ_USED_ELEM_BYTES,
+        );
         // SAFETY: HHDM-mapped q1 used ring idx field at +2; aligned u16 load.
         let dev_used = unsafe {
             core::ptr::read_volatile((used_va + 2) as *const u16)
@@ -147,4 +168,3 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
     }
     Ok(TxOutcome::Timeout)
 }
-

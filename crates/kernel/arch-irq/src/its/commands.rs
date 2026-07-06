@@ -149,8 +149,7 @@ pub unsafe fn cmd_post(hhdm: u64, cmd: [u64; 4]) -> CmdStatus {
         for i in 0..4 {
             core::ptr::write_volatile(dst.add(i), cmd[i]);
         }
-        // Ensure command bytes hit memory before the doorbell.
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        crate::cache::clean_to_poc(hhdm.wrapping_add(q_pa + off), CMD_SIZE as usize);
         let new_cwriter = (cwriter_pre + CMD_SIZE) & (CMDQ_SIZE - 1);
         core::ptr::write_volatile(
             (its_va + GITS_CWRITER as u64) as *mut u64,

@@ -10,11 +10,16 @@ use alloc::vec::Vec;
 mod msix;
 mod devres;
 
+const VIRTIO_FRAME_BYTES: usize = 0x1000;
+const VIRTQ_DESC_BYTES: usize = 16;
+const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
+const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
+
 pub(crate) use devres::VirtioProbeDevres;
 pub(super) use msix::{
     MsixBinding, bind_msix_vector, disable_pci_command, publish_transport_record,
     release_failed_probe_frames, release_msix_bindings, reset_failed_probe,
-    unpublish_transport_record, unpublish_transport_record_by_bdf,
+    unmask_msix_bindings, unpublish_transport_record, unpublish_transport_record_by_bdf,
 };
 pub(super) use virtio::{ProgrammedQueues, QueueRing};
 
@@ -43,10 +48,11 @@ impl virtio::VirtioQueueAllocator for BootQueueAllocator {
         // SAFETY: HHDM covers all RAM PMM hands out; we own this freshly
         // allocated frame; aligned u64 stores stay within the 4 KiB page.
         unsafe {
-            for i in 0..(0x1000 / 8) {
+            for i in 0..(VIRTIO_FRAME_BYTES / core::mem::size_of::<u64>()) {
                 core::ptr::write_volatile(va.add(i), 0);
             }
         }
+        virtio::dma::clean_to_device(self.hhdm.wrapping_add(pa), VIRTIO_FRAME_BYTES);
     }
 }
 
@@ -92,7 +98,9 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
         let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
             break;
         };
-        let desc = (hhdm.wrapping_add(q0.desc_pa) + (desc_id as u64) * 16) as *mut u8;
+        virtio::dma::invalidate_from_device(hhdm.wrapping_add(rx_pa), RX_BUF_LEN as usize);
+        let desc = (hhdm.wrapping_add(q0.desc_pa)
+            + (desc_id as u64) * VIRTQ_DESC_BYTES as u64) as *mut u8;
         // SAFETY: HHDM maps the freshly allocated RX frame and queue-0
         // descriptor table. The transport owns these descriptors until the
         // child driver takes the resource handoff.
@@ -102,6 +110,10 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
             core::ptr::write_volatile((desc.add(12)) as *mut u16, virtio::VRING_DESC_F_WRITE);
             core::ptr::write_volatile((desc.add(14)) as *mut u16, 0u16);
         }
+        virtio::dma::clean_to_device(
+            hhdm.wrapping_add(q0.desc_pa).wrapping_add((desc_id as u64) * VIRTQ_DESC_BYTES as u64),
+            VIRTQ_DESC_BYTES,
+        );
         bufs[bufs_len] = virtio::VirtioNetRxBuffer {
             desc_id: desc_id as u16,
             pa: rx_pa,
@@ -127,6 +139,10 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
     unsafe {
         core::ptr::write_volatile(avail.add(1), bufs_len as u16);
     }
+    virtio::dma::clean_to_device(
+        hhdm.wrapping_add(q0.driver_pa),
+        VIRTQ_AVAIL_HEADER_BYTES + bufs_len * VIRTQ_AVAIL_ELEM_BYTES,
+    );
     core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
     NetRxBootBuffer {

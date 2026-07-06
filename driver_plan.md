@@ -2,12 +2,10 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B509-msix-function-mask-live-proof; ACTIVE; ARM runtime proof failing.
+ACTIVE NOW: none; B509 verified on x86_64 and aarch64, next row not claimed yet.
 
-Current active item: virtio-pci enables MSI-X with the function mask held,
-programs table entries with readback/barrier ordering, clears the function mask
-only after the entry is unmasked, and proves live virtio-net RX interrupt
-delivery on x86_64 and aarch64.
+Current active item: none. Claim next row only after B509 commit, PR, merge,
+fresh main sync, and `metadata/index.md` branch number check.
 
 Next gate after merge: return to fresh `origin/main` before claiming B510 using
 `metadata/index.md`.
@@ -212,7 +210,7 @@ Status legend:
 | SOURCE OK |  | Virtio-input/rng/vsock/snd feature masks come from child drivers. |
 | SOURCE OK |  | Virtio-pci MSI-X setup names `NO_VECTOR`. |
 | SOURCE OK |  | Virtio-pci records q0 queue vector in MSI-X binding. |
-| ACTIVE | B509-msix-function-mask-live-proof | >>> ACTIVE >>> ARM DEVICE MSI-X DELIVERY: x86_64 ARP plus DNS packet proof passes on the restored branch in `/tmp/b509-x86-msix-net-rx-restored.log`. Current branch is restored on fresh `origin/main` and owns the B509 counter claim. Harness installs `/bin/msix_net_rx_probe` as the `driver-path-smoke.service` command when `OXIDE_MSIX_NET_RX_SMOKE=1`. ARM proof still fails on the restored branch in `/tmp/b509-arm-msix-net-rx-restored.log`: `before_packet rx=0 tx=1 txerr=0`, then `FAIL arp reply timeout`; no RX packets, q0 vector readback 0, and `MSI_FIRES` stays 1 after enumeration. Current focus is real ARM PCI requester/MSI routing or RX DMA visibility, not polling fallbacks. |
+| VERIFIED | B509-msix-function-mask-live-proof | Virtio-pci MSI-X live RX proof now passes on both architectures. Transport enables MSI-X with the function mask held, writes and reads back table entries, programs virtqueue MSI-X vectors before `DRIVER_OK`, clears the function mask only after queue setup, and preserves transport-owned MSI-X teardown. ARM fix was the architectural ITS translation-frame doorbell: `GITS_TRANSLATER = ITS_BASE + 0x10040`, not the control-frame `0x0040`; the failing ARM diagnostic had proved q0 RX completion without a PCI-originated MSI, and the corrected table readback now targets `msg_addr=0x8090040` on this QEMU. Checks pass: `cargo check -q -p arch-irq -p firmware -p pci-boot -p virtio -p drv-virtio-net`; `git diff --check`; clean aarch64 smoke `/tmp/b509-arm-msix-net-rx-final.log` shows `msix_net_rx_probe: PASS rx=103 bytes from 10.0.2.3`; clean x86_64 smoke `/tmp/b509-x86-msix-net-rx-final.log` shows the same PASS. |
 | SOURCE OK |  | MSI-X binding helper validates requested table entry against decoded size. |
 | SOURCE OK |  | Transport-owned MSI-X binding lifetime handles multiple entries. |
 | SOURCE OK |  | Extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |

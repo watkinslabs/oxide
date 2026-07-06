@@ -5,6 +5,8 @@
 // - `tables`: per-table decoders and published ACPI-discovered state.
 
 mod log;
+#[cfg(target_os = "oxide-kernel")]
+mod iort;
 mod read;
 mod rsdp;
 mod tables;
@@ -12,7 +14,7 @@ mod tables;
 pub use rsdp::{RsdpStatus, try_log_acpi, try_log_rsdp, try_log_xsdt};
 pub use tables::{ECAM_BASE_PA, GIC_MSI_FRAME_PA, GIC_ITS_PA, decode_gtdt, decode_hpet, decode_madt, decode_mcfg, decode_spcr};
 #[cfg(target_os = "oxide-kernel")]
-pub use tables::decode_iort;
+pub use iort::{decode_iort, iort_msi_device_id};
 
 #[cfg(test)]
 mod tests;

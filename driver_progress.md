@@ -5,13 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B509-msix-function-mask-live-proof; ACTIVE; ARM runtime proof failing.
+Current marker: none; B509-msix-function-mask-live-proof VERIFIED; next row not claimed yet.
 
 ## B509 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B509-msix-function-mask-live-proof | ACTIVE | Branch restored from current `origin/main` (`035cbb3b`) after stale local B509 state was overwritten; `metadata/index.md` now claims B509 by advancing B 509 -> 510. Current patch adds Linux-style MSI-X masked-enable/table-entry-readback/entry-unmask/function-mask-clear ordering, arch-local MSI-X config helpers, rootfs staging/cache support for `OXIDE_MSIX_NET_RX_SMOKE`, and `/bin/msix_net_rx_probe` as the `driver-path-smoke.service` command. x86_64 proof passes in `/tmp/b509-x86-msix-net-rx-restored.log`: ARP reply delivered, then DNS RX `PASS rx=103 bytes from 10.0.2.3`. ARM proof fails in `/tmp/b509-arm-msix-net-rx-restored.log`: `before_packet rx=0 tx=1 txerr=0`, then `FAIL arp reply timeout`; no RX packets, q0 vector readback is 0, and `MSI_FIRES` remains 1 after enumeration. Rejected as insufficient: polling/receive-progress passes because polling can drain q0 without proving MSI-X. Do not mark VERIFIED until both x86_64 and aarch64 logs show `msix_net_rx_probe: PASS` from this branch. |
+| B509-msix-function-mask-live-proof | VERIFIED | Branch restored from current `origin/main` (`035cbb3b`) after stale local B509 state was overwritten; `metadata/index.md` now claims B509 by advancing B 509 -> 510. Patch adds Linux-style MSI-X masked-enable/table-entry-readback/entry-unmask ordering, delayed function-mask clear after virtio queue programming/`DRIVER_OK`, arch-local MSI-X config helpers, ARM cache publication for ITS/LPI/virtqueue memory, rootfs staging/cache support for `OXIDE_MSIX_NET_RX_SMOKE`, and `/bin/msix_net_rx_probe` as the `driver-path-smoke.service` command. ARM failure was narrowed by rejected diagnostic-only runs to PCI-originated MSI routing: q0 received the ARP reply while `MSI_FIRES` did not change. Root cause fixed by programming the architectural ITS translation-frame doorbell (`GITS_TRANSLATER = ITS_BASE + 0x10040`) instead of the control-frame `0x0040`; QEMU readback now shows the net device MSI-X table targeting `msg_addr=0x8090040`. Temporary synthetic ITS and child-driver diagnostics were removed before final proof. Checks pass: `cargo check -q -p arch-irq -p firmware -p pci-boot -p virtio -p drv-virtio-net`; `git diff --check`; clean aarch64 smoke `/tmp/b509-arm-msix-net-rx-final.log` shows `msix_net_rx_probe: PASS rx=103 bytes from 10.0.2.3`; clean x86_64 smoke `/tmp/b509-x86-msix-net-rx-final.log` shows the same PASS. |
 
 ## B508 Current
 
