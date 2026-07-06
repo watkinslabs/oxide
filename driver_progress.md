@@ -5,9 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active row. B519-virtio-probe-trace-debug-proof is VERIFIED
-on branch `B519-virtio-probe-trace-debug-proof`; pending commit, push, PR,
-merge, branch cleanup, and fresh `main` sync before claiming the next row.
+Current marker: B520-virtio-pci-mmio-record-proof IN AUDIT. Fresh `main` is
+merge commit `396ec817` after B519 PR #2616 merge and branch cleanup.
+
+## B520 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B520-virtio-pci-mmio-record-proof | IN AUDIT | Claim branch from fresh `main` at `396ec817`; `metadata/index.md` advanced B 520 -> 521. Target row: virtio-pci owns persistent transport MMIO mappings. Pending source audit, hosted proof, line-cap check, `git diff --check`, and x86_64/aarch64 fast smokes. |
 
 ## B519 Current
 
