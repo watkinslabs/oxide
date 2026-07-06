@@ -5,15 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B560-ahci-per-bdf-state-proof is verified locally from fresh
-`main` at B559 PR #2651 merge commit `b9f38038`; next gate is PR merge and
-post-merge fresh-main smokes.
+Current marker: B561-nvme-remove-quiesce-frames-proof is verified locally from
+fresh `main` at B560 PR #2652 merge commit `42c6a9c2`; next gate is PR merge
+and post-merge fresh-main smokes.
+
+## B561 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B561-nvme-remove-quiesce-frames-proof | VERIFIED LOCAL | Fresh `main` at B560 PR #2652 merge commit `42c6a9c2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s and aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 561 -> 562. NVMe remove unregisters disks, quiesces hardware, and returns queue/bounce frames: source audit proves `NvmeDriver::remove()` parses the PCI BDF and routes through `lifecycle::run_remove_cleanup()`, which calls `imp::remove()` before PCI command disable. `imp::remove()` removes the exact `NvmeRecord` by typed `pci::Bdf`, calls `block::registry::unregister(&rec.name)` so `/sys/block`, `/dev/<disk>`, dev_t lookup, diskstats, and remove uevents are withdrawn, then calls `NvmeBlk::remove()`. `NvmeBlk::remove()` marks existing `Arc` holders removed so later I/O returns EIO and calls `Nvme::shutdown_and_free()`, which disables the controller, waits for RDY clear, frees admin SQ/CQ, I/O SQ/CQ, and PRP bounce frames through PMM, zeros their PAs, clears BAR VA, and unmaps BAR0. Shutdown uses the same controller/free path without unregistering publication for terminal poweroff. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 413, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `block/registry.rs` 426, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B560 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B560-ahci-per-bdf-state-proof | VERIFIED LOCAL | Fresh `main` at B559 PR #2651 merge commit `b9f38038`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s and aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 560 -> 561. AHCI block-device state is now keyed by typed `pci::Bdf` instead of a packed `u32`: `AhciRecord.device_key` stores `pci::Bdf`, `device_key_from_bdf()` returns the BDF directly, `init()` rejects duplicate records by typed BDF before HBA bring-up, and `remove()`/`shutdown()` select the exact typed BDF from the model driver's parsed PCI address. Debug logging reads BDF fields directly, removing old shift/mask decode helpers. Source audit finds no remaining AHCI `device_key: u32` or `bdf_key` helper; remaining shifts are AHCI protocol/register/IDENTIFY fields or unrelated PCI/virtio address encoders. Checks pass: `cargo test -q -p drv-ahci -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-ahci 12/12, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-ahci/lib.rs` 440, `lifecycle.rs` 67, `port.rs` 441, `regs.rs` 302, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s. |
+| B560-ahci-per-bdf-state-proof | VERIFIED MERGED | Fresh `main` at B559 PR #2651 merge commit `b9f38038`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s and aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 560 -> 561. AHCI block-device state is now keyed by typed `pci::Bdf` instead of a packed `u32`: `AhciRecord.device_key` stores `pci::Bdf`, `device_key_from_bdf()` returns the BDF directly, `init()` rejects duplicate records by typed BDF before HBA bring-up, and `remove()`/`shutdown()` select the exact typed BDF from the model driver's parsed PCI address. Debug logging reads BDF fields directly, removing old shift/mask decode helpers. Source audit finds no remaining AHCI `device_key: u32` or `bdf_key` helper; remaining shifts are AHCI protocol/register/IDENTIFY fields or unrelated PCI/virtio address encoders. Checks pass: `cargo test -q -p drv-ahci -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-ahci 12/12, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-ahci/lib.rs` 440, `lifecycle.rs` 67, `port.rs` 441, `regs.rs` 302, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s; PR #2652 merged as `42c6a9c2`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s. |
 
 ## B559 Current
 
