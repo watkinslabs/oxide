@@ -30,4 +30,4 @@ pub use helpers::{
 };
 pub(crate) use helpers::no_data_op_errno;
 pub use locking::{RenameLockGuard, inode_unlock, lock_rename, unlock_rename};
-pub use model::{FileAttr, FiemapExtent, Inode, InodeRef, SealCarrier};
+pub use model::{FileAttr, FiemapExtent, Inode, InodeRef, OwnerPersist, SealCarrier};
