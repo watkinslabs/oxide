@@ -76,7 +76,7 @@ fn build_runtime_handoff_applies_final_notify_observations() {
     );
     let scanned = [(0, 8), (1, 16), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)];
     let mut planned = VirtioQueueNotifyMappings::new();
-    planned.set(1, 0x1111);
+    planned.set(1, 0xbbb0);
 
     let handoff = build_runtime_handoff(VirtioRuntimeHandoffInput {
         scanned_queues: &scanned,
@@ -84,7 +84,6 @@ fn build_runtime_handoff_applies_final_notify_observations() {
         programmed_queues: Some(&programmed),
         planned_notify_mappings: planned,
         q0_notify_va: 0xaaa0,
-        q1_notify_va: 0xbbb0,
         post_notify_status: crate::VIRTIO_STATUS_DRIVER_OK,
         avail_idx_posted: 1,
         used_idx_observed: 2,
