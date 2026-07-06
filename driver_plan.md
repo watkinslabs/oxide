@@ -2,11 +2,11 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: none. B519-virtio-probe-trace-debug-proof is verified on the
-current branch and is pending commit, push, PR, merge, branch cleanup, and fresh
-`main` sync before claiming the next row.
+ACTIVE NOW: none. B520-virtio-pci-mmio-record-proof is verified on the current
+branch and is pending commit, push, PR, merge, branch cleanup, and fresh `main`
+sync before claiming the next row.
 
-Current active item: none. Do not claim another row until B519 is merged and
+Current active item: none. Do not claim another row until B520 is merged and
 local `main` matches `origin/main`.
 
 Next gate: commit, push, PR, merge, then return to fresh `origin/main` before
@@ -172,7 +172,7 @@ Status legend:
 | VERIFIED |  | Shared `VirtioChildProbeFacts` carries child-visible transport probe result. |
 | VERIFIED | B518-virtio-probe-devres-lifetime-proof | `VirtioProbe` owns PCI/MMIO/MSI-X lifetime and opaque frame-release records: source audit proves `VirtioProbe` owns private `VirtioProbeDevres`; devres owns PCI BDF/config identity, transport MMIO mappings, MSI-X bindings, opaque `VirtioProbeOwnedFrames`, and the one-shot `VirtioProbeLease`; failed probe/drop resets the device, releases MSI-X, disables PCI command decode, unmaps MMIO, and frees failed-probe frames, while successful publish transfers mappings, vring frames, and MSI-X bindings into the persistent `TransportRecord`. Touched mapping/MSI paths now use named page/MSI masks instead of inline constants. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate; line caps (`virtio_transport.rs` 274, `virtio_transport/msix.rs` 457, `virtio_drv/probe.rs` 178, `virtio_transport/devres.rs` 68, `virtio/resources/child.rs` 377); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 | VERIFIED | B519-virtio-probe-trace-debug-proof | Debug-only virtio probe trace fields live in `VirtioPciProbeTrace`: source audit proves trace data is built once in `virtio_drv::probe_child` beside the real child facts/devres, is stored separately from `VirtioProbeDevres`, and is only consumed by `virtio_trace::trace_probe()` from `VirtioChildSession::begin`; `trace_probe()` is gated by `debug_boot!` with a non-debug no-op binding, child drivers do not receive the trace object, and persistent publish/remove uses devres/transport records instead. The debug queue MSI-X readback now uses shared `virtio::queue_cfg::CFG_QUEUE_SIZE` instead of an inline register offset. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate; line caps (`virtio_trace.rs` 145, `virtio_drv/probe.rs` 178, `virtio_bus.rs` 145); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
-| SOURCE OK |  | Virtio-pci owns persistent transport MMIO mappings. |
+| VERIFIED | B520-virtio-pci-mmio-record-proof | Virtio-pci owns persistent transport MMIO mappings: source audit proves `TransportMappings` owns BAR-derived `mmio_map::Mapping`s, probe state maps common/device/notify/ISR/MSI-X table pages through that owner, failed probe calls `VirtioProbeDevres::release_failed()` to reset, release MSI-X, disable PCI command decode, and unmap mappings, and successful publish moves mappings into the persistent `TransportRecord`. Persistent unpublish now explicitly releases MSI-X, disables PCI command decode, calls `mappings.unmap_all()`, and then frees vring frames. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate; line caps (`virtio_transport/msix.rs` 465, `virtio_transport.rs` 274, `virtio_transport/devres.rs` 68); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 | SOURCE OK |  | Virtio-pci owns MSI-X state. |
 | SOURCE OK |  | Virtio-pci owns vring frame publication/teardown records for successful child probes. |
 | SOURCE OK |  | Virtio-pci MSI-X state is owned optional/plural binding rather than zero-sentinel fields. |

@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active row. B519-virtio-probe-trace-debug-proof is VERIFIED
-on branch `B519-virtio-probe-trace-debug-proof`; pending commit, push, PR,
-merge, branch cleanup, and fresh `main` sync before claiming the next row.
+Current marker: no active row. B520-virtio-pci-mmio-record-proof is VERIFIED on
+branch `B520-virtio-pci-mmio-record-proof`; pending commit, push, PR, merge,
+branch cleanup, and fresh `main` sync before claiming the next row.
+
+## B520 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B520-virtio-pci-mmio-record-proof | VERIFIED | Fresh `main` at merge commit `396ec817` after B519 PR #2616 merge and branch cleanup. `metadata/index.md` advanced B 520 -> 521. Source audit proves `TransportMappings` owns BAR-derived `mmio_map::Mapping`s, probe state maps common/device/notify/ISR/MSI-X table pages through that owner, failed probe calls `VirtioProbeDevres::release_failed()` to reset, release MSI-X, disable PCI command decode, and unmap mappings, and successful publish moves mappings into the persistent `TransportRecord`. Patch makes persistent unpublish explicitly release MSI-X, disable PCI command decode, call `mappings.unmap_all()`, and then free vring frames. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate with child suites 20/20, 36/36, 36/36, 16/16, 8/8, 11/11, 9/9 plus shared virtio 44/44; line caps (`virtio_transport/msix.rs` 465, `virtio_transport.rs` 274, `virtio_transport/devres.rs` 68); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B519 Current
 
