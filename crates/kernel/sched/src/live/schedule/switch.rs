@@ -291,6 +291,11 @@ pub unsafe fn schedule() {
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
     crate::diag::note_switch();
+    // debug-wakelat: the incoming task is switching IN now — close out any
+    // pending wake→run latency measurement stamped at its ttwu (H2).
+    #[cfg(feature = "debug-wakelat")]
+    // SAFETY: rq.current was just set to next_arc by swap_current; reading its tid is sound.
+    crate::live::wakelat::note_switch_in(unsafe { rq.current_ref() }.tid, now);
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -334,8 +339,18 @@ pub unsafe fn schedule() {
 
 /// Cooperative voluntary yield. Calls `schedule()` then parks the
 /// CPU on `hlt`/`wfi` until the next IRQ.
+///
+/// The trailing halt opens the IRQ window that a BUSY-yield caller (one
+/// that stays Runnable — recvmsg/accept/sendto spin-waiting for device
+/// data while the syscall runs IF=0) depends on to receive that data, so
+/// this form is for those callers. A caller that has already PARKED
+/// (marked itself Sleeping via a wait list) must instead use
+/// [`park_yield`], which does NOT halt: a parked task must not idle the
+/// CPU, because the per-CPU idle task provides the halt/IRQ-window and the
+/// scheduler must be free to run every other ready task back-to-back. See
+/// [`park_yield`] for why that distinction is load-bearing for wake
+/// latency. # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
 /// # SAFETY: per `schedule()`.
-/// # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
 /// # Ctx: process|kthread; preempt-off; IRQs-on
 pub unsafe fn tick_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract (process / kthread context, preempt-off, single-CPU); delegated wholesale.
@@ -347,6 +362,72 @@ pub unsafe fn tick_yield() {
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     // SAFETY: msr daifclr/wfi/daifset are privileged at EL1; the daifclr-wfi-daifset triplet is the canonical arm idle pattern (Linux arm64 default_idle). Any IRQ pending before WFI causes WFI to fall through; daifset restores the syscall-tail DAIF.I=1 invariant.
+    unsafe {
+        core::arch::asm!(
+            "msr daifclr, #2",
+            "wfi",
+            "msr daifset, #2",
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+/// Yield for a caller that has ALREADY parked itself Sleeping on a wait
+/// list (epoll_wait, ppoll, …). Hands the CPU to the next runnable task
+/// via `schedule()`; then halts the CPU on `hlt`/`wfi` ONLY when no other
+/// task is runnable on this CPU, so a wake IRQ can still arrive.
+///
+/// Two regimes, both Linux-correct for a blocking wait:
+///   * OTHER tasks runnable (`nr_running != 0`): return immediately, no
+///     halt. When one wake rouses many parked waiters at once (dozens of
+///     D-Bus daemons during gnome session setup) the scheduler must cycle
+///     through the whole ready set back-to-back. The old `tick_yield` used
+///     here halted the core for a full timer tick after every rescan, so
+///     it advanced only one task per tick (~1 ms); a peer's wake→run
+///     latency grew to N_ready × tick ≈ 50-80 ms and the hundreds-deep
+///     CreateSession→user@ IPC chain accumulated to ~28 s, tripping gdm's
+///     30 s TimeoutStartSec (measured: wake→run latency identical for edge
+///     and scanner wakes — the stall was scheduling throughput, not the
+///     wake mechanism). Not halting here drains the roused set at full
+///     context-switch speed.
+///   * NOTHING else runnable (`nr_running == 0`): halt with IRQs enabled
+///     (idle semantics). This is REQUIRED: syscalls run IF=0, so if this
+///     task is the only runnable entity and `schedule()` re-selected it
+///     (a raced wake / drained self-wake left it Runnable, or the CPU is
+///     otherwise empty), the caller would re-park→`schedule()`→re-pick in
+///     a tight loop with IRQs masked and the wake interrupt would never
+///     land — an SMP CPU-stall (`[CPU-STALL]` soft-lockup, nr_running=1).
+///     Halting opens the one-instruction STI window that lets the wake /
+///     data / timer IRQ arrive, exactly as the per-CPU idle task does.
+///
+/// `nr_running` excludes `current` + idle, so `== 0` means "this task is
+/// the only runnable entity on this CPU". Livelock-safe: unlike a
+/// busy-yield (`tick_yield`) caller that stays Runnable, a parked caller is
+/// Sleeping, so it is not re-picked until a waker makes it Runnable — two
+/// parked callers can never ping-pong the CPU with IRQs masked.
+/// # SAFETY: caller has marked itself Sleeping on a wait list and owns the
+/// post-park schedule per `schedule()`'s contract; must re-check its
+/// condition (and re-park) after this returns.
+/// # C: O(log N) + O(1) ctxsw
+/// # Ctx: process|kthread; preempt-off; caller Sleeping
+pub unsafe fn park_yield() {
+    // SAFETY: caller satisfies `schedule()`'s contract and has parked Sleeping; delegated wholesale.
+    unsafe { schedule(); }
+    // Other runnable work queued on this CPU (excludes current + idle)?
+    // Then return without halting so the ready set drains at full speed.
+    let others = crate::live::runqueue::global()
+        .map(|rq| rq.nr_running.load(Ordering::Acquire))
+        .unwrap_or(0);
+    if others != 0 { return; }
+    // Nothing else to run: halt with IRQs on so the wake/data/timer IRQ can
+    // land (idle semantics) — never spin the re-park loop with IRQs masked.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    // SAFETY: privileged sti+hlt+cli at CPL=0. STI delays IF=1 until after the next instruction (the hlt) per Intel SDM Vol. 2A, so any IRQ edge raised before the hlt is serviced at hlt-resume, not in arbitrary kernel code; cli restores the syscall-tail IF=0 invariant.
+    unsafe {
+        core::arch::asm!("sti; hlt; cli", options(nomem, nostack, preserves_flags));
+    }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    // SAFETY: msr daifclr/wfi/daifset are privileged at EL1; the daifclr-wfi-daifset triplet is the canonical arm idle pattern (Linux arm64 default_idle). Any IRQ pending before WFI makes WFI fall through; daifset restores the syscall-tail DAIF.I=1 invariant.
     unsafe {
         core::arch::asm!(
             "msr daifclr, #2",
