@@ -1,0 +1,424 @@
+// Linux allocation KPI exports for loadable drivers.
+
+extern crate alloc;
+
+use alloc::alloc::{alloc, dealloc, Layout};
+use alloc::vec::Vec;
+use core::ffi::{c_void, VaList};
+use core::mem::{align_of, size_of};
+use core::ptr::{copy_nonoverlapping, null_mut, write_bytes};
+
+const ALLOC_MAGIC: u64 = 0x4f58_4b50_4941_4c4c;
+const PAGE_MAGIC: u64 = 0x4f58_4b50_4950_4147;
+const MIN_ALIGN: usize = align_of::<usize>();
+const GFP_ZERO: u32 = 0x8000;
+const PAGE_SIZE: usize = 4096;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Header {
+    magic: u64,
+    total: usize,
+    align: usize,
+    off: usize,
+}
+
+#[repr(C)]
+pub struct LinuxPage {
+    magic: u64,
+    pa: u64,
+    va: *mut u8,
+    order: u32,
+}
+
+/// Register Linux allocation KPI symbols.
+/// # C: O(1)
+pub fn export_symbols() {
+    use crate::symtab::export;
+    export("kmalloc",          kmalloc          as *const () as usize, false);
+    export("kzalloc",          kzalloc          as *const () as usize, false);
+    export("kcalloc",          kcalloc          as *const () as usize, false);
+    export("kfree",            kfree            as *const () as usize, false);
+    export("vmalloc",          vmalloc          as *const () as usize, false);
+    export("vfree",            vfree            as *const () as usize, false);
+    export("alloc_pages",      alloc_pages      as *const () as usize, false);
+    export("__free_pages",     __free_pages     as *const () as usize, false);
+    export("__get_free_pages", __get_free_pages as *const () as usize, false);
+    export("get_free_pages",   get_free_pages   as *const () as usize, false);
+    export("free_pages",       free_pages       as *const () as usize, false);
+    export("page_address",     page_address     as *const () as usize, false);
+    export("page_to_phys",     page_to_phys     as *const () as usize, false);
+    export("kstrdup",          kstrdup          as *const () as usize, false);
+    export("kasprintf",        kasprintf        as *const () as usize, false);
+}
+
+extern "C" fn kmalloc(size: usize, flags: u32) -> *mut u8 {
+    alloc_bytes(size, MIN_ALIGN, flags & GFP_ZERO != 0)
+}
+
+extern "C" fn kzalloc(size: usize, _flags: u32) -> *mut u8 {
+    alloc_bytes(size, MIN_ALIGN, true)
+}
+
+extern "C" fn kcalloc(n: usize, size: usize, flags: u32) -> *mut u8 {
+    let _ = flags;
+    match n.checked_mul(size) {
+        Some(total) => alloc_bytes(total, MIN_ALIGN, true),
+        None => null_mut(),
+    }
+}
+
+extern "C" fn kfree(ptr: *mut u8) {
+    free_bytes(ptr);
+}
+
+extern "C" fn vmalloc(size: usize) -> *mut u8 {
+    alloc_bytes(size, MIN_ALIGN, false)
+}
+
+extern "C" fn vfree(ptr: *mut u8) {
+    free_bytes(ptr);
+}
+
+extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
+    let (pa, va) = match page_run_alloc(order, flags & GFP_ZERO != 0) {
+        Some(v) => v,
+        None => return null_mut(),
+    };
+    let page = page_desc_alloc(LinuxPage { magic: PAGE_MAGIC, pa, va, order });
+    if page.is_null() {
+        page_run_free_pa(pa, order);
+        return null_mut();
+    }
+    page
+}
+
+extern "C" fn __free_pages(page: *mut LinuxPage, order: u32) {
+    if page.is_null() { return; }
+    if !valid_page(page) { return; }
+    // SAFETY: caller passes a page descriptor returned by alloc_pages.
+    let pa = unsafe { (*page).pa };
+    page_run_free_pa(pa, order);
+    page_desc_free(page);
+}
+
+extern "C" fn __get_free_pages(flags: u32, order: u32) -> usize {
+    page_run_alloc(order, flags & GFP_ZERO != 0).map(|(_, va)| va as usize).unwrap_or(0)
+}
+
+extern "C" fn get_free_pages(flags: u32, order: u32) -> usize {
+    __get_free_pages(flags, order)
+}
+
+extern "C" fn free_pages(addr: usize, order: u32) {
+    if addr == 0 { return; }
+    page_run_free_va(addr as *mut u8, order);
+}
+
+extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
+    if valid_page(page) { unsafe { (*page).va } } else { null_mut() }
+}
+
+extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
+    if valid_page(page) { unsafe { (*page).pa } } else { 0 }
+}
+
+unsafe extern "C" fn kstrdup(s: *const u8, flags: u32) -> *mut u8 {
+    if s.is_null() { return null_mut(); }
+    // SAFETY: caller supplies a NUL-terminated C string.
+    let len = unsafe { c_strlen(s) };
+    let p = alloc_bytes(len + 1, MIN_ALIGN, flags & GFP_ZERO != 0);
+    if p.is_null() { return null_mut(); }
+    // SAFETY: p has len+1 bytes and s is readable through the terminator.
+    unsafe { copy_nonoverlapping(s, p, len + 1); }
+    p
+}
+
+unsafe extern "C" fn kasprintf(flags: u32, fmt: *const u8, mut ap: ...) -> *mut u8 {
+    if fmt.is_null() { return null_mut(); }
+    let mut out = Vec::new();
+    // SAFETY: fmt is NUL-terminated and ap matches its conversion list.
+    unsafe { format_c(&mut out, fmt, &mut ap); }
+    let p = alloc_bytes(out.len() + 1, MIN_ALIGN, flags & GFP_ZERO != 0);
+    if p.is_null() { return null_mut(); }
+    // SAFETY: p has out.len()+1 bytes; copy payload and write NUL.
+    unsafe {
+        copy_nonoverlapping(out.as_ptr(), p, out.len());
+        *p.add(out.len()) = 0;
+    }
+    p
+}
+
+fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut u8 {
+    if size == 0 { return null_mut(); }
+    let align = align.max(MIN_ALIGN).next_power_of_two();
+    let off = align_up(size_of::<Header>(), align);
+    let total = match off.checked_add(size) { Some(v) => v, None => return null_mut() };
+    let layout = match Layout::from_size_align(total, align.max(align_of::<Header>())) {
+        Ok(v) => v,
+        Err(_) => return null_mut(),
+    };
+    // SAFETY: layout was validated above.
+    let base = unsafe { alloc(layout) };
+    if base.is_null() { return null_mut(); }
+    let user = unsafe { base.add(off) };
+    let h = Header { magic: ALLOC_MAGIC, total, align: layout.align(), off };
+    // SAFETY: header slot is inside the allocation immediately before user.
+    unsafe {
+        (user.sub(size_of::<Header>()) as *mut Header).write(h);
+        if zero { write_bytes(user, 0, size); }
+    }
+    user
+}
+
+fn free_bytes(ptr: *mut u8) {
+    if ptr.is_null() { return; }
+    let hp = unsafe { ptr.sub(size_of::<Header>()) as *mut Header };
+    // SAFETY: Linux KPI callers must pass a pointer returned by this allocator.
+    let h = unsafe { *hp };
+    if h.magic != ALLOC_MAGIC { return; }
+    let layout = match Layout::from_size_align(h.total, h.align) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    // SAFETY: base/layout are reconstructed from the header written by alloc_bytes.
+    unsafe { dealloc(ptr.sub(h.off), layout); }
+}
+
+fn valid_page(page: *mut LinuxPage) -> bool {
+    if page.is_null() { return false; }
+    // SAFETY: caller promises a struct page pointer; bad magic is rejected.
+    unsafe { (*page).magic == PAGE_MAGIC }
+}
+
+fn page_desc_alloc(page: LinuxPage) -> *mut LinuxPage {
+    let layout = Layout::new::<LinuxPage>();
+    // SAFETY: layout is the exact LinuxPage layout.
+    let p = unsafe { alloc(layout) as *mut LinuxPage };
+    if p.is_null() { return null_mut(); }
+    // SAFETY: p has LinuxPage layout and is uninitialised.
+    unsafe { p.write(page); }
+    p
+}
+
+fn page_desc_free(page: *mut LinuxPage) {
+    let layout = Layout::new::<LinuxPage>();
+    // SAFETY: page was allocated by page_desc_alloc with this layout.
+    unsafe { dealloc(page as *mut u8, layout); }
+}
+
+fn align_up(v: usize, a: usize) -> usize {
+    (v + (a - 1)) & !(a - 1)
+}
+
+unsafe fn c_strlen(s: *const u8) -> usize {
+    let mut n = 0usize;
+    // SAFETY: caller supplied a NUL-terminated C string.
+    unsafe { while *s.add(n) != 0 { n += 1; } }
+    n
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
+    if order > pmm::MAX_ORDER as u32 { return None; }
+    let pa = pmm::setup::alloc_contig_object(pmm::Order(order as u8))?;
+    let va = pmm::setup::frame_ptr(pa)?;
+    if zero {
+        let bytes = PAGE_SIZE.checked_shl(order).unwrap_or(0);
+        if bytes == 0 { return None; }
+        // SAFETY: va covers the allocated contiguous PMM run.
+        unsafe { write_bytes(va, 0, bytes); }
+    }
+    Some((pa, va))
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn page_run_free_pa(pa: u64, order: u32) {
+    if order > pmm::MAX_ORDER as u32 { return; }
+    // SAFETY: caller owns the page run returned by page_run_alloc.
+    unsafe { pmm::setup::free_contig(pa, pmm::Order(order as u8)); }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn page_run_free_va(va: *mut u8, order: u32) {
+    let hhdm = pmm::user_as::hhdm_offset() as usize;
+    if hhdm == 0 || (va as usize) < hhdm { return; }
+    page_run_free_pa((va as usize - hhdm) as u64, order);
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
+    let bytes = PAGE_SIZE.checked_shl(order)?;
+    let va = alloc_bytes(bytes, PAGE_SIZE, zero);
+    if va.is_null() { None } else { Some((va as u64, va)) }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn page_run_free_pa(pa: u64, _order: u32) {
+    free_bytes(pa as *mut u8);
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn page_run_free_va(va: *mut u8, _order: u32) {
+    free_bytes(va);
+}
+
+unsafe fn format_c(out: &mut Vec<u8>, fmt: *const u8, ap: &mut VaList) {
+    let mut i = 0usize;
+    loop {
+        // SAFETY: fmt is a NUL-terminated format string.
+        let b = unsafe { *fmt.add(i) };
+        if b == 0 { break; }
+        if b != b'%' { out.push(b); i += 1; continue; }
+        i += 1;
+        // SAFETY: reading the next format byte is within the NUL string.
+        let mut c = unsafe { *fmt.add(i) };
+        if c == b'%' { out.push(b'%'); i += 1; continue; }
+        let mut long = false;
+        if c == b'l' || c == b'z' {
+            long = true; i += 1;
+            // SAFETY: length modifier consumed; read conversion byte.
+            c = unsafe { *fmt.add(i) };
+            if c == b'l' {
+                i += 1;
+                // SAFETY: second l consumed; read conversion byte.
+                c = unsafe { *fmt.add(i) };
+            }
+        }
+        match c {
+            b's' => {
+                // SAFETY: vararg type follows %s.
+                let p = unsafe { ap.next_arg::<*mut c_void>() as *const u8 };
+                push_cstr(out, p);
+            }
+            b'c' => {
+                // SAFETY: char is int-promoted in C varargs.
+                out.push(unsafe { ap.next_arg::<i32>() as u8 });
+            }
+            b'd' | b'i' => {
+                let v = if long {
+                    // SAFETY: vararg type follows %ld/%zd.
+                    unsafe { ap.next_arg::<i64>() }
+                } else {
+                    // SAFETY: vararg type follows %d.
+                    unsafe { ap.next_arg::<i32>() as i64 }
+                };
+                push_i64(out, v);
+            }
+            b'u' | b'x' => {
+                let v = if long {
+                    // SAFETY: vararg type follows %lu/%zx.
+                    unsafe { ap.next_arg::<u64>() }
+                } else {
+                    // SAFETY: vararg type follows %u/%x.
+                    unsafe { ap.next_arg::<u32>() as u64 }
+                };
+                push_u64(out, v, if c == b'x' { 16 } else { 10 });
+            }
+            b'p' => {
+                // SAFETY: vararg type follows %p.
+                let p = unsafe { ap.next_arg::<*mut c_void>() as usize };
+                out.extend_from_slice(b"0x");
+                push_u64(out, p as u64, 16);
+            }
+            _ => { out.push(b'%'); out.push(c); }
+        }
+        i += 1;
+    }
+}
+
+fn push_cstr(out: &mut Vec<u8>, p: *const u8) {
+    if p.is_null() { out.extend_from_slice(b"(null)"); return; }
+    let mut n = 0usize;
+    // SAFETY: caller's format contract makes p a NUL-terminated C string.
+    unsafe { while *p.add(n) != 0 { out.push(*p.add(n)); n += 1; } }
+}
+
+fn push_i64(out: &mut Vec<u8>, v: i64) {
+    if v < 0 { out.push(b'-'); push_u64(out, v.unsigned_abs(), 10); }
+    else { push_u64(out, v as u64, 10); }
+}
+
+fn push_u64(out: &mut Vec<u8>, mut v: u64, base: u64) {
+    let mut buf = [0u8; 32];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        let d = (v % base) as u8;
+        buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+        v /= base;
+        if v == 0 { break; }
+    }
+    out.extend_from_slice(&buf[i..]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe fn cstr(p: *const u8) -> &'static str {
+        // SAFETY: tests pass pointers returned by KPI string allocators.
+        let n = unsafe { c_strlen(p) };
+        // SAFETY: same allocation is valid for the measured string bytes.
+        let s = unsafe { core::slice::from_raw_parts(p, n) };
+        core::str::from_utf8(s).unwrap()
+    }
+
+    #[test]
+    fn kmalloc_round_trip_and_zero_allocs() {
+        let p = kmalloc(16, 0);
+        assert!(!p.is_null());
+        unsafe { *p = 0xaa; }
+        kfree(p);
+        let z = kzalloc(8, 0);
+        assert!(!z.is_null());
+        unsafe { assert_eq!(core::slice::from_raw_parts(z, 8), &[0; 8]); }
+        kfree(z);
+    }
+
+    #[test]
+    fn kcalloc_checks_overflow_and_zeroes() {
+        assert!(kcalloc(usize::MAX, 2, 0).is_null());
+        let p = kcalloc(4, 4, 0);
+        assert!(!p.is_null());
+        unsafe { assert_eq!(core::slice::from_raw_parts(p, 16), &[0; 16]); }
+        kfree(p);
+    }
+
+    #[test]
+    fn page_runs_support_struct_page_and_free_pages() {
+        let page = alloc_pages(GFP_ZERO, 1);
+        assert!(!page.is_null());
+        let addr = page_address(page);
+        assert!(!addr.is_null());
+        assert_ne!(page_to_phys(page), 0);
+        unsafe { assert_eq!(core::slice::from_raw_parts(addr, PAGE_SIZE * 2), &[0; PAGE_SIZE * 2]); }
+        __free_pages(page, 1);
+        let addr = __get_free_pages(0, 0);
+        assert_ne!(addr, 0);
+        free_pages(addr, 0);
+    }
+
+    #[test]
+    fn string_helpers_copy_and_format() {
+        let dup = unsafe { kstrdup(b"drv\0".as_ptr(), 0) };
+        assert_eq!(unsafe { cstr(dup) }, "drv");
+        kfree(dup);
+        let s = unsafe { kasprintf(0, b"%s:%d:%x:%p\0".as_ptr(), b"irq\0".as_ptr(), -7i32, 0x2au32, 0x1234usize as *mut c_void) };
+        assert_eq!(unsafe { cstr(s) }, "irq:-7:2a:0x1234");
+        kfree(s);
+    }
+
+    #[test]
+    fn export_symbols_registers_allocator_surface() {
+        crate::symtab::_reset();
+        export_symbols();
+        for name in [
+            "kmalloc", "kzalloc", "kcalloc", "kfree", "vmalloc", "vfree",
+            "alloc_pages", "__free_pages", "__get_free_pages", "get_free_pages",
+            "free_pages", "page_address", "page_to_phys", "kstrdup", "kasprintf",
+        ] {
+            assert!(crate::symtab::resolve(name, true).is_ok(), "{name}");
+        }
+    }
+}
