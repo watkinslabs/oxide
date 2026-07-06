@@ -157,6 +157,25 @@ use super::*;
         assert!(profile.child_requirements.required_queues[4..].iter().all(|required| !required));
     }
 
+    #[test]
+    fn snd_config_reads_generic_device_config_resource() {
+        const TEST_CFG_VA: u64 = 0x1000;
+        const TEST_HHDM: u64 = 0x2000;
+        const TEST_SND_CONFIG: (u32, u32, u32, u32) = (3, 4, 5, 6);
+        let cfg = [
+            TEST_SND_CONFIG.0,
+            TEST_SND_CONFIG.1,
+            TEST_SND_CONFIG.2,
+            TEST_SND_CONFIG.3,
+        ];
+        let resources = virtio::VirtioResources::new(TEST_CFG_VA, TEST_HHDM)
+            .with_device_cfg_va(cfg.as_ptr() as u64);
+        let got = lifecycle::read_device_config(resources).unwrap();
+
+        assert_eq!((got.jacks, got.streams, got.chmaps, got.controls), TEST_SND_CONFIG);
+        assert!(lifecycle::read_device_config(virtio::VirtioResources::new(TEST_CFG_VA, TEST_HHDM)).is_none());
+    }
+
     fn publish_test_card(owner: sound::SoundOwnerKey) {
         let _ = sound::unregister_card(owner);
         let _ = sound::ops::clear(owner);
