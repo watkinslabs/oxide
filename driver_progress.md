@@ -5,14 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B562-ahci-remove-quiesce-frames-proof is claimed from fresh
-`main` at B561 PR #2653 merge commit `5f558af2`.
+Current marker: B562-ahci-remove-quiesce-frames-proof is verified locally from
+fresh `main` at B561 PR #2653 merge commit `5f558af2`; next gate is PR merge
+and post-merge fresh-main smokes.
 
 ## B562 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B562-ahci-remove-quiesce-frames-proof | CLAIMED | Fresh `main` at B561 PR #2653 merge commit `5f558af2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 562 -> 563. Next gate: audit AHCI remove path for disk unregister, hardware quiesce, and frame return, strengthen proof if needed, then run hosted storage/PCI gates plus x86_64/aarch64 smokes. |
+| B562-ahci-remove-quiesce-frames-proof | VERIFIED LOCAL | Fresh `main` at B561 PR #2653 merge commit `5f558af2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 562 -> 563. AHCI remove unregisters disks, quiesces hardware, and returns command/bounce frames: source audit proves `AhciDriver::remove()` parses the PCI BDF and routes through `lifecycle::run_remove_cleanup()`, which calls `imp::remove()` before PCI command disable. `imp::remove()` removes the exact `AhciRecord` by typed `pci::Bdf`, calls `block::registry::unregister(&rec.name)` so `/sys/block`, `/dev/<disk>`, dev_t lookup, diskstats, and remove uevents are withdrawn, then calls `AhciBlk::remove()`. `AhciBlk::remove()` marks existing `Arc` holders removed so later I/O returns EIO and calls `Ahci::shutdown_and_free()`, which stops the active port, clears CLB/FIS base registers, frees command-list, received-FIS, command-table, and bounce frames through PMM, zeros their PAs, clears ABAR VA, and unmaps BAR5. Shutdown uses the same port-stop/free path without unregistering publication for terminal poweroff. Checks pass: `cargo test -q -p drv-ahci -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-ahci 12/12, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-ahci/lib.rs` 440, `lifecycle.rs` 67, `port.rs` 441, `regs.rs` 302, `block/registry.rs` 426, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B561 Current
 
