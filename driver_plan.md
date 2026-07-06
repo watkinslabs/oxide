@@ -2,13 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B513-virtio-snd-frame-teardown-proof verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: B514-virtio-blk-io-freeze-proof; auditing virtio-blk new-I/O freeze and in-flight reset ownership.
 
-Current active item: none. B513 remains on branch
-`B513-virtio-snd-frame-teardown-proof` until commit, PR, merge, fresh main sync,
-and metadata/index.md branch number check complete.
+Current active item: B514-virtio-blk-io-freeze-proof. Claimed from fresh
+`origin/main` at `a651b530` after B513 PR #2608 merge and branch cleanup.
 
-Next gate after merge: return to fresh `origin/main` before claiming B514 using
+Next gate after merge: return to fresh `origin/main` before claiming B515 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -230,7 +229,7 @@ Status legend:
 | SOURCE OK |  | Virtio-net no longer has PCI-transport-owned MAC config harvest. |
 | SOURCE OK |  | Virtio-blk has per-device records. |
 | SOURCE OK |  | Virtio-blk unregisters disks on remove. |
-| NOT DONE | TBD | Virtio-blk freezes new I/O and waits for in-flight owner before reset; needs live and fault proof. |
+| ACTIVE | B514-virtio-blk-io-freeze-proof | Virtio-blk freezes new I/O and waits for in-flight owner before reset; needs live and fault proof. |
 | SOURCE OK |  | Virtio-blk dead config pass-through removed. |
 | SOURCE OK |  | NVMe binds through model probe. |
 | SOURCE OK |  | AHCI binds through model probe. |

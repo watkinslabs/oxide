@@ -5,8 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B513-virtio-snd-frame-teardown-proof VERIFIED. Next row
-not claimed until B513 is committed, pushed, merged, and fresh `main` is synced.
+Current marker: B514-virtio-blk-io-freeze-proof ACTIVE; auditing virtio-blk
+new-I/O freeze and in-flight reset ownership from fresh `main`.
+
+## B514 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B514-virtio-blk-io-freeze-proof | ACTIVE | Fresh `main` at merge commit `a651b530` after B513 PR #2608 merge and branch cleanup. `metadata/index.md` advanced B 514 -> 515. Target row: prove virtio-blk freezes new I/O and waits for in-flight owner before reset with Linux-style hosted fault proof plus x86_64/aarch64 fast smokes; code audit not started yet. |
 
 ## B513 Current
 
