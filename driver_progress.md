@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B528-virtio-debug-probe-trace-indexed-handoff-proof audits row
+Current marker: B528-virtio-debug-probe-trace-indexed-handoff-proof verifies row
 198, Virtio-pci debug probe trace carries indexed handoff records.
 
 ## B528 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B528-virtio-debug-probe-trace-indexed-handoff-proof | IN AUDIT | Fresh `main` at merge commit `14d8e944` after B527 PR #2624 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 17s. `metadata/index.md` advanced B 528 -> 529. Source audit starting for virtio-pci debug probe trace indexed handoff records. |
+| B528-virtio-debug-probe-trace-indexed-handoff-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `14d8e944` after B527 PR #2624 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 17s. `metadata/index.md` advanced B 528 -> 529. Source audit proves `VirtioPciProbeTrace` carries `queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES]` from `handoff.queue_resources`; patch changes `virtio_trace::trace_probe()` from q0/q1-specific handoff trace output to one indexed `virtio-qres` line per populated queue resource with queue index, size, vring PAs, notify mapping, and post/final status. Negative search finds no `q1_notify`, `virtio-tx`, `virtio-q0-prog`, or numeric `queue_resources[...]` indexing in `virtio_trace.rs`. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`virtio_trace.rs` 125, `virtio_drv/probe.rs` 178, `virtio_drv/probe_state.rs` 298, `resources/child.rs` 377, `resources/handoff.rs` 178, `resources/profile.rs` 157); branch smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s. |
 
 ## B527 Current
 
