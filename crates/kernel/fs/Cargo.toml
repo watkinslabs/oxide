@@ -31,6 +31,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 default = []
 debug-boot = []
 debug-sched = []
+debug-wakelat = ["sched/debug-wakelat"]  # epoll_wait busy-wait stall probe ([WLBLK]) for the gnome wakeup-latency hunt
 # F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.
 debug-ssh = []
 # Level-triggered epoll readiness trace ([epoll-lvl]) — busy-loop diagnosis.
