@@ -8,7 +8,7 @@ use crate::dispatch::{
     SYSCALL_TABLE_LEN,
 };
 use crate::errno::{Errno, KResult};
-use crate::userptr::{UserPtr, UserSlice};
+use crate::userptr::{scan_user_cstr, UserPtr, UserSlice};
 
 use hal::USER_VA_END;
 
@@ -210,6 +210,62 @@ fn user_slice_rejects_unaligned_for_aligned_T() {
 // ---------------------------------------------------------------------------
 // Errno
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// scan_user_cstr — execve pathname read (`15§5`, regression for the
+// 64-byte truncation that ENOENT'd every systemd generator/helper with
+// a >64-byte absolute path).
+// ---------------------------------------------------------------------------
+
+// Read a C string laid out at a fake `base` from a Rust buffer.
+fn cstr_at(base: u64, bytes: &[u8], max: u64) -> Result<alloc::vec::Vec<u8>, Errno> {
+    scan_user_cstr(base, max, |va| bytes[(va - base) as usize])
+}
+
+#[test]
+fn scan_reads_full_path_not_capped_at_64() {
+    // The exact user-session generator that regressed: 79 bytes, well
+    // past the old 64-byte cap. Must come back byte-for-byte intact.
+    let mut buf =
+        b"/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator".to_vec();
+    assert_eq!(buf.len(), 79);
+    buf.push(0); // NUL terminator
+    let got = cstr_at(0x1000, &buf, 4096).expect("resolves");
+    assert_eq!(got.len(), 79);
+    assert_eq!(&got[..], &buf[..79]);
+}
+
+#[test]
+fn scan_boundary_64_and_65() {
+    // 64-byte path terminates fine (was the largest that used to work).
+    let mut a = alloc::vec![b'a'; 64]; a.push(0);
+    assert_eq!(cstr_at(0x1000, &a, 4096).unwrap().len(), 64);
+    // 65-byte path used to be silently truncated → ENOENT; now intact.
+    let mut b = alloc::vec![b'b'; 65]; b.push(0);
+    assert_eq!(cstr_at(0x1000, &b, 4096).unwrap().len(), 65);
+}
+
+#[test]
+fn scan_no_nul_within_max_is_enametoolong() {
+    // No terminator inside max_len → ENAMETOOLONG (Linux PATH_MAX rule),
+    // never a truncated success.
+    let buf = alloc::vec![b'x'; 16];
+    assert_eq!(cstr_at(0x1000, &buf, 8), Err(Errno::Enametoolong));
+}
+
+#[test]
+fn scan_base_past_user_end_is_efault() {
+    assert_eq!(scan_user_cstr(USER_VA_END, 4096, |_| b'a'), Err(Errno::Efault));
+    assert_eq!(scan_user_cstr(USER_VA_END + 1, 4096, |_| b'a'), Err(Errno::Efault));
+}
+
+#[test]
+fn scan_walks_off_user_end_before_nul_is_efault() {
+    // A non-terminated path that reaches USER_VA_END mid-walk faults
+    // rather than returning a partial string.
+    let base = USER_VA_END - 4;
+    assert_eq!(scan_user_cstr(base, 4096, |_| b'a'), Err(Errno::Efault));
+}
 
 #[test]
 fn errno_values_match_linux_x86_64() {

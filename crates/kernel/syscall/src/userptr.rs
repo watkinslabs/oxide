@@ -92,6 +92,36 @@ impl<T> UserSlice<T> {
     }
 }
 
+/// Copy a NUL-terminated C string out of user memory starting at
+/// `base`, one byte at a time via `read`, into an owned `Vec` (NUL
+/// excluded). Bounds match Linux `strndup_user(..., max_len)` used by
+/// `getname_flags` on the execve path:
+///   * first `0` byte terminates → `Ok(bytes_before_nul)`;
+///   * reaching `USER_VA_END` before a NUL → `Efault` (the walk ran
+///     off the user half into unmapped/non-canonical space);
+///   * no NUL within `max_len` bytes → `Enametoolong`.
+///
+/// Pure over the byte-reader so the length policy is unit-testable
+/// off-target (the kernel caller passes a `read_volatile` closure).
+/// The caller handles `base == 0` (NULL) before calling.
+/// # C: O(max_len)
+pub fn scan_user_cstr(
+    base: u64,
+    max_len: u64,
+    mut read: impl FnMut(u64) -> u8,
+) -> Result<alloc::vec::Vec<u8>, Errno> {
+    if base >= USER_VA_END { return Err(Errno::Efault); }
+    let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    for i in 0..max_len {
+        let va = base.checked_add(i).ok_or(Errno::Efault)?;
+        if va >= USER_VA_END { return Err(Errno::Efault); }
+        let b = read(va);
+        if b == 0 { return Ok(out); }
+        out.push(b);
+    }
+    Err(Errno::Enametoolong)
+}
+
 #[inline]
 fn validate_range(raw: u64, bytes: u64) -> Result<(), Errno> {
     let end = raw.checked_add(bytes).ok_or(Errno::Efault)?;

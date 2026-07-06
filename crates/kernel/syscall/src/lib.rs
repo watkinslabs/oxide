@@ -31,7 +31,7 @@ pub use dispatch::{
     SYSCALL_TABLE, SYSCALL_TABLE_LEN,
 };
 pub use errno::{Errno, KResult};
-pub use userptr::{UserPtr, UserSlice};
+pub use userptr::{scan_user_cstr, UserPtr, UserSlice};
 
 #[cfg(test)]
 mod tests;
