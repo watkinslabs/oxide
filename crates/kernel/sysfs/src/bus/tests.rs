@@ -26,6 +26,14 @@ extern crate alloc;
     static BIND_PROBES: AtomicU32 = AtomicU32::new(0);
     static BIND_REMOVES: AtomicU32 = AtomicU32::new(0);
 
+    struct SysfsNestedVirtioDriver;
+    impl drv::Driver for SysfsNestedVirtioDriver {
+        fn bus(&self) -> &'static str { "virtio" }
+        fn name(&self) -> &'static str { "sysfs-nested-virtio-test" }
+        fn matches(&self, dev: &drv::Device) -> bool { dev.addr == "sysfs-virtio-child0" }
+    }
+    static SYSFS_NESTED_VIRTIO_DRIVER: SysfsNestedVirtioDriver = SysfsNestedVirtioDriver;
+
     struct SysfsBindUeventDriver;
     impl drv::Driver for SysfsBindUeventDriver {
         fn bus(&self) -> &'static str { "platform" }
@@ -127,6 +135,26 @@ extern crate alloc;
         assert_eq!(
             rebound_driver_link.readlink().expect("readlink"),
             b"../../../bus/platform/drivers/sysfs-bind-test".to_vec());
+    }
+
+    #[test]
+    fn driver_device_symlink_uses_canonical_nested_path() {
+        drv::register_driver(&SYSFS_NESTED_VIRTIO_DRIVER);
+        let parent = Arc::new(drv::Device::new(
+            "pci", String::from("0000:00:2f.0"), 0x1af4, 0x1000, 0x010000));
+        drv::try_device_add(Arc::clone(&parent)).expect("parent registered");
+        let child = Arc::new(drv::Device::new(
+            "virtio", String::from("sysfs-virtio-child0"), 0, 2, 0)
+            .with_parent("pci", String::from("0000:00:2f.0")));
+        drv::try_device_add(Arc::clone(&child)).expect("child registered");
+        assert_eq!(child.bound(), Some("sysfs-nested-virtio-test"));
+
+        let root = make_bus_drivers_inode("virtio");
+        let dir = root.lookup("sysfs-nested-virtio-test").expect("driver dir");
+        let link = dir.lookup("sysfs-virtio-child0").expect("driver device link");
+        assert_eq!(
+            link.readlink().expect("driver link target"),
+            b"../../../../devices/pci0000:00/0000:00:2f.0/sysfs-virtio-child0".to_vec());
     }
 
     #[test]

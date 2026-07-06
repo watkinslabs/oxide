@@ -176,6 +176,13 @@ smoke-sysblock-arm: arm
 	./tools/boot-smoke-sysblock.sh arm $(SYSBLOCK_SMOKE_TIMEOUT)
 smoke-sysblock: smoke-sysblock-x86 smoke-sysblock-arm
 
+SYSBUS_BIND_SMOKE_TIMEOUT ?= 600
+smoke-sysbus-bind-x86: x86
+	./tools/boot-smoke-sysbus-bind.sh x86 $(SYSBUS_BIND_SMOKE_TIMEOUT)
+smoke-sysbus-bind-arm: arm
+	./tools/boot-smoke-sysbus-bind.sh arm $(SYSBUS_BIND_SMOKE_TIMEOUT)
+smoke-sysbus-bind: smoke-sysbus-bind-x86 smoke-sysbus-bind-arm
+
 VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT ?= 900
 smoke-virtio-snd-multidev-x86: x86
 	./tools/boot-smoke-virtio-snd-multidev.sh x86 $(VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT)
