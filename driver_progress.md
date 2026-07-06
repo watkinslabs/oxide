@@ -5,15 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B527-virtio-child-profile-declarations-proof audits row 196,
-Child drivers export transport profile declarations with feature masks, queue
-requirements, IRQ callback policy.
+Current marker: B527-virtio-child-profile-declarations-proof verified locally;
+pending commit, PR, merge, fresh-main sync, and next-row claim.
 
 ## B527 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B527-virtio-child-profile-declarations-proof | IN AUDIT | Fresh `main` at merge commit `243362b7` after B526 PR #2623 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s; aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 527 -> 528. Source audit starting for child-owned `VirtioTransportProfile` declarations: feature masks, queue requirements, and IRQ callback policy must come from child drivers, not pci-boot transport policy. |
+| B527-virtio-child-profile-declarations-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `243362b7` after B526 PR #2623 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s; aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 527 -> 528. Source audit proves `VirtioChildOps::profile()` delegates to each child crate's `transport_profile()` for GPU, input, net, blk, rng, vsock, and snd; each child profile carries child-owned `wanted_features()` plus the appropriate shared `VirtioTransportProfile` constructor, queue requirements, extra queue plans, and child IRQ callback (`raise_rx`, `wake_completions`, input event drain, vsock RX, snd event). pci-boot consumes only `profile.drv_features`, `profile.queue_plans`, `profile.msix0_handler`, `profile.early_payload_policy`, and `profile.child_requirements` through shared virtio bring-up/runtime handoff paths. Checks pass: focused child-profile hosted gate `cargo test -q -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`virtio_child.rs` 398, `resources/profile.rs` 156, child profile declaration files all under 500); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B526 Current
 
