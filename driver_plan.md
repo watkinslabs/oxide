@@ -2,14 +2,14 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B516-virtio-child-session-backend-proof auditing PCI-backed virtio child session backend ownership.
+ACTIVE NOW: none; B516-virtio-child-session-backend-proof verified on x86_64 and aarch64, next row not claimed yet.
 
-Current active item: row 168, `PCI-backed child session carries explicit
-VirtioPciTransport backend`. Marker: `>>> ACTIVE >>> B516`.
+Current active item: none. B516 remains on branch
+`B516-virtio-child-session-backend-proof` until commit, PR, merge, fresh main
+sync, and metadata/index.md branch number check complete.
 
-Next gate after B516: hosted pci-boot/virtio proof, x86_64 and aarch64 fast
-smokes, commit, push, PR, merge, then return to fresh `origin/main` before
-claiming B517 using `metadata/index.md`.
+Next gate after merge: return to fresh `origin/main` before claiming B517 using
+`metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -165,7 +165,7 @@ Status legend:
 | VERIFIED |  | Shared `run_child_remove` owns remove-before-unpublish sequencing. |
 | VERIFIED |  | Shared `run_child_shutdown` owns typed-key shutdown dispatch. |
 | VERIFIED | B507-virtio-child-transport-session-contract | Shared `VirtioChildTransportSession` no longer exposes PCI-shaped location data to child drivers: child-visible session contract carries child key/address/features/resources only; pci-boot keeps BDF as wrapper-local metadata for GPU display registration; virtio-net runtime state/init no longer stores or accepts BDF; virtio-blk debug output logs opaque child keys instead of decoding them as BDF. Checks pass: focused shared virtio/net/block tests; broad hosted driver gate; line caps; `git diff --check`; x86_64 and aarch64 smoke boots. |
-| >>> ACTIVE >>> IN AUDIT | B516-virtio-child-session-backend-proof | PCI-backed child session carries explicit `VirtioPciTransport` backend. |
+| VERIFIED | B516-virtio-child-session-backend-proof | PCI-backed child session carries explicit `VirtioPciTransport` backend: `VirtioChildSession` stores a concrete `virtio_drv::VirtioPciTransport`, constructs it in `begin`, acquires child probe state only through `transport.probe_child`, publishes persistent transport state through `self.transport.publish`, and unpublishes through `VirtioPciTransport.unpublish_key`; child drivers receive only `dyn virtio::VirtioChildTransportSession`, and source search finds no child crate imports of pci-boot transport internals. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate; line caps (`virtio_bus.rs` 145, `virtio_child.rs` 398, `virtio_drv/driver.rs` 112, `virtio_drv/probe.rs` 178, `virtio_drv/probe_state.rs` 298, `virtio/resources/child.rs` 377); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 37s. |
 | SOURCE OK |  | Raw virtio-pci probe/publish/unpublish helpers are private to transport module. |
 | VERIFIED |  | Shared `VirtioChildResourceState` owns transport-neutral readiness/resource policy. |
 | VERIFIED |  | Shared `VirtioChildProbeFacts` carries child-visible transport probe result. |
