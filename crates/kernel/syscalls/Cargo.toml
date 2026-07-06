@@ -71,6 +71,7 @@ debug-ssh = ["kmacros/debug-ssh"]
 debug-cgroup = ["kmacros/debug-cgroup"]
 debug-mount = []  # [mnt] log of mount-family syscall failures (path+errno) — 226/NAMESPACE diagnosis
 debug-atexit = []  # abandoned atexit-corruption FILEREAD/LOCKBYTE probes (kept, off)
+debug-eacces = ["vfs/debug-eacces"]  # [EACCES] path+creds+owner/mode log at every openat -13 return (login-frontier permission hunt)
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

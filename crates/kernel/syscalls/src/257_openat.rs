@@ -100,7 +100,17 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // openat(2): resolve relative `s` against the dirfd's directory (a0).
     let resolved = match crate::pathresolve::resolve_at_result(args.a0 as i32, s) {
         Ok(p) => p,
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-eacces")]
+            if rv == -(Errno::Eacces.as_i32() as i64) {
+                klog::write_raw(b"[EACCES] openat(walk) path=\"");
+                klog::write_raw(s.as_bytes());
+                klog::write_raw(b"\" tid=");
+                klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                klog::write_raw(b"\n");
+            }
+            return rv;
+        }
     };
     let path_str: &str = resolved.as_str();
     #[cfg(feature = "debug-atexit")]
@@ -275,7 +285,19 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         if let Err(e) = inode.on_open() { return -(e as i64); }
     }
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
-    if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) { return rv; }
+    if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) {
+        #[cfg(feature = "debug-eacces")]
+        if rv == -(Errno::Eacces.as_i32() as i64) {
+            klog::write_raw(b"[EACCES] openat(may_open) path=\"");
+            klog::write_raw(path_str.as_bytes());
+            klog::write_raw(b"\" flags=");
+            klog::write_hex_u64(flags as u64);
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+            klog::write_raw(b"\n");
+        }
+        return rv;
+    }
     // Lease-break (Linux `break_lease` in `do_open`): conflicting open signals
     // the lease holder + waits before proceeding. Zero-cost without a lease;
     // skip for a just-created file (cannot hold a pre-existing lease).
