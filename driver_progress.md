@@ -5,15 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B572-smoke-rootfs-mode-guard is VERIFIED LOCAL on branch
-`B572-smoke-rootfs-mode-guard`; next gate is commit, push, PR, merge, fresh-main
-sync, and post-merge x86_64/aarch64 normal-login smokes.
+Current marker: B572-smoke-rootfs-mode-guard is VERIFIED MERGED on fresh
+`main`; next gate is claiming the next B branch from `metadata/index.md`.
 
 ## B572 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B572-smoke-rootfs-mode-guard | VERIFIED LOCAL | Fresh `main` fast-forwarded to `26119cbd` after PR #2664. B571 PR #2663 is merged. The attempted post-merge normal-login smoke `/tmp/b571-postmerge-x86-login-smoke.log` booted a stale targeted rootfs whose `/init` ran `virtio_snd_multidev_probe` and exited 1, while generic `smoke-x86` waited for `oxide login:` until timeout. Root cause is test/cache mode mismatch, not a B571 kernel regression. B572 adds rootfs mode markers, copies markers on cache hits, includes `rootfs_cache.rs` in the rootfs input hash, and rejects `--skip-rootfs`/`OXIDE_SKIP_ROOTFS=1` when the existing rootfs mode does not match the requested smoke environment. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line cap (`rootfs_cache.rs` 273), stale no-marker skip rejects on x86_64 (`/tmp/b572-x86-skip-guard.log`) and aarch64 (`/tmp/b572-arm-skip-guard.log`), normal rootfs rebuild+matching skip succeeds on x86_64 (`/tmp/b572-x86-rootfs-rebuild.log`, `/tmp/b572-x86-skip-normal.log`) and aarch64 (`/tmp/b572-arm-rootfs-rebuild.log`, `/tmp/b572-arm-skip-normal.log`), targeted virtio-snd mode rejects against normal rootfs on x86_64 (`/tmp/b572-x86-skip-targeted-reject.log`) and aarch64 (`/tmp/b572-arm-skip-targeted-reject.log`), and normal-login smokes with `OXIDE_SKIP_ROOTFS=1` reach `oxide login:` on x86_64 (`/tmp/b572-x86-normal-skip-smoke.log`, 38s) and aarch64 (`/tmp/b572-arm-normal-skip-smoke.log`, 44s). |
+| B572-smoke-rootfs-mode-guard | VERIFIED MERGED | Fresh `main` fast-forwarded to `26119cbd` after PR #2664. B571 PR #2663 is merged. The attempted post-merge normal-login smoke `/tmp/b571-postmerge-x86-login-smoke.log` booted a stale targeted rootfs whose `/init` ran `virtio_snd_multidev_probe` and exited 1, while generic `smoke-x86` waited for `oxide login:` until timeout. Root cause is test/cache mode mismatch, not a B571 kernel regression. B572 adds rootfs mode markers, copies markers on cache hits, includes `rootfs_cache.rs` in the rootfs input hash, and rejects `--skip-rootfs`/`OXIDE_SKIP_ROOTFS=1` when the existing rootfs mode does not match the requested smoke environment. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line cap (`rootfs_cache.rs` 273), stale no-marker skip rejects on x86_64 (`/tmp/b572-x86-skip-guard.log`) and aarch64 (`/tmp/b572-arm-skip-guard.log`), normal rootfs rebuild+matching skip succeeds on x86_64 (`/tmp/b572-x86-rootfs-rebuild.log`, `/tmp/b572-x86-skip-normal.log`) and aarch64 (`/tmp/b572-arm-rootfs-rebuild.log`, `/tmp/b572-arm-skip-normal.log`), targeted virtio-snd mode rejects against normal rootfs on x86_64 (`/tmp/b572-x86-skip-targeted-reject.log`) and aarch64 (`/tmp/b572-arm-skip-targeted-reject.log`), normal-login smokes with `OXIDE_SKIP_ROOTFS=1` reach `oxide login:` on x86_64 (`/tmp/b572-x86-normal-skip-smoke.log`, 38s) and aarch64 (`/tmp/b572-arm-normal-skip-smoke.log`, 44s), pre-push boot-smoke passed on both arches, PR #2665 merged as `f846a09b`, and post-merge fresh-main smokes reached `oxide login:` on x86_64 (`/tmp/b572-postmerge-x86-login-smoke.log`, 14s) and aarch64 (`/tmp/b572-postmerge-arm-login-smoke.log`, 18s). |
 
 ## B571 Current
 
