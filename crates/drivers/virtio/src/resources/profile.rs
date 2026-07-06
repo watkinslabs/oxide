@@ -30,7 +30,7 @@ impl VirtioChildRequirements {
     }
 
     pub const fn net() -> Self {
-        Self::new([true, true, false, false, false, false, false, false], false, true)
+        Self::new([true, true, false, false, false, false, false, false], true, true)
     }
 
     pub const fn snd() -> Self {
