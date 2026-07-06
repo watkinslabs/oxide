@@ -4,14 +4,12 @@ impl BlkState {
     pub fn serial(&self) -> &[u8; blk::BLK_SERIAL_LEN] { &self.serial }
 
     pub(super) fn remove(&self) {
-        self.poisoned.store(true, core::sync::atomic::Ordering::Release);
-        #[cfg(target_os = "oxide-kernel")]
-        BLK_COMPL.wake_all();
+        self.freeze_new_io();
         if !self.wait_idle_for_remove() {
-            virtio::reset_device(self.cfg_va);
+            self.reset_common_cfg();
             return;
         }
-        virtio::reset_device(self.cfg_va);
+        self.reset_common_cfg();
         if self.bounce_pa != 0 {
             unsafe { pmm::setup::free_contig(self.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
         }
@@ -20,11 +18,9 @@ impl BlkState {
     }
 
     pub(super) fn shutdown(&self) {
-        self.poisoned.store(true, core::sync::atomic::Ordering::Release);
-        #[cfg(target_os = "oxide-kernel")]
-        BLK_COMPL.wake_all();
+        self.freeze_new_io();
         let idle = self.wait_idle_for_remove();
-        virtio::reset_device(self.cfg_va);
+        self.reset_common_cfg();
         if !idle {
             klog::write_raw(b"[BLK-SHUTDOWN] reset with busy request quarantined\n");
         }
@@ -63,7 +59,20 @@ impl BlkState {
         }
     }
 
+    fn freeze_new_io(&self) {
+        self.poisoned.store(true, core::sync::atomic::Ordering::Release);
+        #[cfg(target_os = "oxide-kernel")]
+        BLK_COMPL.wake_all();
+    }
+
+    fn reset_common_cfg(&self) {
+        virtio::reset_device(self.cfg_va);
+    }
+
     fn submit(&self, type_: u32, sector: u64, data: &mut [u8]) -> KResult<()> {
+        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(BlockError::Eio);
+        }
         let h = hhdm();
         if h == 0 || !self.requestq.is_runtime_valid() || self.bounce_pa == 0 {
             return Err(BlockError::Eio);
@@ -74,9 +83,6 @@ impl BlkState {
         let data_len: u32 = if is_flush { 0 } else { data.len() as u32 };
         if data_len as usize > blk::BOUNCE_DATA_BYTES {
             return Err(BlockError::Einval);
-        }
-        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
-            return Err(BlockError::Eio);
         }
         self.acquire_turn();
         if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
@@ -216,6 +222,16 @@ impl BlkState {
         self.inflight.lock().busy = false;
         #[cfg(target_os = "oxide-kernel")]
         BLK_COMPL.wake_all();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_for_tests(&self) {
+        self.remove();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_for_tests(&self) {
+        self.shutdown();
     }
 
     pub(super) fn get_id(&self) -> KResult<[u8; blk::BLK_SERIAL_LEN]> {

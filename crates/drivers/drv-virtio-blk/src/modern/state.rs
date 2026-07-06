@@ -122,6 +122,42 @@ pub struct BlkState {
     pub(super) poisoned: core::sync::atomic::AtomicBool,
 }
 
+#[cfg(test)]
+impl BlkState {
+    pub(crate) fn for_test_cfg(cfg_va: u64) -> Self {
+        Self {
+            cfg_va,
+            requestq: virtio::VirtQueueResource {
+                index: 0,
+                size: 0,
+                desc_pa: 0,
+                driver_pa: 0,
+                device_pa: 0,
+                notify_va: 0,
+                notify_off: 0,
+            },
+            capacity: 8,
+            blk_size: blk::VIRTIO_BLK_SECTOR_BYTES,
+            serial: [0u8; blk::BLK_SERIAL_LEN],
+            bounce_pa: 0,
+            inflight: Spinlock::new(RingShadow { avail_idx: 0, used_seen: 0, busy: false }),
+            poisoned: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn hold_inflight_for_tests(&self) {
+        self.inflight.lock().busy = true;
+    }
+
+    pub(crate) fn release_inflight_for_tests(&self) {
+        self.inflight.lock().busy = false;
+    }
+
+    pub(crate) fn frozen_for_tests(&self) -> bool {
+        self.poisoned.load(core::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub(super) struct RingShadow {
     pub(super) avail_idx: u16,
     pub(super) used_seen: u16,
