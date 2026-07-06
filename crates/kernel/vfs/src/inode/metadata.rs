@@ -102,10 +102,16 @@ impl Inode {
         self.i_mode.store(ifmt | (perm as u32 & 0o7777), Ordering::Relaxed);
         Ok(())
     }
-    /// `chown` field write. # C: O(1)
+    /// `chown` field write. Writes the in-core `i_uid`/`i_gid`, then — for a
+    /// synthesized inode that installed an [`OwnerPersist`](super::model::OwnerPersist)
+    /// hook (cgroupfs) — writes the owner THROUGH to the backing store so it
+    /// survives the inode being re-created on the next lookup (systemd cgroup
+    /// delegation). No hook installed → the write-through is skipped, so every
+    /// native-storage inode's chown is unchanged. # C: O(1) + backend
     pub fn set_owner(&self, uid: u32, gid: u32) -> KResult<()> {
         self.i_uid.store(uid, Ordering::Relaxed);
         self.i_gid.store(gid, Ordering::Relaxed);
+        if let Some(h) = &self.owner_persist { h.persist_owner(uid, gid); }
         Ok(())
     }
     /// utimes field write. # C: O(1)
