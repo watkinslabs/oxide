@@ -5,10 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B601-driver-model-live-probe-audit is VERIFIED MERGED as
-PR #2724 at `ea997888`. Fresh-main post-merge
-`make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in
-35s and aarch64 reaching `oxide login:` in 38s.
+Current marker: B602-no-direct-pci-boot-probes is VERIFIED LOCAL / PR PENDING
+from fresh `main` at D147 ledger merge `afe96654`. B602 advances
+`metadata/index.md` B 602 -> 603.
+
+## B602 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B602-no-direct-pci-boot-probes | VERIFIED LOCAL / PR PENDING | Claimed from fresh `main` at D147 ledger merge `afe96654`; target row is the old claim that `pci-boot` directly calls `virtio_probe_arch`, `nvme_probe`, and `ahci_probe`. Source search over `crates/kernel/pci-boot` and `crates/drivers` finds no live `virtio_probe_arch`, `nvme_probe`, or `ahci_probe` symbol. Current source registers `drv_nvme::NVME_DRIVER`, `drv_ahci::AHCI_DRIVER`, and virtio-pci model drivers before publishing PCI devices through `drv::try_device_add`; `VirtioPciDrv::probe` publishes `virtio` child devices; the remaining direct virtio install calls live inside `VirtioChildDriver::probe_child`, so they are child-probe work, not PCI enumeration bypass. Hosted gate passes: `cargo test -q -p pci-boot -p drv-nvme -p drv-ahci -p virtio -- --nocapture --test-threads=1` with `drv-nvme` 12/12, `drv-ahci` 7/7, `virtio` 49/49, and `pci-boot` compile-only. B602 changes docs/metadata only, so x86_64/aarch64 runtime state is inherited from fresh `main` at D147 ledger merge `afe96654`, where B601 post-merge `make smoke SMOKE_TIMEOUT=300` reached `oxide login:` on x86_64 in 35s and aarch64 in 38s. No existing B602/direct-pci-boot-probe branch or worktree was found. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B601 Current
 
