@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B605-bind-unbind-readd-aggregate-audit is ACTIVE / IN AUDIT
-from fresh `main` at D150 ledger merge `eb4edbe5`. B605 advances
+Current marker: B605-bind-unbind-readd-aggregate-audit is VERIFIED LOCAL / PR
+PENDING from fresh `main` at D150 ledger merge `eb4edbe5`. B605 advances
 `metadata/index.md` B 605 -> 606.
 
 ## B605 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B605-bind-unbind-readd-aggregate-audit | ACTIVE / IN AUDIT | Claimed from fresh `main` at D150 ledger merge `eb4edbe5`; target row is the B415 aggregate repeated bind/unbind/remove/readd proof. Duplicate-lane check found no B415/B605 aggregate branch or worktree. First ledger scan finds merged concrete live proof rows for PCI, virtio parent/child, block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2; B605 is auditing category completeness before marking the aggregate verified. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
+| B605-bind-unbind-readd-aggregate-audit | VERIFIED LOCAL / PR PENDING | Claimed from fresh `main` at D150 ledger merge `eb4edbe5`; target row is the B415 aggregate repeated bind/unbind/remove/readd proof. Duplicate-lane check found no B415/B605 aggregate branch or worktree. Category audit is complete: PCI is covered by B582 storage multicontroller PCI loops; virtio parent/child by B583; block by B581; net by B580; DRM/fbdev by B579 plus stale devnode removal by B587; input by B576; sound by B578; RNG by B584; UART by B585; PS/2 by B586 with the aarch64 no-i8042 contract. B589/B594 additionally prove driver-directory bind/unbind symlink shape across platform, virtio, and PCI. Local log scan confirms PASS markers in the preserved `/tmp/b57*`, `/tmp/b58*`, and `/tmp/b59*` x86_64/aarch64 logs for those targets. No new combined boot is needed because this row is an aggregate ledger audit of already merged, per-category live proofs. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B604 Current
 

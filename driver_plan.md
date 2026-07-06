@@ -2,7 +2,7 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B605-bind-unbind-readd-aggregate-audit - ACTIVE / IN AUDIT
+ACTIVE NOW: B605-bind-unbind-readd-aggregate-audit - VERIFIED LOCAL / PR PENDING
 
 B599-driver-shutdown-coverage is merged as PR #2721 at `5df821ab`. Fresh-main
 post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching
@@ -20,7 +20,8 @@ records the merged state and advances D 149 -> 150.
 B604-synthetic-virtio-child-binding-audit is merged as PR #2730 at
 `6dfdb24b`. B604 advanced `metadata/index.md` B 604 -> 605; D150 records the
 merged state and advances D 150 -> 151. B605 is claimed from fresh `main` at
-D150 ledger merge `eb4edbe5` and advances `metadata/index.md` B 605 -> 606.
+D150 ledger merge `eb4edbe5`, advances `metadata/index.md` B 605 -> 606, and
+is verified locally as an aggregate coverage audit.
 
 Last verified branch: B601-driver-model-live-probe-audit. Current live PCI,
 NVMe, AHCI, virtio-pci, virtio child, and platform bring-up paths bind through
@@ -30,8 +31,8 @@ the driver model on x86_64 and aarch64.
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: audit whether B415 aggregate live rebind coverage is complete from
-merged concrete proof rows.
+Next gate: PR + merge B605, then return to fresh `main` before closing the
+remaining workflow bookkeeping rows.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -374,7 +375,7 @@ Status legend:
 | VERIFIED | B412-probe-failure-devres-proof | Added `VirtioProbeDevres` as the single virtio-pci probe resource owner for cfg reset, frame release, MSI-X release, PCI command disable, mapping unmap, and successful publish transfer. Added child-probe fault-point lifecycle coverage proving failures release once and never publish. `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`, x86_64 `/tmp/b412-x86-driver-path.log`, and aarch64 `/tmp/b412-arm-driver-path.log` pass. |
 | VERIFIED | B413-devtmpfs-model-owned-publication | Source audit proves hardware-backed nodes publish through `drv::try_device_add`: block, evdev, fbdev, DRM, hwrng, sound, console, and boot pseudo devices; direct `devfs::register*` users are fixed dirs, ptys, coredumps, or other non-hardware namespace entries. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b413-x86-driver-path.log`, and aarch64 `/tmp/b413-arm-driver-path.log` pass. |
 | VERIFIED | B414-driver-devnode-readd-loops | Existing hosted remove/readd loops cover block, evdev, fbdev, DRM, and hwrng; B414 adds same-owner sound card unregister/register restore coverage. Console tty nodes are boot-owned fixed nodes, not hot-remove loop devices; x86_64/aarch64 driver-path proof covers their boot publication path. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b414-x86-driver-path.log`, and aarch64 `/tmp/b414-arm-driver-path.log` pass. |
-| ACTIVE | B605-bind-unbind-readd-aggregate-audit | Aggregate repeated bind/unbind/remove/readd proof remains unverified: `driver_anal.md` requires QEMU hotplug/rebind proof for PCI, virtio, block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2; existing driver-core and hosted devnode loops are useful but explicitly not a substitute. B605 audits this against merged concrete live-proof rows from fresh `main` at D150 ledger merge `eb4edbe5` and advances `metadata/index.md` B 605 -> 606. |
+| VERIFIED LOCAL | B605-bind-unbind-readd-aggregate-audit | B415 aggregate repeated bind/unbind/remove/readd proof is covered by merged concrete QEMU rows on x86_64 and aarch64: PCI by B582 storage multicontroller PCI loops; virtio parent/child by B583; block by B581; net by B580; DRM/fbdev by B579 plus stale devnode removal by B587; input by B576; sound by B578; RNG by B584; UART by B585; PS/2 by B586 with the aarch64 no-i8042 contract. B589/B594 additionally prove driver-directory bind/unbind symlink shape across platform, virtio, and PCI. Local log scan confirms PASS markers in the preserved `/tmp/b57*`, `/tmp/b58*`, and `/tmp/b59*` x86_64/aarch64 logs for those targets. No new combined boot is needed because this row is an aggregate ledger audit of already merged, per-category live proofs. |
 | VERIFIED | B416-nvme-ahci-multicontroller-proof | NVMe/AHCI per-BDF source audit, opt-in two-controller QEMU harness, `/bin/storage_multictrl_probe`, hosted `drv/sysfs/block`, x86_64 `/tmp/b416-x86-storage-multictrl-3.log`, and aarch64 `/tmp/b416-arm-storage-multictrl.log` pass. |
 | VERIFIED | B417-virtio-net-live-multidev-proof | Existing virtio-net multidev probe and QEMU two-device mode satisfy the row: source audit confirms keyed install/remove/rebind path; hosted `drv-virtio-net/net/virtio/pci-boot`, x86_64 `/tmp/b417-x86-virtio-net-multidev.log`, and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
 | VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
