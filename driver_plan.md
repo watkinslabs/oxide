@@ -2,13 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B514-virtio-blk-io-freeze-proof verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: B515-nvme-ahci-bar-devres-proof.
 
-Current active item: none. B514 remains on branch
-`B514-virtio-blk-io-freeze-proof` until commit, PR, merge, fresh main sync, and
-metadata/index.md branch number check complete.
+Current active item: NVMe/AHCI BAR mappings are dropped on probe failure/remove;
+needs leak/fault proof. Branch `B515-nvme-ahci-bar-devres-proof` is claimed
+from fresh `main` at `92126d69`.
 
-Next gate after merge: return to fresh `origin/main` before claiming B515 using
+Next gate after merge: return to fresh `origin/main` before claiming B516 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -238,7 +238,7 @@ Status legend:
 | SOURCE OK |  | AHCI keeps typed per-BDF block-device state. |
 | SOURCE OK |  | NVMe remove unregisters disks, quiesces hardware, returns queue/bounce frames. |
 | SOURCE OK |  | AHCI remove unregisters disks, quiesces hardware, returns queue/bounce frames. |
-| NOT DONE | TBD | NVMe/AHCI BAR mappings are dropped on probe failure/remove; needs leak/fault proof. |
+| ACTIVE | B515-nvme-ahci-bar-devres-proof | NVMe/AHCI BAR mappings are dropped on probe failure/remove; needs leak/fault proof. Fresh `main` at `92126d69`; `metadata/index.md` advanced B 515 -> 516. Audit in progress for Linux-style owned MMIO mapping lifetime, failed-probe unwind, remove/shutdown release, and hosted leak/fault proof before x86_64/aarch64 smoke. |
 | SOURCE OK |  | NVMe publication is per PCI function with `nvmeXn1` names. |
 | SOURCE OK |  | AHCI publication is per PCI function with `sdX` names. |
 | SOURCE OK | TBD | NVMe duplicate binds rejected before controller bring-up; needs hosted/live proof. |
