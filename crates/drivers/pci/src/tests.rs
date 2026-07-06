@@ -4,6 +4,11 @@ use std::sync::Mutex;
 use std::vec;
 use std::vec::Vec;
 
+const TEST_MSIX_TABLE_ENTRIES: u16 = 4;
+const TEST_MSIX_TABLE_BAR: u8 = 0;
+const TEST_MSIX_TABLE_OFFSET: u32 = 0x1000;
+const TEST_MSIX_LAST_ENTRY: u16 = TEST_MSIX_TABLE_ENTRIES - 1;
+
 struct MapReader {
     m: Mutex<HashMap<(Bdf, u8), u32>>,
 }
@@ -235,6 +240,41 @@ fn decode_msix_cap_basic() {
     assert_eq!(m.table_offset, 0x1000);
     assert_eq!(m.pba_bir, 4);
     assert_eq!(m.pba_offset, 0x2000);
+}
+
+#[test]
+fn msix_table_entry_offset_accepts_decoded_table_range() {
+    let m = MsixCap {
+        enabled: false,
+        function_mask: false,
+        table_size: TEST_MSIX_TABLE_ENTRIES,
+        table_bir: TEST_MSIX_TABLE_BAR,
+        table_offset: TEST_MSIX_TABLE_OFFSET,
+        pba_bir: TEST_MSIX_TABLE_BAR,
+        pba_offset: 0,
+    };
+
+    assert_eq!(msix_table_entry_offset(m, 0), Some(TEST_MSIX_TABLE_OFFSET as u64));
+    assert_eq!(
+        msix_table_entry_offset(m, TEST_MSIX_LAST_ENTRY),
+        Some(TEST_MSIX_TABLE_OFFSET as u64 + (TEST_MSIX_LAST_ENTRY as u64) * MSIX_TABLE_ENTRY_BYTES)
+    );
+}
+
+#[test]
+fn msix_table_entry_offset_rejects_entries_outside_decoded_size() {
+    let m = MsixCap {
+        enabled: false,
+        function_mask: false,
+        table_size: TEST_MSIX_TABLE_ENTRIES,
+        table_bir: TEST_MSIX_TABLE_BAR,
+        table_offset: TEST_MSIX_TABLE_OFFSET,
+        pba_bir: TEST_MSIX_TABLE_BAR,
+        pba_offset: 0,
+    };
+
+    assert_eq!(msix_table_entry_offset(m, m.table_size), None);
+    assert_eq!(msix_table_entry_offset(m, m.table_size + 1), None);
 }
 
 #[test]

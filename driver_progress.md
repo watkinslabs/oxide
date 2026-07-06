@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B536-msix-entry-bounds-proof audits row 213; branch claimed
-from fresh `main` at B535 merge commit `76fe3064`.
+Current marker: B536-msix-entry-bounds-proof verified row 213 locally;
+PR/merge/post-merge fresh-main smokes pending.
 
 ## B536 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B536-msix-entry-bounds-proof | IN AUDIT | Fresh `main` at merge commit `76fe3064` after B535 PR #2632 merge. Post-merge fresh-main smokes before branch work passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 536 -> 537. Target row: prove MSI-X binding helper rejects requested table entries outside decoded MSI-X table size without magic numbers. |
+| B536-msix-entry-bounds-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `76fe3064` after B535 PR #2632 merge. Post-merge fresh-main smokes before branch work passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 536 -> 537. Source audit proves PCI owns decoded MSI-X table entry validation in `msix_table_entry_offset(MsixCap, entry_index)`, which rejects entries at or above decoded `table_size`, computes offsets with `MSIX_TABLE_ENTRY_BYTES`, and returns the table-relative offset to virtio-pci. `bind_msix_vector()` now consumes that helper and uses checked BAR-relative addition before mapping/programming the requested MSI-X table entry. Hosted regressions `msix_table_entry_offset_accepts_decoded_table_range` and `msix_table_entry_offset_rejects_entries_outside_decoded_size` prove first/last valid entry acceptance and boundary rejection. Checks pass: focused `cargo test -q -p pci -- --nocapture --test-threads=1` with PCI 17/17; `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 46/46 and pci-boot compile-only 0 tests; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`caps.rs` 224, `lib.rs` 34, `tests.rs` 375, `virtio_transport/msix.rs` 470); branch smokes reached x86_64 `oxide login:` in 33s and aarch64 `oxide login:` in 38s. |
 
 ## B535 Current
 
