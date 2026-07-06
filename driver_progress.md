@@ -5,10 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active row. B597-pci-ecam-parity is VERIFIED MERGED as PR
-#2717 at `4ee46d2a`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300`
-passed with x86_64 reaching `oxide login:` in 34s and aarch64 reaching
-`oxide login:` in 40s.
+Current marker: B598-driver-side-effects-audit is ACTIVE / IN AUDIT from fresh
+`main` at D144 ledger merge `9cd5c31a`. Post-D144 fresh-main `make smoke
+SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 34s and
+aarch64 reaching `oxide login:` in 16s.
+
+## B598 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B598-driver-side-effects-audit | ACTIVE / IN AUDIT | Claim starts from fresh `main` at D144 ledger merge `9cd5c31a`; B598 audits remaining direct subsystem side effects so hardware-backed nodes/classes register in owning probe and remove in owning remove. Duplicate-lane check found no existing B598/direct-side-effects branch or worktree; existing detached worktrees `/home/nd/oxide-wt/cap-livegnome` and `/home/nd/oxide-wt/live-0706` are unrelated and are not touched. `metadata/index.md` advances B 598 -> 599 on this branch. Existing staged files not owned by this branch are not touched or staged: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B597 Current
 
