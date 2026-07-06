@@ -2,12 +2,13 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B536-msix-entry-bounds-proof
+ACTIVE NOW: B538-msix-multi-entry-lifetime-proof
 
-Current active item: row 213 verified locally on branch
-`B536-msix-entry-bounds-proof`; PR/merge/post-merge fresh-main smokes pending.
+Current active item: row 214 in audit on branch
+`B538-msix-multi-entry-lifetime-proof`.
 
-Next gate: push PR, merge, return to fresh `origin/main`, then claim row 214.
+Next gate: prove transport-owned MSI-X binding lifetime handles multiple
+entries, then run x86_64/aarch64 smoke gates before PR.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -211,7 +212,7 @@ Status legend:
 | VERIFIED | B535-virtio-msix-q0-binding-proof | Virtio-pci records q0 queue vector in MSI-X binding: source audit proves `VirtioProbeState::bind_msix0()` binds `VIRTIO_MSIX_Q0_VECTOR`, `bind_msix_queue()` stores and reuses `MsixBinding.queue_vector`, `negotiate_and_program()` passes the recorded q0 vector into `VirtioPciRuntime::program_queue_set()`, and shared `virtio::program_queue_set()` programs queue 0 with that q0 MSI-X vector before extra queue plans. Hosted regression `program_queue_set_writes_q0_msix_vector` proves the q0 vector argument is written to common-cfg `CFG_QUEUE_MSIX` for queue 0 and queue select is restored to zero. Checks pass: focused `cargo test -q -p virtio -- --nocapture --test-threads=1` with shared virtio 46/46; broad hosted PCI/virtio child gate; `git diff --check`; line caps (`queue_cfg.rs` 321, `virtio_drv/probe_state.rs` 298, `virtio_transport/msix.rs` 474); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 | VERIFIED | B509-msix-function-mask-live-proof | Virtio-pci MSI-X live RX proof now passes on both architectures. Transport enables MSI-X with the function mask held, writes and reads back table entries, programs virtqueue MSI-X vectors before `DRIVER_OK`, clears the function mask only after queue setup, and preserves transport-owned MSI-X teardown. ARM fix was the architectural ITS translation-frame doorbell: `GITS_TRANSLATER = ITS_BASE + 0x10040`, not the control-frame `0x0040`; the failing ARM diagnostic had proved q0 RX completion without a PCI-originated MSI, and the corrected table readback now targets `msg_addr=0x8090040` on this QEMU. Checks pass: `cargo check -q -p arch-irq -p firmware -p pci-boot -p virtio -p drv-virtio-net`; `git diff --check`; clean aarch64 smoke `/tmp/b509-arm-msix-net-rx-final.log` shows `msix_net_rx_probe: PASS rx=103 bytes from 10.0.2.3`; clean x86_64 smoke `/tmp/b509-x86-msix-net-rx-final.log` shows the same PASS. |
 | VERIFIED | B536-msix-entry-bounds-proof | MSI-X binding helper validates requested table entry against decoded size: PCI now owns `msix_table_entry_offset(MsixCap, entry_index)`, which rejects entries at or above decoded `table_size` and computes the table-relative byte offset from `MSIX_TABLE_ENTRY_BYTES`; virtio-pci binding consumes that helper and uses checked BAR-relative address addition before mapping/programming an MSI-X table entry. Hosted regressions prove first and last decoded entries are accepted and entries outside decoded size are rejected. Checks pass: focused `cargo test -q -p pci -- --nocapture --test-threads=1` with PCI 17/17; broad PCI/virtio child gate; `git diff --check`; line caps (`caps.rs` 224, `tests.rs` 375, `virtio_transport/msix.rs` 470); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 33s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
-| SOURCE OK |  | Transport-owned MSI-X binding lifetime handles multiple entries. |
+| >>> ACTIVE >>> IN AUDIT | B538-msix-multi-entry-lifetime-proof | Transport-owned MSI-X binding lifetime handles multiple entries. |
 | SOURCE OK |  | Extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |
 | SOURCE OK |  | Virtio-vsock reads guest CID in child driver from generic config resource. |
 | SOURCE OK |  | Dead pci-boot vsock config pass-through removed. |
