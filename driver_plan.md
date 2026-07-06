@@ -2,10 +2,10 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B526-virtio-notify-policy-proof
+ACTIVE NOW: B527-virtio-child-profile-declarations-proof
 
-Current active item: B526 verified locally; pending commit, PR, merge, fresh-main
-sync, and next-row claim.
+Current active item: row 196, Child drivers export transport profile
+declarations with feature masks, queue requirements, IRQ callback policy.
 
 Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
 return to fresh `origin/main`.
@@ -193,7 +193,7 @@ Status legend:
 | VERIFIED |  | Shared virtio owns child-visible `VirtQueueResource` assembly. |
 | VERIFIED |  | Shared virtio owns final runtime handoff assembly through `VirtioRuntimeHandoff`. |
 | VERIFIED |  | Shared `VirtioTransportProbeResult` owns completed-probe transport-neutral result. |
-| SOURCE OK |  | Child drivers export transport profile declarations with feature masks, queue requirements, IRQ callback policy. |
+| >>> ACTIVE >>> IN AUDIT | B527-virtio-child-profile-declarations-proof | Child drivers export transport profile declarations with feature masks, queue requirements, IRQ callback policy. |
 | VERIFIED |  | Shared `ProgrammedQueues` exposes indexed queue lookup. |
 | SOURCE OK |  | Virtio-pci debug probe trace carries indexed handoff records. |
 | SOURCE OK |  | PCI-backed virtio child session owns failed-probe transport cleanup as idempotent session lifetime rule. |
