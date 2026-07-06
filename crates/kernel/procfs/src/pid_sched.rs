@@ -15,7 +15,13 @@ pub(crate) fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
     let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     push(&mut out, task.name.as_bytes());
     push(&mut out, b" (");
-    push_u64(&mut out, tid as u64);
+    // Linux `/proc/<pid>/sched` shows the pid AS SEEN IN THE READER'S PID NS
+    // (the visible pid), NOT the opaque internal tid. systemd's detect_container
+    // parses this field for PID 1 and, if it is not `1`, concludes it is inside
+    // a PID namespace → reports the VM as `container-other`, which skips
+    // ConditionVirtualization=!container units and breaks the gdm graphical
+    // greeter. Emit the visible pid (vtgid) so PID 1 reads `systemd (1, …)`.
+    push_u64(&mut out, sched::live::registry::display_vpid(tid));
     push(&mut out, b", #threads: 1)\n");
     push(&mut out, b"-------------------------------------------------------------------\n");
     push(&mut out, b"se.exec_start                                : ");
