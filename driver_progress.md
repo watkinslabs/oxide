@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B544-dead-vsock-config-pass-through audits row 217; branch
-claimed from fresh `main` at B542 merge commit `6f0be1a4`.
+Current marker: none; B544-dead-vsock-config-pass-through is verified locally
+and pending PR/merge from branch claimed at B542 merge commit `6f0be1a4`.
 
 ## B544 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B544-dead-vsock-config-pass-through | IN AUDIT | Fresh `main` at B542 PR #2636 merge commit `6f0be1a4`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 46s and aarch64 reached `oxide login:` in 52s. `metadata/index.md` advanced B 544 -> 546 because local branch `B545-execve-pathlen` already occupies B545; B544 was the next free B lane. Target row: prove dead pci-boot vsock config pass-through is removed. |
+| B544-dead-vsock-config-pass-through | VERIFIED LOCALLY | Fresh `main` at B542 PR #2636 merge commit `6f0be1a4`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 46s and aarch64 reached `oxide login:` in 52s. `metadata/index.md` advanced B 544 -> 546 because local branch `B545-execve-pathlen` already occupies B545; B544 was the next free B lane. Source audit proves `VirtioVsockOps::probe_child()` passes only `session.child_resources()` into `drv_virtio_vsock::install()`, pci-boot has no vsock-specific config/CID pass-through struct or init path, and its only post-install `guest_cid_for(device_key)` use is debug logging from child-owned installed state. Generic `DEVICE_CFG` still flows through `VirtioResources.device_cfg_va` for the child driver. Checks pass: focused `cargo test -q -p pci-boot -p virtio -p drv-virtio-vsock -- --nocapture --test-threads=1`; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`virtio_child.rs` 398, `virtio_drv/probe.rs` 178, `virtio_drv/probe_state.rs` 298, `registry.rs` 356, `tests.rs` 236, `resources/profile.rs` 157, `resources/child.rs` 377); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B542 Current
 
