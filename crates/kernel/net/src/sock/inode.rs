@@ -48,8 +48,29 @@ pub fn inet_from_inode(inode: &vfs::Inode) -> Option<&InetSocket> {
 pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::string::String> {
     match &*sock.kind.lock() {
         SockKind::UnixListener(l) => Some(l.path.clone()),
+        // Accepted server socket (end A) inherits the listener's path;
+        // the connecting client (end B) is unnamed.
+        SockKind::Unix(pair, end) => pair.local_path(*end),
         // Dgram queues don't retain their bound path (the registry owns
         // it); the bare AF_UNIX family is enough for getsockname's callers.
+        _ => None,
+    }
+}
+
+/// The connected peer's address for `getpeername` on an AF_UNIX socket.
+///
+/// Returns:
+/// - `None` — not a connected AF_UNIX socket (caller returns `ENOTCONN`,
+///   matching Linux for an unconnected/listening socket);
+/// - `Some(path)` — a connected stream/seqpacket end; `path` is the peer's
+///   bound `sun_path` (e.g. `/run/systemd/private` seen by the client), or
+///   `None` for an unnamed peer (a socketpair end, or the client seen from
+///   an accepted server socket) — which Linux reports as the bare `AF_UNIX`
+///   family (`addrlen == 2`). # C: O(path len)
+pub fn unix_peer_path(sock: &InetSocket) -> Option<Option<alloc::string::String>> {
+    match &*sock.kind.lock() {
+        SockKind::Unix(pair, end) => Some(pair.peer_path(*end)),
+        SockKind::UnixMsgPair(_, _) => Some(None),
         _ => None,
     }
 }

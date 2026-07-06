@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{collections::VecDeque, string::String, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
@@ -32,6 +32,13 @@ pub struct UnixPair {
     /// Peer credentials per end (`SO_PEERCRED`).
     pub cred_a: EndCred,
     pub cred_b: EndCred,
+    /// The listener's bound `sun_path` this pair was accept()ed from
+    /// (`connect(path)`). It is the LOCAL name of end A (the server-side
+    /// accepted socket, which inherits the listener path in Linux) and the
+    /// PEER name of end B (the connecting client). `None` for a socketpair /
+    /// an unbound listener (abstract-autobind not yet retained). Used by
+    /// `getsockname`/`getpeername` to report the real path.
+    pub bind_path: Spinlock<Option<String>, UnixLockClass>,
 }
 
 /// One directional byte queue plus its in-band SCM_RIGHTS bursts.
@@ -85,7 +92,36 @@ impl UnixPair {
             end_b_subs: Spinlock::new(None),
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
+            bind_path: Spinlock::new(None),
         })
+    }
+
+    /// Record the listener's bound `sun_path` this pair was connected to.
+    /// Called by the registry `connect(path)` before the ends go live.
+    /// # C: O(path len)
+    pub fn set_bind_path(&self, path: String) {
+        *self.bind_path.lock() = Some(path);
+    }
+
+    /// The peer's bound `sun_path` as seen from `end`. Linux: the client
+    /// (`end == B`) sees the listener's path it connected to; the accepted
+    /// server socket (`end == A`) sees the client's address — unnamed here.
+    /// # C: O(path len)
+    pub fn peer_path(&self, end: UnixEnd) -> Option<String> {
+        match end {
+            UnixEnd::B => self.bind_path.lock().clone(),
+            UnixEnd::A => None,
+        }
+    }
+
+    /// The local bound `sun_path` as seen from `end`. Linux: the accepted
+    /// server socket (`end == A`) inherits the listener path; the client
+    /// (`end == B`) is unnamed. # C: O(path len)
+    pub fn local_path(&self, end: UnixEnd) -> Option<String> {
+        match end {
+            UnixEnd::A => self.bind_path.lock().clone(),
+            UnixEnd::B => None,
+        }
     }
 
     /// Snapshot the `{pid,uid,gid}` owning `end` (`SO_PEERCRED` source).
