@@ -459,6 +459,13 @@ pub fn shutdown_all() {
     for dev in snapshot {
         let Some(driver_name) = dev.bound() else { continue; };
         if let Some(driver) = find_driver_on_bus(dev.bus, driver_name) {
+            klog::write_raw(b"driver_shutdown bus=");
+            klog::write_raw(dev.bus.as_bytes());
+            klog::write_raw(b" addr=");
+            klog::write_raw(dev.addr.as_bytes());
+            klog::write_raw(b" driver=");
+            klog::write_raw(driver_name.as_bytes());
+            klog::write_raw(b"\n");
             driver.shutdown(&dev);
         }
     }

@@ -161,6 +161,7 @@ fn rootfs_mode() -> String {
     push_env_mode(&mut mode, "virtio-gpu-multidev", "OXIDE_VIRTIO_GPU_MULTIDEV_SMOKE");
     push_env_mode(&mut mode, "msix-net-rx", "OXIDE_MSIX_NET_RX_SMOKE");
     push_env_mode(&mut mode, "vsock", "OXIDE_VSOCK_SMOKE");
+    push_env_mode(&mut mode, "shutdown", "OXIDE_SHUTDOWN_SMOKE");
     push_env_mode(&mut mode, "userspace-seat", "OXIDE_USERSPACE_SEAT_SMOKE");
     mode
 }
@@ -257,6 +258,8 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
     if std::env::var_os("OXIDE_VIRTIO_GPU_MULTIDEV_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0vsock-smoke=");
     if std::env::var_os("OXIDE_VSOCK_SMOKE").is_some() { h.write(b"1"); }
+    h.write(b"\0shutdown-smoke=");
+    if std::env::var_os("OXIDE_SHUTDOWN_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0storage-multictrl-smoke=");
     if std::env::var_os("OXIDE_STORAGE_MULTICTRL_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0userspace-seat-smoke=");

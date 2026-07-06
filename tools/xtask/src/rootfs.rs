@@ -332,6 +332,9 @@ ExecStart=/bin/driver_path_smoke.sh
         if std::env::var_os("OXIDE_VSOCK_SMOKE").is_some() {
             put(&user("vsock_probe"), "/init")?;
         }
+        if std::env::var_os("OXIDE_SHUTDOWN_SMOKE").is_some() {
+            put(&user("shutdown_probe"), "/init")?;
+        }
     }
     if std::env::var_os("OXIDE_USERSPACE_SEAT_SMOKE").is_some() {
         let sh = repo.join("target/userspace_seat_smoke.sh");
