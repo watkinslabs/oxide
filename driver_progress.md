@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. B574-qemu-rebind-certification-audit is
-VERIFIED MERGED; next work must start from fresh `main` with the authoritative
-branch counter.
+Current marker: B576-virtio-input-live-rebind-proof is ACTIVE on branch
+`B576-virtio-input-live-rebind-proof`; prove virtio-input live sysfs
+bind/unbind/rebind on x86_64 and aarch64.
+
+## B576 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B576-virtio-input-live-rebind-proof | ACTIVE | Fresh `main` at D123 ledger merge `ec9ad458`; B574 PR #2668 and ledger PR #2670 are merged, B575 is already merged, and `metadata/index.md` advanced B 576 -> 577 on this branch. Active row is QEMU-visible virtio-input bind/unbind/rebind proof; existing `mouseprobe` proves evdev capability/event flow but not sysfs driver unbind/rebind restoration. |
 
 ## B574 Current
 
