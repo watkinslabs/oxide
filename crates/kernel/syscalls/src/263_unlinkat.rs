@@ -56,9 +56,13 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         Ok(())  => {
             unlink_unix_socket_path(&p);
             match victim {
-                Some(d) => { vfs::dcache::d_unlink(&d); }
+                Some(d) => {
+                    if let Some(ino) = d.inode() { ::fs::inotify::fire_delete_self(&ino); }
+                    vfs::dcache::d_unlink(&d);
+                }
                 None    => crate::pathresolve::d_delete_path(&p),
             }
+            vfs::fire_dirent_delete(crate::namei_common::parent_path(&p), &name);
             0
         }
         Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,

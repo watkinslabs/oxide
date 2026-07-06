@@ -107,7 +107,13 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     // O_CREAT flush: drop the leaf negative planted by the failed existence
     // resolve above so `install_open`'s path-walk re-resolves to the NEW inode
     // rather than the stale negative (Linux instantiates the create's own leaf).
-    if created { crate::pathresolve::d_drop_path(path_str); }
+    if created {
+        crate::pathresolve::d_drop_path(path_str);
+        vfs::fire_dirent_create(
+            crate::namei_common::parent_path(path_str),
+            crate::namei_common::last_component(path_str),
+        );
+    }
     // D6: O_DIRECTORY on a non-directory final → ENOTDIR (Linux `do_open`
     // `if ((open_flag & O_DIRECTORY) && !S_ISDIR) → -ENOTDIR`).
     if (flags & O_DIRECTORY) != 0 && !matches!(inode.file_type(), vfs::FileType::Directory) {

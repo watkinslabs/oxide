@@ -25,7 +25,7 @@ pub use types::{
 };
 
 #[cfg(test)]
-pub(crate) use dispatch::fire_self;
+pub(crate) use dispatch::{fire_child, fire_self};
 #[cfg(test)]
 pub(crate) use group::InotifyFileOps;
 #[cfg(test)]

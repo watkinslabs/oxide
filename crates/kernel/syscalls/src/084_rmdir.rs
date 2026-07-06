@@ -39,6 +39,7 @@ pub(crate) fn do_rmdir(p: &str) -> i64 {
                 Some(d) => { vfs::d_invalidate(&d); vfs::dcache::d_unlink(&d); }
                 None    => crate::pathresolve::d_invalidate_path(p),
             }
+            vfs::fire_dirent_delete(crate::namei_common::parent_path(p), &name);
             0
         }
         Err(e)  => errno_from_vfs(e),

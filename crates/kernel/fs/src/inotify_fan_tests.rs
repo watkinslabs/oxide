@@ -107,6 +107,19 @@ fn move_emits_paired_cookie() {
     assert_eq!(evs[0].1, evs[1].1);  // FROM/TO share a cookie
 }
 
+#[test]
+fn child_create_delete_events_reach_watched_directory() {
+    let g = InotifyData::new(0);
+    let dir = mk_inode(FileType::Directory, 0x6d01);
+    apply_mark(&g, MarkScope::Inode, inode_key(&dir), dir.fsid(),
+               IN_CREATE | IN_DELETE, true, false);
+
+    fire_child(&dir, IN_CREATE, 0);
+    fire_child(&dir, IN_DELETE, 0);
+
+    assert_eq!(masks(&g), [IN_CREATE, IN_DELETE]);
+}
+
 // FAN_OPEN_EXEC is delivered to a mark requesting it (execve open-exec event).
 #[test]
 fn open_exec_event() {
