@@ -275,6 +275,16 @@ fn msix_control_value_clears_function_mask_when_enabling() {
 }
 
 #[test]
+fn msix_control_enable_masked_sets_enable_and_function_mask() {
+    let cur = 0x03;
+
+    assert_eq!(
+        msix_control_enable_masked(cur),
+        MSIX_ENABLE | MSIX_FUNCTION_MASK | 0x03
+    );
+}
+
+#[test]
 fn msix_teardown_masks_all_entries_before_disabling_function_and_command() {
     let mut steps = Vec::new();
 
