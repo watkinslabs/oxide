@@ -155,13 +155,30 @@ pub fn resolve_user_pid(pid: u32) -> Option<Arc<Task>> {
 /// Resolve a userspace PID (vtgid) to a Task. Different from
 /// `lookup` which keys on the kernel-internal TID. Used by procfs's
 /// `/proc/<PID>` lookup so `cat /proc/1/status` sees init.
+///
+/// A process vpid is now shared by EVERY thread of the group (CLONE_THREAD
+/// copies the leader's vtgid), so a bare `vtgid == vpid` match is ambiguous.
+/// Resolve to the thread-group LEADER — the task whose `vtid == vtgid` — so
+/// `/proc/<pid>/…` and `cgroup.procs` writes both land on the single task
+/// that owns the process's cgroup membership (its internal tid == its tgid,
+/// the key the cgroup tree stores under). Fall back to any group member if
+/// the leader has already exited (a non-leader thread keeps the group alive).
 /// # C: O(N_tasks)
 pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
     use core::sync::atomic::Ordering;
     let g = REG.lock();
-    g.iter()
-        .filter_map(|(_, w)| w.upgrade())
-        .find(|t| t.vtgid.load(Ordering::Acquire) == vpid)
+    let mut fallback: Option<Arc<Task>> = None;
+    for (_, w) in g.iter() {
+        let Some(t) = w.upgrade() else { continue };
+        if t.vtgid.load(Ordering::Acquire) != vpid {
+            continue;
+        }
+        if t.vtid.load(Ordering::Acquire) == vpid {
+            return Some(t); // thread-group leader
+        }
+        fallback.get_or_insert(t);
+    }
+    fallback
 }
 
 /// Namespace PID to display for the task with internal `tid`: its vtgid,
