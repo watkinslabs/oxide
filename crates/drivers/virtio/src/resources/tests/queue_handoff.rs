@@ -154,7 +154,7 @@ fn child_requirements_describe_transport_contracts() {
     assert!(net.required_queues[0]);
     assert!(net.required_queues[1]);
     assert!(net.needs_net_boot_payloads);
-    assert!(!net.needs_device_cfg);
+    assert!(net.needs_device_cfg);
 
     let snd = VirtioChildRequirements::snd();
     assert!(snd.required_queues[0]);
@@ -173,6 +173,7 @@ fn transport_profiles_describe_child_queue_policy() {
     assert_eq!(net.queue_plans[1].map(|q| q.index), Some(1));
     assert!(net.queue_plans[1].map(|q| q.map_notify).unwrap_or(false));
     assert!(net.child_requirements.needs_net_boot_payloads);
+    assert!(net.child_requirements.needs_device_cfg);
 
     let snd = VirtioTransportProfile::snd(0xaa, None, None);
     assert_eq!(snd.drv_features, 0xaa);
