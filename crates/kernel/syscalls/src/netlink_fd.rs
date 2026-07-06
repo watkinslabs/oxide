@@ -40,6 +40,56 @@ fn netlink_sock(fd: u64) -> Option<Arc<vfs::File>> {
     if (f.inode().ino() & 0xFFFF_FFFF_0000_0000) == NL_TAG { Some(f) } else { None }
 }
 
+// DIAG (debug-uevent): trace the udev-monitor delivery chain that gdm's greeter
+// depends on. gdm's GUdevClient re-checks graphics ONLY on a cooked add/change
+// uevent (its 10s timer is one-shot). The chain is two hops: udevd worker sends
+// the cooked device UNICAST to the manager port; the manager re-broadcasts it to
+// group 2, where gdm's monitor listens. A drop at either hop = gdm never wakes.
+#[cfg(feature = "debug-uevent")]
+fn uev_kv<'a>(payload: &'a [u8], key: &[u8]) -> &'a [u8] {
+    let mut i = 0;
+    while i < payload.len() {
+        let start = i;
+        while i < payload.len() && payload[i] != 0 { i += 1; }
+        let field = &payload[start..i];
+        if field.len() > key.len() && &field[..key.len()] == key { return &field[key.len()..]; }
+        i += 1; // skip NUL
+    }
+    b""
+}
+
+#[cfg(feature = "debug-uevent")]
+fn uev_comm() {
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b"/");
+        klog::write_raw(c.name.as_bytes());
+    } else { klog::write_raw(b"?"); }
+}
+
+#[cfg(feature = "debug-uevent")]
+fn trace_uev_send(cooked: bool, dest_pid: u32, groups: u32, payload: &[u8], path_tag: &[u8], reached: usize) {
+    klog::write_raw(b"[UEV-SEND ");
+    uev_comm();
+    klog::write_raw(b" cooked="); klog::write_dec_u64(cooked as u64);
+    klog::write_raw(b" dst_pid="); klog::write_dec_u64(dest_pid as u64);
+    klog::write_raw(b" grp="); klog::write_dec_u64(groups as u64);
+    klog::write_raw(b" act="); klog::write_raw(uev_kv(payload, b"ACTION="));
+    klog::write_raw(b" dp="); klog::write_raw(uev_kv(payload, b"DEVPATH="));
+    klog::write_raw(b" -> "); klog::write_raw(path_tag);
+    klog::write_raw(b"="); klog::write_dec_u64(reached as u64);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(feature = "debug-uevent")]
+fn trace_uev_bind(nl_groups: u32, via: &[u8]) {
+    klog::write_raw(b"[UEV-BIND ");
+    uev_comm();
+    klog::write_raw(b" "); klog::write_raw(via);
+    klog::write_raw(b" grp="); klog::write_dec_u64(nl_groups as u64);
+    klog::write_raw(b"\n");
+}
+
 /// `bind(fd, sockaddr_nl, addrlen)` for netlink. `nl_groups` (offset 8)
 /// is the multicast subscription bitmask (legacy RTMGRP_* layout); set
 /// it on the socket so rtnl_multicast delivers RTM_NEW*/DEL* notifications
@@ -53,6 +103,8 @@ pub fn bind(fd: u64, addr_p: u64) -> i64 {
     let nl_groups = unsafe { core::ptr::read_volatile((addr_p + 8) as *const u32) };
     if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
         s.set_group_mask(nl_groups);
+        #[cfg(feature = "debug-uevent")]
+        if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT { trace_uev_bind(nl_groups, b"bind"); }
     }
     0
 }
@@ -79,6 +131,10 @@ pub fn setsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen: u64) -
         if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
             if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
             else { s.drop_membership(group); }
+            #[cfg(feature = "debug-uevent")]
+            if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
+                trace_uev_bind(group, if optname == NETLINK_ADD_MEMBERSHIP { b"addmemb" } else { b"dropmemb" });
+            }
         }
     }
     0
@@ -317,7 +373,9 @@ fn send_slice(file: &alloc::sync::Arc<vfs::File>, buf: &[u8], dest_groups: u32) 
         let is_uevent = s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT;
         let is_cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
         if is_uevent && (is_cooked || dest_groups != 0) {
-            ::netlink::rebroadcast_cooked_uevent(buf, dest_groups, s);
+            let _reached = ::netlink::rebroadcast_cooked_uevent(buf, dest_groups, s);
+            #[cfg(feature = "debug-uevent")]
+            trace_uev_send(is_cooked, 0, dest_groups, buf, b"rebc", _reached);
             return buf.len() as i64;
         }
     }
@@ -377,8 +435,23 @@ pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
     // broadcasts (nl_pid = 0) keep the write_to_groups path.
     if sock.protocol == 15 && dest_pid != 0 && groups == 0 {
         let src = sock.port_id.load(core::sync::atomic::Ordering::Acquire);
-        ::netlink::unicast_uevent_to_port(dest_pid, &payload, src);
+        let _reached = ::netlink::unicast_uevent_to_port(dest_pid, &payload, src);
+        #[cfg(feature = "debug-uevent")]
+        { let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
+          trace_uev_send(cooked, dest_pid, groups, &payload, b"uni", _reached); }
         return payload.len() as i64;
+    }
+    // uevent cooked/group broadcast (manager → monitors): call the rebroadcast
+    // directly (equivalent to write_to_groups' cooked path) so the reach count is
+    // observable for the debug trace. Non-uevent / non-cooked falls through.
+    if sock.protocol == 15 {
+        let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
+        if cooked || groups != 0 {
+            let _reached = ::netlink::rebroadcast_cooked_uevent(&payload, groups, sock);
+            #[cfg(feature = "debug-uevent")]
+            trace_uev_send(cooked, dest_pid, groups, &payload, b"bcast", _reached);
+            return payload.len() as i64;
+        }
     }
     match sock.write_to_groups(&payload, groups) {
         Ok(n) => n as i64,
