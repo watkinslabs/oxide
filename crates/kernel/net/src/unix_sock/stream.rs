@@ -9,6 +9,49 @@ use vfs;
 use super::wake_peer_subs;
 use super::{EndCred, UnixEnd};
 
+/// DIAG (debug-dbus): scan an AF_UNIX SOCK_STREAM write for the login1 session
+/// interface or a D-Bus error name; dump a capped hex-free ASCII view tagged
+/// with the writer tid so the failing method call / error reply is visible.
+#[cfg(feature = "debug-dbus")]
+fn trace_dbus_stream(data: &[u8]) {
+    fn has(h: &[u8], n: &[u8]) -> bool { h.windows(n.len()).any(|w| w == n) }
+    // GetSessionByPID/GetSessionByPIDFD carry a trailing uint32 pid in the body;
+    // decode the last 4 bytes (LE) so a pid/vpid-namespace mismatch is visible
+    // (the arg is the final aligned body field of these single-`u` calls).
+    if has(data, b"GetSessionByPID") && data.len() >= 4 {
+        let n = data.len();
+        let pid = u32::from_le_bytes([data[n-4], data[n-3], data[n-2], data[n-1]]);
+        klog::write_raw(b"[GETSESSBYPID arg_pid=");
+        klog::write_dec_u64(pid as u64);
+        klog::write_raw(b" caller=");
+        if let Some(c) = sched::live::current() {
+            klog::write_dec_u64(c.tid as u64);
+            klog::write_raw(b"/");
+            klog::write_raw(c.name.as_bytes());
+        }
+        klog::write_raw(b"]\n");
+    }
+    let hit = has(data, b"login1")
+        || has(data, b"org.freedesktop.DBus.Error");
+    if !hit { return; }
+    let n = core::cmp::min(data.len(), 384);
+    klog::write_raw(b"[DBUS t=");
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b" ");
+        klog::write_raw(c.name.as_bytes());
+    }
+    klog::write_raw(b"] ");
+    // Replace non-printable bytes with '.' so the D-Bus binary header doesn't
+    // corrupt the serial stream; the ASCII strings (paths/interfaces/errors)
+    // remain legible.
+    for &b in &data[..n] {
+        let c = if (0x20..0x7f).contains(&b) { b } else { b'.' };
+        klog::write_raw(&[c]);
+    }
+    klog::write_raw(b"\n");
+}
+
 /// One stream-pair in-kernel: two unidirectional byte queues.
 /// F171: per-direction WaitList lets a parked reader (Inode::read)
 /// wake precisely when its ring grows.
@@ -184,6 +227,17 @@ impl UnixPair {
 
     /// # C: O(data.len() + fds)
     fn write_inner(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> usize {
+        // DIAG (debug-dbus): dump AF_UNIX SOCK_STREAM messages that mention the
+        // login1 session interface or carry a D-Bus error reply. dbus-broker
+        // relays every method call/reply through these streams, so this captures
+        // mutter's Properties.GetAll on /org/freedesktop/login1/session/<id> AND
+        // logind's reply (method_return or org.freedesktop.DBus.Error.*). D-Bus
+        // encodes object paths / interface / error names as inline ASCII, so a
+        // substring scan of the wire buffer surfaces the exact failing call —
+        // pinning why mutter's get_session_proxy() returns NULL ("no matching
+        // session"). Default-off; zero bytes on the hot path.
+        #[cfg(feature = "debug-dbus")]
+        trace_dbus_stream(data);
         let mut g = match end {
             UnixEnd::A => self.a_to_b.lock(),
             UnixEnd::B => self.b_to_a.lock(),
