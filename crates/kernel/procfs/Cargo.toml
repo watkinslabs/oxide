@@ -28,6 +28,7 @@ cgroup = { path = "../cgroup" }
 kmacros = { path = "../../shared/kmacros" }
 
 [features]
+debug-cgroup = []  # [PROCCG]/[OPENCG-adjacent] /proc/<pid>/cgroup read trace
 default = []
 hosted  = []
 

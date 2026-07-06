@@ -149,6 +149,23 @@ impl UnixRegistry {
 
     /// Connect to `path`: allocate a new UnixPair and queue.
     pub fn connect(&self, path: &str) -> Option<Arc<UnixPair>> {
+        // DIAG (debug-dbus): log every AF_UNIX connect to a bus socket + whether a
+        // listener was found. If mutter (uid 979) can't connect to the system bus
+        // (/run/dbus/system_bus_socket), get_session_proxy() returns NULL with no
+        // login1 traffic → "Failed to find any matching session".
+        #[cfg(feature = "debug-dbus")]
+        if path.as_bytes().windows(3).any(|w| w == b"bus") {
+            let found = self.lookup_listener(path).is_some();
+            klog::write_raw(b"[DBUSCONN t=");
+            if let Some(c) = sched::live::current() {
+                klog::write_dec_u64(c.tid as u64);
+                klog::write_raw(b" ");
+                klog::write_raw(c.name.as_bytes());
+            }
+            klog::write_raw(if found { b" OK " } else { b" REFUSED " });
+            klog::write_raw(path.as_bytes());
+            klog::write_raw(b"\n");
+        }
         let listener = self.lookup_listener(path)?;
         let pair = UnixPair::new();
         // Retain the listener's canonical bound path so getsockname (end A,
