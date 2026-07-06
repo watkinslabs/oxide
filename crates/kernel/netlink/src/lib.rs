@@ -28,6 +28,7 @@ pub mod mcast;
 pub mod rtnetlink;
 mod rtnetlink_lookup;
 pub mod rtnetlink_rule;
+pub mod audit;
 pub mod sock_diag;
 
 pub use handler::{install_netfilter_handler, ProtoHandler};
