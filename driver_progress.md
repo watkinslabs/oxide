@@ -5,14 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B532-virtio-blk-feature-mask-proof audits row 209, virtio-blk
-feature mask includes `VIRTIO_BLK_F_BLK_SIZE`.
+Current marker: B533-virtio-child-feature-mask-proof audits row 210,
+virtio-input/rng/vsock/snd feature masks come from child drivers.
+
+## B533 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B533-virtio-child-feature-mask-proof | IN AUDIT | Fresh `main` at merge commit `6c34ad45` after B532 PR #2629 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; first aarch64 attempt hit host vhost-vsock guest-cid contention before kernel boot, rerun reached `oxide login:` in 16s. `metadata/index.md` advanced B 533 -> 534. Target row: prove virtio-input/rng/vsock/snd feature masks come from child drivers. |
 
 ## B532 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B532-virtio-blk-feature-mask-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `627dd19b` after B531 PR #2628 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s; aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 532 -> 533. Source audit proves `drv_virtio_blk::modern::wanted_features()` owns `VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_BLK_SIZE`, `transport_profile()` carries that mask through `VirtioTransportProfile::q0_device_cfg`, and pci-boot consumes the child profile via `drv_virtio_blk::modern::transport_profile()` before passing negotiated `session.drv_features()` into `BlkInit`. Added hosted regression `blk_transport_profile_declares_blk_size_feature` for the feature bit, exact profile mask, q0 requirement, and device-config requirement. Checks pass: `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` 24/24; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests/config.rs` 61, `state.rs` 181, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
+| B532-virtio-blk-feature-mask-proof | VERIFIED MERGED | Fresh `main` at merge commit `627dd19b` after B531 PR #2628 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s; aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 532 -> 533. Source audit proves `drv_virtio_blk::modern::wanted_features()` owns `VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_BLK_SIZE`, `transport_profile()` carries that mask through `VirtioTransportProfile::q0_device_cfg`, and pci-boot consumes the child profile via `drv_virtio_blk::modern::transport_profile()` before passing negotiated `session.drv_features()` into `BlkInit`. Added hosted regression `blk_transport_profile_declares_blk_size_feature` for the feature bit, exact profile mask, q0 requirement, and device-config requirement. Checks pass: `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` 24/24; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests/config.rs` 61, `state.rs` 181, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s; pre-push hook reran boot-smoke and passed both arches; PR #2629 merged as `6c34ad45`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s after one host vhost-vsock guest-cid contention retry before kernel boot. |
 
 ## B531 Current
 
