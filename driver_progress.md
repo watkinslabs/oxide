@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B581-block-live-rebind-loops-proof is VERIFIED locally on
-branch `B581-block-live-rebind-loops-proof`. Commit/PR/merge pending.
+Current marker: no active branch. B581 is merged; next branch must be claimed
+from fresh `main` using `metadata/index.md`.
 
 ## B581 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B581-block-live-rebind-loops-proof | VERIFIED | Fresh `main` at D128 ledger merge `fe4a9ec5`; B580 PR #2681 and ledger PR #2682 are merged, and `metadata/index.md` advanced B 581 -> 582 on this branch. B581 adds `/bin/virtio_blk_multidev_probe`, targeted x86_64/aarch64 wrappers, rootfs/cache wiring, and opt-in scratch virtio-blk QEMU devices. The probe runs three sysfs unbind/rebind loops against the scratch virtio-blk child, proves block count and scratch serial disappear on unbind, rejects stale `/sys/block/<old>` and `/dev/<old>` paths, and re-proves current `/sys/block/<vd*>` size/dev/queue/serial plus `/dev/<vd*>` after every rebind. Kernel fix: block unregister now calls a sysfs remove hook after `drv::device_del`, invalidating stale `/sys/block/<name>`, `/sys/devices/virtual/block/<name>`, and `/sys/class/block/<name>` dentries. Checks pass: `cargo test -q -p block -p sysfs -p drv-virtio-blk -- --nocapture --test-threads=1` with block 33/33, sysfs 25/25, and virtio-blk 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-blk-multidev.sh`; line caps (`virtio_blk_multidev_probe.c` 282, `boot-smoke-virtio-blk-multidev.sh` 87, `registry.rs` 433, `sysfs/src/block.rs` 428); targeted proof x86_64 `/tmp/b581-x86-virtio-blk-multidev.log`; targeted proof aarch64 `/tmp/b581-arm-virtio-blk-multidev.log`. Commit/PR/merge pending. |
+| B581-block-live-rebind-loops-proof | VERIFIED MERGED | Fresh `main` at D128 ledger merge `fe4a9ec5`; B580 PR #2681 and ledger PR #2682 are merged, and `metadata/index.md` advanced B 581 -> 582 on this branch. B581 adds `/bin/virtio_blk_multidev_probe`, targeted x86_64/aarch64 wrappers, rootfs/cache wiring, and opt-in scratch virtio-blk QEMU devices. The probe runs three sysfs unbind/rebind loops against the scratch virtio-blk child, proves block count and scratch serial disappear on unbind, rejects stale `/sys/block/<old>` and `/dev/<old>` paths, and re-proves current `/sys/block/<vd*>` size/dev/queue/serial plus `/dev/<vd*>` after every rebind. Kernel fix: block unregister now calls a sysfs remove hook after `drv::device_del`, invalidating stale `/sys/block/<name>`, `/sys/devices/virtual/block/<name>`, and `/sys/class/block/<name>` dentries. Checks pass: `cargo test -q -p block -p sysfs -p drv-virtio-blk -- --nocapture --test-threads=1` with block 33/33, sysfs 25/25, and virtio-blk 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-blk-multidev.sh`; line caps (`virtio_blk_multidev_probe.c` 282, `boot-smoke-virtio-blk-multidev.sh` 87, `registry.rs` 433, `sysfs/src/block.rs` 428); targeted proof x86_64 `/tmp/b581-x86-virtio-blk-multidev.log`; targeted proof aarch64 `/tmp/b581-arm-virtio-blk-multidev.log`; pre-push smoke on both arches; PR #2683 merged as `bb9c73b9`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` reached x86_64 `oxide login:` in 44s and aarch64 `oxide login:` in 50s. D129 records the merged state and advances D 129 -> 130. |
 
 ## B580 Current
 
