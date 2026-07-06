@@ -5,14 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B531-virtio-blk-generic-config-capacity-proof verifies row 206,
-virtio-blk capacity/block-size reads from generic child config resource.
+Current marker: B532-virtio-blk-feature-mask-proof audits row 209, virtio-blk
+feature mask includes `VIRTIO_BLK_F_BLK_SIZE`.
+
+## B532 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B532-virtio-blk-feature-mask-proof | IN AUDIT | Fresh `main` at merge commit `627dd19b` after B531 PR #2628 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s; aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 532 -> 533. Source audit starting for virtio-blk child-owned feature mask including `VIRTIO_BLK_F_BLK_SIZE`. |
 
 ## B531 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B531-virtio-blk-generic-config-capacity-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `f461ec8c` after B530 PR #2627 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 50s; aarch64 reached `oxide login:` in 55s. `metadata/index.md` advanced B 531 -> 532. Patch names the capacity offset with `virtio::BLK_CFG_OFF_CAPACITY`, keeps block-size reads on `virtio::BLK_CFG_OFF_BLK_SIZE`, and adds hosted config-resource proof that `drv-virtio-blk` reads both values from generic `VirtioResources.device_cfg_va`. Regression coverage: `blk_capacity_and_block_size_read_from_child_config_resource`, `blk_config_uses_default_sector_size_without_negotiated_blk_size`, and `blk_config_requires_generic_device_cfg_resource`. Checks pass: `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` 23/23; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`init.rs` 206, `modern.rs` 39, `tests/mod.rs` 25, `tests/config.rs` 49, `resources/child.rs` 377, `resources/transport.rs` 126, `probe_state.rs` 298, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s. |
+| B531-virtio-blk-generic-config-capacity-proof | VERIFIED MERGED | Fresh `main` at merge commit `f461ec8c` after B530 PR #2627 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 50s; aarch64 reached `oxide login:` in 55s. `metadata/index.md` advanced B 531 -> 532. Patch names the capacity offset with `virtio::BLK_CFG_OFF_CAPACITY`, keeps block-size reads on `virtio::BLK_CFG_OFF_BLK_SIZE`, and adds hosted config-resource proof that `drv-virtio-blk` reads both values from generic `VirtioResources.device_cfg_va`. Regression coverage: `blk_capacity_and_block_size_read_from_child_config_resource`, `blk_config_uses_default_sector_size_without_negotiated_blk_size`, and `blk_config_requires_generic_device_cfg_resource`. Checks pass: `cargo test -q -p drv-virtio-blk -- --nocapture --test-threads=1` 23/23; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`init.rs` 206, `modern.rs` 39, `tests/mod.rs` 25, `tests/config.rs` 49, `resources/child.rs` 377, `resources/transport.rs` 126, `probe_state.rs` 298, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s; pre-push hook reran boot-smoke and passed both arches; PR #2628 merged as `627dd19b`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s. |
 
 ## B530 Current
 
