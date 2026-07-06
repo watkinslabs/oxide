@@ -154,6 +154,7 @@ fn rootfs_mode() -> String {
     push_env_mode(&mut mode, "virtio-net-multidev", "OXIDE_VIRTIO_NET_MULTIDEV_SMOKE");
     push_env_mode(&mut mode, "virtio-blk-multidev", "OXIDE_VIRTIO_BLK_MULTIDEV_SMOKE");
     push_env_mode(&mut mode, "sysblock", "OXIDE_SYSBLOCK_SMOKE");
+    push_env_mode(&mut mode, "sysbus-bind", "OXIDE_SYSBUS_BIND_SMOKE");
     push_env_mode(&mut mode, "virtio-snd-multidev", "OXIDE_VIRTIO_SND_MULTIDEV_SMOKE");
     push_env_mode(&mut mode, "virtio-gpu-multidev", "OXIDE_VIRTIO_GPU_MULTIDEV_SMOKE");
     push_env_mode(&mut mode, "msix-net-rx", "OXIDE_MSIX_NET_RX_SMOKE");
@@ -234,6 +235,8 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
     if std::env::var_os("OXIDE_VIRTIO_BLK_MULTIDEV_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0sysblock-smoke=");
     if std::env::var_os("OXIDE_SYSBLOCK_SMOKE").is_some() { h.write(b"1"); }
+    h.write(b"\0sysbus-bind-smoke=");
+    if std::env::var_os("OXIDE_SYSBUS_BIND_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0virtio-rng-rebind-smoke=");
     if std::env::var_os("OXIDE_VIRTIO_RNG_REBIND_SMOKE").is_some() { h.write(b"1"); }
     h.write(b"\0virtio-parent-child-rebind-smoke=");
