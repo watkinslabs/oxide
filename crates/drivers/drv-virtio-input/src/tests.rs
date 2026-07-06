@@ -247,3 +247,32 @@ fn install_device_reads_identity_and_caps_from_generic_config() {
 
     crate::registry::clear_devices_for_tests();
 }
+
+#[test]
+fn install_device_with_parent_owns_event_node_publication() {
+    crate::registry::clear_devices_for_tests();
+    let mut cfg = FakeInputConfig::new();
+    let parent_addr = alloc::string::String::from("virtio0");
+    let evdev_id = crate::registry::install_device_with_config_and_parent_for_tests(
+        key(TEST_DEVICE_KEY_RAW),
+        &mut cfg,
+        Some(("virtio", parent_addr.clone())),
+    )
+    .expect("driver-owned input publication succeeds");
+    let dev = drv::devices()
+        .into_iter()
+        .find(|d| d.bus == "input" && d.addr == alloc::format!("event{evdev_id}"))
+        .expect("event node published through driver core");
+
+    assert_eq!(dev.parent(), Some(("virtio", parent_addr.as_str())));
+    assert_eq!(evdev_id_for_device(key(TEST_DEVICE_KEY_RAW)), Some(evdev_id));
+    assert_eq!(crate::remove_device_with_node(key(TEST_DEVICE_KEY_RAW)), Some(evdev_id));
+    assert_eq!(evdev_id_for_device(key(TEST_DEVICE_KEY_RAW)), None);
+    assert!(
+        drv::devices()
+            .iter()
+            .all(|d| !(d.bus == "input" && d.addr == alloc::format!("event{evdev_id}")))
+    );
+
+    crate::registry::clear_devices_for_tests();
+}

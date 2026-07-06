@@ -5,16 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B598-driver-side-effects-audit is ACTIVE / IN AUDIT from fresh
-`main` at D144 ledger merge `9cd5c31a`. Post-D144 fresh-main `make smoke
-SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 34s and
-aarch64 reaching `oxide login:` in 16s.
+Current marker: B598-driver-side-effects-audit is VERIFIED locally; PR/merge is
+pending. Post-D144 fresh-main `make smoke SMOKE_TIMEOUT=300` passed with
+x86_64 reaching `oxide login:` in 34s and aarch64 reaching `oxide login:` in
+16s.
 
 ## B598 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B598-driver-side-effects-audit | ACTIVE / IN AUDIT | Claim starts from fresh `main` at D144 ledger merge `9cd5c31a`; B598 audits remaining direct subsystem side effects so hardware-backed nodes/classes register in owning probe and remove in owning remove. Duplicate-lane check found no existing B598/direct-side-effects branch or worktree; existing detached worktrees `/home/nd/oxide-wt/cap-livegnome` and `/home/nd/oxide-wt/live-0706` are unrelated and are not touched. `metadata/index.md` advances B 598 -> 599 on this branch. Existing staged files not owned by this branch are not touched or staged: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
+| B598-driver-side-effects-audit | VERIFIED LOCAL / PR PENDING | Claim starts from fresh `main` at D144 ledger merge `9cd5c31a`; B598 audits remaining direct subsystem side effects so hardware-backed nodes/classes register in owning probe and remove in owning remove. Source audit found one live split: `pci-boot` installed virtio-input state through `drv-virtio-input` but directly published and removed the input event devnode. Fix moves event-node publication, rollback, and removal into `drv-virtio-input` via `install_device_with_parent` and `remove_device_with_node`; `pci-boot` no longer calls `drv_virtio_input::devfs::{register_node,unregister_node}`. Hosted regression `install_device_with_parent_owns_event_node_publication` proves parent linkage and remove cleanup. Broader pci-boot/kmain source audit finds only `drv_virtio_input::devfs::init()` directory setup, not hardware-backed publication. Checks pass: `cargo test -q -p drv-virtio-input -p pci-boot -- --nocapture --test-threads=1`; broad `cargo test -q -p drv -p virtio -p drv-virtio-input -p pci-boot -- --nocapture --test-threads=1`; `make x86`; `make arm`; path-limited `git diff --check`; line caps (`registry.rs` 379, `lib.rs` 34, `tests.rs` 278, `virtio_child.rs` 343); x86_64 `/tmp/b598-x86-side-effects-smoke.log` reached `oxide login:` in 32s; aarch64 `/tmp/b598-arm-side-effects-smoke.log` reached `oxide login:` in 59s. Duplicate-lane check found no existing B598/direct-side-effects branch or worktree; existing detached worktrees `/home/nd/oxide-wt/cap-livegnome` and `/home/nd/oxide-wt/live-0706` are unrelated and are not touched. `metadata/index.md` advances B 598 -> 599 on this branch. Existing staged files not owned by this branch are not touched or staged: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B597 Current
 

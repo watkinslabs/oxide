@@ -94,23 +94,19 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioInputOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        let evdev_id = match drv_virtio_input::install_device(device_key, resources) {
+        let evdev_id = match drv_virtio_input::install_device_with_parent(
+            device_key,
+            resources,
+            Some(("virtio", alloc::string::String::from(session.device_addr()))),
+        ) {
             Some(id) => id,
             None => {
                 return Err(drv::Error::ProbeFailed);
             }
         };
-        if !drv_virtio_input::devfs::register_node(
-            evdev_id,
-            Some(("virtio", alloc::string::String::from(session.device_addr()))),
-        ) {
-            let _ = drv_virtio_input::remove_device(device_key);
-            return Err(drv::Error::ProbeFailed);
-        }
         let installed = drv_virtio_input::drain::install_eventq(device_key, evdev_id, resources);
         if installed.is_err() {
-            let _ = drv_virtio_input::devfs::unregister_node(evdev_id);
-            let _ = drv_virtio_input::remove_device(device_key);
+            let _ = drv_virtio_input::remove_device_with_node(device_key);
             return Err(drv::Error::ProbeFailed);
         }
         debug_boot! {
@@ -123,10 +119,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioInputOps {
 
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
         let _ = drv_virtio_input::drain::uninstall_eventq(device_key);
-        if let Some(evdev_id) = drv_virtio_input::evdev_id_for_device(device_key) {
-            let _ = drv_virtio_input::devfs::unregister_node(evdev_id);
-        }
-        let _ = drv_virtio_input::remove_device(device_key);
+        let _ = drv_virtio_input::remove_device_with_node(device_key);
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
