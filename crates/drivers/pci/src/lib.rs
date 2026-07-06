@@ -25,9 +25,9 @@ pub use caps::{
 };
 pub use scan::{enumerate, enumerate_buses};
 pub use types::{
-    disable_mem_bus_master, enable_mem_bus_master, parse_bdf_addr, read_command, write_command,
-    Bdf, ConfigSpaceReader, Error, KResult, PciDevice, COMMAND_BUS_MASTER, COMMAND_IO,
-    COMMAND_MEMORY,
+    disable_mem_bus_master, enable_mem_bus_master, parse_bdf_addr, read_command,
+    restore_mem_bus_master, write_command, Bdf, ConfigSpaceReader, Error, KResult, PciDevice,
+    COMMAND_BUS_MASTER, COMMAND_IO, COMMAND_MEMORY,
 };
 
 #[cfg(test)]

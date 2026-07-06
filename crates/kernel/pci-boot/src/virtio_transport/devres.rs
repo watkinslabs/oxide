@@ -1,13 +1,15 @@
 use alloc::vec::Vec;
 
 use super::{
-    MsixBinding, TransportMappings, disable_pci_command, publish_transport_record,
+    MsixBinding, TransportMappings, publish_transport_record,
     release_failed_probe_frames, release_msix_bindings, reset_failed_probe,
+    restore_pci_command,
 };
 
 pub(crate) struct VirtioProbeDevres {
     bdf: pci::Bdf,
     bdf_word: u32,
+    command_orig: u16,
     cfg_va: u64,
     mappings: TransportMappings,
     msix: Vec<MsixBinding>,
@@ -19,6 +21,7 @@ impl VirtioProbeDevres {
     pub(crate) fn new(
         bdf: pci::Bdf,
         bdf_word: u32,
+        command_orig: u16,
         cfg_va: u64,
         mappings: TransportMappings,
         msix: Vec<MsixBinding>,
@@ -27,6 +30,7 @@ impl VirtioProbeDevres {
         Self {
             bdf,
             bdf_word,
+            command_orig,
             cfg_va,
             mappings,
             msix,
@@ -42,7 +46,7 @@ impl VirtioProbeDevres {
         let frames = self.frames.take_all();
         reset_failed_probe(self.cfg_va);
         release_msix_bindings(self.bdf, &mut self.msix);
-        disable_pci_command(self.bdf);
+        restore_pci_command(self.bdf, self.command_orig);
         self.mappings.unmap_all();
         release_failed_probe_frames(&frames);
     }
@@ -54,6 +58,7 @@ impl VirtioProbeDevres {
         publish_transport_record(
             device_key,
             self.bdf_word,
+            self.command_orig,
             core::mem::take(&mut self.mappings),
             self.frames.take_vring_frames(),
             core::mem::take(&mut self.msix),
