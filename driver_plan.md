@@ -2,16 +2,17 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B578-sound-live-rebind-proof in audit
+ACTIVE NOW: none
 
-Current active item: B578-sound-live-rebind-proof. Prove sound live
-bind/unbind/remove/readd behavior under QEMU on x86_64 and aarch64.
+Current active item: none. Next branch must be claimed from fresh `main`
+using `metadata/index.md`.
 Last verified branch:
-`B576-virtio-input-live-rebind-proof` merged as PR #2674 at `1753d2b1`;
-fresh-main post-merge x86_64/aarch64 normal-login smokes passed.
+`B578-sound-live-rebind-proof` merged as PR #2677 at `3ce6e1bd`;
+fresh-main post-merge `make smoke` passed and standalone x86_64 smoke reached
+`oxide login:` in 12s.
 
-Next gate: audit current sound publication/remove/rebind coverage, add the
-missing live proof or kernel fix, then verify x86_64 and aarch64.
+Next gate: claim the next NOT DONE driver row from fresh `main`, then verify
+x86_64 and aarch64 before merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -372,7 +373,7 @@ Status legend:
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for net. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for DRM/fbdev. |
 | VERIFIED MERGED | B576-virtio-input-live-rebind-proof | Virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. B576 adds `/bin/virtio_input_rebind_probe`, targeted smoke wrapper/Make targets, and rootfs mode/cache wiring. Kernel fixes: devtmpfs hot-unplug invalidates stale `/dev/input/eventN` dentries and sysfs model remove invalidates stale `/sys/devices/virtual/input/eventN` plus `/sys/class/input/eventN` dentries. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b576-x86-virtio-input-rebind.log`, aarch64 `/tmp/b576-arm-virtio-input-rebind.log`, PR #2674 merged as `1753d2b1`, and fresh-main post-merge login smokes reached `oxide login:` on x86_64 in 46s and aarch64 in 52s. |
-| VERIFIED LOCAL | B578-sound-live-rebind-proof | Sound repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. The virtio-snd multidev probe now runs three sysfs unbind/rebind loops against the second virtio-snd child, proves card-1 ALSA and OSS devnodes disappear after unbind, and re-proves two cards plus control and direct playback/capture PCM_INFO state after each rebind. Checks pass: `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_snd_multidev_probe.c` 418, `boot-smoke-virtio-snd-multidev.sh` 87), x86_64 `/tmp/b578-x86-virtio-snd-multidev.log`, and aarch64 `/tmp/b578-arm-virtio-snd-multidev.log`. PR/merge/post-merge smoke pending. |
+| VERIFIED MERGED | B578-sound-live-rebind-proof | Sound repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. The virtio-snd multidev probe now runs three sysfs unbind/rebind loops against the second virtio-snd child, proves card-1 ALSA and OSS devnodes disappear after unbind, and re-proves two cards plus control and direct playback/capture PCM_INFO state after each rebind. Checks pass: `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_snd_multidev_probe.c` 418, `boot-smoke-virtio-snd-multidev.sh` 87), x86_64 `/tmp/b578-x86-virtio-snd-multidev.log`, aarch64 `/tmp/b578-arm-virtio-snd-multidev.log`, PR #2677 merged as `3ce6e1bd`, fresh-main `make smoke` passed with aarch64 reaching `oxide login:` in 28s, and standalone x86_64 smoke reached `oxide login:` in 12s. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for RNG. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for UART. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for PS/2. |
