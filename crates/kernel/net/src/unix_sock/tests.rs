@@ -1,5 +1,31 @@
 use super::*;
 use alloc::string::String;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Weak};
+
+struct WakeCounter {
+    hits: AtomicU32,
+}
+
+impl WakeCounter {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { hits: AtomicU32::new(0) })
+    }
+}
+
+impl vfs::EpollNotify for WakeCounter {
+    fn notify(&self) {
+        self.hits.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn hits(c: &Arc<WakeCounter>) -> u32 {
+    c.hits.load(Ordering::Relaxed)
+}
+
+fn wake_ref(c: &Arc<WakeCounter>) -> Weak<dyn vfs::EpollNotify> {
+    Arc::downgrade(&(c.clone() as Arc<dyn vfs::EpollNotify>))
+}
 
 #[test]
 fn abstract_and_literal_at_paths_are_distinct() {
@@ -19,6 +45,30 @@ fn abstract_path_display_uses_procfs_at_prefix() {
     assert!(!unix_path_is_abstract("@svc"));
     assert_eq!(unix_path_display("\0svc"), "@svc");
     assert_eq!(unix_path_display("@svc"), "@svc");
+}
+
+#[test]
+fn udev_control_path_connect_wakes_accept_and_round_trips() {
+    let registry = UnixRegistry::new();
+    let listener = registry.bind(String::from("/run/udev/control")).unwrap();
+    let subs = Arc::new(vfs::PollSubscribers::new());
+    let waiter = WakeCounter::new();
+    subs.subscribe(1, wake_ref(&waiter));
+    listener.register_subs(&subs);
+
+    let client = registry.connect("/run/udev/control").expect("connect to udev control");
+    assert_eq!(hits(&waiter), 1, "connect must wake the accepting server");
+    assert_eq!(listener.accept_q.lock().len(), 1);
+
+    let server = listener.accept_q.lock().pop_front().expect("accepted pair");
+    assert!(Arc::ptr_eq(&server, &client));
+    assert_eq!(server.local_path(UnixEnd::A).as_deref(), Some("/run/udev/control"));
+    assert_eq!(client.peer_path(UnixEnd::B).as_deref(), Some("/run/udev/control"));
+
+    assert_eq!(client.write(UnixEnd::B, b"reload"), 6);
+    assert_eq!(server.read(UnixEnd::A, 64), b"reload".to_vec());
+    assert_eq!(server.write(UnixEnd::A, b"ok"), 2);
+    assert_eq!(client.read(UnixEnd::B, 64), b"ok".to_vec());
 }
 
 #[test]
