@@ -229,6 +229,83 @@ fn transport_profiles_carry_child_declared_msix_handlers() {
 }
 
 #[test]
+fn snd_eventq_plan_carries_child_irq_and_notify_mapping() {
+    const CONTROLQ: u16 = 0;
+    const EVENTQ: u16 = 1;
+    const TXQ: u16 = 2;
+    const RXQ: u16 = 3;
+    const QUEUE_SIZE: u16 = 8;
+    const NOTIFY_BASE: u64 = 0x1000;
+    const EVENT_NOTIFY_OFF: u16 = 8;
+    const TX_NOTIFY_OFF: u16 = 12;
+    const RX_NOTIFY_OFF: u16 = 16;
+    const Q0_NOTIFY_VA: u64 = 0x2000;
+    const TEST_FEATURES: u64 = 0x77;
+    const Q0_NOTIFY_OFF: u16 = 4;
+    const Q0_DESC_PA: u64 = 0x1000;
+    const Q0_DRIVER_PA: u64 = 0x2000;
+    const Q0_DEVICE_PA: u64 = 0x3000;
+    const EVENT_DESC_PA: u64 = 0x4000;
+    const EVENT_DRIVER_PA: u64 = 0x5000;
+    const EVENT_DEVICE_PA: u64 = 0x6000;
+    const TX_DESC_PA: u64 = 0x7000;
+    const TX_DRIVER_PA: u64 = 0x8000;
+    const TX_DEVICE_PA: u64 = 0x9000;
+    const RX_DESC_PA: u64 = 0xa000;
+    const RX_DRIVER_PA: u64 = 0xb000;
+    const RX_DEVICE_PA: u64 = 0xc000;
+
+    let profile = VirtioTransportProfile::snd(TEST_FEATURES, None, Some(fake_event_irq));
+    assert!(same_fn(profile.queue_plans[EVENTQ as usize].and_then(|q| q.msix_handler), fake_event_irq));
+    assert!(profile.queue_plans[TXQ as usize].and_then(|q| q.msix_handler).is_none());
+    assert!(profile.queue_plans[RXQ as usize].and_then(|q| q.msix_handler).is_none());
+
+    let programmed = ProgrammedQueues::from_test_parts(
+        QueueRing {
+            desc_pa: Q0_DESC_PA, driver_pa: Q0_DRIVER_PA, device_pa: Q0_DEVICE_PA,
+            notify_off: Q0_NOTIFY_OFF, size: QUEUE_SIZE,
+        },
+        core::array::from_fn(|index| match index as u16 {
+            EVENTQ => Some(QueueRing {
+                desc_pa: EVENT_DESC_PA, driver_pa: EVENT_DRIVER_PA, device_pa: EVENT_DEVICE_PA,
+                notify_off: EVENT_NOTIFY_OFF, size: QUEUE_SIZE,
+            }),
+            TXQ => Some(QueueRing {
+                desc_pa: TX_DESC_PA, driver_pa: TX_DRIVER_PA, device_pa: TX_DEVICE_PA,
+                notify_off: TX_NOTIFY_OFF, size: QUEUE_SIZE,
+            }),
+            RXQ => Some(QueueRing {
+                desc_pa: RX_DESC_PA, driver_pa: RX_DRIVER_PA, device_pa: RX_DEVICE_PA,
+                notify_off: RX_NOTIFY_OFF, size: QUEUE_SIZE,
+            }),
+            _ => None,
+        }),
+    );
+    let scanned = [(CONTROLQ, QUEUE_SIZE), (EVENTQ, QUEUE_SIZE), (TXQ, QUEUE_SIZE), (RXQ, QUEUE_SIZE), (0, 0), (0, 0), (0, 0), (0, 0)];
+    let planned = resolve_planned_notify_mappings(&profile.queue_plans, Some(&programmed), |notify_off| {
+        NOTIFY_BASE + notify_off as u64
+    });
+
+    let handoff = build_runtime_handoff(VirtioRuntimeHandoffInput {
+        scanned_queues: &scanned,
+        scanned_len: RXQ as usize + 1,
+        programmed_queues: Some(&programmed),
+        planned_notify_mappings: planned,
+        q0_notify_va: Q0_NOTIFY_VA,
+        post_notify_status: crate::VIRTIO_STATUS_DRIVER_OK,
+        avail_idx_posted: 0,
+        used_idx_observed: 0,
+        isr_status: 0,
+        net_boot_payloads: VirtioNetBootPayloads::default(),
+    });
+
+    assert_eq!(handoff.queue_resources[EVENTQ as usize].index, EVENTQ);
+    assert_eq!(handoff.queue_resources[EVENTQ as usize].notify_va, NOTIFY_BASE + EVENT_NOTIFY_OFF as u64);
+    assert_eq!(handoff.queue_resources[TXQ as usize].notify_va, NOTIFY_BASE + TX_NOTIFY_OFF as u64);
+    assert_eq!(handoff.queue_resources[RXQ as usize].notify_va, NOTIFY_BASE + RX_NOTIFY_OFF as u64);
+}
+
+#[test]
 fn child_session_data_is_transport_neutral() {
     let loc = VirtioTransportLocation::new(0, 3, 1);
     assert_eq!(loc.bus, 0);
