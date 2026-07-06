@@ -14,13 +14,18 @@
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 
-use vfs::inode::{Inode, InodeBuilder};
-use vfs::inode_ops::{default_inode_ops, mk_mode, InodeOps};
+use vfs::inode::{Inode, InodeBuilder, OwnerPersist};
+use vfs::inode_ops::{mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
 use vfs::{DirContext, FileType, Ino, InodeRef, KResult, VfsError};
 
 const DIR_INO_BASE: u64 = 0x6000_0000;
 const FILE_INO_BASE: u64 = 0x6100_0000;
+
+/// Permission bits of a cgroup DIRECTORY inode. `0o755` (Linux cgroup2 dirs are
+/// `drwxr-xr-x`): the owner may create sub-cgroups (`mkdir`) — required for a
+/// delegated subtree whose directory was chowned to the target uid.
+const CG_DIR_MODE: u16 = 0o755;
 
 /// cgroup2 superblock magic (`linux/magic.h` CGROUP2_SUPER_MAGIC) — the
 /// distinct `fsid` for the unified hierarchy so mount-point detection sees
@@ -86,7 +91,7 @@ impl InodeOps for CgDirOps {
         Err(VfsError::Enoent)
     }
 
-    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
+    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let cgid = dir_data(inode)?.cgid;
         #[cfg(feature = "debug-cgroup")]
         {
@@ -96,7 +101,11 @@ impl InodeOps for CgDirOps {
             klog::write_raw(name.as_bytes());
             klog::write_raw(b"\n");
         }
-        let id = crate::mkdir_child(cgid, name)?;
+        // Stamp the creating task's fsuid/fsgid on the new cgroup (Linux
+        // `cgroup_create` uses `current_fsuid`/`current_fsgid`), mapped DOWN
+        // through the mount idmap — so a delegated user's sub-cgroups are
+        // user-owned and their cgroup.procs is writable without a further chown.
+        let id = crate::mkdir_child(cgid, name, ctx.fsuid(), ctx.fsgid())?;
         Ok(make_cg_dir(id))
     }
 
@@ -166,25 +175,58 @@ impl FileOps for CgFileFileOps {
     }
 }
 
+/// `chown(2)` write-through for a cgroup DIRECTORY inode — persists the owner to
+/// the hierarchy so it survives the inode being re-synthesized on the next
+/// lookup (systemd cgroup delegation). Bound into the inode via
+/// [`InodeBuilder::owner_persist`].
+struct CgDirOwner {
+    cgid: u64,
+}
+impl OwnerPersist for CgDirOwner {
+    /// # C: O(log n)
+    fn persist_owner(&self, uid: u32, gid: u32) { let _ = crate::chown_dir(self.cgid, uid, gid); }
+}
+
+/// `chown(2)` write-through for a cgroup CONTROL-FILE inode — records a per-file
+/// owner override (systemd delegates cgroup.procs/threads/subtree_control this
+/// way).
+struct CgFileOwner {
+    cgid: u64,
+    file: String,
+}
+impl OwnerPersist for CgFileOwner {
+    /// # C: O(log n)
+    fn persist_owner(&self, uid: u32, gid: u32) { let _ = crate::chown_file(self.cgid, &self.file, uid, gid); }
+}
+
 /// Build a cgroup DIRECTORY inode for `cgid`. lookup/iterate resolve against
-/// the live hierarchy (`tree.rs`). # C: O(1)
+/// the live hierarchy (`tree.rs`); the owner is read back from the hierarchy so
+/// a delegated (chowned) subtree keeps its uid across re-synthesis. # C: O(log n)
 pub fn make_cg_dir(cgid: u64) -> InodeRef {
     let ino = (DIR_INO_BASE + cgid) as Ino;
-    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o555), Arc::new(CgDirOps), Arc::new(CgDirFileOps))
+    let (uid, gid) = crate::node_dir_owner(cgid);
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, CG_DIR_MODE), Arc::new(CgDirOps), Arc::new(CgDirFileOps))
         .fsid(CGROUP2_FSID)
+        .owner(uid, gid)
+        .owner_persist(Arc::new(CgDirOwner { cgid }))
         .private(Arc::new(CgDirData { cgid }))
         .build()
 }
 
 /// Build a cgroup CONTROL-FILE inode bound to `(cgid, file)`. read/write route
-/// to the hierarchy. `i_size` is a snapshot of the current content length
-/// (the inode is synthesized fresh on every lookup, so the snapshot is live
-/// at resolution time); the read path bounds on EOF, not `i_size`. # C: O(content)
+/// to the hierarchy. The owner is read back from the hierarchy (per-file chown
+/// override, else the node's frozen creation owner) so a delegated file stays
+/// user-owned. `i_size` is a snapshot of the current content length (the inode
+/// is synthesized fresh on every lookup, so the snapshot is live at resolution
+/// time); the read path bounds on EOF, not `i_size`. # C: O(content)
 pub fn make_cg_file(cgid: u64, file: &str) -> InodeRef {
     let size = crate::read_file(cgid, file).map(|d| d.len()).unwrap_or(0) as u64;
+    let (uid, gid) = crate::node_file_owner(cgid, file);
     InodeBuilder::new(file_ino(cgid, file), mk_mode(FileType::Regular, file_perm(file)),
-                      default_inode_ops(), Arc::new(CgFileFileOps))
+                      vfs::inode_ops::default_inode_ops(), Arc::new(CgFileFileOps))
         .fsid(CGROUP2_FSID)
+        .owner(uid, gid)
+        .owner_persist(Arc::new(CgFileOwner { cgid, file: file.to_string() }))
         .size(size)
         .private(Arc::new(CgFileData { cgid, file: file.to_string() }))
         .build()

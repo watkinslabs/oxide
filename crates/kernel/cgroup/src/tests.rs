@@ -402,3 +402,71 @@ fn move_migrates_memory_charge() {
     assert_eq!(s(&t.read_file(b, "memory.current").unwrap()), "4096\n");
     assert_eq!(t.charged(50), 4096);
 }
+
+// Y1: cgroup delegation ownership. systemd (root) creates the delegated
+// user@UID.service cgroup, then chowns the DIRECTORY + cgroup.procs/threads/
+// subtree_control to the target uid — while the resource-control files
+// (memory.max) STAY root so the user cannot raise its own top-level limit.
+// Pin that the hierarchy PERSISTS the chown (was store-and-ignore on the
+// synthesized inode) with that exact per-file boundary.
+#[test]
+fn delegation_owner_persists_with_resource_file_boundary() {
+    let mut t = Tree::new();
+    t.mount_root();
+    t.write_subtree_control(ROOT, "+memory").unwrap();
+    let (svc, _) = t.create(ROOT, "user@979.service").unwrap();
+    // Root-created → dir + every file default root:root.
+    assert_eq!(t.dir_owner(svc), (0, 0));
+    assert_eq!(t.file_owner(svc, "cgroup.procs"), (0, 0));
+    assert_eq!(t.file_owner(svc, "memory.max"), (0, 0));
+    // systemd delegation: chown the dir + the 3 delegated files to 979.
+    t.set_dir_owner(svc, 979, 979).unwrap();
+    for f in ["cgroup.procs", "cgroup.threads", "cgroup.subtree_control"] {
+        t.set_file_owner(svc, f, 979, 979).unwrap();
+    }
+    assert_eq!(t.dir_owner(svc), (979, 979), "delegated dir chown persists");
+    assert_eq!(t.file_owner(svc, "cgroup.procs"), (979, 979), "delegated file chown persists");
+    // NOT delegated → stays at the frozen creation owner (root).
+    assert_eq!(t.file_owner(svc, "memory.max"), (0, 0), "memory.max stays root:root");
+    // A sub-cgroup the delegated user creates is stamped with its fsuid → all
+    // its files default user-owned (Linux `cgroup_create` uses current_fsuid).
+    let (sub, _) = t.create(svc, "app.scope").unwrap();
+    t.set_created_owner(sub, 979, 979);
+    assert_eq!(t.dir_owner(sub), (979, 979));
+    assert_eq!(t.file_owner(sub, "cgroup.procs"), (979, 979));
+}
+
+// Y1 end-to-end: the code=219/EXIT_CGROUP blocker. Cgroup inodes are
+// synthesized root:root and the chown was LOST (ephemeral inode), so
+// `systemd --user` (uid 979) got EACCES opening its delegated cgroup.procs.
+// Drive the REAL path — synthesize the inode, chown THROUGH it (`set_owner`
+// → OwnerPersist hook → hierarchy), re-synthesize — and assert uid 979 may
+// now WRITE it.
+#[test]
+fn delegated_cgroup_procs_writable_by_uid_after_chown() {
+    let _ = crate::realize_tree(); // mount the singleton hierarchy
+    let svc = crate::mkdir_child(ROOT, "user@979.svc-e2e", 0, 0).unwrap();
+    let mut u979 = vfs::Cred::root();
+    u979.uid = 979; u979.gid = 979;
+    u979.cap_dac_override = false; u979.cap_dac_read_search = false;
+    u979.cap_chown = false; u979.cap_fowner = false; u979.cap_fsetid = false;
+    // Root-created: cgroup.procs is root:root 0644 → uid 979 WRITE = EACCES.
+    let before = crate::inode::make_cg_file(svc, "cgroup.procs");
+    assert_eq!(before.uid(), Some(0));
+    assert_eq!(vfs::inode_permission(&before, vfs::MAY_WRITE, &u979), Err(vfs::VfsError::Eacces));
+    // systemd (root) chowns the delegated file to 979 — the write-through hook
+    // must PERSIST to the hierarchy, not just the ephemeral inode.
+    before.set_owner(979, 979).unwrap();
+    assert_eq!(crate::node_file_owner(svc, "cgroup.procs"), (979, 979), "chown persisted to hierarchy");
+    // A fresh lookup re-synthesizes the inode → owner 979, mode 0644 → uid 979
+    // WRITE now permitted (owner class rw). code=219 blocker cleared.
+    let after = crate::inode::make_cg_file(svc, "cgroup.procs");
+    assert_eq!(after.uid(), Some(979));
+    assert_eq!(vfs::inode_permission(&after, vfs::MAY_WRITE, &u979), Ok(()));
+    // The delegated DIRECTORY is 0755 so once chowned to 979 the user may
+    // create sub-cgroups (mkdir needs owner MAY_WRITE on the parent dir).
+    crate::chown_dir(svc, 979, 979).unwrap();
+    let dir = crate::inode::make_cg_dir(svc);
+    assert_eq!(dir.uid(), Some(979));
+    assert_eq!(vfs::inode_permission(&dir, vfs::MAY_WRITE, &u979), Ok(()));
+}
