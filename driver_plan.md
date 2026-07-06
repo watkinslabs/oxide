@@ -1,15 +1,15 @@
 # Driver plan
 
-Date: 2026-07-05
+Date: 2026-07-06
 
-ACTIVE NOW: none; B515-nvme-ahci-bar-devres-proof verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: B516-virtio-child-session-backend-proof auditing PCI-backed virtio child session backend ownership.
 
-Current active item: none. B515 remains on branch
-`B515-nvme-ahci-bar-devres-proof` until commit, PR, merge, fresh main sync, and
-metadata/index.md branch number check complete.
+Current active item: row 168, `PCI-backed child session carries explicit
+VirtioPciTransport backend`. Marker: `>>> ACTIVE >>> B516`.
 
-Next gate after merge: return to fresh `origin/main` before claiming B516 using
-`metadata/index.md`.
+Next gate after B516: hosted pci-boot/virtio proof, x86_64 and aarch64 fast
+smokes, commit, push, PR, merge, then return to fresh `origin/main` before
+claiming B517 using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -165,7 +165,7 @@ Status legend:
 | VERIFIED |  | Shared `run_child_remove` owns remove-before-unpublish sequencing. |
 | VERIFIED |  | Shared `run_child_shutdown` owns typed-key shutdown dispatch. |
 | VERIFIED | B507-virtio-child-transport-session-contract | Shared `VirtioChildTransportSession` no longer exposes PCI-shaped location data to child drivers: child-visible session contract carries child key/address/features/resources only; pci-boot keeps BDF as wrapper-local metadata for GPU display registration; virtio-net runtime state/init no longer stores or accepts BDF; virtio-blk debug output logs opaque child keys instead of decoding them as BDF. Checks pass: focused shared virtio/net/block tests; broad hosted driver gate; line caps; `git diff --check`; x86_64 and aarch64 smoke boots. |
-| SOURCE OK |  | PCI-backed child session carries explicit `VirtioPciTransport` backend. |
+| >>> ACTIVE >>> IN AUDIT | B516-virtio-child-session-backend-proof | PCI-backed child session carries explicit `VirtioPciTransport` backend. |
 | SOURCE OK |  | Raw virtio-pci probe/publish/unpublish helpers are private to transport module. |
 | VERIFIED |  | Shared `VirtioChildResourceState` owns transport-neutral readiness/resource policy. |
 | VERIFIED |  | Shared `VirtioChildProbeFacts` carries child-visible transport probe result. |
