@@ -189,6 +189,24 @@ fn disable_mem_bus_master_preserves_status_bits() {
 }
 
 #[test]
+fn restore_mem_bus_master_restores_only_owned_bits() {
+    let r = MapReader {
+        m: Mutex::new(HashMap::new()),
+    };
+    let bdf = Bdf {
+        bus: 0,
+        device: 6,
+        function: 1,
+    };
+    r.write32(bdf, 0x04, 0x1234_0007);
+
+    let old = restore_mem_bus_master(&r, bdf, COMMAND_MEMORY);
+
+    assert_eq!(old, COMMAND_MEMORY | COMMAND_BUS_MASTER | COMMAND_IO);
+    assert_eq!(r.read32(bdf, 0x04), 0x1234_0003);
+}
+
+#[test]
 fn decode_mem64_bar() {
     let r = MapReader {
         m: Mutex::new(HashMap::new()),

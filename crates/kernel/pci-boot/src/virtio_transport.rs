@@ -22,7 +22,8 @@ pub(crate) use devres::VirtioProbeDevres;
 pub(super) use msix::{
     MsixBinding, bind_msix_vector, disable_pci_command, publish_transport_record,
     release_failed_probe_frames, release_msix_bindings, reset_failed_probe,
-    unmask_msix_bindings, unpublish_transport_record, unpublish_transport_record_by_bdf,
+    restore_pci_command, unmask_msix_bindings, unpublish_transport_record,
+    unpublish_transport_record_by_bdf,
 };
 pub(super) use virtio::{ProgrammedQueues, QueueRing};
 
