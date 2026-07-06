@@ -5,15 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B523-virtio-pci-msix-plural-binding-proof audits row 176,
-Virtio-pci MSI-X state is owned optional/plural binding rather than
-zero-sentinel fields.
+Current marker: B523-virtio-pci-msix-plural-binding-proof verified row 176
+locally; commit, PR, merge, and fresh `main` sync remain.
 
 ## B523 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B523-virtio-pci-msix-plural-binding-proof | IN AUDIT | Fresh `main` at merge commit `de757062` after B522 PR #2619 merge, branch cleanup, and post-merge x86_64/aarch64 smoke proof. `metadata/index.md` advanced B 523 -> 524. Source audit in progress for optional/plural MSI-X binding state and absence of zero-sentinel MSI-X ownership fields. |
+| B523-virtio-pci-msix-plural-binding-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `de757062` after B522 PR #2619 merge, branch cleanup, and post-merge x86_64/aarch64 smoke proof. `metadata/index.md` advanced B 523 -> 524. Source audit proves child profiles expose MSI-X callbacks as `Option<fn()>`, queue plans carry `VIRTIO_MSI_NO_VECTOR` only as the virtio common-cfg vector value, `VirtioProbeState` owns `Vec<MsixBinding>` and deduplicates by queue vector, `VirtioProbeDevres` carries a vector of bindings through failed-probe release or successful publish, and persistent `TransportRecord` stores `Vec<MsixBinding>` for teardown. Negative search finds no old singular `msix_id`/`msi_id` ownership fields, no `free_msi_id(0)`, and no zero-sentinel MSI-X binding release path. Checks pass: `cargo test -q -p pci-boot -p virtio -p pci -- --nocapture --test-threads=1` with PCI 15/15, shared virtio 44/44, and pci-boot compile-only 0 tests; post-merge fresh-main `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s and `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B522 Current
 
