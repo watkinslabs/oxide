@@ -291,6 +291,11 @@ pub unsafe fn schedule() {
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
     crate::diag::note_switch();
+    // debug-wakelat: the incoming task is switching IN now — close out any
+    // pending wake→run latency measurement stamped at its ttwu (H2).
+    #[cfg(feature = "debug-wakelat")]
+    // SAFETY: rq.current was just set to next_arc by swap_current; reading its tid is sound.
+    crate::live::wakelat::note_switch_in(unsafe { rq.current_ref() }.tid, now);
 
     #[cfg(target_arch = "x86_64")]
     {
@@ -334,8 +339,18 @@ pub unsafe fn schedule() {
 
 /// Cooperative voluntary yield. Calls `schedule()` then parks the
 /// CPU on `hlt`/`wfi` until the next IRQ.
+///
+/// The trailing halt opens the IRQ window that a BUSY-yield caller (one
+/// that stays Runnable — recvmsg/accept/sendto spin-waiting for device
+/// data while the syscall runs IF=0) depends on to receive that data, so
+/// this form is for those callers. A caller that has already PARKED
+/// (marked itself Sleeping via a wait list) must instead use
+/// [`park_yield`], which does NOT halt: a parked task must not idle the
+/// CPU, because the per-CPU idle task provides the halt/IRQ-window and the
+/// scheduler must be free to run every other ready task back-to-back. See
+/// [`park_yield`] for why that distinction is load-bearing for wake
+/// latency. # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
 /// # SAFETY: per `schedule()`.
-/// # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
 /// # Ctx: process|kthread; preempt-off; IRQs-on
 pub unsafe fn tick_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract (process / kthread context, preempt-off, single-CPU); delegated wholesale.
@@ -355,4 +370,36 @@ pub unsafe fn tick_yield() {
             options(nomem, nostack, preserves_flags),
         );
     }
+}
+
+/// Yield for a caller that has ALREADY parked itself Sleeping on a wait
+/// list (epoll_wait, ppoll, …). Hands the CPU to the next runnable task
+/// via `schedule()` and returns as soon as this task is scheduled back in
+/// (i.e. after a waker roused it) — it does NOT halt the CPU.
+///
+/// This is the Linux-correct blocking-wait yield: a task blocked in a
+/// syscall is Sleeping, so `schedule()` runs another ready task or the
+/// per-CPU idle task, and the IDLE task is the one that halts (opening the
+/// IRQ window that delivers data / the next wake). A parked task that
+/// halted the CPU itself — as the old `tick_yield` did here — idled the
+/// core for a full timer tick after every rescan, so when one wake roused
+/// many parked waiters at once (dozens of D-Bus daemons during gnome
+/// session setup) the scheduler could only advance one task per tick
+/// (~1 ms). A given peer's wake→run latency then grew to N_ready × tick ≈
+/// 50-80 ms, and the hundreds-deep CreateSession→user@ IPC chain
+/// accumulated to ~28 s, tripping gdm's 30 s TimeoutStartSec (measured:
+/// wake→run latency identical for edge and scanner wakes, so the stall was
+/// scheduling throughput, not the wake mechanism). Not halting here lets
+/// the roused set drain at full context-switch speed. Unlike `tick_yield`
+/// this is safe from a livelock standpoint precisely because the caller is
+/// Sleeping: it will not be re-picked until a waker makes it Runnable, so
+/// two such callers can never ping-pong the CPU with IRQs masked.
+/// # SAFETY: caller has marked itself Sleeping on a wait list and owns the
+/// post-park schedule per `schedule()`'s contract; must re-check its
+/// condition (and re-park) after this returns.
+/// # C: O(log N) + O(1) ctxsw
+/// # Ctx: process|kthread; preempt-off; caller Sleeping
+pub unsafe fn park_yield() {
+    // SAFETY: caller satisfies `schedule()`'s contract and has parked Sleeping; delegated wholesale, no halt so the CPU stays available to other ready tasks (idle halts when the runqueue drains).
+    unsafe { schedule(); }
 }

@@ -37,6 +37,11 @@ hosted  = []
 # forwards via `--features debug-sched`.
 debug-sched = []
 debug-syscall = []
+# Wake→run latency + LAPIC tick-period probe for the gnome desktop wakeup-
+# latency hunt. Threshold-gated ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/
+# [WLSCANGAP]) — emits nothing unless a stall crosses the threshold, so
+# steady-state timing is unperturbed. Default-off; stays in-tree.
+debug-wakelat = []
 # Liveness diagnostics (`05`/`27`): one-shot soft-lockup watchdog banner +
 # serial-sysrq task dump. Emits zero bytes unless a stall fires or sysrq is
 # triggered — no steady-state trace noise, so timing is unperturbed.

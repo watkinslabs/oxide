@@ -31,3 +31,4 @@ hal-aarch64 = { path = "../../arch/hal-aarch64", package = "hal-aarch64" }
 default = []
 hosted  = []
 debug-boot = []
+debug-scmfd = []  # [SCMW]/[SCMR] AF_UNIX SOCK_STREAM SCM_RIGHTS send/recv probe (vpid+nfds) — trace dbus-broker two-hop fd relay (logind CreateSessionWithPIDFD)
