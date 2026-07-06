@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active row. B521-virtio-pci-msix-state-proof is VERIFIED on
-branch `B521-virtio-pci-msix-state-proof`; pending commit, push, PR, merge,
-branch cleanup, and fresh `main` sync before claiming the next row.
+Current marker: B522-virtio-pci-vring-frame-record-proof audits row 177,
+Virtio-pci owns vring frame publication/teardown records for successful child
+probes.
+
+## B522 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B522-virtio-pci-vring-frame-record-proof | IN AUDIT | Fresh `main` at merge commit `610321de` after B521 PR #2618 merge, branch cleanup, and post-merge x86_64/aarch64 smoke proof. `metadata/index.md` advanced B 522 -> 523. Source audit in progress for successful-probe vring frame ownership, publish handoff, persistent teardown records, and failed-probe frame cleanup separation. |
 
 ## B521 Current
 
