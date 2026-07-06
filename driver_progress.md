@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B563-nvme-publication-per-function-proof is claimed from
-fresh `main` at B562 PR #2654 merge commit `62e96169`; next gate is source
-audit, hosted storage/PCI tests, and x86_64/aarch64 smokes.
+Current marker: B563-nvme-publication-per-function-proof is verified locally
+from fresh `main` at B562 PR #2654 merge commit `62e96169`; next gate is PR
+merge and post-merge fresh-main smokes.
 
 ## B563 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B563-nvme-publication-per-function-proof | ACTIVE | Fresh `main` at B562 PR #2654 merge commit `62e96169`; B562 post-merge fresh-main smokes passed with x86_64 reaching `oxide login:` in 12s and aarch64 reaching `oxide login:` in 16s. `metadata/index.md` advanced B 563 -> 564. Active target: prove NVMe publication is per PCI function with `nvmeXn1` names on x86_64 and aarch64. |
+| B563-nvme-publication-per-function-proof | VERIFIED LOCAL | Fresh `main` at B562 PR #2654 merge commit `62e96169`; B562 post-merge fresh-main smokes passed with x86_64 reaching `oxide login:` in 12s and aarch64 reaching `oxide login:` in 16s. `metadata/index.md` advanced B 563 -> 564. Tightened `/bin/storage_multictrl_probe` so the two-controller live gate requires `/sys/block/nvme0n1` and `/sys/block/nvme1n1` before exercising sysfs unbind/rebind. Source audit proves `NvmeDriver::probe()` parses the PCI BDF from the bound model device, `device_key_from_bdf()` returns the typed `pci::Bdf`, `imp::init()` rejects an existing matching BDF before controller bring-up, successful bring-up allocates `nvmeXn1` names through `nvme_name(NEXT_DISK_INDEX.fetch_add(...))`, publishes through `block::registry::register_with_serial`, and records the exact BDF/name pair only after publication succeeds. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 413, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `block/registry.rs` 426, `storage_multictrl_probe.c` 174); `KEEP_LOG=/tmp/b563-x86-storage-multictrl.log tools/boot-smoke-storage-multictrl.sh x86 300` passed, including initial `nvme0n1`/`nvme1n1` checks and NVMe/AHCI unbind/rebind count restoration; `KEEP_LOG=/tmp/b563-arm-storage-multictrl.log tools/boot-smoke-storage-multictrl.sh arm 300` passed with the same checks. Separate ledger note: normal x86 login smoke timed out all three attempts after this targeted proof passed; attempt-1 output showed systemd/getty cgroup attach/spawn failure, not storage/NVMe failure. |
 
 ## B562 Current
 
