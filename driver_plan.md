@@ -2,13 +2,13 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: none - B544 verified locally pending PR/merge
+ACTIVE NOW: B546-virtio-snd-generic-config-proof
 
-Current active item: none. Last verified branch:
-`B544-dead-vsock-config-pass-through`.
+Current active item: row 219 in audit on branch
+`B546-virtio-snd-generic-config-proof`.
 
-Next gate: commit the B544 verification ledger update, push, open PR, merge,
-sync fresh `main`, then claim the next row.
+Next gate: prove virtio-snd reads jacks, streams, chmaps, and controls from
+the generic child config resource, then run hosted and x86_64/aarch64 gates.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -217,7 +217,7 @@ Status legend:
 | VERIFIED | B542-vsock-cid-generic-config-proof | Virtio-vsock reads guest CID in child driver from generic config resource: source audit proves pci-boot maps `VIRTIO_PCI_CAP_DEVICE_CFG` into `VirtioResources.device_cfg_va`, `VirtioVsockOps::probe_child()` passes only the generic child resource to `drv_virtio_vsock::install()`, and `drv-virtio-vsock` reads the guest CID through named `VSOCK_CFG_OFF_GUEST_CID` before publishing the reserved net endpoint; pci-boot only reads the installed CID back for debug logging and does not pass CID config into the child. Hosted regression `guest_cid_reads_generic_device_config_resource` proves the driver reads CID from `VirtioResources.device_cfg_va` and rejects a missing generic config resource. Checks pass: focused `cargo test -q -p drv-virtio-vsock -- --nocapture --test-threads=1` with vsock 11/11; broad PCI/virtio child gate; `git diff --check`; line caps (`consts.rs` 21, `registry.rs` 356, `tests.rs` 236, `virtio_child.rs` 398, `resources/transport.rs` 126); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 46s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 52s. |
 | VERIFIED | B544-dead-vsock-config-pass-through | Dead pci-boot vsock config pass-through removed: source audit proves `VirtioVsockOps::probe_child()` passes only `session.child_resources()` into `drv_virtio_vsock::install()`, pci-boot has no vsock-specific config/CID pass-through struct or init path, and its only post-install `guest_cid_for(device_key)` use is debug logging from child-owned installed state. Generic `DEVICE_CFG` still flows through `VirtioResources.device_cfg_va` for the child driver. Checks pass: focused `cargo test -q -p pci-boot -p virtio -p drv-virtio-vsock -- --nocapture --test-threads=1`; broad hosted PCI/virtio child gate; `git diff --check`; line caps (`virtio_child.rs` 398, `virtio_drv/probe.rs` 178, `virtio_drv/probe_state.rs` 298, `registry.rs` 356, `tests.rs` 236, `resources/profile.rs` 157, `resources/child.rs` 377); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 | VERIFIED | B511-vsock-failed-install-ownership | Virtio-vsock failed install owns reserved endpoint and bounce frames until installed transport takes ownership: `VsockProbeState` reserves the net endpoint before frame allocation, frees still-owned frames and cancels the reservation in `Drop`, transfers frame ownership only when the context is inserted, and transfers endpoint ownership only after `driver_publish_reserved` succeeds. Hosted regressions prove reservation-drop cancellation and publish-failure cleanup with a live duplicate-CID endpoint unaffected. Checks pass: `cargo test -q -p drv-virtio-vsock -- --nocapture --test-threads=1` 9/9; `cargo test -q -p net vsock -- --nocapture --test-threads=1` 28/28; broad virtio driver gate; `git diff --check`; touched Rust files under 500 lines; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
-| SOURCE OK |  | Virtio-snd reads jacks/streams/chmaps/controls in child driver from generic config resource. |
+| >>> ACTIVE >>> IN AUDIT | B546-virtio-snd-generic-config-proof | Virtio-snd reads jacks/streams/chmaps/controls in child driver from generic config resource. |
 | SOURCE OK |  | Virtio-snd programs EVENTQ(1) with notify mapping and child-owned MSI-X callback. |
 | SOURCE OK |  | Virtio-snd preposts writable event descriptors. |
 | SOURCE OK |  | Virtio-snd drains EVENTQ from sound softirq. |
