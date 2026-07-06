@@ -169,6 +169,13 @@ smoke-driver-path-arm: arm
 	./tools/boot-smoke-driver-path.sh arm $(DRIVER_PATH_SMOKE_TIMEOUT)
 smoke-driver-path: smoke-driver-path-x86 smoke-driver-path-arm
 
+SYSBLOCK_SMOKE_TIMEOUT ?= 900
+smoke-sysblock-x86: x86
+	./tools/boot-smoke-sysblock.sh x86 $(SYSBLOCK_SMOKE_TIMEOUT)
+smoke-sysblock-arm: arm
+	./tools/boot-smoke-sysblock.sh arm $(SYSBLOCK_SMOKE_TIMEOUT)
+smoke-sysblock: smoke-sysblock-x86 smoke-sysblock-arm
+
 VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT ?= 900
 smoke-virtio-snd-multidev-x86: x86
 	./tools/boot-smoke-virtio-snd-multidev.sh x86 $(VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT)

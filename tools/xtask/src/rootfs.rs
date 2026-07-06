@@ -231,6 +231,11 @@ b"#!/bin/sh
 set -eu
 exec /bin/virtio_blk_multidev_probe
 "
+        } else if std::env::var_os("OXIDE_SYSBLOCK_SMOKE").is_some() {
+b"#!/bin/sh
+set -eu
+exec /bin/sysblock_probe
+"
         } else if std::env::var_os("OXIDE_MSIX_NET_RX_SMOKE").is_some() {
 b"#!/bin/sh
 set -eu
