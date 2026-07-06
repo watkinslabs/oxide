@@ -1,4 +1,5 @@
 extern crate alloc;
+    mod block_index;
     mod uevent_replay;
     use super::hooks::*;
     use super::dirs::{make_bus_drivers_inode, make_devices_root_inode};
