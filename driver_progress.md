@@ -5,14 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B535-virtio-msix-q0-binding-proof verified row 212 locally;
-PR/merge/post-merge fresh-main smokes pending.
+Current marker: B536-msix-entry-bounds-proof audits row 213; branch claimed
+from fresh `main` at B535 merge commit `76fe3064`.
+
+## B536 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B536-msix-entry-bounds-proof | IN AUDIT | Fresh `main` at merge commit `76fe3064` after B535 PR #2632 merge. Post-merge fresh-main smokes before branch work passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 536 -> 537. Target row: prove MSI-X binding helper rejects requested table entries outside decoded MSI-X table size without magic numbers. |
 
 ## B535 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B535-virtio-msix-q0-binding-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `e0ab6244` after B534 PR #2631 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 535 -> 536. Source audit proves `VirtioProbeState::bind_msix0()` binds `VIRTIO_MSIX_Q0_VECTOR`, `bind_msix_queue()` stores and reuses `MsixBinding.queue_vector`, `negotiate_and_program()` passes the recorded q0 vector into `VirtioPciRuntime::program_queue_set()`, and shared `virtio::program_queue_set()` programs queue 0 with that q0 MSI-X vector before extra queue plans. Hosted regression `program_queue_set_writes_q0_msix_vector` proves the q0 vector argument is written to common-cfg `CFG_QUEUE_MSIX` for queue 0 and queue select is restored to zero. Checks pass: focused `cargo test -q -p virtio -- --nocapture --test-threads=1` with shared virtio 46/46; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`queue_cfg.rs` 321, `virtio_drv/probe_state.rs` 298, `virtio_transport/msix.rs` 474); branch smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 36s. |
+| B535-virtio-msix-q0-binding-proof | VERIFIED MERGED | Fresh `main` at merge commit `e0ab6244` after B534 PR #2631 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 535 -> 536. Source audit proves `VirtioProbeState::bind_msix0()` binds `VIRTIO_MSIX_Q0_VECTOR`, `bind_msix_queue()` stores and reuses `MsixBinding.queue_vector`, `negotiate_and_program()` passes the recorded q0 vector into `VirtioPciRuntime::program_queue_set()`, and shared `virtio::program_queue_set()` programs queue 0 with that q0 MSI-X vector before extra queue plans. Hosted regression `program_queue_set_writes_q0_msix_vector` proves the q0 vector argument is written to common-cfg `CFG_QUEUE_MSIX` for queue 0 and queue select is restored to zero. Checks pass: focused `cargo test -q -p virtio -- --nocapture --test-threads=1` with shared virtio 46/46; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`queue_cfg.rs` 321, `virtio_drv/probe_state.rs` 298, `virtio_transport/msix.rs` 474); branch smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 36s; pre-push hook reran boot-smoke and passed both arches; PR #2632 merged as `76fe3064`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 36s. |
 
 ## B534 Current
 
