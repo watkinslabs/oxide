@@ -42,7 +42,7 @@ pub(crate) struct MsixBinding {
 struct TransportRecord {
     device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
-    _mappings: TransportMappings,
+    mappings: TransportMappings,
     vring_frames: Vec<u64>,
     msix: Vec<MsixBinding>,
 }
@@ -170,7 +170,7 @@ pub(crate) fn publish_transport_record(
     let rec = TransportRecord {
         device_key,
         bdf,
-        _mappings: mappings,
+        mappings,
         vring_frames,
         msix,
     };
@@ -209,11 +209,19 @@ pub(crate) fn unpublish_transport_record_by_bdf(bdf: u32) {
 }
 
 fn release_transport_record(rec: TransportRecord) {
-    let bdf = bdf_from_word(rec.bdf);
-    let mut msix = rec.msix;
+    let TransportRecord {
+        bdf,
+        mut mappings,
+        vring_frames,
+        msix,
+        ..
+    } = rec;
+    let bdf = bdf_from_word(bdf);
+    let mut msix = msix;
     release_msix_bindings(bdf, &mut msix);
     disable_pci_command(bdf);
-    for frame in rec.vring_frames.iter().copied() {
+    mappings.unmap_all();
+    for frame in vring_frames.iter().copied() {
         if frame == 0 {
             continue;
         }
