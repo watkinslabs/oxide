@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B603-live-probe-methods-audit is ACTIVE / IN AUDIT from fresh
-`main` at D148 ledger merge `cdd1cfe2`. B603 advances `metadata/index.md` B
-603 -> 604.
+Current marker: B603-live-probe-methods-audit is VERIFIED LOCAL / PR PENDING
+from fresh `main` at D148 ledger merge `cdd1cfe2`. B603 advances
+`metadata/index.md` B 603 -> 604.
 
 ## B603 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B603-live-probe-methods-audit | ACTIVE / IN AUDIT | Claimed from fresh `main` at D148 ledger merge `cdd1cfe2`; target row is the old claim that `Driver::probe` is mostly no-op for live model drivers. Duplicate-lane check found no B603/probe-method branch or worktree. First source scan finds substantive live probes for virtio-pci, NVMe, AHCI, UARTs, PS/2, and virtio child resources; the default no-op probe appears in the trait and tests. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
+| B603-live-probe-methods-audit | VERIFIED LOCAL / PR PENDING | Claimed from fresh `main` at D148 ledger merge `cdd1cfe2`; target row is the old claim that `Driver::probe` is mostly no-op for live model drivers. Duplicate-lane check found no B603/probe-method branch or worktree. Source audit finds the default no-op only on the trait and test/fake drivers, while live model drivers do substantive work: virtio-pci probe publishes child `virtio` devices through `drv::try_device_add`; NVMe/AHCI probes parse BDF, enable MEM/BUS_MASTER, decode BARs, map MMIO, and call controller init; virtio child probe opens a transport session and runs child-specific probe before publishing transport state; UART 16550/PL011 probes perform detection and init; PS/2 probe performs bringup and IRQ install. Hosted gate passes: `cargo test -q -p drv -p pci-boot -p virtio -p drv-nvme -p drv-ahci -p drv-uart-16550 -p drv-uart-pl011 -p drv-ps2-keyboard -- --nocapture --test-threads=1` with `drv` 31/31, `drv-nvme` 12/12, `drv-ahci` 7/7, `drv-ps2-keyboard` 6/6, `virtio` 49/49, and compile-only `pci-boot`/UART crates. B603 changes docs/metadata only, so x86_64/aarch64 runtime state is inherited from fresh `main` at D148 ledger merge `cdd1cfe2`, where B601/B602 post-merge proof kept live driver-model boot green on both arches. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B602 Current
 
