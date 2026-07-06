@@ -213,8 +213,8 @@ pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
     Some(match data.minor {
-        MINOR_PCM_P if group == PCM_MAGIC => crate::pcm::handle(data.owner, nr, arg),
-        MINOR_PCM_C if group == PCM_MAGIC => crate::capture::handle(data.owner, nr, arg),
+        MINOR_PCM_P if group == PCM_MAGIC => crate::pcm::handle(data.owner, data.card, nr, arg),
+        MINOR_PCM_C if group == PCM_MAGIC => crate::capture::handle(data.owner, data.card, nr, arg),
         MINOR_CONTROL if group == CTL_MAGIC => crate::control::handle(data.owner, data.card, nr, arg),
         MINOR_DSP | MINOR_AUDIO => crate::oss::handle(data.owner, false, req, arg),
         MINOR_MIXER => crate::oss::handle(data.owner, true, req, arg),
