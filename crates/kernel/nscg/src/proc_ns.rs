@@ -5,12 +5,14 @@
 // matches nstype, and writes the captured ns id into the calling
 // task's matching slot.
 
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{default_inode_ops, mk_mode};
 use vfs::file_ops::default_file_ops;
-use vfs::{FileType, Ino, InodeRef};
+use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, LinkTarget, VfsError, VfsPath};
 
 /// Linux CLONE_NEW* bits — match clone(2) for setns(fd, nstype) checks.
 pub const CLONE_NEWNS:    u64 = 0x00020000;
@@ -41,6 +43,20 @@ impl NsKind {
         }
     }
 
+    /// nsfs link prefix — Linux `readlink(/proc/<pid>/ns/<t>)` returns
+    /// "<proc_name>:[<inode>]" (`ns_prune_dentry`/`ns_get_name`). # C: O(1)
+    pub fn proc_name(self) -> &'static str {
+        match self {
+            NsKind::Mnt    => "mnt",
+            NsKind::Cgroup => "cgroup",
+            NsKind::Uts    => "uts",
+            NsKind::Ipc    => "ipc",
+            NsKind::User   => "user",
+            NsKind::Pid    => "pid",
+            NsKind::Net    => "net",
+        }
+    }
+
     /// Parse the leaf name from /proc/<pid>/ns/<leaf> into an NsKind.
     /// # C: O(1)
     pub fn from_leaf(s: &str) -> Option<Self> {
@@ -60,6 +76,16 @@ impl NsKind {
 /// Inode-number tag — high byte 0x72 ("r" for "ref").
 const NS_INO_MARKER: Ino = 0x7200_0000;
 
+/// Stable, per-(kind,id) inode number for an nsfs node. Two tasks in the
+/// SAME namespace resolve to the SAME `st_ino`, so `stat`-based
+/// same-namespace comparison (systemd `inode_same`) sees them as identical;
+/// distinct kinds/ids never collide. Also the numeric shown by
+/// `readlink` ("net:[<ino>]"). # C: O(1)
+fn ns_ino(kind: NsKind, id: u64) -> Ino {
+    // low nibble = kind (< 7), id shifted clear of it; marker in the high word.
+    NS_INO_MARKER | ((id & 0x00FF_FFFF) << 8) | (kind as Ino)
+}
+
 /// Per-NS id snapshot. Backend-private state (`i_private`) of the
 /// `/proc/<pid>/ns/<type>` inode: captured at lookup time, stable for the
 /// lifetime of the open fd. `setns` recovers it via `inode.private::<NsInode>()`,
@@ -69,10 +95,53 @@ pub struct NsInode {
     pub id:   u64,
 }
 
+/// `i_op` for the `/proc/<pid>/ns/<type>` MAGIC symlink (Linux nsfs). A walk
+/// THROUGH it (`open`/`access`/`stat` with LOOKUP_FOLLOW) does `nd_jump_link`
+/// (Linux `proc_ns_get_link`) to the backing nsfs node, so `open(2)` returns a
+/// fd whose inode `setns(2)` can downcast to `NsInode`; `readlink(2)` returns
+/// the "<type>:[<ino>]" TEXT. Without a real target the default `readlink`
+/// yields `EINVAL`, which made `access("/proc/self/ns/uts", F_OK)` fail —
+/// systemd then logs "the kernel does not support UTS namespaces" and
+/// `open("/proc/self/ns/net")` failed the same way, tripping the PrivateNetwork
+/// "does not support ... network namespace" path.
+struct NsLinkOps;
+impl InodeOps for NsLinkOps {
+    /// `readlink(2)` text — Linux nsfs "<type>:[<inode>]". # C: O(1)
+    fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
+        use core::fmt::Write as _;
+        let d = inode.private::<NsInode>().ok_or(VfsError::Einval)?;
+        let mut s = String::new();
+        let _ = write!(s, "{}:[{}]", d.kind.proc_name(), ns_ino(d.kind, d.id));
+        Ok(s.into_bytes())
+    }
+
+    /// Magic-link follow — jump to a fresh nsfs node carrying the SAME
+    /// `(kind, id)` (Linux `nd_jump_link` into nsfs). `mnt_id 0` = anonymous
+    /// inode (nsfs owns no vfsmount in this tree; matches pipe/socket fds).
+    /// # C: O(1)
+    fn get_link(&self, inode: &Inode) -> KResult<LinkTarget> {
+        let d = inode.private::<NsInode>().ok_or(VfsError::Einval)?;
+        let target = ns_node(d.kind, d.id);
+        let dentry = vfs::d_obtain_alias(target.clone());
+        Ok(LinkTarget::Jump(VfsPath { mnt_id: 0, dentry, inode: target, last_component: None }))
+    }
+}
+
+/// The nsfs node the `/proc/<pid>/ns/<type>` magic link JUMPS to — a non-symlink
+/// inode whose `i_private` carries `(kind, id)` for `setns(2)` to downcast. Not
+/// a symlink (Linux nsfs files aren't links; only the `/proc/.../ns/<t>` entry
+/// is), so the walk terminates here instead of re-following. # C: O(1)
+fn ns_node(kind: NsKind, id: u64) -> InodeRef {
+    InodeBuilder::new(ns_ino(kind, id), mk_mode(FileType::Regular, 0o444), default_inode_ops(), default_file_ops())
+        .private(Arc::new(NsInode { kind, id }))
+        .build()
+}
+
 /// Construct the `/proc/<pid>/ns/<type>` inode capturing `task`'s current id for
-/// `kind`. A `S_IFLNK` magic node (Linux nsfs); `lookup`→`ENOTDIR` and the
-/// metadata defaults come from the generic ops, the captured `(kind, id)` lives
-/// in `i_private`. # C: O(1)
+/// `kind`. A `S_IFLNK` magic node (Linux nsfs): a walk through it jumps to
+/// [`ns_node`]; `readlink` yields the "<type>:[<ino>]" text; the captured
+/// `(kind, id)` lives in `i_private` for an `O_NOFOLLOW`/`O_PATH` `setns`.
+/// # C: O(1)
 pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
     use core::sync::atomic::Ordering;
     let id = match kind {
@@ -84,8 +153,7 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
         NsKind::Cgroup => task.cgroup_ns.load(Ordering::Acquire),
         NsKind::Mnt    => task.mount_ns.load(Ordering::Acquire),
     };
-    let ino: Ino = NS_INO_MARKER | (kind as Ino);
-    InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
+    InodeBuilder::new(ns_ino(kind, id), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
         .private(Arc::new(NsInode { kind, id }))
         .build()
 }
@@ -163,4 +231,51 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
         NsKind::Mnt    => cur.mount_ns.store(ns.id, Ordering::Release),
     }
     0
+}
+
+#[cfg(test)]
+mod ns_link_tests {
+    use super::*;
+    use alloc::format;
+
+    /// Build the `/proc/<pid>/ns/<t>` magic symlink WITHOUT a Task (the only
+    /// Task-independent difference from `ns_inode_for`), so the nsfs link
+    /// behaviour is provable in a hosted unit test.
+    fn ns_symlink(kind: NsKind, id: u64) -> InodeRef {
+        InodeBuilder::new(ns_ino(kind, id), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
+            .private(Arc::new(NsInode { kind, id }))
+            .build()
+    }
+
+    #[test]
+    fn readlink_returns_nsfs_text() {
+        // Linux nsfs: readlink(/proc/self/ns/net) == "net:[<ino>]".
+        let l = ns_symlink(NsKind::Net, 7);
+        assert_eq!(l.readlink().unwrap(), format!("net:[{}]", ns_ino(NsKind::Net, 7)).into_bytes());
+    }
+
+    #[test]
+    fn follow_jumps_to_downcastable_non_symlink() {
+        // A walk THROUGH the link (open/access/stat) must jump to a node whose
+        // inode setns(2) can downcast — the whole point of the fix that makes
+        // systemd's PrivateNetwork/ProtectHostname sandbox setup succeed.
+        let l = ns_symlink(NsKind::Uts, 3);
+        match l.follow_link().unwrap() {
+            LinkTarget::Jump(vp) => {
+                assert_eq!(vp.mnt_id, 0, "nsfs node is an anonymous inode");
+                let ns = vp.inode.private::<NsInode>().expect("setns downcast target");
+                assert_eq!(ns.kind, NsKind::Uts);
+                assert_eq!(ns.id, 3);
+                assert_ne!(vp.inode.file_type(), FileType::Symlink, "jump target is not itself a link");
+            }
+            LinkTarget::Path(_) => panic!("nsfs magic link must Jump, not splice a Path"),
+        }
+    }
+
+    #[test]
+    fn same_ns_same_ino_distinct_ns_distinct_ino() {
+        assert_eq!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Net, 5), "same ns -> same st_ino");
+        assert_ne!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Net, 6), "distinct id -> distinct");
+        assert_ne!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Uts, 5), "distinct kind -> distinct");
+    }
 }

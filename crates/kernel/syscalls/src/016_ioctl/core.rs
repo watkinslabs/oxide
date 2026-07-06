@@ -68,6 +68,19 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = handle_autofs_dev_ioctl(file.inode(), req, arg) {
         return rv;
     }
+    // SIOCGSKNS (linux/sockios.h): "get the network namespace fd of this
+    // socket". systemd's sd-device-monitor probes its NETLINK_KOBJECT_UEVENT
+    // socket with it (device-monitor.c, under DEBUG_LOGGING) then fstat-compares
+    // the result with /proc/1/ns/net; a blanket ENOTTY produced the per-worker
+    // "Unable to get network namespace of udev netlink socket, unable to
+    // determine if we are in host netns, ignoring: Inappropriate ioctl for
+    // device" warning. Linux `sock_ioctl` answers it for ANY socket fd (netlink,
+    // inet, unix) — all of which are FileType::Socket here.
+    if req == super::netns::SIOCGSKNS
+        && file.inode().file_type() == vfs::FileType::Socket
+    {
+        return super::netns::handle_siocgskns();
+    }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
     // dhcpcd's whole bring-up dance uses SIOCGIFFLAGS / SIOCSIFFLAGS
     // / SIOCGIFADDR / SIOCSIFADDR / SIOCGIFINDEX / SIOCGIFHWADDR

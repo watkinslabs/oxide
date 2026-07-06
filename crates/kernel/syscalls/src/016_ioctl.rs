@@ -6,6 +6,7 @@
 #[path = "016_ioctl/blk.rs"] mod blk;
 #[path = "016_ioctl/core.rs"] mod core;
 #[path = "016_ioctl/font.rs"] mod font;
+#[path = "016_ioctl/netns.rs"] mod netns;
 #[path = "016_ioctl/tioclinux.rs"] mod tioclinux;
 #[path = "016_ioctl/tty_ioctl.rs"] mod tty_ioctl;
 #[path = "016_ioctl/vt.rs"] mod vt;
