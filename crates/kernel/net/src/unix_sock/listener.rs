@@ -151,6 +151,10 @@ impl UnixRegistry {
     pub fn connect(&self, path: &str) -> Option<Arc<UnixPair>> {
         let listener = self.lookup_listener(path)?;
         let pair = UnixPair::new();
+        // Retain the listener's canonical bound path so getsockname (end A,
+        // the accepted server socket) and getpeername (end B, the client)
+        // report the real sun_path — e.g. "/run/systemd/private".
+        pair.set_bind_path(listener.path.clone());
         listener.accept_q.lock().push_back(pair.clone());
         // F170: wake any blocking accept() parked on this listener.
         #[cfg(target_os = "oxide-kernel")]
