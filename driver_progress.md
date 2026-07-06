@@ -5,14 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B559-nvme-per-bdf-state-proof is verified locally from fresh
-`main` at B558 PR #2650 merge commit `84595206`.
+Current marker: B560-ahci-per-bdf-state-proof is claimed from fresh `main` at
+B559 PR #2651 merge commit `b9f38038`.
+
+## B560 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B560-ahci-per-bdf-state-proof | CLAIMED | Fresh `main` at B559 PR #2651 merge commit `b9f38038`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s and aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 560 -> 561. Next gate: audit AHCI typed per-BDF state, strengthen proof if needed, then run hosted storage/PCI gates plus x86_64/aarch64 smokes. |
 
 ## B559 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B559-nvme-per-bdf-state-proof | VERIFIED LOCAL | Fresh `main` at B558 PR #2650 merge commit `84595206`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 559 -> 560. NVMe block-device state is now keyed by typed `pci::Bdf` instead of a packed `u32`: `NvmeRecord.device_key` stores `pci::Bdf`, `device_key_from_bdf()` returns the BDF directly, `init()` rejects duplicate records by typed BDF before controller bring-up, and `remove()`/`shutdown()` select the exact typed BDF from the model driver's parsed PCI address. Debug logging reads the BDF fields directly, removing the old shift/mask decode helpers. Source audit finds no remaining NVMe `device_key: u32` or `bdf_key` helper; remaining shifts are NVMe protocol/register fields or unrelated PCI/virtio address encoders. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 413, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s. |
+| B559-nvme-per-bdf-state-proof | VERIFIED MERGED | Fresh `main` at B558 PR #2650 merge commit `84595206`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 559 -> 560. NVMe block-device state is now keyed by typed `pci::Bdf` instead of a packed `u32`: `NvmeRecord.device_key` stores `pci::Bdf`, `device_key_from_bdf()` returns the BDF directly, `init()` rejects duplicate records by typed BDF before controller bring-up, and `remove()`/`shutdown()` select the exact typed BDF from the model driver's parsed PCI address. Debug logging reads the BDF fields directly, removing the old shift/mask decode helpers. Source audit finds no remaining NVMe `device_key: u32` or `bdf_key` helper; remaining shifts are NVMe protocol/register fields or unrelated PCI/virtio address encoders. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 413, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s; PR #2651 merged as `b9f38038`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 28s and aarch64 `oxide login:` in 34s. |
 
 ## B558 Current
 
