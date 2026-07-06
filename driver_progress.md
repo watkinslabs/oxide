@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active B branch. B594-driver-directory-symlink-proof is
+Current marker: B595-pci-runtime-semantics is ACTIVE / IN AUDIT. B594 is
 VERIFIED MERGED as PR #2712 at `5dfec54a`; B415 remains aggregate-only until
 the concrete live-proof rows are closed.
+
+## B595 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B595-pci-runtime-semantics | CLAIMED / IN AUDIT | Fresh `main` at D142 ledger merge `772fe27e`; B594 PR #2712 and ledger PR #2713 are merged, and `metadata/index.md` advances B 595 -> 596 on this branch. Existing dirty files not owned by this branch are not touched or staged: `crates/kernel/mm-vmm/src/address_space/fault/fill.rs`, `crates/kernel/syscalls/src/001_write.rs`, deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and untracked `project_stats.md`. Scope is the PCI runtime semantics row, not the separate ECAM parity row: audit current source for command enable/disable ownership, BAR mapping lifetime, MSI/MSI-X setup/teardown, enable ordering, bridge topology/runtime cleanup, then implement the smallest coherent verified fix with x86_64 and aarch64 proof. |
 
 ## B594 Current
 
