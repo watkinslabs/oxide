@@ -70,13 +70,13 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         exit 1
     fi
     if grep -aq 'driver_path_smoke: PASS - GPU sound block net virtio-snd-multidev-rebind' "$LOG" 2>/dev/null; then
-        grep -aE 'virtio_snd_multidev_probe:|b399_|b420_|b570_|fbdev_probe:|drm_probe:|sysblock_probe:|rtlink_probe:|snd_probe:|driver_path_smoke:' "$LOG" | tail -40
+        grep -aE 'virtio_snd_multidev_probe:|b399_|b420_|b570_|b578_|fbdev_probe:|drm_probe:|sysblock_probe:|rtlink_probe:|snd_probe:|driver_path_smoke:' "$LOG" | tail -60
         echo "virtio-snd-multidev-smoke: PASS"
         exit 0
     fi
-    if grep -aqE 'virtio_snd_multidev_probe: FAIL|b399_.*: FAIL|b420_.*: FAIL|b570_.*: FAIL|fbdev_probe: FAIL|drm_probe: FAIL|sysblock_probe: FAIL|rtlink_probe: FAIL|snd_probe: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
+    if grep -aqE 'virtio_snd_multidev_probe: FAIL|b399_.*: FAIL|b420_.*: FAIL|b570_.*: FAIL|b578_.*: FAIL|fbdev_probe: FAIL|drm_probe: FAIL|sysblock_probe: FAIL|rtlink_probe: FAIL|snd_probe: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
         echo "virtio-snd-multidev-smoke: FAIL - probe reported failure" >&2
-        grep -aE 'virtio_snd_multidev_probe:|b399_|b420_|b570_|fbdev_probe:|drm_probe:|sysblock_probe:|rtlink_probe:|snd_probe:|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
+        grep -aE 'virtio_snd_multidev_probe:|b399_|b420_|b570_|b578_|fbdev_probe:|drm_probe:|sysblock_probe:|rtlink_probe:|snd_probe:|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
         exit 1
     fi
     sleep 2
