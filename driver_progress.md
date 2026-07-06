@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. Last completed item:
-`B579-gpu-live-rebind-loops-proof` is VERIFIED MERGED via PR #2679 at
-`808d8c37`; D127 records the merged state.
+Current marker: B580-net-live-rebind-loops-proof is VERIFIED LOCAL on branch
+`B580-net-live-rebind-loops-proof`. Target: repeated virtio-net
+bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+
+## B580 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B580-net-live-rebind-loops-proof | VERIFIED LOCAL | Fresh `main` at D127 ledger merge `eedff2ef`; B579 PR #2679 and ledger PR #2680 are merged, and `metadata/index.md` advanced B 580 -> 581 on this branch. B580 adds a three-loop virtio-net sysfs unbind/rebind proof for the second virtio-net child, requires eth count to drop to one on unbind and return to two on rebind, fails on stale removed `/sys/class/net/<eth>/address`, and re-proves current eth address/RX stats after each rebind. Kernel fix invalidates `/sys/class/net/<name>` and `/sys/devices/virtual/net/<name>` dentries from the netdev unregister remove hook after releasing the netdev registry lock. Checks pass: `cargo test -q -p net -p sysfs -p drv-virtio-net -- --nocapture --test-threads=1` with net 17/17, sysfs 246/246, and virtio-net 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-net-multidev.sh`; line caps (`netdev.rs` 391, `sysfs/src/lib.rs` 485, `virtio_net_multidev_probe.c` 269, `boot-smoke-virtio-net-multidev.sh` 138); x86_64 targeted proof `/tmp/b580-x86-virtio-net-multidev.log`; aarch64 targeted proof `/tmp/b580-arm-virtio-net-multidev.log`. Next: commit, push with required smoke, PR, merge, refresh main, then D128 ledger. |
 
 ## B579 Current
 

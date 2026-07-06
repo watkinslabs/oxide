@@ -14,6 +14,12 @@ use sync::{Spinlock, Socket as SocketLockClass};
 use crate::addr::{MacAddr, NetIfaceId};
 use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 
+type NetdevRemoveHook = fn(&str);
+static NETDEV_REMOVE_HOOK: Spinlock<Option<NetdevRemoveHook>, SocketLockClass> = Spinlock::new(None);
+
+/// Install the netdev remove hook used by sysfs to drop stale class dentries. # C: O(1)
+pub fn set_remove_hook(f: NetdevRemoveHook) { *NETDEV_REMOVE_HOOK.lock() = Some(f); }
+
 /// `IFF_*` interface flags per `linux/if.h`. Real, mutable per-iface
 /// admin/operational state — RTM_SETLINK flips them, RTM_GETLINK reports
 /// them (no hardcoded reply-time values). # C: O(1)
@@ -191,9 +197,14 @@ impl IfaceRegistry {
     /// device so callers that need to quiesce it can still hold a reference.
     /// # C: O(N)
     pub fn unregister(&self, id: NetIfaceId) -> Option<Arc<dyn NetDev>> {
-        let mut g = self.inner.lock();
-        let pos = g.entries.iter().position(|e| e.id == id)?;
-        Some(g.entries.remove(pos).dev)
+        let dev = {
+            let mut g = self.inner.lock();
+            let pos = g.entries.iter().position(|e| e.id == id)?;
+            g.entries.remove(pos).dev
+        };
+        let hook = *NETDEV_REMOVE_HOOK.lock();
+        if let Some(f) = hook { f(dev.name()); }
+        Some(dev)
     }
 
     /// Current IFF_* flags for `id` (init NS). # C: O(N)

@@ -183,6 +183,13 @@ smoke-virtio-gpu-multidev-arm: arm
 	./tools/boot-smoke-virtio-gpu-multidev.sh arm $(VIRTIO_GPU_MULTIDEV_SMOKE_TIMEOUT)
 smoke-virtio-gpu-multidev: smoke-virtio-gpu-multidev-x86 smoke-virtio-gpu-multidev-arm
 
+VIRTIO_NET_MULTIDEV_SMOKE_TIMEOUT ?= 900
+smoke-virtio-net-multidev-x86: x86
+	./tools/boot-smoke-virtio-net-multidev.sh x86 $(VIRTIO_NET_MULTIDEV_SMOKE_TIMEOUT)
+smoke-virtio-net-multidev-arm: arm
+	./tools/boot-smoke-virtio-net-multidev.sh arm $(VIRTIO_NET_MULTIDEV_SMOKE_TIMEOUT)
+smoke-virtio-net-multidev: smoke-virtio-net-multidev-x86 smoke-virtio-net-multidev-arm
+
 USERSPACE_SEAT_SMOKE_TIMEOUT ?= 900
 smoke-userspace-seat-x86: x86
 	./tools/boot-smoke-userspace-seat.sh x86 $(USERSPACE_SEAT_SMOKE_TIMEOUT)
