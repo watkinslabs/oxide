@@ -169,7 +169,8 @@ pub(super) fn qemu_run_aarch64_grub(
             "-device", "virtio-net-pci-non-transitional,netdev=net1,bus=pcie.0",
         ]);
     }
-    if std::env::var_os("OXIDE_VIRTIO_RNG_REBIND_SMOKE").is_some() {
+    if std::env::var_os("OXIDE_VIRTIO_RNG_REBIND_SMOKE").is_some()
+        || std::env::var_os("OXIDE_VIRTIO_PARENT_CHILD_REBIND_SMOKE").is_some() {
         c.args([
             "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
         ]);
