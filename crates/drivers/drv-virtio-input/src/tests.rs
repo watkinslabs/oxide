@@ -44,6 +44,17 @@ fn devids_layout() {
 }
 
 #[test]
+fn transport_profile_carries_child_feature_mask() {
+    let profile = crate::transport_profile();
+
+    assert_eq!(profile.drv_features, crate::wanted_features());
+    assert_eq!(profile.drv_features, virtio::VIRTIO_F_VERSION_1);
+    assert!(profile.child_requirements.needs_device_cfg);
+    assert!(profile.child_requirements.required_queues[0]);
+    assert!(profile.child_requirements.required_queues[1..].iter().all(|required| !required));
+}
+
+#[test]
 fn install_count_roundtrip() {
     crate::registry::clear_devices_for_tests();
     assert_eq!(count(), 0);
