@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. Claim the next NOT DONE row from fresh
-`main`. B603-live-probe-methods-audit is merged as PR #2728 at `1b490ba5`;
-D149 records the merged state and advances `metadata/index.md` D 149 -> 150.
+Current marker: B604-synthetic-virtio-child-binding-audit is ACTIVE / IN AUDIT
+from fresh `main` at D149 ledger merge `a896b387`. B604 advances
+`metadata/index.md` B 604 -> 605.
+
+## B604 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B604-synthetic-virtio-child-binding-audit | ACTIVE / IN AUDIT | Claimed from fresh `main` at D149 ledger merge `a896b387`; target row is the old claim that synthetic virtio devices are registered but runtime binding still direct PCI boot. Duplicate-lane check found no B604/synthetic-virtio branch or worktree. First source scan finds shared `VirtioChildDriver` wrapper and registered child drivers for net, blk, rng, vsock, snd, input, and gpu on the `virtio` bus. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B603 Current
 
