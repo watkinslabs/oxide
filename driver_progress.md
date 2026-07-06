@@ -5,16 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B587-dri-devnode-hotremove-proof is VERIFIED on branch
-`B587-dri-devnode-hotremove-proof`. Target: fix/prove the concrete
-`/dev/dri/card1` stale-open case named by the class-contract row. Commit, PR,
-merge, fresh-main smoke, and D135 ledger remain.
+Current marker: B587-dri-devnode-hotremove-proof is VERIFIED and committed on
+branch `B587-dri-devnode-hotremove-proof`. Target: fix/prove the concrete
+`/dev/dri/card1` stale-open case named by the class-contract row. Push,
+PR/merge, fresh-main smoke, and D135 ledger remain.
 
 ## B587 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B587-dri-devnode-hotremove-proof | VERIFIED | Fresh `main` at D134 ledger merge `aa75f941`; B586 PR #2695 and ledger PR #2696 are merged, and `metadata/index.md` advanced B 587 -> 588 on this branch. Existing local branches `B576-pathid-sysfs-nest` and `S1b-devfs-nsvis` were observed during lane check and are not touched by this branch. B587 tightens `/bin/virtio_gpu_multidev_probe` so every second-card unbind explicitly opens `/dev/dri/card1` and requires `ENOENT`, and the wrapper now treats `b587_*` failures as fatal and prints them. Source audit proves DRM card removal flows `drv_virtio_gpu::hot_remove` -> `drm::unregister` -> `drm::node::unregister` -> `drv::device_del` -> `devfs::del_device_node`, which invalidates the resolved `/dev/dri/cardN` dentry and removes the node from every devtmpfs namespace. Checks pass: `cargo test -q -p devfs -p drm -p drv-virtio-gpu -- --nocapture --test-threads=1` with devfs 13/13, drm 68/68, and drv-virtio-gpu 36/36; `git diff --check`; `bash -n tools/boot-smoke-virtio-gpu-multidev.sh`; line caps (`virtio_gpu_multidev_probe.c` 300, `boot-smoke-virtio-gpu-multidev.sh` 138, `driver_plan.md` 398, `driver_progress.md` 593). Targeted x86_64 proof `/tmp/b587-x86-virtio-gpu-multidev.log` and targeted aarch64 proof `/tmp/b587-arm-virtio-gpu-multidev.log` both run three unbind/rebind loops and show `b587_removed_dev_card1_open_{0,1,2}: PASS errno=2` before card1 is rebound and usable. Pending commit, PR, merge, fresh-main smoke, and D135 ledger. |
+| B587-dri-devnode-hotremove-proof | VERIFIED | Fresh `main` at D134 ledger merge `aa75f941`; B586 PR #2695 and ledger PR #2696 are merged, and `metadata/index.md` advanced B 587 -> 588 on this branch. Existing local branches `B576-pathid-sysfs-nest` and `S1b-devfs-nsvis` were observed during lane check and are not touched by this branch. B587 tightens `/bin/virtio_gpu_multidev_probe` so every second-card unbind explicitly opens `/dev/dri/card1` and requires `ENOENT`, and the wrapper now treats `b587_*` failures as fatal and prints them. Source audit proves DRM card removal flows `drv_virtio_gpu::hot_remove` -> `drm::unregister` -> `drm::node::unregister` -> `drv::device_del` -> `devfs::del_device_node`, which invalidates the resolved `/dev/dri/cardN` dentry and removes the node from every devtmpfs namespace. Checks pass: `cargo test -q -p devfs -p drm -p drv-virtio-gpu -- --nocapture --test-threads=1` with devfs 13/13, drm 68/68, and drv-virtio-gpu 36/36; `git diff --check`; `bash -n tools/boot-smoke-virtio-gpu-multidev.sh`; line caps (`virtio_gpu_multidev_probe.c` 300, `boot-smoke-virtio-gpu-multidev.sh` 138, `driver_plan.md` 398, `driver_progress.md` 593); full `make smoke SMOKE_TIMEOUT=300`. Targeted x86_64 proof `/tmp/b587-x86-virtio-gpu-multidev.log` and targeted aarch64 proof `/tmp/b587-arm-virtio-gpu-multidev.log` both run three unbind/rebind loops and show `b587_removed_dev_card1_open_{0,1,2}: PASS errno=2` before card1 is rebound and usable. Proof committed as `590c53a6`; pending push, PR, merge, fresh-main smoke, and D135 ledger. |
 
 ## B586 Current
 
