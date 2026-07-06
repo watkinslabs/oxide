@@ -183,6 +183,13 @@ smoke-sysbus-bind-arm: arm
 	./tools/boot-smoke-sysbus-bind.sh arm $(SYSBUS_BIND_SMOKE_TIMEOUT)
 smoke-sysbus-bind: smoke-sysbus-bind-x86 smoke-sysbus-bind-arm
 
+SHUTDOWN_SMOKE_TIMEOUT ?= 600
+smoke-shutdown-x86: x86
+	./tools/boot-smoke-shutdown.sh x86 $(SHUTDOWN_SMOKE_TIMEOUT)
+smoke-shutdown-arm: arm
+	./tools/boot-smoke-shutdown.sh arm $(SHUTDOWN_SMOKE_TIMEOUT)
+smoke-shutdown: smoke-shutdown-x86 smoke-shutdown-arm
+
 VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT ?= 900
 smoke-virtio-snd-multidev-x86: x86
 	./tools/boot-smoke-virtio-snd-multidev.sh x86 $(VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT)
