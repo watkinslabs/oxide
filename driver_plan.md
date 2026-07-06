@@ -2,9 +2,9 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B584-rng-live-rebind-loops-proof in audit
+CURRENT: B584-rng-live-rebind-loops-proof verified pre-merge
 
-Current active item: B584-rng-live-rebind-loops-proof. Prove repeated
+Current verified item: B584-rng-live-rebind-loops-proof. Proves repeated
 bind/unbind/remove/readd loops under QEMU for virtio-rng child behavior on
 x86_64 and aarch64.
 Last verified branch:
@@ -12,8 +12,8 @@ Last verified branch:
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: audit existing B574 RNG rebind proof, extend or fix it for repeated
-loops if needed, then verify x86_64 and aarch64 before merge.
+Next gate: commit B584, push/open/merge PR, refresh `main`, then run
+fresh-main post-merge `make smoke SMOKE_TIMEOUT=300`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -375,7 +375,7 @@ Status legend:
 | VERIFIED MERGED | B579-gpu-live-rebind-loops-proof | DRM/fbdev repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. The virtio-gpu multidev probe now runs three sysfs unbind/rebind loops against the second virtio-gpu child, fails if `/dev/dri/card1` or `/sys/class/drm/card1` remains visible after unbind, re-proves both DRM cards after every rebind, and the QMP-capable wrapper drives mouseprobe after the GPU loops. Checks pass: `cargo test -q -p drv-virtio-gpu -p drm -p fbdev -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, `bash -n tools/boot-smoke-virtio-gpu-multidev.sh`, line caps (`virtio_gpu_multidev_probe.c` 281, `boot-smoke-virtio-gpu-multidev.sh` 138), x86_64 `/tmp/b579-x86-virtio-gpu-multidev.log`, aarch64 `/tmp/b579-arm-virtio-gpu-multidev.log`, pre-push smoke on both arches, PR #2679 merged as `808d8c37`, fresh-main post-merge `make smoke` passed with aarch64 reaching `oxide login:` in 28s, and standalone x86_64 smoke reached `oxide login:` in 12s. D127 records the merged state and advances D 127 -> 128. |
 | VERIFIED MERGED | B576-virtio-input-live-rebind-proof | Virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. B576 adds `/bin/virtio_input_rebind_probe`, targeted smoke wrapper/Make targets, and rootfs mode/cache wiring. Kernel fixes: devtmpfs hot-unplug invalidates stale `/dev/input/eventN` dentries and sysfs model remove invalidates stale `/sys/devices/virtual/input/eventN` plus `/sys/class/input/eventN` dentries. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b576-x86-virtio-input-rebind.log`, aarch64 `/tmp/b576-arm-virtio-input-rebind.log`, PR #2674 merged as `1753d2b1`, and fresh-main post-merge login smokes reached `oxide login:` on x86_64 in 46s and aarch64 in 52s. |
 | VERIFIED MERGED | B578-sound-live-rebind-proof | Sound repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. The virtio-snd multidev probe now runs three sysfs unbind/rebind loops against the second virtio-snd child, proves card-1 ALSA and OSS devnodes disappear after unbind, and re-proves two cards plus control and direct playback/capture PCM_INFO state after each rebind. Checks pass: `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_snd_multidev_probe.c` 418, `boot-smoke-virtio-snd-multidev.sh` 87), x86_64 `/tmp/b578-x86-virtio-snd-multidev.log`, aarch64 `/tmp/b578-arm-virtio-snd-multidev.log`, PR #2677 merged as `3ce6e1bd`, fresh-main `make smoke` passed with aarch64 reaching `oxide login:` in 28s, and standalone x86_64 smoke reached `oxide login:` in 12s. |
-| ACTIVE | B584-rng-live-rebind-loops-proof | Prove repeated bind/unbind/remove/readd loops under QEMU for RNG. Claim made from fresh `main` at D131 ledger merge `d8bf4c93`; `metadata/index.md` advanced B 584 -> 585 on this branch. |
+| VERIFIED | B584-rng-live-rebind-loops-proof | RNG repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B584 extends `/bin/virtio_rng_rebind_probe` from the B574 single-pass proof to run three sysfs child unbind/rebind loops against the same bound virtio-rng child. The probe uses `lstat()` for driver-directory symlink presence, proves `/sys/bus/virtio/drivers/virtio-rng/<child>` disappears after every unbind and returns after every bind, keeps `/dev/hwrng` readable before unbind, after unbind through the promoted provider, and after rebind, and emits B584 loop evidence to stdout plus `/dev/kmsg`. Checks pass: `cargo test -q -p virtio -p pci-boot -p drv-virtio-rng -- --nocapture --test-threads=1` with 57 tests passed; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-rng-rebind.sh`; line caps (`virtio_rng_rebind_probe.c` 217, `boot-smoke-virtio-rng-rebind.sh` 87); x86_64 `/tmp/b584-x86-virtio-rng-rebind.log`; aarch64 `/tmp/b584-arm-virtio-rng-rebind.log`. PR/merge pending. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for UART. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for PS/2. |
 | NOT DONE | TBD | Finish Linux-visible sysfs/devtmpfs/class contracts across every class; B418 found `/dev/dri/card1` remains openable after virtio-gpu model hot-remove even though `hot_remove` reports device/scanout removed. |

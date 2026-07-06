@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B584-rng-live-rebind-loops-proof is ACTIVE on branch
-`B584-rng-live-rebind-loops-proof`. Target: repeated virtio-rng child
-bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+Current marker: B584-rng-live-rebind-loops-proof is VERIFIED pre-merge on
+branch `B584-rng-live-rebind-loops-proof`. Targeted x86_64 and aarch64 proof
+logs are present; PR/merge and post-merge smoke are next.
 
 ## B584 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B584-rng-live-rebind-loops-proof | ACTIVE | Fresh `main` at D131 ledger merge `d8bf4c93`; B583 PR #2687 and ledger PR #2690 are merged, and `metadata/index.md` advanced B 584 -> 585 on this branch. Audit/code/test pending. |
+| B584-rng-live-rebind-loops-proof | VERIFIED | Fresh `main` at D131 ledger merge `d8bf4c93`; B583 PR #2687 and ledger PR #2690 are merged, and `metadata/index.md` advanced B 584 -> 585 on this branch. B584 extends `/bin/virtio_rng_rebind_probe` from the B574 single-pass proof to run three sysfs child unbind/rebind loops against the same bound virtio-rng child. The probe uses `lstat()` for driver-directory symlink presence, proves `/sys/bus/virtio/drivers/virtio-rng/<child>` disappears after every unbind and returns after every bind, keeps `/dev/hwrng` readable before unbind, after unbind through the promoted provider, and after rebind, and emits B584 loop evidence to stdout plus `/dev/kmsg`. Checks pass: `cargo test -q -p virtio -p pci-boot -p drv-virtio-rng -- --nocapture --test-threads=1` with 57 tests passed; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-rng-rebind.sh`; line caps (`virtio_rng_rebind_probe.c` 217, `boot-smoke-virtio-rng-rebind.sh` 87); x86_64 `/tmp/b584-x86-virtio-rng-rebind.log`; aarch64 `/tmp/b584-arm-virtio-rng-rebind.log`. PR/merge pending. |
 
 ## B583 Current
 
