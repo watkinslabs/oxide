@@ -5,9 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B525-virtio-pci-queue-allocator-adapter-proof verified locally
-for row 185, Virtio-pci supplies PMM/HHDM queue allocator adapter; pending
-commit, PR, merge, and fresh-main sync.
+Current marker: B526-virtio-notify-policy-proof verified locally; pending commit,
+PR, merge, fresh-main sync, and next-row claim.
+
+## B526 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B526-virtio-notify-policy-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `c841775d` after B525 PR #2622 merge and branch cleanup. `metadata/index.md` advanced B 526 -> 527. Source audit finds no live `NotifyPolicy`, `notify_policy`, notify enum, `needs_q1`/`needs_q2`/`needs_q3`, or q1 policy symbols in live virtio/pci-boot source. Child queue notify mappings are indexed by `VirtioQueueNotifyMappings` and resolved from `VirtioQueuePlan` entries. Patch removes the persistent `q1_notify_va` override from `VirtioRuntimeHandoffInput` / `build_runtime_handoff`, so queue 1 child-visible notify VA comes only from the indexed planned mapping; remaining q1 local use is net early TX boot-buffer allocation/debug observation, not a child handoff policy. Checks pass: focused `cargo test -q -p virtio -p pci-boot -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`resources/handoff.rs` 178, `virtio_drv/probe_state.rs` 298, `resources/tests/queue_handoff.rs` 228); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B525 Current
 
