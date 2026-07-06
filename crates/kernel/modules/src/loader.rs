@@ -19,7 +19,7 @@ use elf::{
     SHF_ALLOC, SHT_NOBITS, SHT_PROGBITS,
 };
 
-use crate::relocator::{apply, RelocError};
+use crate::relocator::{apply_for_machine, RelocError};
 use crate::ModuleInfo;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -139,7 +139,7 @@ pub fn load_module<R: SymResolver>(bytes: &[u8], resolver: &R) -> Result<LoadedM
             _ => return Err(LoadError::UndefinedSymbol),
         };
         let dest_base = target.vbase;
-        apply(r.r_type, r.offset, r.addend, sym_value, &mut target.bytes, dest_base)
+        apply_for_machine(parsed.e_machine, r.r_type, r.offset, r.addend, sym_value, &mut target.bytes, dest_base)
             .map_err(LoadError::Reloc)?;
     }
 
@@ -152,7 +152,7 @@ pub fn load_module<R: SymResolver>(bytes: &[u8], resolver: &R) -> Result<LoadedM
 mod tests {
     use super::*;
     use elf::{
-        EI_MAG, ELFCLASS64, ELFDATA2LSB, EV_CURRENT, EM_X86_64,
+        EI_MAG, ELFCLASS64, ELFDATA2LSB, EV_CURRENT, EM_AARCH64, EM_X86_64,
     };
 
     /// Build a tiny synthetic ET_REL with one .text section
@@ -251,6 +251,14 @@ mod tests {
         let m = load_module(&buf, &EmptyResolver).unwrap();
         assert!(m.sections.iter().any(|s| s.name == ".text"));
         assert_eq!(m.symbols.get("sym1").copied().is_some(), true);
+    }
+
+    #[test]
+    fn loads_minimal_aarch64_rel() {
+        let mut buf = build_minimal_rel();
+        buf[18..20].copy_from_slice(&EM_AARCH64.to_le_bytes());
+        let m = load_module(&buf, &EmptyResolver).unwrap();
+        assert!(m.sections.iter().any(|s| s.name == ".text"));
     }
 
     #[test]
