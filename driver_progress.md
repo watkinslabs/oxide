@@ -6,14 +6,14 @@ Date: 2026-07-06
 blockers for the active row.
 
 Current marker: B530-virtio-net-late-registration-failed-probe-cleanup-proof
-audits row 205, virtio-net late netdev registration failure unwind after child
-runtime uninstall.
+verifies row 205, virtio-net late netdev registration failure unwind after
+child runtime uninstall.
 
 ## B530 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B530-virtio-net-late-registration-failed-probe-cleanup-proof | IN AUDIT | Fresh `main` at merge commit `313d4cc3` after B529 PR #2626 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 530 -> 531. Source audit starting for virtio-net late netdev registration failure unwind after child runtime uninstall. |
+| B530-virtio-net-late-registration-failed-probe-cleanup-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `313d4cc3` after B529 PR #2626 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 530 -> 531. Patch fixes `init_modern_with_rx_pool()` late netdev registration failure to call `uninstall_modern(device_key)` instead of directly retaining out primary state, so child runtime teardown resets the device, frees RX/TX payload frames, removes registered/net/RX runtime state, and then returns failure to the shared virtio child probe path for transport failed-probe release. Hosted regression `init_modern_unwinds_state_on_late_netdev_registration_failure` proves primary state removal, registered iface removal, net runtime removal, RX runtime removal, shared RX teardown, payload frame release count, and reset count. Checks pass: `cargo test -q -p drv-virtio-net -- --nocapture --test-threads=1` 17/17; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`state.rs` 359, `tests.rs` 472, `modern.rs` 132, `virtio_child.rs` 398); branch smokes reached x86_64 `oxide login:` in 51s and aarch64 `oxide login:` in 54s. |
 
 ## B529 Current
 

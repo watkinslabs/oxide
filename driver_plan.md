@@ -4,8 +4,8 @@ Date: 2026-07-06
 
 ACTIVE NOW: B530-virtio-net-late-registration-failed-probe-cleanup-proof
 
-Current active item: row 205, Virtio-net late netdev registration failure
-unwinds transport failed-probe release after child runtime uninstall.
+Current active item: row 205 verified locally; PR/merge/post-merge smoke
+pending.
 
 Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
 return to fresh `origin/main`.
@@ -202,7 +202,7 @@ Status legend:
 | VERIFIED |  | Virtio common-cfg FAILED helper exists. |
 | VERIFIED |  | Virtio-pci marks FAILED on rejected FEATURES_OK or mandatory q0 programming failure. |
 | VERIFIED |  | Failed virtio child probes release transport vring frames through recorded queue state. |
-| >>> ACTIVE >>> IN AUDIT | B530-virtio-net-late-registration-failed-probe-cleanup-proof | Virtio-net late netdev registration failure unwinds transport failed-probe release after child runtime uninstall. |
+| VERIFIED | B530-virtio-net-late-registration-failed-probe-cleanup-proof | Virtio-net late netdev registration failure unwinds transport failed-probe release after child runtime uninstall: `init_modern_with_rx_pool()` now routes late netdev registration failure through `uninstall_modern(device_key)` instead of directly dropping primary state, so failed child install resets the device, releases child payload frames, removes registered/net/RX runtime state, and then returns `ProbeFailed` to `virtio::run_child_probe()` for transport failed-probe release. Hosted regression `init_modern_unwinds_state_on_late_netdev_registration_failure` proves state/runtime cleanup, RX/TX payload frame release, and reset; focused `cargo test -q -p drv-virtio-net -- --nocapture --test-threads=1` passes 17/17; broad PCI/virtio child gate passes; `git diff --check`; line caps (`state.rs` 359, `tests.rs` 472, `modern.rs` 132, `virtio_child.rs` 398); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 51s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 54s. |
 | SOURCE OK |  | Virtio-blk reads capacity/block size in child driver from generic config resource. |
 | VERIFIED |  | Virtio-net reads MAC in child driver from generic config resource. |
 | VERIFIED |  | Virtio-gpu feature mask comes from GPU child driver. |
