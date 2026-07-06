@@ -5,9 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: D135-b587-ledger-merged records B587 as VERIFIED MERGED. B587
-merged as PR #2698 at `abf97cd1`; fresh-main post-merge smoke passed on
-x86_64 and aarch64. Push/PR/merge of this ledger branch remains.
+Current marker: B588-sys-dev-char-block-proof is CLAIMED on branch
+`B588-sys-dev-char-block-proof`. Target: prove live `/sys/dev/char` and
+`/sys/dev/block` reverse-index entries exist, resolve to real model-owned
+device objects, and stay coherent on x86_64 and aarch64.
+
+## B588 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B588-sys-dev-char-block-proof | ACTIVE | Fresh `main` at D135 ledger merge `16b69d5d`; B587 PR #2698 and ledger PR #2699 are merged, and `metadata/index.md` advanced B 588 -> 589 on this branch. Existing detached worktrees `DRI-validate`, `cap-livegnome`, `live-0706`, and `show-livegnome` were observed during lane check and are not touched by this branch. Initial target is live proof that `/sys/dev/char` and `/sys/dev/block` contain expected dev_t reverse indexes and that representative entries resolve to canonical model-owned device objects on x86_64 and aarch64. |
 
 ## B587 Current
 
