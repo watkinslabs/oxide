@@ -5,15 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B571-sound-tests-global-state-proof is VERIFIED LOCAL on branch
-`B571-sound-tests-global-state-proof`; next gate is commit, push, PR, merge,
-fresh-main sync, and post-merge x86_64/aarch64 normal-login smokes.
+Current marker: B572-smoke-rootfs-mode-guard is VERIFIED LOCAL on branch
+`B572-smoke-rootfs-mode-guard`; next gate is commit, push, PR, merge, fresh-main
+sync, and post-merge x86_64/aarch64 normal-login smokes.
+
+## B572 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B572-smoke-rootfs-mode-guard | VERIFIED LOCAL | Fresh `main` fast-forwarded to `26119cbd` after PR #2664. B571 PR #2663 is merged. The attempted post-merge normal-login smoke `/tmp/b571-postmerge-x86-login-smoke.log` booted a stale targeted rootfs whose `/init` ran `virtio_snd_multidev_probe` and exited 1, while generic `smoke-x86` waited for `oxide login:` until timeout. Root cause is test/cache mode mismatch, not a B571 kernel regression. B572 adds rootfs mode markers, copies markers on cache hits, includes `rootfs_cache.rs` in the rootfs input hash, and rejects `--skip-rootfs`/`OXIDE_SKIP_ROOTFS=1` when the existing rootfs mode does not match the requested smoke environment. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line cap (`rootfs_cache.rs` 273), stale no-marker skip rejects on x86_64 (`/tmp/b572-x86-skip-guard.log`) and aarch64 (`/tmp/b572-arm-skip-guard.log`), normal rootfs rebuild+matching skip succeeds on x86_64 (`/tmp/b572-x86-rootfs-rebuild.log`, `/tmp/b572-x86-skip-normal.log`) and aarch64 (`/tmp/b572-arm-rootfs-rebuild.log`, `/tmp/b572-arm-skip-normal.log`), targeted virtio-snd mode rejects against normal rootfs on x86_64 (`/tmp/b572-x86-skip-targeted-reject.log`) and aarch64 (`/tmp/b572-arm-skip-targeted-reject.log`), and normal-login smokes with `OXIDE_SKIP_ROOTFS=1` reach `oxide login:` on x86_64 (`/tmp/b572-x86-normal-skip-smoke.log`, 38s) and aarch64 (`/tmp/b572-arm-normal-skip-smoke.log`, 44s). |
 
 ## B571 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B571-sound-tests-global-state-proof | VERIFIED LOCAL | Fresh `main` at B570 PR #2662 merge commit `44d17275`; B570 post-merge fresh-main virtio-snd multidev proof passed with x86_64 log `/tmp/b570-postmerge-x86-virtio-snd-multidev.log` and aarch64 log `/tmp/b570-postmerge-arm-virtio-snd-multidev.log`. `metadata/index.md` advanced B 571 -> 572. Source audit proves every integration test in `sound/src/tests.rs` and child module `sound/src/tests/pcm_info.rs` takes `test_guard()`, which serializes access to shared hosted globals (`CARDS`, `OPS`, `PCM`, `CAP`, `OSS`, devtmpfs hooks, and test vectors) with `TEST_LOCK`; focused grep finds all integration tests guarded. Checks pass: default-parallel `cargo test -q -p sound -- --nocapture`, 10 repeated default-parallel sound test runs (`/tmp/b571-sound-default-1.log` through `/tmp/b571-sound-default-10.log`), and serial `cargo test -q -p sound -- --nocapture --test-threads=1` with 17/17. No kernel/userspace runtime surface changed beyond docs/ledger; x86_64/aarch64 runtime baseline remains B570 post-merge fresh-main virtio-snd multidev proof. |
+| B571-sound-tests-global-state-proof | VERIFIED MERGED | Fresh `main` at B570 PR #2662 merge commit `44d17275`; B570 post-merge fresh-main virtio-snd multidev proof passed with x86_64 log `/tmp/b570-postmerge-x86-virtio-snd-multidev.log` and aarch64 log `/tmp/b570-postmerge-arm-virtio-snd-multidev.log`. `metadata/index.md` advanced B 571 -> 572 on the branch; B572 later advanced it to 573. Source audit proves every integration test in `sound/src/tests.rs` and child module `sound/src/tests/pcm_info.rs` takes `test_guard()`, which serializes access to shared hosted globals (`CARDS`, `OPS`, `PCM`, `CAP`, `OSS`, devtmpfs hooks, and test vectors) with `TEST_LOCK`; focused grep finds all integration tests guarded. Checks pass: default-parallel `cargo test -q -p sound -- --nocapture`, 10 repeated default-parallel sound test runs (`/tmp/b571-sound-default-1.log` through `/tmp/b571-sound-default-10.log`), and serial `cargo test -q -p sound -- --nocapture --test-threads=1` with 17/17. No kernel/userspace runtime surface changed beyond docs/ledger; x86_64/aarch64 runtime baseline remains B570 post-merge fresh-main virtio-snd multidev proof. PR #2663 merged as `f5a190a1`; fresh `main` then fast-forwarded to `26119cbd` after PR #2664. Post-merge normal-login smoke attempt `/tmp/b571-postmerge-x86-login-smoke.log` exposed stale `OXIDE_SKIP_ROOTFS` reuse of a targeted `/init` probe rootfs and is tracked by B572. |
 
 ## B570 Current
 

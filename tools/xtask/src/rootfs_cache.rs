@@ -32,6 +32,7 @@ pub(crate) fn pre_build(repo: &Path, blobs: &Path, arch: &str, rest: &[String]) 
     let dest_root = blobs.join(format!("root-{arch}.img"));
 
     if skip && dest_root.is_file() {
+        validate_dest_mode(blobs, arch)?;
         eprintln!("xtask rootfs: --skip-rootfs — reusing existing {} (no restage)", dest_root.display());
         return Ok(Plan::Skip);
     }
@@ -55,6 +56,10 @@ pub(crate) fn pre_build(repo: &Path, blobs: &Path, arch: &str, rest: &[String]) 
 pub(crate) fn post_build(repo: &Path, blobs: &Path, arch: &str) {
     if std::env::var_os("OXIDE_STUB_BLOBS").is_some() { return; }
     let hash = input_hash(repo, arch);
+    if let Err(e) = write_dest_mode(blobs, arch) {
+        eprintln!("xtask rootfs: mode write failed: {e} (skipping cache store)");
+        return;
+    }
     eprintln!("xtask rootfs: cache STORE {hash}");
     store_to_cache(repo, blobs, &hash, arch);
 }
@@ -68,10 +73,18 @@ fn root_cache_path(repo: &Path, hash: &str, arch: &str) -> PathBuf {
 fn home_cache_path(repo: &Path, hash: &str, arch: &str) -> PathBuf {
     cache_dir(repo).join(format!("home-{hash}-{arch}.img"))
 }
+fn mode_cache_path(repo: &Path, hash: &str, arch: &str) -> PathBuf {
+    cache_dir(repo).join(format!("mode-{hash}-{arch}.txt"))
+}
+fn dest_mode_path(blobs: &Path, arch: &str) -> PathBuf {
+    blobs.join(format!("root-{arch}.mode"))
+}
 
-/// True iff both cache images for `hash`/`arch` exist.
+/// True iff both cache images and their rootfs-mode marker exist.
 pub(crate) fn cache_present(repo: &Path, hash: &str, arch: &str) -> bool {
-    root_cache_path(repo, hash, arch).is_file() && home_cache_path(repo, hash, arch).is_file()
+    root_cache_path(repo, hash, arch).is_file()
+        && home_cache_path(repo, hash, arch).is_file()
+        && mode_cache_path(repo, hash, arch).is_file()
 }
 
 /// Copy cached root+home images to the destination blob dir (cache HIT).
@@ -85,6 +98,7 @@ pub(crate) fn copy_from_cache(repo: &Path, blobs: &Path, hash: &str, arch: &str)
     };
     cp(&root_cache_path(repo, hash, arch), &blobs.join(format!("root-{arch}.img")))?;
     cp(&home_cache_path(repo, hash, arch), &blobs.join(format!("home-{arch}.img")))?;
+    cp(&mode_cache_path(repo, hash, arch), &dest_mode_path(blobs, arch))?;
     Ok(())
 }
 
@@ -104,6 +118,50 @@ pub(crate) fn store_to_cache(repo: &Path, blobs: &Path, hash: &str, arch: &str) 
     };
     cp(blobs.join(format!("root-{arch}.img")), root_cache_path(repo, hash, arch));
     cp(blobs.join(format!("home-{arch}.img")), home_cache_path(repo, hash, arch));
+    cp(dest_mode_path(blobs, arch), mode_cache_path(repo, hash, arch));
+}
+
+fn write_dest_mode(blobs: &Path, arch: &str) -> std::io::Result<()> {
+    std::fs::write(dest_mode_path(blobs, arch), format!("{}\n", rootfs_mode()))
+}
+
+fn validate_dest_mode(blobs: &Path, arch: &str) -> Result<(), u8> {
+    let path = dest_mode_path(blobs, arch);
+    let want = rootfs_mode();
+    let got = std::fs::read_to_string(&path).map_err(|_| {
+        eprintln!(
+            "xtask rootfs: --skip-rootfs refused; {} has no mode marker, rebuild rootfs once",
+            path.display()
+        );
+        1u8
+    })?;
+    if got.trim() == want { return Ok(()); }
+    eprintln!(
+        "xtask rootfs: --skip-rootfs refused; cached rootfs mode is `{}`, requested `{want}`",
+        got.trim()
+    );
+    eprintln!("xtask rootfs: rerun without OXIDE_SKIP_ROOTFS or pass --rebuild-rootfs");
+    Err(1)
+}
+
+fn rootfs_mode() -> String {
+    let mut mode = String::from("normal");
+    push_env_mode(&mut mode, "driver-path", "OXIDE_DRIVER_PATH_SMOKE");
+    push_env_mode(&mut mode, "storage-multictrl", "OXIDE_STORAGE_MULTICTRL_SMOKE");
+    push_env_mode(&mut mode, "virtio-net-multidev", "OXIDE_VIRTIO_NET_MULTIDEV_SMOKE");
+    push_env_mode(&mut mode, "virtio-snd-multidev", "OXIDE_VIRTIO_SND_MULTIDEV_SMOKE");
+    push_env_mode(&mut mode, "virtio-gpu-multidev", "OXIDE_VIRTIO_GPU_MULTIDEV_SMOKE");
+    push_env_mode(&mut mode, "msix-net-rx", "OXIDE_MSIX_NET_RX_SMOKE");
+    push_env_mode(&mut mode, "vsock", "OXIDE_VSOCK_SMOKE");
+    push_env_mode(&mut mode, "userspace-seat", "OXIDE_USERSPACE_SEAT_SMOKE");
+    mode
+}
+
+fn push_env_mode(mode: &mut String, label: &str, var: &str) {
+    if std::env::var_os(var).is_some() {
+        mode.push('+');
+        mode.push_str(label);
+    }
 }
 
 /// FNV-1a/64 streaming hasher (dependency-free; xtask has no hash crate).
@@ -152,6 +210,7 @@ pub(crate) fn input_hash(repo: &Path, arch: &str) -> String {
                  "tools/xtask/src/rootfs/build.rs",
                  "tools/xtask/src/rootfs/stage_system.rs",
                  "tools/xtask/src/rootfs/stage_tools.rs",
+                 "tools/xtask/src/rootfs_cache.rs",
                  "tools/xtask/src/rootfs_disks.rs",
                  "tools/xtask/src/rootfs_lists.rs",
                  "tools/xtask/src/l2_deps.rs",
