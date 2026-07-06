@@ -5,9 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B525-virtio-pci-queue-allocator-adapter-proof verified locally
-for row 185, Virtio-pci supplies PMM/HHDM queue allocator adapter; pending
-commit, PR, merge, and fresh-main sync.
+Current marker: B526-virtio-notify-policy-proof audits row 191, Old
+q1-specific notify policy enum removed.
+
+## B526 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B526-virtio-notify-policy-proof | IN AUDIT | Fresh `main` at merge commit `c841775d` after B525 PR #2622 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s; aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 526 -> 527. Source audit starting for removal of old q1-specific notify policy enum and replacement by indexed queue notify mappings/plans. |
 
 ## B525 Current
 

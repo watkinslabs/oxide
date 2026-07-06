@@ -2,13 +2,12 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B525-virtio-pci-queue-allocator-adapter-proof verified locally; pending commit, PR, merge, and fresh-main sync.
+ACTIVE NOW: B526-virtio-notify-policy-proof
 
-Current active item: none. Last verified item: row 185, Virtio-pci supplies
-PMM/HHDM queue allocator adapter.
+Current active item: row 191, Old q1-specific notify policy enum removed.
 
-Next gate: commit B525 evidence, push PR, merge, return to fresh `origin/main`,
-then claim the next row with the metadata branch counter.
+Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
+return to fresh `origin/main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -188,7 +187,7 @@ Status legend:
 | VERIFIED |  | Shared common-cfg bring-up wrapper exists. |
 | VERIFIED |  | Common queue-set helper owns allocator-driven frame ownership and partial-allocation unwind. |
 | VERIFIED |  | Planned extra queue notify mappings are indexed by queue index. |
-| SOURCE OK |  | Old q1-specific notify policy enum removed. |
+| >>> ACTIVE >>> IN AUDIT | B526-virtio-notify-policy-proof | Old q1-specific notify policy enum removed. |
 | VERIFIED |  | Shared virtio owns indexed notify descriptors. |
 | VERIFIED |  | Shared virtio owns child-visible `VirtQueueResource` assembly. |
 | VERIFIED |  | Shared virtio owns final runtime handoff assembly through `VirtioRuntimeHandoff`. |
