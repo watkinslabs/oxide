@@ -3,8 +3,10 @@
 //
 // Linux behavior in one node:
 //   - kcmp(pid1,pid2,type,idx1,idx2): real comparison of resource
-//     pointers (-1=less, 0=equal, 1=greater). v1 compares Task fields
-//     directly when both pids exist; ESRCH otherwise.
+//     pointers. Linux non-negative ordering: 0=equal, 1=less,
+//     2=greater (a negative return would be read as -errno by libc).
+//     v1 compares Task fields directly when both pids exist; ESRCH
+//     otherwise; EBADF for a KCMP_FILE fd that is not allocated.
 //   - set_mempolicy / get_mempolicy / mbind / migrate_pages /
 //     move_pages / set_mempolicy_home_node: validate args; on a
 //     single-node UMA system Linux returns success because the
