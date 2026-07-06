@@ -5,16 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B594-driver-directory-symlink-proof is VERIFIED / READY TO PUSH.
-B594 audits the remaining driver-directory canonical symlink live-proof row
-after B589/B593 merges; B415 remains aggregate-only until the concrete
-live-proof rows are closed.
+Current marker: no active B branch. B594-driver-directory-symlink-proof is
+VERIFIED MERGED as PR #2712 at `5dfec54a`; B415 remains aggregate-only until
+the concrete live-proof rows are closed.
 
 ## B594 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B594-driver-directory-symlink-proof | VERIFIED / READY TO PUSH | Fresh `main` at D141 ledger merge `e5d8f882`; B593 PR #2710 and ledger PR #2711 are merged, and `metadata/index.md` advances B 594 -> 595 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Source audit proves driver-directory device symlinks are synthesized from `dev_canon()`, nested virtio children inherit the PCI parent path, and bind hooks invalidate stale driver-link dentries. Hosted proof passes: `cargo test -q -p sysfs -p drv -- --nocapture --test-threads=1` with `drv` 31/31 and `sysfs` 35/35; line caps remain under hard limits for touched/proof files (`sysbus_bind_probe.c` 206, `boot-smoke-sysbus-bind.sh` 90, `bus/driver.rs` 117, `bus/hooks.rs` 95, `bus/tests.rs` 574 under the 1000-line error cap). Live proof passes on x86_64 at `/tmp/b594-x86-sysbus-bind.log`: platform `8250-serial`, virtio `virtio-blk`, and PCI `virtio-pci` driver links PASS with canonical targets. Live proof passes on aarch64 at `/tmp/b594-arm-sysbus-bind.log`: platform `pl011-serial`, virtio `virtio-blk`, and PCI `virtio-pci` driver links PASS with canonical targets. `git diff --check` passes. |
+| B594-driver-directory-symlink-proof | VERIFIED MERGED | Fresh `main` at D141 ledger merge `e5d8f882`; B593 PR #2710 and ledger PR #2711 are merged, and `metadata/index.md` advances B 594 -> 595 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Source audit proves driver-directory device symlinks are synthesized from `dev_canon()`, nested virtio children inherit the PCI parent path, and bind hooks invalidate stale driver-link dentries. Hosted proof passes: `cargo test -q -p sysfs -p drv -- --nocapture --test-threads=1` with `drv` 31/31 and `sysfs` 35/35; line caps remain under hard limits for touched/proof files (`sysbus_bind_probe.c` 206, `boot-smoke-sysbus-bind.sh` 90, `bus/driver.rs` 117, `bus/hooks.rs` 95, `bus/tests.rs` 574 under the 1000-line error cap). Live proof passes on x86_64 at `/tmp/b594-x86-sysbus-bind.log`: platform `8250-serial`, virtio `virtio-blk`, and PCI `virtio-pci` driver links PASS with canonical targets. Live proof passes on aarch64 at `/tmp/b594-arm-sysbus-bind.log`: platform `pl011-serial`, virtio `virtio-blk`, and PCI `virtio-pci` driver links PASS with canonical targets. `git diff --check` passes. PR #2712 merged at `5dfec54a`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed. D142 records the merged state and advances D 142 -> 143. |
 
 ## B593 Current
 
