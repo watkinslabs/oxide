@@ -3,6 +3,7 @@ use super::runtime::VirtioPciRuntime;
 use super::{
     bind_msix_vector, disable_pci_command, kick_queue_notify, unmask_msix_bindings, MsixBinding,
     NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
+    VIRTIO_PCI_PAGE_BASE_MASK,
 };
 
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
@@ -292,7 +293,7 @@ fn map_cap_window(
         _ => return None,
     };
     let cap_pa = bar_pa.checked_add(cap.offset as u64)?;
-    let page_pa = cap_pa & !0xFFF;
+    let page_pa = cap_pa & VIRTIO_PCI_PAGE_BASE_MASK;
     let page_off = cap_pa - page_pa;
     Some(mappings.map_page(page_pa) + page_off)
 }
