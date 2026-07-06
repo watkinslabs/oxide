@@ -5,16 +5,22 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B568-arm-noprogress-watchdog-audit is verified locally from
-fresh `main` at B567 PR #2659 merge commit `23d538f7`; next gate is
-commit/push, PR merge, fresh-main sync, and post-merge lockstep driver-path
-proof.
+Current marker: B569-x86-login-cgroup-audit is claimed from fresh `main` at
+B568 PR #2660 merge commit `81b94914`; next gate is durable x86_64
+normal-login reproduction, cgroup/getty root-cause fix if current main still
+reproduces, and lockstep verification.
+
+## B569 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B569-x86-login-cgroup-audit | ACTIVE | Fresh `main` at B568 PR #2660 merge commit `81b94914`; B568 post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. `metadata/index.md` advanced B 569 -> 570. Active target: rerun `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` with durable logs, determine whether current main still reproduces the `console-getty.service` cgroup attach/spawn failure, fix the kernel-side cgroup/getty path if it reproduces, then verify x86_64 and aarch64 gates before PR/merge. |
 
 ## B568 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B568-arm-noprogress-watchdog-audit | VERIFIED LOCAL | Fresh `main` at B567 PR #2659 merge commit `23d538f7`; B567 post-merge fresh-main storage multicontroller proof passed with x86_64 log `/tmp/b567-postmerge-x86-storage-multictrl.log` and aarch64 log `/tmp/b567-postmerge-arm-storage-multictrl.log`. `metadata/index.md` advanced B 568 -> 569. Historical failing logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/b383-arm-driver-path.log`, and `/tmp/b421-pci-identity-mismatch-arm-noprogress.log` stop after QEMU launches and GRUB prints `Booting oxide (EFI-stub)`, before any `driver_path_smoke` service output or `mouseprobe` start marker. Current main does not reproduce the no-progress failure: five sequential durable ARM driver-path runs passed (`/tmp/b568-arm-driver-path-1.log` through `/tmp/b568-arm-driver-path-5.log`), each reaching `driver_path_smoke: START`, all driver probes, `driver_path_smoke: run mouseprobe`, `mouseprobe: PASS`, and final `driver_path_smoke: PASS - GPU input sound block net`. Lockstep x86_64 driver-path proof also passed with `/tmp/b568-x86-driver-path.log`. No current kernel-side failure reproduced; PR/merge and post-merge lockstep proof remain pending. |
+| B568-arm-noprogress-watchdog-audit | VERIFIED MERGED | Fresh `main` at B567 PR #2659 merge commit `23d538f7`; B567 post-merge fresh-main storage multicontroller proof passed with x86_64 log `/tmp/b567-postmerge-x86-storage-multictrl.log` and aarch64 log `/tmp/b567-postmerge-arm-storage-multictrl.log`. `metadata/index.md` advanced B 568 -> 569. Historical failing logs `/tmp/b327-queue-quiesce-arm.log`, `/tmp/b337-drm-render-nodes-withheld-arm.log`, `/tmp/b383-arm-driver-path.log`, and `/tmp/b421-pci-identity-mismatch-arm-noprogress.log` stop after QEMU launches and GRUB prints `Booting oxide (EFI-stub)`, before any `driver_path_smoke` service output or `mouseprobe` start marker. Current main does not reproduce the no-progress failure: five sequential durable ARM driver-path runs passed (`/tmp/b568-arm-driver-path-1.log` through `/tmp/b568-arm-driver-path-5.log`), each reaching `driver_path_smoke: START`, all driver probes, `driver_path_smoke: run mouseprobe`, `mouseprobe: PASS`, and final `driver_path_smoke: PASS - GPU input sound block net`. Lockstep x86_64 driver-path proof also passed with `/tmp/b568-x86-driver-path.log`; PR #2660 merged as `81b94914`; post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. |
 
 ## B567 Current
 
