@@ -5,7 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B510-virtio-probe-state-boundary VERIFIED; next row not claimed yet.
+Current marker: B511-vsock-failed-install-ownership ACTIVE; auditing failed
+virtio-vsock install ownership and proof gaps.
+
+## B511 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B511-vsock-failed-install-ownership | ACTIVE | Fresh `main` at merge commit `6db0ed4e` after B510 PR #2600 merge and local/remote branch cleanup. `metadata/index.md` advanced B 511 -> 512. Target row: prove virtio-vsock failed install owns the reserved endpoint and allocated bounce frames until a successful installed transport takes ownership; no code change yet. |
 
 ## B510 Current
 
