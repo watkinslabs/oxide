@@ -111,6 +111,32 @@ fn msgpair_preserves_boundaries() {
     assert!(p.recv(UnixEnd::B, 64).is_none());
 }
 
+// Regression: SCM_CREDENTIALS on a socketpair shared by many senders must be
+// per-MESSAGE, not last-sender-wins. systemd-udevd's worker_watch socketpair is
+// written by every udev worker; when the manager drained a completion it read
+// the wrong worker's pid (whoever sent most recently), idled the wrong worker,
+// and wedged the udev event queue → card0 never tagged → no gdm greeter. Two
+// messages from different senders, recv'd in FIFO order, must each carry their
+// own sender creds. (Hosted `send` has no `current()`, so push the ring directly
+// to simulate two distinct senders — `UnixMsgRing.msgs` is pub.)
+#[test]
+fn msgpair_creds_are_per_message_fifo() {
+    use super::msg_pair::UnixMsg;
+    let p = UnixMsgPair::new();
+    // Two senders write end A (read by end B), sender 100 then sender 200.
+    {
+        let mut g = p.b_to_a.lock();
+        g.msgs.push_back(UnixMsg { payload: b"first".to_vec(),  fds: alloc::vec::Vec::new(), creds: (100, 0, 0) });
+        g.msgs.push_back(UnixMsg { payload: b"second".to_vec(), fds: alloc::vec::Vec::new(), creds: (200, 0, 0) });
+    }
+    let m1 = p.recv_msg(UnixEnd::A, 64).expect("first");
+    assert_eq!(m1.payload, b"first");
+    assert_eq!(m1.creds, (100, 0, 0), "first message must carry its OWN sender, not last-sender-wins");
+    let m2 = p.recv_msg(UnixEnd::A, 64).expect("second");
+    assert_eq!(m2.payload, b"second");
+    assert_eq!(m2.creds, (200, 0, 0));
+}
+
 #[test]
 fn msgpair_truncates_to_buf() {
     let p = UnixMsgPair::new();
