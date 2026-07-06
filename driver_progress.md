@@ -5,15 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B584-rng-live-rebind-loops-proof is VERIFIED pre-merge on
-branch `B584-rng-live-rebind-loops-proof`. Targeted x86_64 and aarch64 proof
-logs are present; PR/merge and post-merge smoke are next.
+Current marker: B584-rng-live-rebind-loops-proof is VERIFIED MERGED. PR #2691
+merged at `55ad7477`; D132 records the merge and advances D 132 -> 133.
 
 ## B584 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B584-rng-live-rebind-loops-proof | VERIFIED | Fresh `main` at D131 ledger merge `d8bf4c93`; B583 PR #2687 and ledger PR #2690 are merged, and `metadata/index.md` advanced B 584 -> 585 on this branch. B584 extends `/bin/virtio_rng_rebind_probe` from the B574 single-pass proof to run three sysfs child unbind/rebind loops against the same bound virtio-rng child. The probe uses `lstat()` for driver-directory symlink presence, proves `/sys/bus/virtio/drivers/virtio-rng/<child>` disappears after every unbind and returns after every bind, keeps `/dev/hwrng` readable before unbind, after unbind through the promoted provider, and after rebind, and emits B584 loop evidence to stdout plus `/dev/kmsg`. Checks pass: `cargo test -q -p virtio -p pci-boot -p drv-virtio-rng -- --nocapture --test-threads=1` with 57 tests passed; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-rng-rebind.sh`; line caps (`virtio_rng_rebind_probe.c` 217, `boot-smoke-virtio-rng-rebind.sh` 87); x86_64 `/tmp/b584-x86-virtio-rng-rebind.log`; aarch64 `/tmp/b584-arm-virtio-rng-rebind.log`. PR/merge pending. |
+| B584-rng-live-rebind-loops-proof | VERIFIED MERGED | Fresh `main` at D131 ledger merge `d8bf4c93`; B583 PR #2687 and ledger PR #2690 are merged, and `metadata/index.md` advanced B 584 -> 585 on this branch. B584 extends `/bin/virtio_rng_rebind_probe` from the B574 single-pass proof to run three sysfs child unbind/rebind loops against the same bound virtio-rng child. The probe uses `lstat()` for driver-directory symlink presence, proves `/sys/bus/virtio/drivers/virtio-rng/<child>` disappears after every unbind and returns after every bind, keeps `/dev/hwrng` readable before unbind, after unbind through the promoted provider, and after rebind, and emits B584 loop evidence to stdout plus `/dev/kmsg`. Checks pass: `cargo test -q -p virtio -p pci-boot -p drv-virtio-rng -- --nocapture --test-threads=1` with 57 tests passed; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-rng-rebind.sh`; line caps (`virtio_rng_rebind_probe.c` 217, `boot-smoke-virtio-rng-rebind.sh` 87); x86_64 `/tmp/b584-x86-virtio-rng-rebind.log`; aarch64 `/tmp/b584-arm-virtio-rng-rebind.log`; pre-push smoke on both arches; PR #2691 merged as `55ad7477`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 and aarch64, including aarch64 reaching `oxide login:` in 29s. D132 records the merged state and advances D 132 -> 133. |
 
 ## B583 Current
 
