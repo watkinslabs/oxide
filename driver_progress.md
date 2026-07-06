@@ -5,8 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. B581 is merged; next branch must be claimed
-from fresh `main` using `metadata/index.md`.
+Current marker: B582-pci-live-rebind-loops-proof is ACTIVE on branch
+`B582-pci-live-rebind-loops-proof`. Target: repeated PCI
+bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+
+## B582 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B582-pci-live-rebind-loops-proof | ACTIVE | Fresh `main` at D129 ledger merge `2f02e6e9`; B581 PR #2683 and ledger PR #2684 are merged, and `metadata/index.md` advanced B 582 -> 583 on this branch. Audit/code/test pending. |
 
 ## B581 Current
 
