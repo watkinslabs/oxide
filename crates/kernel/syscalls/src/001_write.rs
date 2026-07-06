@@ -24,6 +24,29 @@ fn trace_stderr_write(fd: i32, bytes: &[u8]) {
     if n == 0 || bytes[n - 1] != b'\n' { klog::write_raw(b"\n"); }
 }
 
+// DIAG (debug-session): echo writes whose target path is a logind session-state
+// file (/run/systemd/{sessions,users,seats,machines}/*, incl. the atomic-write
+// temp `.#…` siblings in those dirs) to the console. logind classifies a session
+// (Type/Class/Seat/VTNr) and records the user's primary graphical session
+// (DISPLAY=) in these files — mutter's `sd_uid_get_display()` reads them. Seeing
+// the exact bytes logind writes tells us why "Failed to find any matching session".
+#[cfg(feature = "debug-session")]
+fn trace_session_write(file: &vfs::File, bytes: &[u8]) {
+    let path = file.dentry().absolute_path();
+    let p = &path[..];
+    let hit = p.windows(21).any(|w| w == b"/run/systemd/sessions")
+        || p.windows(18).any(|w| w == b"/run/systemd/users")
+        || p.windows(18).any(|w| w == b"/run/systemd/seats");
+    if !hit { return; }
+    let n = core::cmp::min(bytes.len(), 512);
+    klog::write_raw(b"[SESSFILE ");
+    klog::write_raw(&path);
+    klog::write_raw(b"] ");
+    klog::write_raw(&bytes[..n]);
+    if n < bytes.len() { klog::write_raw(b"...<truncated>"); }
+    if n == 0 || bytes[n - 1] != b'\n' { klog::write_raw(b"\n"); }
+}
+
 /// `sys_write(fd, buf, cnt)` — slot 1. Work fn: `vfs::File::write`.
 /// # C: O(cnt) on the underlying inode write.
 pub fn sys_write(args: &SyscallArgs) -> i64 {
@@ -38,6 +61,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
     let slice: &[u8] = unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) };
+    #[cfg(feature = "debug-session")]
+    trace_session_write(&file, slice);
     #[cfg(feature = "debug-stderr")]
     trace_stderr_write(fd, slice);
     match file.write(slice) {
