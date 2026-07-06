@@ -30,6 +30,11 @@ pub struct Disk {
 }
 
 static TABLE: Spinlock<Vec<Arc<Disk>>, DevicesClass> = Spinlock::new(Vec::new());
+type DiskRemoveHook = fn(&str);
+static DISK_REMOVE_HOOK: Spinlock<Option<DiskRemoveHook>, DevicesClass> = Spinlock::new(None);
+
+/// Install the disk remove hook used by sysfs to drop stale block dentries. # C: O(1)
+pub fn set_remove_hook(f: DiskRemoveHook) { *DISK_REMOVE_HOOK.lock() = Some(f); }
 
 /// Register a block device. Returns the assigned 1-based index.
 /// Idempotent on `name`: returns the existing index if already
@@ -127,6 +132,8 @@ pub fn unregister(name: &str) -> bool {
     {
         drv::device_del(&dev);
     }
+    let hook = *DISK_REMOVE_HOOK.lock();
+    if let Some(f) = hook { f(name); }
     true
 }
 
