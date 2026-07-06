@@ -5,10 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active row. B518-virtio-probe-devres-lifetime-proof is
-VERIFIED on branch `B518-virtio-probe-devres-lifetime-proof`; pending commit,
-push, PR, merge, branch cleanup, and fresh `main` sync before claiming the next
-row.
+Current marker: B519-virtio-probe-trace-debug-proof IN AUDIT. Fresh `main` is
+merge commit `398acd13` after B518 PR #2614 merge and branch cleanup.
+
+## B519 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B519-virtio-probe-trace-debug-proof | IN AUDIT | Claim branch from fresh `main` at `398acd13`; `metadata/index.md` advanced B 519 -> 520. Target row: debug-only virtio probe trace fields live in `VirtioPciProbeTrace`. Pending source audit, hosted proof, line-cap check, `git diff --check`, and x86_64/aarch64 fast smokes. |
 
 ## B518 Current
 

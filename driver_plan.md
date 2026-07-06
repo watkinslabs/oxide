@@ -2,15 +2,15 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: none. B518-virtio-probe-devres-lifetime-proof is verified on the
-current branch and is pending commit, push, PR, merge, branch cleanup, and fresh
-`main` sync before claiming B519.
+ACTIVE NOW: B519-virtio-probe-trace-debug-proof auditing debug-only virtio
+probe trace ownership.
 
-Current active item: none. Do not claim another row until B518 is merged and
-local `main` matches `origin/main`.
+Current active item: row 174, `Debug-only virtio probe trace fields live in
+VirtioPciProbeTrace`. Marker: `>>> ACTIVE >>> B519`.
 
-Next gate: commit, push, PR, merge, then return to fresh `origin/main` before
-claiming B519 using `metadata/index.md`.
+Next gate: source audit, hosted pci-boot/virtio proof, x86_64 and aarch64 fast
+smokes, commit, push, PR, merge, then return to fresh `origin/main` before
+claiming the next branch using `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -171,7 +171,7 @@ Status legend:
 | VERIFIED |  | Shared `VirtioChildResourceState` owns transport-neutral readiness/resource policy. |
 | VERIFIED |  | Shared `VirtioChildProbeFacts` carries child-visible transport probe result. |
 | VERIFIED | B518-virtio-probe-devres-lifetime-proof | `VirtioProbe` owns PCI/MMIO/MSI-X lifetime and opaque frame-release records: source audit proves `VirtioProbe` owns private `VirtioProbeDevres`; devres owns PCI BDF/config identity, transport MMIO mappings, MSI-X bindings, opaque `VirtioProbeOwnedFrames`, and the one-shot `VirtioProbeLease`; failed probe/drop resets the device, releases MSI-X, disables PCI command decode, unmaps MMIO, and frees failed-probe frames, while successful publish transfers mappings, vring frames, and MSI-X bindings into the persistent `TransportRecord`. Touched mapping/MSI paths now use named page/MSI masks instead of inline constants. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate; line caps (`virtio_transport.rs` 274, `virtio_transport/msix.rs` 457, `virtio_drv/probe.rs` 178, `virtio_transport/devres.rs` 68, `virtio/resources/child.rs` 377); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
-| SOURCE OK |  | Debug-only virtio probe trace fields live in `VirtioPciProbeTrace`. |
+| >>> ACTIVE >>> IN AUDIT | B519-virtio-probe-trace-debug-proof | Debug-only virtio probe trace fields live in `VirtioPciProbeTrace`. |
 | SOURCE OK |  | Virtio-pci owns persistent transport MMIO mappings. |
 | SOURCE OK |  | Virtio-pci owns MSI-X state. |
 | SOURCE OK |  | Virtio-pci owns vring frame publication/teardown records for successful child probes. |
