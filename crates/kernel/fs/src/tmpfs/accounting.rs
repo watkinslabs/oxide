@@ -21,16 +21,27 @@ impl TmpfsSb {
     /// Effectively-unbounded accounting (memfd/anon/coredump, hosted tests).
     /// # C: O(1)
     pub fn unlimited() -> Arc<Self> { Self::new(u64::MAX, u64::MAX) }
+    /// Total physical RAM in pages (PMM live pool), falling back to a large
+    /// bound when the PMM is absent (hosted tests). # C: O(1)
+    pub(super) fn total_ram_pages() -> u64 {
+        pmm::setup::pmm_static()
+            .map(|p| p.free_pages() + p.allocated_pages())
+            .filter(|&t| t != 0)
+            .unwrap_or(FALLBACK_TOTAL_PAGES)
+    }
     /// Linux tmpfs default: half of physical RAM for blocks, and one inode per
     /// page of half-RAM, falling back to a large bound when the PMM is absent
     /// (hosted tests). # C: O(1)
     pub(super) fn default_limits() -> Arc<Self> {
-        let total_pages = pmm::setup::pmm_static()
-            .map(|p| p.free_pages() + p.allocated_pages())
-            .filter(|&t| t != 0)
-            .unwrap_or(FALLBACK_TOTAL_PAGES);
-        let half = total_pages / 2;
+        let half = Self::total_ram_pages() / 2;
         Self::new(half, half)
+    }
+    /// Build accounting from parsed `-o size=/nr_blocks=/nr_inodes=` options,
+    /// defaulting any unspecified cap to Linux's half-RAM. `size=` (bytes) is
+    /// rounded up to pages inside `resolve_blocks`. # C: O(1)
+    pub(super) fn from_opts(opts: &super::mount_opts::TmpfsOpts) -> Arc<Self> {
+        let half = Self::total_ram_pages() / 2;
+        Self::new(opts.resolve_blocks(half), opts.resolve_inodes(half))
     }
     /// Reserve one block; `false` (caller → `ENOSPC`) at the limit. # C: O(1)
     pub(super) fn charge_block(&self) -> bool {
