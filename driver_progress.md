@@ -5,8 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B511-vsock-failed-install-ownership VERIFIED; next row
-not claimed yet.
+Current marker: none; B513-virtio-snd-frame-teardown-proof VERIFIED. Next row
+not claimed until B513 is committed, pushed, merged, and fresh `main` is synced.
+
+## B513 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B513-virtio-snd-frame-teardown-proof | VERIFIED | Fresh `main` at merge commit `9c4d27ad` after B511 PR #2605 merge and local/remote branch cleanup. `metadata/index.md` advanced B 512 -> 514 because remote branch `origin/B512-sysctl-leaves` already occupies B512. Patch adds test-only fake frame ownership tracking for virtio-snd probe/context teardown and hosted regressions proving owned probe frames free on `Drop`, disarmed probe frames transfer cleanup to context teardown, and failed scan context removal frees scratch/event/TX/RX frames while clearing the sound softirq. Checks pass: `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` 11/11; `cargo test -q -p sound -- --nocapture --test-threads=1` 16/16; broad hosted `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; touched Rust files under 500 lines (`lib.rs` 130, `state.rs` 238, `tests.rs` 443); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 40s. |
 
 ## B511 Current
 
