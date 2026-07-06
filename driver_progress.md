@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B534-virtio-msix-no-vector-proof audits row 211, virtio-pci
-MSI-X setup names `NO_VECTOR`.
+Current marker: B534-virtio-msix-no-vector-proof verified row 211 locally;
+PR/merge/post-merge fresh-main smokes pending.
 
 ## B534 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B534-virtio-msix-no-vector-proof | IN AUDIT | Fresh `main` at merge commit `6f713913` after B533 PR #2630 merge and branch cleanup. Post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s; first aarch64 attempt hit host vhost-vsock guest-cid contention before kernel boot, rerun reached `oxide login:` in 16s. `metadata/index.md` advanced B 534 -> 535. Target row: prove virtio-pci MSI-X setup names `NO_VECTOR`. |
+| B534-virtio-msix-no-vector-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `6f713913` after B533 PR #2630 merge and branch cleanup. Post-merge fresh-main smokes before branch work passed: x86_64 reached `oxide login:` in 12s; first aarch64 attempt hit host vhost-vsock guest-cid contention before kernel boot, rerun reached `oxide login:` in 16s. `metadata/index.md` advanced B 534 -> 535. Source audit proves shared `virtio::VIRTIO_MSI_NO_VECTOR` owns the no-vector sentinel, `VirtioQueuePlan::new()` initializes extra queue `msix_vec` with it, `VirtioProbeState::resolve_queue_plan_msix()` and q0 setup fall back to that named constant when no MSI-X binding exists, and shared queue programming writes the resolved value into `CFG_QUEUE_MSIX`. Hosted regression `queue_plans_default_to_named_no_vector_sentinel` proves queue plans default to the named sentinel and concrete MSI-X vectors only replace it through `with_msix_vec()`. Checks pass: focused `cargo test -q -p virtio -- --nocapture --test-threads=1` with shared virtio 45/45; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`resources/tests/queue_handoff.rs` 243, `resources/profile.rs` 157, `virtio_drv/probe_state.rs` 298); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B533 Current
 
