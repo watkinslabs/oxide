@@ -81,6 +81,14 @@ pub(super) fn ensure_ahci_extra_img(
     ensure_storage_img(repo, id, arch, "ahci1")
 }
 
+pub(super) fn ensure_virtio_blk_extra_img(
+    repo: &std::path::Path,
+    id: Option<&str>,
+    arch: &str,
+) -> std::path::PathBuf {
+    ensure_storage_img(repo, id, arch, "vblk-scratch")
+}
+
 /// `xtask image --arch <arch>` — build the bootable artifact
 /// (`target/oxide-<arch>-grub.iso`) without launching qemu. Limine is
 /// gone, so this is a thin alias for `grub --arch <arch> --build-only`:
