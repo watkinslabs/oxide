@@ -64,6 +64,7 @@ impl RunqueueInner {
         // context (SP_EL0 / callee-saved regs) is corrupted. Cleared when the
         // task is picked/removed off the tree (cfs/rt `pick_*` + `remove`).
         if task.on_rq.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
+        task.cpu.store(self.cpu, core::sync::atomic::Ordering::Release);
         match task.sched_class() {
             SchedClass::Rt { .. }     => self.rt.enqueue(task),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),

@@ -53,9 +53,9 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
 #[inline]
 fn this_cpu() -> u32 {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() }
+    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) as u32 }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() }
+    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) as u32 }
     #[cfg(not(target_os = "oxide-kernel"))]
     { 0 }
 }
@@ -69,6 +69,15 @@ fn this_cpu() -> u32 {
 pub fn select_task_rq(task: &Task) -> u32 {
     let allowed = task.cpus_allowed.load(Ordering::Acquire);
     let local = this_cpu();
+    let prev = task.cpu.load(Ordering::Acquire);
+    if prev != u16::MAX {
+        let cpu = prev as u32;
+        if cpu < 64 && (allowed & (1u64 << cpu)) != 0 {
+            // SAFETY: global_for returns None unless this prior owner still
+            // has an installed runqueue.
+            if unsafe { global_for(cpu) }.is_some() { return cpu; }
+        }
+    }
     let mut best: Option<u32> = None;
     let mut best_load = u32::MAX;
     // Visit local first so equal-load ties resolve to it (wake-affine).
@@ -165,9 +174,27 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
 /// alive; preempt discipline per the wake path.
 /// # C: O(N_cpus + log N)
 unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
-    if task.cas_state(TaskState::Sleeping, TaskState::Runnable).is_err() { return false; }
+    if task.cas_state(TaskState::Sleeping, TaskState::Runnable).is_err() {
+        if task.state() != TaskState::Runnable
+            || task.on_cpu.load(Ordering::Acquire)
+            || task.on_rq.load(Ordering::Acquire)
+        {
+            return false;
+        }
+    }
     // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
     task.wakeup_deadline_ns.store(0, Ordering::Release);
+    // SAFETY: ttwu_inner owns an Arc for this wake placement and has just
+    // established the task is Runnable but not already executing or queued.
+    unsafe { place_runnable(task, force_defer); }
+    true
+}
+
+/// Place a Runnable task on an eligible runqueue, repairing the same invariant
+/// as a normal wake: Runnable tasks must be executing or queued.
+/// # SAFETY: caller is a wake site and owns an `Arc<Task>` for placement.
+/// # C: O(N_cpus + log N)
+unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
     let me = this_cpu();
     // Timer-ISR callers cannot take any rq lock here, but they are already on
     // a CPU that will drain its own wake-list on the next schedule edge. Keeping
@@ -186,10 +213,10 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
         // SAFETY: global_for reads installed per-CPU runqueue slots; None unless online.
         let tcpu = if unsafe { global_for(target) }.is_some() { target }
                    else if unsafe { global_for(me) }.is_some() { me }
-                   else { wake_list_push(target, task); return true; };
+                   else { wake_list_push(target, task); return; };
         wake_list_push(tcpu, task);
         resched_curr(tcpu);
-        return true;
+        return;
     }
     // Local, settled (`on_cpu == false`, target == this CPU): direct enqueue —
     // the UP fast path, behaviourally identical to the pre-SMP code. The task
@@ -207,7 +234,6 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
         }
         resched_curr(me);
     }
-    true
 }
 
 /// Linux `try_to_wake_up`: place a Sleeping `task` Runnable on its selected
