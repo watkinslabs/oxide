@@ -10,8 +10,8 @@ boot.
 
 | Status | Branch | Description |
 | --- | --- | --- |
-| VERIFIED | B606-udev-canonical-devpath | Make generic `/sys/devices/.../uevent` replay use the same canonical DEVPATH as add/remove events. |
-| NOT DONE | B607-net-uevent-env | Make net device `uevent` replay include `INTERFACE` and `IFINDEX` instead of emitting a bare event. |
+| DONE | B606-udev-canonical-devpath | Make generic `/sys/devices/.../uevent` replay use the same canonical DEVPATH as add/remove events. |
+| VERIFIED | B607-net-uevent-env | Make net device `uevent` replay include `INTERFACE` and `IFINDEX` instead of emitting a bare event. |
 | NOT DONE | B608-uevent-seqnum-sysfs | Add/readable `/sys/kernel/uevent_seqnum` backed by the netlink uevent sequence counter, or document and prove non-requirement in code tests. |
 | NOT DONE | B609-sys-dev-block-index | Ensure `/sys/dev/block/<major>:<minor>` resolves for real registered block disks, including disks sourced from `block::registry`. |
 | NOT DONE | B610-tty-subsystem-link | Add `subsystem` symlink to `/sys/devices/virtual/tty/<name>` if code/tests confirm udev/libudev expects the same class-device shape as other classes. |
