@@ -1,0 +1,6 @@
+#ifndef OXIDE_GENERATED_UTSRELEASE_H
+#define OXIDE_GENERATED_UTSRELEASE_H
+
+#define UTS_RELEASE "0.1.0-oxide"
+
+#endif
