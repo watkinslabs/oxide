@@ -8,7 +8,8 @@
 //
 // Layering: `regs.rs` = pure register/FIS/IDENTIFY math (host-tested);
 // `port.rs` = the kernel-only MMIO + command mechanics (the `Ahci`
-// controller); this file = the BlockDevice impl + registration + PCI
+// controller); `lifecycle.rs` = hosted cleanup-order proof; this file =
+// the BlockDevice impl + registration + PCI
 // bring-up glue. Mirrors drv-nvme: one synchronous in-flight request,
 // serialised by a Spinlock; per-chunk loop over a one-page bounce frame.
 
@@ -17,6 +18,8 @@
 extern crate alloc;
 
 mod regs;
+#[cfg(any(target_os = "oxide-kernel", test))]
+mod lifecycle;
 #[cfg(target_os = "oxide-kernel")]
 mod port;
 
@@ -368,6 +371,13 @@ fn clear_pci_bus_master(dev: &drv::Device) {
     }
 }
 
+#[cfg(target_os = "oxide-kernel")]
+const BAR_PAGE_SIZE: u64 = 0x1000;
+#[cfg(target_os = "oxide-kernel")]
+const BAR_PAGE_OFFSET_MASK: u64 = BAR_PAGE_SIZE - 1;
+#[cfg(target_os = "oxide-kernel")]
+const BAR_PAGE_BASE_MASK: u64 = !BAR_PAGE_OFFSET_MASK;
+
 /// The D1a model driver for AHCI: matches PCI class 0x010601 on the PCI bus.
 /// Registered + bound at the bring-up success site in pci-boot.
 #[cfg(target_os = "oxide-kernel")]
@@ -397,12 +407,16 @@ impl drv::Driver for AhciDriver {
         }
         let bars = decode_bars(bdf);
         let abar_pa = bars[5].mem_base().unwrap_or(0);
-        if abar_pa == 0 { return Err(drv::Error::ProbeFailed); }
+        if abar_pa == 0 {
+            clear_pci_bus_master(dev);
+            return Err(drv::Error::ProbeFailed);
+        }
         // SAFETY: BAR5 PA came from this PCI function's config space; two
         // pages cover generic HBA registers plus the 32-port register array.
-        let mmio = unsafe { mmio_map::map_owned(abar_pa & !0xFFF, 2) };
+        let mmio = unsafe { mmio_map::map_owned(abar_pa & BAR_PAGE_BASE_MASK, 2) };
         let device_key = imp::device_key_from_bdf(bdf);
-        if imp::init(device_key, mmio, abar_pa & 0xFFF) == 0 {
+        if imp::init(device_key, mmio, abar_pa & BAR_PAGE_OFFSET_MASK) == 0 {
+            lifecycle::run_probe_failure_cleanup(|| clear_pci_bus_master(dev));
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
@@ -410,13 +424,18 @@ impl drv::Driver for AhciDriver {
 
     fn remove(&self, dev: &drv::Device) {
         let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
-        clear_pci_bus_master(dev);
-        let _ = imp::remove(imp::device_key_from_bdf(bdf));
+        lifecycle::run_remove_cleanup(
+            || { let _ = imp::remove(imp::device_key_from_bdf(bdf)); },
+            || clear_pci_bus_master(dev),
+        );
     }
 
     fn shutdown(&self, dev: &drv::Device) {
         let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
-        let _ = imp::shutdown(imp::device_key_from_bdf(bdf));
+        lifecycle::run_remove_cleanup(
+            || { let _ = imp::shutdown(imp::device_key_from_bdf(bdf)); },
+            || clear_pci_bus_master(dev),
+        );
     }
 }
 
