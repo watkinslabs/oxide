@@ -65,8 +65,11 @@ pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u6
     let g = sock.kind.lock();
     match &*g {
         SockKind::Unix(pair, end) => {
-            pair.push_fds(*end, fds);
-            pair.write(*end, &payload);
+            // Tie the fds to `payload`'s first stream byte so the peer's
+            // recvmsg delivers them with THIS message, not an earlier
+            // fd-less one (a desync that lost logind's CreateSession /
+            // Inhibit reply fifo fd → pam_systemd got no runtime_path).
+            pair.write_with_fds(*end, &payload, fds);
             payload.len() as i64
         }
         SockKind::UnixMsgPair(pair, end) => pair.send_with_fds(*end, &payload, fds) as i64,
