@@ -3,6 +3,11 @@ use super::*;
 
     static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
     static TEST_EVENT_CALLS: AtomicU64 = AtomicU64::new(0);
+    const PROBE_FRAME_BASE: u64 = 0x0100;
+    const DISARMED_FRAME_BASE: u64 = 0x0200;
+    const FAILED_SCAN_FRAME_BASE: u64 = 0x0300;
+    const SND_TEARDOWN_KEY: u32 = 0x0080_0000;
+    const SND_FAILED_SCAN_KEY: u32 = 0x0090_0000;
 
     const fn key(raw: u32) -> DeviceKey {
         DeviceKey::from_raw(raw)
@@ -90,8 +95,44 @@ use super::*;
         }
     }
 
+    fn ctx_with_test_frames(device_key: DeviceKey, base: u64) -> Ctx {
+        let mut c = ctx(device_key);
+        c.scratch_pa = test_frame_pa(base);
+        c.event_buf_pa = test_frame_pa(base + 1);
+        c.tx_buf_pa = test_frame_pa(base + 2);
+        c.tx_scratch_pa = test_frame_pa(base + 3);
+        c.rx_buf_pa = test_frame_pa(base + 4);
+        c.rx_scratch_pa = test_frame_pa(base + 5);
+        c.txq = Some(queue(2));
+        c.rxq = Some(queue(3));
+        c
+    }
+
+    fn probe_frame_set(base: u64) -> [u64; 6] {
+        [
+            test_frame_pa(base),
+            test_frame_pa(base + 1),
+            test_frame_pa(base + 2),
+            test_frame_pa(base + 3),
+            test_frame_pa(base + 4),
+            test_frame_pa(base + 5),
+        ]
+    }
+
+    fn stop_free_order(base: u64) -> [u64; 6] {
+        [
+            test_frame_pa(base + 1),
+            test_frame_pa(base + 4),
+            test_frame_pa(base + 5),
+            test_frame_pa(base + 2),
+            test_frame_pa(base + 3),
+            test_frame_pa(base),
+        ]
+    }
+
     fn reset_test_state() {
         CTX.lock().clear();
+        clear_freed_frames_for_tests();
         TEST_EVENT_CALLS.store(0, Ordering::Relaxed);
         DRAINED_EVENTS.store(0, Ordering::Relaxed);
         LAST_EVENT.store(0, Ordering::Relaxed);
@@ -258,6 +299,54 @@ use super::*;
         unsafe { softirq::run_pending(); }
         assert_eq!(TEST_EVENT_CALLS.load(Ordering::Relaxed), 0);
         assert!(!present());
+        reset_test_state();
+    }
+
+    #[test]
+    fn probe_frames_drop_frees_all_owned_snd_frames() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        {
+            let frames = SndProbeFrames::for_tests(PROBE_FRAME_BASE);
+            assert_eq!(frames.all(), probe_frame_set(PROBE_FRAME_BASE));
+        }
+        assert_eq!(freed_frames_for_tests(), probe_frame_set(PROBE_FRAME_BASE));
+        reset_test_state();
+    }
+
+    #[test]
+    fn disarmed_probe_frames_wait_for_context_teardown() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        {
+            let mut frames = SndProbeFrames::for_tests(DISARMED_FRAME_BASE);
+            frames.disarm();
+        }
+        assert!(freed_frames_for_tests().is_empty());
+        stop_reset_free(ctx_with_test_frames(key(SND_TEARDOWN_KEY), DISARMED_FRAME_BASE));
+        assert_eq!(freed_frames_for_tests(), stop_free_order(DISARMED_FRAME_BASE));
+        reset_test_state();
+    }
+
+    #[test]
+    fn failed_scan_context_teardown_frees_snd_frames_and_clears_softirq() {
+        let _guard = TEST_LOCK.lock();
+        reset_test_state();
+        let device_key = key(SND_FAILED_SCAN_KEY);
+        CTX.lock().push(ctx_with_test_frames(device_key, FAILED_SCAN_FRAME_BASE));
+        softirq::set_handler(softirq::Slot::SndEvent, test_event_handler);
+
+        let Some(ctx) = remove_ctx_and_release_event_handler(device_key) else {
+            panic!("expected failed-probe context removal");
+        };
+        stop_reset_free(ctx);
+        softirq::raise(softirq::Slot::SndEvent);
+        // SAFETY: hosted unit test owns the SndEvent slot under TEST_LOCK.
+        unsafe { softirq::run_pending(); }
+
+        assert_eq!(TEST_EVENT_CALLS.load(Ordering::Relaxed), 0);
+        assert!(!present_for(device_key));
+        assert_eq!(freed_frames_for_tests(), stop_free_order(FAILED_SCAN_FRAME_BASE));
         reset_test_state();
     }
 
