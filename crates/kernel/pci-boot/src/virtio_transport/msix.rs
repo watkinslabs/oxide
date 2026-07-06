@@ -1,10 +1,12 @@
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 
-use super::TransportMappings;
+use super::{TransportMappings, VIRTIO_PCI_PAGE_BASE_MASK};
 
 mod arch;
 mod log;
+
+const MSI_MESSAGE_ADDRESS_LOW_MASK: u64 = 0xFFFF_FFFF;
 
 #[cfg(target_arch = "aarch64")]
 const ITS_DEVICE_SLOTS: usize = 32;
@@ -65,7 +67,7 @@ pub(crate) fn bind_msix_vector(
     let entry_pa = tbar_pa
         .wrapping_add(m.table_offset as u64)
         .wrapping_add((queue_vector as u64) * pci::MSIX_TABLE_ENTRY_BYTES);
-    let page_pa = entry_pa & !0xFFF;
+    let page_pa = entry_pa & VIRTIO_PCI_PAGE_BASE_MASK;
     let page_off = entry_pa - page_pa;
 
     let (id, msg_addr, msg_data) = alloc_msi_message(d.bdf, queue_vector)?;
@@ -96,7 +98,7 @@ fn write_msix_entry(entry_va: u64, msg_addr: u64, msg_data: u32) {
             pci::MSIX_VECTOR_CONTROL_MASKED,
         );
         let _ = core::ptr::read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
-        core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & 0xFFFF_FFFF) as u32);
+        core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & MSI_MESSAGE_ADDRESS_LOW_MASK) as u32);
         core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
         core::ptr::write_volatile((entry_va + 8) as *mut u32, msg_data);
         let _ = core::ptr::read_volatile((entry_va + 8) as *const u32);

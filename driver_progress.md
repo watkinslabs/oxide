@@ -5,9 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B517-virtio-pci-helper-privacy-proof VERIFIED. Next row
-not claimed until B517 is committed, pushed, merged, and fresh `main` is
-synced.
+Current marker: no active row. B518-virtio-probe-devres-lifetime-proof is
+VERIFIED on branch `B518-virtio-probe-devres-lifetime-proof`; pending commit,
+push, PR, merge, branch cleanup, and fresh `main` sync before claiming the next
+row.
+
+## B518 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B518-virtio-probe-devres-lifetime-proof | VERIFIED | Fresh `main` at merge commit `988afe60` after B517 PR #2612 merge and branch cleanup. `metadata/index.md` advanced B 518 -> 519. Source audit proves `VirtioProbe` owns private `VirtioProbeDevres`; devres owns PCI BDF/config identity, transport MMIO mappings, MSI-X bindings, opaque `VirtioProbeOwnedFrames`, and the one-shot `VirtioProbeLease`; failed probe/drop resets the device, releases MSI-X, disables PCI command decode, unmaps MMIO, and frees failed-probe frames, while successful publish transfers mappings, vring frames, and MSI-X bindings into the persistent `TransportRecord`. Patch replaces inline virtio-pci page/MSI masks in touched mapping paths with named constants. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate with child suites 20/20, 36/36, 36/36, 16/16, 8/8, 11/11, 9/9 plus shared virtio 44/44; line caps (`virtio_transport.rs` 274, `virtio_transport/msix.rs` 457, `virtio_drv/probe.rs` 178, `virtio_transport/devres.rs` 68, `virtio/resources/child.rs` 377); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 
 ## B517 Current
 
