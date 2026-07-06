@@ -2,7 +2,7 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: NONE - claim next NOT DONE row from fresh main
+ACTIVE NOW: B603-live-probe-methods-audit - ACTIVE / IN AUDIT
 
 B599-driver-shutdown-coverage is merged as PR #2721 at `5df821ab`. Fresh-main
 post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching
@@ -14,7 +14,8 @@ Fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64
 reaching `oxide login:` in 35s and aarch64 reaching `oxide login:` in 38s.
 B602-no-direct-pci-boot-probes is merged as PR #2726 at `d3d5bc73`.
 B602 advanced `metadata/index.md` B 602 -> 603; D148 records the merged state
-and advances D 148 -> 149.
+and advances D 148 -> 149. B603 is claimed from fresh `main` at D148 ledger
+merge `cdd1cfe2` and advances `metadata/index.md` B 603 -> 604.
 
 Last verified branch: B601-driver-model-live-probe-audit. Current live PCI,
 NVMe, AHCI, virtio-pci, virtio child, and platform bring-up paths bind through
@@ -24,7 +25,8 @@ the driver model on x86_64 and aarch64.
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: claim the next NOT DONE row from fresh `main`.
+Next gate: audit live `Driver::probe` implementations for real hardware work
+versus default no-op paths.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -399,7 +401,7 @@ Status legend:
 | VERIFIED MERGED | B599-driver-shutdown-coverage | Concrete terminal shutdown coverage is merged. `power::prepare_cmd` emits `power_cmd restart|poweroff|halt` immediately before `drv::shutdown_devices_once()`, and `drv::shutdown_all()` emits `driver_shutdown bus=<bus> addr=<addr> driver=<driver>` before invoking each registered shutdown callback. B599 adds `/init` direct-init shutdown probe wiring through `OXIDE_SHUTDOWN_SMOKE=1`, `userspace/shutdown_probe/shutdown_probe.c`, `tools/boot-smoke-shutdown.sh`, and `smoke-shutdown-{x86,arm}` targets. The probe invokes the glibc-visible `reboot(RB_AUTOBOOT)` interface, which reaches the Linux reboot syscall restart path; QEMU exits through the existing `-no-reboot` path. x86_64 `/tmp/b599-x86-shutdown.log` shows `power_cmd restart` plus shutdown markers for AHCI, NVMe, virtio-pci parents, virtio-snd, virtio-vsock, virtio-rng, two virtio-input devices, virtio-gpu, virtio-net, virtio-blk, i8042-kbd, and `8250-serial`, then `shutdown-smoke: PASS`. aarch64 `/tmp/b599-arm-shutdown.log` shows the same PCI/virtio coverage plus `pl011-serial`, then `shutdown-smoke: PASS`. Checks pass: `cargo test -q -p drv -p power -- --nocapture --test-threads=1`; `cargo check -q -p xtask`; `bash -n tools/boot-smoke-shutdown.sh`; host `cc -Wall -Wextra -Werror` for `shutdown_probe.c`; line caps (`model.rs` 488, `power/lib.rs` 283, `rootfs.rs` 436, `rootfs_cache.rs` 300, `rootfs_lists.rs` 108, `boot-smoke-shutdown.sh` 104, `shutdown_probe.c` 12, `Makefile` 364). Claim starts from fresh `main` at D145 ledger merge `7a12d540`; post-B598 fresh-main `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 32s and aarch64 reaching `oxide login:` in 36s. `metadata/index.md` advanced B 599 -> 600 on the proof branch. PR #2721 merged at `5df821ab`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 50s and aarch64 reaching `oxide login:` in 56s. D146 records the merged state and advances D 146 -> 147. |
 | VERIFIED MERGED | B601-driver-model-live-probe-audit | Old claim that live hardware bring-up mostly bypasses the true driver model is stale. Source audit proves `drv::try_device_add` plus `drv::register_driver` own PCI, NVMe, AHCI, virtio-pci, virtio child, and platform attach paths: `drv::model::bind_inner` calls `Driver::probe` before recording binding; `pci-boot` publishes PCI devices and registers NVMe/AHCI/virtio-pci model drivers; `VirtioPciDrv::probe` publishes `virtio` child devices; `VirtioChildDriver::probe` owns child install and transport publication; kmain platform serial/i8042 publication routes through `platform_device_or_panic` and model registration. Source search finds no live `virtio_probe_arch`, `nvme_probe`, `ahci_probe`, or direct boot install bypass outside virtio child driver probes. Hosted gate passes: `cargo test -q -p drv -p pci-boot -p virtio -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1`. Runtime proof passes: x86_64 `/tmp/b601-x86-driver-model-shutdown.log` and aarch64 `/tmp/b601-arm-driver-model-shutdown.log` show `power_cmd restart`, `driver_shutdown` for AHCI, NVMe, virtio-pci parents, virtio-snd, virtio-vsock, virtio-rng, two virtio-input devices, virtio-gpu, virtio-net, virtio-blk, and the per-arch platform driver (`i8042-kbd`/`8250-serial` on x86_64, `pl011-serial` on aarch64), then `shutdown-smoke: PASS`. B601 starts from fresh `main` at D146 ledger merge `385498f3`; B600 is already occupied by `B600-gnome-session-diag`, so this lane uses B601 and advances `metadata/index.md` B 600 -> 602. PR #2724 merged at `ea997888`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 35s and aarch64 reaching `oxide login:` in 38s. D147 records the merged state and advances D 147 -> 148. |
 | VERIFIED MERGED | B602-no-direct-pci-boot-probes | Old claim that `pci-boot` directly calls `virtio_probe_arch`, `nvme_probe`, and `ahci_probe` is stale. Source search over `crates/kernel/pci-boot` and `crates/drivers` finds no live legacy probe entry points; `pci-boot` registers `drv_nvme::NVME_DRIVER`, `drv_ahci::AHCI_DRIVER`, and virtio-pci model drivers, then publishes PCI devices through `drv::try_device_add`. The only direct virtio install calls found are inside `VirtioChildDriver::probe_child`, so they run through child driver probe, not PCI enumeration. Hosted gate passes: `cargo test -q -p pci-boot -p drv-nvme -p drv-ahci -p virtio -- --nocapture --test-threads=1` with `drv-nvme` 12/12, `drv-ahci` 7/7, `virtio` 49/49, and `pci-boot` compile-only. B602 changes docs/metadata only, so x86_64/aarch64 runtime state is inherited from fresh `main` at D147 ledger merge `afe96654`, where B601 post-merge `make smoke SMOKE_TIMEOUT=300` reached `oxide login:` on x86_64 in 35s and aarch64 in 38s. PR #2726 merged at `d3d5bc73`; D148 records the merged state and advances D 148 -> 149. |
-| NOT DONE |  | Old claim: `Driver::probe` is mostly no-op for live model drivers. Current main has substantive probe methods for main hardware drivers. |
+| ACTIVE | B603-live-probe-methods-audit | Old claim: `Driver::probe` is mostly no-op for live model drivers. Current main has substantive probe methods for main hardware drivers. B603 audits this from fresh `main` at D148 ledger merge `cdd1cfe2` and advances `metadata/index.md` B 603 -> 604. |
 | NOT DONE |  | Old claim: synthetic virtio devices are registered but runtime binding still direct PCI boot. Current source binds child drivers on `virtio` bus through wrapper. |
 | NOT DONE | TBD | Keep `driver_progress.md` updated after each row is fixed/proven. |
 | NOT DONE | TBD | For every branch: implement one coherent item, run relevant hosted tests, push, PR, merge, return to fresh `main`, and continue with no drift. |

@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. Claim the next NOT DONE row from fresh
-`main`. B602-no-direct-pci-boot-probes is merged as PR #2726 at `d3d5bc73`;
-D148 records the merged state and advances `metadata/index.md` D 148 -> 149.
+Current marker: B603-live-probe-methods-audit is ACTIVE / IN AUDIT from fresh
+`main` at D148 ledger merge `cdd1cfe2`. B603 advances `metadata/index.md` B
+603 -> 604.
+
+## B603 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B603-live-probe-methods-audit | ACTIVE / IN AUDIT | Claimed from fresh `main` at D148 ledger merge `cdd1cfe2`; target row is the old claim that `Driver::probe` is mostly no-op for live model drivers. Duplicate-lane check found no B603/probe-method branch or worktree. First source scan finds substantive live probes for virtio-pci, NVMe, AHCI, UARTs, PS/2, and virtio child resources; the default no-op probe appears in the trait and tests. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B602 Current
 
