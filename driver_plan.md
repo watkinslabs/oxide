@@ -2,10 +2,10 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B527-virtio-child-profile-declarations-proof
+ACTIVE NOW: B528-virtio-debug-probe-trace-indexed-handoff-proof
 
-Current active item: B527 verified locally; pending commit, PR, merge, fresh-main
-sync, and next-row claim.
+Current active item: row 198, Virtio-pci debug probe trace carries indexed
+handoff records.
 
 Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
 return to fresh `origin/main`.
@@ -195,7 +195,7 @@ Status legend:
 | VERIFIED |  | Shared `VirtioTransportProbeResult` owns completed-probe transport-neutral result. |
 | VERIFIED | B527-virtio-child-profile-declarations-proof | Child drivers export transport profile declarations with feature masks, queue requirements, IRQ callback policy: source audit proves `VirtioChildOps::profile()` delegates to each child crate's `transport_profile()` for GPU, input, net, blk, rng, vsock, and snd; each child profile carries child-owned `wanted_features()` plus the appropriate shared `VirtioTransportProfile` constructor, queue requirements, extra queue plans, and child IRQ callback (`raise_rx`, `wake_completions`, input event drain, vsock RX, snd event). pci-boot consumes only `profile.drv_features`, `profile.queue_plans`, `profile.msix0_handler`, `profile.early_payload_policy`, and `profile.child_requirements` through shared virtio bring-up/runtime handoff paths. Checks pass: focused child-profile hosted gate `cargo test -q -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; broad hosted PCI/virtio child gate; `git diff --check`; line caps (`virtio_child.rs` 398, `resources/profile.rs` 156, child profile declaration files all under 500); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 | VERIFIED |  | Shared `ProgrammedQueues` exposes indexed queue lookup. |
-| SOURCE OK |  | Virtio-pci debug probe trace carries indexed handoff records. |
+| >>> ACTIVE >>> IN AUDIT | B528-virtio-debug-probe-trace-indexed-handoff-proof | Virtio-pci debug probe trace carries indexed handoff records. |
 | SOURCE OK |  | PCI-backed virtio child session owns failed-probe transport cleanup as idempotent session lifetime rule. |
 | VERIFIED |  | Child readiness checks go through `VirtioChildRequirements` and `VirtioProbe::child_resources`. |
 | VERIFIED |  | Virtio-snd requires all four queues before install. |
