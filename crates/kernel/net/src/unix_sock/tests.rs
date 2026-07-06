@@ -100,6 +100,36 @@ fn msgpair_bidirectional() {
     assert_eq!(p.recv(UnixEnd::A, 64).unwrap(), b"world");
 }
 
+// SW1: getpeername/getsockname on a connected AF_UNIX pair must report the
+// real sun_path. The client (end B) sees the listener's bound path it
+// connected to; the accepted server socket (end A) inherits that path as its
+// LOCAL name and sees the (unnamed) client as its peer. Regression:
+// getpeername returned ENOTCONN for every AF_UNIX fd (broke sd-bus/dbus).
+#[test]
+fn connected_pair_reports_bind_path() {
+    use alloc::string::String;
+    let p = UnixPair::new();
+    p.set_bind_path(String::from("/run/systemd/private"));
+
+    // Client (end B): peer = the listener path; local = unnamed.
+    assert_eq!(p.peer_path(UnixEnd::B).as_deref(), Some("/run/systemd/private"));
+    assert_eq!(p.local_path(UnixEnd::B), None);
+
+    // Accepted server (end A): local = the listener path; peer = unnamed client.
+    assert_eq!(p.local_path(UnixEnd::A).as_deref(), Some("/run/systemd/private"));
+    assert_eq!(p.peer_path(UnixEnd::A), None);
+}
+
+#[test]
+fn socketpair_has_no_bind_path() {
+    // A socketpair / an unbound connect leaves both ends unnamed (bare AF_UNIX).
+    let p = UnixPair::new();
+    assert_eq!(p.peer_path(UnixEnd::A), None);
+    assert_eq!(p.peer_path(UnixEnd::B), None);
+    assert_eq!(p.local_path(UnixEnd::A), None);
+    assert_eq!(p.local_path(UnixEnd::B), None);
+}
+
 // --- SCM_RIGHTS fd/byte-boundary binding on SOCK_STREAM (S8) ---
 // Regression: AF_UNIX SOCK_STREAM held SCM_RIGHTS fds in a FIFO fully
 // decoupled from byte position, so a recvmsg popped the front burst
