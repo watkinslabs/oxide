@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B582-pci-live-rebind-loops-proof is ACTIVE on branch
-`B582-pci-live-rebind-loops-proof`. Target: repeated PCI
-bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+Current marker: B582-pci-live-rebind-loops-proof is VERIFIED on branch
+`B582-pci-live-rebind-loops-proof`. Target proof passed on x86_64 and
+aarch64; PR/merge pending.
 
 ## B582 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B582-pci-live-rebind-loops-proof | ACTIVE | Fresh `main` at D129 ledger merge `2f02e6e9`; B581 PR #2683 and ledger PR #2684 are merged, and `metadata/index.md` advanced B 582 -> 583 on this branch. Audit/code/test pending. |
+| B582-pci-live-rebind-loops-proof | VERIFIED | Fresh `main` at D129 ledger merge `2f02e6e9`; B581 PR #2683 and ledger PR #2684 are merged, and `metadata/index.md` advanced B 582 -> 583 in the claim commit. B582 adds `smoke-storage-multictrl-{x86,arm}` Make targets, extends `/bin/storage_multictrl_probe` to run three bind/unbind loops for the selected NVMe and AHCI PCI functions, rejects duplicate bind with `errno=16`, checks bound driver symlinks, requires `/sys/bus/pci/drivers/{nvme,ahci}/<addr>` and `/sys/devices/pci0000:00/<addr>/driver` to disappear after unbind, and rechecks both links plus block count restoration after rebind. Kernel fix: `sysfs::bus::hooks` invalidates exact resolved paths plus parent/name dentries for bind-change driver symlinks, covering symlink target resolution and cached positive/negative child dentries. Checks pass: `cargo test -q -p sysfs -p drv -p pci -- --nocapture --test-threads=1` with drv 31/31, pci 17/17, and sysfs 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-storage-multictrl.sh`; line caps (`Makefile` 322, `storage_multictrl_probe.c` 293, `sysfs/src/bus/hooks.rs` 95). Targeted proof passed: x86_64 `/tmp/b582-x86-storage-multictrl.log`; aarch64 `/tmp/b582-arm-storage-multictrl.log`. |
 
 ## B581 Current
 

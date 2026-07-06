@@ -2,17 +2,15 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B582-pci-live-rebind-loops-proof in audit
+ACTIVE NOW: none; B582 verified on branch and ready for PR
 
-Current active item: B582-pci-live-rebind-loops-proof. Prove repeated PCI
-bind/unbind/remove/readd behavior under QEMU on x86_64 and aarch64.
+Current active item: none. B582 proves repeated PCI bind/unbind/remove/readd
+behavior under QEMU on x86_64 and aarch64.
 Last verified branch:
-`B581-block-live-rebind-loops-proof` merged as PR #2683 at `bb9c73b9`;
-fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64
-reaching `oxide login:` in 44s and aarch64 reaching `oxide login:` in 50s.
+`B582-pci-live-rebind-loops-proof` passed branch gates; PR/merge pending.
 
-Next gate: audit current PCI bind/unbind/remove/readd behavior, add targeted
-proof or kernel fixes, then verify x86_64 and aarch64 before merge.
+Next gate: commit, push, open PR, merge, run fresh-main post-merge smoke, then
+record the merge in a D ledger branch.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -367,7 +365,7 @@ Status legend:
 | SOURCE OK |  | Production model drivers in current source have explicit shutdown callbacks; default shutdown remains test-only. |
 | NOT DONE | TBD | Extract remaining real virtio bus/core split from `pci-boot`. |
 | NOT DONE | TBD | Add explicit fault-injection coverage after every allocation, mapping, registration, IRQ/MSI step, queue setup, and userspace publication. |
-| ACTIVE | B582-pci-live-rebind-loops-proof | Prove repeated bind/unbind/remove/readd loops under QEMU for PCI. Claim made from fresh `main` at D129 ledger merge `2f02e6e9`; `metadata/index.md` advanced B 582 -> 583 on this branch. |
+| VERIFIED | B582-pci-live-rebind-loops-proof | PCI repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B582 extends `/bin/storage_multictrl_probe` to run three sysfs bind/unbind loops for the selected NVMe and AHCI PCI functions, requires duplicate bind to fail with `EBUSY` without changing block counts, verifies `/sys/bus/pci/drivers/{nvme,ahci}/<addr>` and `/sys/devices/pci0000:00/<addr>/driver` while bound, verifies both symlinks disappear after unbind, and re-proves block count restoration plus symlink restoration after rebind. Kernel fix: sysfs bus bind hooks now invalidate both exact resolved paths and parent/name cached dentries for dynamic driver symlinks, covering symlink-target resolution and negative/positive dentry caching. Checks pass: `cargo test -q -p sysfs -p drv -p pci -- --nocapture --test-threads=1` with drv 31/31, pci 17/17, and sysfs 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-storage-multictrl.sh`; line caps (`Makefile` 322, `storage_multictrl_probe.c` 293, `sysfs/src/bus/hooks.rs` 95); x86_64 `/tmp/b582-x86-storage-multictrl.log`; aarch64 `/tmp/b582-arm-storage-multictrl.log`. `metadata/index.md` advanced B 582 -> 583 in the claim commit. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for virtio parent/child. |
 | VERIFIED MERGED | B581-block-live-rebind-loops-proof | Block repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B581 adds `/bin/virtio_blk_multidev_probe`, targeted smoke wrappers, rootfs/cache wiring, and opt-in scratch virtio-blk QEMU devices for both arches. The probe runs three sysfs unbind/rebind loops against the scratch virtio-blk child, proves block count and scratch serial disappear on unbind, rejects stale `/sys/block/<old>` and `/dev/<old>` paths, and re-proves current `/sys/block/<vd*>` size/dev/queue/serial plus `/dev/<vd*>` after every rebind. Kernel fix: block unregister now calls a sysfs remove hook after `drv::device_del`, invalidating stale `/sys/block/<name>`, `/sys/devices/virtual/block/<name>`, and `/sys/class/block/<name>` dentries. Checks pass: `cargo test -q -p block -p sysfs -p drv-virtio-blk -- --nocapture --test-threads=1` with block 33/33, sysfs 25/25, and virtio-blk 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-blk-multidev.sh`; line caps (`virtio_blk_multidev_probe.c` 282, `boot-smoke-virtio-blk-multidev.sh` 87, `registry.rs` 433, `sysfs/src/block.rs` 428); x86_64 `/tmp/b581-x86-virtio-blk-multidev.log`; aarch64 `/tmp/b581-arm-virtio-blk-multidev.log`; pre-push smoke on both arches; PR #2683 merged as `bb9c73b9`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` reached x86_64 `oxide login:` in 44s and aarch64 `oxide login:` in 50s. D129 records the merged state and advances D 129 -> 130. |
 | VERIFIED MERGED | B580-net-live-rebind-loops-proof | Net repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B580 extends `/bin/virtio_net_multidev_probe` to run three sysfs unbind/rebind loops against the second virtio-net child, fails if the removed netdev's old `/sys/class/net/<eth>/address` path remains visible after unbind, and re-proves two `eth*` devices with address and RX stats after every rebind. Kernel fix: netdev unregister now calls a sysfs remove hook after dropping the netdev registry lock, invalidating stale `/sys/class/net/<name>` and `/sys/devices/virtual/net/<name>` dentries. Checks pass: `cargo test -q -p net -p sysfs -p drv-virtio-net -- --nocapture --test-threads=1` with net 17/17, sysfs 246/246, and virtio-net 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-net-multidev.sh`; line caps (`netdev.rs` 391, `sysfs/src/lib.rs` 485, `virtio_net_multidev_probe.c` 269, `boot-smoke-virtio-net-multidev.sh` 138); x86_64 `/tmp/b580-x86-virtio-net-multidev.log`; aarch64 `/tmp/b580-arm-virtio-net-multidev.log`; pre-push smoke on both arches; PR #2681 merged as `4559a402`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` reached x86_64 `oxide login:` in 44s and aarch64 `oxide login:` in 53s. D128 records the merged state and advances D 128 -> 129. |
