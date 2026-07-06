@@ -83,6 +83,8 @@ pub struct Device {
     pub dev_t:     Option<(u32, u32)>,
     /// Optional bespoke `/dev` node factory (overrides the `dev_t` node).
     pub node_factory: Option<NodeFactory>,
+    /// Extra kobject uevent environment supplied by the publishing driver.
+    pub uevent_env: Vec<String>,
     /// Bus resources, e.g. PCI BAR windows.
     pub resources: Vec<Resource>,
 }
@@ -94,7 +96,7 @@ impl Device {
             bus, addr, parent_bus: None, parent_addr: None, vendor_id, device_id, class,
             driver: Spinlock::new(None), driver_override: Spinlock::new(None),
             dev_class: "", devname: None, dev_t: None, node_factory: None,
-            resources: Vec::new(),
+            uevent_env: Vec::new(), resources: Vec::new(),
         }
     }
     /// Currently-bound driver name, if any. # C: O(1)
@@ -125,6 +127,7 @@ impl Device {
             && self.dev_t == other.dev_t
             && self.node_factory.is_none()
             && other.node_factory.is_none()
+            && self.uevent_env == other.uevent_env
             && self.resources == other.resources
     }
     /// Builder: attach a parent device identity. # C: O(1)
@@ -140,6 +143,8 @@ impl Device {
     }
     /// Builder: attach a bespoke `/dev` node factory (custom `FileOps`). # C: O(1)
     pub fn with_node_factory(mut self, f: NodeFactory) -> Self { self.node_factory = Some(f); self }
+    /// Builder: attach class/device-specific uevent environment. # C: O(n)
+    pub fn with_uevent_env(mut self, env: Vec<String>) -> Self { self.uevent_env = env; self }
     /// Builder: attach bus resources to the device. # C: O(n)
     pub fn with_resources(mut self, resources: Vec<Resource>) -> Self {
         self.resources = resources;

@@ -265,6 +265,9 @@ fn install_device_with_parent_owns_event_node_publication() {
         .expect("event node published through driver core");
 
     assert_eq!(dev.parent(), Some(("virtio", parent_addr.as_str())));
+    assert!(dev.uevent_env.iter().any(|entry| entry == "PRODUCT=3/1234/5678/9abc"));
+    assert!(dev.uevent_env.iter().any(|entry| entry == "NAME=\"oxide keyboard\""));
+    assert!(dev.uevent_env.iter().any(|entry| entry == "UNIQ=\"input-serial\""));
     assert_eq!(evdev_id_for_device(key(TEST_DEVICE_KEY_RAW)), Some(evdev_id));
     assert_eq!(crate::remove_device_with_node(key(TEST_DEVICE_KEY_RAW)), Some(evdev_id));
     assert_eq!(evdev_id_for_device(key(TEST_DEVICE_KEY_RAW)), None);
