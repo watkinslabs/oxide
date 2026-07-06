@@ -1,12 +1,18 @@
 # Driver progress
 
-Date: 2026-07-05
+Date: 2026-07-06
 
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B515-nvme-ahci-bar-devres-proof VERIFIED. Next row not
-claimed until B515 is committed, pushed, merged, and fresh `main` is synced.
+Current marker: B516-virtio-child-session-backend-proof IN AUDIT. Fresh `main`
+is merge commit `6feebf65` after B515 PR #2610 merge and branch cleanup.
+
+## B516 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B516-virtio-child-session-backend-proof | IN AUDIT | Claim branch from fresh `main` at `6feebf65`; `metadata/index.md` advanced B 516 -> 517. Target row: PCI-backed child session carries explicit `VirtioPciTransport` backend. Pending source audit, focused hosted proof, broad pci-boot/virtio gate, line-cap check, `git diff --check`, and x86_64/aarch64 fast smokes. |
 
 ## B515 Current
 
