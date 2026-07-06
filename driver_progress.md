@@ -5,16 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B589-sys-bus-driver-bind-proof is ACTIVE IN AUDIT on branch
-`B589-sys-bus-driver-bind-proof`. The target is live proof for
-`/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape on both x86_64
-and aarch64. Claim is from fresh `main` at D136 ledger merge `9c0eff87`.
+Current marker: B589-sys-bus-driver-bind-proof is VERIFIED on branch
+`B589-sys-bus-driver-bind-proof`. Focused x86_64 and aarch64 live proofs pass
+for `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape, including
+canonical nested PCI-backed virtio driver symlink targets.
 
 ## B589 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B589-sys-bus-driver-bind-proof | >>> ACTIVE >>> IN AUDIT | Fresh `main` at D136 ledger merge `9c0eff87`; B588 PR #2700 and ledger PR #2701 are merged, and `metadata/index.md` advances B 589 -> 590 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Need source audit and focused x86_64/aarch64 live proof for `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape. |
+| B589-sys-bus-driver-bind-proof | VERIFIED | Fresh `main` at D136 ledger merge `9c0eff87`; B588 PR #2700 and ledger PR #2701 are merged, and `metadata/index.md` advances B 589 -> 590 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Source audit found driver-directory device symlinks used a flat bus root while `/sys/bus/<bus>/devices/<addr>` used canonical nested paths; `sysfs::bus::driver` now uses `dev_canon()` so PCI-backed virtio driver entries resolve under their PCI parent. Hosted regression covers a nested virtio child. Checks pass: `cargo test -q -p sysfs -p drv -- --nocapture --test-threads=1` with drv 31/31 and sysfs 35/35; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-sysbus-bind.sh`; host `cc -Wall -Wextra -Werror` for `sysbus_bind_probe.c`; line caps for production files (`driver.rs` 117, `sysbus_bind_probe.c` 206, `boot-smoke-sysbus-bind.sh` 90, `rootfs.rs` 433, `rootfs_lists.rs` 107, `rootfs_cache.rs` 291, `Makefile` 357). Targeted x86_64 proof `/tmp/b589-x86-sysbus-bind.log` passes with `8250-serial`, two platform bind loops, nested virtio target `../../../../devices/pci0000:00/0000:00:01.0/virtio0`, and PCI target proof. Targeted aarch64 proof `/tmp/b589-arm-sysbus-bind.log` passes with `pl011-serial` and the same virtio/PCI target proof. First x86 run exposed a rootfs install-list miss for the new binary; fixed by adding `sysbus_bind_probe` to the `/bin` staging list and rerun passed. Pending commit, PR, merge, fresh-main smoke, and D137 ledger. |
 
 ## B588 Current
 
