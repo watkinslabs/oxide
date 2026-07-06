@@ -5,8 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B514-virtio-blk-io-freeze-proof VERIFIED. Next row not
-claimed until B514 is committed, pushed, merged, and fresh `main` is synced.
+Current marker: B515-nvme-ahci-bar-devres-proof ACTIVE; auditing NVMe/AHCI BAR
+mapping ownership and failed-probe/remove release from fresh `main`.
+
+## B515 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B515-nvme-ahci-bar-devres-proof | ACTIVE | Fresh `main` at merge commit `92126d69` after B514 PR #2609 merge and branch cleanup. `metadata/index.md` advanced B 515 -> 516. Target row: prove NVMe/AHCI BAR mappings are owned resources dropped on probe failure and remove, with Linux-style hosted leak/fault proof plus x86_64/aarch64 fast smokes. Source audit just started. |
 
 ## B514 Current
 
