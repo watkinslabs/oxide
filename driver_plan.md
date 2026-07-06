@@ -2,7 +2,7 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B580-net-live-rebind-loops-proof in audit
+ACTIVE NOW: B580-net-live-rebind-loops-proof VERIFIED LOCAL
 
 Current active item: B580-net-live-rebind-loops-proof. Prove repeated
 virtio-net bind/unbind/remove/readd behavior under QEMU on x86_64 and aarch64.
@@ -12,8 +12,8 @@ fresh-main post-merge `make smoke` passed with aarch64 reaching
 `oxide login:` in 28s, and standalone x86_64 smoke reached `oxide login:` in
 12s.
 
-Next gate: audit the current virtio-net live proof, add repeated remove/readd
-coverage or kernel fixes, then verify x86_64 and aarch64 before merge.
+Next gate: commit B580, push with pre-push smoke, open/merge PR, refresh main,
+then record the merged state on a D128 ledger branch.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -371,7 +371,7 @@ Status legend:
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for PCI. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for virtio parent/child. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for block. |
-| ACTIVE | B580-net-live-rebind-loops-proof | Prove repeated bind/unbind/remove/readd loops under QEMU for net. Claim made from fresh `main` at D127 ledger merge `eedff2ef`; `metadata/index.md` advanced B 580 -> 581 on this branch. |
+| VERIFIED LOCAL | B580-net-live-rebind-loops-proof | Net repeated bind/unbind/remove/readd is proven locally under QEMU on x86_64 and aarch64. B580 extends `/bin/virtio_net_multidev_probe` to run three sysfs unbind/rebind loops against the second virtio-net child, fails if the removed netdev's old `/sys/class/net/<eth>/address` path remains visible after unbind, and re-proves two `eth*` devices with address and RX stats after every rebind. Kernel fix: netdev unregister now calls a sysfs remove hook after dropping the netdev registry lock, invalidating stale `/sys/class/net/<name>` and `/sys/devices/virtual/net/<name>` dentries. Checks pass: `cargo test -q -p net -p sysfs -p drv-virtio-net -- --nocapture --test-threads=1` with net 17/17, sysfs 246/246, and virtio-net 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-net-multidev.sh`; line caps (`netdev.rs` 391, `sysfs/src/lib.rs` 485, `virtio_net_multidev_probe.c` 269, `boot-smoke-virtio-net-multidev.sh` 138); x86_64 `/tmp/b580-x86-virtio-net-multidev.log`; aarch64 `/tmp/b580-arm-virtio-net-multidev.log`. |
 | VERIFIED MERGED | B579-gpu-live-rebind-loops-proof | DRM/fbdev repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. The virtio-gpu multidev probe now runs three sysfs unbind/rebind loops against the second virtio-gpu child, fails if `/dev/dri/card1` or `/sys/class/drm/card1` remains visible after unbind, re-proves both DRM cards after every rebind, and the QMP-capable wrapper drives mouseprobe after the GPU loops. Checks pass: `cargo test -q -p drv-virtio-gpu -p drm -p fbdev -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, `bash -n tools/boot-smoke-virtio-gpu-multidev.sh`, line caps (`virtio_gpu_multidev_probe.c` 281, `boot-smoke-virtio-gpu-multidev.sh` 138), x86_64 `/tmp/b579-x86-virtio-gpu-multidev.log`, aarch64 `/tmp/b579-arm-virtio-gpu-multidev.log`, pre-push smoke on both arches, PR #2679 merged as `808d8c37`, fresh-main post-merge `make smoke` passed with aarch64 reaching `oxide login:` in 28s, and standalone x86_64 smoke reached `oxide login:` in 12s. D127 records the merged state and advances D 127 -> 128. |
 | VERIFIED MERGED | B576-virtio-input-live-rebind-proof | Virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. B576 adds `/bin/virtio_input_rebind_probe`, targeted smoke wrapper/Make targets, and rootfs mode/cache wiring. Kernel fixes: devtmpfs hot-unplug invalidates stale `/dev/input/eventN` dentries and sysfs model remove invalidates stale `/sys/devices/virtual/input/eventN` plus `/sys/class/input/eventN` dentries. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b576-x86-virtio-input-rebind.log`, aarch64 `/tmp/b576-arm-virtio-input-rebind.log`, PR #2674 merged as `1753d2b1`, and fresh-main post-merge login smokes reached `oxide login:` on x86_64 in 46s and aarch64 in 52s. |
 | VERIFIED MERGED | B578-sound-live-rebind-proof | Sound repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. The virtio-snd multidev probe now runs three sysfs unbind/rebind loops against the second virtio-snd child, proves card-1 ALSA and OSS devnodes disappear after unbind, and re-proves two cards plus control and direct playback/capture PCM_INFO state after each rebind. Checks pass: `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_snd_multidev_probe.c` 418, `boot-smoke-virtio-snd-multidev.sh` 87), x86_64 `/tmp/b578-x86-virtio-snd-multidev.log`, aarch64 `/tmp/b578-arm-virtio-snd-multidev.log`, PR #2677 merged as `3ce6e1bd`, fresh-main `make smoke` passed with aarch64 reaching `oxide login:` in 28s, and standalone x86_64 smoke reached `oxide login:` in 12s. |
