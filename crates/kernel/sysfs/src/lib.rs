@@ -33,6 +33,9 @@ pub mod net_stats;
 pub mod root;
 pub mod tty;
 
+#[cfg(test)]
+mod net_tests;
+
 pub use root::{register, register_dir, sys_root, SYSFS_FSID};
 
 const ARPHRD_LOOPBACK: u16 = 772;
@@ -315,7 +318,11 @@ impl SysfsOps for NetIfaceData {
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
         if attr == "uevent" {
             let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
-            ::netlink::emit_uevent(uevent_action(buf), &devpath, "net");
+            let devtype = String::from("DEVTYPE=");
+            let iface = alloc::format!("INTERFACE={}", self.name);
+            let ifindex = alloc::format!("IFINDEX={}", lookup_net_ifindex(&self.name));
+            ::netlink::emit_uevent_with_env(
+                uevent_action(buf), &devpath, "net", &[&devtype, &iface, &ifindex]);
             return Ok(buf.len());
         }
         Err(VfsError::Erofs)
