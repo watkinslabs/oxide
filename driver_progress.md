@@ -5,8 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: D133-b585-ledger-merged records B585 as VERIFIED MERGED.
-Next: merge the ledger branch, refresh main, then claim B586 from fresh main.
+Current marker: B586-ps2-live-rebind-loops-proof is ACTIVE on branch
+`B586-ps2-live-rebind-loops-proof`. Target: repeated PS/2/i8042
+bind/unbind/remove/readd proof under QEMU on x86_64 plus correct aarch64
+no-device behavior.
+
+## B586 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B586-ps2-live-rebind-loops-proof | ACTIVE | Fresh `main` at D133 ledger merge `9fbf1155`; B585 PR #2693 and ledger PR #2694 are merged, and `metadata/index.md` advanced B 586 -> 587 on this branch. Audit/code/test pending. |
 
 ## B585 Current
 
