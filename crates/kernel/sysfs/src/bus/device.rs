@@ -9,6 +9,7 @@ use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
 use crate::{make_symlink_inode_ino, DIR_PERM, RO_PERM, RW_PERM};
 
 use super::ids::{dev_root_canon, INO_ATTR, INO_DEVICE_DIR, INO_SYMLINK};
+use super::index::dev_devpath;
 
 const DEV_ATTR: Attribute = Attribute { name: "dev", mode: RO_PERM };
 const PCI_RESOURCE_ATTRS: [Attribute; 6] = [
@@ -187,7 +188,7 @@ impl SysfsOps for DeviceKobj {
             }
             "uevent" => {
                 let action = crate::uevent_action(buf);
-                let devpath = alloc::format!("/{}/{}", dev_root_canon(dev.bus), dev.addr);
+                let devpath = dev_devpath(&dev);
                 let env = dev_uevent_env(&dev);
                 let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
                 ::netlink::emit_uevent_with_env(action, &devpath, dev.bus, &refs);
