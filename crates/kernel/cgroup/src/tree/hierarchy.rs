@@ -126,6 +126,53 @@ impl Tree {
         self.nodes.get(&id)?.children.get(name).copied()
     }
 
+    /// DAC owner `(uid, gid)` of node `id`'s DIRECTORY inode (root:root if the
+    /// node is gone). # C: O(log n)
+    pub fn dir_owner(&self, id: u64) -> (u32, u32) {
+        self.nodes.get(&id).map(|n| (n.uid, n.gid)).unwrap_or((0, 0))
+    }
+
+    /// DAC owner `(uid, gid)` of control file `(id, file)`: the per-file chown
+    /// override if present, else the node's frozen creation owner. # C: O(log n)
+    pub fn file_owner(&self, id: u64, file: &str) -> (u32, u32) {
+        match self.nodes.get(&id) {
+            Some(n) => n.file_owner.get(file).copied().unwrap_or((n.file_uid, n.file_gid)),
+            None => (0, 0),
+        }
+    }
+
+    /// `chown(2)` the cgroup DIRECTORY inode — persists so the re-synthesized
+    /// inode keeps the owner (systemd delegation). ENOENT if the node is gone.
+    /// # C: O(log n)
+    pub fn set_dir_owner(&mut self, id: u64, uid: u32, gid: u32) -> KResult<()> {
+        let n = self.nodes.get_mut(&id).ok_or(VfsError::Enoent)?;
+        n.uid = uid;
+        n.gid = gid;
+        Ok(())
+    }
+
+    /// `chown(2)` a single control-file inode `(id, file)` — records a per-file
+    /// override (systemd delegates cgroup.procs/threads/subtree_control this
+    /// way). ENOENT if the node is gone. # C: O(log n)
+    pub fn set_file_owner(&mut self, id: u64, file: &str, uid: u32, gid: u32) -> KResult<()> {
+        let n = self.nodes.get_mut(&id).ok_or(VfsError::Enoent)?;
+        n.file_owner.insert(file.to_string(), (uid, gid));
+        Ok(())
+    }
+
+    /// Stamp the creating task's owner on a freshly created node (Linux
+    /// `cgroup_create` uses `current_fsuid`/`current_fsgid`): sets the directory
+    /// owner AND the frozen control-file default so a delegated user's own
+    /// sub-cgroups are user-owned. # C: O(log n)
+    pub fn set_created_owner(&mut self, id: u64, uid: u32, gid: u32) {
+        if let Some(n) = self.nodes.get_mut(&id) {
+            n.uid = uid;
+            n.gid = gid;
+            n.file_uid = uid;
+            n.file_gid = gid;
+        }
+    }
+
     /// Ordered child-cgroup names of `id`.
     /// # C: O(children)
     pub fn child_names(&self, id: u64) -> Vec<String> {
