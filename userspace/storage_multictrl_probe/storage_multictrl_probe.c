@@ -13,6 +13,7 @@
 #define MAX_DEVS 8
 #define MAX_NAME 64
 #define MAX_PATH 160
+#define MAX_ATTR 64
 #define RETRIES 50
 #define SLEEP_US 100000
 
@@ -60,6 +61,44 @@ static int require_block_name(const char *name, const char *tag) {
         return 1;
     }
     printf("%s: PASS /sys/block/%s\n", tag, name);
+    return 0;
+}
+
+static int read_attr(const char *path, char *buf, size_t len) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, buf, len - 1);
+    int saved = errno;
+    close(fd);
+    if (n < 0) { errno = saved; return -1; }
+    buf[n] = '\0';
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ')) {
+        buf[n - 1] = '\0';
+        n--;
+    }
+    return 0;
+}
+
+static int read_block_serial(const char *name, char *buf, size_t len) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "/sys/block/%s/device/serial", name);
+    return read_attr(path, buf, len);
+}
+
+static int require_ahci_serials(void) {
+    char sda[MAX_ATTR], sdb[MAX_ATTR];
+    if (read_block_serial("sda", sda, sizeof sda) ||
+        read_block_serial("sdb", sdb, sizeof sdb)) {
+        printf("storage_ahci_identify_serial: FAIL read errno=%d\n", errno);
+        return 1;
+    }
+    int have0 = !strcmp(sda, "oxahci0") || !strcmp(sdb, "oxahci0");
+    int have1 = !strcmp(sda, "oxahci1") || !strcmp(sdb, "oxahci1");
+    if (!have0 || !have1 || !strcmp(sda, sdb)) {
+        printf("storage_ahci_identify_serial: FAIL sda=%s sdb=%s\n", sda, sdb);
+        return 1;
+    }
+    printf("storage_ahci_identify_serial: PASS sda=%s sdb=%s\n", sda, sdb);
     return 0;
 }
 
@@ -194,7 +233,8 @@ int main(void) {
         require_block_name("nvme1n1", "storage_nvme1n1_initial") ||
         require_count("sd", 2, "storage_ahci_initial") ||
         require_block_name("sda", "storage_sda_initial") ||
-        require_block_name("sdb", "storage_sdb_initial")) return 1;
+        require_block_name("sdb", "storage_sdb_initial") ||
+        require_ahci_serials()) return 1;
     if (exercise("nvme", "/sys/bus/pci/drivers/nvme", "nvme") ||
         exercise("ahci", "/sys/bus/pci/drivers/ahci", "sd")) return 1;
     emit_line("driver_path_smoke: PASS - storage-multictrl-rebind\n");

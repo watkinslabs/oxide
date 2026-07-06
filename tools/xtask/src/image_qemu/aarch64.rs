@@ -157,7 +157,7 @@ pub(super) fn qemu_run_aarch64_grub(
         // sata0, and self-tests an LBA-0 read.
         "-device", "ich9-ahci,id=ahci,bus=pcie.0",
         "-drive", ahci_drive.as_str(),
-        "-device", "ide-hd,drive=sata0,bus=ahci.0",
+        "-device", "ide-hd,drive=sata0,bus=ahci.0,serial=oxahci0",
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         "-display", if headless { "none" } else { "gtk" },
@@ -195,7 +195,7 @@ pub(super) fn qemu_run_aarch64_grub(
             "-device", "nvme,serial=oxnvme1,drive=nvm1,bus=pcie.0",
             "-device", "ich9-ahci,id=ahci1,bus=pcie.0",
             "-drive", ahci1_drive.as_str(),
-            "-device", "ide-hd,drive=sata1,bus=ahci1.0",
+            "-device", "ide-hd,drive=sata1,bus=ahci1.0,serial=oxahci1",
         ]);
     }
     eprintln!("xtask grub: launching qemu-system-aarch64 (OVMF→GRUB→EFI-stub), smp={smp}, headless={headless}");
