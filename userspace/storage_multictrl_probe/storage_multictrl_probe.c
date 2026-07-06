@@ -115,6 +115,22 @@ static int write_token(const char *driver, const char *leaf, const char *token, 
     return 0;
 }
 
+static int write_token_fails(const char *driver, const char *leaf, const char *token, const char *tag) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s/%s", driver, leaf);
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) { printf("%s: FAIL open errno=%d\n", tag, errno); return 1; }
+    ssize_t n = write(fd, token, strlen(token));
+    int saved = errno;
+    close(fd);
+    if (n >= 0) {
+        printf("%s: FAIL write unexpectedly succeeded n=%ld token=%s\n", tag, (long)n, token);
+        return 1;
+    }
+    printf("%s: PASS errno=%d\n", tag, saved);
+    return 0;
+}
+
 static int require_count(const char *prefix, int want, const char *tag) {
     int got = count_block_prefix(prefix);
     if (got < want) {
@@ -137,6 +153,16 @@ static int exercise(const char *name, const char *driver, const char *prefix) {
     int before = count_block_prefix(prefix);
     printf("storage_multictrl_probe: %s selected addr=%s before=%d\n", name, dev, before);
     char tag[MAX_NAME];
+    snprintf(tag, sizeof tag, "storage_%s_duplicate_bind", name);
+    if (write_token_fails(driver, "bind", dev, tag)) return 1;
+    if (!device_bound(driver, dev)) { printf("storage_multictrl_probe: FAIL %s duplicate unbound\n", name); return 1; }
+    if (count_block_prefix(prefix) != before) {
+        printf("storage_multictrl_probe: FAIL %s duplicate count=%d want=%d\n",
+               name, count_block_prefix(prefix), before);
+        return 1;
+    }
+    printf("storage_multictrl_probe: PASS %s duplicate rejected count=%d\n", name, before);
+
     snprintf(tag, sizeof tag, "storage_%s_unbind_write", name);
     if (write_token(driver, "unbind", dev, tag)) return 1;
     if (device_bound(driver, dev)) { printf("storage_multictrl_probe: FAIL %s still bound\n", name); return 1; }
