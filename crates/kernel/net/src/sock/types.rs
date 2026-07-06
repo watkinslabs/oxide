@@ -149,6 +149,21 @@ pub struct SockOpts {
     pub ip_tos:    core::sync::atomic::AtomicI32,
     pub ip_pktinfo: core::sync::atomic::AtomicI32, pub ip_mcast_ttl: core::sync::atomic::AtomicI32, pub ip_mcast_loop: core::sync::atomic::AtomicI32, pub ip_mcast_ifaddr: core::sync::atomic::AtomicU32, pub ip_mcast_ifindex: core::sync::atomic::AtomicU32,
     pub ipv6_v6only: core::sync::atomic::AtomicI32,
+    /// IPV6_UNICAST_HOPS / IPV6_MULTICAST_HOPS: outbound hop limit for
+    /// unicast / multicast IPv6 datagrams. Linux sentinel `-1` = derive the
+    /// per-route/interface default (64 unicast, 1 multicast); an explicit
+    /// `0..=255` overrides. avahi sets both to 255 (mDNS RFC 6762 §11).
+    pub ipv6_ucast_hops: core::sync::atomic::AtomicI32,
+    pub ipv6_mcast_hops: core::sync::atomic::AtomicI32,
+    /// IPV6_MULTICAST_LOOP: loop multicast TX back to local members (default 1).
+    pub ipv6_mcast_loop: core::sync::atomic::AtomicI32,
+    /// IPV6_MULTICAST_IF: outbound multicast interface index (0 = unset).
+    pub ipv6_mcast_ifindex: core::sync::atomic::AtomicU32,
+    /// IPV6_RECVPKTINFO: deliver IPV6_PKTINFO ancillary (dst addr + ifindex)
+    /// on recvmsg. IPV6_RECVHOPLIMIT: deliver IPV6_HOPLIMIT ancillary (the
+    /// received hop limit; avahi enforces == 255 for on-link mDNS).
+    pub ipv6_recvpktinfo: core::sync::atomic::AtomicI32,
+    pub ipv6_recvhoplimit: core::sync::atomic::AtomicI32,
     /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
@@ -189,6 +204,12 @@ impl Default for SockOpts {
             ip_tos:      AtomicI32::new(0),
             ip_pktinfo:  AtomicI32::new(0), ip_mcast_ttl: AtomicI32::new(1), ip_mcast_loop: AtomicI32::new(1), ip_mcast_ifaddr: AtomicU32::new(0), ip_mcast_ifindex: AtomicU32::new(0),
             ipv6_v6only: AtomicI32::new(0),
+            ipv6_ucast_hops: AtomicI32::new(-1),
+            ipv6_mcast_hops: AtomicI32::new(-1),
+            ipv6_mcast_loop: AtomicI32::new(1),
+            ipv6_mcast_ifindex: AtomicU32::new(0),
+            ipv6_recvpktinfo: AtomicI32::new(0),
+            ipv6_recvhoplimit: AtomicI32::new(0),
             bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
             tcp_cork:    AtomicI32::new(0),

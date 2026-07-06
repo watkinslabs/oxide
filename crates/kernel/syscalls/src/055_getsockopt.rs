@@ -79,7 +79,13 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IP_MULTICAST_LOOP: u64 = 34;
     const IP_MSFILTER: u64 = 41;
     const MCAST_MSFILTER: u64 = 48;
+    const IPV6_UNICAST_HOPS: u64 = 16;
+    const IPV6_MULTICAST_IF: u64 = 17;
+    const IPV6_MULTICAST_HOPS: u64 = 18;
+    const IPV6_MULTICAST_LOOP: u64 = 19;
     const IPV6_V6ONLY: u64 = 26;
+    const IPV6_RECVPKTINFO: u64 = 49;
+    const IPV6_RECVHOPLIMIT: u64 = 51;
     const TCP_CORK: u64 = 3;
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
@@ -126,6 +132,12 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IP, IP_MSFILTER) => return ipv4_msfilter_get(&s, optval, optlen_p),
             (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_group_filter_get(&s, optval, optlen_p),
             (IPPROTO_IPV6, IPV6_V6ONLY) => return i32_back(s.opts.ipv6_v6only.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => return i32_back(s.opts.ipv6_ucast_hops.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => return i32_back(s.opts.ipv6_mcast_hops.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => return i32_back(s.opts.ipv6_mcast_loop.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_MULTICAST_IF) => return i32_back(s.opts.ipv6_mcast_ifindex.load(Ordering::Acquire) as i32),
+            (IPPROTO_IPV6, IPV6_RECVPKTINFO) => return i32_back(s.opts.ipv6_recvpktinfo.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => return i32_back(s.opts.ipv6_recvhoplimit.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),

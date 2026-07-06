@@ -159,7 +159,7 @@ fn net_udp6_body() -> alloc::vec::Vec<u8> {
     let map = stack.udp6_map().lock();
     let mut sl: u32 = 0;
     for q in map.values() {
-        let rx_len: usize = q.q.lock().iter().map(|(_, _, p)| p.len()).sum();
+        let rx_len: usize = q.q.lock().iter().map(|(.., p)| p.len()).sum();
         let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
             sl, proc_ipv6_hex(q.bound_ip), q.bound_port, proc_ipv6_hex(Ipv6Addr::ANY), rx_len);
         sl += 1;
