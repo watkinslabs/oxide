@@ -115,6 +115,30 @@ unsafe fn cfg_payload(cfg_va: u64, dst: &mut [u8]) -> usize {
     n
 }
 
+pub(crate) trait InputConfigAccess {
+    fn select(&mut self, select: u8, subsel: u8) -> u8;
+    fn payload(&mut self, dst: &mut [u8]) -> usize;
+    fn payload_u8(&mut self, off: u64) -> u8;
+}
+
+struct MmioInputConfig {
+    cfg_va: u64,
+}
+
+impl InputConfigAccess for MmioInputConfig {
+    fn select(&mut self, select: u8, subsel: u8) -> u8 {
+        unsafe { cfg_select(self.cfg_va, select, subsel) }
+    }
+
+    fn payload(&mut self, dst: &mut [u8]) -> usize {
+        unsafe { cfg_payload(self.cfg_va, dst) }
+    }
+
+    fn payload_u8(&mut self, off: u64) -> u8 {
+        unsafe { core::ptr::read_volatile((self.cfg_va + INPUT_CFG_PAYLOAD_OFF + off) as *const u8) }
+    }
+}
+
 fn set_cap_bit(bits: &mut [u8], bit: u16) {
     let byte = (bit / INPUT_BYTE_BITS) as usize;
     let shift = bit % INPUT_BYTE_BITS;
@@ -137,6 +161,22 @@ pub fn install_device(
     if cfg_va == 0 {
         return None;
     }
+    let mut cfg = MmioInputConfig { cfg_va };
+    install_device_with_config(device_key, &mut cfg)
+}
+
+#[cfg(test)]
+pub(crate) fn install_device_with_config_for_tests<C: InputConfigAccess>(
+    device_key: virtio::VirtioChildDeviceKey,
+    cfg: &mut C,
+) -> Option<u32> {
+    install_device_with_config(device_key, cfg)
+}
+
+fn install_device_with_config<C: InputConfigAccess>(
+    device_key: virtio::VirtioChildDeviceKey,
+    cfg: &mut C,
+) -> Option<u32> {
     let evdev_id = {
         let g = DEVICES.lock();
         if g.iter().any(|d| d.device_key == device_key) {
@@ -162,18 +202,16 @@ pub fn install_device(
         prop_bits: [0; 4],
         repeat: DEFAULT_REPEAT,
     };
-    unsafe {
-        let _ = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ID_NAME, 0);
-        dev.name_len = cfg_payload(cfg_va, &mut dev.name);
-        let _ = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ID_SERIAL, 0);
-        dev.serial_len = cfg_payload(cfg_va, &mut dev.serial);
-        let n = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ID_DEVIDS, 0);
+    {
+        let _ = cfg.select(VIRTIO_INPUT_CFG_ID_NAME, 0);
+        dev.name_len = cfg.payload(&mut dev.name);
+        let _ = cfg.select(VIRTIO_INPUT_CFG_ID_SERIAL, 0);
+        dev.serial_len = cfg.payload(&mut dev.serial);
+        let n = cfg.select(VIRTIO_INPUT_CFG_ID_DEVIDS, 0);
         if n >= INPUT_DEVIDS_BYTES {
-            let rd16 = |o: u64| {
-                (core::ptr::read_volatile((cfg_va + INPUT_CFG_PAYLOAD_OFF + o) as *const u8) as u16)
-                    | ((core::ptr::read_volatile(
-                        (cfg_va + INPUT_CFG_PAYLOAD_OFF + o + INPUT_LE16_HIGH_BYTE_OFF) as *const u8,
-                    ) as u16) << INPUT_BYTE_BITS)
+            let mut rd16 = |o: u64| {
+                (cfg.payload_u8(o) as u16)
+                    | ((cfg.payload_u8(o + INPUT_LE16_HIGH_BYTE_OFF) as u16) << INPUT_BYTE_BITS)
             };
             dev.ids = VirtioInputDevIds {
                 bustype: rd16(0),
@@ -182,28 +220,28 @@ pub fn install_device(
                 version: rd16(INPUT_DEVIDS_VERSION_OFF),
             };
         }
-        let _ = cfg_select(cfg_va, VIRTIO_INPUT_CFG_PROP_BITS, 0);
-        let _ = cfg_payload(cfg_va, &mut dev.prop_bits);
+        let _ = cfg.select(VIRTIO_INPUT_CFG_PROP_BITS, 0);
+        let _ = cfg.payload(&mut dev.prop_bits);
         let mut abs_sz = 0u8;
         for ty in 0u8..INPUT_EV_TYPE_COUNT {
-            let sz = cfg_select(cfg_va, VIRTIO_INPUT_CFG_EV_BITS, ty);
+            let sz = cfg.select(VIRTIO_INPUT_CFG_EV_BITS, ty);
             if sz == 0 {
                 continue;
             }
             set_cap_bit(&mut dev.ev_bits, ty as u16);
             match ty as u16 {
                 EV_KEY => {
-                    let _ = cfg_payload(cfg_va, &mut dev.key_bits.bits);
+                    let _ = cfg.payload(&mut dev.key_bits.bits);
                 }
                 EV_REL => {
-                    let _ = cfg_payload(cfg_va, &mut dev.rel_bits.bits);
+                    let _ = cfg.payload(&mut dev.rel_bits.bits);
                 }
                 EV_ABS => {
                     abs_sz = sz;
-                    let _ = cfg_payload(cfg_va, &mut dev.abs_bits.bits);
+                    let _ = cfg.payload(&mut dev.abs_bits.bits);
                 }
                 EV_LED => {
-                    let _ = cfg_payload(cfg_va, &mut dev.led_bits.bits);
+                    let _ = cfg.payload(&mut dev.led_bits.bits);
                 }
                 _ => {}
             }
@@ -213,15 +251,13 @@ pub fn install_device(
                 if !cap_bit_is_set(&dev.abs_bits.bits, axis as u16) {
                     continue;
                 }
-                let m = cfg_select(cfg_va, VIRTIO_INPUT_CFG_ABS_INFO, axis);
+                let m = cfg.select(VIRTIO_INPUT_CFG_ABS_INFO, axis);
                 if m >= INPUT_ABS_INFO_BYTES {
-                    let rd32 = |o: u64| {
+                    let mut rd32 = |o: u64| {
                         let mut v = 0u32;
                         for b in 0..INPUT_U32_BYTES {
                             let shift = (b as u32) * INPUT_BYTE_BITS as u32;
-                            v |= (core::ptr::read_volatile(
-                                (cfg_va + INPUT_CFG_PAYLOAD_OFF + o + b as u64) as *const u8,
-                            ) as u32) << shift;
+                            v |= (cfg.payload_u8(o + b as u64) as u32) << shift;
                         }
                         v
                     };
