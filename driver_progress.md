@@ -5,14 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B521-virtio-pci-msix-state-proof audits row 175, Virtio-pci owns
-MSI-X state.
+Current marker: no active row. B521-virtio-pci-msix-state-proof is VERIFIED on
+branch `B521-virtio-pci-msix-state-proof`; pending commit, push, PR, merge,
+branch cleanup, and fresh `main` sync before claiming the next row.
 
 ## B521 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B521-virtio-pci-msix-state-proof | IN AUDIT | Fresh `main` at merge commit `69df3ca1` after B520 PR #2617 merge and branch cleanup. `metadata/index.md` advanced B 521 -> 522. Source audit in progress for virtio-pci MSI-X state ownership, including probe-state binding records, failed-probe cleanup, persistent transport records, teardown order, and x86_64/aarch64 runtime gates. |
+| B521-virtio-pci-msix-state-proof | VERIFIED | Fresh `main` at merge commit `69df3ca1` after B520 PR #2617 merge and branch cleanup. `metadata/index.md` advanced B 521 -> 522. Source audit proves `VirtioProbeState` owns the in-probe `Vec<MsixBinding>`, deduplicates bindings by queue vector, records table entry VA/capability offset/MSI ID/queue vector per binding, unmasks only after `DRIVER_OK`, transfers failed-probe state into `VirtioProbeDevres`, releases failed-probe MSI-X before disabling PCI command decode/unmapping MMIO/freeing frames, and moves successful bindings into the persistent `TransportRecord` for teardown by device key or BDF. Patch removes the impossible zero-ID sentinel skip from MSI-X release and names the remaining MSI message/page/vector-control literals. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate with child suites 20/20, 36/36, 36/36, 16/16, 8/8, 11/11, 9/9 plus shared virtio 44/44; line caps (`virtio_transport/msix.rs` 471, `virtio_drv/probe_state.rs` 299, `virtio_drv/mod.rs` 20, `virtio_transport.rs` 274, `virtio_transport/devres.rs` 68); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 28s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 34s. |
 
 ## B520 Current
 

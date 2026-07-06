@@ -7,6 +7,11 @@ mod arch;
 mod log;
 
 const MSI_MESSAGE_ADDRESS_LOW_MASK: u64 = 0xFFFF_FFFF;
+#[cfg(target_arch = "x86_64")]
+const X86_APIC_MSI_MESSAGE_ADDRESS: u64 = 0xFEE0_0000;
+#[cfg(target_arch = "aarch64")]
+const GICV2M_SETSPI_NSR_OFFSET: u64 = 0x40;
+const MSIX_VECTOR_CONTROL_UNMASKED: u32 = 0;
 
 #[cfg(target_arch = "aarch64")]
 const ITS_DEVICE_SLOTS: usize = 32;
@@ -102,7 +107,10 @@ fn write_msix_entry(entry_va: u64, msg_addr: u64, msg_data: u32) {
         core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
         core::ptr::write_volatile((entry_va + 8) as *mut u32, msg_data);
         let _ = core::ptr::read_volatile((entry_va + 8) as *const u32);
-        core::ptr::write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, 0);
+        core::ptr::write_volatile(
+            (entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
+            MSIX_VECTOR_CONTROL_UNMASKED,
+        );
         let _ = core::ptr::read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
     }
     arch::mmio_flush();
@@ -285,7 +293,8 @@ fn alloc_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, u32)
     #[cfg(target_arch = "x86_64")]
     {
         let _ = (bdf, queue_vector);
-        arch_irq::alloc_x86_vector().map(|vec| (vec as u32, 0xFEE0_0000u64, vec as u32))
+        arch_irq::alloc_x86_vector()
+            .map(|vec| (vec as u32, X86_APIC_MSI_MESSAGE_ADDRESS, vec as u32))
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -303,7 +312,7 @@ fn alloc_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, u32)
             let _ = arch_irq::free_arm_spi(spi);
             return None;
         }
-        Some((spi, v2m_pa + 0x40, spi))
+        Some((spi, v2m_pa + GICV2M_SETSPI_NSR_OFFSET, spi))
     }
 }
 
@@ -455,9 +464,6 @@ fn register_msi_handler(id: u32, handler: fn()) -> bool {
 }
 
 fn free_msi_id(id: u32) {
-    if id == 0 {
-        return;
-    }
     #[cfg(target_arch = "x86_64")]
     let _ = arch_irq::free_x86_vector(id as u8);
     #[cfg(target_arch = "aarch64")]
