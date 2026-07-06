@@ -1,4 +1,5 @@
 use super::*;
+mod prepost;
     use core::sync::atomic::AtomicU64;
 
     static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
