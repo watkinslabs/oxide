@@ -12,6 +12,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <stdio.h>
+#include <sys/stat.h>
 
 static void emit(const char *m) { write(1, m, strlen(m)); }
 
@@ -25,6 +27,62 @@ static long read_attr(const char *path, char *buf, long cap) {
     if (n < 0) return -1;
     buf[n] = '\0';
     return n;
+}
+
+static void trim_lf(char *s) {
+    char *p = strchr(s, '\n');
+    if (p) *p = '\0';
+}
+
+static int dir_has(const char *path, const char *name) {
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (!strcmp(e->d_name, name)) {
+            closedir(d);
+            return 1;
+        }
+    }
+    closedir(d);
+    return 0;
+}
+
+static int check_dev_index(const char *kind, const char *dev,
+                           const char *target, const char *tag) {
+    char path[128], attr[160], link[160], buf[64];
+    struct stat st;
+    snprintf(path, sizeof path, "/sys/dev/%s/%s", kind, dev);
+    if (lstat(path, &st) < 0 || !S_ISLNK(st.st_mode)) {
+        printf("%s: FAIL missing-symlink path=%s\n", tag, path);
+        return 1;
+    }
+    ssize_t n = readlink(path, link, sizeof link - 1);
+    if (n < 0) {
+        printf("%s: FAIL readlink path=%s\n", tag, path);
+        return 1;
+    }
+    link[n] = '\0';
+    if (target[0] == '*' ? !strstr(link, target + 1) : strcmp(link, target)) {
+        printf("%s: FAIL target=%s expected=%s\n", tag, link, target);
+        return 1;
+    }
+    snprintf(attr, sizeof attr, "%s/dev", path);
+    if (read_attr(attr, buf, sizeof buf) < 0) {
+        printf("%s: FAIL resolved-dev path=%s\n", tag, attr);
+        return 1;
+    }
+    trim_lf(buf);
+    if (strcmp(buf, dev)) {
+        printf("%s: FAIL resolved-dev=%s expected=%s\n", tag, buf, dev);
+        return 1;
+    }
+    if (!dir_has(kind[0] == 'b' ? "/sys/dev/block" : "/sys/dev/char", dev)) {
+        printf("%s: FAIL readdir-missing dev=%s\n", tag, dev);
+        return 1;
+    }
+    printf("%s: PASS dev=%s target=%s\n", tag, dev, target);
+    return 0;
 }
 
 int main(void) {
@@ -54,6 +112,9 @@ int main(void) {
     if (read_attr("/sys/block/vda/dev", buf, sizeof buf) < 0 || !strchr(buf, ':')) {
         emit("sysblock_probe: FAIL dev\n"); return 1;
     }
+    trim_lf(buf);
+    char vda_dev[64];
+    snprintf(vda_dev, sizeof vda_dev, "%s", buf);
 
     // At least one disk dir is enumerable via opendir(/sys/block).
     DIR *d = opendir("/sys/block");
@@ -66,6 +127,13 @@ int main(void) {
     }
     closedir(d);
     if (ndisks < 1) { emit("sysblock_probe: FAIL no disks\n"); return 1; }
+
+    if (check_dev_index("block", vda_dev, "../../devices/virtual/block/vda",
+                        "b588_sys_dev_block_vda")) return 1;
+    if (check_dev_index("char", "1:3", "../../devices/virtual/mem/null",
+                        "b588_sys_dev_char_null")) return 1;
+    if (check_dev_index("char", "226:0", "*/drm/card0",
+                        "b588_sys_dev_char_drm_card0")) return 1;
 
     char out[64]; int p = 0;
     const char *pre = "sysblock_probe: PASS vda_size=";
