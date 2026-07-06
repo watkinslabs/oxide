@@ -6,6 +6,22 @@ use crate::acpi::read::{read_u32_le, read_u64_le};
 /// know what to device-map.
 pub static ECAM_BASE_PA: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0);
+/// First-segment MCFG start bus. Valid only when `ECAM_BASE_PA != 0`.
+pub static ECAM_BUS_START: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(0);
+/// First-segment MCFG end bus. Valid only when `ECAM_BASE_PA != 0`.
+pub static ECAM_BUS_END: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(0);
+
+/// Number of bus numbers addressable from the published first ECAM segment.
+/// # C: O(1)
+pub fn ecam_bus_cap() -> u16 {
+    if ECAM_BASE_PA.load(core::sync::atomic::Ordering::Acquire) == 0 {
+        return 0;
+    }
+    let end = ECAM_BUS_END.load(core::sync::atomic::Ordering::Acquire).min(255);
+    (end + 1) as u16
+}
 
 /// Physical base of the first GICv2m MSI frame discovered via MADT
 /// type-13 entries (ACPI 6.4 Table 5.50). Zero = no GICv2m frame
@@ -295,6 +311,8 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
             let end_bus    = core::ptr::read_volatile(p.add(off + 11));
             if i == 0 {
                 ECAM_BASE_PA.store(base, core::sync::atomic::Ordering::Release);
+                ECAM_BUS_START.store(start_bus as u32, core::sync::atomic::Ordering::Release);
+                ECAM_BUS_END.store(end_bus as u32, core::sync::atomic::Ordering::Release);
             }
             alog_raw(b"[INFO]    mcfg ecam pa=");
             alog_hex(base);

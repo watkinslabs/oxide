@@ -53,7 +53,7 @@ pub fn parse_bdf_addr(addr: &str) -> Option<Bdf> {
 }
 
 /// `ConfigSpaceReader`: arch-specific accessor for the per-BDF 256-byte config
-/// space. x86 uses CF8/CFC; AArch64 ECAM MMIO.
+/// space. Production arches use ECAM MMIO.
 pub trait ConfigSpaceReader: Send + Sync {
     /// Read a u32 from `(bdf, offset)`. Offset must be 4-aligned.
     fn read32(&self, bdf: Bdf, offset: u8) -> u32;

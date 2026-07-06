@@ -1,82 +1,70 @@
-// Legacy PCI config-space accessor on x86. CF8 = 32-bit address,
-// CFC = 32-bit data. Per Intel® 82c93/PIIX-era convention; every
-// modern board still exposes the legacy mechanism even when ECAM
-// (PCIe extended config space) is also present.
-//
-// Address word: bit 31 = enable, bits 23..16 = bus, 15..11 = dev,
-// 10..8 = func, 7..2 = reg (4-byte aligned), 1..0 = 0.
+// PCIe ECAM config-space accessor for x86_64. docs/34 requires ECAM-only
+// config cycles, so the boot device-map publishes a kernel VA for the ACPI
+// MCFG segment before PCI enumeration runs.
 
 #[cfg(target_arch = "x86_64")]
-use core::arch::asm;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_arch = "x86_64")]
-pub struct LegacyPci;
+pub static ECAM_BASE_VA: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "x86_64")]
-impl LegacyPci {
-    fn cf8_address(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
-        0x8000_0000
-            | ((bus  as u32) << 16)
-            | ((dev  as u32) << 11)
-            | ((func as u32) << 8)
-            | ((reg  as u32) & 0xFC)
+pub struct EcamPci {
+    pub base_va: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl EcamPci {
+    /// Build from the boot-published ECAM VA. # C: O(1)
+    pub fn from_published() -> Option<Self> {
+        let v = ECAM_BASE_VA.load(Ordering::Acquire);
+        if v == 0 { None } else { Some(Self { base_va: v }) }
     }
 
-    /// # SAFETY: writes to I/O port 0xCF8 + reads from 0xCFC are
-    /// always-safe operations on x86 (no kernel-state side-effects
-    /// outside the config-space mechanism's hardware semantics).
+    #[inline]
+    fn ecam_addr(&self, bus: u8, dev: u8, func: u8, reg: u8) -> u64 {
+        self.base_va
+            + ((bus  as u64) << 20)
+            + ((dev  as u64) << 15)
+            + ((func as u64) << 12)
+            + ((reg  as u64) & 0xFC)
+    }
+
+    /// Read a 4-byte aligned dword from PCIe ECAM config space.
     /// # C: O(1)
     pub fn read32(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
-        let addr = Self::cf8_address(bus, dev, func, reg);
-        let val: u32;
-        // SAFETY: PCI config-space port-I/O via 0xCF8/0xCFC; well-defined on x86 since 1992; no memory operands.
-        unsafe {
-            asm!(
-                "out dx, eax",
-                in("dx") 0xCF8u16,
-                in("eax") addr,
-                options(nomem, nostack, preserves_flags),
-            );
-            asm!(
-                "in eax, dx",
-                in("dx") 0xCFCu16,
-                out("eax") val,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-        val
+        Self::from_published().map(|r| r.read32_at(bus, dev, func, reg)).unwrap_or(u32::MAX)
     }
 
-    /// # SAFETY: same as read32 — port I/O has well-defined
-    /// hardware behavior; PCI config space writes affect device
-    /// state only when the caller asks for it.
+    /// Write a 4-byte aligned dword to PCIe ECAM config space.
     /// # C: O(1)
     pub fn write32(bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
-        let addr = Self::cf8_address(bus, dev, func, reg);
-        // SAFETY: PCI config-space port-I/O via 0xCF8/0xCFC; mirror of read32 with `out` instead of `in`.
-        unsafe {
-            asm!(
-                "out dx, eax",
-                in("dx") 0xCF8u16,
-                in("eax") addr,
-                options(nomem, nostack, preserves_flags),
-            );
-            asm!(
-                "out dx, eax",
-                in("dx") 0xCFCu16,
-                in("eax") val,
-                options(nomem, nostack, preserves_flags),
-            );
+        if let Some(r) = Self::from_published() {
+            r.write32_at(bus, dev, func, reg, val);
         }
+    }
+
+    fn read32_at(&self, bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
+        let p = self.ecam_addr(bus, dev, func, reg) as *const u32;
+        // SAFETY: ECAM_BASE_VA is published only after the MCFG aperture is
+        // mapped Device-uncacheable; aligned volatile load hits config space.
+        unsafe { core::ptr::read_volatile(p) }
+    }
+
+    fn write32_at(&self, bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
+        let p = self.ecam_addr(bus, dev, func, reg) as *mut u32;
+        // SAFETY: same mapping contract as read32_at; aligned volatile store
+        // writes the requested device config dword.
+        unsafe { core::ptr::write_volatile(p, val); }
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-impl pci::ConfigSpaceReader for LegacyPci {
+impl pci::ConfigSpaceReader for EcamPci {
     fn read32(&self, bdf: pci::Bdf, offset: u8) -> u32 {
-        Self::read32(bdf.bus, bdf.device, bdf.function, offset)
+        self.read32_at(bdf.bus, bdf.device, bdf.function, offset)
     }
     fn write32(&self, bdf: pci::Bdf, offset: u8, val: u32) {
-        Self::write32(bdf.bus, bdf.device, bdf.function, offset, val);
+        self.write32_at(bdf.bus, bdf.device, bdf.function, offset, val);
     }
 }

@@ -265,8 +265,9 @@ pub(crate) fn release_failed_probe_frames(frames: &[u64]) {
 pub(crate) fn restore_pci_command(bdf: pci::Bdf, command_orig: u16) {
     #[cfg(target_arch = "x86_64")]
     {
-        let r = hal_x86_64::pci::LegacyPci;
-        let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
+        if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
+            let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -279,8 +280,9 @@ pub(crate) fn restore_pci_command(bdf: pci::Bdf, command_orig: u16) {
 pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
     #[cfg(target_arch = "x86_64")]
     {
-        let r = hal_x86_64::pci::LegacyPci;
-        let _ = pci::disable_mem_bus_master(&r, bdf);
+        if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
+            let _ = pci::disable_mem_bus_master(&r, bdf);
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {

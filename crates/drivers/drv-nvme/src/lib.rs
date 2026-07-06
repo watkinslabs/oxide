@@ -329,8 +329,10 @@ pub use imp::{command_orig_for, device_key_from_bdf, init, remove, shutdown, Nvm
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
-    let r = hal_x86_64::pci::LegacyPci;
-    pci::decode_bars(&r, bdf)
+    match hal_x86_64::pci::EcamPci::from_published() {
+        Some(r) => pci::decode_bars(&r, bdf),
+        None => [pci::Bar::None; 6],
+    }
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
@@ -346,8 +348,9 @@ fn restore_pci_bus_master(dev: &drv::Device, command_orig: u16) {
     let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
     #[cfg(target_arch = "x86_64")]
     {
-        let r = hal_x86_64::pci::LegacyPci;
-        let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
+        if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
+            let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -380,8 +383,11 @@ impl drv::Driver for NvmeDriver {
         let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
         #[cfg(target_arch = "x86_64")]
         let command_orig = {
-            let r = hal_x86_64::pci::LegacyPci;
-            pci::enable_mem_bus_master(&r, bdf)
+            if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
+                pci::enable_mem_bus_master(&r, bdf)
+            } else {
+                return Err(drv::Error::ProbeFailed);
+            }
         };
         #[cfg(target_arch = "aarch64")]
         let command_orig = {
