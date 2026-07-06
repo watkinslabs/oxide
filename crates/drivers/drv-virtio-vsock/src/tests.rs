@@ -6,6 +6,9 @@ use crate::{
 };
 
 static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
+const TEST_CFG_VA: u64 = 0x1000;
+const TEST_HHDM: u64 = 0x2000;
+const TEST_GUEST_CID: u64 = 0x4455_6677_8899_AABB;
 
 fn queue(index: u16) -> virtio::VirtQueueResource {
     virtio::VirtQueueResource {
@@ -56,6 +59,29 @@ fn transport_profile_carries_child_feature_mask() {
     assert!(profile.child_requirements.required_queues[0]);
     assert!(profile.child_requirements.required_queues[1]);
     assert!(profile.child_requirements.required_queues[2..].iter().all(|required| !required));
+}
+
+#[test]
+fn guest_cid_reads_generic_device_config_resource() {
+    let _guard = TEST_LOCK.lock();
+    let cfg = [TEST_GUEST_CID];
+    let resources = virtio::VirtioResources::from_queues(
+        TEST_CFG_VA,
+        TEST_HHDM,
+        &[queue(0), queue(1)],
+    )
+    .with_device_cfg_va(cfg.as_ptr() as u64);
+
+    assert_eq!(
+        crate::registry::read_guest_cid_from_resources_for_tests(resources),
+        Some(TEST_GUEST_CID),
+    );
+    assert_eq!(
+        crate::registry::read_guest_cid_from_resources_for_tests(
+            virtio::VirtioResources::from_queues(TEST_CFG_VA, TEST_HHDM, &[queue(0), queue(1)]),
+        ),
+        None,
+    );
 }
 
 #[test]
