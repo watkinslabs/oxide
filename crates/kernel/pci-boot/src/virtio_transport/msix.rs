@@ -66,13 +66,9 @@ pub(crate) fn bind_msix_vector(
 ) -> Option<MsixBinding> {
     let c = caps.find(pci::CAP_ID_MSIX)?;
     let m = arch::decode_cap(d.bdf, c.cfg_off)?;
-    if queue_vector >= m.table_size {
-        return None;
-    }
+    let entry_off = pci::msix_table_entry_offset(m, queue_vector)?;
     let tbar_pa = bars.get(m.table_bir as usize).and_then(|b| b.mem_base())?;
-    let entry_pa = tbar_pa
-        .wrapping_add(m.table_offset as u64)
-        .wrapping_add((queue_vector as u64) * pci::MSIX_TABLE_ENTRY_BYTES);
+    let entry_pa = tbar_pa.checked_add(entry_off)?;
     let page_pa = entry_pa & VIRTIO_PCI_PAGE_BASE_MASK;
     let page_off = entry_pa - page_pa;
 
