@@ -58,6 +58,26 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                           c.creds.egid.load(Ordering::Relaxed)))
                 .unwrap_or((0, 0, 0))
         });
+        // DIAG (debug-dbus): log every SO_PEERCRED read + the returned peer
+        // {pid,uid,gid}. dbus-broker calls this at accept to learn a client's
+        // pid; if it returns pid=0 (or a wrong pid) for mutter's connection, the
+        // bus can't tell logind mutter's pid → GetSessionByPID(0) → NoSessionForPID.
+        #[cfg(feature = "debug-dbus")]
+        {
+            klog::write_raw(b"[PEERCRED fd=");
+            klog::write_dec_u64(args.a0 as u64);
+            klog::write_raw(b" -> pid=");
+            klog::write_dec_u64(pid as u64);
+            klog::write_raw(b" uid=");
+            klog::write_dec_u64(uid as u64);
+            klog::write_raw(b" by=");
+            if let Some(c) = sched::live::current() {
+                klog::write_dec_u64(c.tid as u64);
+                klog::write_raw(b"/");
+                klog::write_raw(c.name.as_bytes());
+            }
+            klog::write_raw(b"]\n");
+        }
         // SAFETY: optval+optlen_p validated < USER_VA_END; struct ucred is 12 bytes; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile( optval        as *mut u32, pid);

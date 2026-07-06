@@ -32,3 +32,4 @@ default = []
 hosted  = []
 debug-boot = []
 debug-scmfd = []  # [SCMW]/[SCMR] AF_UNIX SOCK_STREAM SCM_RIGHTS send/recv probe (vpid+nfds) — trace dbus-broker two-hop fd relay (logind CreateSessionWithPIDFD)
+debug-dbus = []  # [DBUS] dump AF_UNIX stream messages touching login1 session iface / D-Bus errors — mutter get_session_proxy failure hunt

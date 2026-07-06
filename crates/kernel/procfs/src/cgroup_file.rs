@@ -33,6 +33,26 @@ impl FileOps for CgroupFileOps {
             .map(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire))
             .unwrap_or(tid);
         let data = cgroup::proc_cgroup(proc_tid as u64);
+        // DIAG (debug-cgroup): trace every /proc/<pid>/cgroup read with the target
+        // tid, the leader tid it resolved to, the reader, and the rendered path.
+        // logind's GetSessionByPID reads this to map a pid to its session scope;
+        // this makes a per-thread/root read (the vpid/tid bug class) visible.
+        #[cfg(feature = "debug-cgroup")]
+        if off == 0 {
+            klog::write_raw(b"[PROCCG target=");
+            klog::write_dec_u64(tid as u64);
+            klog::write_raw(b" proc=");
+            klog::write_dec_u64(proc_tid as u64);
+            klog::write_raw(b" by=");
+            if let Some(c) = sched::live::current() {
+                klog::write_dec_u64(c.tid as u64);
+                klog::write_raw(b"/");
+                klog::write_raw(c.name.as_bytes());
+            }
+            klog::write_raw(b"] ");
+            klog::write_raw(data.trim_end().as_bytes());
+            klog::write_raw(b"\n");
+        }
         Ok(read_at(data.as_bytes(), off, buf))
     }
 }
