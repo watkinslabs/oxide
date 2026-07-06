@@ -17,6 +17,7 @@
 #define MAX_PATH 128
 #define RETRIES 50
 #define SLEEP_US 100000
+#define REBIND_LOOPS 3
 #define STREAM_PLAYBACK 0
 #define STREAM_CAPTURE 1
 #define CTL_ELEM_IFACE_MIXER 2
@@ -62,6 +63,9 @@ struct snd_ctl_elem_info {
 #define PCM_INFO       _IOR('A', 0x01, struct snd_pcm_info)
 
 static const char *driver = "/sys/bus/virtio/drivers/virtio-snd";
+
+static int count_controls(void);
+static int wait_control_count(int want);
 
 static void emit_line(const char *msg) {
     write(1, msg, strlen(msg));
@@ -113,10 +117,37 @@ static int readable(const char *path, const char *tag) {
     return 1;
 }
 
+static int missing(const char *path, const char *tag) {
+    errno = 0;
+    if (access(path, F_OK) < 0 && errno == ENOENT) return 0;
+    printf("%s: FAIL path=%s errno=%d\n", tag, path, errno);
+    emit_status(tag, "FAIL");
+    return 1;
+}
+
 static int writable(const char *path, const char *tag) {
     if (access(path, W_OK) == 0) return 0;
     printf("%s: FAIL path=%s errno=%d\n", tag, path, errno);
     return 1;
+}
+
+static int prove_removed_second_card(int iter) {
+    if (wait_control_count(1)) {
+        printf("b578_snd_cards_after_unbind_%d: FAIL control_count=%d\n", iter, count_controls());
+        return 1;
+    }
+    const char *paths[] = {
+        "/dev/snd/controlC1", "/dev/snd/pcmC1D0p", "/dev/snd/pcmC1D0c",
+        "/dev/dsp1", "/dev/audio1", "/dev/mixer1",
+    };
+    char tag[64];
+    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        snprintf(tag, sizeof tag, "b578_removed_card1_%d_%u", iter, i);
+        if (missing(paths[i], tag)) return 1;
+    }
+    printf("b578_snd_cards_after_unbind_%d: PASS\n", iter);
+    emit_status("b578_snd_cards_after_unbind", "PASS");
+    return 0;
 }
 
 static int list_bound(char names[MAX_DEVS][MAX_NAME]) {
@@ -361,21 +392,25 @@ int main(void) {
     if (n < 2) { printf("b399_bound_devices: FAIL count=%d\n", n); return 1; }
 
     const char *dev = names[1];
-    printf("b399_unbind_dev: %s\n", dev);
-    if (write_token("unbind", dev, "b399_unbind_write")) return 1;
-    if (wait_bound(dev, 0)) { printf("b399_virtio_snd_unbind: FAIL\n"); return 1; }
-    if (wait_control_count(1)) {
-        printf("b399_snd_cards_after_unbind: FAIL control_count=%d\n", count_controls());
-        return 1;
-    }
-    emit_line("b399_virtio_snd_unbind: PASS\n");
+    for (int iter = 0; iter < REBIND_LOOPS; iter++) {
+        char tag[64], phase[32];
+        snprintf(tag, sizeof tag, "b578_loop_%d", iter);
+        emit_status(tag, "START");
+        printf("b578_unbind_dev_%d: %s\n", iter, dev);
+        if (write_token("unbind", dev, "b578_unbind_write")) return 1;
+        if (wait_bound(dev, 0)) { printf("b578_virtio_snd_unbind_%d: FAIL\n", iter); return 1; }
+        if (prove_removed_second_card(iter)) return 1;
+        emit_status("b578_virtio_snd_unbind", "PASS");
 
-    if (write_token("bind", dev, "b399_bind_write")) return 1;
-    if (wait_bound(dev, 1)) { printf("b399_virtio_snd_rebind: FAIL\n"); return 1; }
-    if (prove_two_cards("b399_snd_cards_after_rebind")) return 1;
-    if (prove_control_card("/dev/snd/controlC0", 0, "b420_controlC0_after_rebind") ||
-        prove_control_card("/dev/snd/controlC1", 1, "b420_controlC1_after_rebind")) return 1;
-    if (prove_direct_pcm_nodes("after_rebind")) return 1;
+        if (write_token("bind", dev, "b578_bind_write")) return 1;
+        if (wait_bound(dev, 1)) { printf("b578_virtio_snd_rebind_%d: FAIL\n", iter); return 1; }
+        if (prove_two_cards("b399_snd_cards_after_rebind")) return 1;
+        if (prove_control_card("/dev/snd/controlC0", 0, "b420_controlC0_after_rebind") ||
+            prove_control_card("/dev/snd/controlC1", 1, "b420_controlC1_after_rebind")) return 1;
+        snprintf(phase, sizeof phase, "loop%d", iter);
+        if (prove_direct_pcm_nodes(phase)) return 1;
+        emit_status("b578_virtio_snd_rebind", "PASS");
+    }
     if (run_probe("/bin/snd_probe")) return 1;
 
     emit_line("driver_path_smoke: PASS - GPU sound block net virtio-snd-multidev-rebind\n");
