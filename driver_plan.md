@@ -2,13 +2,13 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B525-virtio-pci-queue-allocator-adapter-proof verified locally; pending commit, PR, merge, and fresh-main sync.
+ACTIVE NOW: B526-virtio-notify-policy-proof
 
-Current active item: none. Last verified item: row 185, Virtio-pci supplies
-PMM/HHDM queue allocator adapter.
+Current active item: B526 verified locally; pending commit, PR, merge, fresh-main
+sync, and next-row claim.
 
-Next gate: commit B525 evidence, push PR, merge, return to fresh `origin/main`,
-then claim the next row with the metadata branch counter.
+Next gate: audit/fix source, verify x86_64 and aarch64, push PR, merge, then
+return to fresh `origin/main`.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -188,7 +188,7 @@ Status legend:
 | VERIFIED |  | Shared common-cfg bring-up wrapper exists. |
 | VERIFIED |  | Common queue-set helper owns allocator-driven frame ownership and partial-allocation unwind. |
 | VERIFIED |  | Planned extra queue notify mappings are indexed by queue index. |
-| SOURCE OK |  | Old q1-specific notify policy enum removed. |
+| VERIFIED | B526-virtio-notify-policy-proof | Old q1-specific notify policy enum removed: source audit finds no live `NotifyPolicy`, `notify_policy`, notify enum, `needs_q1`/`needs_q2`/`needs_q3`, or q1 policy symbols in live virtio/pci-boot source; child queue notify mappings are indexed by `VirtioQueueNotifyMappings` and resolved from `VirtioQueuePlan` entries. Patch removes the persistent `q1_notify_va` override from `VirtioRuntimeHandoffInput` / `build_runtime_handoff`, so queue 1 child-visible notify VA comes only from the indexed planned mapping; remaining q1 local use is net early TX boot-buffer allocation/debug observation, not a child handoff policy. Checks pass: focused `cargo test -q -p virtio -p pci-boot -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate; `git diff --check`; line caps (`resources/handoff.rs` 178, `virtio_drv/probe_state.rs` 298, `resources/tests/queue_handoff.rs` 228); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 36s. |
 | VERIFIED |  | Shared virtio owns indexed notify descriptors. |
 | VERIFIED |  | Shared virtio owns child-visible `VirtQueueResource` assembly. |
 | VERIFIED |  | Shared virtio owns final runtime handoff assembly through `VirtioRuntimeHandoff`. |
