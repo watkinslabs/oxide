@@ -2,17 +2,16 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B574-qemu-rebind-certification-audit verified locally; PR/merge pending
+ACTIVE NOW: none. Last completed: B574-qemu-rebind-certification-audit verified merged.
 
 Current active item: QEMU-visible runtime bind/unbind/rebind certification is
-now extended for virtio-rng live bind/unbind/rebind without touching the
-existing local `B573-mem-chardev` branch.
+extended for virtio-rng live bind/unbind/rebind; B574 is merged.
 Last verified branch:
-`B572-smoke-rootfs-mode-guard` merged as PR #2665 and was recorded by PR #2666;
+`B574-qemu-rebind-certification-audit` merged as PR #2668 at `1ff61f7d`;
 fresh-main post-merge x86_64/aarch64 normal-login smokes passed.
 
-Next gate: commit, push, open PR, merge, sync main, then move to the next
-NOT DONE driver-system row from a fresh branch.
+Next gate: choose the next NOT DONE driver-system row from fresh `main`, use
+the authoritative branch counter, and create a new short-lived branch.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -355,14 +354,14 @@ Status legend:
 | VERIFIED | B412-probe-failure-devres-proof | Added `VirtioProbeDevres` as the single virtio-pci probe resource owner for cfg reset, frame release, MSI-X release, PCI command disable, mapping unmap, and successful publish transfer. Added child-probe fault-point lifecycle coverage proving failures release once and never publish. `cargo test -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`, x86_64 `/tmp/b412-x86-driver-path.log`, and aarch64 `/tmp/b412-arm-driver-path.log` pass. |
 | VERIFIED | B413-devtmpfs-model-owned-publication | Source audit proves hardware-backed nodes publish through `drv::try_device_add`: block, evdev, fbdev, DRM, hwrng, sound, console, and boot pseudo devices; direct `devfs::register*` users are fixed dirs, ptys, coredumps, or other non-hardware namespace entries. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b413-x86-driver-path.log`, and aarch64 `/tmp/b413-arm-driver-path.log` pass. |
 | VERIFIED | B414-driver-devnode-readd-loops | Existing hosted remove/readd loops cover block, evdev, fbdev, DRM, and hwrng; B414 adds same-owner sound card unregister/register restore coverage. Console tty nodes are boot-owned fixed nodes, not hot-remove loop devices; x86_64/aarch64 driver-path proof covers their boot publication path. `cargo test -p drv -p devfs -p block -p drv-virtio-input -p fbdev -p drm -p drv-virtio-rng -p sound -p console -- --nocapture --test-threads=1`, x86_64 `/tmp/b414-x86-driver-path.log`, and aarch64 `/tmp/b414-arm-driver-path.log` pass. |
-| NOT DONE | B415-bind-unbind-readd-proof | Aggregate repeated bind/unbind/remove/readd proof remains unverified: `driver_anal.md` requires QEMU hotplug/rebind proof for PCI, virtio, block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2; existing driver-core and hosted devnode loops are useful but explicitly not a substitute. RNG live rebind is covered locally by B574; complete the remaining concrete live-proof rows, then revisit this aggregate row. |
+| NOT DONE | B415-bind-unbind-readd-proof | Aggregate repeated bind/unbind/remove/readd proof remains unverified: `driver_anal.md` requires QEMU hotplug/rebind proof for PCI, virtio, block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2; existing driver-core and hosted devnode loops are useful but explicitly not a substitute. RNG live rebind is covered by merged B574; complete the remaining concrete live-proof rows, then revisit this aggregate row. |
 | VERIFIED | B416-nvme-ahci-multicontroller-proof | NVMe/AHCI per-BDF source audit, opt-in two-controller QEMU harness, `/bin/storage_multictrl_probe`, hosted `drv/sysfs/block`, x86_64 `/tmp/b416-x86-storage-multictrl-3.log`, and aarch64 `/tmp/b416-arm-storage-multictrl.log` pass. |
 | VERIFIED | B417-virtio-net-live-multidev-proof | Existing virtio-net multidev probe and QEMU two-device mode satisfy the row: source audit confirms keyed install/remove/rebind path; hosted `drv-virtio-net/net/virtio/pci-boot`, x86_64 `/tmp/b417-x86-virtio-net-multidev.log`, and aarch64 `/tmp/b417-arm-virtio-net-multidev.log` pass. |
 | VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
 | VERIFIED | B419-virtio-vsock-live-multiendpoint-proof | Virtio-vsock primary compatibility route works with multiple live endpoints: direct `/init` proof installs cid=3/cid=4 and completes host round-trip on x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log`; hosted `net`, `drv-virtio-vsock`, and `pci-boot` tests pass. |
 | VERIFIED | B420-virtio-snd-event-control-proof | Virtio-snd live multi-card proof now covers control/event UAPI shape without fabricated mixer controls: `controlC0`/`controlC1` prove card info, PCM discovery/info for playback+capture, empty control element list, missing element `ENOENT`, and event subscription before and after live rebind. Direct musl builds pass for x86_64/aarch64; hosted `cargo test -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` passes; fast live logs `/tmp/b420-x86-virtio-snd-event-control.log` and `/tmp/b420-arm-virtio-snd-event-control.log` pass. |
 | NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
-| VERIFIED | B574-qemu-rebind-certification-audit | QEMU-visible virtio-rng runtime bind/unbind/rebind proof added without touching local `B573-mem-chardev`: opt-in QEMU mode adds a second `virtio-rng-pci`, `/bin/virtio_rng_rebind_probe` verifies two bound virtio-rng children, writable sysfs `bind`/`unbind`, `/dev/hwrng` entropy before unbind, provider promotion after unbind, and restored entropy after rebind. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b574-x86-virtio-rng-rebind.log`, and aarch64 `/tmp/b574-arm-virtio-rng-rebind.log`. |
+| VERIFIED MERGED | B574-qemu-rebind-certification-audit | QEMU-visible virtio-rng runtime bind/unbind/rebind proof added without touching local `B573-mem-chardev`: opt-in QEMU mode adds a second `virtio-rng-pci`, `/bin/virtio_rng_rebind_probe` verifies two bound virtio-rng children, writable sysfs `bind`/`unbind`, `/dev/hwrng` entropy before unbind, provider promotion after unbind, and restored entropy after rebind. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b574-x86-virtio-rng-rebind.log`, aarch64 `/tmp/b574-arm-virtio-rng-rebind.log`, PR #2668 merged as `1ff61f7d`, and fresh-main post-merge login smokes x86_64 `/tmp/b574-postmerge-x86-login-smoke.log` plus aarch64 `/tmp/b574-postmerge-arm-login-smoke.log`. |
 | NOT DONE | TBD | PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. |
 | SOURCE OK |  | Production model drivers in current source have explicit shutdown callbacks; default shutdown remains test-only. |
 | NOT DONE | TBD | Extract remaining real virtio bus/core split from `pci-boot`. |
