@@ -5,9 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. Last completed item:
-`B579-gpu-live-rebind-loops-proof` is VERIFIED MERGED via PR #2679 at
-`808d8c37`; D127 records the merged state.
+Current marker: B580-net-live-rebind-loops-proof is ACTIVE on branch
+`B580-net-live-rebind-loops-proof`. Target: repeated virtio-net
+bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+
+## B580 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B580-net-live-rebind-loops-proof | ACTIVE | Fresh `main` at D127 ledger merge `eedff2ef`; B579 PR #2679 and ledger PR #2680 are merged, and `metadata/index.md` advanced B 580 -> 581 on this branch. Audit/code/test pending. |
 
 ## B579 Current
 
