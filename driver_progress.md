@@ -5,7 +5,7 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B595-pci-runtime-semantics is ACTIVE / IN AUDIT. B594 is
+Current marker: B595-pci-runtime-semantics is VERIFIED / READY FOR PR. B594 is
 VERIFIED MERGED as PR #2712 at `5dfec54a`; B415 remains aggregate-only until
 the concrete live-proof rows are closed.
 
@@ -13,7 +13,7 @@ the concrete live-proof rows are closed.
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B595-pci-runtime-semantics | CLAIMED / IN AUDIT | Fresh `main` at D142 ledger merge `772fe27e`; B594 PR #2712 and ledger PR #2713 are merged, and `metadata/index.md` advances B 595 -> 596 on this branch. Existing dirty files not owned by this branch are not touched or staged: `crates/kernel/mm-vmm/src/address_space/fault/fill.rs`, `crates/kernel/syscalls/src/001_write.rs`, deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and untracked `project_stats.md`. Scope is the PCI runtime semantics row, not the separate ECAM parity row: audit current source for command enable/disable ownership, BAR mapping lifetime, MSI/MSI-X setup/teardown, enable ordering, bridge topology/runtime cleanup, then implement the smallest coherent verified fix with x86_64 and aarch64 proof. |
+| B595-pci-runtime-semantics | VERIFIED / READY FOR PR | Fresh `main` at D142 ledger merge `772fe27e`; B594 PR #2712 and ledger PR #2713 are merged, and `metadata/index.md` advances B 595 -> 596 on this branch. Existing dirty files not owned by this branch are not touched or staged: `crates/kernel/kmain/Cargo.toml`, `crates/kernel/mm-vmm/src/address_space/fault/fill.rs`, `crates/kernel/syscalls/Cargo.toml`, `crates/kernel/syscalls/src/001_write.rs`, `crates/kernel/syscalls/src/020_writev.rs`, staged deleted `glibc*.md`, staged deleted `state.md`, staged deleted `project-stats.md`, and staged added `project_stats.md`. B595 fixes command-ownership runtime cleanup: new `pci::restore_mem_bus_master()` restores only MEM/BUS_MASTER from saved pre-probe state; virtio-pci now carries `cmd_orig` into failed-probe devres and persistent transport records; NVMe/AHCI store `command_orig` in their controller records and restore it after controller release when a record exists. Terminal virtio parent shutdown remains the existing explicit disable path. Checks pass: focused `cargo test -q -p pci -p pci-boot -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1` with pci 20/20, NVMe 12/12, AHCI 7/7, and pci-boot compile-only; broad hosted virtio gate with virtio 49/49, virtio-net 25/25, virtio-blk 36/36, virtio-gpu 38/38, virtio-input 17/17, virtio-rng 9/9, virtio-vsock 15/15, and virtio-snd 11/11; `make x86`; `make arm`; `git diff --check`; line caps (`msix.rs` 480, `devres.rs` 73, `probe_state.rs` 305, `drv-ahci/lib.rs` 459, `drv-nvme/lib.rs` 432, `pci/tests.rs` 460). Live login proof passes on x86_64 at `/tmp/b595-x86-login-smoke.log` in 34s and aarch64 at `/tmp/b595-arm-login-smoke.log` in 40s. Separate NOT DONE rows still track ECAM parity, direct side-effect audit, and per-driver shutdown coverage. |
 
 ## B594 Current
 

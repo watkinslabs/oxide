@@ -169,6 +169,7 @@ mod imp {
 
     struct AhciRecord {
         device_key: pci::Bdf,
+        command_orig: u16,
         name:       String,
         dev:        Arc<AhciBlk>,
     }
@@ -213,7 +214,12 @@ mod imp {
     /// disk under a unique `sdX` name, and return the 1-based registry index
     /// (0 on failure). Optionally self-tests by reading LBA 0.
     /// # C: O(N_ahci + bring-up + registry O(N))
-    pub fn init(device_key: pci::Bdf, mmio: mmio_map::Mapping, abar_off: u64) -> u32 {
+    pub fn init(
+        device_key: pci::Bdf,
+        command_orig: u16,
+        mmio: mmio_map::Mapping,
+        abar_off: u64,
+    ) -> u32 {
         if DEVICES.lock().iter().any(|rec| rec.device_key == device_key) {
             return 0;
         }
@@ -271,6 +277,7 @@ mod imp {
             } else {
                 devices.push(AhciRecord {
                     device_key,
+                    command_orig,
                     name: name.clone(),
                     dev: dev.clone(),
                 });
@@ -332,10 +339,20 @@ mod imp {
         dev.shutdown();
         true
     }
+
+    /// Original PCI command bits saved before this driver enabled decode.
+    /// # C: O(N_ahci)
+    pub fn command_orig_for(device_key: pci::Bdf) -> Option<u16> {
+        DEVICES
+            .lock()
+            .iter()
+            .find(|rec| rec.device_key == device_key)
+            .map(|rec| rec.command_orig)
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{device_key_from_bdf, init, remove, shutdown, AhciBlk, AHCI_CLASS24};
+pub use imp::{command_orig_for, device_key_from_bdf, init, remove, shutdown, AhciBlk, AHCI_CLASS24};
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
@@ -352,17 +369,17 @@ fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn clear_pci_bus_master(dev: &drv::Device) {
+fn restore_pci_bus_master(dev: &drv::Device, command_orig: u16) {
     let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
     #[cfg(target_arch = "x86_64")]
     {
         let r = hal_x86_64::pci::LegacyPci;
-        let _ = pci::disable_mem_bus_master(&r, bdf);
+        let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
     }
     #[cfg(target_arch = "aarch64")]
     {
         if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-            let _ = pci::disable_mem_bus_master(&r, bdf);
+            let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
         }
     }
 }
@@ -389,30 +406,30 @@ impl drv::Driver for AhciDriver {
     fn probe(&self, dev: &alloc::sync::Arc<drv::Device>) -> drv::KResult<()> {
         let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
         #[cfg(target_arch = "x86_64")]
-        {
+        let command_orig = {
             let r = hal_x86_64::pci::LegacyPci;
-            pci::enable_mem_bus_master(&r, bdf);
-        }
+            pci::enable_mem_bus_master(&r, bdf)
+        };
         #[cfg(target_arch = "aarch64")]
-        {
+        let command_orig = {
             if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-                pci::enable_mem_bus_master(&r, bdf);
+                pci::enable_mem_bus_master(&r, bdf)
             } else {
                 return Err(drv::Error::ProbeFailed);
             }
-        }
+        };
         let bars = decode_bars(bdf);
         let abar_pa = bars[5].mem_base().unwrap_or(0);
         if abar_pa == 0 {
-            clear_pci_bus_master(dev);
+            restore_pci_bus_master(dev, command_orig);
             return Err(drv::Error::ProbeFailed);
         }
         // SAFETY: BAR5 PA came from this PCI function's config space; two
         // pages cover generic HBA registers plus the 32-port register array.
         let mmio = unsafe { mmio_map::map_owned(abar_pa & BAR_PAGE_BASE_MASK, 2) };
         let device_key = imp::device_key_from_bdf(bdf);
-        if imp::init(device_key, mmio, abar_pa & BAR_PAGE_OFFSET_MASK) == 0 {
-            lifecycle::run_probe_failure_cleanup(|| clear_pci_bus_master(dev));
+        if imp::init(device_key, command_orig, mmio, abar_pa & BAR_PAGE_OFFSET_MASK) == 0 {
+            lifecycle::run_probe_failure_cleanup(|| restore_pci_bus_master(dev, command_orig));
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
@@ -420,17 +437,19 @@ impl drv::Driver for AhciDriver {
 
     fn remove(&self, dev: &drv::Device) {
         let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+        let command_orig = imp::command_orig_for(imp::device_key_from_bdf(bdf));
         lifecycle::run_remove_cleanup(
             || { let _ = imp::remove(imp::device_key_from_bdf(bdf)); },
-            || clear_pci_bus_master(dev),
+            || { if let Some(command_orig) = command_orig { restore_pci_bus_master(dev, command_orig); } },
         );
     }
 
     fn shutdown(&self, dev: &drv::Device) {
         let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+        let command_orig = imp::command_orig_for(imp::device_key_from_bdf(bdf));
         lifecycle::run_remove_cleanup(
             || { let _ = imp::shutdown(imp::device_key_from_bdf(bdf)); },
-            || clear_pci_bus_master(dev),
+            || { if let Some(command_orig) = command_orig { restore_pci_bus_master(dev, command_orig); } },
         );
     }
 }

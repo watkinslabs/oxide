@@ -106,6 +106,19 @@ pub fn disable_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
     old
 }
 
+/// Restore only the Memory Space and Bus Master bits from a previous command
+/// value, preserving all other currently-live command bits.
+/// # C: O(1)
+pub fn restore_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf, previous: u16) -> u16 {
+    let old = read_command(r, bdf);
+    let restored = (old & !(COMMAND_MEMORY | COMMAND_BUS_MASTER))
+        | (previous & (COMMAND_MEMORY | COMMAND_BUS_MASTER));
+    if restored != old {
+        write_command(r, bdf, restored);
+    }
+    old
+}
+
 /// Per-device decoded summary for the kernel's device list.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PciDevice {
