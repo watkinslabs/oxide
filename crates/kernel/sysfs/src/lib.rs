@@ -28,6 +28,7 @@ pub mod bus;
 pub mod char_class;
 pub mod drm;
 pub mod input;
+pub mod kernel;
 pub mod kobject;
 pub mod net_stats;
 pub mod root;
@@ -430,6 +431,7 @@ pub fn init() {
     // tracefs/debugfs mount points (content lives in tracefs's own roots).
     register_dir("/sys/kernel/tracing");
     register_dir("/sys/kernel/debug");
+    kernel::init();
     register("/sys/class/net", make_sys_class_net_inode());
     register("/sys/devices/virtual/net", make_sys_devices_virtual_net_inode());
     #[cfg(target_os = "oxide-kernel")]

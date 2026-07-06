@@ -36,7 +36,7 @@ pub use inode::{
 };
 pub use listeners::{
     emit_uevent, emit_uevent_with_env, rebroadcast_cooked_uevent, register_rtnl_listener,
-    register_uevent_listener, rtnl_multicast, unicast_uevent_to_port,
+    register_uevent_listener, rtnl_multicast, uevent_seqnum, unicast_uevent_to_port,
 };
 pub(crate) use handler::invoke_netfilter;
 pub use netlink_socket::NetlinkSocket;

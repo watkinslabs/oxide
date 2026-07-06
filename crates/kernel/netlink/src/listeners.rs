@@ -15,6 +15,12 @@ static UEVENT_LISTENERS: Spinlock<Vec<Weak<NetlinkSocket>>, SockLockClass> =
 /// Monotonic uevent sequence number (`SEQNUM=` in each message).
 static UEVENT_SEQNUM: AtomicU32 = AtomicU32::new(1);
 
+/// Current kobject uevent sequence counter exposed through
+/// `/sys/kernel/uevent_seqnum`. # C: O(1)
+pub fn uevent_seqnum() -> u32 {
+    UEVENT_SEQNUM.load(Ordering::Relaxed)
+}
+
 /// Register a `NETLINK_KOBJECT_UEVENT` socket to receive broadcast device
 /// uevents. Called when such a socket is created.
 /// # C: O(N_listeners) — prunes dead weaks.
