@@ -13,7 +13,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 /// B46: reset caught signal handlers to SIG_DFL per execve(2) ABI.
 /// "All signals that were being caught by the calling thread (set
@@ -97,23 +96,33 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     }
 }
 
-/// Read up to 64 bytes of a NUL-terminated path from a userspace
-/// pointer into an owned Vec. Empty Vec ↔ NULL/empty user pointer.
-/// Errors come back negated for the caller to forward.
-/// # C: O(64)
+/// Linux `PATH_MAX` (`limits.h`): the largest pathname execve accepts,
+/// NUL included. A pathname whose length reaches this bound without a
+/// terminating NUL is rejected with `ENAMETOOLONG`, exactly as Linux's
+/// `strndup_user(..., PATH_MAX)` in `getname_flags`/`do_execveat_common`.
+const PATH_MAX: u64 = 4096;
+
+/// Read a NUL-terminated path (up to `PATH_MAX` bytes incl. NUL) from a
+/// userspace pointer into an owned Vec. Empty Vec ↔ NULL/empty user
+/// pointer. Errors come back negated for the caller to forward:
+///   * `EFAULT` — pointer at/above `USER_VA_END`, incl. a path that runs
+///     into the non-canonical/kernel half before terminating.
+///   * `ENAMETOOLONG` — no NUL within `PATH_MAX` bytes.
+/// Previously capped at 64 bytes, silently truncating any longer path
+/// (e.g. `/usr/lib/systemd/user-environment-generators/30-systemd-\
+/// environment-d-generator`, 79 bytes) into a garbage prefix that then
+/// failed to resolve — every systemd generator/helper with a >64-byte
+/// absolute path spuriously `execve`-ENOENT'd, breaking the PID1 and
+/// `systemd --user` generator passes. Linux's cap is `PATH_MAX`.
+/// # C: O(PATH_MAX)
 pub(crate) fn read_user_exec_path(path_ptr: u64) -> Result<alloc::vec::Vec<u8>, i64> {
     if path_ptr == 0 { return Ok(alloc::vec::Vec::new()); }
-    if path_ptr >= USER_VA_END {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(64);
-    for i in 0..64u64 {
-        // SAFETY: bounded 64-byte read from validated user pointer < USER_VA_END; CPL=0 / EL1 reads through caller's AS pre-activate.
-        let b = unsafe { core::ptr::read_volatile((path_ptr + i) as *const u8) };
-        if b == 0 { break; }
-        out.push(b);
-    }
-    Ok(out)
+    // Length/bounds policy lives in `syscall::scan_user_cstr` (pure,
+    // hosted-tested). We supply the per-byte user read.
+    syscall::scan_user_cstr(path_ptr, PATH_MAX, |va|
+        // SAFETY: `va` proven < USER_VA_END by scan_user_cstr each iteration; CPL=0 / EL1 reads through caller's AS pre-activate.
+        unsafe { core::ptr::read_volatile(va as *const u8) }
+    ).map_err(|e| -(e.as_i32() as i64))
 }
 
 /// Decode the `security.capability` xattr on `inode` (Linux's
