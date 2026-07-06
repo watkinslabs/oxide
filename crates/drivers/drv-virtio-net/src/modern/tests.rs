@@ -50,6 +50,7 @@ use core::sync::atomic::Ordering;
         REGISTERED_NETDEVS.lock().clear();
         NET_RUNTIMES.lock().clear();
         clear_rx_runtime();
+        state::clear_test_released_frames();
         uninstall_rx_softirq_handler();
         unregister_timers();
     }
@@ -162,6 +163,34 @@ use core::sync::atomic::Ordering;
             0xb000,
         ));
         assert!(!is_modern_present_for(key(4)));
+    }
+
+    #[test]
+    fn init_modern_unwinds_state_on_late_netdev_registration_failure() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        static MAC1: [u8; 6] = [0x02, 0, 0, 0, 0, 5];
+        install_rx_runtime(key(5), net::NetIfaceId::from_raw(55));
+        set_registered_iface(key(5), net::NetIfaceId::from_raw(55));
+        state::fail_next_netdev_registration();
+
+        assert!(!init_modern_with_rx_pool(
+            key(5),
+            resources_with_mac(&MAC1),
+            alloc::vec![virtio::VirtioNetRxBuffer {
+                desc_id: 0,
+                pa: 0x9000,
+                len: 2048,
+            }],
+            0xb000,
+        ));
+        assert!(!is_modern_present_for(key(5)));
+        assert!(registered_iface_for(key(5)).is_none());
+        assert!(net_runtime_for(key(5)).is_none());
+        assert!(first_iface_ip_for(key(5)).is_none());
+        assert!(!SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+        assert_eq!(state::test_released_frames(), 2);
+        assert_eq!(state::test_resets(), 1);
     }
 
     #[test]
