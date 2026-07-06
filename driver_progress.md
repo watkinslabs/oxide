@@ -5,8 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B523-virtio-pci-msix-plural-binding-proof verified row 176
-locally; commit, PR, merge, and fresh `main` sync remain.
+Current marker: B524-virtio-device-cfg-resource-proof audits row 182, Generic
+mapped `DEVICE_CFG` window is carried to child drivers.
+
+## B524 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B524-virtio-device-cfg-resource-proof | IN AUDIT | Fresh `main` at merge commit `a2887bf2` after B523 PR #2620 merge and branch cleanup. `metadata/index.md` advanced B 524 -> 525. Source audit in progress for mapped PCI `DEVICE_CFG` ownership, handoff into `VirtioResources`, and child-driver consumption without pci-boot config pass-through. |
 
 ## B523 Current
 
