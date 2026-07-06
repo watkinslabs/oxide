@@ -368,6 +368,12 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
         // worst-case latency when nothing else wakes us. 20 ms is
         // imperceptible at the console and fine for systemd's timers.
         const RESCAN_NS: u64 = 20_000_000;
+        // debug-wakelat: total time this epoll_wait spends blocked; a long
+        // wait that ends with ready fds means the arrival edge was slow.
+        #[cfg(feature = "debug-wakelat")]
+        let wl_start = now();
+        #[cfg(feature = "debug-wakelat")]
+        let wl_tid = sched::current().map(|c| c.tid).unwrap_or(0);
         loop {
             // Park until the nearest of: the caller's deadline (if any)
             // and the next safety-net re-scan.
@@ -376,13 +382,23 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
                 Some(d) => core::cmp::min(d, rescan_at),
                 None => rescan_at,
             };
-            // SAFETY: process ctx; preempt-off across the syscall; park_with_deadline bumps Arc + marks Sleeping + stamps the wake deadline; tick_yield yields. UP single-CPU.
+            // debug-wakelat: claim the correlation slot + tag KIND_EPOLL so
+            // the ttwu→switch-in latency for this park cycle is measured.
+            #[cfg(feature = "debug-wakelat")]
+            sched::live::wakelat::note_wait(wl_tid, sched::live::wakelat::KIND_EPOLL);
+            // SAFETY: process ctx; preempt-off across the syscall; park_with_deadline bumps Arc + marks Sleeping + stamps the wake deadline; park_yield yields WITHOUT halting the CPU (this task is now Sleeping, so the idle task provides the halt/IRQ-window and the scheduler drains all other roused waiters at full speed — the gnome session-setup wake-latency fix). UP single-CPU.
             unsafe {
                 ep.waiters.park_with_deadline(park_dl);
-                sched::live::tick_yield();
+                sched::live::park_yield();
             }
             let out2 = scan_once(&ep, &fdt, evp, maxevents);
-            if out2 > 0 { return out2 as i64; }
+            if out2 > 0 {
+                #[cfg(feature = "debug-wakelat")]
+                sched::live::wakelat::note_blocked(
+                    wl_tid, sched::live::wakelat::KIND_EPOLL,
+                    now().saturating_sub(wl_start), out2 as u64);
+                return out2 as i64;
+            }
             if let Some(d) = deadline_ns {
                 if now() >= d { return 0; }
             }

@@ -32,6 +32,12 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
     // recvmsg (Linux returns at the ancillary-data boundary). read_stream
     // never re-queues or parks, so this yield loop always progresses.
     let mut pending_fds: Vec<Arc<File>> = Vec::new();
+    // debug-wakelat: when the stream is empty this loop busy-yields
+    // (`tick_yield`) instead of parking Sleeping, so it posts no ttwu. Time
+    // the first-yield→data-ready span directly to catch a Runnable-but-
+    // starved stall (H2 on the busy-wait path).
+    #[cfg(feature = "debug-wakelat")]
+    let mut wl_yield_start: u64 = 0;
     'iovloop: for i in 0..iovlen {
         let iov_i = iov + i * 16;
         if iov_i + 16 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
@@ -71,12 +77,47 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
             };
             if eof { break 'iovloop; }
             if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+            #[cfg(feature = "debug-wakelat")]
+            if wl_yield_start == 0 {
+                use hal::TimerOps;
+                #[cfg(target_arch = "x86_64")] { wl_yield_start = hal_x86_64::X86TimerOps::monotonic_ns().0.max(1); }
+                #[cfg(target_arch = "aarch64")] { wl_yield_start = hal_aarch64::ArmTimerOps::monotonic_ns().0.max(1); }
+            }
             unsafe { sched::live::tick_yield(); }
         }
+    }
+    // debug-wakelat: report a busy-yield recvmsg that finally got data.
+    #[cfg(feature = "debug-wakelat")]
+    if wl_yield_start != 0 {
+        use hal::TimerOps;
+        #[cfg(target_arch = "x86_64")]
+        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        #[cfg(target_arch = "aarch64")]
+        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        let tid = sched::current().map(|c| c.tid).unwrap_or(0);
+        sched::live::wakelat::note_blocked(
+            tid, sched::live::wakelat::KIND_RECVMSG,
+            now.saturating_sub(wl_yield_start), total as u64);
     }
     let mut ctrl_written: u64 = 0;
     let mut ctrunc = false;
     if !pending_fds.is_empty() {
+        // [SCMR] AF_UNIX SOCK_STREAM SCM_RIGHTS receive probe: logs the
+        // receiver vpid, delivered fd count, and control-buffer size for
+        // every fd-carrying recvmsg. Pairs with [SCMW] to trace both hops
+        // of the dbus-broker relay of logind's CreateSessionWithPIDFD /
+        // reply. Kept permanently behind `debug-scmfd` (default-off).
+        #[cfg(feature = "debug-scmfd")]
+        {
+            let vpid = sched::live::current().map(|c| c.visible_pid()).unwrap_or(0);
+            klog::write_raw(b"[SCMR pid=");
+            klog::write_dec_u64(vpid as u64);
+            klog::write_raw(b" nfds=");
+            klog::write_dec_u64(pending_fds.len() as u64);
+            klog::write_raw(b" ctl=");
+            klog::write_dec_u64(controllen);
+            klog::write_raw(b"]\n");
+        }
         if control == 0 || controllen < 16 || control >= USER_VA_END {
             ctrunc = true;
         } else {
@@ -180,6 +221,9 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
         }
         sum
     };
+    // debug-wakelat: SOCK_DGRAM recvmsg busy-yield span (H2 busy-wait path).
+    #[cfg(feature = "debug-wakelat")]
+    let mut wl_yield_start: u64 = 0;
     let msg = loop {
         let got = {
             let g = sock.kind.lock();
@@ -188,9 +232,20 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
                 _ => return -(Errno::Einval.as_i32() as i64),
             }
         };
-        if let Some(m) = got { break m; }
+        if let Some(m) = got {
+            #[cfg(feature = "debug-wakelat")]
+            if wl_yield_start != 0 {
+                let tid = sched::current().map(|c| c.tid).unwrap_or(0);
+                sched::live::wakelat::note_blocked(
+                    tid, sched::live::wakelat::KIND_RECVMSG,
+                    now().saturating_sub(wl_yield_start), 1);
+            }
+            break m;
+        }
         if nonblock { return -(Errno::Eagain.as_i32() as i64); }
         if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
+        #[cfg(feature = "debug-wakelat")]
+        if wl_yield_start == 0 { wl_yield_start = now().max(1); }
         unsafe { sched::live::tick_yield(); }
     };
     let mut total: usize = 0;

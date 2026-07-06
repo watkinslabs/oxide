@@ -184,6 +184,22 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
     }
     // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
     task.wakeup_deadline_ns.store(0, Ordering::Release);
+    // debug-wakelat: stamp the make-Runnable instant + wake source so a
+    // later switch-in can report the wake→run latency (H2) and whether the
+    // wake came from the arrival edge or the deferred/scanner path (H1).
+    #[cfg(feature = "debug-wakelat")]
+    {
+        let now = {
+            #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+            { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+            #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+            { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            { 0u64 }
+        };
+        let src = if force_defer { super::wakelat::SRC_DEFER } else { super::wakelat::SRC_EDGE };
+        super::wakelat::note_runnable(task.tid, now, src);
+    }
     // SAFETY: ttwu_inner owns an Arc for this wake placement and has just
     // established the task is Runnable but not already executing or queued.
     unsafe { place_runnable(task, force_defer); }
