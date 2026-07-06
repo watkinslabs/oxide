@@ -282,6 +282,13 @@ smoke-virtio-rng-rebind-arm: arm
 	./tools/boot-smoke-virtio-rng-rebind.sh arm $(VIRTIO_RNG_REBIND_SMOKE_TIMEOUT)
 smoke-virtio-rng-rebind: smoke-virtio-rng-rebind-x86 smoke-virtio-rng-rebind-arm
 
+VIRTIO_PARENT_CHILD_REBIND_SMOKE_TIMEOUT ?= 600
+smoke-virtio-parent-child-rebind-x86: x86
+	./tools/boot-smoke-virtio-parent-child-rebind.sh x86 $(VIRTIO_PARENT_CHILD_REBIND_SMOKE_TIMEOUT)
+smoke-virtio-parent-child-rebind-arm: arm
+	./tools/boot-smoke-virtio-parent-child-rebind.sh arm $(VIRTIO_PARENT_CHILD_REBIND_SMOKE_TIMEOUT)
+smoke-virtio-parent-child-rebind: smoke-virtio-parent-child-rebind-x86 smoke-virtio-parent-child-rebind-arm
+
 VIRTIO_INPUT_REBIND_SMOKE_TIMEOUT ?= 600
 smoke-virtio-input-rebind-x86: x86
 	./tools/boot-smoke-virtio-input-rebind.sh x86 $(VIRTIO_INPUT_REBIND_SMOKE_TIMEOUT)

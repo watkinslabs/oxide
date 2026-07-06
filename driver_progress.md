@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B583-virtio-parent-child-rebind-proof is ACTIVE on branch
-`B583-virtio-parent-child-rebind-proof`. Target: repeated virtio parent/child
-bind/unbind/remove/readd proof under QEMU on x86_64 and aarch64.
+Current marker: B583-virtio-parent-child-rebind-proof is VERIFIED pre-merge on
+branch `B583-virtio-parent-child-rebind-proof`. Targeted x86_64 and aarch64
+proof logs are present; PR/merge and post-merge smoke are next.
 
 ## B583 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B583-virtio-parent-child-rebind-proof | ACTIVE | Fresh `main` at D130 ledger merge `b048bd02`; B582 PR #2685 and ledger PR #2686 are merged, and `metadata/index.md` advanced B 583 -> 584 on this branch. Audit/code/test pending. |
+| B583-virtio-parent-child-rebind-proof | VERIFIED | Fresh `main` at D130 ledger merge `b048bd02`; B582 PR #2685 and ledger PR #2686 are merged, and `metadata/index.md` advanced B 583 -> 584 on this branch. B583 adds `/bin/virtio_parent_child_rebind_probe`, `smoke-virtio-parent-child-rebind-{x86,arm}` Make targets, rootfs/cache wiring, and opt-in second `virtio-rng-pci` QEMU device for both arches. The probe runs three PCI parent unbind/rebind loops against a `virtio-pci` parent with device id `0x1044`, proves the old child disappears from `/sys/bus/virtio/devices/<child>` and `/sys/devices/virtio/<child>`, proves `/sys/bus/pci/drivers/virtio-pci/<parent>` disappears while unbound, keeps `/dev/hwrng` readable through the remaining provider, and re-proves entropy after rebind. Checks pass: `cargo test -q -p virtio -p pci-boot -p drv-virtio-rng -- --nocapture --test-threads=1` with 57 tests passed; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-parent-child-rebind.sh`; line caps (`Makefile` 329, `virtio_parent_child_rebind_probe.c` 221, `boot-smoke-virtio-parent-child-rebind.sh` 87, `rootfs.rs` 407, `rootfs_lists.rs` 102, `rootfs_cache.rs` 285, `image_qemu/x86_64.rs` 213, `image_qemu/aarch64.rs` 217); x86_64 `/tmp/b583-x86-virtio-parent-child-rebind.log`; aarch64 `/tmp/b583-arm-virtio-parent-child-rebind.log`. PR/merge pending. |
 
 ## B582 Current
 
