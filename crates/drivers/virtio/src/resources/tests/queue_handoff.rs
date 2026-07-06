@@ -185,6 +185,21 @@ fn transport_profiles_describe_child_queue_policy() {
     assert!(snd.child_requirements.needs_device_cfg);
 }
 
+#[test]
+fn queue_plans_default_to_named_no_vector_sentinel() {
+    let plan = VirtioQueuePlan::new(1, None, true);
+    assert_eq!(plan.msix_vec, VIRTIO_MSI_NO_VECTOR);
+    assert_eq!(plan.with_msix_vec(2).msix_vec, 2);
+
+    let net = VirtioTransportProfile::net(0x55, None);
+    assert_eq!(net.queue_plans[1].map(|q| q.msix_vec), Some(VIRTIO_MSI_NO_VECTOR));
+
+    let snd = VirtioTransportProfile::snd(0xaa, None, None);
+    assert_eq!(snd.queue_plans[1].map(|q| q.msix_vec), Some(VIRTIO_MSI_NO_VECTOR));
+    assert_eq!(snd.queue_plans[2].map(|q| q.msix_vec), Some(VIRTIO_MSI_NO_VECTOR));
+    assert_eq!(snd.queue_plans[3].map(|q| q.msix_vec), Some(VIRTIO_MSI_NO_VECTOR));
+}
+
 fn fake_config_irq() {}
 fn fake_event_irq() {}
 
