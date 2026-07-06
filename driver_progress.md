@@ -5,14 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B517-virtio-pci-helper-privacy-proof IN AUDIT. Fresh `main` is
-merge commit `a3a68134` after B516 PR #2611 merge and branch cleanup.
+Current marker: none; B517-virtio-pci-helper-privacy-proof VERIFIED. Next row
+not claimed until B517 is committed, pushed, merged, and fresh `main` is
+synced.
 
 ## B517 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B517-virtio-pci-helper-privacy-proof | IN AUDIT | Claim branch from fresh `main` at `a3a68134`; `metadata/index.md` advanced B 517 -> 518. Target row: raw virtio-pci probe/publish/unpublish helpers are private to transport module. Pending source audit, focused hosted proof, broad pci-boot/virtio gate, line-cap check, `git diff --check`, and x86_64/aarch64 fast smokes. |
+| B517-virtio-pci-helper-privacy-proof | VERIFIED | Fresh `main` at merge commit `a3a68134` after B516 PR #2611 merge and branch cleanup. `metadata/index.md` advanced B 517 -> 518. Source audit proves raw virtio-pci helpers stay private to the pci-boot transport module: `VirtioPciAcquisition`, `probe_child`, `publish_transport_mmio`, `unpublish_transport_mmio`, and `unpublish_transport_mmio_bdf` are confined to `virtio_drv/probe.rs` with `pub(super)` visibility, only `virtio_drv::driver::VirtioPciTransport` calls them, `virtio_drv` re-exports only `VirtioPciTransport`/`VirtioProbe` to the bus wrapper, and source search finds no child crate imports of `pci_boot`, `virtio_drv`, `VirtioPciTransport`, or raw publish/unpublish helpers. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate with child suites 20/20, 36/36, 36/36, 16/16, 8/8, 11/11, 9/9 plus shared virtio 44/44; line caps (`virtio_bus.rs` 145, `virtio_child.rs` 398, `virtio_drv/driver.rs` 112, `virtio_drv/probe.rs` 178, `virtio_drv/probe_state.rs` 298, `virtio/resources/child.rs` 377); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
 
 ## B516 Current
 
