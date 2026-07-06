@@ -43,6 +43,21 @@ pub fn remove_device_cb(dev: &drv::Device) {
     let env = dev_uevent_env(dev);
     let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
     ::netlink::emit_uevent_with_env("remove", &devpath, dev.bus, &refs);
+    invalidate_model_paths(dev, &devpath);
+}
+
+fn invalidate_path(path: &str) {
+    let full = alloc::format!("/sys{}", path);
+    if let Some(dentry) = vfs::resolve_path_dentry(&full) {
+        vfs::d_invalidate(&dentry);
+    }
+}
+
+fn invalidate_model_paths(dev: &drv::Device, devpath: &str) {
+    invalidate_path(devpath);
+    if dev.bus == "input" {
+        invalidate_path(&alloc::format!("/class/input/{}", dev.addr));
+    }
 }
 
 /// drv `set_driver_hook` target: a driver was registered. # C: O(1)
