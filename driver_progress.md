@@ -5,10 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. Claim the next NOT DONE row from fresh
-`main`. B604-synthetic-virtio-child-binding-audit is merged as PR #2730 at
-`6dfdb24b`; D150 records the merged state and advances `metadata/index.md` D
-150 -> 151.
+Current marker: B605-bind-unbind-readd-aggregate-audit is ACTIVE / IN AUDIT
+from fresh `main` at D150 ledger merge `eb4edbe5`. B605 advances
+`metadata/index.md` B 605 -> 606.
+
+## B605 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B605-bind-unbind-readd-aggregate-audit | ACTIVE / IN AUDIT | Claimed from fresh `main` at D150 ledger merge `eb4edbe5`; target row is the B415 aggregate repeated bind/unbind/remove/readd proof. Duplicate-lane check found no B415/B605 aggregate branch or worktree. First ledger scan finds merged concrete live proof rows for PCI, virtio parent/child, block, net, DRM/fbdev, input, sound, RNG, UART, and PS/2; B605 is auditing category completeness before marking the aggregate verified. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B604 Current
 
