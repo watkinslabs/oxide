@@ -30,6 +30,7 @@ pub mod drm;
 pub mod input;
 pub mod kernel;
 pub mod kobject;
+pub mod modules;
 pub mod net_stats;
 pub mod root;
 pub mod tty;
@@ -432,6 +433,7 @@ pub fn init() {
     register_dir("/sys/kernel/tracing");
     register_dir("/sys/kernel/debug");
     kernel::init();
+    modules::init();
     register("/sys/class/net", make_sys_class_net_inode());
     register("/sys/devices/virtual/net", make_sys_devices_virtual_net_inode());
     #[cfg(target_os = "oxide-kernel")]

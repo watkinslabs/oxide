@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{load_module, LoadedModule, SymResolver};
+use crate::{load_module, LoadedModule, ModuleInfo, ModuleParam, SymResolver};
 use sync::{Spinlock, Modules as ModulesLockClass};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -29,6 +29,9 @@ impl ModuleState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModuleSnapshot {
     pub name:     String,
+    pub license:  Option<String>,
+    pub vermagic: Option<String>,
+    pub params:   Vec<ModuleParam>,
     pub size:     usize,
     pub refcnt:   usize,
     pub state:    ModuleState,
@@ -41,14 +44,17 @@ pub enum RegistryError {
     Inval,
     Exists,
     Load,
+    Vermagic,
     Busy,
     Noent,
 }
 
-struct KernelSymResolver;
+struct KernelSymResolver {
+    module_is_gpl: bool,
+}
 impl SymResolver for KernelSymResolver {
     fn resolve(&self, name: &str) -> Option<u64> {
-        crate::symtab::resolve(name, false).ok().map(|e| e.addr as u64)
+        crate::symtab::resolve(name, self.module_is_gpl).ok().map(|e| e.addr as u64)
     }
 }
 
@@ -72,10 +78,17 @@ pub fn load_blob(bytes: &[u8]) -> Option<usize> {
 /// Load + register a module with an optional caller-supplied name.
 /// # C: O(N_sections + N_relocs + N_modules)
 pub fn load_blob_named(bytes: &[u8], name: Option<&str>) -> Result<usize, RegistryError> {
-    let r = KernelSymResolver;
+    let info = ModuleInfo::parse_elf(bytes).ok_or(RegistryError::Load)?;
+    if !info.vermagic_matches() { return Err(RegistryError::Vermagic); }
+    let r = KernelSymResolver { module_is_gpl: info.is_gpl_compatible() };
     let m = load_module(bytes, &r).map_err(|_| RegistryError::Load)?;
     let final_name = match name {
         Some(n) => { validate_name(n)?; String::from(n) }
+        None if m.info.name.as_deref().is_some() => {
+            let n = m.info.name.as_deref().unwrap();
+            validate_name(n)?;
+            String::from(n)
+        }
         None => synthetic_name(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
     };
     let mut g = REGISTRY.lock();
@@ -93,6 +106,9 @@ pub fn snapshot() -> Vec<ModuleSnapshot> {
     REGISTRY.lock().iter()
         .filter_map(|slot| slot.as_ref().map(|r| ModuleSnapshot {
             name:     r.name.clone(),
+            license:  r.module.info.license.clone(),
+            vermagic: r.module.info.vermagic.clone(),
+            params:   r.module.info.params.clone(),
             size:     module_size(&r.module),
             refcnt:   r.refcnt,
             state:    r.state,
@@ -221,7 +237,7 @@ mod tests {
     }
 
     fn empty_module() -> LoadedModule {
-        LoadedModule { sections: Vec::new(), symbols: BTreeMap::new() }
+        LoadedModule { sections: Vec::new(), symbols: BTreeMap::new(), info: ModuleInfo::default() }
     }
 
     fn insert(name: &str, refcnt: usize) {
@@ -253,6 +269,9 @@ mod tests {
         let s = snapshot();
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].name, "sample");
+        assert_eq!(s[0].license, None);
+        assert_eq!(s[0].vermagic, None);
+        assert_eq!(s[0].params.len(), 0);
         assert_eq!(s[0].size, 12);
         assert_eq!(s[0].refcnt, 2);
         assert_eq!(s[0].state.as_str(), "Live");
