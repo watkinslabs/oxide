@@ -5,14 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B515-nvme-ahci-bar-devres-proof ACTIVE; auditing NVMe/AHCI BAR
-mapping ownership and failed-probe/remove release from fresh `main`.
+Current marker: none; B515-nvme-ahci-bar-devres-proof VERIFIED. Next row not
+claimed until B515 is committed, pushed, merged, and fresh `main` is synced.
 
 ## B515 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B515-nvme-ahci-bar-devres-proof | ACTIVE | Fresh `main` at merge commit `92126d69` after B514 PR #2609 merge and branch cleanup. `metadata/index.md` advanced B 515 -> 516. Target row: prove NVMe/AHCI BAR mappings are owned resources dropped on probe failure and remove, with Linux-style hosted leak/fault proof plus x86_64/aarch64 fast smokes. Source audit just started. |
+| B515-nvme-ahci-bar-devres-proof | VERIFIED | Fresh `main` at merge commit `92126d69` after B514 PR #2609 merge and branch cleanup. `metadata/index.md` advanced B 515 -> 516. Patch fixes NVMe/AHCI teardown order so remove/shutdown quiesce the controller and unmap owned BAR mappings before disabling PCI command decode; probe failure after PCI command enable now disables command on missing BAR or failed init; BAR alignment uses named page masks. Hosted lifecycle regressions prove release-before-disable cleanup order and failed-probe PCI command disable. Checks pass: `cargo test -q -p drv-nvme -p drv-ahci -- --nocapture --test-threads=1` with NVMe 12/12 and AHCI 7/7; `cargo test -q -p drv-nvme -p drv-ahci -p block -- --nocapture --test-threads=1` with block 33/33; broad hosted driver gate for pci/pci-boot/block/NVMe/AHCI/virtio and all virtio child drivers; `git diff --check`; touched Rust files under 500 lines (`drv-nvme/lib.rs` 416, `drv-nvme/lifecycle.rs` 67, `drv-nvme/queue.rs` 462, `drv-ahci/lib.rs` 443, `drv-ahci/lifecycle.rs` 67, `drv-ahci/port.rs` 441); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 48s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 54s. |
 
 ## B514 Current
 
