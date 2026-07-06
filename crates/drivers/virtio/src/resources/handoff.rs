@@ -83,7 +83,6 @@ pub struct VirtioRuntimeHandoffInput<'a> {
     pub programmed_queues: Option<&'a ProgrammedQueues>,
     pub planned_notify_mappings: VirtioQueueNotifyMappings,
     pub q0_notify_va: u64,
-    pub q1_notify_va: u64,
     pub post_notify_status: u8,
     pub avail_idx_posted: u16,
     pub used_idx_observed: u16,
@@ -104,7 +103,6 @@ pub struct VirtioRuntimeHandoff {
 pub fn build_runtime_handoff(input: VirtioRuntimeHandoffInput<'_>) -> VirtioRuntimeHandoff {
     let mut notify_mappings = input.planned_notify_mappings;
     notify_mappings.set(0, input.q0_notify_va);
-    notify_mappings.set(1, input.q1_notify_va);
 
     VirtioRuntimeHandoff {
         queue_resources: build_queue_resources(

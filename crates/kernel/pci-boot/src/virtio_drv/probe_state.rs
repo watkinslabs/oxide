@@ -247,7 +247,6 @@ impl VirtioProbeState {
             programmed_queues,
             planned_notify_mappings,
             q0_notify_va,
-            q1_notify_va,
             post_notify_status,
             avail_idx_posted: net_rx_boot.avail_idx_posted,
             used_idx_observed,
