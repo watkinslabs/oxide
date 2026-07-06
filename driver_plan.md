@@ -2,11 +2,12 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: D133-b585-ledger-merged records B585 merge
+ACTIVE NOW: B586-ps2-live-rebind-loops-proof verified, pending commit/PR/merge
 
-Current active item: B585-uart-live-rebind-loops-proof. Prove repeated
-bind/unbind/remove/readd loops under QEMU for UART/serial behavior on x86_64
-and aarch64. B585 merged; D133 records the merged state.
+Current active item: B586-ps2-live-rebind-loops-proof. Prove repeated
+bind/unbind/remove/readd loops under QEMU for PS/2/i8042 behavior on x86_64
+and the correct aarch64 no-device path. Targeted proof passed on both arches;
+commit, PR, merge, fresh-main smoke, and D134 ledger update remain.
 Last verified branch:
 `B583-virtio-parent-child-rebind-proof` merged as PR #2687 at `51fae5c4`;
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
@@ -16,8 +17,8 @@ reaching `oxide login:` in 28s and x86_64 passing in the same run.
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 29s and x86_64 passing in the same run.
 
-Next gate: commit, push, open PR, merge, refresh main, run post-merge smoke,
-then claim B586 for the next unverified row from fresh main.
+Next gate: commit B586 proof, run required pre-push smoke, push/PR/merge,
+refresh main, run fresh-main smoke, then record D134 ledger merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -381,7 +382,7 @@ Status legend:
 | VERIFIED MERGED | B578-sound-live-rebind-proof | Sound repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. The virtio-snd multidev probe now runs three sysfs unbind/rebind loops against the second virtio-snd child, proves card-1 ALSA and OSS devnodes disappear after unbind, and re-proves two cards plus control and direct playback/capture PCM_INFO state after each rebind. Checks pass: `cargo test -q -p sound -p drv-virtio-snd -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_snd_multidev_probe.c` 418, `boot-smoke-virtio-snd-multidev.sh` 87), x86_64 `/tmp/b578-x86-virtio-snd-multidev.log`, aarch64 `/tmp/b578-arm-virtio-snd-multidev.log`, PR #2677 merged as `3ce6e1bd`, fresh-main `make smoke` passed with aarch64 reaching `oxide login:` in 28s, and standalone x86_64 smoke reached `oxide login:` in 12s. |
 | VERIFIED MERGED | B584-rng-live-rebind-loops-proof | RNG repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B584 extends `/bin/virtio_rng_rebind_probe` from the B574 single-pass proof to run three sysfs child unbind/rebind loops against the same bound virtio-rng child. The probe uses `lstat()` for driver-directory symlink presence, proves `/sys/bus/virtio/drivers/virtio-rng/<child>` disappears after every unbind and returns after every bind, keeps `/dev/hwrng` readable before unbind, after unbind through the promoted provider, and after rebind, and emits B584 loop evidence to stdout plus `/dev/kmsg`. Checks pass: `cargo test -q -p virtio -p pci-boot -p drv-virtio-rng -- --nocapture --test-threads=1` with 57 tests passed; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-virtio-rng-rebind.sh`; line caps (`virtio_rng_rebind_probe.c` 217, `boot-smoke-virtio-rng-rebind.sh` 87); x86_64 `/tmp/b584-x86-virtio-rng-rebind.log`; aarch64 `/tmp/b584-arm-virtio-rng-rebind.log`; pre-push smoke on both arches; PR #2691 merged as `55ad7477`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 and aarch64, including aarch64 reaching `oxide login:` in 29s. D132 records the merged state and advances D 132 -> 133. |
 | VERIFIED MERGED | B585-uart-live-rebind-loops-proof | UART repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B585 adds `/bin/uart_rebind_probe`, `smoke-uart-rebind-{x86,arm}` Make targets, and rootfs direct-init wiring. The probe discovers the active per-arch platform UART driver (`8250-serial` on x86_64, `pl011-serial` on aarch64), runs three sysfs unbind/rebind loops for `platform/serial0`, records that `/sys/bus/platform/drivers/<driver>/serial0` and `/sys/devices/platform/serial0/driver` disappear while unbound, re-proves both symlink targets after every bind, and writes through `/dev/ttyS0` after each restore. Checks pass: `cargo test -q -p drv -p sysfs -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -- --nocapture --test-threads=1` with drv 31/31 and sysfs 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-uart-rebind.sh`; line caps (`uart_rebind_probe.c` 199, `boot-smoke-uart-rebind.sh` 87, `rootfs.rs` 415, `rootfs_lists.rs` 104, `Makefile` 336); x86_64 `/tmp/b585-x86-uart-rebind.log`; aarch64 `/tmp/b585-arm-uart-rebind.log`; PR #2693 merged as `357532b4`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 and aarch64, including aarch64 reaching `oxide login:` in 28s. D133 records the merged state and advances D 133 -> 134. |
-| NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for PS/2. |
+| VERIFIED | B586-ps2-live-rebind-loops-proof | PS/2/i8042 repeated bind/unbind/remove/readd proof passes under QEMU. B586 adds `/bin/ps2_rebind_probe`, `smoke-ps2-rebind-{x86,arm}` Make targets, and rootfs direct-init wiring. x86_64 proof runs three sysfs loops against `platform/i8042` bound to `i8042-kbd`, rejects duplicate bind with `errno=16`, proves `/sys/bus/platform/drivers/i8042-kbd/i8042` and `/sys/devices/platform/i8042/driver` disappear while unbound, proves the platform device persists, and re-proves both symlink targets after every bind. aarch64 proof verifies QEMU virt correctly has no `/sys/devices/platform/i8042` and no `/sys/bus/platform/drivers/i8042-kbd`. Checks pass: `cargo test -q -p drv -p sysfs -p drv-ps2-keyboard -- --nocapture --test-threads=1` with drv 31/31, sysfs 34/34, and drv-ps2-keyboard 6/6; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-ps2-rebind.sh`; line caps (`ps2_rebind_probe.c` 213, `boot-smoke-ps2-rebind.sh` 87, `rootfs.rs` 423, `rootfs_lists.rs` 106, `Makefile` 343, `driver_plan.md` 398, `driver_progress.md` 588); x86_64 `/tmp/b586-x86-ps2-rebind.log`; aarch64 `/tmp/b586-arm-ps2-rebind.log`. Claim made from fresh `main` at D133 ledger merge `9fbf1155`; `metadata/index.md` advanced B 586 -> 587 on this branch. Pending commit, PR, merge, fresh-main smoke, and D134 ledger. |
 | NOT DONE | TBD | Finish Linux-visible sysfs/devtmpfs/class contracts across every class; B418 found `/dev/dri/card1` remains openable after virtio-gpu model hot-remove even though `hot_remove` reports device/scanout removed. |
 | NOT DONE | TBD | `/sys/dev/{char,block}` exists and resolves; needs live udev proof. |
 | NOT DONE | TBD | `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape exists; needs live proof. |
