@@ -51,12 +51,13 @@ pub fn publish_driver_cb(_bus: &str, _name: &'static str) {}
 /// drv `set_bind_hook` target: a device binding changed after model state was
 /// updated. # C: O(N_devices)
 pub fn bind_device_cb(bus: &str, addr: &str, _driver: &'static str, _event: drv::BindEvent) {
-    let devpath = alloc::format!("/{}/{}", dev_root_canon(bus), addr);
     if let Some(dev) = find_dev(bus, addr) {
+        let devpath = dev_devpath(&dev);
         let env = dev_uevent_env(&dev);
         let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
         ::netlink::emit_uevent_with_env("change", &devpath, bus, &refs);
     } else {
+        let devpath = alloc::format!("/{}/{}", dev_root_canon(bus), addr);
         ::netlink::emit_uevent("change", &devpath, bus);
     }
 }
