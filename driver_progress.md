@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B574-qemu-rebind-certification-audit is VERIFIED locally on branch
-`B574-qemu-rebind-certification-audit`; existing local `B573-mem-chardev` is
-not part of this work.
+Current marker: no active branch. B574-qemu-rebind-certification-audit is
+VERIFIED MERGED; next work must start from fresh `main` with the authoritative
+branch counter.
 
 ## B574 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B574-qemu-rebind-certification-audit | VERIFIED LOCAL | Fresh `main` at B572/D122 ledger merge `c2b7f679`; B572 PR #2665 and ledger PR #2666 are merged, and post-merge x86_64/aarch64 normal-login smokes passed. `metadata/index.md` advanced B 573 -> 575 because local `B573-mem-chardev` already exists and is not touched by this branch. Audit found storage, virtio-net, virtio-gpu, virtio-snd, and uevent live rebind proofs already present, but no QEMU-visible virtio-rng sysfs rebind proof. B574 adds opt-in two-device virtio-rng QEMU mode for x86_64/aarch64, stages `/bin/virtio_rng_rebind_probe`, wires rootfs mode/cache isolation, and adds `tools/boot-smoke-virtio-rng-rebind.sh` plus Make targets. The probe verifies two bound `virtio-rng` children, writable driver `bind`/`unbind`, `/dev/hwrng` entropy before unbind, live provider promotion after unbind, rebind, and restored `/dev/hwrng` entropy. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_rng_rebind_probe.c` 170, `boot-smoke-virtio-rng-rebind.sh` 87, `rootfs.rs` 383, `rootfs_cache.rs` 276, `x86_64.rs` 204, `aarch64.rs` 208), x86_64 targeted smoke `/tmp/b574-x86-virtio-rng-rebind.log`, and aarch64 targeted smoke `/tmp/b574-arm-virtio-rng-rebind.log`. |
+| B574-qemu-rebind-certification-audit | VERIFIED MERGED | Fresh `main` at B572/D122 ledger merge `c2b7f679`; B572 PR #2665 and ledger PR #2666 are merged, and post-merge x86_64/aarch64 normal-login smokes passed. `metadata/index.md` advanced B 573 -> 575 because local `B573-mem-chardev` already existed and was not touched by this branch. Audit found storage, virtio-net, virtio-gpu, virtio-snd, and uevent live rebind proofs already present, but no QEMU-visible virtio-rng sysfs rebind proof. B574 added opt-in two-device virtio-rng QEMU mode for x86_64/aarch64, staged `/bin/virtio_rng_rebind_probe`, wired rootfs mode/cache isolation, and added `tools/boot-smoke-virtio-rng-rebind.sh` plus Make targets. The probe verifies two bound `virtio-rng` children, writable driver `bind`/`unbind`, `/dev/hwrng` entropy before unbind, live provider promotion after unbind, rebind, and restored `/dev/hwrng` entropy. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps (`virtio_rng_rebind_probe.c` 170, `boot-smoke-virtio-rng-rebind.sh` 87, `rootfs.rs` 383, `rootfs_cache.rs` 276, `x86_64.rs` 204, `aarch64.rs` 208), x86_64 targeted smoke `/tmp/b574-x86-virtio-rng-rebind.log`, aarch64 targeted smoke `/tmp/b574-arm-virtio-rng-rebind.log`, pre-push boot smoke reached `oxide login:` on x86_64 in 26s and aarch64 in 30s, PR #2668 merged as `1ff61f7d`, local `main` was refreshed through PR #2669 at `8ebf4737`, and fresh-main post-merge login smokes reached `oxide login:` on x86_64 (`/tmp/b574-postmerge-x86-login-smoke.log`, 38s) and aarch64 (`/tmp/b574-postmerge-arm-login-smoke.log`, 44s). D123 records the merged state and advances stale counters: D 123 -> 124 and B 575 -> 576 because B575 is already merged on `main`. |
 
 ## B572 Current
 
