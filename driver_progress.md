@@ -5,15 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B569-x86-login-cgroup-audit is VERIFIED LOCAL on branch
-`B569-x86-login-cgroup-audit`; next gate is commit, push, PR, merge, fresh-main
-sync, and post-merge x86_64/aarch64 normal-login smokes.
+Current marker: B570-alsa-pcm-info-card-proof is ACTIVE on branch
+`B570-alsa-pcm-info-card-proof`; source audit is checking direct ALSA PCM
+`PCM_INFO` card-number reporting.
+
+## B570 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B570-alsa-pcm-info-card-proof | ACTIVE | Fresh `main` at B569 PR #2661 merge commit `4909421e`; B569 post-merge fresh-main normal-login proof passed with x86_64 log `/tmp/b569-postmerge-x86-login-smoke.log` and aarch64 log `/tmp/b569-postmerge-arm-login-smoke.log`. `metadata/index.md` advanced B 570 -> 571. Source audit in progress for direct ALSA PCM `PCM_INFO` on PCM nodes. |
 
 ## B569 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B569-x86-login-cgroup-audit | VERIFIED LOCAL | Fresh `main` at B568 PR #2660 merge commit `81b94914`; B568 post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. `metadata/index.md` advanced B 569 -> 570. Current main did not reproduce the old x86_64 `console-getty.service` cgroup attach/spawn failure across three durable x86_64 normal-login runs (`/tmp/b569-x86-login-smoke-1.log`, `/tmp/b569-x86-login-smoke-2.log`, `/tmp/b569-x86-login-smoke-3.log`). Lockstep ARM normal-login exposed a real scheduler no-progress failure after `g19_glibc_smoke` exit: `/tmp/b569-arm-login-smoke.log` and `/tmp/b569-arm-login-smoke-after-ttwu.log` timed out with PID 1 `Runnable` but not queued/running after `clone`, while the vfork child was zombie. B569 fixes scheduler ownership and wake placement by stamping `Task::cpu` at enqueue/switch, preferring the prior owning runqueue for legal wake placement, repairing Runnable-not-queued wake placement, and completing stale `on_cpu` switch handoff before wake-list drain/reuse. Checks pass: `cargo test -q -p sched -- --nocapture --test-threads=1` with 121/121 tests, `git diff --check`, line caps (`switch.rs` 358, `ttwu.rs` 264, `runqueue.rs` 102, `queues.rs` 223), aarch64 normal-login `/tmp/b569-arm-login-smoke-after-cpu-owner.log` reached `oxide login:` in 50s, and x86_64 normal-login `/tmp/b569-x86-login-smoke-after-cpu-owner.log` reached `oxide login:` in 46s. |
+| B569-x86-login-cgroup-audit | VERIFIED MERGED | Fresh `main` at B568 PR #2660 merge commit `81b94914`; B568 post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. `metadata/index.md` advanced B 569 -> 570. Current main did not reproduce the old x86_64 `console-getty.service` cgroup attach/spawn failure across three durable x86_64 normal-login runs (`/tmp/b569-x86-login-smoke-1.log`, `/tmp/b569-x86-login-smoke-2.log`, `/tmp/b569-x86-login-smoke-3.log`). Lockstep ARM normal-login exposed a real scheduler no-progress failure after `g19_glibc_smoke` exit: `/tmp/b569-arm-login-smoke.log` and `/tmp/b569-arm-login-smoke-after-ttwu.log` timed out with PID 1 `Runnable` but not queued/running after `clone`, while the vfork child was zombie. B569 fixes scheduler ownership and wake placement by stamping `Task::cpu` at enqueue/switch, preferring the prior owning runqueue for legal wake placement, repairing Runnable-not-queued wake placement, and completing stale `on_cpu` switch handoff before wake-list drain/reuse. Checks pass: `cargo test -q -p sched -- --nocapture --test-threads=1` with 121/121 tests, `git diff --check`, line caps (`switch.rs` 358, `ttwu.rs` 264, `runqueue.rs` 102, `queues.rs` 223), aarch64 normal-login `/tmp/b569-arm-login-smoke-after-cpu-owner.log` reached `oxide login:` in 50s, x86_64 normal-login `/tmp/b569-x86-login-smoke-after-cpu-owner.log` reached `oxide login:` in 46s, pre-push boot-smoke passed on x86_64/aarch64, PR #2661 merged as `4909421e`, and post-merge fresh-main normal-login smokes passed on x86_64 (`/tmp/b569-postmerge-x86-login-smoke.log`, 34s) and aarch64 (`/tmp/b569-postmerge-arm-login-smoke.log`, 40s). |
 
 ## B568 Current
 
