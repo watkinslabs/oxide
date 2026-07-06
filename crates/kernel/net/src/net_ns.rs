@@ -137,6 +137,45 @@ pub fn current_unix_registry() -> UnixRegRef {
     ns_unix_registry(crate::netdev::current_net_ns())
 }
 
+/// net_ns id that owns the AF_UNIX rendezvous for `path`, honouring the
+/// real Linux split: an ABSTRACT address (leading NUL) is keyed by
+/// `(netns, name)` — private to the calling task's net_ns — while a
+/// PATHNAME address is a filesystem object keyed by inode, GLOBAL across
+/// every net_ns (id 0). B518 isolated the *whole* registry per-ns, which
+/// wrongly hid pathname sockets from `PrivateNetwork=yes` services: a
+/// hardened daemon (polkit / rtkit-daemon / systemd-hostnamed run in a
+/// fresh net_ns) connecting to `/run/dbus/system_bus_socket` — a pathname
+/// socket bound by dbus-broker in ns 0 — looked in its empty private
+/// registry and got ECONNREFUSED, dying and starving the session bus.
+/// Linux `unix_find_other`: pathname → `kern_path` + find-by-inode (no
+/// net check); abstract → `unix_find_socket_byname(net, …)` (net-scoped).
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn unix_ns_for_path(path: &str) -> u64 {
+    if unix_path_is_global(path) {
+        0
+    } else {
+        crate::netdev::current_net_ns()
+    }
+}
+
+/// True when `path`'s AF_UNIX rendezvous is filesystem-GLOBAL and thus
+/// reachable across every net_ns (a pathname address), false when it is
+/// per-net_ns (an abstract address, leading NUL). Pure + target-agnostic
+/// so the hosted `cargo test -p net` can prove the routing rule without
+/// the kernel-only net_ns plumbing. # C: O(1)
+pub fn unix_path_is_global(path: &str) -> bool {
+    !crate::unix_sock::unix_path_is_abstract(path)
+}
+
+/// AF_UNIX registry that owns `path`'s rendezvous: the caller's net_ns
+/// for abstract addresses, the GLOBAL registry for pathname addresses.
+/// See `unix_ns_for_path`. # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
+pub fn unix_registry_for_path(path: &str) -> UnixRegRef {
+    ns_unix_registry(unix_ns_for_path(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +243,78 @@ mod tests {
         assert!(n2.unix.dgram_bind(p.clone(), crate::UnixDgramQueue::new()).is_ok());
         n1.unix.dgram_unbind(&p);
         n2.unix.dgram_unbind(&p);
+    }
+
+    // SC1: pathname AF_UNIX sockets are filesystem-global (cross net_ns);
+    // only abstract addresses are per-net_ns.
+    #[test]
+    fn pathname_is_global_abstract_is_per_ns() {
+        assert!(unix_path_is_global("/run/dbus/system_bus_socket"),
+            "a pathname socket is filesystem-global");
+        assert!(unix_path_is_global("/run/systemd/private"),
+            "any leading-'/' path is global");
+        // Abstract addresses carry a leading NUL byte.
+        assert!(!unix_path_is_global("\0/org/freedesktop/systemd1"),
+            "an abstract socket (leading NUL) stays per-net_ns");
+    }
+
+    // SC1 regression: a PrivateNetwork=yes service (polkit / rtkit-daemon /
+    // systemd-hostnamed) runs in a fresh net_ns yet MUST reach the D-Bus
+    // system bus, a PATHNAME socket bound by dbus-broker in ns 0. Model the
+    // routing: pathname → the global registry (reachable from any ns);
+    // abstract → the caller's own ns registry (isolated).
+    #[test]
+    fn pathname_socket_reachable_across_net_ns() {
+        // `g` plays the role of ns 0's global registry; `priv_ns` is a
+        // PrivateNetwork service's private registry.
+        let g = UnixRegistry::new();
+        let priv_ns = UnixRegistry::new();
+
+        let bus = String::from("/run/dbus/system_bus_socket");
+        // dbus-broker (ns 0) binds the pathname listener into the global reg.
+        let listener = g.bind(bus.clone()).expect("bind system bus in ns 0");
+
+        // A private-ns client's connect ROUTES by unix_path_is_global: a
+        // pathname address resolves against the global registry, NOT its
+        // own (empty) private one — the pre-fix bug returned ECONNREFUSED.
+        let reg_for_connect = if unix_path_is_global(&bus) { &g } else { &priv_ns };
+        assert!(!core::ptr::eq(reg_for_connect, &priv_ns),
+            "pathname connect must NOT resolve in the private-ns registry");
+        // connect-before-accept: dbus-broker has not accept()'d yet, so the
+        // connection must QUEUE into the listen backlog, never be refused.
+        let pair = reg_for_connect.connect(&bus);
+        assert!(pair.is_some(), "cross-ns pathname connect must succeed (queue), not ECONNREFUSED");
+        assert_eq!(listener.accept_q.lock().len(), 1,
+            "the pending connection is queued for a later accept()");
+
+        // Abstract addresses stay isolated: an abstract listener bound in
+        // the private ns is invisible to the global registry.
+        let abs = String::from("\0sc1-abstract");
+        let _al = priv_ns.bind(abs.clone()).expect("abstract bind in private ns");
+        assert!(g.connect(&abs).is_none(),
+            "an abstract socket must remain private to its own net_ns");
+
+        g.unbind(&bus);
+        priv_ns.unbind(&abs);
+    }
+
+    // SC1: connect() to a bound listener that has not accept()'d yet must
+    // QUEUE the connection (Linux listen backlog), returning success — the
+    // whole premise of D-Bus socket activation. It must NOT ECONNREFUSE.
+    #[test]
+    fn connect_before_accept_queues_not_refused() {
+        let reg = UnixRegistry::new();
+        let p = String::from("/run/sc1-queue.sock");
+        let l = reg.bind(p.clone()).expect("bind");
+        // No accept() has run.
+        assert_eq!(l.accept_q.lock().len(), 0);
+        assert!(reg.connect(&p).is_some(), "connect-before-accept queues");
+        assert!(reg.connect(&p).is_some(), "a second pending connection also queues");
+        assert_eq!(l.accept_q.lock().len(), 2, "both connections wait in the backlog");
+        // A connect to an UNbound path is refused (None → ECONNREFUSED).
+        assert!(reg.connect("/run/sc1-nobody").is_none(),
+            "no listener bound → ECONNREFUSED");
+        reg.unbind(&p);
     }
 
     #[test]
