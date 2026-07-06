@@ -22,6 +22,13 @@ const SECOND_EVENT_RAW: u64 = 0xcccc_0000_0000_0004;
 const NO_EVENTS: u64 = 0;
 const IDLE_AVAIL_IDX: u16 = 0;
 const IDLE_LAST_USED: u16 = 0;
+const WRAP_KEY_RAW: u32 = 0x0040_0000;
+const WRAP_START_AVAIL_IDX: u16 = QUEUE_SIZE - 1;
+const WRAP_FINAL_AVAIL_IDX: u16 = WRAP_START_AVAIL_IDX + USED_EVENTS;
+const WRAP_FIRST_DESC_ID: u32 = 5;
+const WRAP_SECOND_DESC_ID: u32 = 6;
+const WRAP_FIRST_EVENT_RAW: u64 = 0xdddd_0000_0000_0005;
+const WRAP_SECOND_EVENT_RAW: u64 = 0xdddd_0000_0000_0006;
 
 #[test]
 fn eventq_drain_accounting_is_keyed_by_snd_context() {
@@ -76,5 +83,43 @@ fn eventq_drain_accounting_is_keyed_by_snd_context() {
     assert_eq!(notify1, EVENTQ_INDEX);
     assert_eq!(DRAINED_EVENTS.load(Ordering::Relaxed), USED_EVENTS as u64);
     assert_eq!(LAST_EVENT.load(Ordering::Relaxed), SECOND_EVENT_RAW);
+    reset_test_state();
+}
+
+#[test]
+fn eventq_drain_recycles_used_descriptors_with_avail_wrap() {
+    let _guard = TEST_LOCK.lock();
+    reset_test_state();
+    let mut used = [0u8; USED_BYTES];
+    let mut avail = [0u8; AVAIL_BYTES];
+    let mut events = [0u8; EVENT_BYTES];
+    let mut notify = 0u16;
+    put_u16(&mut used, USED_IDX_OFF, USED_EVENTS);
+    put_u32(&mut used, USED_RING_OFF, WRAP_FIRST_DESC_ID);
+    put_u32(&mut used, USED_RING_OFF + USED_ELEM_BYTES, WRAP_SECOND_DESC_ID);
+    put_event(&mut events, WRAP_FIRST_DESC_ID as usize, WRAP_FIRST_EVENT_RAW);
+    put_event(&mut events, WRAP_SECOND_DESC_ID as usize, WRAP_SECOND_EVENT_RAW);
+
+    let mut wrap_ctx = ctx(key(WRAP_KEY_RAW));
+    let mut q = queue(EVENTQ_INDEX);
+    q.device_pa = used.as_mut_ptr() as u64;
+    q.driver_pa = avail.as_mut_ptr() as u64;
+    q.notify_va = (&mut notify as *mut u16) as u64;
+    wrap_ctx.eventq = Some(q);
+    wrap_ctx.event_buf_pa = events.as_mut_ptr() as u64;
+    wrap_ctx.event_avail_idx = WRAP_START_AVAIL_IDX;
+    CTX.lock().push(wrap_ctx);
+
+    event_softirq();
+
+    assert_eq!(eventq_state_for(key(WRAP_KEY_RAW)), Some((QUEUE_SIZE, USED_EVENTS, WRAP_FINAL_AVAIL_IDX)));
+    assert_eq!(get_u16(&avail, AVAIL_IDX_OFF), WRAP_FINAL_AVAIL_IDX);
+    assert_eq!(
+        get_u16(&avail, AVAIL_RING_OFF + WRAP_START_AVAIL_IDX as usize * AVAIL_RING_ENTRY_BYTES),
+        WRAP_FIRST_DESC_ID as u16,
+    );
+    assert_eq!(get_u16(&avail, AVAIL_RING_OFF), WRAP_SECOND_DESC_ID as u16);
+    assert_eq!(event_stats_for(key(WRAP_KEY_RAW)), Some((USED_EVENTS as u64, WRAP_SECOND_EVENT_RAW)));
+    assert_eq!(notify, EVENTQ_INDEX);
     reset_test_state();
 }
