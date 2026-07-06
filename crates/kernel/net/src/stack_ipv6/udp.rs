@@ -89,6 +89,18 @@ impl NetStack {
         port: u16,
         peek: bool,
     ) -> Option<(Ipv6Addr, u16, Vec<u8>)> {
+        let (src, sport, _dst, _iface, _hop, body) = self.recv_udp6_meta_opts(port, peek)?;
+        Some((src, sport, body))
+    }
+
+    /// recvmsg path: return the datagram plus the ancillary metadata
+    /// `(src, src_port, dst, recv_iface, hop_limit, payload)` used to
+    /// build IPV6_PKTINFO / IPV6_HOPLIMIT control messages. # C: O(1)
+    pub fn recv_udp6_meta_opts(
+        &self,
+        port: u16,
+        peek: bool,
+    ) -> Option<super::Udp6Datagram> {
         let q = { self.udp6_map().lock().get(&port)?.clone() };
         let mut g = q.q.lock();
         if peek { g.front().cloned() } else { g.pop_front() }

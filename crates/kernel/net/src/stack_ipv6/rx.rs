@@ -55,7 +55,7 @@ impl NetStack {
                 }
             }
         };
-        self.deliver_rx_ipv6_payload(iface, hdr.src, hdr.dst, next_header, payload)
+        self.deliver_rx_ipv6_payload(iface, hdr.src, hdr.dst, hdr.hop_limit, next_header, payload)
     }
 
     fn deliver_rx_ipv6_payload(
@@ -63,6 +63,7 @@ impl NetStack {
         iface: NetIfaceId,
         src: Ipv6Addr,
         dst: Ipv6Addr,
+        hop_limit: u8,
         next_header: u8,
         payload: &[u8],
     ) -> NetResult<()> {
@@ -84,7 +85,7 @@ impl NetStack {
                         return Ok(());
                     }
                     let body = &payload[crate::udp::UDP_HDR_LEN..udp.length as usize];
-                    q.q.lock().push_back((src, udp.src_port, body.to_vec()));
+                    q.q.lock().push_back((src, udp.src_port, dst, iface, hop_limit, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
                     {
                         q.waiters.wake_all();

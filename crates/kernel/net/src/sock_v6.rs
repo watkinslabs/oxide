@@ -47,6 +47,21 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
     crate::sock_io::connect_wait_established(&entry)
 }
 
+/// Resolve the outbound hop limit for a v6 datagram from the socket's
+/// IPV6_MULTICAST_HOPS (multicast dst) or IPV6_UNICAST_HOPS (unicast dst).
+/// The `-1` sentinel means "unset" → Linux default: 1 for multicast,
+/// `IPV6_DEFAULT_HOP_LIMIT` for unicast. # C: O(1)
+fn resolve_v6_hop_limit(sock: &alloc::sync::Arc<InetSocket>, dst_ip: crate::Ipv6Addr) -> u8 {
+    use core::sync::atomic::Ordering;
+    if dst_ip.is_multicast() {
+        let h = sock.opts.ipv6_mcast_hops.load(Ordering::Acquire);
+        if h < 0 { 1 } else { h as u8 }
+    } else {
+        let h = sock.opts.ipv6_ucast_hops.load(Ordering::Acquire);
+        if h < 0 { crate::ipv6::IPV6_DEFAULT_HOP_LIMIT } else { h as u8 }
+    }
+}
+
 /// F180b: AF_INET6 datagram sendto. Allocates an ephemeral src port
 /// on demand; routes via stack().send_udp6_to.
 /// # C: O(payload)
@@ -71,7 +86,8 @@ pub fn sendto_v6(sock: &alloc::sync::Arc<InetSocket>,
         }
     };
     let src_ip = *sock.local_ip6.lock();
-    stack().send_udp6_to_bound(src_ip, src_port, dst_ip, dst_port, payload, bound_iface(sock)?)?;
+    let hop = resolve_v6_hop_limit(sock, dst_ip);
+    stack().send_udp6_to_bound_opts(src_ip, src_port, dst_ip, dst_port, payload, bound_iface(sock)?, hop)?;
     drain_loopback();
     Ok(payload.len())
 }

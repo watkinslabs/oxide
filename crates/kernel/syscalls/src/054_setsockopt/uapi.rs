@@ -36,9 +36,15 @@ pub(super) const MCAST_LEAVE_SOURCE_GROUP: u64 = 47;
 pub(super) const MCAST_MSFILTER: u64 = 48;
 
 pub(super) const IPPROTO_IPV6: u64 = 41;
+pub(super) const IPV6_UNICAST_HOPS: u64 = 16;
+pub(super) const IPV6_MULTICAST_IF: u64 = 17;
+pub(super) const IPV6_MULTICAST_HOPS: u64 = 18;
+pub(super) const IPV6_MULTICAST_LOOP: u64 = 19;
 pub(super) const IPV6_JOIN_GROUP: u64 = 20;
 pub(super) const IPV6_LEAVE_GROUP: u64 = 21;
 pub(super) const IPV6_V6ONLY: u64 = 26;
+pub(super) const IPV6_RECVPKTINFO: u64 = 49;
+pub(super) const IPV6_RECVHOPLIMIT: u64 = 51;
 
 pub(super) const IPPROTO_TCP: u64 = 6;
 pub(super) const TCP_CORK: u64 = 3;

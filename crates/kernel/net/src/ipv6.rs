@@ -84,8 +84,18 @@ impl Ipv6Hdr {
 pub fn push_ipv6_header(
     pkt: &mut Pkt, src: Ipv6Addr, dst: Ipv6Addr, proto: IpProto
 ) -> Result<(), crate::pkt::PktError> {
+    push_ipv6_header_hop(pkt, src, dst, proto, IPV6_DEFAULT_HOP_LIMIT)
+}
+
+/// Push an IPv6 header with an explicit hop limit (IPV6_UNICAST_HOPS /
+/// IPV6_MULTICAST_HOPS). `push_ipv6_header` is the default-hop-limit case.
+/// # C: O(1)
+pub fn push_ipv6_header_hop(
+    pkt: &mut Pkt, src: Ipv6Addr, dst: Ipv6Addr, proto: IpProto, hop_limit: u8,
+) -> Result<(), crate::pkt::PktError> {
     let payload_len = pkt.len() as u16;
-    let hdr = Ipv6Hdr::build(src, dst, proto, payload_len);
+    let mut hdr = Ipv6Hdr::build(src, dst, proto, payload_len);
+    hdr.hop_limit = hop_limit;
     let slot = pkt.push(IPV6_HDR_LEN)?;
     hdr.write_to(slot);
     Ok(())

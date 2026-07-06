@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::addr::{IpAddr, IpProto, Ipv6Addr, NetIfaceId};
-use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
+use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header, push_ipv6_header_hop};
 use crate::netdev::{NetDev, NetError, NetResult};
 use crate::netfilter_hook::{nf_output, NFPROTO_IPV6};
 use crate::stack::NetStack;
@@ -126,6 +126,24 @@ impl NetStack {
         proto: IpProto,
         l4: &[u8],
     ) -> NetResult<()> {
+        self.xmit_ipv6_l4_on_iface_opts(
+            iface_id, iface, src, dst, proto, l4, crate::ipv6::IPV6_DEFAULT_HOP_LIMIT,
+        )
+    }
+
+    /// `xmit_ipv6_l4_on_iface` with an explicit hop limit (socket
+    /// IPV6_UNICAST_HOPS / IPV6_MULTICAST_HOPS). Mirrors the IPv4
+    /// `xmit_ipv4_l4_on_iface_opts` ttl seam. # C: O(payload + N)
+    pub(crate) fn xmit_ipv6_l4_on_iface_opts(
+        &self,
+        iface_id: NetIfaceId,
+        iface: Arc<dyn NetDev>,
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        proto: IpProto,
+        l4: &[u8],
+        hop_limit: u8,
+    ) -> NetResult<()> {
         let mtu = iface.mtu() as usize;
         let total = IPV6_HDR_LEN + l4.len();
         if l4.len() > u16::MAX as usize {
@@ -135,7 +153,7 @@ impl NetStack {
             let mut p = crate::pkt::Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
             p.put(l4.len()).map_err(|_| NetError::Enobufs)?
                 .copy_from_slice(l4);
-            push_ipv6_header(&mut p, src, dst, proto).map_err(|_| NetError::Enobufs)?;
+            push_ipv6_header_hop(&mut p, src, dst, proto, hop_limit).map_err(|_| NetError::Enobufs)?;
             p.proto = crate::addr::eth_p::IPV6;
             p.iface = Some(iface_id);
             if !nf_output(&p, NFPROTO_IPV6) {
@@ -164,7 +182,7 @@ impl NetStack {
             body[2..4].copy_from_slice(&off_flags.to_be_bytes());
             body[4..8].copy_from_slice(&frag_id.to_be_bytes());
             body[8..].copy_from_slice(&l4[off..off + take]);
-            push_ipv6_header(&mut p, src, dst, IpProto::Fragment)
+            push_ipv6_header_hop(&mut p, src, dst, IpProto::Fragment, hop_limit)
                 .map_err(|_| NetError::Enobufs)?;
             p.proto = crate::addr::eth_p::IPV6;
             p.iface = Some(iface_id);
