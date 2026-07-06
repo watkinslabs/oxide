@@ -12,6 +12,7 @@ hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 elf  = { path = "../../shared/elf" }
+pmm  = { path = "../mm-pmm" }
 
 [features]
 default = []

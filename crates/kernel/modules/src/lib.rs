@@ -10,6 +10,7 @@
 // symtab; `__ksymtab` linker section walking.
 
 #![no_std]
+#![feature(c_variadic)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
@@ -45,6 +46,8 @@ pub use relocator::{
 
 pub mod modinfo;
 pub use modinfo::{KERNEL_VERMAGIC, ModuleInfo, ModuleParam};
+
+pub mod linux_alloc;
 
 pub mod loader;
 pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
