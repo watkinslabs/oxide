@@ -2,19 +2,17 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: selecting next driver row after B572 verified merged
+ACTIVE NOW: B574-qemu-rebind-certification-audit in audit
 
-Current active item: `OXIDE_SKIP_ROOTFS=1` can reuse a targeted driver-smoke
-rootfs whose `/init` is a probe binary while generic `smoke-x86`/`smoke-arm`
-wait for `oxide login:`, producing a slow false timeout instead of a real
-driver verdict.
+Current active item: QEMU-visible runtime bind/unbind/rebind certification is
+incomplete; audit current live probes and add the missing proof without touching
+the existing local `B573-mem-chardev` branch.
 Last verified branch:
-`B571-sound-tests-global-state-proof` merged as PR #2663. The attempted
-post-merge normal-login smoke exposed the stale rootfs mode mismatch now tracked
-by B572, not a B571 code regression.
+`B572-smoke-rootfs-mode-guard` merged as PR #2665 and was recorded by PR #2666;
+fresh-main post-merge x86_64/aarch64 normal-login smokes passed.
 
-Next gate: claim the next B branch from `metadata/index.md`, update this
-marker, and start the next concrete driver row from fresh `main`.
+Next gate: audit existing QEMU live rebind proofs, identify concrete missing
+coverage, implement/prove on x86_64 and aarch64, then PR/merge/sync.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -364,7 +362,7 @@ Status legend:
 | VERIFIED | B419-virtio-vsock-live-multiendpoint-proof | Virtio-vsock primary compatibility route works with multiple live endpoints: direct `/init` proof installs cid=3/cid=4 and completes host round-trip on x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log`; hosted `net`, `drv-virtio-vsock`, and `pci-boot` tests pass. |
 | VERIFIED | B420-virtio-snd-event-control-proof | Virtio-snd live multi-card proof now covers control/event UAPI shape without fabricated mixer controls: `controlC0`/`controlC1` prove card info, PCM discovery/info for playback+capture, empty control element list, missing element `ENOENT`, and event subscription before and after live rebind. Direct musl builds pass for x86_64/aarch64; hosted `cargo test -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` passes; fast live logs `/tmp/b420-x86-virtio-snd-event-control.log` and `/tmp/b420-arm-virtio-snd-event-control.log` pass. |
 | NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
-| NOT DONE | TBD | QEMU-visible runtime bind/unbind/rebind certification incomplete. |
+| ACTIVE | B574-qemu-rebind-certification-audit | QEMU-visible runtime bind/unbind/rebind certification incomplete. Audit existing live proof coverage and close one concrete missing proof on x86_64 and aarch64 from fresh `main`; do not touch the existing local `B573-mem-chardev` branch. |
 | NOT DONE | TBD | PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. |
 | SOURCE OK |  | Production model drivers in current source have explicit shutdown callbacks; default shutdown remains test-only. |
 | NOT DONE | TBD | Extract remaining real virtio bus/core split from `pci-boot`. |
