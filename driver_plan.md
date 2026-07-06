@@ -2,15 +2,16 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: none
+ACTIVE NOW: B578-sound-live-rebind-proof in audit
 
-Current active item: none. B576 is merged and post-merge smoke-verified on
-fresh `main`.
+Current active item: B578-sound-live-rebind-proof. Prove sound live
+bind/unbind/remove/readd behavior under QEMU on x86_64 and aarch64.
 Last verified branch:
 `B576-virtio-input-live-rebind-proof` merged as PR #2674 at `1753d2b1`;
 fresh-main post-merge x86_64/aarch64 normal-login smokes passed.
 
-Next gate: claim the next row from fresh `main`.
+Next gate: audit current sound publication/remove/rebind coverage, add the
+missing live proof or kernel fix, then verify x86_64 and aarch64.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -371,7 +372,7 @@ Status legend:
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for net. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for DRM/fbdev. |
 | VERIFIED MERGED | B576-virtio-input-live-rebind-proof | Virtio-input sysfs bind/unbind/rebind under QEMU restores evdev state and userspace-visible input function on x86_64 and aarch64. B576 adds `/bin/virtio_input_rebind_probe`, targeted smoke wrapper/Make targets, and rootfs mode/cache wiring. Kernel fixes: devtmpfs hot-unplug invalidates stale `/dev/input/eventN` dentries and sysfs model remove invalidates stale `/sys/devices/virtual/input/eventN` plus `/sys/class/input/eventN` dentries. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b576-x86-virtio-input-rebind.log`, aarch64 `/tmp/b576-arm-virtio-input-rebind.log`, PR #2674 merged as `1753d2b1`, and fresh-main post-merge login smokes reached `oxide login:` on x86_64 in 46s and aarch64 in 52s. |
-| NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for sound. |
+| ACTIVE | B578-sound-live-rebind-proof | Prove repeated bind/unbind/remove/readd loops under QEMU for sound on x86_64 and aarch64. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for RNG. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for UART. |
 | NOT DONE | TBD | Prove repeated bind/unbind/remove/readd loops under QEMU for PS/2. |

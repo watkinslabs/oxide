@@ -5,8 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B576-virtio-input-live-rebind-proof is VERIFIED MERGED via PR
-#2674 at `1753d2b1`; post-merge x86_64/aarch64 smokes passed on fresh `main`.
+Current marker: B578-sound-live-rebind-proof is ACTIVE on branch
+`B578-sound-live-rebind-proof`; prove sound live bind/unbind/remove/readd on
+x86_64 and aarch64.
+
+## B578 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B578-sound-live-rebind-proof | ACTIVE | Fresh `main` at D125 counter sync merge `6d3c257c`; B576 PR #2674 and ledger PR #2675 are merged, B577 is already merged, and `metadata/index.md` advanced B 578 -> 579 on this branch. Active row is QEMU-visible sound bind/unbind/remove/readd proof; existing virtio-snd multidev coverage proves ALSA card/node behavior but this row still needs a fresh audit and x86_64/aarch64 live proof. |
 
 ## B576 Current
 
