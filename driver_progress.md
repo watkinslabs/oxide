@@ -5,9 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B516-virtio-child-session-backend-proof VERIFIED. Next
-row not claimed until B516 is committed, pushed, merged, and fresh `main` is
-synced.
+Current marker: B517-virtio-pci-helper-privacy-proof IN AUDIT. Fresh `main` is
+merge commit `a3a68134` after B516 PR #2611 merge and branch cleanup.
+
+## B517 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B517-virtio-pci-helper-privacy-proof | IN AUDIT | Claim branch from fresh `main` at `a3a68134`; `metadata/index.md` advanced B 517 -> 518. Target row: raw virtio-pci probe/publish/unpublish helpers are private to transport module. Pending source audit, focused hosted proof, broad pci-boot/virtio gate, line-cap check, `git diff --check`, and x86_64/aarch64 fast smokes. |
 
 ## B516 Current
 
