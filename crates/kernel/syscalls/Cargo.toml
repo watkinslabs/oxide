@@ -73,6 +73,7 @@ debug-mount = []  # [mnt] log of mount-family syscall failures (path+errno) — 
 debug-atexit = []  # abandoned atexit-corruption FILEREAD/LOCKBYTE probes (kept, off)
 debug-eacces = ["vfs/debug-eacces"]  # [EACCES] path+creds+owner/mode log at every openat -13 return (login-frontier permission hunt)
 debug-stderr = []  # [STDERR] echo fd==2 write(2)/writev(2) to console (lightweight; gnome-shell/mutter death-message visibility) — no ld.so DR0 machinery, boots at normal speed
+debug-session = []  # [SESSFILE] echo writes to logind session-state files (/run/systemd/{sessions,users,seats}) — session classification (Type/Class/Seat/VTNr/DISPLAY) visibility for the "no matching session" hunt
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
