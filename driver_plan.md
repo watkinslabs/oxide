@@ -2,7 +2,12 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B589-sys-bus-driver-bind-proof merged; next branch is B590 from fresh main
+ACTIVE NOW: B590-uart-ps2-singleton-model-proof claimed on fresh main
+
+Current active item: B590-uart-ps2-singleton-model-proof. Audit whether UART
+and PS/2 model drivers are intentionally singleton hardware paths, not general
+multi-device serial/input infrastructure, and prove the current behavior on
+x86_64 and aarch64.
 
 Last verified branch: B589-sys-bus-driver-bind-proof. Audited
 `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape on fresh `main`
@@ -15,8 +20,8 @@ passed, PR #2702 merged at `2b5792c6`, and fresh-main post-merge
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: claim B590 from fresh `main`, update the active marker before code
-work, prove the next NOT DONE item on x86_64 and aarch64, then PR/merge.
+Next gate: audit UART/PS2 singleton source shape, add or reuse focused runtime
+proofs on x86_64 and aarch64, then PR/merge from the B590 branch.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -365,7 +370,7 @@ Status legend:
 | VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
 | VERIFIED | B419-virtio-vsock-live-multiendpoint-proof | Virtio-vsock primary compatibility route works with multiple live endpoints: direct `/init` proof installs cid=3/cid=4 and completes host round-trip on x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log`; hosted `net`, `drv-virtio-vsock`, and `pci-boot` tests pass. |
 | VERIFIED | B420-virtio-snd-event-control-proof | Virtio-snd live multi-card proof now covers control/event UAPI shape without fabricated mixer controls: `controlC0`/`controlC1` prove card info, PCM discovery/info for playback+capture, empty control element list, missing element `ENOENT`, and event subscription before and after live rebind. Direct musl builds pass for x86_64/aarch64; hosted `cargo test -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` passes; fast live logs `/tmp/b420-x86-virtio-snd-event-control.log` and `/tmp/b420-arm-virtio-snd-event-control.log` pass. |
-| NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
+| ACTIVE | B590-uart-ps2-singleton-model-proof | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. Fresh branch claimed from D137 ledger merge `8d01273c`; `metadata/index.md` advances B 590 -> 591 on this branch. Pending source audit, hosted checks, x86_64 proof, aarch64 proof, PR/merge, and ledger. |
 | VERIFIED MERGED | B574-qemu-rebind-certification-audit | QEMU-visible virtio-rng runtime bind/unbind/rebind proof added without touching local `B573-mem-chardev`: opt-in QEMU mode adds a second `virtio-rng-pci`, `/bin/virtio_rng_rebind_probe` verifies two bound virtio-rng children, writable sysfs `bind`/`unbind`, `/dev/hwrng` entropy before unbind, provider promotion after unbind, and restored entropy after rebind. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b574-x86-virtio-rng-rebind.log`, aarch64 `/tmp/b574-arm-virtio-rng-rebind.log`, PR #2668 merged as `1ff61f7d`, and fresh-main post-merge login smokes x86_64 `/tmp/b574-postmerge-x86-login-smoke.log` plus aarch64 `/tmp/b574-postmerge-arm-login-smoke.log`. |
 | NOT DONE | TBD | PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. |
 | SOURCE OK |  | Production model drivers in current source have explicit shutdown callbacks; default shutdown remains test-only. |

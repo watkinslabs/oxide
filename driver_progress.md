@@ -5,13 +5,17 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B589-sys-bus-driver-bind-proof is VERIFIED MERGED. Focused
-x86_64 and aarch64 live proofs pass for `/sys/bus/<bus>/drivers/<driver>`
-bind/unbind/device-link shape, including canonical nested PCI-backed virtio
-driver symlink targets. Proof commit `80e36b63` merged through PR #2702 at
-`2b5792c6`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with
-x86_64 reaching `oxide login:` in 46s and aarch64 reaching `oxide login:` in
-52s. D137 records this state; next code branch is B590 from fresh `main`.
+Current marker: B590-uart-ps2-singleton-model-proof is ACTIVE on fresh `main`
+at D137 ledger merge `8d01273c`. The row audits whether UART and PS/2 model
+drivers are intentionally singleton hardware paths, not general multi-device
+serial/input infrastructure. Source audit, hosted checks, x86_64 proof,
+aarch64 proof, PR/merge, and ledger remain.
+
+## B590 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B590-uart-ps2-singleton-model-proof | ACTIVE | Fresh `main` at D137 ledger merge `8d01273c`; B589 PR #2702 and ledger PR #2703 are merged, and `metadata/index.md` advances B 590 -> 591 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Pending source audit of UART/PS2 singleton behavior, hosted checks, focused x86_64 proof, focused aarch64 proof, PR/merge, and ledger. |
 
 ## B589 Current
 
