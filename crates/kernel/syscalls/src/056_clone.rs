@@ -132,6 +132,17 @@ pub fn sys_clone_dispatch(
     // Without it the child is its own process leader and tgid==tid.
     if (flags & CLONE_THREAD) != 0 {
         child.tgid.store(cur.tgid.load(Ordering::Acquire), Ordering::Release);
+        // Every thread of a process shares ONE visible PID (Linux: getpid()
+        // returns the tgid for all threads; SO_PEERCRED and /proc/<pid> use
+        // that same value). `spawn_user_thread_for_fork` stamped a fresh
+        // vtgid/vtid pair; keep the distinct vtid (== gettid()) but overwrite
+        // vtgid with the group leader's so the thread reports the PROCESS pid.
+        // Without this each thread carried its own vpid, so a D-Bus call made
+        // from a worker thread reported a pid whose /proc/<pid>/cgroup was the
+        // root cgroup (that pid was never placed in a cgroup) — logind's
+        // GetSessionByPID then returned NoSessionForPID and GNOME never logged
+        // in.
+        child.vtgid.store(cur.vtgid.load(Ordering::Acquire), Ordering::Release);
     }
     // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
     // for `park_zombie` SIGCHLD delivery (P3-67).
