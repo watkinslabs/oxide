@@ -306,10 +306,13 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
         let off = (ctrl_written + 7) & !7u64;
         let creds_total = 28u64;
         if off + creds_total <= controllen {
-            let (pid, uid, gid) = {
-                let g = sock.kind.lock();
-                match &*g { SockKind::UnixMsgPair(p, e) => p.peer_cred(*e), _ => (0, 0, 0) }
-            };
+            // Per-MESSAGE sender creds (SO_PASSCRED): read from the dequeued
+            // message, NOT the shared per-end cred slot. systemd-udevd's
+            // worker_watch socketpair is shared by all udev workers writing one
+            // end; a per-end last-sender-wins cred tagged each completion with
+            // the wrong worker pid, so the manager idled the wrong worker and
+            // wedged the udev event queue (card0 never tagged → no gdm greeter).
+            let (pid, uid, gid) = msg.creds;
             const SCM_CREDENTIALS: i32 = 2;
             let base = control + off;
             unsafe {

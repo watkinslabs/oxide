@@ -32,6 +32,11 @@ pub struct UnixMsgPair {
 pub struct UnixMsg {
     pub payload: Vec<u8>,
     pub fds: Vec<Arc<vfs::File>>,
+    /// Sender (pid, uid, gid) captured at send time for SO_PASSCRED /
+    /// SCM_CREDENTIALS. Per-MESSAGE (not the shared per-end cred slot) so a
+    /// socketpair shared by many senders (systemd-udevd's worker_watch: all
+    /// workers write one end) attributes each message to its true sender.
+    pub creds: (u32, u32, u32),
 }
 
 impl UnixMsgPair {
@@ -105,7 +110,19 @@ impl UnixMsgPair {
         if g.closed_writer {
             return 0;
         }
-        g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds });
+        // Capture the SENDER's creds per-message (SO_PASSCRED). Hosted tests
+        // have no `current()`; default to zero there.
+        #[cfg(target_os = "oxide-kernel")]
+        let creds = sched::live::current()
+            .map(|c| (
+                c.visible_pid(),
+                c.creds.euid.load(core::sync::atomic::Ordering::Relaxed),
+                c.creds.egid.load(core::sync::atomic::Ordering::Relaxed),
+            ))
+            .unwrap_or((0, 0, 0));
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let creds = (0u32, 0u32, 0u32);
+        g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds, creds });
         let n = payload.len();
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
@@ -174,7 +191,7 @@ impl UnixMsgPair {
             }
             Some(msg)
         } else if g.closed_writer {
-            Some(UnixMsg { payload: Vec::new(), fds: Vec::new() })
+            Some(UnixMsg { payload: Vec::new(), fds: Vec::new(), creds: (0, 0, 0) })
         } else {
             None
         }
