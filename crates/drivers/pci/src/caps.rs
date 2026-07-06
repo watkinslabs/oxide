@@ -73,6 +73,17 @@ pub fn decode_msix_cap<R: ConfigSpaceReader>(r: &R, bdf: Bdf, cfg_off: u8) -> Op
     })
 }
 
+/// Compute the byte offset of one MSI-X table entry, rejecting indexes outside
+/// the decoded table size.
+/// # C: O(1)
+pub fn msix_table_entry_offset(m: MsixCap, entry_index: u16) -> Option<u64> {
+    if entry_index >= m.table_size {
+        return None;
+    }
+    let entry_bytes = (entry_index as u64).checked_mul(MSIX_TABLE_ENTRY_BYTES)?;
+    (m.table_offset as u64).checked_add(entry_bytes)
+}
+
 /// Compute the MSI-X message-control update for enable/disable.
 ///
 /// Enabling clears the function mask after table entries have been programmed;
