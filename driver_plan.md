@@ -2,13 +2,14 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B508-msix-teardown-order; VERIFIED; PR pending.
+ACTIVE NOW: B509-msix-function-mask-live-proof; ACTIVE; ARM runtime proof failing.
 
-Current active item: MSI-X teardown masks table entries, disables MSI-X once per
-function, and drops PCI memory decode after MSI-X teardown under live remove and
-failed-probe cleanup.
+Current active item: virtio-pci enables MSI-X with the function mask held,
+programs table entries with readback/barrier ordering, clears the function mask
+only after the entry is unmasked, and proves live virtio-net RX interrupt
+delivery on x86_64 and aarch64.
 
-Next gate after merge: return to fresh `origin/main` before claiming B509 using
+Next gate after merge: return to fresh `origin/main` before claiming B510 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -211,7 +212,7 @@ Status legend:
 | SOURCE OK |  | Virtio-input/rng/vsock/snd feature masks come from child drivers. |
 | SOURCE OK |  | Virtio-pci MSI-X setup names `NO_VECTOR`. |
 | SOURCE OK |  | Virtio-pci records q0 queue vector in MSI-X binding. |
-| NOT DONE | TBD | Virtio-pci clears MSI-X function mask when enabling table entry; needs live interrupt proof. |
+| ACTIVE | B509-msix-function-mask-live-proof | >>> ACTIVE >>> ARM DEVICE MSI-X DELIVERY: x86_64 ARP plus DNS packet proof passes on the restored branch in `/tmp/b509-x86-msix-net-rx-restored.log`. Current branch is restored on fresh `origin/main` and owns the B509 counter claim. Harness installs `/bin/msix_net_rx_probe` as the `driver-path-smoke.service` command when `OXIDE_MSIX_NET_RX_SMOKE=1`. ARM proof still fails on the restored branch in `/tmp/b509-arm-msix-net-rx-restored.log`: `before_packet rx=0 tx=1 txerr=0`, then `FAIL arp reply timeout`; no RX packets, q0 vector readback 0, and `MSI_FIRES` stays 1 after enumeration. Current focus is real ARM PCI requester/MSI routing or RX DMA visibility, not polling fallbacks. |
 | SOURCE OK |  | MSI-X binding helper validates requested table entry against decoded size. |
 | SOURCE OK |  | Transport-owned MSI-X binding lifetime handles multiple entries. |
 | SOURCE OK |  | Extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |

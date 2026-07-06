@@ -83,6 +83,12 @@ pub const fn msix_control_value(cur: u32, enabled: bool) -> u32 {
     }
 }
 
+/// Compute MSI-X enable with all function vectors masked.
+/// # C: O(1)
+pub const fn msix_control_enable_masked(cur: u32) -> u32 {
+    cur | MSIX_ENABLE | MSIX_FUNCTION_MASK
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MsixTeardownStep {
     MaskEntry(usize),

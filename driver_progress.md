@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B508-msix-teardown-order; VERIFIED; PR pending.
+Current marker: B509-msix-function-mask-live-proof; ACTIVE; ARM runtime proof failing.
+
+## B509 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B509-msix-function-mask-live-proof | ACTIVE | Branch restored from current `origin/main` (`035cbb3b`) after stale local B509 state was overwritten; `metadata/index.md` now claims B509 by advancing B 509 -> 510. Current patch adds Linux-style MSI-X masked-enable/table-entry-readback/entry-unmask/function-mask-clear ordering, arch-local MSI-X config helpers, rootfs staging/cache support for `OXIDE_MSIX_NET_RX_SMOKE`, and `/bin/msix_net_rx_probe` as the `driver-path-smoke.service` command. x86_64 proof passes in `/tmp/b509-x86-msix-net-rx-restored.log`: ARP reply delivered, then DNS RX `PASS rx=103 bytes from 10.0.2.3`. ARM proof fails in `/tmp/b509-arm-msix-net-rx-restored.log`: `before_packet rx=0 tx=1 txerr=0`, then `FAIL arp reply timeout`; no RX packets, q0 vector readback is 0, and `MSI_FIRES` remains 1 after enumeration. Rejected as insufficient: polling/receive-progress passes because polling can drain q0 without proving MSI-X. Do not mark VERIFIED until both x86_64 and aarch64 logs show `msix_net_rx_probe: PASS` from this branch. |
 
 ## B508 Current
 

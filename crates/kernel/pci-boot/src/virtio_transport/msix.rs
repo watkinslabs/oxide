@@ -3,6 +3,8 @@ use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 
 use super::TransportMappings;
 
+mod arch;
+
 #[cfg(target_arch = "aarch64")]
 const ITS_DEVICE_SLOTS: usize = 32;
 #[cfg(target_arch = "aarch64")]
@@ -40,7 +42,7 @@ pub(crate) fn bind_msix_vector(
     handler: fn(),
 ) -> Option<MsixBinding> {
     let c = caps.find(pci::CAP_ID_MSIX)?;
-    let m = decode_msix_cap_arch(d.bdf, c.cfg_off)?;
+    let m = arch::decode_cap(d.bdf, c.cfg_off)?;
     if queue_vector >= m.table_size {
         return None;
     }
@@ -59,22 +61,34 @@ pub(crate) fn bind_msix_vector(
     let base_va = mappings.map_page(page_pa);
     let entry_va = base_va + page_off;
 
-    // SAFETY: entry_va addresses the requested 16-byte MSI-X table entry. The
-    // entry index was validated against the decoded table size, and each field
-    // is naturally aligned within the MSI-X entry.
-    unsafe {
-        core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & 0xFFFF_FFFF) as u32);
-        core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
-        core::ptr::write_volatile((entry_va + 8) as *mut u32, msg_data);
-        core::ptr::write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, 0);
-    }
-    set_msix_enabled_arch(d.bdf, c.cfg_off, true);
+    arch::set_enabled_masked(d.bdf, c.cfg_off);
+    write_msix_entry(entry_va, msg_addr, msg_data);
+    arch::clear_function_mask(d.bdf, c.cfg_off);
     Some(MsixBinding {
         id,
         entry_va,
         cap_off: c.cfg_off,
         queue_vector,
     })
+}
+
+fn write_msix_entry(entry_va: u64, msg_addr: u64, msg_data: u32) {
+    // SAFETY: entry_va addresses the requested 16-byte MSI-X table entry. The
+    // caller validated the entry index against the decoded table size.
+    unsafe {
+        core::ptr::write_volatile(
+            (entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
+            pci::MSIX_VECTOR_CONTROL_MASKED,
+        );
+        let _ = core::ptr::read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
+        core::ptr::write_volatile(entry_va as *mut u32, (msg_addr & 0xFFFF_FFFF) as u32);
+        core::ptr::write_volatile((entry_va + 4) as *mut u32, (msg_addr >> 32) as u32);
+        core::ptr::write_volatile((entry_va + 8) as *mut u32, msg_data);
+        let _ = core::ptr::read_volatile((entry_va + 8) as *const u32);
+        core::ptr::write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, 0);
+        let _ = core::ptr::read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
+    }
+    arch::mmio_flush();
 }
 
 fn mask_msix_binding(binding: MsixBinding) {
@@ -86,7 +100,11 @@ fn mask_msix_binding(binding: MsixBinding) {
             (binding.entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
             pci::MSIX_VECTOR_CONTROL_MASKED,
         );
+        let _ = core::ptr::read_volatile(
+            (binding.entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32,
+        );
     }
+    arch::mmio_flush();
 }
 
 fn disable_bound_msix_caps(bdf: pci::Bdf, bindings: &[MsixBinding]) {
@@ -97,7 +115,7 @@ fn disable_bound_msix_caps(bdf: pci::Bdf, bindings: &[MsixBinding]) {
         }
     }
     for cap_off in cap_offs {
-        set_msix_enabled_arch(bdf, cap_off, false);
+        arch::set_enabled(bdf, cap_off, false);
     }
 }
 
@@ -223,40 +241,6 @@ fn bdf_from_word(word: u32) -> pci::Bdf {
         bus: ((word >> 16) & 0xFF) as u8,
         device: ((word >> 8) & 0xFF) as u8,
         function: (word & 0xFF) as u8,
-    }
-}
-
-fn decode_msix_cap_arch(bdf: pci::Bdf, cfg_off: u8) -> Option<pci::MsixCap> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let r = hal_x86_64::pci::LegacyPci;
-        pci::decode_msix_cap(&r, bdf, cfg_off)
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        hal_aarch64::pci::EcamPci::from_published()
-            .and_then(|r| pci::decode_msix_cap(&r, bdf, cfg_off))
-    }
-}
-
-fn set_msix_enabled_arch(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
-    let off = cfg_off & 0xFC;
-    #[cfg(target_arch = "x86_64")]
-    {
-        let r = hal_x86_64::pci::LegacyPci;
-        use pci::ConfigSpaceReader as _;
-        let cur = r.read32(bdf, off);
-        let new = pci::msix_control_value(cur, enabled);
-        r.write32(bdf, off, new);
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-            let cur =
-                <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, off);
-            let new = pci::msix_control_value(cur, enabled);
-            <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, off, new);
-        }
     }
 }
 
