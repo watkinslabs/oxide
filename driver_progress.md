@@ -5,10 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B595-pci-runtime-semantics is VERIFIED MERGED as PR #2714 at
-`eb0fcead`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed on
-x86_64 and aarch64. B415 remains aggregate-only until the concrete live-proof
-rows are closed.
+Current marker: B597-pci-ecam-parity is ACTIVE / IN AUDIT from fresh `main` at
+D143 ledger merge `6c538c6a`. B596 is already occupied by
+`B596-debug-stderr`, so this lane uses B597 and advances B 596 -> 598.
+
+## B597 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B597-pci-ecam-parity | ACTIVE / IN AUDIT | Claim starts from fresh `main` at D143 ledger merge `6c538c6a`; post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 36s and aarch64 reaching `oxide login:` in 40s. Duplicate-lane check found existing worktree `/home/nd/oxide-wt/B594-debug-stderr` on `B596-debug-stderr`, so this driver lane does not touch B596 and uses the next free branch number. Existing staged files not owned by this branch are not touched or staged: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. Initial target: audit docs/34, x86 config access, aarch64 MCFG/ECAM mapping, and PCI enumeration addressability; keep x86_64 and aarch64 proof lockstep. |
 
 ## B595 Current
 
