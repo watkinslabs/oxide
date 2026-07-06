@@ -1,12 +1,41 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use vfs::{
     default_inode_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps,
     InodeRef, KResult, VfsError,
 };
 
-use crate::{make_body_inode, make_symlink_inode, read_window, uevent_action, DIR_PERM, RW_PERM};
+use crate::{make_body_inode, make_symlink_inode, read_window, uevent_action, DIR_PERM, RO_PERM,
+            RW_PERM};
+
+/// Live foreground-VT query (`tty::live::foreground`), wired at boot via
+/// `set_active_vt_hook`. `null` (unwired) → VT 1, the boot foreground VT.
+/// Held as an erased fn-pointer to keep sysfs free of a `tty` dependency
+/// (mirrors `tty::live`'s own `KBD_SINK`/`APP_CURSOR_Q` erased hooks).
+static ACTIVE_VT_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Default foreground VT reported when no live query is wired. # C: n/a
+const DEFAULT_FG_VT: u8 = 1;
+
+/// Wire the live foreground-VT query (boot wiring, once). Pass
+/// `tty::live::foreground`. # C: O(1)
+pub fn set_active_vt_hook(f: fn() -> u8) {
+    ACTIVE_VT_HOOK.store(f as *mut (), Ordering::Release);
+}
+
+/// Current foreground video VT (1-based). Falls back to `DEFAULT_FG_VT`
+/// until the live query is wired. # C: O(1) + query cost
+fn active_vt() -> u8 {
+    let raw = ACTIVE_VT_HOOK.load(Ordering::Acquire);
+    if raw.is_null() { return DEFAULT_FG_VT; }
+    // SAFETY: ACTIVE_VT_HOOK is only ever set via set_active_vt_hook with a
+    // non-null `fn() -> u8` cast through `as *mut ()`; the reverse transmute
+    // restores the identical signature.
+    let f: fn() -> u8 = unsafe { core::mem::transmute::<*mut (), fn() -> u8>(raw) };
+    f().max(DEFAULT_FG_VT)
+}
 
 #[cfg(target_arch = "aarch64")]
 const SERIAL_TTY_MAJOR: u32 = 204;
@@ -90,6 +119,18 @@ pub(crate) fn make_sys_devices_virtual_tty_inode() -> InodeRef {
 
 struct TtyDeviceData { name: String, major: u32, minor: u32 }
 
+/// The `active` sysfs attribute exists only on the VT master (`tty0`) and the
+/// system console (`console`) — Linux `tty0`/`console` register a
+/// `dev_attr_active`; ordinary ttys (`ttyS0`, …) have none. # C: O(1)
+fn tty_has_active(name: &str) -> bool {
+    name == "tty0" || name == "console"
+}
+
+/// Per-device attribute file names, in `iterate` order. # C: O(1)
+fn tty_dev_attrs(name: &str) -> &'static [&'static str] {
+    if tty_has_active(name) { &["active", "dev", "uevent"] } else { &["dev", "uevent"] }
+}
+
 struct TtyDeviceOps;
 impl InodeOps for TtyDeviceOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
@@ -100,23 +141,53 @@ impl InodeOps for TtyDeviceOps {
                 Ok(make_body_inode(body, 0x5101_2000 + d.minor as Ino))
             }
             "uevent" => Ok(make_tty_uevent_inode(d.name.clone(), d.major, d.minor)),
+            "active" if tty_has_active(&d.name) =>
+                Ok(make_tty_active_inode(&d.name, d.minor)),
             _ => Err(VfsError::Enoent),
         }
     }
 }
 impl FileOps for TtyDeviceOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const ENTRIES: &[&str] = &["dev", "uevent"];
+        let d = match inode.private::<TtyDeviceData>() { Some(d) => d, None => return Ok(()) };
+        let entries = tty_dev_attrs(&d.name);
         let mut idx = ctx.pos as usize;
-        while idx < ENTRIES.len() {
+        while idx < entries.len() {
             let next = idx as u64 + 1;
-            let ino = inode.lookup(ENTRIES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(ENTRIES[idx], ino, FileType::Regular, next) { return Ok(()); }
+            let ino = inode.lookup(entries[idx]).map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit(entries[idx], ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
         Ok(())
     }
 }
+
+/// `f_op` for `/sys/class/tty/{tty0,console}/active`. `tty0/active` reports the
+/// live foreground VT (`ttyN`); `console/active` reports the VT console master
+/// (`tty0`). Linux serves the `active` attr fresh on each read (VT switches
+/// change it), so the body is formatted per-read. # C: O(1)
+struct TtyActiveFileOps { is_vt: bool }
+impl FileOps for TtyActiveFileOps {
+    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let body: alloc::vec::Vec<u8> = if self.is_vt {
+            alloc::format!("tty{}\n", active_vt()).into_bytes()
+        } else {
+            b"tty0\n".to_vec()
+        };
+        Ok(read_window(&body, off, buf))
+    }
+    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+/// Build the read-only `active` attribute inode for `tty0`/`console`. # C: O(1)
+fn make_tty_active_inode(name: &str, minor: u32) -> InodeRef {
+    InodeBuilder::new(0x5101_4000 + minor as Ino, mk_mode(FileType::Regular, RO_PERM),
+        default_inode_ops(), Arc::new(TtyActiveFileOps { is_vt: name == "tty0" }))
+        .build()
+}
+
+#[cfg(test)]
+mod tests;
 
 fn make_tty_device_inode(name: String, major: u32, minor: u32) -> InodeRef {
     InodeBuilder::new(0x5101_1000 + minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
