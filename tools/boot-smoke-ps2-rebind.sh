@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# B586 platform i8042/PS2 live rebind gate. x86_64 proves i8042-kbd
-# bind/unbind/rebind; aarch64 proves the expected no-i8042 platform state.
+# B586/B590 platform i8042/PS2 gate. x86_64 proves i8042-kbd
+# bind/unbind/rebind and singleton shape; aarch64 proves no i8042 state.
 set -euo pipefail
 
 usage() {
@@ -70,13 +70,13 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         exit 1
     fi
     if grep -aq 'driver_path_smoke: PASS - ps2-rebind' "$LOG" 2>/dev/null; then
-        grep -aE 'ps2_rebind_probe:|b586_|driver_path_smoke:' "$LOG" | tail -120
+        grep -aE 'ps2_rebind_probe:|b586_|b590_|driver_path_smoke:' "$LOG" | tail -140
         echo "ps2-rebind-smoke: PASS"
         exit 0
     fi
-    if grep -aqE 'ps2_rebind_probe: FAIL|b586_.*: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
+    if grep -aqE 'ps2_rebind_probe: FAIL|b586_.*: FAIL|b590_.*: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
         echo "ps2-rebind-smoke: FAIL - probe reported failure" >&2
-        grep -aE 'ps2_rebind_probe:|b586_|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
+        grep -aE 'ps2_rebind_probe:|b586_|b590_|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
         exit 1
     fi
     sleep 2
