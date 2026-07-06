@@ -2,12 +2,13 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B510 verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: B511-vsock-failed-install-ownership; auditing failed virtio-vsock install ownership.
 
-Current active item: none. Claim next row only after B510 commit, PR, merge,
-fresh main sync, and `metadata/index.md` branch number check.
+Current active item: B511-vsock-failed-install-ownership. Claim commit marks
+this row before code changes; update this marker after hosted and x86_64/aarch64
+proof.
 
-Next gate after merge: return to fresh `origin/main` before claiming B511 using
+Next gate after merge: return to fresh `origin/main` before claiming B512 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -216,7 +217,7 @@ Status legend:
 | SOURCE OK |  | Extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |
 | SOURCE OK |  | Virtio-vsock reads guest CID in child driver from generic config resource. |
 | SOURCE OK |  | Dead pci-boot vsock config pass-through removed. |
-| NOT DONE | TBD | Virtio-vsock failed install owns reserved endpoint and bounce frames until installed transport takes ownership. |
+| ACTIVE | B511-vsock-failed-install-ownership | Virtio-vsock failed install owns reserved endpoint and bounce frames until installed transport takes ownership. |
 | SOURCE OK |  | Virtio-snd reads jacks/streams/chmaps/controls in child driver from generic config resource. |
 | SOURCE OK |  | Virtio-snd programs EVENTQ(1) with notify mapping and child-owned MSI-X callback. |
 | SOURCE OK |  | Virtio-snd preposts writable event descriptors. |
