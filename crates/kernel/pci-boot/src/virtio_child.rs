@@ -1,75 +1,38 @@
-//! Virtio child model drivers.
-//!
-//! These are still wired to the boot virtio-pci transport, but keeping child
-//! driver binding out of the PCI transport module is the next step toward a
-//! real virtio bus/core split.
+//! Virtio child model driver callbacks for the boot virtio-pci bus.
 
 use super::virtio_bus::{parent_key, unpublish_transport, VirtioChildSession};
-use alloc::sync::Arc;
-use core::marker::PhantomData;
+use virtio::VirtioChildTransportSession;
 
-trait VirtioChildOps: Sync {
-    const DRIVER_ID: virtio::VirtioChildDriverId;
+struct PciVirtioChildBus;
+impl virtio::VirtioChildBus for PciVirtioChildBus {
+    type Session = VirtioChildSession;
 
-    fn profile() -> virtio::VirtioTransportProfile;
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()>;
-    fn remove_child(device_key: virtio::VirtioChildDeviceKey);
-    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey);
-}
-
-struct VirtioChildDriver<O> {
-    _ops: PhantomData<O>,
-}
-
-impl<O> VirtioChildDriver<O> {
-    const fn new() -> Self {
-        Self { _ops: PhantomData }
-    }
-}
-
-impl<O: VirtioChildOps> drv::Driver for VirtioChildDriver<O> {
-    fn bus(&self) -> &'static str { virtio::VIRTIO_CHILD_BUS }
-
-    fn name(&self) -> &'static str { O::DRIVER_ID.name }
-
-    fn matches(&self, dev: &drv::Device) -> bool {
-        O::DRIVER_ID.matches_device(&dev.bus, dev.vendor_id, dev.device_id)
+    fn begin_session(
+        dev: &drv::Device,
+        profile: virtio::VirtioTransportProfile,
+    ) -> drv::KResult<Self::Session> {
+        VirtioChildSession::begin(dev, profile)
     }
 
-    fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let session = VirtioChildSession::begin(dev, O::profile())?;
-        let pci_bdf = session.pci_bdf();
-        virtio::run_child_probe(session, |session| O::probe_child(session, pci_bdf))
+    fn parent_key(dev: &drv::Device) -> Option<virtio::VirtioChildDeviceKey> {
+        parent_key(dev)
     }
 
-    fn remove(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            virtio::run_child_remove(device_key, O::remove_child, unpublish_transport);
-        }
-    }
-
-    fn shutdown(&self, dev: &drv::Device) {
-        if let Some(device_key) = parent_key(dev) {
-            virtio::run_child_shutdown(device_key, O::shutdown_child);
-        }
+    fn unpublish_transport(device_key: virtio::VirtioChildDeviceKey) {
+        unpublish_transport(device_key);
     }
 }
 
 struct VirtioGpuOps;
-impl VirtioChildOps for VirtioGpuOps {
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioGpuOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_gpu::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_gpu::transport_profile()
     }
 
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()> {
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
+        let pci_bdf = session.pci_bdf();
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -115,20 +78,18 @@ impl VirtioChildOps for VirtioGpuOps {
         let _ = drv_virtio_gpu::shutdown(device_key);
     }
 }
-static VIRTIO_GPU_DRV: VirtioChildDriver<VirtioGpuOps> = VirtioChildDriver::new();
+static VIRTIO_GPU_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioGpuOps> =
+    virtio::VirtioChildDriver::new();
 
 struct VirtioInputOps;
-impl VirtioChildOps for VirtioInputOps {
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioInputOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_input::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_input::transport_profile()
     }
 
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        _pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()> {
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -172,20 +133,18 @@ impl VirtioChildOps for VirtioInputOps {
         let _ = drv_virtio_input::drain::shutdown_eventq(device_key);
     }
 }
-static VIRTIO_INPUT_DRV: VirtioChildDriver<VirtioInputOps> = VirtioChildDriver::new();
+static VIRTIO_INPUT_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioInputOps> =
+    virtio::VirtioChildDriver::new();
 
 struct VirtioNetOps;
-impl VirtioChildOps for VirtioNetOps {
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioNetOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_net::modern::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_net::modern::transport_profile()
     }
 
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        _pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()> {
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let device_key = session.device_key();
         let payloads = session.net_boot_payloads();
         let Some(resources) = session.child_resources() else {
@@ -214,20 +173,18 @@ impl VirtioChildOps for VirtioNetOps {
         let _ = drv_virtio_net::modern::shutdown_modern(device_key);
     }
 }
-static VIRTIO_NET_DRV: VirtioChildDriver<VirtioNetOps> = VirtioChildDriver::new();
+static VIRTIO_NET_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioNetOps> =
+    virtio::VirtioChildDriver::new();
 
 struct VirtioBlkOps;
-impl VirtioChildOps for VirtioBlkOps {
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioBlkOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_blk::modern::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_blk::modern::transport_profile()
     }
 
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        _pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()> {
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -251,20 +208,18 @@ impl VirtioChildOps for VirtioBlkOps {
         let _ = drv_virtio_blk::modern::shutdown_blk(device_key);
     }
 }
-static VIRTIO_BLK_DRV: VirtioChildDriver<VirtioBlkOps> = VirtioChildDriver::new();
+static VIRTIO_BLK_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioBlkOps> =
+    virtio::VirtioChildDriver::new();
 
 struct VirtioRngOps;
-impl VirtioChildOps for VirtioRngOps {
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioRngOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_rng::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_rng::transport_profile()
     }
 
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        _pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()> {
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
@@ -291,20 +246,18 @@ impl VirtioChildOps for VirtioRngOps {
         let _ = drv_virtio_rng::shutdown(device_key);
     }
 }
-static VIRTIO_RNG_DRV: VirtioChildDriver<VirtioRngOps> = VirtioChildDriver::new();
+static VIRTIO_RNG_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioRngOps> =
+    virtio::VirtioChildDriver::new();
 
 struct VirtioVsockOps;
-impl VirtioChildOps for VirtioVsockOps {
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioVsockOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_vsock::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_vsock::transport_profile()
     }
 
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        _pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()> {
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -330,20 +283,18 @@ impl VirtioChildOps for VirtioVsockOps {
         let _ = drv_virtio_vsock::shutdown(device_key);
     }
 }
-static VIRTIO_VSOCK_DRV: VirtioChildDriver<VirtioVsockOps> = VirtioChildDriver::new();
+static VIRTIO_VSOCK_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioVsockOps> =
+    virtio::VirtioChildDriver::new();
 
 struct VirtioSndOps;
-impl VirtioChildOps for VirtioSndOps {
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioSndOps {
     const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_snd::DRIVER_ID;
 
     fn profile() -> virtio::VirtioTransportProfile {
         drv_virtio_snd::transport_profile()
     }
 
-    fn probe_child(
-        session: &mut dyn virtio::VirtioChildTransportSession,
-        _pci_bdf: pci::Bdf,
-    ) -> drv::KResult<()> {
+    fn probe_child(session: &mut VirtioChildSession) -> drv::KResult<()> {
         let device_key = session.device_key();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -383,7 +334,8 @@ impl VirtioChildOps for VirtioSndOps {
         let _ = drv_virtio_snd::shutdown(device_key);
     }
 }
-static VIRTIO_SND_DRV: VirtioChildDriver<VirtioSndOps> = VirtioChildDriver::new();
+static VIRTIO_SND_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioSndOps> =
+    virtio::VirtioChildDriver::new();
 
 /// Register virtio child drivers whose bring-up is owned by `Driver::probe`.
 /// # C: O(N_drivers)
