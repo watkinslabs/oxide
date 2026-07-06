@@ -5,8 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B578-sound-live-rebind-proof is VERIFIED MERGED via PR #2677.
-No active driver branch is claimed.
+Current marker: B579-gpu-live-rebind-loops-proof is VERIFIED LOCAL on branch
+`B579-gpu-live-rebind-loops-proof`; PR/merge/post-merge smoke still pending.
+
+## B579 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B579-gpu-live-rebind-loops-proof | VERIFIED LOCAL | Fresh `main` at D126 ledger merge `d01aa4e4`; B578 PR #2677 and ledger PR #2678 are merged, and `metadata/index.md` advanced B 579 -> 580 on this branch. B579 extends the virtio-gpu multidev live probe to run three sysfs unbind/rebind loops against the second virtio-gpu child, fail if `/dev/dri/card1` or `/sys/class/drm/card1` remains visible after unbind, re-prove both DRM cards after every rebind, and use a QMP-capable wrapper so the existing mouseprobe tail proves input delivery after the GPU loops. Checks pass: `cargo test -q -p drv-virtio-gpu -p drm -p fbdev -- --nocapture --test-threads=1`, `cargo check -q -p xtask`, `git diff --check`, `bash -n tools/boot-smoke-virtio-gpu-multidev.sh`, line caps (`virtio_gpu_multidev_probe.c` 281, `boot-smoke-virtio-gpu-multidev.sh` 138), x86_64 targeted proof `/tmp/b579-x86-virtio-gpu-multidev.log`, and aarch64 targeted proof `/tmp/b579-arm-virtio-gpu-multidev.log`. PR/merge/post-merge smoke pending. |
 
 ## B578 Current
 
