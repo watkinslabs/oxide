@@ -10,6 +10,12 @@ Current marker: no active branch. Claim the next NOT DONE row from fresh
 `89f0245d`; D151 records the merged state and advances `metadata/index.md` D
 151 -> 152.
 
+## D152 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| D152-driver-ledger-bookkeeping-close | VERIFIED LOCAL / PR PENDING | Closes the two remaining workflow bookkeeping rows. `driver_progress.md` was updated for each active row before commits/PRs/merges, and each final driver row used its own branch, push, PR, merge, fresh-main sync, and D-ledger record. After this change, `driver_plan.md` has no `NOT DONE` rows. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
+
 ## B605 Current
 
 | Branch | Status | Evidence |
