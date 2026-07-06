@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B576-virtio-input-live-rebind-proof is VERIFIED LOCAL on branch
-`B576-virtio-input-live-rebind-proof`; PR/merge/post-merge sync pending.
+Current marker: B576-virtio-input-live-rebind-proof is VERIFIED MERGED via PR
+#2674 at `1753d2b1`; post-merge x86_64/aarch64 smokes passed on fresh `main`.
 
 ## B576 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B576-virtio-input-live-rebind-proof | VERIFIED LOCAL | Fresh `main` at D123 ledger merge `ec9ad458`; B574 PR #2668 and ledger PR #2670 are merged, B575 is already merged, and `metadata/index.md` advanced B 576 -> 577 on this branch. Added `/bin/virtio_input_rebind_probe`, `tools/boot-smoke-virtio-input-rebind.sh`, Make smoke targets, rootfs binary/mode/cache wiring, and QMP event injection after rebind. The live proof exposed two real stale dcache bugs: `/dev/input/event1` survived virtio-input unbind until `devfs::del_device_node` invalidated the VFS dentry, then `/sys/class/input/event1/dev` survived until sysfs model remove invalidated the canonical device path plus input class symlink. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, line caps (`sysfs/bus/hooks.rs` 77, `devfs/lib.rs` 353, `virtio_input_rebind_probe.c` 215, `boot-smoke-virtio-input-rebind.sh` 134), x86_64 targeted proof `/tmp/b576-x86-virtio-input-rebind.log`, and aarch64 targeted proof `/tmp/b576-arm-virtio-input-rebind.log`. PR/merge/post-merge sync pending. |
+| B576-virtio-input-live-rebind-proof | VERIFIED MERGED | Fresh `main` at D123 ledger merge `ec9ad458`; B574 PR #2668 and ledger PR #2670 are merged, B575 is already merged, and `metadata/index.md` advanced B 576 -> 577 on this branch. Added `/bin/virtio_input_rebind_probe`, `tools/boot-smoke-virtio-input-rebind.sh`, Make smoke targets, rootfs binary/mode/cache wiring, and QMP event injection after rebind. The live proof exposed two real stale dcache bugs: `/dev/input/event1` survived virtio-input unbind until `devfs::del_device_node` invalidated the VFS dentry, then `/sys/class/input/event1/dev` survived until sysfs model remove invalidated the canonical device path plus input class symlink. Checks pass: `cargo test -q -p devfs`, `cargo test -q -p sysfs`, `cargo check -q -p xtask`, `git diff --check`, line caps (`sysfs/bus/hooks.rs` 77, `devfs/lib.rs` 353, `virtio_input_rebind_probe.c` 215, `boot-smoke-virtio-input-rebind.sh` 134), x86_64 targeted proof `/tmp/b576-x86-virtio-input-rebind.log`, aarch64 targeted proof `/tmp/b576-arm-virtio-input-rebind.log`, pre-push normal smokes, PR #2674 merged as `1753d2b1`, and fresh-main post-merge login smokes reached `oxide login:` on x86_64 in 46s and aarch64 in 52s. D124 records the merged state and advances D 124 -> 125. |
 
 ## B574 Current
 
