@@ -2,12 +2,12 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: none; B510 verified on x86_64 and aarch64, next row not claimed yet.
+ACTIVE NOW: none; B511 verified on x86_64 and aarch64, next row not claimed yet.
 
-Current active item: none. Claim next row only after B510 commit, PR, merge,
+Current active item: none. Claim next row only after B511 commit, PR, merge,
 fresh main sync, and `metadata/index.md` branch number check.
 
-Next gate after merge: return to fresh `origin/main` before claiming B511 using
+Next gate after merge: return to fresh `origin/main` before claiming B512 using
 `metadata/index.md`.
 
 Scope: working audit ledger for every driver-system item carried by
@@ -216,7 +216,7 @@ Status legend:
 | SOURCE OK |  | Extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |
 | SOURCE OK |  | Virtio-vsock reads guest CID in child driver from generic config resource. |
 | SOURCE OK |  | Dead pci-boot vsock config pass-through removed. |
-| NOT DONE | TBD | Virtio-vsock failed install owns reserved endpoint and bounce frames until installed transport takes ownership. |
+| VERIFIED | B511-vsock-failed-install-ownership | Virtio-vsock failed install owns reserved endpoint and bounce frames until installed transport takes ownership: `VsockProbeState` reserves the net endpoint before frame allocation, frees still-owned frames and cancels the reservation in `Drop`, transfers frame ownership only when the context is inserted, and transfers endpoint ownership only after `driver_publish_reserved` succeeds. Hosted regressions prove reservation-drop cancellation and publish-failure cleanup with a live duplicate-CID endpoint unaffected. Checks pass: `cargo test -q -p drv-virtio-vsock -- --nocapture --test-threads=1` 9/9; `cargo test -q -p net vsock -- --nocapture --test-threads=1` 28/28; broad virtio driver gate; `git diff --check`; touched Rust files under 500 lines; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 | SOURCE OK |  | Virtio-snd reads jacks/streams/chmaps/controls in child driver from generic config resource. |
 | SOURCE OK |  | Virtio-snd programs EVENTQ(1) with notify mapping and child-owned MSI-X callback. |
 | SOURCE OK |  | Virtio-snd preposts writable event descriptors. |

@@ -170,3 +170,29 @@ fn shutdown_quiesces_endpoint_without_primary_context() {
     assert!(shutdown(key(0x0010_0000)));
     let _ = net::vsock::driver_uninstall(owner(0x0010_0000));
 }
+
+#[test]
+fn failed_probe_reservation_drop_releases_reserved_endpoint() {
+    let _guard = TEST_LOCK.lock();
+    crate::registry::clear_ctxs_for_tests();
+    assert!(crate::registry::reserved_probe_drop_releases_endpoint_for_tests(key(0x0010_0000)));
+}
+
+#[test]
+fn publish_failure_releases_uninstalled_context_and_endpoint() {
+    fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
+
+    let _guard = TEST_LOCK.lock();
+    crate::registry::clear_ctxs_for_tests();
+    crate::registry::clear_rx_softirq_handler();
+    let failed = key(0x0010_0000);
+    let live = key(0x0020_0000);
+    assert!(net::vsock::driver_install(owner(live.raw()), 3, tx_stub, rx_noop));
+
+    assert!(crate::registry::publish_failure_releases_context_and_endpoint_for_tests(failed, 3));
+    assert!(!present_for(failed));
+    assert!(net::vsock::driver_up_for(owner(live.raw())));
+
+    assert!(net::vsock::driver_uninstall(owner(live.raw())));
+    crate::registry::clear_ctxs_for_tests();
+}

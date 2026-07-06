@@ -5,7 +5,14 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B510-virtio-probe-state-boundary VERIFIED; next row not claimed yet.
+Current marker: none; B511-vsock-failed-install-ownership VERIFIED; next row
+not claimed yet.
+
+## B511 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B511-vsock-failed-install-ownership | VERIFIED | Fresh `main` at merge commit `6db0ed4e` after B510 PR #2600 merge and local/remote branch cleanup. `metadata/index.md` advanced B 511 -> 512. Patch clarifies the virtio-vsock probe-state handoff by renaming frame and endpoint transitions to `transfer_frames_to_ctx` and `transfer_endpoint_to_net`. `VsockProbeState` keeps reserved endpoint ownership through allocation and pre-publish failure, keeps frame ownership until context insertion, and `Drop` cancels the reserved endpoint plus frees still-owned frames. Added hosted proof for reservation-drop cancellation and publish-failure cleanup when a second live endpoint already owns the guest CID; the failed context is removed, the failed owner can reserve again, and the live endpoint remains installed. Checks pass: `cargo test -q -p drv-virtio-vsock -- --nocapture --test-threads=1` 9/9; `cargo test -q -p net vsock -- --nocapture --test-threads=1` 28/28; broad hosted `cargo test -q -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; touched Rust files under 500 lines (`registry.rs` 350, `tests.rs` 198); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 
 ## B510 Current
 
