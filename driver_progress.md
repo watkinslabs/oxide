@@ -5,14 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B538-msix-multi-entry-lifetime-proof audits row 214; branch
-claimed from fresh `main` at B536 merge commit `9076cc41`.
+Current marker: B538-msix-multi-entry-lifetime-proof verified locally for row
+214; PR/merge/post-merge fresh-main smokes pending.
 
 ## B538 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B538-msix-multi-entry-lifetime-proof | IN AUDIT | Fresh `main` at merge commit `9076cc41` after B536 PR #2633 merge and branch cleanup. Post-merge fresh-main smokes before branch work passed: x86_64 reached `oxide login:` in 32s; aarch64 reached `oxide login:` in 38s. `metadata/index.md` advanced B 537 -> 539 because remote branch `origin/B537-loginuid-ftruncate` already occupies B537, so reusing B537 would violate the no-reused-counter rule. Target row: prove transport-owned MSI-X binding lifetime handles multiple entries. |
+| B538-msix-multi-entry-lifetime-proof | VERIFIED LOCALLY | Fresh `main` at merge commit `9076cc41` after B536 PR #2633 merge and branch cleanup. Post-merge fresh-main smokes before branch work passed: x86_64 reached `oxide login:` in 32s; aarch64 reached `oxide login:` in 38s. `metadata/index.md` advanced B 537 -> 539 because remote branch `origin/B537-loginuid-ftruncate` already occupies B537, so reusing B537 would violate the no-reused-counter rule. Source audit proves `VirtioProbeState` owns `msix: Vec<MsixBinding>`, `bind_msix_queue()` deduplicates by queue vector while allowing multiple distinct bindings, `negotiate_and_program()` unmasks the whole binding vector only after `DRIVER_OK`, failed-probe devres releases the full vector before PCI command disable/unmap/frame release, publish moves the full vector into persistent `TransportRecord`, and transport-record teardown releases that full vector. `release_msix_bindings()` takes the vector, emits teardown for `bindings.len()`, masks every entry before disabling unique caps, then frees every binding MSI id; unmask/disable paths dedupe same-cap operations by `cap_off`. Existing hosted PCI regression `msix_teardown_masks_all_entries_before_disabling_function_and_command` proves multi-entry teardown ordering. Checks pass: focused `cargo test -q -p pci -- --nocapture --test-threads=1` with PCI 17/17; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`virtio_transport/msix.rs` 470, `virtio_transport/devres.rs` 68, `virtio_drv/probe_state.rs` 298, `caps.rs` 224, `tests.rs` 375); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B536 Current
 
