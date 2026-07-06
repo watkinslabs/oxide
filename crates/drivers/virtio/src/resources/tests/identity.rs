@@ -1,6 +1,7 @@
 use super::*;
+use alloc::string::String;
 use alloc::vec;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[test]
 fn child_driver_id_matches_virtio_child_devices() {
@@ -226,4 +227,218 @@ fn child_shutdown_lifecycle_passes_stable_key() {
     run_child_shutdown(key, |device_key| shutdown_calls.lock().unwrap().push(device_key.raw()));
 
     assert_eq!(*calls.lock().unwrap(), vec![0x34]);
+}
+
+const MODEL_FAULT_DRIVER: &str = "b593-virtio-fault";
+const MODEL_FAULT_DEVICE_ID: u16 = 0x5d93;
+const MODEL_FAULT_ADDR: &str = "virtio593";
+const MODEL_FAULT_PARENT: &str = "0000:00:59.3";
+const MODEL_FAULT_FEATURES: u64 = 0xb593;
+const MODEL_FAULT_KEY_RAW: u64 = 594;
+static MODEL_FAULT_DRV: VirtioChildDriver<ModelFaultBus, ModelFaultOps> = VirtioChildDriver::new();
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ModelFaultMode {
+    BeginFail,
+    ChildFail,
+    Success,
+}
+
+impl Default for ModelFaultMode {
+    fn default() -> Self { Self::Success }
+}
+
+#[derive(Default)]
+struct ModelFaultState {
+    mode: ModelFaultMode,
+    events: Vec<(&'static str, u64)>,
+}
+
+struct ModelFaultBus;
+struct ModelFaultOps;
+
+struct ModelFaultSession {
+    key: VirtioChildDeviceKey,
+    addr: String,
+}
+
+fn model_fault_state() -> &'static Mutex<ModelFaultState> {
+    static STATE: OnceLock<Mutex<ModelFaultState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(ModelFaultState::default()))
+}
+
+fn reset_model_fault_state(mode: ModelFaultMode) {
+    let mut state = model_fault_state().lock().unwrap();
+    state.mode = mode;
+    state.events.clear();
+}
+
+fn model_fault_events() -> Vec<(&'static str, u64)> {
+    model_fault_state().lock().unwrap().events.clone()
+}
+
+fn remove_model_fault_devices() {
+    for dev in drv::devices() {
+        if dev.bus == VIRTIO_CHILD_BUS && dev.addr == MODEL_FAULT_ADDR {
+            drv::device_del(&dev);
+        }
+    }
+}
+
+fn model_fault_device() -> Arc<drv::Device> {
+    Arc::new(
+        drv::Device::new(
+            VIRTIO_CHILD_BUS,
+            String::from(MODEL_FAULT_ADDR),
+            VIRTIO_VENDOR_ID,
+            MODEL_FAULT_DEVICE_ID,
+            VIRTIO_CHILD_CLASS,
+        )
+        .with_parent("pci", String::from(MODEL_FAULT_PARENT)))
+}
+
+impl VirtioChildTransportSession for ModelFaultSession {
+    fn device_key(&self) -> VirtioChildDeviceKey {
+        self.key
+    }
+
+    fn device_addr(&self) -> &str {
+        &self.addr
+    }
+
+    fn drv_features(&self) -> u64 {
+        MODEL_FAULT_FEATURES
+    }
+
+    fn net_boot_payloads(&self) -> VirtioNetBootPayloads {
+        VirtioNetBootPayloads::default()
+    }
+
+    fn child_resources(&self) -> Option<VirtioResources> {
+        None
+    }
+
+    fn release_failed_child(&mut self) {
+        model_fault_state()
+            .lock()
+            .unwrap()
+            .events
+            .push(("release", self.key.raw() as u64));
+    }
+
+    fn publish(self) {
+        model_fault_state()
+            .lock()
+            .unwrap()
+            .events
+            .push(("publish", self.key.raw() as u64));
+    }
+}
+
+impl VirtioChildBus for ModelFaultBus {
+    type Session = ModelFaultSession;
+
+    fn begin_session(
+        dev: &drv::Device,
+        profile: VirtioTransportProfile,
+    ) -> drv::KResult<Self::Session> {
+        let mut state = model_fault_state().lock().unwrap();
+        state.events.push(("begin", profile.drv_features));
+        if state.mode == ModelFaultMode::BeginFail {
+            return Err(drv::Error::ProbeFailed);
+        }
+        Ok(ModelFaultSession {
+            key: VirtioChildDeviceKey::from_child_addr(&dev.addr).unwrap(),
+            addr: dev.addr.clone(),
+        })
+    }
+
+    fn parent_key(dev: &drv::Device) -> Option<VirtioChildDeviceKey> {
+        VirtioChildDeviceKey::from_child_addr(&dev.addr)
+    }
+
+    fn unpublish_transport(device_key: VirtioChildDeviceKey) {
+        model_fault_state()
+            .lock()
+            .unwrap()
+            .events
+            .push(("unpublish", device_key.raw() as u64));
+    }
+}
+
+impl VirtioChildDriverOps<ModelFaultSession> for ModelFaultOps {
+    const DRIVER_ID: VirtioChildDriverId =
+        VirtioChildDriverId::new(MODEL_FAULT_DRIVER, MODEL_FAULT_DEVICE_ID);
+
+    fn profile() -> VirtioTransportProfile {
+        VirtioTransportProfile::q0(MODEL_FAULT_FEATURES, None)
+    }
+
+    fn probe_child(session: &mut ModelFaultSession) -> drv::KResult<()> {
+        let mut state = model_fault_state().lock().unwrap();
+        state.events.push(("probe", session.device_key().raw() as u64));
+        if state.mode == ModelFaultMode::ChildFail {
+            return Err(drv::Error::ProbeFailed);
+        }
+        Ok(())
+    }
+
+    fn remove_child(device_key: VirtioChildDeviceKey) {
+        model_fault_state()
+            .lock()
+            .unwrap()
+            .events
+            .push(("remove", device_key.raw() as u64));
+    }
+
+    fn shutdown_child(device_key: VirtioChildDeviceKey) {
+        model_fault_state()
+            .lock()
+            .unwrap()
+            .events
+            .push(("shutdown", device_key.raw() as u64));
+    }
+}
+
+#[test]
+fn child_model_driver_faults_release_without_transport_publish() {
+    drv::register_driver(&MODEL_FAULT_DRV);
+    remove_model_fault_devices();
+
+    reset_model_fault_state(ModelFaultMode::BeginFail);
+    let begin_fail = drv::try_device_add(model_fault_device()).unwrap();
+    assert!(begin_fail.bound().is_none());
+    assert_eq!(model_fault_events(), vec![("begin", MODEL_FAULT_FEATURES)]);
+    drv::device_del(&begin_fail);
+
+    reset_model_fault_state(ModelFaultMode::ChildFail);
+    let child_fail = drv::try_device_add(model_fault_device()).unwrap();
+    assert!(child_fail.bound().is_none());
+    assert_eq!(
+        model_fault_events(),
+        vec![
+            ("begin", MODEL_FAULT_FEATURES),
+            ("probe", MODEL_FAULT_KEY_RAW),
+            ("release", MODEL_FAULT_KEY_RAW),
+        ]);
+
+    reset_model_fault_state(ModelFaultMode::Success);
+    assert_eq!(drv::bind(&child_fail, MODEL_FAULT_DRIVER), Ok(()));
+    assert_eq!(child_fail.bound(), Some(MODEL_FAULT_DRIVER));
+    assert_eq!(
+        model_fault_events(),
+        vec![
+            ("begin", MODEL_FAULT_FEATURES),
+            ("probe", MODEL_FAULT_KEY_RAW),
+            ("publish", MODEL_FAULT_KEY_RAW),
+        ]);
+
+    reset_model_fault_state(ModelFaultMode::Success);
+    assert_eq!(drv::unbind(&child_fail), Ok(()));
+    assert!(child_fail.bound().is_none());
+    assert_eq!(
+        model_fault_events(),
+        vec![("remove", MODEL_FAULT_KEY_RAW), ("unpublish", MODEL_FAULT_KEY_RAW)]);
+
+    drv::device_del(&child_fail);
 }
