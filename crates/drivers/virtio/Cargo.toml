@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 pci = { path = "../../drivers/pci" }
+drv = { path = "../../drivers/drv" }
 
 [features]
 default = []

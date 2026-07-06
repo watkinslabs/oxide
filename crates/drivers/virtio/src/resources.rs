@@ -34,9 +34,10 @@ pub use transport::{
 
 mod child;
 pub use child::{
-    push_unique_frame, run_child_probe, run_child_remove, run_child_shutdown,
-    VirtioChildProbeFacts, VirtioChildResourceState, VirtioChildTransportSession,
-    VirtioProbeLease, VirtioProbeOwnedFrames, VirtioTransportProbeResult,
+    push_unique_frame, run_child_probe, run_child_remove, run_child_shutdown, VirtioChildBus,
+    VirtioChildDriver, VirtioChildDriverOps, VirtioChildProbeFacts, VirtioChildResourceState,
+    VirtioChildTransportSession, VirtioProbeLease, VirtioProbeOwnedFrames,
+    VirtioTransportProbeResult,
 };
 
 #[cfg(test)]
