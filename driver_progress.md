@@ -5,8 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B572-smoke-rootfs-mode-guard is VERIFIED MERGED on fresh
-`main`; next gate is claiming the next B branch from `metadata/index.md`.
+Current marker: B574-qemu-rebind-certification-audit is ACTIVE on branch
+`B574-qemu-rebind-certification-audit`; existing local `B573-mem-chardev` is
+not part of this work.
+
+## B574 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B574-qemu-rebind-certification-audit | ACTIVE | Fresh `main` at B572/D122 ledger merge `c2b7f679`; B572 PR #2665 and ledger PR #2666 are merged, and post-merge x86_64/aarch64 normal-login smokes passed. `metadata/index.md` advanced B 573 -> 575 because local `B573-mem-chardev` already exists and is not touched by this branch. Active row is QEMU-visible runtime bind/unbind/rebind certification; first step is auditing current live probes to identify and close one concrete missing proof on x86_64 and aarch64. |
 
 ## B572 Current
 
