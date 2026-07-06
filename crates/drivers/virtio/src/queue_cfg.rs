@@ -270,6 +270,35 @@ mod tests {
     }
 
     #[test]
+    fn program_queue_set_writes_q0_msix_vector() {
+        const TEST_Q0_MSIX_VECTOR: u16 = 3;
+        let mut cfg = [0u64; 8];
+        let base = cfg.as_mut_ptr() as u64;
+        // SAFETY: base points at this test's fake common-cfg register block
+        // and CFG_QUEUE_SIZE is the aligned u16 queue-size field.
+        unsafe {
+            core::ptr::write_volatile((base + CFG_QUEUE_SIZE) as *mut u16, 128);
+        }
+        let mut allocator = TestAllocator::new(3);
+
+        let queues = program_queue_set(base, &mut allocator, TEST_Q0_MSIX_VECTOR, &[None]);
+        // SAFETY: base points at this test's fake common-cfg register block
+        // and CFG_QUEUE_MSIX is the aligned u16 queue MSI-X field.
+        let programmed_msix = unsafe {
+            core::ptr::read_volatile((base + CFG_QUEUE_MSIX) as *const u16)
+        };
+        // SAFETY: base points at this test's fake common-cfg register block
+        // and CFG_QUEUE_SELECT is the aligned u16 queue-select field.
+        let selected_queue = unsafe {
+            core::ptr::read_volatile((base + CFG_QUEUE_SELECT) as *const u16)
+        };
+
+        assert!(queues.is_some());
+        assert_eq!(programmed_msix, TEST_Q0_MSIX_VECTOR);
+        assert_eq!(selected_queue, QUEUE_ZERO);
+    }
+
+    #[test]
     fn programmed_queues_are_indexed_by_virtqueue() {
         let ring = |index: u16| QueueRing {
             desc_pa: 0x1000 + index as u64,
