@@ -5,10 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active branch. B599-driver-shutdown-coverage is merged as
-PR #2721 at `5df821ab`; fresh-main `make smoke SMOKE_TIMEOUT=300` passed with
-x86_64 reaching `oxide login:` in 50s and aarch64 reaching `oxide login:` in
-56s. Next branch should claim the next concrete NOT DONE driver row.
+Current marker: B601-driver-model-live-probe-audit is ACTIVE / IN AUDIT from
+fresh `main` at D146 ledger merge `385498f3`. B600 is already occupied by
+existing branch/worktree `B600-gnome-session-diag`, so this driver lane uses
+the next free B number and advances `metadata/index.md` B 600 -> 602.
+
+## B601 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B601-driver-model-live-probe-audit | ACTIVE / IN AUDIT | Claimed from fresh `main` at D146 ledger merge `385498f3`; target row is the old claim that live hardware bring-up mostly bypasses the true driver model. Duplicate-lane check found existing `B600-gnome-session-diag` in `/home/nd/oxide-wt/gnome-diag`, so this lane does not touch B600 and uses B601. No existing B601/driver-model-live-probe branch or worktree was found. Existing staged files not owned by this branch are not touched or committed: deleted `glibc*.md`, deleted `state.md`, deleted `project-stats.md`, and added `project_stats.md`. |
 
 ## B599 Current
 
