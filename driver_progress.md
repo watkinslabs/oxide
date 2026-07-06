@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B509-msix-function-mask-live-proof VERIFIED; next row not claimed yet.
+Current marker: none; B510-virtio-probe-state-boundary VERIFIED; next row not claimed yet.
+
+## B510 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B510-virtio-probe-state-boundary | VERIFIED | Fresh `main` at merge commit `2258152b` after B509 PR #2599 merge and branch cleanup. `metadata/index.md` advanced B 510 -> 511. Patch splits `VirtioProbeState` into dedicated `virtio_drv::probe_state`, moving BAR capability mapping, transport mappings, MSI-X binding collection, queue MSI-X vector resolution, common-cfg bring-up, notify mapping/kick/status observation, ISR sampling, net boot payload handoff, and final `VirtioProbeDevres` construction behind the explicit state boundary. `probe.rs` is reduced to PCI acquisition, child facts/trace assembly, and publish/release APIs. Checks pass: broad hosted driver compile gate for `pci-boot`, `virtio`, and all virtio child drivers; `git diff --check`; touched Rust files under 500 lines (`probe.rs` 178, `probe_state.rs` 298); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 36s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 42s. |
 
 ## B509 Current
 
