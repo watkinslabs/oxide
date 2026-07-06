@@ -197,6 +197,13 @@ smoke-virtio-blk-multidev-arm: arm
 	./tools/boot-smoke-virtio-blk-multidev.sh arm $(VIRTIO_BLK_MULTIDEV_SMOKE_TIMEOUT)
 smoke-virtio-blk-multidev: smoke-virtio-blk-multidev-x86 smoke-virtio-blk-multidev-arm
 
+STORAGE_MULTICTRL_SMOKE_TIMEOUT ?= 900
+smoke-storage-multictrl-x86: x86
+	./tools/boot-smoke-storage-multictrl.sh x86 $(STORAGE_MULTICTRL_SMOKE_TIMEOUT)
+smoke-storage-multictrl-arm: arm
+	./tools/boot-smoke-storage-multictrl.sh arm $(STORAGE_MULTICTRL_SMOKE_TIMEOUT)
+smoke-storage-multictrl: smoke-storage-multictrl-x86 smoke-storage-multictrl-arm
+
 USERSPACE_SEAT_SMOKE_TIMEOUT ?= 900
 smoke-userspace-seat-x86: x86
 	./tools/boot-smoke-userspace-seat.sh x86 $(USERSPACE_SEAT_SMOKE_TIMEOUT)

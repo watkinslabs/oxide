@@ -51,6 +51,13 @@ fn invalidate_path(path: &str) {
     if let Some(dentry) = vfs::resolve_path_dentry(&full) {
         vfs::d_invalidate(&dentry);
     }
+    let Some((parent, name)) = full.rsplit_once('/') else { return; };
+    let parent = if parent.is_empty() { "/" } else { parent };
+    if let Some(parent_dentry) = vfs::resolve_path_dentry(parent) {
+        if let Some(dentry) = vfs::d_lookup(&parent_dentry, name) {
+            vfs::d_invalidate(&dentry);
+        }
+    }
 }
 
 fn invalidate_model_paths(dev: &drv::Device, devpath: &str) {
@@ -60,12 +67,22 @@ fn invalidate_model_paths(dev: &drv::Device, devpath: &str) {
     }
 }
 
+fn invalidate_bind_paths(bus: &str, addr: &str, driver: &'static str) {
+    let devpath = match find_dev(bus, addr) {
+        Some(dev) => dev_devpath(&dev),
+        None => alloc::format!("/{}/{}", dev_root_canon(bus), addr),
+    };
+    invalidate_path(&alloc::format!("{}/driver", devpath));
+    invalidate_path(&alloc::format!("/bus/{}/drivers/{}/{}", bus, driver, addr));
+}
+
 /// drv `set_driver_hook` target: a driver was registered. # C: O(1)
 pub fn publish_driver_cb(_bus: &str, _name: &'static str) {}
 
 /// drv `set_bind_hook` target: a device binding changed after model state was
 /// updated. # C: O(N_devices)
-pub fn bind_device_cb(bus: &str, addr: &str, _driver: &'static str, _event: drv::BindEvent) {
+pub fn bind_device_cb(bus: &str, addr: &str, driver: &'static str, _event: drv::BindEvent) {
+    invalidate_bind_paths(bus, addr, driver);
     if let Some(dev) = find_dev(bus, addr) {
         let devpath = dev_devpath(&dev);
         let env = dev_uevent_env(&dev);

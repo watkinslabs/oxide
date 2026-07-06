@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define MAX_DEVS 8
@@ -16,6 +17,7 @@
 #define MAX_ATTR 64
 #define RETRIES 50
 #define SLEEP_US 100000
+#define REBIND_LOOPS 3
 
 static void emit_line(const char *msg) {
     write(1, msg, strlen(msg));
@@ -53,6 +55,29 @@ static int block_name_exists(const char *name) {
     if (fd < 0) return 0;
     close(fd);
     return 1;
+}
+
+static int path_lexists(const char *path) {
+    struct stat st;
+    return lstat(path, &st) == 0;
+}
+
+static int require_path_present(const char *path, const char *tag, int loop) {
+    if (!path_lexists(path)) {
+        printf("%s: FAIL loop=%d missing %s errno=%d\n", tag, loop, path, errno);
+        return 1;
+    }
+    printf("%s: PASS loop=%d %s\n", tag, loop, path);
+    return 0;
+}
+
+static int require_path_absent(const char *path, const char *tag, int loop) {
+    if (path_lexists(path)) {
+        printf("%s: FAIL loop=%d stale %s\n", tag, loop, path);
+        return 1;
+    }
+    printf("%s: PASS loop=%d absent %s\n", tag, loop, path);
+    return 0;
 }
 
 static int require_block_name(const char *name, const char *tag) {
@@ -191,36 +216,62 @@ static int exercise(const char *name, const char *driver, const char *prefix) {
     const char *dev = names[0];
     int before = count_block_prefix(prefix);
     printf("storage_multictrl_probe: %s selected addr=%s before=%d\n", name, dev, before);
-    char tag[MAX_NAME];
-    snprintf(tag, sizeof tag, "storage_%s_duplicate_bind", name);
-    if (write_token_fails(driver, "bind", dev, tag)) return 1;
-    if (!device_bound(driver, dev)) { printf("storage_multictrl_probe: FAIL %s duplicate unbound\n", name); return 1; }
-    if (count_block_prefix(prefix) != before) {
-        printf("storage_multictrl_probe: FAIL %s duplicate count=%d want=%d\n",
-               name, count_block_prefix(prefix), before);
-        return 1;
-    }
-    printf("storage_multictrl_probe: PASS %s duplicate rejected count=%d\n", name, before);
+    for (int loop = 1; loop <= REBIND_LOOPS; loop++) {
+        char tag[MAX_NAME], driver_link[MAX_PATH], device_link[MAX_PATH];
+        snprintf(driver_link, sizeof driver_link, "%s/%s", driver, dev);
+        snprintf(device_link, sizeof device_link, "/sys/devices/pci0000:00/%s/driver", dev);
+        snprintf(tag, sizeof tag, "storage_%s_driver_link", name);
+        if (require_path_present(driver_link, tag, loop) ||
+            require_path_present(device_link, tag, loop)) return 1;
 
-    snprintf(tag, sizeof tag, "storage_%s_unbind_write", name);
-    if (write_token(driver, "unbind", dev, tag)) return 1;
-    if (device_bound(driver, dev)) { printf("storage_multictrl_probe: FAIL %s still bound\n", name); return 1; }
-    if (wait_count(prefix, before - 1)) {
-        printf("storage_multictrl_probe: FAIL %s unbind count=%d want=%d\n",
-               name, count_block_prefix(prefix), before - 1);
-        return 1;
-    }
-    printf("storage_multictrl_probe: PASS %s unbind count=%d\n", name, before - 1);
+        snprintf(tag, sizeof tag, "storage_%s_duplicate_bind", name);
+        if (write_token_fails(driver, "bind", dev, tag)) return 1;
+        if (!device_bound(driver, dev)) {
+            printf("storage_multictrl_probe: FAIL %s duplicate unbound\n", name);
+            return 1;
+        }
+        if (count_block_prefix(prefix) != before) {
+            printf("storage_multictrl_probe: FAIL %s duplicate count=%d want=%d\n",
+                   name, count_block_prefix(prefix), before);
+            return 1;
+        }
+        printf("storage_multictrl_probe: PASS %s duplicate rejected loop=%d count=%d\n",
+               name, loop, before);
 
-    snprintf(tag, sizeof tag, "storage_%s_bind_write", name);
-    if (write_token(driver, "bind", dev, tag)) return 1;
-    if (!device_bound(driver, dev)) { printf("storage_multictrl_probe: FAIL %s not rebound\n", name); return 1; }
-    if (wait_count(prefix, before)) {
-        printf("storage_multictrl_probe: FAIL %s rebind count=%d want=%d\n",
-               name, count_block_prefix(prefix), before);
-        return 1;
+        snprintf(tag, sizeof tag, "storage_%s_unbind_write", name);
+        if (write_token(driver, "unbind", dev, tag)) return 1;
+        if (device_bound(driver, dev)) {
+            printf("storage_multictrl_probe: FAIL %s still bound loop=%d\n", name, loop);
+            return 1;
+        }
+        if (wait_count(prefix, before - 1)) {
+            printf("storage_multictrl_probe: FAIL %s unbind loop=%d count=%d want=%d\n",
+                   name, loop, count_block_prefix(prefix), before - 1);
+            return 1;
+        }
+        snprintf(tag, sizeof tag, "storage_%s_driver_unlink", name);
+        if (require_path_absent(driver_link, tag, loop) ||
+            require_path_absent(device_link, tag, loop)) return 1;
+        printf("storage_multictrl_probe: PASS %s unbind loop=%d count=%d\n",
+               name, loop, before - 1);
+
+        snprintf(tag, sizeof tag, "storage_%s_bind_write", name);
+        if (write_token(driver, "bind", dev, tag)) return 1;
+        if (!device_bound(driver, dev)) {
+            printf("storage_multictrl_probe: FAIL %s not rebound loop=%d\n", name, loop);
+            return 1;
+        }
+        if (wait_count(prefix, before)) {
+            printf("storage_multictrl_probe: FAIL %s rebind loop=%d count=%d want=%d\n",
+                   name, loop, count_block_prefix(prefix), before);
+            return 1;
+        }
+        snprintf(tag, sizeof tag, "storage_%s_driver_relink", name);
+        if (require_path_present(driver_link, tag, loop) ||
+            require_path_present(device_link, tag, loop)) return 1;
+        printf("storage_multictrl_probe: PASS %s rebind loop=%d count=%d\n",
+               name, loop, before);
     }
-    printf("storage_multictrl_probe: PASS %s rebind count=%d\n", name, before);
     return 0;
 }
 
