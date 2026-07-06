@@ -247,6 +247,13 @@ smoke-vsock-arm: arm
 	./tools/boot-smoke-vsock.sh arm $(VSOCK_SMOKE_TIMEOUT)
 smoke-vsock: smoke-vsock-x86
 
+VIRTIO_RNG_REBIND_SMOKE_TIMEOUT ?= 600
+smoke-virtio-rng-rebind-x86: x86
+	./tools/boot-smoke-virtio-rng-rebind.sh x86 $(VIRTIO_RNG_REBIND_SMOKE_TIMEOUT)
+smoke-virtio-rng-rebind-arm: arm
+	./tools/boot-smoke-virtio-rng-rebind.sh arm $(VIRTIO_RNG_REBIND_SMOKE_TIMEOUT)
+smoke-virtio-rng-rebind: smoke-virtio-rng-rebind-x86 smoke-virtio-rng-rebind-arm
+
 # Rebuild target/builds/default/root-<arch>.img from userspace/ sources. Run after
 # editing any userspace/<name>/<name>.c so include_bytes! picks up
 # the new bytes on the next kernel build.
