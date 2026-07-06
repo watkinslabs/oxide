@@ -152,6 +152,23 @@ static int missing(const char *path, const char *tag) {
     return 1;
 }
 
+static int open_missing(const char *path, const char *tag) {
+    errno = 0;
+    int fd = open(path, O_RDWR);
+    int saved = errno;
+    if (fd >= 0) {
+        close(fd);
+        printf("%s: FAIL path=%s still-openable\n", tag, path);
+        return 1;
+    }
+    if (saved != ENOENT) {
+        printf("%s: FAIL path=%s errno=%d\n", tag, path, saved);
+        return 1;
+    }
+    printf("%s: PASS errno=%d\n", tag, saved);
+    return 0;
+}
+
 static int count_cards(void) {
     int n = 0;
     char path[MAX_PATH];
@@ -222,6 +239,8 @@ static int prove_removed_second_card(int iter) {
     char tag[64];
     snprintf(tag, sizeof tag, "b579_removed_dev_card1_%d", iter);
     if (missing("/dev/dri/card1", tag)) return 1;
+    snprintf(tag, sizeof tag, "b587_removed_dev_card1_open_%d", iter);
+    if (open_missing("/dev/dri/card1", tag)) return 1;
     snprintf(tag, sizeof tag, "b579_removed_sys_card1_%d", iter);
     if (missing("/sys/class/drm/card1", tag)) return 1;
     emit_status("b579_cards_after_unbind", "PASS");
