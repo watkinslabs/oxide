@@ -31,7 +31,7 @@ use core::sync::atomic::Ordering;
 
 use hal::{Context, MmuOps};
 use crate::{RunqueueInner, SchedClass, Task, TaskState};
-use crate::live::runqueue::global;
+use crate::live::runqueue::{global, Runqueue};
 
 use super::active_mm::{active_mm_drop, active_mm_grab, sched_current_cpu};
 use super::hooks::fire_sched_switch;
@@ -136,6 +136,20 @@ fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
     prev.exec_start_ns.store(now, Ordering::Release);
 }
 
+/// Clear the previous switch's outgoing-task `on_cpu` handoff before the slot
+/// is reused. This mirrors Linux `finish_task_switch(prev)`: a later wake must
+/// be able to see that the old task is no longer executing.
+/// # SAFETY: caller runs on this runqueue's CPU in scheduler context.
+/// # C: O(1)
+unsafe fn finish_switched_from(rq: &Runqueue) {
+    let from = rq.switched_from.swap(core::ptr::null_mut(), Ordering::AcqRel);
+    if !from.is_null() {
+        // SAFETY: `from` was stored by schedule() before a context switch; the
+        // outgoing task is kept alive by the switcher's frame or task registry.
+        unsafe { (*from).on_cpu.store(false, Ordering::Release); }
+    }
+}
+
 /// Linux `finish_task_switch` / `schedule_tail`: the INCOMING task runs this
 /// after the switch. It (1) releases the rq-lock the switcher held across the
 /// switch, (2) drains the deferred-reap slot, and (3) drops the `preempt_count`
@@ -152,11 +166,9 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
             let dying = unsafe { Arc::from_raw(raw) };
             super::super::zombies::enqueue_zombie(dying);
         }
-        let from = rq.switched_from.swap(core::ptr::null_mut(), Ordering::AcqRel);
-        if !from.is_null() {
-            // SAFETY: `from` is the outgoing task ptr stored by schedule() pre-switch; alive across the switch; on_cpu is a plain atomic.
-            unsafe { (*from).on_cpu.store(false, Ordering::Release); }
-        }
+        // SAFETY: schedule_tail is the normal handoff completion point for
+        // this CPU's previous switch.
+        unsafe { finish_switched_from(rq); }
     }
     crate::preempt::preempt_enable_no_check();
 }
@@ -172,6 +184,9 @@ pub unsafe fn schedule() {
         Some(r) => r,
         None => { crate::preempt::preempt_enable_no_check(); return }
     };
+    // SAFETY: complete any pending outgoing-task handoff before draining
+    // deferred wakeups, so ttwu does not re-defer a task on stale `on_cpu`.
+    unsafe { finish_switched_from(rq); }
     // SAFETY: single-CPU here; restored by irq_restore on this task's resume.
     let flags = unsafe { irq_save_disable() };
     let now = now_ns();
@@ -261,6 +276,13 @@ pub unsafe fn schedule() {
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
     // SAFETY: rq.current was just set to next; prev_raw is the outgoing task, kept alive by `prev_arc`/the runqueue across the switch.
     unsafe { rq.current_ref() }.on_cpu.store(true, Ordering::Release);
+    // SAFETY: rq.current was just set to next and this scheduler context owns
+    // the incoming task's CPU ownership transition.
+    unsafe { rq.current_ref() }.cpu.store(me as u16, Ordering::Release);
+    // SAFETY: before overwriting the single handoff slot, complete any
+    // previous switch whose incoming task reached schedule() before its tail
+    // hook cleared the old outgoing task.
+    unsafe { finish_switched_from(rq); }
     rq.switched_from.store(prev_raw, Ordering::Release);
     let mut prev_arc_opt = Some(prev_arc);
     if matches!(prev_arc_opt.as_ref().expect("just set").state(), TaskState::Zombie) {

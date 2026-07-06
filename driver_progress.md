@@ -5,16 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B569-x86-login-cgroup-audit is claimed from fresh `main` at
-B568 PR #2660 merge commit `81b94914`; next gate is durable x86_64
-normal-login reproduction, cgroup/getty root-cause fix if current main still
-reproduces, and lockstep verification.
+Current marker: B569-x86-login-cgroup-audit is VERIFIED LOCAL on branch
+`B569-x86-login-cgroup-audit`; next gate is commit, push, PR, merge, fresh-main
+sync, and post-merge x86_64/aarch64 normal-login smokes.
 
 ## B569 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B569-x86-login-cgroup-audit | ACTIVE | Fresh `main` at B568 PR #2660 merge commit `81b94914`; B568 post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. `metadata/index.md` advanced B 569 -> 570. Active target: rerun `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` with durable logs, determine whether current main still reproduces the `console-getty.service` cgroup attach/spawn failure, fix the kernel-side cgroup/getty path if it reproduces, then verify x86_64 and aarch64 gates before PR/merge. |
+| B569-x86-login-cgroup-audit | VERIFIED LOCAL | Fresh `main` at B568 PR #2660 merge commit `81b94914`; B568 post-merge fresh-main driver-path proof passed with x86_64 log `/tmp/b568-postmerge-x86-driver-path.log` and aarch64 log `/tmp/b568-postmerge-arm-driver-path.log`. `metadata/index.md` advanced B 569 -> 570. Current main did not reproduce the old x86_64 `console-getty.service` cgroup attach/spawn failure across three durable x86_64 normal-login runs (`/tmp/b569-x86-login-smoke-1.log`, `/tmp/b569-x86-login-smoke-2.log`, `/tmp/b569-x86-login-smoke-3.log`). Lockstep ARM normal-login exposed a real scheduler no-progress failure after `g19_glibc_smoke` exit: `/tmp/b569-arm-login-smoke.log` and `/tmp/b569-arm-login-smoke-after-ttwu.log` timed out with PID 1 `Runnable` but not queued/running after `clone`, while the vfork child was zombie. B569 fixes scheduler ownership and wake placement by stamping `Task::cpu` at enqueue/switch, preferring the prior owning runqueue for legal wake placement, repairing Runnable-not-queued wake placement, and completing stale `on_cpu` switch handoff before wake-list drain/reuse. Checks pass: `cargo test -q -p sched -- --nocapture --test-threads=1` with 121/121 tests, `git diff --check`, line caps (`switch.rs` 358, `ttwu.rs` 264, `runqueue.rs` 102, `queues.rs` 223), aarch64 normal-login `/tmp/b569-arm-login-smoke-after-cpu-owner.log` reached `oxide login:` in 50s, and x86_64 normal-login `/tmp/b569-x86-login-smoke-after-cpu-owner.log` reached `oxide login:` in 46s. |
 
 ## B568 Current
 
