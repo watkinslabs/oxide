@@ -11,6 +11,7 @@ use virtio::VirtioChildDeviceKey;
 
 mod chain;
 mod chunking;
+mod config;
 mod helpers;
 mod lifecycle;
 mod naming;
