@@ -175,9 +175,9 @@ pub fn make_proc_net_udp6() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_
 fn modules_body() -> alloc::vec::Vec<u8> {
     use core::fmt::Write as _;
     let mut s = String::new();
-    for (idx, n_secs, n_syms) in modules::registry::snapshot() {
-        let _ = writeln!(s, "module_{} {} {} - Live 0x0 sec={} sym={}",
-            idx, n_secs * 4096, 0, n_secs, n_syms);
+    for m in modules::registry::snapshot() {
+        let _ = writeln!(s, "{} {} {} - {} 0x0 sec={} sym={}",
+            m.name, m.size, m.refcnt, m.state.as_str(), m.sections, m.symbols);
     }
     s.into_bytes()
 }
