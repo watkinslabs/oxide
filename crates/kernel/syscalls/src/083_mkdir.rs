@@ -50,7 +50,11 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     // i_rwsem is dropped before the rank-50/60 dcache `d_drop_path` below.
     let r = { let _g = pino.inode_lock(); pino.mkdir(&name, mode, &ctx) };
     match r {
-        Ok(_) => { crate::pathresolve::d_drop_path(&p); 0 }
+        Ok(_) => {
+            crate::pathresolve::d_drop_path(&p);
+            vfs::fire_dirent_create(crate::namei_common::parent_path(&p), &name);
+            0
+        }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdir", &p, e);
             errno_from_vfs(e)

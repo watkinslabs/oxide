@@ -196,6 +196,18 @@ pub(crate) fn last_component(raw: &str) -> &str {
     trimmed.rsplit('/').next().unwrap_or(trimmed)
 }
 
+/// Parent path string for fsnotify hooks after a successful mutation. Inputs
+/// here are resolved absolute paths; root children report parent `/`.
+/// # C: O(N)
+pub(crate) fn parent_path(abs: &str) -> &str {
+    let trimmed = abs.trim_end_matches('/');
+    match trimmed.rfind('/') {
+        Some(0) => "/",
+        Some(i) => &trimmed[..i],
+        _ => "/",
+    }
+}
+
 /// Linux `do_rmdirat`: a final component of `.` → EINVAL, `..` → ENOTEMPTY
 /// (the `LAST_DOT` / `LAST_DOTDOT` cases). Checked on the raw path before
 /// resolution, which would otherwise normalise the dots away. # C: O(N)

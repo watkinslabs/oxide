@@ -40,7 +40,11 @@ pub(crate) fn symlink_impl(target: String, link: String) -> i64 {
     // `filename_create` → `->symlink`); dropped before the dcache update below.
     let r = { let _g = pino.inode_lock(); pino.symlink_child(&name, target.as_bytes(), &ctx) };
     match r {
-        Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }
+        Ok(())  => {
+            crate::pathresolve::d_drop_path(&l);
+            vfs::fire_dirent_create(crate::namei_common::parent_path(&l), &name);
+            0
+        }
         Err(e)  => {
             crate::namei_common::trace_run_vfs_error(b"symlink", &l, e);
             errno_from_vfs(e)

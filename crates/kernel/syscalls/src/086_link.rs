@@ -61,7 +61,14 @@ pub fn sys_link(args: &SyscallArgs) -> i64 {
         Err(_) => tm.fs().link(&t, &l),
     };
     match r {
-        Ok(())  => { crate::pathresolve::d_drop_path(&l); 0 }
+        Ok(())  => {
+            crate::pathresolve::d_drop_path(&l);
+            vfs::fire_dirent_create(
+                crate::namei_common::parent_path(&l),
+                crate::namei_common::last_component(&l),
+            );
+            0
+        }
         Err(e)  => errno_from_vfs(e),
     }
 }

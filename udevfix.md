@@ -15,8 +15,8 @@ boot.
 | DONE | B608-uevent-seqnum-sysfs | Add/readable `/sys/kernel/uevent_seqnum` backed by the netlink uevent sequence counter, or document and prove non-requirement in code tests. |
 | DONE | B610-sys-dev-block-index | Ensure `/sys/dev/block/<major>:<minor>` resolves for real registered block disks, including disks sourced from `block::registry`. |
 | DONE | B611-tty-subsystem-link | Add `subsystem` symlink to `/sys/devices/virtual/tty/<name>` if code/tests confirm udev/libudev expects the same class-device shape as other classes. |
-| VERIFIED | B612-udev-control-proof | Add focused AF_UNIX/systemd-udevd control socket proof for connect, wake, send, and reply behavior without boot smokes. |
-| NOT DONE | B613-inotify-udev-dirs | Prove or fix inotify `IN_CREATE`/`IN_DELETE`/move delivery for `/dev` and `/run/udev` directory mutations. |
+| DONE | B612-udev-control-proof | Add focused AF_UNIX/systemd-udevd control socket proof for connect, wake, send, and reply behavior without boot smokes. |
+| VERIFIED | B613-inotify-udev-dirs | Prove or fix inotify `IN_CREATE`/`IN_DELETE`/move delivery for `/dev` and `/run/udev` directory mutations. |
 | NOT DONE | B614-class-env-audit | Audit and fix class-specific uevent env for input, sound, graphics, misc, and mem devices where Linux udev rules need more than DEVNAME/MAJOR/MINOR. |
 
 ## Current Priority

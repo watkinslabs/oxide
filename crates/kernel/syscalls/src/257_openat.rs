@@ -265,7 +265,13 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // resolve above so `open_dentry`'s path-walk re-resolves to the NEW inode
     // rather than the stale negative (Linux instantiates the create's own leaf).
     // O_TMPFILE has no directory entry (path is the directory), so it is exempt.
-    if created && (flags & O_TMPFILE) == 0 { crate::pathresolve::d_drop_path(path_str); }
+    if created && (flags & O_TMPFILE) == 0 {
+        crate::pathresolve::d_drop_path(path_str);
+        vfs::fire_dirent_create(
+            crate::namei_common::parent_path(path_str),
+            crate::namei_common::last_component(path_str),
+        );
+    }
     // O_TMPFILE = __O_TMPFILE | O_DIRECTORY, so skip the dir check for it.
     if (flags & O_DIRECTORY) != 0 && (flags & O_TMPFILE) == 0
         && !matches!(inode.file_type(), vfs::FileType::Directory)
