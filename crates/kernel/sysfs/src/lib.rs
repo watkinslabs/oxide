@@ -83,6 +83,16 @@ fn lookup_net_ifindex(_name: &str) -> u32 {
     0
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn invalidate_netdev_paths(name: &str) {
+    for path in ["/sys/class/net/", "/sys/devices/virtual/net/"] {
+        let full = alloc::format!("{}{}", path, name);
+        if let Some(dentry) = vfs::resolve_path_dentry(&full) {
+            vfs::d_invalidate(&dentry);
+        }
+    }
+}
+
 // ---- /sys/class/net (directory of symlinks) -------------------------------
 
 /// `/sys/class/net` directory. `iterate` enumerates
@@ -415,6 +425,8 @@ pub fn init() {
     register_dir("/sys/kernel/debug");
     register("/sys/class/net", make_sys_class_net_inode());
     register("/sys/devices/virtual/net", make_sys_devices_virtual_net_inode());
+    #[cfg(target_os = "oxide-kernel")]
+    net::netdev::set_remove_hook(invalidate_netdev_paths);
     register("/sys/class/tty", tty::make_sys_class_tty_inode());
     register("/sys/devices/virtual/tty", tty::make_sys_devices_virtual_tty_inode());
     bus::init();
