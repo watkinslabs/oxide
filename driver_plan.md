@@ -2,11 +2,11 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B513-virtio-snd-frame-teardown-proof; auditing virtio-snd frame ownership and teardown proof.
+ACTIVE NOW: none; B513-virtio-snd-frame-teardown-proof verified on x86_64 and aarch64, next row not claimed yet.
 
-Current active item: B513-virtio-snd-frame-teardown-proof. B512 is occupied
-by remote branch `origin/B512-sysctl-leaves`, so this driver lane uses the
-next free B-number.
+Current active item: none. B513 remains on branch
+`B513-virtio-snd-frame-teardown-proof` until commit, PR, merge, fresh main sync,
+and metadata/index.md branch number check complete.
 
 Next gate after merge: return to fresh `origin/main` before claiming B514 using
 `metadata/index.md`.
@@ -224,7 +224,7 @@ Status legend:
 | SOURCE OK |  | Virtio-snd drains EVENTQ from sound softirq. |
 | SOURCE OK |  | Virtio-snd recycles used event descriptors. |
 | SOURCE OK |  | Dead pci-boot sound config pass-through removed. |
-| ACTIVE | B513-virtio-snd-frame-teardown-proof | Virtio-snd probe scratch/event/TX/RX frame ownership and teardown need fault-injection proof. |
+| VERIFIED | B513-virtio-snd-frame-teardown-proof | Virtio-snd probe scratch/event/TX/RX frame ownership and teardown are proven by hosted fault-injection tests: owned probe frames free on `Drop`, disarmed probe frames transfer cleanup to context teardown, and failed scan context removal frees scratch/event/TX/RX frames while clearing the sound softirq. Checks pass: `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` 11/11; `cargo test -q -p sound -- --nocapture --test-threads=1` 16/16; broad hosted virtio driver gate; `git diff --check`; touched Rust files under 500 lines (`lib.rs` 130, `state.rs` 238, `tests.rs` 443); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 40s. |
 | SOURCE OK |  | Virtio-input reads identity/capability from generic config resource. |
 | VERIFIED |  | Virtio-input owns `/dev/input/eventN` publication/removal in child install/remove path. |
 | SOURCE OK |  | Virtio-net no longer has PCI-transport-owned MAC config harvest. |
