@@ -7,6 +7,24 @@ use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
 
+// DIAG (debug-stderr): lightweight fd==2 echo for the writev path (no ld.so
+// verassert VMA dump), mirroring 001_write's trace_stderr_write.
+#[cfg(all(feature = "debug-stderr", not(feature = "debug-atexit")))]
+fn trace_stderr_echo(fd: i32, bytes: &[u8]) {
+    if fd != 2 { return; }
+    let n = core::cmp::min(bytes.len(), 512);
+    klog::write_raw(b"[STDERR t=");
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b" ");
+        klog::write_raw(c.name.as_bytes());
+    }
+    klog::write_raw(b"] ");
+    klog::write_raw(&bytes[..n]);
+    if n < bytes.len() { klog::write_raw(b"...<truncated>"); }
+    if n == 0 || bytes[n - 1] != b'\n' { klog::write_raw(b"\n"); }
+}
+
 #[cfg(feature = "debug-atexit")]
 fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
     if fd != 2 {
@@ -192,6 +210,8 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         };
         #[cfg(feature = "debug-atexit")]
         trace_stderr_writev(fd, bytes);
+        #[cfg(all(feature = "debug-stderr", not(feature = "debug-atexit")))]
+        trace_stderr_echo(fd, bytes);
         dtrace!(b"WV_PRE_W");
         match file.write(bytes) {
             Ok(n)  => { dtrace!(b"WV_OK", n as u64); total = total.saturating_add(n as u64); }
