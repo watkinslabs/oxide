@@ -47,6 +47,8 @@ pub use queue_cfg::{
     program_queue, program_queue_set, ProgrammedQueues, QueueRing, VirtioQueueAllocator,
 };
 
+pub mod dma;
+
 pub mod queue;
 pub use queue::{
     Desc, AvailRing, UsedElem, UsedRing, VirtQueue,

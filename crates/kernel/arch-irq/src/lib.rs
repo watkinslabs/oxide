@@ -6,6 +6,8 @@
 
 extern crate alloc;
 
+pub mod cache;
+
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};

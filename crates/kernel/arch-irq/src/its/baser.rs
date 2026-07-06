@@ -25,7 +25,7 @@ const fn baser_off(n: usize) -> u64 { (GITS_BASER0 + n * 8) as u64 }
 #[cfg(target_arch = "aarch64")]
 const BASER_VALID:    u64 = 1 << 63;
 #[cfg(target_arch = "aarch64")]
-const BASER_IC_NC:    u64 = 1 << 56;
+const BASER_IC_NC:    u64 = 1 << 59;
 #[cfg(target_arch = "aarch64")]
 const BASER_INNER_SH: u64 = 1 << 10;
 #[cfg(target_arch = "aarch64")]
@@ -109,6 +109,7 @@ pub unsafe fn baser_setup(hhdm: u64, slots_out: &mut [BaserSlot; GITS_BASER_COUN
                     core::ptr::write_volatile(va.add(j), 0);
                 }
             }
+            crate::cache::clean_to_poc(hhdm.wrapping_add(pa), 0x1000);
         }
         // Preserve Type + EntrySize (RO); OR in driver-controlled fields.
         let new_raw = (raw & !BASER_RW_MASK)

@@ -2,7 +2,7 @@ use crate::acpi::log::{alog_dec, alog_hex, alog_raw};
 use crate::acpi::read::{read_u32_le, read_u64_le};
 use crate::acpi::tables::{decode_gtdt, decode_hpet, decode_madt, decode_mcfg, decode_spcr};
 #[cfg(target_os = "oxide-kernel")]
-use crate::acpi::tables::decode_iort;
+use crate::acpi::iort::decode_iort;
 
 /// Outcome of `try_log_rsdp` for callers that want to check.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

@@ -8,6 +8,11 @@ use super::{
 };
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
+const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
+const VIRTQ_USED_HEADER_BYTES: usize = 4;
+const VIRTQ_USED_ELEM_BYTES: usize = 8;
+
 #[derive(Clone, Copy)]
 struct RxRuntime {
     device_key: DeviceKey,
@@ -242,11 +247,16 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
 
     let used_va  = hhdm.wrapping_add(s.rxq.device_pa);
     let avail_va = hhdm.wrapping_add(s.rxq.driver_pa);
+    let rxq_size = s.rxq.size as usize;
 
     // SAFETY: HHDM-mapped device-written used ring; aligned u16 load
     // at offset +2 (idx field). Ordering::Acquire pairs with the
     // device's store of used.idx after writing the ring entry per
     // Virtio 1.2 §2.6.8.
+    virtio::dma::invalidate_from_device(
+        used_va,
+        VIRTQ_USED_HEADER_BYTES + rxq_size * VIRTQ_USED_ELEM_BYTES,
+    );
     let dev_used_idx = unsafe {
         core::ptr::read_volatile((used_va + 2) as *const u16)
     };
@@ -254,7 +264,6 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
     let mut last = s.rx_last_used;
     if dev_used_idx == last { return 0; }
 
-    let rxq_size = s.rxq.size as usize;
     let mut delivered = 0usize;
     let mut repost_ids: alloc::vec::Vec<u16> = alloc::vec::Vec::new();
     // Collect frame copies under the lock so we can safely drop the
@@ -293,6 +302,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
             let rx_buf = rx_buf.expect("rx buffer was validated above");
             let body_len = frame_total as usize - VIRTIO_NET_HDR_LEN;
             let buf_va = hhdm.wrapping_add(rx_buf.pa);
+            virtio::dma::invalidate_from_device(buf_va, rx_buf.len as usize);
             // SAFETY: RX buffer is HHDM-mapped, owned by this driver
             // under the virtio-net device-table lock; the device finished writing
             // before publishing used.ring per Virtio 1.2 §2.6.8. Copy
@@ -336,6 +346,12 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
     let mut reposted = false;
     for id in repost_ids {
         let pub_slot = (next_avail as usize) % rxq_size;
+        if let Some(rx_buf) = s.rx_bufs.iter().find(|buf| buf.desc_id == id) {
+            virtio::dma::invalidate_from_device(
+                hhdm.wrapping_add(rx_buf.pa),
+                rx_buf.len as usize,
+            );
+        }
         // SAFETY: HHDM-mapped avail ring, exclusive under the virtio-net device-table lock.
         unsafe {
             core::ptr::write_volatile(
@@ -352,6 +368,10 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
         unsafe {
             core::ptr::write_volatile((avail_va + 2) as *mut u16, next_avail);
         }
+        virtio::dma::clean_to_device(
+            avail_va,
+            VIRTQ_AVAIL_HEADER_BYTES + rxq_size * VIRTQ_AVAIL_ELEM_BYTES,
+        );
         core::sync::atomic::fence(Ordering::Release);
         s.rx_next_avail = next_avail;
         // Kick: u16 queue index 0 to the per-queue notify VA. Modern
