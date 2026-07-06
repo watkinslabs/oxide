@@ -13,7 +13,7 @@
 
 use alloc::sync::Arc;
 use sync::{Spinlock, TaskList as TaskListClass};
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 use core::sync::atomic::Ordering;
 use crate::dyn_file::read_at;
@@ -59,6 +59,31 @@ impl FileOps for SysctlFileOps {
     }
 }
 
+/// `i_op` for a writable `/proc` pseudo-leaf (sysctl slot, ip_forward,
+/// proc_handler-bound var). Overrides only `truncate`: `ftruncate(2)` on such a
+/// leaf must SUCCEED as a no-op (Linux `proc_setattr` ignores the size change on
+/// a procfs inode). The `InodeOps` DEFAULT `truncate` returns `Erofs`, which
+/// broke `pam_loginuid.so`: its session hook does
+/// `open("/proc/self/loginuid", O_RDWR)` → `ftruncate(fd, 0)` → write. The
+/// EROFS from `ftruncate` made it log "Error writing /proc/self/loginuid" +
+/// "set_loginuid failed" and return `PAM_SESSION_ERR` ("Cannot make/remove an
+/// entry for the specified session"), so `user@<uid>.service` failed its PAM
+/// session (224/PAM) and the GNOME user manager never started. When the private
+/// is a byte-slot `SysctlInode`, shrink the stored bytes to `len` so a read
+/// between the truncate and the replacing write reflects the emptied file; for a
+/// live-variable leaf (no `SysctlInode` private) it is a pure no-op.
+struct SysctlInodeOps;
+impl InodeOps for SysctlInodeOps {
+    /// # C: O(1)
+    fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
+        if let Some(d) = inode.private::<SysctlInode>() {
+            let mut v = d.val.lock();
+            if (len as usize) < v.len() { v.truncate(len as usize); }
+        }
+        Ok(())
+    }
+}
+
 impl SysctlInode {
     /// New unbounded writable sysctl inode seeded with `default`
     /// (`proc_dointvec` free byte slot). # C: O(len default)
@@ -75,7 +100,7 @@ impl SysctlInode {
     /// # C: O(len default)
     fn new_inner(default: &[u8], bounds: Option<(i64, i64)>) -> InodeRef {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(SysctlFileOps))
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), Arc::new(SysctlInodeOps), Arc::new(SysctlFileOps))
             .private(Arc::new(SysctlInode { val: Spinlock::new(default.to_vec()), bounds }))
             .build()
     }
@@ -106,7 +131,7 @@ impl IpForwardInode {
     /// New `/proc/sys/net/ipv4/ip_forward` inode. # C: O(1)
     pub fn new() -> InodeRef {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(IpForwardFileOps))
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), Arc::new(SysctlInodeOps), Arc::new(IpForwardFileOps))
             .build()
     }
 }
@@ -146,7 +171,7 @@ impl FileOps for BoundSysctlFileOps {
 pub fn bound_sysctl_inode(h: Arc<dyn crate::proc_handler::ProcHandler>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
     let perm = if h.writable() { 0o644 } else { 0o444 };
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, perm), default_inode_ops(), Arc::new(BoundSysctlFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, perm), Arc::new(SysctlInodeOps), Arc::new(BoundSysctlFileOps))
         .private(Arc::new(BoundSysctlInode { h }))
         .build()
 }
