@@ -173,3 +173,25 @@ Full sweep of `systemd-udevd` / `(udev-worker)` output from a live-gnome boot th
 - **Capture-first**: for 1.1 / 3.1 / 3.4, add a cargo `debug-*` feature gate that logs the offending syscall + errno before proposing a fix; keep the probe in-tree permanently (per [[keep-gated-debug-instrumentation]]).
 - **No overlapping agents**: one item = one lane; claim before starting (per [[no-overlapping-agents]]).
 - **Build the subsystem** for infra gaps (namespaces, PR_SET_MM, PSI) rather than stubbing to a floor, unless Linux itself diverges (per [[build-missing-subsystems-for-100]]).
+
+---
+
+## Boot-broken sweep (2026-07-05) — non-fatal signals that mean "shit is broken"
+
+Harvested from a full live-gnome boot (post PAM/XDG/cgroup fixes, reaches gnome-shell launch). These are warnings/skips systemd emits that are NOT hard ERRORs but indicate broken subsystems. Fix-list, highest-value first:
+
+| # | Signal (verbatim) | Root cause / lane | Priority |
+|---|---|---|---|
+| S1 | `Device node /dev/input/event0` / `event1` / `/dev/dri/card0` / `/dev/fb0` / `/dev/autofs` **is missing, skipping handling** | Char-device devtmpfs nodes not present when udev processes the ADD uevent (same class as the `/dev/vda` fix, but char). Gates INPUT (keyboard/mouse) + GPU node (card0) → **blocks gnome**. Likely a devtmpfs create-timing or char-node publication gap in drv/devtmpfs (check fleet-overlap: virtio-input/drm). | 🔴 HIGH — gates input+graphics+gnome |
+| S2 | `PrivateNetwork=yes … kernel does not support network namespace, proceeding without` (×5) → **accounts-daemon FAILS** | `unshare/clone(CLONE_NEWNET)` for a service sandbox not fully working; systemd detects "unsupported". (1.2 net-ns) | 🟠 causes unit failures |
+| S3 | `ProtectHostname=yes … kernel does not support UTS namespaces, ignoring` (×3) | `CLONE_NEWUTS` service-sandbox setup fails detection. (1.2 UTS) | 🟠 |
+| S4 | `Unable to get network namespace of udev netlink socket` (×16) | udev can't read netns of its NETLINK_KOBJECT_UEVENT socket (SO_NETNS_COOKIE / /proc ns link). (udev U4) | 🟡 |
+| S5 | sysctl `net/ipv4/conf/default/{accept_source_route,promote_secondaries}` — "No such file"; `/sys/class/tty/tty0/active` missing | Missing procfs sysctl leaves + sysfs tty `active` attribute. (3.3 remainder) | 🟡 |
+| S6 | `Received too short user lookup message` (×4) | userdb short-read (3.5, still open). | 🟡 |
+| S7 | `Error opening /dev/null: No such device or address` | /dev/null intermittent ENXIO (3.4). | 🟡 |
+| S8 | upowerd `g_unix_fd_list assertion failed` (logind Inhibit reply empty fd list) | AF_UNIX SOCK_STREAM SCM_RIGHTS fd desync. B541 attempted it but deadlocked (reverted #2606) — needs a correct re-fix (parked-reader wakeup). | 🟡 |
+| S9 | `path_id` ENOENT (×2) | udev path_id sysfs `/sys/devices/**` walk hits a missing node (U2). | 🟢 non-fatal |
+| S10 | `LSM hook not enabled, BPF LSM not supported`; `does not support BPF/cgroup firewall` | BPF LSM + cgroup/BPF firewall not implemented. | 🟢 |
+| — | `/dev/kvm` missing; libvirt read-only sockets | EXPECTED (nested virt / libvirt) — leave. | WONTFIX |
+
+**Next:** fan out on S1 (device nodes — gates gnome), S2/S3 (namespaces — accounts-daemon), S4/S5 (udev netns + sysctl/sysfs surfaces). Then re-fix S8 (SCM_RIGHTS, correctly), S6/S7. THEN gnome graphics (card0 GL/llvmpipe).
