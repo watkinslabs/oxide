@@ -1,12 +1,19 @@
 # Driver progress
 
-Date: 2026-07-05
+Date: 2026-07-06
 
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B515-nvme-ahci-bar-devres-proof VERIFIED. Next row not
-claimed until B515 is committed, pushed, merged, and fresh `main` is synced.
+Current marker: none; B516-virtio-child-session-backend-proof VERIFIED. Next
+row not claimed until B516 is committed, pushed, merged, and fresh `main` is
+synced.
+
+## B516 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B516-virtio-child-session-backend-proof | VERIFIED | Fresh `main` at merge commit `6feebf65` after B515 PR #2610 merge and branch cleanup. `metadata/index.md` advanced B 516 -> 517. Source audit proves `VirtioChildSession` stores a concrete `virtio_drv::VirtioPciTransport`, constructs it in `begin`, calls `transport.probe_child` for acquisition, calls `self.transport.publish` for successful handoff, and unpublishes through `VirtioPciTransport.unpublish_key`; child drivers receive only `dyn virtio::VirtioChildTransportSession`, and source search finds no child crate imports of pci-boot transport internals. Checks pass: focused `cargo test -q -p pci-boot -p virtio -- --nocapture --test-threads=1` with shared virtio 44/44 and pci-boot compile-only 0 tests; broad hosted virtio child driver gate with child suites 20/20, 36/36, 36/36, 16/16, 8/8, 11/11, 9/9 plus shared virtio 44/44; line caps (`virtio_bus.rs` 145, `virtio_child.rs` 398, `virtio_drv/driver.rs` 112, `virtio_drv/probe.rs` 178, `virtio_drv/probe_state.rs` 298, `virtio/resources/child.rs` 377); `git diff --check`; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 30s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 37s. |
 
 ## B515 Current
 
