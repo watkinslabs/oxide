@@ -5,14 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B557-nvme-model-probe-proof is verified locally from fresh
-`main` at B556 PR #2648 merge commit `aafb36c2`; PR/merge pending.
+Current marker: B558-ahci-model-probe-proof is claimed from fresh `main` at
+B557 PR #2649 merge commit `80d2d358`.
+
+## B558 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B558-ahci-model-probe-proof | CLAIMED | Fresh `main` at B557 PR #2649 merge commit `80d2d358`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 13s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 558 -> 559. Next gate: audit AHCI PCI model driver registration/probe path, strengthen proof if needed, then run hosted storage/PCI gates plus x86_64/aarch64 smokes. |
 
 ## B557 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B557-nvme-model-probe-proof | VERIFIED LOCAL | Fresh `main` at B556 PR #2648 merge commit `aafb36c2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 557 -> 558. Source audit proves `pci-boot::register_pci_model_drivers()` registers `drv_nvme::NVME_DRIVER`, PCI enumeration publishes each PCI function through `publish_pci_model_device()` / `drv::try_device_add()` with BAR resources, driver-core initial attach routes through `attach_device_to_registered_drivers()` / `bind_inner()` and calls `driver.probe(dev)`, and `NvmeDriver::probe()` matches only `pci` devices with `NVME_CLASS24`, parses the model address, enables PCI MEM/BUS_MASTER, maps BAR0 with named page masks, and calls `drv-nvme` controller bring-up from the probe path. Negative search finds no direct boot-time `drv_nvme::init`, `nvme_probe`, or `init_nvme` bypass; only `NVME_DRIVER` definition and pci-boot registration remain. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 417, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
+| B557-nvme-model-probe-proof | VERIFIED MERGED | Fresh `main` at B556 PR #2648 merge commit `aafb36c2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 557 -> 558. Source audit proves `pci-boot::register_pci_model_drivers()` registers `drv_nvme::NVME_DRIVER`, PCI enumeration publishes each PCI function through `publish_pci_model_device()` / `drv::try_device_add()` with BAR resources, driver-core initial attach routes through `attach_device_to_registered_drivers()` / `bind_inner()` and calls `driver.probe(dev)`, and `NvmeDriver::probe()` matches only `pci` devices with `NVME_CLASS24`, parses the model address, enables PCI MEM/BUS_MASTER, maps BAR0 with named page masks, and calls `drv-nvme` controller bring-up from the probe path. Negative search finds no direct boot-time `drv_nvme::init`, `nvme_probe`, or `init_nvme` bypass; only `NVME_DRIVER` definition and pci-boot registration remain. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 417, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s; PR #2649 merged as `80d2d358`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 13s and aarch64 `oxide login:` in 16s. |
 
 ## B556 Current
 
