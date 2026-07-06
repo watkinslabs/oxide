@@ -5,15 +5,20 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B561-nvme-remove-quiesce-frames-proof is verified locally from
-fresh `main` at B560 PR #2652 merge commit `42c6a9c2`; next gate is PR merge
-and post-merge fresh-main smokes.
+Current marker: B562-ahci-remove-quiesce-frames-proof is claimed from fresh
+`main` at B561 PR #2653 merge commit `5f558af2`.
+
+## B562 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B562-ahci-remove-quiesce-frames-proof | CLAIMED | Fresh `main` at B561 PR #2653 merge commit `5f558af2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 562 -> 563. Next gate: audit AHCI remove path for disk unregister, hardware quiesce, and frame return, strengthen proof if needed, then run hosted storage/PCI gates plus x86_64/aarch64 smokes. |
 
 ## B561 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B561-nvme-remove-quiesce-frames-proof | VERIFIED LOCAL | Fresh `main` at B560 PR #2652 merge commit `42c6a9c2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s and aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 561 -> 562. NVMe remove unregisters disks, quiesces hardware, and returns queue/bounce frames: source audit proves `NvmeDriver::remove()` parses the PCI BDF and routes through `lifecycle::run_remove_cleanup()`, which calls `imp::remove()` before PCI command disable. `imp::remove()` removes the exact `NvmeRecord` by typed `pci::Bdf`, calls `block::registry::unregister(&rec.name)` so `/sys/block`, `/dev/<disk>`, dev_t lookup, diskstats, and remove uevents are withdrawn, then calls `NvmeBlk::remove()`. `NvmeBlk::remove()` marks existing `Arc` holders removed so later I/O returns EIO and calls `Nvme::shutdown_and_free()`, which disables the controller, waits for RDY clear, frees admin SQ/CQ, I/O SQ/CQ, and PRP bounce frames through PMM, zeros their PAs, clears BAR VA, and unmaps BAR0. Shutdown uses the same controller/free path without unregistering publication for terminal poweroff. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 413, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `block/registry.rs` 426, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
+| B561-nvme-remove-quiesce-frames-proof | VERIFIED MERGED | Fresh `main` at B560 PR #2652 merge commit `42c6a9c2`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 28s and aarch64 reached `oxide login:` in 34s. `metadata/index.md` advanced B 561 -> 562. NVMe remove unregisters disks, quiesces hardware, and returns queue/bounce frames: source audit proves `NvmeDriver::remove()` parses the PCI BDF and routes through `lifecycle::run_remove_cleanup()`, which calls `imp::remove()` before PCI command disable. `imp::remove()` removes the exact `NvmeRecord` by typed `pci::Bdf`, calls `block::registry::unregister(&rec.name)` so `/sys/block`, `/dev/<disk>`, dev_t lookup, diskstats, and remove uevents are withdrawn, then calls `NvmeBlk::remove()`. `NvmeBlk::remove()` marks existing `Arc` holders removed so later I/O returns EIO and calls `Nvme::shutdown_and_free()`, which disables the controller, waits for RDY clear, frees admin SQ/CQ, I/O SQ/CQ, and PRP bounce frames through PMM, zeros their PAs, clears BAR VA, and unmaps BAR0. Shutdown uses the same controller/free path without unregistering publication for terminal poweroff. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 413, `lifecycle.rs` 67, `queue.rs` 462, `regs.rs` 180, `block/registry.rs` 426, `pci-boot/lib.rs` 300, `drv/model.rs` 481); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s; PR #2653 merged as `5f558af2`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B560 Current
 
