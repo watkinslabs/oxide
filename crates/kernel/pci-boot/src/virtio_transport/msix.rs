@@ -48,6 +48,7 @@ pub(crate) struct MsixBinding {
 struct TransportRecord {
     device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
+    command_orig: u16,
     mappings: TransportMappings,
     vring_frames: Vec<u64>,
     msix: Vec<MsixBinding>,
@@ -174,6 +175,7 @@ pub(crate) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBindin
 pub(crate) fn publish_transport_record(
     device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
+    command_orig: u16,
     mappings: TransportMappings,
     vring_frames: Vec<u64>,
     msix: Vec<MsixBinding>,
@@ -181,6 +183,7 @@ pub(crate) fn publish_transport_record(
     let rec = TransportRecord {
         device_key,
         bdf,
+        command_orig,
         mappings,
         vring_frames,
         msix,
@@ -222,6 +225,7 @@ pub(crate) fn unpublish_transport_record_by_bdf(bdf: u32) {
 fn release_transport_record(rec: TransportRecord) {
     let TransportRecord {
         bdf,
+        command_orig,
         mut mappings,
         vring_frames,
         msix,
@@ -230,7 +234,7 @@ fn release_transport_record(rec: TransportRecord) {
     let bdf = bdf_from_word(bdf);
     let mut msix = msix;
     release_msix_bindings(bdf, &mut msix);
-    disable_pci_command(bdf);
+    restore_pci_command(bdf, command_orig);
     mappings.unmap_all();
     for frame in vring_frames.iter().copied() {
         debug_assert!(frame != 0);
@@ -258,24 +262,30 @@ pub(crate) fn release_failed_probe_frames(frames: &[u64]) {
     }
 }
 
-pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
+pub(crate) fn restore_pci_command(bdf: pci::Bdf, command_orig: u16) {
     #[cfg(target_arch = "x86_64")]
     {
         let r = hal_x86_64::pci::LegacyPci;
-        let cur = pci::read_command(&r, bdf);
-        let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
-        if restored != cur {
-            pci::write_command(&r, bdf, restored);
-        }
+        let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
     }
     #[cfg(target_arch = "aarch64")]
     {
         if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-            let cur = pci::read_command(&r, bdf);
-            let restored = cur & !(pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER);
-            if restored != cur {
-                pci::write_command(&r, bdf, restored);
-            }
+            let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
+        }
+    }
+}
+
+pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let r = hal_x86_64::pci::LegacyPci;
+        let _ = pci::disable_mem_bus_master(&r, bdf);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+            let _ = pci::disable_mem_bus_master(&r, bdf);
         }
     }
 }

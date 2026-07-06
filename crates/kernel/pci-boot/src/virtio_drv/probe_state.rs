@@ -1,7 +1,7 @@
 use super::address::{bdf_from_word, bdf_word};
 use super::runtime::VirtioPciRuntime;
 use super::{
-    bind_msix_vector, disable_pci_command, kick_queue_notify, unmask_msix_bindings, MsixBinding,
+    bind_msix_vector, kick_queue_notify, restore_pci_command, unmask_msix_bindings, MsixBinding,
     NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
     VIRTIO_PCI_PAGE_BASE_MASK,
 };
@@ -31,13 +31,14 @@ impl VirtioProbeState {
         bdf: pci::Bdf,
         vcaps: &virtio::pci::heapless_v::VCapVec,
         bars: &[pci::Bar; 6],
+        command_orig: u16,
     ) -> Option<Self> {
         let mut mappings = TransportMappings::default();
         let Some(common) = vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG) else {
-            return abandon_probe_transport(bdf, &mut mappings);
+            return abandon_probe_transport(bdf, command_orig, &mut mappings);
         };
         let Some(cfg_va) = map_cap_window(&mut mappings, common, bars) else {
-            return abandon_probe_transport(bdf, &mut mappings);
+            return abandon_probe_transport(bdf, command_orig, &mut mappings);
         };
         let device_cfg_va = vcaps
             .find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG)
@@ -262,11 +263,13 @@ impl VirtioProbeState {
     pub(super) fn finish_devres(
         self,
         result: &virtio::VirtioTransportProbeResult,
+        command_orig: u16,
     ) -> VirtioProbeDevres {
         let owned_frames = virtio::VirtioProbeOwnedFrames::from_probe_result(result);
         VirtioProbeDevres::new(
             bdf_from_word(self.bdf_word),
             self.bdf_word,
+            command_orig,
             self.cfg_va,
             self.mappings,
             self.msix,
@@ -275,8 +278,12 @@ impl VirtioProbeState {
     }
 }
 
-fn abandon_probe_transport<T>(bdf: pci::Bdf, mappings: &mut TransportMappings) -> Option<T> {
-    disable_pci_command(bdf);
+fn abandon_probe_transport<T>(
+    bdf: pci::Bdf,
+    command_orig: u16,
+    mappings: &mut TransportMappings,
+) -> Option<T> {
+    restore_pci_command(bdf, command_orig);
     mappings.unmap_all();
     None
 }
