@@ -82,6 +82,25 @@ const NS_INO_MARKER: Ino = 0x7200_0000;
 /// distinct kinds/ids never collide. Also the numeric shown by
 /// `readlink` ("net:[<ino>]"). # C: O(1)
 fn ns_ino(kind: NsKind, id: u64) -> Ino {
+    // The INITIAL namespaces (id 0) must report Linux's reserved nsfs inode
+    // numbers (include/linux/proc_ns.h `PROC_*_INIT_INO`). systemd's
+    // `namespace_is_init()` — the decisive test in `detect_container()` — stats
+    // /proc/1/ns/{pid,cgroup,…} and compares `st_ino` to these EXACT constants
+    // to decide host-vs-container. A synthetic inode makes it conclude "running
+    // in a pid namespace" and report the VM as `container-other`, which skips
+    // every ConditionVirtualization=!container unit (plymouth, …) and breaks the
+    // gdm graphical greeter. net/mnt have no reserved init ino in Linux (they get
+    // dynamic nsfs inodes there too), so they keep the synthetic scheme.
+    if id == 0 {
+        match kind {
+            NsKind::Ipc    => return 0xEFFF_FFFF,
+            NsKind::Uts    => return 0xEFFF_FFFE,
+            NsKind::User   => return 0xEFFF_FFFD,
+            NsKind::Pid    => return 0xEFFF_FFFC,
+            NsKind::Cgroup => return 0xEFFF_FFFB,
+            NsKind::Mnt | NsKind::Net => {}
+        }
+    }
     // low nibble = kind (< 7), id shifted clear of it; marker in the high word.
     NS_INO_MARKER | ((id & 0x00FF_FFFF) << 8) | (kind as Ino)
 }
