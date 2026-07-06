@@ -158,10 +158,28 @@ const SYSCTL_TREE: &[Node] = &[
     ]),
 ];
 
-/// The Linux `net/ipv4/conf/<dev>/*` per-interface knob set. Each `<dev>`
-/// (all/default/eth0) gets the same writable leaves. # C: n/a
-const IPV4_CONF_LEAVES: &[&str] =
-    &["rp_filter", "arp_ignore", "arp_announce", "accept_redirects", "send_redirects", "forwarding"];
+/// The Linux `net/ipv4/conf/<dev>/*` per-interface knob set (net/ipv4/
+/// devinet.c `devinet_conf_ctl_table`). Each `<dev>` (all/default/lo/eth0)
+/// gets the same writable leaves. # C: n/a
+const IPV4_CONF_LEAVES: &[&str] = &[
+    "accept_local", "accept_redirects", "accept_source_route",
+    "arp_accept", "arp_announce", "arp_filter", "arp_ignore", "arp_notify",
+    "bootp_relay", "disable_policy", "disable_xfrm", "drop_gratuitous_arp",
+    "drop_unicast_in_l2_multicast", "force_igmp_version", "forwarding",
+    "ignore_routes_with_linkdown", "log_martians", "promote_secondaries",
+    "proxy_arp", "proxy_arp_pvlan", "route_localnet", "rp_filter",
+    "secure_redirects", "send_redirects", "shared_media", "src_valid_mark",
+];
+
+/// Linux `ipv4_devconf` compiled defaults: the knobs seeded to `1`; every
+/// other `net/ipv4/conf/<dev>/*` leaf defaults to `0`. # C: n/a
+const IPV4_CONF_DEFAULT_ONE: &[&str] =
+    &["accept_redirects", "secure_redirects", "send_redirects", "shared_media"];
+
+/// The interfaces that get a `net/ipv4/conf/<dev>` subtree at boot: the two
+/// pseudo-devices Linux always exposes (`all`, `default`) plus the loopback
+/// and the first ethernet device. # C: n/a
+const IPV4_CONF_DEVS: &[&str] = &["all", "default", "lo", "eth0"];
 
 /// Build the leaf inode for a ctl_table handler class. Integer / long / bool
 /// leaves get a freshly `Box::leak`ed live cell seeded with the default; the
@@ -222,14 +240,12 @@ pub fn register_sysctl_table(boot_id: &'static [u8], random_uuid: &'static [u8])
     );
     // The nested ctl_table tree (live-bound leaves).
     register_tree("/proc/sys", SYSCTL_TREE);
-    // net/ipv4/conf/<dev>/* writable per-iface knobs (all/default/eth0).
-    for dev in ["all", "default", "eth0"] {
+    // net/ipv4/conf/<dev>/* writable per-iface knobs (all/default/lo/eth0).
+    for dev in IPV4_CONF_DEVS.iter().copied() {
         for leaf in IPV4_CONF_LEAVES.iter().copied() {
             let path = alloc::format!("/proc/sys/net/ipv4/conf/{dev}/{leaf}");
-            let default: &[u8] = match leaf {
-                "accept_redirects" | "send_redirects" => b"1\n",
-                _ => b"0\n",
-            };
+            let default: &[u8] =
+                if IPV4_CONF_DEFAULT_ONE.contains(&leaf) { b"1\n" } else { b"0\n" };
             crate::reg::register(&path, SysctlInode::new(default) as InodeRef);
         }
     }

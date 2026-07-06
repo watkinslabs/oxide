@@ -25,6 +25,13 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
     };
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     let mut total: i64 = 0;
+    // SCM_RIGHTS fds delivered by `read_stream`, bound to the exact bytes
+    // of the write that carried them. `read_stream` stops a read at the
+    // next fd boundary, so a burst never rides bytes of an earlier
+    // fd-less D-Bus message. Once any fds ride a read we return this
+    // recvmsg (Linux returns at the ancillary-data boundary). read_stream
+    // never re-queues or parks, so this yield loop always progresses.
+    let mut pending_fds: Vec<Arc<File>> = Vec::new();
     'iovloop: for i in 0..iovlen {
         let iov_i = iov + i * 16;
         if iov_i + 16 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
@@ -38,17 +45,25 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
         if len == 0 { continue; }
         if base + len > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         loop {
-            let chunk = {
+            let (chunk, fds) = {
                 let g = sock.kind.lock();
-                if let SockKind::Unix(pair, end) = &*g { pair.read(*end, len as usize) }
+                if let SockKind::Unix(pair, end) = &*g { pair.read_stream(*end, len as usize) }
                 else { return -(Errno::Einval.as_i32() as i64); }
             };
+            if !fds.is_empty() { pending_fds.extend(fds); }
             if !chunk.is_empty() {
                 unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), base as *mut u8, chunk.len()); }
                 total += chunk.len() as i64;
+                // Stop at the ancillary boundary: fds ride the chunk we
+                // just delivered, so return rather than coalescing the
+                // next (differently-tagged) message onto this recvmsg.
+                if !pending_fds.is_empty() { break 'iovloop; }
                 if (chunk.len() as u64) < len { break 'iovloop; }
                 continue 'iovloop;
             }
+            // Empty payload but fds present (fd-only message): deliver the
+            // fds now — don't loop waiting for bytes that aren't coming.
+            if !pending_fds.is_empty() { break 'iovloop; }
             if total > 0 { break 'iovloop; }
             let eof = {
                 let g = sock.kind.lock();
@@ -59,13 +74,6 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
             unsafe { sched::live::tick_yield(); }
         }
     }
-    let pending_fds: Vec<Arc<File>> = {
-        let g = sock.kind.lock();
-        match &*g {
-            SockKind::Unix(pair, end) => pair.pop_fds(*end),
-            _ => Vec::new(),
-        }
-    };
     let mut ctrl_written: u64 = 0;
     let mut ctrunc = false;
     if !pending_fds.is_empty() {

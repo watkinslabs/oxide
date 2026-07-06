@@ -100,6 +100,142 @@ fn msgpair_bidirectional() {
     assert_eq!(p.recv(UnixEnd::A, 64).unwrap(), b"world");
 }
 
+// --- SCM_RIGHTS fd/byte-boundary binding on SOCK_STREAM (S8) ---
+// Regression: AF_UNIX SOCK_STREAM held SCM_RIGHTS fds in a FIFO fully
+// decoupled from byte position, so a recvmsg popped the front burst
+// regardless of which bytes it read. Through the dbus-broker relay this
+// desynced fds from their owning D-Bus message: logind's CreateSession /
+// Inhibit reply fifo fd got attached to an earlier fd-less message and
+// dropped (upowerd saw `g_unix_fd_list_get_length: G_IS_UNIX_FD_LIST`).
+// Fix ties each burst to the stream offset of its carrying write; a read
+// never crosses an fd boundary (Linux `unix_stream_read_generic`).
+//
+// The PRIOR attempt (B541, reverted) deadlocked the boot: its `read()`
+// (the blocking-read/park path) could return EMPTY while data/fds were
+// buffered (a re-queue branch + capping), so a parked reader never woke.
+// This fix keeps `read()` byte-identical to the original (drains all
+// bytes, drops fds, never re-queues, never returns empty when bytes
+// exist) and routes boundary logic through `read_stream`, used ONLY by
+// recvmsg's busy-yield loop which never parks.
+
+struct NullOps;
+impl vfs::FileOps for NullOps {
+    fn read(&self, _i: &vfs::inode::Inode, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+    fn write(&self, _i: &vfs::inode::Inode, _o: u64, b: &[u8]) -> vfs::KResult<usize> { Ok(b.len()) }
+}
+
+fn anon_file() -> alloc::sync::Arc<vfs::File> {
+    let ino: vfs::InodeRef = vfs::InodeBuilder::new(
+        0xF00D,
+        vfs::mk_mode(vfs::FileType::Socket, 0o600),
+        vfs::default_inode_ops(),
+        alloc::sync::Arc::new(NullOps),
+    ).build();
+    let d = vfs::Dentry::new(None, "s".into(), alloc::sync::Arc::clone(&ino));
+    vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDWR, 0, vfs::Cred::root())
+}
+
+#[test]
+fn stream_fds_bind_to_their_write_not_an_earlier_one() {
+    let p = UnixPair::new();
+    let fd = anon_file();
+    // msg1 (no fds) then msg2 (one fd), coalesced in the ring.
+    p.write(UnixEnd::A, b"AAAA");
+    p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd)]);
+
+    // First recvmsg reads msg1's bytes: must NOT carry the fd, and must
+    // stop at the fd boundary (only "AAAA", even though 64 was asked).
+    let (b1, f1) = p.read_stream(UnixEnd::B, 64);
+    assert_eq!(&b1[..], b"AAAA", "read capped at the fd boundary");
+    assert!(f1.is_empty(), "fd must not ride the earlier fd-less message");
+
+    // Second recvmsg reaches the boundary: delivers msg2's bytes + the fd.
+    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    assert_eq!(&b2[..], b"BBBB");
+    assert_eq!(f2.len(), 1, "fd delivered with its own message");
+    assert!(alloc::sync::Arc::ptr_eq(&f2[0], &fd));
+
+    // No fds left over.
+    let (_b3, f3) = p.read_stream(UnixEnd::B, 64);
+    assert!(f3.is_empty());
+}
+
+#[test]
+fn stream_fd_on_first_byte_delivers_immediately() {
+    let p = UnixPair::new();
+    let fd = anon_file();
+    p.write_with_fds(UnixEnd::A, b"HELLO", alloc::vec![alloc::sync::Arc::clone(&fd)]);
+    let (b, f) = p.read_stream(UnixEnd::B, 64);
+    assert_eq!(&b[..], b"HELLO");
+    assert_eq!(f.len(), 1);
+    assert!(alloc::sync::Arc::ptr_eq(&f[0], &fd));
+}
+
+#[test]
+fn stream_partial_read_delivers_fd_once_with_first_chunk() {
+    let p = UnixPair::new();
+    let fd = anon_file();
+    p.write_with_fds(UnixEnd::A, b"XYZW", alloc::vec![alloc::sync::Arc::clone(&fd)]);
+    let (b1, f1) = p.read_stream(UnixEnd::B, 2); // partial
+    assert_eq!(&b1[..], b"XY");
+    assert_eq!(f1.len(), 1, "fd rides the first byte of its write");
+    let (b2, f2) = p.read_stream(UnixEnd::B, 2);
+    assert_eq!(&b2[..], b"ZW");
+    assert!(f2.is_empty(), "fd not re-delivered on the rest of the same write");
+}
+
+#[test]
+fn stream_fd_only_message_delivers_without_looping() {
+    // An empty-payload message that carries only fds must hand the fds to
+    // read_stream immediately (empty bytes, non-empty fds) so recvmsg's
+    // yield loop delivers them and does NOT spin/park waiting for bytes.
+    let p = UnixPair::new();
+    let fd = anon_file();
+    p.write_with_fds(UnixEnd::A, b"", alloc::vec![alloc::sync::Arc::clone(&fd)]);
+    let (b, f) = p.read_stream(UnixEnd::B, 64);
+    assert!(b.is_empty());
+    assert_eq!(f.len(), 1, "fd-only message delivered, not re-queued");
+    assert!(alloc::sync::Arc::ptr_eq(&f[0], &fd));
+}
+
+#[test]
+fn stream_read_with_fds_never_returns_empty_when_bytes_present() {
+    // DEADLOCK REGRESSION GUARD (the B541 boot hang): the blocking-read /
+    // park path calls `read()`. If `read()` ever returns EMPTY while the
+    // ring has buffered bytes (as B541's read() could, by re-queuing fds
+    // or capping to 0), the parked reader sleeps forever after the
+    // writer's wake already fired = lost wakeup / CPU stall. `read()` must
+    // ALWAYS drain the available bytes and never re-queue.
+    let p = UnixPair::new();
+    let fd = anon_file();
+    // fd rides the FIRST byte — the exact case B541 stalled on.
+    p.write_with_fds(UnixEnd::A, b"PAYLOAD", alloc::vec![alloc::sync::Arc::clone(&fd)]);
+    let got = p.read(UnixEnd::B, 64);
+    assert_eq!(&got[..], b"PAYLOAD", "read() must return bytes, never park with data buffered");
+    // fd was dropped (no cmsg buffer on a plain read) and NOT left dangling
+    // for a stale later delivery.
+    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    assert!(b2.is_empty());
+    assert!(f2.is_empty(), "read() dropped the fd; nothing stale re-delivered");
+}
+
+#[test]
+fn stream_read_drops_only_passed_fds_keeps_future_ones() {
+    // read() past msg1 must drop msg1's fd but keep msg2's fd for a later
+    // recvmsg (the fd stays bound to its own bytes, never desynced).
+    let p = UnixPair::new();
+    let fd1 = anon_file();
+    let fd2 = anon_file();
+    p.write_with_fds(UnixEnd::A, b"AAAA", alloc::vec![alloc::sync::Arc::clone(&fd1)]);
+    p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd2)]);
+    // Plain read drains everything up to max, dropping fd1 (rode "AAAA")
+    // AND fd2 (rode "BBBB") since both are now behind the cursor.
+    let got = p.read(UnixEnd::B, 8);
+    assert_eq!(&got[..], b"AAAABBBB");
+    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    assert!(b2.is_empty() && f2.is_empty(), "all fds consumed/dropped, nothing desynced");
+}
+
 #[test]
 fn dgram_message_preserves_sender_creds() {
     let q = UnixDgramQueue::new();
