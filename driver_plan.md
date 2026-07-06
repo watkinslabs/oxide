@@ -2,10 +2,12 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B558-ahci-model-probe-proof claimed
+ACTIVE NOW: B562-ahci-remove-quiesce-frames-proof claimed
 
-Current active item: AHCI binds through model probe. Last verified branch:
-`B557-nvme-model-probe-proof` merged as PR #2649 and passed fresh-main x86_64/aarch64 smokes.
+Current active item: AHCI remove unregisters disks, quiesces hardware, and
+returns queue/bounce frames. Last verified branch:
+`B561-nvme-remove-quiesce-frames-proof` merged as PR #2653 and passed
+fresh-main x86_64/aarch64 smokes.
 
 Next gate: audit AHCI PCI model driver registration/probe path, strengthen proof if needed, run hosted storage/PCI gates plus x86_64/aarch64 smokes, then PR/merge from fresh main.
 
