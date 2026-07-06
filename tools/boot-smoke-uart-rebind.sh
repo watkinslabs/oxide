@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# B585 platform UART live rebind gate. Boots the active per-arch serial driver,
-# then proves sysfs unbind/rebind restores platform/serial0 and ttyS0 output.
+# B585/B590 platform UART gate. Boots the active per-arch serial driver, proves
+# sysfs unbind/rebind restores platform/serial0, and checks singleton shape.
 set -euo pipefail
 
 usage() {
@@ -70,13 +70,13 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         exit 1
     fi
     if grep -aq 'driver_path_smoke: PASS - uart-rebind' "$LOG" 2>/dev/null; then
-        grep -aE 'uart_rebind_probe:|b585_|driver_path_smoke:' "$LOG" | tail -100
+        grep -aE 'uart_rebind_probe:|b585_|b590_|driver_path_smoke:' "$LOG" | tail -120
         echo "uart-rebind-smoke: PASS"
         exit 0
     fi
-    if grep -aqE 'uart_rebind_probe: FAIL|b585_.*: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
+    if grep -aqE 'uart_rebind_probe: FAIL|b585_.*: FAIL|b590_.*: FAIL|driver-path-smoke.service: Failed' "$LOG" 2>/dev/null; then
         echo "uart-rebind-smoke: FAIL - probe reported failure" >&2
-        grep -aE 'uart_rebind_probe:|b585_|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
+        grep -aE 'uart_rebind_probe:|b585_|b590_|driver_path_smoke:|driver-path-smoke.service' "$LOG" >&2
         exit 1
     fi
     sleep 2

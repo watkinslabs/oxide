@@ -2,7 +2,11 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B589-sys-bus-driver-bind-proof merged; next branch is B590 from fresh main
+ACTIVE NOW: B590-uart-ps2-singleton-model-proof verified and committed, pending push/PR/merge
+
+Current active item: B590-uart-ps2-singleton-model-proof. UART and PS/2 model
+drivers are intentionally singleton hardware paths, not general multi-device
+serial/input infrastructure. x86_64 and aarch64 focused live proofs now pass.
 
 Last verified branch: B589-sys-bus-driver-bind-proof. Audited
 `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape on fresh `main`
@@ -15,8 +19,8 @@ passed, PR #2702 merged at `2b5792c6`, and fresh-main post-merge
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: claim B590 from fresh `main`, update the active marker before code
-work, prove the next NOT DONE item on x86_64 and aarch64, then PR/merge.
+Next gate: push B590 proof, PR/merge, refresh main, run fresh-main smoke, then
+record the D138 ledger merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -365,7 +369,7 @@ Status legend:
 | VERIFIED | B418-virtio-gpu-live-multigpu-proof | Added opt-in two-GPU QEMU mode and `/bin/virtio_gpu_multidev_probe`; source audit plus hosted `drv-virtio-gpu/drm/fbdev/virtio/pci-boot` tests pass. x86_64 `/tmp/b418-x86-virtio-gpu-multidev.log` and aarch64 `/tmp/b418-arm-virtio-gpu-multidev.log` prove two DRM cards, sysfs unbind/rebind, keyed `hot_remove`, and input/sound/block/net tail. |
 | VERIFIED | B419-virtio-vsock-live-multiendpoint-proof | Virtio-vsock primary compatibility route works with multiple live endpoints: direct `/init` proof installs cid=3/cid=4 and completes host round-trip on x86_64 `/tmp/b419-x86-vsock-multiendpoint-fastinit.log` and aarch64 `/tmp/b419-arm-vsock-multiendpoint-fastinit-3.log`; hosted `net`, `drv-virtio-vsock`, and `pci-boot` tests pass. |
 | VERIFIED | B420-virtio-snd-event-control-proof | Virtio-snd live multi-card proof now covers control/event UAPI shape without fabricated mixer controls: `controlC0`/`controlC1` prove card info, PCM discovery/info for playback+capture, empty control element list, missing element `ENOENT`, and event subscription before and after live rebind. Direct musl builds pass for x86_64/aarch64; hosted `cargo test -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` passes; fast live logs `/tmp/b420-x86-virtio-snd-event-control.log` and `/tmp/b420-arm-virtio-snd-event-control.log` pass. |
-| NOT DONE | TBD | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. |
+| VERIFIED | B590-uart-ps2-singleton-model-proof | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. Source audit proves `kmain::runtime` publishes only `platform/serial0` on both arches and `platform/i8042` only on x86_64; `drv-serial` registers exactly the per-arch UART model driver (`8250-serial` on x86_64, `pl011-serial` on aarch64); both UART drivers match only `platform/serial0`; `drv-ps2-keyboard` matches only `platform/i8042` and is compiled/registered only for x86_64 kernel builds. B590 extends the existing UART and PS/2 focused probes with explicit singleton markers: UART enumerates `/sys/bus/platform/devices` and requires only `serial0` plus exactly one registered UART driver directory; PS/2 requires exactly one `i8042` plus `i8042-kbd` on x86_64 and zero `i8042*` platform/driver state on aarch64. It also fixes rootfs cache mode/hash coverage for `OXIDE_UART_REBIND_SMOKE` and `OXIDE_PS2_REBIND_SMOKE`; the first PS/2 x86 attempt exposed the stale-cache bug by booting the UART probe, and the rerun passed after the cache fix. Checks pass: host `cc -Wall -Wextra -Werror` for both probes; `bash -n tools/boot-smoke-uart-rebind.sh tools/boot-smoke-ps2-rebind.sh`; `cargo check -q -p xtask`; `git diff --check`; `cargo test -q -p drv -p sysfs -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -p drv-ps2-keyboard -p drv-virtio-input -- --nocapture --test-threads=1` with drv 31/31, PS/2 6/6, virtio-input 38/38, and sysfs 35/35; line caps (`uart_rebind_probe.c` 249, `ps2_rebind_probe.c` 269, both wrappers 87, `rootfs_cache.rs` 297). Focused live proofs pass: x86_64 UART `/tmp/b590-x86-uart-rebind.log` shows `b590_uart_singleton_device` PASS count=1 and driver `8250-serial`; aarch64 UART `/tmp/b590-arm-uart-rebind.log` shows count=1 and driver `pl011-serial`; x86_64 PS/2 `/tmp/b590-x86-ps2-rebind.log` shows `b590_ps2_singleton_device` PASS count=1 and driver `i8042-kbd`; aarch64 PS/2 `/tmp/b590-arm-ps2-rebind.log` shows `b590_ps2_arm_no_singleton` PASS count=0. Full branch `make smoke SMOKE_TIMEOUT=300` passed with aarch64 reaching `oxide login:` in 28s after x86_64 passed in the same run. Claim made from fresh `main` at D137 ledger merge `8d01273c`; `metadata/index.md` advanced B 590 -> 591 on this branch; proof committed as `f0f4c36e`. Pending push, PR, merge, fresh-main smoke, and D138 ledger. |
 | VERIFIED MERGED | B574-qemu-rebind-certification-audit | QEMU-visible virtio-rng runtime bind/unbind/rebind proof added without touching local `B573-mem-chardev`: opt-in QEMU mode adds a second `virtio-rng-pci`, `/bin/virtio_rng_rebind_probe` verifies two bound virtio-rng children, writable sysfs `bind`/`unbind`, `/dev/hwrng` entropy before unbind, provider promotion after unbind, and restored entropy after rebind. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b574-x86-virtio-rng-rebind.log`, aarch64 `/tmp/b574-arm-virtio-rng-rebind.log`, PR #2668 merged as `1ff61f7d`, and fresh-main post-merge login smokes x86_64 `/tmp/b574-postmerge-x86-login-smoke.log` plus aarch64 `/tmp/b574-postmerge-arm-login-smoke.log`. |
 | NOT DONE | TBD | PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. |
 | SOURCE OK |  | Production model drivers in current source have explicit shutdown callbacks; default shutdown remains test-only. |

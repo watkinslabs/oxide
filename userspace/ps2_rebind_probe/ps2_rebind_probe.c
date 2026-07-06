@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,6 +55,50 @@ static int driver_link_present(void) {
     char path[128];
     driver_path(path, sizeof path, dev);
     return lstat_path(path);
+}
+
+static int starts_with(const char *s, const char *prefix) {
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+static int count_i8042_devices(int *seen_exact) {
+    DIR *d = opendir("/sys/bus/platform/devices");
+    if (!d) {
+        emitf("b590_ps2_singleton_device: FAIL opendir errno=%d\n", errno);
+        return -1;
+    }
+    int count = 0;
+    *seen_exact = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        if (!starts_with(de->d_name, "i8042")) continue;
+        count++;
+        if (strcmp(de->d_name, "i8042") == 0) {
+            *seen_exact = 1;
+        } else {
+            emitf("b590_ps2_singleton_device: FAIL unexpected=%s\n", de->d_name);
+        }
+    }
+    closedir(d);
+    return count;
+}
+
+static int prove_i8042_singleton_x86(void) {
+    int seen_exact = 0;
+    int count = count_i8042_devices(&seen_exact);
+    if (count != 1 || !seen_exact) {
+        emitf("b590_ps2_singleton_device: FAIL count=%d i8042=%d\n",
+              count, seen_exact);
+        return 1;
+    }
+    if (!lstat_path("/sys/bus/platform/drivers/i8042-kbd")) {
+        emitf("b590_ps2_singleton_driver: FAIL missing i8042-kbd\n");
+        return 1;
+    }
+    emitf("b590_ps2_singleton_device: PASS device=i8042 count=%d\n", count);
+    emitf("b590_ps2_singleton_driver: PASS driver=i8042-kbd\n");
+    return 0;
 }
 
 static int writable_attr(const char *leaf, const char *tag) {
@@ -157,7 +202,15 @@ static int prove_unbound_links(int loop) {
     return 0;
 }
 
+#if defined(__aarch64__)
 static int prove_no_i8042_on_arm(void) {
+    int seen_exact = 0;
+    int count = count_i8042_devices(&seen_exact);
+    if (count != 0 || seen_exact) {
+        emitf("b590_ps2_arm_no_singleton: FAIL count=%d i8042=%d\n",
+              count, seen_exact);
+        return 1;
+    }
     if (lstat_path("/sys/devices/platform/i8042")) {
         emitf("b586_arm_no_i8042_device: FAIL device exists\n");
         return 1;
@@ -168,9 +221,11 @@ static int prove_no_i8042_on_arm(void) {
     }
     emitf("b586_arm_no_i8042_device: PASS\n");
     emitf("b586_arm_no_i8042_driver: PASS\n");
+    emitf("b590_ps2_arm_no_singleton: PASS count=%d\n", count);
     emitf("driver_path_smoke: PASS - ps2-rebind\n");
     return 0;
 }
+#endif
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -184,6 +239,7 @@ int main(void) {
         emitf("b586_i8042_device_present: FAIL missing platform device\n");
         return 1;
     }
+    if (prove_i8042_singleton_x86()) return 1;
     if (writable_attr("bind", "b586_bind_attr") ||
         writable_attr("unbind", "b586_unbind_attr") ||
         prove_bound_links(0) ||
