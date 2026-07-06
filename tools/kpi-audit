@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Audit Linux module undefined symbols against Oxide KPI exports."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+
+EXPORT_RE = re.compile(r'\bexport(?:_module)?\(\s*"([^"]+)"')
+NM_UNDEF_RE = re.compile(r"^(?:(?P<addr>[0-9A-Fa-f]+|\s+)\s+)?(?P<kind>[UuWw])\s+(?P<sym>\S+)")
+VERSION_RE = re.compile(r"(@@?|#).*$")
+
+
+@dataclass(frozen=True)
+class Undef:
+    source: str
+    symbol: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class Finding:
+    symbol: str
+    status: str
+    category: str
+    sources: tuple[str, ...]
+    refs: int
+
+
+CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("module", (
+        "module_", "__this_module", "__module_", "cleanup_module", "init_module",
+        "param_", "kernel_param", "__UNIQUE_ID_", "vermagic",
+    )),
+    ("alloc", (
+        "kmalloc", "kzalloc", "kcalloc", "krealloc", "kfree", "vmalloc", "vfree",
+        "alloc_pages", "__get_free_pages", "free_pages", "kstrdup", "kasprintf",
+        "devm_kmalloc", "devm_kzalloc", "devm_kfree",
+    )),
+    ("sync", (
+        "mutex_", "spin_", "_raw_spin", "raw_spin", "down_", "up_", "init_waitqueue",
+        "wait_", "wake_up", "complete", "completion", "atomic", "refcount", "kref",
+        "rcu_", "synchronize_rcu", "lockdep",
+    )),
+    ("time-work", (
+        "jiffies", "HZ", "ktime", "msleep", "usleep", "udelay", "mdelay",
+        "timer_", "hrtimer", "schedule_", "workqueue", "queue_work", "delayed_work",
+        "kthread", "tasklet",
+    )),
+    ("mmio-portio", (
+        "ioremap", "iounmap", "readb", "readw", "readl", "readq", "writeb",
+        "writew", "writel", "writeq", "memcpy_toio", "memcpy_fromio", "inb",
+        "inw", "inl", "outb", "outw", "outl", "mmiowb",
+    )),
+    ("dma", (
+        "dma_", "dmam_", "sg_", "scatterlist", "pci_alloc_consistent",
+        "pci_free_consistent", "pci_map_", "pci_unmap_",
+    )),
+    ("irq", (
+        "request_irq", "free_irq", "enable_irq", "disable_irq", "irq_", "request_threaded_irq",
+        "synchronize_irq", "pci_irq_vector", "pci_alloc_irq_vectors",
+    )),
+    ("device-core", (
+        "device_", "driver_", "bus_", "class_", "dev_", "devm_", "kobject",
+        "kset", "sysfs_", "uevent", "modalias",
+    )),
+    ("pci", (
+        "pci_", "pcim_", "pcii_", "pcie_", "pci_bus", "pci_dev",
+    )),
+    ("char-misc", (
+        "cdev_", "misc_", "register_chrdev", "unregister_chrdev", "alloc_chrdev",
+        "file_operations", "nonseekable_open", "noop_llseek", "simple_read_from_buffer",
+    )),
+    ("firmware", (
+        "request_firmware", "release_firmware", "firmware_request",
+    )),
+    ("netdev", (
+        "netdev", "netif_", "alloc_netdev", "alloc_etherdev", "register_netdev",
+        "unregister_netdev", "skb", "napi_", "eth_", "ether_", "ethtool",
+        "phy_", "mdio_", "of_mdiobus",
+    )),
+    ("block", (
+        "blk_", "bio_", "gendisk", "add_disk", "del_gendisk", "submit_bio",
+        "bdev_", "request_queue",
+    )),
+    ("input", (
+        "input_", "evdev", "serio_", "hid_",
+    )),
+    ("usb", (
+        "usb_", "urb_", "hid_register", "hid_unregister",
+    )),
+    ("platform-acpi-dt", (
+        "platform_", "acpi_", "of_", "fwnode_",
+    )),
+    ("power-pm", (
+        "pm_", "pm_runtime", "dev_pm", "suspend", "resume", "wakeup",
+    )),
+    ("crypto-random-crc", (
+        "get_random", "crc", "crypto_", "hash_", "sha", "md5",
+    )),
+    ("usercopy", (
+        "copy_to_user", "copy_from_user", "access_ok", "get_user", "put_user",
+        "clear_user", "strncpy_from_user",
+    )),
+    ("debugfs-configfs", (
+        "debugfs_", "configfs_", "seq_", "proc_create", "single_open",
+    )),
+)
+
+
+def repo_root(start: Path) -> Path:
+    p = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=start,
+                       text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        raise SystemExit(p.stderr.strip() or "not inside a git repository")
+    return Path(p.stdout.strip())
+
+
+def normalize_symbol(sym: str) -> str:
+    return VERSION_RE.sub("", sym.strip())
+
+
+def parse_nm_text(text: str, source: str) -> list[Undef]:
+    out: list[Undef] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = NM_UNDEF_RE.match(line)
+        if not m:
+            continue
+        sym = normalize_symbol(m.group("sym"))
+        if sym:
+            out.append(Undef(source, sym, m.group("kind")))
+    return out
+
+
+def run_nm(path: Path, nm: str) -> list[Undef]:
+    p = subprocess.run([nm, "-u", str(path)], text=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        raise SystemExit(f"{path}: nm failed: {p.stderr.strip()}")
+    return parse_nm_text(p.stdout, str(path))
+
+
+def read_symbols(path: Path) -> list[str]:
+    return [normalize_symbol(line) for line in path.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")]
+
+
+def scan_exports(root: Path, extra: list[Path]) -> set[str]:
+    exports: set[str] = set()
+    for src in (root / "crates/kernel/modules/src").glob("*.rs"):
+        if src.name == "tests.rs":
+            continue
+        for match in EXPORT_RE.finditer(src.read_text()):
+            exports.add(match.group(1))
+    for path in extra:
+        exports.update(read_symbols(path))
+    return exports
+
+
+def category(sym: str) -> str:
+    for name, needles in CATEGORY_RULES:
+        if any(sym == n or sym.startswith(n) or n in sym for n in needles):
+            return name
+    return "unknown"
+
+
+def findings(undefs: list[Undef], exports: set[str]) -> list[Finding]:
+    by_sym: dict[str, list[Undef]] = {}
+    for u in undefs:
+        by_sym.setdefault(u.symbol, []).append(u)
+    rows: list[Finding] = []
+    for sym, refs in by_sym.items():
+        status = "EXPORTED" if sym in exports else "WEAK-MISSING" if all(r.kind in "Ww" for r in refs) else "MISSING"
+        rows.append(Finding(sym, status, category(sym),
+                            tuple(sorted({r.source for r in refs})), len(refs)))
+    return sorted(rows, key=lambda r: (r.status != "MISSING", r.category, r.symbol))
+
+
+def print_summary(rows: list[Finding], exports: set[str]) -> None:
+    total = sum(r.refs for r in rows)
+    missing = sum(1 for r in rows if r.status == "MISSING")
+    weak = sum(1 for r in rows if r.status == "WEAK-MISSING")
+    exported = sum(1 for r in rows if r.status == "EXPORTED")
+    print(f"exports: {len(exports)}")
+    print(f"undefined refs: {total}")
+    print(f"unique symbols: {len(rows)}")
+    print(f"missing: {missing}")
+    print(f"weak-missing: {weak}")
+    print(f"exported: {exported}")
+    print()
+
+
+def print_markdown(rows: list[Finding]) -> None:
+    print("| Status | Category | Symbol | Refs | Sources |")
+    print("| --- | --- | --- | ---: | --- |")
+    for r in rows:
+        srcs = ", ".join(r.sources)
+        print(f"| {r.status} | {r.category} | `{r.symbol}` | {r.refs} | {srcs} |")
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description="Audit Linux .ko undefined symbols against Oxide KPI exports.")
+    ap.add_argument("inputs", nargs="+", help=".ko files, nm -u text files, or '-' for stdin")
+    ap.add_argument("--root", type=Path, default=None, help="repo root; default git top-level")
+    ap.add_argument("--nm", default="nm", help="nm binary to run for .ko inputs")
+    ap.add_argument("--nm-output", action="store_true", help="treat all inputs as captured nm -u text")
+    ap.add_argument("--exports", action="append", type=Path, default=[], help="extra newline-delimited exported symbols")
+    ap.add_argument("--fail-on-missing", action="store_true", help="exit 1 when strong missing symbols remain")
+    args = ap.parse_args(argv)
+
+    root = args.root or repo_root(Path.cwd())
+    exports = scan_exports(root, args.exports)
+    undefs: list[Undef] = []
+    for item in args.inputs:
+        if item == "-":
+            undefs.extend(parse_nm_text(sys.stdin.read(), "stdin"))
+            continue
+        path = Path(item)
+        if args.nm_output or path.suffix != ".ko":
+            undefs.extend(parse_nm_text(path.read_text(), str(path)))
+        else:
+            undefs.extend(run_nm(path, args.nm))
+
+    rows = findings(undefs, exports)
+    print_summary(rows, exports)
+    print_markdown(rows)
+    if args.fail_on_missing and any(r.status == "MISSING" for r in rows):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
