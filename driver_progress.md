@@ -5,10 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: D140-b592-ledger-merged records B592 as VERIFIED MERGED.
-B592 extracted the remaining generic virtio child model-driver adapter from
-`pci-boot`; B415 remains aggregate-only until the concrete live-proof rows are
-closed.
+Current marker: B593-driver-fault-injection-coverage is CLAIMED / IN AUDIT.
+B593 audits explicit driver fault-injection coverage after allocations,
+mappings, registration, IRQ/MSI, queue setup, and userspace publication; B415
+remains aggregate-only until the concrete live-proof rows are closed.
+
+## B593 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B593-driver-fault-injection-coverage | CLAIMED / IN AUDIT | Fresh `main` at D140 ledger merge `0d92e87a`; B592 PR #2708 and ledger PR #2709 are merged, and `metadata/index.md` advances B 593 -> 594 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. First pass is source audit across existing driver fault hooks/tests in `crates/drivers/drv`, `crates/drivers/virtio`, `crates/kernel/pci-boot`, PCI/NVMe/AHCI/virtio child drivers, sysfs/devfs publication hooks, and targeted QEMU probes to identify the smallest real missing coverage set. Required proof is focused hosted regressions plus x86_64 and aarch64 boot smoke. |
 
 ## B592 Current
 
