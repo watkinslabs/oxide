@@ -15,6 +15,7 @@
 #define MAX_NAME 64
 #define RETRIES 50
 #define SLEEP_US 100000
+#define REBIND_LOOPS 3
 
 static const char *driver = "/sys/bus/virtio/drivers/virtio-net";
 
@@ -100,15 +101,24 @@ static int write_token(const char *leaf, const char *token, const char *tag) {
     char path[128];
     snprintf(path, sizeof path, "%s/%s", driver, leaf);
     int fd = open(path, O_WRONLY);
-    if (fd < 0) { printf("%s: FAIL open errno=%d\n", tag, errno); return 1; }
+    if (fd < 0) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s: FAIL open errno=%d token=%s\n", tag, errno, token);
+        emit_line(msg);
+        return 1;
+    }
     ssize_t n = write(fd, token, strlen(token));
     int saved = errno;
     close(fd);
     if (n != (ssize_t)strlen(token)) {
-        printf("%s: FAIL write n=%ld errno=%d\n", tag, (long)n, saved);
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s: FAIL write n=%ld errno=%d token=%s\n", tag, (long)n, saved, token);
+        emit_line(msg);
         return 1;
     }
-    printf("%s: PASS\n", tag);
+    char msg[64];
+    snprintf(msg, sizeof msg, "%s: PASS\n", tag);
+    emit_line(msg);
     return 0;
 }
 
@@ -132,12 +142,76 @@ static int count_eth(void) {
     return n;
 }
 
-static int wait_eth_count(int want) {
+static int list_eth(char names[MAX_DEVS][MAX_NAME]) {
+    DIR *d = opendir("/sys/class/net");
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "eth", 3)) continue;
+        if (n < MAX_DEVS) {
+            strncpy(names[n], e->d_name, MAX_NAME - 1);
+            names[n][MAX_NAME - 1] = '\0';
+        }
+        n++;
+    }
+    closedir(d);
+    return n;
+}
+
+static int wait_eth_count_exact(int want) {
     for (int i = 0; i < RETRIES; i++) {
-        if (count_eth() >= want) return 0;
+        if (count_eth() == want) return 0;
         usleep(SLEEP_US);
     }
     return 1;
+}
+
+static int readable_eth_attrs(const char *name, const char *tag) {
+    char path[128];
+    snprintf(path, sizeof path, "/sys/class/net/%s/address", name);
+    if (readable(path, tag)) return 1;
+    snprintf(path, sizeof path, "/sys/class/net/%s/statistics/rx_packets", name);
+    return readable(path, tag);
+}
+
+static int missing_eth_from(char before[MAX_DEVS][MAX_NAME], int before_n) {
+    for (int i = 0; i < before_n && i < MAX_DEVS; i++) {
+        char path[128];
+        snprintf(path, sizeof path, "/sys/class/net/%s/address", before[i]);
+        if (access(path, R_OK) < 0 && errno == ENOENT) return 0;
+    }
+    return 1;
+}
+
+static void emit_status(const char *tag, int loop) {
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "%s loop=%d\n", tag, loop);
+    if (n > 0) emit_line(buf);
+}
+
+static void emit_count(const char *tag, int value) {
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "%s count=%d\n", tag, value);
+    if (n > 0) emit_line(buf);
+}
+
+static void emit_dev_status(const char *tag, int loop, const char *dev) {
+    char buf[128];
+    int n = snprintf(buf, sizeof buf, "%s loop=%d dev=%s\n", tag, loop, dev);
+    if (n > 0) emit_line(buf);
+}
+
+static void emit_loop_count_fail(const char *tag, int loop, int value) {
+    char buf[128];
+    int n = snprintf(buf, sizeof buf, "%s: FAIL loop=%d count=%d\n", tag, loop, value);
+    if (n > 0) emit_line(buf);
+}
+
+static void emit_loop_fail(const char *tag, int loop) {
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "%s: FAIL loop=%d\n", tag, loop);
+    if (n > 0) emit_line(buf);
 }
 
 int main(void) {
@@ -158,26 +232,38 @@ int main(void) {
 
     char names[MAX_DEVS][MAX_NAME];
     int n = list_bound(names);
-    printf("b382_bound_devices:");
-    for (int i = 0; i < n && i < MAX_DEVS; i++) printf(" %s", names[i]);
-    printf("\n");
-    if (n < 2) { printf("b382_bound_devices: FAIL count=%d\n", n); return 1; }
+    emit_count("b580_bound_devices_seen", n);
+    if (n < 2) { emit_count("b382_bound_devices: FAIL", n); return 1; }
 
     const char *dev = names[1];
-    printf("b382_unbind_dev: %s\n", dev);
-    if (write_token("unbind", dev, "b382_unbind_write")) return 1;
-    if (wait_bound(dev, 0)) { printf("b382_virtio_net_unbind: FAIL\n"); return 1; }
-    emit_line("b382_virtio_net_unbind: PASS\n");
+    char eth_before[MAX_DEVS][MAX_NAME];
+    int eth_n = list_eth(eth_before);
+    emit_count("b580_initial_eth_seen", eth_n);
+    if (eth_n != 2) { printf("b580_initial_eth_count: FAIL count=%d\n", eth_n); return 1; }
 
-    if (write_token("bind", dev, "b382_bind_write")) return 1;
-    if (wait_bound(dev, 1)) { printf("b382_virtio_net_rebind: FAIL\n"); return 1; }
-    if (wait_eth_count(2) ||
-        readable("/sys/class/net/eth0/address", "b382_re_eth0_address") ||
-        readable("/sys/class/net/eth1/address", "b382_re_eth1_address")) return 1;
+    for (int loop = 1; loop <= REBIND_LOOPS; loop++) {
+        emit_dev_status("b580_unbind_dev", loop, dev);
+        if (write_token("unbind", dev, "b580_unbind_write")) return 1;
+        if (wait_bound(dev, 0)) { emit_loop_fail("b580_virtio_net_unbind", loop); return 1; }
+        if (wait_eth_count_exact(1)) { emit_loop_count_fail("b580_eth_remove_count", loop, count_eth()); return 1; }
+        if (missing_eth_from(eth_before, eth_n)) { emit_loop_fail("b580_eth_remove_path", loop); return 1; }
+        emit_status("b580_virtio_net_unbind: PASS", loop);
+
+        if (write_token("bind", dev, "b580_bind_write")) return 1;
+        if (wait_bound(dev, 1)) { emit_loop_fail("b580_virtio_net_rebind", loop); return 1; }
+        if (wait_eth_count_exact(2)) { emit_loop_count_fail("b580_eth_readd_count", loop, count_eth()); return 1; }
+        eth_n = list_eth(eth_before);
+        if (eth_n != 2) { emit_loop_count_fail("b580_eth_relist", loop, eth_n); return 1; }
+        for (int i = 0; i < eth_n && i < MAX_DEVS; i++) {
+            if (readable_eth_attrs(eth_before[i], "b580_re_eth_attrs")) return 1;
+        }
+        emit_status("b580_virtio_net_rebind: PASS", loop);
+    }
+    emit_line("b382_virtio_net_unbind: PASS\n");
     emit_line("b382_virtio_net_rebind: PASS\n");
     emit_line("driver_path_smoke: run mouseprobe\n");
     sleep(1);
     if (run_probe("/bin/mouseprobe")) return 1;
-    emit_line("driver_path_smoke: PASS - GPU input sound block net multidev-rebind\n");
+    emit_line("driver_path_smoke: PASS - GPU input sound block net virtio-net-multidev-rebind\n");
     return 0;
 }
