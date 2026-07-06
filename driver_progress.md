@@ -5,15 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B552-virtio-input-generic-config-proof is verified locally for
-virtio-input generic config-resource identity/capability reads; PR/merge is
-next.
+Current marker: B553-virtio-net-mac-config-proof is claimed for virtio-net
+MAC config ownership audit from fresh `main` at B552 PR #2644 merge commit
+`27cd782e`.
+
+## B553 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B553-virtio-net-mac-config-proof | CLAIMED | Fresh `main` at B552 PR #2644 merge commit `27cd782e`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 553 -> 554. Next gate: audit pci-boot/virtio-net MAC config ownership, add focused proof if needed, run hosted gates plus x86_64/aarch64 smokes, then PR/merge and sync fresh main. |
 
 ## B552 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B552-virtio-input-generic-config-proof | VERIFIED LOCAL | Fresh `main` at B551 PR #2643 merge commit `c04c7cf5`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s after rerunning arm alone because a parallel smoke hit host vhost-vsock guest-CID contention. `metadata/index.md` advanced B 552 -> 553. Source audit proves `VirtioInputOps::probe_child()` passes generic `session.child_resources()` into `drv_virtio_input::install_device`, production install rejects missing `VirtioResources.device_cfg_va`, and `drv-virtio-input` owns virtio-input identity/capability reads through named config constants. Added hosted fake-config regression `install_device_reads_identity_and_caps_from_generic_config`, proving name, serial, device IDs, property bits, EV bits, key bits, ABS bits, ABS info, and pointer classification are read from the generic config resource. Checks pass: focused `cargo test -q -p drv-virtio-input -- --nocapture --test-threads=1` with input 38/38; `cargo test -q -p pci-boot -p virtio -p drv-virtio-input -- --nocapture --test-threads=1` with input 38/38 and virtio 48/48; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`registry.rs` 330, `tests.rs` 249); branch smokes reached x86_64 `oxide login:` in 31s and aarch64 `oxide login:` in 36s. Next gate: commit, push, PR/merge, sync fresh main. |
+| B552-virtio-input-generic-config-proof | VERIFIED MERGED | Fresh `main` at B551 PR #2643 merge commit `c04c7cf5`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s after rerunning arm alone because a parallel smoke hit host vhost-vsock guest-CID contention. `metadata/index.md` advanced B 552 -> 553. Source audit proves `VirtioInputOps::probe_child()` passes generic `session.child_resources()` into `drv_virtio_input::install_device`, production install rejects missing `VirtioResources.device_cfg_va`, and `drv-virtio-input` owns virtio-input identity/capability reads through named config constants. Added hosted fake-config regression `install_device_reads_identity_and_caps_from_generic_config`, proving name, serial, device IDs, property bits, EV bits, key bits, ABS bits, ABS info, and pointer classification are read from the generic config resource. Checks pass: focused `cargo test -q -p drv-virtio-input -- --nocapture --test-threads=1` with input 38/38; `cargo test -q -p pci-boot -p virtio -p drv-virtio-input -- --nocapture --test-threads=1` with input 38/38 and virtio 48/48; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`registry.rs` 330, `tests.rs` 249); branch smokes reached x86_64 `oxide login:` in 31s and aarch64 `oxide login:` in 36s; PR #2644 merged as `27cd782e`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 30s and aarch64 `oxide login:` in 36s. |
 
 ## B551 Current
 
