@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::RX_RING_BUFS;
+use crate::{consts::VSOCK_CFG_OFF_GUEST_CID, RX_RING_BUFS};
 
 /// Per-device ring engine. PAs/VA reference the q0(RX)/q1(TX) rings the
 /// boot probe programmed. RX buffers are pre-posted at install; TX uses
@@ -89,7 +89,8 @@ fn read_guest_cid(resources: virtio::VirtioResources) -> Option<u64> {
     if cfg == 0 {
         return None;
     }
-    Some(unsafe { core::ptr::read_volatile(cfg as *const u64) })
+    // SAFETY: virtio transport supplied a mapped device configuration window and the guest CID field is a le64 at offset zero.
+    Some(unsafe { core::ptr::read_volatile((cfg + VSOCK_CFG_OFF_GUEST_CID) as *const u64) })
 }
 
 pub fn present() -> bool {
@@ -260,6 +261,11 @@ fn rx_poll_for_owner(_owner: net::vsock::VsockOwner) -> usize {
 #[cfg(test)]
 pub(crate) fn clear_ctxs_for_tests() {
     CTX.lock().clear();
+}
+
+#[cfg(test)]
+pub(crate) fn read_guest_cid_from_resources_for_tests(resources: virtio::VirtioResources) -> Option<u64> {
+    read_guest_cid(resources)
 }
 
 #[cfg(test)]
