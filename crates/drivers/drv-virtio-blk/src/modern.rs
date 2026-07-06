@@ -36,4 +36,4 @@ mod engine;
 mod init;
 pub use init::{disk_name, init_blk, remove_blk, shutdown_blk};
 #[cfg(test)]
-pub(crate) use init::{test_has_record, test_publish_record};
+pub(crate) use init::{test_has_record, test_publish_record, test_read_device_config};
