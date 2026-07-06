@@ -2,11 +2,11 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: D135-b587-ledger-merged recording B587 merge
+ACTIVE NOW: B588-sys-dev-char-block-proof claimed for live `/sys/dev/{char,block}` proof
 
-Current active item: D135-b587-ledger-merged. B587 is merged as PR #2698 at
-`abf97cd1`; fresh-main post-merge smoke passed on x86_64 and aarch64. This
-branch records the merged ledger state and advances D 135 -> 136.
+Current active item: B588-sys-dev-char-block-proof. Prove live
+`/sys/dev/char` and `/sys/dev/block` reverse-index entries exist, resolve to
+real model-owned device objects, and stay coherent on x86_64 and aarch64.
 Last verified branch:
 `B586-ps2-live-rebind-loops-proof` merged as PR #2695 at `46366d7b`;
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
@@ -16,8 +16,8 @@ reaching `oxide login:` in 28s and x86_64 passing in the same run.
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: push/PR/merge D135 ledger branch, refresh main, then claim the next
-NOT DONE row from fresh main with the B588 counter.
+Next gate: audit existing sysfs/devfs/block/devnode code, add the smallest
+live proof needed, then run targeted x86_64 and aarch64 checks.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -383,7 +383,7 @@ Status legend:
 | VERIFIED MERGED | B585-uart-live-rebind-loops-proof | UART repeated bind/unbind/remove/readd is proven under QEMU on x86_64 and aarch64. B585 adds `/bin/uart_rebind_probe`, `smoke-uart-rebind-{x86,arm}` Make targets, and rootfs direct-init wiring. The probe discovers the active per-arch platform UART driver (`8250-serial` on x86_64, `pl011-serial` on aarch64), runs three sysfs unbind/rebind loops for `platform/serial0`, records that `/sys/bus/platform/drivers/<driver>/serial0` and `/sys/devices/platform/serial0/driver` disappear while unbound, re-proves both symlink targets after every bind, and writes through `/dev/ttyS0` after each restore. Checks pass: `cargo test -q -p drv -p sysfs -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -- --nocapture --test-threads=1` with drv 31/31 and sysfs 34/34; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-uart-rebind.sh`; line caps (`uart_rebind_probe.c` 199, `boot-smoke-uart-rebind.sh` 87, `rootfs.rs` 415, `rootfs_lists.rs` 104, `Makefile` 336); x86_64 `/tmp/b585-x86-uart-rebind.log`; aarch64 `/tmp/b585-arm-uart-rebind.log`; PR #2693 merged as `357532b4`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 and aarch64, including aarch64 reaching `oxide login:` in 28s. D133 records the merged state and advances D 133 -> 134. |
 | VERIFIED MERGED | B586-ps2-live-rebind-loops-proof | PS/2/i8042 repeated bind/unbind/remove/readd proof passes under QEMU. B586 adds `/bin/ps2_rebind_probe`, `smoke-ps2-rebind-{x86,arm}` Make targets, and rootfs direct-init wiring. x86_64 proof runs three sysfs loops against `platform/i8042` bound to `i8042-kbd`, rejects duplicate bind with `errno=16`, proves `/sys/bus/platform/drivers/i8042-kbd/i8042` and `/sys/devices/platform/i8042/driver` disappear while unbound, proves the platform device persists, and re-proves both symlink targets after every bind. aarch64 proof verifies QEMU virt correctly has no `/sys/devices/platform/i8042` and no `/sys/bus/platform/drivers/i8042-kbd`. Checks pass: `cargo test -q -p drv -p sysfs -p drv-ps2-keyboard -- --nocapture --test-threads=1` with drv 31/31, sysfs 34/34, and drv-ps2-keyboard 6/6; `cargo check -q -p xtask`; `git diff --check`; `bash -n tools/boot-smoke-ps2-rebind.sh`; line caps (`ps2_rebind_probe.c` 213, `boot-smoke-ps2-rebind.sh` 87, `rootfs.rs` 423, `rootfs_lists.rs` 106, `Makefile` 343, `driver_plan.md` 396, `driver_progress.md` 586); x86_64 `/tmp/b586-x86-ps2-rebind.log`; aarch64 `/tmp/b586-arm-ps2-rebind.log`; pre-push smoke on both arches; PR #2695 merged as `46366d7b`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 and aarch64, including aarch64 reaching `oxide login:` in 28s. D134 records the merged state and advances D 134 -> 135. |
 | VERIFIED MERGED | B587-dri-devnode-hotremove-proof | DRM devtmpfs stale-open proof is explicit: `virtio_gpu_multidev_probe` now opens `/dev/dri/card1` after each second-card virtio-gpu unbind and requires `ENOENT`, with the wrapper treating `b587_*` failures as fatal and printing B587 evidence. Source audit proves DRM card removal flows `drv_virtio_gpu::hot_remove` -> `drm::unregister` -> `drm::node::unregister` -> `drv::device_del` -> `devfs::del_device_node`, which invalidates the resolved `/dev/dri/cardN` dentry and removes the node from every devtmpfs namespace. Checks pass: `cargo test -q -p devfs -p drm -p drv-virtio-gpu -- --nocapture --test-threads=1` with devfs 13/13, drm 68/68, and drv-virtio-gpu 36/36; `git diff --check`; `bash -n tools/boot-smoke-virtio-gpu-multidev.sh`; line caps (`virtio_gpu_multidev_probe.c` 300, `boot-smoke-virtio-gpu-multidev.sh` 138, `driver_plan.md` 398, `driver_progress.md` 593); x86_64 `/tmp/b587-x86-virtio-gpu-multidev.log`; aarch64 `/tmp/b587-arm-virtio-gpu-multidev.log`; full `make smoke SMOKE_TIMEOUT=300`; pre-push smoke on both arches. Both live logs run three unbind/rebind loops and show `b587_removed_dev_card1_open_{0,1,2}: PASS errno=2` before card1 is rebound and usable. Claim made from fresh `main` at D134 ledger merge `aa75f941`; `metadata/index.md` advanced B 587 -> 588 on this branch; proof committed as `590c53a6`; PR #2698 merged as `abf97cd1`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with x86_64 reaching `oxide login:` in 46s and aarch64 reaching `oxide login:` in 50s. D135 records the merged state and advances D 135 -> 136. |
-| NOT DONE | TBD | `/sys/dev/{char,block}` exists and resolves; needs live udev proof. |
+| ACTIVE | B588-sys-dev-char-block-proof | `/sys/dev/{char,block}` exists and resolves; needs live udev proof. Claimed from fresh `main` at D135 ledger merge `16b69d5d`; `metadata/index.md` advanced B 588 -> 589 on this branch. |
 | NOT DONE | TBD | `/sys/bus/<bus>/drivers/<driver>` bind/unbind/device-link shape exists; needs live proof. |
 | NOT DONE | TBD | Driver-directory device symlinks resolve to canonical `/sys/devices/...`; needs live proof. |
 | NOT DONE | TBD | Generalize PCI command enable/disable, BAR mapping ownership, MSI/MSI-X setup/teardown, `enable`, bridge topology, and runtime semantics. |
