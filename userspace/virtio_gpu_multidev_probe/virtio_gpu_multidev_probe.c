@@ -20,6 +20,7 @@
 #define MAX_CARDS 8
 #define RETRIES 50
 #define SLEEP_US 100000
+#define REBIND_LOOPS 3
 
 #define DRM_IOCTL_MODE_GETRESOURCES  _IOWR(0x64, 0xa0, struct drm_mode_card_res)
 
@@ -137,6 +138,20 @@ static int write_token(const char *leaf, const char *token, const char *tag) {
     return 0;
 }
 
+static void emit_status(const char *tag, const char *status) {
+    char line[96];
+    int n = snprintf(line, sizeof line, "%s: %s\n", tag, status);
+    if (n > 0) emit_line(line);
+}
+
+static int missing(const char *path, const char *tag) {
+    errno = 0;
+    if (access(path, F_OK) < 0 && errno == ENOENT) return 0;
+    printf("%s: FAIL path=%s errno=%d\n", tag, path, errno);
+    emit_status(tag, "FAIL");
+    return 1;
+}
+
 static int count_cards(void) {
     int n = 0;
     char path[MAX_PATH];
@@ -198,6 +213,21 @@ static int prove_card(const char *path, const char *tag) {
     return 0;
 }
 
+static int prove_removed_second_card(int iter) {
+    if (wait_sysfs_card_count(1) || wait_card_count(1)) {
+        printf("b579_cards_after_unbind_%d: FAIL sysfs=%d devfs=%d\n",
+               iter, count_sysfs_cards(), count_cards());
+        return 1;
+    }
+    char tag[64];
+    snprintf(tag, sizeof tag, "b579_removed_dev_card1_%d", iter);
+    if (missing("/dev/dri/card1", tag)) return 1;
+    snprintf(tag, sizeof tag, "b579_removed_sys_card1_%d", iter);
+    if (missing("/sys/class/drm/card1", tag)) return 1;
+    emit_status("b579_cards_after_unbind", "PASS");
+    return 0;
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     emit_line("virtio_gpu_multidev_probe: START\n");
@@ -220,27 +250,29 @@ int main(void) {
     if (n < 2) { printf("b418_bound_devices: FAIL count=%d\n", n); return 1; }
 
     const char *dev = names[1];
-    printf("b418_unbind_dev: %s\n", dev);
-    if (write_token("unbind", dev, "b418_unbind_write")) return 1;
-    if (device_bound(dev)) { printf("b418_virtio_gpu_unbind: FAIL still-bound\n"); return 1; }
-    if (wait_sysfs_card_count(1)) {
-        printf("b418_sysfs_cards_after_unbind: FAIL count=%d devfs_count=%d\n",
-               count_sysfs_cards(), count_cards());
-        return 1;
-    }
-    printf("b418_devfs_cards_after_unbind: observed count=%d\n", count_cards());
-    emit_line("b418_virtio_gpu_unbind: PASS\n");
+    for (int iter = 0; iter < REBIND_LOOPS; iter++) {
+        char tag[64];
+        snprintf(tag, sizeof tag, "b579_loop_%d", iter);
+        emit_status(tag, "START");
+        printf("b579_unbind_dev_%d: %s\n", iter, dev);
+        if (write_token("unbind", dev, "b579_unbind_write")) return 1;
+        if (device_bound(dev)) { printf("b579_virtio_gpu_unbind_%d: FAIL still-bound\n", iter); return 1; }
+        if (prove_removed_second_card(iter)) return 1;
+        emit_status("b579_virtio_gpu_unbind", "PASS");
 
-    if (write_token("bind", dev, "b418_bind_write")) return 1;
-    if (!device_bound(dev)) { printf("b418_virtio_gpu_rebind: FAIL not-bound\n"); return 1; }
-    if (wait_sysfs_card_count(2) || wait_card_count(2)) {
-        printf("b418_cards_after_rebind: FAIL sysfs=%d devfs=%d\n",
-               count_sysfs_cards(), count_cards());
-        return 1;
+        if (write_token("bind", dev, "b579_bind_write")) return 1;
+        if (!device_bound(dev)) { printf("b579_virtio_gpu_rebind_%d: FAIL not-bound\n", iter); return 1; }
+        if (wait_sysfs_card_count(2) || wait_card_count(2)) {
+            printf("b579_cards_after_rebind_%d: FAIL sysfs=%d devfs=%d\n",
+                   iter, count_sysfs_cards(), count_cards());
+            return 1;
+        }
+        snprintf(tag, sizeof tag, "b579_card0_loop%d", iter);
+        if (prove_card("/dev/dri/card0", tag)) return 1;
+        snprintf(tag, sizeof tag, "b579_card1_loop%d", iter);
+        if (prove_card("/dev/dri/card1", tag)) return 1;
+        emit_status("b579_virtio_gpu_rebind", "PASS");
     }
-    if (prove_card("/dev/dri/card0", "b418_card0_rebind") ||
-        prove_card("/dev/dri/card1", "b418_card1_rebind")) return 1;
-    emit_line("b418_virtio_gpu_rebind: PASS\n");
     emit_line("driver_path_smoke: run mouseprobe\n");
     sleep(1);
     if (run_probe("/bin/mouseprobe")) return 1;
