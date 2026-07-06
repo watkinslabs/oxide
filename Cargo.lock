@@ -1418,6 +1418,7 @@ dependencies = [
  "block",
  "drv",
  "kernfs",
+ "modules",
  "net",
  "netlink",
  "sync",

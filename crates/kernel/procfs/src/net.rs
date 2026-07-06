@@ -169,15 +169,16 @@ fn net_udp6_body() -> alloc::vec::Vec<u8> {
 /// `/proc/net/udp6` inode. # C: O(1)
 pub fn make_proc_net_udp6() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_000B as Ino, net_udp6_body) }
 
-/// `/proc/modules` — Linux text format: "<name> <size> <refcnt> <holders> <state> <addr>\n".
-/// v1 uses synthetic name "module_<idx>" since .modinfo parsing
-/// hasn't landed.
+/// `/proc/modules` — Linux text format plus audit fields for parsed module metadata.
 fn modules_body() -> alloc::vec::Vec<u8> {
     use core::fmt::Write as _;
     let mut s = String::new();
     for m in modules::registry::snapshot() {
-        let _ = writeln!(s, "{} {} {} - {} 0x0 sec={} sym={}",
-            m.name, m.size, m.refcnt, m.state.as_str(), m.sections, m.symbols);
+        let license = m.license.as_deref().unwrap_or("-");
+        let vermagic = m.vermagic.as_deref().unwrap_or("-");
+        let _ = writeln!(s, "{} {} {} - {} 0x0 sec={} sym={} license={} vermagic={} params={}",
+            m.name, m.size, m.refcnt, m.state.as_str(), m.sections, m.symbols,
+            license, vermagic, m.params.len());
     }
     s.into_bytes()
 }

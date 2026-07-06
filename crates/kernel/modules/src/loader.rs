@@ -20,6 +20,7 @@ use elf::{
 };
 
 use crate::relocator::{apply, RelocError};
+use crate::ModuleInfo;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LoadError {
@@ -44,6 +45,7 @@ pub struct LoadedModule {
     pub sections: Vec<PlacedSection>,
     /// Resolved (name → absolute VA) for every defined symbol.
     pub symbols:  BTreeMap<String, u64>,
+    pub info:     ModuleInfo,
 }
 
 /// Symbol resolver: looks up an external symbol name and returns
@@ -59,6 +61,7 @@ pub trait SymResolver {
 /// # C: O(N_sections + N_symbols + N_relocs)
 pub fn load_module<R: SymResolver>(bytes: &[u8], resolver: &R) -> Result<LoadedModule, LoadError> {
     let parsed: ParsedRelocatable<'_> = parse_relocatable(bytes).map_err(|_| LoadError::BadElf)?;
+    let info = ModuleInfo::parse_sections(bytes, &parsed.sections);
 
     // Phase 1: place each ALLOC section into a fresh heap Vec.
     // Section index → (vbase, bytes). We build a parallel Vec<Option>
@@ -142,7 +145,7 @@ pub fn load_module<R: SymResolver>(bytes: &[u8], resolver: &R) -> Result<LoadedM
 
     // Collect placed sections (drop the Option wrapping).
     let sections: Vec<PlacedSection> = placed.into_iter().filter_map(|x| x).collect();
-    Ok(LoadedModule { sections, symbols: named_symbols })
+    Ok(LoadedModule { sections, symbols: named_symbols, info })
 }
 
 #[cfg(test)]

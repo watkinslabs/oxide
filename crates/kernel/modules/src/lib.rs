@@ -30,6 +30,9 @@ pub use relocator::{
     R_X86_64_COPY, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE,
 };
 
+pub mod modinfo;
+pub use modinfo::{KERNEL_VERMAGIC, ModuleInfo, ModuleParam};
+
 pub mod loader;
 pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
 
