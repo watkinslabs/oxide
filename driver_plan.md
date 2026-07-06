@@ -2,12 +2,12 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: B590-uart-ps2-singleton-model-proof VERIFIED MERGED; D138 ledger branch active
+ACTIVE NOW: B591-pci-lifecycle-runtime-semantics CLAIMED / IN AUDIT
 
-Current active item: D138-b590-ledger-merged. UART and PS/2 model
-drivers are intentionally singleton hardware paths, not general multi-device
-serial/input infrastructure. B590 is merged, and this branch records the
-post-merge proof before the next B branch starts.
+Current active item: B591-pci-lifecycle-runtime-semantics. PCI lifecycle
+remains the first concrete unverified driver gap after B415, which is an
+aggregate row that depends on the remaining live-proof rows. This branch audits
+and fixes the PCI bus/simple-QEMU/runtime semantics gap from fresh `main`.
 
 Last verified branch: B590-uart-ps2-singleton-model-proof. UART and PS/2
 singleton model shape passed source audit plus focused x86_64/aarch64 live
@@ -19,8 +19,8 @@ reaching `oxide login:` in 28s.
 fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed with aarch64
 reaching `oxide login:` in 28s and x86_64 passing in the same run.
 
-Next gate: push/merge D138 ledger, refresh main, select B591 from fresh main,
-mark the active row, and start the next driver-system proof.
+Next gate: finish B591 source audit, implement one coherent PCI lifecycle fix,
+prove it with hosted tests plus x86_64/aarch64 boot evidence, then push/PR/merge.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -371,7 +371,7 @@ Status legend:
 | VERIFIED | B420-virtio-snd-event-control-proof | Virtio-snd live multi-card proof now covers control/event UAPI shape without fabricated mixer controls: `controlC0`/`controlC1` prove card info, PCM discovery/info for playback+capture, empty control element list, missing element `ENOENT`, and event subscription before and after live rebind. Direct musl builds pass for x86_64/aarch64; hosted `cargo test -p sound -p drv-virtio-snd -- --nocapture --test-threads=1` passes; fast live logs `/tmp/b420-x86-virtio-snd-event-control.log` and `/tmp/b420-arm-virtio-snd-event-control.log` pass. |
 | VERIFIED MERGED | B590-uart-ps2-singleton-model-proof | UART and PS/2 model drivers remain intentional singleton hardware paths, not general multi-device serial/input infrastructure. Source audit proves `kmain::runtime` publishes only `platform/serial0` on both arches and `platform/i8042` only on x86_64; `drv-serial` registers exactly the per-arch UART model driver (`8250-serial` on x86_64, `pl011-serial` on aarch64); both UART drivers match only `platform/serial0`; `drv-ps2-keyboard` matches only `platform/i8042` and is compiled/registered only for x86_64 kernel builds. B590 extends the existing UART and PS/2 focused probes with explicit singleton markers: UART enumerates `/sys/bus/platform/devices` and requires only `serial0` plus exactly one registered UART driver directory; PS/2 requires exactly one `i8042` plus `i8042-kbd` on x86_64 and zero `i8042*` platform/driver state on aarch64. It also fixes rootfs cache mode/hash coverage for `OXIDE_UART_REBIND_SMOKE` and `OXIDE_PS2_REBIND_SMOKE`; the first PS/2 x86 attempt exposed the stale-cache bug by booting the UART probe, and the rerun passed after the cache fix. Checks pass: host `cc -Wall -Wextra -Werror` for both probes; `bash -n tools/boot-smoke-uart-rebind.sh tools/boot-smoke-ps2-rebind.sh`; `cargo check -q -p xtask`; `git diff --check`; `cargo test -q -p drv -p sysfs -p drv-uart-16550 -p drv-uart-pl011 -p drv-serial -p drv-ps2-keyboard -p drv-virtio-input -- --nocapture --test-threads=1` with drv 31/31, PS/2 6/6, virtio-input 38/38, and sysfs 35/35; line caps (`uart_rebind_probe.c` 249, `ps2_rebind_probe.c` 269, both wrappers 87, `rootfs_cache.rs` 297). Focused live proofs pass: x86_64 UART `/tmp/b590-x86-uart-rebind.log` shows `b590_uart_singleton_device` PASS count=1 and driver `8250-serial`; aarch64 UART `/tmp/b590-arm-uart-rebind.log` shows count=1 and driver `pl011-serial`; x86_64 PS/2 `/tmp/b590-x86-ps2-rebind.log` shows `b590_ps2_singleton_device` PASS count=1 and driver `i8042-kbd`; aarch64 PS/2 `/tmp/b590-arm-ps2-rebind.log` shows `b590_ps2_arm_no_singleton` PASS count=0. Full branch `make smoke SMOKE_TIMEOUT=300` passed with aarch64 reaching `oxide login:` in 28s after x86_64 passed in the same run. Claim made from fresh `main` at D137 ledger merge `8d01273c`; `metadata/index.md` advanced B 590 -> 591 on this branch; proof committed as `f0f4c36e`; PR #2704 merged as `01a8312c`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed on both arches, including aarch64 reaching `oxide login:` in 28s. D138 records the merged state and advances D 138 -> 139. |
 | VERIFIED MERGED | B574-qemu-rebind-certification-audit | QEMU-visible virtio-rng runtime bind/unbind/rebind proof added without touching local `B573-mem-chardev`: opt-in QEMU mode adds a second `virtio-rng-pci`, `/bin/virtio_rng_rebind_probe` verifies two bound virtio-rng children, writable sysfs `bind`/`unbind`, `/dev/hwrng` entropy before unbind, provider promotion after unbind, and restored entropy after rebind. Checks pass: `cargo check -q -p xtask`, `git diff --check`, line caps, x86_64 `/tmp/b574-x86-virtio-rng-rebind.log`, aarch64 `/tmp/b574-arm-virtio-rng-rebind.log`, PR #2668 merged as `1ff61f7d`, and fresh-main post-merge login smokes x86_64 `/tmp/b574-postmerge-x86-login-smoke.log` plus aarch64 `/tmp/b574-postmerge-arm-login-smoke.log`. |
-| NOT DONE | TBD | PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. |
+| >>> ACTIVE >>> IN AUDIT | B591-pci-lifecycle-runtime-semantics | PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. B591 is claimed from fresh `main` after D138 merge `be0afcea`; `metadata/index.md` advances B 591 -> 592 on this branch. |
 | SOURCE OK |  | Production model drivers in current source have explicit shutdown callbacks; default shutdown remains test-only. |
 | NOT DONE | TBD | Extract remaining real virtio bus/core split from `pci-boot`. |
 | NOT DONE | TBD | Add explicit fault-injection coverage after every allocation, mapping, registration, IRQ/MSI step, queue setup, and userspace publication. |

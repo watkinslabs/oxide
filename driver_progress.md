@@ -5,11 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: D138-b590-ledger-merged records B590 as VERIFIED MERGED.
-UART and PS/2 singleton model shape is proven by source audit plus focused
-x86_64 and aarch64 live proofs. Proof commit is `f0f4c36e`; PR #2704 merged as
-`01a8312c`; fresh-main post-merge `make smoke SMOKE_TIMEOUT=300` passed on both
-arches, including aarch64 reaching `oxide login:` in 28s.
+Current marker: B591-pci-lifecycle-runtime-semantics is CLAIMED / IN AUDIT.
+PCI lifecycle/runtime semantics are the first concrete unverified driver gap
+after B415; B415 remains aggregate-only until the concrete live-proof rows are
+closed. This branch starts from D138 merge `be0afcea`.
+
+## B591 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B591-pci-lifecycle-runtime-semantics | CLAIMED / IN AUDIT | Fresh `main` at D138 ledger merge `be0afcea`; B590 PR #2704 and ledger PR #2705 are merged, and `metadata/index.md` advances B 591 -> 592 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Target row: PCI lifecycle remains shallow: bus 0/simple QEMU path, no full bridge/resource/runtime semantics. First pass is source audit across `pci`, `pci-boot`, arch PCI config backends, virtio transport, and existing live probes before implementation. |
 
 ## B590 Current
 
