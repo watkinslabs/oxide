@@ -6,7 +6,8 @@
 // 0x010802 (QEMU vendor 0x1b36 device 0x0010), maps BAR0, and calls `init`.
 //
 // Layering: `regs.rs` = pure register/bit math (host-tested); `queue.rs` =
-// the kernel-only MMIO + queue mechanics (the `Nvme` controller); this file =
+// the kernel-only MMIO + queue mechanics (the `Nvme` controller);
+// `lifecycle.rs` = hosted cleanup-order proof; this file =
 // the BlockDevice impl + registration + PCI bring-up glue. Mirrors
 // drv-virtio-blk: one synchronous in-flight request, serialised by a Spinlock.
 
@@ -15,6 +16,8 @@
 extern crate alloc;
 
 mod regs;
+#[cfg(any(target_os = "oxide-kernel", test))]
+mod lifecycle;
 #[cfg(target_os = "oxide-kernel")]
 mod queue;
 
@@ -341,6 +344,13 @@ fn clear_pci_bus_master(dev: &drv::Device) {
     }
 }
 
+#[cfg(target_os = "oxide-kernel")]
+const BAR_PAGE_SIZE: u64 = 0x1000;
+#[cfg(target_os = "oxide-kernel")]
+const BAR_PAGE_OFFSET_MASK: u64 = BAR_PAGE_SIZE - 1;
+#[cfg(target_os = "oxide-kernel")]
+const BAR_PAGE_BASE_MASK: u64 = !BAR_PAGE_OFFSET_MASK;
+
 /// The D1a model driver for NVMe: matches PCI class 0x010802 on the PCI bus.
 /// Registered + bound at the bring-up success site in pci-boot.
 #[cfg(target_os = "oxide-kernel")]
@@ -370,12 +380,16 @@ impl drv::Driver for NvmeDriver {
         }
         let bars = decode_bars(bdf);
         let bar0_pa = bars[0].mem_base().unwrap_or(0);
-        if bar0_pa == 0 { return Err(drv::Error::ProbeFailed); }
+        if bar0_pa == 0 {
+            clear_pci_bus_master(dev);
+            return Err(drv::Error::ProbeFailed);
+        }
         // SAFETY: BAR0 PA came from this PCI function's config space; two
         // pages cover the controller register file and QEMU doorbells.
-        let mmio = unsafe { mmio_map::map_owned(bar0_pa & !0xFFF, 2) };
+        let mmio = unsafe { mmio_map::map_owned(bar0_pa & BAR_PAGE_BASE_MASK, 2) };
         let device_key = imp::device_key_from_bdf(bdf);
-        if imp::init(device_key, mmio, bar0_pa & 0xFFF) == 0 {
+        if imp::init(device_key, mmio, bar0_pa & BAR_PAGE_OFFSET_MASK) == 0 {
+            lifecycle::run_probe_failure_cleanup(|| clear_pci_bus_master(dev));
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
@@ -383,13 +397,18 @@ impl drv::Driver for NvmeDriver {
 
     fn remove(&self, dev: &drv::Device) {
         let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
-        clear_pci_bus_master(dev);
-        let _ = imp::remove(imp::device_key_from_bdf(bdf));
+        lifecycle::run_remove_cleanup(
+            || { let _ = imp::remove(imp::device_key_from_bdf(bdf)); },
+            || clear_pci_bus_master(dev),
+        );
     }
 
     fn shutdown(&self, dev: &drv::Device) {
         let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
-        let _ = imp::shutdown(imp::device_key_from_bdf(bdf));
+        lifecycle::run_remove_cleanup(
+            || { let _ = imp::shutdown(imp::device_key_from_bdf(bdf)); },
+            || clear_pci_bus_master(dev),
+        );
     }
 }
 
