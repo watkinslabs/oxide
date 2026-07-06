@@ -5,29 +5,44 @@ use alloc::vec::Vec;
 
 use vfs::{mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use super::device::{find_dev, make_device_dir_inode, make_link_inode};
+use super::device::{dev_canon, find_dev, make_device_dir_inode, make_link_inode};
 use super::driver::make_driver_dir_inode;
 use crate::DIR_PERM;
-use super::ids::{bus_devices_ino, bus_drivers_ino, dev_root_canon, devices_root_ino};
+use super::ids::{bus_devices_ino, bus_drivers_ino, devices_root_ino};
 
 struct BusData { bus: &'static str }
+
+/// A device is anchored directly under its bus root only when it has no model
+/// parent that itself exists in the tree; otherwise it is nested under that
+/// parent's directory (Linux sysfs topology). An orphaned parent ref falls back
+/// to the root so the device stays reachable. # C: O(1)
+fn is_root_device(dev: &drv::Device) -> bool {
+    match dev.parent() {
+        Some((pb, pa)) => find_dev(pb, pa).is_none(),
+        None => true,
+    }
+}
 
 /// `/sys/devices/pci0000:00` or `/sys/devices/virtio` — real device dirs.
 struct DevicesRootOps;
 impl InodeOps for DevicesRootOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let bus = inode.private::<BusData>().ok_or(VfsError::Einval)?.bus;
-        if find_dev(bus, name).is_some() {
-            return Ok(make_device_dir_inode(String::from(name), bus));
+        match find_dev(bus, name) {
+            Some(dev) if is_root_device(&dev) => {
+                Ok(make_device_dir_inode(String::from(name), bus))
+            }
+            _ => Err(VfsError::Enoent),
         }
-        Err(VfsError::Enoent)
     }
 }
 impl FileOps for DevicesRootOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let bus = match inode.private::<BusData>() { Some(d) => d.bus, None => return Err(VfsError::Einval) };
         let devs = drv::devices();
-        let list: Vec<&str> = devs.iter().filter(|d| d.bus == bus).map(|d| d.addr.as_str()).collect();
+        let list: Vec<&str> = devs.iter()
+            .filter(|d| d.bus == bus && is_root_device(d))
+            .map(|d| d.addr.as_str()).collect();
         let mut idx = ctx.pos as usize;
         while idx < list.len() {
             let next = idx as u64 + 1;
@@ -52,8 +67,8 @@ impl InodeOps for BusDevicesOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let bus = inode.private::<BusData>().ok_or(VfsError::Einval)?.bus;
         if find_dev(bus, name).is_some() {
-            // from /sys/bus/<bus>/devices/<addr> -> /sys/devices/<root>/<addr>
-            let t = alloc::format!("../../../{}/{}", dev_root_canon(bus), name);
+            // /sys/bus/<bus>/devices/<addr> -> /sys/<canonical nested path>
+            let t = alloc::format!("../../../{}", dev_canon(bus, name));
             return Ok(make_link_inode(t.into_bytes()));
         }
         Err(VfsError::Enoent)
