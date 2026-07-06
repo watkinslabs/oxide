@@ -141,6 +141,7 @@ impl InodeOps for TtyDeviceOps {
                 Ok(make_body_inode(body, 0x5101_2000 + d.minor as Ino))
             }
             "uevent" => Ok(make_tty_uevent_inode(d.name.clone(), d.major, d.minor)),
+            "subsystem" => Ok(make_symlink_inode(b"../../../../class/tty".to_vec())),
             "active" if tty_has_active(&d.name) =>
                 Ok(make_tty_active_inode(&d.name, d.minor)),
             _ => Err(VfsError::Enoent),
@@ -157,6 +158,11 @@ impl FileOps for TtyDeviceOps {
             let ino = inode.lookup(entries[idx]).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(entries[idx], ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
+        }
+        if idx == entries.len() {
+            let next = idx as u64 + 1;
+            let ino = inode.lookup("subsystem").map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit("subsystem", ino, FileType::Symlink, next) { return Ok(()); }
         }
         Ok(())
     }

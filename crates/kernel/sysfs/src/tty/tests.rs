@@ -51,3 +51,11 @@ fn active_devices_advertise_active_attr() {
     assert_eq!(tty_dev_attrs("tty0"), &["active", "dev", "uevent"]);
     assert_eq!(tty_dev_attrs("console"), &["active", "dev", "uevent"]);
 }
+
+#[test]
+fn tty_devices_expose_subsystem_symlink() {
+    let root = make_sys_devices_virtual_tty_inode();
+    let dir = root.lookup("ttyS0").expect("ttyS0 device dir");
+    let link = dir.lookup("subsystem").expect("subsystem symlink");
+    assert_eq!(link.readlink().expect("readlink"), b"../../../../class/tty".to_vec());
+}
