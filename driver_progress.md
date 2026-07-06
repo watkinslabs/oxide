@@ -5,9 +5,14 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: no active row. B520-virtio-pci-mmio-record-proof is VERIFIED on
-branch `B520-virtio-pci-mmio-record-proof`; pending commit, push, PR, merge,
-branch cleanup, and fresh `main` sync before claiming the next row.
+Current marker: B521-virtio-pci-msix-state-proof audits row 175, Virtio-pci owns
+MSI-X state.
+
+## B521 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B521-virtio-pci-msix-state-proof | IN AUDIT | Fresh `main` at merge commit `69df3ca1` after B520 PR #2617 merge and branch cleanup. `metadata/index.md` advanced B 521 -> 522. Source audit in progress for virtio-pci MSI-X state ownership, including probe-state binding records, failed-probe cleanup, persistent transport records, teardown order, and x86_64/aarch64 runtime gates. |
 
 ## B520 Current
 
