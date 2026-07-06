@@ -89,8 +89,13 @@ fn register_filesystems() {
     use vfs::fs::{FsFlags, FsType, MountSpec, register_fs};
     type R = vfs::fs::KResult<MountSpec>;
 
-    fn tmpfs_ctor(_s: &str, target: &str, _d: &str) -> R {
-        let tfs = ::fs::tmpfs::TmpfsFs::new(target.to_string());
+    fn tmpfs_ctor(_s: &str, target: &str, d: &str) -> R {
+        // Honour the `-o mode=/uid=/gid=/size=/nr_inodes=` option string: the
+        // per-user runtime dir (systemd-user-runtime-dir) mounts /run/user/UID
+        // mode 0700 owned by UID:UID, and pam_systemd/`systemd --user` reject a
+        // root-owned 0755 runtime dir. Was: option string dropped → every
+        // tmpfs mounted root:root 0755 half-RAM (real-Linux divergence).
+        let tfs = ::fs::tmpfs::TmpfsFs::from_mount_data(target.to_string(), d);
         let root = tfs.root_inode();
         let fs: Arc<dyn vfs::fs::FileSystem> = tfs;
         Ok(MountSpec { fs, bind_root: Some(root), strict: false })
