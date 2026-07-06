@@ -26,6 +26,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, DirContext, FileOps, Fil
 pub mod block;
 pub mod bus;
 pub mod char_class;
+pub mod dmi;
 pub mod drm;
 pub mod input;
 pub mod kernel;
@@ -446,6 +447,7 @@ pub fn init() {
     char_class::init();
     drm::init();
     input::init();
+    dmi::init();
 }
 
 /// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult sysfs's own
