@@ -71,6 +71,13 @@ pub fn try_populate_defaults() -> drv::KResult<()> {
     // standard mem major/minor metadata. Linux exposes random as 1:8 and
     // urandom as 1:9, so publish separate device identities even though both
     // use the same random file implementation.
+    // Register the `mem` char driver (major 1) in the cdev registry so a
+    // user/`systemd` `mknod(/dev/null, c, 1, 3)` — which `PrivateDevices=`
+    // clones into a service's private /dev — dispatches through the real
+    // driver instead of `ENXIO`. The devfs inodes below carry their own baked
+    // f_op; this covers the mknod'd-node path (Linux `chr_dev_init`). Idempotent
+    // (register_chrdev overwrites the major's regions).
+    vfs::register_chrdev(1, Arc::new(crate::misc::MemCharDevOps));
     add_pseudo_dev("mem", "null", (1, 3),  Arc::new(|| crate::misc::make_null_inode()))?;
     add_pseudo_dev("mem", "kmsg", (1, 11), Arc::new(|| crate::misc::make_kmsg_inode()))?;
     add_pseudo_dev("mem", "zero", (1, 5),  Arc::new(|| crate::misc::make_zero_inode()))?;

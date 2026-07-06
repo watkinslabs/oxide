@@ -113,18 +113,26 @@ impl FileOps for KmsgFileOps {
     /// silently discarded.
     /// # C: O(len)
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
-        let mut msg = b;
-        if msg.first() == Some(&b'<') {
-            if let Some(gt) = msg.iter().take(6).position(|&c| c == b'>') {
-                if gt > 1 && msg[1..gt].iter().all(|c| c.is_ascii_digit()) {
-                    msg = &msg[gt + 1..];
-                }
-            }
-        }
-        klog::kmsg_write(msg);
-        if msg.last() != Some(&b'\n') { klog::kmsg_write(b"\n"); }
+        kmsg_write_record(b);
         Ok(b.len())
     }
+}
+
+/// `/dev/kmsg` write body (Linux `devkmsg_write`): strip an optional leading
+/// `<N>` syslog-priority prefix, inject one record into the kernel log ring,
+/// ensuring a trailing newline. Shared by `KmsgFileOps` (devfs inode) and
+/// `MemCharDevOps` (mknod'd node). # C: O(len)
+fn kmsg_write_record(b: &[u8]) {
+    let mut msg = b;
+    if msg.first() == Some(&b'<') {
+        if let Some(gt) = msg.iter().take(6).position(|&c| c == b'>') {
+            if gt > 1 && msg[1..gt].iter().all(|c| c.is_ascii_digit()) {
+                msg = &msg[gt + 1..];
+            }
+        }
+    }
+    klog::kmsg_write(msg);
+    if msg.last() != Some(&b'\n') { klog::kmsg_write(b"\n"); }
 }
 /// `/dev/kmsg` inode (1:11 mem/kmsg, `0o644`). # C: O(1)
 pub fn make_kmsg_inode() -> InodeRef { char_inode(0x2000_000A, 0o644, 0x010b, Arc::new(KmsgFileOps)) }
@@ -234,19 +242,26 @@ pub fn make_hwrng_inode() -> InodeRef { char_inode(0x2000_0005, 0o644, 0x0ab7, A
 /// # C: O(1)
 pub fn make_autofs_inode() -> InodeRef { char_inode(0x2000_0006, 0o600, 0x0aec, default_file_ops()) }
 
+/// Fill `b` with LCG pseudo-random bytes (the shared `/dev/random`,
+/// `/dev/urandom` and `sys_getrandom` body). NOT cryptographic — v1
+/// placeholder until docs/26 CPRNG lands. # C: O(b.len())
+pub fn random_fill(b: &mut [u8]) {
+    let mut i = 0;
+    while i < b.len() {
+        let v = lcg_next().to_le_bytes();
+        let n = (b.len() - i).min(8);
+        b[i..i + n].copy_from_slice(&v[..n]);
+        i += n;
+    }
+}
+
 /// `/dev/random` and `/dev/urandom` — fill with LCG bytes.
 /// SECURITY: NOT cryptographic; v1 placeholder until docs/26
 /// CPRNG lands.
 struct RandomFileOps;
 impl FileOps for RandomFileOps {
     fn read(&self, _i: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
-        let mut i = 0;
-        while i < b.len() {
-            let v = lcg_next().to_le_bytes();
-            let n = (b.len() - i).min(8);
-            b[i..i + n].copy_from_slice(&v[..n]);
-            i += n;
-        }
+        random_fill(b);
         Ok(b.len())
     }
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
@@ -256,6 +271,47 @@ pub fn make_random_inode() -> InodeRef { char_inode(0x2000_0004, 0o666, 0x0108, 
 
 /// `/dev/urandom` inode (1:9 mem/urandom, `0o666`). # C: O(1)
 pub fn make_urandom_inode() -> InodeRef { char_inode(0x2000_0007, 0o666, 0x0109, Arc::new(RandomFileOps)) }
+
+/// The `mem` char driver (Linux `drivers/char/mem.c`, major 1) — ONE
+/// `CharDevOps` backing every mem minor, dispatching by minor to the SAME
+/// behaviour the devfs built-in inodes expose. Registered at boot via
+/// `register_chrdev(1, …)`.
+///
+/// Why this must exist: the built-in `/dev/null`,`/dev/zero`,… inodes bake
+/// their `f_op` directly into the devfs node, so they never registered a
+/// driver in the `cdev` registry. A userspace `mknod(path, S_IFCHR, MKDEV(1,3))`
+/// — which systemd's `PrivateDevices=`/`clone_device_node` performs to clone
+/// the standard nodes into a service's private `/dev` tmpfs — builds a
+/// `DeviceFileOps` node that dispatches through `lookup_chrdev(1:3)`. With no
+/// driver registered that lookup MISSED and `open(2)` returned `ENXIO`
+/// ("polkitd: Error opening /dev/null: No such device or address"). Registering
+/// the mem major makes the mknod'd node resolve to the real driver, matching
+/// Linux where `/dev/null` works via BOTH devtmpfs and a hand-`mknod`ed node.
+///
+/// Unknown minors return `ENXIO` (Linux mem `memory_open` rejects unregistered
+/// minors), so a stray `mknod c 1 42` still errors like Linux.
+pub struct MemCharDevOps;
+impl vfs::CharDevOps for MemCharDevOps {
+    /// # C: O(buf.len())
+    fn read(&self, devt: vfs::Devt, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match devt.minor() {
+            3 => Ok(0),                                                    // null: EOF
+            5 | 7 => { for x in buf.iter_mut() { *x = 0; } Ok(buf.len()) } // zero/full
+            8 | 9 => { random_fill(buf); Ok(buf.len()) }                   // random/urandom
+            11 => { let (n, _next) = klog::ring_read(off as usize, buf); Ok(n) } // kmsg
+            _ => Err(VfsError::Enxio),
+        }
+    }
+    /// # C: O(buf.len())
+    fn write(&self, devt: vfs::Devt, _off: u64, buf: &[u8]) -> KResult<usize> {
+        match devt.minor() {
+            3 | 5 | 8 | 9 => Ok(buf.len()),        // null/zero/random discard
+            7 => Err(VfsError::Eio),               // full: mirrors FullFileOps (write fails)
+            11 => { kmsg_write_record(buf); Ok(buf.len()) }
+            _ => Err(VfsError::Enxio),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -288,5 +344,37 @@ mod tests {
         add_entropy(&[]);
         let s1 = PRNG_STATE.load(Ordering::Relaxed);
         assert_eq!(s0, s1, "empty entropy must not change state");
+    }
+
+    /// A mknod'd char node on major 1 (systemd `PrivateDevices=` clones the
+    /// standard nodes this way) must dispatch through the registered `mem`
+    /// driver, not miss the cdev registry and return `ENXIO`. This is the
+    /// polkitd "Error opening /dev/null: No such device or address" bug.
+    #[test]
+    fn mem_driver_dispatches_after_register() {
+        use vfs::{Devt, VfsError};
+        // Without register_chrdev the cdev registry has no major 1, so a
+        // mknod'd node's lookup_chrdev(1:3) MISSES → the polkitd ENXIO.
+        // After registering the mem driver the same lookup resolves.
+        vfs::register_chrdev(1, alloc::sync::Arc::new(super::MemCharDevOps));
+        let ops = vfs::lookup_chrdev(Devt::new(1, 3)).expect("mem driver registered on major 1");
+
+        // /dev/null (1:3): read = EOF, write = swallow all.
+        let mut buf = [0xAAu8; 8];
+        assert_eq!(ops.read(Devt::new(1, 3), 0, &mut buf), Ok(0), "null read EOF");
+        assert_eq!(buf, [0xAAu8; 8], "null read leaves buf untouched");
+        assert_eq!(ops.write(Devt::new(1, 3), 0, b"discarded"), Ok(9), "null write swallows");
+        assert!(ops.open(Devt::new(1, 3)).is_ok(), "null open ok (not ENXIO)");
+
+        // /dev/zero (1:5): read zero-fills.
+        let mut z = [0xAAu8; 4];
+        assert_eq!(ops.read(Devt::new(1, 5), 0, &mut z), Ok(4));
+        assert_eq!(z, [0u8; 4], "zero read fills NUL");
+
+        // /dev/full (1:7): write fails like FullFileOps.
+        assert_eq!(ops.write(Devt::new(1, 7), 0, b"x"), Err(VfsError::Eio), "full write fails");
+
+        // Unknown minor still errors (Linux mem rejects unregistered minors).
+        assert_eq!(ops.read(Devt::new(1, 42), 0, &mut buf), Err(VfsError::Enxio));
     }
 }
