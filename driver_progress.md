@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B549-virtio-snd-eventq-drain-proof is active for proving
-virtio-snd drains EVENTQ from the sound softirq from fresh `main` at B548 PR
-#2640 merge commit `d6ffc91d`.
+Current marker: B549-virtio-snd-eventq-drain-proof is locally verified for
+virtio-snd EVENTQ drain proof from fresh `main` at B548 PR #2640 merge commit
+`d6ffc91d`; pending commit, push, PR, merge, and fresh-main sync.
 
 ## B549 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B549-virtio-snd-eventq-drain-proof | CLAIMED | Fresh `main` at B548 PR #2640 merge commit `d6ffc91d`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 549 -> 550. Target row: prove virtio-snd drains EVENTQ from the sound softirq. |
+| B549-virtio-snd-eventq-drain-proof | VERIFIED LOCALLY | Fresh `main` at B548 PR #2640 merge commit `d6ffc91d`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 30s and aarch64 reached `oxide login:` in 36s. `metadata/index.md` advanced B 549 -> 550. Source audit proves `drv-virtio-snd::lifecycle::install()` installs `event_softirq` on `softirq::Slot::SndEvent` after publishing child-owned `Ctx`, `raise_event()` raises that slot, `event_softirq()` walks all contexts, and `drain_eventq()` reads the EVENTQ used idx through named virtqueue layout constants, drains each new used element, records per-context/global event accounting, recycles valid descriptors into the avail ring, release-fences avail idx publication, and notifies EVENTQ. Added split hosted regression `eventq_drain_accounting_is_keyed_by_snd_context`, proving only the context with used events drains two entries, records the latest raw event, recycles descriptor ids 3/4, publishes avail idx 2, and notifies EVENTQ while the idle context remains unchanged. Checks pass: focused `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` with snd 14/14; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`event.rs` 64, `tests.rs` 425, `tests/drain.rs` 80, `tests/prepost.rs` 71, `lifecycle.rs` 251, `lib.rs` 130); branch smokes reached x86_64 `oxide login:` in 31s and aarch64 `oxide login:` in 36s. |
 
 ## B548 Current
 
