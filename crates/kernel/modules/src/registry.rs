@@ -1,22 +1,50 @@
-// Kernel modules surface — wraps `crate::loader` with a global
-// registry + a resolver backed by `crate::symtab`. NR_INIT_MODULE
-// / NR_FINIT_MODULE / NR_DELETE_MODULE dispatch into this.
-//
-// v1: no signature verification; no per-module W^X (the loader's
-// section bytes live in the heap, so they're RW; future P10-05+
-// work allocates with `mmap(EXEC)`).
+// Kernel modules registry: load, name, snapshot, unload lifecycle state.
 
-
-
-use alloc::sync::Arc;
+extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{load_module, LoadedModule, SymResolver};
 use sync::{Spinlock, Modules as ModulesLockClass};
 
-/// Kernel-wide resolver: forward to `crate::symtab::resolve`
-/// (the EXPORT_SYMBOL surface).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ModuleState {
+    Coming,
+    Live,
+    Going,
+}
+
+impl ModuleState {
+    /// # C: O(1)
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModuleState::Coming => "Loading",
+            ModuleState::Live   => "Live",
+            ModuleState::Going  => "Unloading",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModuleSnapshot {
+    pub name:     String,
+    pub size:     usize,
+    pub refcnt:   usize,
+    pub state:    ModuleState,
+    pub sections: usize,
+    pub symbols:  usize,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum RegistryError {
+    Inval,
+    Exists,
+    Load,
+    Busy,
+    Noent,
+}
+
 struct KernelSymResolver;
 impl SymResolver for KernelSymResolver {
     fn resolve(&self, name: &str) -> Option<u64> {
@@ -24,74 +52,131 @@ impl SymResolver for KernelSymResolver {
     }
 }
 
-/// Process-global registry. Each `LoadedModule` is held by an
-/// `Arc` so look-up + concurrent unload are tractable; v1 only
-/// pushes (no remove yet).
-static REGISTRY: Spinlock<Vec<Arc<LoadedModule>>, ModulesLockClass>
-    = Spinlock::new(Vec::new());
-
-/// Load + register a module from raw ELF ET_REL bytes.
-/// Returns the new module's index in the registry, or
-/// `None` on parse / reloc / undefined-symbol failure.
-/// # C: O(N_sections + N_relocs)
-pub fn load_blob(bytes: &[u8]) -> Option<usize> {
-    let r = KernelSymResolver;
-    match load_module(bytes, &r) {
-        Ok(m) => {
-            let mut g = REGISTRY.lock();
-            g.push(Arc::new(m));
-            Some(g.len() - 1)
-        }
-        Err(_) => None,
-    }
+struct ModuleRecord {
+    name:   String,
+    module: LoadedModule,
+    refcnt: usize,
+    state:  ModuleState,
 }
 
-/// Snapshot the registry (id, section_count, named_symbol_count)
-/// for `/proc/modules`-style introspection. v1 stores no name on
-/// the module; the name comes from the .modinfo section once we
-/// parse it.
+static REGISTRY: Spinlock<Vec<Option<ModuleRecord>>, ModulesLockClass>
+    = Spinlock::new(Vec::new());
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+/// Load + register a module from raw ELF ET_REL bytes.
+/// # C: O(N_sections + N_relocs)
+pub fn load_blob(bytes: &[u8]) -> Option<usize> {
+    load_blob_named(bytes, None).ok()
+}
+
+/// Load + register a module with an optional caller-supplied name.
+/// # C: O(N_sections + N_relocs + N_modules)
+pub fn load_blob_named(bytes: &[u8], name: Option<&str>) -> Result<usize, RegistryError> {
+    let r = KernelSymResolver;
+    let m = load_module(bytes, &r).map_err(|_| RegistryError::Load)?;
+    let final_name = match name {
+        Some(n) => { validate_name(n)?; String::from(n) }
+        None => synthetic_name(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
+    };
+    let mut g = REGISTRY.lock();
+    if g.iter().any(|slot| slot.as_ref().is_some_and(|r| r.name == final_name)) {
+        return Err(RegistryError::Exists);
+    }
+    let idx = g.len();
+    g.push(Some(ModuleRecord { name: final_name, module: m, refcnt: 0, state: ModuleState::Live }));
+    Ok(idx)
+}
+
+/// Snapshot for `/proc/modules`-style introspection.
 /// # C: O(N modules)
-pub fn snapshot() -> Vec<(usize, usize, usize)> {
-    REGISTRY.lock().iter().enumerate()
-        .map(|(i, m)| (i, m.sections.len(), m.symbols.len()))
+pub fn snapshot() -> Vec<ModuleSnapshot> {
+    REGISTRY.lock().iter()
+        .filter_map(|slot| slot.as_ref().map(|r| ModuleSnapshot {
+            name:     r.name.clone(),
+            size:     module_size(&r.module),
+            refcnt:   r.refcnt,
+            state:    r.state,
+            sections: r.module.sections.len(),
+            symbols:  r.module.symbols.len(),
+        }))
         .collect()
 }
 
 /// Number of currently-loaded modules.
-/// # C: O(1)
-pub fn count() -> usize { REGISTRY.lock().len() }
-
-/// Unload module at registry slot `idx`. Replaces the entry
-/// with `None`-equivalent (we use a tombstone Arc clone of an
-/// empty marker since the registry is Vec<Arc<…>>; v1 takes a
-/// simpler path: drain, drop, rebuild). Returns `false` if the
-/// idx is out of range. Real Linux delete_module checks ref
-/// count before unloading; v1 always unloads.
 /// # C: O(N)
-pub fn unload(idx: usize) -> bool {
-    let mut g = REGISTRY.lock();
-    if idx >= g.len() { return false; }
-    g.remove(idx);
-    true
+pub fn count() -> usize {
+    REGISTRY.lock().iter().filter(|m| m.is_some()).count()
 }
 
-/// Module name for the boot trace. Currently fixed; real impl
-/// reads .modinfo "name=…".
-#[allow(dead_code)]
+/// Legacy slot unload retained for internal callers; sys_delete_module uses names.
 /// # C: O(1)
-pub fn module_name(_idx: usize) -> Option<String> { Some(String::from("module")) }
+pub fn unload(idx: usize) -> bool {
+    let mut g = REGISTRY.lock();
+    unload_slot(&mut g, idx).is_ok()
+}
 
-/// Register the kernel's canonical exported symbols so modules
-/// can resolve common helpers without hand-rolled stubs. Called
-/// once at boot.
-/// # SAFETY: caller is the boot path; no other CPU has yet seen
-/// the symtab entries.
+/// Linux-shaped unload by module name.
+/// # C: O(N)
+pub fn unload_by_name(name: &str) -> Result<(), RegistryError> {
+    validate_name(name)?;
+    let mut g = REGISTRY.lock();
+    let idx = g.iter().position(|slot| slot.as_ref().is_some_and(|r| r.name == name))
+        .ok_or(RegistryError::Noent)?;
+    unload_slot(&mut g, idx)
+}
+
+/// # C: O(1)
+pub fn module_name(idx: usize) -> Option<String> {
+    REGISTRY.lock().get(idx).and_then(|s| s.as_ref().map(|r| r.name.clone()))
+}
+
+/// Register built-in exported symbols at boot.
+/// # SAFETY: caller is the boot path; no other CPU has yet seen the symtab entries.
 /// # C: O(1)
 pub unsafe fn init_exports() {
     use crate::symtab::export;
-    export("klog_write_raw",     klog_write_raw_thunk     as usize, false);
-    export("klog_write_dec_u64", klog_write_dec_u64_thunk as usize, false);
-    export("kassert_thunk",      kassert_thunk            as usize, false);
+    export("klog_write_raw",     klog_write_raw_thunk     as *const () as usize, false);
+    export("klog_write_dec_u64", klog_write_dec_u64_thunk as *const () as usize, false);
+    export("kassert_thunk",      kassert_thunk            as *const () as usize, false);
+}
+
+fn unload_slot(g: &mut Vec<Option<ModuleRecord>>, idx: usize) -> Result<(), RegistryError> {
+    let rec = g.get_mut(idx).ok_or(RegistryError::Noent)?
+        .as_mut().ok_or(RegistryError::Noent)?;
+    if rec.refcnt != 0 { return Err(RegistryError::Busy); }
+    rec.state = ModuleState::Going;
+    g[idx] = None;
+    Ok(())
+}
+
+fn validate_name(name: &str) -> Result<(), RegistryError> {
+    if name.is_empty() || name.len() > 56 { return Err(RegistryError::Inval); }
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return Err(RegistryError::Inval);
+    }
+    Ok(())
+}
+
+fn module_size(m: &LoadedModule) -> usize {
+    m.sections.iter().map(|s| s.bytes.len()).sum()
+}
+
+fn synthetic_name(id: usize) -> String {
+    let mut s = String::from("module_");
+    push_dec(&mut s, id);
+    s
+}
+
+fn push_dec(s: &mut String, mut n: usize) {
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 { break; }
+    }
+    for b in &buf[i..] { s.push(*b as char); }
 }
 
 extern "C" fn klog_write_raw_thunk(p: *const u8, len: usize) {
@@ -122,4 +207,82 @@ extern "C" fn kassert_thunk(cond: u64, msg_p: *const u8, msg_len: usize) {
         klog::write_raw(b"\n");
     }
     #[cfg(not(feature = "debug-modules"))] { let _ = (msg_p, msg_len); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use crate::PlacedSection;
+
+    fn reset() {
+        REGISTRY.lock().clear();
+        NEXT_ID.store(0, Ordering::Relaxed);
+    }
+
+    fn empty_module() -> LoadedModule {
+        LoadedModule { sections: Vec::new(), symbols: BTreeMap::new() }
+    }
+
+    fn insert(name: &str, refcnt: usize) {
+        REGISTRY.lock().push(Some(ModuleRecord {
+            name: String::from(name),
+            module: empty_module(),
+            refcnt,
+            state: ModuleState::Live,
+        }));
+    }
+
+    #[test]
+    fn snapshot_reports_name_state_and_counts() {
+        reset();
+        let mut m = empty_module();
+        m.sections.push(PlacedSection {
+            name: String::from(".text"),
+            bytes: alloc::vec![0u8; 12],
+            vbase: 0,
+            flags: 0,
+        });
+        m.symbols.insert(String::from("init_module"), 1);
+        REGISTRY.lock().push(Some(ModuleRecord {
+            name: String::from("sample"),
+            module: m,
+            refcnt: 2,
+            state: ModuleState::Live,
+        }));
+        let s = snapshot();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "sample");
+        assert_eq!(s[0].size, 12);
+        assert_eq!(s[0].refcnt, 2);
+        assert_eq!(s[0].state.as_str(), "Live");
+        assert_eq!(s[0].sections, 1);
+        assert_eq!(s[0].symbols, 1);
+    }
+
+    #[test]
+    fn unload_by_name_removes_only_matching_live_record() {
+        reset();
+        insert("one", 0);
+        insert("two", 0);
+        assert_eq!(unload_by_name("one"), Ok(()));
+        assert_eq!(count(), 1);
+        assert_eq!(module_name(1), Some(String::from("two")));
+        assert_eq!(unload_by_name("one"), Err(RegistryError::Noent));
+    }
+
+    #[test]
+    fn unload_busy_module_fails() {
+        reset();
+        insert("busy", 1);
+        assert_eq!(unload_by_name("busy"), Err(RegistryError::Busy));
+        assert_eq!(count(), 1);
+    }
+
+    #[test]
+    fn invalid_names_are_rejected() {
+        reset();
+        assert_eq!(unload_by_name(""), Err(RegistryError::Inval));
+        assert_eq!(unload_by_name("bad/name"), Err(RegistryError::Inval));
+    }
 }

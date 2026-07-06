@@ -5,10 +5,9 @@
 // resolution with GPL gating, per-module export bookkeeping for the
 // unload path.
 //
-// Out of scope (follow-ups): full `finit_module` / `delete_module`
-// flow (`18§5`/`§6`) — needs ELF relocation + page mapping + signature
-// verification; per-module W^X memory; refcount + unload safety;
-// CRC of built-in symtab; `__ksymtab` linker section walking.
+// Out of scope (follow-ups): signature verification; per-module W^X
+// memory; executable init/exit callbacks; async drain; CRC of built-in
+// symtab; `__ksymtab` linker section walking.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -51,16 +50,21 @@ pub enum Error {
 pub(crate) type StubResult<T> = core::result::Result<T, Error>;
 
 /// Initialization entry; called by the kernel boot phase per `00§3` /
-/// `boot-flow.md`. v1 returns `NotImplemented`; bodies in P1-N.
+/// `boot-flow.md`.
 ///
 /// # SAFETY: caller is the boot path, runs single-CPU with IRQs off
 /// per `boot-flow.md`. Subsystem-specific preconditions documented at
 /// the implementation site.
 ///
-/// # C: O(N_pfn) once at boot
+/// # C: O(1) once at boot
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init() -> StubResult<()> {
-    Err(Error::NotImplemented)
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        // SAFETY: caller is the boot path before module loading is visible.
+        unsafe { registry::init_exports() };
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -68,13 +72,13 @@ mod stub_tests {
     use super::*;
 
     #[test]
-    fn init_returns_not_implemented() {
+    fn init_succeeds() {
         // SAFETY: hosted-test entry; nothing else has touched the subsystem; init's preconditions trivially hold.
         let r = unsafe { init() };
-        assert_eq!(r, Err(Error::NotImplemented));
+        assert_eq!(r, Ok(()));
     }
 }
 
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod registry;
