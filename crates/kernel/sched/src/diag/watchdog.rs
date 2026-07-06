@@ -60,6 +60,9 @@ static WD_START_NS: AtomicU64 = AtomicU64::new(0);
 static WD_FIRED: AtomicBool = AtomicBool::new(false);
 static WD_ARMED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "debug-taskdump")]
+static WD_TASKDUMP_NS: AtomicU64 = AtomicU64::new(0);
+
 const NOPROG_NS: u64 = 40_000_000_000;
 static WD_NOPROG_SW: AtomicU64 = AtomicU64::new(0);
 static WD_NOPROG_NS: AtomicU64 = AtomicU64::new(0);
@@ -95,6 +98,23 @@ pub fn watchdog_tick(now_ns: u64) {
     if let Some(_secs) = fired {
         #[cfg(feature = "debug-watchdog")]
         report_lockup(_secs, beat.tid, cur);
+    }
+
+    // debug-taskdump: periodic all-task snapshot (state/last-syscall/futex/exe)
+    // every TASKDUMP_NS. Unlike the no-progress wedge below, this fires even
+    // while the system makes progress — the case where ONE task (e.g. a udev
+    // worker hung after "Device processed") is stuck but others keep running.
+    #[cfg(feature = "debug-taskdump")]
+    {
+        const TASKDUMP_NS: u64 = 20_000_000_000;
+        let last = WD_TASKDUMP_NS.load(Ordering::Relaxed);
+        if now_ns.wrapping_sub(last) >= TASKDUMP_NS {
+            WD_TASKDUMP_NS.store(now_ns, Ordering::Relaxed);
+            klog::write_raw(b"\n[TASKDUMP] t=");
+            klog::write_dec_u64(now_ns / 1_000_000_000);
+            klog::write_raw(b"s\n");
+            super::emit::dump_tasks();
+        }
     }
 
     let sw = beat.switches;
