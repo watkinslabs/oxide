@@ -1,4 +1,6 @@
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::devfs::fileops::make_evdev_inode;
 use crate::devfs::shared::{EVDEV_DEVICES, EVDEV_GRABS, EVDEV_NODES};
@@ -17,8 +19,10 @@ pub fn register_node(id: u32, parent: Option<(&'static str, alloc::string::Strin
         return false;
     }
     let factory: drv::NodeFactory = Arc::new(move || make_evdev_inode(id));
+    let env = input_uevent_env(id);
     let mut dev = drv::Device::new("input", alloc::format!("event{id}"), 0, 0, id)
         .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))
+        .with_uevent_env(env)
         .with_node_factory(factory);
     if let Some((bus, addr)) = parent {
         dev = dev.with_parent(bus, addr);
@@ -29,6 +33,27 @@ pub fn register_node(id: u32, parent: Option<(&'static str, alloc::string::Strin
     };
     EVDEV_DEVICES.lock()[slot] = Some(dev);
     true
+}
+
+fn utf8_payload(prefix: &str, bytes: &[u8]) -> Option<String> {
+    let text = core::str::from_utf8(bytes).ok()?.trim_end_matches('\0');
+    if text.is_empty() { None } else { Some(alloc::format!("{prefix}=\"{text}\"")) }
+}
+
+fn input_uevent_env(id: u32) -> Vec<String> {
+    let mut env = Vec::new();
+    let Some(dev) = crate::registry::device(id) else { return env; };
+    env.push(alloc::format!(
+        "PRODUCT={:x}/{:x}/{:x}/{:x}",
+        dev.ids.bustype, dev.ids.vendor, dev.ids.product, dev.ids.version,
+    ));
+    if let Some(name) = utf8_payload("NAME", &dev.name[..dev.name_len]) {
+        env.push(name);
+    }
+    if let Some(serial) = utf8_payload("UNIQ", &dev.serial[..dev.serial_len]) {
+        env.push(serial);
+    }
+    env
 }
 
 pub fn unregister_node(id: u32) -> bool {

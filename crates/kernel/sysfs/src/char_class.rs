@@ -36,6 +36,7 @@ struct CharDevInfo {
     addr: String,
     devname: String,
     dev_t: (u32, u32),
+    uevent_env: Vec<String>,
     parent_bus: Option<&'static str>,
     parent_addr: Option<String>,
 }
@@ -50,6 +51,7 @@ fn char_devs(class: &'static str) -> Vec<CharDevInfo> {
                 addr: d.addr.clone(),
                 devname: d.devname.clone().unwrap_or_else(|| d.addr.clone()),
                 dev_t,
+                uevent_env: d.uevent_env.clone(),
                 parent_bus: d.parent_bus,
                 parent_addr: d.parent_addr.clone(),
             })
@@ -62,13 +64,17 @@ fn char_by_addr(class: &'static str, addr: &str) -> Option<CharDevInfo> {
 }
 
 fn uevent_body(info: &CharDevInfo) -> Vec<u8> {
-    alloc::format!(
+    let mut body = alloc::format!(
         "MAJOR={}\nMINOR={}\nDEVNAME={}\n",
         info.dev_t.0,
         info.dev_t.1,
         info.devname,
-    )
-    .into_bytes()
+    );
+    for entry in info.uevent_env.iter() {
+        body.push_str(entry);
+        body.push('\n');
+    }
+    body.into_bytes()
 }
 
 fn parent_root_leaf(bus: &str) -> &'static str {
@@ -117,8 +123,10 @@ impl FileOps for CharUeventOps {
         let devname = alloc::format!("DEVNAME={}", d.info.devname);
         let maj = alloc::format!("MAJOR={}", d.info.dev_t.0);
         let min = alloc::format!("MINOR={}", d.info.dev_t.1);
+        let mut env = Vec::from([devname.as_str(), maj.as_str(), min.as_str()]);
+        env.extend(d.info.uevent_env.iter().map(|entry| entry.as_str()));
         ::netlink::emit_uevent_with_env(
-            crate::uevent_action(b), &devpath, d.class, &[&devname, &maj, &min]);
+            crate::uevent_action(b), &devpath, d.class, &env);
         Ok(b.len())
     }
 }

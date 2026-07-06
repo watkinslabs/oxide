@@ -49,6 +49,7 @@ pub(super) fn dev_uevent_env(dev: &drv::Device) -> Vec<String> {
     if let Some(name) = dev.devname.as_ref() {
         env.push(alloc::format!("DEVNAME={}", name));
     }
+    env.extend(dev.uevent_env.iter().cloned());
     // Block disks: udev block rules key on DEVTYPE (60§6.3a). Whole-disk nodes
     // are DEVTYPE=disk (partitions would be =partition; v1 has no partitions).
     if dev.bus == "block" {
