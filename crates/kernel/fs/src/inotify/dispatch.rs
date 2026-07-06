@@ -64,7 +64,7 @@ fn dispatch(inode: &InodeRef, mask_bit: u32, self_event: bool, cookie: u32) {
 pub(crate) fn fire_self(inode: &InodeRef, mask_bit: u32) { dispatch(inode, mask_bit, true, 0); }
 
 /// A dir-entry event reported on watched directory `parent`. # C: as dispatch
-fn fire_child(parent: &InodeRef, mask_bit: u32, cookie: u32) { dispatch(parent, mask_bit, false, cookie); }
+pub(crate) fn fire_child(parent: &InodeRef, mask_bit: u32, cookie: u32) { dispatch(parent, mask_bit, false, cookie); }
 
 /// Fire `IN_MODIFY` on the inode currently registered at `path`.
 /// Leaf crates (cgroup) that mutate a synthetic file's content without

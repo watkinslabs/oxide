@@ -73,7 +73,11 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
         }
     };
     match r {
-        Ok(())  => { crate::pathresolve::d_drop_path(&p); 0 }
+        Ok(())  => {
+            crate::pathresolve::d_drop_path(&p);
+            vfs::fire_dirent_create(crate::namei_common::parent_path(&p), &name);
+            0
+        }
         Err(e)  => {
             crate::namei_common::trace_run_vfs_error(b"mknod", &p, e);
             errno_from_vfs(e)

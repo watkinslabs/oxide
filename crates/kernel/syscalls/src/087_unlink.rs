@@ -58,6 +58,7 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
                 }
                 None    => crate::pathresolve::d_delete_path(&p),
             }
+            vfs::fire_dirent_delete(crate::namei_common::parent_path(&p), &name);
             0
         }
         Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
