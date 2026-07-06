@@ -14,6 +14,9 @@ const VIRTIO_FRAME_BYTES: usize = 0x1000;
 const VIRTQ_DESC_BYTES: usize = 16;
 const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
 const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
+pub(super) const VIRTIO_PCI_PAGE_SIZE: u64 = 0x1000;
+pub(super) const VIRTIO_PCI_PAGE_OFFSET_MASK: u64 = VIRTIO_PCI_PAGE_SIZE - 1;
+pub(super) const VIRTIO_PCI_PAGE_BASE_MASK: u64 = !VIRTIO_PCI_PAGE_OFFSET_MASK;
 
 pub(crate) use devres::VirtioProbeDevres;
 pub(super) use msix::{
@@ -230,7 +233,7 @@ impl TransportMappings {
         let Some(nfy_pa) = virtio::notify_pa(notify_cap, bars, notify_off) else {
             return 0;
         };
-        let n_page_pa = nfy_pa & !0xFFF;
+        let n_page_pa = nfy_pa & VIRTIO_PCI_PAGE_BASE_MASK;
         let n_page_off = nfy_pa - n_page_pa;
         self.map_page(n_page_pa) + n_page_off
     }
@@ -247,7 +250,7 @@ impl TransportMappings {
             return 0;
         };
         let isr_pa = ibar_pa + isr_cap.offset as u64;
-        let page_pa = isr_pa & !0xFFF;
+        let page_pa = isr_pa & VIRTIO_PCI_PAGE_BASE_MASK;
         let page_off = isr_pa - page_pa;
         let isr_va = self.map_page(page_pa) + page_off;
         // SAFETY: isr_va is decoded from the virtio-pci ISR capability and
