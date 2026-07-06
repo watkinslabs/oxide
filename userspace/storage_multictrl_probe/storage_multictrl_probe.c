@@ -166,7 +166,9 @@ int main(void) {
     if (require_count("nvme", 2, "storage_nvme_initial") ||
         require_block_name("nvme0n1", "storage_nvme0n1_initial") ||
         require_block_name("nvme1n1", "storage_nvme1n1_initial") ||
-        require_count("sd", 2, "storage_ahci_initial")) return 1;
+        require_count("sd", 2, "storage_ahci_initial") ||
+        require_block_name("sda", "storage_sda_initial") ||
+        require_block_name("sdb", "storage_sdb_initial")) return 1;
     if (exercise("nvme", "/sys/bus/pci/drivers/nvme", "nvme") ||
         exercise("ahci", "/sys/bus/pci/drivers/ahci", "sd")) return 1;
     emit_line("driver_path_smoke: PASS - storage-multictrl-rebind\n");
