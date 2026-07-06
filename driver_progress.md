@@ -5,15 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B565-nvme-duplicate-bind-reject-proof is claimed from fresh
-`main` at B564 PR #2656 merge commit `8373813c`; next gate is source audit,
-hosted storage/PCI tests, and x86_64/aarch64 storage smokes.
+Current marker: B565-nvme-duplicate-bind-reject-proof is verified locally from
+fresh `main` at B564 PR #2656 merge commit `8373813c`; next gate is PR merge
+and post-merge fresh-main smokes.
 
 ## B565 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B565-nvme-duplicate-bind-reject-proof | ACTIVE | Fresh `main` at B564 PR #2656 merge commit `8373813c`; B564 post-merge fresh-main storage multicontroller proof passed with x86_64 log `/tmp/b564-postmerge-x86-storage-multictrl.log` and aarch64 log `/tmp/b564-postmerge-arm-storage-multictrl.log`. `metadata/index.md` advanced B 565 -> 566. Active target: prove NVMe duplicate binds are rejected before controller bring-up on x86_64 and aarch64. |
+| B565-nvme-duplicate-bind-reject-proof | VERIFIED LOCAL | Fresh `main` at B564 PR #2656 merge commit `8373813c`; B564 post-merge fresh-main storage multicontroller proof passed with x86_64 log `/tmp/b564-postmerge-x86-storage-multictrl.log` and aarch64 log `/tmp/b564-postmerge-arm-storage-multictrl.log`. `metadata/index.md` advanced B 565 -> 566. Tightened `/bin/storage_multictrl_probe` so it writes a currently bound NVMe PCI address back to `/sys/bus/pci/drivers/nvme/bind`, requires `errno=16`, verifies the device remains bound, and verifies the `nvme` block count is unchanged before unbind/rebind. Source audit proves driver-core `bind_inner()` returns `AlreadyBound` before driver lookup/probe when the model PCI device is already bound, sysfs maps that to `EBUSY`, and `imp::init()` independently rejects an existing typed `pci::Bdf` record before `Nvme::bring_up()`. Checks pass: `cargo test -q -p drv-nvme -p pci-boot -p pci -p drv -p block -p sysfs -- --nocapture --test-threads=1` with block 33/33, drv 31/31, drv-nvme 7/7, pci 17/17, sysfs 32/32, and pci-boot compile-only; `git diff --check`; line caps (`drv-nvme/lib.rs` 413, `drv/model.rs` 481, `sysfs/bus/driver.rs` 117, `storage_multictrl_probe.c` 202); `KEEP_LOG=/tmp/b565-x86-storage-multictrl.log tools/boot-smoke-storage-multictrl.sh x86 300` passed, including `storage_nvme_duplicate_bind: PASS errno=16` and unchanged count before rebind; `KEEP_LOG=/tmp/b565-arm-storage-multictrl.log tools/boot-smoke-storage-multictrl.sh arm 300` passed with the same checks. |
 
 ## B564 Current
 
