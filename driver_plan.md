@@ -2,10 +2,10 @@
 
 Date: 2026-07-05
 
-ACTIVE NOW: B510-virtio-probe-state-boundary; ACTIVE; source audit starting.
+ACTIVE NOW: none; B510 verified on x86_64 and aarch64, next row not claimed yet.
 
-Current active item: move remaining virtio-pci transport ownership behind an
-explicit `VirtioProbeState` boundary or prove current source already does so.
+Current active item: none. Claim next row only after B510 commit, PR, merge,
+fresh main sync, and `metadata/index.md` branch number check.
 
 Next gate after merge: return to fresh `origin/main` before claiming B511 using
 `metadata/index.md`.
@@ -175,7 +175,7 @@ Status legend:
 | SOURCE OK |  | Virtio-pci owns vring frame publication/teardown records for successful child probes. |
 | SOURCE OK |  | Virtio-pci MSI-X state is owned optional/plural binding rather than zero-sentinel fields. |
 | VERIFIED | B508-msix-teardown-order | MSI-X teardown masks all bound table entries before disabling MSI-X, disables each function capability once, frees MSI IDs only after function disable, and drops PCI command memory/bus-master decode after MSI-X teardown on both persistent remove and failed-probe devres cleanup. Added named PCI MSI-X constants/control helper/teardown step planner with hosted regressions. Checks pass: `cargo test -q -p pci -- --nocapture --test-threads=1` 14/14; broad hosted pci-boot/virtio/all virtio-child driver gate; `git diff --check`; touched files under line caps; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 34s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
-| ACTIVE | B510-virtio-probe-state-boundary | >>> ACTIVE >>> `VirtioProbeState` exists; audit current `pci-boot` virtio probe/transport code and move remaining transport ownership behind the explicit state/boundary if gaps remain. Do not mark VERIFIED from old ledger claims; require source proof, focused hosted coverage where practical, line-cap check, `git diff --check`, and x86_64/aarch64 smoke evidence before merge. |
+| VERIFIED | B510-virtio-probe-state-boundary | `VirtioProbeState` is now an explicit `virtio_drv::probe_state` owner boundary instead of living inside the main probe body. Source audit proves BAR capability mapping, `TransportMappings`, MSI-X binding collection, queue MSI-X vector resolution, common-cfg bring-up, notify mapping/kick/status observation, ISR sampling, net boot payload handoff, and final `VirtioProbeDevres` construction are owned by `VirtioProbeState`; `probe.rs` now only acquires PCI state, builds child facts/trace, and exposes publish/release APIs. Checks pass: broad hosted driver compile gate for `pci-boot`, `virtio`, and all virtio child drivers; `git diff --check`; touched Rust files under 500 lines (`probe.rs` 178, `probe_state.rs` 298); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 36s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 42s. |
 | VERIFIED |  | Shared `VirtioResources` / `VirtQueueResource` handoff exists. |
 | VERIFIED |  | Queue lookup validation centralized through `require_queue`. |
 | VERIFIED |  | Child probes declare `VirtioChildRequirements`. |
