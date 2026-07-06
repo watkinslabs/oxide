@@ -2,13 +2,13 @@
 
 Date: 2026-07-06
 
-ACTIVE NOW: none; B538 verified locally pending PR/merge
+ACTIVE NOW: B540-msix-queue-indexed-callback-proof
 
-Current active item: none. Last completed local verification:
-`B538-msix-multi-entry-lifetime-proof`.
+Current active item: row 215 in audit on branch
+`B540-msix-queue-indexed-callback-proof`.
 
-Next gate: commit B538 verification docs, push, open PR, merge, sync fresh
-`main`, run post-merge x86_64/aarch64 smokes, then claim next row.
+Next gate: prove extra queue plans resolve IRQ callbacks into queue-indexed
+MSI-X entries, then run hosted and x86_64/aarch64 smoke gates before PR.
 
 Scope: working audit ledger for every driver-system item carried by
 `driver_anal.md`. `driver_progress.md` records current evidence and test
@@ -213,7 +213,7 @@ Status legend:
 | VERIFIED | B509-msix-function-mask-live-proof | Virtio-pci MSI-X live RX proof now passes on both architectures. Transport enables MSI-X with the function mask held, writes and reads back table entries, programs virtqueue MSI-X vectors before `DRIVER_OK`, clears the function mask only after queue setup, and preserves transport-owned MSI-X teardown. ARM fix was the architectural ITS translation-frame doorbell: `GITS_TRANSLATER = ITS_BASE + 0x10040`, not the control-frame `0x0040`; the failing ARM diagnostic had proved q0 RX completion without a PCI-originated MSI, and the corrected table readback now targets `msg_addr=0x8090040` on this QEMU. Checks pass: `cargo check -q -p arch-irq -p firmware -p pci-boot -p virtio -p drv-virtio-net`; `git diff --check`; clean aarch64 smoke `/tmp/b509-arm-msix-net-rx-final.log` shows `msix_net_rx_probe: PASS rx=103 bytes from 10.0.2.3`; clean x86_64 smoke `/tmp/b509-x86-msix-net-rx-final.log` shows the same PASS. |
 | VERIFIED | B536-msix-entry-bounds-proof | MSI-X binding helper validates requested table entry against decoded size: PCI now owns `msix_table_entry_offset(MsixCap, entry_index)`, which rejects entries at or above decoded `table_size` and computes the table-relative byte offset from `MSIX_TABLE_ENTRY_BYTES`; virtio-pci binding consumes that helper and uses checked BAR-relative address addition before mapping/programming an MSI-X table entry. Hosted regressions prove first and last decoded entries are accepted and entries outside decoded size are rejected. Checks pass: focused `cargo test -q -p pci -- --nocapture --test-threads=1` with PCI 17/17; broad PCI/virtio child gate; `git diff --check`; line caps (`caps.rs` 224, `tests.rs` 375, `virtio_transport/msix.rs` 470); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 33s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
 | VERIFIED | B538-msix-multi-entry-lifetime-proof | Transport-owned MSI-X binding lifetime handles multiple entries: source audit proves `VirtioProbeState` stores multiple `MsixBinding` records in `self.msix`, `bind_msix_queue()` deduplicates by queue vector while allowing distinct entries, successful probe moves the full binding vector into `VirtioProbeDevres`, publish moves it into persistent `TransportRecord`, failed-probe and record teardown both call `release_msix_bindings`, teardown masks every binding entry before disabling unique caps and frees every MSI id, and unmask/disable paths dedupe by cap offset for multi-entry same-cap devices. Existing hosted PCI regression `msix_teardown_masks_all_entries_before_disabling_function_and_command` proves all entries in a multi-entry binding set are masked before function/command disable. Checks pass: focused `cargo test -q -p pci -- --nocapture --test-threads=1` with PCI 17/17; broad PCI/virtio child gate; `git diff --check`; line caps (`virtio_transport/msix.rs` 470, `virtio_transport/devres.rs` 68, `virtio_drv/probe_state.rs` 298, `caps.rs` 224, `tests.rs` 375); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
-| SOURCE OK |  | Extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |
+| >>> ACTIVE >>> IN AUDIT | B540-msix-queue-indexed-callback-proof | Extra queue plans resolve IRQ callbacks into queue-indexed MSI-X entries. |
 | SOURCE OK |  | Virtio-vsock reads guest CID in child driver from generic config resource. |
 | SOURCE OK |  | Dead pci-boot vsock config pass-through removed. |
 | VERIFIED | B511-vsock-failed-install-ownership | Virtio-vsock failed install owns reserved endpoint and bounce frames until installed transport takes ownership: `VsockProbeState` reserves the net endpoint before frame allocation, frees still-owned frames and cancels the reservation in `Drop`, transfers frame ownership only when the context is inserted, and transfers endpoint ownership only after `driver_publish_reserved` succeeds. Hosted regressions prove reservation-drop cancellation and publish-failure cleanup with a live duplicate-CID endpoint unaffected. Checks pass: `cargo test -q -p drv-virtio-vsock -- --nocapture --test-threads=1` 9/9; `cargo test -q -p net vsock -- --nocapture --test-threads=1` 28/28; broad virtio driver gate; `git diff --check`; touched Rust files under 500 lines; `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 32s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 38s. |
