@@ -29,17 +29,45 @@ pub struct UnixPair {
     /// is woken when end B writes (write(end=B) advances b_to_a).
     pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
-    /// SCM_RIGHTS bursts queued by writes on each direction.
-    pub a_to_b_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
-    pub b_to_a_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
     /// Peer credentials per end (`SO_PEERCRED`).
     pub cred_a: EndCred,
     pub cred_b: EndCred,
 }
 
+/// One directional byte queue plus its in-band SCM_RIGHTS bursts.
+///
+/// S8 fix: SCM_RIGHTS fds on a SOCK_STREAM are NOT held in a FIFO
+/// decoupled from byte position (the old `a_to_b_fds`/`b_to_a_fds`
+/// queues), because that let a recvmsg pop the front burst regardless
+/// of which bytes it read and desync a D-Bus reply's fd onto an earlier
+/// fd-less message (logind Inhibit/CreateSession fd dropped). Instead
+/// each burst is tagged with the absolute stream offset of the FIRST
+/// byte it rides with (`produced` at the carrying write), matching
+/// Linux `unix_stream_read_generic` where an skb's `fp` fds ride that
+/// skb's first byte. `produced`/`consumed` are monotonic byte counters.
 pub struct UnixRing {
     pub buf: VecDeque<u8>,
     pub closed_writer: bool,
+    /// Total bytes ever pushed into `buf` (monotonic; drains don't lower it).
+    pub produced: u64,
+    /// Total bytes ever drained from `buf` (monotonic).
+    pub consumed: u64,
+    /// SCM_RIGHTS bursts, each tagged with the absolute stream offset of
+    /// the first byte they ride with. FIFO / ascending by offset.
+    pub fds: VecDeque<(u64, Vec<Arc<vfs::File>>)>,
+}
+
+impl UnixRing {
+    /// # C: O(1)
+    fn new() -> Self {
+        Self {
+            buf: VecDeque::new(),
+            closed_writer: false,
+            produced: 0,
+            consumed: 0,
+            fds: VecDeque::new(),
+        }
+    }
 }
 
 impl UnixPair {
@@ -47,16 +75,14 @@ impl UnixPair {
     /// # C: O(1)
     pub fn new() -> alloc::sync::Arc<Self> {
         alloc::sync::Arc::new(Self {
-            a_to_b: Spinlock::new(UnixRing { buf: VecDeque::new(), closed_writer: false }),
-            b_to_a: Spinlock::new(UnixRing { buf: VecDeque::new(), closed_writer: false }),
+            a_to_b: Spinlock::new(UnixRing::new()),
+            b_to_a: Spinlock::new(UnixRing::new()),
             #[cfg(target_os = "oxide-kernel")]
             a_to_b_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
             b_to_a_waiters: sched::live::WaitList::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
-            a_to_b_fds: Spinlock::new(VecDeque::new()),
-            b_to_a_fds: Spinlock::new(VecDeque::new()),
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
         })
@@ -78,41 +104,6 @@ impl UnixPair {
             crate::UnixEnd::A => self.cred_b.get(),
             crate::UnixEnd::B => self.cred_a.get(),
         }
-    }
-
-    /// Queue a SCM_RIGHTS burst from `end` for the peer to pick up
-    /// on its next recvmsg-with-cmsg.
-    /// # C: O(1)
-    pub fn push_fds(&self, end: UnixEnd, fds: alloc::vec::Vec<Arc<vfs::File>>) {
-        if fds.is_empty() {
-            return;
-        }
-        let mut g = match end {
-            UnixEnd::A => self.a_to_b_fds.lock(),
-            UnixEnd::B => self.b_to_a_fds.lock(),
-        };
-        g.push_back(fds);
-    }
-
-    /// Pop the next SCM_RIGHTS burst queued for the reader at `end`.
-    /// `end == A` consumes from b_to_a_fds. Returns empty when none.
-    /// # C: O(1)
-    pub fn pop_fds(&self, end: UnixEnd) -> alloc::vec::Vec<Arc<vfs::File>> {
-        let mut g = match end {
-            UnixEnd::A => self.b_to_a_fds.lock(),
-            UnixEnd::B => self.a_to_b_fds.lock(),
-        };
-        g.pop_front().unwrap_or_default()
-    }
-
-    /// True if reader at `end` has a fd burst pending.
-    /// # C: O(1)
-    pub fn has_fds(&self, end: UnixEnd) -> bool {
-        let g = match end {
-            UnixEnd::A => self.b_to_a_fds.lock(),
-            UnixEnd::B => self.a_to_b_fds.lock(),
-        };
-        !g.is_empty()
     }
 
     /// F181a: register an end's epoll-subscriber list. Called when
@@ -143,6 +134,20 @@ impl UnixPair {
     /// Returns the number of bytes accepted (full byte count for v1).
     /// # C: O(data.len())
     pub fn write(&self, end: UnixEnd, data: &[u8]) -> usize {
+        self.write_inner(end, data, Vec::new())
+    }
+
+    /// Append `data` plus a SCM_RIGHTS burst, tagging the fds to the
+    /// stream offset of `data`'s first byte so the peer's recvmsg
+    /// delivers them exactly with that byte (Linux skb-`fp` semantics)
+    /// rather than popping them ahead of their D-Bus message.
+    /// # C: O(data.len() + fds)
+    pub fn write_with_fds(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> usize {
+        self.write_inner(end, data, fds)
+    }
+
+    /// # C: O(data.len() + fds)
+    fn write_inner(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> usize {
         let mut g = match end {
             UnixEnd::A => self.a_to_b.lock(),
             UnixEnd::B => self.b_to_a.lock(),
@@ -150,8 +155,15 @@ impl UnixPair {
         if g.closed_writer {
             return 0;
         }
+        // Tag the burst to the offset of the first byte of THIS write so a
+        // reader delivers it with (never before) that byte.
+        if !fds.is_empty() {
+            let off = g.produced;
+            g.fds.push_back((off, fds));
+        }
         g.buf.extend(data.iter().copied());
         let n = data.len();
+        g.produced += n as u64;
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
         {
@@ -181,20 +193,95 @@ impl UnixPair {
         n
     }
 
-    /// Drain up to `max` bytes from the ring `end` reads from.
-    /// Returns the bytes consumed (empty when queue is empty).
+    /// Drain up to `max` bytes from the ring `end` reads from, as a
+    /// plain `read(2)`/`recvfrom(2)` with no control buffer.
+    ///
+    /// S8: this path has NO ancillary buffer, so any SCM_RIGHTS fds
+    /// riding the drained bytes are DROPPED (Linux discards an skb's
+    /// `fp` fds on a read without msg_control). It is byte-identical to
+    /// the pre-fd behaviour for the caller: it drains all available
+    /// bytes up to `max` (never caps at an fd boundary) and only returns
+    /// empty when the ring is empty — so the blocking read path's
+    /// park/wake timing is UNCHANGED and cannot lose a wakeup. Dropped
+    /// fds are released AFTER the ring lock is dropped (fput may take
+    /// other locks — never under the ring spinlock).
     /// # C: O(min(max, queue))
     pub fn read(&self, end: UnixEnd, max: usize) -> Vec<u8> {
+        let mut drop_later: Vec<Arc<vfs::File>> = Vec::new();
+        let out = {
+            let mut g = match end {
+                UnixEnd::A => self.b_to_a.lock(),
+                UnixEnd::B => self.a_to_b.lock(),
+            };
+            let take = core::cmp::min(max, g.buf.len());
+            let mut out = Vec::with_capacity(take);
+            for _ in 0..take {
+                out.push(g.buf.pop_front().unwrap());
+            }
+            g.consumed += take as u64;
+            // Discard every burst whose first byte is now behind the
+            // cursor (it rode bytes we just handed over without a cmsg).
+            loop {
+                match g.fds.front() {
+                    Some((off, _)) if *off < g.consumed => {
+                        let (_, f) = g.fds.pop_front().unwrap();
+                        drop_later.extend(f);
+                    }
+                    _ => break,
+                }
+            }
+            out
+        };
+        drop(drop_later);
+        out
+    }
+
+    /// Boundary-aware stream drain for recvmsg-with-control: return up to
+    /// `max` bytes AND the SCM_RIGHTS burst attached to the first byte
+    /// returned. A read never crosses an fd boundary, so fds are handed
+    /// over with (and only with) the bytes of the write that carried
+    /// them — matching Linux `unix_stream_read_generic`, where an skb's
+    /// `fp` fds ride that skb's first byte and the read stops at the next
+    /// `fp` skb.
+    ///
+    /// Unlike [`read`], this NEVER re-queues fds and never parks: fds at
+    /// or behind the cursor are returned to the caller immediately (even
+    /// with an empty payload — an fd-only message), so recvmsg's yield
+    /// loop always makes progress and can never wedge. It is only reached
+    /// from recvmsg (which busy-yields, not parks), so it cannot lose a
+    /// WaitList wakeup.
+    /// # C: O(min(max, queue))
+    pub fn read_stream(&self, end: UnixEnd, max: usize) -> (Vec<u8>, Vec<Arc<vfs::File>>) {
         let mut g = match end {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
         };
-        let take = core::cmp::min(max, g.buf.len());
+        // Collect every burst tagged at or behind the cursor; cap the
+        // read at the NEXT burst strictly ahead so its fds cannot ride an
+        // earlier message's bytes.
+        let mut fds_out: Vec<Arc<vfs::File>> = Vec::new();
+        let mut cap = max;
+        loop {
+            match g.fds.front() {
+                Some((off, _)) if *off <= g.consumed => {
+                    let (_, f) = g.fds.pop_front().unwrap();
+                    fds_out.extend(f);
+                }
+                Some((off, _)) => {
+                    let dist = (*off - g.consumed) as usize;
+                    cap = core::cmp::min(cap, dist);
+                    break;
+                }
+                None => break,
+            }
+        }
+        let take = core::cmp::min(cap, g.buf.len());
         let mut out = Vec::with_capacity(take);
         for _ in 0..take {
             out.push(g.buf.pop_front().unwrap());
         }
-        out
+        g.consumed += take as u64;
+        (out, fds_out)
     }
 
     /// MSG_PEEK variant of `read`: copy without draining.
