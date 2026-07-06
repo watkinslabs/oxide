@@ -166,37 +166,33 @@ mod imp {
     static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 
     struct NvmeRecord {
-        device_key: u32,
+        device_key: pci::Bdf,
         name:       String,
         dev:        Arc<NvmeBlk>,
     }
 
     static DEVICES: Spinlock<Vec<NvmeRecord>, DriverLockClass> = Spinlock::new(Vec::new());
 
-    fn bdf_key(bus: u8, device: u8, function: u8) -> u32 {
-        (bus as u32) << 16 | (device as u32) << 8 | (function as u32)
-    }
-
     #[cfg(feature = "debug-boot")]
-    fn key_bus(key: u32) -> u8 { ((key >> 16) & 0xff) as u8 }
+    fn key_bus(key: pci::Bdf) -> u8 { key.bus }
     #[cfg(feature = "debug-boot")]
-    fn key_device(key: u32) -> u8 { ((key >> 8) & 0xff) as u8 }
+    fn key_device(key: pci::Bdf) -> u8 { key.device }
     #[cfg(feature = "debug-boot")]
-    fn key_function(key: u32) -> u8 { (key & 0xff) as u8 }
+    fn key_function(key: pci::Bdf) -> u8 { key.function }
 
     fn nvme_name(index: u32) -> String {
         alloc::format!("nvme{}n1", index)
     }
 
-    pub fn device_key_from_bdf(bdf: pci::Bdf) -> u32 {
-        bdf_key(bdf.bus, bdf.device, bdf.function)
+    pub fn device_key_from_bdf(bdf: pci::Bdf) -> pci::Bdf {
+        bdf
     }
 
     /// Bring up the NVMe controller mapped by `mmio` (BAR0 register file,
     /// ≥2 pages), register it under a unique `nvmeXn1` name, and return the
     /// 1-based registry index (0 on failure). Optionally self-tests by reading
     /// LBA 0. # C: O(N_nvme + controller bring-up + N_disks)
-    pub fn init(device_key: u32, mmio: mmio_map::Mapping, bar0_off: u64) -> u32 {
+    pub fn init(device_key: pci::Bdf, mmio: mmio_map::Mapping, bar0_off: u64) -> u32 {
         if DEVICES.lock().iter().any(|rec| rec.device_key == device_key) {
             return 0;
         }
@@ -280,7 +276,7 @@ mod imp {
 
     /// Remove the registered NVMe disk and release controller-owned resources.
     /// # C: O(N_nvme + N_disks + controller shutdown)
-    pub fn remove(device_key: u32) -> bool {
+    pub fn remove(device_key: pci::Bdf) -> bool {
         let rec = {
             let mut devices = DEVICES.lock();
             match devices.iter().position(|rec| rec.device_key == device_key) {
@@ -296,7 +292,7 @@ mod imp {
     /// Quiesce the bound NVMe controller for reboot/poweroff without
     /// unregistering userspace-visible block publication.
     /// # C: O(N_nvme + controller shutdown)
-    pub fn shutdown(device_key: u32) -> bool {
+    pub fn shutdown(device_key: pci::Bdf) -> bool {
         let dev = match DEVICES
             .lock()
             .iter()
