@@ -1515,6 +1515,7 @@ dependencies = [
 name = "virtio"
 version = "0.1.0"
 dependencies = [
+ "drv",
  "pci",
 ]
 

@@ -5,15 +5,16 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: B592-virtio-bus-core-extraction is CLAIMED / IN AUDIT.
-B592 targets the remaining real virtio bus/core split from `pci-boot`; B415
-remains aggregate-only until the concrete live-proof rows are closed.
+Current marker: B592-virtio-bus-core-extraction is VERIFIED / PR READY.
+B592 extracted the remaining generic virtio child model-driver adapter from
+`pci-boot`; B415 remains aggregate-only until the concrete live-proof rows are
+closed.
 
 ## B592 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B592-virtio-bus-core-extraction | CLAIMED / IN AUDIT | Fresh `main` at D139 ledger merge `015e2f76`; B591 PR #2706 and ledger PR #2707 are merged, and `metadata/index.md` advances B 592 -> 593 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. First pass is source audit across `crates/kernel/pci-boot/src/virtio_bus.rs`, `virtio_child.rs`, `virtio_drv/*`, `virtio_transport/*`, and `crates/drivers/virtio/src/resources/*`; implementation must keep PCI transport/MMIO/MSI lifetime in `pci-boot` while moving generic virtio child bus/core policy into the shared `virtio` crate. Required proof is hosted virtio/pci-boot/child-driver tests plus x86_64 and aarch64 boot smoke. |
+| B592-virtio-bus-core-extraction | VERIFIED / PR READY | Fresh `main` at D139 ledger merge `015e2f76`; B591 PR #2706 and ledger PR #2707 are merged, and `metadata/index.md` advances B 592 -> 593 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. Source audit found the generic virtio child `drv::Driver` adapter still lived in `pci-boot`; B592 moves that adapter into shared `virtio` as `VirtioChildBus`, `VirtioChildDriverOps`, and `VirtioChildDriver<B,O>`. `pci-boot` now supplies only `PciVirtioChildBus`, `VirtioChildSession`, PCI transport/MMIO/MSI lifetime, and child-specific install/remove/shutdown callbacks. Hosted proof passes: `cargo test -q -p virtio -p pci-boot -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1` with virtio 48/48, virtio-net 25/25, virtio-blk 36/36, virtio-gpu 38/38, virtio-input 17/17, virtio-rng 9/9, virtio-vsock 15/15, virtio-snd 11/11, and pci-boot compile-only hosted targets. First `make smoke SMOKE_TIMEOUT=300` exposed kernel-target trait import coverage missing from hosted compile; fixed by importing `virtio::VirtioChildTransportSession` in `pci-boot` and rerunning hosted tests. `git diff --check` passes; line caps: `virtio/src/resources/child.rs` 467, `pci-boot/src/virtio_child.rs` 350, `pci-boot/src/virtio_bus.rs` 145. Branch `make smoke SMOKE_TIMEOUT=300` passes with x86_64 reaching `oxide login:` in 35s and aarch64 reaching `oxide login:` in 38s. |
 
 ## B591 Current
 
