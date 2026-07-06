@@ -5,7 +5,13 @@ Date: 2026-07-05
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B509-msix-function-mask-live-proof VERIFIED; next row not claimed yet.
+Current marker: B510-virtio-probe-state-boundary; ACTIVE; source audit starting.
+
+## B510 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B510-virtio-probe-state-boundary | ACTIVE | Fresh `main` at merge commit `2258152b` after B509 PR #2599 merge and branch cleanup. `metadata/index.md` advanced B 510 -> 511. Target row: `VirtioProbeState` exists; remaining virtio-pci transport ownership should move behind explicit state/boundary. Current task is source audit first, then patch only real gaps. Do not mark VERIFIED until current source proof and required checks pass on x86_64 and aarch64. |
 
 ## B509 Current
 
