@@ -5,14 +5,21 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: none; B546-virtio-snd-generic-config-proof is verified locally
-and pending PR/merge from branch claimed at B544 merge commit `380d4045`.
+Current marker: B547-virtio-snd-eventq-msix-proof is active for proving
+virtio-snd EVENTQ(1) notify mapping and child-owned MSI-X callback from fresh
+`main` at B546 PR #2638 merge commit `4d4aa485`.
+
+## B547 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B547-virtio-snd-eventq-msix-proof | CLAIMED | Fresh `main` at B546 PR #2638 merge commit `4d4aa485`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s after rerunning alone to avoid transient host vhost-vsock guest-CID contention. `metadata/index.md` advanced B 547 -> 548. Target row: prove virtio-snd programs EVENTQ(1) with notify mapping and child-owned MSI-X callback. |
 
 ## B546 Current
 
 | Branch | Status | Evidence |
 |---|---|---|
-| B546-virtio-snd-generic-config-proof | VERIFIED LOCALLY | Fresh `main` at B544 PR #2637 merge commit `380d4045`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 546 -> 547. Source audit proves pci-boot maps `VIRTIO_PCI_CAP_DEVICE_CFG` into generic `VirtioResources.device_cfg_va`, `VirtioSndOps::probe_child()` passes only `session.child_resources()` into `drv_virtio_snd::install(SndInstall { device_key, resources })`, and `drv-virtio-snd::lifecycle::read_device_config()` reads jacks, streams, chmaps, and controls from the child resource via named `SND_CFG_*_OFF` offsets before context publication. Added hosted regression `snd_config_reads_generic_device_config_resource`, proving all four fields come from `VirtioResources.device_cfg_va` and missing generic config returns `None`. Checks pass: focused `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` with snd 13/13; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests.rs` 476, `lifecycle.rs` 240, `lib.rs` 130, `state.rs` 238, `virtio_child.rs` 398, `resources/transport.rs` 126, `resources/profile.rs` 157, `resources/child.rs` 377); `OXIDE_SKIP_ROOTFS=1 make smoke-x86 SMOKE_TIMEOUT=300` reached `oxide login:` in 12s; `OXIDE_SKIP_ROOTFS=1 make smoke-arm SMOKE_TIMEOUT=300` reached `oxide login:` in 16s. |
+| B546-virtio-snd-generic-config-proof | VERIFIED MERGED | Fresh `main` at B544 PR #2637 merge commit `380d4045`; post-merge fresh-main smokes passed: x86_64 reached `oxide login:` in 12s and aarch64 reached `oxide login:` in 16s. `metadata/index.md` advanced B 546 -> 547. Source audit proves pci-boot maps `VIRTIO_PCI_CAP_DEVICE_CFG` into generic `VirtioResources.device_cfg_va`, `VirtioSndOps::probe_child()` passes only `session.child_resources()` into `drv_virtio_snd::install(SndInstall { device_key, resources })`, and `drv-virtio-snd::lifecycle::read_device_config()` reads jacks, streams, chmaps, and controls from the child resource via named `SND_CFG_*_OFF` offsets before context publication. Added hosted regression `snd_config_reads_generic_device_config_resource`, proving all four fields come from `VirtioResources.device_cfg_va` and missing generic config returns `None`. Checks pass: focused `cargo test -q -p drv-virtio-snd -- --nocapture --test-threads=1` with snd 13/13; broad `cargo test -q -p pci -p pci-boot -p virtio -p drv-virtio-net -p drv-virtio-blk -p drv-virtio-rng -p drv-virtio-vsock -p drv-virtio-snd -p drv-virtio-input -p drv-virtio-gpu -- --nocapture --test-threads=1`; `git diff --check`; line caps (`tests.rs` 476, `lifecycle.rs` 240, `lib.rs` 130, `state.rs` 238, `virtio_child.rs` 398, `resources/transport.rs` 126, `resources/profile.rs` 157, `resources/child.rs` 377); branch smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s; pre-push hook reran boot-smoke and passed both arches; PR #2638 merged as `4d4aa485`; post-merge fresh-main smokes reached x86_64 `oxide login:` in 12s and aarch64 `oxide login:` in 16s. |
 
 ## B544 Current
 
