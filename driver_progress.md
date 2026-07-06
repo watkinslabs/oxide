@@ -5,11 +5,15 @@ Date: 2026-07-06
 `driver_plan.md` is the status ledger. This file records current evidence and
 blockers for the active row.
 
-Current marker: D139-b591-ledger-merged records B591 as VERIFIED MERGED.
-PCI lifecycle/runtime semantics are the first concrete unverified driver gap
-after B415; B415 remains aggregate-only until the concrete live-proof rows are
-closed. This branch starts from D138 merge `be0afcea` and fixes the generic
-PCI bridge-window enumeration path.
+Current marker: B592-virtio-bus-core-extraction is CLAIMED / IN AUDIT.
+B592 targets the remaining real virtio bus/core split from `pci-boot`; B415
+remains aggregate-only until the concrete live-proof rows are closed.
+
+## B592 Current
+
+| Branch | Status | Evidence |
+|---|---|---|
+| B592-virtio-bus-core-extraction | CLAIMED / IN AUDIT | Fresh `main` at D139 ledger merge `015e2f76`; B591 PR #2706 and ledger PR #2707 are merged, and `metadata/index.md` advances B 592 -> 593 on this branch. Existing local `project-stats.md` deletion plus untracked `project_stats.md` are unrelated and are not touched by this branch. First pass is source audit across `crates/kernel/pci-boot/src/virtio_bus.rs`, `virtio_child.rs`, `virtio_drv/*`, `virtio_transport/*`, and `crates/drivers/virtio/src/resources/*`; implementation must keep PCI transport/MMIO/MSI lifetime in `pci-boot` while moving generic virtio child bus/core policy into the shared `virtio` crate. Required proof is hosted virtio/pci-boot/child-driver tests plus x86_64 and aarch64 boot smoke. |
 
 ## B591 Current
 
