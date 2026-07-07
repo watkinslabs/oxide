@@ -317,6 +317,19 @@ pub unsafe fn spawn_user_thread_for_fork(
             task.vtgid.store(v, Ordering::Release);
             task.vtid.store(v, Ordering::Release);
         }
+        // Seccomp is INHERITED across fork/clone and PRESERVED across execve
+        // (Linux copies the filter chain in dup_task_struct; execve never
+        // clears it). Without this a seccomp-sandboxed process could fork() and
+        // the child would run with an EMPTY filter set — a trivial sandbox
+        // escape (`fork(); <forbidden syscall in child>`).
+        // SAFETY: parent is the running task on this CPU (single-mutator read
+        // per `13§5`); `task` is local and not yet scheduled (single-mutator
+        // write). The child gets its own copy of the filter chain.
+        unsafe { *task.seccomp_filters.get() = (*parent.seccomp_filters.get()).clone(); }
+        // Landlock ruleset chain is likewise inherited across fork and kept
+        // across execve — a Landlock-confined process's children stay confined.
+        let parent_chain = parent.landlock_chain.lock().clone();
+        *task.landlock_chain.lock() = parent_chain;
     }
 
     let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
@@ -420,6 +433,19 @@ pub unsafe fn spawn_user_thread_for_fork(
             task.vtgid.store(v, Ordering::Release);
             task.vtid.store(v, Ordering::Release);
         }
+        // Seccomp is INHERITED across fork/clone and PRESERVED across execve
+        // (Linux copies the filter chain in dup_task_struct; execve never
+        // clears it). Without this a seccomp-sandboxed process could fork() and
+        // the child would run with an EMPTY filter set — a trivial sandbox
+        // escape (`fork(); <forbidden syscall in child>`).
+        // SAFETY: parent is the running task on this CPU (single-mutator read
+        // per `13§5`); `task` is local and not yet scheduled (single-mutator
+        // write). The child gets its own copy of the filter chain.
+        unsafe { *task.seccomp_filters.get() = (*parent.seccomp_filters.get()).clone(); }
+        // Landlock ruleset chain is likewise inherited across fork and kept
+        // across execve — a Landlock-confined process's children stay confined.
+        let parent_chain = parent.landlock_chain.lock().clone();
+        *task.landlock_chain.lock() = parent_chain;
     }
 
     let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
