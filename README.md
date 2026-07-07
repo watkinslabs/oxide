@@ -29,9 +29,32 @@ Oxide development is intentionally constrained:
 
 ## Current capability snapshot
 
-Oxide currently includes major kernel/runtime surface across boot, memory, scheduling, syscall plumbing, process control, proc/dev/tty surfaces, cgroup enforcement work, and interactive shell bring-up in QEMU. The active handoff state and latest landed work are tracked in `state.md`.
+Oxide currently includes active kernel/runtime code across:
 
-For authoritative subsystem status, read `docs/MANIFEST.md` and the referenced spec docs.
+- x86_64 and aarch64 boot, HAL, traps, syscall entry, timers, MMU, IRQ, and context switching.
+- PMM, VMM, slab/kalloc, user address spaces, mmap/fault/COW/rmap paths, and memory smoke/torture tests.
+- Scheduler/process code for tasks, clone/fork/exec/wait/exit, process groups, sessions, signals, timers, rlimits, pidfd, futexes, and syscall return handling.
+- Linux syscall routing through `crates/kernel/syscalls`, with hundreds of numbered handlers wired into subsystem code.
+- VFS, fd tables, dcache/namei, mounts, ext4, tmpfs, devfs, devpts, procfs, sysfs, kernfs, and tracefs.
+- Block registry/page cache plus virtio-blk, NVMe, AHCI, PCI, virtio transport, virtio-net/gpu/input/rng/vsock/snd, serial UARTs, PS/2 keyboard, DRM/fbdev/fbcon, VT, and sound/OSS/PCM code.
+- Networking for loopback/virtio-net, IPv4/IPv6, ARP/NDP, ICMP, UDP/TCP, AF_UNIX, AF_PACKET, vsock, rtnetlink, sock_diag, and netfilter/nft pieces.
+- TTY/PTY/console, virtual terminals, framebuffer console, serial tty, and `/dev/console` routing.
+- cgroup v2, namespace pieces, capabilities/creds, seccomp, BPF/cBPF paths, Landlock, and LSM self-attr syscall paths.
+- Loadable-module infrastructure, symbol/relocation support, and a partial Linux KPI surface for alloc/device/chrdev/block/DMA/IRQ/PCI/netdev/input/firmware/crypto/sync/time/PM/platform/USB/usercopy.
+- Rust glibc-ABI userspace, dynamic-loader pieces, startup objects, NSS/PAM helpers, service-unit parsing/supervision, RPM/package readers, and folded-library shims.
+
+Not done / not Linux-complete:
+
+- One declared syscall constant, `NR_LISTNS`/470, is not actively referenced by the kernel syscall routes.
+- The active syscall router still falls back to an older low-level dispatch table containing v1 fallback stubs; syscall semantic completeness needs a generated code audit.
+- SMP, CPU hotplug, NUMA policy, swap, full overcommit behavior, async block IO/writeback, and full page-cache waiter/locking depth are incomplete.
+- Linux filesystem coverage is narrow: ext4/tmpfs/pseudo filesystems exist, but not XFS, Btrfs, NFS, overlayfs, squashfs, ISO9660, FAT/exFAT, 9p, or full FUSE integration.
+- Driver coverage is not Linux hardware complete: no broad USB host/HID/storage stack, Wi-Fi, Bluetooth, vendor GPU drivers, ACPI battery/thermal, or broad NIC/storage matrix.
+- Linux KPI/module loading is partial: signature/CRC/vermagic enforcement, W^X module memory, init/exit execution, threaded IRQ depth, and wider driver API coverage remain.
+- Networking needs raw socket, conntrack/NAT, nftables depth, IPv6 edge cases, route/rule parity, diagnostics/counters, and packet-socket conformance work.
+- glibc/userspace, udev/systemd compatibility, package management, service supervision, BPF/perf/userfaultfd/io_uring, and security/LSM depth remain incomplete.
+
+For the full code-scan status and next implementation list, read [`oxide_status.md`](oxide_status.md). The active handoff state and latest landed work are tracked in `state.md`.
 
 ## Quick start
 
