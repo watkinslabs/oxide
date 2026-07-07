@@ -3,6 +3,7 @@
 extern crate alloc;
 
 use alloc::alloc::{alloc, dealloc, Layout};
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::{c_void, VaList};
 use core::mem::{align_of, size_of};
@@ -13,6 +14,15 @@ const PAGE_MAGIC: u64 = 0x4f58_4b50_4950_4147;
 const MIN_ALIGN: usize = align_of::<usize>();
 const GFP_ZERO: u32 = 0x8000;
 pub(crate) const PAGE_SIZE: usize = 4096;
+const KMALLOC_CACHE_SLOTS: usize = 128;
+
+#[repr(C)]
+pub struct LinuxKmemCache {
+    _private: usize,
+}
+
+static KMALLOC_CACHES: [usize; KMALLOC_CACHE_SLOTS] = [0; KMALLOC_CACHE_SLOTS];
+static RANDOM_KMALLOC_SEED: usize = 0;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -39,9 +49,13 @@ pub fn export_symbols() {
     export("kzalloc",          kzalloc          as *const () as usize, false);
     export("kcalloc",          kcalloc          as *const () as usize, false);
     export("kfree",            kfree            as *const () as usize, false);
+    export("kvfree",           kvfree           as *const () as usize, false);
+    export("kvfree_call_rcu",   kvfree_call_rcu  as *const () as usize, true);
     export("vmalloc",          vmalloc          as *const () as usize, false);
     export("vfree",            vfree            as *const () as usize, false);
     export("alloc_pages",      alloc_pages      as *const () as usize, false);
+    export("alloc_pages_noprof", alloc_pages_noprof as *const () as usize, false);
+    export("__alloc_pages_noprof", __alloc_pages_noprof as *const () as usize, false);
     export("__free_pages",     __free_pages     as *const () as usize, false);
     export("__get_free_pages", __get_free_pages as *const () as usize, false);
     export("get_free_pages",   get_free_pages   as *const () as usize, false);
@@ -50,10 +64,28 @@ pub fn export_symbols() {
     export("page_to_phys",     page_to_phys     as *const () as usize, false);
     export("kstrdup",          kstrdup          as *const () as usize, false);
     export("kasprintf",        kasprintf        as *const () as usize, false);
+    export("kmemdup_noprof",   kmemdup_noprof   as *const () as usize, false);
+    export("__kmalloc_noprof", __kmalloc_noprof as *const () as usize, false);
+    export("__kmalloc_cache_noprof", __kmalloc_cache_noprof as *const () as usize, false);
+    export("__kvmalloc_node_noprof", __kvmalloc_node_noprof as *const () as usize, false);
+    export("kmalloc_caches",   KMALLOC_CACHES.as_ptr() as usize, false);
+    export("random_kmalloc_seed", &RANDOM_KMALLOC_SEED as *const usize as usize, false);
 }
 
 extern "C" fn kmalloc(size: usize, flags: u32) -> *mut u8 {
     alloc_bytes(size, MIN_ALIGN, flags & GFP_ZERO != 0)
+}
+
+extern "C" fn __kmalloc_noprof(size: usize, flags: u32) -> *mut u8 {
+    kmalloc(size, flags)
+}
+
+extern "C" fn __kmalloc_cache_noprof(_cache: *mut LinuxKmemCache, flags: u32, size: usize) -> *mut u8 {
+    kmalloc(size, flags)
+}
+
+extern "C" fn __kvmalloc_node_noprof(size: usize, flags: u32, _node: i32) -> *mut u8 {
+    kmalloc(size, flags)
 }
 
 extern "C" fn kzalloc(size: usize, _flags: u32) -> *mut u8 {
@@ -70,6 +102,15 @@ extern "C" fn kcalloc(n: usize, size: usize, flags: u32) -> *mut u8 {
 
 extern "C" fn kfree(ptr: *mut u8) {
     free_bytes(ptr);
+}
+
+extern "C" fn kvfree(ptr: *mut u8) {
+    free_bytes(ptr);
+}
+
+extern "C" fn kvfree_call_rcu(_head: *mut c_void, ptr: *mut c_void) {
+    let addr = ptr as usize;
+    sync::call_rcu(Box::new(move || free_bytes(addr as *mut u8)));
 }
 
 extern "C" fn vmalloc(size: usize) -> *mut u8 {
@@ -93,6 +134,19 @@ pub(crate) extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
         return null_mut();
     }
     page
+}
+
+extern "C" fn alloc_pages_noprof(flags: u32, order: u32) -> *mut LinuxPage {
+    alloc_pages(flags, order)
+}
+
+extern "C" fn __alloc_pages_noprof(
+    flags: u32,
+    order: u32,
+    _preferred_nid: i32,
+    _nodemask: *mut c_void,
+) -> *mut LinuxPage {
+    alloc_pages(flags, order)
 }
 
 /// Free pages owned by a Linux `struct page` descriptor.
@@ -140,6 +194,15 @@ unsafe extern "C" fn kstrdup(s: *const u8, flags: u32) -> *mut u8 {
     // SAFETY: p has len+1 bytes and s is readable through the terminator.
     unsafe { copy_nonoverlapping(s, p, len + 1); }
     p
+}
+
+unsafe extern "C" fn kmemdup_noprof(src: *const c_void, len: usize, flags: u32) -> *mut c_void {
+    if src.is_null() { return null_mut(); }
+    let p = alloc_bytes(len, MIN_ALIGN, flags & GFP_ZERO != 0);
+    if p.is_null() { return null_mut(); }
+    // SAFETY: src is readable for len bytes and p is writable for len bytes.
+    unsafe { copy_nonoverlapping(src as *const u8, p, len); }
+    p as *mut c_void
 }
 
 unsafe extern "C" fn kasprintf(flags: u32, fmt: *const u8, mut ap: ...) -> *mut u8 {
@@ -386,72 +449,5 @@ fn push_u64(out: &mut Vec<u8>, mut v: u64, base: u64) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    unsafe fn cstr(p: *const u8) -> &'static str {
-        // SAFETY: tests pass pointers returned by KPI string allocators.
-        let n = unsafe { c_strlen(p) };
-        // SAFETY: same allocation is valid for the measured string bytes.
-        let s = unsafe { core::slice::from_raw_parts(p, n) };
-        core::str::from_utf8(s).unwrap()
-    }
-
-    #[test]
-    fn kmalloc_round_trip_and_zero_allocs() {
-        let p = kmalloc(16, 0);
-        assert!(!p.is_null());
-        unsafe { *p = 0xaa; }
-        kfree(p);
-        let z = kzalloc(8, 0);
-        assert!(!z.is_null());
-        unsafe { assert_eq!(core::slice::from_raw_parts(z, 8), &[0; 8]); }
-        kfree(z);
-    }
-
-    #[test]
-    fn kcalloc_checks_overflow_and_zeroes() {
-        assert!(kcalloc(usize::MAX, 2, 0).is_null());
-        let p = kcalloc(4, 4, 0);
-        assert!(!p.is_null());
-        unsafe { assert_eq!(core::slice::from_raw_parts(p, 16), &[0; 16]); }
-        kfree(p);
-    }
-
-    #[test]
-    fn page_runs_support_struct_page_and_free_pages() {
-        let page = alloc_pages(GFP_ZERO, 1);
-        assert!(!page.is_null());
-        let addr = page_address(page);
-        assert!(!addr.is_null());
-        assert_ne!(page_to_phys(page), 0);
-        unsafe { assert_eq!(core::slice::from_raw_parts(addr, PAGE_SIZE * 2), &[0; PAGE_SIZE * 2]); }
-        __free_pages(page, 1);
-        let addr = __get_free_pages(0, 0);
-        assert_ne!(addr, 0);
-        free_pages(addr, 0);
-    }
-
-    #[test]
-    fn string_helpers_copy_and_format() {
-        let dup = unsafe { kstrdup(b"drv\0".as_ptr(), 0) };
-        assert_eq!(unsafe { cstr(dup) }, "drv");
-        kfree(dup);
-        let s = unsafe { kasprintf(0, b"%s:%d:%x:%p\0".as_ptr(), b"irq\0".as_ptr(), -7i32, 0x2au32, 0x1234usize as *mut c_void) };
-        assert_eq!(unsafe { cstr(s) }, "irq:-7:2a:0x1234");
-        kfree(s);
-    }
-
-    #[test]
-    fn export_symbols_registers_allocator_surface() {
-        crate::symtab::_reset();
-        export_symbols();
-        for name in [
-            "kmalloc", "kzalloc", "kcalloc", "kfree", "vmalloc", "vfree",
-            "alloc_pages", "__free_pages", "__get_free_pages", "get_free_pages",
-            "free_pages", "page_address", "page_to_phys", "kstrdup", "kasprintf",
-        ] {
-            assert!(crate::symtab::resolve(name, true).is_ok(), "{name}");
-        }
-    }
-}
+#[path = "linux_alloc_tests.rs"]
+mod tests;
