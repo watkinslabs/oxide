@@ -15,6 +15,7 @@ const SYSFS_PAGE_SIZE: usize = crate::linux_alloc::PAGE_SIZE;
 /// # C: O(1)
 pub(super) fn export_symbols() {
     use crate::symtab::export;
+    super::kobject::export_symbols();
     for (name, addr) in [
         ("device_initialize",       device_initialize       as *const () as usize),
         ("device_add",              device_add              as *const () as usize),
@@ -63,19 +64,23 @@ extern "C" fn device_initialize(dev: *mut LinuxDevice) {
     unsafe {
         (*dev).driver_data = null_mut();
         (*dev).name = [0; DEVICE_NAME_LEN];
+        (*dev).kobj = super::types::LinuxKobject::new();
+        (*dev).driver = null_mut();
     }
+    registry::initialize_device(dev as usize);
 }
 
 extern "C" fn device_add(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
     populate_device_name(dev);
-    registry::insert_device(dev as usize)
+    // SAFETY: dev points at a caller-owned Linux struct device.
+    let class = unsafe { (*dev).class as usize };
+    registry::add_device(dev as usize, class, 0, false)
 }
 
 extern "C" fn device_del(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
     registry::remove_device(dev as usize);
-    devres::release_device(dev);
 }
 
 extern "C" fn device_register(dev: *mut LinuxDevice) -> i32 {
@@ -90,15 +95,19 @@ extern "C" fn device_unregister(dev: *mut LinuxDevice) {
 }
 
 extern "C" fn get_device(dev: *mut LinuxDevice) -> *mut LinuxDevice {
-    dev
+    if dev.is_null() { return null_mut(); }
+    if registry::get_device(dev as usize) { dev } else { null_mut() }
 }
 
 extern "C" fn put_device(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
+    let Some(owned) = registry::put_device(dev as usize) else { return; };
+    devres::release_device(dev);
     // SAFETY: release is a caller-installed Linux device release callback.
     unsafe {
         if let Some(release) = (*dev).release { release(dev); }
     }
+    if owned { allocs::free_device(dev); }
 }
 
 extern "C" fn dev_set_drvdata(dev: *mut LinuxDevice, data: *mut c_void) {
@@ -143,12 +152,12 @@ extern "C" fn root_device_register(name: *const c_char) -> *mut LinuxDevice {
         allocs::free_device(dev);
         return null_mut();
     }
+    registry::mark_owned(dev as usize);
     dev
 }
 
 extern "C" fn root_device_unregister(dev: *mut LinuxDevice) {
     device_unregister(dev);
-    allocs::free_device(dev);
 }
 
 extern "C" fn __class_create(owner: *mut c_void, name: *const c_char) -> *mut LinuxClass {
@@ -211,7 +220,6 @@ unsafe extern "C" fn device_create(
     fmt: *const c_char,
     mut ap: ...
 ) -> *mut LinuxDevice {
-    let _ = devt;
     if class.is_null() || fmt.is_null() { return null_mut(); }
     let dev = allocs::alloc_device();
     if dev.is_null() { return null_mut(); }
@@ -222,7 +230,7 @@ unsafe extern "C" fn device_create(
         (*dev).driver_data = drvdata;
         format_into((*dev).name.as_mut_ptr(), DEVICE_NAME_LEN, fmt, &mut ap);
     }
-    if device_add(dev) != LINUX_OK {
+    if registry::add_device(dev as usize, class as usize, devt, true) != LINUX_OK {
         allocs::free_device(dev);
         return null_mut();
     }
@@ -230,15 +238,20 @@ unsafe extern "C" fn device_create(
 }
 
 extern "C" fn device_destroy(class: *mut LinuxClass, devt: u32) {
-    let _ = devt;
     if class.is_null() { return; }
+    if let Some(dev) = registry::find_class_devt(class as usize, devt) {
+        device_unregister(dev as *mut LinuxDevice);
+    }
 }
 
 extern "C" fn device_create_file(dev: *mut LinuxDevice, attr: *const LinuxDeviceAttribute) -> i32 {
-    if dev.is_null() || attr.is_null() { -LINUX_EINVAL } else { LINUX_OK }
+    if dev.is_null() || attr.is_null() { -LINUX_EINVAL } else { registry::add_attr(dev as usize, attr as usize) }
 }
 
-extern "C" fn device_remove_file(_dev: *mut LinuxDevice, _attr: *const LinuxDeviceAttribute) {}
+extern "C" fn device_remove_file(dev: *mut LinuxDevice, attr: *const LinuxDeviceAttribute) {
+    if dev.is_null() || attr.is_null() { return; }
+    registry::remove_attr(dev as usize, attr as usize);
+}
 
 unsafe extern "C" fn sysfs_emit(buf: *mut c_char, fmt: *const c_char, mut ap: ...) -> i32 {
     // SAFETY: sysfs show callbacks pass a PAGE_SIZE output buffer and matching varargs.

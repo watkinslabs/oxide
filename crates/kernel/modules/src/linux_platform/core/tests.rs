@@ -46,6 +46,7 @@ fn empty_device(name: *const c_char, res: &mut [LinuxResource]) -> PlatformDevic
             driver: null_mut(),
             init_name: name,
             name: [0; crate::linux_device::types::DEVICE_NAME_LEN],
+            kobj: crate::linux_device::types::LinuxKobject::new(),
             release: None,
             of_node: null_mut(),
             acpi_node: null_mut(),
