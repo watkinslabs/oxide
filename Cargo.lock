@@ -839,6 +839,7 @@ name = "modules"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "block",
  "elf",
  "ext4",
  "hal",

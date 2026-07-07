@@ -23,6 +23,7 @@ arch-irq = { path = "../arch-irq" }
 pci = { path = "../../drivers/pci" }
 vfs = { path = "../vfs" }
 net = { path = "../net" }
+block = { path = "../block" }
 
 [features]
 default = []

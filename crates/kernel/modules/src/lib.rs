@@ -48,6 +48,7 @@ pub mod modinfo;
 pub use modinfo::{KERNEL_VERMAGIC, ModuleInfo, ModuleParam};
 
 pub mod linux_alloc;
+pub mod linux_block;
 pub mod linux_chrdev;
 pub mod linux_device;
 pub mod linux_dma;
