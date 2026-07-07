@@ -432,6 +432,7 @@ pub fn init() {
     // tracefs/debugfs mount points (content lives in tracefs's own roots).
     register_dir("/sys/kernel/tracing");
     register_dir("/sys/kernel/debug");
+    register_dir("/sys/kernel/config");
     kernel::init();
     modules::init();
     register("/sys/class/net", make_sys_class_net_inode());

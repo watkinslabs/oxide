@@ -866,6 +866,7 @@ dependencies = [
  "sched",
  "sync",
  "timer",
+ "tracefs",
  "vfs",
  "vmm",
 ]

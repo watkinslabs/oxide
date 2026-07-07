@@ -29,6 +29,7 @@ vfs = { path = "../vfs" }
 net = { path = "../net" }
 block = { path = "../block" }
 input = { path = "../input" }
+tracefs = { path = "../tracefs" }
 
 [features]
 default = []

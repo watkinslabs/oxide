@@ -3,9 +3,11 @@
 #include <linux/atomic.h>
 #include <linux/acpi.h>
 #include <linux/completion.h>
+#include <linux/configfs.h>
 #include <linux/crc32.h>
 #include <linux/crc32c.h>
 #include <linux/delay.h>
+#include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
 #include <linux/firmware.h>
@@ -118,6 +120,7 @@ enum { SAMPLE_PM_SCHEDULE_DELAY = 0 };
 enum { SAMPLE_RANDOM_LEN = 16 };
 enum { SAMPLE_CRYPTO_DIGEST_LEN = 32 };
 enum { SAMPLE_USERCOPY_LEN = 8 };
+enum { SAMPLE_DEBUG_VALUE_INIT = 7 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -236,6 +239,28 @@ static ssize_t sample_attr_show(struct device *dev, struct device_attribute *att
     (void)dev; (void)attr; (void)buf; return 0;
 }
 static DEVICE_ATTR(sample, SAMPLE_ATTR_MODE, sample_attr_show, NULL);
+static ssize_t sample_config_show(struct config_item *item, char *page)
+{
+    (void)item; (void)page; return 0;
+}
+static ssize_t sample_config_store(struct config_item *item, const char *page, size_t count)
+{
+    (void)item; (void)page; return (ssize_t)count;
+}
+static struct configfs_attribute sample_config_attr = {
+    .name = "sample",
+    .mode = 0644,
+    .show = sample_config_show,
+    .store = sample_config_store,
+};
+static struct configfs_attribute *sample_config_attrs[] = {
+    &sample_config_attr,
+    NULL,
+};
+static struct config_item_type sample_config_type = {
+    .release = NULL,
+    .attrs = sample_config_attrs,
+};
 
 static int __init sample_init(void)
 {
@@ -259,6 +284,10 @@ static int __init sample_init(void)
     struct device_driver driver = { "sample-driver", &bus, THIS_MODULE, NULL, NULL };
     struct device *root_dev;
     struct device *created_dev;
+    struct dentry *debug_dir;
+    struct dentry *debug_file;
+    u32 debug_value = SAMPLE_DEBUG_VALUE_INIT;
+    struct configfs_subsystem subsys;
     struct cdev cdev;
     struct miscdevice misc = {
         .minor = MISC_DYNAMIC_MINOR,
@@ -457,6 +486,13 @@ static int __init sample_init(void)
     class_destroy(class);
     root_dev = root_device_register("sample-root");
     root_device_unregister(root_dev);
+    debug_dir = debugfs_create_dir("sample", NULL);
+    debug_file = debugfs_create_u32("value", 0600, debug_dir, &debug_value);
+    debugfs_remove(debug_file);
+    debugfs_remove_recursive(debug_dir);
+    config_group_init_type_name(&subsys.su_group, "sample", &sample_config_type);
+    (void)configfs_register_subsystem(&subsys);
+    configfs_unregister_subsystem(&subsys);
     (void)request_firmware(&fw, "sample/fw.bin", &dev);
     (void)request_firmware_direct(&fw, "sample/fw.bin", &dev);
     (void)firmware_request(&fw, "sample/fw.bin", &dev);
