@@ -15,6 +15,7 @@
 #include <linux/list.h>
 #include <linux/lockdep.h>
 #include <linux/mm.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
@@ -68,6 +69,10 @@ enum { SAMPLE_PCI_CFG_VENDOR_DEVICE = 0 };
 enum { SAMPLE_PCI_CFG_COMMAND = 4 };
 enum { SAMPLE_PCI_MIN_VECTORS = 1 };
 enum { SAMPLE_PCI_MAX_VECTORS = 1 };
+enum { SAMPLE_CHRDEV_MAJOR = 240 };
+enum { SAMPLE_CHRDEV_MINOR = 1 };
+enum { SAMPLE_CHRDEV_COUNT = 1 };
+enum { SAMPLE_IOCTL_CMD = 0x58434445 };
 enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -80,6 +85,40 @@ static int sample_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
     (void)pdev; (void)id; return 0;
 }
 static void sample_pci_remove(struct pci_dev *pdev) { (void)pdev; }
+static int sample_chr_open(struct inode *inode, struct file *file)
+{
+    file->private_data = inode;
+    return 0;
+}
+static ssize_t sample_chr_read(struct file *file, char *buf, size_t count, loff_t *ppos)
+{
+    (void)file; (void)buf; (void)ppos;
+    return (ssize_t)count;
+}
+static ssize_t sample_chr_write(struct file *file, const char *buf, size_t count, loff_t *ppos)
+{
+    (void)file; (void)buf; (void)ppos;
+    return (ssize_t)count;
+}
+static long sample_chr_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    (void)file; (void)cmd; (void)arg;
+    return 0;
+}
+static int sample_chr_release(struct inode *inode, struct file *file)
+{
+    (void)inode; (void)file;
+    return 0;
+}
+static const struct file_operations sample_fops = {
+    .owner = THIS_MODULE,
+    .open = sample_chr_open,
+    .read = sample_chr_read,
+    .write = sample_chr_write,
+    .unlocked_ioctl = sample_chr_ioctl,
+    .release = sample_chr_release,
+    .llseek = noop_llseek,
+};
 static const struct pci_device_id sample_pci_ids[] = {
     { PCI_DEVICE(SAMPLE_PCI_VENDOR, SAMPLE_PCI_DEVICE) },
     { 0, 0, 0, 0, 0, 0, 0 },
@@ -112,6 +151,13 @@ static int __init sample_init(void)
     struct device_driver driver = { "sample-driver", &bus, THIS_MODULE, NULL, NULL };
     struct device *root_dev;
     struct device *created_dev;
+    struct cdev cdev;
+    struct miscdevice misc = {
+        .minor = MISC_DYNAMIC_MINOR,
+        .name = "sample-misc",
+        .fops = &sample_fops,
+        .mode = 0600,
+    };
     struct pci_dev pdev;
     struct pci_driver pdrv = {
         "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
@@ -119,6 +165,8 @@ static int __init sample_init(void)
     };
     struct page *page;
     dma_addr_t dma;
+    dev_t chrdev_devt;
+    int chrdev_major;
     u64 dma_mask;
     void *coherent;
     char dma_buf[SAMPLE_DMA_BUF_SIZE];
@@ -218,6 +266,19 @@ static int __init sample_init(void)
     pdev.resource[SAMPLE_PCI_BAR].name = "sample-bar";
     pdev.resource[SAMPLE_PCI_BAR].flags = IORESOURCE_MEM;
     pdev.config_space[SAMPLE_PCI_CFG_VENDOR_DEVICE] = (SAMPLE_PCI_DEVICE << 16) | SAMPLE_PCI_VENDOR;
+    cdev_init(&cdev, &sample_fops);
+    (void)register_chrdev_region(MKDEV(SAMPLE_CHRDEV_MAJOR, SAMPLE_CHRDEV_MINOR), SAMPLE_CHRDEV_COUNT, "sample-char");
+    (void)cdev_add(&cdev, MKDEV(SAMPLE_CHRDEV_MAJOR, SAMPLE_CHRDEV_MINOR), SAMPLE_CHRDEV_COUNT);
+    cdev_del(&cdev);
+    unregister_chrdev_region(MKDEV(SAMPLE_CHRDEV_MAJOR, SAMPLE_CHRDEV_MINOR), SAMPLE_CHRDEV_COUNT);
+    (void)alloc_chrdev_region(&chrdev_devt, SAMPLE_CHRDEV_MINOR, SAMPLE_CHRDEV_COUNT, "sample-dyn-char");
+    unregister_chrdev_region(chrdev_devt, SAMPLE_CHRDEV_COUNT);
+    chrdev_major = register_chrdev(0, "sample-legacy-char", &sample_fops);
+    unregister_chrdev((unsigned int)chrdev_major, "sample-legacy-char");
+    (void)nonseekable_open(NULL, NULL);
+    (void)sample_chr_ioctl(NULL, SAMPLE_IOCTL_CMD, 0);
+    (void)misc_register(&misc);
+    (void)misc_deregister(&misc);
     (void)pci_register_driver(&pdrv);
     (void)pci_enable_device(&pdev);
     pci_set_master(&pdev);
