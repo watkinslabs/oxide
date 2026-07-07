@@ -9,7 +9,7 @@ mod core;
 mod devres;
 mod format;
 mod registry;
-mod types;
+pub(crate) mod types;
 
 /// Register Linux device-core KPI symbols.
 /// # C: O(1)
