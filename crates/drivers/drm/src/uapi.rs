@@ -28,8 +28,10 @@ pub const DRM_IOCTL_MODE_GETRESOURCES:      u64 = 0xc04064a0;
 pub const DRM_IOCTL_MODE_GETCRTC:           u64 = 0xc06864a1;
 pub const DRM_IOCTL_MODE_SETCRTC:           u64 = 0xc06864a2;
 pub const DRM_IOCTL_MODE_CURSOR:            u64 = 0xc01c64a3;
-pub const DRM_IOCTL_MODE_GETGAMMA:          u64 = 0xc01864a4;
-pub const DRM_IOCTL_MODE_SETGAMMA:          u64 = 0xc01864a5;
+// `drm_mode_crtc_lut` is 32 bytes (crtc_id+gamma_size u32 + 3 u64 array ptrs),
+// so the size field is 0x20 — the earlier 0x18 (24) never matched libdrm.
+pub const DRM_IOCTL_MODE_GETGAMMA:          u64 = 0xc02064a4;
+pub const DRM_IOCTL_MODE_SETGAMMA:          u64 = 0xc02064a5;
 pub const DRM_IOCTL_MODE_GETENCODER:        u64 = 0xc01464a6;
 pub const DRM_IOCTL_MODE_GETCONNECTOR:      u64 = 0xc05064a7;
 pub const DRM_IOCTL_MODE_ATTACHMODE:        u64 = 0xc05064a8;
@@ -47,13 +49,17 @@ pub const DRM_IOCTL_MODE_MAP_DUMB:          u64 = 0xc01064b3;
 pub const DRM_IOCTL_MODE_DESTROY_DUMB:      u64 = 0xc00464b4;
 pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u64 = 0xc01064b5;
 pub const DRM_IOCTL_MODE_GETPLANE:          u64 = 0xc02064b6;
-pub const DRM_IOCTL_MODE_SETPLANE:          u64 = 0xc03064b7;
+// `drm_mode_set_plane` is 64 bytes (8×u32/s32 + 4×u64 src_* fixed-16.16), so
+// the size field is 0x40 — the earlier 0x30 (48) never matched libdrm's SETPLANE.
+pub const DRM_IOCTL_MODE_SETPLANE:          u64 = 0xc04064b7;
 // _IOWR(0x64, 0xb8, struct drm_mode_fb_cmd2): modern struct carries
 // modifier[4] (u64), so sizeof = 104 (0x68), not pre-modifier 68 (0x44).
 pub const DRM_IOCTL_MODE_ADDFB2:            u64 = 0xc06864b8;
 pub const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u64 = 0xc02064b9;
 pub const DRM_IOCTL_MODE_OBJ_SETPROPERTY:   u64 = 0xc01864ba;
-pub const DRM_IOCTL_MODE_CURSOR2:           u64 = 0xc02464bf;
+// CURSOR2 is nr 0xBB (drm_mode_cursor2, 36 bytes) — the earlier 0xBF byte was a
+// transcription error (0xBF is SYNCOBJ_CREATE's nr) and never matched libdrm.
+pub const DRM_IOCTL_MODE_CURSOR2:           u64 = 0xc02464bb;
 pub const DRM_IOCTL_MODE_ATOMIC:            u64 = 0xc04064bc;
 pub const DRM_IOCTL_MODE_CREATEPROPBLOB:    u64 = 0xc01064bd;
 pub const DRM_IOCTL_MODE_DESTROYPROPBLOB:   u64 = 0xc00464be;
@@ -277,3 +283,123 @@ pub struct DrmEventVblank {
     pub sequence:  u32,
     pub crtc_id:   u32,
 }
+
+// ---------------------------------------------------------------------------
+// Additional KMS ioctl structs (read/written wholesale via repr(C) — no inline
+// field offsets). Layouts copied EXACTLY from linux/include/uapi/drm/drm_mode.h.
+// ---------------------------------------------------------------------------
+
+/// `struct drm_mode_set_plane` — 0xc04064b7, 64 bytes. src_* are 16.16 fixed.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeSetPlane {
+    pub plane_id: u32,
+    pub crtc_id:  u32,
+    pub fb_id:    u32,
+    pub flags:    u32,
+    pub crtc_x:   i32,
+    pub crtc_y:   i32,
+    pub crtc_w:   u32,
+    pub crtc_h:   u32,
+    pub src_x:    u64,
+    pub src_y:    u64,
+    pub src_h:    u64,
+    pub src_w:    u64,
+}
+
+/// `struct drm_mode_fb_dirty_cmd` — DIRTYFB, 0xc01864b1, 24 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeFbDirtyCmd {
+    pub fb_id:     u32,
+    pub flags:     u32,
+    pub color:     u32,
+    pub num_clips: u32,
+    pub clips_ptr: u64,
+}
+
+/// `struct drm_mode_obj_set_property` — 0xc01864ba, 24 bytes (u64-aligned →
+/// 4 bytes tail padding after the three u32s).
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeObjSetProperty {
+    pub value:    u64,
+    pub prop_id:  u32,
+    pub obj_id:   u32,
+    pub obj_type: u32,
+}
+
+/// `struct drm_mode_connector_set_property` — SETPROPERTY, 0xc01064ab, 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeConnectorSetProperty {
+    pub value:        u64,
+    pub prop_id:      u32,
+    pub connector_id: u32,
+}
+
+/// `struct drm_mode_crtc_lut` — GET/SETGAMMA, 0xc02064a4/a5, 32 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeCrtcLut {
+    pub crtc_id:    u32,
+    pub gamma_size: u32,
+    pub red:        u64,
+    pub green:      u64,
+    pub blue:       u64,
+}
+
+/// `struct drm_mode_cursor` — CURSOR, 0xc01c64a3, 28 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeCursor {
+    pub flags:   u32,
+    pub crtc_id: u32,
+    pub x:       i32,
+    pub y:       i32,
+    pub width:   u32,
+    pub height:  u32,
+    pub handle:  u32,
+}
+
+/// `struct drm_mode_cursor2` — CURSOR2, 0xc02464bb, 36 bytes (adds hot_x/hot_y).
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeCursor2 {
+    pub flags:   u32,
+    pub crtc_id: u32,
+    pub x:       i32,
+    pub y:       i32,
+    pub width:   u32,
+    pub height:  u32,
+    pub handle:  u32,
+    pub hot_x:   i32,
+    pub hot_y:   i32,
+}
+
+/// `struct drm_mode_fb_cmd` — GETFB, 0xc01c64ad, 28 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeFbCmd {
+    pub fb_id:  u32,
+    pub width:  u32,
+    pub height: u32,
+    pub pitch:  u32,
+    pub bpp:    u32,
+    pub depth:  u32,
+    pub handle: u32,
+}
+
+// SETPLANE flags (drm_mode.h).
+pub const DRM_MODE_PRESENT_TOP_FIELD:    u32 = 1 << 0;
+pub const DRM_MODE_PRESENT_BOTTOM_FIELD: u32 = 1 << 1;
+
+// drm_mode_cursor `flags` (drm_mode.h): which cursor op the ioctl performs.
+pub const DRM_MODE_CURSOR_BO:   u32 = 1 << 0; // set the cursor image (handle)
+pub const DRM_MODE_CURSOR_MOVE: u32 = 1 << 1; // move the cursor (x,y)
+
+// Connector DPMS property values (drm_mode.h).
+pub const DRM_MODE_DPMS_ON:      u64 = 0;
+pub const DRM_MODE_DPMS_STANDBY: u64 = 1;
+pub const DRM_MODE_DPMS_SUSPEND: u64 = 2;
+pub const DRM_MODE_DPMS_OFF:     u64 = 3;

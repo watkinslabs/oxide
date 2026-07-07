@@ -54,8 +54,19 @@ pub fn destroy_dumb(card_id: u32, arg: u64) -> i64 {
 pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd2>() as u64) { return einval(); }
     let mut req: DrmModeFbCmd2 = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd2) };
-    if req.flags != 0 { return einval(); }
-    if req.modifier.iter().any(|m| *m != 0) { return einval(); }
+    // Accept the explicit-modifier path (DRM_MODE_FB_MODIFIERS) now that IN_FORMATS
+    // advertises the LINEAR modifier: mutter may pass flags=DRM_MODE_FB_MODIFIERS
+    // with modifier[0]=LINEAR(0) or INVALID ("driver picks", = linear for our
+    // PMM-contiguous dumb buffers). Reject any other flag (INTERLACED) or a
+    // non-linear/tiled modifier we cannot honor. Modifiers are only meaningful
+    // when the flag is set.
+    const DRM_MODE_FB_MODIFIERS: u32 = 0x2;
+    const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+    if req.flags & !DRM_MODE_FB_MODIFIERS != 0 { return einval(); }
+    if req.flags & DRM_MODE_FB_MODIFIERS != 0 {
+        if req.modifier[0] != 0 && req.modifier[0] != DRM_FORMAT_MOD_INVALID { return einval(); }
+        if req.modifier[1..].iter().any(|m| *m != 0) { return einval(); }
+    }
     if !format_supported(req.pixel_format) { return einval(); }
     if req.width == 0 || req.height == 0 { return einval(); }
     if req.handles[0] == 0 { return einval(); }
