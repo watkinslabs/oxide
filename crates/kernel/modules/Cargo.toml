@@ -18,6 +18,7 @@ pmm  = { path = "../mm-pmm" }
 sched = { path = "../sched" }
 timer = { path = "../timer" }
 mmio-map = { path = "../mmio-map" }
+arch-irq = { path = "../arch-irq" }
 
 [features]
 default = []

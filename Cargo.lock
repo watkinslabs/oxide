@@ -838,6 +838,7 @@ dependencies = [
 name = "modules"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
  "elf",
  "hal",
  "hal-aarch64",
