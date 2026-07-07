@@ -3,6 +3,7 @@
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/etherdevice.h>
 #include <linux/firmware.h>
 #include <linux/gfp.h>
 #include <linux/hrtimer.h>
@@ -19,6 +20,7 @@
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/netdevice.h>
 #include <linux/pci.h>
 #include <linux/refcount.h>
 #include <linux/rbtree.h>
@@ -75,6 +77,9 @@ enum { SAMPLE_CHRDEV_MINOR = 1 };
 enum { SAMPLE_CHRDEV_COUNT = 1 };
 enum { SAMPLE_IOCTL_CMD = 0x58434445 };
 enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
+enum { SAMPLE_NET_PRIV = 32 };
+enum { SAMPLE_SKB_LEN = ETH_HLEN + 20 };
+static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
 static void sample_timer_fn(struct timer_list *timer) { (void)timer; }
@@ -86,6 +91,14 @@ static int sample_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
     (void)pdev; (void)id; return 0;
 }
 static void sample_pci_remove(struct pci_dev *pdev) { (void)pdev; }
+static int sample_net_open(struct net_device *dev) { (void)dev; return 0; }
+static int sample_net_stop(struct net_device *dev) { (void)dev; return 0; }
+static netdev_tx_t sample_net_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+    (void)dev;
+    dev_kfree_skb(skb);
+    return NETDEV_TX_OK;
+}
 static int sample_chr_open(struct inode *inode, struct file *file)
 {
     file->private_data = inode;
@@ -124,6 +137,11 @@ static const struct pci_device_id sample_pci_ids[] = {
     { PCI_DEVICE(SAMPLE_PCI_VENDOR, SAMPLE_PCI_DEVICE) },
     { 0, 0, 0, 0, 0, 0, 0 },
 };
+static const struct net_device_ops sample_netdev_ops = {
+    .ndo_open = sample_net_open,
+    .ndo_stop = sample_net_stop,
+    .ndo_start_xmit = sample_net_xmit,
+};
 static ssize_t sample_attr_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
     (void)dev; (void)attr; (void)buf; return 0;
@@ -161,6 +179,9 @@ static int __init sample_init(void)
     };
     struct pci_dev pdev;
     const struct firmware *fw;
+    struct net_device *netdev;
+    struct sk_buff *skb;
+    unsigned char *skb_data;
     struct pci_driver pdrv = {
         "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
         { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
@@ -256,6 +277,31 @@ static int __init sample_init(void)
         (void)fw->pages;
         (void)fw->priv;
         release_firmware(fw);
+    }
+    netdev = alloc_etherdev(SAMPLE_NET_PRIV);
+    if (netdev != NULL) {
+        netdev->netdev_ops = &sample_netdev_ops;
+        netdev->mtu = ETH_DATA_LEN;
+        eth_hw_addr_set(netdev, sample_mac);
+        netif_stop_queue(netdev);
+        netif_start_queue(netdev);
+        netif_wake_queue(netdev);
+        netif_carrier_off(netdev);
+        netif_carrier_on(netdev);
+        (void)netdev_priv(netdev);
+        (void)register_netdev(netdev);
+        skb = dev_alloc_skb(SAMPLE_SKB_LEN);
+        if (skb != NULL) {
+            skb_reserve(skb, ETH_HLEN);
+            skb_data = skb_put(skb, SAMPLE_SKB_LEN - ETH_HLEN);
+            (void)skb_data;
+            skb->dev = netdev;
+            skb->protocol = ETH_P_IP;
+            (void)skb_tail_pointer(skb);
+            (void)netif_rx(skb);
+        }
+        unregister_netdev(netdev);
+        free_netdev(netdev);
     }
     pdev.dev.dma_mask = &dma_mask;
     pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
