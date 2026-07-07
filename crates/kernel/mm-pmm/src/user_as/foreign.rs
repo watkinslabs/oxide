@@ -58,6 +58,55 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
     written
 }
 
+/// Foreign-root sibling of `unmap::evict_pages_in_range`: drop the
+/// physical pages of `[addr, addr+len)` in the address space rooted at
+/// `root_pa` (a task OTHER than the running one), keeping its VMAs.
+/// process_madvise MADV_DONTNEED/MADV_FREE against a foreign pidfd.
+///
+/// Frame accounting is kept IDENTICAL to `evict_pages_in_range`: each
+/// present leaf is cleared then released via the SAME
+/// `crate::setup::rmap_aware_dec_and_maybe_free`, so a COW-shared frame
+/// (still mapped in a peer AS) is only unmapped from the target, never
+/// freed early. No TLB shootdown is issued — oxide is UP (`smp cpus=0`),
+/// the foreign target is not executing, and its TLB is flushed on its
+/// next CR3/TTBR reload (`20§5`).
+/// # C: O(len/4096) PT walks
+pub fn evict_foreign_pages_in_range(root_pa: u64, addr: u64, len: u64) -> i64 {
+    use syscall::errno::Errno;
+    if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let len_aligned = (len + 0xfff) & !0xfff;
+    if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let hhdm = hhdm_offset();
+    let mut va = addr;
+    let end = addr + len_aligned;
+    while va < end {
+        // SAFETY: root_pa is a live foreign AS root the caller pins via
+        // Arc and that is NOT active on this UP CPU; HHDM covers PT
+        // memory; the leaf slot is exclusively owned (target not running).
+        let torn = unsafe {
+            #[cfg(target_arch = "x86_64")]
+            { hal::pt_walker::unmap_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root_pa, va, hhdm) }
+            #[cfg(target_arch = "aarch64")]
+            { hal::pt_walker::unmap_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(root_pa, va, hhdm) }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            { let _ = (root_pa, va, hhdm); None::<u64> }
+        };
+        if let Some(pa) = torn {
+            // SAFETY: pa was reachable via the foreign leaf just cleared;
+            // rmap_aware_dec_and_maybe_free checks the struct-page refcount
+            // and only releases to PMM when the last mapping drops — same
+            // contract as the active-root evict path in unmap.rs.
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+        }
+        va += 0x1000;
+    }
+    0
+}
+
 #[cfg(target_arch = "x86_64")]
 pub(super) unsafe fn read_foreign_leaf_pa(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<u64> {
     use hal_x86_64::vmm::PtWalkerX86;
