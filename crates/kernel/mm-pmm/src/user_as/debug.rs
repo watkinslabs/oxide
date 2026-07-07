@@ -224,5 +224,3 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
     }
     klog::write_raw(b"\n");
 }
-
-/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
