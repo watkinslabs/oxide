@@ -245,13 +245,48 @@ impl PseudoDir {
         }
     }
 
+    /// Independent copy of a device-node leaf inode for a fresh mount namespace:
+    /// same behaviour (i_op/i_fop/i_private/rdev — identical device + routing
+    /// ino) but its OWN mutable owner/mode so per-namespace chmod/chown does not
+    /// leak. # C: O(1)
+    fn clone_device_leaf(leaf: &InodeRef) -> InodeRef {
+        let inode = InodeBuilder::new(
+            leaf.ino(),
+            leaf.i_mode() as u32,
+            Arc::clone(leaf.i_op()),
+            Arc::clone(leaf.i_fop()),
+        )
+        .rdev(leaf.rdev())
+        .fsid(leaf.fsid())
+        .private(Arc::clone(leaf.i_private()))
+        .build();
+        let _ = inode.set_owner(leaf.uid().unwrap_or(0), leaf.gid().unwrap_or(0));
+        inode
+    }
+
     pub fn deep_clone(&self) -> Arc<PseudoDir> {
         let g = self.children.lock();
         let mut nc: BTreeMap<String, PseudoEntry> = BTreeMap::new();
         for (k, v) in g.iter() {
             let nv = match v {
                 PseudoEntry::Dir(d) => PseudoEntry::Dir(d.deep_clone()),
-                PseudoEntry::Leaf(i) => PseudoEntry::Leaf(Arc::clone(i)),
+                // Device-node leaves carry per-namespace MUTABLE metadata
+                // (i_uid/i_gid/i_mode a service's PrivateDevices chmod/chown
+                // writes). Sharing the Arc across mount namespaces let one
+                // service's `chown /dev/null` corrupt /dev/null for EVERY other
+                // namespace (the greeter then hit EACCES → glib "Failed to open
+                // file to remap file descriptor"). Give each namespace its own
+                // copy; share the immutable behaviour (i_op/i_fop/i_private/rdev
+                // → same device, same routing ino). Non-device leaves (dynamic
+                // procfs/sysfs files + symlinks) carry no mutable per-ns state,
+                // so they stay shared.
+                PseudoEntry::Leaf(i) => PseudoEntry::Leaf(
+                    if matches!(i.file_type(), FileType::CharDev | FileType::BlockDev) {
+                        Self::clone_device_leaf(i)
+                    } else {
+                        Arc::clone(i)
+                    },
+                ),
             };
             nc.insert(k.clone(), nv);
         }
