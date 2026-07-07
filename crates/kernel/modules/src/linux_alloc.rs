@@ -12,7 +12,7 @@ const ALLOC_MAGIC: u64 = 0x4f58_4b50_4941_4c4c;
 const PAGE_MAGIC: u64 = 0x4f58_4b50_4950_4147;
 const MIN_ALIGN: usize = align_of::<usize>();
 const GFP_ZERO: u32 = 0x8000;
-const PAGE_SIZE: usize = 4096;
+pub(crate) const PAGE_SIZE: usize = 4096;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -80,7 +80,9 @@ extern "C" fn vfree(ptr: *mut u8) {
     free_bytes(ptr);
 }
 
-extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
+/// Allocate a Linux `struct page` descriptor plus owned contiguous pages.
+/// # C: O(order)
+pub(crate) extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
     let (pa, va) = match page_run_alloc(order, flags & GFP_ZERO != 0) {
         Some(v) => v,
         None => return null_mut(),
@@ -93,7 +95,9 @@ extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
     page
 }
 
-extern "C" fn __free_pages(page: *mut LinuxPage, order: u32) {
+/// Free pages owned by a Linux `struct page` descriptor.
+/// # C: O(order)
+pub(crate) extern "C" fn __free_pages(page: *mut LinuxPage, order: u32) {
     if page.is_null() { return; }
     if !valid_page(page) { return; }
     // SAFETY: caller passes a page descriptor returned by alloc_pages.
@@ -120,7 +124,11 @@ extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
 }
 
 extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
-    if valid_page(page) { unsafe { (*page).pa } } else { 0 }
+    linux_page_phys(page).unwrap_or(0)
+}
+
+pub(crate) fn linux_page_phys(page: *const LinuxPage) -> Option<u64> {
+    if valid_page(page as *mut LinuxPage) { Some(unsafe { (*page).pa }) } else { None }
 }
 
 unsafe extern "C" fn kstrdup(s: *const u8, flags: u32) -> *mut u8 {
@@ -219,7 +227,9 @@ unsafe fn c_strlen(s: *const u8) -> usize {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
+/// Allocate a contiguous PMM page run for Linux KPI wrappers.
+/// # C: O(order)
+pub(crate) fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
     if order > pmm::MAX_ORDER as u32 { return None; }
     let pa = pmm::setup::alloc_contig_object(pmm::Order(order as u8))?;
     let va = pmm::setup::frame_ptr(pa)?;
@@ -233,34 +243,57 @@ fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn page_run_free_pa(pa: u64, order: u32) {
+/// Free a contiguous PMM page run by physical address.
+/// # C: O(order)
+pub(crate) fn page_run_free_pa(pa: u64, order: u32) {
     if order > pmm::MAX_ORDER as u32 { return; }
     // SAFETY: caller owns the page run returned by page_run_alloc.
     unsafe { pmm::setup::free_contig(pa, pmm::Order(order as u8)); }
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn page_run_free_va(va: *mut u8, order: u32) {
-    let hhdm = pmm::user_as::hhdm_offset() as usize;
-    if hhdm == 0 || (va as usize) < hhdm { return; }
-    page_run_free_pa((va as usize - hhdm) as u64, order);
+/// Free a contiguous PMM page run by direct-map address.
+/// # C: O(order)
+pub(crate) fn page_run_free_va(va: *mut u8, order: u32) {
+    if let Some(pa) = direct_pa_for_va(va as *const u8) { page_run_free_pa(pa, order); }
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
+/// Allocate a hosted page-aligned run for Linux KPI tests.
+/// # C: O(order)
+pub(crate) fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
     let bytes = PAGE_SIZE.checked_shl(order)?;
     let va = alloc_bytes(bytes, PAGE_SIZE, zero);
     if va.is_null() { None } else { Some((va as u64, va)) }
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn page_run_free_pa(pa: u64, _order: u32) {
+/// Free a hosted page-aligned run by pseudo-physical address.
+/// # C: O(1)
+pub(crate) fn page_run_free_pa(pa: u64, _order: u32) {
     free_bytes(pa as *mut u8);
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn page_run_free_va(va: *mut u8, _order: u32) {
+/// Free a hosted page-aligned run by virtual address.
+/// # C: O(1)
+pub(crate) fn page_run_free_va(va: *mut u8, _order: u32) {
     free_bytes(va);
+}
+
+#[cfg(target_os = "oxide-kernel")]
+/// Translate a direct-map kernel virtual address to a physical address.
+/// # C: O(1)
+pub(crate) fn direct_pa_for_va(va: *const u8) -> Option<u64> {
+    let hhdm = pmm::user_as::hhdm_offset() as usize;
+    if hhdm == 0 || (va as usize) < hhdm { None } else { Some((va as usize - hhdm) as u64) }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+/// Translate hosted pointers through the identity DMA test policy.
+/// # C: O(1)
+pub(crate) fn direct_pa_for_va(va: *const u8) -> Option<u64> {
+    if va.is_null() { None } else { Some(va as u64) }
 }
 
 unsafe fn format_c(out: &mut Vec<u8>, fmt: *const u8, ap: &mut VaList) {
