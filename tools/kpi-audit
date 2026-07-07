@@ -70,7 +70,7 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("device-core", (
         "device_", "driver_", "bus_", "class_", "dev_", "devm_", "kobject",
-        "kset", "sysfs_", "uevent", "modalias",
+        "kset", "sysfs_", "uevent", "modalias", "__dynamic_dev_dbg",
     )),
     ("pci", (
         "pci_", "pcim_", "pcii_", "pcie_", "pci_bus", "pci_dev",
@@ -115,7 +115,7 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "strncasecmp", "strcpy", "strncpy", "strchr", "strstr", "strsep", "strim",
         "sized_strscpy", "kstrto", "hex_to_bin", "hex2bin", "bin2hex",
         "snprintf", "scnprintf", "sprintf", "printk", "_ctype", "__stack_chk",
-        "__fortify", "__fentry__",
+        "__fortify", "__fentry__", "__dynamic_pr_debug",
     )),
     ("debugfs-configfs", (
         "debugfs_", "configfs_", "seq_", "proc_create", "single_open",

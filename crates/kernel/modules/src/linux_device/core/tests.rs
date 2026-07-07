@@ -93,6 +93,7 @@ fn export_symbols_registers_device_surface() {
         "device_register", "device_unregister", "dev_set_drvdata",
         "dev_get_drvdata", "dev_name", "device_get_match_data", "devm_kmalloc", "devm_kfree",
         "__class_create", "bus_register", "driver_register", "sysfs_emit", "sysfs_emit_at", "_dev_info",
+        "__dynamic_dev_dbg",
     ] {
         assert!(crate::symtab::is_exported(name));
     }

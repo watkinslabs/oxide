@@ -15,6 +15,7 @@ pub(crate) fn export_symbols() {
         ("_printk",   printk    as *const () as usize),
         ("printk",    printk    as *const () as usize),
         ("__warn_printk", printk as *const () as usize),
+        ("__dynamic_pr_debug", dynamic_pr_debug as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -37,6 +38,12 @@ pub(crate) unsafe extern "C" fn printk(fmt: *const u8, mut ap: ...) -> i32 {
     let mut out = Vec::new();
     unsafe { format_c(&mut out, fmt, &mut ap); }
     out.len() as i32
+}
+
+unsafe extern "C" fn dynamic_pr_debug(_desc: *mut c_void, fmt: *const u8, mut ap: ...) {
+    let mut out = Vec::new();
+    // SAFETY: dynamic debug callers pass a descriptor followed by printf-compatible varargs.
+    unsafe { format_c(&mut out, fmt, &mut ap); }
 }
 
 unsafe fn format_to_buf(buf: *mut u8, size: usize, fmt: *const u8, ap: &mut VaList) -> usize {

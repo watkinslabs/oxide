@@ -50,6 +50,13 @@ Date: 2026-07-07
 - Extended `kpi/include/linux/module.h` and `tools/kpi-header-smoke.c` for host, x86_64, and aarch64 compile smoke coverage.
 - Valid Fedora module audit now resolves the `module_put` and `try_module_get` references; no `MISSING | module` rows remain for `target_core_mod`, `libcomposite`, or `industrialio-configfs`.
 
+## Dynamic Debug Follow-Up
+
+- Added Linux dynamic debug exports required by Fedora 6.16 `target_core_mod` and `libcomposite`: `__dynamic_pr_debug` and `__dynamic_dev_dbg`.
+- Added `kpi/include/linux/dynamic_debug.h` with `_ddebug` metadata, dynamic debug flags, function prototypes, `DEFINE_DYNAMIC_DEBUG_METADATA`, and a `dynamic_pr_debug` call path.
+- Wired `pr_debug` through dynamic debug metadata instead of a plain `printk` alias, and extended `tools/kpi-header-smoke.c` for host, x86_64, and aarch64 compile smoke coverage.
+- Valid Fedora module audit now resolves both dynamic debug references; no `MISSING` rows remain for `__dynamic_pr_debug` or `__dynamic_dev_dbg`.
+
 ## Sync Follow-Up
 
 - Added Fedora 6.16-era sync/RCU exports required by real module audits: `_raw_spin_lock_bh`, `_raw_spin_lock_irq`, `_raw_spin_lock_irqsave`, `_raw_spin_unlock_bh`, `_raw_spin_unlock_irq`, `_raw_spin_unlock_irqrestore`, `__mutex_init`, `mutex_lock_interruptible`, `sema_init`, `down`, `down_interruptible`, `down_trylock`, `up`, `wait_for_completion_interruptible`, `wait_for_completion_timeout`, `__init_waitqueue_head`, `__init_swait_queue_head`, `__wake_up`, `init_wait_entry`, `prepare_to_wait_event`, `finish_wait`, `__rcu_read_lock`, `__rcu_read_unlock`, `synchronize_rcu`, `rcu_barrier`, and `refcount_warn_saturate`.
@@ -119,9 +126,11 @@ F674 result:
 - Exported `device-core` matches now include `sysfs_emit`; remaining `device-core` misses are `__dynamic_dev_dbg`, `bdev_discard_alignment`, `scsi_device_type`, `usb_gadget_register_driver_owner`, and `usb_gadget_vbus_draw`.
 - After the module refcount follow-up, the audit reported 581 exports, 280 undefined refs, 225 unique symbols, 109 missing symbols, 0 weak-missing, and 116 exported matches.
 - Exported `module` matches now include `module_put` and `try_module_get`; no `MISSING | module` rows remain.
+- After the dynamic debug follow-up, the audit reported 583 exports, 280 undefined refs, 225 unique symbols, 107 missing symbols, 0 weak-missing, and 118 exported matches.
+- Exported dynamic debug matches now include `__dynamic_dev_dbg` and `__dynamic_pr_debug`; remaining `device-core` misses are `bdev_discard_alignment`, `scsi_device_type`, `usb_gadget_register_driver_owner`, and `usb_gadget_vbus_draw`.
 
 The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
-After the allocator, sync, DMA/scatterlist, string/runtime, CRC, sysfs emit, and module refcount follow-ups, the remaining audit misses no longer include the modern allocator slab-cache symbols, sync/RCU, DMA/scatterlist, string/runtime, crypto-random-crc, `sysfs_emit`, `module_put`, or `try_module_get` symbols listed above. Real `vmap`/`vunmap` remain allocator work.
+After the allocator, sync, DMA/scatterlist, string/runtime, CRC, sysfs emit, module refcount, and dynamic debug follow-ups, the remaining audit misses no longer include the modern allocator slab-cache symbols, sync/RCU, DMA/scatterlist, string/runtime, crypto-random-crc, `sysfs_emit`, `module_put`, `try_module_get`, `__dynamic_dev_dbg`, or `__dynamic_pr_debug` symbols listed above. Real `vmap`/`vunmap` remain allocator work.
 
 ## Validation Passed
 
@@ -146,6 +155,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after CRC follow-up (expected nonzero overall; 577 exports, 112 missing, 113 exported matches, and no remaining `crypto-random-crc` missing rows)
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after sysfs emit follow-up (expected nonzero overall; 579 exports, 111 missing, 114 exported matches, and `sysfs_emit` exported)
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after module refcount follow-up (expected nonzero overall; 581 exports, 109 missing, 116 exported matches, and no remaining `module` missing rows)
+- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after dynamic debug follow-up (expected nonzero overall; 583 exports, 107 missing, 118 exported matches, and no remaining dynamic debug missing rows)
 - `cargo run -q -p xtask -- kernel --arch x86_64`
 - `cargo run -q -p xtask -- kernel --arch aarch64`
 - `git diff --check`
@@ -157,6 +167,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - CRC source line-count check: `linux_crypto/crc.rs` is 128 lines.
 - Device-core source line-count check after sysfs emit: `linux_device/core.rs` is 308 lines.
 - Module refcount source line-count check: `linux_module.rs` is 98 lines.
+- Dynamic debug line-count check: `linux_device/core.rs` is 315 lines, `linux_string/format.rs` is 147 lines, and `kpi/include/linux/dynamic_debug.h` is 46 lines.
 
 ## Next Steps
 
