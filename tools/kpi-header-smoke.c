@@ -48,12 +48,14 @@ enum { SAMPLE_DMA_BUF_SIZE = 64 };
 enum { SAMPLE_DMA_SG_NENTS = 2 };
 enum { SAMPLE_DMA_PAGE_ORDER = 0 };
 enum { SAMPLE_DMA_PAGE_OFFSET = 0 };
+enum { SAMPLE_IRQ = 1 };
 enum { SAMPLE_IO_PORT = 0 };
 enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
 static void sample_timer_fn(struct timer_list *timer) { (void)timer; }
 static enum hrtimer_restart sample_hrtimer_fn(struct hrtimer *timer) { (void)timer; return HRTIMER_NORESTART; }
+static irqreturn_t sample_irq_handler(int irq, void *dev) { (void)irq; (void)dev; return IRQ_HANDLED; }
 
 static int __init sample_init(void)
 {
@@ -102,6 +104,16 @@ static int __init sample_init(void)
     (void)page_to_phys(NULL);
     (void)kstrdup("driver", GFP_KERNEL);
     (void)kasprintf(GFP_KERNEL, "driver %d", 1);
+    (void)request_irq(SAMPLE_IRQ, sample_irq_handler, IRQF_SHARED, "sample", &s);
+    disable_irq_nosync(SAMPLE_IRQ);
+    enable_irq(SAMPLE_IRQ);
+    synchronize_irq(SAMPLE_IRQ);
+    (void)irq_set_affinity_hint(SAMPLE_IRQ, NULL);
+    (void)irq_update_affinity_hint(SAMPLE_IRQ, NULL);
+    (void)in_irq();
+    (void)in_interrupt();
+    free_irq(SAMPLE_IRQ, &s);
+    (void)request_threaded_irq(SAMPLE_IRQ, sample_irq_handler, sample_irq_handler, IRQF_ONESHOT, "sample", &s);
     dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     dev.dma_mask = &dma_mask;
     dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);

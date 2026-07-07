@@ -7,6 +7,16 @@
 extern crate alloc;
 
 pub mod cache;
+mod line;
+
+pub use line::LineHandler;
+#[cfg(target_arch = "x86_64")]
+pub use line::{free_irq_line_handler, invoke_x86_line_handler, register_irq_line_handler};
+#[cfg(target_arch = "aarch64")]
+pub use line::{
+    free_arm_irq_line_handler, free_msi_line_handler, invoke_arm_irq_line_handler,
+    invoke_arm_spi_line_handler, register_msi_line_handler, request_arm_irq_line_handler,
+};
 
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::AtomicBool;
@@ -115,6 +125,7 @@ pub fn free_x86_vector(vector: u8) -> Result<(), ()> {
     }
     let idx = (vector - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
     MSI_HANDLERS[idx].store(core::ptr::null_mut(), Ordering::Release);
+    let _ = line::free_irq_line_handler(vector as u32);
     MSI_VEC_USED[idx].store(false, Ordering::Release);
     Ok(())
 }
@@ -198,6 +209,7 @@ pub fn free_arm_irq_handler(intid: u32) -> Result<(), ()> {
     for i in 0..ARM_IRQ_SLOTS {
         if ARM_IRQ_INTIDS[i].load(Ordering::Acquire) == intid {
             ARM_IRQ_HANDS[i].store(core::ptr::null_mut(), Ordering::Release);
+            let _ = line::free_arm_irq_line_handler(intid);
             ARM_IRQ_INTIDS[i].store(0, Ordering::Release);
             return Ok(());
         }
@@ -261,6 +273,7 @@ pub fn free_arm_spi(spi: u32) -> Result<(), ()> {
     for i in 0..ARM_MSI_SLOTS {
         if ARM_MSI_SPIS[i].load(Ordering::Acquire) == spi {
             ARM_MSI_HANDS[i].store(core::ptr::null_mut(), Ordering::Release);
+            let _ = line::free_msi_line_handler(spi);
             ARM_MSI_SPIS[i].store(0, Ordering::Release);
             return Ok(());
         }
