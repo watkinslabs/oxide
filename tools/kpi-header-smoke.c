@@ -17,6 +17,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/pci.h>
 #include <linux/refcount.h>
 #include <linux/rbtree.h>
 #include <linux/rwlock.h>
@@ -52,6 +53,21 @@ enum { SAMPLE_IRQ = 1 };
 enum { SAMPLE_IO_PORT = 0 };
 enum { SAMPLE_ATTR_MODE = 0444 };
 enum { SAMPLE_DEVICE_DEVT = 0 };
+enum { SAMPLE_PCI_VENDOR = 0x1af4 };
+enum { SAMPLE_PCI_DEVICE = 0x1041 };
+enum { SAMPLE_PCI_SUBVENDOR = 0x1af4 };
+enum { SAMPLE_PCI_SUBDEVICE = 0x0001 };
+enum { SAMPLE_PCI_CLASS = 0x020000 };
+enum { SAMPLE_PCI_BUS = 0 };
+enum { SAMPLE_PCI_SLOT = 1 };
+enum { SAMPLE_PCI_FUNC = 0 };
+enum { SAMPLE_PCI_BAR = 0 };
+enum { SAMPLE_PCI_BAR_START = 0x10000000 };
+enum { SAMPLE_PCI_BAR_END = 0x10000fff };
+enum { SAMPLE_PCI_CFG_VENDOR_DEVICE = 0 };
+enum { SAMPLE_PCI_CFG_COMMAND = 4 };
+enum { SAMPLE_PCI_MIN_VECTORS = 1 };
+enum { SAMPLE_PCI_MAX_VECTORS = 1 };
 enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -59,6 +75,15 @@ static void sample_timer_fn(struct timer_list *timer) { (void)timer; }
 static enum hrtimer_restart sample_hrtimer_fn(struct hrtimer *timer) { (void)timer; return HRTIMER_NORESTART; }
 static irqreturn_t sample_irq_handler(int irq, void *dev) { (void)irq; (void)dev; return IRQ_HANDLED; }
 static void sample_devres_action(void *data) { (void)data; }
+static int sample_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+{
+    (void)pdev; (void)id; return 0;
+}
+static void sample_pci_remove(struct pci_dev *pdev) { (void)pdev; }
+static const struct pci_device_id sample_pci_ids[] = {
+    { PCI_DEVICE(SAMPLE_PCI_VENDOR, SAMPLE_PCI_DEVICE) },
+    { 0, 0, 0, 0, 0, 0, 0 },
+};
 static ssize_t sample_attr_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
     (void)dev; (void)attr; (void)buf; return 0;
@@ -87,6 +112,11 @@ static int __init sample_init(void)
     struct device_driver driver = { "sample-driver", &bus, THIS_MODULE, NULL, NULL };
     struct device *root_dev;
     struct device *created_dev;
+    struct pci_dev pdev;
+    struct pci_driver pdrv = {
+        "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
+        { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
+    };
     struct page *page;
     dma_addr_t dma;
     u64 dma_mask;
@@ -99,6 +129,9 @@ static int __init sample_init(void)
     unsigned int start;
     void __iomem *regs;
     u8 port8;
+    u8 pci_cfg8;
+    u16 pci_cfg16;
+    u32 pci_cfg32;
     INIT_LIST_HEAD(&s.link);
     list_add(&s.link, &samples);
     set_bit(3, sample_bits);
@@ -163,6 +196,56 @@ static int __init sample_init(void)
     class_destroy(class);
     root_dev = root_device_register("sample-root");
     root_device_unregister(root_dev);
+    pdev.dev.dma_mask = &dma_mask;
+    pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
+    pdev.dev.driver_data = NULL;
+    pdev.dev.parent = NULL;
+    pdev.dev.bus = NULL;
+    pdev.dev.class = NULL;
+    pdev.dev.driver = NULL;
+    pdev.dev.init_name = "sample-pci-dev";
+    pdev.dev.release = NULL;
+    pdev.vendor = SAMPLE_PCI_VENDOR;
+    pdev.device = SAMPLE_PCI_DEVICE;
+    pdev.subsystem_vendor = SAMPLE_PCI_SUBVENDOR;
+    pdev.subsystem_device = SAMPLE_PCI_SUBDEVICE;
+    pdev.class = SAMPLE_PCI_CLASS;
+    pdev.bus = SAMPLE_PCI_BUS;
+    pdev.devfn = PCI_DEVFN(SAMPLE_PCI_SLOT, SAMPLE_PCI_FUNC);
+    pdev.irq = SAMPLE_IRQ;
+    pdev.resource[SAMPLE_PCI_BAR].start = SAMPLE_PCI_BAR_START;
+    pdev.resource[SAMPLE_PCI_BAR].end = SAMPLE_PCI_BAR_END;
+    pdev.resource[SAMPLE_PCI_BAR].name = "sample-bar";
+    pdev.resource[SAMPLE_PCI_BAR].flags = IORESOURCE_MEM;
+    pdev.config_space[SAMPLE_PCI_CFG_VENDOR_DEVICE] = (SAMPLE_PCI_DEVICE << 16) | SAMPLE_PCI_VENDOR;
+    (void)pci_register_driver(&pdrv);
+    (void)pci_enable_device(&pdev);
+    pci_set_master(&pdev);
+    pci_clear_master(&pdev);
+    pci_set_drvdata(&pdev, &s);
+    (void)pci_get_drvdata(&pdev);
+    (void)pci_name(&pdev);
+    (void)pci_resource_start(&pdev, SAMPLE_PCI_BAR);
+    (void)pci_resource_end(&pdev, SAMPLE_PCI_BAR);
+    (void)pci_resource_flags(&pdev, SAMPLE_PCI_BAR);
+    (void)pci_resource_len(&pdev, SAMPLE_PCI_BAR);
+    (void)pci_request_region(&pdev, SAMPLE_PCI_BAR, "sample");
+    regs = pci_iomap(&pdev, SAMPLE_PCI_BAR, SAMPLE_MMIO_SIZE);
+    pci_iounmap(&pdev, regs);
+    pci_release_region(&pdev, SAMPLE_PCI_BAR);
+    (void)pci_request_regions(&pdev, "sample");
+    pci_release_regions(&pdev);
+    (void)pci_alloc_irq_vectors(&pdev, SAMPLE_PCI_MIN_VECTORS, SAMPLE_PCI_MAX_VECTORS, PCI_IRQ_LEGACY);
+    (void)pci_irq_vector(&pdev, SAMPLE_PCI_FUNC);
+    pci_free_irq_vectors(&pdev);
+    (void)pci_read_config_byte(&pdev, SAMPLE_PCI_CFG_COMMAND, &pci_cfg8);
+    (void)pci_read_config_word(&pdev, SAMPLE_PCI_CFG_COMMAND, &pci_cfg16);
+    (void)pci_read_config_dword(&pdev, SAMPLE_PCI_CFG_COMMAND, &pci_cfg32);
+    (void)pci_write_config_byte(&pdev, SAMPLE_PCI_CFG_COMMAND, pci_cfg8);
+    (void)pci_write_config_word(&pdev, SAMPLE_PCI_CFG_COMMAND, pci_cfg16);
+    (void)pci_write_config_dword(&pdev, SAMPLE_PCI_CFG_COMMAND, pci_cfg32);
+    pci_disable_device(&pdev);
+    pci_unregister_driver(&pdrv);
     (void)dma_set_mask_and_coherent(&dev, DMA_BIT_MASK(DMA_ULL_BITS));
     coherent = dma_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
     (void)dma_mapping_error(&dev, dma);
