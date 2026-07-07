@@ -11,8 +11,14 @@ use syscall::SyscallArgs;
 pub fn sys_set_robust_list(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
+    /// sizeof(struct robust_list_head) — Linux `sys_set_robust_list` rejects
+    /// any other `len` unconditionally (kernel/futex/syscalls.c).
+    const ROBUST_LIST_HEAD_SIZE: u64 = 24;
     let head = args.a0;
     let len  = args.a1;
+    if len != ROBUST_LIST_HEAD_SIZE {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     if head != 0 && head >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }

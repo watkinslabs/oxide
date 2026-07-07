@@ -152,3 +152,33 @@ static EPOLL_BROADCAST_HOOK: core::sync::atomic::AtomicPtr<()>
 pub fn set_epoll_broadcast_hook(f: fn()) {
     EPOLL_BROADCAST_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
 }
+
+/// Robust-futex exit walk (`ipc::live::futex::exit_robust_list`), installed at
+/// boot by kmain. Lives here as a hook because the walk body is in `ipc`, and
+/// `ipc` already depends on `sched` — a direct `sched -> ipc` dep would cycle.
+/// Both non-syscall exit paths (`zombies::terminate_current_with_signal` here,
+/// and `pmm::user_as::signal`'s SIGSEGV terminate) drive it through
+/// `run_robust_exit` so a thread killed by a fatal fault while holding a robust
+/// mutex still marks it FUTEX_OWNER_DIED and wakes a waiter (Linux
+/// `do_exit -> exit_robust_list`; the syscall exit path calls the body directly
+/// from `060_exit.rs`). `(head_uaddr, owner_tid)`.
+pub type RobustExitFn = fn(u64, u32);
+static ROBUST_EXIT_HOOK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1)
+pub fn set_robust_exit_hook(f: RobustExitFn) {
+    ROBUST_EXIT_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Run the installed robust-futex exit walk for a dying task. No-op if unset
+/// (early boot before kmain wires the hook). MUST be called while the dying
+/// task's mm is still mapped (the walk reads user memory under the active AS).
+/// # C: O(list_len) via the installed walk
+pub fn run_robust_exit(head_uaddr: u64, owner_tid: u32) {
+    let p = ROBUST_EXIT_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: hook installed via set_robust_exit_hook with the documented RobustExitFn signature; Acquire load pairs with the Release store in the setter; ptr is a valid 'static fn address.
+    let f: RobustExitFn = unsafe { core::mem::transmute(p) };
+    f(head_uaddr, owner_tid);
+}
