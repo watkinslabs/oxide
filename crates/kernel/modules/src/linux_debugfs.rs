@@ -19,31 +19,31 @@ static NEXT_INO: core::sync::atomic::AtomicU64 =
 static LOCK: Spinlock<(), ModulesLockClass> = Spinlock::new(());
 
 #[repr(C)]
-pub struct LinuxFile { private_data: *mut c_void }
+pub struct LinuxFile { pub(crate) private_data: *mut c_void }
 
 #[repr(C)]
 pub struct LinuxInode {
-    i_rdev: u32,
-    private: *mut c_void,
+    pub(crate) i_rdev: u32,
+    pub(crate) private: *mut c_void,
 }
 
-type LinuxRead = unsafe extern "C" fn(*mut LinuxFile, *mut c_char, usize, *mut i64) -> isize;
-type LinuxWrite = unsafe extern "C" fn(*mut LinuxFile, *const c_char, usize, *mut i64) -> isize;
-type LinuxOpen = unsafe extern "C" fn(*mut LinuxInode, *mut LinuxFile) -> i32;
-type LinuxRelease = unsafe extern "C" fn(*mut LinuxInode, *mut LinuxFile) -> i32;
-type LinuxIoctl = unsafe extern "C" fn(*mut LinuxFile, u32, usize) -> isize;
+pub(crate) type LinuxRead = unsafe extern "C" fn(*mut LinuxFile, *mut c_char, usize, *mut i64) -> isize;
+pub(crate) type LinuxWrite = unsafe extern "C" fn(*mut LinuxFile, *const c_char, usize, *mut i64) -> isize;
+pub(crate) type LinuxOpen = unsafe extern "C" fn(*mut LinuxInode, *mut LinuxFile) -> i32;
+pub(crate) type LinuxRelease = unsafe extern "C" fn(*mut LinuxInode, *mut LinuxFile) -> i32;
+pub(crate) type LinuxIoctl = unsafe extern "C" fn(*mut LinuxFile, u32, usize) -> isize;
 
 #[repr(C)]
 pub struct LinuxFileOperations {
-    owner: *mut c_void,
-    open: Option<LinuxOpen>,
-    read: Option<LinuxRead>,
-    write: Option<LinuxWrite>,
-    unlocked_ioctl: Option<LinuxIoctl>,
-    release: Option<LinuxRelease>,
-    poll: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> u32>,
-    mmap: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> i32>,
-    llseek: *mut c_void,
+    pub(crate) owner: *mut c_void,
+    pub(crate) open: Option<LinuxOpen>,
+    pub(crate) read: Option<LinuxRead>,
+    pub(crate) write: Option<LinuxWrite>,
+    pub(crate) unlocked_ioctl: Option<LinuxIoctl>,
+    pub(crate) release: Option<LinuxRelease>,
+    pub(crate) poll: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> u32>,
+    pub(crate) mmap: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> i32>,
+    pub(crate) llseek: *mut c_void,
 }
 
 unsafe impl Sync for LinuxFileOperations {}
@@ -66,20 +66,38 @@ impl FileOps for DebugFileOps {
         let d = inode.private::<DebugFileData>().ok_or(VfsError::Einval)?;
         let ops = linux_ops(d.ops).ok_or(VfsError::Einval)?;
         let read = ops.read.ok_or(VfsError::Einval)?;
-        let mut file = LinuxFile { private_data: d.data as *mut c_void };
+        let mut opened = open_debug_file(ops, d.data)?;
         let mut pos = off as i64;
         // SAFETY: callback pointer comes from module-owned file_operations; VFS passes a valid kernel buffer.
-        checked_size(unsafe { read(&mut file, buf.as_mut_ptr() as *mut c_char, buf.len(), &mut pos) })
+        let r = checked_size(unsafe { read(&mut opened.file, buf.as_mut_ptr() as *mut c_char, buf.len(), &mut pos) });
+        opened.release(ops);
+        r
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<DebugFileData>().ok_or(VfsError::Einval)?;
         let ops = linux_ops(d.ops).ok_or(VfsError::Einval)?;
         let write = ops.write.ok_or(VfsError::Einval)?;
-        let mut file = LinuxFile { private_data: d.data as *mut c_void };
+        let mut opened = open_debug_file(ops, d.data)?;
         let mut pos = off as i64;
         // SAFETY: callback pointer comes from module-owned file_operations; VFS passes a valid kernel buffer.
-        checked_size(unsafe { write(&mut file, buf.as_ptr() as *const c_char, buf.len(), &mut pos) })
+        let r = checked_size(unsafe { write(&mut opened.file, buf.as_ptr() as *const c_char, buf.len(), &mut pos) });
+        opened.release(ops);
+        r
+    }
+}
+
+struct OpenedFile {
+    inode: LinuxInode,
+    file:  LinuxFile,
+}
+
+impl OpenedFile {
+    fn release(&mut self, ops: &LinuxFileOperations) {
+        if let Some(release) = ops.release {
+            // SAFETY: release callback belongs to the same file_operations used for open/read/write.
+            let _ = unsafe { release(&mut self.inode, &mut self.file) };
+        }
     }
 }
 
@@ -110,6 +128,7 @@ pub fn export_symbols() {
     for (name, addr) in [
         ("debugfs_create_dir",       debugfs_create_dir       as *const () as usize),
         ("debugfs_create_file",      debugfs_create_file      as *const () as usize),
+        ("debugfs_create_file_size", debugfs_create_file_size as *const () as usize),
         ("debugfs_create_u8",        debugfs_create_u8        as *const () as usize),
         ("debugfs_create_u16",       debugfs_create_u16       as *const () as usize),
         ("debugfs_create_u32",       debugfs_create_u32       as *const () as usize),
@@ -119,6 +138,12 @@ pub fn export_symbols() {
         ("debugfs_create_x32",       debugfs_create_x32       as *const () as usize),
         ("debugfs_create_x64",       debugfs_create_x64       as *const () as usize),
         ("debugfs_create_bool",      debugfs_create_bool      as *const () as usize),
+        ("debugfs_create_blob",      crate::linux_debugfs_extra::debugfs_create_blob as *const () as usize),
+        ("debugfs_create_symlink",   crate::linux_debugfs_extra::debugfs_create_symlink as *const () as usize),
+        ("simple_attr_open",         crate::linux_debugfs_extra::simple_attr_open as *const () as usize),
+        ("simple_attr_read",         crate::linux_debugfs_extra::simple_attr_read as *const () as usize),
+        ("simple_attr_write",        crate::linux_debugfs_extra::simple_attr_write as *const () as usize),
+        ("simple_attr_release",      crate::linux_debugfs_extra::simple_attr_release as *const () as usize),
         ("debugfs_remove",           debugfs_remove           as *const () as usize),
         ("debugfs_remove_recursive", debugfs_remove_recursive as *const () as usize),
         ("debugfs_lookup",           debugfs_lookup           as *const () as usize),
@@ -142,6 +167,20 @@ extern "C" fn debugfs_create_file(
     if fops.is_null() { return null_mut(); }
     let d = DebugFileData { ops: fops as usize, data: data as usize };
     let inode = regular_inode(mode, Arc::new(DebugFileOps), Arc::new(d));
+    create_entry(name, parent, Some(inode), mode, false)
+}
+
+extern "C" fn debugfs_create_file_size(
+    name: *const c_char,
+    mode: u16,
+    parent: *mut LinuxDentry,
+    data: *mut c_void,
+    fops: *const LinuxFileOperations,
+    size: u64,
+) -> *mut LinuxDentry {
+    if fops.is_null() { return null_mut(); }
+    let d = DebugFileData { ops: fops as usize, data: data as usize };
+    let inode = regular_inode_size(mode, Arc::new(DebugFileOps), Arc::new(d), size);
     create_entry(name, parent, Some(inode), mode, false)
 }
 
@@ -179,7 +218,7 @@ extern "C" fn debugfs_lookup(name: *const c_char, parent: *mut LinuxDentry) -> *
     Box::into_raw(Box::new(LinuxDentry { magic: DENTRY_MAGIC, root: DEBUGFS_ROOT, path }))
 }
 
-extern "C" fn debugfs_remove(dentry: *mut LinuxDentry) { remove_dentry(dentry); }
+pub(crate) extern "C" fn debugfs_remove(dentry: *mut LinuxDentry) { remove_dentry(dentry); }
 extern "C" fn debugfs_remove_recursive(dentry: *mut LinuxDentry) { remove_dentry(dentry); }
 
 fn create_num(name: *const c_char, mode: u16, parent: *mut LinuxDentry, ptr: usize, kind: NumKind, hex: bool) -> *mut LinuxDentry {
@@ -198,6 +237,20 @@ fn create_entry(name: *const c_char, parent: *mut LinuxDentry, inode: Option<Ino
         tracefs::debug_root().insert_path(&path, inode.unwrap_or_else(|| empty_file(mode)));
     }
     Box::into_raw(Box::new(LinuxDentry { magic: DENTRY_MAGIC, root: DEBUGFS_ROOT, path }))
+}
+
+pub(crate) fn create_inode_entry(name: *const c_char, parent: *mut LinuxDentry, inode: InodeRef) -> *mut LinuxDentry {
+    create_entry(name, parent, Some(inode), DEFAULT_FILE_MODE, false)
+}
+
+pub(crate) fn create_path_entry(path: String, inode: InodeRef) -> *mut LinuxDentry {
+    let _g = LOCK.lock();
+    tracefs::debug_root().insert_path(&path, inode);
+    Box::into_raw(Box::new(LinuxDentry { magic: DENTRY_MAGIC, root: DEBUGFS_ROOT, path }))
+}
+
+pub(crate) fn entry_path(parent: *mut LinuxDentry, name: *const c_char) -> Option<String> {
+    child_path(parent_path(parent), name)
 }
 
 fn remove_dentry(dentry: *mut LinuxDentry) {
@@ -240,13 +293,17 @@ fn read_cstr(ptr: *const c_char, max: usize) -> Option<String> {
 }
 
 fn regular_inode(mode: u16, ops: Arc<dyn FileOps>, data: Arc<dyn core::any::Any + Send + Sync>) -> InodeRef {
+    regular_inode_size(mode, ops, data, 0)
+}
+
+pub(crate) fn regular_inode_size(mode: u16, ops: Arc<dyn FileOps>, data: Arc<dyn core::any::Any + Send + Sync>, size: u64) -> InodeRef {
     let perm = if mode == 0 { DEFAULT_FILE_MODE } else { mode & 0o777 };
     InodeBuilder::new(
         NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
         mk_mode(FileType::Regular, perm),
         default_inode_ops(),
         ops,
-    ).private(data).build()
+    ).size(size).private(data).build()
 }
 
 fn empty_file(mode: u16) -> InodeRef {
@@ -265,6 +322,48 @@ fn linux_ops(ptr: usize) -> Option<&'static LinuxFileOperations> {
         Some(unsafe { &*(ptr as *const LinuxFileOperations) })
     }
 }
+
+fn open_debug_file(ops: &LinuxFileOperations, data: usize) -> KResult<OpenedFile> {
+    let mut opened = OpenedFile {
+        inode: LinuxInode { i_rdev: 0, private: data as *mut c_void },
+        file: LinuxFile { private_data: data as *mut c_void },
+    };
+    if let Some(open) = ops.open {
+        // SAFETY: open callback pointer comes from module-owned file_operations.
+        let rc = unsafe { open(&mut opened.inode, &mut opened.file) };
+        if rc < 0 { return Err(errno_to_vfs(-rc)); }
+    }
+    Ok(opened)
+}
+
+pub(crate) fn read_bytes_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
+    read_at(body, off, buf)
+}
+
+pub(crate) fn cstr(ptr: *const c_char, max: usize) -> Option<String> {
+    read_cstr(ptr, max)
+}
+
+pub(crate) fn symlink_inode(target: &[u8]) -> InodeRef {
+    InodeBuilder::new(
+        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        mk_mode(FileType::Symlink, 0o777),
+        default_inode_ops(),
+        vfs::default_file_ops(),
+    ).size(target.len() as u64).link(target.to_vec().into_boxed_slice()).build()
+}
+
+pub(crate) const NULL_FILE_OPS: LinuxFileOperations = LinuxFileOperations {
+    owner: null_mut(),
+    open: None,
+    read: None,
+    write: None,
+    unlocked_ioctl: None,
+    release: None,
+    poll: None,
+    mmap: None,
+    llseek: null_mut(),
+};
 
 fn checked_size(v: isize) -> KResult<usize> {
     if v < 0 { Err(errno_to_vfs((-v) as i32)) } else { Ok(v as usize) }
