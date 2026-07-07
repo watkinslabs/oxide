@@ -3,6 +3,9 @@
 
 #include <linux/types.h>
 
+#define PLATFORM_NAME_SIZE 20
+#define ACPI_ID_LEN 9
+
 struct pci_device_id {
     __u32 vendor;
     __u32 device;
@@ -26,6 +29,23 @@ struct usb_device_id {
     __u8 bInterfaceSubClass;
     __u8 bInterfaceProtocol;
     unsigned long driver_info;
+};
+
+struct platform_device_id {
+    char name[PLATFORM_NAME_SIZE];
+    unsigned long driver_data;
+};
+
+struct acpi_device_id {
+    __u8 id[ACPI_ID_LEN];
+    unsigned long driver_data;
+};
+
+struct of_device_id {
+    const char *name;
+    const char *type;
+    const char *compatible;
+    const void *data;
 };
 
 #endif
