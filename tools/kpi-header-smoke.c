@@ -57,6 +57,7 @@
 #include <linux/timer.h>
 #include <linux/uaccess.h>
 #include <linux/usb.h>
+#include <linux/usb/gadget.h>
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
@@ -168,6 +169,15 @@ static int sample_usb_probe(struct usb_interface *intf, const struct usb_device_
     return usb_get_intfdata(intf) == NULL ? -ENODEV : 0;
 }
 static void sample_usb_disconnect(struct usb_interface *intf) { usb_set_intfdata(intf, NULL); }
+static int sample_gadget_bind(struct usb_gadget *gadget, struct usb_gadget_driver *driver)
+{
+    (void)gadget; (void)driver; return 0;
+}
+static int sample_gadget_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
+{
+    (void)gadget; (void)ctrl; return 0;
+}
+static void sample_gadget_disconnect(struct usb_gadget *gadget) { (void)gadget; }
 static int sample_net_open(struct net_device *dev) { (void)dev; return 0; }
 static int sample_net_stop(struct net_device *dev) { (void)dev; return 0; }
 static int sample_napi_poll(struct napi_struct *napi, int budget)
@@ -503,6 +513,16 @@ static int __init sample_init(void)
     struct usb_interface uintf;
     struct usb_host_interface ualt;
     struct usb_endpoint_descriptor uep;
+    struct usb_ep gadget_ep;
+    struct usb_request *gadget_req;
+    struct usb_gadget gadget;
+    struct usb_gadget_driver gadget_driver = {
+        .function = "sample-gadget",
+        .max_speed = USB_SPEED_HIGH,
+        .bind = sample_gadget_bind,
+        .setup = sample_gadget_setup,
+        .disconnect = sample_gadget_disconnect,
+    };
     struct usb_driver udrv = {
         .name = "sample-usb",
         .probe = sample_usb_probe,
@@ -1035,6 +1055,7 @@ static int __init sample_init(void)
     }
     uep.bEndpointAddress = USB_DIR_IN | 1;
     uep.bmAttributes = USB_ENDPOINT_XFER_BULK;
+    uep.wMaxPacketSize = 512;
     ualt.desc.bInterfaceClass = USB_CLASS_HID;
     ualt.desc.bInterfaceSubClass = 0;
     ualt.desc.bInterfaceProtocol = 0;
@@ -1074,6 +1095,43 @@ static int __init sample_init(void)
     usb_get_intf(&uintf);
     usb_put_intf(&uintf);
     usb_deregister(&udrv);
+    INIT_LIST_HEAD(&gadget_ep.ep_list);
+    gadget_ep.name = "ep1in";
+    gadget_ep.ops = NULL;
+    gadget_ep.caps.type_bulk = 1;
+    gadget_ep.caps.dir_in = 1;
+    gadget_ep.maxpacket = 512;
+    gadget_ep.maxpacket_limit = 512;
+    gadget_ep.address = USB_DIR_IN | 1;
+    gadget_ep.desc = &uep;
+    INIT_LIST_HEAD(&gadget.ep_list);
+    gadget.ep0 = &gadget_ep;
+    gadget.speed = USB_SPEED_HIGH;
+    gadget.max_speed = USB_SPEED_HIGH;
+    gadget.name = "sample-gadget";
+    (void)usb_gadget_register_driver(&gadget_driver);
+    (void)usb_gadget_check_config(&gadget);
+    (void)usb_gadget_activate(&gadget);
+    (void)usb_gadget_deactivate(&gadget);
+    (void)usb_gadget_set_selfpowered(&gadget);
+    (void)usb_gadget_clear_selfpowered(&gadget);
+    (void)usb_gadget_set_remote_wakeup(&gadget, 1);
+    (void)usb_gadget_vbus_draw(&gadget, 250);
+    usb_gadget_set_state(&gadget, USB_STATE_CONFIGURED);
+    (void)usb_gadget_ep_match_desc(&gadget, &gadget_ep, &uep, NULL);
+    (void)usb_speed_string(gadget.speed);
+    usb_ep_set_maxpacket_limit(&gadget_ep, 512);
+    usb_ep_set_drvdata(&gadget_ep, &gadget);
+    (void)usb_ep_get_drvdata(&gadget_ep);
+    gadget_req = usb_ep_alloc_request(&gadget_ep, GFP_KERNEL);
+    if (gadget_req != NULL) {
+        gadget_req->buf = usb_buf;
+        gadget_req->length = sizeof(usb_buf);
+        (void)usb_ep_queue(&gadget_ep, gadget_req, GFP_KERNEL);
+        (void)usb_ep_dequeue(&gadget_ep, gadget_req);
+        usb_ep_free_request(&gadget_ep, gadget_req);
+    }
+    usb_gadget_unregister_driver(&gadget_driver);
     pdev.dev.dma_mask = &dma_mask;
     pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     pdev.dev.driver_data = NULL;
