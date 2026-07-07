@@ -105,15 +105,23 @@ pub(super) fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> 
 }
 
 /// Build a `/dev/dri/cardN` inode (`S_IFCHR|DRM_NODE_MODE`, card tag, card f_op).
-/// # C: O(1)
+/// `i_rdev` MUST carry the real `(DRM_MAJOR, N)` dev_t: userspace `stat(2)`s the
+/// node and passes `st_rdev` to logind's `TakeDevice(major,minor)`. Without it
+/// `st_rdev` is 0, mutter calls `TakeDevice(0,0)`, and logind's
+/// `sd_device_new_from_devnum(0:0)` misses → `ENODEV` ("No GPUs found") — the
+/// greeter never opens the GPU. Mirrors Linux `init_special_inode` setting
+/// `i_rdev` on every char node. # C: O(1)
 pub(super) fn make_card_inode(card_id: u32) -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_CARD_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
-                           vfs::default_inode_ops(), Arc::new(DrmCardFileOps)).build()
+                           vfs::default_inode_ops(), Arc::new(DrmCardFileOps))
+        .rdev(vfs::Devt::new(DRM_MAJOR, card_id).raw()).build()
 }
-/// Build a `/dev/dri/renderD128+N` inode (sink f_op). # C: O(1)
+/// Build a `/dev/dri/renderD128+N` inode (sink f_op). `i_rdev` = `(226, 128+N)`
+/// (Linux DRM render minors start at 128), same rationale as the card node. # C: O(1)
 pub(super) fn make_render_inode(card_id: u32) -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_RENDER_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
-                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps)).build()
+                           vfs::default_inode_ops(), Arc::new(DrmSinkFileOps))
+        .rdev(vfs::Devt::new(DRM_MAJOR, crate::uapi::DRM_RENDER_MINOR_BASE + card_id).raw()).build()
 }
 
 /// Self-register a DRM `/dev` node through `drv::try_device_add` (D27): the
