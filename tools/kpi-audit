@@ -108,6 +108,13 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "copy_to_user", "copy_from_user", "access_ok", "get_user", "put_user",
         "clear_user", "strncpy_from_user",
     )),
+    ("string-runtime", (
+        "memcpy", "memset", "memcmp", "strlen", "strnlen", "strcmp", "strncmp",
+        "strncasecmp", "strcpy", "strncpy", "strchr", "strstr", "strsep", "strim",
+        "sized_strscpy", "kstrto", "hex_to_bin", "hex2bin", "bin2hex",
+        "snprintf", "scnprintf", "sprintf", "printk", "_ctype", "__stack_chk",
+        "__fortify", "__fentry__",
+    )),
     ("debugfs-configfs", (
         "debugfs_", "configfs_", "seq_", "proc_create", "single_open",
     )),

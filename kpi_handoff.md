@@ -7,7 +7,7 @@ Date: 2026-07-07
 - Primary repo: `/home/nd/oxide/kernel`
 - Active worktree: `/home/nd/oxide/worktrees/kpi-debugfs-configfs`
 - Active branch: `F674-kpi-debugfs-configfs`
-- Base freshness: `main` is at `origin/main` `9277e1ac` on 2026-07-07; `origin/main` was fetched again before this DMA/scatterlist follow-up and remained current.
+- Base freshness: `main` is at `origin/main` `9277e1ac` on 2026-07-07; `origin/main` was fetched again before the DMA/scatterlist and string/runtime follow-ups and remained current.
 - Work has not been pushed, PR'd, or merged.
 - Keep all follow-up work in `/home/nd/oxide/worktrees/...`, not the main checkout.
 
@@ -42,6 +42,16 @@ Date: 2026-07-07
 - Extended `kpi/include/linux/scatterlist.h`, `tools/kpi-header-smoke.c`, and the audit classifier for SGL symbols.
 - Valid Fedora module audit no longer reports any missing DMA/scatterlist symbols for `target_core_mod`, `libcomposite`, or `industrialio-configfs`.
 
+## String/Runtime Follow-Up
+
+- Added focused `crates/kernel/modules/src/linux_string/` helpers and `kpi/include/linux/string.h`.
+- Exported real byte/string helpers required by Fedora 6.16 real-module audits: `memcpy`, `memset`, `memcmp`, `memcpy_and_pad`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strncasecmp`, `strcpy`, `strncpy`, `strchr`, `strstr`, `strsep`, `strim`, and `sized_strscpy`.
+- Exported conversion helpers: `hex_to_bin`, `hex2bin`, `bin2hex`, `simple_strtoul`, `kstrtobool`, `kstrtoint`, `kstrtou8`, `kstrtou16`, `kstrtouint`, and `kstrtoull`.
+- Exported bounded printf helpers: `snprintf`, `scnprintf`, `sprintf`, `_printk`, `printk`, and `__warn_printk`.
+- Exported runtime support symbols: `__stack_chk_fail`, `__fortify_panic`, `__fentry__`, `_ctype`, and `__ref_stack_chk_guard`.
+- Updated `tools/kpi-audit` to classify these as `string-runtime`, and extended `tools/kpi-header-smoke.c` to compile common call sites.
+- Valid Fedora module audit no longer reports any missing `string-runtime` rows for `target_core_mod`, `libcomposite`, or `industrialio-configfs`.
+
 ## F674 Implementation Summary
 
 - Split configfs attribute VFS handling into `crates/kernel/modules/src/linux_configfs/attr.rs`.
@@ -75,9 +85,11 @@ F674 result:
 - No remaining sync/RCU missing symbols were reported for those modules after the sync follow-up; that audit reported 525 exports, 280 undefined refs, 225 unique symbols, 162 missing symbols, 0 weak-missing, and 63 exported matches.
 - After the DMA/scatterlist follow-up, the audit reported 533 exports, 280 undefined refs, 225 unique symbols, 154 missing symbols, 0 weak-missing, and 71 exported matches.
 - Exported DMA/scatterlist matches now include `sg_alloc_table`, `sg_copy_to_buffer`, `sg_free_table`, `sg_init_table`, `sg_miter_next`, `sg_miter_start`, `sg_miter_stop`, `sgl_alloc_order`, and `sgl_free_n_order`.
+- After the string/runtime follow-up, the audit reported 570 exports, 280 undefined refs, 225 unique symbols, 118 missing symbols, 0 weak-missing, and 107 exported matches.
+- Exported `string-runtime` matches now cover 34 real-module references; no `MISSING | string-runtime` rows remain.
 
-The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, module refcounting, UBSAN/compiler runtime, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
-After the allocator, sync, and DMA/scatterlist follow-ups, the remaining audit misses no longer include the modern allocator, sync/RCU, or DMA/scatterlist symbols listed above.
+The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, module refcounting, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
+After the allocator, sync, DMA/scatterlist, and string/runtime follow-ups, the remaining audit misses no longer include the modern allocator, sync/RCU, DMA/scatterlist, or string/runtime symbols listed above.
 
 ## Validation Passed
 
@@ -87,18 +99,20 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `cargo test -q -p modules linux_alloc`
 - `cargo test -q -p modules linux_sync`
 - `cargo test -q -p modules linux_dma`
+- `cargo test -q -p modules linux_string`
 - `cargo test -q -p modules -- --test-threads=1`
 - `cargo test -q -p vfs`
 - `cc -std=gnu11 -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
 - `clang -std=gnu11 -target x86_64-unknown-linux-gnu -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
 - `clang -std=gnu11 -target aarch64-unknown-linux-gnu -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
-- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining allocator, sync/RCU, DMA/scatterlist, or debugfs/configfs missing rows)
+- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining allocator, sync/RCU, DMA/scatterlist, string/runtime, or debugfs/configfs missing rows)
 - `cargo run -q -p xtask -- kernel --arch x86_64`
 - `cargo run -q -p xtask -- kernel --arch aarch64`
 - `git diff --check`
 - Configfs source line-count check; all `crates/kernel/modules/src/linux_configfs/*.rs` files are under 500 lines.
 - Sync source line-count check; `crates/kernel/modules/src/linux_sync.rs` is 494 lines.
 - DMA source line-count check: `linux_dma.rs` is 452 lines, `linux_dma_sgl.rs` is 52 lines, `linux_dma_tests.rs` is 96 lines, and `linux_alloc.rs` is 453 lines.
+- String/runtime line-count check: `linux_string.rs` is 23 lines; child files are 210 lines or less.
 
 ## Next Steps
 
@@ -106,7 +120,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 2. Commit with author `Chris Watkins <chris@watkinslabs.com>` if the scope is accepted.
 3. Push/open PR for `F674-kpi-debugfs-configfs`.
 4. After merge, fast-forward the main checkout and remove this worktree.
-5. Pick the next partial lane from `kpi_fix.md`; the broad real-module audit still points at device-core/sysfs, module refcounting, UBSAN/compiler runtime, workqueue/time, USB gadget, SCSI/target helpers, and other runtime/compiler symbols, not debugfs/configfs or DMA/scatterlist.
+5. Pick the next partial lane from `kpi_fix.md`; the broad real-module audit still points at device-core/sysfs, module refcounting, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, SCSI/target helpers, and other runtime symbols, not debugfs/configfs, DMA/scatterlist, or string/runtime helpers.
 
 ## Do Not Do
 
