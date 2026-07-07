@@ -70,6 +70,7 @@ pub mod linux_netdev;
 pub mod linux_pci;
 pub mod linux_platform;
 pub mod linux_pm;
+pub mod linux_runtime;
 pub mod linux_seq_file;
 pub mod linux_scsi;
 pub mod linux_string;
