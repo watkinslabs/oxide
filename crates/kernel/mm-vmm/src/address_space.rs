@@ -107,6 +107,13 @@ pub struct AddressSpace {
     /// Getters/setters + the PR_SET_MM apply/validate logic live in the
     /// `mmfields` child module.
     mm_layout: mmfields::MmLayout,
+    /// userfaultfd fast-path guard: set true the first time any range on
+    /// this AS is `UFFDIO_REGISTER`ed (see `set_uffd_missing`), never
+    /// cleared. The page-fault handler checks it before the per-VMA uffd
+    /// lookup so the overwhelming majority of processes (no uffd) skip the
+    /// extra vmas read-lock on every NotPresent fault. Conservative: once
+    /// any uffd registers, every fault pays the lookup — cheap and rare.
+    has_uffd: core::sync::atomic::AtomicBool,
 }
 
 impl Drop for AddressSpace {
@@ -146,6 +153,7 @@ impl AddressSpace {
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
             self_weak: w.clone(),
+            has_uffd: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),

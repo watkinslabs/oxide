@@ -541,6 +541,7 @@ dependencies = [
  "sync",
  "syscall",
  "vfs",
+ "vmm",
 ]
 
 [[package]]
