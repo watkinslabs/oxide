@@ -312,6 +312,14 @@ pub fn sys_clone_dispatch(
         klog::write_raw(b"\n");
     }
 
+    // Linux `wake_up_new_task`: the child is now fully built — vtgid, fd
+    // table, sigmask, CLONE_SETTLS FS_BASE, and the set_child_tid writes are
+    // all final. ONLY now make it schedulable, so no CPU (SMP) can pick it up
+    // and run its glibc thread-start trampoline with the parent's stale
+    // FS_BASE / an unfinished vtgid (which aliased the creator's TLS and made
+    // GCond signals target the wrong futex word — the greeter/SMP wedge).
+    sched::live::wake_new_task(&child);
+
     // F156: CLONE_VFORK suspension. Linux semantic — parent blocks
     // until child execve(2)s or _exit(2)s. With CLONE_VM the two
     // share the address space, so without this the parent races on

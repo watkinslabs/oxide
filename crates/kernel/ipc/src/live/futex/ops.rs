@@ -28,17 +28,11 @@ pub fn requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: usize, nr_requeue: usize
             if waiter.key == src { waiter.key = dst; moved += 1; }
         }
     }
-    if !woken.is_empty() {
-        if let Some(rq) = sched::live::global() {
-            let mut inner = rq.inner.lock();
-            for t in &woken {
-                t.set_state(TaskState::Runnable);
-                t.lift_vruntime(inner.cfs.min_vruntime());
-                inner.enqueue(t.clone());
-            }
-            rq.nr_running.store(inner.nr_running(), Ordering::Release);
-            sched::live::preempt::set_need_resched();
-        }
+    // Route wakes through try_to_wake_up (Sleeping->Runnable CAS + on_cpu
+    // deferral) instead of hand-rolling the enqueue — see wake_key.
+    for t in &woken {
+        // SAFETY: wake-site; the Arc keeps `t` alive across the call.
+        unsafe { sched::live::try_to_wake_up(t.clone()); }
     }
     woken.len() as i64
 }
