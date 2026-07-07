@@ -22,7 +22,17 @@ const SIG_IGN: u64 = 1;
 /// # C: O(1)
 #[inline]
 fn sigchld_payload(p: &PendingSignal) -> Option<hal::SigChld> {
-    if p.sig as u8 != Signum::Sigchld as u8 { return None; }
+    // SIGCHLD carries child-exit fields; RT signals (33..=64) carry the SENDER's
+    // pid/uid + si_code (SI_TKILL / SI_QUEUE). SA_SIGINFO handlers read these:
+    // glibc's __nptl_setxid_sighandler (SIGSETXID=33) rejects the signal unless
+    // `si_pid == getpid() && si_code == SI_TKILL`, so a zeroed siginfo made it
+    // return without applying the setxid or acking — setgid()/setresgid() in a
+    // multithreaded process (gdm-session-worker) then hung in __nptl_setxid. The
+    // sender's siginfo is queued at send time (tgkill/rt_sigqueue); thread it
+    // into the frame for RT signals too, not just SIGCHLD.
+    if p.sig as u8 != Signum::Sigchld as u8 && !(33..=64).contains(&p.sig) {
+        return None;
+    }
     let i = p.info?;
     Some(hal::SigChld { code: i.code, pid: i.pid as i32, uid: i.uid, status: i.value as i32 })
 }
