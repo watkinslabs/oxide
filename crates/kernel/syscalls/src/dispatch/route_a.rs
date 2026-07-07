@@ -89,6 +89,8 @@ pub(super) fn dispatch_route_a(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_LANDLOCK_RESTRICT_SELF => crate::s446_landlock_restrict_self::sys_landlock_restrict_self(args),
         syscall::nrs::NR_PERF_EVENT_OPEN => ::fs::perf::sys_perf_event_open(args),
         syscall::nrs::NR_USERFAULTFD => ::fs::userfaultfd::sys_userfaultfd(args),
+        syscall::nrs::NR_QUOTACTL => crate::s179_quotactl::sys_quotactl(args),
+        syscall::nrs::NR_QUOTACTL_FD => crate::s443_quotactl_fd::sys_quotactl_fd(args),
         _ => return None,
     })
 }
