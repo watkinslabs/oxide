@@ -23,7 +23,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
     syscall::tracepoint::fire_sys_enter(nr as u32);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
-    if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
+    if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
     ptrace_syscall_stop_if_armed();
     let rv = if let Some(rv) = dispatch_route_a(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_b(nr, &args) { rv }

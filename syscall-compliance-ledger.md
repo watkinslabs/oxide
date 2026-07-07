@@ -44,7 +44,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | G2 | nanosleep/clock_nanosleep EINTR (35/230) | TODO | | busy-yields, never checks sigpending, never writes `rem`. Make interruptible + write remaining. |
 | G3 | getrusage/times (98/100) | TODO | | report wall-clock for utime, zeroed counters. Track real per-task CPU time + rusage counters. |
 | G4 | set_robust_list exit walk (273) | TODO | | registers head but thread-exit never walks the robust list to wake futex waiters. |
-| G5 | seccomp arg[5] (core.rs:26) | TODO | | `check()` passes hardcoded 0 for the 6th arg. Plumb real a5. |
+| G5 | seccomp arg[5] (core.rs:26) | DONE | B635 #TBD | `check()` now passes the real `a5` (already read into args) instead of literal 0; filters inspecting args[5] evaluate correctly. |
 | G6 | process_madvise/process_mrelease (440/448) | TODO | | fake success; resolve pidfd → target AS and apply advice / reap. |
 | G7 | mlock family unmapped range (149-152) | TODO | | returns 0 for unmapped ranges; Linux returns ENOMEM. Validate range. |
 | G8 | signalfd mask-update + siginfo (282/289) | TODO | | mask-update on existing fd no-op; siginfo only fills ssi_signo. |
