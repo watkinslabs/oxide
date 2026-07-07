@@ -1,5 +1,5 @@
-//! `vfs::fs::FileSystem` impls for tracefs (`/sys/kernel/tracing`) and
-//! debugfs (`/sys/kernel/debug`). Mirror `ProcfsFs`: own a superblock with
+//! `vfs::fs::FileSystem` impls for tracefs (`/sys/kernel/tracing`), debugfs
+//! (`/sys/kernel/debug`), and configfs (`/sys/kernel/config`). Mirror `ProcfsFs`: own a superblock with
 //! the right magic and delegate path resolution to the devfs subtree that
 //! `tracefs::init` (and the debugfs static files) populate. Registering
 //! these in the unified mount table — instead of the old admit-noop that
@@ -45,5 +45,20 @@ impl vfs::fs::FileSystem for DebugfsFs {
     /// accepts it. # C: O(components)
     fn root(&self) -> Option<InodeRef> {
         Some(crate::debug_root().as_inode())
+    }
+}
+
+/// configfs. `CONFIGFS_MAGIC` (linux/magic.h).
+pub struct ConfigfsFs;
+
+impl vfs::fs::FileSystem for ConfigfsFs {
+    /// # C: O(1)
+    fn name(&self) -> &str { "configfs" }
+    /// CONFIGFS_MAGIC.
+    /// # C: O(1)
+    fn magic(&self) -> u64 { 0x6265_6570 }
+    /// Mount root = the shared `/sys/kernel/config` configfs tree. # C: O(1)
+    fn root(&self) -> Option<InodeRef> {
+        Some(crate::config_root().as_inode())
     }
 }

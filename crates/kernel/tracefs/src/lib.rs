@@ -10,7 +10,7 @@ pub mod root;
 
 pub use eventfs::{register_dynamic_event, EventDesc};
 
-pub use root::{debug_root, register, trace_root};
+pub use root::{config_root, debug_root, register, register_config, register_debug, trace_root};
 
 // Boot-time tracefs registration per `37§R01` and v2-arch-plan §1.8.
 //
