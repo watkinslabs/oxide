@@ -20,6 +20,7 @@ timer = { path = "../timer" }
 mmio-map = { path = "../mmio-map" }
 arch-irq = { path = "../arch-irq" }
 pci = { path = "../../drivers/pci" }
+vfs = { path = "../vfs" }
 
 [features]
 default = []
