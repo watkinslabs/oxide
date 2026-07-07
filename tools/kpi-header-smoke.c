@@ -2,6 +2,7 @@
 #include <linux/atomic.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/gfp.h>
 #include <linux/hrtimer.h>
 #include <linux/idr.h>
@@ -42,6 +43,11 @@ static DECLARE_BITMAP(sample_bits, 128);
 static DECLARE_WORK(sample_work, NULL);
 static DECLARE_TASKLET(sample_tasklet, NULL, 0);
 enum { SAMPLE_MMIO_SIZE = 4096 };
+enum { SAMPLE_DMA_SIZE = 4096 };
+enum { SAMPLE_DMA_BUF_SIZE = 64 };
+enum { SAMPLE_DMA_SG_NENTS = 2 };
+enum { SAMPLE_DMA_PAGE_ORDER = 0 };
+enum { SAMPLE_DMA_PAGE_OFFSET = 0 };
 enum { SAMPLE_IO_PORT = 0 };
 enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
 static void sample_release(struct kref *kref) { (void)kref; }
@@ -64,6 +70,13 @@ static int __init sample_init(void)
     struct hrtimer hrtimer;
     struct delayed_work delayed;
     struct task_struct *task;
+    struct scatterlist sg[SAMPLE_DMA_SG_NENTS];
+    struct device dev;
+    struct page *page;
+    dma_addr_t dma;
+    u64 dma_mask;
+    void *coherent;
+    char dma_buf[SAMPLE_DMA_BUF_SIZE];
     atomic_t atom;
     refcount_t refs;
     struct kref kref;
@@ -80,7 +93,7 @@ static int __init sample_init(void)
     (void)kzalloc(16, GFP_KERNEL);
     (void)kcalloc(2, 8, GFP_KERNEL);
     kfree(NULL);
-    (void)vmalloc(4096);
+    (void)vmalloc(SAMPLE_MMIO_SIZE);
     vfree(NULL);
     (void)alloc_pages(GFP_KERNEL | __GFP_ZERO, 0);
     (void)__get_free_pages(GFP_KERNEL, 0);
@@ -89,6 +102,30 @@ static int __init sample_init(void)
     (void)page_to_phys(NULL);
     (void)kstrdup("driver", GFP_KERNEL);
     (void)kasprintf(GFP_KERNEL, "driver %d", 1);
+    dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
+    dev.dma_mask = &dma_mask;
+    dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
+    dev.driver_data = NULL;
+    (void)dma_set_mask_and_coherent(&dev, DMA_BIT_MASK(DMA_ULL_BITS));
+    coherent = dma_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
+    (void)dma_mapping_error(&dev, dma);
+    dma_sync_single_for_device(&dev, dma, SAMPLE_DMA_SIZE, DMA_TO_DEVICE);
+    dma_sync_single_for_cpu(&dev, dma, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
+    dma_free_coherent(&dev, SAMPLE_DMA_SIZE, coherent, dma);
+    dma = dma_map_single(&dev, dma_buf, sizeof(dma_buf), DMA_BIDIRECTIONAL);
+    dma_unmap_single(&dev, dma, sizeof(dma_buf), DMA_BIDIRECTIONAL);
+    page = alloc_pages(GFP_KERNEL, SAMPLE_DMA_PAGE_ORDER);
+    dma = dma_map_page(&dev, page, SAMPLE_DMA_PAGE_OFFSET, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
+    dma_unmap_page(&dev, dma, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
+    sg_init_table(sg, ARRAY_SIZE(sg));
+    sg_set_buf(&sg[0], dma_buf, sizeof(dma_buf));
+    sg_set_page(&sg[1], page, SAMPLE_DMA_SIZE, SAMPLE_DMA_PAGE_OFFSET);
+    (void)sg_next(&sg[0]);
+    (void)dma_map_sg(&dev, sg, ARRAY_SIZE(sg), DMA_TO_DEVICE);
+    dma_sync_sg_for_device(&dev, sg, ARRAY_SIZE(sg), DMA_TO_DEVICE);
+    dma_sync_sg_for_cpu(&dev, sg, ARRAY_SIZE(sg), DMA_FROM_DEVICE);
+    dma_unmap_sg(&dev, sg, ARRAY_SIZE(sg), DMA_TO_DEVICE);
+    __free_pages(page, SAMPLE_DMA_PAGE_ORDER);
     regs = ioremap(0, SAMPLE_MMIO_SIZE);
     (void)readb(regs);
     (void)readw(regs);
