@@ -30,7 +30,6 @@ pub fn install_open(
     {
         return Err(VfsError::Enotdir);
     }
-    inode.on_open()?;
     if flags.contains(OpenFlags::O_TRUNC) {
         if crate::mount::is_readonly_path(path) {
             return Err(VfsError::Erofs);
@@ -44,6 +43,7 @@ pub fn install_open(
         Some(fop) => File::new_at_fop(inode, dentry, file_flags, mnt_id, cred, fop),
         None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
     };
+    file.f_op.on_open_file(&file)?;
     let fd = fdt.alloc_limit(file, limit).map_err(|_| VfsError::Emfile)?;
     if cloexec {
         fdt.set_cloexec(fd, true)?;
