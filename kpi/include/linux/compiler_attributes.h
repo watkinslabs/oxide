@@ -10,6 +10,7 @@
 #define __used __attribute__((__used__))
 #define __maybe_unused __attribute__((__unused__))
 #define __printf(a, b) __attribute__((__format__(__printf__, a, b)))
+#define __scanf(a, b) __attribute__((__format__(__scanf__, a, b)))
 #define __cold __attribute__((__cold__))
 #define __visible __attribute__((__externally_visible__))
 

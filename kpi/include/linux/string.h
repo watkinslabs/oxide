@@ -3,6 +3,7 @@
 
 #include <linux/stddef.h>
 #include <linux/types.h>
+#include <linux/compiler_attributes.h>
 
 extern const unsigned char _ctype[];
 
@@ -26,6 +27,7 @@ int hex_to_bin(int ch);
 int hex2bin(unsigned char *dst, const char *src, size_t count);
 char *bin2hex(char *dst, const void *src, size_t count);
 unsigned long simple_strtoul(const char *cp, char **endp, unsigned int base);
+int sscanf(const char *s, const char *fmt, ...) __scanf(2, 3);
 int kstrtobool(const char *s, bool *res);
 int kstrtoint(const char *s, unsigned int base, int *res);
 int kstrtou8(const char *s, unsigned int base, u8 *res);
