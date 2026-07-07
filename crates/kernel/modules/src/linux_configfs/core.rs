@@ -6,11 +6,16 @@ use alloc::sync::Arc;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicU32, Ordering};
-use sync::{Modules as ModulesLockClass, Spinlock};
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use sync::{Modules as ModulesLockClass, RwLock, Spinlock};
+use vfs::{default_inode_ops, mk_mode, FileType, InodeBuilder, InodeRef};
 
-use super::util::{checked_size, join_path, read_at, read_cstr, valid_name};
+use super::util::{join_path, read_cstr, valid_name};
+use attr::{AttrData, AttrOps, BinAttrData, BinAttrOps};
 
+#[path = "attr.rs"]
+mod attr;
+#[path = "compat.rs"]
+mod compat;
 #[path = "dynamic.rs"]
 mod dynamic;
 
@@ -86,60 +91,8 @@ struct PathState {
     magic: u32,
     path: String,
     refs: AtomicU32,
-}
-
-struct AttrData {
-    item: usize,
-    attr: usize,
-}
-
-struct AttrOps;
-impl FileOps for AttrOps {
-    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = inode.private::<AttrData>().ok_or(VfsError::Einval)?;
-        let attr = attr_ref(d.attr).ok_or(VfsError::Einval)?;
-        let show = attr.show.ok_or(VfsError::Einval)?;
-        let mut body = [0u8; 4096];
-        // SAFETY: configfs attribute callback receives the live item and page-sized kernel buffer.
-        let n = unsafe { show(d.item as *mut ConfigItem, body.as_mut_ptr() as *mut c_char) };
-        checked_size(n).map(|len| read_at(&body[..len.min(body.len())], off, buf))
-    }
-
-    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
-        let d = inode.private::<AttrData>().ok_or(VfsError::Einval)?;
-        let attr = attr_ref(d.attr).ok_or(VfsError::Einval)?;
-        let store = attr.store.ok_or(VfsError::Einval)?;
-        // SAFETY: configfs attribute callback receives the live item and caller-provided kernel slice.
-        checked_size(unsafe {
-            store(d.item as *mut ConfigItem, buf.as_ptr() as *const c_char, buf.len())
-        })
-    }
-}
-
-struct BinAttrData {
-    item: usize,
-    attr: usize,
-}
-
-struct BinAttrOps;
-impl FileOps for BinAttrOps {
-    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = inode.private::<BinAttrData>().ok_or(VfsError::Einval)?;
-        let attr = bin_attr_ref(d.attr).ok_or(VfsError::Einval)?;
-        let read = attr.read.ok_or(VfsError::Einval)?;
-        // SAFETY: configfs bin attr callback receives live item/private storage and VFS buffer.
-        checked_size(unsafe {
-            read(d.item as *mut ConfigItem, attr.private, null_mut(), buf.as_mut_ptr() as *mut c_char, off as i64, buf.len())
-        })
-    }
-
-    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
-        let d = inode.private::<BinAttrData>().ok_or(VfsError::Einval)?;
-        let attr = bin_attr_ref(d.attr).ok_or(VfsError::Einval)?;
-        let write = attr.write.ok_or(VfsError::Einval)?;
-        // SAFETY: configfs bin attr callback receives live item/private storage and VFS buffer.
-        checked_size(unsafe { write(d.item as *mut ConfigItem, attr.private, null_mut(), buf.as_ptr() as *const c_char, off as i64, buf.len()) })
-    }
+    deps: AtomicU32,
+    frag: Arc<RwLock<bool, ModulesLockClass>>,
 }
 
 /// Register Linux configfs KPI symbols. # C: O(1)
@@ -154,8 +107,13 @@ pub fn export_symbols() {
         ("configfs_unregister_subsystem", configfs_unregister_subsystem as *const () as usize),
         ("configfs_register_group",       configfs_register_group       as *const () as usize),
         ("configfs_unregister_group",     configfs_unregister_group     as *const () as usize),
+        ("configfs_remove_default_groups", compat::configfs_remove_default_groups as *const () as usize),
         ("config_item_get",               config_item_get               as *const () as usize),
+        ("config_item_get_unless_zero",   compat::config_item_get_unless_zero as *const () as usize),
         ("config_item_put",               config_item_put               as *const () as usize),
+        ("config_item_set_name",          compat::config_item_set_name  as *const () as usize),
+        ("configfs_depend_item",          compat::configfs_depend_item  as *const () as usize),
+        ("configfs_undepend_item",        compat::configfs_undepend_item as *const () as usize),
         ("configfs_create_link",          configfs_create_link          as *const () as usize),
         ("configfs_drop_link",            configfs_drop_link            as *const () as usize),
     ] { export(name, addr, false); }
@@ -211,12 +169,12 @@ extern "C" fn configfs_unregister_group(group: *mut ConfigGroup) {
     unsafe { unregister_group(group); }
 }
 
-extern "C" fn config_item_get(item: *mut ConfigItem) -> *mut ConfigItem {
+pub(super) extern "C" fn config_item_get(item: *mut ConfigItem) -> *mut ConfigItem {
     if let Some(state) = item_state(item) { state.refs.fetch_add(1, Ordering::AcqRel); }
     item
 }
 
-extern "C" fn config_item_put(item: *mut ConfigItem) {
+pub(super) extern "C" fn config_item_put(item: *mut ConfigItem) {
     let Some(state) = item_state(item) else { return; };
     if state.refs.fetch_sub(1, Ordering::AcqRel) == 1 { release_item(item); }
 }
@@ -270,9 +228,9 @@ unsafe fn register_group(parent: *mut ConfigGroup, group: *mut ConfigGroup) -> i
         let _g = LOCK.lock();
         if tracefs::config_root().lookup_path(&path).is_some() { return -LINUX_EEXIST; }
         tracefs::config_root().ensure_dir_path_with_hooks(&path, Arc::new(dynamic::ConfigDirHooks::new(group as usize)));
+        set_item_path(group_item, path.clone());
         install_attrs(&path, group_item);
         install_bin_attrs(&path, group_item);
-        set_item_path(group_item, path);
     }
     install_default_groups(group_item, group);
     LINUX_OK
@@ -283,10 +241,9 @@ unsafe fn unregister_group(group: *mut ConfigGroup) {
     // SAFETY: group is checked non-null and owned by module code for unregister.
     let item = unsafe { &mut (*group).item };
     unregister_default_groups(item);
-    if let Some(path) = item_path(item) {
-        let _g = LOCK.lock();
-        tracefs::config_root().remove_subtree(&path);
-    }
+    let Some(path) = item_path(item) else { return; };
+    let _g = LOCK.lock();
+    tracefs::config_root().remove_subtree(&path);
     clear_item_path(item);
     release_item(item);
 }
@@ -294,6 +251,7 @@ unsafe fn unregister_group(group: *mut ConfigGroup) {
 pub(super) fn install_attrs(path: &str, item: *mut ConfigItem) {
     let ty = item_type(item);
     let attrs = match ty.and_then(|t| attrs_ptr(t)) { Some(a) => a, None => return };
+    let Some(frag) = item_frag(item) else { return; };
     let mut i = 0usize;
     loop {
         // SAFETY: configfs attr array is NULL-terminated by module code.
@@ -303,7 +261,7 @@ pub(super) fn install_attrs(path: &str, item: *mut ConfigItem) {
             if valid_name(&name) {
                 let ap = join_path(path, &name);
                 let mode = unsafe { (*attr).mode };
-                let data = AttrData { item: item as usize, attr: attr as usize };
+                let data = AttrData { item: item as usize, attr: attr as usize, frag: Arc::clone(&frag) };
                 tracefs::config_root().insert_path(&ap, attr_inode(mode, data));
             }
         }
@@ -314,6 +272,7 @@ pub(super) fn install_attrs(path: &str, item: *mut ConfigItem) {
 pub(super) fn install_bin_attrs(path: &str, item: *mut ConfigItem) {
     let ty = item_type(item);
     let attrs = match ty.and_then(|t| bin_attrs_ptr(t)) { Some(a) => a, None => return };
+    let Some(frag) = item_frag(item) else { return; };
     let mut i = 0usize;
     loop {
         // SAFETY: configfs bin attr array is NULL-terminated by module code.
@@ -325,7 +284,7 @@ pub(super) fn install_bin_attrs(path: &str, item: *mut ConfigItem) {
                 let ap = join_path(path, &name);
                 // SAFETY: bin attr pointer comes from module-owned static configfs storage.
                 let mode = unsafe { (*attr).attr.mode };
-                let data = BinAttrData { item: item as usize, attr: attr as usize };
+                let data = BinAttrData { item: item as usize, attr: attr as usize, frag: Arc::clone(&frag) };
                 tracefs::config_root().insert_path(&ap, bin_attr_inode(mode, data));
             }
         }
@@ -347,7 +306,7 @@ pub(super) fn install_default_groups(parent_item: *mut ConfigItem, parent_group:
     }
 }
 
-fn unregister_default_groups(parent_item: *mut ConfigItem) {
+pub(super) fn unregister_default_groups(parent_item: *mut ConfigItem) {
     let ty = item_type(parent_item);
     let groups = match ty.and_then(|t| default_groups_ptr(t)) { Some(g) => g, None => return };
     let mut i = 0usize;
@@ -416,14 +375,14 @@ fn bin_attrs_ptr(ty: *mut ConfigItemType) -> Option<*mut *mut ConfigfsBinAttribu
     if attrs.is_null() { None } else { Some(attrs) }
 }
 
-fn attr_ref(ptr: usize) -> Option<&'static ConfigfsAttribute> {
+pub(super) fn attr_ref(ptr: usize) -> Option<&'static ConfigfsAttribute> {
     if ptr == 0 { None } else {
         // SAFETY: pointer comes from a module-owned static configfs attribute.
         Some(unsafe { &*(ptr as *const ConfigfsAttribute) })
     }
 }
 
-fn bin_attr_ref(ptr: usize) -> Option<&'static ConfigfsBinAttribute> {
+pub(super) fn bin_attr_ref(ptr: usize) -> Option<&'static ConfigfsBinAttribute> {
     if ptr == 0 { None } else {
         // SAFETY: pointer comes from a module-owned static configfs bin attribute.
         Some(unsafe { &*(ptr as *const ConfigfsBinAttribute) })
@@ -431,7 +390,13 @@ fn bin_attr_ref(ptr: usize) -> Option<&'static ConfigfsBinAttribute> {
 }
 
 pub(super) fn set_item_path(item: *mut ConfigItem, path: String) {
-    let state = Box::new(PathState { magic: CONFIG_PATH_MAGIC, path, refs: AtomicU32::new(1) });
+    let state = Box::new(PathState {
+        magic: CONFIG_PATH_MAGIC,
+        path,
+        refs: AtomicU32::new(1),
+        deps: AtomicU32::new(0),
+        frag: Arc::new(RwLock::new(false)),
+    });
     // SAFETY: item is caller-owned configfs storage.
     unsafe { (*item).private = Box::into_raw(state) as *mut c_void; }
 }
@@ -446,6 +411,31 @@ fn item_state(item: *mut ConfigItem) -> Option<&'static PathState> {
     if state.magic == CONFIG_PATH_MAGIC { Some(state) } else { None }
 }
 
+pub(super) fn config_item_get_if_live(item: *mut ConfigItem) -> Option<*mut ConfigItem> {
+    let state = item_state(item)?;
+    if state.refs.load(Ordering::Acquire) == 0 { return None; }
+    state.refs.fetch_add(1, Ordering::AcqRel);
+    Some(item)
+}
+
+pub(super) fn item_depend(item: *mut ConfigItem) -> bool {
+    let Some(state) = item_state(item) else { return false; };
+    if config_item_get_if_live(item).is_none() { return false; }
+    state.deps.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
+pub(super) fn item_undepend(item: *mut ConfigItem) {
+    let Some(state) = item_state(item) else { return; };
+    if state.deps.load(Ordering::Acquire) == 0 { return; }
+    state.deps.fetch_sub(1, Ordering::AcqRel);
+    config_item_put(item);
+}
+
+pub(super) fn item_dependent_count(item: *mut ConfigItem) -> u32 {
+    item_state(item).map(|state| state.deps.load(Ordering::Acquire)).unwrap_or(0)
+}
+
 pub(super) fn clear_item_path(item: *mut ConfigItem) {
     // SAFETY: item is caller-owned configfs storage.
     let p = unsafe { (*item).private };
@@ -453,6 +443,7 @@ pub(super) fn clear_item_path(item: *mut ConfigItem) {
     // SAFETY: private was set by set_item_path for registered items.
     let state = unsafe { Box::from_raw(p as *mut PathState) };
     if state.magic != CONFIG_PATH_MAGIC { core::mem::forget(state); return; }
+    *state.frag.write() = true;
     // SAFETY: item is caller-owned configfs storage.
     unsafe { (*item).private = null_mut(); }
 }
@@ -461,11 +452,16 @@ pub(super) fn item_path(item: *mut ConfigItem) -> Option<String> {
     item_state(item).map(|state| state.path.clone())
 }
 
+fn item_frag(item: *mut ConfigItem) -> Option<Arc<RwLock<bool, ModulesLockClass>>> {
+    item_state(item).map(|state| Arc::clone(&state.frag))
+}
+
 pub(super) fn release_item(item: *mut ConfigItem) {
     if let Some(ty) = item_type(item) {
         // SAFETY: item type and release callback are module-owned configfs operation storage.
         unsafe { if let Some(release) = (*ty).release { release(item); } }
     }
+    compat::drop_owned_name(item);
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use vfs::{CreateCtx, InodeRef, KResult, VfsError};
 
 use super::{
     clear_item_path, install_attrs, install_bin_attrs, install_default_groups, item_path, item_type,
-    release_item, set_item_path, ConfigGroup, ConfigItem,
+    item_dependent_count, release_item, set_item_path, ConfigGroup, ConfigItem,
 };
 use crate::linux_configfs::util::{join_path, valid_name};
 
@@ -55,9 +55,11 @@ impl PseudoDirHooks for ConfigDirHooks {
         let group = self.group as *mut ConfigGroup;
         if group.is_null() { return Err(VfsError::Einval); }
         let path = join_path(&parent_path(group)?, name);
-        let item = CREATED.lock().remove(&path).ok_or(VfsError::Enoent)? as *mut ConfigItem;
+        let item = *CREATED.lock().get(&path).ok_or(VfsError::Enoent)? as *mut ConfigItem;
         if item.is_null() { return Err(VfsError::Einval); }
+        if item_dependent_count(item) != 0 { return Err(VfsError::Ebusy); }
         if child_has_children(&path) { CREATED.lock().insert(path, item as usize); return Err(VfsError::Enotempty); }
+        CREATED.lock().remove(&path);
         let ty = item_type(parent_item(group));
         tracefs::config_root().remove_subtree(&path);
         clear_item_path(item);
@@ -91,9 +93,9 @@ fn install_item_path(item: *mut ConfigItem, path: String, is_group: bool, parent
     } else {
         tracefs::config_root().ensure_dir_path(&path);
     }
+    set_item_path(item, path.clone());
     install_attrs(&path, item);
     install_bin_attrs(&path, item);
-    set_item_path(item, path.clone());
     CREATED.lock().insert(path, item as usize);
     let _ = parent;
 }

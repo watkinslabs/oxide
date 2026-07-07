@@ -9,7 +9,8 @@ pub(super) fn checked_size(v: isize) -> KResult<usize> {
 pub(super) fn errno_to_vfs(e: i32) -> VfsError { match e {
     2 => VfsError::Enoent, 12 => VfsError::Enomem, 13 => VfsError::Eacces,
     16 => VfsError::Ebusy, 17 => VfsError::Eexist, 20 => VfsError::Enotdir,
-    22 => VfsError::Einval, 39 => VfsError::Enotempty, _ => VfsError::Eio,
+    22 => VfsError::Einval, 26 => VfsError::Etxtbsy, 27 => VfsError::Efbig,
+    39 => VfsError::Enotempty, _ => VfsError::Eio,
 } }
 
 pub(super) fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {

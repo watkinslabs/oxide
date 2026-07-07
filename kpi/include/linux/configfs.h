@@ -64,7 +64,12 @@ void configfs_unregister_subsystem(struct configfs_subsystem *subsys);
 int configfs_register_group(struct config_group *parent, struct config_group *group);
 void configfs_unregister_group(struct config_group *group);
 struct config_item *config_item_get(struct config_item *item);
+struct config_item *config_item_get_unless_zero(struct config_item *item);
 void config_item_put(struct config_item *item);
+int config_item_set_name(struct config_item *item, const char *fmt, ...);
+void configfs_remove_default_groups(struct config_group *group);
+int configfs_depend_item(struct configfs_subsystem *subsys, struct config_item *target);
+void configfs_undepend_item(struct configfs_subsystem *subsys, struct config_item *target);
 int configfs_create_link(struct config_item *parent, struct config_item *target, const char *name);
 void configfs_drop_link(struct config_item *parent, struct config_item *target, const char *name);
 
