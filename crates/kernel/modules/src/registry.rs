@@ -158,6 +158,7 @@ pub unsafe fn init_exports() {
     crate::linux_chrdev::export_symbols();
     crate::linux_device::export_symbols();
     crate::linux_dma::export_symbols();
+    crate::linux_firmware::export_symbols();
     crate::linux_io::export_symbols();
     crate::linux_irq::export_symbols();
     crate::linux_pci::export_symbols();

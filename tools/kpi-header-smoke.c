@@ -3,6 +3,7 @@
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/firmware.h>
 #include <linux/gfp.h>
 #include <linux/hrtimer.h>
 #include <linux/idr.h>
@@ -159,6 +160,7 @@ static int __init sample_init(void)
         .mode = 0600,
     };
     struct pci_dev pdev;
+    const struct firmware *fw;
     struct pci_driver pdrv = {
         "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
         { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
@@ -244,6 +246,17 @@ static int __init sample_init(void)
     class_destroy(class);
     root_dev = root_device_register("sample-root");
     root_device_unregister(root_dev);
+    (void)request_firmware(&fw, "sample/fw.bin", &dev);
+    (void)request_firmware_direct(&fw, "sample/fw.bin", &dev);
+    (void)firmware_request(&fw, "sample/fw.bin", &dev);
+    (void)firmware_request_nowarn(&fw, "sample/fw.bin", &dev);
+    if (fw != NULL) {
+        (void)fw->size;
+        (void)fw->data;
+        (void)fw->pages;
+        (void)fw->priv;
+        release_firmware(fw);
+    }
     pdev.dev.dma_mask = &dma_mask;
     pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     pdev.dev.driver_data = NULL;

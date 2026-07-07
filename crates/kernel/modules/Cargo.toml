@@ -14,6 +14,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 elf  = { path = "../../shared/elf" }
+ext4 = { path = "../ext4" }
 pmm  = { path = "../mm-pmm" }
 sched = { path = "../sched" }
 timer = { path = "../timer" }
