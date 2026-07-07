@@ -3,9 +3,11 @@
 
 #include <linux/fs.h>
 #include <linux/kdev_t.h>
+#include <linux/kobject.h>
 #include <linux/types.h>
 
 struct cdev {
+    struct kobject kobj;
     const struct file_operations *ops;
     struct module *owner;
     dev_t dev;

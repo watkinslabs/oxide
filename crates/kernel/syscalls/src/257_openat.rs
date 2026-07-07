@@ -381,6 +381,9 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         Some(fop) => File::new_at_fop(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred(), fop),
         None      => File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred()),
     };
+    if (flags & O_PATH) == 0 {
+        if let Err(e) = file.open_hook() { return -(e as i64); }
+    }
     if let Some(i) = created_ref { vfs::file::iput(i); }
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
     // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.

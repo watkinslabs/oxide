@@ -19,6 +19,7 @@ use sync::{Devices as DevClass, Spinlock};
 
 use crate::inode::{Inode, InodeBuilder, InodeRef};
 use crate::inode_ops::InodeOps;
+use crate::file::File;
 use crate::file_ops::{FileOps, default_file_ops};
 use crate::poll_subs::PollSubscribers;
 use crate::superblock::SuperBlock;
@@ -97,18 +98,36 @@ pub const fn huge_encode_dev(kdev: u32) -> u64 { new_encode_dev(kdev) as u64 }
 pub trait CharDevOps: Send + Sync {
     /// `cdev->open`. Default OK. # C: driver-dependent
     fn open(&self, devt: Devt) -> KResult<()> { let _ = devt; Ok(()) }
+    /// `cdev->open` with the open file description available. # C: driver-dependent
+    fn open_file(&self, devt: Devt, file: &File) -> KResult<()> { let _ = file; self.open(devt) }
     /// `cdev->read`. # C: driver-dependent
     fn read(&self, devt: Devt, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let _ = (devt, off, buf); Err(VfsError::Eio)
+    }
+    /// `cdev->read` with per-open state. # C: driver-dependent
+    fn read_file(&self, devt: Devt, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let _ = file; self.read(devt, off, buf)
     }
     /// `cdev->write`. # C: driver-dependent
     fn write(&self, devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
         let _ = (devt, off, buf); Err(VfsError::Eio)
     }
+    /// `cdev->write` with per-open state. # C: driver-dependent
+    fn write_file(&self, devt: Devt, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        let _ = file; self.write(devt, off, buf)
+    }
     /// `cdev->unlocked_ioctl`. # C: driver-dependent
     fn ioctl(&self, devt: Devt, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = (devt, cmd, arg); Err(VfsError::Enotty)
     }
+    /// `cdev->poll`. # C: driver-dependent
+    fn poll(&self, devt: Devt) -> KResult<u32> { let _ = devt; Ok(crate::inode::POLL_IN | crate::inode::POLL_OUT) }
+    /// `cdev->poll` with per-open state. # C: driver-dependent
+    fn poll_file(&self, devt: Devt, file: &File) -> KResult<u32> { let _ = file; self.poll(devt) }
+    /// `cdev->mmap`/shared-frame probe. # C: driver-dependent
+    fn mmap_shared_frame(&self, devt: Devt, off: u64) -> Option<u64> { let _ = (devt, off); None }
+    /// `cdev->release`. # C: driver-dependent
+    fn release_file(&self, devt: Devt, file: &File) { let _ = (devt, file); }
 }
 
 /// `struct block_device_operations` — a block driver's per-`dev_t` vtable.
@@ -296,12 +315,64 @@ impl FileOps for DeviceFileOps {
             _ => Err(VfsError::Eio),
         }
     }
+    fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = device_data(file.inode())?;
+        match d.ft {
+            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.read_file(d.devt, file, off, buf),
+            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.read(d.devt, off, buf),
+            _ => Err(VfsError::Eio),
+        }
+    }
+    fn write_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        let d = device_data(file.inode())?;
+        match d.ft {
+            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.write_file(d.devt, file, off, buf),
+            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.write(d.devt, off, buf),
+            _ => Err(VfsError::Eio),
+        }
+    }
     fn on_open(&self, inode: &Inode) -> KResult<()> {
         let d = device_data(inode)?;
         match d.ft {
-            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.open(d.devt),
+            FileType::CharDev  => lookup_chrdev(d.devt).map(|_| ()).ok_or(VfsError::Enxio),
             FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.open(d.devt),
             _ => Err(VfsError::Enodev),
+        }
+    }
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        let d = device_data(file.inode())?;
+        match d.ft {
+            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.open_file(d.devt, file),
+            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.open(d.devt),
+            _ => Err(VfsError::Enodev),
+        }
+    }
+    fn on_release_file(&self, file: &File) {
+        if let Ok(d) = device_data(file.inode()) {
+            if d.ft == FileType::CharDev {
+                if let Some(ops) = lookup_chrdev(d.devt) { ops.release_file(d.devt, file); }
+            }
+        }
+    }
+    fn poll(&self, inode: &Inode) -> u32 {
+        let Ok(d) = device_data(inode) else { return 0; };
+        match d.ft {
+            FileType::CharDev => lookup_chrdev(d.devt).and_then(|o| o.poll(d.devt).ok()).unwrap_or(0),
+            _ => 0,
+        }
+    }
+    fn poll_open_file(&self, file: &File) -> u32 {
+        let Ok(d) = device_data(file.inode()) else { return 0; };
+        match d.ft {
+            FileType::CharDev => lookup_chrdev(d.devt).and_then(|o| o.poll_file(d.devt, file).ok()).unwrap_or(0),
+            _ => self.poll(file.inode()),
+        }
+    }
+    fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> Option<u64> {
+        let d = device_data(inode).ok()?;
+        match d.ft {
+            FileType::CharDev => lookup_chrdev(d.devt).and_then(|o| o.mmap_shared_frame(d.devt, off)),
+            _ => None,
         }
     }
 }

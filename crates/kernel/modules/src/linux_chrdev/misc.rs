@@ -1,5 +1,6 @@
 use super::core::{cdev_add, cdev_del, cdev_init, unregister_chrdev_region, volatile_write_u32};
 use super::types::*;
+use alloc::string::String;
 use sync::{Modules as ModulesLockClass, Spinlock};
 
 const MAX_MISC_MINORS: usize = LINUX_MISC_MAX_DYNAMIC_MINOR as usize + 1;
@@ -38,6 +39,7 @@ extern "C" fn misc_register(misc: *mut LinuxMiscDevice) -> i32 {
         release_misc_minor(minor, misc);
         return rc;
     }
+    publish_devnode(misc, minor);
     // SAFETY: misc is valid caller-owned storage.
     unsafe { (*misc).registered = LINUX_FIELD_SET; }
     LINUX_OK
@@ -48,6 +50,7 @@ extern "C" fn misc_deregister(misc: *mut LinuxMiscDevice) -> i32 {
     // SAFETY: misc is caller-owned Linux struct miscdevice storage.
     let minor = unsafe { (*misc).minor };
     if minor < LINUX_OK { return -LINUX_EINVAL; }
+    unpublish_devnode(misc);
     cdev_del(misc_cdev(misc));
     release_misc_minor(minor as u32, misc);
     // SAFETY: misc is valid caller-owned storage.
@@ -93,9 +96,39 @@ fn registered_ptr(misc: *mut LinuxMiscDevice) -> *mut u32 {
     }
 }
 
+fn publish_devnode(misc: *mut LinuxMiscDevice, minor: u32) {
+    let Some(name) = devnode_name(misc) else { return; };
+    devfs::add_device_node("misc", &name, Some((LINUX_MISC_MAJOR, minor)), None);
+}
+
+fn unpublish_devnode(misc: *mut LinuxMiscDevice) {
+    let Some(name) = devnode_name(misc) else { return; };
+    devfs::del_device_node(&name);
+}
+
+fn devnode_name(misc: *mut LinuxMiscDevice) -> Option<String> {
+    if misc.is_null() { return None; }
+    // SAFETY: misc is checked non-null; nodename/name are caller-owned NUL-terminated strings by Linux miscdevice contract.
+    let ptr = unsafe { if !(*misc).nodename.is_null() { (*misc).nodename } else { (*misc).name } };
+    cstr_to_string(ptr)
+}
+
+fn cstr_to_string(ptr: *const core::ffi::c_char) -> Option<String> {
+    if ptr.is_null() { return None; }
+    let mut out = String::new();
+    for i in 0..96usize {
+        // SAFETY: caller supplied a Linux C string; cap bounds traversal for malformed input.
+        let b = unsafe { *ptr.add(i) } as u8;
+        if b == 0 { return if out.is_empty() { None } else { Some(out) }; }
+        out.push(b as char);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux_device::types::LinuxKobject;
     use crate::linux_chrdev::types::LinuxFileOperations;
     use core::ptr::null_mut;
 
@@ -110,17 +143,19 @@ mod tests {
         mmap: None,
         llseek: null_mut(),
     };
+    static TEST_NAME: &[u8] = b"oxide-misc-kpi\0";
 
     fn new_misc() -> LinuxMiscDevice {
         LinuxMiscDevice {
             minor: LINUX_MISC_DYNAMIC_MINOR,
-            name: core::ptr::null(),
+            name: TEST_NAME.as_ptr() as *const core::ffi::c_char,
             fops: &FOPS,
             parent: null_mut(),
             this_device: null_mut(),
             mode: 0,
             nodename: core::ptr::null(),
             cdev: LinuxCdev {
+                kobj: LinuxKobject::new(),
                 ops: core::ptr::null(),
                 owner: null_mut(),
                 dev: 0,
@@ -140,8 +175,12 @@ mod tests {
         assert_eq!(misc.mode, LINUX_MISC_DEFAULT_MODE);
         assert_eq!(misc.registered, LINUX_FIELD_SET);
         assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(mkdev(LINUX_MISC_MAJOR, misc.minor as u32))).is_some());
+        let node = devfs::lookup("/dev/oxide-misc-kpi").expect("misc_register publishes devtmpfs node");
+        assert_eq!(node.file_type(), vfs::FileType::CharDev);
+        assert_eq!(node.rdev(), vfs::Devt::new(LINUX_MISC_MAJOR, misc.minor as u32).raw());
         assert_eq!(misc_deregister(&mut misc), LINUX_OK);
         assert_eq!(misc.registered, LINUX_FIELD_CLEAR);
         assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(mkdev(LINUX_MISC_MAJOR, misc.minor as u32))).is_none());
+        assert!(devfs::lookup("/dev/oxide-misc-kpi").is_none());
     }
 }
