@@ -3,9 +3,11 @@
 
 #include <linux/stddef.h>
 
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
 typedef _Bool bool;
 #define true 1
 #define false 0
+#endif
 
 typedef signed char s8;
 typedef unsigned char u8;
