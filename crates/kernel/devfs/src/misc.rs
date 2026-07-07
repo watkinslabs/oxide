@@ -17,6 +17,16 @@ fn char_inode(ino: vfs::Ino, perm: u16, rdev: u32, fop: Arc<dyn FileOps>) -> Ino
         .fsid(crate::DEVFS_FSID).rdev(rdev).build()
 }
 
+/// `char_inode` for a kernel-provided PUBLIC device (`/dev/null`, `/dev/zero`,
+/// `/dev/full`, `/dev/random`, `/dev/urandom`) — a single shared inode across
+/// all mount namespaces whose world-rw perms must survive systemd's per-service
+/// device-node chowns (see [`vfs::Inode::mark_public_device`]). # C: O(1)
+fn public_char_inode(ino: vfs::Ino, rdev: u32, fop: Arc<dyn FileOps>) -> InodeRef {
+    let i = char_inode(ino, 0o666, rdev, fop);
+    i.mark_public_device();
+    i
+}
+
 /// Boot-time smoke test: each device's `f_op` read fills the right bytes.
 /// `/dev/zero` returns NUL, `/dev/null` returns 0 (EOF), `/dev/random`
 /// fills with non-deterministic bytes (we just check len). Run from
@@ -67,7 +77,7 @@ impl FileOps for NullFileOps {
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 /// `/dev/null` inode (1:3 mem/null, `0o666`). # C: O(1)
-pub fn make_null_inode() -> InodeRef { char_inode(0x2000_0001, 0o666, 0x0103, Arc::new(NullFileOps)) }
+pub fn make_null_inode() -> InodeRef { public_char_inode(0x2000_0001, 0x0103, Arc::new(NullFileOps)) }
 
 /// Static symlink with a fixed target — backs the standard `/dev`
 /// links `stdin`/`stdout`/`stderr`/`fd` that every Linux system
@@ -147,7 +157,7 @@ impl FileOps for ZeroFileOps {
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 /// `/dev/zero` inode (1:5 mem/zero, `0o666`). # C: O(1)
-pub fn make_zero_inode() -> InodeRef { char_inode(0x2000_0002, 0o666, 0x0105, Arc::new(ZeroFileOps)) }
+pub fn make_zero_inode() -> InodeRef { public_char_inode(0x2000_0002, 0x0105, Arc::new(ZeroFileOps)) }
 
 /// `/dev/full` — read fills with NUL like /dev/zero; write
 /// returns -ENOSPC. POSIX-shaped so libc `posix_fallocate`-on-
@@ -161,7 +171,7 @@ impl FileOps for FullFileOps {
     fn write(&self, _i: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
 /// `/dev/full` inode (1:7 mem/full, `0o666`). # C: O(1)
-pub fn make_full_inode() -> InodeRef { char_inode(0x2000_0003, 0o666, 0x0107, Arc::new(FullFileOps)) }
+pub fn make_full_inode() -> InodeRef { public_char_inode(0x2000_0003, 0x0107, Arc::new(FullFileOps)) }
 
 /// LCG pseudo-random source seeded from a monotonic counter. v1
 /// has no real entropy pool (per docs/26 the CPRNG/RDRAND wiring
@@ -267,10 +277,10 @@ impl FileOps for RandomFileOps {
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 /// `/dev/random` inode (1:8 mem/random, `0o666`). # C: O(1)
-pub fn make_random_inode() -> InodeRef { char_inode(0x2000_0004, 0o666, 0x0108, Arc::new(RandomFileOps)) }
+pub fn make_random_inode() -> InodeRef { public_char_inode(0x2000_0004, 0x0108, Arc::new(RandomFileOps)) }
 
 /// `/dev/urandom` inode (1:9 mem/urandom, `0o666`). # C: O(1)
-pub fn make_urandom_inode() -> InodeRef { char_inode(0x2000_0007, 0o666, 0x0109, Arc::new(RandomFileOps)) }
+pub fn make_urandom_inode() -> InodeRef { public_char_inode(0x2000_0007, 0x0109, Arc::new(RandomFileOps)) }
 
 /// The `mem` char driver (Linux `drivers/char/mem.c`, major 1) — ONE
 /// `CharDevOps` backing every mem minor, dispatching by minor to the SAME

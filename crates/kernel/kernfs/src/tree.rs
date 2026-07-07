@@ -261,6 +261,9 @@ impl PseudoDir {
         .private(Arc::clone(leaf.i_private()))
         .build();
         let _ = inode.set_owner(leaf.uid().unwrap_or(0), leaf.gid().unwrap_or(0));
+        // Preserve the public-device (perm-immutable) mark so a per-namespace
+        // copy of /dev/null etc. keeps its universal-access invariant too.
+        if leaf.is_public_device() { inode.mark_public_device(); }
         inode
     }
 

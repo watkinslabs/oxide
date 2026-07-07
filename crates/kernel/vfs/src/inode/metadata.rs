@@ -14,6 +14,12 @@ use crate::types::{FileType, KResult, Umode, S_IFMT};
 use super::flags::{I_FREEING, I_WILL_FREE};
 use super::model::{Inode, SealCarrier};
 
+/// oxide-internal `i_flags` bit: a shared-across-namespaces public device node
+/// whose owner/mode is held at its universal-access as-created value (see
+/// [`Inode::mark_public_device`]). High bit to avoid the Linux `S_*` runtime
+/// flags in the low range.
+const I_PUBLIC_DEV: u32 = 1 << 28;
+
 impl Inode {
     /// `inode->i_ino`. # C: O(1)
     pub fn ino(&self) -> crate::types::Ino { self.i_ino }
@@ -41,6 +47,19 @@ impl Inode {
     pub fn btime(&self) -> Option<u64> { if self.i_btime != 0 { Some(self.i_btime) } else { None } }
     /// `i_flags` (`S_*`). # C: O(1)
     pub fn i_flags(&self) -> u32 { self.i_flags.load(Ordering::Relaxed) }
+    /// Mark this inode a kernel-provided PUBLIC device node (/dev/null, /dev/zero,
+    /// /dev/full, /dev/random, /dev/urandom). oxide backs each of these with ONE
+    /// shared inode across every mount namespace (Linux gives each private `/dev`
+    /// its own copy). systemd resets device-node ownership per session/service via
+    /// `fchownat(fd,"",AT_EMPTY_PATH)`; on the shared node the LAST chown would
+    /// strip world-access and lock out every other process (the greeter, whose uid
+    /// != the last chowner, then fails glib's "open /dev/null to remap fd" with
+    /// EACCES). `notify_change` keeps these nodes at their as-created world-rw
+    /// mode + root owner — the universal-access invariant they always hold on
+    /// Linux. # C: O(1)
+    pub fn mark_public_device(&self) { self.i_flags.fetch_or(I_PUBLIC_DEV, Ordering::Relaxed); }
+    /// True iff [`mark_public_device`] was set. # C: O(1)
+    pub fn is_public_device(&self) -> bool { self.i_flags.load(Ordering::Relaxed) & I_PUBLIC_DEV != 0 }
     /// `i_rdev` packed `dev_t`. # C: O(1)
     pub fn rdev(&self) -> u32 { self.i_rdev }
     /// `i_generation`. # C: O(1)
