@@ -40,7 +40,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
-| G1 | kill(-1) broadcast (62) | TODO | | `062_kill.rs:58` returns EPERM. Signal every process the caller may signal (except self/init per Linux). |
+| G1 | kill(-1) broadcast (62) | DONE | B634 #TBD | `post_broadcast`: signal every real user proc the caller may signal, excluding self + init(vtgid 1) + kthreads(vtgid 0). Returns 0 / ESRCH. |
 | G2 | nanosleep/clock_nanosleep EINTR (35/230) | TODO | | busy-yields, never checks sigpending, never writes `rem`. Make interruptible + write remaining. |
 | G3 | getrusage/times (98/100) | TODO | | report wall-clock for utime, zeroed counters. Track real per-task CPU time + rusage counters. |
 | G4 | set_robust_list exit walk (273) | TODO | | registers head but thread-exit never walks the robust list to wake futex waiters. |
