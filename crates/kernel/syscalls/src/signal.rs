@@ -84,5 +84,15 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     } else {
         (h.handler, h.flags, h.restorer)
     };
+    #[cfg(feature = "debug-boot")]
+    if sig >= 32 {
+        let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
+        if is_gdm {
+            klog::write_raw(b"[SIGDELIV tid="); klog::write_dec_u64(cur.tid as u64);
+            klog::write_raw(b" sig="); klog::write_dec_u64(sig as u64);
+            klog::write_raw(b" handler="); klog::write_hex_u64(handler);
+            klog::write_raw(b"]\n");
+        }
+    }
     Some(PendingSignal { sig, handler, flags, restorer, info })
 }
