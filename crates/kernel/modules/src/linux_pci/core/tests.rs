@@ -1,6 +1,10 @@
 use super::*;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec;
 use core::ffi::{c_char, c_void};
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const TEST_MMIO_START: u64 = 0x1000_0000;
 const TEST_MMIO_END: u64 = 0x1000_0fff;
@@ -26,6 +30,31 @@ const TEST_CFG_HIGH_WORD: u16 = 0x1234;
 const TEST_CFG_PATCH_BYTE: u8 = 0xab;
 const TEST_CFG_PATCHED_DWORD: u32 = 0x1234_ab78;
 const TEST_DEVFN: u8 = (TEST_SLOT << PCI_DEVFN_DEV_SHIFT) | TEST_FUNC;
+const TEST_MODEL_CLASS: u32 = 0x010802;
+const TEST_MODEL_DRIVER_DATA: usize = 0xfeed_beef;
+
+static MODEL_PROBES: AtomicUsize = AtomicUsize::new(0);
+static MODEL_REMOVES: AtomicUsize = AtomicUsize::new(0);
+static MODEL_IDS: [LinuxPciDeviceId; 2] = [
+    LinuxPciDeviceId {
+        vendor: TEST_VENDOR as u32,
+        device: TEST_DEVICE as u32,
+        subvendor: u32::MAX,
+        subdevice: u32::MAX,
+        class: TEST_MODEL_CLASS,
+        class_mask: 0x00ff_ffff,
+        driver_data: TEST_MODEL_DRIVER_DATA,
+    },
+    LinuxPciDeviceId {
+        vendor: 0,
+        device: 0,
+        subvendor: 0,
+        subdevice: 0,
+        class: 0,
+        class_mask: 0,
+        driver_data: 0,
+    },
+];
 
 fn test_dev() -> LinuxPciDev {
     // SAFETY: repr(C) KPI structs are plain data and zero is a valid empty state for tests.
@@ -52,6 +81,32 @@ fn cstr_eq(ptr: *const c_char, want: &[u8]) -> bool {
     }
     // SAFETY: want stops before the expected NUL terminator.
     unsafe { *ptr.add(want.len()) == 0 }
+}
+
+unsafe extern "C" fn model_probe(dev: *mut LinuxPciDev, id: *const LinuxPciDeviceId) -> i32 {
+    assert!(!dev.is_null());
+    assert!(!id.is_null());
+    // SAFETY: test probe receives live PCI ABI pointers from registry bridge.
+    unsafe {
+        assert_eq!((*dev).vendor, TEST_VENDOR);
+        assert_eq!((*dev).device, TEST_DEVICE);
+        assert_eq!((*dev).class, TEST_MODEL_CLASS);
+        assert_eq!((*dev).resource[TEST_BAR_IDX].start, TEST_MMIO_START);
+        assert!(pci_get_drvdata(dev).is_null());
+        assert!(cstr_eq((*dev).name.as_ptr(), b"0000:02:03.1"));
+        assert!(cstr_eq((*dev).dev.name.as_ptr(), b"0000:02:03.1"));
+        assert!((*dev).dev.init_name.is_null());
+        assert_eq!((*id).driver_data, TEST_MODEL_DRIVER_DATA);
+    }
+    MODEL_PROBES.fetch_add(1, Ordering::SeqCst);
+    pci_set_drvdata(dev, TEST_MODEL_DRIVER_DATA as *mut c_void);
+    LINUX_OK
+}
+
+unsafe extern "C" fn model_remove(dev: *mut LinuxPciDev) {
+    assert!(!dev.is_null());
+    assert_eq!(pci_get_drvdata(dev), TEST_MODEL_DRIVER_DATA as *mut c_void);
+    MODEL_REMOVES.fetch_add(1, Ordering::SeqCst);
 }
 
 #[test]
@@ -122,11 +177,43 @@ fn driver_registration_and_drvdata_round_trip() {
 }
 
 #[test]
+fn pci_driver_registration_binds_existing_model_device() {
+    MODEL_PROBES.store(0, Ordering::SeqCst);
+    MODEL_REMOVES.store(0, Ordering::SeqCst);
+    let model = Arc::new(
+        drv::Device::new("pci", String::from("0000:02:03.1"), TEST_VENDOR, TEST_DEVICE, TEST_MODEL_CLASS)
+            .with_resources(vec![drv::Resource {
+                bar: TEST_BAR as u8,
+                start: TEST_MMIO_START,
+                end: TEST_MMIO_END,
+                flags: pci::IORESOURCE_MEM,
+            }])
+    );
+    let model = drv::try_device_add(model).expect("model pci device added");
+    // SAFETY: repr(C) KPI structs are plain data and zero is a valid empty state for tests.
+    let mut driver: LinuxPciDriver = unsafe { MaybeUninit::zeroed().assume_init() };
+    driver.name = c"linux-pci-model-test".as_ptr();
+    driver.id_table = MODEL_IDS.as_ptr();
+    driver.probe = Some(model_probe);
+    driver.remove = Some(model_remove);
+    assert_eq!(pci_register_driver(&mut driver), LINUX_OK);
+    assert_eq!(model.bound(), Some("linux-pci-model-test"));
+    assert_eq!(MODEL_PROBES.load(Ordering::SeqCst), 1);
+    assert_eq!(super::super::registry::binding_count(), 1);
+    assert_eq!(super::super::registry::bound_id_driver_data(&model), Some(TEST_MODEL_DRIVER_DATA));
+    pci_unregister_driver(&mut driver);
+    assert_eq!(model.bound(), None);
+    assert_eq!(MODEL_REMOVES.load(Ordering::SeqCst), 1);
+    assert_eq!(super::super::registry::binding_count(), 0);
+    drv::device_del(&model);
+}
+
+#[test]
 fn export_symbols_registers_pci_surface() {
     crate::symtab::_reset();
     export_symbols();
     for name in [
-        "pci_register_driver", "pci_enable_device", "pci_resource_start",
+        "__pci_register_driver", "pci_register_driver", "pci_enable_device", "pci_resource_start",
         "pci_request_region", "pci_iomap", "pci_alloc_irq_vectors",
         "pci_read_config_dword", "pci_write_config_dword",
     ] {

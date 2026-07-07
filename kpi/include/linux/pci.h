@@ -17,6 +17,9 @@
 #define PCI_SLOT_MASK 0x1f
 #define PCI_FUNC_MASK 0x07
 #define PCI_ANY_ID 0xffffffffU
+#ifndef KBUILD_MODNAME
+#define KBUILD_MODNAME "oxide"
+#endif
 
 #define PCI_IRQ_LEGACY 0x00000001U
 #define PCI_IRQ_MSI 0x00000002U
@@ -67,10 +70,14 @@ struct pci_driver {
     struct device_driver driver;
 };
 
-int pci_register_driver(struct pci_driver *drv);
+int __pci_register_driver(struct pci_driver *drv, struct module *owner, const char *mod_name);
+#define pci_register_driver(drv) __pci_register_driver((drv), THIS_MODULE, KBUILD_MODNAME)
 void pci_unregister_driver(struct pci_driver *drv);
 int pci_enable_device(struct pci_dev *dev);
+int pci_enable_device_mem(struct pci_dev *dev);
 void pci_disable_device(struct pci_dev *dev);
+int pcim_enable_device(struct pci_dev *dev);
+int pcim_pin_device(struct pci_dev *dev);
 void pci_set_master(struct pci_dev *dev);
 void pci_clear_master(struct pci_dev *dev);
 void pci_set_drvdata(struct pci_dev *dev, void *data);
@@ -84,8 +91,17 @@ int pci_request_region(struct pci_dev *dev, int bar, const char *name);
 void pci_release_region(struct pci_dev *dev, int bar);
 int pci_request_regions(struct pci_dev *dev, const char *name);
 void pci_release_regions(struct pci_dev *dev);
+int pcim_request_all_regions(struct pci_dev *dev, const char *name);
+void pcim_release_all_regions(struct pci_dev *dev);
 void __iomem *pci_iomap(struct pci_dev *dev, int bar, unsigned long maxlen);
+void __iomem *pcim_iomap(struct pci_dev *dev, int bar, unsigned long maxlen);
+void pcim_iounmap(struct pci_dev *dev, void __iomem *addr);
+void __iomem *pci_ioremap_bar(struct pci_dev *dev, int bar);
+void __iomem *pci_ioremap_wc_bar(struct pci_dev *dev, int bar);
 void pci_iounmap(struct pci_dev *dev, void __iomem *addr);
+int pci_enable_msi(struct pci_dev *dev);
+void pci_disable_msi(struct pci_dev *dev);
+int pci_msix_vec_count(struct pci_dev *dev);
 int pci_alloc_irq_vectors(struct pci_dev *dev, int min_vecs, int max_vecs, unsigned int flags);
 void pci_free_irq_vectors(struct pci_dev *dev);
 int pci_irq_vector(struct pci_dev *dev, unsigned int nr);
