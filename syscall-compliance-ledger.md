@@ -21,7 +21,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
-| D1 | pwritev / pwritev2 (296/328) | TODO | | `296_pwritev.rs` forwards to `writev`, dropping the offset → positional writes hit `f_pos`. Plumb the `pos_l`/`pos_h` offset like `preadv` (295) already does. |
+| D1 | pwritev / pwritev2 (296/328) | DONE | B632 #TBD | `296_pwritev.rs` now a positional write mirroring `preadv`: extracts pos_l/pos_h, writes each iovec at the running offset via `inode().write(off,buf)`, never touches `f_pos`. |
 | D2 | sync(2) | TODO | | `route_b.rs:99` `NR_SYNC => 0` no-op. Iterate `vfs::mount::MOUNTS` calling `SuperBlock::sync_filesystem`. |
 | D3 | syncfs(2) | TODO | | `074_fsync.rs` flushes only the fd's inode. Route SYNCFS to the fd's superblock `sync_filesystem`. |
 | D4 | shmat (SysV shm) | TODO | | `ipc/sysv_shm.rs:138` clones bytes per attach → not shared. One backing object shared by all attaches (real shmem). |
