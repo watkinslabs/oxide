@@ -853,6 +853,7 @@ dependencies = [
  "crc",
  "crypt",
  "devfs",
+ "drv",
  "elf",
  "ext4",
  "hal",
