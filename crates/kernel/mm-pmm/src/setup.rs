@@ -30,8 +30,15 @@ mod tests;
 
 pub use boot_init::{HhdmBacking, MAX_REGIONS, SetupError, init_from_boot_info, pmm_static};
 pub use frame_alloc::{alloc_one_frame, alloc_object_frame, alloc_raw_frame, frame_ptr};
-pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, frame_refcount, inc_ref, repair_frame_counts};
+pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, frame_refcount, inc_ref};
 pub use metadata::{anon_vma_for_pa, clear_anon_rmap_for_pa, init_page_meta, page_index_for_pa, pfn_max_from_boot_info, rmap_aware_dec_and_maybe_free, set_anon_rmap_for_pa};
+// free-while-mapped peer-scan repair: opt-in DIAG only. The always-on
+// never-free-a-mapped-page invariant lives in `refs::release_frame_on_zero`
+// (cheap own-mapcount check); the expensive cross-AS page-table scan below is
+// a `debug-fwm` backstop for an under-count, not a production hot path.
+#[cfg(feature = "debug-fwm")]
+pub use refs::repair_frame_counts;
+#[cfg(feature = "debug-fwm")]
 pub use metadata::fwm_peer_maps;
 #[cfg(feature = "debug-atexit")]
 pub use metadata::set_dec_ctx;
