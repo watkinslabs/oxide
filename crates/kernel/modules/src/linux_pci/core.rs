@@ -6,7 +6,6 @@ use pci::{
 };
 use sync::{Modules as ModulesLockClass, Spinlock};
 
-const MAX_PCI_DRIVERS: usize = 32;
 const MAX_REGION_CLAIMS: usize = 64;
 const PCI_DEVFN_DEV_SHIFT: u8 = 3;
 const PCI_CONFIG_ALIGN: u8 = 4;
@@ -17,9 +16,6 @@ const PCI_RESOURCE_EMPTY: u64 = 0;
 const INVALID_RESOURCE: usize = usize::MAX;
 
 #[derive(Copy, Clone)]
-struct DriverRecord { ptr: usize }
-
-#[derive(Copy, Clone)]
 struct RegionClaim {
     dev: usize,
     bar: usize,
@@ -27,8 +23,6 @@ struct RegionClaim {
     end: u64,
 }
 
-static DRIVERS: Spinlock<[Option<DriverRecord>; MAX_PCI_DRIVERS], ModulesLockClass> =
-    Spinlock::new([None; MAX_PCI_DRIVERS]);
 static REGIONS: Spinlock<[Option<RegionClaim>; MAX_REGION_CLAIMS], ModulesLockClass> =
     Spinlock::new([None; MAX_REGION_CLAIMS]);
 
@@ -37,10 +31,14 @@ static REGIONS: Spinlock<[Option<RegionClaim>; MAX_REGION_CLAIMS], ModulesLockCl
 pub(super) fn export_symbols() {
     use crate::symtab::export;
     for (name, addr) in [
+        ("__pci_register_driver",    __pci_register_driver    as *const () as usize),
         ("pci_register_driver",       pci_register_driver       as *const () as usize),
         ("pci_unregister_driver",     pci_unregister_driver     as *const () as usize),
         ("pci_enable_device",         pci_enable_device         as *const () as usize),
+        ("pci_enable_device_mem",     pci_enable_device_mem     as *const () as usize),
         ("pci_disable_device",        pci_disable_device        as *const () as usize),
+        ("pcim_enable_device",        pcim_enable_device        as *const () as usize),
+        ("pcim_pin_device",           pcim_pin_device           as *const () as usize),
         ("pci_set_master",            pci_set_master            as *const () as usize),
         ("pci_clear_master",          pci_clear_master          as *const () as usize),
         ("pci_set_drvdata",           pci_set_drvdata           as *const () as usize),
@@ -54,8 +52,17 @@ pub(super) fn export_symbols() {
         ("pci_release_region",        pci_release_region        as *const () as usize),
         ("pci_request_regions",       pci_request_regions       as *const () as usize),
         ("pci_release_regions",       pci_release_regions       as *const () as usize),
+        ("pcim_request_all_regions",  pcim_request_all_regions  as *const () as usize),
+        ("pcim_release_all_regions",  pcim_release_all_regions  as *const () as usize),
         ("pci_iomap",                 pci_iomap                 as *const () as usize),
+        ("pcim_iomap",                pcim_iomap                as *const () as usize),
+        ("pcim_iounmap",              pcim_iounmap              as *const () as usize),
+        ("pci_ioremap_bar",           pci_ioremap_bar           as *const () as usize),
+        ("pci_ioremap_wc_bar",        pci_ioremap_wc_bar        as *const () as usize),
         ("pci_iounmap",               pci_iounmap               as *const () as usize),
+        ("pci_enable_msi",            pci_enable_msi            as *const () as usize),
+        ("pci_disable_msi",           pci_disable_msi           as *const () as usize),
+        ("pci_msix_vec_count",        pci_msix_vec_count        as *const () as usize),
         ("pci_alloc_irq_vectors",     pci_alloc_irq_vectors     as *const () as usize),
         ("pci_free_irq_vectors",      pci_free_irq_vectors      as *const () as usize),
         ("pci_irq_vector",            pci_irq_vector            as *const () as usize),
@@ -68,22 +75,20 @@ pub(super) fn export_symbols() {
     ] { export(name, addr, false); }
 }
 
+extern "C" fn __pci_register_driver(
+    driver: *mut LinuxPciDriver,
+    _owner: *mut c_void,
+    _mod_name: *const c_char,
+) -> i32 {
+    pci_register_driver(driver)
+}
+
 extern "C" fn pci_register_driver(driver: *mut LinuxPciDriver) -> i32 {
-    if driver.is_null() { return -LINUX_EINVAL; }
-    let mut g = DRIVERS.lock();
-    if g.iter().flatten().any(|r| r.ptr == driver as usize) { return -LINUX_EBUSY; }
-    if let Some(slot) = g.iter_mut().find(|r| r.is_none()) {
-        *slot = Some(DriverRecord { ptr: driver as usize });
-        LINUX_OK
-    } else { -LINUX_ENOMEM }
+    super::registry::register_driver(driver)
 }
 
 extern "C" fn pci_unregister_driver(driver: *mut LinuxPciDriver) {
-    if driver.is_null() { return; }
-    let mut g = DRIVERS.lock();
-    if let Some(slot) = g.iter_mut().find(|r| r.is_some_and(|v| v.ptr == driver as usize)) {
-        *slot = None;
-    }
+    super::registry::unregister_driver(driver);
 }
 
 extern "C" fn pci_enable_device(dev: *mut LinuxPciDev) -> i32 {
@@ -96,12 +101,23 @@ extern "C" fn pci_enable_device(dev: *mut LinuxPciDev) -> i32 {
     LINUX_OK
 }
 
+extern "C" fn pci_enable_device_mem(dev: *mut LinuxPciDev) -> i32 {
+    if dev.is_null() { return -LINUX_EINVAL; }
+    let old = read_config32(dev, PCI_COMMAND_STATUS_OFF);
+    write_config32(dev, PCI_COMMAND_STATUS_OFF, (old & PCI_STATUS_MASK) | COMMAND_MEMORY as u32);
+    LINUX_OK
+}
+
 extern "C" fn pci_disable_device(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
     let old = read_config32(dev, PCI_COMMAND_STATUS_OFF);
     let cmd = (old & PCI_COMMAND_MASK) & !(COMMAND_IO as u32 | COMMAND_MEMORY as u32);
     write_config32(dev, PCI_COMMAND_STATUS_OFF, (old & PCI_STATUS_MASK) | cmd);
 }
+
+extern "C" fn pcim_enable_device(dev: *mut LinuxPciDev) -> i32 { pci_enable_device(dev) }
+
+extern "C" fn pcim_pin_device(_dev: *mut LinuxPciDev) -> i32 { LINUX_OK }
 
 extern "C" fn pci_set_master(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
@@ -186,6 +202,10 @@ extern "C" fn pci_release_regions(dev: *mut LinuxPciDev) {
     for bar in 0..PCI_STD_NUM_BARS { release_region(dev, bar); }
 }
 
+extern "C" fn pcim_request_all_regions(dev: *mut LinuxPciDev, name: *const c_char) -> i32 { pci_request_regions(dev, name) }
+
+extern "C" fn pcim_release_all_regions(dev: *mut LinuxPciDev) { pci_release_regions(dev); }
+
 extern "C" fn pci_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut c_void {
     let res = match resource(dev, bar) { Some(v) => v, None => return null_mut() };
     let len = bounded_resource_len(res, maxlen);
@@ -193,9 +213,39 @@ extern "C" fn pci_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut 
     super::maps::iomap_resource(res, len).unwrap_or(null_mut())
 }
 
+extern "C" fn pcim_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut c_void { pci_iomap(dev, bar, maxlen) }
+
+extern "C" fn pcim_iounmap(dev: *mut LinuxPciDev, addr: *mut c_void) { pci_iounmap(dev, addr); }
+
+extern "C" fn pci_ioremap_bar(dev: *mut LinuxPciDev, bar: i32) -> *mut c_void {
+    pci_iomap(dev, bar, 0)
+}
+
+extern "C" fn pci_ioremap_wc_bar(dev: *mut LinuxPciDev, bar: i32) -> *mut c_void {
+    pci_iomap(dev, bar, 0)
+}
+
 extern "C" fn pci_iounmap(_dev: *mut LinuxPciDev, addr: *mut c_void) {
     super::maps::iounmap(addr);
 }
+
+extern "C" fn pci_enable_msi(dev: *mut LinuxPciDev) -> i32 {
+    match pci_alloc_irq_vectors(dev, 1, 1, PCI_IRQ_MSI) {
+        1 => LINUX_OK,
+        err => err,
+    }
+}
+
+extern "C" fn pci_disable_msi(dev: *mut LinuxPciDev) {
+    if dev.is_null() { return; }
+    let flags = unsafe {
+        // SAFETY: dev points at a caller-owned Linux struct pci_dev.
+        (*dev).irq_vector_flags
+    };
+    if flags & PCI_IRQ_MSI != 0 { pci_free_irq_vectors(dev); }
+}
+
+extern "C" fn pci_msix_vec_count(_dev: *mut LinuxPciDev) -> i32 { -LINUX_EINVAL }
 
 extern "C" fn pci_alloc_irq_vectors(dev: *mut LinuxPciDev, min_vecs: i32, max_vecs: i32, flags: u32) -> i32 {
     super::vectors::alloc_irq_vectors(dev, min_vecs, max_vecs, flags)
