@@ -56,8 +56,9 @@ impl RootfsState {
         let nlink = if inode.links_count != 0 { inode.links_count as u32 }
                     else if matches!(ft, vfs::FileType::Directory) { 2 } else { 1 };
         let (uid, gid) = (inode.uid, inode.gid);
+        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns);
         let st = self.clone();
-        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid);
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, times);
         // Route through the SB inode cache so a repeated lookup of the same ino
         // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
         // the SB is back-stamped (during `fs.root()`) build directly.
@@ -75,9 +76,10 @@ impl RootfsState {
         let size = inode.size;
         let mode = inode.mode;
         let (uid, gid) = (inode.uid, inode.gid);
+        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns);
         let nlink = if inode.links_count != 0 { inode.links_count as u32 } else { 1 };
         let st = self.clone();
-        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid);
+        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, times);
         // Shared identity via the SB inode cache (Linux `iget`).
         Some(match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),

@@ -3,9 +3,11 @@
 // - `data`: per-inode private state shared across inode kinds.
 // - `regular`: regular-file inode/file/mapping ops + builder + seek tests.
 // - `special`: directory/symlink/device inode/file ops + builder.
+// - `meta`: shared `ext4_setattr` — in-core apply + on-disk metadata writeback.
 
 mod ids;
 mod data;
+mod meta;
 mod regular;
 mod special;
 

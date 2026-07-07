@@ -1,0 +1,62 @@
+use crate::mount::{Mount, MountError};
+
+// ext4 on-disk inode field byte offsets (Linux `struct ext4_inode`). The data
+// path owns size/blocks/nlink/extents; this writer touches only the metadata
+// the VFS `notify_change` mutates: mode, owner, and the three timestamps.
+const OFF_MODE:        usize = 0x00;
+const OFF_UID_LO:      usize = 0x02;
+const OFF_ATIME:       usize = 0x08;
+const OFF_CTIME:       usize = 0x0C;
+const OFF_MTIME:       usize = 0x10;
+const OFF_GID_LO:      usize = 0x18;
+const OFF_UID_HI:      usize = 0x78; // osd2 `l_i_uid_high`
+const OFF_GID_HI:      usize = 0x7A; // osd2 `l_i_gid_high`
+const OFF_CTIME_EXTRA: usize = 0x84;
+const OFF_MTIME_EXTRA: usize = 0x88;
+const OFF_ATIME_EXTRA: usize = 0x8C;
+
+/// Encode an absolute-ns timestamp into the ext4 `(i_*time, i_*time_extra)`
+/// pair: seconds low 32 bits in the base field; `(nsec << 2) | epoch_hi2` in
+/// the extra field (Linux `ext4_encode_extra_time`). # C: O(1)
+fn enc_time(ns: u64) -> (u32, u32) {
+    let secs = ns / 1_000_000_000;
+    let nsec = (ns % 1_000_000_000) as u32;
+    let lo = (secs & 0xFFFF_FFFF) as u32;
+    let epoch = ((secs >> 32) & 0x3) as u32;
+    (lo, (nsec << 2) | epoch)
+}
+
+impl Mount {
+    /// Persist an inode's mode / owner / timestamps to its on-disk slot
+    /// (journaled) — the ext4 half of `notify_change` (Linux `ext4_setattr` →
+    /// `__ext4_mark_inode_dirty`). Size/blocks/nlink/extents are owned by the
+    /// data path and left untouched, so a concurrent-in-scope truncate is not
+    /// clobbered. Owner ids write both the low u16 and the osd2 high u16 so a
+    /// uid/gid > 65535 round-trips. # C: O(1) I/O, one journal transaction
+    pub fn persist_inode_meta(&self, ino: u32, mode: u16, uid: u32, gid: u32,
+        atime_ns: u64, mtime_ns: u64, ctime_ns: u64) -> Result<(), MountError>
+    {
+        let isize = self.sb.inode_size as usize;
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            b[OFF_MODE..OFF_MODE + 2].copy_from_slice(&mode.to_le_bytes());
+            b[OFF_UID_LO..OFF_UID_LO + 2].copy_from_slice(&((uid & 0xFFFF) as u16).to_le_bytes());
+            b[OFF_UID_HI..OFF_UID_HI + 2].copy_from_slice(&((uid >> 16) as u16).to_le_bytes());
+            b[OFF_GID_LO..OFF_GID_LO + 2].copy_from_slice(&((gid & 0xFFFF) as u16).to_le_bytes());
+            b[OFF_GID_HI..OFF_GID_HI + 2].copy_from_slice(&((gid >> 16) as u16).to_le_bytes());
+            let (a_lo, a_ex) = enc_time(atime_ns);
+            let (c_lo, c_ex) = enc_time(ctime_ns);
+            let (m_lo, m_ex) = enc_time(mtime_ns);
+            b[OFF_ATIME..OFF_ATIME + 4].copy_from_slice(&a_lo.to_le_bytes());
+            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
+            b[OFF_MTIME..OFF_MTIME + 4].copy_from_slice(&m_lo.to_le_bytes());
+            // The nanosecond / epoch-high halves only exist in a >128-byte inode.
+            if isize >= OFF_ATIME_EXTRA + 4 {
+                b[OFF_ATIME_EXTRA..OFF_ATIME_EXTRA + 4].copy_from_slice(&a_ex.to_le_bytes());
+                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
+                b[OFF_MTIME_EXTRA..OFF_MTIME_EXTRA + 4].copy_from_slice(&m_ex.to_le_bytes());
+            }
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+}
