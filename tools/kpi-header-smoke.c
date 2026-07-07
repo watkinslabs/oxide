@@ -1,6 +1,7 @@
 #include <linux/bitmap.h>
 #include <linux/blkdev.h>
 #include <linux/atomic.h>
+#include <linux/acpi.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
@@ -12,6 +13,7 @@
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/jiffies.h>
 #include <linux/kref.h>
 #include <linux/kthread.h>
@@ -23,6 +25,8 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/pci.h>
 #include <linux/refcount.h>
 #include <linux/rbtree.h>
@@ -75,6 +79,9 @@ enum { SAMPLE_PCI_CFG_VENDOR_DEVICE = 0 };
 enum { SAMPLE_PCI_CFG_COMMAND = 4 };
 enum { SAMPLE_PCI_MIN_VECTORS = 1 };
 enum { SAMPLE_PCI_MAX_VECTORS = 1 };
+enum { SAMPLE_PLATFORM_RESOURCE_COUNT = 2 };
+enum { SAMPLE_PLATFORM_MEM_RESOURCE = 0 };
+enum { SAMPLE_PLATFORM_IRQ_RESOURCE = 0 };
 enum { SAMPLE_CHRDEV_MAJOR = 240 };
 enum { SAMPLE_CHRDEV_MINOR = 1 };
 enum { SAMPLE_CHRDEV_COUNT = 1 };
@@ -108,6 +115,17 @@ static int sample_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
     (void)pdev; (void)id; return 0;
 }
 static void sample_pci_remove(struct pci_dev *pdev) { (void)pdev; }
+static int sample_platform_probe(struct platform_device *pdev)
+{
+    platform_set_drvdata(pdev, pdev);
+    return platform_get_drvdata(pdev) == NULL ? -ENODEV : 0;
+}
+static int sample_platform_remove(struct platform_device *pdev)
+{
+    platform_set_drvdata(pdev, NULL);
+    return 0;
+}
+static void sample_platform_shutdown(struct platform_device *pdev) { (void)pdev; }
 static int sample_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
     usb_set_intfdata(intf, (void *)id);
@@ -171,6 +189,18 @@ static const struct usb_device_id sample_usb_ids[] = {
     { USB_INTERFACE_INFO(USB_CLASS_HID, 0, 0) },
     { 0 }
 };
+static const struct platform_device_id sample_platform_ids[] = {
+    { "sample-platform", SAMPLE_PCI_DEVICE },
+    { "", 0 },
+};
+static const struct of_device_id sample_of_ids[] = {
+    { .compatible = "oxide,sample-platform", .data = &sample_of_ids },
+    { NULL, NULL, NULL, NULL },
+};
+static const struct acpi_device_id sample_acpi_ids[] = {
+    { "OXID0001", SAMPLE_PCI_DEVICE },
+    { "", 0 },
+};
 static const struct net_device_ops sample_netdev_ops = {
     .ndo_open = sample_net_open,
     .ndo_stop = sample_net_stop,
@@ -215,6 +245,10 @@ static int __init sample_init(void)
         .mode = 0600,
     };
     struct pci_dev pdev;
+    struct platform_device platdev;
+    struct resource plat_resources[SAMPLE_PLATFORM_RESOURCE_COUNT];
+    struct device_node of_node;
+    struct acpi_device acpi_dev;
     const struct firmware *fw;
     struct net_device *netdev;
     struct sk_buff *skb;
@@ -245,7 +279,20 @@ static int __init sample_init(void)
         "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
         { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
     };
+    struct platform_driver pldrv = {
+        .probe = sample_platform_probe,
+        .remove = sample_platform_remove,
+        .shutdown = sample_platform_shutdown,
+        .driver = {
+            .name = "sample-platform",
+            .owner = THIS_MODULE,
+            .of_match_table = sample_of_ids,
+            .acpi_match_table = sample_acpi_ids,
+        },
+        .id_table = sample_platform_ids,
+    };
     struct page *page;
+    struct resource *plat_res;
     dma_addr_t dma;
     dev_t chrdev_devt;
     int chrdev_major;
@@ -258,6 +305,7 @@ static int __init sample_init(void)
     struct lock_class_key key;
     unsigned int start;
     void __iomem *regs;
+    const void *match_data;
     u8 port8;
     u8 pci_cfg8;
     u16 pci_cfg16;
@@ -542,6 +590,59 @@ static int __init sample_init(void)
     (void)pci_write_config_dword(&pdev, SAMPLE_PCI_CFG_COMMAND, pci_cfg32);
     pci_disable_device(&pdev);
     pci_unregister_driver(&pdrv);
+    plat_resources[SAMPLE_PLATFORM_MEM_RESOURCE].start = SAMPLE_PCI_BAR_START;
+    plat_resources[SAMPLE_PLATFORM_MEM_RESOURCE].end = SAMPLE_PCI_BAR_END;
+    plat_resources[SAMPLE_PLATFORM_MEM_RESOURCE].name = "sample-mmio";
+    plat_resources[SAMPLE_PLATFORM_MEM_RESOURCE].flags = IORESOURCE_MEM;
+    plat_resources[1].start = SAMPLE_IRQ;
+    plat_resources[1].end = SAMPLE_IRQ;
+    plat_resources[1].name = "sample-irq";
+    plat_resources[1].flags = IORESOURCE_IRQ;
+    of_node.name = "sample-platform";
+    of_node.type = "platform";
+    of_node.compatible = "oxide,sample-platform";
+    of_node.data = NULL;
+    acpi_dev.hid[0] = 'O';
+    acpi_dev.hid[1] = 'X';
+    acpi_dev.hid[2] = 'I';
+    acpi_dev.hid[3] = 'D';
+    acpi_dev.hid[4] = '0';
+    acpi_dev.hid[5] = '0';
+    acpi_dev.hid[6] = '0';
+    acpi_dev.hid[7] = '1';
+    acpi_dev.hid[8] = '\0';
+    acpi_dev.uid[0] = '0';
+    acpi_dev.uid[1] = '\0';
+    acpi_dev.driver_data = NULL;
+    platdev.name = "sample-platform";
+    platdev.id = PLATFORM_DEVID_NONE;
+    platdev.dev.init_name = "sample-platform";
+    platdev.dev.of_node = &of_node;
+    platdev.dev.acpi_node = &acpi_dev;
+    platdev.num_resources = ARRAY_SIZE(plat_resources);
+    platdev.resource = plat_resources;
+    platdev.driver_data = NULL;
+    platdev.driver = NULL;
+    platdev.id_entry = NULL;
+    platdev.registered = 0;
+    (void)platform_driver_register(&pldrv);
+    (void)platform_device_register(&platdev);
+    plat_res = platform_get_resource(&platdev, IORESOURCE_MEM, SAMPLE_PLATFORM_MEM_RESOURCE);
+    (void)platform_get_resource_byname(&platdev, IORESOURCE_MEM, "sample-mmio");
+    (void)platform_get_irq(&platdev, SAMPLE_PLATFORM_IRQ_RESOURCE);
+    regs = devm_platform_ioremap_resource(&platdev, SAMPLE_PLATFORM_MEM_RESOURCE);
+    (void)devm_platform_get_and_ioremap_resource(&platdev, SAMPLE_PLATFORM_MEM_RESOURCE, &plat_res);
+    (void)regs;
+    (void)of_match_device(sample_of_ids, &platdev.dev);
+    (void)acpi_match_device(sample_acpi_ids, &platdev.dev);
+    (void)acpi_dev_get_first_match_dev("OXID0001", "0", 0);
+    acpi_dev_put(&acpi_dev);
+    (void)of_property_read_u32(&of_node, "clock-frequency", &pci_cfg32);
+    (void)of_property_read_bool(&of_node, "dma-coherent");
+    match_data = device_get_match_data(&platdev.dev);
+    (void)match_data;
+    platform_device_unregister(&platdev);
+    platform_driver_unregister(&pldrv);
     (void)dma_set_mask_and_coherent(&dev, DMA_BIT_MASK(DMA_ULL_BITS));
     coherent = dma_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
     (void)dma_mapping_error(&dev, dma);

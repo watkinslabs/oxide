@@ -24,6 +24,7 @@ pub(super) fn export_symbols() {
         ("dev_set_drvdata",         dev_set_drvdata         as *const () as usize),
         ("dev_get_drvdata",         dev_get_drvdata         as *const () as usize),
         ("dev_name",                dev_name                as *const () as usize),
+        ("device_get_match_data",   device_get_match_data   as *const () as usize),
         ("dev_set_name",            dev_set_name            as *const () as usize),
         ("root_device_register",    root_device_register    as *const () as usize),
         ("root_device_unregister",  root_device_unregister  as *const () as usize),
@@ -115,6 +116,10 @@ extern "C" fn dev_name(dev: *const LinuxDevice) -> *const c_char {
         if (*dev).name[0] != 0 { (*dev).name.as_ptr() }
         else { (*dev).init_name }
     }
+}
+
+extern "C" fn device_get_match_data(dev: *const LinuxDevice) -> *const c_void {
+    crate::linux_platform::device_match_data(dev as *mut LinuxDevice)
 }
 
 unsafe extern "C" fn dev_set_name(dev: *mut LinuxDevice, fmt: *const c_char, mut ap: ...) -> i32 {

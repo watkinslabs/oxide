@@ -2,11 +2,14 @@
 #define OXIDE_LINUX_DEVICE_H
 
 #include <linux/gfp.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/types.h>
 
 #define OXIDE_DEVICE_NAME_LEN 64
 
+struct acpi_device;
+struct device_node;
 struct attribute {
     const char *name;
     umode_t mode;
@@ -24,6 +27,8 @@ struct device {
     const char *init_name;
     char name[OXIDE_DEVICE_NAME_LEN];
     void (*release)(struct device *dev);
+    struct device_node *of_node;
+    struct acpi_device *acpi_node;
 };
 
 struct device_driver {
@@ -32,6 +37,8 @@ struct device_driver {
     struct module *owner;
     int (*probe)(struct device *dev);
     int (*remove)(struct device *dev);
+    const struct of_device_id *of_match_table;
+    const struct acpi_device_id *acpi_match_table;
 };
 
 struct bus_type {
@@ -64,6 +71,7 @@ void put_device(struct device *dev);
 void dev_set_drvdata(struct device *dev, void *data);
 void *dev_get_drvdata(const struct device *dev);
 const char *dev_name(const struct device *dev);
+const void *device_get_match_data(const struct device *dev);
 int dev_set_name(struct device *dev, const char *fmt, ...);
 struct device *root_device_register(const char *name);
 void root_device_unregister(struct device *dev);
