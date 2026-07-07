@@ -74,10 +74,12 @@ pub fn export_symbols() {
     export("page_address",     page_address     as *const () as usize, false);
     export("page_to_phys",     page_to_phys     as *const () as usize, false);
     export("kstrdup",          kstrdup          as *const () as usize, false);
+    export("kstrndup",         kstrndup         as *const () as usize, false);
     export("kasprintf",        kasprintf        as *const () as usize, false);
     export("kmemdup_noprof",   kmemdup_noprof   as *const () as usize, false);
     export("__kmalloc_noprof", __kmalloc_noprof as *const () as usize, false);
     export("__kmalloc_cache_noprof", __kmalloc_cache_noprof as *const () as usize, false);
+    export("__kmalloc_cache_node_noprof", __kmalloc_cache_node_noprof as *const () as usize, false);
     export("__kvmalloc_node_noprof", __kvmalloc_node_noprof as *const () as usize, false);
     export("__kmem_cache_create_args", cache::__kmem_cache_create_args as *const () as usize, false);
     export("kmem_cache_alloc_noprof", cache::kmem_cache_alloc_noprof as *const () as usize, false);
@@ -98,6 +100,10 @@ extern "C" fn __kmalloc_noprof(size: usize, flags: u32) -> *mut u8 {
 
 extern "C" fn __kmalloc_cache_noprof(_cache: *mut LinuxKmemCache, flags: u32, size: usize) -> *mut u8 {
     if !_cache.is_null() { cache::kmem_cache_alloc_noprof(_cache, flags) } else { kmalloc(size, flags) }
+}
+
+extern "C" fn __kmalloc_cache_node_noprof(cache: *mut LinuxKmemCache, flags: u32, _node: i32, size: usize) -> *mut u8 {
+    __kmalloc_cache_noprof(cache, flags, size)
 }
 
 extern "C" fn __kvmalloc_node_noprof(size: usize, flags: u32, _node: i32) -> *mut u8 {
@@ -216,6 +222,18 @@ unsafe extern "C" fn kstrdup(s: *const u8, flags: u32) -> *mut u8 {
     p
 }
 
+unsafe extern "C" fn kstrndup(s: *const u8, max: usize, flags: u32) -> *mut u8 {
+    if s.is_null() { return null_mut(); }
+    let mut len = 0usize;
+    // SAFETY: caller supplies a C string readable up to max bytes or NUL.
+    while len < max && unsafe { *s.add(len) } != 0 { len += 1; }
+    let p = alloc_bytes(len + 1, MIN_ALIGN, flags & GFP_ZERO != 0);
+    if p.is_null() { return null_mut(); }
+    // SAFETY: p has len+1 bytes and s is readable for len bytes.
+    unsafe { copy_nonoverlapping(s, p, len); *p.add(len) = 0; }
+    p
+}
+
 unsafe extern "C" fn kmemdup_noprof(src: *const c_void, len: usize, flags: u32) -> *mut c_void {
     if src.is_null() { return null_mut(); }
     let p = alloc_bytes(len, MIN_ALIGN, flags & GFP_ZERO != 0);
@@ -240,7 +258,7 @@ unsafe extern "C" fn kasprintf(flags: u32, fmt: *const u8, mut ap: ...) -> *mut 
     p
 }
 
-fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut u8 {
+pub(crate) fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut u8 {
     if size == 0 { return null_mut(); }
     let align = align.max(MIN_ALIGN).next_power_of_two();
     let off = align_up(size_of::<Header>(), align);

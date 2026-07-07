@@ -19,6 +19,7 @@ struct kmem_cache_args {
 void *kmalloc(size_t size, gfp_t flags);
 void *__kmalloc_noprof(size_t size, gfp_t flags);
 void *__kmalloc_cache_noprof(struct kmem_cache *cache, gfp_t flags, size_t size);
+void *__kmalloc_cache_node_noprof(struct kmem_cache *cache, gfp_t flags, int node, size_t size);
 void *__kvmalloc_node_noprof(size_t size, gfp_t flags, int node);
 struct kmem_cache *__kmem_cache_create_args(const char *name, unsigned int object_size, struct kmem_cache_args *args, slab_flags_t flags);
 void *kmem_cache_alloc_noprof(struct kmem_cache *cache, gfp_t flags);
@@ -31,6 +32,7 @@ void kvfree(const void *ptr);
 void kvfree_call_rcu(void *head, void *ptr);
 void *kmemdup_noprof(const void *src, size_t len, gfp_t flags);
 char *kstrdup(const char *s, gfp_t flags);
+char *kstrndup(const char *s, size_t max, gfp_t flags);
 char *kasprintf(gfp_t flags, const char *fmt, ...);
 
 #endif

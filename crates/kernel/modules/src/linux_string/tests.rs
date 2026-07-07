@@ -1,4 +1,4 @@
-use super::{cstr, format, mem, parse};
+use super::{bitops, cstr, format, match_parser, mem, parse, unicode};
 use core::ffi::c_void;
 
 #[test]
@@ -29,6 +29,35 @@ fn parse_helpers_convert_linux_numbers() {
 }
 
 #[test]
+fn scanf_match_bit_and_unicode_helpers_cover_runtime_utility_surface() {
+    let mut iv = 0i32;
+    let mut word = [0u8; 8];
+    assert_eq!(unsafe { parse::sscanf(b"17 fast\0".as_ptr(), b"%d %s\0".as_ptr(), &mut iv, word.as_mut_ptr()) }, 2);
+    assert_eq!(iv, 17);
+    assert_eq!(&word[..5], b"fast\0");
+
+    let bits = [0b1000_0000usize, 0];
+    assert_eq!(bitops::_find_first_bit(bits.as_ptr(), usize::BITS as usize * 2), 7);
+    assert_eq!(bitops::_find_next_bit(bits.as_ptr(), usize::BITS as usize * 2, 8), usize::BITS as usize * 2);
+
+    let mut wide = [0u16; 4];
+    let mut narrow = [0u8; 8];
+    assert_eq!(unicode::utf8s_to_utf16s(b"ok".as_ptr(), 2, 0, wide.as_mut_ptr(), wide.len() as i32), 2);
+    assert_eq!(unicode::utf16s_to_utf8s(wide.as_ptr(), 2, 0, narrow.as_mut_ptr(), narrow.len() as i32), 2);
+    assert_eq!(&narrow[..2], b"ok");
+
+    let table = [
+        match_parser::MatchToken { token: 3, pattern: b"mode=%s\0".as_ptr() },
+        match_parser::MatchToken { token: 0, pattern: core::ptr::null() },
+    ];
+    let mut args = [match_parser::Substring { from: core::ptr::null(), to: core::ptr::null() }];
+    assert_eq!(unsafe { match_parser::match_token(b"mode=42\0".as_ptr(), table.as_ptr(), args.as_mut_ptr()) }, 3);
+    let mut mv = 0i32;
+    assert_eq!(unsafe { match_parser::match_int(args.as_ptr(), &mut mv) }, 0);
+    assert_eq!(mv, 42);
+}
+
+#[test]
 fn hex_helpers_round_trip_bytes() {
     let mut bin = [0u8; 2];
     let mut hex = [0u8; 4];
@@ -54,7 +83,9 @@ fn export_symbols_registers_string_surface() {
         "memcpy", "memset", "memcmp", "strlen", "strcmp", "strncasecmp",
         "kstrtou8", "kstrtou16", "kstrtoint", "hex_to_bin", "hex2bin", "bin2hex",
         "snprintf", "scnprintf", "sprintf", "_printk", "__stack_chk_fail",
-        "__dynamic_pr_debug", "_ctype", "__ref_stack_chk_guard",
+        "__dynamic_pr_debug", "_ctype", "__ref_stack_chk_guard", "sscanf",
+        "_find_first_bit", "_find_next_bit", "match_token", "match_int",
+        "utf16s_to_utf8s", "utf8s_to_utf16s", "print_hex_dump",
     ] {
         assert!(crate::symtab::is_exported(name), "{name}");
     }

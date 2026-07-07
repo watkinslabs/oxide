@@ -24,4 +24,7 @@ static __always_inline int test_bit(unsigned long nr, const volatile unsigned lo
     return !!(addr[BIT_WORD(nr)] & BIT_MASK(nr));
 }
 
+unsigned long _find_first_bit(const unsigned long *addr, unsigned long size);
+unsigned long _find_next_bit(const unsigned long *addr, unsigned long size, unsigned long offset);
+
 #endif
