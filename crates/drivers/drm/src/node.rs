@@ -42,6 +42,7 @@ use crate::{
     DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
     DRM_IOCTL_AUTH_MAGIC, DRM_IOCTL_GET_MAGIC,
     DRM_IOCTL_MODE_GETPLANERESOURCES, DRM_IOCTL_MODE_GETPLANE,
+    DRM_IOCTL_MODE_OBJ_GETPROPERTIES, DRM_IOCTL_MODE_GETPROPERTY,
     DRM_IOCTL_MODE_GETCRTC, DRM_IOCTL_MODE_GETENCODER,
     DRM_IOCTL_MODE_GETCONNECTOR,
     DRM_IOCTL_MODE_CREATE_DUMB, DRM_IOCTL_MODE_MAP_DUMB,
@@ -82,6 +83,11 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     }
     let token = file_token(file);
     let driver = crate::card(card_id);
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[DRMIOCTL req="); klog::write_hex_u64(req);
+      klog::write_raw(b" card="); klog::write_dec_u64(card_id as u64);
+      klog::write_raw(b" tag="); klog::write_hex_u64(tag);
+      klog::write_raw(b" drv="); klog::write_dec_u64(driver.is_some() as u64); klog::write_raw(b"]\n"); }
     match req {
         DRM_IOCTL_VERSION => {
             let (name, date, desc, ver) = match driver.as_ref() {
@@ -218,6 +224,11 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
+        // Object properties: report zero (no mutable KMS props on the legacy
+        // path yet) so mutter's drmModeObjectGetProperties succeeds instead of
+        // ENOTTY — the bare ENOTTY made mutter abort with "No available CRTC".
+        DRM_IOCTL_MODE_OBJ_GETPROPERTIES => Some(crate::modeset::get_obj_properties(arg)),
+        DRM_IOCTL_MODE_GETPROPERTY       => Some(crate::modeset::get_property(arg)),
         DRM_IOCTL_MODE_GETCRTC => {
             match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_crtc(d, arg)),
