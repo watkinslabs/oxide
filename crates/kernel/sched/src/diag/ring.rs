@@ -67,7 +67,12 @@ pub(super) fn dump_recent_for(tid: u32) {
     }
 }
 
-#[cfg(feature = "debug-watchdog")]
+// Per-exit syscall-ring dump: gated on the OPT-IN `debug-taskdump`, NOT the
+// default-on `debug-watchdog`. It fires on EVERY non-zero process exit (every
+// /bin/false, probe, failed exec), each dumping ~30 lines to the slow serial
+// console — steady-state noise that has no place in a normal boot (the
+// soft-lockup watchdog, the actually-wanted default-on part, lives elsewhere).
+#[cfg(feature = "debug-taskdump")]
 pub fn dump_exit_recent(name: &str, code: u64) {
     if code == 0 {
         return;
@@ -88,7 +93,7 @@ pub fn dump_exit_recent(name: &str, code: u64) {
     }
 }
 
-#[cfg(not(feature = "debug-watchdog"))]
+#[cfg(not(feature = "debug-taskdump"))]
 pub fn dump_exit_recent(_name: &str, _code: u64) {}
 
 impl Task {
