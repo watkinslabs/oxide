@@ -398,6 +398,9 @@ static int __init sample_init(void)
     struct scatterlist *sg_allocated;
     unsigned int sg_allocated_nents;
     struct device dev;
+    struct kobject kobj;
+    struct kobj_type ktype = { NULL };
+    struct attribute sample_sysfs_attr = { "sample", 0444 };
     struct class *class;
     struct bus_type bus = { "sample-bus", NULL };
     struct device_driver driver = { "sample-driver", &bus, THIS_MODULE, NULL, NULL };
@@ -674,6 +677,15 @@ static int __init sample_init(void)
     (void)dev_name(&dev);
     (void)device_create_file(&dev, &dev_attr_sample);
     device_remove_file(&dev, &dev_attr_sample);
+    kobject_init(&kobj, &ktype);
+    (void)kobject_set_name(&kobj, "sample-kobj%d", 1);
+    (void)kobject_name(&kobj);
+    (void)kobject_get(&kobj);
+    (void)sysfs_create_file(&kobj, &sample_sysfs_attr);
+    sysfs_remove_file(&kobj, &sample_sysfs_attr);
+    (void)kobject_uevent(&kobj, KOBJ_CHANGE);
+    kobject_put(&kobj);
+    kobject_put(&kobj);
     (void)devm_kmalloc(&dev, 16, GFP_KERNEL);
     (void)devm_kzalloc(&dev, 16, GFP_KERNEL);
     devm_kfree(&dev, NULL);

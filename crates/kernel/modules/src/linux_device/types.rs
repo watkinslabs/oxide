@@ -3,6 +3,7 @@ use crate::linux_pm::types::{LinuxDevPmInfo, LinuxDevPmOps};
 
 pub(crate) type ReleaseFn = unsafe extern "C" fn(*mut LinuxDevice);
 pub(super) type DevresAction = unsafe extern "C" fn(*mut c_void);
+pub(super) type KobjectRelease = unsafe extern "C" fn(*mut LinuxKobject);
 
 pub(crate) const DEVICE_NAME_LEN: usize = 64;
 pub(super) const GFP_ZERO: u32 = 0x8000;
@@ -22,10 +23,42 @@ pub struct LinuxDevice {
     pub(crate) driver: *mut LinuxDeviceDriver,
     pub(crate) init_name: *const c_char,
     pub(crate) name: [c_char; DEVICE_NAME_LEN],
+    pub(crate) kobj: LinuxKobject,
     pub(crate) release: Option<ReleaseFn>,
     pub(crate) of_node: *mut c_void,
     pub(crate) acpi_node: *mut c_void,
     pub(crate) power: LinuxDevPmInfo,
+}
+
+#[repr(C)]
+pub struct LinuxKobject {
+    pub(crate) name: *const c_char,
+    pub(crate) parent: *mut LinuxKobject,
+    pub(crate) kset: *mut LinuxKset,
+    pub(crate) ktype: *const LinuxKobjType,
+    pub(crate) private: *mut c_void,
+    pub(crate) refcount: u32,
+    pub(crate) name_buf: [c_char; DEVICE_NAME_LEN],
+}
+
+impl LinuxKobject {
+    pub(crate) const fn new() -> Self {
+        Self {
+            name: core::ptr::null(), parent: core::ptr::null_mut(), kset: core::ptr::null_mut(),
+            ktype: core::ptr::null(), private: core::ptr::null_mut(), refcount: 0,
+            name_buf: [0; DEVICE_NAME_LEN],
+        }
+    }
+}
+
+#[repr(C)]
+pub struct LinuxKobjType {
+    pub(crate) release: Option<KobjectRelease>,
+}
+
+#[repr(C)]
+pub struct LinuxKset {
+    pub(crate) kobj: LinuxKobject,
 }
 
 #[repr(C)]
