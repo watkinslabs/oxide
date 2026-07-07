@@ -121,6 +121,7 @@ pub fn page_index_for_pa(pa: u64) -> u32 {
 /// backstop that turns an under-count into a survivable leak instead of a
 /// free-while-mapped corruption. Each probe is one 4-level walk per AS.
 /// # C: O(N_tasks) — one 4-level PT walk each
+#[cfg(feature = "debug-fwm")]
 pub fn fwm_peer_maps(va: u64, pa: u64, exclude_root: u64, hhdm: u64) -> usize {
     let target = pa & !0xfff;
     let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return 0 };

@@ -170,6 +170,7 @@ pub fn frame_refcount(pa: u64) -> u32 {
 /// freed while a peer maps it. No-op pre-init / out-of-range.
 /// # SAFETY: caller verified via `fwm_peer_maps` that `val-1` peers map `pa`.
 /// # C: O(1)
+#[cfg(feature = "debug-fwm")]
 pub unsafe fn repair_frame_counts(pa: u64, val: u32) {
     if let Some(meta) = page_meta() {
         if let Some(m) = meta.get(hal::Pfn(pa / 4096)) {
