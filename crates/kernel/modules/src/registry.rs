@@ -155,6 +155,7 @@ pub unsafe fn init_exports() {
     export("klog_write_dec_u64", klog_write_dec_u64_thunk as *const () as usize, false);
     export("kassert_thunk",      kassert_thunk            as *const () as usize, false);
     crate::linux_alloc::export_symbols();
+    crate::linux_device::export_symbols();
     crate::linux_dma::export_symbols();
     crate::linux_io::export_symbols();
     crate::linux_irq::export_symbols();
