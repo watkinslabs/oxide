@@ -23,5 +23,7 @@ Remaining KPI work:
 - Biggest missing clusters are still netdev/device-model, DMA/scatterlist, virtqueue/virtio, PCI/resource, block/blk-mq, cpuhp/workqueue, xarray, badblocks, and VFS credential/file helpers.
 - `crates/kernel/modules/src/linux_alloc.rs` is near the 500-line cap; split allocator glue before adding more allocator exports.
 
-Publish flow for this lane:
-- Commit implementation, fetch/merge fresh `origin/main`, push `F692-kpi-runtime-utility-glue`, open PR, merge with `gh pr merge --merge --delete-branch=true`, fast-forward `/home/nd/oxide/kernel`, then remove the worktree/local branch.
+Publish state:
+- F692 merged as PR #2835 at `19c706c3`.
+- `/home/nd/oxide/kernel` is fast-forwarded to `origin/main`.
+- The F692 local worktree, local branch, and remote branch were removed.
