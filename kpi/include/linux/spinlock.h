@@ -15,5 +15,11 @@ int raw_spin_trylock(raw_spinlock_t *lock);
 void raw_spin_unlock(raw_spinlock_t *lock);
 void _raw_spin_lock(raw_spinlock_t *lock);
 void _raw_spin_unlock(raw_spinlock_t *lock);
+void _raw_spin_lock_bh(raw_spinlock_t *lock);
+void _raw_spin_lock_irq(raw_spinlock_t *lock);
+unsigned long _raw_spin_lock_irqsave(raw_spinlock_t *lock);
+void _raw_spin_unlock_bh(raw_spinlock_t *lock);
+void _raw_spin_unlock_irq(raw_spinlock_t *lock);
+void _raw_spin_unlock_irqrestore(raw_spinlock_t *lock, unsigned long flags);
 
 #endif

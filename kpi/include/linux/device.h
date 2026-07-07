@@ -1,6 +1,7 @@
 #ifndef OXIDE_LINUX_DEVICE_H
 #define OXIDE_LINUX_DEVICE_H
 
+#include <linux/dynamic_debug.h>
 #include <linux/gfp.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>

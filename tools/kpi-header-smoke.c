@@ -3,9 +3,12 @@
 #include <linux/atomic.h>
 #include <linux/acpi.h>
 #include <linux/completion.h>
+#include <linux/configfs.h>
 #include <linux/crc32.h>
 #include <linux/crc32c.h>
+#include <linux/crc-t10dif.h>
 #include <linux/delay.h>
+#include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
 #include <linux/firmware.h>
@@ -33,16 +36,21 @@
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
-#include <linux/refcount.h>
 #include <linux/random.h>
 #include <linux/rbtree.h>
+#include <linux/rcupdate.h>
+#include <linux/refcount.h>
 #include <linux/rwlock.h>
 #include <linux/rwsem.h>
+#include <linux/semaphore.h>
 #include <linux/seqlock.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
+#include <linux/string.h>
+#include <linux/sysfs.h>
 #include <linux/timer.h>
 #include <linux/uaccess.h>
 #include <linux/usb.h>
@@ -118,6 +126,7 @@ enum { SAMPLE_PM_SCHEDULE_DELAY = 0 };
 enum { SAMPLE_RANDOM_LEN = 16 };
 enum { SAMPLE_CRYPTO_DIGEST_LEN = 32 };
 enum { SAMPLE_USERCOPY_LEN = 8 };
+enum { SAMPLE_DEBUG_VALUE_INIT = 7 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -198,6 +207,30 @@ static const struct file_operations sample_fops = {
     .release = sample_chr_release,
     .llseek = noop_llseek,
 };
+static int sample_seq_show(struct seq_file *m, void *v)
+{
+    (void)v;
+    seq_puts(m, "sample ");
+    seq_putc(m, 'x');
+    seq_write(m, ":", 1);
+    return seq_printf(m, "%u\n", 1);
+}
+static int sample_seq_open(struct inode *inode, struct file *file)
+{
+    (void)inode;
+    return single_open(file, sample_seq_show, NULL);
+}
+static struct vfsmount *sample_debugfs_automount(struct dentry *dentry, void *data)
+{
+    (void)dentry; (void)data; return NULL;
+}
+static const struct file_operations sample_seq_fops = {
+    .owner = THIS_MODULE,
+    .open = sample_seq_open,
+    .read = seq_read,
+    .release = single_release,
+    .llseek = seq_lseek,
+};
 static const struct pci_device_id sample_pci_ids[] = {
     { PCI_DEVICE(SAMPLE_PCI_VENDOR, SAMPLE_PCI_DEVICE) },
     { 0, 0, 0, 0, 0, 0, 0 },
@@ -236,6 +269,110 @@ static ssize_t sample_attr_show(struct device *dev, struct device_attribute *att
     (void)dev; (void)attr; (void)buf; return 0;
 }
 static DEVICE_ATTR(sample, SAMPLE_ATTR_MODE, sample_attr_show, NULL);
+static ssize_t sample_config_show(struct config_item *item, char *page)
+{
+    (void)item; (void)page; return 0;
+}
+static ssize_t sample_config_store(struct config_item *item, const char *page, size_t count)
+{
+    (void)item; (void)page; return (ssize_t)count;
+}
+
+static int sample_simple_get(void *data, u64 *value)
+{
+    (void)data;
+    *value = 7;
+    return 0;
+}
+
+static int sample_simple_set(void *data, u64 value)
+{
+    (void)data; (void)value;
+    return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(sample_simple_fops, sample_simple_get, sample_simple_set, "%llu\n");
+
+static ssize_t sample_config_bin_read(struct config_item *item, void *private, void *buf, char *page, loff_t off, size_t count)
+{
+    (void)item; (void)private; (void)buf; (void)page; (void)off; return (ssize_t)count;
+}
+
+static ssize_t sample_config_bin_write(struct config_item *item, void *private, void *buf, const char *page, loff_t off, size_t count)
+{
+    (void)item; (void)private; (void)buf; (void)page; (void)off; return (ssize_t)count;
+}
+
+static int sample_config_allow_link(struct config_item *src, struct config_item *target)
+{
+    (void)src; (void)target; return 0;
+}
+
+static int sample_config_drop_link(struct config_item *src, struct config_item *target)
+{
+    (void)src; (void)target; return 0;
+}
+
+static struct config_item *sample_config_make_item(struct config_group *group, const char *name)
+{
+    (void)group; (void)name; return NULL;
+}
+
+static struct config_group *sample_config_make_group(struct config_group *group, const char *name)
+{
+    (void)group; (void)name; return NULL;
+}
+
+static void sample_config_drop_item(struct config_group *group, struct config_item *item)
+{
+    (void)group; (void)item;
+}
+
+static struct configfs_attribute sample_config_attr = {
+    .name = "sample",
+    .mode = 0644,
+    .show = sample_config_show,
+    .store = sample_config_store,
+};
+static struct configfs_attribute *sample_config_attrs[] = {
+    &sample_config_attr,
+    NULL,
+};
+static struct configfs_bin_attribute sample_config_bin_attr = {
+    .attr = {
+        .name = "blob",
+        .mode = 0600,
+    },
+    .private = NULL,
+    .size = 4,
+    .read = sample_config_bin_read,
+    .write = sample_config_bin_write,
+};
+static struct configfs_bin_attribute *sample_config_bin_attrs[] = {
+    &sample_config_bin_attr,
+    NULL,
+};
+static struct config_group sample_config_child;
+static struct config_group *sample_config_default_groups[] = {
+    &sample_config_child,
+    NULL,
+};
+static struct config_item_type sample_config_child_type = {
+    .release = NULL,
+    .attrs = sample_config_attrs,
+    .bin_attrs = sample_config_bin_attrs,
+};
+static struct config_item_type sample_config_type = {
+    .release = NULL,
+    .attrs = sample_config_attrs,
+    .default_groups = sample_config_default_groups,
+    .bin_attrs = sample_config_bin_attrs,
+    .allow_link = sample_config_allow_link,
+    .drop_link = sample_config_drop_link,
+    .make_item = sample_config_make_item,
+    .make_group = sample_config_make_group,
+    .drop_item = sample_config_drop_item,
+};
 
 static int __init sample_init(void)
 {
@@ -245,20 +382,45 @@ static int __init sample_init(void)
     struct mutex m;
     rwlock_t rwl;
     struct rw_semaphore sem;
+    struct semaphore semaphore;
     seqlock_t seq;
     struct completion comp;
     wait_queue_head_t wait;
+    wait_queue_entry_t wait_entry;
+    swait_queue_head_t swait;
     struct timer_list timer;
     struct hrtimer hrtimer;
     struct delayed_work delayed;
     struct task_struct *task;
     struct scatterlist sg[SAMPLE_DMA_SG_NENTS];
+    struct sg_table sg_table;
+    struct sg_mapping_iter sg_iter;
+    struct scatterlist *sg_allocated;
+    unsigned int sg_allocated_nents;
     struct device dev;
     struct class *class;
     struct bus_type bus = { "sample-bus", NULL };
     struct device_driver driver = { "sample-driver", &bus, THIS_MODULE, NULL, NULL };
     struct device *root_dev;
     struct device *created_dev;
+    struct dentry *debug_dir;
+    struct dentry *debug_file;
+    struct dentry *debug_blob_file;
+    struct dentry *debug_link;
+    struct debugfs_blob_wrapper debug_blob;
+    u32 debug_value = SAMPLE_DEBUG_VALUE_INIT;
+    char debug_blob_data[4] = { 'd', 'a', 't', 'a' };
+    u32 debug_regs[2] = { 0x12345678, 0x90abcdef };
+    const struct debugfs_reg32 debug_reg_defs[] = {
+        { "status", 0 },
+        { "control", 4 },
+    };
+    struct debugfs_regset32 debug_regset = {
+        .regs = debug_reg_defs,
+        .nregs = 2,
+        .base = debug_regs,
+    };
+    struct configfs_subsystem subsys;
     struct cdev cdev;
     struct miscdevice misc = {
         .minor = MISC_DYNAMIC_MINOR,
@@ -325,6 +487,7 @@ static int __init sample_init(void)
     atomic_t atom;
     refcount_t refs;
     struct kref kref;
+    struct module owner;
     struct lock_class_key key;
     unsigned int start;
     void __iomem *regs;
@@ -334,8 +497,15 @@ static int __init sample_init(void)
     u16 pci_cfg16;
     u32 pci_cfg32;
     u32 crc;
+    u16 crc16;
     u8 random_buf[SAMPLE_RANDOM_LEN];
     u8 digest[SAMPLE_CRYPTO_DIGEST_LEN];
+    struct kmem_cache_args cache_args = {
+        .align = sizeof(void *),
+        .ctor = NULL,
+    };
+    struct kmem_cache *cache;
+    void *cache_obj;
     u8 usercopy_src[SAMPLE_USERCOPY_LEN];
     u8 usercopy_dst[SAMPLE_USERCOPY_LEN];
     u32 user_value;
@@ -344,24 +514,81 @@ static int __init sample_init(void)
     struct shash_desc shash_desc;
     int usb_actual;
     char usb_buf[SAMPLE_USB_BULK_LEN];
+    char str_buf[32];
+    char str_copy[32];
+    char *str_cursor;
+    char *str_token;
+    unsigned char hex_bin[2];
+    char hex_out[4];
+    int parsed_int;
+    u16 parsed_u16;
+    bool parsed_bool;
     INIT_LIST_HEAD(&s.link);
     list_add(&s.link, &samples);
     set_bit(3, sample_bits);
     pr_info("sample %d\n", test_bit(3, sample_bits));
     (void)container_of(&s.link, struct sample, link);
     (void)kmalloc(16, GFP_KERNEL);
+    (void)__kmalloc_noprof(16, GFP_KERNEL);
+    (void)__kmalloc_cache_noprof(NULL, GFP_KERNEL, 16);
+    (void)__kvmalloc_node_noprof(16, GFP_KERNEL, -1);
+    cache = __kmem_cache_create_args("sample-cache", 32, &cache_args, 0);
+    cache_obj = kmem_cache_alloc_noprof(cache, GFP_KERNEL | __GFP_ZERO);
+    kmem_cache_free(cache, cache_obj);
+    kmem_cache_destroy(cache);
     (void)kzalloc(16, GFP_KERNEL);
     (void)kcalloc(2, 8, GFP_KERNEL);
     kfree(NULL);
+    kvfree(NULL);
+    kvfree_call_rcu(NULL, NULL);
     (void)vmalloc(SAMPLE_MMIO_SIZE);
+    (void)vzalloc_noprof(SAMPLE_MMIO_SIZE);
     vfree(NULL);
     (void)alloc_pages(GFP_KERNEL | __GFP_ZERO, 0);
+    (void)alloc_pages_noprof(GFP_KERNEL, 0);
+    (void)__alloc_pages_noprof(GFP_KERNEL, 0, -1, NULL);
     (void)__get_free_pages(GFP_KERNEL, 0);
     free_pages(0, 0);
     (void)page_address(NULL);
     (void)page_to_phys(NULL);
     (void)kstrdup("driver", GFP_KERNEL);
+    (void)kmemdup_noprof("driver", 6, GFP_KERNEL);
     (void)kasprintf(GFP_KERNEL, "driver %d", 1);
+    (void)memset(str_buf, 0, sizeof(str_buf));
+    (void)memcpy(str_copy, str_buf, sizeof(str_buf));
+    (void)memcmp(str_copy, str_buf, sizeof(str_buf));
+    (void)memcpy_and_pad(str_copy, sizeof(str_copy), "x", 1, 0);
+    (void)strcpy(str_buf, " yes ");
+    (void)strncpy(str_copy, str_buf, sizeof(str_copy));
+    (void)strlen(str_buf);
+    (void)strnlen(str_buf, sizeof(str_buf));
+    (void)strcmp(str_buf, " yes ");
+    (void)strncmp(str_buf, " yes ", 5);
+    (void)strncasecmp(str_buf, " YES ", 5);
+    (void)strchr(str_buf, 'y');
+    (void)strstr(str_buf, "yes");
+    (void)strim(str_buf);
+    (void)sized_strscpy(str_buf, "copy", sizeof(str_buf));
+    str_cursor = str_buf;
+    str_token = strsep(&str_cursor, ",");
+    (void)str_token;
+    (void)hex2bin(hex_bin, "0aff", sizeof(hex_bin));
+    (void)bin2hex(hex_out, hex_bin, sizeof(hex_bin));
+    (void)hex_to_bin('f');
+    (void)simple_strtoul("42", NULL, 10);
+    (void)kstrtoint("-7", 10, &parsed_int);
+    (void)kstrtou16("65535", 10, &parsed_u16);
+    (void)kstrtobool("on", &parsed_bool);
+    (void)snprintf(str_buf, sizeof(str_buf), "v=%d", parsed_int);
+    (void)scnprintf(str_buf, sizeof(str_buf), "v=%u", parsed_u16);
+    (void)sprintf(str_buf, "%s", "ok");
+    pr_debug("parsed=%d\n", parsed_int);
+    {
+        DEFINE_DYNAMIC_DEBUG_METADATA(devdbg_descriptor, "dev=%s\n");
+        __dynamic_dev_dbg(&devdbg_descriptor, &dev, "dev=%s\n", "sample");
+    }
+    (void)sysfs_emit(str_buf, "v=%d\n", parsed_int);
+    (void)sysfs_emit_at(str_buf, 2, "u=%u\n", parsed_u16);
     (void)request_irq(SAMPLE_IRQ, sample_irq_handler, IRQF_SHARED, "sample", &s);
     disable_irq_nosync(SAMPLE_IRQ);
     enable_irq(SAMPLE_IRQ);
@@ -379,6 +606,11 @@ static int __init sample_init(void)
     crc = crc32_be(crc, random_buf, sizeof(random_buf));
     crc = crc32c(crc, random_buf, sizeof(random_buf));
     crc = __crc32c_le(crc, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif_arch(0, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif_generic(crc16, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif_update(crc16, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif(random_buf, sizeof(random_buf));
+    (void)crc16;
     crc ^= get_random_u32();
     crc ^= prandom_u32();
     crc ^= (u32)get_random_u64();
@@ -457,6 +689,35 @@ static int __init sample_init(void)
     class_destroy(class);
     root_dev = root_device_register("sample-root");
     root_device_unregister(root_dev);
+    debug_dir = debugfs_create_dir("sample", NULL);
+    debug_file = debugfs_create_u32("value", 0600, debug_dir, &debug_value);
+    debugfs_remove(debug_file);
+    debug_file = debugfs_create_file_size("simple", 0600, debug_dir, &debug_value, &sample_simple_fops, 8);
+    debugfs_remove(debugfs_create_file("seq", 0400, debug_dir, NULL, &sample_seq_fops));
+    debugfs_remove(debugfs_create_automount("auto", debug_dir, sample_debugfs_automount, &debug_value));
+    debug_blob.data = debug_blob_data;
+    debug_blob.size = sizeof(debug_blob_data);
+    debug_blob_file = debugfs_create_blob("blob", 0400, debug_dir, &debug_blob);
+    debugfs_create_regset32("regs", 0400, debug_dir, &debug_regset);
+    debugfs_print_regs32(NULL, debug_reg_defs, 2, debug_regs, "sample_");
+    debug_link = debugfs_create_symlink("link", debug_dir, "value");
+    debugfs_remove(debug_link);
+    debugfs_remove(debug_blob_file);
+    debugfs_remove(debug_file);
+    debugfs_remove_recursive(debug_dir);
+    config_group_init_type_name(&sample_config_child, "child", &sample_config_child_type);
+    (void)config_item_set_name(&sample_config_child.item, "child%d", 1);
+    config_group_init_type_name(&subsys.su_group, "sample", &sample_config_type);
+    (void)configfs_register_subsystem(&subsys);
+    (void)configfs_create_link(&subsys.su_group.item, &sample_config_child.item, "child_link");
+    configfs_drop_link(&subsys.su_group.item, &sample_config_child.item, "child_link");
+    (void)config_item_get(&subsys.su_group.item);
+    config_item_put(&subsys.su_group.item);
+    (void)config_item_get_unless_zero(&subsys.su_group.item);
+    (void)configfs_depend_item(&subsys, &sample_config_child.item);
+    configfs_undepend_item(&subsys, &sample_config_child.item);
+    configfs_remove_default_groups(&subsys.su_group);
+    configfs_unregister_subsystem(&subsys);
     (void)request_firmware(&fw, "sample/fw.bin", &dev);
     (void)request_firmware_direct(&fw, "sample/fw.bin", &dev);
     (void)firmware_request(&fw, "sample/fw.bin", &dev);
@@ -745,6 +1006,14 @@ static int __init sample_init(void)
     sg_set_buf(&sg[0], dma_buf, sizeof(dma_buf));
     sg_set_page(&sg[1], page, SAMPLE_DMA_SIZE, SAMPLE_DMA_PAGE_OFFSET);
     (void)sg_next(&sg[0]);
+    (void)sg_copy_to_buffer(sg, ARRAY_SIZE(sg), dma_buf, sizeof(dma_buf));
+    (void)sg_alloc_table(&sg_table, ARRAY_SIZE(sg), GFP_KERNEL);
+    sg_free_table(&sg_table);
+    sg_miter_start(&sg_iter, sg, ARRAY_SIZE(sg), SG_MITER_FROM_SG);
+    (void)sg_miter_next(&sg_iter);
+    sg_miter_stop(&sg_iter);
+    sg_allocated = sgl_alloc_order(SAMPLE_DMA_SIZE, SAMPLE_DMA_PAGE_ORDER, false, GFP_KERNEL, &sg_allocated_nents);
+    sgl_free_n_order(sg_allocated, sg_allocated_nents, SAMPLE_DMA_PAGE_ORDER);
     (void)dma_map_sg(&dev, sg, ARRAY_SIZE(sg), DMA_TO_DEVICE);
     dma_sync_sg_for_device(&dev, sg, ARRAY_SIZE(sg), DMA_TO_DEVICE);
     dma_sync_sg_for_cpu(&dev, sg, ARRAY_SIZE(sg), DMA_FROM_DEVICE);
@@ -815,8 +1084,17 @@ static int __init sample_init(void)
     raw_spin_lock_init(&raw);
     (void)raw_spin_trylock(&raw);
     raw_spin_unlock(&raw);
+    _raw_spin_lock_bh(&raw);
+    _raw_spin_unlock_bh(&raw);
+    _raw_spin_lock_irq(&raw);
+    _raw_spin_unlock_irq(&raw);
+    start = _raw_spin_lock_irqsave(&raw);
+    _raw_spin_unlock_irqrestore(&raw, start);
     mutex_init(&m);
+    __mutex_init(&m, "sample", NULL);
     mutex_lock(&m);
+    mutex_unlock(&m);
+    (void)mutex_lock_interruptible(&m);
     mutex_unlock(&m);
     rwlock_init(&rwl);
     read_lock(&rwl);
@@ -828,21 +1106,44 @@ static int __init sample_init(void)
     up_read(&sem);
     down_write(&sem);
     up_write(&sem);
+    sema_init(&semaphore, 1);
+    down(&semaphore);
+    up(&semaphore);
+    (void)down_interruptible(&semaphore);
+    up(&semaphore);
+    (void)down_trylock(&semaphore);
+    up(&semaphore);
     seqlock_init(&seq);
     start = read_seqbegin(&seq);
     (void)read_seqretry(&seq, start);
     init_completion(&comp);
     complete(&comp);
     (void)try_wait_for_completion(&comp);
+    (void)wait_for_completion_interruptible(&comp);
+    (void)wait_for_completion_timeout(&comp, 1);
     init_waitqueue_head(&wait);
+    __init_waitqueue_head(&wait, "sample_wait", NULL);
+    __init_swait_queue_head(&swait, "sample_swait", NULL);
     wake_up(&wait);
+    (void)__wake_up(&wait, TASK_INTERRUPTIBLE, 1, NULL);
     (void)waitqueue_active(&wait);
+    init_wait_entry(&wait_entry, 0);
+    (void)prepare_to_wait_event(&wait, &wait_entry, TASK_INTERRUPTIBLE);
+    finish_wait(&wait, &wait_entry);
+    __rcu_read_lock();
+    __rcu_read_unlock();
+    synchronize_rcu();
+    rcu_barrier();
     atomic_set(&atom, 1);
     atomic_inc(&atom);
     (void)atomic_dec_and_test(&atom);
     refcount_set(&refs, 1);
     refcount_inc(&refs);
     (void)refcount_dec_and_test(&refs);
+    owner.state = 0;
+    owner.refcnt = 1;
+    (void)try_module_get(&owner);
+    module_put(&owner);
     kref_init(&kref);
     kref_get(&kref);
     (void)kref_put(&kref, sample_release);

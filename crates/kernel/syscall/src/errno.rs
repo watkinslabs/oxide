@@ -33,6 +33,8 @@ pub enum Errno {
     Enfile  = 23,
     Emfile  = 24,
     Enotty  = 25,
+    Etxtbsy = 26,
+    Efbig   = 27,
     Espipe  = 29,
     Erofs   = 30,
     Enospc  = 28,

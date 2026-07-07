@@ -4,6 +4,7 @@
 #include <linux/types.h>
 
 void *vmalloc(unsigned long size);
+void *vzalloc_noprof(unsigned long size);
 void vfree(const void *addr);
 
 #endif
