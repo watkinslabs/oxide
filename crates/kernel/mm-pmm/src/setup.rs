@@ -23,15 +23,15 @@ mod refs;
 mod metadata;
 mod contig;
 #[cfg(feature = "debug-cow")]
+#[cfg(feature = "debug-cow")]
 mod alloc_integrity;
 #[cfg(test)]
 mod tests;
 
 pub use boot_init::{HhdmBacking, MAX_REGIONS, SetupError, init_from_boot_info, pmm_static};
 pub use frame_alloc::{alloc_one_frame, alloc_object_frame, alloc_raw_frame, frame_ptr};
-pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, frame_refcount, inc_ref};
+pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, frame_refcount, inc_ref, repair_frame_counts};
 pub use metadata::{anon_vma_for_pa, clear_anon_rmap_for_pa, init_page_meta, page_index_for_pa, pfn_max_from_boot_info, rmap_aware_dec_and_maybe_free, set_anon_rmap_for_pa};
-#[cfg(feature = "debug-fwm")]
 pub use metadata::fwm_peer_maps;
 #[cfg(feature = "debug-atexit")]
 pub use metadata::set_dec_ctx;
