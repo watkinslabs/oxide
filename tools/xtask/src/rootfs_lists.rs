@@ -21,6 +21,7 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
     ("userspace/cmdsubst_probe/cmdsubst_probe",   "userspace/cmdsubst_probe/cmdsubst_probe.c"),
     ("userspace/alarm_probe/alarm_probe",         "userspace/alarm_probe/alarm_probe.c"),
     ("userspace/cputime_probe/cputime_probe",     "userspace/cputime_probe/cputime_probe.c"),
+    ("userspace/signalfd_probe/signalfd_probe",   "userspace/signalfd_probe/signalfd_probe.c"),
     ("userspace/quota_probe/quota_probe",         "userspace/quota_probe/quota_probe.c"),
     ("userspace/tcflow_probe/tcflow_probe",       "userspace/tcflow_probe/tcflow_probe.c"),
     ("userspace/tty_ioctl_probe/tty_ioctl_probe", "userspace/tty_ioctl_probe/tty_ioctl_probe.c"),
