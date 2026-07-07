@@ -58,6 +58,7 @@ pub(super) struct LinuxPciDev {
     pub(super) config_space: [u32; PCI_CONFIG_DWORDS],
     pub(super) irq_vector_base: u32,
     pub(super) irq_vectors: i32,
+    pub(super) irq_vector_flags: u32,
     pub(super) name: [c_char; PCI_NAME_LEN],
     pub(super) saved_config_space: [u32; PCI_CONFIG_DWORDS],
     pub(super) current_state: i32,
