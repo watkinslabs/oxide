@@ -102,7 +102,7 @@ pub fn clear_owner(card_id: u32) {
     }
 }
 
-fn set_current_fb(card_id: u32, fb_id: u32) {
+pub(crate) fn set_current_fb(card_id: u32, fb_id: u32) {
     let mut current = CURRENT_FB.lock();
     let idx = card_id as usize;
     if current.len() <= idx {
@@ -234,7 +234,7 @@ fn release_new_scanout_resource(card_id: u32, res_id: u32) {
     }
 }
 
-fn fb_scanout_resource(card_id: u32, ops: crate::node::ScanoutOps, fb_id: u32) -> Option<(u32, u32, u32)> {
+pub(crate) fn fb_scanout_resource(card_id: u32, ops: crate::node::ScanoutOps, fb_id: u32) -> Option<(u32, u32, u32)> {
     let (pa, w, h, fmt, existing) = fb_to_scanout(card_id, fb_id)?;
     if existing != 0 {
         return Some((existing, w, h));
@@ -262,10 +262,22 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
     if !user_ok(arg, core::mem::size_of::<DrmModeCrtc>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; drm_mode_crtc is 104 bytes; aligned struct read through the caller's AS at CPL=0.
     let c: DrmModeCrtc = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtc) };
+    // DIAG: mutter's legacy modeset drives the scanout switch through here. One
+    // line names whether it's called, whether the virtio-gpu scanout backend is
+    // wired for THIS card_id, and the crtc/fb it targets — so a console-never-
+    // leaves-fbcon symptom is traced to SETCRTC vs. a missing backend.
+    klog::write_raw(b"[DRM-SETCRTC] card="); klog::write_hex_u64(card_id as u64);
+    klog::write_raw(b" crtc="); klog::write_hex_u64(c.crtc_id as u64);
+    klog::write_raw(b" fb=");   klog::write_hex_u64(c.fb_id as u64);
+    klog::write_raw(if scanout_ops(card_id).is_some() { b" ops=present" } else { b" ops=ABSENT" });
+    klog::write_raw(b"\n");
     // Validate the crtc id against the registered card.
     let count = card.crtc_ids().len();
-    if crtc_idx_of(c.crtc_id, count).is_none() { return einval(); }
-    let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
+    if crtc_idx_of(c.crtc_id, count).is_none() {
+        klog::write_raw(b"[DRM-SETCRTC] -> EINVAL bad crtc_id (count="); klog::write_hex_u64(count as u64); klog::write_raw(b")\n");
+        return einval();
+    }
+    let ops = match scanout_ops(card_id) { Some(o) => o, None => { klog::write_raw(b"[DRM-SETCRTC] -> EINVAL no scanout backend for card\n"); return einval(); } };
 
     if c.fb_id == 0 {
         // Disable / detach: restore the console scanout if WE owned it.

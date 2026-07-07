@@ -42,13 +42,16 @@ use crate::{
     DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
     DRM_IOCTL_AUTH_MAGIC, DRM_IOCTL_GET_MAGIC,
     DRM_IOCTL_MODE_GETPLANERESOURCES, DRM_IOCTL_MODE_GETPLANE,
-    DRM_IOCTL_MODE_OBJ_GETPROPERTIES, DRM_IOCTL_MODE_GETPROPERTY,
+    DRM_IOCTL_MODE_OBJ_GETPROPERTIES, DRM_IOCTL_MODE_GETPROPERTY, DRM_IOCTL_MODE_GETPROPBLOB,
     DRM_IOCTL_MODE_GETCRTC, DRM_IOCTL_MODE_GETENCODER,
     DRM_IOCTL_MODE_GETCONNECTOR,
     DRM_IOCTL_MODE_CREATE_DUMB, DRM_IOCTL_MODE_MAP_DUMB,
     DRM_IOCTL_MODE_DESTROY_DUMB, DRM_IOCTL_MODE_ADDFB2,
     DRM_IOCTL_MODE_ADDFB, DRM_IOCTL_MODE_RMFB,
     DRM_IOCTL_MODE_SETCRTC, DRM_IOCTL_MODE_PAGE_FLIP,
+    DRM_IOCTL_MODE_SETPLANE, DRM_IOCTL_MODE_DIRTYFB,
+    DRM_IOCTL_MODE_OBJ_SETPROPERTY, DRM_IOCTL_MODE_SETPROPERTY,
+    DRM_IOCTL_MODE_GETGAMMA, DRM_IOCTL_MODE_SETGAMMA, DRM_IOCTL_MODE_GETFB,
 };
 
 use vfs::File;
@@ -229,6 +232,10 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         // ENOTTY — the bare ENOTTY made mutter abort with "No available CRTC".
         DRM_IOCTL_MODE_OBJ_GETPROPERTIES => Some(crate::modeset::get_obj_properties(arg)),
         DRM_IOCTL_MODE_GETPROPERTY       => Some(crate::modeset::get_property(arg)),
+        // IN_FORMATS blob (and any future prop blob). Without this, mutter's
+        // native KMS backend reads zero plane formats ("Plane has no advertised
+        // formats") and aborts modeset — the primary blocker to scanout.
+        DRM_IOCTL_MODE_GETPROPBLOB       => Some(crate::modeset::get_prop_blob(arg)),
         DRM_IOCTL_MODE_GETCRTC => {
             match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_crtc(d, arg)),
@@ -376,6 +383,51 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
+        // ---- universal-plane commit + damage + property/gamma writes ----
+        // All are master-only modeset ops (Linux DRM_MASTER). SETPLANE on the
+        // primary drives the scanout; DIRTYFB re-flushes the on-screen fb.
+        DRM_IOCTL_MODE_SETPLANE => {
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            match driver.as_ref() {
+                Some(d) => Some(crate::kms_ext::set_plane(card_id, d, arg, token)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
+        DRM_IOCTL_MODE_DIRTYFB => {
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            Some(crate::kms_ext::dirty_fb(card_id, arg))
+        }
+        DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            Some(crate::kms_ext::obj_set_property(arg))
+        }
+        DRM_IOCTL_MODE_SETPROPERTY => {
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            Some(crate::kms_ext::set_property(arg))
+        }
+        DRM_IOCTL_MODE_SETGAMMA => {
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            match driver.as_ref() {
+                Some(d) => Some(crate::kms_ext::set_gamma(d, arg)),
+                None    => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
+        // Reads (no master required).
+        DRM_IOCTL_MODE_GETGAMMA => match driver.as_ref() {
+            Some(d) => Some(crate::kms_ext::get_gamma(d, arg)),
+            None    => Some(-(Errno::Einval.as_i32() as i64)),
+        },
+        DRM_IOCTL_MODE_GETFB => Some(crate::kms_ext::get_fb(card_id, arg)),
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }
 }

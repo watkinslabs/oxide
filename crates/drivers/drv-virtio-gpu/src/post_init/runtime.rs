@@ -31,7 +31,12 @@ pub fn create_scanout_from_pa_for_key(driver_key: drm::node::ScanoutDriverKey, p
     if !scanout_ready_for_key(owner) { return None; }
     let fmt = crate::drm_fourcc_to_virtio(fmt_drm)?;
     if w == 0 || h == 0 { return None; }
-    let bytes = (w as u64) * (h as u64) * 4;
+    // virtio-gpu RESOURCE_CREATE_2D derives the host stride as width*bpp, so the
+    // backing must be tightly packed at that stride (BYTES_PER_PIXEL for the
+    // XRGB/ARGB scanout formats). Mode widths are alignment-friendly (e.g. 1280),
+    // so the dumb pitch equals width*bpp and no padding is dropped here.
+    const BYTES_PER_PIXEL: u64 = 4;
+    let bytes = (w as u64) * (h as u64) * BYTES_PER_PIXEL;
     if bytes == 0 || bytes > u32::MAX as u64 { return None; }
     let res_id = NEXT_RUNTIME_RES_ID.fetch_add(1, Ordering::AcqRel);
     if !submit_ctrl_for_key(driver_key, |b| crate::encode_resource_create_2d(b, res_id, fmt, w, h)) {

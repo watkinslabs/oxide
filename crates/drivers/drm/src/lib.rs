@@ -31,5 +31,6 @@ mod tests;
 
 pub mod crtc;
 pub mod dumb;
+pub mod kms_ext;
 pub mod modeset;
 pub mod node;
