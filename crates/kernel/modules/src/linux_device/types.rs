@@ -1,4 +1,5 @@
 use core::ffi::{c_char, c_void};
+use crate::linux_pm::types::{LinuxDevPmInfo, LinuxDevPmOps};
 
 pub(crate) type ReleaseFn = unsafe extern "C" fn(*mut LinuxDevice);
 pub(super) type DevresAction = unsafe extern "C" fn(*mut c_void);
@@ -24,6 +25,7 @@ pub struct LinuxDevice {
     pub(crate) release: Option<ReleaseFn>,
     pub(crate) of_node: *mut c_void,
     pub(crate) acpi_node: *mut c_void,
+    pub(crate) power: LinuxDevPmInfo,
 }
 
 #[repr(C)]
@@ -35,6 +37,7 @@ pub struct LinuxDeviceDriver {
     pub(crate) remove: Option<unsafe extern "C" fn(*mut LinuxDevice) -> i32>,
     pub(crate) of_match_table: *const c_void,
     pub(crate) acpi_match_table: *const c_void,
+    pub(crate) pm: *const LinuxDevPmOps,
 }
 
 #[repr(C)]
