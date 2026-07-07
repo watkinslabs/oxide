@@ -13,6 +13,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use crate::dentry::Dentry;
 use crate::xattr::XattrError;
 
 use crate::idmap::Idmap;
@@ -68,6 +69,15 @@ pub trait InodeOps: Send + Sync {
     /// `Enotdir` (a non-directory has no `lookup`). # C: backend-dependent
     fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> {
         Err(VfsError::Enotdir)
+    }
+
+    /// Whether this inode can trigger `automount`. # C: O(1)
+    fn is_automount(&self, _inode: &Inode) -> bool { false }
+
+    /// `d_automount` equivalent for an inode resolved as a mount trigger.
+    /// Returns true when it attached a mount on `dentry`. # C: backend-dependent
+    fn automount(&self, _inode: &Inode, _dentry: &Arc<Dentry>, _parent_mnt: u64) -> KResult<bool> {
+        Ok(false)
     }
 
     /// `i_op->create` — create a regular child `name` (`mode` = full umode_t).
