@@ -160,6 +160,14 @@ pub trait FileOps: Send + Sync {
     /// `File`/fd is built; a driver may reject the open. Default `Ok`. # C: O(1)
     fn on_open(&self, _inode: &Inode) -> KResult<()> { Ok(()) }
 
+    /// `f_op->open` with access to the just-built open file description. Backends
+    /// that initialize Linux `file->private_data` override this; the default
+    /// preserves inode-only open hooks.
+    /// # C: O(1)
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        self.on_open(file.inode())
+    }
+
     /// `f_op->release` — last-close hook (final fd of an open description
     /// drops). MUST NOT panic/block (runs from `File` Drop). # C: O(1)
     fn on_release(&self, _inode: &Inode) {}

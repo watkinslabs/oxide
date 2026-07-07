@@ -347,6 +347,16 @@ impl Nameidata {
                 }
             }
 
+            let child_inode = child.inode().ok_or(VfsError::Enoent)?;
+
+            // Automount triggers run before ordinary mount crossing. The hook
+            // may graft a mount onto `child`, after which `follow_mount_down`
+            // crosses it through the same generic mount path as explicit mounts.
+            if child_inode.i_op().is_automount(&child_inode) {
+                if self.rcu && !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
+                child_inode.i_op().automount(&child_inode, &child, self.cur_mnt_id)?;
+            }
+
             // Mount crossing / final component are complications: legitimize
             // (leave LOOKUP_RCU) when crossing into a mount (reads the mount
             // tables) or at the trailing component (Linux `complete_walk`).

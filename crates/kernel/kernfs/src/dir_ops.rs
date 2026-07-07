@@ -13,8 +13,12 @@ impl InodeOps for PseudoDirOps {
         pdir(inode)?.op_lookup(name)
     }
 
-    fn mkdir(&self, inode: &Inode, name: &str, _mode: u32, _ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
-        pdir(inode)?.op_mkdir(name)
+    fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
+        pdir(inode)?.op_mkdir(name, mode, ctx)
+    }
+
+    fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
+        pdir(inode)?.op_rmdir(name)
     }
 
     fn symlink(&self, inode: &Inode, name: &str, target: &[u8], _ctx: &vfs::CreateCtx) -> KResult<()> {

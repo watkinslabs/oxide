@@ -1,7 +1,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use core::sync::atomic::AtomicU64;
@@ -66,7 +66,6 @@ const SECURITYFS_MAGIC: u64 = 0x7363_6673;
 const EFIVARFS_MAGIC: u64 = 0xde5e_81e4;
 const PSTOREFS_MAGIC: u64 = 0x6165_676C;
 const BPF_FS_MAGIC: u64 = 0xcafe_4a11;
-const CONFIGFS_MAGIC: u64 = 0x6265_6570;
 const FUSE_CTL_MAGIC: u64 = 0x6573_5546;
 const FUSE_SUPER_MAGIC: u64 = 0x6573_5546;
 const MQUEUE_MAGIC: u64 = 0x1980_0202;
@@ -129,7 +128,9 @@ fn register_filesystems() {
     pseudo!("efivarfs", EFIVARFS_MAGIC);
     pseudo!("pstore", PSTOREFS_MAGIC);
     pseudo!("bpf", BPF_FS_MAGIC);
-    pseudo!("configfs", CONFIGFS_MAGIC);
+    let _ = register_fs(FsType::new("configfs", 0, FsFlags::empty(), Box::new(|_, _, _| -> R {
+        Ok(MountSpec { fs: Arc::new(tracefs::fs_impl::ConfigfsFs), bind_root: None, strict: false })
+    })));
     pseudo!("fusectl", FUSE_CTL_MAGIC);
     pseudo!("mqueue", MQUEUE_MAGIC);
     pseudo!("hugetlbfs", HUGETLBFS_MAGIC);

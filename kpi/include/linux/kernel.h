@@ -4,6 +4,7 @@
 #include <linux/bits.h>
 #include <linux/build_bug.h>
 #include <linux/compiler_types.h>
+#include <linux/dynamic_debug.h>
 #include <linux/stddef.h>
 #include <linux/types.h>
 
@@ -14,6 +15,11 @@
 #define clamp(val, lo, hi) min((typeof(val))max(val, lo), hi)
 
 int printk(const char *fmt, ...) __printf(1, 2);
+int _printk(const char *fmt, ...) __printf(1, 2);
+int __warn_printk(const char *fmt, ...) __printf(1, 2);
+int snprintf(char *buf, size_t size, const char *fmt, ...) __printf(3, 4);
+int scnprintf(char *buf, size_t size, const char *fmt, ...) __printf(3, 4);
+int sprintf(char *buf, const char *fmt, ...) __printf(2, 3);
 #define pr_emerg(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_alert(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_crit(fmt, ...) printk(fmt, ##__VA_ARGS__)
@@ -21,6 +27,6 @@ int printk(const char *fmt, ...) __printf(1, 2);
 #define pr_warn(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_notice(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_info(fmt, ...) printk(fmt, ##__VA_ARGS__)
-#define pr_debug(fmt, ...) printk(fmt, ##__VA_ARGS__)
+#define pr_debug(fmt, ...) dynamic_pr_debug(fmt, ##__VA_ARGS__)
 
 #endif

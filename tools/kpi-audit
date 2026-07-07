@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 EXPORT_RE = re.compile(r'\bexport(?:_module)?\(\s*"([^"]+)"')
+EXPORT_TUPLE_RE = re.compile(r'\("([^"]+)"\s*,[^)]*as \*const \(\) as usize\)')
 NM_UNDEF_RE = re.compile(r"^(?:(?P<addr>[0-9A-Fa-f]+|\s+)\s+)?(?P<kind>[UuWw])\s+(?P<sym>\S+)")
 VERSION_RE = re.compile(r"(@@?|#).*$")
 
@@ -39,7 +40,9 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("alloc", (
         "kmalloc", "kzalloc", "kcalloc", "krealloc", "kfree", "vmalloc", "vfree",
-        "alloc_pages", "__get_free_pages", "free_pages", "kstrdup", "kasprintf",
+        "vzalloc", "vmap", "vunmap", "alloc_pages", "__get_free_pages", "free_pages",
+        "kmem_cache", "__kmem_cache", "kmemdup", "kvmalloc", "kvfree",
+        "kmalloc_caches", "random_kmalloc_seed", "kstrdup", "kasprintf",
         "devm_kmalloc", "devm_kzalloc", "devm_kfree",
     )),
     ("sync", (
@@ -58,7 +61,7 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "inw", "inl", "outb", "outw", "outl", "mmiowb",
     )),
     ("dma", (
-        "dma_", "dmam_", "sg_", "scatterlist", "pci_alloc_consistent",
+        "dma_", "dmam_", "sg_", "sgl_", "scatterlist", "pci_alloc_consistent",
         "pci_free_consistent", "pci_map_", "pci_unmap_",
     )),
     ("irq", (
@@ -67,7 +70,7 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("device-core", (
         "device_", "driver_", "bus_", "class_", "dev_", "devm_", "kobject",
-        "kset", "sysfs_", "uevent", "modalias",
+        "kset", "sysfs_", "uevent", "modalias", "__dynamic_dev_dbg",
     )),
     ("pci", (
         "pci_", "pcim_", "pcii_", "pcie_", "pci_bus", "pci_dev",
@@ -106,6 +109,13 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("usercopy", (
         "copy_to_user", "copy_from_user", "access_ok", "get_user", "put_user",
         "clear_user", "strncpy_from_user",
+    )),
+    ("string-runtime", (
+        "memcpy", "memset", "memcmp", "strlen", "strnlen", "strcmp", "strncmp",
+        "strncasecmp", "strcpy", "strncpy", "strchr", "strstr", "strsep", "strim",
+        "sized_strscpy", "kstrto", "hex_to_bin", "hex2bin", "bin2hex",
+        "snprintf", "scnprintf", "sprintf", "printk", "_ctype", "__stack_chk",
+        "__fortify", "__fentry__", "__dynamic_pr_debug",
     )),
     ("debugfs-configfs", (
         "debugfs_", "configfs_", "seq_", "proc_create", "single_open",
@@ -155,10 +165,13 @@ def read_symbols(path: Path) -> list[str]:
 
 def scan_exports(root: Path, extra: list[Path]) -> set[str]:
     exports: set[str] = set()
-    for src in (root / "crates/kernel/modules/src").glob("*.rs"):
-        if src.name == "tests.rs":
+    for src in (root / "crates/kernel/modules/src").rglob("*.rs"):
+        if src.name == "tests.rs" or "/tests/" in src.as_posix():
             continue
-        for match in EXPORT_RE.finditer(src.read_text()):
+        text = src.read_text()
+        for match in EXPORT_RE.finditer(text):
+            exports.add(match.group(1))
+        for match in EXPORT_TUPLE_RE.finditer(text):
             exports.add(match.group(1))
     for path in extra:
         exports.update(read_symbols(path))

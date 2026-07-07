@@ -73,13 +73,27 @@ fn class_bus_driver_and_devres_round_trip() {
 }
 
 #[test]
+fn sysfs_emit_formats_into_page_buffer() {
+    let mut buf = [0u8; crate::linux_alloc::PAGE_SIZE];
+    let n = unsafe { sysfs_emit(buf.as_mut_ptr() as *mut c_char, c"state=%u\n".as_ptr(), 7u32) };
+    assert_eq!(n, 8);
+    assert_eq!(&buf[..9], b"state=7\n\0");
+    let n = unsafe { sysfs_emit_at(buf.as_mut_ptr() as *mut c_char, 8, c"tail=%d\n".as_ptr(), -3i32) };
+    assert_eq!(n, 8);
+    assert_eq!(&buf[8..17], b"tail=-3\n\0");
+    let n = unsafe { sysfs_emit_at(buf.as_mut_ptr() as *mut c_char, crate::linux_alloc::PAGE_SIZE as i32, c"x".as_ptr()) };
+    assert_eq!(n, 0);
+}
+
+#[test]
 fn export_symbols_registers_device_surface() {
     crate::symtab::_reset();
     export_symbols();
     for name in [
         "device_register", "device_unregister", "dev_set_drvdata",
         "dev_get_drvdata", "dev_name", "device_get_match_data", "devm_kmalloc", "devm_kfree",
-        "__class_create", "bus_register", "driver_register", "_dev_info",
+        "__class_create", "bus_register", "driver_register", "sysfs_emit", "sysfs_emit_at", "_dev_info",
+        "__dynamic_dev_dbg",
     ] {
         assert!(crate::symtab::is_exported(name));
     }
