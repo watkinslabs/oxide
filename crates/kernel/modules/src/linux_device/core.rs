@@ -53,6 +53,7 @@ pub(super) fn export_symbols() {
         ("_dev_warn",               _dev_warn               as *const () as usize),
         ("_dev_info",               _dev_info               as *const () as usize),
         ("_dev_dbg",                _dev_dbg                as *const () as usize),
+        ("__dynamic_dev_dbg",       dynamic_dev_dbg         as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -292,6 +293,12 @@ unsafe extern "C" fn _dev_info(dev: *const LinuxDevice, fmt: *const c_char, mut 
 unsafe extern "C" fn _dev_dbg(dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
     let _ = dev;
     // SAFETY: diagnostic-only formatting validates the caller's C varargs.
+    unsafe { consume_format(fmt, &mut ap); }
+}
+
+unsafe extern "C" fn dynamic_dev_dbg(desc: *mut c_void, dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
+    let _ = (desc, dev);
+    // SAFETY: dynamic dev debug callers pass a descriptor/device and printf-compatible varargs.
     unsafe { consume_format(fmt, &mut ap); }
 }
 

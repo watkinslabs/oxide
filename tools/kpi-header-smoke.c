@@ -582,6 +582,11 @@ static int __init sample_init(void)
     (void)snprintf(str_buf, sizeof(str_buf), "v=%d", parsed_int);
     (void)scnprintf(str_buf, sizeof(str_buf), "v=%u", parsed_u16);
     (void)sprintf(str_buf, "%s", "ok");
+    pr_debug("parsed=%d\n", parsed_int);
+    {
+        DEFINE_DYNAMIC_DEBUG_METADATA(devdbg_descriptor, "dev=%s\n");
+        __dynamic_dev_dbg(&devdbg_descriptor, &dev, "dev=%s\n", "sample");
+    }
     (void)sysfs_emit(str_buf, "v=%d\n", parsed_int);
     (void)sysfs_emit_at(str_buf, 2, "u=%u\n", parsed_u16);
     (void)request_irq(SAMPLE_IRQ, sample_irq_handler, IRQF_SHARED, "sample", &s);

@@ -4,6 +4,7 @@
 #include <linux/bits.h>
 #include <linux/build_bug.h>
 #include <linux/compiler_types.h>
+#include <linux/dynamic_debug.h>
 #include <linux/stddef.h>
 #include <linux/types.h>
 
@@ -26,6 +27,6 @@ int sprintf(char *buf, const char *fmt, ...) __printf(2, 3);
 #define pr_warn(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_notice(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_info(fmt, ...) printk(fmt, ##__VA_ARGS__)
-#define pr_debug(fmt, ...) printk(fmt, ##__VA_ARGS__)
+#define pr_debug(fmt, ...) dynamic_pr_debug(fmt, ##__VA_ARGS__)
 
 #endif

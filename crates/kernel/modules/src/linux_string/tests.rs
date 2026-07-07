@@ -54,7 +54,7 @@ fn export_symbols_registers_string_surface() {
         "memcpy", "memset", "memcmp", "strlen", "strcmp", "strncasecmp",
         "kstrtou8", "kstrtou16", "kstrtoint", "hex_to_bin", "hex2bin", "bin2hex",
         "snprintf", "scnprintf", "sprintf", "_printk", "__stack_chk_fail",
-        "_ctype", "__ref_stack_chk_guard",
+        "__dynamic_pr_debug", "_ctype", "__ref_stack_chk_guard",
     ] {
         assert!(crate::symtab::is_exported(name), "{name}");
     }
