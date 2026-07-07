@@ -13,8 +13,10 @@ use super::core::{
 /// gdbus/gmain helper threads involved in the greeter pthread deadlock).
 #[cfg(feature = "debug-futextrace")]
 fn ftx_target_exe() -> bool {
+    // Both gdm processes: the daemon (/usr/bin/gdm) and the session worker
+    // (/usr/libexec/gdm-session-worker) — to see the cross-process wedge.
     sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.ends_with("gdm-session-worker")) })
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
         .unwrap_or(false)
 }
 
@@ -149,7 +151,8 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, deadline_ns: u64) -> i
             }
             #[cfg(feature = "debug-futextrace")]
             if ftx_target_exe() {
-                klog::write_raw(b"[FTX-WAIT tid="); klog::write_dec_u64(tid as u64);
+                klog::write_raw(b"[FTX-WAIT tgid="); klog::write_dec_u64(sched::live::current().map(|c| c.tgid.load(core::sync::atomic::Ordering::Relaxed)).unwrap_or(0) as u64);
+                klog::write_raw(b" tid="); klog::write_dec_u64(tid as u64);
                 klog::write_raw(b" uaddr="); klog::write_hex_u64(uaddr);
                 klog::write_raw(b" val="); klog::write_dec_u64(val as u64);
                 klog::write_raw(b"] park\n");
@@ -171,7 +174,8 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, deadline_ns: u64) -> i
             #[cfg(feature = "debug-futextrace")]
             if ftx_target_exe() {
                 let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
-                klog::write_raw(b"[FTX-WAKE tid="); klog::write_dec_u64(tid as u64);
+                klog::write_raw(b"[FTX-WAKE tgid="); klog::write_dec_u64(sched::live::current().map(|c| c.tgid.load(core::sync::atomic::Ordering::Relaxed)).unwrap_or(0) as u64);
+                klog::write_raw(b" tid="); klog::write_dec_u64(tid as u64);
                 klog::write_raw(b" uaddr="); klog::write_hex_u64(uaddr);
                 klog::write_raw(b" want="); klog::write_dec_u64(val as u64);
                 klog::write_raw(b" woke="); klog::write_dec_u64(n as u64);
