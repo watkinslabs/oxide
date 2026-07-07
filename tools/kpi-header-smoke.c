@@ -50,6 +50,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/scsi.h>
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 #include <linux/string.h>
@@ -133,6 +134,10 @@ enum { SAMPLE_CRYPTO_DIGEST_LEN = 32 };
 enum { SAMPLE_USERCOPY_LEN = 8 };
 enum { SAMPLE_DEBUG_VALUE_INIT = 7 };
 enum { SAMPLE_FIRMWARE_BUF_LEN = 64 };
+enum { SAMPLE_SCSI_LUN = 7 };
+enum { SAMPLE_SCSI_SENSE_KEY = 5 };
+enum { SAMPLE_SCSI_ASC = 0x20 };
+enum { SAMPLE_SCSI_ASCQ = 0 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -523,6 +528,9 @@ static int __init sample_init(void)
         .setup = sample_gadget_setup,
         .disconnect = sample_gadget_disconnect,
     };
+    struct scsi_lun scsi_lun;
+    u8 scsi_cdb[16] = { 0 };
+    u8 scsi_sense[SCSI_SENSE_BUFFERSIZE];
     struct usb_driver udrv = {
         .name = "sample-usb",
         .probe = sample_usb_probe,
@@ -1132,6 +1140,13 @@ static int __init sample_init(void)
         usb_ep_free_request(&gadget_ep, gadget_req);
     }
     usb_gadget_unregister_driver(&gadget_driver);
+    int_to_scsilun(SAMPLE_SCSI_LUN, &scsi_lun);
+    scsi_cdb[0] = 0x28;
+    (void)scsi_command_size(scsi_cdb);
+    (void)scsi_command_size_tbl[scsi_cdb[0] >> 5];
+    (void)scsi_device_type[TYPE_DISK];
+    (void)scsi_build_sense_buffer(0, scsi_sense, SAMPLE_SCSI_SENSE_KEY, SAMPLE_SCSI_ASC, SAMPLE_SCSI_ASCQ);
+    scsi_set_sense_information(scsi_sense, sizeof(scsi_sense), 0x01020304);
     pdev.dev.dma_mask = &dma_mask;
     pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     pdev.dev.driver_data = NULL;
