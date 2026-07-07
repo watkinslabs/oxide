@@ -171,6 +171,9 @@ impl File {
         self.f_op.poll_open_file(self)
     }
 
+    /// Run `file_operations->open` after this open file description exists.
+    /// # C: backend-dependent
+    pub fn open_hook(&self) -> crate::KResult<()> { self.f_op.on_open_file(self) }
 
     /// `F_SET_RW_HINT` (Linux `fcntl_rw_hint`): store the `RWH_WRITE_LIFE_*`
     /// write-life hint. Advisory; forwarded to a hinting block backend. # C: O(1)
