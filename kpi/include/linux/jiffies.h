@@ -9,10 +9,13 @@ extern unsigned long jiffies;
 extern unsigned long long jiffies_64;
 
 unsigned long msecs_to_jiffies(unsigned int m);
+unsigned long __msecs_to_jiffies(unsigned int m);
 unsigned long usecs_to_jiffies(unsigned int u);
+unsigned long __usecs_to_jiffies(unsigned int u);
 unsigned long nsecs_to_jiffies(unsigned long long n);
 unsigned int jiffies_to_msecs(unsigned long j);
 unsigned int jiffies_to_usecs(unsigned long j);
+unsigned long round_jiffies(unsigned long j);
 
 #define time_after(a, b) ((long)((b) - (a)) < 0)
 #define time_before(a, b) time_after(b, a)

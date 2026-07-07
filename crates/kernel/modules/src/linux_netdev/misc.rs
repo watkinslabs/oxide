@@ -25,6 +25,7 @@ pub(super) fn export_symbols() {
     export("netdev_stats_to_stats64", netdev_stats_to_stats64 as *const () as usize, false);
     export("netdev_stat_queue_sum", netdev_stat_queue_sum as *const () as usize, false);
     export("netdev_rss_key_fill", netdev_rss_key_fill as *const () as usize, false);
+    export("net_dim_work_cancel", net_dim_work_cancel as *const () as usize, false);
     export("netdev_printk", netdev_printk as *const () as usize, false);
     export("netdev_err", netdev_err as *const () as usize, false);
     export("netdev_warn", netdev_warn as *const () as usize, false);
@@ -113,6 +114,9 @@ unsafe extern "C" fn netdev_rss_key_fill(buf: *mut c_void, len: usize) {
         }
     }
 }
+
+/// # C: O(1)
+unsafe extern "C" fn net_dim_work_cancel(_dim: *mut c_void) {}
 
 /// # C: O(1)
 unsafe extern "C" fn netdev_printk(_level: *const c_char, _dev: *const LinuxNetDevice, _fmt: *const c_char, mut _args: ...) {}

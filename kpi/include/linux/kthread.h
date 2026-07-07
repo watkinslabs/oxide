@@ -16,6 +16,10 @@ struct task_struct *kthread_create(int (*threadfn)(void *data), void *data, cons
 int wake_up_process(struct task_struct *task);
 int kthread_should_stop(void);
 int kthread_stop(struct task_struct *task);
+int kthread_associate_blkcg(void *css);
+void set_current_state(int state);
+void schedule(void);
+long schedule_timeout(long timeout);
 
 #define kthread_run(threadfn, data, namefmt, ...) ({ \
     struct task_struct *__task = kthread_create((threadfn), (data), (namefmt), ##__VA_ARGS__); \

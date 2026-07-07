@@ -20,6 +20,7 @@ pub(super) fn export_symbols() {
     export("napi_enable", napi_enable as *const () as usize, false);
     export("napi_disable", napi_disable as *const () as usize, false);
     export("__napi_schedule", __napi_schedule as *const () as usize, false);
+    export("__napi_schedule_irqoff", __napi_schedule_irqoff as *const () as usize, false);
     export("napi_schedule_prep", napi_schedule_prep as *const () as usize, false);
     export("napi_complete_done", napi_complete_done as *const () as usize, false);
     export("napi_alloc_skb", napi_alloc_skb as *const () as usize, false);
@@ -88,6 +89,12 @@ unsafe extern "C" fn __napi_schedule(napi: *mut LinuxNapiStruct) {
         }
         (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
     }
+}
+
+/// # C: O(poll budget)
+unsafe extern "C" fn __napi_schedule_irqoff(napi: *mut LinuxNapiStruct) {
+    // SAFETY: irqoff variant has the same NAPI storage contract; Oxide does not model softirq masking here.
+    unsafe { __napi_schedule(napi); }
 }
 
 /// # C: O(1)
