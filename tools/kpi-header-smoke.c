@@ -624,12 +624,17 @@ static int __init sample_init(void)
     debugfs_remove(debug_file);
     debugfs_remove_recursive(debug_dir);
     config_group_init_type_name(&sample_config_child, "child", &sample_config_child_type);
+    (void)config_item_set_name(&sample_config_child.item, "child%d", 1);
     config_group_init_type_name(&subsys.su_group, "sample", &sample_config_type);
     (void)configfs_register_subsystem(&subsys);
     (void)configfs_create_link(&subsys.su_group.item, &sample_config_child.item, "child_link");
     configfs_drop_link(&subsys.su_group.item, &sample_config_child.item, "child_link");
     (void)config_item_get(&subsys.su_group.item);
     config_item_put(&subsys.su_group.item);
+    (void)config_item_get_unless_zero(&subsys.su_group.item);
+    (void)configfs_depend_item(&subsys, &sample_config_child.item);
+    configfs_undepend_item(&subsys, &sample_config_child.item);
+    configfs_remove_default_groups(&subsys.su_group);
     configfs_unregister_subsystem(&subsys);
     (void)request_firmware(&fw, "sample/fw.bin", &dev);
     (void)request_firmware_direct(&fw, "sample/fw.bin", &dev);

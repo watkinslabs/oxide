@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 EXPORT_RE = re.compile(r'\bexport(?:_module)?\(\s*"([^"]+)"')
+EXPORT_TUPLE_RE = re.compile(r'\("([^"]+)"\s*,[^)]*as \*const \(\) as usize\)')
 NM_UNDEF_RE = re.compile(r"^(?:(?P<addr>[0-9A-Fa-f]+|\s+)\s+)?(?P<kind>[UuWw])\s+(?P<sym>\S+)")
 VERSION_RE = re.compile(r"(@@?|#).*$")
 
@@ -155,10 +156,13 @@ def read_symbols(path: Path) -> list[str]:
 
 def scan_exports(root: Path, extra: list[Path]) -> set[str]:
     exports: set[str] = set()
-    for src in (root / "crates/kernel/modules/src").glob("*.rs"):
-        if src.name == "tests.rs":
+    for src in (root / "crates/kernel/modules/src").rglob("*.rs"):
+        if src.name == "tests.rs" or "/tests/" in src.as_posix():
             continue
-        for match in EXPORT_RE.finditer(src.read_text()):
+        text = src.read_text()
+        for match in EXPORT_RE.finditer(text):
+            exports.add(match.group(1))
+        for match in EXPORT_TUPLE_RE.finditer(text):
             exports.add(match.group(1))
     for path in extra:
         exports.update(read_symbols(path))
