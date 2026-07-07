@@ -1,12 +1,12 @@
 use super::allocs;
 use super::devres;
-use super::format::{consume_format, copy_cstr, format_into};
+use super::format::{copy_cstr, format_into};
 use super::registry;
 use super::types::{
     DevresAction, LinuxBusType, LinuxClass, LinuxDevice, LinuxDeviceAttribute, LinuxDeviceDriver,
     DEVICE_NAME_LEN, GFP_ZERO, LINUX_EINVAL, LINUX_OK,
 };
-use core::ffi::{c_char, c_void};
+use core::ffi::{c_char, c_void, VaList};
 use core::ptr::null_mut;
 
 const SYSFS_PAGE_SIZE: usize = crate::linux_alloc::PAGE_SIZE;
@@ -286,33 +286,29 @@ extern "C" fn devm_remove_action(dev: *mut LinuxDevice, action: Option<DevresAct
 }
 
 unsafe extern "C" fn _dev_err(dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
-    let _ = dev;
-    // SAFETY: diagnostic-only formatting validates the caller's C varargs.
-    unsafe { consume_format(fmt, &mut ap); }
+    // SAFETY: dev diagnostics accept Linux printf-compatible varargs.
+    unsafe { dev_log(b"err", dev, fmt, &mut ap); }
 }
 
 unsafe extern "C" fn _dev_warn(dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
-    let _ = dev;
-    // SAFETY: diagnostic-only formatting validates the caller's C varargs.
-    unsafe { consume_format(fmt, &mut ap); }
+    // SAFETY: dev diagnostics accept Linux printf-compatible varargs.
+    unsafe { dev_log(b"warn", dev, fmt, &mut ap); }
 }
 
 unsafe extern "C" fn _dev_info(dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
-    let _ = dev;
-    // SAFETY: diagnostic-only formatting validates the caller's C varargs.
-    unsafe { consume_format(fmt, &mut ap); }
+    // SAFETY: dev diagnostics accept Linux printf-compatible varargs.
+    unsafe { dev_log(b"info", dev, fmt, &mut ap); }
 }
 
 unsafe extern "C" fn _dev_dbg(dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
-    let _ = dev;
-    // SAFETY: diagnostic-only formatting validates the caller's C varargs.
-    unsafe { consume_format(fmt, &mut ap); }
+    // SAFETY: dev diagnostics accept Linux printf-compatible varargs.
+    unsafe { dev_log(b"debug", dev, fmt, &mut ap); }
 }
 
 unsafe extern "C" fn dynamic_dev_dbg(desc: *mut c_void, dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
-    let _ = (desc, dev);
+    let _ = desc;
     // SAFETY: dynamic dev debug callers pass a descriptor/device and printf-compatible varargs.
-    unsafe { consume_format(fmt, &mut ap); }
+    unsafe { dev_log(b"debug", dev, fmt, &mut ap); }
 }
 
 fn populate_device_name(dev: *mut LinuxDevice) {
@@ -321,6 +317,38 @@ fn populate_device_name(dev: *mut LinuxDevice) {
         if (*dev).name[0] == 0 && !(*dev).init_name.is_null() {
             copy_cstr((*dev).name.as_mut_ptr(), DEVICE_NAME_LEN, (*dev).init_name);
         }
+    }
+}
+
+unsafe fn dev_log(level: &[u8], dev: *const LinuxDevice, fmt: *const c_char, ap: &mut VaList) {
+    let mut buf = [0u8; 256];
+    // SAFETY: caller guarantees fmt/ap follow the Linux printf varargs ABI.
+    let n = unsafe { crate::linux_string::vscnprintf(buf.as_mut_ptr(), buf.len(), fmt as *const u8, ap) };
+    klog::write_raw(b"linux-dev ");
+    klog::write_raw(level);
+    if !dev.is_null() {
+        let name = dev_name(dev);
+        if !name.is_null() {
+            klog::write_raw(b" ");
+            write_cstr(name, DEVICE_NAME_LEN);
+        }
+    }
+    klog::write_raw(b": ");
+    if n > 0 {
+        let len = (n as usize).min(buf.len().saturating_sub(1));
+        klog::write_raw(&buf[..len]);
+    }
+    klog::write_raw(b"\n");
+}
+
+fn write_cstr(ptr: *const c_char, max: usize) {
+    let mut i = 0usize;
+    while i < max {
+        // SAFETY: caller gives a C string pointer; max bounds the scan.
+        let b = unsafe { *ptr.add(i) as u8 };
+        if b == 0 { break; }
+        klog::write_raw(&[b]);
+        i += 1;
     }
 }
 
