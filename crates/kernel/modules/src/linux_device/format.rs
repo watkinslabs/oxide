@@ -32,14 +32,6 @@ pub(super) unsafe fn format_into(dst: *mut c_char, cap: usize, fmt: *const c_cha
     }
 }
 
-pub(super) unsafe fn consume_format(fmt: *const c_char, ap: &mut VaList) {
-    if fmt.is_null() { return; }
-    let mut out = [0u8; DEVICE_NAME_LEN];
-    let mut n = 0usize;
-    // SAFETY: fmt is a NUL-terminated C format string and ap matches it.
-    unsafe { format_bytes(&mut out, &mut n, fmt, ap); }
-}
-
 unsafe fn format_bytes(out: &mut [u8], n: &mut usize, fmt: *const c_char, ap: &mut VaList) {
     if fmt.is_null() { return; }
     let mut i = 0usize;
