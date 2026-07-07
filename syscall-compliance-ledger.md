@@ -47,7 +47,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | G5 | seccomp arg[5] (core.rs:26) | DONE | B635 #TBD | `check()` now passes the real `a5` (already read into args) instead of literal 0; filters inspecting args[5] evaluate correctly. |
 | G6 | process_madvise/process_mrelease (440/448) | DONE | B647 #TBD | both real now. madvise: pidfd→task, sig_perm_check, read_iovs, advice validated to the {WILLNEED,DONTNEED,FREE,COLD,PAGEOUT} subset; DONTNEED/FREE drop the target's pages (self→active-root evict, foreign→new evict_foreign_pages_in_range built on hal unmap_4k_at_root + the SAME rmap_aware_dec_and_maybe_free), COLD/PAGEOUT/WILLNEED no-op (no LRU/swap). mrelease: pidfd→task, reject self, require exiting(SIGKILL/Zombie), sig_perm_check, then reaps the target's ANON pages in place (OOM-reaper style, mm stays attached — detaching would let a dying user task return to user against the wrong CR3). Boot-verified `/bin/pmadvise_probe` (DONTNEED→refault-zero + self-mrelease EINVAL) → PASS. |
 | G7 | mlock family unmapped range (149-152) | DONE | B636 #TBD | split: `sys_mlock_range` (mlock/munlock) validates the page range via `find_vma` → ENOMEM on unmapped; `sys_mlockall` rejects bad MCL_* flags; `sys_munlockall` 0. |
-| G8 | signalfd mask-update + siginfo (282/289) | TODO | | mask-update on existing fd no-op; siginfo only fills ssi_signo. |
+| G8 | signalfd mask-update + siginfo (282/289) | WIP | B648 | mask-update on existing fd no-op; siginfo only fills ssi_signo. |
 | G9 | shmctl IPC_STAT (31) | DONE | B639 #TBD | shmctl IPC_STAT now fills shmid64_ds (key/mode/shm_segsz/shm_cpid/shm_nattch) instead of zeroing. sem/msg IPC_STAT fills remain as follow-up. |
 
 ## P2 — cleanup
