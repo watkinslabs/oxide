@@ -271,7 +271,7 @@ pub unsafe fn spawn_user_thread_for_fork(
     regs: &hal_x86_64::ForkRegs,
     mm: Arc<AddressSpace>,
 ) -> Result<Arc<Task>, SpawnError> {
-    let rq = match super::runqueue::global() {
+    let _rq = match super::runqueue::global() {
         Some(r) => r,
         None    => return Err(SpawnError::NoRunqueue),
     };
@@ -349,13 +349,26 @@ pub unsafe fn spawn_user_thread_for_fork(
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
     super::registry::insert(&arc);
+    // NOT enqueued here. The caller (sys_clone) still has to finalize the
+    // child's CLONE_SETTLS FS_BASE, CLONE_THREAD vtgid, fd table, sigmask and
+    // the *tid writes; enqueuing now would let another CPU run the child with a
+    // half-built TLS/vtgid. Mirroring Linux copy_process + wake_up_new_task,
+    // the caller invokes `wake_new_task(&arc)` as the LAST step.
+    Ok(arc)
+}
+
+/// Linux `wake_up_new_task`: make a freshly-built task (registered but not yet
+/// runnable) schedulable. Call ONLY after every field a running child could
+/// observe — FS_BASE/TLS, vtgid, fd table, sigmask, `set_child_tid` — is final,
+/// so no CPU picks a half-constructed task. # C: O(1)
+pub fn wake_new_task(task: &Arc<Task>) {
+    let rq = match super::runqueue::global() { Some(r) => r, None => return };
     {
         let mut inner = rq.inner.lock();
-        inner.enqueue(Arc::clone(&arc));
+        inner.enqueue(Arc::clone(task));
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
     }
     crate::preempt::set_need_resched();
-    Ok(arc)
 }
 
 /// aarch64 mirror of `spawn_user_thread_for_fork`. The arm path
@@ -376,7 +389,7 @@ pub unsafe fn spawn_user_thread_for_fork(
     regs: &hal_aarch64::ForkRegs,
     mm: Arc<AddressSpace>,
 ) -> Result<Arc<Task>, SpawnError> {
-    let rq = match super::runqueue::global() {
+    let _rq = match super::runqueue::global() {
         Some(r) => r,
         None    => return Err(SpawnError::NoRunqueue),
     };
@@ -423,11 +436,7 @@ pub unsafe fn spawn_user_thread_for_fork(
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
     super::registry::insert(&arc);
-    {
-        let mut inner = rq.inner.lock();
-        inner.enqueue(Arc::clone(&arc));
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    }
-    crate::preempt::set_need_resched();
+    // NOT enqueued here — see the x86 path: the caller finalizes TLS/vtgid/fds
+    // then calls `wake_new_task(&arc)` (Linux wake_up_new_task).
     Ok(arc)
 }
