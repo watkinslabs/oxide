@@ -68,6 +68,7 @@ mod open_common;
 #[path = "002_open.rs"] pub mod s002_open;
 #[path = "110_getppid.rs"] pub mod s110_getppid;
 #[path = "009_mmap.rs"] pub mod s009_mmap;
+#[path = "029_shmget.rs"] pub mod s029_shmget;
 #[path = "011_munmap.rs"] pub mod s011_munmap;
 #[path = "012_brk.rs"] pub mod s012_brk;
 #[path = "060_exit.rs"] pub mod s060_exit;

@@ -57,7 +57,7 @@ pub(super) fn dispatch_route_a(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_PTRACE => crate::ptrace::sys_ptrace(args),
         syscall::nrs::NR_FANOTIFY_INIT => ::fs::inotify::sys_fanotify_init(args),
         syscall::nrs::NR_FANOTIFY_MARK => ::fs::inotify::sys_fanotify_mark(args),
-        syscall::nrs::NR_SHMGET => ipc::sysv_shm::sys_shmget(args),
+        syscall::nrs::NR_SHMGET => crate::s029_shmget::sys_shmget(args),
         syscall::nrs::NR_SHMAT => ipc::sysv_shm::sys_shmat(args),
         syscall::nrs::NR_SHMDT => ipc::sysv_shm::sys_shmdt(args),
         syscall::nrs::NR_SHMCTL => ipc::sysv_shm::sys_shmctl(args),
