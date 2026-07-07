@@ -50,12 +50,20 @@ enum { SAMPLE_DMA_PAGE_ORDER = 0 };
 enum { SAMPLE_DMA_PAGE_OFFSET = 0 };
 enum { SAMPLE_IRQ = 1 };
 enum { SAMPLE_IO_PORT = 0 };
+enum { SAMPLE_ATTR_MODE = 0444 };
+enum { SAMPLE_DEVICE_DEVT = 0 };
 enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
 static void sample_timer_fn(struct timer_list *timer) { (void)timer; }
 static enum hrtimer_restart sample_hrtimer_fn(struct hrtimer *timer) { (void)timer; return HRTIMER_NORESTART; }
 static irqreturn_t sample_irq_handler(int irq, void *dev) { (void)irq; (void)dev; return IRQ_HANDLED; }
+static void sample_devres_action(void *data) { (void)data; }
+static ssize_t sample_attr_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    (void)dev; (void)attr; (void)buf; return 0;
+}
+static DEVICE_ATTR(sample, SAMPLE_ATTR_MODE, sample_attr_show, NULL);
 
 static int __init sample_init(void)
 {
@@ -74,6 +82,11 @@ static int __init sample_init(void)
     struct task_struct *task;
     struct scatterlist sg[SAMPLE_DMA_SG_NENTS];
     struct device dev;
+    struct class *class;
+    struct bus_type bus = { "sample-bus", NULL };
+    struct device_driver driver = { "sample-driver", &bus, THIS_MODULE, NULL, NULL };
+    struct device *root_dev;
+    struct device *created_dev;
     struct page *page;
     dma_addr_t dma;
     u64 dma_mask;
@@ -118,6 +131,38 @@ static int __init sample_init(void)
     dev.dma_mask = &dma_mask;
     dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     dev.driver_data = NULL;
+    dev.parent = NULL;
+    dev.bus = &bus;
+    dev.class = NULL;
+    dev.driver = &driver;
+    dev.init_name = "sample-dev";
+    dev.release = NULL;
+    device_initialize(&dev);
+    (void)dev_set_name(&dev, "sample%d", 1);
+    (void)device_add(&dev);
+    dev_set_drvdata(&dev, &s);
+    (void)dev_get_drvdata(&dev);
+    (void)dev_name(&dev);
+    (void)device_create_file(&dev, &dev_attr_sample);
+    device_remove_file(&dev, &dev_attr_sample);
+    (void)devm_kmalloc(&dev, 16, GFP_KERNEL);
+    (void)devm_kzalloc(&dev, 16, GFP_KERNEL);
+    devm_kfree(&dev, NULL);
+    (void)devm_add_action_or_reset(&dev, sample_devres_action, &s);
+    devm_remove_action(&dev, sample_devres_action, &s);
+    dev_info(&dev, "sample device %s\n", dev_name(&dev));
+    device_del(&dev);
+    (void)bus_register(&bus);
+    (void)driver_register(&driver);
+    driver_unregister(&driver);
+    bus_unregister(&bus);
+    class = class_create(THIS_MODULE, "sample-class");
+    created_dev = device_create(class, NULL, SAMPLE_DEVICE_DEVT, &s, "sample-created%d", 1);
+    device_destroy(class, SAMPLE_DEVICE_DEVT);
+    device_unregister(created_dev);
+    class_destroy(class);
+    root_dev = root_device_register("sample-root");
+    root_device_unregister(root_dev);
     (void)dma_set_mask_and_coherent(&dev, DMA_BIT_MASK(DMA_ULL_BITS));
     coherent = dma_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
     (void)dma_mapping_error(&dev, dma);

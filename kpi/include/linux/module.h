@@ -12,6 +12,7 @@ struct module {
     unsigned int refcnt;
 };
 
+#define THIS_MODULE ((struct module *)0)
 #define __PASTE(a, b) a##b
 #define __PASTE2(a, b) __PASTE(a, b)
 #define __UNIQUE_ID(prefix) __PASTE2(__UNIQUE_ID_##prefix##_, __COUNTER__)
