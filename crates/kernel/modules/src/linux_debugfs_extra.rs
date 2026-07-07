@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use vfs::{FileOps, Inode, KResult, VfsError};
@@ -10,9 +11,11 @@ use crate::linux_debugfs::{
     cstr, create_inode_entry, create_path_entry, entry_path, read_bytes_at, regular_inode_size,
     symlink_inode, LinuxDentry, LinuxFile, LinuxInode,
 };
+use crate::linux_seq_file::{seq_write, SeqFile};
 
 const TARGET_MAX: usize = 4096;
 const SIMPLE_BUF: usize = 64;
+const REG_NAME_MAX: usize = 128;
 
 type SimpleGet = unsafe extern "C" fn(*mut c_void, *mut u64) -> i32;
 type SimpleSet = unsafe extern "C" fn(*mut c_void, u64) -> i32;
@@ -21,6 +24,20 @@ type SimpleSet = unsafe extern "C" fn(*mut c_void, u64) -> i32;
 pub struct DebugfsBlobWrapper {
     data: *const c_void,
     size: usize,
+}
+
+#[repr(C)]
+pub struct DebugfsReg32 {
+    name: *mut c_char,
+    offset: usize,
+}
+
+#[repr(C)]
+pub struct DebugfsRegset32 {
+    regs: *const DebugfsReg32,
+    nregs: i32,
+    base: *mut c_void,
+    dev: *mut c_void,
 }
 
 struct BlobData { wrapper: usize }
@@ -37,6 +54,21 @@ impl FileOps for BlobOps {
         // SAFETY: blob data is caller-owned readable storage of wrapper.size bytes.
         let bytes = unsafe { core::slice::from_raw_parts(w.data as *const u8, w.size) };
         Ok(read_bytes_at(bytes, off, buf))
+    }
+}
+
+struct RegsetData { regset: usize }
+struct RegsetOps;
+
+impl FileOps for RegsetOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<RegsetData>().ok_or(VfsError::Einval)?;
+        let regset = d.regset as *const DebugfsRegset32;
+        if regset.is_null() { return Err(VfsError::Einval); }
+        // SAFETY: regset pointer is caller-owned storage for this debugfs file lifetime.
+        let r = unsafe { &*regset };
+        let body = format_regset(r);
+        Ok(read_bytes_at(&body, off, buf))
     }
 }
 
@@ -59,6 +91,33 @@ pub extern "C" fn debugfs_create_blob(
     let size = unsafe { (*blob).size as u64 };
     let inode = regular_inode_size(mode, Arc::new(BlobOps), Arc::new(BlobData { wrapper: blob as usize }), size);
     create_inode_entry(name, parent, inode)
+}
+
+#[no_mangle]
+pub extern "C" fn debugfs_create_regset32(
+    name: *const c_char,
+    mode: u16,
+    parent: *mut LinuxDentry,
+    regset: *mut DebugfsRegset32,
+) {
+    if regset.is_null() { return; }
+    let inode = regular_inode_size(mode, Arc::new(RegsetOps), Arc::new(RegsetData { regset: regset as usize }), 0);
+    let _ = create_inode_entry(name, parent, inode);
+}
+
+#[no_mangle]
+pub extern "C" fn debugfs_print_regs32(
+    seq: *mut SeqFile,
+    regs: *const DebugfsReg32,
+    nregs: i32,
+    base: *mut c_void,
+    prefix: *mut c_char,
+) {
+    if seq.is_null() || regs.is_null() || nregs <= 0 || base.is_null() { return; }
+    let set = DebugfsRegset32 { regs, nregs, base, dev: null_mut() };
+    let mut body = Vec::new();
+    append_regs(&mut body, &set, prefix);
+    let _ = seq_write(seq, body.as_ptr() as *const c_void, body.len());
 }
 
 #[no_mangle]
@@ -168,6 +227,48 @@ fn copy_to_user_slice(body: &[u8], buf: *mut c_char, count: usize, ppos: *mut i6
     n as isize
 }
 
+fn format_regset(regset: &DebugfsRegset32) -> Vec<u8> {
+    let mut body = Vec::new();
+    append_regs(&mut body, regset, null_mut());
+    body
+}
+
+fn append_regs(out: &mut Vec<u8>, regset: &DebugfsRegset32, prefix: *mut c_char) {
+    if regset.regs.is_null() || regset.nregs <= 0 || regset.base.is_null() { return; }
+    let nregs = regset.nregs as usize;
+    for i in 0..nregs {
+        // SAFETY: regs covers nregs entries by debugfs_regset32 contract.
+        let reg = unsafe { &*regset.regs.add(i) };
+        if !prefix.is_null() { push_cstr(out, prefix, REG_NAME_MAX); }
+        push_cstr(out, reg.name, REG_NAME_MAX);
+        out.extend_from_slice(b" = 0x");
+        push_hex32(out, read_reg32(regset.base, reg.offset));
+        out.push(b'\n');
+    }
+}
+
+fn read_reg32(base: *mut c_void, offset: usize) -> u32 {
+    // SAFETY: caller supplies an MMIO base and register offset for volatile 32-bit read.
+    unsafe { core::ptr::read_volatile((base as *const u8).add(offset) as *const u32) }
+}
+
+fn push_cstr(out: &mut Vec<u8>, ptr: *const c_char, max: usize) {
+    if ptr.is_null() { return; }
+    for i in 0..max {
+        // SAFETY: ptr is a NUL-terminated C string; bounded scan avoids runaway reads.
+        let b = unsafe { *ptr.add(i) } as u8;
+        if b == 0 { return; }
+        out.push(b);
+    }
+}
+
+fn push_hex32(out: &mut Vec<u8>, v: u32) {
+    for shift in (0..32).step_by(4).rev() {
+        let d = ((v >> shift) & 0xf) as u8;
+        out.push(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+    }
+}
+
 fn parse_u64(bytes: &[u8]) -> Option<u64> {
     let s = core::str::from_utf8(bytes).ok()?.trim();
     if let Some(hex) = s.strip_prefix("0x") { u64::from_str_radix(hex, 16).ok() } else { s.parse().ok() }
@@ -235,6 +336,27 @@ mod tests {
         assert!(!d.is_null());
         assert!(tracefs::debug_root().lookup_path("debugfs_link").is_some());
         crate::linux_debugfs::debugfs_remove(d);
+    }
+
+    #[test]
+    fn regset32_file_renders_register_values() {
+        let regs = [0x1234_5678u32, 0x90ab_cdefu32];
+        let defs = [
+            DebugfsReg32 { name: b"status\0".as_ptr() as *mut c_char, offset: 0 },
+            DebugfsReg32 { name: b"control\0".as_ptr() as *mut c_char, offset: 4 },
+        ];
+        let mut regset = DebugfsRegset32 {
+            regs: defs.as_ptr(),
+            nregs: defs.len() as i32,
+            base: regs.as_ptr() as *mut c_void,
+            dev: null_mut(),
+        };
+        debugfs_create_regset32(b"debugfs_regs\0".as_ptr() as *const c_char, 0o400, null_mut(), &mut regset);
+        let inode = tracefs::debug_root().lookup_path("debugfs_regs").expect("regset file");
+        let mut buf = [0u8; 96];
+        let n = inode.read(0, &mut buf).expect("read regset");
+        assert_eq!(&buf[..n], b"status = 0x12345678\ncontrol = 0x90abcdef\n");
+        tracefs::debug_root().remove_subtree("debugfs_regs");
     }
 
     #[test]

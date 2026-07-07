@@ -1,7 +1,9 @@
 #ifndef OXIDE_LINUX_DEBUGFS_H
 #define OXIDE_LINUX_DEBUGFS_H
 
+#include <linux/compiler_types.h>
 #include <linux/fs.h>
+#include <linux/seq_file.h>
 #include <linux/types.h>
 
 struct dentry {
@@ -12,6 +14,18 @@ struct dentry {
 struct debugfs_blob_wrapper {
     void *data;
     unsigned long size;
+};
+
+struct debugfs_reg32 {
+    char *name;
+    unsigned long offset;
+};
+
+struct debugfs_regset32 {
+    const struct debugfs_reg32 *regs;
+    int nregs;
+    void __iomem *base;
+    struct device *dev;
 };
 
 int debugfs_initialized(void);
@@ -28,6 +42,8 @@ struct dentry *debugfs_create_x32(const char *name, umode_t mode, struct dentry 
 struct dentry *debugfs_create_x64(const char *name, umode_t mode, struct dentry *parent, u64 *value);
 struct dentry *debugfs_create_bool(const char *name, umode_t mode, struct dentry *parent, bool *value);
 struct dentry *debugfs_create_blob(const char *name, umode_t mode, struct dentry *parent, struct debugfs_blob_wrapper *blob);
+void debugfs_create_regset32(const char *name, umode_t mode, struct dentry *parent, struct debugfs_regset32 *regset);
+void debugfs_print_regs32(struct seq_file *s, const struct debugfs_reg32 *regs, int nregs, void __iomem *base, char *prefix);
 struct dentry *debugfs_create_symlink(const char *name, struct dentry *parent, const char *target);
 void debugfs_remove(struct dentry *dentry);
 void debugfs_remove_recursive(struct dentry *dentry);

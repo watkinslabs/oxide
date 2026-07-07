@@ -149,6 +149,8 @@ pub fn export_symbols() {
         ("debugfs_lookup",           debugfs_lookup           as *const () as usize),
         ("debugfs_initialized",      debugfs_initialized      as *const () as usize),
     ] { export(name, addr, false); }
+    export("debugfs_create_regset32", crate::linux_debugfs_extra::debugfs_create_regset32 as *const () as usize, true);
+    export("debugfs_print_regs32",    crate::linux_debugfs_extra::debugfs_print_regs32    as *const () as usize, true);
 }
 
 extern "C" fn debugfs_initialized() -> i32 { 1 }
