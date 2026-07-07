@@ -41,6 +41,7 @@
 #include <linux/rwlock.h>
 #include <linux/rwsem.h>
 #include <linux/seqlock.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/spinlock.h>
@@ -200,6 +201,26 @@ static const struct file_operations sample_fops = {
     .unlocked_ioctl = sample_chr_ioctl,
     .release = sample_chr_release,
     .llseek = noop_llseek,
+};
+static int sample_seq_show(struct seq_file *m, void *v)
+{
+    (void)v;
+    seq_puts(m, "sample ");
+    seq_putc(m, 'x');
+    seq_write(m, ":", 1);
+    return seq_printf(m, "%u\n", 1);
+}
+static int sample_seq_open(struct inode *inode, struct file *file)
+{
+    (void)inode;
+    return single_open(file, sample_seq_show, NULL);
+}
+static const struct file_operations sample_seq_fops = {
+    .owner = THIS_MODULE,
+    .open = sample_seq_open,
+    .read = seq_read,
+    .release = single_release,
+    .llseek = seq_lseek,
 };
 static const struct pci_device_id sample_pci_ids[] = {
     { PCI_DEVICE(SAMPLE_PCI_VENDOR, SAMPLE_PCI_DEVICE) },
@@ -558,6 +579,7 @@ static int __init sample_init(void)
     debug_file = debugfs_create_u32("value", 0600, debug_dir, &debug_value);
     debugfs_remove(debug_file);
     debug_file = debugfs_create_file_size("simple", 0600, debug_dir, &debug_value, &sample_simple_fops, 8);
+    debugfs_remove(debugfs_create_file("seq", 0400, debug_dir, NULL, &sample_seq_fops));
     debug_blob.data = debug_blob_data;
     debug_blob.size = sizeof(debug_blob_data);
     debug_blob_file = debugfs_create_blob("blob", 0400, debug_dir, &debug_blob);
