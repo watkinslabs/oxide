@@ -24,6 +24,11 @@ struct module {
 #define MODULE_ALIAS(info) MODULE_INFO(alias, info)
 #define MODULE_FIRMWARE(info) MODULE_INFO(firmware, info)
 #define MODULE_DEVICE_TABLE(type, name) extern const typeof(name) __mod_##type##__##name##_device_table __attribute__((alias(#name)))
+#define module_driver(__driver, __register, __unregister) \
+    static int __init __driver##_init(void) { return __register(&(__driver)); } \
+    static void __exit __driver##_exit(void) { __unregister(&(__driver)); } \
+    module_init(__driver##_init); \
+    module_exit(__driver##_exit)
 #define module_param(name, type, perm) static const char __param_##name[] __used __section("__param") = #name ":" #type ":" #perm
 #define MODULE_PARM_DESC(name, desc) MODULE_INFO(parm_##name, #name ":" desc)
 
