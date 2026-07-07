@@ -29,6 +29,13 @@ Date: 2026-07-07
 - Extended `kpi/include/linux/slab.h`, `kpi/include/linux/mm.h`, and `tools/kpi-header-smoke.c` for the new allocator surface.
 - Valid Fedora module audit now resolves those allocator symbols. Overall audit still exits nonzero because remaining misses include real `vmap`/`vunmap` page-table alias support plus other KPI lanes: workqueue/time, USB gadget, module refcounting, device/sysfs helpers, compiler/runtime helpers, and target/SCSI-specific helpers.
 
+## CRC Follow-Up
+
+- Added Linux T10-DIF CRC exports required by Fedora 6.16 `target_core_mod`: `crc_t10dif_arch` and the matching `crc_t10dif_generic`.
+- Added `kpi/include/linux/crc-t10dif.h` with Linux-shaped `crc_t10dif_arch`, `crc_t10dif_generic`, `crc_t10dif_update`, and `crc_t10dif` declarations.
+- The implementation uses the T10-DIF polynomial `0x8BB7` and is covered by the standard `"123456789"` known vector `0xD0DB`.
+- Valid Fedora module audit now resolves the `crc_t10dif_arch` reference; no `MISSING | crypto-random-crc` rows remain for `target_core_mod`, `libcomposite`, or `industrialio-configfs`.
+
 ## Sync Follow-Up
 
 - Added Fedora 6.16-era sync/RCU exports required by real module audits: `_raw_spin_lock_bh`, `_raw_spin_lock_irq`, `_raw_spin_lock_irqsave`, `_raw_spin_unlock_bh`, `_raw_spin_unlock_irq`, `_raw_spin_unlock_irqrestore`, `__mutex_init`, `mutex_lock_interruptible`, `sema_init`, `down`, `down_interruptible`, `down_trylock`, `up`, `wait_for_completion_interruptible`, `wait_for_completion_timeout`, `__init_waitqueue_head`, `__init_swait_queue_head`, `__wake_up`, `init_wait_entry`, `prepare_to_wait_event`, `finish_wait`, `__rcu_read_lock`, `__rcu_read_unlock`, `synchronize_rcu`, `rcu_barrier`, and `refcount_warn_saturate`.
@@ -92,9 +99,11 @@ F674 result:
 - Exported `string-runtime` matches now cover 34 real-module references; no `MISSING | string-runtime` rows remain.
 - After the slab-cache allocator follow-up, the audit reported 575 exports, 280 undefined refs, 225 unique symbols, 113 missing symbols, 0 weak-missing, and 112 exported matches.
 - Exported allocator matches now include `__kmem_cache_create_args`, `kmem_cache_alloc_noprof`, `kmem_cache_destroy`, `kmem_cache_free`, and `vzalloc_noprof`; remaining allocator misses are `vmap` and `vunmap`, which were not stubbed because the current module layer lacks a real vmalloc VA/page-table alias primitive.
+- After the CRC follow-up, the audit reported 577 exports, 280 undefined refs, 225 unique symbols, 112 missing symbols, 0 weak-missing, and 113 exported matches.
+- Exported `crypto-random-crc` matches now include `crc_t10dif_arch`; no `MISSING | crypto-random-crc` rows remain.
 
 The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, module refcounting, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
-After the allocator, sync, DMA/scatterlist, and string/runtime follow-ups, the remaining audit misses no longer include the modern allocator slab-cache symbols, sync/RCU, DMA/scatterlist, or string/runtime symbols listed above. Real `vmap`/`vunmap` remain allocator work.
+After the allocator, sync, DMA/scatterlist, string/runtime, and CRC follow-ups, the remaining audit misses no longer include the modern allocator slab-cache symbols, sync/RCU, DMA/scatterlist, string/runtime, or crypto-random-crc symbols listed above. Real `vmap`/`vunmap` remain allocator work.
 
 ## Validation Passed
 
@@ -105,6 +114,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `cargo test -q -p modules linux_sync`
 - `cargo test -q -p modules linux_dma`
 - `cargo test -q -p modules linux_string`
+- `cargo test -q -p modules linux_crypto::crc`
 - `cargo test -q -p modules -- --test-threads=1`
 - `cargo test -q -p vfs`
 - `cc -std=gnu11 -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
@@ -112,6 +122,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `clang -std=gnu11 -target aarch64-unknown-linux-gnu -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining allocator slab-cache, sync/RCU, DMA/scatterlist, string/runtime, or debugfs/configfs missing rows)
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after slab-cache allocator follow-up (expected nonzero overall; allocator missing rows reduced to real `vmap`/`vunmap` only)
+- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after CRC follow-up (expected nonzero overall; 577 exports, 112 missing, 113 exported matches, and no remaining `crypto-random-crc` missing rows)
 - `cargo run -q -p xtask -- kernel --arch x86_64`
 - `cargo run -q -p xtask -- kernel --arch aarch64`
 - `git diff --check`
@@ -120,6 +131,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - DMA source line-count check: `linux_dma.rs` is 452 lines, `linux_dma_sgl.rs` is 52 lines, `linux_dma_tests.rs` is 96 lines.
 - Allocator source line-count check after slab-cache split: `linux_alloc.rs` is 469 lines, `linux_alloc_cache.rs` is 74 lines, and `linux_alloc_tests.rs` is 135 lines.
 - String/runtime line-count check: `linux_string.rs` is 23 lines; child files are 210 lines or less.
+- CRC source line-count check: `linux_crypto/crc.rs` is 128 lines.
 
 ## Next Steps
 

@@ -6,6 +6,7 @@
 #include <linux/configfs.h>
 #include <linux/crc32.h>
 #include <linux/crc32c.h>
+#include <linux/crc-t10dif.h>
 #include <linux/delay.h>
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
@@ -494,6 +495,7 @@ static int __init sample_init(void)
     u16 pci_cfg16;
     u32 pci_cfg32;
     u32 crc;
+    u16 crc16;
     u8 random_buf[SAMPLE_RANDOM_LEN];
     u8 digest[SAMPLE_CRYPTO_DIGEST_LEN];
     struct kmem_cache_args cache_args = {
@@ -595,6 +597,11 @@ static int __init sample_init(void)
     crc = crc32_be(crc, random_buf, sizeof(random_buf));
     crc = crc32c(crc, random_buf, sizeof(random_buf));
     crc = __crc32c_le(crc, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif_arch(0, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif_generic(crc16, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif_update(crc16, random_buf, sizeof(random_buf));
+    crc16 = crc_t10dif(random_buf, sizeof(random_buf));
+    (void)crc16;
     crc ^= get_random_u32();
     crc ^= prandom_u32();
     crc ^= (u32)get_random_u64();
