@@ -10,6 +10,7 @@ use net::{MacAddr, NetDev, NetError, NetIfaceId, NetStats, Pkt};
 
 const NETDEV_STATE_QUEUE_STOPPED: u32 = 1 << 0;
 const NETDEV_STATE_CARRIER_OFF: u32 = 1 << 1;
+const NETDEV_STATE_TX_LOCKED: u32 = 1 << 2;
 const NAME_FALLBACK: &str = "net";
 const ETHERTYPE_OFFSET: usize = ETH_HLEN - 2;
 
@@ -26,13 +27,24 @@ pub(super) fn export_symbols() {
     export("ether_setup",       netalloc::ether_setup       as *const () as usize, false);
     export("eth_hw_addr_set",   netalloc::eth_hw_addr_set   as *const () as usize, false);
     export("register_netdev",   register_netdev             as *const () as usize, false);
+    export("register_netdevice", register_netdevice          as *const () as usize, false);
     export("unregister_netdev", unregister_netdev           as *const () as usize, false);
     export("netif_rx",          netif_rx                    as *const () as usize, false);
     export("netif_start_queue", netif_start_queue           as *const () as usize, false);
     export("netif_stop_queue",  netif_stop_queue            as *const () as usize, false);
     export("netif_wake_queue",  netif_wake_queue            as *const () as usize, false);
+    export("netif_tx_wake_queue", netif_tx_wake_queue        as *const () as usize, false);
+    export("netif_tx_stop_all_queues", netif_tx_stop_all_queues as *const () as usize, false);
+    export("netif_tx_lock",     netif_tx_lock                as *const () as usize, false);
+    export("netif_tx_unlock",   netif_tx_unlock              as *const () as usize, false);
     export("netif_carrier_on",  netif_carrier_on            as *const () as usize, false);
     export("netif_carrier_off", netif_carrier_off           as *const () as usize, false);
+    export("netif_set_real_num_tx_queues", netif_set_real_num_tx_queues as *const () as usize, false);
+    export("netif_set_real_num_rx_queues", netif_set_real_num_rx_queues as *const () as usize, false);
+    export("netif_set_tso_max_size", netif_set_tso_max_size as *const () as usize, false);
+    export("netif_set_tso_max_segs", netif_set_tso_max_segs as *const () as usize, false);
+    export("__netif_set_xps_queue", __netif_set_xps_queue    as *const () as usize, false);
+    export("netif_enable_cpu_rmap", netif_enable_cpu_rmap    as *const () as usize, false);
 }
 
 /// # C: O(N netdevs)
@@ -51,6 +63,12 @@ unsafe extern "C" fn register_netdev(dev: *mut LinuxNetDevice) -> i32 {
         (*dev).flags |= IFF_UP | IFF_RUNNING;
     }
     LINUX_OK
+}
+
+/// # C: O(N netdevs)
+unsafe extern "C" fn register_netdevice(dev: *mut LinuxNetDevice) -> i32 {
+    // SAFETY: same ABI contract as register_netdev.
+    unsafe { register_netdev(dev) }
 }
 
 /// # C: O(N netdevs)
@@ -103,6 +121,12 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
     }
 }
 
+/// # C: O(frame)
+pub(super) unsafe fn netif_rx_for_napi(skbp: *mut LinuxSkBuff) -> i32 {
+    // SAFETY: NAPI/GRO callers transfer skb ownership to the RX path.
+    unsafe { netif_rx(skbp) }
+}
+
 /// # C: O(1)
 unsafe extern "C" fn netif_start_queue(dev: *mut LinuxNetDevice) {
     // SAFETY: C caller supplies a net_device pointer or NULL.
@@ -119,6 +143,26 @@ unsafe extern "C" fn netif_wake_queue(dev: *mut LinuxNetDevice) {
     unsafe { clear_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
 }
 /// # C: O(1)
+unsafe extern "C" fn netif_tx_wake_queue(dev: *mut LinuxNetDevice) {
+    // SAFETY: C caller supplies a net_device pointer or NULL.
+    unsafe { clear_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
+}
+/// # C: O(1)
+unsafe extern "C" fn netif_tx_stop_all_queues(dev: *mut LinuxNetDevice) {
+    // SAFETY: C caller supplies a net_device pointer or NULL.
+    unsafe { set_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
+}
+/// # C: O(1)
+unsafe extern "C" fn netif_tx_lock(dev: *mut LinuxNetDevice) {
+    // SAFETY: C caller supplies a net_device pointer or NULL.
+    unsafe { set_state(dev, NETDEV_STATE_TX_LOCKED); }
+}
+/// # C: O(1)
+unsafe extern "C" fn netif_tx_unlock(dev: *mut LinuxNetDevice) {
+    // SAFETY: C caller supplies a net_device pointer or NULL.
+    unsafe { clear_state(dev, NETDEV_STATE_TX_LOCKED); }
+}
+/// # C: O(1)
 unsafe extern "C" fn netif_carrier_on(dev: *mut LinuxNetDevice) {
     // SAFETY: C caller supplies a net_device pointer or NULL.
     unsafe { clear_state(dev, NETDEV_STATE_CARRIER_OFF); }
@@ -127,6 +171,52 @@ unsafe extern "C" fn netif_carrier_on(dev: *mut LinuxNetDevice) {
 unsafe extern "C" fn netif_carrier_off(dev: *mut LinuxNetDevice) {
     // SAFETY: C caller supplies a net_device pointer or NULL.
     unsafe { set_state(dev, NETDEV_STATE_CARRIER_OFF); }
+}
+
+/// # C: O(1)
+unsafe extern "C" fn netif_set_real_num_tx_queues(dev: *mut LinuxNetDevice, n: u32) -> i32 {
+    if dev.is_null() || n == 0 { return -LINUX_EINVAL; }
+    // SAFETY: dev points to a valid net_device.
+    unsafe { (*dev).real_num_tx_queues = n; }
+    LINUX_OK
+}
+
+/// # C: O(1)
+unsafe extern "C" fn netif_set_real_num_rx_queues(dev: *mut LinuxNetDevice, n: u32) -> i32 {
+    if dev.is_null() || n == 0 { return -LINUX_EINVAL; }
+    // SAFETY: dev points to a valid net_device.
+    unsafe { (*dev).real_num_rx_queues = n; }
+    LINUX_OK
+}
+
+/// # C: O(1)
+unsafe extern "C" fn netif_set_tso_max_size(dev: *mut LinuxNetDevice, size: u32) {
+    if dev.is_null() { return; }
+    // SAFETY: dev points to a valid net_device.
+    unsafe { (*dev).tso_max_size = size; }
+}
+
+/// # C: O(1)
+unsafe extern "C" fn netif_set_tso_max_segs(dev: *mut LinuxNetDevice, segs: u16) {
+    if dev.is_null() { return; }
+    // SAFETY: dev points to a valid net_device.
+    unsafe { (*dev).tso_max_segs = segs; }
+}
+
+/// # C: O(1)
+unsafe extern "C" fn __netif_set_xps_queue(_dev: *mut LinuxNetDevice, _mask: *const core::ffi::c_void, _index: u16) -> i32 {
+    LINUX_OK
+}
+
+/// # C: O(1)
+unsafe extern "C" fn netif_enable_cpu_rmap(_dev: *mut LinuxNetDevice, _queues: u16) -> i32 {
+    LINUX_OK
+}
+
+pub(super) unsafe fn carrier_is_on(dev: *const LinuxNetDevice) -> bool {
+    if dev.is_null() { return false; }
+    // SAFETY: dev points to a valid net_device.
+    unsafe { (*dev).state.load(Ordering::Acquire) & NETDEV_STATE_CARRIER_OFF == 0 }
 }
 
 struct LinuxNetAdapter {
