@@ -42,7 +42,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 |----|-----------|--------|--------|-----|
 | G1 | kill(-1) broadcast (62) | DONE | B634 #TBD | `post_broadcast`: signal every real user proc the caller may signal, excluding self + init(vtgid 1) + kthreads(vtgid 0). Returns 0 / ESRCH. |
 | G2 | nanosleep/clock_nanosleep EINTR (35/230) | DONE | B638 #2803 | both loops now check `pending & !sigmask` each iteration → EINTR + write `rem` (TIMER_ABSTIME skips rem). |
-| G3 | getrusage/times (98/100) | TODO | | report wall-clock for utime, zeroed counters. Track real per-task CPU time + rusage counters. |
+| G3 | getrusage/times (98/100) | DONE | B645 #TBD | real per-task utime/stime via tick-sampling (Linux CONFIG_TICK_CPU_ACCOUNTING): both arch timer ISRs charge the real inter-tick monotonic delta to the interrupted task's utime (from_user) or stime bucket via `cpustat::charge_current_tick` (timer isn't fixed 100Hz here, so real-delta not jiffy; clamped 100ms). New Task utime_ns/stime_ns + cumulative_child_{u,s}time_ns; getrusage/times read them; child time rolls up on reap (signal_child_exit). ru_maxrss/faults stay 0 (out of scope). Boot-verified `/bin/cputime_probe` (user busy-loop → ru_utime>0 && tms_utime>0) → PASS. |
 | G4 | set_robust_list exit walk (273) | TODO | | registers head but thread-exit never walks the robust list to wake futex waiters. |
 | G5 | seccomp arg[5] (core.rs:26) | DONE | B635 #TBD | `check()` now passes the real `a5` (already read into args) instead of literal 0; filters inspecting args[5] evaluate correctly. |
 | G6 | process_madvise/process_mrelease (440/448) | TODO | | fake success; resolve pidfd → target AS and apply advice / reap. |
