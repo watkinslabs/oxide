@@ -4,6 +4,8 @@ extern crate alloc;
 
 #[path = "linux_alloc_cache.rs"]
 mod cache;
+#[path = "linux_alloc_vmap.rs"]
+mod vmap;
 
 use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::boxed::Box;
@@ -60,6 +62,8 @@ pub fn export_symbols() {
     export("kvfree_call_rcu",   kvfree_call_rcu  as *const () as usize, true);
     export("vmalloc",          vmalloc          as *const () as usize, false);
     export("vfree",            vfree            as *const () as usize, false);
+    export("vmap",             vmap::vmap       as *const () as usize, false);
+    export("vunmap",           vmap::vunmap     as *const () as usize, false);
     export("alloc_pages",      alloc_pages      as *const () as usize, false);
     export("alloc_pages_noprof", alloc_pages_noprof as *const () as usize, false);
     export("__alloc_pages_noprof", __alloc_pages_noprof as *const () as usize, false);

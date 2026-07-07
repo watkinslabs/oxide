@@ -45,6 +45,30 @@ fn page_runs_support_struct_page_and_free_pages() {
 }
 
 #[test]
+fn vmap_single_page_aliases_and_unmaps() {
+    let page = alloc_pages(GFP_ZERO, 0);
+    assert!(!page.is_null());
+    let mut pages = [page];
+    let addr = unsafe { vmap::vmap(pages.as_mut_ptr(), 1, 0, 0) };
+    assert_eq!(addr as *mut u8, page_address(page));
+    vmap::vunmap(addr);
+    __free_pages(page, 0);
+}
+
+#[test]
+fn vmap_rejects_non_contiguous_page_list() {
+    let a = alloc_pages(GFP_ZERO, 0);
+    let b = alloc_pages(GFP_ZERO, 0);
+    assert!(!a.is_null());
+    assert!(!b.is_null());
+    let mut pages = [a, b];
+    let addr = unsafe { vmap::vmap(pages.as_mut_ptr(), 2, 0, 0) };
+    assert!(addr.is_null());
+    __free_pages(a, 0);
+    __free_pages(b, 0);
+}
+
+#[test]
 fn string_helpers_copy_and_format() {
     let dup = unsafe { kstrdup(b"drv\0".as_ptr(), 0) };
     assert_eq!(unsafe { cstr(dup) }, "drv");
@@ -121,7 +145,7 @@ fn export_symbols_registers_allocator_surface() {
     crate::symtab::_reset();
     export_symbols();
     for name in [
-        "kmalloc", "kzalloc", "kcalloc", "kfree", "vmalloc", "vfree",
+        "kmalloc", "kzalloc", "kcalloc", "kfree", "vmalloc", "vfree", "vmap", "vunmap",
         "alloc_pages", "__free_pages", "__get_free_pages", "get_free_pages",
         "free_pages", "page_address", "page_to_phys", "kstrdup", "kasprintf",
         "__kmalloc_noprof", "__kmalloc_cache_noprof", "__kvmalloc_node_noprof",
