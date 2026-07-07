@@ -9,12 +9,15 @@ path = "src/lib.rs"
 
 [dependencies]
 hal  = { path = "../../arch/hal" }
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 elf  = { path = "../../shared/elf" }
 pmm  = { path = "../mm-pmm" }
 sched = { path = "../sched" }
 timer = { path = "../timer" }
+mmio-map = { path = "../mmio-map" }
 
 [features]
 default = []

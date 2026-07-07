@@ -6,6 +6,7 @@
 #include <linux/hrtimer.h>
 #include <linux/idr.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <linux/jiffies.h>
 #include <linux/kref.h>
 #include <linux/kthread.h>
@@ -40,6 +41,9 @@ static DEFINE_IDR(sample_idr);
 static DECLARE_BITMAP(sample_bits, 128);
 static DECLARE_WORK(sample_work, NULL);
 static DECLARE_TASKLET(sample_tasklet, NULL, 0);
+enum { SAMPLE_MMIO_SIZE = 4096 };
+enum { SAMPLE_IO_PORT = 0 };
+enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
 static void sample_timer_fn(struct timer_list *timer) { (void)timer; }
@@ -65,6 +69,8 @@ static int __init sample_init(void)
     struct kref kref;
     struct lock_class_key key;
     unsigned int start;
+    void __iomem *regs;
+    u8 port8;
     INIT_LIST_HEAD(&s.link);
     list_add(&s.link, &samples);
     set_bit(3, sample_bits);
@@ -83,6 +89,29 @@ static int __init sample_init(void)
     (void)page_to_phys(NULL);
     (void)kstrdup("driver", GFP_KERNEL);
     (void)kasprintf(GFP_KERNEL, "driver %d", 1);
+    regs = ioremap(0, SAMPLE_MMIO_SIZE);
+    (void)readb(regs);
+    (void)readw(regs);
+    (void)readl(regs);
+    (void)readq(regs);
+    writeb(SAMPLE_WRITEB, regs);
+    writew(SAMPLE_WRITEW, regs);
+    writel(SAMPLE_WRITEL, regs);
+    writeq(SAMPLE_WRITEQ, regs);
+    memcpy_toio(regs, &s, sizeof(s));
+    memcpy_fromio(&s, regs, sizeof(s));
+    memset_io(regs, 0, sizeof(s));
+    port8 = inb(SAMPLE_IO_PORT);
+    outb(port8, SAMPLE_IO_PORT);
+    (void)inw(SAMPLE_IO_PORT);
+    (void)inl(SAMPLE_IO_PORT);
+    outw(0, SAMPLE_IO_PORT);
+    outl(0, SAMPLE_IO_PORT);
+    mb();
+    rmb();
+    wmb();
+    mmiowb();
+    iounmap(regs);
     (void)jiffies;
     (void)msecs_to_jiffies(10);
     (void)jiffies_to_msecs(1);
