@@ -38,12 +38,34 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     };
     let start = monotonic();
     let deadline = start.saturating_add(rel_ns);
+    let is_abs = (flags & TIMER_ABSTIME) != 0;
+    let cur = sched::live::current();
     loop {
         if monotonic() >= deadline { break; }
+        // Interruptible: an unblocked pending signal aborts with EINTR. A
+        // RELATIVE sleep reports the time left in `rem`; TIMER_ABSTIME does not
+        // (Linux clock_nanosleep). Mirror of the poll/pselect6 EINTR check.
+        if let Some(c) = cur {
+            use core::sync::atomic::Ordering;
+            let pending = c.sigpending.load(Ordering::Acquire);
+            let mask    = c.sigmask.load(Ordering::Acquire);
+            if pending & !mask != 0 {
+                if !is_abs && rem != 0 && rem < hal::USER_VA_END {
+                    let left  = deadline.saturating_sub(monotonic());
+                    let rsec  = (left / 1_000_000_000) as i64;
+                    let rnsec = (left % 1_000_000_000) as i64;
+                    // SAFETY: rem validated < USER_VA_END; caller's AS mapped; CPL=0 writes.
+                    unsafe {
+                        core::ptr::write_volatile(rem as *mut i64, rsec);
+                        core::ptr::write_volatile((rem + 8) as *mut i64, rnsec);
+                    }
+                }
+                return -(Errno::Eintr.as_i32() as i64);
+            }
+        }
         // SAFETY: process ctx; runqueue installed; preempt-off; voluntary tick_yield re-enters scheduler.
         unsafe { sched::live::tick_yield(); }
     }
-    let _ = rem;
     0
 }
 

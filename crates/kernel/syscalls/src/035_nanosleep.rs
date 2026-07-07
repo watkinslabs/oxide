@@ -24,7 +24,31 @@ pub fn sys_nanosleep(args: &SyscallArgs) -> i64 {
     let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let start = now();
     let deadline = start.saturating_add(total);
+    let rem = args.a1;
+    let cur = sched::live::current();
     while now() < deadline {
+        // Interruptible: an unblocked pending signal aborts the sleep with
+        // EINTR and writes the remaining time to `rem` (Linux nanosleep). Mirror
+        // of the poll/pselect6 EINTR check. Without this, `sleep` could not be
+        // interrupted by Ctrl-C / SIGTERM until the full duration elapsed.
+        if let Some(c) = cur {
+            use core::sync::atomic::Ordering;
+            let pending = c.sigpending.load(Ordering::Acquire);
+            let mask    = c.sigmask.load(Ordering::Acquire);
+            if pending & !mask != 0 {
+                if rem != 0 && rem < hal::USER_VA_END {
+                    let left  = deadline.saturating_sub(now());
+                    let rsec  = (left / 1_000_000_000) as i64;
+                    let rnsec = (left % 1_000_000_000) as i64;
+                    // SAFETY: rem validated < USER_VA_END; caller's AS mapped; CPL=0 writes.
+                    unsafe {
+                        core::ptr::write_volatile(rem as *mut i64, rsec);
+                        core::ptr::write_volatile((rem + 8) as *mut i64, rnsec);
+                    }
+                }
+                return -(Errno::Eintr.as_i32() as i64);
+            }
+        }
         if sched::live::global().is_some() {
             // SAFETY: process ctx; runqueue installed; preempt-off through the syscall handler; tick_yield saves into current.arch_ctx + Context::switch's away.
             unsafe { sched::live::tick_yield(); }
