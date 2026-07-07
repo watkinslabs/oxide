@@ -198,24 +198,11 @@ extern "C" fn pci_iounmap(_dev: *mut LinuxPciDev, addr: *mut c_void) {
 }
 
 extern "C" fn pci_alloc_irq_vectors(dev: *mut LinuxPciDev, min_vecs: i32, max_vecs: i32, flags: u32) -> i32 {
-    if dev.is_null() || min_vecs <= 0 || max_vecs < min_vecs { return -LINUX_EINVAL; }
-    if (flags & (PCI_IRQ_LEGACY | PCI_IRQ_MSI | PCI_IRQ_MSIX)) == 0 { return -LINUX_EINVAL; }
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe {
-        if (*dev).irq == 0 { return -LINUX_ENOSPC; }
-        (*dev).irq_vector_base = (*dev).irq;
-        (*dev).irq_vectors = min_vecs;
-    }
-    min_vecs
+    super::vectors::alloc_irq_vectors(dev, min_vecs, max_vecs, flags)
 }
 
 extern "C" fn pci_free_irq_vectors(dev: *mut LinuxPciDev) {
-    if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe {
-        (*dev).irq_vector_base = 0;
-        (*dev).irq_vectors = 0;
-    }
+    super::vectors::free_irq_vectors(dev);
 }
 
 extern "C" fn pci_irq_vector(dev: *mut LinuxPciDev, nr: u32) -> i32 {

@@ -1,6 +1,7 @@
 // Linux IRQ KPI exports for loadable drivers.
 
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Modules as ModulesLockClass, Spinlock};
 
 type IrqHandler = unsafe extern "C" fn(i32, *mut c_void) -> i32;
@@ -10,9 +11,10 @@ const LINUX_OK: i32 = 0;
 const LINUX_EINVAL: i32 = 22;
 const LINUX_EBUSY: i32 = 16;
 const LINUX_ENOMEM: i32 = 12;
-const LINUX_ENOSYS: i32 = 38;
 const IRQF_SHARED: u64 = 0x80;
+const IRQF_ONESHOT: u64 = 0x0000_2000;
 const IRQF_TRIGGER_NONE: u64 = 0;
+const IRQ_WAKE_THREAD: i32 = 2;
 #[cfg(target_arch = "aarch64")]
 const IRQF_TRIGGER_HIGH: u64 = 0x0000_0004;
 #[cfg(target_arch = "aarch64")]
@@ -24,19 +26,27 @@ const ARM_LPI_BASE: u32 = 8192;
 struct IrqRecord {
     irq: u32,
     handler: usize,
+    thread_fn: usize,
     dev_id: usize,
     flags: u64,
     enabled: bool,
+    pending: u32,
+    running: u32,
 }
 
 #[derive(Copy, Clone)]
 struct IrqCall {
     handler: usize,
+    thread_fn: usize,
     dev_id: usize,
+    slot: usize,
 }
 
 static IRQ_RECORDS: Spinlock<[Option<IrqRecord>; MAX_IRQ_RECORDS], ModulesLockClass> =
     Spinlock::new([None; MAX_IRQ_RECORDS]);
+#[cfg(target_os = "oxide-kernel")]
+static IRQ_THREAD_WAIT: sched::live::WaitList = sched::live::WaitList::new();
+static IRQ_THREAD_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Register Linux IRQ KPI symbols.
 /// # C: O(1)
@@ -75,8 +85,7 @@ extern "C" fn request_threaded_irq(
     _name: *const u8,
     dev_id: *mut c_void,
 ) -> i32 {
-    if thread_fn.is_some() { return -LINUX_ENOSYS; }
-    let handler = match handler { Some(v) => v, None => return -LINUX_EINVAL };
+    if handler.is_none() && thread_fn.is_none() { return -LINUX_EINVAL; }
     if (flags & IRQF_SHARED) != 0 && dev_id.is_null() { return -LINUX_EINVAL; }
     let mut g = IRQ_RECORDS.lock();
     let shared = (flags & IRQF_SHARED) != 0;
@@ -94,16 +103,27 @@ extern "C" fn request_threaded_irq(
     if !has_line && install_arch_handler(irq).is_err() { return -LINUX_EINVAL; }
     g[slot] = Some(IrqRecord {
         irq,
-        handler: handler as usize,
+        handler: handler.map(|v| v as usize).unwrap_or(0),
+        thread_fn: thread_fn.map(|v| v as usize).unwrap_or(0),
         dev_id: dev_id as usize,
         flags,
         enabled: true,
+        pending: 0,
+        running: 0,
     });
     arch_enable_irq(irq, flags);
+    if thread_fn.is_some() { ensure_irq_thread(); }
     LINUX_OK
 }
 
 extern "C" fn free_irq(irq: u32, dev_id: *mut c_void) {
+    {
+        let mut g = IRQ_RECORDS.lock();
+        if let Some(rec) = g.iter_mut().flatten().find(|rec| rec.irq == irq && rec.dev_id == dev_id as usize) {
+            rec.enabled = false;
+        }
+    }
+    synchronize_irq(irq);
     let free_arch = {
         let mut g = IRQ_RECORDS.lock();
         if let Some(idx) = g.iter().position(|r| {
@@ -127,13 +147,25 @@ extern "C" fn enable_irq(irq: u32) {
 extern "C" fn disable_irq(irq: u32) {
     set_irq_enabled(irq, false);
     arch_disable_irq(irq);
+    synchronize_irq(irq);
 }
 
 extern "C" fn disable_irq_nosync(irq: u32) {
-    disable_irq(irq);
+    set_irq_enabled(irq, false);
+    arch_disable_irq(irq);
 }
 
-extern "C" fn synchronize_irq(_irq: u32) {}
+extern "C" fn synchronize_irq(irq: u32) {
+    drain_irq_threads();
+    #[cfg(target_os = "oxide-kernel")]
+    while irq_thread_busy(irq) {
+        // SAFETY: synchronize_irq is process context; yielding lets the IRQ worker drain.
+        unsafe { sched::live::park_yield(); }
+        drain_irq_threads();
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = irq;
+}
 
 extern "C" fn irq_set_affinity_hint(_irq: u32, _mask: *const c_void) -> i32 { LINUX_OK }
 extern "C" fn irq_update_affinity_hint(_irq: u32, _mask: *const c_void) -> i32 { LINUX_OK }
@@ -154,23 +186,111 @@ fn set_irq_enabled(irq: u32, enabled: bool) {
 }
 
 fn linux_irq_dispatch(irq: u32) {
-    let mut calls = [IrqCall { handler: 0, dev_id: 0 }; MAX_IRQ_RECORDS];
+    let mut calls = [IrqCall { handler: 0, thread_fn: 0, dev_id: 0, slot: 0 }; MAX_IRQ_RECORDS];
     let mut n = 0usize;
     {
         let g = IRQ_RECORDS.lock();
-        for rec in g.iter().flatten() {
+        for (slot, rec) in g.iter().enumerate().filter_map(|(i, r)| r.map(|v| (i, v))) {
             if rec.irq == irq && rec.enabled {
-                calls[n] = IrqCall { handler: rec.handler, dev_id: rec.dev_id };
+                calls[n] = IrqCall { handler: rec.handler, thread_fn: rec.thread_fn, dev_id: rec.dev_id, slot };
                 n += 1;
             }
         }
     }
     for call in calls.iter().take(n) {
-        // SAFETY: handler was installed from a non-null C irq_handler_t in request_irq.
-        let f: IrqHandler = unsafe { core::mem::transmute(call.handler) };
-        // SAFETY: Linux IRQ handlers own their dev_id contract.
-        let _ = unsafe { f(irq as i32, call.dev_id as *mut c_void) };
+        let wake = if call.handler == 0 {
+            call.thread_fn != 0
+        } else {
+            // SAFETY: handler was installed from a non-null C irq_handler_t in request_irq.
+            let f: IrqHandler = unsafe { core::mem::transmute(call.handler) };
+            // SAFETY: Linux IRQ handlers own their dev_id contract.
+            (unsafe { f(irq as i32, call.dev_id as *mut c_void) }) == IRQ_WAKE_THREAD
+        };
+        if wake && call.thread_fn != 0 { wake_irq_thread(call.slot); }
     }
+}
+
+fn ensure_irq_thread() {
+    if IRQ_THREAD_STARTED.load(Ordering::Acquire) { return; }
+    #[cfg(target_os = "oxide-kernel")]
+    if IRQ_THREAD_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        let tid = sched::live::next_tid();
+        // SAFETY: request_threaded_irq runs after scheduler init in the kernel module path.
+        if let Ok(task) = unsafe { sched::live::spawn_kernel_thread(tid, "irqthread", irq_thread_entry, 0) } {
+            core::mem::forget(task);
+        } else {
+            IRQ_THREAD_STARTED.store(false, Ordering::Release);
+        }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    IRQ_THREAD_STARTED.store(true, Ordering::Release);
+}
+
+fn wake_irq_thread(slot: usize) {
+    {
+        let mut g = IRQ_RECORDS.lock();
+        if let Some(rec) = g.get_mut(slot).and_then(Option::as_mut) {
+            rec.pending = rec.pending.saturating_add(1);
+            if (rec.flags & IRQF_ONESHOT) != 0 { rec.enabled = false; }
+        }
+    }
+    #[cfg(target_os = "oxide-kernel")]
+    IRQ_THREAD_WAIT.wake_one();
+    #[cfg(not(target_os = "oxide-kernel"))]
+    drain_irq_threads();
+}
+
+#[cfg(target_os = "oxide-kernel")]
+extern "C" fn irq_thread_entry(_arg: usize) -> ! {
+    loop {
+        drain_irq_threads();
+        // SAFETY: irqthread is the running task and yields immediately after parking.
+        unsafe { IRQ_THREAD_WAIT.park(); }
+        // SAFETY: irqthread just parked itself and must schedule away.
+        unsafe { sched::live::park_yield(); }
+    }
+}
+
+fn drain_irq_threads() {
+    while let Some(call) = take_pending_thread() {
+        // SAFETY: thread_fn was installed from a non-null C irq_handler_t in request_threaded_irq.
+        let f: IrqHandler = unsafe { core::mem::transmute(call.thread_fn) };
+        // SAFETY: Linux threaded IRQ handlers own their dev_id contract.
+        let _ = unsafe { f(call.handler as i32, call.dev_id as *mut c_void) };
+        finish_thread(call.slot);
+    }
+}
+
+fn take_pending_thread() -> Option<IrqCall> {
+    let mut g = IRQ_RECORDS.lock();
+    for (slot, rec) in g.iter_mut().enumerate() {
+        let rec = match rec { Some(v) => v, None => continue };
+        if rec.pending == 0 || rec.thread_fn == 0 { continue; }
+        rec.pending -= 1;
+        rec.running = rec.running.saturating_add(1);
+        return Some(IrqCall { handler: rec.irq as usize, thread_fn: rec.thread_fn, dev_id: rec.dev_id, slot });
+    }
+    None
+}
+
+fn finish_thread(slot: usize) {
+    let mut g = IRQ_RECORDS.lock();
+    if let Some(rec) = g.get_mut(slot).and_then(Option::as_mut) {
+        rec.running = rec.running.saturating_sub(1);
+        if rec.running == 0 && rec.pending == 0 && (rec.flags & IRQF_ONESHOT) != 0 {
+            rec.enabled = true;
+            arch_enable_irq(rec.irq, rec.flags);
+        }
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn irq_thread_busy(irq: u32) -> bool {
+    let g = IRQ_RECORDS.lock();
+    g.iter().flatten().any(|rec| rec.irq == irq && (rec.pending != 0 || rec.running != 0))
 }
 
 fn install_arch_handler(irq: u32) -> Result<(), ()> {
@@ -230,57 +350,4 @@ fn arch_disable_irq(irq: u32) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    static HITS: AtomicUsize = AtomicUsize::new(0);
-    const TEST_DEV_ID: usize = 0x1000;
-
-    unsafe extern "C" fn test_handler(_irq: i32, dev_id: *mut c_void) -> i32 {
-        assert_eq!(dev_id as usize, TEST_DEV_ID);
-        HITS.fetch_add(1, Ordering::Relaxed);
-        1
-    }
-
-    #[test]
-    fn request_dispatch_disable_and_free_irq() {
-        let irq = hal_x86_64::VEC_MSI_POOL_FIRST as u32;
-        HITS.store(0, Ordering::Relaxed);
-        assert_eq!(request_irq(irq, Some(test_handler), 0, core::ptr::null(), TEST_DEV_ID as *mut c_void), LINUX_OK);
-        assert!(arch_irq::invoke_x86_line_handler(irq as u8));
-        assert_eq!(HITS.load(Ordering::Relaxed), 1);
-        disable_irq(irq);
-        assert!(arch_irq::invoke_x86_line_handler(irq as u8));
-        assert_eq!(HITS.load(Ordering::Relaxed), 1);
-        enable_irq(irq);
-        assert!(arch_irq::invoke_x86_line_handler(irq as u8));
-        assert_eq!(HITS.load(Ordering::Relaxed), 2);
-        free_irq(irq, TEST_DEV_ID as *mut c_void);
-        assert!(!arch_irq::invoke_x86_line_handler(irq as u8));
-    }
-
-    #[test]
-    fn rejects_duplicate_unshared_and_threaded_irq() {
-        let irq = hal_x86_64::VEC_MSI_POOL_FIRST as u32 + 1;
-        assert_eq!(request_irq(irq, Some(test_handler), 0, core::ptr::null(), TEST_DEV_ID as *mut c_void), LINUX_OK);
-        assert_eq!(request_irq(irq, Some(test_handler), 0, core::ptr::null(), (TEST_DEV_ID + 1) as *mut c_void), -LINUX_EBUSY);
-        free_irq(irq, TEST_DEV_ID as *mut c_void);
-        assert_eq!(
-            request_threaded_irq(irq, Some(test_handler), Some(test_handler), 0, core::ptr::null(), TEST_DEV_ID as *mut c_void),
-            -LINUX_ENOSYS
-        );
-    }
-
-    #[test]
-    fn export_symbols_registers_irq_surface() {
-        crate::symtab::_reset();
-        export_symbols();
-        for name in [
-            "request_irq", "request_threaded_irq", "free_irq", "enable_irq",
-            "disable_irq", "disable_irq_nosync", "synchronize_irq", "in_irq",
-        ] {
-            assert!(crate::symtab::is_exported(name));
-        }
-    }
-}
+mod tests;
