@@ -22,8 +22,8 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
 | D1 | pwritev / pwritev2 (296/328) | DONE | B632 #TBD | `296_pwritev.rs` now a positional write mirroring `preadv`: extracts pos_l/pos_h, writes each iovec at the running offset via `inode().write(off,buf)`, never touches `f_pos`. |
-| D2 | sync(2) | TODO | | `route_b.rs:99` `NR_SYNC => 0` no-op. Iterate `vfs::mount::MOUNTS` calling `SuperBlock::sync_filesystem`. |
-| D3 | syncfs(2) | TODO | | `074_fsync.rs` flushes only the fd's inode. Route SYNCFS to the fd's superblock `sync_filesystem`. |
+| D2 | sync(2) | DONE | B633 #TBD | new `162_sync.rs sys_sync`: iterate `all_mounts()`, dedup superblocks by Arc identity, `sync_filesystem` each. Routed. |
+| D3 | syncfs(2) | DONE | B633 #TBD | new `sys_syncfs`: resolve fd → `file.vfsmount().sb().sync_filesystem()` (whole fs, not one inode). Split out of the fsync arm. |
 | D4 | shmat (SysV shm) | TODO | | `ipc/sysv_shm.rs:138` clones bytes per attach → not shared. One backing object shared by all attaches (real shmem). |
 | D5 | chmod/chown/utimes ext4 persist (90/91/92/93/132/235/260/268/280/452) | TODO | | in-core only; add ext4 `InodeOps::setattr` + dirty/writeback in `vfs metadata set_perm/set_owner/set_times`. |
 
