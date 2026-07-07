@@ -31,10 +31,71 @@ pub unsafe fn inc_ref(pa: u64) {
     }
 }
 
+/// The SINGLE free-on-zero choke point — Linux `__folio_put` +
+/// `free_pages_prepare`'s `VM_BUG_ON_PAGE(page_mapped(page), page)`. BOTH
+/// ref-drop paths (PTE teardown via `dec_and_maybe_free_frame`, object/pin
+/// release via `dec_object_ref_and_maybe_free_frame`) funnel here once refcount
+/// reaches 0, so the "free vs. still-mapped" decision and the never-free-a-
+/// mapped-page invariant live in exactly ONE place — there is no second free
+/// path to drift out of sync (the duplication that hid the free-while-mapped).
+///
+/// Returns the frame to the buddy ONLY if no live user PTE maps it
+/// (`mapcount == 0`). A nonzero mapcount means a mapping's reference was lost
+/// (an unpaired object dec, a double-drop, or a missing map-time inc): a live
+/// PTE still points here, so freeing would be a free-while-mapped — the reused
+/// frame gets written through the surviving PTE, smashing a free-node link →
+/// the merge-time `FWM-CORRUPT` / bitmap double-free panic. Restore refcount to
+/// the mapping count and DON'T free; the frame is released when that last PTE is
+/// finally torn down (Linux `zap_pte_range` → `page_remove_rmap` → `put_page`).
+/// # SAFETY: caller just dropped the last counted reference (refcount hit 0);
+/// `pa` is a page-aligned PMM frame.
+/// # C: O(1)
+#[track_caller]
+unsafe fn release_frame_on_zero(pa: u64) {
+    let pfn = hal::Pfn(pa / 4096);
+    let meta = match page_meta() {
+        Some(m) => m,
+        // Pre-init (no PageMeta): the buddy isn't refcount-tracked; direct free.
+        // SAFETY: pre-init fallback; same preconditions as free_one_frame.
+        None => { unsafe { free_one_frame(pa); } return; }
+    };
+    // NEVER free a page a live PTE still maps (Linux `page_mapped` VM_BUG_ON).
+    // Excludes the wrapped-underflow value (~u32::MAX) healed by the callers.
+    let mc = meta.mapcount(pfn).unwrap_or(0);
+    if mc != 0 && mc < 0x8000_0000 {
+        #[cfg(feature = "debug-pmm")]
+        {
+            let loc = core::panic::Location::caller();
+            klog::write_raw(b"[FWM-PREVENTED] refcount hit 0 with mapcount=");
+            klog::write_dec_u64(mc as u64);
+            klog::write_raw(b" pa="); klog::write_hex_u64(pa);
+            klog::write_raw(b" (restored, not freed) at ");
+            klog::write_raw(loc.file().as_bytes());
+            klog::write_raw(b":"); klog::write_dec_u64(loc.line() as u64);
+            klog::write_raw(b"\n");
+        }
+        if let Some(m) = meta.get(pfn) {
+            m.refcount.store(mc, core::sync::atomic::Ordering::Release);
+        }
+        return;
+    }
+    // BISECT (debug-leak-teardown): leak ONLY as_teardown frees (caller file
+    // user_as); munmap/COW still reclaim. If this clears the corruption, the
+    // bad free is at teardown.
+    #[cfg(feature = "debug-leak-teardown")]
+    if core::panic::Location::caller().file().contains("user_as") { return; }
+    // DIAG (debug-noreclaim): leak instead of freeing.
+    #[cfg(not(feature = "debug-noreclaim"))]
+    // SAFETY: refcount hit 0 and mapcount is 0 — no AS holds or maps this frame;
+    // same preconditions as free_one_frame.
+    unsafe { free_one_frame(pa); }
+}
+
 /// Drop an object-owned frame reference without changing mapcount. Use for
 /// inode/base pins: no user PTE is removed by this operation. User PTE
 /// teardown must keep using `dec_and_maybe_free_frame`, which decrements both
-/// mapcount and refcount.
+/// mapcount and refcount. Both funnel through `release_frame_on_zero` when the
+/// last reference drops — one free path, one invariant (Linux `put_page`).
 /// # SAFETY: caller owns one non-PTE reference to `pa`.
 /// # C: O(1) amortised
 #[track_caller]
@@ -42,13 +103,13 @@ pub unsafe fn dec_object_ref_and_maybe_free_frame(pa: u64) {
     let pfn = hal::Pfn(pa / 4096);
     if let Some(meta) = page_meta() {
         if let Some(new) = meta.dec_ref(pfn) {
-            if new == 0 {
-                #[cfg(not(feature = "debug-noreclaim"))]
-                unsafe { free_one_frame(pa); }
-            }
+            // SAFETY: refcount just reached 0; single free-on-zero choke point
+            // enforces the never-free-a-mapped-page invariant.
+            if new == 0 { unsafe { release_frame_on_zero(pa); } }
         }
         return;
     }
+    // SAFETY: pre-init fallback; same preconditions as free_one_frame.
     unsafe { free_one_frame(pa); }
 }
 
@@ -99,6 +160,23 @@ pub fn frame_refcount(pa: u64) -> u32 {
     page_meta()
         .and_then(|m| m.refcount(hal::Pfn(pa / 4096)))
         .unwrap_or(0)
+}
+
+/// Repair an under-counted frame's struct-page counts to `val` (both refcount
+/// and mapcount). Used by the free-while-mapped backstop (`as_teardown` /
+/// munmap peer-scan) after it authoritatively finds `val-1` peer address spaces
+/// still mapping a frame whose refcount fell to <=1 — restoring the true
+/// reference count so the subsequent dec lands above zero and the frame is NOT
+/// freed while a peer maps it. No-op pre-init / out-of-range.
+/// # SAFETY: caller verified via `fwm_peer_maps` that `val-1` peers map `pa`.
+/// # C: O(1)
+pub unsafe fn repair_frame_counts(pa: u64, val: u32) {
+    if let Some(meta) = page_meta() {
+        if let Some(m) = meta.get(hal::Pfn(pa / 4096)) {
+            m.refcount.store(val, core::sync::atomic::Ordering::Release);
+            m.mapcount.store(val, core::sync::atomic::Ordering::Release);
+        }
+    }
 }
 
 /// F157: decrement refcount; if it reaches 0, return the frame to
@@ -201,15 +279,11 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                 return;
             }
             if new == 0 {
-                // DIAG (debug-watchdog): free-while-mapped RED-HANDED trap.
-                // Invariant: refcount >= mapcount, so refcount can only reach 0
-                // AFTER mapcount does. If we're about to free (refcount 0) with
-                // mapcount STILL nonzero, a PTE somewhere maps this frame and its
-                // ref was lost (the under-count that corrupts ld.so's ANON heap
-                // → `needed != NULL`). Name the frame + residual mapcount +
-                // caller + tid — this is the anon-corruption smoking gun the
-                // file-only tailwatch detector can't see. (Exclude the wrapped
-                // underflow value handled above.)
+                // DIAG (debug-watchdog): free-while-mapped RED-HANDED trap —
+                // name the frame + residual mapcount + caller + tid. The actual
+                // never-free-a-mapped-page ENFORCEMENT + free lives in the single
+                // free-on-zero choke point `release_frame_on_zero` below, shared
+                // with the object-ref drop path (no duplicated free path).
                 #[cfg(feature = "debug-watchdog")]
                 if let Some(mc) = new_mc {
                     if mc != 0 && mc < 0x8000_0000 {
@@ -224,23 +298,9 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                         klog::write_raw(b"\n");
                     }
                 }
-                // DIAG (debug-noreclaim): leak instead of freeing. If this
-                // makes the boot wedge vanish, the wedge is a free-while-mapped
-                // aliasing (a frame dec'd to 0 while a peer still maps it, then
-                // realloc'd onto another page).
-                // BISECT (debug-leak-teardown): leak ONLY frees coming from
-                // as_teardown (caller file user_as.rs); munmap/COW go through
-                // rmap_aware_dec (caller file setup.rs) and still reclaim. If
-                // this clears the corruption, the bad free is at teardown.
-                #[cfg(feature = "debug-leak-teardown")]
-                if core::panic::Location::caller().file().contains("user_as") {
-                    return;
-                }
-                #[cfg(not(feature = "debug-noreclaim"))]
-                // SAFETY: refcount hit zero — no other AS holds this
-                // frame; caller asserts the leaf PTE was already torn
-                // down. Same preconditions as free_one_frame.
-                unsafe { free_one_frame(pa); }
+                // SAFETY: refcount just reached 0; the single free-on-zero choke
+                // point enforces never-free-a-mapped-page + noreclaim/leak gates.
+                unsafe { release_frame_on_zero(pa); }
             }
             return;
         }

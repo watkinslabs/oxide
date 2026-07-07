@@ -111,14 +111,16 @@ pub fn page_index_for_pa(pa: u64) -> u32 {
         .unwrap_or(0)
 }
 
-/// debug-fwm: count live address spaces OTHER than `exclude_root` that still
-/// map VA `va` to physical frame `pa`. Used at as_teardown free-to-zero to
-/// catch free-while-mapped aliasing — a frame about to return to PMM while a
-/// peer task's PTE still maps it (refcount under-counted). Works for ALL
-/// backings (not just anon, unlike an rmap walk) by enumerating live tasks'
-/// address spaces. `hhdm` is the HHDM offset for foreign-PT reads.
-/// # C: O(N_tasks)
-#[cfg(feature = "debug-fwm")]
+/// Count live address spaces OTHER than `exclude_root` that still map VA `va`
+/// to physical frame `pa`. Used at every free-to-zero to enforce the
+/// never-free-a-mapped-page invariant AUTHORITATIVELY — a frame about to return
+/// to PMM while a peer task's PTE still maps it (refcount under-counted by a
+/// map-time `inc_ref` that never ran). Works for ALL backings (not just anon,
+/// unlike an rmap walk) by enumerating live tasks' address spaces. `hhdm` is the
+/// HHDM offset for foreign-PT reads. Production (was debug-fwm): it is the
+/// backstop that turns an under-count into a survivable leak instead of a
+/// free-while-mapped corruption. Each probe is one 4-level walk per AS.
+/// # C: O(N_tasks) — one 4-level PT walk each
 pub fn fwm_peer_maps(va: u64, pa: u64, exclude_root: u64, hhdm: u64) -> usize {
     let target = pa & !0xfff;
     let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return 0 };

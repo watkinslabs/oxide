@@ -1,6 +1,6 @@
 use super::*;
 use super::double_free::{df_dump, df_note};
-use super::free_node::{read_u64, OFF_NEXT, OFF_POISON};
+use super::free_node::{read_u64, OFF_NEXT, OFF_POISON, OFF_PREV, OFF_ORDER};
 use super::inner::PmmInner;
 
 /// PMM owner. Single-instance kernel-wide; constructed in the boot path
@@ -234,6 +234,43 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             let buddy = p ^ (1u64 << o);
             if buddy + (1u64 << o) > g.pfn_max { break; }
             if !g.bitmap_get(o, buddy >> o) { break; }
+            // [debug-cow] FREE-WHILE-MAPPED trap: `buddy`'s bitmap says it is
+            // free, so its FreeNode header MUST still carry POISON_MAGIC. If a
+            // live owner overwrote the freed page (free-while-mapped / refcount
+            // underflow), the poison is gone and the next/prev links below are
+            // garbage — `unlink_free` would dereference them and #GP. Catch it
+            // HERE, deterministically, and name the frame + its last freer
+            // (df_dump reads the #[track_caller] free ring) so the premature
+            // free's call-site is known instead of a bare #GP. Gated on
+            // debug-pmm (the free-ring feature) — a minimal-overhead build that
+            // keeps the corruption's timing close to a prod boot, unlike
+            // debug-cow whose poison writes perturb it.
+            #[cfg(feature = "debug-pmm")]
+            {
+                // SAFETY: buddy is order-o free per bitmap ⇒ PMM-owned page.
+                let bp = unsafe { self.backing.page_ptr(Pfn(buddy)) };
+                // SAFETY: 32B header read from an owned page.
+                let m = unsafe { read_u64(bp, OFF_POISON) };
+                if m != POISON_MAGIC {
+                    // SAFETY: same owned page; dump the garbage links + order tag.
+                    let (nx, pv, od) = unsafe {
+                        (read_u64(bp, OFF_NEXT), read_u64(bp, OFF_PREV), read_u64(bp, OFF_ORDER))
+                    };
+                    klog::write_raw(b"[FWM-CORRUPT] free-node overwritten while free: pa=");
+                    klog::write_hex_u64(buddy * PAGE_SIZE_BYTES);
+                    klog::write_raw(b" pfn="); klog::write_hex_u64(buddy);
+                    klog::write_raw(b" order="); klog::write_dec_u64(o as u64);
+                    klog::write_raw(b" poison="); klog::write_hex_u64(m);
+                    klog::write_raw(b" next="); klog::write_hex_u64(nx);
+                    klog::write_raw(b" prev="); klog::write_hex_u64(pv);
+                    klog::write_raw(b" ordhdr="); klog::write_hex_u64(od);
+                    klog::write_raw(b" merged-from-free-of="); klog::write_hex_u64(pfn.0);
+                    klog::write_raw(b" at="); klog::write_raw(loc.file().as_bytes());
+                    klog::write_raw(b":"); klog::write_dec_u64(loc.line() as u64);
+                    klog::write_raw(b"\n[FWM-CORRUPT] last freer of the corrupt frame:\n");
+                    df_dump(buddy, loc);
+                }
+            }
             // SAFETY: bitmap I3 says buddy is on free_list[o].
             unsafe { g.unlink_free(&self.backing, buddy, o) };
             g.bitmap_clear(o, buddy >> o);
