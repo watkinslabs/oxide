@@ -8,6 +8,32 @@ use alloc::string::String;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
+/// debug-boot: trace the syscalls systemd-logind runs while classifying
+/// `/dev/dri/card0` for `TakeDevice`. mutter reports `Failed to open gpu ...
+/// ENODEV` when logind's `session_device_new` → `sd_device_new_from_devnum` /
+/// `detect_device_type` fails; that failure is a readlink/open/stat on the
+/// card's sysfs (`/sys/dev/char/226:0`, `.../drm/card0/subsystem`, `.../uevent`)
+/// or the `/dev/dri/card0` node returning an errno. Log the resolved path +
+/// return value for the logind process so the exact failing step is visible.
+/// Gated; no effect in prod. # C: O(len)
+#[cfg(feature = "debug-boot")]
+pub(crate) fn trace_logind_dev(op: &'static [u8], path: &str, rv: i64) {
+    let hit = path.contains("card0") || path.contains("226:0")
+        || path.contains("dri/card") || path.contains("/dri")
+        || path.contains("drm/card") || path.contains("class/drm");
+    if !hit { return; }
+    let is_logind = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("logind")) })
+        .unwrap_or(false);
+    if !is_logind { return; }
+    klog::write_raw(b"[LGD "); klog::write_raw(op);
+    klog::write_raw(b" rv=");
+    if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+    else { klog::write_dec_u64(rv as u64); }
+    klog::write_raw(b" path="); klog::write_raw(path.as_bytes());
+    klog::write_raw(b"]\n");
+}
+
 /// Read a user-space pathname with the full Linux errno contract:
 ///   * NULL / out-of-range ptr  → **EFAULT**
 ///   * empty string (`""`)      → **ENOENT** (callers without AT_EMPTY_PATH)
