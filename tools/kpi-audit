@@ -7,6 +7,7 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,6 +91,10 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("firmware", (
         "request_firmware", "release_firmware", "firmware_request",
+        "firmware_request_nowarn", "firmware_request_platform",
+        "firmware_request_cache", "request_firmware_nowait",
+        "firmware_request_nowait_nowarn", "request_firmware_into_buf",
+        "request_partial_firmware_into_buf",
     )),
     ("netdev", (
         "netdev", "netif_", "alloc_netdev", "alloc_etherdev", "register_netdev",
@@ -165,6 +170,23 @@ def run_nm(path: Path, nm: str) -> list[Undef]:
     if p.returncode != 0:
         raise SystemExit(f"{path}: nm failed: {p.stderr.strip()}")
     return parse_nm_text(p.stdout, str(path))
+
+
+def run_nm_compressed(path: Path, nm: str) -> list[Undef]:
+    if path.name.endswith(".ko.xz"):
+        cmd = ["xz", "-dc", str(path)]
+    elif path.name.endswith(".ko.zst"):
+        cmd = ["zstd", "-dcq", str(path)]
+    else:
+        raise SystemExit(f"{path}: unsupported compressed module")
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        raise SystemExit(f"{path}: decompression failed: {p.stderr.decode(errors='replace').strip()}")
+    with tempfile.NamedTemporaryFile(suffix=".ko") as f:
+        f.write(p.stdout)
+        f.flush()
+        rows = run_nm(Path(f.name), nm)
+    return [Undef(str(path), r.symbol, r.kind) for r in rows]
 
 
 def read_symbols(path: Path) -> list[str]:
@@ -246,10 +268,14 @@ def main(argv: list[str]) -> int:
             undefs.extend(parse_nm_text(sys.stdin.read(), "stdin"))
             continue
         path = Path(item)
-        if args.nm_output or path.suffix != ".ko":
+        if args.nm_output:
             undefs.extend(parse_nm_text(path.read_text(), str(path)))
-        else:
+        elif path.suffix == ".ko":
             undefs.extend(run_nm(path, args.nm))
+        elif path.name.endswith((".ko.xz", ".ko.zst")):
+            undefs.extend(run_nm_compressed(path, args.nm))
+        else:
+            undefs.extend(parse_nm_text(path.read_text(), str(path)))
 
     rows = findings(undefs, exports)
     print_summary(rows, exports)

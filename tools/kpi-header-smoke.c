@@ -127,6 +127,7 @@ enum { SAMPLE_RANDOM_LEN = 16 };
 enum { SAMPLE_CRYPTO_DIGEST_LEN = 32 };
 enum { SAMPLE_USERCOPY_LEN = 8 };
 enum { SAMPLE_DEBUG_VALUE_INIT = 7 };
+enum { SAMPLE_FIRMWARE_BUF_LEN = 64 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -134,6 +135,10 @@ static void sample_timer_fn(struct timer_list *timer) { (void)timer; }
 static enum hrtimer_restart sample_hrtimer_fn(struct hrtimer *timer) { (void)timer; return HRTIMER_NORESTART; }
 static irqreturn_t sample_irq_handler(int irq, void *dev) { (void)irq; (void)dev; return IRQ_HANDLED; }
 static void sample_devres_action(void *data) { (void)data; }
+static void sample_firmware_cont(const struct firmware *fw, void *context)
+{
+    (void)fw; (void)context;
+}
 static int sample_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
     (void)pdev; (void)id; return 0;
@@ -403,7 +408,11 @@ static int __init sample_init(void)
     struct attribute sample_sysfs_attr = { "sample", 0444 };
     struct class *class;
     struct bus_type bus = { "sample-bus", NULL };
-    struct device_driver driver = { "sample-driver", &bus, THIS_MODULE, NULL, NULL };
+    struct device_driver driver = {
+        .name = "sample-driver",
+        .bus = &bus,
+        .owner = THIS_MODULE,
+    };
     struct device *root_dev;
     struct device *created_dev;
     struct dentry *debug_dir;
@@ -413,6 +422,7 @@ static int __init sample_init(void)
     struct debugfs_blob_wrapper debug_blob;
     u32 debug_value = SAMPLE_DEBUG_VALUE_INIT;
     char debug_blob_data[4] = { 'd', 'a', 't', 'a' };
+    u8 firmware_buf[SAMPLE_FIRMWARE_BUF_LEN];
     u32 debug_regs[2] = { 0x12345678, 0x90abcdef };
     const struct debugfs_reg32 debug_reg_defs[] = {
         { "status", 0 },
@@ -463,8 +473,14 @@ static int __init sample_init(void)
     };
     struct urb *urb;
     struct pci_driver pdrv = {
-        "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
-        { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
+        .name = "sample-pci",
+        .id_table = sample_pci_ids,
+        .probe = sample_pci_probe,
+        .remove = sample_pci_remove,
+        .driver = {
+            .name = "sample-pci",
+            .owner = THIS_MODULE,
+        },
     };
     struct platform_driver pldrv = {
         .probe = sample_platform_probe,
@@ -737,6 +753,15 @@ static int __init sample_init(void)
     (void)request_firmware_direct(&fw, "sample/fw.bin", &dev);
     (void)firmware_request(&fw, "sample/fw.bin", &dev);
     (void)firmware_request_nowarn(&fw, "sample/fw.bin", &dev);
+    (void)firmware_request_platform(&fw, "sample/fw.bin", &dev);
+    (void)firmware_request_cache(&dev, "sample/fw.bin");
+    (void)request_firmware_into_buf(&fw, "sample/fw.bin", &dev, firmware_buf, sizeof(firmware_buf));
+    (void)request_partial_firmware_into_buf(&fw, "sample/fw.bin", &dev, firmware_buf,
+                                            sizeof(firmware_buf), 0);
+    (void)request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT, "sample/fw.bin", &dev,
+                                  GFP_KERNEL, &s, sample_firmware_cont);
+    (void)firmware_request_nowait_nowarn(THIS_MODULE, "sample/fw.bin", &dev,
+                                         GFP_KERNEL, &s, sample_firmware_cont);
     if (fw != NULL) {
         (void)fw->size;
         (void)fw->data;
