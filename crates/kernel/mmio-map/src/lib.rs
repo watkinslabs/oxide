@@ -18,6 +18,7 @@ use hal_x86_64::mmu_ops::X86Mmu;
 /// Kernel VA bump-allocator base for PCI BAR/device mappings. Disjoint from
 /// `KERNEL_DEVICE_BASE` low-32 PA aliases and the aarch64 ECAM window.
 const DEVICE_BAR_VA_BASE: u64 = 0xffff_fd00_0000_0000;
+const PAGE_BYTES: u64 = 0x1000;
 static DEVICE_BAR_VA_NEXT: AtomicU64 = AtomicU64::new(DEVICE_BAR_VA_BASE);
 
 fn device_flags() -> PageFlags {
@@ -32,11 +33,11 @@ fn device_flags() -> PageFlags {
 /// initialized, and `pa` is page-aligned.
 /// # C: O(n_pages * page-table depth)
 pub unsafe fn map_pages(pa: u64, n_pages: u64) -> u64 {
-    let bytes = n_pages * 0x1000;
+    let bytes = n_pages * PAGE_BYTES;
     let base = DEVICE_BAR_VA_NEXT.fetch_add(bytes, Ordering::AcqRel);
     for i in 0..n_pages {
-        let va = base + i * 0x1000;
-        let pa_i = pa + i * 0x1000;
+        let va = base + i * PAGE_BYTES;
+        let pa_i = pa + i * PAGE_BYTES;
         // SAFETY: upheld by this function's caller; each VA comes from the
         // global bump allocator and is used once for this mapping.
         unsafe {
@@ -44,6 +45,29 @@ pub unsafe fn map_pages(pa: u64, n_pages: u64) -> u64 {
             <X86Mmu as MmuOps>::map(Va(va), Pa(pa_i), device_flags(), PageSize::P4K);
             #[cfg(target_arch = "aarch64")]
             <ArmMmu as MmuOps>::map(Va(va), Pa(pa_i), device_flags(), PageSize::P4K);
+        }
+    }
+    base
+}
+
+/// Map 4K physical pages into contiguous fresh kernel VA space.
+///
+/// # Safety
+/// Caller must ensure every physical page exists, is page-aligned, and remains
+/// owned for the lifetime of the returned alias.
+/// # C: O(pages.len() * page-table depth)
+pub unsafe fn map_page_list(pages: &[u64], flags: PageFlags) -> u64 {
+    let bytes = pages.len() as u64 * PAGE_BYTES;
+    let base = DEVICE_BAR_VA_NEXT.fetch_add(bytes, Ordering::AcqRel);
+    for (i, pa_i) in pages.iter().copied().enumerate() {
+        let va = base + i as u64 * PAGE_BYTES;
+        // SAFETY: upheld by this function's caller; each VA comes from the
+        // global bump allocator and is used once for this mapping.
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            <X86Mmu as MmuOps>::map(Va(va), Pa(pa_i), flags, PageSize::P4K);
+            #[cfg(target_arch = "aarch64")]
+            <ArmMmu as MmuOps>::map(Va(va), Pa(pa_i), flags, PageSize::P4K);
         }
     }
     base
@@ -99,7 +123,7 @@ pub unsafe fn map_owned(pa: u64, n_pages: u64) -> Mapping {
 /// # C: O(n_pages * page-table depth)
 pub unsafe fn unmap_pages(base_va: u64, n_pages: u64) {
     for i in 0..n_pages {
-        let va = base_va + i * 0x1000;
+        let va = base_va + i * PAGE_BYTES;
         // SAFETY: upheld by this function's caller; every VA is page-aligned
         // and belongs to the mapping being torn down.
         unsafe {
