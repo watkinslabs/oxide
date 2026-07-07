@@ -194,6 +194,42 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         Ok(f)  => f,
         Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Linux writev(2): the iovec array forms ONE message. For a message-boundary
+    // socket (UDP / AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET) the per-iovec loop below
+    // would emit ONE datagram PER iovec and fragment the message. systemd's
+    // user-lookup writev — [uid(4)][gid(4)][unit_id(N)] — then arrives at PID1 as
+    // 4-byte datagrams, tripping "Received too short user lookup message,
+    // ignoring" for every service and breaking uid/gid→name resolution (dbus
+    // groups fallback, logind session-id lookup, polkit). Coalesce the iovecs
+    // into one buffer and write once so the socket layer emits a single datagram.
+    // Regular files and STREAM sockets fall through — the byte stream is
+    // identical either way. Mirrors the same fix in 046 sendmsg.
+    if let Some(sock) = crate::net_common::socket_from_fd(args.a0) {
+        let msg_boundary = matches!(
+            &*sock.kind.lock(),
+            net::sock::SockKind::Udp
+                | net::sock::SockKind::UnixDgram(_)
+                | net::sock::SockKind::UnixMsgPair(_, _)
+        );
+        if msg_boundary {
+            let mut msg: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            for i in 0..iovcnt {
+                let iov_i = iov + i * 16;
+                // SAFETY: iov array validated above; iov_i inside; {base@0,len@8} LP64 iovec.
+                let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+                let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+                if len == 0 { continue; }
+                if let Err(rv) = validate_user_buf(base, len, 1) { return rv; }
+                // SAFETY: base..base+len validated < USER_VA_END; CPL=0 read of caller AS.
+                let src = unsafe { core::slice::from_raw_parts(base as *const u8, len as usize) };
+                msg.extend_from_slice(src);
+            }
+            return match file.write(&msg) {
+                Ok(n)  => n as i64,
+                Err(e) => -(e as i64),
+            };
+        }
+    }
     let mut total: u64 = 0;
     for i in 0..iovcnt {
         let iov_i = iov + i * 16;
