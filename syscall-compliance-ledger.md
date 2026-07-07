@@ -25,7 +25,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | D2 | sync(2) | DONE | B633 #TBD | new `162_sync.rs sys_sync`: iterate `all_mounts()`, dedup superblocks by Arc identity, `sync_filesystem` each. Routed. |
 | D3 | syncfs(2) | DONE | B633 #TBD | new `sys_syncfs`: resolve fd → `file.vfsmount().sb().sync_filesystem()` (whole fs, not one inode). Split out of the fsync arm. |
 | D4 | shmat (SysV shm) | DONE | B639 #TBD | ShmSegment now holds ONE shared shmem backing (anon tmpfs inode, built by new `029_shmget.rs` shim); every shmat maps it MAP_SHARED so attaches + forked children share frames. Replaces the per-attach `bytes.clone()`. |
-| D5 | chmod/chown/utimes ext4 persist (90/91/92/93/132/235/260/268/280/452) | TODO | | in-core only; add ext4 `InodeOps::setattr` + dirty/writeback in `vfs metadata set_perm/set_owner/set_times`. |
+| D5 | chmod/chown/utimes ext4 persist (90/91/92/93/132/235/260/268/280/452) | DONE | B641 #TBD | syscall `notify_change` now routes the apply through VFS `i_op->setattr` (Linux `fs/attr.c`); ext4 overrides `setattr` (`ext4_setattr`) to journal mode/owner(+osd2 hi)/times to the on-disk inode. Read side: ext4 inode decoder now parses atime/ctime/mtime(+`i_*time_extra` ns) and iget threads them via `InodeBuilder::times`, so utimes round-trips. Hosted `setattr_persist_image` proves chmod+chown(>16-bit)+utimes(ns) survive a remount. |
 
 ## P1 — non-functional facility / fake fd
 

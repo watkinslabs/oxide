@@ -63,8 +63,29 @@ pub struct Inode {
     /// Owner gid: `i_gid` @0x18 (low u16) merged with `l_i_gid_high` @0x7A
     /// (osd2 high u16). Drives `st_gid`.
     pub gid:         u32,
+    /// `i_atime` in absolute ns: `i_atime` @0x08 (u32 secs) + the epoch-high /
+    /// nanosecond `i_atime_extra` @0x8C (only present in a >128-byte inode).
+    /// Drives `st_atim`; the utimes writeback round-trips through it.
+    pub atime_ns:    u64,
+    /// `i_mtime` in absolute ns (`i_mtime` @0x10 + `i_mtime_extra` @0x88).
+    pub mtime_ns:    u64,
+    /// `i_ctime` in absolute ns (`i_ctime` @0x0C + `i_ctime_extra` @0x84).
+    pub ctime_ns:    u64,
     /// Inline extent tree root + leaves (60 bytes verbatim).
     pub i_block:     [u8; I_BLOCK_LEN],
+}
+
+/// Decode an ext4 `(i_*time, i_*time_extra)` pair to absolute ns: `base` holds
+/// the low 32 bits of the seconds; the extra word (present only when the inode
+/// is large enough to hold `extra_off`) carries `epoch_hi2` in bits[1:0] and
+/// nanoseconds in bits[31:2] (Linux `ext4_decode_extra_time`). # C: O(1)
+fn decode_time(buf: &[u8], base: usize, extra_off: usize, isize: usize) -> u64 {
+    let secs = u32::from_le_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]) as u64;
+    let (epoch, nsec) = if isize >= extra_off + 4 {
+        let ex = u32::from_le_bytes([buf[extra_off], buf[extra_off + 1], buf[extra_off + 2], buf[extra_off + 3]]);
+        ((ex & 0x3) as u64, (ex >> 2) as u64)
+    } else { (0, 0) };
+    ((epoch << 32) | secs) * 1_000_000_000 + nsec
 }
 
 impl Inode {
@@ -99,6 +120,9 @@ impl Inode {
                 | ((u16::from_le_bytes([buf[0x78], buf[0x79]]) as u32) << 16);
         let gid = u16::from_le_bytes([buf[0x18], buf[0x19]]) as u32
                 | ((u16::from_le_bytes([buf[0x7A], buf[0x7B]]) as u32) << 16);
+        let atime_ns = decode_time(buf, 0x08, 0x8C, isize);
+        let ctime_ns = decode_time(buf, 0x0C, 0x84, isize);
+        let mtime_ns = decode_time(buf, 0x10, 0x88, isize);
         Ok(Inode {
             mode,
             size: size_lo | (size_hi << 32),
@@ -106,6 +130,9 @@ impl Inode {
             i_blocks,
             uid,
             gid,
+            atime_ns,
+            mtime_ns,
+            ctime_ns,
             i_block,
         })
     }
