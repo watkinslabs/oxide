@@ -12,6 +12,36 @@ struct module {
     unsigned int refcnt;
 };
 
+struct kernel_param;
+struct kparam_array;
+struct kernel_param_ops {
+    unsigned int flags;
+    int (*set)(const char *val, const struct kernel_param *kp);
+    int (*get)(char *buffer, const struct kernel_param *kp);
+    void (*free)(void *arg);
+};
+
+struct kernel_param {
+    const char *name;
+    struct module *mod;
+    const struct kernel_param_ops *ops;
+    const u16 perm;
+    s8 level;
+    u8 flags;
+    union {
+        void *arg;
+        const struct kparam_array *arr;
+    };
+};
+
+struct kparam_array {
+    unsigned int max;
+    unsigned int elemsize;
+    unsigned int *num;
+    const struct kernel_param_ops *ops;
+    void *elem;
+};
+
 #define THIS_MODULE ((struct module *)0)
 #define __PASTE(a, b) a##b
 #define __PASTE2(a, b) __PASTE(a, b)
@@ -34,5 +64,18 @@ struct module {
 
 int try_module_get(struct module *module);
 void module_put(struct module *module);
+extern const struct kernel_param_ops param_ops_bool;
+extern const struct kernel_param_ops param_ops_int;
+extern const struct kernel_param_ops param_ops_uint;
+extern const struct kernel_param_ops param_ops_ulong;
+extern const struct kernel_param_ops param_array_ops;
+int param_set_bool(const char *val, const struct kernel_param *kp);
+int param_get_bool(char *buffer, const struct kernel_param *kp);
+int param_set_int(const char *val, const struct kernel_param *kp);
+int param_get_int(char *buffer, const struct kernel_param *kp);
+int param_set_uint(const char *val, const struct kernel_param *kp);
+int param_get_uint(char *buffer, const struct kernel_param *kp);
+int param_set_ulong(const char *val, const struct kernel_param *kp);
+int param_get_ulong(char *buffer, const struct kernel_param *kp);
 
 #endif

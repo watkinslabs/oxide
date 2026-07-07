@@ -573,6 +573,25 @@ static int __init sample_init(void)
     refcount_t refs;
     struct kref kref;
     struct module owner;
+    char param_buf[64];
+    bool param_bool = false;
+    int param_int = 0;
+    unsigned int param_uint = 0;
+    unsigned long param_ulong = 0;
+    unsigned int param_arr_vals[3] = { 0 };
+    unsigned int param_arr_num = 0;
+    struct kparam_array param_arr = {
+        .max = 3,
+        .elemsize = sizeof(param_arr_vals[0]),
+        .num = &param_arr_num,
+        .ops = &param_ops_uint,
+        .elem = param_arr_vals,
+    };
+    struct kernel_param param_bool_kp = { .name = "param_bool", .mod = &owner, .ops = &param_ops_bool, .arg = &param_bool };
+    struct kernel_param param_int_kp = { .name = "param_int", .mod = &owner, .ops = &param_ops_int, .arg = &param_int };
+    struct kernel_param param_uint_kp = { .name = "param_uint", .mod = &owner, .ops = &param_ops_uint, .arg = &param_uint };
+    struct kernel_param param_ulong_kp = { .name = "param_ulong", .mod = &owner, .ops = &param_ops_ulong, .arg = &param_ulong };
+    struct kernel_param param_arr_kp = { .name = "param_arr", .mod = &owner, .ops = &param_array_ops, .arr = &param_arr };
     struct lock_class_key key;
     unsigned int start;
     void __iomem *regs;
@@ -1464,6 +1483,16 @@ static int __init sample_init(void)
     owner.refcnt = 1;
     (void)try_module_get(&owner);
     module_put(&owner);
+    (void)param_set_bool("Y", &param_bool_kp);
+    (void)param_get_bool(param_buf, &param_bool_kp);
+    (void)param_set_int("-7", &param_int_kp);
+    (void)param_get_int(param_buf, &param_int_kp);
+    (void)param_set_uint("42", &param_uint_kp);
+    (void)param_get_uint(param_buf, &param_uint_kp);
+    (void)param_set_ulong("123", &param_ulong_kp);
+    (void)param_get_ulong(param_buf, &param_ulong_kp);
+    (void)param_array_ops.set("1,2,3", &param_arr_kp);
+    (void)param_array_ops.get(param_buf, &param_arr_kp);
     kref_init(&kref);
     kref_get(&kref);
     (void)kref_put(&kref, sample_release);
