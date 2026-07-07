@@ -96,9 +96,10 @@ pub(super) fn dispatch_route_b(nr: u64, args: &SyscallArgs) -> Option<i64> {
             }
         }
         syscall::nrs::NR_FACCESSAT2 => crate::fs_access::sys_faccessat2(args),
-        syscall::nrs::NR_SYNC => 0,
+        syscall::nrs::NR_SYNC => crate::misc::sys_sync(args),
+        syscall::nrs::NR_SYNCFS => crate::misc::sys_syncfs(args),
         syscall::nrs::NR_REBOOT => crate::misc::sys_reboot(args),
-        nr if matches!(nr, syscall::nrs::NR_FSYNC | syscall::nrs::NR_FDATASYNC | syscall::nrs::NR_SYNCFS | syscall::nrs::NR_SYNC_FILE_RANGE) => crate::misc::sys_fsync(args),
+        nr if matches!(nr, syscall::nrs::NR_FSYNC | syscall::nrs::NR_FDATASYNC | syscall::nrs::NR_SYNC_FILE_RANGE) => crate::misc::sys_fsync(args),
         nr if matches!(nr, syscall::nrs::NR_PKEY_ALLOC | syscall::nrs::NR_PKEY_FREE | syscall::nrs::NR_PKEY_MPROTECT | syscall::nrs::NR_KCMP | syscall::nrs::NR_SET_MEMPOLICY | syscall::nrs::NR_GET_MEMPOLICY | syscall::nrs::NR_MBIND | syscall::nrs::NR_SET_MEMPOLICY_HOME_NODE | syscall::nrs::NR_MIGRATE_PAGES | syscall::nrs::NR_MOVE_PAGES | syscall::nrs::NR_PROCESS_MADVISE | syscall::nrs::NR_PROCESS_MRELEASE) => crate::misc::dispatch(nr, args),
         _ => return None,
     })
