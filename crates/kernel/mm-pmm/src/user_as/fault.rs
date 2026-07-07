@@ -167,6 +167,30 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
             as_.try_grow_stack(uva);
         }
     }
+    // F1 userfaultfd MISSING: a NotPresent fault inside a MISSING-
+    // registered range is handed to userspace (Linux `handle_userfault`)
+    // — enqueue a PAGEFAULT message, wake the monitor, and BLOCK this
+    // thread until UFFDIO_COPY/ZEROPAGE/WAKE resolves it. Only for a
+    // genuinely-absent page: if the leaf is already present (a racer /
+    // stale fault) fall through to the normal resolve. `uffd_for` clones
+    // the ctx out + releases the vmas lock, so no lock is held across the
+    // block below.
+    if let FaultKind::NotPresent { access } = fault {
+        if as_.maybe_uffd() {
+            if let Some((ctx, true)) = as_.uffd_for(uva) {
+                use hal::MmuOps;
+                let va_page = uva.as_u64() & !(hal::PAGE_SIZE_BYTES - 1);
+                #[cfg(target_arch = "x86_64")]
+                let present = hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)).is_some();
+                #[cfg(target_arch = "aarch64")]
+                let present = hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)).is_some();
+                if !present {
+                    ctx.missing_fault(va_page, matches!(access, FaultAccess::Write));
+                    return Ok(());
+                }
+            }
+        }
+    }
     // debug-cow item 1: re-verify the RO-shared anon checksum at the COW
     // write-fault, BEFORE the handler copies/reuses the frame. Translate the
     // faulting VA to its current frame and hand it to the vmm side, which

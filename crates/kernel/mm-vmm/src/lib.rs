@@ -21,6 +21,7 @@ pub mod anon_vma;
 pub mod rmap;
 pub mod vma;
 pub mod tree;
+pub mod uffd;
 pub(crate) mod hole;
 
 pub use address_space::{AddressSpace, MIN_USER_VA, MMAP_BASE_GAP};
@@ -34,6 +35,7 @@ pub use address_space::{
 pub use anon_vma::{AnonVma, RmapTarget};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
+pub use uffd::UffdContext;
 
 /// DIAG (debug-atexit): fn-ptr the arch layer installs to arm a DR0 hardware
 /// write-watchpoint at a VA. The File fill arm calls it once, on the first

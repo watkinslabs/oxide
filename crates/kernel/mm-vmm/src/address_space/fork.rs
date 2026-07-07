@@ -31,6 +31,7 @@ impl AddressSpace {
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
+            has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
@@ -225,6 +226,7 @@ impl AddressSpace {
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
+            has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
@@ -313,6 +315,7 @@ impl AddressSpace {
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
+            has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
