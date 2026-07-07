@@ -61,6 +61,10 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             let from_user = unsafe { (core::ptr::read_volatile(frame.add(96) as *const u64) & 3) == 3 };
             sched::cpustat::account(
                 if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
+            // G3: per-task utime/stime — charge the real inter-tick delta to
+            // the interrupted task's user/kernel CPU-time bucket (getrusage/
+            // times). IRQ-context: atomics only.
+            sched::cpustat::charge_current_tick(from_user);
             // BSP timer hook runs only on the boot CPU. The softirq drain is
             // PER-CPU (Linux: every CPU runs its own
             // __do_softirq from irq_exit) — each CPU drains its OWN pending
