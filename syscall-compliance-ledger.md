@@ -31,7 +31,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
-| F1 | userfaultfd | TODO | | `UFFDIO_REGISTER` records ranges but VMM fault path ignores them; `read()` returns 0 forever. Wire demand-fault → uffd_msg queue + WAKE. |
+| F1 | userfaultfd | WIP | B642 | `UFFDIO_REGISTER` records ranges but VMM fault path ignores them; `read()` returns 0 forever. Wire demand-fault → uffd_msg queue + WAKE. |
 | F2 | pkey_alloc/free/mprotect (329-331) | DONE | B640 TBD | key handed out, never enforced (no PKRU). Either implement PKRU/CR4.PKE enforcement or ENOSYS like Linux w/o X86_FEATURE_PKU. |
 | F3 | libaio io_setup/submit/getevents/cancel/destroy (206-210,333) | TODO | | `compat.rs:145` ENOSYS. Implement the aio ring (or keep ENOSYS only if truly matching Linux config — it does not). |
 | F4 | quotactl / quotactl_fd (179/443) | TODO | | ENOSYS. Implement quota ops. |
