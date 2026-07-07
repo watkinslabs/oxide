@@ -16,7 +16,11 @@ typedef int blk_qc_t;
 #define REQ_OP_DISCARD 3u
 
 #define BLK_STS_OK ((blk_status_t)0u)
+#define BLK_STS_RESOURCE ((blk_status_t)1u)
+#define BLK_STS_AGAIN ((blk_status_t)2u)
+#define BLK_STS_NOTSUPP ((blk_status_t)9u)
 #define BLK_STS_IOERR ((blk_status_t)10u)
+#define BLK_STS_TARGET ((blk_status_t)11u)
 
 struct block_device;
 struct gendisk;
@@ -31,6 +35,7 @@ struct bio {
     blk_status_t bi_status;
     u32 bi_size;
     u8 *bi_data;
+    void (*bi_end_io)(struct bio *bio);
     void *owner;
 };
 
