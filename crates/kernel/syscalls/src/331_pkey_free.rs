@@ -4,20 +4,9 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::misc::misc_common::{errno, PKEY_BITMAP};
+use crate::misc::misc_common::errno;
 
+/// `pkey_free(pkey)` — slot 331. No PKU support (see pkey_alloc), so no key was
+/// ever allocatable; Linux w/o X86_FEATURE_OSPKE returns ENOSYS.
 /// # C: O(1)
-pub fn sys_pkey_free(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let key = args.a0 as i32;
-    if !(1..16).contains(&key) { return errno(Errno::Einval); }
-    let mut cur = PKEY_BITMAP.load(Ordering::Acquire);
-    loop {
-        if cur & (1u16 << key) == 0 { return errno(Errno::Einval); }
-        let next = cur & !(1u16 << key);
-        match PKEY_BITMAP.compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_)    => return 0,
-            Err(now) => cur = now,
-        }
-    }
-}
+pub fn sys_pkey_free(_args: &SyscallArgs) -> i64 { errno(Errno::Enosys) }

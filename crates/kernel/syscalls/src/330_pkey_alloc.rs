@@ -4,20 +4,12 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::misc::misc_common::{errno, PKEY_BITMAP};
+use crate::misc::misc_common::errno;
 
+/// `pkey_alloc(flags, access_rights)` — slot 330. No PKU/PKRU enforcement
+/// (no CR4.PKE, no per-PTE protection-key bits), so a protection key cannot
+/// protect anything. Linux returns ENOSYS when X86_FEATURE_OSPKE is absent —
+/// do the same instead of handing back a valid key that silently isn't
+/// enforced (an in-process isolation lie).
 /// # C: O(1)
-pub fn sys_pkey_alloc(_args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let mut cur = PKEY_BITMAP.load(Ordering::Acquire);
-    loop {
-        let i = match (1..16).find(|i| cur & (1u16 << i) == 0) {
-            Some(i) => i, None => return errno(Errno::Enospc),
-        };
-        let next = cur | (1u16 << i);
-        match PKEY_BITMAP.compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_)    => return i as i64,
-            Err(now) => cur = now,
-        }
-    }
-}
+pub fn sys_pkey_alloc(_args: &SyscallArgs) -> i64 { errno(Errno::Enosys) }
