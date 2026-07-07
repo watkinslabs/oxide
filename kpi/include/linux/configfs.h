@@ -13,9 +13,21 @@ struct configfs_attribute {
     ssize_t (*store)(struct config_item *item, const char *page, size_t count);
 };
 
+struct configfs_bin_attribute {
+    struct configfs_attribute attr;
+    void *private;
+    size_t size;
+    ssize_t (*read)(struct config_item *item, void *private, void *buf, char *page, loff_t off, size_t count);
+    ssize_t (*write)(struct config_item *item, void *private, void *buf, const char *page, loff_t off, size_t count);
+};
+
 struct config_item_type {
     void (*release)(struct config_item *item);
     struct configfs_attribute **attrs;
+    struct config_group **default_groups;
+    struct configfs_bin_attribute **bin_attrs;
+    int (*allow_link)(struct config_item *src, struct config_item *target);
+    int (*drop_link)(struct config_item *src, struct config_item *target);
 };
 
 struct config_item {
@@ -50,5 +62,7 @@ int configfs_register_group(struct config_group *parent, struct config_group *gr
 void configfs_unregister_group(struct config_group *group);
 struct config_item *config_item_get(struct config_item *item);
 void config_item_put(struct config_item *item);
+int configfs_create_link(struct config_item *parent, struct config_item *target, const char *name);
+void configfs_drop_link(struct config_item *parent, struct config_item *target, const char *name);
 
 #endif
