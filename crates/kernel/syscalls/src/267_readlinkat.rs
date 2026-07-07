@@ -35,9 +35,16 @@ pub fn sys_readlinkat(args: &SyscallArgs) -> i64 {
     let raw: &str = path.as_str();
     let resolved = match crate::pathresolve::resolve_at_result(dirfd, raw) {
         Ok(s) => s,
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-boot")]
+            crate::namei_common::trace_logind_dev(b"readlink", raw, rv);
+            return rv;
+        }
     };
-    crate::s089_readlink::readlink_resolved_path(resolved.as_str(), buf_ptr, bufsize)
+    let rv = crate::s089_readlink::readlink_resolved_path(resolved.as_str(), buf_ptr, bufsize);
+    #[cfg(feature = "debug-boot")]
+    crate::namei_common::trace_logind_dev(b"readlink", resolved.as_str(), rv);
+    rv
 }
 
 /// D20: empty-path `readlinkat` — operate on `dirfd` itself (LOOKUP_EMPTY).
