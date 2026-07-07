@@ -6,6 +6,7 @@
 #include <linux/ioport.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/pm.h>
 #include <linux/types.h>
 
 #define PCI_STD_NUM_BARS 6
@@ -20,6 +21,14 @@
 #define PCI_IRQ_LEGACY 0x00000001U
 #define PCI_IRQ_MSI 0x00000002U
 #define PCI_IRQ_MSIX 0x00000004U
+
+typedef int pci_power_t;
+#define PCI_D0 0
+#define PCI_D1 1
+#define PCI_D2 2
+#define PCI_D3hot 3
+#define PCI_D3cold 4
+#define PCI_POWER_ERROR (-1)
 
 #define PCI_DEVFN(slot, func) ((((slot) & PCI_SLOT_MASK) << PCI_DEVFN_SLOT_SHIFT) | ((func) & PCI_FUNC_MASK))
 #define PCI_SLOT(devfn) (((devfn) >> PCI_DEVFN_SLOT_SHIFT) & PCI_SLOT_MASK)
@@ -44,6 +53,9 @@ struct pci_dev {
     unsigned int irq_vector_base;
     int irq_vectors;
     char name[PCI_NAME_LEN];
+    u32 saved_config_space[PCI_CONFIG_DWORDS];
+    pci_power_t current_state;
+    bool wake_enabled;
 };
 
 struct pci_driver {
@@ -82,5 +94,10 @@ int pci_read_config_dword(struct pci_dev *dev, int where, u32 *val);
 int pci_write_config_byte(struct pci_dev *dev, int where, u8 val);
 int pci_write_config_word(struct pci_dev *dev, int where, u16 val);
 int pci_write_config_dword(struct pci_dev *dev, int where, u32 val);
+int pci_save_state(struct pci_dev *dev);
+int pci_restore_state(struct pci_dev *dev);
+int pci_set_power_state(struct pci_dev *dev, pci_power_t state);
+pci_power_t pci_choose_state(struct pci_dev *dev, pm_message_t state);
+int pci_enable_wake(struct pci_dev *dev, pci_power_t state, bool enable);
 
 #endif
