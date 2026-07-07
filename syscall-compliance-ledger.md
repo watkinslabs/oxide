@@ -33,7 +33,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 |----|-----------|--------|--------|-----|
 | F1 | userfaultfd | DONE | B642 #TBD | MISSING-mode fully wired: mm-vmm `UffdContext` trait + per-VMA ctx (`VMA_UFFD_MISSING`); mm-pmm `do_handle` intercepts a NotPresent fault in a registered range → enqueue PAGEFAULT `uffd_msg`, wake monitor, park faulter (no vmas lock held). fs `read`/`poll` block; `UFFDIO_COPY`/`ZEROPAGE` alloc real frames + `map_at` into the faulting AS + wake; `WAKE`/`UNREGISTER` wired. Fork clears child uffd (no EVENT_FORK). Fixed `uffd_msg` ABI (address@16, was swapped). WP recorded-only (honest, not faked). Boot-verified: userspace `uffd_probe` (monitor+faulter threads) → PASS. |
 | F2 | pkey_alloc/free/mprotect (329-331) | DONE | B640 TBD | key handed out, never enforced (no PKRU). Either implement PKRU/CR4.PKE enforcement or ENOSYS like Linux w/o X86_FEATURE_PKU. |
-| F3 | libaio io_setup/submit/getevents/cancel/destroy (206-210,333) | TODO | | `compat.rs:145` ENOSYS. Implement the aio ring (or keep ENOSYS only if truly matching Linux config — it does not). |
+| F3 | libaio io_setup/submit/getevents/cancel/destroy (206-210,333) | WIP | B643 | `compat.rs:145` ENOSYS. Implement the aio ring (or keep ENOSYS only if truly matching Linux config — it does not). |
 | F4 | quotactl / quotactl_fd (179/443) | TODO | | ENOSYS. Implement quota ops. |
 
 ## P1 — semantic gaps (real work done, contract broken)
