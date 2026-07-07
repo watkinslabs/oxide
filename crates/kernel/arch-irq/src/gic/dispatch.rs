@@ -130,6 +130,10 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             };
             sched::cpustat::account(
                 if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
+            // G3: per-task utime/stime — charge the real inter-tick delta to
+            // the interrupted task's user/kernel CPU-time bucket (getrusage/
+            // times). IRQ-context: atomics only.
+            sched::cpustat::charge_current_tick(from_user);
             if is_bsp {
                 // SAFETY: IRQ dispatcher context, IRQs masked.
                 unsafe { crate::tick_poll(from_user); }
