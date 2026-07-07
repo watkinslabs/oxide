@@ -544,7 +544,10 @@ static int __init sample_init(void)
     (void)vmalloc(SAMPLE_MMIO_SIZE);
     (void)vzalloc_noprof(SAMPLE_MMIO_SIZE);
     vfree(NULL);
-    (void)alloc_pages(GFP_KERNEL | __GFP_ZERO, 0);
+    page = alloc_pages(GFP_KERNEL | __GFP_ZERO, 0);
+    (void)vmap(&page, 1, VM_MAP, PAGE_KERNEL);
+    vunmap(NULL);
+    (void)page;
     (void)alloc_pages_noprof(GFP_KERNEL, 0);
     (void)__alloc_pages_noprof(GFP_KERNEL, 0, -1, NULL);
     (void)__get_free_pages(GFP_KERNEL, 0);
