@@ -11,7 +11,12 @@ use crate::open_common::{dup_fd_target, open_proc_fd, enforce_open_perm, break_l
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257. No openat2 RESOLVE_*
 /// modifiers (default `LookupFlags`). # C: O(N_path)
 pub fn sys_openat(args: &SyscallArgs) -> i64 {
-    open_core(args, vfs::LookupFlags::default())
+    let rv = open_core(args, vfs::LookupFlags::default());
+    #[cfg(feature = "debug-boot")]
+    if let Ok(p) = crate::namei_common::read_user_path(args.a1) {
+        crate::namei_common::trace_logind_dev(b"open", p.as_str(), rv);
+    }
+    rv
 }
 
 // openat2 RESOLVE_* (uapi/linux/openat2.h). VALID = OR of all six.
