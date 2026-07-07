@@ -2,7 +2,7 @@ use super::*;
 
 // ---- harness driver ----
 
-struct Xorshift(u64);
+pub(super) struct Xorshift(u64);
 impl Xorshift {
     fn next(&mut self) -> u64 {
         let mut x = self.0;
@@ -13,15 +13,15 @@ impl Xorshift {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind { Anon, FilePriv, FileShared, ShmemAnon, KernelBytes }
+pub(super) enum Kind { Anon, FilePriv, FileShared, ShmemAnon, KernelBytes }
 
-struct AsSlot {
-    root: u64,
-    mm: Arc<AddressSpace>,
+pub(super) struct AsSlot {
+    pub(super) root: u64,
+    pub(super) mm: Arc<AddressSpace>,
 }
 
 /// Enumerate a random page VA inside any VMA of `mm`. Returns (va, prot_w).
-fn pick_page(mm: &AddressSpace, rng: &mut Xorshift) -> Option<(u64, bool)> {
+pub(super) fn pick_page(mm: &AddressSpace, rng: &mut Xorshift) -> Option<(u64, bool)> {
     let tree = mm.vmas_for_test();
     let vmas: Vec<(u64, u64, bool)> = tree.iter()
         .map(|v| (v.start.as_u64(), v.end.as_u64(), v.prot.contains(VmaProt::WRITE)))
@@ -33,16 +33,16 @@ fn pick_page(mm: &AddressSpace, rng: &mut Xorshift) -> Option<(u64, bool)> {
     Some((va, w))
 }
 
-fn pte_at(root: u64, va: u64) -> Option<(u64, u64)> {
+pub(super) fn pte_at(root: u64, va: u64) -> Option<(u64, u64)> {
     ROOTS.with(|r| r.borrow().get(&root).and_then(|m| m.get(&va).copied()))
 }
 
-const COW_WRITE: FaultKind = FaultKind::Protection { access: FaultAccess::Write };
-const DEMAND_WRITE: FaultKind = FaultKind::NotPresent { access: FaultAccess::Write };
-const DEMAND_READ: FaultKind = FaultKind::NotPresent { access: FaultAccess::Read };
+pub(super) const COW_WRITE: FaultKind = FaultKind::Protection { access: FaultAccess::Write };
+pub(super) const DEMAND_WRITE: FaultKind = FaultKind::NotPresent { access: FaultAccess::Write };
+pub(super) const DEMAND_READ: FaultKind = FaultKind::NotPresent { access: FaultAccess::Read };
 
 /// Drive one fault (demand or COW) at `va` in the active AS.
-fn do_fault(mm: &AddressSpace, va: u64, fault: FaultKind) {
+pub(super) fn do_fault(mm: &AddressSpace, va: u64, fault: FaultKind) {
     let uva = match hal::UserVirtAddr::new(va) { Some(u) => u, None => return };
     // SAFETY: hosted harness; MultiMmu active root set to `mm`; closures mirror
     // the kernel fault dispatcher's real inc/dec/refcount/alloc/rmap wiring.
@@ -70,7 +70,7 @@ fn do_fault(mm: &AddressSpace, va: u64, fault: FaultKind) {
 
 /// Model `glue_munmap`: unmap-then-dec each present leaf in [addr,addr+len),
 /// then drop the VMA bookkeeping.
-fn do_munmap(slot: &AsSlot, addr: u64, len: u64) {
+pub(super) fn do_munmap(slot: &AsSlot, addr: u64, len: u64) {
     activate(slot.root);
     let pages: Vec<(u64, u64)> = ROOTS.with(|r| {
         r.borrow().get(&slot.root).map(|m| {
@@ -89,7 +89,7 @@ fn do_munmap(slot: &AsSlot, addr: u64, len: u64) {
 }
 
 /// Model `as_teardown`: dec every present user leaf, drop the root.
-fn do_exit(slot: &AsSlot) {
+pub(super) fn do_exit(slot: &AsSlot) {
     let pages: Vec<u64> = ROOTS.with(|r| {
         r.borrow().get(&slot.root).map(|m| m.values().map(|(pa, _)| *pa & !(PAGE - 1)).collect())
             .unwrap_or_default()
@@ -98,7 +98,7 @@ fn do_exit(slot: &AsSlot) {
     ROOTS.with(|r| { r.borrow_mut().remove(&slot.root); });
 }
 
-fn map_region(slot: &AsSlot, kind: Kind, len: u64) {
+pub(super) fn map_region(slot: &AsSlot, kind: Kind, len: u64) {
     let (prot, flags, backing) = match kind {
         Kind::Anon => (
             VmaProt::READ | VmaProt::WRITE,
@@ -130,7 +130,7 @@ fn map_region(slot: &AsSlot, kind: Kind, len: u64) {
 }
 
 /// The core randomized invariant test. `seed` + `iters` parametrize the run.
-fn run(seed: u64, iters: usize) {
+pub(super) fn run(seed: u64, iters: usize) {
     reset();
     let mut rng = Xorshift(seed);
     let mut next_root: u64 = 0x1_0000_0000;
