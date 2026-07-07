@@ -22,6 +22,7 @@ tty     = { path = "../../kernel/tty" }
 vt      = { path = "../../drivers/vt" }
 pmm     = { path = "../../kernel/mm-pmm" }
 sched   = { path = "../../kernel/sched" }
+input   = { path = "../../kernel/input" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

@@ -48,12 +48,14 @@ pub mod modinfo;
 pub use modinfo::{KERNEL_VERMAGIC, ModuleInfo, ModuleParam};
 
 pub mod linux_alloc;
+pub mod linux_block;
 pub mod linux_chrdev;
 pub mod linux_device;
 pub mod linux_dma;
 pub mod linux_io;
 pub mod linux_irq;
 pub mod linux_firmware;
+pub mod linux_input;
 pub mod linux_netdev;
 pub mod linux_pci;
 pub mod linux_sync;

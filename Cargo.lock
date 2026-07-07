@@ -335,6 +335,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "input",
  "klog",
  "pmm",
  "procfs",
@@ -654,6 +655,14 @@ name = "inflate"
 version = "0.1.0"
 
 [[package]]
+name = "input"
+version = "0.1.0"
+dependencies = [
+ "sync",
+ "virtio",
+]
+
+[[package]]
 name = "ipc"
 version = "0.1.0"
 dependencies = [
@@ -839,11 +848,13 @@ name = "modules"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "block",
  "elf",
  "ext4",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "input",
  "klog",
  "mmio-map",
  "net",
