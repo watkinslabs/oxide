@@ -260,7 +260,7 @@ fn collect_initcall_sections(m: &LoadedModule) -> Result<Vec<InitFn>, RegistryEr
     let mut out = Vec::new();
     for s in &m.sections {
         if !is_initcall_section(&s.name) { continue; }
-        for addr in section_ptrs(&s.bytes)? {
+        for addr in section_ptrs(s.bytes())? {
             // SAFETY: initcall section entries are relocated function pointers.
             out.push(unsafe { init_fn(addr) });
         }
@@ -272,7 +272,7 @@ fn collect_exitcall_sections(m: &LoadedModule) -> Result<Vec<ExitFn>, RegistryEr
     let mut out = Vec::new();
     for s in &m.sections {
         if s.name != ".exitcall.exit" { continue; }
-        for addr in section_ptrs(&s.bytes)? {
+        for addr in section_ptrs(s.bytes())? {
             // SAFETY: exitcall section entries are relocated function pointers.
             out.push(unsafe { exit_fn(addr) });
         }
@@ -318,7 +318,7 @@ fn validate_name(name: &str) -> Result<(), RegistryError> {
 }
 
 fn module_size(m: &LoadedModule) -> usize {
-    m.sections.iter().map(|s| s.bytes.len()).sum()
+    m.sections.iter().map(|s| s.len()).sum()
 }
 
 fn synthetic_name(id: usize) -> String {

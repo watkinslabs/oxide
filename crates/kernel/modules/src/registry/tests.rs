@@ -32,12 +32,7 @@ fn empty_module() -> LoadedModule {
 }
 
 fn ptr_section(name: &str, ptr: usize) -> PlacedSection {
-    PlacedSection {
-        name: String::from(name),
-        bytes: ptr.to_ne_bytes().to_vec(),
-        vbase: 0,
-        flags: 0,
-    }
+    PlacedSection::from_bytes(String::from(name), ptr.to_ne_bytes().to_vec(), 0)
 }
 
 fn insert(name: &str, refcnt: usize) {
@@ -53,12 +48,7 @@ fn insert(name: &str, refcnt: usize) {
 fn snapshot_reports_name_state_and_counts() {
     reset();
     let mut m = empty_module();
-    m.sections.push(PlacedSection {
-        name: String::from(".text"),
-        bytes: alloc::vec![0u8; 12],
-        vbase: 0,
-        flags: 0,
-    });
+    m.sections.push(PlacedSection::from_bytes(String::from(".text"), alloc::vec![0u8; 12], 0));
     m.symbols.insert(String::from("init_module"), 1);
     REGISTRY.lock().push(Some(ModuleRecord {
         name: String::from("sample"),

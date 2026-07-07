@@ -3,11 +3,11 @@
 // `symtab.rs` lands the kernel symbol table per `18§7`:
 // `EXPORT_SYMBOL` / `EXPORT_SYMBOL_GPL` registration, name-based
 // resolution with GPL gating, per-module export bookkeeping for the
-// unload path.
+// unload path. `module_mem.rs` owns loader section backing and final
+// W^X permissions.
 //
-// Out of scope (follow-ups): signature verification; per-module W^X
-// memory; executable init/exit callbacks; async drain; CRC of built-in
-// symtab; `__ksymtab` linker section walking.
+// Out of scope (follow-ups): signature verification; async drain; CRC
+// of built-in symtab; `__ksymtab` linker section walking.
 
 #![no_std]
 #![feature(c_variadic)]
@@ -79,6 +79,7 @@ pub mod linux_usb;
 
 pub mod loader;
 pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
+pub mod module_mem;
 
 #[cfg(test)]
 mod tests;

@@ -1,24 +1,19 @@
-// Minimum kernel-modules loader. Takes a `.ko` ET_REL ELF + a
-// symbol resolver, places each loadable section into a freshly-
-// allocated heap buffer, resolves symbols, applies relocations.
+// Minimum kernel-modules loader. Takes a `.ko` ET_REL ELF + a symbol
+// resolver, places each loadable section into module-owned storage,
+// resolves symbols, applies relocations, then seals final W^X PTEs.
 //
-// The product is a `LoadedModule` that pins the section buffers
-// in memory + records the resolved symbol vaddrs. Calling
-// `init_module()` on the loaded code is the next step (P10-04);
-// requires the kernel-side mmap-with-EXEC permissions which is
-// orthogonal — for now hosted-test exercises the relocator end
-// to end against synthetic .ko payloads.
+// Hosted tests use Vec-backed storage; target builds use PMM frames
+// mapped writable while relocating, then remapped RX/RO/RW by section
+// flags before the module is published.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use elf::{
-    parse_relocatable, ParsedRelocatable,
-    SHF_ALLOC, SHT_NOBITS, SHT_PROGBITS,
-};
+use elf::{parse_relocatable, ParsedRelocatable, SHF_ALLOC, SHT_NOBITS, SHT_PROGBITS};
 
+use crate::module_mem::{section_page_flags, SectionStorage};
 use crate::relocator::{apply_for_machine, RelocError};
 use crate::ModuleInfo;
 
@@ -28,18 +23,49 @@ pub enum LoadError {
     Reloc(RelocError),
     UndefinedSymbol,
     SectionTooLarge,
+    NoMem,
 }
 
 /// One placed-in-memory section.
 pub struct PlacedSection {
     pub name:    String,
-    pub bytes:   Vec<u8>,    // owns the placed bytes (heap)
-    pub vbase:   u64,        // virtual base address (== bytes.as_ptr() in v1)
+    storage:     SectionStorage,
+    pub vbase:   u64,
     pub flags:   u64,        // SHF_*
 }
 
+impl PlacedSection {
+    fn new(name: String, size: usize, flags: u64) -> Result<Self, LoadError> {
+        let storage = SectionStorage::new(size).ok_or(LoadError::NoMem)?;
+        let vbase = storage.vbase();
+        Ok(Self { name, storage, vbase, flags })
+    }
+
+    /// Construct a placed section from bytes for registry tests.
+    /// # C: O(bytes)
+    pub fn from_bytes(name: String, bytes: Vec<u8>, flags: u64) -> Self {
+        let storage = SectionStorage::from_bytes(bytes);
+        let vbase = storage.vbase();
+        Self { name, storage, vbase, flags }
+    }
+
+    /// Section length in bytes.
+    /// # C: O(1)
+    pub fn len(&self) -> usize { self.storage.len() }
+
+    /// Immutable relocated section bytes.
+    /// # C: O(1)
+    pub fn bytes(&self) -> &[u8] { self.storage.as_slice() }
+
+    fn bytes_mut(&mut self) -> &mut [u8] { self.storage.as_mut_slice() }
+
+    fn seal(&mut self) -> Result<(), LoadError> {
+        if self.storage.seal(section_page_flags(self.flags)) { Ok(()) } else { Err(LoadError::NoMem) }
+    }
+}
+
 /// Loaded module record. Borrowed by the kernel-side module
-/// registry; dropping it frees the section bytes (and so unloads
+/// registry; dropping it frees the section storage (and so unloads
 /// the module).
 pub struct LoadedModule {
     pub sections: Vec<PlacedSection>,
@@ -72,21 +98,19 @@ pub fn load_module<R: SymResolver>(bytes: &[u8], resolver: &R) -> Result<LoadedM
             placed.push(None);
             continue;
         }
-        let mut buf = alloc::vec![0u8; s.size as usize];
+        let size = usize::try_from(s.size).map_err(|_| LoadError::SectionTooLarge)?;
+        let mut section = PlacedSection::new(s.name.to_string(), size, s.flags)?;
         if s.sh_type == SHT_PROGBITS {
-            let src = bytes.get(s.offset as usize .. (s.offset + s.size) as usize)
+            let end = s.offset.checked_add(s.size).ok_or(LoadError::BadElf)?;
+            let start = usize::try_from(s.offset).map_err(|_| LoadError::BadElf)?;
+            let end = usize::try_from(end).map_err(|_| LoadError::BadElf)?;
+            let src = bytes.get(start .. end)
                 .ok_or(LoadError::BadElf)?;
-            buf.copy_from_slice(src);
+            section.bytes_mut().copy_from_slice(src);
         }
         // SHT_NOBITS (.bss) stays zero-initialized.
         let _ = SHT_NOBITS;
-        let vbase = buf.as_ptr() as u64;
-        placed.push(Some(PlacedSection {
-            name:  s.name.to_string(),
-            bytes: buf,
-            vbase,
-            flags: s.flags,
-        }));
+        placed.push(Some(section));
     }
 
     // Phase 2: resolve symbols. Defined symbols (shndx != 0) get
@@ -139,8 +163,12 @@ pub fn load_module<R: SymResolver>(bytes: &[u8], resolver: &R) -> Result<LoadedM
             _ => return Err(LoadError::UndefinedSymbol),
         };
         let dest_base = target.vbase;
-        apply_for_machine(parsed.e_machine, r.r_type, r.offset, r.addend, sym_value, &mut target.bytes, dest_base)
+        apply_for_machine(parsed.e_machine, r.r_type, r.offset, r.addend, sym_value, target.bytes_mut(), dest_base)
             .map_err(LoadError::Reloc)?;
+    }
+
+    for s in placed.iter_mut().filter_map(|x| x.as_mut()) {
+        s.seal()?;
     }
 
     // Collect placed sections (drop the Option wrapping).
