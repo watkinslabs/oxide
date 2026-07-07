@@ -106,7 +106,10 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // Misc ENOSYS.
         | NR_LOOKUP_DCOOKIE | NR_REMAP_FILE_PAGES
         | NR_USELIB | NR_USTAT | NR_SYSFS | NR_MODIFY_LDT
-        | NR_QUOTACTL | NR_QUOTACTL_FD | NR_ACCT
+        // QUOTACTL / QUOTACTL_FD moved to real impls (F4) — faithful
+        // no-quota-active dispatch (Q_SYNC=0, mutating=EPERM/ESRCH,
+        // queries=ESRCH). See syscalls/{179_quotactl,443_quotactl_fd}.rs.
+        | NR_ACCT
         // POSIX timer family (timer_create/settime/gettime/getoverrun/delete)
         // moved to silent-0 below — userspace tolerates "no timer fires"
         // better than -ENOSYS, which crashes hardened systemd setups.
