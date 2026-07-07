@@ -11,6 +11,7 @@
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/firmware.h>
 #include <linux/gfp.h>
 #include <linux/hrtimer.h>
@@ -33,6 +34,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pci.h>
+#include <linux/phy.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
@@ -57,6 +59,7 @@
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
+#include <linux/xdp.h>
 #include <crypto/hash.h>
 
 struct sample {
@@ -166,6 +169,11 @@ static int sample_usb_probe(struct usb_interface *intf, const struct usb_device_
 static void sample_usb_disconnect(struct usb_interface *intf) { usb_set_intfdata(intf, NULL); }
 static int sample_net_open(struct net_device *dev) { (void)dev; return 0; }
 static int sample_net_stop(struct net_device *dev) { (void)dev; return 0; }
+static int sample_napi_poll(struct napi_struct *napi, int budget)
+{
+    (void)napi; return budget;
+}
+static void sample_phy_link_change(struct net_device *dev) { (void)dev; }
 static int sample_make_request(struct request_queue *queue, struct bio *bio)
 {
     (void)queue;
@@ -450,6 +458,15 @@ static int __init sample_init(void)
     struct net_device *netdev;
     struct sk_buff *skb;
     unsigned char *skb_data;
+    struct napi_struct napi;
+    struct phy_device phydev;
+    struct ethtool_ts_info tsinfo;
+    struct ethtool_eee eee;
+    unsigned long link_modes[1] = { 0 };
+    u32 legacy_modes = 0;
+    u8 ethtool_buf[ETH_GSTRING_LEN * 2];
+    u8 *ethtool_ptr = ethtool_buf;
+    char skb_copy[SAMPLE_SKB_LEN];
     struct request_queue *queue;
     struct request_queue *mq_queue;
     struct gendisk *disk;
@@ -537,6 +554,7 @@ static int __init sample_init(void)
     char str_copy[32];
     char *str_cursor;
     char *str_token;
+    u8 mac_buf[ETH_ALEN];
     unsigned char hex_bin[2];
     char hex_out[4];
     int parsed_int;
@@ -777,8 +795,63 @@ static int __init sample_init(void)
         netif_stop_queue(netdev);
         netif_start_queue(netdev);
         netif_wake_queue(netdev);
+        netif_tx_lock(netdev);
+        netif_tx_unlock(netdev);
+        netif_tx_stop_all_queues(netdev);
+        netif_tx_wake_queue(netdev);
         netif_carrier_off(netdev);
         netif_carrier_on(netdev);
+        (void)netif_set_real_num_tx_queues(netdev, 1);
+        (void)netif_set_real_num_rx_queues(netdev, 1);
+        netif_set_tso_max_size(netdev, 65536);
+        netif_set_tso_max_segs(netdev, 64);
+        (void)__netif_set_xps_queue(netdev, NULL, 0);
+        (void)netif_enable_cpu_rmap(netdev, 1);
+        netif_napi_add_weight_locked(netdev, &napi, sample_napi_poll, NAPI_POLL_WEIGHT);
+        napi_enable(&napi);
+        __napi_schedule(&napi);
+        napi_disable(&napi);
+        netif_queue_set_napi(netdev, 0, &napi);
+        __netif_napi_del_locked(&napi);
+        (void)ethtool_op_get_link(netdev);
+        (void)ethtool_op_get_ts_info(netdev, &tsinfo);
+        ethtool_convert_legacy_u32_to_link_mode(link_modes, legacy_modes);
+        (void)ethtool_convert_link_mode_to_legacy_u32(&legacy_modes, link_modes);
+        ethtool_puts(&ethtool_ptr, "rx");
+        ethtool_sprintf(&ethtool_ptr, "tx");
+        (void)eth_validate_addr(netdev);
+        (void)eth_platform_get_mac_address(&dev, mac_buf);
+        (void)phy_connect_direct(netdev, &phydev, sample_phy_link_change, 0);
+        phy_start(&phydev);
+        phy_stop(&phydev);
+        (void)phy_resume(&phydev);
+        (void)phy_suspend(&phydev);
+        (void)phy_start_aneg(&phydev);
+        (void)phy_init_hw(&phydev);
+        (void)genphy_soft_reset(&phydev);
+        phy_get_pause(&phydev, NULL, NULL);
+        phy_set_asym_pause(&phydev, true, false);
+        phy_support_asym_pause(&phydev);
+        (void)phy_support_eee(&phydev);
+        (void)phy_ethtool_get_eee(&phydev, &eee);
+        (void)phy_ethtool_set_eee(&phydev, &eee);
+        (void)phy_ethtool_nway_reset(&phydev);
+        (void)phy_set_max_speed(&phydev, SPEED_1000);
+        (void)phy_speed_down(&phydev, false);
+        (void)phy_speed_up(&phydev);
+        (void)phy_modify(&phydev, 0, 0xff, 1);
+        (void)__phy_modify(&phydev, 0, 0xff, 1);
+        (void)phy_write_mmd(&phydev, 0, 0, 1);
+        (void)__phy_write_mmd(&phydev, 0, 0, 1);
+        (void)__phy_modify_mmd(&phydev, 0, 0, 0xff, 1);
+        (void)phy_read_paged(&phydev, 0, 0);
+        (void)phy_write_paged(&phydev, 0, 0, 1);
+        (void)phy_modify_paged(&phydev, 0, 0, 0xff, 1);
+        (void)phy_restore_page(&phydev, phy_select_page(&phydev, 0), 0);
+        phy_print_status(&phydev);
+        phy_attached_info(&phydev);
+        phy_mac_interrupt(&phydev);
+        phy_disconnect(&phydev);
         (void)netdev_priv(netdev);
         (void)register_netdev(netdev);
         skb = dev_alloc_skb(SAMPLE_SKB_LEN);
@@ -788,9 +861,25 @@ static int __init sample_init(void)
             (void)skb_data;
             skb->dev = netdev;
             skb->protocol = ETH_P_IP;
+            (void)skb_partial_csum_set(skb, 0, 0);
+            (void)skb_copy_bits(skb, 0, skb_copy, 4);
+            (void)__pskb_pull_tail(skb, 0);
+            skb_trim(skb, SAMPLE_SKB_LEN - ETH_HLEN);
+            (void)___pskb_trim(skb, SAMPLE_SKB_LEN - ETH_HLEN);
+            (void)__skb_pad(skb, 1, false);
+            skb_tstamp_tx(skb, NULL);
+            skb_clone_tx_timestamp(skb);
             (void)skb_tail_pointer(skb);
             (void)netif_rx(skb);
         }
+        skb = napi_alloc_skb(&napi, SAMPLE_SKB_LEN);
+        if (skb != NULL) {
+            napi_consume_skb(skb, 1);
+        }
+        (void)napi_get_frags(&napi);
+        (void)napi_gro_frags(&napi);
+        (void)__napi_alloc_frag_align(SAMPLE_SKB_LEN, 0);
+        (void)skb_page_frag_refill(SAMPLE_SKB_LEN, &s, GFP_KERNEL);
         unregister_netdev(netdev);
         free_netdev(netdev);
     }
