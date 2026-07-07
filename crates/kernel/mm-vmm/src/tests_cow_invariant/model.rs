@@ -1,44 +1,44 @@
-use alloc::sync::Arc;
-use core::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::thread_local;
-use std::vec::Vec;
+pub(super) use alloc::sync::Arc;
+pub(super) use core::cell::RefCell;
+pub(super) use std::collections::{HashMap, HashSet};
+pub(super) use std::thread_local;
+pub(super) use std::vec::Vec;
 
-use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
+pub(super) use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
-use crate::address_space::AddressSpace;
-use crate::anon_vma::AnonVma;
-use crate::vma::{FaultAccess, FaultKind, FileBacking, VmaBacking, VmaFlags, VmaProt};
+pub(super) use crate::address_space::AddressSpace;
+pub(super) use crate::anon_vma::AnonVma;
+pub(super) use crate::vma::{FaultAccess, FaultKind, FileBacking, VmaBacking, VmaFlags, VmaProt};
 
-const PAGE: u64 = 0x1000;
+pub(super) const PAGE: u64 = 0x1000;
 
 thread_local! {
     /// root_pa -> (va -> (pa, flags)). One leaf map per address space.
-    static ROOTS: RefCell<HashMap<u64, HashMap<u64, (u64, u64)>>> = RefCell::new(HashMap::new());
+    pub(super) static ROOTS: RefCell<HashMap<u64, HashMap<u64, (u64, u64)>>> = RefCell::new(HashMap::new());
     /// The "active CR3": which root map/translate operate on.
-    static ACTIVE: RefCell<u64> = RefCell::new(0);
+    pub(super) static ACTIVE: RefCell<u64> = RefCell::new(0);
     /// pa -> struct-page refcount (the thing pmm tracks). Only inc/dec/alloc
     /// touch this — map/unmap NEVER do, exactly like the real kernel.
-    static RC: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
+    pub(super) static RC: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
     /// pa -> mapcount (live user-PTE count; `PageMeta::mapcount`). Mutated by
     /// the SAME closures that move refcount for PTE-boundary events
     /// (alloc=+1, inc_ref=+1, dec_ref=-1), mirroring `setup.rs`. The inode
     /// base hold (shmem) does NOT touch this — a base pin is not a PTE — so
     /// `mapcount` stays exactly equal to the live-PTE count.
-    static MC: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
+    pub(super) static MC: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
     /// pa -> base holds (inode pin for shmem/memfd frames). Constant per frame.
-    static BASE: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
+    pub(super) static BASE: RefCell<HashMap<u64, i64>> = RefCell::new(HashMap::new());
     /// Frames currently on the free list (refcount hit 0). Reuse models the
     /// real allocator handing a freed frame back out.
-    static POOL: RefCell<Vec<u64>> = RefCell::new(Vec::new());
+    pub(super) static POOL: RefCell<Vec<u64>> = RefCell::new(Vec::new());
     /// memfd backing: file_off -> persistent shared frame pa.
-    static SHFRAMES: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+    pub(super) static SHFRAMES: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
     /// A3 model of `PageFlags::ANON_EXCLUSIVE`: an anon frame born from a
     /// fresh fault / COW-copy is exclusive; `inc_ref` (fork-share) clears
     /// it; a dec back to (mapcount==1, refcount==1) restores it. Mirrors
     /// `pmm::setup` exactly so the harness can assert the COW-reuse fast
     /// path only fires when the kernel's `can_reuse_anon_exclusive` would.
-    static EXCL: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    pub(super) static EXCL: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
     /// A4 rmap model: pa -> the real `Arc<AnonVma>` bound at the fault
     /// (`set_anon_rmap_for_pa`). `check_invariant` walks THIS family's
     /// real chain edges — the self-edge `AddressSpace::mmap` attaches plus
@@ -46,12 +46,12 @@ thread_local! {
     /// target against `ROOTS`, an rmap-derived mapper count INDEPENDENT of
     /// the mapcount model. Three-way equality (rmap == mapcount == Σ live
     /// PTEs) breaks the self-consistency that let the under-count hide.
-    static RMAP: RefCell<HashMap<u64, Arc<AnonVma>>> = RefCell::new(HashMap::new());
+    pub(super) static RMAP: RefCell<HashMap<u64, Arc<AnonVma>>> = RefCell::new(HashMap::new());
     /// Recorded invariant violation (first one wins). None = clean.
-    static BUG: RefCell<Option<std::string::String>> = RefCell::new(None);
+    pub(super) static BUG: RefCell<Option<std::string::String>> = RefCell::new(None);
 }
 
-fn reset() {
+pub(super) fn reset() {
     ROOTS.with(|r| r.borrow_mut().clear());
     RC.with(|r| r.borrow_mut().clear());
     MC.with(|r| r.borrow_mut().clear());
@@ -64,17 +64,17 @@ fn reset() {
     BUG.with(|b| *b.borrow_mut() = None);
 }
 
-fn record_bug(s: std::string::String) {
+pub(super) fn record_bug(s: std::string::String) {
     BUG.with(|b| { if b.borrow().is_none() { *b.borrow_mut() = Some(s); } });
 }
 
-fn activate(root: u64) { ACTIVE.with(|a| *a.borrow_mut() = root); }
+pub(super) fn activate(root: u64) { ACTIVE.with(|a| *a.borrow_mut() = root); }
 
 // ---- struct-page refcount primitives (the ONLY mutators of RC) ----
 
 /// Real 4 KiB host frame so the COW copy (hhdm=0 -> identity) touches valid
 /// memory. Leaked; the test process is short-lived.
-fn fresh_pa() -> u64 {
+pub(super) fn fresh_pa() -> u64 {
     use std::alloc::{alloc_zeroed, Layout};
     let layout = Layout::from_size_align(4096, 4096).unwrap();
     // SAFETY: non-zero 4 KiB layout; alloc_zeroed yields a valid aligned block.
@@ -84,7 +84,7 @@ fn fresh_pa() -> u64 {
 /// Model of `pmm::setup::alloc_one_frame`: prefer a freed frame off the pool,
 /// but NEVER hand out one whose refcount is non-zero (the production guard at
 /// `setup.rs:339`); set refcount to 1 on success.
-fn alloc_frame() -> Option<u64> {
+pub(super) fn alloc_frame() -> Option<u64> {
     let pa = POOL.with(|p| {
         let mut p = p.borrow_mut();
         // Production guard: skip in-use frames on the free list.
@@ -106,7 +106,7 @@ fn alloc_frame() -> Option<u64> {
     Some(pa)
 }
 
-fn rc_inc(pa: u64) {
+pub(super) fn rc_inc(pa: u64) {
     RC.with(|r| { *r.borrow_mut().entry(pa).or_insert(0) += 1; });
     // F157-A1: every inc_ref adds one user PTE (`setup::inc_ref` -> inc_map).
     MC.with(|r| { *r.borrow_mut().entry(pa).or_insert(0) += 1; });
@@ -118,7 +118,7 @@ fn rc_inc(pa: u64) {
 /// Model of `pmm::setup::dec_and_maybe_free_frame`: drop one ref; on 0 the
 /// frame returns to the free list (reusable). F157-A1: also drops one
 /// mapcount (a PTE is being torn down), mirroring `dec_map` then `dec_ref`.
-fn rc_dec(pa: u64) {
+pub(super) fn rc_dec(pa: u64) {
     let mnew = MC.with(|r| {
         let mut m = r.borrow_mut();
         let e = m.entry(pa).or_insert(0);
@@ -152,13 +152,13 @@ fn rc_dec(pa: u64) {
     }
 }
 
-fn rc_get(pa: u64) -> u32 {
+pub(super) fn rc_get(pa: u64) -> u32 {
     RC.with(|r| (*r.borrow().get(&pa).unwrap_or(&0)).max(0) as u32)
 }
 
 // ---- multi-AS page-table model. map/unmap NEVER touch RC. ----
 
-struct MultiMmu;
+pub(super) struct MultiMmu;
 impl MmuOps for MultiMmu {
     unsafe fn map(va: Va, pa: Pa, flags: PageFlags, _s: PageSize) -> Option<Pa> {
         let root = ACTIVE.with(|a| *a.borrow());
@@ -194,7 +194,7 @@ impl MmuOps for MultiMmu {
 
 // ---- shmem (memfd) file backing with persistent shared frames ----
 
-struct MemfdBacking;
+pub(super) struct MemfdBacking;
 impl FileBacking for MemfdBacking {
     fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, ()> {
         for b in dst.iter_mut() { *b = 0; }
@@ -218,7 +218,7 @@ impl FileBacking for MemfdBacking {
 }
 
 /// Private-file backing (no shared_frame; MAP_PRIVATE COW snapshot).
-struct PrivFileBacking;
+pub(super) struct PrivFileBacking;
 impl FileBacking for PrivFileBacking {
     fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, ()> {
         for b in dst.iter_mut() { *b = 0; }
@@ -231,7 +231,7 @@ impl FileBacking for PrivFileBacking {
 
 /// After every op: refcount(pa) == live-PTE-count(pa) + base(pa) for every
 /// frame, and no live PTE references a freed (pooled, refcount-0) frame.
-fn check_invariant(label: &str) {
+pub(super) fn check_invariant(label: &str) {
     // Tally live PTEs across all roots.
     let mut live: HashMap<u64, i64> = HashMap::new();
     // (root, pa) -> the VAs in that AS mapping pa. Built once here so the
