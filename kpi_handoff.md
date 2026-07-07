@@ -7,7 +7,7 @@ Date: 2026-07-07
 - Primary repo: `/home/nd/oxide/kernel`
 - Active worktree: `/home/nd/oxide/worktrees/kpi-debugfs-configfs`
 - Active branch: `F674-kpi-debugfs-configfs`
-- Base freshness: `main` is at `origin/main` `9277e1ac` on 2026-07-07; `origin/main` was fetched again before the DMA/scatterlist and string/runtime follow-ups and remained current.
+- Base freshness: `main` is at `origin/main` `9277e1ac` on 2026-07-07; `origin/main` was fetched again before the DMA/scatterlist, string/runtime, and sysfs emit follow-ups and remained current.
 - Work has not been pushed, PR'd, or merged.
 - Keep all follow-up work in `/home/nd/oxide/worktrees/...`, not the main checkout.
 
@@ -35,6 +35,13 @@ Date: 2026-07-07
 - Added `kpi/include/linux/crc-t10dif.h` with Linux-shaped `crc_t10dif_arch`, `crc_t10dif_generic`, `crc_t10dif_update`, and `crc_t10dif` declarations.
 - The implementation uses the T10-DIF polynomial `0x8BB7` and is covered by the standard `"123456789"` known vector `0xD0DB`.
 - Valid Fedora module audit now resolves the `crc_t10dif_arch` reference; no `MISSING | crypto-random-crc` rows remain for `target_core_mod`, `libcomposite`, or `industrialio-configfs`.
+
+## Sysfs Emit Follow-Up
+
+- Added Linux sysfs page-buffer formatter exports required by Fedora 6.16 `target_core_mod` and `libcomposite`: `sysfs_emit` and `sysfs_emit_at`.
+- Added shared bounded `vscnprintf` plumbing so `sysfs_emit` uses Linux-style page-buffer truncation and `sysfs_emit_at` honors invalid/over-page offsets without writing.
+- Added `kpi/include/linux/sysfs.h` and extended `tools/kpi-header-smoke.c` for host, x86_64, and aarch64 compile smoke coverage.
+- Valid Fedora module audit now resolves the `sysfs_emit` reference; remaining `device-core` misses are `__dynamic_dev_dbg`, `bdev_discard_alignment`, `scsi_device_type`, `usb_gadget_register_driver_owner`, and `usb_gadget_vbus_draw`.
 
 ## Sync Follow-Up
 
@@ -101,9 +108,11 @@ F674 result:
 - Exported allocator matches now include `__kmem_cache_create_args`, `kmem_cache_alloc_noprof`, `kmem_cache_destroy`, `kmem_cache_free`, and `vzalloc_noprof`; remaining allocator misses are `vmap` and `vunmap`, which were not stubbed because the current module layer lacks a real vmalloc VA/page-table alias primitive.
 - After the CRC follow-up, the audit reported 577 exports, 280 undefined refs, 225 unique symbols, 112 missing symbols, 0 weak-missing, and 113 exported matches.
 - Exported `crypto-random-crc` matches now include `crc_t10dif_arch`; no `MISSING | crypto-random-crc` rows remain.
+- After the sysfs emit follow-up, the audit reported 579 exports, 280 undefined refs, 225 unique symbols, 111 missing symbols, 0 weak-missing, and 114 exported matches.
+- Exported `device-core` matches now include `sysfs_emit`; remaining `device-core` misses are `__dynamic_dev_dbg`, `bdev_discard_alignment`, `scsi_device_type`, `usb_gadget_register_driver_owner`, and `usb_gadget_vbus_draw`.
 
 The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, module refcounting, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
-After the allocator, sync, DMA/scatterlist, string/runtime, and CRC follow-ups, the remaining audit misses no longer include the modern allocator slab-cache symbols, sync/RCU, DMA/scatterlist, string/runtime, or crypto-random-crc symbols listed above. Real `vmap`/`vunmap` remain allocator work.
+After the allocator, sync, DMA/scatterlist, string/runtime, CRC, and sysfs emit follow-ups, the remaining audit misses no longer include the modern allocator slab-cache symbols, sync/RCU, DMA/scatterlist, string/runtime, crypto-random-crc, or `sysfs_emit` symbols listed above. Real `vmap`/`vunmap` remain allocator work.
 
 ## Validation Passed
 
@@ -115,6 +124,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `cargo test -q -p modules linux_dma`
 - `cargo test -q -p modules linux_string`
 - `cargo test -q -p modules linux_crypto::crc`
+- `cargo test -q -p modules linux_device::core`
 - `cargo test -q -p modules -- --test-threads=1`
 - `cargo test -q -p vfs`
 - `cc -std=gnu11 -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
@@ -123,6 +133,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining allocator slab-cache, sync/RCU, DMA/scatterlist, string/runtime, or debugfs/configfs missing rows)
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after slab-cache allocator follow-up (expected nonzero overall; allocator missing rows reduced to real `vmap`/`vunmap` only)
 - `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after CRC follow-up (expected nonzero overall; 577 exports, 112 missing, 113 exported matches, and no remaining `crypto-random-crc` missing rows)
+- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after sysfs emit follow-up (expected nonzero overall; 579 exports, 111 missing, 114 exported matches, and `sysfs_emit` exported)
 - `cargo run -q -p xtask -- kernel --arch x86_64`
 - `cargo run -q -p xtask -- kernel --arch aarch64`
 - `git diff --check`
@@ -130,8 +141,9 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - Sync source line-count check; `crates/kernel/modules/src/linux_sync.rs` is 494 lines.
 - DMA source line-count check: `linux_dma.rs` is 452 lines, `linux_dma_sgl.rs` is 52 lines, `linux_dma_tests.rs` is 96 lines.
 - Allocator source line-count check after slab-cache split: `linux_alloc.rs` is 469 lines, `linux_alloc_cache.rs` is 74 lines, and `linux_alloc_tests.rs` is 135 lines.
-- String/runtime line-count check: `linux_string.rs` is 23 lines; child files are 210 lines or less.
+- String/runtime line-count check: `linux_string.rs` is 30 lines; child files are 210 lines or less.
 - CRC source line-count check: `linux_crypto/crc.rs` is 128 lines.
+- Device-core source line-count check after sysfs emit: `linux_device/core.rs` is 308 lines.
 
 ## Next Steps
 
@@ -139,7 +151,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 2. Commit with author `Chris Watkins <chris@watkinslabs.com>` if the scope is accepted.
 3. Push/open PR for `F674-kpi-debugfs-configfs`.
 4. After merge, fast-forward the main checkout and remove this worktree.
-5. Pick the next partial lane from `kpi_fix.md`; the broad real-module audit still points at device-core/sysfs, module refcounting, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, SCSI/target helpers, and other runtime symbols, not debugfs/configfs, DMA/scatterlist, or string/runtime helpers.
+5. Pick the next partial lane from `kpi_fix.md`; the broad real-module audit still points at remaining device-core/sysfs helpers, module refcounting, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, SCSI/target helpers, and other runtime symbols, not debugfs/configfs, DMA/scatterlist, string/runtime, CRC, or `sysfs_emit` helpers.
 
 ## Do Not Do
 

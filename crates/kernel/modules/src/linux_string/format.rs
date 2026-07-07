@@ -25,8 +25,7 @@ pub(crate) unsafe extern "C" fn snprintf(buf: *mut u8, size: usize, fmt: *const 
 
 pub(crate) unsafe extern "C" fn scnprintf(buf: *mut u8, size: usize, fmt: *const u8, mut ap: ...) -> i32 {
     // SAFETY: caller supplies a printf format and matching varargs.
-    let n = unsafe { format_to_buf(buf, size, fmt, &mut ap) };
-    core::cmp::min(n, size.saturating_sub(1)) as i32
+    unsafe { vscnprintf(buf, size, fmt, &mut ap) }
 }
 
 pub(crate) unsafe extern "C" fn sprintf(buf: *mut u8, fmt: *const u8, mut ap: ...) -> i32 {
@@ -53,6 +52,12 @@ unsafe fn format_to_buf(buf: *mut u8, size: usize, fmt: *const u8, ap: &mut VaLi
         unsafe { *buf.add(n) = 0; }
     }
     out.len()
+}
+
+pub(crate) unsafe fn vscnprintf(buf: *mut u8, size: usize, fmt: *const u8, ap: &mut VaList) -> i32 {
+    // SAFETY: caller supplies a printf format and matching varargs.
+    let n = unsafe { format_to_buf(buf, size, fmt, ap) };
+    core::cmp::min(n, size.saturating_sub(1)) as i32
 }
 
 unsafe fn format_c(out: &mut Vec<u8>, fmt: *const u8, ap: &mut VaList) {
