@@ -5,6 +5,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 const MODULE_NAME_MAX: u64 = 64;
+const DELETE_MODULE_FORCE: u64 = 0o1000;
 
 /// `delete_module(name, flags)` slot 176.
 /// # C: O(N_modules + MODULE_NAME_MAX)
@@ -21,7 +22,8 @@ pub fn sys_delete_module(args: &SyscallArgs) -> i64 {
         Ok(s) => s,
         Err(_) => return errno(Errno::Einval),
     };
-    match modules::registry::unload_by_name(name) {
+    let force = (args.a1 & DELETE_MODULE_FORCE) != 0;
+    match modules::registry::unload_by_name_flags(name, force) {
         Ok(()) => 0,
         Err(modules::registry::RegistryError::Busy)  => errno(Errno::Ebusy),
         Err(modules::registry::RegistryError::Noent) => errno(Errno::Enoent),
