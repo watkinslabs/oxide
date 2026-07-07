@@ -1,8 +1,9 @@
-// signalfd surface per Linux 2.6.22. v1: each signalfd_create
-// allocates a SignalfdInode storing the mask. read pops the lowest
-// pending masked signal off current.sigpending and emits a
-// 128-byte `signalfd_siginfo` record (ssi_signo only — other
-// fields zero).
+// signalfd surface per Linux 2.6.22. Each signalfd_create allocates a
+// SignalfdInode storing the mask; signalfd(fd>=0,…) re-arms an existing fd
+// with a new mask. read pops the lowest pending masked signal off
+// current.sigpending and emits a 128-byte `signalfd_siginfo` record filled
+// from the signal's queued siginfo: ssi_signo always, plus ssi_code/pid/uid
+// and either ssi_status (SIGCHLD) or ssi_int/ssi_ptr (RT sigqueue value).
 
 
 
@@ -17,6 +18,17 @@ use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 const SIGNALFD_INO_BASE: Ino = 0x7200_0000;
 /// Linux `signalfd_siginfo` size — 128 bytes per `signalfd(2)`.
 pub const SIGINFO_SIZE: usize = 128;
+
+// `struct signalfd_siginfo` field byte offsets (Linux `linux/signalfd.h`).
+const SSI_SIGNO:  usize = 0;   // u32 signal number
+const SSI_CODE:   usize = 8;   // s32 si_code (SI_USER / CLD_* / SI_QUEUE …)
+const SSI_PID:    usize = 12;  // u32 sender / child pid
+const SSI_UID:    usize = 16;  // u32 sender / child real uid
+const SSI_STATUS: usize = 40;  // s32 SIGCHLD exit status (wait-encoded)
+const SSI_INT:    usize = 44;  // s32 sigqueue value.sival_int
+const SSI_PTR:    usize = 48;  // u64 sigqueue value.sival_ptr
+/// SIGCHLD signal number (its queued siginfo carries pid/uid/status/code).
+const SIG_SIGCHLD: u32 = 17;
 
 /// Per-inode signalfd state (Linux `i_private`): the signal mask read drains.
 pub struct SignalfdData {
@@ -49,10 +61,40 @@ impl FileOps for SignalfdFileOps {
         // nonblocking (read never parks), so EAGAIN is always right here.
         if deliver == 0 { return Err(VfsError::Eagain); }
         let sig = (deliver.trailing_zeros() + 1) as u32;
-        cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-        // Zero the buffer, write ssi_signo at offset 0 (u32 LE).
+        // Pop the signal + its queued siginfo, mirroring rt_sigtimedwait: RT
+        // signals (33..=64) drain their per-signal queue and clear the pending
+        // bit only when it empties; SIGCHLD drains its child-event queue the
+        // same way (systemd reads pid/status/code from the signalfd); other
+        // standard signals collapse in the bitmap with no queued record, so
+        // only ssi_signo is known (synthesised, like Linux for a bitmap sig).
+        let popped: Option<sched::SigInfo> = if (33..=64).contains(&sig) {
+            let (rec, empty) = cur.rt_pop(sig);
+            if empty { cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release); }
+            rec
+        } else if sig == SIG_SIGCHLD {
+            let (rec, empty) = cur.child_sigq_pop();
+            if empty { cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release); }
+            rec
+        } else {
+            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+            None
+        };
+        // Fill the 128-byte signalfd_siginfo: ssi_signo always; the queued
+        // record supplies ssi_code/pid/uid and either ssi_status (SIGCHLD) or
+        // ssi_int/ssi_ptr (an RT sigqueue value).
         for b in &mut buf[..SIGINFO_SIZE] { *b = 0; }
-        buf[0..4].copy_from_slice(&sig.to_le_bytes());
+        buf[SSI_SIGNO..SSI_SIGNO + 4].copy_from_slice(&sig.to_le_bytes());
+        if let Some(rec) = popped {
+            buf[SSI_CODE..SSI_CODE + 4].copy_from_slice(&rec.code.to_le_bytes());
+            buf[SSI_PID..SSI_PID + 4].copy_from_slice(&rec.pid.to_le_bytes());
+            buf[SSI_UID..SSI_UID + 4].copy_from_slice(&rec.uid.to_le_bytes());
+            if sig == SIG_SIGCHLD {
+                buf[SSI_STATUS..SSI_STATUS + 4].copy_from_slice(&(rec.value as i32).to_le_bytes());
+            } else {
+                buf[SSI_INT..SSI_INT + 4].copy_from_slice(&(rec.value as u32).to_le_bytes());
+                buf[SSI_PTR..SSI_PTR + 8].copy_from_slice(&rec.value.to_le_bytes());
+            }
+        }
         Ok(SIGINFO_SIZE)
     }
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
@@ -99,10 +141,12 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     if in_fd >= 0 {
-        // Update existing — caller's responsibility that it's a signalfd.
-        match fdt.get(in_fd) {
-            Ok(_) => return in_fd as i64, // mask update is best-effort; v1 stores only on alloc
-            Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        // Update the existing signalfd's mask in place (Linux `signalfd(fd,…)`
+        // re-arms the fd with the new mask). EINVAL if `fd` is not a signalfd.
+        let file = match fdt.get(in_fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+        match file.inode().private::<SignalfdData>() {
+            Some(d) => { d.mask.store(mask, Ordering::Release); return in_fd as i64; }
+            None => return -(Errno::Einval.as_i32() as i64),
         }
     }
     const SFD_NONBLOCK: u64 = 0o0_004_000;
