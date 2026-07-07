@@ -487,6 +487,7 @@ static int __init sample_init(void)
     atomic_t atom;
     refcount_t refs;
     struct kref kref;
+    struct module owner;
     struct lock_class_key key;
     unsigned int start;
     void __iomem *regs;
@@ -1134,6 +1135,10 @@ static int __init sample_init(void)
     refcount_set(&refs, 1);
     refcount_inc(&refs);
     (void)refcount_dec_and_test(&refs);
+    owner.state = 0;
+    owner.refcnt = 1;
+    (void)try_module_get(&owner);
+    module_put(&owner);
     kref_init(&kref);
     kref_get(&kref);
     (void)kref_put(&kref, sample_release);

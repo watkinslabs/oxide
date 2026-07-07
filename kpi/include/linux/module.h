@@ -32,4 +32,7 @@ struct module {
 #define module_param(name, type, perm) static const char __param_##name[] __used __section("__param") = #name ":" #type ":" #perm
 #define MODULE_PARM_DESC(name, desc) MODULE_INFO(parm_##name, #name ":" desc)
 
+int try_module_get(struct module *module);
+void module_put(struct module *module);
+
 #endif

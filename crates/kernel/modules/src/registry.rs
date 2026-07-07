@@ -164,6 +164,7 @@ pub unsafe fn init_exports() {
     crate::linux_dma::export_symbols();
     crate::linux_firmware::export_symbols();
     crate::linux_input::export_symbols();
+    crate::linux_module::export_symbols();
     crate::linux_io::export_symbols();
     crate::linux_irq::export_symbols();
     crate::linux_netdev::export_symbols();
