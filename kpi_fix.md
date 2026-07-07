@@ -56,7 +56,7 @@ PM, config/autoconf/version glue, or nm-based validation against real `.ko` file
 | DONE | P4 | F671-kpi-power-pm [DONE F671-kpi-power-pm 2026-07-07] | Added power-management compatibility: suspend/resume hooks, runtime PM get/put, device power states, PCI PM, wakeup events. |
 | DONE | P4 | F672-kpi-crypto-random-crc [DONE F672-kpi-crypto-random-crc 2026-07-07] | Export helper APIs commonly needed by drivers: `get_random_bytes`, CRC helpers, hash helpers, and crypto API stubs or real implementation based on target driver demand. |
 | DONE | P4 | F673-kpi-usercopy-api [DONE F673-kpi-usercopy-api 2026-07-07] | Consolidate current syscall-only user-buffer validation into exported driver-safe `access_ok`, `copy_to_user`, `copy_from_user`, `get_user`, `put_user` helpers with fault-safe behavior or explicit non-sleeping limits. |
-| GAP | P4 | TBD-F-kpi-debugfs-configfs | Add debugfs stubs/implementation and configfs if the chosen driver set references them. Keep as late as possible unless `kpi-audit` shows early demand. |
+| GAP | P4 | F674-kpi-debugfs-configfs [CLAIMED F674-kpi-debugfs-configfs 2026-07-07] | Add debugfs stubs/implementation and configfs if the chosen driver set references them. Keep as late as possible unless `kpi-audit` shows early demand. |
 
 ## Minimum Useful Path
 
