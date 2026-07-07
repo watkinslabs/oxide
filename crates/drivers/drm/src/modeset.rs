@@ -153,6 +153,9 @@ pub fn get_plane_res(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_get_plane_res is 16 B; aligned struct read.
     let r: DrmModeGetPlaneRes = unsafe { core::ptr::read_volatile(arg as *const DrmModeGetPlaneRes) };
     let planes = card.plane_ids();
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[DRMPROP planeres count="); klog::write_dec_u64(planes.len() as u64);
+      klog::write_raw(b" ucount="); klog::write_dec_u64(r.count_planes as u64); klog::write_raw(b"]\n"); }
     if r.plane_id_ptr != 0 && r.count_planes >= planes.len() as u32 {
         write_ids(r.plane_id_ptr, &planes, r.count_planes);
     }
@@ -178,8 +181,109 @@ pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     p.possible_crtcs     = info.possible_crtcs;
     p.gamma_size         = 0;
     p.count_format_types = fmts.len() as u32;
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[DRMPROP getplane id="); klog::write_dec_u64(p.plane_id as u64);
+      klog::write_raw(b" crtc_id="); klog::write_dec_u64(info.crtc_id as u64);
+      klog::write_raw(b" possible_crtcs="); klog::write_hex_u64(info.possible_crtcs as u64); klog::write_raw(b"]\n"); }
     // SAFETY: arg validated; struct is 32 B; aligned struct write through caller's AS at CPL=0.
     unsafe { core::ptr::write_volatile(arg as *mut DrmModeGetPlane, p); }
+    0
+}
+
+fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
+
+// DRM mode-object type tags (uapi drm_mode.h) + the one KMS object property we
+// expose. mutter's legacy path needs the plane "type" enum to pick a CRTC's
+// PRIMARY plane; CRTC/connector need no properties for legacy modeset.
+const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
+/// Stable id for the immutable "type" plane property (Linux assigns these
+/// dynamically; a fixed id is fine for a single built-in property).
+const PROP_PLANE_TYPE_ID: u32 = 16;
+const DRM_PLANE_TYPE_PRIMARY: u64 = 1; // OVERLAY=0, PRIMARY=1, CURSOR=2
+const DRM_MODE_PROP_IMMUTABLE: u32 = 0x04;
+const DRM_MODE_PROP_ENUM: u32 = 0x08;
+/// `drm_mode_property_enum` is `{ __u64 value; char name[32]; }` = 40 bytes.
+const PROP_ENUM_STRIDE: u64 = 40;
+
+/// `MODE_OBJ_GETPROPERTIES` — property list of a mode object. Only a PLANE
+/// exposes a property: the immutable "type" = PRIMARY, which mutter reads to pick
+/// the CRTC's primary plane (else "No available primary plane found"). CRTC /
+/// connector report zero (legacy modeset needs none). Returning the real list
+/// (vs the bare `ENOTTY` this ioctl used to hit) is what lets mutter finish KMS
+/// setup. Two-pass: `struct drm_mode_obj_get_properties` = props_ptr@0,
+/// prop_values_ptr@8, count_props@16, obj_id@20, obj_type@24. # C: O(1)
+pub fn get_obj_properties(arg: u64) -> i64 {
+    if !user_ok(arg, 28) { return efault(); }
+    // SAFETY: [arg,arg+28) validated <= USER_VA_END; fields are naturally aligned.
+    let (props_ptr, vals_ptr, ucount, obj_type) = unsafe {
+        (core::ptr::read_volatile(arg as *const u64),
+         core::ptr::read_volatile((arg + 8) as *const u64),
+         core::ptr::read_volatile((arg + 16) as *const u32),
+         core::ptr::read_volatile((arg + 24) as *const u32))
+    };
+    let n: u32 = if obj_type == DRM_MODE_OBJECT_PLANE { 1 } else { 0 };
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[DRMPROP objprops obj_type="); klog::write_hex_u64(obj_type as u64);
+        klog::write_raw(b" ucount="); klog::write_dec_u64(ucount as u64);
+        klog::write_raw(b" n="); klog::write_dec_u64(n as u64); klog::write_raw(b"]\n");
+    }
+    if n == 1 && ucount >= 1 && user_ok(props_ptr, 4) && user_ok(vals_ptr, 8) {
+        // SAFETY: both single-element ranges validated; write the (id,value) pair.
+        unsafe {
+            core::ptr::write_volatile(props_ptr as *mut u32, PROP_PLANE_TYPE_ID);
+            core::ptr::write_volatile(vals_ptr as *mut u64, DRM_PLANE_TYPE_PRIMARY);
+        }
+    }
+    // SAFETY: arg+16 within the validated 28-byte range; report the real count.
+    unsafe { core::ptr::write_volatile((arg + 16) as *mut u32, n); }
+    0
+}
+
+/// `MODE_GETPROPERTY` — describe a property by id. Only `PROP_PLANE_TYPE_ID` (the
+/// plane "type" enum) exists; any other id is `EINVAL` (Linux
+/// `drm_mode_getproperty_ioctl` on an unknown id). `struct drm_mode_get_property`
+/// = values_ptr@0, enum_blob_ptr@8, prop_id@16, flags@20, name[32]@24,
+/// count_values@56, count_enum_blobs@60 (64 B). Two-pass on the enum blob array
+/// (`drm_mode_property_enum` × count). # C: O(1)
+pub fn get_property(arg: u64) -> i64 {
+    if !user_ok(arg, 64) { return efault(); }
+    // SAFETY: [arg,arg+64) validated; prop_id@16, enum_blob_ptr@8, count_enum_blobs@60.
+    let (prop_id, enum_ptr, ucount) = unsafe {
+        (core::ptr::read_volatile((arg + 16) as *const u32),
+         core::ptr::read_volatile((arg + 8) as *const u64),
+         core::ptr::read_volatile((arg + 60) as *const u32))
+    };
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[DRMPROP getprop id="); klog::write_dec_u64(prop_id as u64);
+      klog::write_raw(b" ucount="); klog::write_dec_u64(ucount as u64); klog::write_raw(b"]\n"); }
+    if prop_id != PROP_PLANE_TYPE_ID { return einval(); }
+    // SAFETY: validated range; write flags@20, name[32]@24, count_values@56=0,
+    // count_enum_blobs@60=3 (the OVERLAY/PRIMARY/CURSOR enum tri-state).
+    unsafe {
+        core::ptr::write_volatile((arg + 20) as *mut u32, DRM_MODE_PROP_ENUM | DRM_MODE_PROP_IMMUTABLE);
+        let name = b"type";
+        for i in 0..32u64 {
+            let b = if (i as usize) < name.len() { name[i as usize] } else { 0 };
+            core::ptr::write_volatile((arg + 24 + i) as *mut u8, b);
+        }
+        core::ptr::write_volatile((arg + 56) as *mut u32, 0u32);
+        core::ptr::write_volatile((arg + 60) as *mut u32, 3u32);
+    }
+    let entries: [(u64, &[u8]); 3] = [(0, b"Overlay"), (1, b"Primary"), (2, b"Cursor")];
+    if ucount >= 3 && user_ok(enum_ptr, 3 * PROP_ENUM_STRIDE) {
+        for (i, (val, nm)) in entries.iter().enumerate() {
+            let base = enum_ptr + (i as u64) * PROP_ENUM_STRIDE;
+            // SAFETY: [enum_ptr, enum_ptr+120) validated; each entry is value@0 + name[32]@8.
+            unsafe {
+                core::ptr::write_volatile(base as *mut u64, *val);
+                for j in 0..32u64 {
+                    let b = if (j as usize) < nm.len() { nm[j as usize] } else { 0 };
+                    core::ptr::write_volatile((base + 8 + j) as *mut u8, b);
+                }
+            }
+        }
+    }
     0
 }
 
