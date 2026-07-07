@@ -45,6 +45,9 @@ echo post-pthread-probe rv=$?
 echo pre-robust-probe
 timeout 10 /bin/robust_probe
 echo post-robust-probe rv=$?
+echo pre-pmadvise-probe
+timeout 10 /bin/pmadvise_probe
+echo post-pmadvise-probe rv=$?
 echo pre-socketpair-fork-probe
 timeout 10 /bin/socketpair_fork_probe
 echo post-socketpair-fork-probe rv=$?

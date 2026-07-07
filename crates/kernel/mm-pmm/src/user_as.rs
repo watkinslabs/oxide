@@ -38,7 +38,7 @@ use signal::try_deliver_sigsegv_via_handler_x86;
 
 use state::{current_cpu_idx, current_mm_cpumask, HHDM_OFFSET};
 pub use state::{clone_global_arc, hhdm_offset, init, with};
-pub use foreign::{mprotect_pages, read_foreign_user, rmap_walk_anon_pa, write_foreign_user};
+pub use foreign::{evict_foreign_pages_in_range, mprotect_pages, read_foreign_user, rmap_walk_anon_pa, write_foreign_user};
 use foreign::{read_foreign_leaf, read_foreign_leaf_pa};
 #[cfg(target_arch = "x86_64")]
 pub use teardown::classify_x86_pf;
