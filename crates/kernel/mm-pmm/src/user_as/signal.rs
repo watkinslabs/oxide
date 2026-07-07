@@ -239,6 +239,18 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
             // exit_status low 8 = signal num, bit 8 = "killed by
             // signal" flag (per the wait4 encoder in syscall_glue).
             task.exit_status.store(11 | 0x100, Ordering::Release);
+            // Robust-futex recovery (Linux do_exit -> exit_robust_list): a task
+            // that SEGVs while holding a robust mutex must mark it
+            // FUTEX_OWNER_DIED + wake a waiter or peers strand forever. This
+            // path does NOT replace_mm, so the user list stays mapped; the walk
+            // is fault-safe (verifies page-present before each read). Routed via
+            // the sched hook (walk body lives in `ipc`, which depends on sched).
+            let rl = task.robust_list_head.load(Ordering::Acquire);
+            if rl != 0 {
+                let vt = task.vtid.load(Ordering::Acquire);
+                let owner_tid = if vt != 0 { vt } else { task.tid };
+                sched::live::run_robust_exit(rl, owner_tid);
+            }
             sched::live::mark_done(task);
             sched::live::signal_child_exit(task);
         }
@@ -285,6 +297,16 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
             // strong-ref-via-raw keeps pointee alive across this borrow.
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(11 | 0x100, Ordering::Release);
+            // Robust-futex recovery (Linux do_exit -> exit_robust_list): mark a
+            // held robust mutex FUTEX_OWNER_DIED + wake a waiter so a SEGV of
+            // the owner doesn't strand peers. mm stays mapped on this path; the
+            // walk is fault-safe. Routed via the sched hook (body in `ipc`).
+            let rl = task.robust_list_head.load(Ordering::Acquire);
+            if rl != 0 {
+                let vt = task.vtid.load(Ordering::Acquire);
+                let owner_tid = if vt != 0 { vt } else { task.tid };
+                sched::live::run_robust_exit(rl, owner_tid);
+            }
             sched::live::mark_done(task);
             sched::live::signal_child_exit(task);
         }
