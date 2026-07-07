@@ -33,7 +33,7 @@ fn test_dev(ops: &LinuxDevPmOps, driver: &mut LinuxDeviceDriver) -> LinuxDevice 
     LinuxDevice {
         dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
         parent: null_mut(), bus: null_mut::<LinuxBusType>(), class: null_mut(), driver,
-        init_name: c"pm-dev".as_ptr(), name: [0; DEVICE_NAME_LEN], release: None,
+        init_name: c"pm-dev".as_ptr(), name: [0; DEVICE_NAME_LEN], kobj: crate::linux_device::types::LinuxKobject::new(), release: None,
         of_node: null_mut(), acpi_node: null_mut(), power: LinuxDevPmInfo::new(),
     }
 }

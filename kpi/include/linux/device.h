@@ -3,6 +3,7 @@
 
 #include <linux/dynamic_debug.h>
 #include <linux/gfp.h>
+#include <linux/kobject.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pm.h>
@@ -28,6 +29,7 @@ struct device {
     struct device_driver *driver;
     const char *init_name;
     char name[OXIDE_DEVICE_NAME_LEN];
+    struct kobject kobj;
     void (*release)(struct device *dev);
     struct device_node *of_node;
     struct acpi_device *acpi_node;
