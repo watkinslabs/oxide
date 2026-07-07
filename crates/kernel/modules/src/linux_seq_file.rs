@@ -126,7 +126,7 @@ extern "C" fn seq_putc(seq: *mut SeqFile, c: c_char) -> i32 {
     0
 }
 
-extern "C" fn seq_puts(seq: *mut SeqFile, s: *const c_char) -> i32 {
+pub(crate) extern "C" fn seq_puts(seq: *mut SeqFile, s: *const c_char) -> i32 {
     let Some(state) = seq_state_mut(seq) else { return -EINVAL; };
     if s.is_null() { return -EINVAL; }
     let mut i = 0usize;
@@ -141,7 +141,7 @@ extern "C" fn seq_puts(seq: *mut SeqFile, s: *const c_char) -> i32 {
     0
 }
 
-extern "C" fn seq_write(seq: *mut SeqFile, data: *const c_void, len: usize) -> i32 {
+pub(crate) extern "C" fn seq_write(seq: *mut SeqFile, data: *const c_void, len: usize) -> i32 {
     let Some(state) = seq_state_mut(seq) else { return -EINVAL; };
     if data.is_null() && len != 0 { return -EINVAL; }
     if state.body.len().saturating_add(len) > MAX_SEQ_BYTES { return -ENOMEM; }

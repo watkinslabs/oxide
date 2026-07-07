@@ -376,6 +376,16 @@ static int __init sample_init(void)
     struct debugfs_blob_wrapper debug_blob;
     u32 debug_value = SAMPLE_DEBUG_VALUE_INIT;
     char debug_blob_data[4] = { 'd', 'a', 't', 'a' };
+    u32 debug_regs[2] = { 0x12345678, 0x90abcdef };
+    const struct debugfs_reg32 debug_reg_defs[] = {
+        { "status", 0 },
+        { "control", 4 },
+    };
+    struct debugfs_regset32 debug_regset = {
+        .regs = debug_reg_defs,
+        .nregs = 2,
+        .base = debug_regs,
+    };
     struct configfs_subsystem subsys;
     struct cdev cdev;
     struct miscdevice misc = {
@@ -583,6 +593,8 @@ static int __init sample_init(void)
     debug_blob.data = debug_blob_data;
     debug_blob.size = sizeof(debug_blob_data);
     debug_blob_file = debugfs_create_blob("blob", 0400, debug_dir, &debug_blob);
+    debugfs_create_regset32("regs", 0400, debug_dir, &debug_regset);
+    debugfs_print_regs32(NULL, debug_reg_defs, 2, debug_regs, "sample_");
     debug_link = debugfs_create_symlink("link", debug_dir, "value");
     debugfs_remove(debug_link);
     debugfs_remove(debug_blob_file);
