@@ -71,6 +71,7 @@ pub mod linux_pci;
 pub mod linux_platform;
 pub mod linux_pm;
 pub mod linux_seq_file;
+pub mod linux_scsi;
 pub mod linux_string;
 pub mod linux_sync;
 pub mod linux_time;
