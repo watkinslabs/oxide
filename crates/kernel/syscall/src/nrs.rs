@@ -399,7 +399,8 @@ pub const NR_REMOVEXATTRAT:       u64 = 466;
 pub const NR_OPEN_TREE_ATTR:      u64 = 467;
 pub const NR_FILE_GETATTR:        u64 = 468;
 pub const NR_FILE_SETATTR:        u64 = 469;
-pub const NR_LISTNS:              u64 = 470;
+// 470 unassigned in mainline — `listns` was proposed but never merged, so no
+// NR_LISTNS constant (it had no handler and was routed nowhere).
 pub const NR_RSEQ_SLICE_YIELD:    u64 = 471;
 
 pub const ARCH_SET_FS: u64 = 0x1002;

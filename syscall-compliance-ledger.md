@@ -54,7 +54,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
-| X1 | NR_LISTNS (470) | TODO | | declared, unrouted. Route to a real listns impl or drop the constant if not a real Linux syscall. |
+| X1 | NR_LISTNS (470) | DONE | B637 #TBD | not a real mainline syscall (proposed, never merged); removed the fictional constant. |
 
 ## Notes
 - Rows marked "not personally verified" in the audit (D5, D3, F1, F3, F4 + inotify/flock/xattr-persist semantics) get a source-read + hosted test as the FIRST step of their branch before implementing.
