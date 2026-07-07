@@ -53,7 +53,7 @@ pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteFlags, PteX86_64, PtIndices,
     ENTRIES_PER_TABLE, PD_SHIFT, PDPT_SHIFT, PML4_SHIFT, PT_SHIFT, PTE_PHYS_MASK,
 };
-pub use pt_regs::{oxide_dispatch_from_pt_regs_x86_64, PtRegsX86_64};
+pub use pt_regs::PtRegsX86_64;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use regs::{read_clear_dr6, set_data_watchpoint};
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};

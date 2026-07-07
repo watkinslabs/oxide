@@ -11,7 +11,7 @@
 //
 // Layout is asm-coupled. Tests pin every offset.
 
-use syscall::{dispatch, SyscallArgs};
+use syscall::SyscallArgs;
 
 /// Saved user-state on `svc` / IRQ entry. x0..x30 (31 GPRs) +
 /// SP_EL0 + ELR_EL1 (user PC) + SPSR_EL1 (user pstate). 34 slots
@@ -53,26 +53,6 @@ impl PtRegsAArch64 {
     pub fn set_return(&mut self, rv: i64) {
         self.x0 = rv as u64;
     }
-}
-
-/// Bridge from the trampoline's `PtRegsAArch64` frame to
-/// `syscall::dispatch`.
-///
-/// # SAFETY: `regs` points to a fully-populated `PtRegsAArch64` on
-/// the current kernel stack; the kernel owns the frame; userspace
-/// can't observe it until `eret` is reached.
-/// # C: O(1) + dispatch fn cost
-#[no_mangle]
-pub unsafe extern "C" fn oxide_dispatch_from_pt_regs_aarch64(regs: *mut PtRegsAArch64) {
-    // SAFETY: regs is a kernel-stack pointer to a populated frame
-    // per the function contract above; the trampoline guarantees
-    // it lives across this call. We need both a read (args+nr) and
-    // a write-back (x0) which is why we take `*mut`.
-    let r = unsafe { &mut *regs };
-    let nr   = r.syscall_nr();
-    let args = r.to_syscall_args();
-    let rv   = dispatch(nr, &args);
-    r.set_return(rv);
 }
 
 #[cfg(test)]
@@ -135,18 +115,4 @@ mod tests {
                    (0x1000, 0x4000, 0x7, 0x32, 0x0, 0x0));
     }
 
-    #[test]
-    fn dispatch_writes_back_to_x0() {
-        let mut regs = PtRegsAArch64::default();
-        regs.x8 = 7777; // unimplemented syscall ⇒ ENOSYS
-        // SAFETY: hosted test; `regs` is a stack-local PtRegs that
-        // lives across this call; the bridge fn reads nr+args and
-        // writes x0 — exactly its documented contract.
-        unsafe {
-            oxide_dispatch_from_pt_regs_aarch64(&mut regs as *mut _);
-        }
-        // ENOSYS = 38; encoded as `-(38i32 as i64) as u64` per `15§1.3`.
-        let expected = -38i64 as u64;
-        assert_eq!(regs.x0, expected, "x0 must hold -errno on ENOSYS");
-    }
 }

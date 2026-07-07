@@ -1,6 +1,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::{SyscallArgs, dispatch};
+use syscall::SyscallArgs;
 
 use super::ptrace::ptrace_syscall_stop_if_armed;
 use super::route_a::dispatch_route_a;
@@ -34,7 +34,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     else if let Some(rv) = ::fs::xattr::xattr_dispatch(nr, &args) { rv }
     else if let Some(rv) = ::fs::keyring::keyring_dispatch(nr, &args) { rv }
     else if let Some(rv) = sched::compat::try_compat(nr, &args) { rv }
-    else { dispatch(nr as u32, &args) };
+    // No modern route claimed this nr: honest ENOSYS. There is NO legacy
+    // fallback table (docs/53 hollow-shell) — an unimplemented syscall must
+    // report ENOSYS, never silently hit a stub with wrong semantics.
+    else { -(syscall::Errno::Enosys.as_i32() as i64) };
     debug_syscall! { sched::trace::ret(nr, rv); }
     syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {
