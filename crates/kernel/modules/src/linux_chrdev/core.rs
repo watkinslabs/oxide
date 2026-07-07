@@ -1,10 +1,11 @@
 use super::types::*;
+use crate::linux_device::types::LinuxKobject;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use sync::{Modules as ModulesLockClass, Spinlock};
-use vfs::{CharDevOps, Devt, VfsError};
+use vfs::{CharDevOps, Devt, File, VfsError};
 
 const MAX_CDEV_REGIONS: usize = 128;
 const MAX_MAJOR_CLAIMS: usize = 128;
@@ -63,11 +64,13 @@ pub(super) extern "C" fn cdev_init(cdev: *mut LinuxCdev, ops: *const LinuxFileOp
         (*cdev).count = 0;
         (*cdev).added = 0;
         (*cdev).private = null_mut();
+        (*cdev).kobj = LinuxKobject::new();
     }
 }
 
 extern "C" fn cdev_alloc() -> *mut LinuxCdev {
     let c = Box::new(LinuxCdev {
+        kobj: LinuxKobject::new(),
         ops: core::ptr::null(),
         owner: null_mut(),
         dev: 0,
@@ -99,6 +102,7 @@ pub(super) extern "C" fn cdev_add(cdev: *mut LinuxCdev, dev: u32, count: u32) ->
         (*cdev).dev = dev;
         (*cdev).count = count;
         (*cdev).added = LINUX_FIELD_SET;
+        (*cdev).kobj.refcount = 1;
     }
     LINUX_OK
 }
@@ -109,7 +113,10 @@ pub(super) extern "C" fn cdev_del(cdev: *mut LinuxCdev) {
         vfs::unregister_chrdev_region(r.major, r.base, r.count);
     }
     // SAFETY: cdev is caller-owned and checked non-null.
-    unsafe { (*cdev).added = LINUX_FIELD_CLEAR; }
+    unsafe {
+        (*cdev).added = LINUX_FIELD_CLEAR;
+        (*cdev).kobj.refcount = 0;
+    }
 }
 
 extern "C" fn alloc_chrdev_region(dev: *mut u32, firstminor: u32, count: u32, _name: *const c_char) -> i32 {
@@ -168,44 +175,104 @@ extern "C" fn nonseekable_open(_inode: *mut LinuxInode, _file: *mut LinuxFile) -
 
 impl CharDevOps for LinuxCharOps {
     fn open(&self, devt: Devt) -> vfs::KResult<()> {
-        let ops = self.ops();
-        let open = ops.and_then(|o| o.open);
-        if let Some(f) = open {
-            let mut inode = inode_for(devt, self.cdev);
-            let mut file = file_for(self.cdev);
-            // SAFETY: callback pointer comes from a registered Linux file_operations table.
-            let rc = unsafe { f(&mut inode, &mut file) };
-            if rc < 0 { Err(errno_to_vfs((-rc) as i32)) } else { Ok(()) }
-        } else { Ok(()) }
+        self.open_common(devt, None)
+    }
+
+    fn open_file(&self, devt: Devt, file: &File) -> vfs::KResult<()> {
+        self.open_common(devt, Some(file))
     }
 
     fn read(&self, _devt: Devt, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        let read = self.ops().and_then(|o| o.read).ok_or(VfsError::Einval)?;
-        let mut file = file_for(self.cdev);
-        let mut pos = off as i64;
-        // SAFETY: registered callback writes at most buf.len() bytes into the provided kernel buffer.
-        let rc = unsafe { read(&mut file, buf.as_mut_ptr() as *mut c_char, buf.len(), &mut pos) };
-        checked_size(rc)
+        self.read_common(None, off, buf)
+    }
+
+    fn read_file(&self, _devt: Devt, file: &File, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        self.read_common(Some(file), off, buf)
     }
 
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
-        let write = self.ops().and_then(|o| o.write).ok_or(VfsError::Einval)?;
-        let mut file = file_for(self.cdev);
-        let mut pos = off as i64;
-        // SAFETY: registered callback reads at most buf.len() bytes from the provided kernel buffer.
-        let rc = unsafe { write(&mut file, buf.as_ptr() as *const c_char, buf.len(), &mut pos) };
-        checked_size(rc)
+        self.write_common(None, off, buf)
+    }
+
+    fn write_file(&self, _devt: Devt, file: &File, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        self.write_common(Some(file), off, buf)
     }
 
     fn ioctl(&self, _devt: Devt, cmd: u32, arg: usize) -> vfs::KResult<usize> {
         let ioctl = self.ops().and_then(|o| o.unlocked_ioctl).ok_or(VfsError::Enotty)?;
-        let mut file = file_for(self.cdev);
+        let mut file = file_for_call(self.cdev, None);
         // SAFETY: registered callback pointer comes from the Linux file_operations table.
         checked_size(unsafe { ioctl(&mut file, cmd, arg) })
+    }
+
+    fn poll(&self, _devt: Devt) -> vfs::KResult<u32> {
+        let poll = self.ops().and_then(|o| o.poll).ok_or(VfsError::Einval)?;
+        let mut file = file_for_call(self.cdev, None);
+        // SAFETY: registered callback pointer comes from the Linux file_operations table.
+        Ok(unsafe { poll(&mut file, null_mut()) })
+    }
+
+    fn poll_file(&self, _devt: Devt, file: &File) -> vfs::KResult<u32> {
+        let poll = self.ops().and_then(|o| o.poll).ok_or(VfsError::Einval)?;
+        let mut lf = file_for_call(self.cdev, Some(file));
+        // SAFETY: registered callback pointer comes from the Linux file_operations table.
+        let mask = unsafe { poll(&mut lf, null_mut()) };
+        store_file_private(file, &lf);
+        Ok(mask)
+    }
+
+    fn mmap_shared_frame(&self, _devt: Devt, _off: u64) -> Option<u64> {
+        let mmap = self.ops().and_then(|o| o.mmap)?;
+        let mut file = file_for_call(self.cdev, None);
+        // SAFETY: registered callback pointer comes from the Linux file_operations table; no VMA model is available in this shared-frame query.
+        let _ = unsafe { mmap(&mut file, null_mut()) };
+        None
+    }
+
+    fn release_file(&self, devt: Devt, file: &File) {
+        let Some(release) = self.ops().and_then(|o| o.release) else { return; };
+        let mut inode = inode_for(devt, self.cdev);
+        let mut lf = file_for_call(self.cdev, Some(file));
+        // SAFETY: registered callback pointer comes from the Linux file_operations table.
+        let _ = unsafe { release(&mut inode, &mut lf) };
+        store_file_private(file, &lf);
     }
 }
 
 impl LinuxCharOps {
+    fn open_common(&self, devt: Devt, file: Option<&File>) -> vfs::KResult<()> {
+        let ops = self.ops();
+        let open = ops.and_then(|o| o.open);
+        if let Some(f) = open {
+            let mut inode = inode_for(devt, self.cdev);
+            let mut lf = file_for_call(self.cdev, file);
+            // SAFETY: callback pointer comes from a registered Linux file_operations table.
+            let rc = unsafe { f(&mut inode, &mut lf) };
+            if let Some(file) = file { store_file_private(file, &lf); }
+            if rc < 0 { Err(errno_to_vfs((-rc) as i32)) } else { Ok(()) }
+        } else { Ok(()) }
+    }
+
+    fn read_common(&self, file: Option<&File>, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let read = self.ops().and_then(|o| o.read).ok_or(VfsError::Einval)?;
+        let mut lf = file_for_call(self.cdev, file);
+        let mut pos = off as i64;
+        // SAFETY: registered callback writes at most buf.len() bytes into the provided kernel buffer.
+        let rc = unsafe { read(&mut lf, buf.as_mut_ptr() as *mut c_char, buf.len(), &mut pos) };
+        if let Some(file) = file { store_file_private(file, &lf); }
+        checked_size(rc)
+    }
+
+    fn write_common(&self, file: Option<&File>, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        let write = self.ops().and_then(|o| o.write).ok_or(VfsError::Einval)?;
+        let mut lf = file_for_call(self.cdev, file);
+        let mut pos = off as i64;
+        // SAFETY: registered callback reads at most buf.len() bytes from the provided kernel buffer.
+        let rc = unsafe { write(&mut lf, buf.as_ptr() as *const c_char, buf.len(), &mut pos) };
+        if let Some(file) = file { store_file_private(file, &lf); }
+        checked_size(rc)
+    }
+
     fn ops(&self) -> Option<&LinuxFileOperations> {
         if self.ops == 0 { None } else {
             // SAFETY: ops is captured from a live cdev registration.
@@ -285,8 +352,13 @@ fn inode_for(devt: Devt, cdev: usize) -> LinuxInode {
     LinuxInode { i_rdev: devt.to_kdev(), private: cdev as *mut c_void }
 }
 
-fn file_for(cdev: usize) -> LinuxFile {
-    LinuxFile { private_data: cdev as *mut c_void }
+fn file_for_call(cdev: usize, file: Option<&File>) -> LinuxFile {
+    let private = file.map(|f| f.private_data() as *mut c_void).unwrap_or(cdev as *mut c_void);
+    LinuxFile { private_data: private }
+}
+
+fn store_file_private(file: &File, lf: &LinuxFile) {
+    file.set_private_data(lf.private_data as usize as u64);
 }
 
 fn checked_size(rc: isize) -> vfs::KResult<usize> {
