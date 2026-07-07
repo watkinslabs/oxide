@@ -35,11 +35,13 @@
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
-#include <linux/refcount.h>
 #include <linux/random.h>
 #include <linux/rbtree.h>
+#include <linux/rcupdate.h>
+#include <linux/refcount.h>
 #include <linux/rwlock.h>
 #include <linux/rwsem.h>
+#include <linux/semaphore.h>
 #include <linux/seqlock.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -377,9 +379,12 @@ static int __init sample_init(void)
     struct mutex m;
     rwlock_t rwl;
     struct rw_semaphore sem;
+    struct semaphore semaphore;
     seqlock_t seq;
     struct completion comp;
     wait_queue_head_t wait;
+    wait_queue_entry_t wait_entry;
+    swait_queue_head_t swait;
     struct timer_list timer;
     struct hrtimer hrtimer;
     struct delayed_work delayed;
@@ -1002,8 +1007,17 @@ static int __init sample_init(void)
     raw_spin_lock_init(&raw);
     (void)raw_spin_trylock(&raw);
     raw_spin_unlock(&raw);
+    _raw_spin_lock_bh(&raw);
+    _raw_spin_unlock_bh(&raw);
+    _raw_spin_lock_irq(&raw);
+    _raw_spin_unlock_irq(&raw);
+    start = _raw_spin_lock_irqsave(&raw);
+    _raw_spin_unlock_irqrestore(&raw, start);
     mutex_init(&m);
+    __mutex_init(&m, "sample", NULL);
     mutex_lock(&m);
+    mutex_unlock(&m);
+    (void)mutex_lock_interruptible(&m);
     mutex_unlock(&m);
     rwlock_init(&rwl);
     read_lock(&rwl);
@@ -1015,15 +1029,34 @@ static int __init sample_init(void)
     up_read(&sem);
     down_write(&sem);
     up_write(&sem);
+    sema_init(&semaphore, 1);
+    down(&semaphore);
+    up(&semaphore);
+    (void)down_interruptible(&semaphore);
+    up(&semaphore);
+    (void)down_trylock(&semaphore);
+    up(&semaphore);
     seqlock_init(&seq);
     start = read_seqbegin(&seq);
     (void)read_seqretry(&seq, start);
     init_completion(&comp);
     complete(&comp);
     (void)try_wait_for_completion(&comp);
+    (void)wait_for_completion_interruptible(&comp);
+    (void)wait_for_completion_timeout(&comp, 1);
     init_waitqueue_head(&wait);
+    __init_waitqueue_head(&wait, "sample_wait", NULL);
+    __init_swait_queue_head(&swait, "sample_swait", NULL);
     wake_up(&wait);
+    (void)__wake_up(&wait, TASK_INTERRUPTIBLE, 1, NULL);
     (void)waitqueue_active(&wait);
+    init_wait_entry(&wait_entry, 0);
+    (void)prepare_to_wait_event(&wait, &wait_entry, TASK_INTERRUPTIBLE);
+    finish_wait(&wait, &wait_entry);
+    __rcu_read_lock();
+    __rcu_read_unlock();
+    synchronize_rcu();
+    rcu_barrier();
     atomic_set(&atom, 1);
     atomic_inc(&atom);
     (void)atomic_dec_and_test(&atom);
