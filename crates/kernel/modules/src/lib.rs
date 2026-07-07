@@ -50,6 +50,7 @@ pub use modinfo::{KERNEL_VERMAGIC, ModuleInfo, ModuleParam};
 pub mod linux_alloc;
 pub mod linux_dma;
 pub mod linux_io;
+pub mod linux_irq;
 pub mod linux_sync;
 pub mod linux_time;
 
