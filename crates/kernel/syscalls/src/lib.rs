@@ -7,7 +7,7 @@ extern crate alloc;
 
 mod anon_dname;
 // Moved out of the kernel binary with the syscall layer (docs/53):
-pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
+pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio; pub mod pidfd;
 // One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]
 // under an `sNNN_` alias (a module name can't start with a digit).
 #[path = "452_fchmodat2.rs"] pub mod s452_fchmodat2; #[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set; #[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
