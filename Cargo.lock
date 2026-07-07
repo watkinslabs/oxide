@@ -849,6 +849,9 @@ version = "0.1.0"
 dependencies = [
  "arch-irq",
  "block",
+ "crc",
+ "crypt",
+ "devfs",
  "elf",
  "ext4",
  "hal",

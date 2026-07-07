@@ -3,6 +3,8 @@
 #include <linux/atomic.h>
 #include <linux/acpi.h>
 #include <linux/completion.h>
+#include <linux/crc32.h>
+#include <linux/crc32c.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
@@ -32,6 +34,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
 #include <linux/refcount.h>
+#include <linux/random.h>
 #include <linux/rbtree.h>
 #include <linux/rwlock.h>
 #include <linux/rwsem.h>
@@ -45,6 +48,7 @@
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
+#include <crypto/hash.h>
 
 struct sample {
     int value;
@@ -110,6 +114,8 @@ enum { SAMPLE_USB_TIMEOUT = 100 };
 enum { SAMPLE_PM_AUTOSUSPEND_DELAY = 1 };
 enum { SAMPLE_PM_WAKE_MSEC = 1 };
 enum { SAMPLE_PM_SCHEDULE_DELAY = 0 };
+enum { SAMPLE_RANDOM_LEN = 16 };
+enum { SAMPLE_CRYPTO_DIGEST_LEN = 32 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -325,6 +331,11 @@ static int __init sample_init(void)
     u8 pci_cfg8;
     u16 pci_cfg16;
     u32 pci_cfg32;
+    u32 crc;
+    u8 random_buf[SAMPLE_RANDOM_LEN];
+    u8 digest[SAMPLE_CRYPTO_DIGEST_LEN];
+    struct crypto_shash *shash;
+    struct shash_desc shash_desc;
     int usb_actual;
     char usb_buf[SAMPLE_USB_BULK_LEN];
     INIT_LIST_HEAD(&s.link);
@@ -354,6 +365,27 @@ static int __init sample_init(void)
     (void)in_irq();
     (void)in_interrupt();
     free_irq(SAMPLE_IRQ, &s);
+    get_random_bytes(random_buf, sizeof(random_buf));
+    add_device_randomness(random_buf, sizeof(random_buf));
+    add_hwgenerator_randomness(random_buf, sizeof(random_buf), sizeof(random_buf));
+    crc = crc32(0, random_buf, sizeof(random_buf));
+    crc = crc32_le(crc, random_buf, sizeof(random_buf));
+    crc = crc32_be(crc, random_buf, sizeof(random_buf));
+    crc = crc32c(crc, random_buf, sizeof(random_buf));
+    crc = __crc32c_le(crc, random_buf, sizeof(random_buf));
+    crc ^= get_random_u32();
+    crc ^= prandom_u32();
+    crc ^= (u32)get_random_u64();
+    shash = crypto_alloc_shash("sha256", CRYPTO_ALG_TYPE_SHASH, 0);
+    if (shash != NULL) {
+        shash_desc.tfm = shash;
+        shash_desc.flags = 0;
+        (void)crypto_shash_digestsize(shash);
+        (void)crypto_shash_descsize(shash);
+        (void)crypto_shash_digest(&shash_desc, random_buf, sizeof(random_buf), digest);
+        crypto_free_shash(shash);
+    }
+    (void)crc;
     (void)request_threaded_irq(SAMPLE_IRQ, sample_irq_handler, sample_irq_handler, IRQF_ONESHOT, "sample", &s);
     dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     dev.dma_mask = &dma_mask;
