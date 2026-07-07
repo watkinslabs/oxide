@@ -49,6 +49,7 @@ fn empty_device(name: *const c_char, res: &mut [LinuxResource]) -> PlatformDevic
             release: None,
             of_node: null_mut(),
             acpi_node: null_mut(),
+            power: crate::linux_pm::types::LinuxDevPmInfo::new(),
         },
         num_resources: res.len() as u32,
         resource: res.as_mut_ptr(),
@@ -72,6 +73,7 @@ fn driver(ids: *const PlatformDeviceId) -> PlatformDriver {
             remove: None,
             of_match_table: null(),
             acpi_match_table: null(),
+            pm: null(),
         },
         id_table: ids,
     }

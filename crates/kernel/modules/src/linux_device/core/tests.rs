@@ -1,5 +1,4 @@
 use super::*;
-use crate::linux_device::types::*;
 use core::ffi::{c_char, c_void};
 use core::mem::size_of;
 use core::ptr::null_mut;
@@ -33,7 +32,7 @@ fn register_drvdata_name_and_release() {
         dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
         parent: null_mut(), bus: null_mut(), class: null_mut(), driver: null_mut(),
         init_name: c"sample".as_ptr(), name: [0; DEVICE_NAME_LEN], release: Some(release),
-        of_node: null_mut(), acpi_node: null_mut(),
+        of_node: null_mut(), acpi_node: null_mut(), power: crate::linux_pm::types::LinuxDevPmInfo::new(),
     };
     let data = &mut dev as *mut _ as *mut c_void;
     assert_eq!(device_add(&mut dev), LINUX_OK);
@@ -52,7 +51,7 @@ fn class_bus_driver_and_devres_round_trip() {
     let mut bus = LinuxBusType { name: c"sample-bus".as_ptr(), private: null_mut() };
     let mut driver = LinuxDeviceDriver {
         name: c"sample-driver".as_ptr(), bus: &mut bus, owner: null_mut(), probe: None, remove: None,
-        of_match_table: core::ptr::null(), acpi_match_table: core::ptr::null(),
+        of_match_table: core::ptr::null(), acpi_match_table: core::ptr::null(), pm: core::ptr::null(),
     };
     assert_eq!(bus_register(&mut bus), LINUX_OK);
     assert_eq!(driver_register(&mut driver), LINUX_OK);
@@ -60,7 +59,7 @@ fn class_bus_driver_and_devres_round_trip() {
         dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
         parent: null_mut(), bus: &mut bus, class, driver: &mut driver,
         init_name: c"sample-dev".as_ptr(), name: [0; DEVICE_NAME_LEN], release: None,
-        of_node: null_mut(), acpi_node: null_mut(),
+        of_node: null_mut(), acpi_node: null_mut(), power: crate::linux_pm::types::LinuxDevPmInfo::new(),
     };
     assert_eq!(device_add(&mut dev), LINUX_OK);
     let p = devm_kzalloc(&mut dev, size_of::<usize>(), 0);
