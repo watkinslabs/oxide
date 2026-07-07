@@ -76,6 +76,30 @@ pub(super) fn current_key(uaddr: u64, private: bool) -> Option<Key> {
     }
 }
 
+/// True iff user VA `va` resolves to a present page in the ACTIVE address
+/// space, and — when `need_write` — that page is user-writable, so a CPL=0
+/// load (or store) through `va` will NOT #PF. The robust-list exit walk
+/// (`robust::exit_robust_list`) uses this to stay fault-safe: it runs on the
+/// exit/fault path of a possibly-CRASHING task whose `robust_list_head` and
+/// mutex words may be corrupt or unmapped, and a raw `read_volatile` of an
+/// unmapped user VA there would #PF the kernel (→ double-fault/hang), a worse
+/// regression than a stranded waiter. Translates via the SAME arch MMU walk
+/// `current_key` uses for shared-futex keying (the active CR3/TTBR0). O(1) per
+/// node, no lock/alloc, IRQ/exit-context safe. Mirrors Linux `get_user`
+/// returning -EFAULT (the walk aborts) instead of faulting the kernel.
+/// # C: O(page-table depth)
+pub(super) fn user_addr_accessible(va: u64, need_write: bool) -> bool {
+    use hal::{MmuOps, PageFlags, Va};
+    #[cfg(target_arch = "x86_64")]
+    let r = hal_x86_64::mmu_ops::X86Mmu::translate(Va(va));
+    #[cfg(target_arch = "aarch64")]
+    let r = hal_aarch64::mmu_ops::ArmMmu::translate(Va(va));
+    match r {
+        Some((_, flags)) => !need_write || flags.contains(PageFlags::WRITE),
+        None => false,
+    }
+}
+
 /// Read u32 at user VA `uaddr`. Caller is the syscall path with
 /// current's CR3 active, so a direct kernel-mode load through
 /// the user mapping resolves via the user PT (demand-faulted by

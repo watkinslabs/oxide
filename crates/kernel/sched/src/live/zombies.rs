@@ -467,6 +467,18 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             task.exit_status.store(crate::signum::killed_status(sig as u32), Ordering::Release);
             super::vfork_done(task); // clear + wake a parked vfork parent (signal-death)
             ::cgroup::on_exit(task.tid as u64);
+            // Robust-futex recovery (Linux do_exit -> exit_robust_list): a
+            // thread killed by a fatal signal while holding a robust mutex must
+            // mark it FUTEX_OWNER_DIED and wake a waiter, else a peer blocked on
+            // that lock hangs forever. MUST run before replace_mm below (the
+            // walk reads the dying task's still-mapped user list). Routed via
+            // the sched hook because the walk body lives in `ipc`.
+            let rl = task.robust_list_head.load(Ordering::Acquire);
+            if rl != 0 {
+                let vt = task.vtid.load(Ordering::Acquire);
+                let owner_tid = if vt != 0 { vt } else { task.tid };
+                crate::live::run_robust_exit(rl, owner_tid);
+            }
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); reparent_children(task.tid); }
             crate::live::mark_done(task);

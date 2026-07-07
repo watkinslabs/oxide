@@ -128,6 +128,10 @@ fn init_runtime_subsystems() {
     let _ = unsafe { power::init() };
     let _ = unsafe { firmware::init() };
     ::sched::set_current_hook(|| sched::live::current());
+    // Robust-futex exit walk lives in `ipc`; wire it into the sched exit hook so
+    // the crash/fatal-fault exit paths (zombies, SIGSEGV terminate) recover a
+    // dying thread's held robust mutexes. Body: ipc::live::futex::exit_robust_list.
+    sched::live::set_robust_exit_hook(ipc::live::futex::exit_robust_list);
     let _ = unsafe { nscg::init() };
     sched::cgroup::install();
     cgroup::set_notify_hook(fs::inotify::fire_modify_path);
