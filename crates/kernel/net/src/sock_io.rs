@@ -195,6 +195,8 @@ pub(crate) fn read_unix_stream_blocking(
     deadline_ns: u64,
 ) -> vfs::KResult<usize> {
     loop {
+        // Fast path + interruption checks BEFORE arming the wait, matching
+        // Linux (signal/timeout observed before prepare_to_wait).
         let got = pair.read(end, buf.len());
         if !got.is_empty() {
             let n = got.len();
@@ -210,11 +212,29 @@ pub(crate) fn read_unix_stream_blocking(
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
             return Err(vfs::VfsError::Eagain);
         }
-        // SAFETY: process ctx; preempt-off owned by syscall stub; writer wakes us via pair.reader_waiters(end).wake_all.
+        // Race-free re-check-and-park: read_or_park registers on the reader
+        // wait list UNDER the read-ring lock, so a concurrent write()+wake_all
+        // (which needs that same lock to push) cannot land between the
+        // emptiness check and the park and lose the wakeup (Linux
+        // prepare_to_wait). A blocked D-Bus stream read that peers with a
+        // writer on another CPU would otherwise stall forever.
         #[cfg(target_os = "oxide-kernel")]
-        unsafe {
-            pair.reader_waiters(end).park_with_deadline(deadline_ns);
-            sched::live::schedule::schedule();
+        {
+            use crate::unix_sock::stream::ReadOutcome;
+            match pair.read_or_park(end, buf.len(), deadline_ns) {
+                ReadOutcome::Data(got) => {
+                    if !got.is_empty() {
+                        let n = got.len();
+                        buf[..n].copy_from_slice(&got);
+                        return Ok(n);
+                    }
+                    // empty (raced to another reader) — retry
+                }
+                ReadOutcome::Eof => return Ok(0),
+                // SAFETY: process ctx; preempt-off owned by syscall stub; we
+                // are on the reader wait list (armed under the ring lock).
+                ReadOutcome::Parked => unsafe { sched::live::schedule::schedule(); }
+            }
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(vfs::VfsError::Eagain);
