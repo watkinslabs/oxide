@@ -23,6 +23,7 @@ unsafe extern "C" fn ok_exit() {
 fn reset() {
     REGISTRY.lock().clear();
     NEXT_ID.store(0, Ordering::Relaxed);
+    crate::symtab::_reset();
     INIT_COUNT.store(0, TestOrdering::SeqCst);
     EXIT_COUNT.store(0, TestOrdering::SeqCst);
 }
@@ -40,7 +41,9 @@ fn insert(name: &str, refcnt: usize) {
         name: String::from(name),
         module: empty_module(),
         refcnt,
+        taints: 0,
         state: ModuleState::Live,
+        unload_pending: false,
     }));
 }
 
@@ -54,7 +57,9 @@ fn snapshot_reports_name_state_and_counts() {
         name: String::from("sample"),
         module: m,
         refcnt: 2,
+        taints: 0x1000,
         state: ModuleState::Live,
+        unload_pending: false,
     }));
     let s = snapshot();
     assert_eq!(s.len(), 1);
@@ -64,6 +69,7 @@ fn snapshot_reports_name_state_and_counts() {
     assert_eq!(s[0].params.len(), 0);
     assert_eq!(s[0].size, 12);
     assert_eq!(s[0].refcnt, 2);
+    assert_eq!(s[0].taints, 0x1000);
     assert_eq!(s[0].state.as_str(), "Live");
     assert_eq!(s[0].sections, 1);
     assert_eq!(s[0].symbols, 1);
@@ -100,7 +106,9 @@ fn unload_runs_exitcall_before_removing_record() {
         name: String::from("sample"),
         module: m,
         refcnt: 0,
+        taints: 0,
         state: ModuleState::Live,
+        unload_pending: false,
     }));
     assert_eq!(unload_by_name("sample"), Ok(()));
     assert_eq!(EXIT_COUNT.load(TestOrdering::SeqCst), 1);
@@ -124,6 +132,58 @@ fn unload_busy_module_fails() {
     insert("busy", 1);
     assert_eq!(unload_by_name("busy"), Err(RegistryError::Busy));
     assert_eq!(count(), 1);
+    assert_eq!(snapshot()[0].state, ModuleState::Going);
+    assert!(!try_get_by_name("busy"));
+    assert_eq!(put_by_name("busy"), Ok(()));
+    assert_eq!(count(), 0);
+}
+
+#[test]
+fn module_refs_pin_until_last_put() {
+    reset();
+    insert("pinned", 0);
+    assert!(try_get_by_name("pinned"));
+    assert!(try_get_by_name("pinned"));
+    assert_eq!(snapshot()[0].refcnt, 2);
+    assert_eq!(unload_by_name("pinned"), Err(RegistryError::Busy));
+    assert!(!try_get_by_name("pinned"));
+    assert_eq!(put_by_name("pinned"), Ok(()));
+    assert_eq!(count(), 1);
+    assert_eq!(put_by_name("pinned"), Ok(()));
+    assert_eq!(count(), 0);
+}
+
+#[test]
+fn final_unload_removes_module_exports() {
+    reset();
+    insert("exporter", 0);
+    crate::symtab::export_module("sample_export", 0x1234, false, "exporter");
+    assert!(crate::symtab::is_exported("sample_export"));
+    assert_eq!(unload_by_name("exporter"), Ok(()));
+    assert!(!crate::symtab::is_exported("sample_export"));
+}
+
+#[test]
+fn module_taints_track_out_of_tree_and_license() {
+    reset();
+    let mut m = empty_module();
+    m.info.license = Some(String::from("GPL"));
+    let gpl = module_taints(&m);
+    m.info.license = Some(String::from("Proprietary"));
+    let proprietary = module_taints(&m);
+    assert_ne!(gpl, 0);
+    assert_ne!(proprietary & gpl, 0);
+    assert_ne!(proprietary, gpl);
+}
+
+#[test]
+fn forced_unload_marks_taint_while_waiting_for_refs() {
+    reset();
+    insert("forced", 1);
+    assert_eq!(unload_by_name_flags("forced", true), Err(RegistryError::Busy));
+    let s = snapshot();
+    assert_eq!(s[0].state, ModuleState::Going);
+    assert_ne!(s[0].taints & super::TAINT_FORCED_RMMOD, 0);
 }
 
 #[test]
