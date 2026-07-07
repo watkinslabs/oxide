@@ -44,6 +44,7 @@
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 #include <linux/timer.h>
+#include <linux/uaccess.h>
 #include <linux/usb.h>
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
@@ -116,6 +117,7 @@ enum { SAMPLE_PM_WAKE_MSEC = 1 };
 enum { SAMPLE_PM_SCHEDULE_DELAY = 0 };
 enum { SAMPLE_RANDOM_LEN = 16 };
 enum { SAMPLE_CRYPTO_DIGEST_LEN = 32 };
+enum { SAMPLE_USERCOPY_LEN = 8 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -334,6 +336,10 @@ static int __init sample_init(void)
     u32 crc;
     u8 random_buf[SAMPLE_RANDOM_LEN];
     u8 digest[SAMPLE_CRYPTO_DIGEST_LEN];
+    u8 usercopy_src[SAMPLE_USERCOPY_LEN];
+    u8 usercopy_dst[SAMPLE_USERCOPY_LEN];
+    u32 user_value;
+    u32 __user *user_value_ptr;
     struct crypto_shash *shash;
     struct shash_desc shash_desc;
     int usb_actual;
@@ -387,6 +393,14 @@ static int __init sample_init(void)
     }
     (void)crc;
     (void)request_threaded_irq(SAMPLE_IRQ, sample_irq_handler, sample_irq_handler, IRQF_ONESHOT, "sample", &s);
+    (void)access_ok(usercopy_dst, sizeof(usercopy_dst));
+    (void)copy_from_user(usercopy_dst, usercopy_src, sizeof(usercopy_dst));
+    (void)copy_to_user(usercopy_dst, usercopy_src, sizeof(usercopy_src));
+    (void)clear_user(usercopy_dst, sizeof(usercopy_dst));
+    user_value_ptr = (u32 __user *)usercopy_dst;
+    (void)get_user(user_value, user_value_ptr);
+    (void)put_user(user_value, user_value_ptr);
+    might_fault();
     dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     dev.dma_mask = &dma_mask;
     dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
