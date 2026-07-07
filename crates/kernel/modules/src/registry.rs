@@ -167,6 +167,7 @@ pub unsafe fn init_exports() {
     crate::linux_pci::export_symbols();
     crate::linux_sync::export_symbols();
     crate::linux_time::export_symbols();
+    crate::linux_usb::export_symbols();
 }
 
 fn unload_slot(g: &mut Vec<Option<ModuleRecord>>, idx: usize) -> Result<(), RegistryError> {

@@ -33,6 +33,7 @@
 #include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/timer.h>
+#include <linux/usb.h>
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
@@ -92,6 +93,9 @@ enum { SAMPLE_ABS_MIN = -100 };
 enum { SAMPLE_ABS_MAX = 100 };
 enum { SAMPLE_ABS_FUZZ = 1 };
 enum { SAMPLE_ABS_FLAT = 2 };
+enum { SAMPLE_USB_DEVNUM = 1 };
+enum { SAMPLE_USB_BULK_LEN = 8 };
+enum { SAMPLE_USB_TIMEOUT = 100 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -104,6 +108,12 @@ static int sample_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
     (void)pdev; (void)id; return 0;
 }
 static void sample_pci_remove(struct pci_dev *pdev) { (void)pdev; }
+static int sample_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
+{
+    usb_set_intfdata(intf, (void *)id);
+    return usb_get_intfdata(intf) == NULL ? -ENODEV : 0;
+}
+static void sample_usb_disconnect(struct usb_interface *intf) { usb_set_intfdata(intf, NULL); }
 static int sample_net_open(struct net_device *dev) { (void)dev; return 0; }
 static int sample_net_stop(struct net_device *dev) { (void)dev; return 0; }
 static int sample_make_request(struct request_queue *queue, struct bio *bio)
@@ -155,6 +165,11 @@ static const struct file_operations sample_fops = {
 static const struct pci_device_id sample_pci_ids[] = {
     { PCI_DEVICE(SAMPLE_PCI_VENDOR, SAMPLE_PCI_DEVICE) },
     { 0, 0, 0, 0, 0, 0, 0 },
+};
+static const struct usb_device_id sample_usb_ids[] = {
+    { USB_DEVICE(SAMPLE_PCI_VENDOR, SAMPLE_PCI_DEVICE) },
+    { USB_INTERFACE_INFO(USB_CLASS_HID, 0, 0) },
+    { 0 }
 };
 static const struct net_device_ops sample_netdev_ops = {
     .ndo_open = sample_net_open,
@@ -215,6 +230,17 @@ static int __init sample_init(void)
     };
     struct input_dev *input;
     struct input_event input_ev;
+    struct usb_device udev;
+    struct usb_interface uintf;
+    struct usb_host_interface ualt;
+    struct usb_endpoint_descriptor uep;
+    struct usb_driver udrv = {
+        .name = "sample-usb",
+        .probe = sample_usb_probe,
+        .disconnect = sample_usb_disconnect,
+        .id_table = sample_usb_ids,
+    };
+    struct urb *urb;
     struct pci_driver pdrv = {
         "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
         { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
@@ -236,6 +262,8 @@ static int __init sample_init(void)
     u8 pci_cfg8;
     u16 pci_cfg16;
     u32 pci_cfg32;
+    int usb_actual;
+    char usb_buf[SAMPLE_USB_BULK_LEN];
     INIT_LIST_HEAD(&s.link);
     list_add(&s.link, &samples);
     set_bit(3, sample_bits);
@@ -410,6 +438,47 @@ static int __init sample_init(void)
             input_free_device(input);
         }
     }
+    uep.bEndpointAddress = USB_DIR_IN | 1;
+    uep.bmAttributes = USB_ENDPOINT_XFER_BULK;
+    ualt.desc.bInterfaceClass = USB_CLASS_HID;
+    ualt.desc.bInterfaceSubClass = 0;
+    ualt.desc.bInterfaceProtocol = 0;
+    ualt.endpoint = &uep;
+    ualt.extra = NULL;
+    ualt.extralen = 0;
+    udev.devnum = SAMPLE_USB_DEVNUM;
+    udev.speed = USB_SPEED_HIGH;
+    udev.descriptor.idVendor = SAMPLE_PCI_VENDOR;
+    udev.descriptor.idProduct = SAMPLE_PCI_DEVICE;
+    uintf.usb_dev = &udev;
+    uintf.altsetting = &ualt;
+    uintf.cur_altsetting = &ualt;
+    uintf.num_altsetting = 1;
+    uintf.intfdata = NULL;
+    (void)interface_to_usbdev(&uintf);
+    (void)usb_register(&udrv);
+    (void)usb_match_id(&uintf, sample_usb_ids);
+    (void)usb_find_interface(&udrv, 0);
+    urb = usb_alloc_urb(0, GFP_KERNEL);
+    if (urb != NULL) {
+        usb_fill_bulk_urb(urb, &udev, usb_rcvbulkpipe(&udev, 1), usb_buf, sizeof(usb_buf), NULL, NULL);
+        (void)usb_submit_urb(urb, GFP_KERNEL);
+        usb_kill_urb(urb);
+        (void)usb_unlink_urb(urb);
+        usb_free_urb(urb);
+    }
+    (void)usb_control_msg(&udev, usb_sndctrlpipe(&udev, 0), 0, USB_TYPE_VENDOR | USB_RECIP_DEVICE, 0, 0, usb_buf, sizeof(usb_buf), SAMPLE_USB_TIMEOUT);
+    (void)usb_bulk_msg(&udev, usb_rcvbulkpipe(&udev, 1), usb_buf, sizeof(usb_buf), &usb_actual, SAMPLE_USB_TIMEOUT);
+    (void)usb_interrupt_msg(&udev, usb_rcvintpipe(&udev, 1), usb_buf, sizeof(usb_buf), &usb_actual, SAMPLE_USB_TIMEOUT);
+    coherent = usb_alloc_coherent(&udev, SAMPLE_DMA_SIZE, GFP_KERNEL, &dma);
+    usb_free_coherent(&udev, SAMPLE_DMA_SIZE, coherent, dma);
+    coherent = usb_buffer_alloc(&udev, SAMPLE_DMA_SIZE, GFP_KERNEL, &dma);
+    usb_buffer_free(&udev, SAMPLE_DMA_SIZE, coherent, dma);
+    usb_get_dev(&udev);
+    usb_put_dev(&udev);
+    usb_get_intf(&uintf);
+    usb_put_intf(&uintf);
+    usb_deregister(&udrv);
     pdev.dev.dma_mask = &dma_mask;
     pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
     pdev.dev.driver_data = NULL;
