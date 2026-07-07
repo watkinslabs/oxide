@@ -1,6 +1,7 @@
-#[cfg(feature = "debug-cow")]
-mod alloc_integrity {
-    use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+// This file is loaded as `mod alloc_integrity;` (gated on debug-cow in
+// setup.rs), so its items ARE the `alloc_integrity` module — no inner `mod`
+// wrapper (that double-nested the fns as alloc_integrity::alloc_integrity::*).
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
     /// Data pointer to the leaked `[AtomicU64]` shadow bitmap (null until init).
     static BITS: AtomicPtr<AtomicU64> = AtomicPtr::new(core::ptr::null_mut());
@@ -51,4 +52,3 @@ mod alloc_integrity {
         let bit = 1u64 << (pfn & 63);
         if let Some(w) = word(pfn) { w.fetch_and(!bit, Ordering::AcqRel); }
     }
-}

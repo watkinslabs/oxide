@@ -13,19 +13,34 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // (multiple AS map them) only release once the last AS drops.
     // Tables (intermediate PT levels) are always per-AS — direct free.
     let mut free_leaf = |_va: u64, pa: u64| {
-        // debug-fwm (LIGHT): only check refcount-1 frames in the high
-        // library/lock VA window (≥0x7000_0000_0000) — where the free-while-
-        // mapped corruption lands (libc/systemd .data, glibc locks). Skipping
-        // bulk heap/stack frames keeps teardown cheap (no boot regression).
-        #[cfg(feature = "debug-fwm")]
-        if _va >= 0x7000_0000_0000 && crate::setup::frame_refcount(pa) == 1 {
-            let n = crate::setup::fwm_peer_maps(_va, pa, root_pa, hhdm);
-            if n > 0 {
-                klog::write_raw(b"[FWM] teardown va="); klog::write_hex_u64(_va);
-                klog::write_raw(b" pa=");               klog::write_hex_u64(pa);
-                klog::write_raw(b" peers=");            klog::write_dec_u64(n as u64);
-                klog::write_raw(b" exiting_root=");     klog::write_hex_u64(root_pa);
+        // PRODUCTION free-while-mapped BACKSTOP (Linux never frees a page a live
+        // PTE maps). This teardown leaf is about to dec_and_maybe_free `pa`. If
+        // its refcount is <=1 the dec will FREE it — but if a PEER address space
+        // still maps this VA→pa, the refcount was UNDER-counted: a map-time
+        // inc_ref that never ran (the frame's own mapcount is 0 too, so the
+        // cheap same-frame guard can't see it — only a scan of other ASes can).
+        // Freeing now is a free-while-mapped → the reused frame is written
+        // through the surviving peer PTE, smashing a free-node link → the merge-
+        // time FWM-CORRUPT / bitmap double-free panic at teardown.rs:44. Repair:
+        // set refcount to (peers+1) so the dec below lands at `peers` (>0) and
+        // the frame SURVIVES; it is freed when the true last mapper drops. The
+        // scan runs only for the <=1 refcount leaves actually at risk (one
+        // 4-level PT walk per live AS), and logs the under-count so the missing
+        // inc_ref can be root-caused.
+        let rc = crate::setup::frame_refcount(pa);
+        if rc <= 1 {
+            let peers = crate::setup::fwm_peer_maps(_va, pa, root_pa, hhdm);
+            if peers > 0 {
+                klog::write_raw(b"[FWM-REPAIR] under-counted frame still mapped by peer: va=");
+                klog::write_hex_u64(_va);
+                klog::write_raw(b" pa=");     klog::write_hex_u64(pa);
+                klog::write_raw(b" rc=");     klog::write_dec_u64(rc as u64);
+                klog::write_raw(b" peers=");  klog::write_dec_u64(peers as u64);
+                klog::write_raw(b" exiting_root="); klog::write_hex_u64(root_pa);
+                klog::write_raw(b" -> counts repaired to "); klog::write_dec_u64((peers + 1) as u64);
                 klog::write_raw(b"\n");
+                // SAFETY: fwm_peer_maps just proved `peers` other ASes map `pa`.
+                unsafe { crate::setup::repair_frame_counts(pa, (peers + 1) as u32); }
             }
         }
         // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
@@ -61,6 +76,22 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     crate::setup::set_dec_ctx(root_pa);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     let mut free_leaf = |_va: u64, pa: u64| {
+        // PRODUCTION free-while-mapped backstop (mirror of x86_64 above): repair
+        // an under-counted frame a peer AS still maps instead of freeing it.
+        let rc = crate::setup::frame_refcount(pa);
+        if rc <= 1 {
+            let peers = crate::setup::fwm_peer_maps(_va, pa, root_pa, hhdm);
+            if peers > 0 {
+                klog::write_raw(b"[FWM-REPAIR] under-counted frame still mapped by peer: va=");
+                klog::write_hex_u64(_va);
+                klog::write_raw(b" pa=");     klog::write_hex_u64(pa);
+                klog::write_raw(b" peers=");  klog::write_dec_u64(peers as u64);
+                klog::write_raw(b" -> counts repaired to "); klog::write_dec_u64((peers + 1) as u64);
+                klog::write_raw(b"\n");
+                // SAFETY: fwm_peer_maps just proved `peers` other ASes map `pa`.
+                unsafe { crate::setup::repair_frame_counts(pa, (peers + 1) as u32); }
+            }
+        }
         // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
         unsafe { crate::setup::dec_and_maybe_free_frame(pa); }
     };

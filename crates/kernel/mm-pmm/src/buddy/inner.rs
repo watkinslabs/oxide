@@ -98,7 +98,16 @@ impl PmmInner {
         // SAFETY: head on free-list ⇒ PMM-owned page.
         let hp = unsafe { backing.page_ptr(Pfn(head)) };
         // SAFETY: header lives in first 32B of a PMM-owned page.
-        let next = unsafe { read_u64(hp, OFF_NEXT) };
+        let mut next = unsafe { read_u64(hp, OFF_NEXT) };
+        // SURVIVAL GUARD (always on): a corrupt (overwritten-while-free) head
+        // node's `next` link would #GP the pop below. Clamp out-of-range links
+        // to PFN_NULL so the allocator survives (list truncated, frames leak) —
+        // logged upstream. Keeps the boot alive through the free-while-mapped bug.
+        if next != PFN_NULL && next >= self.pfn_max {
+            klog::write_raw(b"[FREELIST-HEAL] pop bad next="); klog::write_hex_u64(next);
+            klog::write_raw(b" head="); klog::write_hex_u64(head); klog::write_raw(b"\n");
+            next = PFN_NULL;
+        }
         // debug-cow probe 1 (FREELIST CANARY): a free node's `next` link is
         // either PFN_NULL or an in-range PFN. A `next` that is neither means
         // the freed frame's FreeNode header was overwritten while it sat on
@@ -130,9 +139,25 @@ impl PmmInner {
         // SAFETY: pfn on free-list ⇒ PMM-owned page.
         let p = unsafe { backing.page_ptr(Pfn(pfn)) };
         // SAFETY: header read inside owned page.
-        let next = unsafe { read_u64(p, OFF_NEXT) };
+        let mut next = unsafe { read_u64(p, OFF_NEXT) };
         // SAFETY: header read inside owned page.
-        let prev = unsafe { read_u64(p, OFF_PREV) };
+        let mut prev = unsafe { read_u64(p, OFF_PREV) };
+        // SURVIVAL GUARD (always on, Linux-style defensive mm): a free node whose
+        // link is neither PFN_NULL nor an in-range pfn was overwritten while free
+        // (free-while-mapped). Dereferencing it below would #GP and kill the
+        // boot; instead clamp the bad link to PFN_NULL (truncating the list —
+        // some frames leak) so the kernel SURVIVES and the greeter can still come
+        // up. The corruption is still logged upstream (FWM-CORRUPT / poison).
+        if next != PFN_NULL && next >= self.pfn_max {
+            klog::write_raw(b"[FREELIST-HEAL] unlink bad next="); klog::write_hex_u64(next);
+            klog::write_raw(b" at pfn="); klog::write_hex_u64(pfn); klog::write_raw(b"\n");
+            next = PFN_NULL;
+        }
+        if prev != PFN_NULL && prev >= self.pfn_max {
+            klog::write_raw(b"[FREELIST-HEAL] unlink bad prev="); klog::write_hex_u64(prev);
+            klog::write_raw(b" at pfn="); klog::write_hex_u64(pfn); klog::write_raw(b"\n");
+            prev = PFN_NULL;
+        }
         if prev == PFN_NULL {
             self.free_heads[order as usize] = next;
         } else {

@@ -21,11 +21,27 @@ mod df {
     static DF_LOC: [AtomicUsize; DF_CAP] = [const { AtomicUsize::new(0) }; DF_CAP];
     static DF_HEAD: AtomicUsize = AtomicUsize::new(0);
 
+    /// PER-PFN last-freer table (unlike the 1024-entry ring, this NEVER loses a
+    /// frame's freer to churn — the free-while-mapped double free's original
+    /// free is usually >>1024 frees old). Indexed directly by pfn; sized for 8 GB
+    /// (2M frames) so it covers the 6 GB VM. ~16 MB .bss, debug-pmm only.
+    const PER_PFN_MAX: usize = 1 << 21;
+    static PER_PFN_LOC: [AtomicUsize; PER_PFN_MAX] = [const { AtomicUsize::new(0) }; PER_PFN_MAX];
+
     /// Record a frame free: `pfn` freed at `loc` (original caller). # C: O(1).
     pub fn note(pfn: u64, loc: &'static core::panic::Location<'static>) {
         let i = DF_HEAD.fetch_add(1, Ordering::Relaxed) % DF_CAP;
         DF_PFN[i].store(pfn, Ordering::Relaxed);
         DF_LOC[i].store(loc as *const _ as usize, Ordering::Relaxed);
+        if (pfn as usize) < PER_PFN_MAX {
+            PER_PFN_LOC[pfn as usize].store(loc as *const _ as usize, Ordering::Relaxed);
+        }
+    }
+
+    /// The last recorded freer of `pfn` (0 = never freed / out of range). Never
+    /// lost to ring churn. # C: O(1).
+    pub fn last_freer(pfn: u64) -> usize {
+        if (pfn as usize) < PER_PFN_MAX { PER_PFN_LOC[pfn as usize].load(Ordering::Relaxed) } else { 0 }
     }
 
     /// Print one stored `Location` (file:line). # C: O(len).
@@ -58,6 +74,16 @@ mod df {
             }
         }
         if !found { klog::write_raw(b"[PMM-DF]     (none in ring - freed >1024 frees ago)\n"); }
+        // PER-PFN table: the last freer of this exact frame, retained regardless
+        // of how old the free is — THE premature-free call-site we need.
+        let lf = last_freer(pfn);
+        if lf != 0 {
+            klog::write_raw(b"[PMM-DF]   >>> LAST FREER (per-pfn, never lost): ");
+            print_loc(lf);
+            klog::write_raw(b"\n");
+        } else {
+            klog::write_raw(b"[PMM-DF]   >>> per-pfn table: pfn never recorded (order>0 free?)\n");
+        }
     }
 }
 
