@@ -28,6 +28,9 @@ struct config_item_type {
     struct configfs_bin_attribute **bin_attrs;
     int (*allow_link)(struct config_item *src, struct config_item *target);
     int (*drop_link)(struct config_item *src, struct config_item *target);
+    struct config_item *(*make_item)(struct config_group *group, const char *name);
+    struct config_group *(*make_group)(struct config_group *group, const char *name);
+    void (*drop_item)(struct config_group *group, struct config_item *item);
 };
 
 struct config_item {

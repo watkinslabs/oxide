@@ -30,6 +30,7 @@ net = { path = "../net" }
 block = { path = "../block" }
 input = { path = "../input" }
 tracefs = { path = "../tracefs" }
+kernfs = { path = "../kernfs" }
 
 [features]
 default = []
