@@ -38,10 +38,12 @@ use syscall::errno::Errno;
 #[path = "440_process_madvise.rs"]          pub mod s440_process_madvise;
 #[path = "448_process_mrelease.rs"]         pub mod s448_process_mrelease;
 #[path = "074_fsync.rs"]                    pub mod s074_fsync;
+#[path = "162_sync.rs"]                     pub mod s162_sync;
 #[path = "169_reboot.rs"]                   pub mod s169_reboot;
 
-// dispatch.rs calls these via `crate::misc::sys_fsync` / `sys_reboot`.
+// Routed via `crate::misc::sys_fsync` / `sys_reboot` / `sys_sync` / `sys_syncfs`.
 pub use s074_fsync::sys_fsync;
+pub use s162_sync::{sys_sync, sys_syncfs};
 pub use s169_reboot::sys_reboot;
 
 /// Tail dispatch for the previously-compat tail (pkey, kcmp, NUMA,
