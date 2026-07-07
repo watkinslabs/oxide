@@ -96,6 +96,7 @@ extern "C" fn platform_device_alloc(name: *const c_char, id: i32) -> *mut Platfo
             driver: null_mut(),
             init_name: name,
             name: [0; crate::linux_device::types::DEVICE_NAME_LEN],
+            kobj: crate::linux_device::types::LinuxKobject::new(),
             release: None,
             of_node: null_mut(),
             acpi_node: null_mut(),

@@ -68,6 +68,15 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "request_irq", "free_irq", "enable_irq", "disable_irq", "irq_", "request_threaded_irq",
         "synchronize_irq", "pci_irq_vector", "pci_alloc_irq_vectors",
     )),
+    ("block", (
+        "bdev_",
+    )),
+    ("usb", (
+        "usb_gadget", "usb_ep_", "usb_speed_string",
+    )),
+    ("scsi-target", (
+        "scsi_", "int_to_scsilun",
+    )),
     ("device-core", (
         "device_", "driver_", "bus_", "class_", "dev_", "devm_", "kobject",
         "kset", "sysfs_", "uevent", "modalias", "__dynamic_dev_dbg",
