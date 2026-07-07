@@ -1,39 +1,69 @@
 // Linux DMA mapping KPI exports for loadable drivers.
 
+use alloc::alloc::{alloc_zeroed, dealloc, Layout};
+use core::cmp::min;
 use core::ffi::c_void;
-use core::ptr::{null_mut, write_bytes};
+use core::mem::{align_of, size_of};
+use core::ptr::{copy_nonoverlapping, null_mut, write_bytes};
 use core::sync::atomic::{compiler_fence, fence, Ordering};
 
 use crate::linux_alloc::{self, LinuxPage};
 
-const DMA_MAPPING_ERROR: u64 = 0;
+pub(crate) const DMA_MAPPING_ERROR: u64 = 0;
 const LINUX_OK: i32 = 0;
 const LINUX_EIO: i32 = 5;
-const LINUX_EINVAL: i32 = 22;
+pub(crate) const LINUX_EINVAL: i32 = 22;
 const DMA_NONE: i32 = 0;
-const DMA_TO_DEVICE: i32 = 1;
+pub(crate) const DMA_TO_DEVICE: i32 = 1;
 const DMA_FROM_DEVICE: i32 = 2;
-const DMA_BIDIRECTIONAL: i32 = 3;
-const DEFAULT_DMA_MASK: u64 = u64::MAX;
+pub(crate) const DMA_BIDIRECTIONAL: i32 = 3;
+pub(crate) const DEFAULT_DMA_MASK: u64 = u64::MAX;
 const DMA_ADDRESS_BITS: u32 = u64::BITS;
-#[cfg(test)]
-const TEST_DMA_BUF_SIZE: usize = 32;
+pub(crate) const SG_END: usize = 0x02;
+pub(crate) const SG_MITER_FROM_SG: u32 = 1 << 2;
 
 #[repr(C)]
 pub struct LinuxDevice {
-    dma_mask: *mut u64,
-    coherent_dma_mask: u64,
-    driver_data: *mut c_void,
+    pub(crate) dma_mask: *mut u64,
+    pub(crate) coherent_dma_mask: u64,
+    pub(crate) driver_data: *mut c_void,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ScatterList {
-    page_link: usize,
-    offset: u32,
-    length: u32,
-    dma_address: u64,
-    dma_length: u32,
+    pub(crate) page_link: usize,
+    pub(crate) offset: u32,
+    pub(crate) length: u32,
+    pub(crate) dma_address: u64,
+    pub(crate) dma_length: u32,
+}
+
+#[repr(C)]
+pub struct SgTable {
+    pub(crate) sgl: *mut ScatterList,
+    pub(crate) nents: u32,
+    pub(crate) orig_nents: u32,
+}
+
+#[repr(C)]
+pub struct SgPageIter {
+    pub(crate) sg: *mut ScatterList,
+    pub(crate) sg_pgoffset: u32,
+    pub(crate) nents: u32,
+    pub(crate) pg_advance: i32,
+}
+
+#[repr(C)]
+pub struct SgMappingIter {
+    pub(crate) page: *mut LinuxPage,
+    pub(crate) addr: *mut c_void,
+    pub(crate) length: usize,
+    pub(crate) consumed: usize,
+    pub(crate) piter: SgPageIter,
+    pub(crate) offset: u32,
+    pub(crate) remaining: u32,
+    pub(crate) flags: u32,
 }
 
 /// Register Linux DMA mapping KPI symbols.
@@ -66,10 +96,18 @@ pub fn export_symbols() {
         ("sg_set_buf",                sg_set_buf                as *const () as usize),
         ("sg_set_page",               sg_set_page               as *const () as usize),
         ("sg_next",                   sg_next                   as *const () as usize),
+        ("sg_alloc_table",            sg_alloc_table            as *const () as usize),
+        ("sg_free_table",             sg_free_table             as *const () as usize),
+        ("sg_copy_to_buffer",         sg_copy_to_buffer         as *const () as usize),
+        ("sg_miter_start",            sg_miter_start            as *const () as usize),
+        ("sg_miter_next",             sg_miter_next             as *const () as usize),
+        ("sg_miter_stop",             sg_miter_stop             as *const () as usize),
+        ("sgl_alloc_order",           crate::linux_dma_sgl::sgl_alloc_order as *const () as usize),
+        ("sgl_free_n_order",          crate::linux_dma_sgl::sgl_free_n_order as *const () as usize),
     ] { export(name, addr, false); }
 }
 
-extern "C" fn dma_alloc_coherent(dev: *mut LinuxDevice, size: usize, dma_handle: *mut u64, flags: u64) -> *mut c_void {
+pub(crate) extern "C" fn dma_alloc_coherent(dev: *mut LinuxDevice, size: usize, dma_handle: *mut u64, flags: u64) -> *mut c_void {
     let _ = flags;
     if size == 0 || dma_handle.is_null() { return null_mut(); }
     let order = match order_for_size(size) { Some(v) => v, None => return null_mut() };
@@ -83,12 +121,12 @@ extern "C" fn dma_alloc_coherent(dev: *mut LinuxDevice, size: usize, dma_handle:
     va as *mut c_void
 }
 
-extern "C" fn dma_free_coherent(_dev: *mut LinuxDevice, size: usize, cpu_addr: *mut c_void, dma_handle: u64) {
+pub(crate) extern "C" fn dma_free_coherent(_dev: *mut LinuxDevice, size: usize, cpu_addr: *mut c_void, dma_handle: u64) {
     if size == 0 || cpu_addr.is_null() || dma_handle == DMA_MAPPING_ERROR { return; }
     if let Some(order) = order_for_size(size) { linux_alloc::page_run_free_pa(dma_handle, order); }
 }
 
-extern "C" fn dma_map_single(dev: *mut LinuxDevice, ptr: *mut c_void, size: usize, dir: i32) -> u64 {
+pub(crate) extern "C" fn dma_map_single(dev: *mut LinuxDevice, ptr: *mut c_void, size: usize, dir: i32) -> u64 {
     if ptr.is_null() || size == 0 || !valid_dir(dir) { return DMA_MAPPING_ERROR; }
     let pa = match linux_alloc::direct_pa_for_va(ptr as *const u8) { Some(v) => v, None => return DMA_MAPPING_ERROR };
     if !fits_mask(pa, size, device_dma_mask(dev, false)) { return DMA_MAPPING_ERROR; }
@@ -96,12 +134,12 @@ extern "C" fn dma_map_single(dev: *mut LinuxDevice, ptr: *mut c_void, size: usiz
     pa
 }
 
-extern "C" fn dma_unmap_single(_dev: *mut LinuxDevice, dma_addr: u64, size: usize, dir: i32) {
+pub(crate) extern "C" fn dma_unmap_single(_dev: *mut LinuxDevice, dma_addr: u64, size: usize, dir: i32) {
     if dma_addr == DMA_MAPPING_ERROR || size == 0 || !valid_dir(dir) { return; }
     sync_for_cpu(dir);
 }
 
-extern "C" fn dma_map_page(dev: *mut LinuxDevice, page: *mut LinuxPage, offset: usize, size: usize, dir: i32) -> u64 {
+pub(crate) extern "C" fn dma_map_page(dev: *mut LinuxDevice, page: *mut LinuxPage, offset: usize, size: usize, dir: i32) -> u64 {
     if size == 0 || !valid_dir(dir) { return DMA_MAPPING_ERROR; }
     let base = match linux_alloc::linux_page_phys(page) { Some(v) => v, None => return DMA_MAPPING_ERROR };
     let pa = match base.checked_add(offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR };
@@ -114,7 +152,7 @@ extern "C" fn dma_unmap_page(dev: *mut LinuxDevice, dma_addr: u64, size: usize, 
     dma_unmap_single(dev, dma_addr, size, dir);
 }
 
-extern "C" fn dma_map_sg(dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) -> i32 {
+pub(crate) extern "C" fn dma_map_sg(dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) -> i32 {
     if sg.is_null() || nents <= 0 || !valid_dir(dir) { return 0; }
     let mut mapped = 0i32;
     for i in 0..nents as usize {
@@ -129,7 +167,7 @@ extern "C" fn dma_map_sg(dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32
     mapped
 }
 
-extern "C" fn dma_unmap_sg(_dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) {
+pub(crate) extern "C" fn dma_unmap_sg(_dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) {
     if sg.is_null() || nents <= 0 || !valid_dir(dir) { return; }
     sync_for_cpu(dir);
     for i in 0..nents as usize {
@@ -140,7 +178,7 @@ extern "C" fn dma_unmap_sg(_dev: *mut LinuxDevice, sg: *mut ScatterList, nents: 
     }
 }
 
-extern "C" fn dma_mapping_error(_dev: *mut LinuxDevice, dma_addr: u64) -> i32 {
+pub(crate) extern "C" fn dma_mapping_error(_dev: *mut LinuxDevice, dma_addr: u64) -> i32 {
     if dma_addr == DMA_MAPPING_ERROR { 1 } else { 0 }
 }
 
@@ -193,23 +231,27 @@ extern "C" fn dma_get_required_mask(_dev: *mut LinuxDevice) -> u64 {
     dma_bit_mask(DMA_ADDRESS_BITS)
 }
 
-unsafe extern "C" fn sg_init_table(sg: *mut ScatterList, nents: u32) {
+pub(crate) unsafe extern "C" fn sg_init_table(sg: *mut ScatterList, nents: u32) {
     if sg.is_null() { return; }
     // SAFETY: caller supplied an array containing nents scatterlist entries.
     unsafe { write_bytes(sg, 0, nents as usize); }
+    if nents > 0 {
+        // SAFETY: caller supplied at least nents entries; mark the final entry as list end.
+        unsafe { (*sg.add(nents as usize - 1)).page_link |= SG_END; }
+    }
 }
 
-unsafe extern "C" fn sg_init_one(sg: *mut ScatterList, buf: *const c_void, buflen: u32) {
+pub(crate) unsafe extern "C" fn sg_init_one(sg: *mut ScatterList, buf: *const c_void, buflen: u32) {
     // SAFETY: sg is the single entry supplied by the caller.
     unsafe { sg_init_table(sg, 1); }
     sg_set_buf(sg, buf, buflen);
 }
 
-extern "C" fn sg_set_buf(sg: *mut ScatterList, buf: *const c_void, buflen: u32) {
+pub(crate) extern "C" fn sg_set_buf(sg: *mut ScatterList, buf: *const c_void, buflen: u32) {
     if sg.is_null() { return; }
     // SAFETY: sg points at a caller-owned scatterlist entry.
     unsafe {
-        (*sg).page_link = 0;
+        (*sg).page_link &= SG_END;
         (*sg).offset = 0;
         (*sg).length = buflen;
         (*sg).dma_address = buf as u64;
@@ -217,11 +259,11 @@ extern "C" fn sg_set_buf(sg: *mut ScatterList, buf: *const c_void, buflen: u32) 
     }
 }
 
-extern "C" fn sg_set_page(sg: *mut ScatterList, page: *mut LinuxPage, len: u32, offset: u32) {
+pub(crate) extern "C" fn sg_set_page(sg: *mut ScatterList, page: *mut LinuxPage, len: u32, offset: u32) {
     if sg.is_null() { return; }
     // SAFETY: sg points at a caller-owned scatterlist entry.
     unsafe {
-        (*sg).page_link = page as usize;
+        (*sg).page_link = (page as usize) | ((*sg).page_link & SG_END);
         (*sg).offset = offset;
         (*sg).length = len;
         (*sg).dma_address = DMA_MAPPING_ERROR;
@@ -229,17 +271,106 @@ extern "C" fn sg_set_page(sg: *mut ScatterList, page: *mut LinuxPage, len: u32, 
     }
 }
 
-extern "C" fn sg_next(sg: *mut ScatterList) -> *mut ScatterList {
+pub(crate) extern "C" fn sg_next(sg: *mut ScatterList) -> *mut ScatterList {
     if sg.is_null() { null_mut() } else {
-        // SAFETY: Linux sg_next advances within a caller-managed scatterlist chain.
-        unsafe { sg.add(1) }
+        // SAFETY: sg points to a valid entry and page_link holds Linux end marker bits.
+        unsafe { if (*sg).page_link & SG_END != 0 { null_mut() } else { sg.add(1) } }
     }
+}
+
+pub(crate) extern "C" fn sg_alloc_table(t: *mut SgTable, nents: u32, _flags: u32) -> i32 {
+    if t.is_null() || nents == 0 { return -LINUX_EINVAL; }
+    let layout = match sg_layout(nents) { Some(v) => v, None => return -LINUX_EINVAL };
+    // SAFETY: layout has non-zero size and scatterlist alignment.
+    let p = unsafe { alloc_zeroed(layout) as *mut ScatterList };
+    if p.is_null() { return -LINUX_EIO; }
+    // SAFETY: p points to nents scatterlist entries allocated above.
+    unsafe { sg_init_table(p, nents); (*t).sgl = p; (*t).nents = nents; (*t).orig_nents = nents; }
+    LINUX_OK
+}
+
+pub(crate) extern "C" fn sg_free_table(t: *mut SgTable) {
+    if t.is_null() { return; }
+    // SAFETY: table pointer is caller-owned and sgl/orig_nents follow sg_alloc_table contract.
+    unsafe {
+        if !(*t).sgl.is_null() && (*t).orig_nents != 0 {
+            if let Some(layout) = sg_layout((*t).orig_nents) { dealloc((*t).sgl as *mut u8, layout); }
+        }
+        (*t).sgl = null_mut(); (*t).nents = 0; (*t).orig_nents = 0;
+    }
+}
+
+pub(crate) extern "C" fn sg_copy_to_buffer(sg: *mut ScatterList, nents: u32, buf: *mut c_void, buflen: usize) -> usize {
+    if sg.is_null() || buf.is_null() || nents == 0 || buflen == 0 { return 0; }
+    let mut copied = 0usize;
+    let mut cur = sg;
+    for _ in 0..nents {
+        if cur.is_null() || copied == buflen { break; }
+        if let Some((src, len)) = sg_cpu_ptr_len(cur) {
+            let n = min(len, buflen - copied);
+            // SAFETY: src names readable sg bytes; buf has buflen caller-owned writable bytes.
+            unsafe { copy_nonoverlapping(src, (buf as *mut u8).add(copied), n); }
+            copied += n;
+        }
+        cur = sg_next(cur);
+    }
+    copied
+}
+
+pub(crate) extern "C" fn sg_miter_start(m: *mut SgMappingIter, sg: *mut ScatterList, nents: u32, flags: u32) {
+    if m.is_null() { return; }
+    // SAFETY: m points at Linux sg_mapping_iter storage supplied by the module.
+    unsafe {
+        (*m).page = null_mut(); (*m).addr = null_mut(); (*m).length = 0; (*m).consumed = 0;
+        (*m).piter.sg = sg; (*m).piter.sg_pgoffset = 0; (*m).piter.nents = nents; (*m).piter.pg_advance = 0;
+        (*m).offset = 0; (*m).remaining = 0; (*m).flags = flags;
+    }
+}
+
+pub(crate) extern "C" fn sg_miter_next(m: *mut SgMappingIter) -> bool {
+    if m.is_null() { return false; }
+    // SAFETY: m points at Linux sg_mapping_iter storage initialized by sg_miter_start.
+    unsafe {
+        if !(*m).addr.is_null() {
+            let used = min((*m).consumed, (*m).length);
+            (*m).offset = (*m).offset.saturating_add(used as u32);
+            (*m).remaining = (*m).remaining.saturating_sub(used as u32);
+        }
+        while (*m).piter.nents != 0 && !(*m).piter.sg.is_null() {
+            let sg = (*m).piter.sg;
+            if (*m).remaining == 0 {
+                (*m).offset = 0;
+                (*m).remaining = (*sg).length;
+            }
+            if (*m).remaining != 0 {
+                if let Some((addr, len)) = sg_cpu_ptr_len_with_offset(sg, (*m).offset as usize) {
+                    (*m).page = ((*sg).page_link & !SG_END) as *mut LinuxPage;
+                    (*m).addr = addr as *mut c_void;
+                    (*m).length = min(len, (*m).remaining as usize);
+                    (*m).consumed = (*m).length;
+                    return true;
+                }
+                (*m).remaining = 0;
+            }
+            (*m).piter.nents -= 1;
+            (*m).piter.sg = sg_next(sg);
+        }
+        (*m).page = null_mut(); (*m).addr = null_mut(); (*m).length = 0; (*m).consumed = 0;
+    }
+    false
+}
+
+pub(crate) extern "C" fn sg_miter_stop(m: *mut SgMappingIter) {
+    if m.is_null() { return; }
+    // SAFETY: m points at Linux sg_mapping_iter storage supplied by the module.
+    unsafe { (*m).page = null_mut(); (*m).addr = null_mut(); (*m).length = 0; (*m).consumed = 0; }
 }
 
 fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32) -> u64 {
     if ent.length == 0 { return DMA_MAPPING_ERROR; }
-    let pa = if ent.page_link != 0 {
-        let base = match linux_alloc::linux_page_phys(ent.page_link as *const LinuxPage) { Some(v) => v, None => return DMA_MAPPING_ERROR };
+    let page = ent.page_link & !SG_END;
+    let pa = if page != 0 {
+        let base = match linux_alloc::linux_page_phys(page as *const LinuxPage) { Some(v) => v, None => return DMA_MAPPING_ERROR };
         match base.checked_add(ent.offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR }
     } else {
         match linux_alloc::direct_pa_for_va(ent.dma_address as *const u8) { Some(v) => v, None => return DMA_MAPPING_ERROR }
@@ -247,6 +378,30 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32) -> u64 {
     if !fits_mask(pa, ent.length as usize, device_dma_mask(dev, false)) { return DMA_MAPPING_ERROR; }
     sync_for_device(dir);
     pa
+}
+
+fn sg_layout(nents: u32) -> Option<Layout> {
+    Layout::from_size_align(size_of::<ScatterList>().checked_mul(nents as usize)?, align_of::<ScatterList>()).ok()
+}
+
+fn sg_cpu_ptr_len(sg: *mut ScatterList) -> Option<(*const u8, usize)> {
+    sg_cpu_ptr_len_with_offset(sg, 0)
+}
+
+fn sg_cpu_ptr_len_with_offset(sg: *mut ScatterList, extra: usize) -> Option<(*const u8, usize)> {
+    if sg.is_null() { return None; }
+    // SAFETY: sg points at a caller-owned scatterlist entry.
+    let ent = unsafe { &*sg };
+    if extra >= ent.length as usize { return None; }
+    let base = if ent.page_link & !SG_END != 0 {
+        let page = (ent.page_link & !SG_END) as *mut LinuxPage;
+        let p = linux_alloc::page_address(page);
+        if p.is_null() { return None; }
+        p
+    } else { ent.dma_address as *mut u8 };
+    if base.is_null() { return None; }
+    let off = ent.offset as usize + extra;
+    Some((base.wrapping_add(off), ent.length as usize - extra))
 }
 
 fn order_for_size(size: usize) -> Option<u32> {
@@ -293,63 +448,5 @@ fn sync_for_device(dir: i32) {
     if dir == DMA_TO_DEVICE || dir == DMA_BIDIRECTIONAL {
         compiler_fence(Ordering::SeqCst);
         fence(Ordering::SeqCst);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn coherent_alloc_returns_dma_address_and_zeroed_memory() {
-        let mut dma = DMA_MAPPING_ERROR;
-        let p = dma_alloc_coherent(null_mut(), linux_alloc::PAGE_SIZE, &mut dma, 0);
-        assert!(!p.is_null());
-        assert_ne!(dma, DMA_MAPPING_ERROR);
-        unsafe { assert_eq!(core::slice::from_raw_parts(p as *const u8, linux_alloc::PAGE_SIZE), &[0; linux_alloc::PAGE_SIZE]); }
-        dma_free_coherent(null_mut(), linux_alloc::PAGE_SIZE, p, dma);
-    }
-
-    #[test]
-    fn streaming_map_checks_masks_and_directions() {
-        let mut buf = [0u8; TEST_DMA_BUF_SIZE];
-        let mut mask = DEFAULT_DMA_MASK;
-        let mut dev = LinuxDevice { dma_mask: &mut mask, coherent_dma_mask: DEFAULT_DMA_MASK, driver_data: null_mut() };
-        let dma = dma_map_single(&mut dev, buf.as_mut_ptr() as *mut c_void, buf.len(), DMA_TO_DEVICE);
-        assert_eq!(dma_mapping_error(&mut dev, dma), 0);
-        dma_unmap_single(&mut dev, dma, buf.len(), DMA_TO_DEVICE);
-        mask = dma - 1;
-        assert_eq!(mask, dma - 1);
-        assert_eq!(dma_map_single(&mut dev, buf.as_mut_ptr() as *mut c_void, buf.len(), DMA_TO_DEVICE), DMA_MAPPING_ERROR);
-        assert_eq!(dma_map_single(&mut dev, buf.as_mut_ptr() as *mut c_void, buf.len(), LINUX_EINVAL), DMA_MAPPING_ERROR);
-    }
-
-    #[test]
-    fn scatterlist_maps_buffer_and_page_entries() {
-        let buf = [0u8; 16];
-        let mut sg = [ScatterList { page_link: 0, offset: 0, length: 0, dma_address: 0, dma_length: 0 }; 2];
-        unsafe { sg_init_table(sg.as_mut_ptr(), sg.len() as u32); }
-        sg_set_buf(&mut sg[0], buf.as_ptr() as *const c_void, buf.len() as u32);
-        let page = crate::linux_alloc::alloc_pages(0, 0);
-        sg_set_page(&mut sg[1], page, linux_alloc::PAGE_SIZE as u32, 0);
-        assert_eq!(dma_map_sg(null_mut(), sg.as_mut_ptr(), sg.len() as i32, DMA_BIDIRECTIONAL), sg.len() as i32);
-        assert_ne!(sg[0].dma_address, DMA_MAPPING_ERROR);
-        assert_ne!(sg[1].dma_address, DMA_MAPPING_ERROR);
-        dma_unmap_sg(null_mut(), sg.as_mut_ptr(), sg.len() as i32, DMA_BIDIRECTIONAL);
-        crate::linux_alloc::__free_pages(page, 0);
-    }
-
-    #[test]
-    fn export_symbols_registers_dma_surface() {
-        crate::symtab::_reset();
-        export_symbols();
-        for name in [
-            "dma_alloc_coherent", "dma_free_coherent", "dma_map_single",
-            "dma_unmap_single", "dma_map_page", "dma_map_sg", "dma_unmap_sg",
-            "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
-            "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",
-        ] {
-            assert!(crate::symtab::is_exported(name));
-        }
     }
 }

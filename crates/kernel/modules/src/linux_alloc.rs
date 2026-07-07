@@ -173,7 +173,7 @@ extern "C" fn free_pages(addr: usize, order: u32) {
     page_run_free_va(addr as *mut u8, order);
 }
 
-extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
+pub(crate) extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
     if valid_page(page) { unsafe { (*page).va } } else { null_mut() }
 }
 

@@ -59,7 +59,7 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "inw", "inl", "outb", "outw", "outl", "mmiowb",
     )),
     ("dma", (
-        "dma_", "dmam_", "sg_", "scatterlist", "pci_alloc_consistent",
+        "dma_", "dmam_", "sg_", "sgl_", "scatterlist", "pci_alloc_consistent",
         "pci_free_consistent", "pci_map_", "pci_unmap_",
     )),
     ("irq", (

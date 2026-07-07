@@ -7,7 +7,7 @@ Date: 2026-07-07
 - Primary repo: `/home/nd/oxide/kernel`
 - Active worktree: `/home/nd/oxide/worktrees/kpi-debugfs-configfs`
 - Active branch: `F674-kpi-debugfs-configfs`
-- Base freshness: `main` is at `origin/main` `9277e1ac` on 2026-07-07; `origin/main` was merged into `F674-kpi-debugfs-configfs` before continuing sync follow-up work.
+- Base freshness: `main` is at `origin/main` `9277e1ac` on 2026-07-07; `origin/main` was fetched again before this DMA/scatterlist follow-up and remained current.
 - Work has not been pushed, PR'd, or merged.
 - Keep all follow-up work in `/home/nd/oxide/worktrees/...`, not the main checkout.
 
@@ -24,7 +24,7 @@ Date: 2026-07-07
 - `kvfree_call_rcu` now defers the free through the existing shared RCU callback queue instead of freeing inline.
 - Split allocator tests into `crates/kernel/modules/src/linux_alloc_tests.rs` to keep `linux_alloc.rs` under the 500-line cap.
 - Extended `kpi/include/linux/slab.h`, `kpi/include/linux/mm.h`, and `tools/kpi-header-smoke.c` for the new allocator surface.
-- Valid Fedora module audit now resolves those allocator symbols. Overall audit still exits nonzero because remaining misses are in other KPI lanes: workqueue/time, USB gadget, DMA/scatterlist, module refcounting, device/sysfs helpers, compiler/runtime helpers, and target/SCSI-specific helpers.
+- Valid Fedora module audit now resolves those allocator symbols. Overall audit still exits nonzero because remaining misses are in other KPI lanes: workqueue/time, USB gadget, module refcounting, device/sysfs helpers, compiler/runtime helpers, and target/SCSI-specific helpers.
 
 ## Sync Follow-Up
 
@@ -32,6 +32,15 @@ Date: 2026-07-07
 - Added `kpi/include/linux/rcupdate.h`, `kpi/include/linux/semaphore.h`, and extended spinlock/mutex/wait/completion headers plus `tools/kpi-header-smoke.c`.
 - Valid Fedora module audit no longer reports missing sync/RCU symbols for `target_core_mod`, `libcomposite`, or `industrialio-configfs`.
 - `F656-kpi-linux-sync-api` remains `PARTIAL`: the current facade is still counter/spin-backed compatibility, not full Linux scheduler-backed sleeping wait-event semantics.
+
+## DMA/Scatterlist Follow-Up
+
+- Added real-module scatterlist exports required by Fedora 6.16 `target_core_mod`: `sg_alloc_table`, `sg_free_table`, `sg_copy_to_buffer`, `sg_miter_start`, `sg_miter_next`, `sg_miter_stop`, `sgl_alloc_order`, and `sgl_free_n_order`.
+- `sg_init_table`, `sg_set_buf`, `sg_set_page`, and `sg_next` now preserve and honor the Linux `SG_END` marker so finite SG arrays do not walk past their last entry.
+- `sg_copy_to_buffer` and `sg_miter_*` walk real CPU-addressable buffer/page-backed entries. `sgl_alloc_order` allocates page-backed SG entries and `sgl_free_n_order` releases the owned pages and table.
+- Split DMA tests into `crates/kernel/modules/src/linux_dma_tests.rs` and moved SGL helpers into `crates/kernel/modules/src/linux_dma_sgl.rs` so `linux_dma.rs` stays under the 500-line cap.
+- Extended `kpi/include/linux/scatterlist.h`, `tools/kpi-header-smoke.c`, and the audit classifier for SGL symbols.
+- Valid Fedora module audit no longer reports any missing DMA/scatterlist symbols for `target_core_mod`, `libcomposite`, or `industrialio-configfs`.
 
 ## F674 Implementation Summary
 
@@ -63,10 +72,12 @@ F674 result:
 - `config_item_set_name`: exported
 - Existing configfs registration/init/get/put symbols remained exported.
 - No remaining debugfs/configfs missing symbols were reported for those modules.
-- No remaining sync/RCU missing symbols were reported for those modules after the sync follow-up; the audit reported 525 exports, 280 undefined refs, 225 unique symbols, 162 missing symbols, 0 weak-missing, and 63 exported matches.
+- No remaining sync/RCU missing symbols were reported for those modules after the sync follow-up; that audit reported 525 exports, 280 undefined refs, 225 unique symbols, 162 missing symbols, 0 weak-missing, and 63 exported matches.
+- After the DMA/scatterlist follow-up, the audit reported 533 exports, 280 undefined refs, 225 unique symbols, 154 missing symbols, 0 weak-missing, and 71 exported matches.
+- Exported DMA/scatterlist matches now include `sg_alloc_table`, `sg_copy_to_buffer`, `sg_free_table`, `sg_init_table`, `sg_miter_next`, `sg_miter_start`, `sg_miter_stop`, `sgl_alloc_order`, and `sgl_free_n_order`.
 
-The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, DMA/scatterlist, module refcounting, UBSAN/compiler runtime, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
-After the allocator and sync follow-ups, the remaining audit misses no longer include the modern allocator or sync/RCU symbols listed above.
+The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, module refcounting, UBSAN/compiler runtime, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
+After the allocator, sync, and DMA/scatterlist follow-ups, the remaining audit misses no longer include the modern allocator, sync/RCU, or DMA/scatterlist symbols listed above.
 
 ## Validation Passed
 
@@ -75,17 +86,19 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `cargo test -q -p modules linux_configfs`
 - `cargo test -q -p modules linux_alloc`
 - `cargo test -q -p modules linux_sync`
+- `cargo test -q -p modules linux_dma`
 - `cargo test -q -p modules -- --test-threads=1`
 - `cargo test -q -p vfs`
 - `cc -std=gnu11 -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
 - `clang -std=gnu11 -target x86_64-unknown-linux-gnu -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
 - `clang -std=gnu11 -target aarch64-unknown-linux-gnu -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
-- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining sync/RCU or debugfs/configfs missing rows)
+- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining allocator, sync/RCU, DMA/scatterlist, or debugfs/configfs missing rows)
 - `cargo run -q -p xtask -- kernel --arch x86_64`
 - `cargo run -q -p xtask -- kernel --arch aarch64`
 - `git diff --check`
 - Configfs source line-count check; all `crates/kernel/modules/src/linux_configfs/*.rs` files are under 500 lines.
 - Sync source line-count check; `crates/kernel/modules/src/linux_sync.rs` is 494 lines.
+- DMA source line-count check: `linux_dma.rs` is 452 lines, `linux_dma_sgl.rs` is 52 lines, `linux_dma_tests.rs` is 96 lines, and `linux_alloc.rs` is 453 lines.
 
 ## Next Steps
 
@@ -93,7 +106,7 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 2. Commit with author `Chris Watkins <chris@watkinslabs.com>` if the scope is accepted.
 3. Push/open PR for `F674-kpi-debugfs-configfs`.
 4. After merge, fast-forward the main checkout and remove this worktree.
-5. Pick the next partial lane from `kpi_fix.md`; the broad real-module audit still points at alloc/device/DMA/module/sync gaps, not debugfs/configfs.
+5. Pick the next partial lane from `kpi_fix.md`; the broad real-module audit still points at device-core/sysfs, module refcounting, UBSAN/compiler runtime, workqueue/time, USB gadget, SCSI/target helpers, and other runtime/compiler symbols, not debugfs/configfs or DMA/scatterlist.
 
 ## Do Not Do
 

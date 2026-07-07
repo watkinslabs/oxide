@@ -390,6 +390,10 @@ static int __init sample_init(void)
     struct delayed_work delayed;
     struct task_struct *task;
     struct scatterlist sg[SAMPLE_DMA_SG_NENTS];
+    struct sg_table sg_table;
+    struct sg_mapping_iter sg_iter;
+    struct scatterlist *sg_allocated;
+    unsigned int sg_allocated_nents;
     struct device dev;
     struct class *class;
     struct bus_type bus = { "sample-bus", NULL };
@@ -937,6 +941,14 @@ static int __init sample_init(void)
     sg_set_buf(&sg[0], dma_buf, sizeof(dma_buf));
     sg_set_page(&sg[1], page, SAMPLE_DMA_SIZE, SAMPLE_DMA_PAGE_OFFSET);
     (void)sg_next(&sg[0]);
+    (void)sg_copy_to_buffer(sg, ARRAY_SIZE(sg), dma_buf, sizeof(dma_buf));
+    (void)sg_alloc_table(&sg_table, ARRAY_SIZE(sg), GFP_KERNEL);
+    sg_free_table(&sg_table);
+    sg_miter_start(&sg_iter, sg, ARRAY_SIZE(sg), SG_MITER_FROM_SG);
+    (void)sg_miter_next(&sg_iter);
+    sg_miter_stop(&sg_iter);
+    sg_allocated = sgl_alloc_order(SAMPLE_DMA_SIZE, SAMPLE_DMA_PAGE_ORDER, false, GFP_KERNEL, &sg_allocated_nents);
+    sgl_free_n_order(sg_allocated, sg_allocated_nents, SAMPLE_DMA_PAGE_ORDER);
     (void)dma_map_sg(&dev, sg, ARRAY_SIZE(sg), DMA_TO_DEVICE);
     dma_sync_sg_for_device(&dev, sg, ARRAY_SIZE(sg), DMA_TO_DEVICE);
     dma_sync_sg_for_cpu(&dev, sg, ARRAY_SIZE(sg), DMA_FROM_DEVICE);

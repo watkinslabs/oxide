@@ -52,6 +52,9 @@ pub mod linux_block;
 pub mod linux_chrdev;
 pub mod linux_device;
 pub mod linux_dma;
+mod linux_dma_sgl;
+#[cfg(test)]
+mod linux_dma_tests;
 pub mod linux_io;
 pub mod linux_irq;
 pub mod linux_firmware;
