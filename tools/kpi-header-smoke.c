@@ -263,6 +263,26 @@ static int sample_simple_set(void *data, u64 value)
 
 DEFINE_SIMPLE_ATTRIBUTE(sample_simple_fops, sample_simple_get, sample_simple_set, "%llu\n");
 
+static ssize_t sample_config_bin_read(struct config_item *item, void *private, void *buf, char *page, loff_t off, size_t count)
+{
+    (void)item; (void)private; (void)buf; (void)page; (void)off; return (ssize_t)count;
+}
+
+static ssize_t sample_config_bin_write(struct config_item *item, void *private, void *buf, const char *page, loff_t off, size_t count)
+{
+    (void)item; (void)private; (void)buf; (void)page; (void)off; return (ssize_t)count;
+}
+
+static int sample_config_allow_link(struct config_item *src, struct config_item *target)
+{
+    (void)src; (void)target; return 0;
+}
+
+static int sample_config_drop_link(struct config_item *src, struct config_item *target)
+{
+    (void)src; (void)target; return 0;
+}
+
 static struct configfs_attribute sample_config_attr = {
     .name = "sample",
     .mode = 0644,
@@ -273,9 +293,37 @@ static struct configfs_attribute *sample_config_attrs[] = {
     &sample_config_attr,
     NULL,
 };
+static struct configfs_bin_attribute sample_config_bin_attr = {
+    .attr = {
+        .name = "blob",
+        .mode = 0600,
+    },
+    .private = NULL,
+    .size = 4,
+    .read = sample_config_bin_read,
+    .write = sample_config_bin_write,
+};
+static struct configfs_bin_attribute *sample_config_bin_attrs[] = {
+    &sample_config_bin_attr,
+    NULL,
+};
+static struct config_group sample_config_child;
+static struct config_group *sample_config_default_groups[] = {
+    &sample_config_child,
+    NULL,
+};
+static struct config_item_type sample_config_child_type = {
+    .release = NULL,
+    .attrs = sample_config_attrs,
+    .bin_attrs = sample_config_bin_attrs,
+};
 static struct config_item_type sample_config_type = {
     .release = NULL,
     .attrs = sample_config_attrs,
+    .default_groups = sample_config_default_groups,
+    .bin_attrs = sample_config_bin_attrs,
+    .allow_link = sample_config_allow_link,
+    .drop_link = sample_config_drop_link,
 };
 
 static int __init sample_init(void)
@@ -518,8 +566,13 @@ static int __init sample_init(void)
     debugfs_remove(debug_blob_file);
     debugfs_remove(debug_file);
     debugfs_remove_recursive(debug_dir);
+    config_group_init_type_name(&sample_config_child, "child", &sample_config_child_type);
     config_group_init_type_name(&subsys.su_group, "sample", &sample_config_type);
     (void)configfs_register_subsystem(&subsys);
+    (void)configfs_create_link(&subsys.su_group.item, &sample_config_child.item, "child_link");
+    configfs_drop_link(&subsys.su_group.item, &sample_config_child.item, "child_link");
+    (void)config_item_get(&subsys.su_group.item);
+    config_item_put(&subsys.su_group.item);
     configfs_unregister_subsystem(&subsys);
     (void)request_firmware(&fw, "sample/fw.bin", &dev);
     (void)request_firmware_direct(&fw, "sample/fw.bin", &dev);

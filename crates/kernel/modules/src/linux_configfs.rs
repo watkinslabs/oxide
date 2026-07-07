@@ -5,6 +5,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Modules as ModulesLockClass, Spinlock};
 use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 
@@ -22,6 +23,9 @@ static LOCK: Spinlock<(), ModulesLockClass> = Spinlock::new(());
 type ShowFn = unsafe extern "C" fn(*mut ConfigItem, *mut c_char) -> isize;
 type StoreFn = unsafe extern "C" fn(*mut ConfigItem, *const c_char, usize) -> isize;
 type ReleaseFn = unsafe extern "C" fn(*mut ConfigItem);
+type BinReadFn = unsafe extern "C" fn(*mut ConfigItem, *mut c_void, *mut c_void, *mut c_char, i64, usize) -> isize;
+type BinWriteFn = unsafe extern "C" fn(*mut ConfigItem, *mut c_void, *mut c_void, *const c_char, i64, usize) -> isize;
+type LinkFn = unsafe extern "C" fn(*mut ConfigItem, *mut ConfigItem) -> i32;
 
 #[repr(C)]
 pub struct ConfigfsAttribute {
@@ -32,9 +36,22 @@ pub struct ConfigfsAttribute {
 }
 
 #[repr(C)]
+pub struct ConfigfsBinAttribute {
+    attr: ConfigfsAttribute,
+    private: *mut c_void,
+    size: usize,
+    read: Option<BinReadFn>,
+    write: Option<BinWriteFn>,
+}
+
+#[repr(C)]
 pub struct ConfigItemType {
     release: Option<ReleaseFn>,
     attrs: *mut *mut ConfigfsAttribute,
+    default_groups: *mut *mut ConfigGroup,
+    bin_attrs: *mut *mut ConfigfsBinAttribute,
+    allow_link: Option<LinkFn>,
+    drop_link: Option<LinkFn>,
 }
 
 #[repr(C)]
@@ -57,6 +74,7 @@ pub struct ConfigfsSubsystem {
 struct PathState {
     magic: u32,
     path: String,
+    refs: AtomicU32,
 }
 
 struct AttrData {
@@ -87,6 +105,32 @@ impl FileOps for AttrOps {
     }
 }
 
+struct BinAttrData {
+    item: usize,
+    attr: usize,
+}
+
+struct BinAttrOps;
+impl FileOps for BinAttrOps {
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<BinAttrData>().ok_or(VfsError::Einval)?;
+        let attr = bin_attr_ref(d.attr).ok_or(VfsError::Einval)?;
+        let read = attr.read.ok_or(VfsError::Einval)?;
+        // SAFETY: configfs bin attr callback receives live item/private storage and VFS buffer.
+        checked_size(unsafe {
+            read(d.item as *mut ConfigItem, attr.private, null_mut(), buf.as_mut_ptr() as *mut c_char, off as i64, buf.len())
+        })
+    }
+
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let d = inode.private::<BinAttrData>().ok_or(VfsError::Einval)?;
+        let attr = bin_attr_ref(d.attr).ok_or(VfsError::Einval)?;
+        let write = attr.write.ok_or(VfsError::Einval)?;
+        // SAFETY: configfs bin attr callback receives live item/private storage and VFS buffer.
+        checked_size(unsafe { write(d.item as *mut ConfigItem, attr.private, null_mut(), buf.as_ptr() as *const c_char, off as i64, buf.len()) })
+    }
+}
+
 /// Register Linux configfs KPI symbols. # C: O(1)
 pub fn export_symbols() {
     use crate::symtab::export;
@@ -101,6 +145,8 @@ pub fn export_symbols() {
         ("configfs_unregister_group",     configfs_unregister_group     as *const () as usize),
         ("config_item_get",               config_item_get               as *const () as usize),
         ("config_item_put",               config_item_put               as *const () as usize),
+        ("configfs_create_link",          configfs_create_link          as *const () as usize),
+        ("configfs_drop_link",            configfs_drop_link            as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -154,8 +200,46 @@ extern "C" fn configfs_unregister_group(group: *mut ConfigGroup) {
     unsafe { unregister_group(group); }
 }
 
-extern "C" fn config_item_get(item: *mut ConfigItem) -> *mut ConfigItem { item }
-extern "C" fn config_item_put(_item: *mut ConfigItem) {}
+extern "C" fn config_item_get(item: *mut ConfigItem) -> *mut ConfigItem {
+    if let Some(state) = item_state(item) { state.refs.fetch_add(1, Ordering::AcqRel); }
+    item
+}
+
+extern "C" fn config_item_put(item: *mut ConfigItem) {
+    let Some(state) = item_state(item) else { return; };
+    if state.refs.fetch_sub(1, Ordering::AcqRel) == 1 { release_item(item); }
+}
+
+extern "C" fn configfs_create_link(parent: *mut ConfigItem, target: *mut ConfigItem, name: *const c_char) -> i32 {
+    if parent.is_null() || target.is_null() { return -LINUX_EINVAL; }
+    let name = match read_cstr(name, NAME_MAX) { Some(n) => n, None => return -LINUX_EINVAL };
+    if !valid_name(&name) { return -LINUX_EINVAL; }
+    let parent_path = match item_path(parent) { Some(p) => p, None => return -LINUX_EINVAL };
+    let target_path = match item_path(target) { Some(p) => p, None => return -LINUX_EINVAL };
+    if let Some(ty) = item_type(parent) {
+        // SAFETY: item type and callback are module-owned configfs operation storage.
+        let rc = unsafe { (*ty).allow_link.map(|f| f(parent, target)).unwrap_or(LINUX_OK) };
+        if rc < 0 { return rc; }
+    }
+    let link_path = join_path(&parent_path, &name);
+    let _g = LOCK.lock();
+    tracefs::config_root().insert_path(&link_path, symlink_inode(target_path.as_bytes()));
+    LINUX_OK
+}
+
+extern "C" fn configfs_drop_link(parent: *mut ConfigItem, target: *mut ConfigItem, name: *const c_char) {
+    if parent.is_null() || target.is_null() { return; }
+    let Some(name) = read_cstr(name, NAME_MAX) else { return; };
+    if !valid_name(&name) { return; }
+    if let Some(ty) = item_type(parent) {
+        // SAFETY: item type and callback are module-owned configfs operation storage.
+        unsafe { if let Some(f) = (*ty).drop_link { let _ = f(parent, target); } }
+    }
+    if let Some(parent_path) = item_path(parent) {
+        let _g = LOCK.lock();
+        tracefs::config_root().remove_subtree(&join_path(&parent_path, &name));
+    }
+}
 
 unsafe fn register_group(parent: *mut ConfigGroup, group: *mut ConfigGroup) -> i32 {
     if group.is_null() { return -LINUX_EINVAL; }
@@ -171,11 +255,15 @@ unsafe fn register_group(parent: *mut ConfigGroup, group: *mut ConfigGroup) -> i
         match item_path(parent_item) { Some(p) => p, None => return -LINUX_EINVAL }
     };
     let path = join_path(&parent_path, &name);
-    let _g = LOCK.lock();
-    if tracefs::config_root().lookup_path(&path).is_some() { return -LINUX_EEXIST; }
-    tracefs::config_root().ensure_dir_path(&path);
-    install_attrs(&path, group_item);
-    set_item_path(group_item, path);
+    {
+        let _g = LOCK.lock();
+        if tracefs::config_root().lookup_path(&path).is_some() { return -LINUX_EEXIST; }
+        tracefs::config_root().ensure_dir_path(&path);
+        install_attrs(&path, group_item);
+        install_bin_attrs(&path, group_item);
+        set_item_path(group_item, path);
+    }
+    install_default_groups(group_item, group);
     LINUX_OK
 }
 
@@ -183,11 +271,13 @@ unsafe fn unregister_group(group: *mut ConfigGroup) {
     if group.is_null() { return; }
     // SAFETY: group is checked non-null and owned by module code for unregister.
     let item = unsafe { &mut (*group).item };
+    unregister_default_groups(item);
     if let Some(path) = item_path(item) {
         let _g = LOCK.lock();
         tracefs::config_root().remove_subtree(&path);
     }
     clear_item_path(item);
+    release_item(item);
 }
 
 fn install_attrs(path: &str, item: *mut ConfigItem) {
@@ -210,6 +300,56 @@ fn install_attrs(path: &str, item: *mut ConfigItem) {
     }
 }
 
+fn install_bin_attrs(path: &str, item: *mut ConfigItem) {
+    let ty = item_type(item);
+    let attrs = match ty.and_then(|t| bin_attrs_ptr(t)) { Some(a) => a, None => return };
+    let mut i = 0usize;
+    loop {
+        // SAFETY: configfs bin attr array is NULL-terminated by module code.
+        let attr = unsafe { *attrs.add(i) };
+        if attr.is_null() { break; }
+        // SAFETY: bin attr pointer comes from module-owned static configfs storage.
+        if let Some(name) = unsafe { read_cstr((*attr).attr.name, NAME_MAX) } {
+            if valid_name(&name) {
+                let ap = join_path(path, &name);
+                // SAFETY: bin attr pointer comes from module-owned static configfs storage.
+                let mode = unsafe { (*attr).attr.mode };
+                let data = BinAttrData { item: item as usize, attr: attr as usize };
+                tracefs::config_root().insert_path(&ap, bin_attr_inode(mode, data));
+            }
+        }
+        i += 1;
+    }
+}
+
+fn install_default_groups(parent_item: *mut ConfigItem, parent_group: *mut ConfigGroup) {
+    let ty = item_type(parent_item);
+    let groups = match ty.and_then(|t| default_groups_ptr(t)) { Some(g) => g, None => return };
+    let mut i = 0usize;
+    loop {
+        // SAFETY: configfs default group array is NULL-terminated by module code.
+        let group = unsafe { *groups.add(i) };
+        if group.is_null() { break; }
+        // SAFETY: default group pointer comes from module-owned configfs storage.
+        let _ = unsafe { register_group(parent_group, group) };
+        i += 1;
+    }
+}
+
+fn unregister_default_groups(parent_item: *mut ConfigItem) {
+    let ty = item_type(parent_item);
+    let groups = match ty.and_then(|t| default_groups_ptr(t)) { Some(g) => g, None => return };
+    let mut i = 0usize;
+    loop {
+        // SAFETY: configfs default group array is NULL-terminated by module code.
+        let group = unsafe { *groups.add(i) };
+        if group.is_null() { break; }
+        // SAFETY: default group pointer comes from module-owned configfs storage.
+        unsafe { unregister_group(group); }
+        i += 1;
+    }
+}
+
 fn attr_inode(mode: u16, data: AttrData) -> InodeRef {
     let perm = if mode == 0 { DEFAULT_ATTR_MODE } else { mode & 0o777 };
     InodeBuilder::new(
@@ -218,6 +358,25 @@ fn attr_inode(mode: u16, data: AttrData) -> InodeRef {
         default_inode_ops(),
         Arc::new(AttrOps),
     ).private(Arc::new(data)).build()
+}
+
+fn bin_attr_inode(mode: u16, data: BinAttrData) -> InodeRef {
+    let perm = if mode == 0 { DEFAULT_ATTR_MODE } else { mode & 0o777 };
+    InodeBuilder::new(
+        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        mk_mode(FileType::Regular, perm),
+        default_inode_ops(),
+        Arc::new(BinAttrOps),
+    ).private(Arc::new(data)).build()
+}
+
+fn symlink_inode(target: &[u8]) -> InodeRef {
+    InodeBuilder::new(
+        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        mk_mode(FileType::Symlink, 0o777),
+        default_inode_ops(),
+        vfs::default_file_ops(),
+    ).size(target.len() as u64).link(target.to_vec().into_boxed_slice()).build()
 }
 
 fn item_type(item: *mut ConfigItem) -> Option<*mut ConfigItemType> {
@@ -234,6 +393,18 @@ fn attrs_ptr(ty: *mut ConfigItemType) -> Option<*mut *mut ConfigfsAttribute> {
     if attrs.is_null() { None } else { Some(attrs) }
 }
 
+fn default_groups_ptr(ty: *mut ConfigItemType) -> Option<*mut *mut ConfigGroup> {
+    // SAFETY: ty is checked non-null by caller.
+    let groups = unsafe { (*ty).default_groups };
+    if groups.is_null() { None } else { Some(groups) }
+}
+
+fn bin_attrs_ptr(ty: *mut ConfigItemType) -> Option<*mut *mut ConfigfsBinAttribute> {
+    // SAFETY: ty is checked non-null by caller.
+    let attrs = unsafe { (*ty).bin_attrs };
+    if attrs.is_null() { None } else { Some(attrs) }
+}
+
 fn attr_ref(ptr: usize) -> Option<&'static ConfigfsAttribute> {
     if ptr == 0 { None } else {
         // SAFETY: pointer comes from a module-owned static configfs attribute.
@@ -241,10 +412,27 @@ fn attr_ref(ptr: usize) -> Option<&'static ConfigfsAttribute> {
     }
 }
 
+fn bin_attr_ref(ptr: usize) -> Option<&'static ConfigfsBinAttribute> {
+    if ptr == 0 { None } else {
+        // SAFETY: pointer comes from a module-owned static configfs bin attribute.
+        Some(unsafe { &*(ptr as *const ConfigfsBinAttribute) })
+    }
+}
+
 fn set_item_path(item: *mut ConfigItem, path: String) {
-    let state = Box::new(PathState { magic: CONFIG_PATH_MAGIC, path });
+    let state = Box::new(PathState { magic: CONFIG_PATH_MAGIC, path, refs: AtomicU32::new(1) });
     // SAFETY: item is caller-owned configfs storage.
     unsafe { (*item).private = Box::into_raw(state) as *mut c_void; }
+}
+
+fn item_state(item: *mut ConfigItem) -> Option<&'static PathState> {
+    if item.is_null() { return None; }
+    // SAFETY: item is checked non-null and owned by module code.
+    let p = unsafe { (*item).private };
+    if p.is_null() { return None; }
+    // SAFETY: private points to PathState for registered items.
+    let state = unsafe { &*(p as *const PathState) };
+    if state.magic == CONFIG_PATH_MAGIC { Some(state) } else { None }
 }
 
 fn clear_item_path(item: *mut ConfigItem) {
@@ -259,36 +447,29 @@ fn clear_item_path(item: *mut ConfigItem) {
 }
 
 fn item_path(item: *mut ConfigItem) -> Option<String> {
-    if item.is_null() { return None; }
-    // SAFETY: item is checked non-null and owned by module code.
-    let p = unsafe { (*item).private };
-    if p.is_null() { return None; }
-    // SAFETY: private points to PathState for registered items.
-    let state = unsafe { &*(p as *const PathState) };
-    if state.magic == CONFIG_PATH_MAGIC { Some(state.path.clone()) } else { None }
+    item_state(item).map(|state| state.path.clone())
+}
+
+fn release_item(item: *mut ConfigItem) {
+    if let Some(ty) = item_type(item) {
+        // SAFETY: item type and release callback are module-owned configfs operation storage.
+        unsafe { if let Some(release) = (*ty).release { release(item); } }
+    }
 }
 
 fn checked_size(v: isize) -> KResult<usize> {
     if v < 0 { Err(errno_to_vfs((-v) as i32)) } else { Ok(v as usize) }
 }
-
-fn errno_to_vfs(e: i32) -> VfsError {
-    match e {
-        2 => VfsError::Enoent,
-        12 => VfsError::Enomem,
-        13 => VfsError::Eacces,
-        16 => VfsError::Ebusy,
-        22 => VfsError::Einval,
-        _ => VfsError::Eio,
-    }
-}
+fn errno_to_vfs(e: i32) -> VfsError { match e {
+    2 => VfsError::Enoent, 12 => VfsError::Enomem, 13 => VfsError::Eacces,
+    16 => VfsError::Ebusy, 22 => VfsError::Einval, _ => VfsError::Eio,
+} }
 
 fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
     let off = off as usize;
     if off >= body.len() { return 0; }
     let n = (body.len() - off).min(buf.len());
-    buf[..n].copy_from_slice(&body[off..off + n]);
-    n
+    buf[..n].copy_from_slice(&body[off..off + n]); n
 }
 
 fn read_cstr(ptr: *const c_char, max: usize) -> Option<String> {
@@ -309,57 +490,9 @@ fn valid_name(name: &str) -> bool {
 
 fn join_path(parent: &str, name: &str) -> String {
     let mut p = String::from(parent);
-    if !p.is_empty() { p.push('/'); }
-    p.push_str(name);
-    p
+    if !p.is_empty() { p.push('/'); } p.push_str(name); p
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    static ATTR_NAME: &[u8] = b"value\0";
-    static GROUP_NAME: &[u8] = b"sample\0";
-
-    unsafe extern "C" fn show(_item: *mut ConfigItem, buf: *mut c_char) -> isize {
-        let body = b"ok\n";
-        // SAFETY: configfs passes a page-sized writable kernel buffer.
-        unsafe { core::ptr::copy_nonoverlapping(body.as_ptr(), buf as *mut u8, body.len()); }
-        body.len() as isize
-    }
-
-    #[test]
-    fn export_symbols_registers_configfs_surface() {
-        export_symbols();
-        assert!(crate::is_exported("configfs_register_subsystem"));
-        assert!(crate::is_exported("configfs_unregister_group"));
-    }
-
-    #[test]
-    fn subsystem_registers_attrs_in_config_root() {
-        let mut attr = ConfigfsAttribute {
-            name: ATTR_NAME.as_ptr() as *const c_char,
-            mode: 0o444,
-            show: Some(show),
-            store: None,
-        };
-        let mut attrs = [&mut attr as *mut ConfigfsAttribute, core::ptr::null_mut()];
-        let mut ty = ConfigItemType { release: None, attrs: attrs.as_mut_ptr() };
-        let mut s = ConfigfsSubsystem {
-            group: ConfigGroup {
-                item: ConfigItem {
-                    name: GROUP_NAME.as_ptr() as *const c_char,
-                    ty: &mut ty,
-                    private: null_mut(),
-                },
-            },
-        };
-        assert_eq!(configfs_register_subsystem(&mut s), 0);
-        let inode = tracefs::config_root().lookup_path("sample/value").expect("configfs attr");
-        let mut buf = [0u8; 8];
-        let n = inode.read(0, &mut buf).expect("read configfs attr");
-        assert_eq!(&buf[..n], b"ok\n");
-        configfs_unregister_subsystem(&mut s);
-        assert!(tracefs::config_root().lookup_path("sample/value").is_none());
-    }
-}
+#[path = "linux_configfs_tests.rs"]
+mod linux_configfs_tests;
