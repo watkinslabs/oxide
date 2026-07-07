@@ -4,6 +4,7 @@
 #include <linux/gfp.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/pm.h>
 #include <linux/types.h>
 
 #define OXIDE_DEVICE_NAME_LEN 64
@@ -29,6 +30,7 @@ struct device {
     void (*release)(struct device *dev);
     struct device_node *of_node;
     struct acpi_device *acpi_node;
+    struct dev_pm_info power;
 };
 
 struct device_driver {
@@ -39,6 +41,7 @@ struct device_driver {
     int (*remove)(struct device *dev);
     const struct of_device_id *of_match_table;
     const struct acpi_device_id *acpi_match_table;
+    const struct dev_pm_ops *pm;
 };
 
 struct bus_type {
