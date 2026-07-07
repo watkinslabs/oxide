@@ -18,10 +18,22 @@ pub(super) const USB_DEVICE_ID_MATCH_INT_CLASS: u16 = 0x0080;
 pub(super) const USB_DEVICE_ID_MATCH_INT_SUBCLASS: u16 = 0x0100;
 pub(super) const USB_DEVICE_ID_MATCH_INT_PROTOCOL: u16 = 0x0200;
 pub(super) const PAGE_SIZE: usize = 4096;
+pub(super) const USB_DIR_IN: u8 = 0x80;
+pub(super) const USB_ENDPOINT_XFERTYPE_MASK: u8 = 3;
+pub(super) const USB_ENDPOINT_XFER_BULK: u8 = 2;
+pub(super) const USB_ENDPOINT_XFER_INT: u8 = 3;
 
 pub(super) type UsbProbeFn = unsafe extern "C" fn(*mut UsbInterface, *const UsbDeviceId) -> i32;
 pub(super) type UsbDisconnectFn = unsafe extern "C" fn(*mut UsbInterface);
 pub(super) type UrbCompleteFn = unsafe extern "C" fn(*mut UsbUrb);
+pub(super) type UsbRequestCompleteFn = unsafe extern "C" fn(*mut UsbEndpoint, *mut UsbRequest);
+pub(super) type UsbEpAllocRequestFn = unsafe extern "C" fn(*mut UsbEndpoint, u32) -> *mut UsbRequest;
+pub(super) type UsbEpFreeRequestFn = unsafe extern "C" fn(*mut UsbEndpoint, *mut UsbRequest);
+pub(super) type UsbEpQueueFn = unsafe extern "C" fn(*mut UsbEndpoint, *mut UsbRequest, u32) -> i32;
+pub(super) type UsbEpDequeueFn = unsafe extern "C" fn(*mut UsbEndpoint, *mut UsbRequest) -> i32;
+pub(super) type UsbGadgetBindFn = unsafe extern "C" fn(*mut UsbGadget, *mut UsbGadgetDriver) -> i32;
+pub(super) type UsbGadgetVoidFn = unsafe extern "C" fn(*mut UsbGadget);
+pub(super) type UsbGadgetSetupFn = unsafe extern "C" fn(*mut UsbGadget, *const UsbCtrlRequest) -> i32;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
@@ -137,6 +149,106 @@ pub(super) struct UsbUrb {
     pub(super) complete: Option<UrbCompleteFn>,
     pub(super) interval: i32,
     pub(super) number_of_packets: i32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub(super) struct ListHead {
+    pub(super) next: *mut ListHead,
+    pub(super) prev: *mut ListHead,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub(super) struct UsbEpCaps {
+    pub(super) type_control: u8,
+    pub(super) type_iso: u8,
+    pub(super) type_bulk: u8,
+    pub(super) type_int: u8,
+    pub(super) dir_in: u8,
+    pub(super) dir_out: u8,
+}
+
+#[repr(C)]
+pub(super) struct UsbEndpoint {
+    pub(super) name: *const c_char,
+    pub(super) ops: *const UsbEpOps,
+    pub(super) ep_list: ListHead,
+    pub(super) caps: UsbEpCaps,
+    pub(super) maxpacket: u16,
+    pub(super) maxpacket_limit: u16,
+    pub(super) max_streams: u16,
+    pub(super) enabled: u8,
+    pub(super) address: u8,
+    pub(super) desc: *const UsbEndpointDescriptor,
+    pub(super) driver_data: *mut c_void,
+}
+
+#[repr(C)]
+pub(super) struct UsbEpOps {
+    pub(super) enable: Option<unsafe extern "C" fn(*mut UsbEndpoint, *const UsbEndpointDescriptor) -> i32>,
+    pub(super) disable: Option<unsafe extern "C" fn(*mut UsbEndpoint) -> i32>,
+    pub(super) alloc_request: Option<UsbEpAllocRequestFn>,
+    pub(super) free_request: Option<UsbEpFreeRequestFn>,
+    pub(super) queue: Option<UsbEpQueueFn>,
+    pub(super) dequeue: Option<UsbEpDequeueFn>,
+}
+
+#[repr(C)]
+pub(super) struct UsbRequest {
+    pub(super) buf: *mut c_void,
+    pub(super) dma: u64,
+    pub(super) length: u32,
+    pub(super) actual: u32,
+    pub(super) status: i32,
+    pub(super) zero: u8,
+    pub(super) short_not_ok: u8,
+    pub(super) no_interrupt: u8,
+    pub(super) complete: Option<UsbRequestCompleteFn>,
+    pub(super) context: *mut c_void,
+    pub(super) list: ListHead,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub(super) struct UsbCtrlRequest {
+    pub(super) b_request_type: u8,
+    pub(super) b_request: u8,
+    pub(super) w_value: u16,
+    pub(super) w_index: u16,
+    pub(super) w_length: u16,
+}
+
+#[repr(C)]
+pub(super) struct UsbGadget {
+    pub(super) ops: *const c_void,
+    pub(super) ep0: *mut UsbEndpoint,
+    pub(super) ep_list: ListHead,
+    pub(super) speed: i32,
+    pub(super) max_speed: i32,
+    pub(super) state: i32,
+    pub(super) name: *const c_char,
+    pub(super) dev: LinuxDevice,
+    pub(super) is_selfpowered: u8,
+    pub(super) deactivated: u8,
+    pub(super) connected: u8,
+    pub(super) remote_wakeup: u8,
+    pub(super) vbus_draw_ma: u32,
+    pub(super) driver: *mut UsbGadgetDriver,
+}
+
+#[repr(C)]
+pub(super) struct UsbGadgetDriver {
+    pub(super) function: *const c_char,
+    pub(super) max_speed: i32,
+    pub(super) bind: Option<UsbGadgetBindFn>,
+    pub(super) unbind: Option<UsbGadgetVoidFn>,
+    pub(super) setup: Option<UsbGadgetSetupFn>,
+    pub(super) disconnect: Option<UsbGadgetVoidFn>,
+    pub(super) suspend: Option<UsbGadgetVoidFn>,
+    pub(super) resume: Option<UsbGadgetVoidFn>,
+    pub(super) reset: Option<UsbGadgetVoidFn>,
+    pub(super) driver: *mut c_void,
 }
 
 #[derive(Copy, Clone)]
