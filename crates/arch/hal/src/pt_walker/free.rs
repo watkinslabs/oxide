@@ -155,6 +155,51 @@ pub unsafe fn unmap_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64
     None
 }
 
+/// Tear down a 4 KiB leaf at `va` in the tree rooted at the
+/// caller-supplied `root_pa` (not the active CR3/TTBR). Mirror of
+/// `unmap_4k` for a FOREIGN address space (process_madvise
+/// MADV_DONTNEED/FREE targeting another task). Zeroes the leaf slot
+/// and returns the leaf's PHYSICAL address (`leaf & PHYS_MASK`, flag
+/// bits stripped); `None` if not present or a non-bottom-level entry
+/// blocks the walk. Does NOT flush any TLB —
+/// `root_pa` is a non-active root; the target's TLB is flushed on its
+/// next CR3/TTBR reload (UP: the foreign task is not concurrently
+/// executing).
+///
+/// # SAFETY: caller asserts (a) HHDM covers page-table memory, (b)
+/// `root_pa` is a valid 4 KiB-aligned root of a live AS the caller
+/// keeps alive (Arc) and that is NOT active on this CPU, (c) `va` in
+/// that AS is exclusively owned for the duration (UP + preempt-off,
+/// target not running).
+/// # C: O(walk depth) = O(4)
+/// # Ctx: UP single-CPU, target not scheduled.
+pub unsafe fn unmap_4k_at_root<W: PtWalker>(root_pa: u64, va: u64, hhdm_offset: u64) -> Option<u64> {
+    let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+    // SAFETY: HHDM covers page-table memory; `root_pa` is a live
+    // non-active root exclusively owned per fn contract; only the L3
+    // leaf slot is written.
+    unsafe {
+        let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
+        let e0 = ptr::read_volatile(l0.add(i_l0));
+        if !W::is_valid(e0) || W::is_huge_or_block(e0) { return None; }
+        let l1 = (hhdm_offset.wrapping_add(e0 & W::PHYS_MASK)) as *const u64;
+        let e1 = ptr::read_volatile(l1.add(i_l1));
+        if !W::is_valid(e1) || W::is_huge_or_block(e1) { return None; }
+        let l2 = (hhdm_offset.wrapping_add(e1 & W::PHYS_MASK)) as *const u64;
+        let e2 = ptr::read_volatile(l2.add(i_l2));
+        if !W::is_valid(e2) || W::is_huge_or_block(e2) { return None; }
+        let l3 = (hhdm_offset.wrapping_add(e2 & W::PHYS_MASK)) as *mut u64;
+        let slot = l3.add(i_l3);
+        let leaf = ptr::read_volatile(slot);
+        if !W::is_valid(leaf) { return None; }
+        ptr::write_volatile(slot, 0);
+        Some(leaf & W::PHYS_MASK)
+    }
+}
+
 /// Tear down a 4 KiB leaf at `va` if present. No-op if not mapped
 /// or if a non-bottom-level entry blocks the walk. Returns the
 /// torn-down leaf entry on success.

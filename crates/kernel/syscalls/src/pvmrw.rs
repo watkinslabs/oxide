@@ -5,7 +5,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-#[path = "pvmrw_common.rs"] mod pvmrw_common;
+#[path = "pvmrw_common.rs"] pub mod pvmrw_common;
 #[path = "310_process_vm_readv.rs"] mod s310_process_vm_readv;
 #[path = "311_process_vm_writev.rs"] mod s311_process_vm_writev;
 
