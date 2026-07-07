@@ -846,6 +846,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "mmio-map",
+ "net",
  "pci",
  "pmm",
  "sched",

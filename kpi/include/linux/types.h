@@ -35,6 +35,10 @@ typedef unsigned int umode_t;
 typedef long ssize_t;
 typedef long long loff_t;
 typedef unsigned int dev_t;
+typedef unsigned short __be16;
+typedef unsigned short __sum16;
+typedef unsigned int __wsum;
+typedef int netdev_tx_t;
 
 struct page;
 struct device;

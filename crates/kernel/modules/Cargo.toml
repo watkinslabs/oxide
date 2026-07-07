@@ -22,6 +22,7 @@ mmio-map = { path = "../mmio-map" }
 arch-irq = { path = "../arch-irq" }
 pci = { path = "../../drivers/pci" }
 vfs = { path = "../vfs" }
+net = { path = "../net" }
 
 [features]
 default = []
