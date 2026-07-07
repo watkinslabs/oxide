@@ -9,8 +9,11 @@ mod types;
 
 pub use consts::*;
 pub use registry::{
-    count, device, devices_snapshot, evdev_id_for_device, install, install_device, is_pointer,
-    name_of, remove_device, repeat, set_repeat, CapBitmap, Error, KResult, VirtioInputDev,
+    install_device, Error, KResult,
+};
+pub use input::{
+    count, device, devices_snapshot, evdev_id_for_device, install, is_pointer, name_of,
+    remove_device, repeat, set_repeat, CapBitmap, VirtioInputDev,
 };
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub use registry::{install_device_with_parent, remove_device_with_node, ModelParent};
