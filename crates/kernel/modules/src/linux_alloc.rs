@@ -2,6 +2,9 @@
 
 extern crate alloc;
 
+#[path = "linux_alloc_cache.rs"]
+mod cache;
+
 use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -11,6 +14,7 @@ use core::ptr::{copy_nonoverlapping, null_mut, write_bytes};
 
 const ALLOC_MAGIC: u64 = 0x4f58_4b50_4941_4c4c;
 const PAGE_MAGIC: u64 = 0x4f58_4b50_4950_4147;
+const CACHE_MAGIC: u64 = 0x4f58_4b50_4943_4143;
 const MIN_ALIGN: usize = align_of::<usize>();
 const GFP_ZERO: u32 = 0x8000;
 pub(crate) const PAGE_SIZE: usize = 4096;
@@ -18,7 +22,10 @@ const KMALLOC_CACHE_SLOTS: usize = 128;
 
 #[repr(C)]
 pub struct LinuxKmemCache {
-    _private: usize,
+    magic: u64,
+    object_size: usize,
+    align: usize,
+    ctor: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 static KMALLOC_CACHES: [usize; KMALLOC_CACHE_SLOTS] = [0; KMALLOC_CACHE_SLOTS];
@@ -68,6 +75,11 @@ pub fn export_symbols() {
     export("__kmalloc_noprof", __kmalloc_noprof as *const () as usize, false);
     export("__kmalloc_cache_noprof", __kmalloc_cache_noprof as *const () as usize, false);
     export("__kvmalloc_node_noprof", __kvmalloc_node_noprof as *const () as usize, false);
+    export("__kmem_cache_create_args", cache::__kmem_cache_create_args as *const () as usize, false);
+    export("kmem_cache_alloc_noprof", cache::kmem_cache_alloc_noprof as *const () as usize, false);
+    export("kmem_cache_free", cache::kmem_cache_free as *const () as usize, false);
+    export("kmem_cache_destroy", cache::kmem_cache_destroy as *const () as usize, false);
+    export("vzalloc_noprof",   vzalloc_noprof   as *const () as usize, false);
     export("kmalloc_caches",   KMALLOC_CACHES.as_ptr() as usize, false);
     export("random_kmalloc_seed", &RANDOM_KMALLOC_SEED as *const usize as usize, false);
 }
@@ -81,7 +93,7 @@ extern "C" fn __kmalloc_noprof(size: usize, flags: u32) -> *mut u8 {
 }
 
 extern "C" fn __kmalloc_cache_noprof(_cache: *mut LinuxKmemCache, flags: u32, size: usize) -> *mut u8 {
-    kmalloc(size, flags)
+    if !_cache.is_null() { cache::kmem_cache_alloc_noprof(_cache, flags) } else { kmalloc(size, flags) }
 }
 
 extern "C" fn __kvmalloc_node_noprof(size: usize, flags: u32, _node: i32) -> *mut u8 {
@@ -115,6 +127,10 @@ extern "C" fn kvfree_call_rcu(_head: *mut c_void, ptr: *mut c_void) {
 
 extern "C" fn vmalloc(size: usize) -> *mut u8 {
     alloc_bytes(size, MIN_ALIGN, false)
+}
+
+extern "C" fn vzalloc_noprof(size: usize) -> *mut u8 {
+    alloc_bytes(size, MIN_ALIGN, true)
 }
 
 extern "C" fn vfree(ptr: *mut u8) {

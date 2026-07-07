@@ -40,7 +40,9 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("alloc", (
         "kmalloc", "kzalloc", "kcalloc", "krealloc", "kfree", "vmalloc", "vfree",
-        "alloc_pages", "__get_free_pages", "free_pages", "kstrdup", "kasprintf",
+        "vzalloc", "vmap", "vunmap", "alloc_pages", "__get_free_pages", "free_pages",
+        "kmem_cache", "__kmem_cache", "kmemdup", "kvmalloc", "kvfree",
+        "kmalloc_caches", "random_kmalloc_seed", "kstrdup", "kasprintf",
         "devm_kmalloc", "devm_kzalloc", "devm_kfree",
     )),
     ("sync", (

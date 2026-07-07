@@ -496,6 +496,12 @@ static int __init sample_init(void)
     u32 crc;
     u8 random_buf[SAMPLE_RANDOM_LEN];
     u8 digest[SAMPLE_CRYPTO_DIGEST_LEN];
+    struct kmem_cache_args cache_args = {
+        .align = sizeof(void *),
+        .ctor = NULL,
+    };
+    struct kmem_cache *cache;
+    void *cache_obj;
     u8 usercopy_src[SAMPLE_USERCOPY_LEN];
     u8 usercopy_dst[SAMPLE_USERCOPY_LEN];
     u32 user_value;
@@ -522,12 +528,17 @@ static int __init sample_init(void)
     (void)__kmalloc_noprof(16, GFP_KERNEL);
     (void)__kmalloc_cache_noprof(NULL, GFP_KERNEL, 16);
     (void)__kvmalloc_node_noprof(16, GFP_KERNEL, -1);
+    cache = __kmem_cache_create_args("sample-cache", 32, &cache_args, 0);
+    cache_obj = kmem_cache_alloc_noprof(cache, GFP_KERNEL | __GFP_ZERO);
+    kmem_cache_free(cache, cache_obj);
+    kmem_cache_destroy(cache);
     (void)kzalloc(16, GFP_KERNEL);
     (void)kcalloc(2, 8, GFP_KERNEL);
     kfree(NULL);
     kvfree(NULL);
     kvfree_call_rcu(NULL, NULL);
     (void)vmalloc(SAMPLE_MMIO_SIZE);
+    (void)vzalloc_noprof(SAMPLE_MMIO_SIZE);
     vfree(NULL);
     (void)alloc_pages(GFP_KERNEL | __GFP_ZERO, 0);
     (void)alloc_pages_noprof(GFP_KERNEL, 0);
