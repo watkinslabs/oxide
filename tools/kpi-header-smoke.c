@@ -1,4 +1,5 @@
 #include <linux/bitmap.h>
+#include <linux/blkdev.h>
 #include <linux/atomic.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
@@ -8,6 +9,7 @@
 #include <linux/gfp.h>
 #include <linux/hrtimer.h>
 #include <linux/idr.h>
+#include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/jiffies.h>
@@ -79,6 +81,17 @@ enum { SAMPLE_IOCTL_CMD = 0x58434445 };
 enum { SAMPLE_WRITEB = 1, SAMPLE_WRITEW = 2, SAMPLE_WRITEL = 3, SAMPLE_WRITEQ = 4 };
 enum { SAMPLE_NET_PRIV = 32 };
 enum { SAMPLE_SKB_LEN = ETH_HLEN + 20 };
+enum { SAMPLE_DISK_MINORS = 1 };
+enum { SAMPLE_DISK_SECTORS = 1024 };
+enum { SAMPLE_BLOCK_SIZE = SECTOR_SIZE };
+enum { SAMPLE_BIO_VECS = 1 };
+enum { SAMPLE_BIO_LEN = SECTOR_SIZE };
+enum { SAMPLE_BLK_HW_QUEUES = 1 };
+enum { SAMPLE_BLK_QUEUE_DEPTH = 64 };
+enum { SAMPLE_ABS_MIN = -100 };
+enum { SAMPLE_ABS_MAX = 100 };
+enum { SAMPLE_ABS_FUZZ = 1 };
+enum { SAMPLE_ABS_FLAT = 2 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -93,6 +106,12 @@ static int sample_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
 static void sample_pci_remove(struct pci_dev *pdev) { (void)pdev; }
 static int sample_net_open(struct net_device *dev) { (void)dev; return 0; }
 static int sample_net_stop(struct net_device *dev) { (void)dev; return 0; }
+static int sample_make_request(struct request_queue *queue, struct bio *bio)
+{
+    (void)queue;
+    bio->bi_status = BLK_STS_OK;
+    return bio_op(bio) == REQ_OP_DISCARD ? 0 : (int)bio->bi_size;
+}
 static netdev_tx_t sample_net_xmit(struct sk_buff *skb, struct net_device *dev)
 {
     (void)dev;
@@ -142,6 +161,9 @@ static const struct net_device_ops sample_netdev_ops = {
     .ndo_stop = sample_net_stop,
     .ndo_start_xmit = sample_net_xmit,
 };
+static const struct block_device_operations sample_blk_ops = {
+    .owner = THIS_MODULE,
+};
 static ssize_t sample_attr_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
     (void)dev; (void)attr; (void)buf; return 0;
@@ -182,6 +204,17 @@ static int __init sample_init(void)
     struct net_device *netdev;
     struct sk_buff *skb;
     unsigned char *skb_data;
+    struct request_queue *queue;
+    struct request_queue *mq_queue;
+    struct gendisk *disk;
+    struct bio *bio;
+    struct block_device bdev;
+    struct blk_mq_tag_set tag_set = {
+        NULL, SAMPLE_BLK_HW_QUEUES, SAMPLE_BLK_QUEUE_DEPTH,
+        0, 0, 0, &s
+    };
+    struct input_dev *input;
+    struct input_event input_ev;
     struct pci_driver pdrv = {
         "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
         { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
@@ -302,6 +335,80 @@ static int __init sample_init(void)
         }
         unregister_netdev(netdev);
         free_netdev(netdev);
+    }
+    queue = blk_alloc_queue(GFP_KERNEL);
+    if (queue != NULL) {
+        blk_queue_make_request(queue, sample_make_request);
+        blk_queue_logical_block_size(queue, SAMPLE_BLOCK_SIZE);
+        disk = alloc_disk(SAMPLE_DISK_MINORS);
+        if (disk != NULL) {
+            disk->disk_name[0] = 's';
+            disk->disk_name[1] = 'd';
+            disk->disk_name[2] = 'x';
+            disk->disk_name[3] = '\0';
+            disk->queue = queue;
+            disk->fops = &sample_blk_ops;
+            disk->private_data = &s;
+            disk->flags = GENHD_FL_NO_PART_SCAN;
+            set_capacity(disk, SAMPLE_DISK_SECTORS);
+            add_disk(disk);
+            (void)get_capacity(disk);
+            bdev.bd_disk = disk;
+            bdev.bd_queue = queue;
+            bdev.bd_private = &s;
+            bio = bio_alloc(GFP_KERNEL, SAMPLE_BIO_VECS);
+            if (bio != NULL) {
+                bio_set_dev(bio, &bdev);
+                bio->bi_opf = REQ_OP_FLUSH;
+                bio->bi_sector = 0;
+                (void)bio_add_page(bio, NULL, SAMPLE_BIO_LEN, 0);
+                (void)submit_bio(bio);
+                bio->bi_opf = REQ_OP_DISCARD;
+                (void)submit_bio(bio);
+                bio_put(bio);
+            }
+            del_gendisk(disk);
+            put_disk(disk);
+        }
+        blk_cleanup_queue(queue);
+    }
+    if (blk_mq_alloc_tag_set(&tag_set) == 0) {
+        mq_queue = blk_mq_init_queue(&tag_set);
+        blk_cleanup_queue(mq_queue);
+        blk_mq_free_tag_set(&tag_set);
+    }
+    input_ev.tv_sec = 0;
+    input_ev.tv_usec = 0;
+    input_ev.type = EV_SYN;
+    input_ev.code = SYN_REPORT;
+    input_ev.value = 0;
+    (void)input_ev;
+    input = input_allocate_device();
+    if (input != NULL) {
+        input->name = "sample-input";
+        input->phys = "sample/input0";
+        input->uniq = "sample-serial";
+        input->id.bustype = BUS_VIRTUAL;
+        input->id.vendor = SAMPLE_PCI_VENDOR;
+        input->id.product = SAMPLE_PCI_DEVICE;
+        input->id.version = 1;
+        input_set_capability(input, EV_KEY, KEY_A);
+        input_set_capability(input, EV_REL, REL_X);
+        input_set_capability(input, EV_LED, LED_NUML);
+        input_set_abs_params(input, ABS_X, SAMPLE_ABS_MIN, SAMPLE_ABS_MAX, SAMPLE_ABS_FUZZ, SAMPLE_ABS_FLAT);
+        input_set_drvdata(input, &s);
+        (void)input_get_drvdata(input);
+        (void)test_bit(KEY_A, input->keybit);
+        if (input_register_device(input) == 0) {
+            input_report_key(input, KEY_A, 1);
+            input_report_rel(input, REL_X, 1);
+            input_report_abs(input, ABS_X, 10);
+            input_event(input, EV_LED, LED_NUML, 1);
+            input_sync(input);
+            input_unregister_device(input);
+        } else {
+            input_free_device(input);
+        }
     }
     pdev.dev.dma_mask = &dma_mask;
     pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);
