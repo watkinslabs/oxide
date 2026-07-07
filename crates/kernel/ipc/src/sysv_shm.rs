@@ -42,14 +42,24 @@ const PAGE_SIZE: u64 = 4096;
 const SHM_MIN_SIZE: usize = 1;
 const SHM_MAX_SIZE: usize = 64 * 1024 * 1024; // 64 MiB v1 cap
 
-/// One SysV shm segment. Bytes are kernel-owned (Vec<u8>); shmat
-/// installs a private read-only KernelBytes VMA over them.
+/// One SysV shm segment. Backed by a single shared shmem (anonymous tmpfs)
+/// object — every `shmat` maps THIS object MAP_SHARED, so all attaches (and
+/// their forked children) share the same physical frames and see each other's
+/// writes (real Linux SysV shm), instead of each getting a private copy.
 pub struct ShmSegment {
     pub id:    i32,
     pub key:   i32,
     /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
     pub ns:    u64,
-    pub bytes: Vec<u8>,
+    pub size:  usize,
+    pub mode:  u32,
+    /// Creator PID (shm_cpid) for IPC_STAT.
+    pub cpid:  u32,
+    /// Current attach count (shm_nattch); bumped on shmat.
+    pub nattch: core::sync::atomic::AtomicI64,
+    /// The shared shmem backing (one anon-tmpfs inode). Created by the syscalls
+    /// shim (which can reach tmpfs); the ipc registry only holds + maps it.
+    pub backing: Arc<dyn vmm::FileBacking>,
 }
 
 fn current_ipc_ns() -> u64 {
@@ -67,19 +77,22 @@ static REG: ShmRegistry = ShmRegistry {
     segs: Spinlock::new(Vec::new()),
 };
 
-/// `shmget(key, size, shmflg)` — slot 29.
+/// `shmget` registry entry. The syscalls shim (which can reach tmpfs) builds
+/// the shared shmem `backing` and passes it here with the creator pid `cpid`.
+/// Returns the existing id for a known (ns,key), else registers a new segment.
 /// # C: O(N_segments) on lookup
-pub fn sys_shmget(args: &syscall::SyscallArgs) -> i64 {
+pub fn shmget_with_backing(
+    key: i32, size: usize, flg: u64, cpid: u32,
+    backing: Arc<dyn vmm::FileBacking>,
+) -> i64 {
     use syscall::errno::Errno;
-    let key  = args.a0 as i32;
-    let size = args.a1 as usize;
-    let _flg = args.a2;
     if size < SHM_MIN_SIZE || size > SHM_MAX_SIZE {
         return -(Errno::Einval.as_i32() as i64);
     }
     let ns = current_ipc_ns();
     if key != IPC_PRIVATE {
-        // Lookup by (ns, key).
+        // Lookup by (ns, key) — an existing segment is returned; the freshly
+        // built backing is simply dropped.
         let g = REG.segs.lock();
         for s in g.iter() {
             if s.key == key && s.ns == ns {
@@ -88,12 +101,13 @@ pub fn sys_shmget(args: &syscall::SyscallArgs) -> i64 {
         }
     }
     let id = REG.next_id.fetch_add(1, Ordering::AcqRel);
-    let mut bytes = Vec::new();
-    if bytes.try_reserve_exact(size).is_err() {
-        return -(Errno::Enomem.as_i32() as i64);
-    }
-    bytes.resize(size, 0);
-    let seg = Arc::new(ShmSegment { id, key, ns, bytes });
+    let seg = Arc::new(ShmSegment {
+        id, key, ns, size,
+        mode: (flg & 0o777) as u32,
+        cpid,
+        nattch: core::sync::atomic::AtomicI64::new(0),
+        backing,
+    });
     let mut g = REG.segs.lock();
     g.push(seg);
     id as i64
@@ -108,7 +122,6 @@ fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
 /// `shmat(shmid, shmaddr, shmflg)` — slot 30.
 /// # C: O(N_segments) lookup
 pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
-    use hal::UserVirtAddr;
     use syscall::errno::Errno;
     use vmm::{VmaProt, VmaFlags, VmaBacking};
     let shmid = args.a0 as i32;
@@ -124,27 +137,24 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     let mm = match unsafe { cur.mm_ref() } {
         Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64),
     };
-    // Map at a kernel-picked hole. Bytes referenced by KernelBytes
-    // are wrapped in Arc<[u8]> so the buffer lives until the last
-    // VMA referencing it drops (Linux page-cache analogue). The
-    // Arc<ShmSegment> in REG keeps an additional strong ref alive
-    // until shmctl IPC_RMID; until then, attaches share the same
-    // Arc bytes.
-    let len_aligned = (seg.bytes.len() as u64 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    // Convert seg.bytes (Vec<u8>) into Arc<[u8]>. We only do this on
-    // attach — segment storage on the registry side stays the Vec.
-    // For v1 the simplicity outweighs the per-attach realloc.
-    let data: alloc::sync::Arc<[u8]> =
-        alloc::sync::Arc::from(seg.bytes.clone().into_boxed_slice());
+    // Map the segment's ONE shared shmem backing MAP_SHARED at a kernel-picked
+    // hole — the anon-shmem recipe (VmaFlags::SHARED|ANONYMOUS + File{tmpfs},
+    // Linux `shmem`): every attach maps the same inode, so all attaches (and
+    // forked children) alias the same physical frames and see each other's
+    // writes. The Arc<ShmSegment> in REG keeps the backing alive until IPC_RMID.
+    let len_aligned = (seg.size as u64 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
     let res = mm.mmap(
         None, len_aligned as usize,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::SHARED | VmaFlags::ANONYMOUS,
-        VmaBacking::KernelBytes { data, off: 0 },
+        VmaBacking::File { backing: seg.backing.clone(), off: 0 },
         false,
     );
     match res {
-        Ok(va)  => va.as_u64() as i64,
+        Ok(va)  => {
+            seg.nattch.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+            va.as_u64() as i64
+        }
         Err(_)  => -(Errno::Enomem.as_i32() as i64),
     }
 }
@@ -198,12 +208,25 @@ pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
             0
         }
         IPC_STAT | IPC_INFO => {
+            let seg = match lookup_by_id(shmid) {
+                Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+            };
             if buf != 0 && buf < hal::USER_VA_END {
-                // Zero-fill 112 bytes of struct shmid_ds (Linux x86_64).
-                // SAFETY: buf validated < USER_VA_END; CPL=0 writes through caller's AS.
+                // struct shmid64_ds (Linux x86_64, 112 B). Populate the fields we
+                // track — shm_perm.key@0, shm_perm.mode@20, shm_segsz@48,
+                // shm_cpid@80, shm_nattch@88 — instead of the old all-zero fill
+                // (which made `ipcs -m` and stat readers see a 0-byte segment).
+                let mut ds = [0u8; 112];
+                ds[0..4].copy_from_slice(&seg.key.to_le_bytes());
+                ds[20..24].copy_from_slice(&seg.mode.to_le_bytes());
+                ds[48..56].copy_from_slice(&(seg.size as u64).to_le_bytes());
+                ds[80..84].copy_from_slice(&(seg.cpid as i32).to_le_bytes());
+                let nattch = seg.nattch.load(core::sync::atomic::Ordering::Acquire).max(0) as u64;
+                ds[88..96].copy_from_slice(&nattch.to_le_bytes());
+                // SAFETY: buf validated < USER_VA_END; byte-wise write is alignment-safe; CPL=0 writes through caller's AS.
                 unsafe {
                     for i in 0..112usize {
-                        core::ptr::write_volatile((buf + i as u64) as *mut u8, 0);
+                        core::ptr::write_volatile((buf + i as u64) as *mut u8, ds[i]);
                     }
                 }
             }
