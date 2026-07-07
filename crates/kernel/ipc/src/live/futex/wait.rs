@@ -8,6 +8,18 @@ use super::core::{
     Waiter, current_key, load_user_u32, remove_waiter, wake_key,
 };
 
+/// debug-futextrace: true iff the current task's process is gdm-session-worker
+/// (all its threads share the exe path, so this catches the main thread AND the
+/// gdbus/gmain helper threads involved in the greeter pthread deadlock).
+#[cfg(feature = "debug-futextrace")]
+fn ftx_target_exe() -> bool {
+    // Both gdm processes: the daemon (/usr/bin/gdm) and the session worker
+    // (/usr/libexec/gdm-session-worker) — to see the cross-process wedge.
+    sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
+        .unwrap_or(false)
+}
+
 /// Back-compat shim for callers without a timeout (deadline 0 = block forever).
 /// # C: O(W) waiters per WAKE; O(1) WAIT
 pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
@@ -137,6 +149,14 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, deadline_ns: u64) -> i
                 cur.futex_uaddr.store(uaddr, core::sync::atomic::Ordering::Relaxed);
                 w.push(Waiter { key, task: arc });
             }
+            #[cfg(feature = "debug-futextrace")]
+            if ftx_target_exe() {
+                klog::write_raw(b"[FTX-WAIT tgid="); klog::write_dec_u64(sched::live::current().map(|c| c.tgid.load(core::sync::atomic::Ordering::Relaxed)).unwrap_or(0) as u64);
+                klog::write_raw(b" tid="); klog::write_dec_u64(tid as u64);
+                klog::write_raw(b" uaddr="); klog::write_hex_u64(uaddr);
+                klog::write_raw(b" val="); klog::write_dec_u64(val as u64);
+                klog::write_raw(b"] park\n");
+            }
             // SAFETY: process ctx; runqueue installed; preempt-off.
             unsafe { sched::live::schedule(); }
             cur.futex_uaddr.store(0, core::sync::atomic::Ordering::Relaxed);
@@ -151,6 +171,16 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, deadline_ns: u64) -> i
                 Some(k) => k, None => return -(Errno::Einval.as_i32() as i64),
             };
             let n = wake_key(key, val as usize);
+            #[cfg(feature = "debug-futextrace")]
+            if ftx_target_exe() {
+                let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+                klog::write_raw(b"[FTX-WAKE tgid="); klog::write_dec_u64(sched::live::current().map(|c| c.tgid.load(core::sync::atomic::Ordering::Relaxed)).unwrap_or(0) as u64);
+                klog::write_raw(b" tid="); klog::write_dec_u64(tid as u64);
+                klog::write_raw(b" uaddr="); klog::write_hex_u64(uaddr);
+                klog::write_raw(b" want="); klog::write_dec_u64(val as u64);
+                klog::write_raw(b" woke="); klog::write_dec_u64(n as u64);
+                klog::write_raw(b"]\n");
+            }
             #[cfg(feature = "debug-mount")]
             if (uaddr & !0xfff) == 0x7ffffe88d000 {
                 let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);

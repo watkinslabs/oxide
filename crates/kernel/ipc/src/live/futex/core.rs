@@ -158,16 +158,17 @@ pub(super) fn wake_key(key: Key, n_target: usize) -> usize {
         g.retain(|grp| grp.woken_idx.load(Ordering::Acquire) < 0);
     }
     if woken.is_empty() { return 0; }
-    let rq = match sched::live::global() {
-        Some(r) => r, None => return woken.len(),
-    };
-    let mut inner = rq.inner.lock();
+    let n = woken.len();
+    // Route each wake through the scheduler's canonical waker instead of
+    // hand-rolling set_state(Runnable)+enqueue. try_to_wake_up does the atomic
+    // Sleeping->Runnable CAS claim AND the on_cpu deferral (a task still
+    // finishing its context-switch-off on another CPU is routed through that
+    // CPU's wake-list, not enqueued live) — required on SMP, where a futex
+    // wake of an on_cpu waiter otherwise runs it on two CPUs / on a half-saved
+    // context. Matches Linux futex_wake -> wake_up_q -> try_to_wake_up.
     for t in &woken {
-        t.set_state(TaskState::Runnable);
-        t.lift_vruntime(inner.cfs.min_vruntime());
-        inner.enqueue(t.clone());
+        // SAFETY: wake-site; the Arc keeps `t` alive across the call.
+        unsafe { sched::live::try_to_wake_up(t.clone()); }
     }
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    sched::live::preempt::set_need_resched();
-    woken.len()
+    n
 }

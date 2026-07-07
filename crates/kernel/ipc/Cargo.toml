@@ -29,3 +29,4 @@ debug-boot = []  # operational-pulse trace (futex park probe)
 default = []
 hosted  = []
 debug-mount = []  # [mnt] FUTEXWAIT backing probe (diagnose the stuck-lock wedge)
+debug-futextrace = []  # [FTX-WAIT]/[FTX-WAKE] per-op futex trace (uaddr/val/woken) filtered to gdm-session-worker — diagnose the greeter pthread deadlock

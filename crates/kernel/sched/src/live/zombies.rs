@@ -269,15 +269,13 @@ fn wake_wait4_parent(parent_tid: u32) {
 /// # C: O(1)
 /// # Lk: runqueue inner
 fn wake_task_for_signal(task: &Arc<Task>) {
-    let rq = match super::runqueue::global() { Some(r) => r, None => return };
-    if task.cas_state(TaskState::Sleeping, TaskState::Runnable).is_err() {
-        return;
-    }
-    let mut inner = rq.inner.lock();
-    task.set_vruntime_to_floor(inner.cfs.min_vruntime());
-    inner.enqueue(task.clone());
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    crate::preempt::set_need_resched();
+    // Route through the canonical waker so a signal-wake of a task still
+    // finishing its context-switch-off on another CPU is deferred through that
+    // CPU's wake-list (on_cpu) instead of enqueued live. try_to_wake_up does
+    // the Sleeping->Runnable CAS claim itself, so a non-Sleeping task is a
+    // no-op — matching the old cas_state guard.
+    // SAFETY: wake-site; the Arc keeps `task` alive across the call.
+    unsafe { super::try_to_wake_up(task.clone()); }
 }
 
 /// Reap one Zombie child matching the `wait4` filter

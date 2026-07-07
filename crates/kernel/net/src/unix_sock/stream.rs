@@ -9,6 +9,15 @@ use vfs;
 use super::wake_peer_subs;
 use super::{EndCred, UnixEnd};
 
+/// Outcome of [`UnixPair::read_or_park`]: data drained, peer-closed EOF, or the
+/// caller was registered on the reader wait list and must now `schedule()`.
+#[cfg(target_os = "oxide-kernel")]
+pub enum ReadOutcome {
+    Data(Vec<u8>),
+    Eof,
+    Parked,
+}
+
 /// DIAG (debug-dbus): scan an AF_UNIX SOCK_STREAM write for the login1 session
 /// interface or a D-Bus error name; dump a capped hex-free ASCII view tagged
 /// with the writer tid so the failing method call / error reply is visible.
@@ -31,7 +40,18 @@ fn trace_dbus_stream(data: &[u8]) {
         }
         klog::write_raw(b"]\n");
     }
-    let hit = has(data, b"login1")
+    // Widen to the gdm private connection: dump EVERY D-Bus frame written by a
+    // gdm process (daemon or session-worker) so the Hello handshake + any
+    // reentrant call/reply that stalls the greeter is visible in-order.
+    let is_gdm = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
+        .unwrap_or(false);
+    let hit = is_gdm
+        || has(data, b"login1")
+        || has(data, b"io.systemd")        // Varlink userdb queries (from any proc)
+        || has(data, b"UserRecord")        // Varlink userdb replies
+        || has(data, b"GroupRecord")
+        || has(data, b"groupMembers")
         || has(data, b"org.freedesktop.DBus.Error");
     if !hit { return; }
     let n = core::cmp::min(data.len(), 384);
@@ -340,6 +360,42 @@ impl UnixPair {
         };
         drop(drop_later);
         out
+    }
+
+    /// Linux `prepare_to_wait` for a blocking stream read: atomically, under
+    /// the read-ring lock, either hand back available data / EOF, or register
+    /// the caller on the reader wait list and report `Parked`. `write_inner`
+    /// takes this SAME ring lock to push bytes and only wakes AFTER dropping
+    /// it, so a writer is serialized behind us — it cannot slip a write+wake
+    /// between our emptiness check and our park and lose the wakeup. This
+    /// closes the check-then-park race in `read_unix_stream_blocking` that
+    /// stalled the D-Bus private-connection stream read (gdm greeter). Caller
+    /// MUST `schedule()` after a `Parked` return (the ring lock is released
+    /// here). # C: O(min(max, queue))
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn read_or_park(&self, end: UnixEnd, max: usize, deadline_ns: u64) -> ReadOutcome {
+        let read_ring = match end {
+            UnixEnd::A => &self.b_to_a,
+            UnixEnd::B => &self.a_to_b,
+        };
+        let g = read_ring.lock();
+        if !g.buf.is_empty() {
+            drop(g);
+            return ReadOutcome::Data(self.read(end, max));
+        }
+        if g.closed_writer {
+            drop(g);
+            return ReadOutcome::Eof;
+        }
+        // Register on the wait list while STILL holding the read-ring lock:
+        // the writer must take this lock to push, so it can only wake us
+        // after we are already on the list.
+        // SAFETY: running task on this CPU; preempt-off owned by the syscall
+        // stub; park_with_deadline marks Sleeping + enqueues on the WaitList;
+        // the ring lock is dropped below and the caller owns the schedule().
+        unsafe { self.reader_waiters(end).park_with_deadline(deadline_ns); }
+        drop(g);
+        ReadOutcome::Parked
     }
 
     /// Boundary-aware stream drain for recvmsg-with-control: return up to

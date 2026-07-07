@@ -49,12 +49,58 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
                 return -(Errno::Eperm.as_i32() as i64);
             }
             if sig != 0 {
+                // RT signals (33..=64) are delivered to SA_SIGINFO handlers, which
+                // read the siginfo. Queue one carrying the SENDER's pid/uid with
+                // si_code = SI_TKILL so the handler sees a real siginfo instead of
+                // a zeroed one. glibc's __nptl_setxid_sighandler (SIGSETXID=33)
+                // validates `si_pid == getpid()` before applying the setxid and
+                // acknowledging; a zeroed si_pid=0 made it silently return without
+                // acking, so setgid()/setresgid() in a multithreaded process
+                // (gdm-session-worker dropping to the session user) hung forever in
+                // __nptl_setxid → no greeter. This matches Linux, which records the
+                // sender in the siginfo at send time.
+                if (33..=64).contains(&sig) {
+                    let spid = cur.vtgid.load(Ordering::Acquire);
+                    let spid = if spid != 0 { spid } else { cur.tgid.load(Ordering::Acquire) };
+                    const SI_TKILL: i32 = -6;
+                    t.rt_push(sched::SigInfo {
+                        signo: sig as u32,
+                        code: SI_TKILL,
+                        pid: spid,
+                        uid: cur.creds.euid.load(Ordering::Relaxed),
+                        value: 0,
+                    });
+                }
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
                 if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
                 sched::live::wake_if_sleeping(&t);
             }
+            #[cfg(feature = "debug-boot")]
+            if sig >= 32 {
+                let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
+                if is_gdm {
+                    klog::write_raw(b"[TGKILL from="); klog::write_dec_u64(cur.tid as u64);
+                    klog::write_raw(b" to_vtid="); klog::write_dec_u64(want_tid as u64);
+                    klog::write_raw(b" tgt_tid="); klog::write_dec_u64(t.tid as u64);
+                    klog::write_raw(b" sig="); klog::write_dec_u64(sig as u64);
+                    klog::write_raw(b" tgtmask="); klog::write_hex_u64(t.sigmask.load(Ordering::Acquire));
+                    klog::write_raw(b"]\n");
+                }
+            }
             0
         }
-        None => -(Errno::Esrch.as_i32() as i64),
+        None => {
+            #[cfg(feature = "debug-boot")]
+            if sig >= 32 {
+                let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
+                if is_gdm {
+                    klog::write_raw(b"[TGKILL from="); klog::write_dec_u64(cur.tid as u64);
+                    klog::write_raw(b" to_vtid="); klog::write_dec_u64(want_tid as u64);
+                    klog::write_raw(b" sig="); klog::write_dec_u64(sig as u64);
+                    klog::write_raw(b" NOTFOUND]\n");
+                }
+            }
+            -(Errno::Esrch.as_i32() as i64)
+        }
     }
 }

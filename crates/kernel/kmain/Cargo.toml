@@ -104,6 +104,7 @@ debug-reap = ["sched/debug-ssh"]  # ONLY the sched-crate reap traces (signal_chi
 debug-epoll = ["fs/debug-epoll"]  # [epoll-lvl] level-triggered readiness trace — diagnose systemd "Looping too fast" busy-loops.
 debug-mount = ["pmm/debug-mount", "vmm/debug-mount", "ipc/debug-mount"]  # TEMP: WROTE-LOCK rip — lock page RO so first write traps + logs the corruptor's RIP. ipc → [mnt] FUTEXWAIT stuck-lock probe.
 debug-mnt = ["syscalls/debug-mount", "vfs/debug-mnt"]  # mount-family syscall failure trace + [MNTCREATE] vfs mount-create trace + [MNTDIVERGE] D24 Stage-1b walk-flip probe (follow_mount_down)
+debug-futextrace = ["ipc/debug-futextrace"]  # [FTX-WAIT]/[FTX-WAKE] futex ops (uaddr/val/woke) for gdm-session-worker — greeter pthread-deadlock hunt
 debug-noreclaim = ["pmm/debug-noreclaim"]  # DIAG: leak freed frames — confirm free-while-mapped aliasing is the wedge.
 debug-fwm = ["pmm/debug-fwm"]  # DIAG: [FWM] pinpoint the free-while-mapped caller at as_teardown.
 debug-leak-teardown = ["pmm/debug-leak-teardown"]  # BISECT premature-free path
