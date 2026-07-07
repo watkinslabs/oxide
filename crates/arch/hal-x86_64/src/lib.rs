@@ -16,6 +16,8 @@ mod idt;
 pub mod ioapic;
 mod irq;
 mod irq_gate;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub mod linux_retpoline;
 mod mmu;
 pub mod mmu_ops;
 pub mod pci;
