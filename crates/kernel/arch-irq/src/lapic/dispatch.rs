@@ -115,6 +115,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 let f: fn() = unsafe { core::mem::transmute(raw) };
                 f();
             }
+            let _ = crate::invoke_x86_line_handler(v);
             if softirq::pending() {
                 // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — do_softirq's in_interrupt guard blocks re-entry.
                 unsafe {
