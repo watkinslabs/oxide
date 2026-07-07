@@ -17,6 +17,20 @@ static VT_SWITCH_WAIT: sched::live::WaitList = sched::live::WaitList::new();
 pub fn vt_switch_wake() { VT_SWITCH_WAIT.wake_all(); }
 
 /// KD_*/VT_* ioctls on /dev/tty<N> via the vt crate. Returns
+/// debug-boot: true when the current task is part of the display stack whose VT
+/// handshake gates the greeter (gdm / logind / mutter / gnome-shell). # C: O(len)
+#[cfg(feature = "debug-boot")]
+fn vt_is_ui_caller() -> bool {
+    sched::live::current()
+        .and_then(|c| unsafe {
+            (*c.exe_path.get()).as_ref().map(|s| {
+                s.contains("gdm") || s.contains("logind") || s.contains("mutter")
+                    || s.contains("gnome-shell") || s.contains("systemd")
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// `Some(rv)` when the ioctl is recognised; `None` to fall back to
 /// the existing tty-line-discipline path.
 /// # C: O(1)
@@ -31,6 +45,21 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
     // targeted the active VT instead of VT 1.)
     let ino_low = (inode.ino() & 0xFF) as u8;
     let vt_target = if ino_low == console::FG_VT_INO_LB { vt::active() } else { ino_low };
+    // debug-boot: trace VT ioctls by the display stack (gdm/logind/mutter). A
+    // gdm-wayland greeter session gets a seat from logind ONLY if it holds a
+    // valid VT: gdm allocates one via VT_OPENQRY + opens /dev/ttyN + VT_ACTIVATE.
+    // If any of these fails, the session has vtnr=0, logind assigns no seat, and
+    // mutter's TakeDevice(card0) returns ENODEV ("No GPUs found"). Log the op +
+    // target + caller so the VT-allocation handshake can be followed offline.
+    #[cfg(feature = "debug-boot")]
+    if vt_is_ui_caller() {
+        klog::write_raw(b"[VTIO req="); klog::write_hex_u64(req);
+        klog::write_raw(b" tgt="); klog::write_dec_u64(vt_target as u64);
+        klog::write_raw(b" active="); klog::write_dec_u64(vt::active() as u64);
+        klog::write_raw(b" by=");
+        if let Some(c) = sched::live::current() { klog::write_raw(c.name.as_bytes()); }
+        klog::write_raw(b"]\n");
+    }
     if !(1..=63).contains(&vt_target) { return None; }
     use syscall::errno::Errno;
     let errno = |e: Errno| -(e.as_i32() as i64);
@@ -81,6 +110,10 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         }
         vt::VT_OPENQRY => {
             let id = match vt::openqry() { Ok(n) => n as u32, Err(_) => return Some(errno(Errno::Ebusy)) };
+            #[cfg(feature = "debug-boot")]
+            if vt_is_ui_caller() {
+                klog::write_raw(b"[VTIO OPENQRY->"); klog::write_dec_u64(id as u64); klog::write_raw(b"]\n");
+            }
             if arg != 0 && arg < hal::USER_VA_END {
                 // SAFETY: arg validated < USER_VA_END; aligned u32 store.
                 unsafe { core::ptr::write_volatile(arg as *mut u32, id); }
@@ -89,6 +122,10 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         }
         vt::VT_GETSTATE => {
             let st = vt::get_state();
+            #[cfg(feature = "debug-boot")]
+            if vt_is_ui_caller() {
+                klog::write_raw(b"[VTIO GETSTATE active="); klog::write_dec_u64(st.v_active as u64); klog::write_raw(b"]\n");
+            }
             if arg == 0 || arg + 6 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
             // SAFETY: arg validated < USER_VA_END - 6; struct vt_stat is 6 bytes.
             unsafe {
