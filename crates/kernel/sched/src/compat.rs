@@ -142,8 +142,8 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // IO_URING moved to real (synchronous) impl in P23a — opcode
         // dispatch over SQ→CQ ring. SQPOLL/IOPOLL/fixed-buffer ride
         // follow-ups.
-        | NR_IO_SETUP | NR_IO_DESTROY | NR_IO_GETEVENTS
-        | NR_IO_SUBMIT | NR_IO_CANCEL | NR_IO_PGETEVENTS
+        // libaio (IO_SETUP/DESTROY/SUBMIT/GETEVENTS/CANCEL/PGETEVENTS)
+        // moved to real (synchronous) impl in B643 — crate::aio.
         // SECCOMP / BPF / LANDLOCK / PERF_EVENT_OPEN moved to real
         // (narrow) impls in P24a — seccomp filter via cBPF interpreter
         // is the headliner; bpf + landlock + perf_event_open admit
