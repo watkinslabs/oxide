@@ -11,6 +11,8 @@ const NETDEV_MAGIC: u64 = 0x4f58_4b50_494e_4554;
 const FIELD_CLEAR: u32 = 0;
 const DEFAULT_TXQS: u32 = 1;
 const DEFAULT_RXQS: u32 = 1;
+const DEFAULT_TSO_MAX_SIZE: u32 = 65_536;
+const DEFAULT_TSO_MAX_SEGS: u16 = 64;
 const ETH_NAME_TEMPLATE: &[u8] = b"eth%d\0";
 const DECIMAL_RADIX: usize = 10;
 
@@ -31,8 +33,8 @@ pub(super) unsafe extern "C" fn alloc_netdev_mqs(
     name: *const c_char,
     _name_assign_type: u8,
     setup: Option<NetdevSetup>,
-    _txqs: u32,
-    _rxqs: u32,
+    txqs: u32,
+    rxqs: u32,
 ) -> *mut LinuxNetDevice {
     if sizeof_priv < 0 { return null_mut(); }
     let dev = netdev_alloc(sizeof_priv as usize);
@@ -42,6 +44,11 @@ pub(super) unsafe extern "C" fn alloc_netdev_mqs(
         (*dev).mtu = ETH_DATA_LEN;
         (*dev).addr_len = ETH_ALEN as u8;
         (*dev).flags = IFF_BROADCAST | IFF_MULTICAST;
+        (*dev).num_tx_queues = txqs.max(1);
+        (*dev).real_num_tx_queues = txqs.max(1);
+        (*dev).real_num_rx_queues = rxqs.max(1);
+        (*dev).tso_max_size = DEFAULT_TSO_MAX_SIZE;
+        (*dev).tso_max_segs = DEFAULT_TSO_MAX_SEGS;
         set_name_from_template(dev, name);
         if let Some(f) = setup { f(dev); }
     }
@@ -102,6 +109,8 @@ pub(super) unsafe extern "C" fn ether_setup(dev: *mut LinuxNetDevice) {
         (*dev).mtu = ETH_DATA_LEN;
         (*dev).addr_len = ETH_ALEN as u8;
         (*dev).flags = IFF_BROADCAST | IFF_MULTICAST;
+        (*dev).tso_max_size = DEFAULT_TSO_MAX_SIZE;
+        (*dev).tso_max_segs = DEFAULT_TSO_MAX_SEGS;
         (*dev).state.store(FIELD_CLEAR, Ordering::Release);
     }
 }

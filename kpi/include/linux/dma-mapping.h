@@ -9,7 +9,7 @@
 
 #define DMA_MAPPING_ERROR 0
 #define DMA_ULL_BITS (__SIZEOF_LONG_LONG__ * __CHAR_BIT__)
-#define DMA_BIT_MASK(n) ((n) >= DMA_ULL_BITS ? ~0ULL : ((1ULL << (n)) - 1ULL))
+#define DMA_BIT_MASK(n) ((n) >= DMA_ULL_BITS ? ~0ULL : ((1ULL << ((n) & (DMA_ULL_BITS - 1))) - 1ULL))
 
 enum dma_data_direction {
     DMA_NONE = 0,

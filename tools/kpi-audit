@@ -99,7 +99,8 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("netdev", (
         "netdev", "netif_", "alloc_netdev", "alloc_etherdev", "register_netdev",
         "unregister_netdev", "skb", "napi_", "eth_", "ether_", "ethtool",
-        "phy_", "mdio_", "of_mdiobus",
+        "phy_", "mdio_", "mdiobus", "of_mdiobus", "rtnl_", "xdp_", "dev_close",
+        "gro_receive", "phys_base",
     )),
     ("block", (
         "blk_", "bio_", "gendisk", "add_disk", "del_gendisk", "submit_bio",
