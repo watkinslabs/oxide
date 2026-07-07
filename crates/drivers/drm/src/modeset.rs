@@ -199,11 +199,74 @@ const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
 /// Stable id for the immutable "type" plane property (Linux assigns these
 /// dynamically; a fixed id is fine for a single built-in property).
 const PROP_PLANE_TYPE_ID: u32 = 16;
+/// Stable id for the immutable "IN_FORMATS" plane property (its value is the
+/// blob id below). mutter's native KMS backend reads plane pixel formats +
+/// modifiers from this blob, NOT the legacy GETPLANE format list — without it
+/// the primary plane appears format-less and modeset aborts.
+const PROP_IN_FORMATS_ID: u32 = 17;
+/// Stable blob id backing the IN_FORMATS property. Served by `get_prop_blob`.
+const IN_FORMATS_BLOB_ID: u32 = 0x50;
 const DRM_PLANE_TYPE_PRIMARY: u64 = 1; // OVERLAY=0, PRIMARY=1, CURSOR=2
 const DRM_MODE_PROP_IMMUTABLE: u32 = 0x04;
 const DRM_MODE_PROP_ENUM: u32 = 0x08;
+const DRM_MODE_PROP_BLOB: u32 = 0x10;
 /// `drm_mode_property_enum` is `{ __u64 value; char name[32]; }` = 40 bytes.
 const PROP_ENUM_STRIDE: u64 = 40;
+
+/// Build the plane `IN_FORMATS` blob (`struct drm_format_modifier_blob`,
+/// drm_mode.h): header(24) + formats[2](8) + modifiers[1](24) = 56 bytes.
+/// Advertises XRGB8888/ARGB8888 with the LINEAR modifier — the only layout our
+/// PMM-contiguous dumb buffers use. This is the exact structure mutter's native
+/// KMS backend parses to learn a plane's supported formats. # C: O(1)
+fn in_formats_blob() -> [u8; 56] {
+    let mut b = [0u8; 56];
+    // header (struct drm_format_modifier_blob)
+    b[0..4].copy_from_slice(&1u32.to_le_bytes());   // version = FORMAT_BLOB_CURRENT
+    b[4..8].copy_from_slice(&0u32.to_le_bytes());   // flags
+    b[8..12].copy_from_slice(&2u32.to_le_bytes());  // count_formats
+    b[12..16].copy_from_slice(&24u32.to_le_bytes()); // formats_offset
+    b[16..20].copy_from_slice(&1u32.to_le_bytes());  // count_modifiers
+    b[20..24].copy_from_slice(&32u32.to_le_bytes()); // modifiers_offset
+    // formats[] (u32 fourcc each)
+    b[24..28].copy_from_slice(&DRM_FORMAT_XRGB8888.to_le_bytes());
+    b[28..32].copy_from_slice(&DRM_FORMAT_ARGB8888.to_le_bytes());
+    // modifiers[0] (struct drm_format_modifier: formats@0 u64, offset@8 u32,
+    // pad@12 u32, modifier@16 u64). formats bitmask 0b11 = applies to both.
+    b[32..40].copy_from_slice(&0b11u64.to_le_bytes()); // formats bitmask
+    b[40..44].copy_from_slice(&0u32.to_le_bytes());    // offset
+    b[44..48].copy_from_slice(&0u32.to_le_bytes());    // pad
+    b[48..56].copy_from_slice(&0u64.to_le_bytes());    // modifier = LINEAR (0)
+    b
+}
+
+/// `MODE_GETPROPBLOB` — return a property blob's bytes. Only the plane
+/// IN_FORMATS blob exists. `struct drm_mode_get_blob` = blob_id@0 (u32),
+/// length@4 (u32), data@8 (u64) = 16 bytes. Two-pass: length=0 → returns the
+/// byte length; length>=len + data ptr → copies the blob. # C: O(1)
+pub fn get_prop_blob(arg: u64) -> i64 {
+    if !user_ok(arg, 16) { return efault(); }
+    // SAFETY: [arg,arg+16) validated; blob_id@0 u32, length@4 u32, data@8 u64.
+    let (blob_id, ulen, data_ptr) = unsafe {
+        (core::ptr::read_volatile(arg as *const u32),
+         core::ptr::read_volatile((arg + 4) as *const u32),
+         core::ptr::read_volatile((arg + 8) as *const u64))
+    };
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[DRMPROP getblob id="); klog::write_dec_u64(blob_id as u64);
+      klog::write_raw(b" ulen="); klog::write_dec_u64(ulen as u64); klog::write_raw(b"]\n"); }
+    if blob_id != IN_FORMATS_BLOB_ID { return einval(); }
+    let blob = in_formats_blob();
+    let len = blob.len() as u32;
+    if ulen >= len && data_ptr != 0 && user_ok(data_ptr, len as u64) {
+        for (i, byte) in blob.iter().enumerate() {
+            // SAFETY: data_ptr..+len validated; byte-wise copy through caller AS at CPL=0.
+            unsafe { core::ptr::write_volatile((data_ptr + i as u64) as *mut u8, *byte); }
+        }
+    }
+    // SAFETY: length@4 within the validated 16-byte range; report the real size.
+    unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len); }
+    0
+}
 
 /// `MODE_OBJ_GETPROPERTIES` — property list of a mode object. Only a PLANE
 /// exposes a property: the immutable "type" = PRIMARY, which mutter reads to pick
@@ -221,18 +284,23 @@ pub fn get_obj_properties(arg: u64) -> i64 {
          core::ptr::read_volatile((arg + 16) as *const u32),
          core::ptr::read_volatile((arg + 24) as *const u32))
     };
-    let n: u32 = if obj_type == DRM_MODE_OBJECT_PLANE { 1 } else { 0 };
+    // A plane exposes TWO properties: "type"=PRIMARY (so mutter classifies it as
+    // the primary plane) and "IN_FORMATS" (so mutter learns its pixel formats).
+    let n: u32 = if obj_type == DRM_MODE_OBJECT_PLANE { 2 } else { 0 };
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[DRMPROP objprops obj_type="); klog::write_hex_u64(obj_type as u64);
         klog::write_raw(b" ucount="); klog::write_dec_u64(ucount as u64);
         klog::write_raw(b" n="); klog::write_dec_u64(n as u64); klog::write_raw(b"]\n");
     }
-    if n == 1 && ucount >= 1 && user_ok(props_ptr, 4) && user_ok(vals_ptr, 8) {
-        // SAFETY: both single-element ranges validated; write the (id,value) pair.
+    if n == 2 && ucount >= 2 && user_ok(props_ptr, 8) && user_ok(vals_ptr, 16) {
+        // SAFETY: both 2-element ranges validated; write (id,value) pairs. The
+        // arrays are parallel: prop id i pairs with value i.
         unsafe {
             core::ptr::write_volatile(props_ptr as *mut u32, PROP_PLANE_TYPE_ID);
+            core::ptr::write_volatile((props_ptr + 4) as *mut u32, PROP_IN_FORMATS_ID);
             core::ptr::write_volatile(vals_ptr as *mut u64, DRM_PLANE_TYPE_PRIMARY);
+            core::ptr::write_volatile((vals_ptr + 8) as *mut u64, IN_FORMATS_BLOB_ID as u64);
         }
     }
     // SAFETY: arg+16 within the validated 28-byte range; report the real count.
@@ -257,6 +325,24 @@ pub fn get_property(arg: u64) -> i64 {
     #[cfg(feature = "debug-boot")]
     { klog::write_raw(b"[DRMPROP getprop id="); klog::write_dec_u64(prop_id as u64);
       klog::write_raw(b" ucount="); klog::write_dec_u64(ucount as u64); klog::write_raw(b"]\n"); }
+    // IN_FORMATS: an immutable BLOB property. GETPROPERTY only describes it
+    // (name + BLOB|IMMUTABLE flags, no enum/value list) — its current value (the
+    // blob id) comes from OBJ_GETPROPERTIES and its bytes from GETPROPBLOB.
+    if prop_id == PROP_IN_FORMATS_ID {
+        // SAFETY: validated 64-byte range; write flags@20, name[32]@24,
+        // count_values@56=0, count_enum_blobs@60=0.
+        unsafe {
+            core::ptr::write_volatile((arg + 20) as *mut u32, DRM_MODE_PROP_BLOB | DRM_MODE_PROP_IMMUTABLE);
+            let name = b"IN_FORMATS";
+            for i in 0..32u64 {
+                let b = if (i as usize) < name.len() { name[i as usize] } else { 0 };
+                core::ptr::write_volatile((arg + 24 + i) as *mut u8, b);
+            }
+            core::ptr::write_volatile((arg + 56) as *mut u32, 0u32);
+            core::ptr::write_volatile((arg + 60) as *mut u32, 0u32);
+        }
+        return 0;
+    }
     if prop_id != PROP_PLANE_TYPE_ID { return einval(); }
     // SAFETY: validated range; write flags@20, name[32]@24, count_values@56=0,
     // count_enum_blobs@60=3 (the OVERLAY/PRIMARY/CURSOR enum tri-state).

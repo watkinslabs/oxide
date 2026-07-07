@@ -222,3 +222,41 @@ fn unregister_drops_only_that_card_runtime_state() {
     assert!(unregister(card1));
     crate::dumb::TABLES.lock().fbs.clear();
 }
+
+/// The size field embedded in a Linux `_IOC` ioctl number (bits 16..30).
+fn ioc_size(ioctl: u64) -> u64 { (ioctl >> 16) & 0x3fff }
+
+#[test]
+fn ioctl_size_fields_match_structs() {
+    // Every _IOWR ioctl encodes sizeof(struct) in bits 16..30. A mismatch means
+    // the number was mis-transcribed (GETGAMMA/SETGAMMA had 0x18 vs 0x20,
+    // SETPLANE had 0x30 vs 0x40) and libdrm's real call falls through to ENOTTY.
+    use core::mem::size_of;
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_SETPLANE),        size_of::<DrmModeSetPlane>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_DIRTYFB),         size_of::<DrmModeFbDirtyCmd>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_OBJ_SETPROPERTY), size_of::<DrmModeObjSetProperty>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_SETPROPERTY),     size_of::<DrmModeConnectorSetProperty>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_GETGAMMA),        size_of::<DrmModeCrtcLut>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_SETGAMMA),        size_of::<DrmModeCrtcLut>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_GETFB),           size_of::<DrmModeFbCmd>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_SETCRTC),         size_of::<DrmModeCrtc>() as u64);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_GETPLANE),        size_of::<DrmModeGetPlane>() as u64);
+    // CURSOR/CURSOR2 nr byte + size must both be right.
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_CURSOR),          size_of::<DrmModeCursor>() as u64);
+    assert_eq!(DRM_IOCTL_MODE_CURSOR  & 0xff, 0xa3);
+    assert_eq!(ioc_size(DRM_IOCTL_MODE_CURSOR2),         size_of::<DrmModeCursor2>() as u64);
+    assert_eq!(DRM_IOCTL_MODE_CURSOR2 & 0xff, 0xbb);
+}
+
+#[test]
+fn new_kms_struct_sizes() {
+    use core::mem::size_of;
+    assert_eq!(size_of::<DrmModeSetPlane>(),             64);
+    assert_eq!(size_of::<DrmModeFbDirtyCmd>(),           24);
+    assert_eq!(size_of::<DrmModeObjSetProperty>(),       24);
+    assert_eq!(size_of::<DrmModeConnectorSetProperty>(), 16);
+    assert_eq!(size_of::<DrmModeCrtcLut>(),              32);
+    assert_eq!(size_of::<DrmModeCursor>(),               28);
+    assert_eq!(size_of::<DrmModeCursor2>(),              36);
+    assert_eq!(size_of::<DrmModeFbCmd>(),                28);
+}
