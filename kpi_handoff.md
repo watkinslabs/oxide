@@ -7,7 +7,7 @@ Date: 2026-07-07
 - Primary repo: `/home/nd/oxide/kernel`
 - Active worktree: `/home/nd/oxide/worktrees/kpi-debugfs-configfs`
 - Active branch: `F674-kpi-debugfs-configfs`
-- Base freshness: `git fetch origin main --prune` followed by `git merge --ff-only origin/main`; branch was already up to date with `origin/main` before the final F674 work.
+- Base freshness: `main` was fast-forwarded from `origin/main` to `7c038edc` on 2026-07-07, then merged into `F674-kpi-debugfs-configfs` before continuing allocator follow-up work.
 - Work has not been pushed, PR'd, or merged.
 - Keep all follow-up work in `/home/nd/oxide/worktrees/...`, not the main checkout.
 
@@ -17,6 +17,14 @@ Date: 2026-07-07
 - Ledger row in `kpi_fix.md` is now `DONE`.
 - The previous `PARTIAL` reason was real: configfs lacked active-operation lifetime parity and the real-module audit still showed missing configfs symbols.
 - That F674-specific partial reason is now closed.
+
+## Allocator Follow-Up
+
+- Added Fedora 6.16-era allocation exports required by real module audits: `__kmalloc_noprof`, `__kmalloc_cache_noprof`, `__kvmalloc_node_noprof`, `alloc_pages_noprof`, `__alloc_pages_noprof`, `kvfree`, `kvfree_call_rcu`, `kmemdup_noprof`, `kmalloc_caches`, and `random_kmalloc_seed`.
+- `kvfree_call_rcu` now defers the free through the existing shared RCU callback queue instead of freeing inline.
+- Split allocator tests into `crates/kernel/modules/src/linux_alloc_tests.rs` to keep `linux_alloc.rs` under the 500-line cap.
+- Extended `kpi/include/linux/slab.h`, `kpi/include/linux/mm.h`, and `tools/kpi-header-smoke.c` for the new allocator surface.
+- Valid Fedora module audit now resolves those allocator symbols. Overall audit still exits nonzero because remaining misses are in other KPI lanes: sync/RCU, workqueue/time, USB gadget, DMA/scatterlist, module refcounting, device/sysfs helpers, compiler/runtime helpers, and target/SCSI-specific helpers.
 
 ## F674 Implementation Summary
 
@@ -49,13 +57,15 @@ F674 result:
 - Existing configfs registration/init/get/put symbols remained exported.
 - No remaining debugfs/configfs missing symbols were reported for those modules.
 
-The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including alloc, device-core, DMA/scatterlist, module refcounting, UBSAN/compiler runtime, sync, and SCSI/target-specific surfaces.
+The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, DMA/scatterlist, module refcounting, UBSAN/compiler runtime, sync/RCU, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
+After the allocator follow-up, the remaining audit misses no longer include the modern allocator symbols listed above.
 
 ## Validation Passed
 
 From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 
 - `cargo test -q -p modules linux_configfs`
+- `cargo test -q -p modules linux_alloc`
 - `cargo test -q -p modules`
 - `cargo test -q -p vfs`
 - `cc -std=gnu11 -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
