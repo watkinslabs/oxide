@@ -99,8 +99,11 @@ fn push_child_event(child: &Task, parent: &Task) {
     parent.child_sigq_push(info);
 }
 
-/// Add the dying child's elapsed CPU to the parent's
-/// `cumulative_child_ns` for `getrusage(RUSAGE_CHILDREN)`.
+/// Roll the dying child's CPU time into the parent's cumulative-children
+/// counters for `getrusage(RUSAGE_CHILDREN)` / `times().tms_c[us]time`:
+/// the child's tick-sampled user/kernel time (`utime_ns`/`stime_ns`) and,
+/// for back-compat, its wall-clock elapsed into `cumulative_child_ns`.
+/// Called once per child from `signal_child_exit` (the live exit path).
 /// # C: O(1)
 fn accrue_child_time(child: &Task, parent: &Task) {
     use hal::TimerOps;
@@ -110,6 +113,10 @@ fn accrue_child_time(child: &Task, parent: &Task) {
     let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let elapsed = now.saturating_sub(child.spawn_ns.load(Ordering::Acquire));
     parent.cumulative_child_ns.fetch_add(elapsed, Ordering::AcqRel);
+    parent.cumulative_child_utime_ns
+        .fetch_add(child.utime_ns.load(Ordering::Acquire), Ordering::AcqRel);
+    parent.cumulative_child_stime_ns
+        .fetch_add(child.stime_ns.load(Ordering::Acquire), Ordering::AcqRel);
 }
 
 /// Post-mortem signaling without taking ownership of the Arc. Splits
@@ -142,6 +149,10 @@ pub fn signal_child_exit(task: &Task) {
         push_child_event(task, p);
         // F167: typed signal bit.
         p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
+        // G3: roll the child's CPU time into the parent's RUSAGE_CHILDREN /
+        // tms_c[us]time counters. This is the live exit path (park_zombie is
+        // unused), so signal-killed and normally-exited children both roll up.
+        accrue_child_time(task, p);
     }
     wake_wait4_parent(parent_tid);
     // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
