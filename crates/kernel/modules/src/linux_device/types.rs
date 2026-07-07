@@ -1,9 +1,9 @@
 use core::ffi::{c_char, c_void};
 
-pub(super) type ReleaseFn = unsafe extern "C" fn(*mut LinuxDevice);
+pub(crate) type ReleaseFn = unsafe extern "C" fn(*mut LinuxDevice);
 pub(super) type DevresAction = unsafe extern "C" fn(*mut c_void);
 
-pub(super) const DEVICE_NAME_LEN: usize = 64;
+pub(crate) const DEVICE_NAME_LEN: usize = 64;
 pub(super) const GFP_ZERO: u32 = 0x8000;
 pub(super) const LINUX_OK: i32 = 0;
 pub(super) const LINUX_EINVAL: i32 = 22;
@@ -12,25 +12,29 @@ pub(super) const LINUX_EBUSY: i32 = 16;
 
 #[repr(C)]
 pub struct LinuxDevice {
-    pub(super) dma_mask: *mut u64,
-    pub(super) coherent_dma_mask: u64,
-    pub(super) driver_data: *mut c_void,
-    pub(super) parent: *mut LinuxDevice,
-    pub(super) bus: *mut LinuxBusType,
-    pub(super) class: *mut LinuxClass,
-    pub(super) driver: *mut LinuxDeviceDriver,
-    pub(super) init_name: *const c_char,
-    pub(super) name: [c_char; DEVICE_NAME_LEN],
-    pub(super) release: Option<ReleaseFn>,
+    pub(crate) dma_mask: *mut u64,
+    pub(crate) coherent_dma_mask: u64,
+    pub(crate) driver_data: *mut c_void,
+    pub(crate) parent: *mut LinuxDevice,
+    pub(crate) bus: *mut LinuxBusType,
+    pub(crate) class: *mut LinuxClass,
+    pub(crate) driver: *mut LinuxDeviceDriver,
+    pub(crate) init_name: *const c_char,
+    pub(crate) name: [c_char; DEVICE_NAME_LEN],
+    pub(crate) release: Option<ReleaseFn>,
+    pub(crate) of_node: *mut c_void,
+    pub(crate) acpi_node: *mut c_void,
 }
 
 #[repr(C)]
 pub struct LinuxDeviceDriver {
-    pub(super) name: *const c_char,
-    pub(super) bus: *mut LinuxBusType,
-    pub(super) owner: *mut c_void,
-    pub(super) probe: Option<unsafe extern "C" fn(*mut LinuxDevice) -> i32>,
-    pub(super) remove: Option<unsafe extern "C" fn(*mut LinuxDevice) -> i32>,
+    pub(crate) name: *const c_char,
+    pub(crate) bus: *mut LinuxBusType,
+    pub(crate) owner: *mut c_void,
+    pub(crate) probe: Option<unsafe extern "C" fn(*mut LinuxDevice) -> i32>,
+    pub(crate) remove: Option<unsafe extern "C" fn(*mut LinuxDevice) -> i32>,
+    pub(crate) of_match_table: *const c_void,
+    pub(crate) acpi_match_table: *const c_void,
 }
 
 #[repr(C)]

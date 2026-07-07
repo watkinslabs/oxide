@@ -3,6 +3,7 @@
 
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/types.h>
@@ -20,20 +21,9 @@
 #define PCI_IRQ_MSI 0x00000002U
 #define PCI_IRQ_MSIX 0x00000004U
 
-#define IORESOURCE_IO 0x00000100ULL
-#define IORESOURCE_MEM 0x00000200ULL
-#define IORESOURCE_PREFETCH 0x00002000ULL
-
 #define PCI_DEVFN(slot, func) ((((slot) & PCI_SLOT_MASK) << PCI_DEVFN_SLOT_SHIFT) | ((func) & PCI_FUNC_MASK))
 #define PCI_SLOT(devfn) (((devfn) >> PCI_DEVFN_SLOT_SHIFT) & PCI_SLOT_MASK)
 #define PCI_FUNC(devfn) ((devfn) & PCI_FUNC_MASK)
-
-struct resource {
-    resource_size_t start;
-    resource_size_t end;
-    const char *name;
-    unsigned long flags;
-};
 
 #define PCI_DEVICE(vend, dev) \
     .vendor = (vend), .device = (dev), .subvendor = PCI_ANY_ID, .subdevice = PCI_ANY_ID

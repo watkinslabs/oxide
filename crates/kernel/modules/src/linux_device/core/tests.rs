@@ -33,6 +33,7 @@ fn register_drvdata_name_and_release() {
         dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
         parent: null_mut(), bus: null_mut(), class: null_mut(), driver: null_mut(),
         init_name: c"sample".as_ptr(), name: [0; DEVICE_NAME_LEN], release: Some(release),
+        of_node: null_mut(), acpi_node: null_mut(),
     };
     let data = &mut dev as *mut _ as *mut c_void;
     assert_eq!(device_add(&mut dev), LINUX_OK);
@@ -51,6 +52,7 @@ fn class_bus_driver_and_devres_round_trip() {
     let mut bus = LinuxBusType { name: c"sample-bus".as_ptr(), private: null_mut() };
     let mut driver = LinuxDeviceDriver {
         name: c"sample-driver".as_ptr(), bus: &mut bus, owner: null_mut(), probe: None, remove: None,
+        of_match_table: core::ptr::null(), acpi_match_table: core::ptr::null(),
     };
     assert_eq!(bus_register(&mut bus), LINUX_OK);
     assert_eq!(driver_register(&mut driver), LINUX_OK);
@@ -58,6 +60,7 @@ fn class_bus_driver_and_devres_round_trip() {
         dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
         parent: null_mut(), bus: &mut bus, class, driver: &mut driver,
         init_name: c"sample-dev".as_ptr(), name: [0; DEVICE_NAME_LEN], release: None,
+        of_node: null_mut(), acpi_node: null_mut(),
     };
     assert_eq!(device_add(&mut dev), LINUX_OK);
     let p = devm_kzalloc(&mut dev, size_of::<usize>(), 0);
@@ -76,7 +79,7 @@ fn export_symbols_registers_device_surface() {
     export_symbols();
     for name in [
         "device_register", "device_unregister", "dev_set_drvdata",
-        "dev_get_drvdata", "dev_name", "devm_kmalloc", "devm_kfree",
+        "dev_get_drvdata", "dev_name", "device_get_match_data", "devm_kmalloc", "devm_kfree",
         "__class_create", "bus_register", "driver_register", "_dev_info",
     ] {
         assert!(crate::symtab::is_exported(name));
