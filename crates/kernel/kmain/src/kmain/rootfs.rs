@@ -19,6 +19,7 @@ pub unsafe fn init(info: &BootInfo) {
         net::sock::init();
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
         net::iface_addr::set_addr_change_hook(crate::syscalls::siocgif::ipv4_addr_change_hook);
+        modules::linux_time::set_now_hook(module_time_now_ns);
         modules::registry::init_exports();
         crate::syscalls::mount::install_vfs_hooks();
         let _ = vfs::mount::register(None, Arc::new(ext4::rootfs::Ext4RootfsFs));
@@ -46,6 +47,18 @@ pub unsafe fn init(info: &BootInfo) {
     debug_boot_rootfs();
     load_keymap();
     handoff_to_userspace(info);
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn module_time_now_ns() -> u64 {
+    use hal::TimerOps;
+    hal_x86_64::X86TimerOps::monotonic_ns().0
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn module_time_now_ns() -> u64 {
+    use hal::TimerOps;
+    hal_aarch64::ArmTimerOps::monotonic_ns().0
 }
 
 #[cfg(target_os = "oxide-kernel")]
