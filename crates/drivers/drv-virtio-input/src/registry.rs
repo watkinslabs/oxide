@@ -1,15 +1,10 @@
-use alloc::vec::Vec;
-
-use sync::{Spinlock, TaskList as DriverLockClass};
-
 use crate::{
-    types::{VirtioInputAbsInfo, VirtioInputDevIds},
-    DEFAULT_REPEAT, EV_ABS, EV_KEY, EV_LED, EV_REL, MAX_INPUT_DEVICES, VIRTIO_INPUT_CFG_ABS_INFO,
+    DEFAULT_REPEAT, EV_ABS, EV_KEY, EV_LED, EV_REL, VIRTIO_INPUT_CFG_ABS_INFO,
     VIRTIO_INPUT_CFG_EV_BITS, VIRTIO_INPUT_CFG_ID_DEVIDS, VIRTIO_INPUT_CFG_ID_NAME,
     VIRTIO_INPUT_CFG_ID_SERIAL, VIRTIO_INPUT_CFG_PROP_BITS,
 };
+use input::{CapBitmap, VirtioInputAbsInfo, VirtioInputDev, VirtioInputDevIds};
 
-const CAP_BITMAP_BYTES: usize = 96;
 const INPUT_CFG_SELECT_OFF: u64 = 0;
 const INPUT_CFG_SUBSEL_OFF: u64 = 1;
 const INPUT_CFG_SIZE_OFF: u64 = 2;
@@ -43,60 +38,6 @@ pub enum Error {
 pub type KResult<T> = core::result::Result<T, Error>;
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub type ModelParent = Option<(&'static str, alloc::string::String)>;
-
-#[derive(Clone, Debug)]
-pub struct CapBitmap {
-    pub bits: [u8; CAP_BITMAP_BYTES],
-}
-
-impl Default for CapBitmap {
-    fn default() -> Self {
-        Self { bits: [0u8; CAP_BITMAP_BYTES] }
-    }
-}
-
-#[derive(Clone)]
-pub struct VirtioInputDev {
-    pub device_key: virtio::VirtioChildDeviceKey,
-    pub evdev_id: u32,
-    pub is_pointer: bool,
-    pub name: [u8; 128],
-    pub name_len: usize,
-    pub serial: [u8; 128],
-    pub serial_len: usize,
-    pub ids: VirtioInputDevIds,
-    pub ev_bits: [u8; 32],
-    pub key_bits: CapBitmap,
-    pub rel_bits: CapBitmap,
-    pub abs_bits: CapBitmap,
-    pub led_bits: CapBitmap,
-    pub abs_info: [Option<VirtioInputAbsInfo>; 64],
-    pub prop_bits: [u8; 4],
-    pub repeat: [u32; 2],
-}
-
-static DEVICES: Spinlock<Vec<VirtioInputDev>, DriverLockClass> = Spinlock::new(Vec::new());
-
-fn lowest_free_evdev_id(devs: &[VirtioInputDev]) -> Option<u32> {
-    for id in 0..MAX_INPUT_DEVICES as u32 {
-        if devs.iter().all(|d| d.evdev_id != id) {
-            return Some(id);
-        }
-    }
-    None
-}
-
-pub fn install(dev: VirtioInputDev) {
-    DEVICES.lock().push(dev);
-}
-
-pub fn count() -> usize {
-    DEVICES.lock().len()
-}
-
-pub fn devices_snapshot() -> Vec<VirtioInputDev> {
-    DEVICES.lock().clone()
-}
 
 unsafe fn cfg_select(cfg_va: u64, select: u8, subsel: u8) -> u8 {
     unsafe {
@@ -209,7 +150,7 @@ fn install_device_with_config_and_parent<C: InputConfigAccess>(
     if crate::devfs::register_node(evdev_id, parent) {
         Some(evdev_id)
     } else {
-        let _ = remove_device(device_key);
+        let _ = input::remove_device(device_key);
         None
     }
 }
@@ -218,13 +159,8 @@ fn install_device_with_config<C: InputConfigAccess>(
     device_key: virtio::VirtioChildDeviceKey,
     cfg: &mut C,
 ) -> Option<u32> {
-    let evdev_id = {
-        let g = DEVICES.lock();
-        if g.iter().any(|d| d.device_key == device_key) {
-            return None;
-        }
-        lowest_free_evdev_id(&g)?
-    };
+    if input::evdev_id_for_device(device_key).is_some() { return None; }
+    let evdev_id = input::next_free_evdev_id()?;
     let mut dev = VirtioInputDev {
         device_key,
         evdev_id,
@@ -315,65 +251,19 @@ fn install_device_with_config<C: InputConfigAccess>(
         dev.is_pointer = cap_bit_is_set(&dev.ev_bits, EV_REL)
             || cap_bit_is_set(&dev.ev_bits, EV_ABS);
     }
-    install(dev);
-    Some(evdev_id)
-}
-
-pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
-    let evdev_id = {
-        let mut g = DEVICES.lock();
-        let idx = g.iter().position(|d| d.device_key == device_key)?;
-        g.remove(idx).evdev_id
-    };
+    input::install(dev);
     Some(evdev_id)
 }
 
 /// # C: remove the owned input model node and clear virtio-input state
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub fn remove_device_with_node(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
-    let evdev_id = evdev_id_for_device(device_key)?;
+    let evdev_id = input::evdev_id_for_device(device_key)?;
     let _ = crate::devfs::unregister_node(evdev_id);
-    remove_device(device_key)
-}
-
-pub fn evdev_id_for_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
-    DEVICES
-        .lock()
-        .iter()
-        .find(|d| d.device_key == device_key)
-        .map(|d| d.evdev_id)
-}
-
-pub fn name_of(evdev_id: u32) -> Option<[u8; 128]> {
-    DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).map(|d| d.name)
-}
-
-pub fn device(evdev_id: u32) -> Option<VirtioInputDev> {
-    DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).cloned()
-}
-
-pub fn repeat(evdev_id: u32) -> Option<[u32; 2]> {
-    DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).map(|d| d.repeat)
-}
-
-pub fn set_repeat(evdev_id: u32, repeat: [u32; 2]) -> bool {
-    let mut devs = DEVICES.lock();
-    let Some(dev) = devs.iter_mut().find(|d| d.evdev_id == evdev_id) else {
-        return false;
-    };
-    dev.repeat = repeat;
-    true
-}
-
-pub fn is_pointer(evdev_id: u32) -> bool {
-    DEVICES
-        .lock()
-        .iter()
-        .find(|d| d.evdev_id == evdev_id)
-        .is_some_and(|d| d.is_pointer)
+    input::remove_device(device_key)
 }
 
 #[cfg(test)]
 pub(crate) fn clear_devices_for_tests() {
-    DEVICES.lock().clear();
+    input::clear_devices_for_tests();
 }
