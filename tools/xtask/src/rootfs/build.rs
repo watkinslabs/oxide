@@ -53,6 +53,8 @@ let pthread_bins: &[(&str, &str)] = &[
      "userspace/mtmalloc_smoke/mtmalloc_smoke.c"),
     ("userspace/uffd_probe/uffd_probe",
      "userspace/uffd_probe/uffd_probe.c"),
+    ("userspace/robust_probe/robust_probe",
+     "userspace/robust_probe/robust_probe.c"),
 ];
 for (out_rel, src_rel) in pthread_bins {
     let basename = out_rel.rsplit('/').next().unwrap();

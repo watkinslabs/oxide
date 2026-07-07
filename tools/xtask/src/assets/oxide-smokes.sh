@@ -42,6 +42,9 @@ echo post-bash-dynamic rv=$?
 echo pre-pthread-probe
 timeout 10 /bin/pthread_socketpair_probe
 echo post-pthread-probe rv=$?
+echo pre-robust-probe
+timeout 10 /bin/robust_probe
+echo post-robust-probe rv=$?
 echo pre-socketpair-fork-probe
 timeout 10 /bin/socketpair_fork_probe
 echo post-socketpair-fork-probe rv=$?
