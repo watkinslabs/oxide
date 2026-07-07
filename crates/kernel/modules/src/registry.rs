@@ -214,6 +214,7 @@ pub unsafe fn init_exports() {
     crate::linux_pci::export_symbols();
     crate::linux_platform::export_symbols();
     crate::linux_pm::export_symbols();
+    crate::linux_runtime::export_symbols();
     crate::linux_seq_file::export_symbols();
     crate::linux_scsi::export_symbols();
     crate::linux_string::export_symbols();
