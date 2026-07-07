@@ -23,6 +23,7 @@ pub(crate) const CRT_BINS: &[(&str, &str)] = &[
     ("userspace/tcflow_probe/tcflow_probe",       "userspace/tcflow_probe/tcflow_probe.c"),
     ("userspace/tty_ioctl_probe/tty_ioctl_probe", "userspace/tty_ioctl_probe/tty_ioctl_probe.c"),
     ("userspace/io_uring_probe/io_uring_probe",   "userspace/io_uring_probe/io_uring_probe.c"),
+    ("userspace/aio_probe/aio_probe",             "userspace/aio_probe/aio_probe.c"),
     ("userspace/io_uring_reg_probe/io_uring_reg_probe", "userspace/io_uring_reg_probe/io_uring_reg_probe.c"),
     ("userspace/tkill_probe/tkill_probe",         "userspace/tkill_probe/tkill_probe.c"),
     ("userspace/pid_identity_probe/pid_identity_probe", "userspace/pid_identity_probe/pid_identity_probe.c"),
