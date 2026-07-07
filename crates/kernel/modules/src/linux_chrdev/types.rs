@@ -1,4 +1,5 @@
 use core::ffi::{c_char, c_void};
+use crate::linux_device::types::LinuxKobject;
 
 pub(super) const LINUX_OK: i32 = 0;
 pub(super) const LINUX_EINVAL: i32 = 22;
@@ -60,6 +61,7 @@ unsafe impl Sync for LinuxFileOperations {}
 
 #[repr(C)]
 pub(super) struct LinuxCdev {
+    pub(super) kobj: LinuxKobject,
     pub(super) ops: *const LinuxFileOperations,
     pub(super) owner: *mut c_void,
     pub(super) dev: u32,
