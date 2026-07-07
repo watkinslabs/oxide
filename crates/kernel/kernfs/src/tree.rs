@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use sync::{Kernfs as KernfsClass, Spinlock};
 use vfs::superblock::SuperBlock;
-use vfs::{FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{CreateCtx, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError, default_file_ops, default_inode_ops, mk_mode};
 
 use crate::dir_ops::{PseudoDirFileOps, PseudoDirOps};
 
@@ -70,6 +70,18 @@ pub struct PseudoDir {
     pub(crate) sb: Spinlock<Weak<SuperBlock>, KernfsClass>,
     pub(crate) children: Spinlock<BTreeMap<String, PseudoEntry>, KernfsClass>,
     pub(crate) inode: Spinlock<Weak<Inode>, KernfsClass>,
+    pub(crate) hooks: Spinlock<Option<Arc<dyn PseudoDirHooks>>, KernfsClass>,
+}
+
+pub trait PseudoDirHooks: Send + Sync {
+    fn mkdir(&self, dir: &PseudoDir, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<Option<InodeRef>> {
+        let _ = (dir, name, mode, ctx);
+        Ok(None)
+    }
+    fn rmdir(&self, dir: &PseudoDir, name: &str) -> KResult<bool> {
+        let _ = (dir, name);
+        Ok(false)
+    }
 }
 
 impl PseudoDir {
@@ -81,6 +93,7 @@ impl PseudoDir {
             sb: Spinlock::new(Weak::new()),
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
+            hooks: Spinlock::new(None),
         })
     }
 
@@ -92,6 +105,7 @@ impl PseudoDir {
             sb: Spinlock::new(sb),
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
+            hooks: Spinlock::new(None),
         })
     }
 
@@ -152,6 +166,8 @@ impl PseudoDir {
         self.sb.lock().clone()
     }
 
+    pub fn path(&self) -> &str { &self.path }
+
     fn child_dir(self: &Arc<PseudoDir>, name: &str) -> Arc<PseudoDir> {
         let mut g = self.children.lock();
         if let Some(PseudoEntry::Dir(d)) = g.get(name) {
@@ -190,6 +206,15 @@ impl PseudoDir {
         for c in &comps {
             dir = dir.child_dir(c);
         }
+    }
+
+    pub fn ensure_dir_path_with_hooks(self: &Arc<PseudoDir>, path: &str, hooks: Arc<dyn PseudoDirHooks>) {
+        let comps = components(path);
+        let mut dir = Arc::clone(self);
+        for c in &comps {
+            dir = dir.child_dir(c);
+        }
+        *dir.hooks.lock() = Some(hooks);
     }
 
     pub fn lookup_path(self: &Arc<PseudoDir>, full_path: &str) -> Option<InodeRef> {
@@ -300,6 +325,7 @@ impl PseudoDir {
             sb: Spinlock::new(self.sb.lock().clone()),
             children: Spinlock::new(nc),
             inode: Spinlock::new(Weak::new()),
+            hooks: Spinlock::new(self.hooks.lock().clone()),
         })
     }
 
@@ -315,7 +341,13 @@ impl PseudoDir {
         Ok(self.leaf_iget(&leaf))
     }
 
-    pub(crate) fn op_mkdir(&self, name: &str) -> KResult<InodeRef> {
+    pub(crate) fn op_mkdir(&self, name: &str, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
+        let hook = self.hooks.lock().clone();
+        if let Some(h) = hook {
+            if let Some(inode) = h.mkdir(self, name, mode, ctx)? {
+                return Ok(inode);
+            }
+        }
         let mut g = self.children.lock();
         if g.contains_key(name) {
             return Err(VfsError::Eexist);
@@ -326,6 +358,24 @@ impl PseudoDir {
         let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak());
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
         Ok(d.as_inode())
+    }
+
+    pub(crate) fn op_rmdir(&self, name: &str) -> KResult<()> {
+        let hook = self.hooks.lock().clone();
+        if let Some(h) = hook {
+            if h.rmdir(self, name)? {
+                return Ok(());
+            }
+        }
+        let mut g = self.children.lock();
+        match g.get(name) {
+            Some(PseudoEntry::Dir(d)) if d.children.lock().is_empty() => {}
+            Some(PseudoEntry::Dir(_)) => return Err(VfsError::Enotempty),
+            Some(PseudoEntry::Leaf(_)) => return Err(VfsError::Enotdir),
+            None => return Err(VfsError::Enoent),
+        }
+        g.remove(name);
+        Ok(())
     }
 
     pub(crate) fn op_symlink(&self, name: &str, target: &[u8]) -> KResult<()> {

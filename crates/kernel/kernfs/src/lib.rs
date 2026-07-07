@@ -23,7 +23,7 @@ mod fs;
 mod tree;
 
 pub use fs::{PseudoFs, PSEUDO_ROOT_INO};
-pub use tree::{PseudoDir, PseudoSymlink, dir_ino};
+pub use tree::{PseudoDir, PseudoDirHooks, PseudoSymlink, dir_ino};
 
 #[cfg(test)]
 mod tests;

@@ -304,6 +304,21 @@ static int sample_config_drop_link(struct config_item *src, struct config_item *
     (void)src; (void)target; return 0;
 }
 
+static struct config_item *sample_config_make_item(struct config_group *group, const char *name)
+{
+    (void)group; (void)name; return NULL;
+}
+
+static struct config_group *sample_config_make_group(struct config_group *group, const char *name)
+{
+    (void)group; (void)name; return NULL;
+}
+
+static void sample_config_drop_item(struct config_group *group, struct config_item *item)
+{
+    (void)group; (void)item;
+}
+
 static struct configfs_attribute sample_config_attr = {
     .name = "sample",
     .mode = 0644,
@@ -345,6 +360,9 @@ static struct config_item_type sample_config_type = {
     .bin_attrs = sample_config_bin_attrs,
     .allow_link = sample_config_allow_link,
     .drop_link = sample_config_drop_link,
+    .make_item = sample_config_make_item,
+    .make_group = sample_config_make_group,
+    .drop_item = sample_config_drop_item,
 };
 
 static int __init sample_init(void)
