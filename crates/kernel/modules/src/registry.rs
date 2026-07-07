@@ -170,6 +170,7 @@ pub unsafe fn init_exports() {
     crate::linux_pm::export_symbols();
     crate::linux_sync::export_symbols();
     crate::linux_time::export_symbols();
+    crate::linux_usercopy::export_symbols();
     crate::linux_usb::export_symbols();
 }
 
