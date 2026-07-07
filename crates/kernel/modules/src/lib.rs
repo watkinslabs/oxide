@@ -59,6 +59,7 @@ pub mod linux_input;
 pub mod linux_crypto;
 pub mod linux_configfs;
 pub mod linux_debugfs;
+pub mod linux_debugfs_extra;
 pub mod linux_netdev;
 pub mod linux_pci;
 pub mod linux_platform;

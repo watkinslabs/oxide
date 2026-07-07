@@ -247,6 +247,22 @@ static ssize_t sample_config_store(struct config_item *item, const char *page, s
 {
     (void)item; (void)page; return (ssize_t)count;
 }
+
+static int sample_simple_get(void *data, u64 *value)
+{
+    (void)data;
+    *value = 7;
+    return 0;
+}
+
+static int sample_simple_set(void *data, u64 value)
+{
+    (void)data; (void)value;
+    return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(sample_simple_fops, sample_simple_get, sample_simple_set, "%llu\n");
+
 static struct configfs_attribute sample_config_attr = {
     .name = "sample",
     .mode = 0644,
@@ -286,7 +302,11 @@ static int __init sample_init(void)
     struct device *created_dev;
     struct dentry *debug_dir;
     struct dentry *debug_file;
+    struct dentry *debug_blob_file;
+    struct dentry *debug_link;
+    struct debugfs_blob_wrapper debug_blob;
     u32 debug_value = SAMPLE_DEBUG_VALUE_INIT;
+    char debug_blob_data[4] = { 'd', 'a', 't', 'a' };
     struct configfs_subsystem subsys;
     struct cdev cdev;
     struct miscdevice misc = {
@@ -488,6 +508,14 @@ static int __init sample_init(void)
     root_device_unregister(root_dev);
     debug_dir = debugfs_create_dir("sample", NULL);
     debug_file = debugfs_create_u32("value", 0600, debug_dir, &debug_value);
+    debugfs_remove(debug_file);
+    debug_file = debugfs_create_file_size("simple", 0600, debug_dir, &debug_value, &sample_simple_fops, 8);
+    debug_blob.data = debug_blob_data;
+    debug_blob.size = sizeof(debug_blob_data);
+    debug_blob_file = debugfs_create_blob("blob", 0400, debug_dir, &debug_blob);
+    debug_link = debugfs_create_symlink("link", debug_dir, "value");
+    debugfs_remove(debug_link);
+    debugfs_remove(debug_blob_file);
     debugfs_remove(debug_file);
     debugfs_remove_recursive(debug_dir);
     config_group_init_type_name(&subsys.su_group, "sample", &sample_config_type);
