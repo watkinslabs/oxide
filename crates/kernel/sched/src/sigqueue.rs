@@ -53,4 +53,18 @@ impl Task {
         if g.len() >= RT_QUEUE_CAP { g.pop_front(); }
         g.push_back(info);
     }
+
+    /// Pop the oldest queued SIGCHLD child-exit siginfo (pid=child VPID,
+    /// code=CLD_*, value=wait-encoded status). Returns the record (`None`
+    /// if none queued → caller synthesises signo-only) plus whether the
+    /// queue is empty after the pop, so SIGCHLD's collapsed pending bit
+    /// clears only when the last child event drains — the inverse of
+    /// `child_sigq_push`, mirroring `rt_pop`. Used by signalfd read and
+    /// SA_SIGINFO SIGCHLD delivery. # C: O(1)
+    pub fn child_sigq_pop(&self) -> (Option<SigInfo>, bool) {
+        let mut g = self.child_sigq.lock();
+        let info = g.pop_front();
+        let empty = g.is_empty();
+        (info, empty)
+    }
 }
