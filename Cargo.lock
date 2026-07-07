@@ -867,6 +867,7 @@ dependencies = [
  "sync",
  "timer",
  "vfs",
+ "vmm",
 ]
 
 [[package]]

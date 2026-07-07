@@ -63,6 +63,7 @@ pub mod linux_platform;
 pub mod linux_pm;
 pub mod linux_sync;
 pub mod linux_time;
+pub mod linux_usercopy;
 pub mod linux_usb;
 
 pub mod loader;
