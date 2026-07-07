@@ -18,7 +18,7 @@
 //   /sys/devices/virtual/drm/<name>/         (per-minor dir)
 //     dev                                     "226:<minor>\n"
 //     uevent                                  MAJOR=/MINOR=/DEVNAME=/DEVTYPE=
-//     subsystem    -> ../../../class/drm      (so udev reads SUBSYSTEM=drm)
+//     subsystem    -> <../ × dir-depth>class/drm  (so udev reads SUBSYSTEM=drm)
 //   /sys/devices/<parent>/<addr>/drm/<name>/ (parented DRM minors)
 //     dev, uevent, subsystem, device          Linux class-device layout
 
@@ -151,11 +151,17 @@ fn device_link_target(minor: &DrmMinor) -> Option<Vec<u8>> {
 }
 
 fn subsystem_target(minor: &DrmMinor) -> Vec<u8> {
-    if minor.parent_bus.is_some() && minor.parent_addr.is_some() {
-        b"../../../../class/drm".to_vec()
-    } else {
-        b"../../../class/drm".to_vec()
-    }
+    // The `subsystem` symlink lives inside the card's own directory, so it must
+    // climb `depth(card dir)` levels to reach `/sys` before descending into
+    // `class/drm`. A fixed `../` count breaks the moment the card nests deeper —
+    // which the path_id fix did by parenting virtio-gpu under its PCI transport
+    // (`devices/pci0000:00/<bdf>/virtioN/drm/cardN`, depth 6, not the old flat
+    // depth 4). A non-resolving `subsystem` link makes udev/sd-device fail to
+    // classify the device (`sd_device_get_subsystem`), so logind refuses
+    // `TakeDevice` with ENODEV and mutter reports "No GPUs found". Compute the
+    // depth dynamically, exactly as the generic bus device links do
+    // (`bus::ups_prefix`). # C: O(depth)
+    alloc::format!("{}class/drm", crate::bus::ups_prefix(&drm_device_path(minor))).into_bytes()
 }
 
 // ---- /sys/class/drm (directory of symlinks) -------------------------------
@@ -442,9 +448,11 @@ mod tests {
         let device = card_dir.lookup("device").expect("parent device link");
         assert_eq!(device.readlink().expect("readlink"), b"../..".to_vec());
         let subsystem = card_dir.lookup("subsystem").expect("subsystem link");
+        // card43 dir = devices/virtio/virtio-gpu-parent0/drm/card43 (depth 5), so
+        // the subsystem link climbs 5 levels to /sys then into class/drm.
         assert_eq!(
             subsystem.readlink().expect("readlink"),
-            b"../../../../class/drm".to_vec()
+            b"../../../../../class/drm".to_vec()
         );
 
         drv::device_del(&card);

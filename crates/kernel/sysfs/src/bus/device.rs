@@ -366,6 +366,6 @@ fn dev_canon_dev(dev: &drv::Device) -> String {
 /// `../` sequence that climbs from a device directory at `canon` back to
 /// `/sys`, so relative `subsystem`/`driver`/`parent` links resolve at any
 /// nesting depth. # C: O(depth)
-fn ups_prefix(canon: &str) -> String {
+pub(crate) fn ups_prefix(canon: &str) -> String {
     "../".repeat(canon.split('/').count())
 }
