@@ -52,6 +52,7 @@ struct pci_dev {
     u32 config_space[PCI_CONFIG_DWORDS];
     unsigned int irq_vector_base;
     int irq_vectors;
+    unsigned int irq_vector_flags;
     char name[PCI_NAME_LEN];
     u32 saved_config_space[PCI_CONFIG_DWORDS];
     pci_power_t current_state;

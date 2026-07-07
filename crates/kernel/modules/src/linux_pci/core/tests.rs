@@ -12,7 +12,9 @@ const TEST_BAR: i32 = 0;
 const TEST_BAR_IDX: usize = TEST_BAR as usize;
 const TEST_MAXLEN_UNBOUNDED: usize = 0;
 const TEST_VECTOR_COUNT: i32 = 1;
+const TEST_MSI_VECTOR_COUNT: i32 = 2;
 const TEST_VECTOR_NR: u32 = 0;
+const TEST_VECTOR_NR_ONE: u32 = 1;
 const TEST_VENDOR: u16 = 0x1af4;
 const TEST_DEVICE: u16 = 0x1041;
 const TEST_CFG_DWORD_OFF: i32 = 0;
@@ -63,8 +65,29 @@ fn register_resources_iomap_and_irq_vectors() {
     pci_iounmap(&mut dev, ptr);
     assert_eq!(pci_alloc_irq_vectors(&mut dev, TEST_VECTOR_COUNT, TEST_VECTOR_COUNT, PCI_IRQ_LEGACY), TEST_VECTOR_COUNT);
     assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR), TEST_IRQ as i32);
+    assert_eq!(dev.irq_vector_flags, PCI_IRQ_LEGACY);
     pci_free_irq_vectors(&mut dev);
     pci_release_region(&mut dev, TEST_BAR);
+}
+
+#[test]
+fn msi_irq_vectors_allocate_and_free_arch_vectors() {
+    let mut dev = test_dev();
+    assert_eq!(
+        pci_alloc_irq_vectors(&mut dev, TEST_MSI_VECTOR_COUNT, TEST_MSI_VECTOR_COUNT, PCI_IRQ_MSI),
+        TEST_MSI_VECTOR_COUNT
+    );
+    let base = pci_irq_vector(&mut dev, TEST_VECTOR_NR);
+    assert!(base > 0);
+    assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR_ONE), base + 1);
+    assert_eq!(dev.irq_vector_flags, PCI_IRQ_MSI);
+    pci_free_irq_vectors(&mut dev);
+    assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR), -LINUX_EINVAL);
+    assert_eq!(
+        pci_alloc_irq_vectors(&mut dev, TEST_MSI_VECTOR_COUNT, TEST_MSI_VECTOR_COUNT, PCI_IRQ_MSI),
+        TEST_MSI_VECTOR_COUNT
+    );
+    pci_free_irq_vectors(&mut dev);
 }
 
 #[test]
