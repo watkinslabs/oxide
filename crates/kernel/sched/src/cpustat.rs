@@ -17,6 +17,20 @@ static USER: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static SYS:  [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static IDLE: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 
+/// Per-CPU monotonic-ns timestamp of the previous timer tick. The
+/// inter-tick wall delta is charged to the interrupted task's user- or
+/// kernel-mode CPU-time bucket (tick-sampled per-task accounting, Linux
+/// CONFIG_TICK_CPU_ACCOUNTING). 0 = no baseline yet (first tick on CPU).
+static LAST_TICK_NS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
+
+/// Ceiling on a single tick's per-task charge. The LAPIC/CNTV periodic
+/// timer here is NOT a fixed 100 Hz (x86 LAPIC bus freq is unmeasured;
+/// arm CNTV ticks ~62.5 Hz at `timer_periodic(1_000_000)`), so utime is
+/// derived from the real inter-tick monotonic delta rather than a fixed
+/// jiffy. A larger gap (first tick, long IRQ-off window, VM pause) is
+/// capped so accounting can't spike. 100 ms >> any real tick period.
+pub const MAX_TICK_CHARGE_NS: u64 = 100_000_000;
+
 /// What the timer tick interrupted.
 pub enum TickKind { User, System, Idle }
 
@@ -42,6 +56,43 @@ pub fn account(kind: TickKind) {
         TickKind::System => SYS[c].fetch_add(1, Ordering::Relaxed),
         TickKind::Idle   => IDLE[c].fetch_add(1, Ordering::Relaxed),
     };
+}
+
+/// Live monotonic clock in ns. Host builds (unit tests) return 0, so the
+/// per-task charge below is a no-op off-target.
+/// # C: O(1)
+#[inline]
+fn now_ns() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+/// Charge the wall-time elapsed since the previous timer tick on THIS CPU
+/// to the interrupted task's user- or kernel-mode CPU-time bucket. Called
+/// from each arch timer ISR alongside `account`. Tick-sampled: the whole
+/// inter-tick delta is attributed to whichever mode the timer interrupted
+/// (`from_user`), matching Linux CONFIG_TICK_CPU_ACCOUNTING. Reads the
+/// real monotonic delta so utime/stime stay wall-consistent on any timer
+/// frequency (the periodic tick is not a fixed 100 Hz here). IRQ-context:
+/// atomics only, no locks/alloc/panic.
+/// # C: O(1)
+/// # Ctx: IRQ
+pub fn charge_current_tick(from_user: bool) {
+    let c = this_cpu();
+    let now = now_ns();
+    let prev = LAST_TICK_NS[c].swap(now, Ordering::Relaxed);
+    if prev == 0 || now <= prev { return; }
+    let delta = (now - prev).min(MAX_TICK_CHARGE_NS);
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(t) = crate::live::current() {
+        if from_user { t.utime_ns.fetch_add(delta, Ordering::Relaxed); }
+        else         { t.stime_ns.fetch_add(delta, Ordering::Relaxed); }
+    }
+    let _ = (delta, from_user);
 }
 
 /// `(user, system, idle)` accumulated ticks for CPU `cpu` — `/proc/stat`'s

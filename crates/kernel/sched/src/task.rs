@@ -243,6 +243,19 @@ pub struct Task {
     /// getrusage(RUSAGE_CHILDREN).
     pub cumulative_child_ns: AtomicU64,
 
+    /// Per-task user-mode CPU time (ns), tick-sampled at the timer IRQ
+    /// (Linux CONFIG_TICK_CPU_ACCOUNTING); read by getrusage/times/proc-stat.
+    pub utime_ns: AtomicU64,
+    /// Per-task kernel-mode CPU time (ns), tick-sampled at the timer IRQ
+    /// (Linux CONFIG_TICK_CPU_ACCOUNTING); read by getrusage/times/proc-stat.
+    pub stime_ns: AtomicU64,
+    /// Cumulative user-mode CPU time (ns) of reaped children; read by
+    /// getrusage(RUSAGE_CHILDREN).ru_utime + times().tms_cutime.
+    pub cumulative_child_utime_ns: AtomicU64,
+    /// Cumulative kernel-mode CPU time (ns) of reaped children; read by
+    /// getrusage(RUSAGE_CHILDREN).ru_stime + times().tms_cstime.
+    pub cumulative_child_stime_ns: AtomicU64,
+
     /// alarm(2)/setitimer ITIMER_REAL deadline in monotonic ns.
     /// `0` = no alarm pending. Dispatch tail compares against
     /// monotonic_ns() and posts SIGALRM (signal 14) when reached.
