@@ -24,6 +24,7 @@ pci = { path = "../../drivers/pci" }
 vfs = { path = "../vfs" }
 net = { path = "../net" }
 block = { path = "../block" }
+input = { path = "../input" }
 
 [features]
 default = []

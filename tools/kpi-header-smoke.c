@@ -9,6 +9,7 @@
 #include <linux/gfp.h>
 #include <linux/hrtimer.h>
 #include <linux/idr.h>
+#include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/jiffies.h>
@@ -87,6 +88,10 @@ enum { SAMPLE_BIO_VECS = 1 };
 enum { SAMPLE_BIO_LEN = SECTOR_SIZE };
 enum { SAMPLE_BLK_HW_QUEUES = 1 };
 enum { SAMPLE_BLK_QUEUE_DEPTH = 64 };
+enum { SAMPLE_ABS_MIN = -100 };
+enum { SAMPLE_ABS_MAX = 100 };
+enum { SAMPLE_ABS_FUZZ = 1 };
+enum { SAMPLE_ABS_FLAT = 2 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -208,6 +213,8 @@ static int __init sample_init(void)
         NULL, SAMPLE_BLK_HW_QUEUES, SAMPLE_BLK_QUEUE_DEPTH,
         0, 0, 0, &s
     };
+    struct input_dev *input;
+    struct input_event input_ev;
     struct pci_driver pdrv = {
         "sample-pci", sample_pci_ids, sample_pci_probe, sample_pci_remove,
         { "sample-pci", NULL, THIS_MODULE, NULL, NULL }
@@ -369,6 +376,39 @@ static int __init sample_init(void)
         mq_queue = blk_mq_init_queue(&tag_set);
         blk_cleanup_queue(mq_queue);
         blk_mq_free_tag_set(&tag_set);
+    }
+    input_ev.tv_sec = 0;
+    input_ev.tv_usec = 0;
+    input_ev.type = EV_SYN;
+    input_ev.code = SYN_REPORT;
+    input_ev.value = 0;
+    (void)input_ev;
+    input = input_allocate_device();
+    if (input != NULL) {
+        input->name = "sample-input";
+        input->phys = "sample/input0";
+        input->uniq = "sample-serial";
+        input->id.bustype = BUS_VIRTUAL;
+        input->id.vendor = SAMPLE_PCI_VENDOR;
+        input->id.product = SAMPLE_PCI_DEVICE;
+        input->id.version = 1;
+        input_set_capability(input, EV_KEY, KEY_A);
+        input_set_capability(input, EV_REL, REL_X);
+        input_set_capability(input, EV_LED, LED_NUML);
+        input_set_abs_params(input, ABS_X, SAMPLE_ABS_MIN, SAMPLE_ABS_MAX, SAMPLE_ABS_FUZZ, SAMPLE_ABS_FLAT);
+        input_set_drvdata(input, &s);
+        (void)input_get_drvdata(input);
+        (void)test_bit(KEY_A, input->keybit);
+        if (input_register_device(input) == 0) {
+            input_report_key(input, KEY_A, 1);
+            input_report_rel(input, REL_X, 1);
+            input_report_abs(input, ABS_X, 10);
+            input_event(input, EV_LED, LED_NUML, 1);
+            input_sync(input);
+            input_unregister_device(input);
+        } else {
+            input_free_device(input);
+        }
     }
     pdev.dev.dma_mask = &dma_mask;
     pdev.dev.coherent_dma_mask = DMA_BIT_MASK(DMA_ULL_BITS);

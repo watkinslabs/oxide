@@ -8,6 +8,11 @@ use crate::evdev_queue::MAX_EVDEV;
 
 pub fn init() {
     devfs::register_dir("/dev/input");
+    input::set_evdev_hooks(input::EvdevHooks {
+        register: Some(register_node),
+        unregister: Some(unregister_node),
+        push_event: Some(crate::evdev_queue::push_event),
+    });
 }
 
 pub fn register_node(id: u32, parent: Option<(&'static str, alloc::string::String)>) -> bool {
@@ -42,7 +47,7 @@ fn utf8_payload(prefix: &str, bytes: &[u8]) -> Option<String> {
 
 fn input_uevent_env(id: u32) -> Vec<String> {
     let mut env = Vec::new();
-    let Some(dev) = crate::registry::device(id) else { return env; };
+    let Some(dev) = crate::device(id) else { return env; };
     env.push(alloc::format!(
         "PRODUCT={:x}/{:x}/{:x}/{:x}",
         dev.ids.bustype, dev.ids.vendor, dev.ids.product, dev.ids.version,
