@@ -105,7 +105,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "mmap_zero_smoke", "mmchurn_smoke", "mallocstress_smoke", "mallocstress_dyn",
         "mtmalloc_smoke", "uffd_probe", "sigmalloc_smoke", "mremap_alias_smoke", "rawecho_smoke", "termios_rt_smoke", "isatty_smoke", "pollecho_smoke",
         "usleep_smoke", "af_packet_smoke", "online_smoke",
-        "tcp_smoke", "exit_test", "pthread_socketpair_probe",
+        "tcp_smoke", "exit_test", "pthread_socketpair_probe", "robust_probe",
         "socketpair_fork_probe", "tty_reset_probe", "dsr_probe", "vtswitch_probe", "vtmode_probe", "vtresize_probe", "kdfont_probe", "fbdev_probe", "fbdev_probe2", "vcs_probe", "ptyhup_probe", "hwrng_probe", "virtio_rng_rebind_probe", "virtio_parent_child_rebind_probe", "uart_rebind_probe", "ps2_rebind_probe", "virtio_input_rebind_probe", "netstats_probe", "vsock_probe", "drm_probe", "drm_probe2", "drm_probe3", "sysblock_probe", "sysbus_bind_probe", "snd_probe", "mouseprobe",
         "msix_net_rx_probe", "virtio_net_multidev_probe", "virtio_snd_multidev_probe", "virtio_gpu_multidev_probe", "virtio_blk_multidev_probe", "storage_multictrl_probe",
     ] {
