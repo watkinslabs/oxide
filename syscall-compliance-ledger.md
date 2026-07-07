@@ -46,7 +46,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | G4 | set_robust_list exit walk (273) | TODO | | registers head but thread-exit never walks the robust list to wake futex waiters. |
 | G5 | seccomp arg[5] (core.rs:26) | DONE | B635 #TBD | `check()` now passes the real `a5` (already read into args) instead of literal 0; filters inspecting args[5] evaluate correctly. |
 | G6 | process_madvise/process_mrelease (440/448) | TODO | | fake success; resolve pidfd → target AS and apply advice / reap. |
-| G7 | mlock family unmapped range (149-152) | TODO | | returns 0 for unmapped ranges; Linux returns ENOMEM. Validate range. |
+| G7 | mlock family unmapped range (149-152) | DONE | B636 #TBD | split: `sys_mlock_range` (mlock/munlock) validates the page range via `find_vma` → ENOMEM on unmapped; `sys_mlockall` rejects bad MCL_* flags; `sys_munlockall` 0. |
 | G8 | signalfd mask-update + siginfo (282/289) | TODO | | mask-update on existing fd no-op; siginfo only fills ssi_signo. |
 | G9 | shmctl/semctl/msgctl IPC_STAT (31/191/71...) | TODO | | IPC_STAT/IPC_INFO return 0 without filling the user id_ds. Fill the struct. |
 
