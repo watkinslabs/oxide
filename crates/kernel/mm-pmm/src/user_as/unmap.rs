@@ -58,6 +58,22 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // aliasing). x86-only effect; no-op on UP / aarch64 / hosted.
             // cpumask-targeted (only CPUs that have this mm), not all online.
             hal::tlb::shootdown_others_va(va, mask);
+            // debug-fwm: free-while-mapped catch on the MADV_DONTNEED path.
+            #[cfg(feature = "debug-fwm")]
+            {
+                let base = pa.0 & !0xfff;
+                if crate::setup::frame_refcount(base) <= 1 {
+                    let root = sched::live::current().and_then(|c| unsafe { c.mm_ref() }).map(|mm| mm.root_pa()).unwrap_or(0);
+                    let n = crate::setup::fwm_peer_maps(va, base, root, crate::user_as::hhdm_offset());
+                    if n > 0 {
+                        klog::write_raw(b"[FWM-EVICT] va="); klog::write_hex_u64(va);
+                        klog::write_raw(b" pa=");            klog::write_hex_u64(base);
+                        klog::write_raw(b" peers=");         klog::write_dec_u64(n as u64);
+                        klog::write_raw(b" tid=");           klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                        klog::write_raw(b"\n");
+                    }
+                }
+            }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }
@@ -135,6 +151,27 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // entry. x86-only effect; no-op on UP / aarch64 / hosted.
             // cpumask-targeted (only CPUs that have this mm), not all online.
             hal::tlb::shootdown_others_va(va, mask);
+            // debug-fwm: free-while-mapped catch on the MUNMAP path. This dec is
+            // about to (maybe) free `pa`. If its refcount is <=1 (this dec frees
+            // it) yet a PEER address space still maps this VA→pa, the refcount
+            // was UNDER-counted — the same free-while-mapped as the teardown
+            // check, but caught at munmap (the dhcpcd/grandchild path). Names
+            // the culprit: va, pa, how many peers still map it, and the tid.
+            #[cfg(feature = "debug-fwm")]
+            {
+                let base = pa.0 & !0xfff;
+                if crate::setup::frame_refcount(base) <= 1 {
+                    let root = sched::live::current().and_then(|c| unsafe { c.mm_ref() }).map(|mm| mm.root_pa()).unwrap_or(0);
+                    let n = crate::setup::fwm_peer_maps(va, base, root, crate::user_as::hhdm_offset());
+                    if n > 0 {
+                        klog::write_raw(b"[FWM-MUNMAP] va="); klog::write_hex_u64(va);
+                        klog::write_raw(b" pa=");             klog::write_hex_u64(base);
+                        klog::write_raw(b" peers=");          klog::write_dec_u64(n as u64);
+                        klog::write_raw(b" tid=");            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                        klog::write_raw(b"\n");
+                    }
+                }
+            }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
         }

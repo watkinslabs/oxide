@@ -1,7 +1,7 @@
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES};
 
 use crate::vma::{FaultAccess, VmaBacking, VmaFlags};
-#[cfg(feature = "debug-atexit")]
+#[cfg(any(feature = "debug-atexit", feature = "debug-cow"))]
 use crate::vma::VmaProt;
 use crate::{Error, KResult};
 
