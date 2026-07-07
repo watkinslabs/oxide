@@ -1,4 +1,5 @@
 #include <linux/bitmap.h>
+#include <linux/blk-mq.h>
 #include <linux/blkdev.h>
 #include <linux/atomic.h>
 #include <linux/acpi.h>
@@ -180,6 +181,14 @@ static int sample_make_request(struct request_queue *queue, struct bio *bio)
     bio->bi_status = BLK_STS_OK;
     return bio_op(bio) == REQ_OP_DISCARD ? 0 : (int)bio->bi_size;
 }
+static blk_status_t sample_queue_rq(struct blk_mq_hw_ctx *hctx, const struct blk_mq_queue_data *bd)
+{
+    (void)hctx;
+    blk_mq_start_request(bd->rq);
+    blk_mq_end_request(bd->rq, BLK_STS_OK);
+    return BLK_STS_OK;
+}
+static void sample_complete_rq(struct request *rq) { (void)rq; }
 static netdev_tx_t sample_net_xmit(struct sk_buff *skb, struct net_device *dev)
 {
     (void)dev;
@@ -272,6 +281,10 @@ static const struct net_device_ops sample_netdev_ops = {
 };
 static const struct block_device_operations sample_blk_ops = {
     .owner = THIS_MODULE,
+};
+static const struct blk_mq_ops sample_mq_ops = {
+    .queue_rq = sample_queue_rq,
+    .complete = sample_complete_rq,
 };
 static const struct dev_pm_ops sample_pm_ops = {
     SET_SYSTEM_SLEEP_PM_OPS(sample_pm_suspend, sample_pm_resume),
@@ -470,10 +483,16 @@ static int __init sample_init(void)
     struct request_queue *queue;
     struct request_queue *mq_queue;
     struct gendisk *disk;
+    struct gendisk *mq_disk;
     struct bio *bio;
+    struct request *rq;
     struct block_device bdev;
+    struct queue_limits limits = {
+        SAMPLE_BLOCK_SIZE, SAMPLE_BLOCK_SIZE, SAMPLE_BLOCK_SIZE, 0,
+        SAMPLE_DISK_SECTORS, SAMPLE_BIO_VECS, 0, 0
+    };
     struct blk_mq_tag_set tag_set = {
-        NULL, SAMPLE_BLK_HW_QUEUES, SAMPLE_BLK_QUEUE_DEPTH,
+        &sample_mq_ops, SAMPLE_BLK_HW_QUEUES, SAMPLE_BLK_QUEUE_DEPTH,
         0, 0, 0, &s
     };
     struct input_dev *input;
@@ -909,19 +928,72 @@ static int __init sample_init(void)
                 bio->bi_opf = REQ_OP_FLUSH;
                 bio->bi_sector = 0;
                 (void)bio_add_page(bio, NULL, SAMPLE_BIO_LEN, 0);
+                (void)__bio_add_page(bio, NULL, SAMPLE_BIO_LEN, 0);
                 (void)submit_bio(bio);
+                submit_bio_noacct(bio);
+                (void)submit_bio_wait(bio);
                 bio->bi_opf = REQ_OP_DISCARD;
                 (void)submit_bio(bio);
+                (void)bio_split_to_limits(bio);
+                (void)bio_associate_blkg(bio);
+                (void)bio_blkcg_css(bio);
+                zero_fill_bio_iter(bio);
+                bio_chain(bio, bio);
+                bio_endio(bio);
                 bio_put(bio);
             }
+            (void)bdev_disk_changed(disk, false);
+            blk_mark_disk_dead(disk);
             del_gendisk(disk);
             put_disk(disk);
         }
         blk_cleanup_queue(queue);
     }
     if (blk_mq_alloc_tag_set(&tag_set) == 0) {
+        blk_mq_map_queues(&tag_set);
+        mq_queue = blk_mq_alloc_queue(&tag_set, &limits, &s);
+        if (mq_queue != NULL) {
+            blk_queue_rq_timeout(mq_queue, 1);
+            blk_mq_freeze_queue_nomemsave(mq_queue);
+            blk_mq_freeze_queue_wait(mq_queue);
+            blk_mq_unfreeze_queue_nomemrestore(mq_queue);
+            blk_mq_quiesce_queue(mq_queue);
+            blk_mq_unquiesce_queue(mq_queue);
+            blk_mq_stop_hw_queues(mq_queue);
+            blk_mq_start_stopped_hw_queues(mq_queue, false);
+            blk_mq_update_nr_hw_queues(&tag_set, SAMPLE_BLK_HW_QUEUES);
+            blk_mq_map_hw_queues(NULL, NULL, 0);
+            rq = blk_mq_alloc_request(mq_queue, REQ_OP_READ, 0);
+            if (rq != NULL) {
+                (void)blk_mq_unique_tag(rq);
+                blk_execute_rq_nowait(rq, false);
+                (void)blk_execute_rq(rq, false);
+                (void)blk_update_request(rq, BLK_STS_OK, 0);
+                blk_mq_requeue_request(rq, false);
+                blk_mq_free_request(rq);
+            }
+            blk_sync_queue(mq_queue);
+            blk_mq_destroy_queue(mq_queue);
+        }
         mq_queue = blk_mq_init_queue(&tag_set);
-        blk_cleanup_queue(mq_queue);
+        blk_put_queue(mq_queue);
+        mq_disk = blk_mq_alloc_disk(&tag_set, &limits, &s);
+        if (mq_disk != NULL) {
+            mq_disk->disk_name[0] = 'm';
+            mq_disk->disk_name[1] = 'q';
+            mq_disk->disk_name[2] = '0';
+            mq_disk->disk_name[3] = '\0';
+            (void)device_add_disk(&dev, mq_disk, NULL);
+            del_gendisk(mq_disk);
+            put_disk(mq_disk);
+        }
+        blk_set_stacking_limits(&limits);
+        (void)blk_revalidate_disk_zones(NULL, NULL);
+        (void)blk_status_to_errno(BLK_STS_OK);
+        (void)errno_to_blk_status(0);
+        (void)blk_op_str(REQ_OP_READ);
+        blk_mq_quiesce_tagset(&tag_set);
+        blk_mq_unquiesce_tagset(&tag_set);
         blk_mq_free_tag_set(&tag_set);
     }
     input_ev.tv_sec = 0;
