@@ -21,10 +21,13 @@ Date: 2026-07-07
 ## Allocator Follow-Up
 
 - Added Fedora 6.16-era allocation exports required by real module audits: `__kmalloc_noprof`, `__kmalloc_cache_noprof`, `__kvmalloc_node_noprof`, `alloc_pages_noprof`, `__alloc_pages_noprof`, `kvfree`, `kvfree_call_rcu`, `kmemdup_noprof`, `kmalloc_caches`, and `random_kmalloc_seed`.
+- Added the remaining real-module slab-cache allocation exports: `__kmem_cache_create_args`, `kmem_cache_alloc_noprof`, `kmem_cache_free`, `kmem_cache_destroy`, and `vzalloc_noprof`.
+- `__kmem_cache_create_args` now records object size, requested alignment, and constructor metadata; `kmem_cache_alloc_noprof` allocates owned objects through the shared allocator and invokes the registered constructor; `kmem_cache_free`/`kmem_cache_destroy` release object/cache ownership.
 - `kvfree_call_rcu` now defers the free through the existing shared RCU callback queue instead of freeing inline.
 - Split allocator tests into `crates/kernel/modules/src/linux_alloc_tests.rs` to keep `linux_alloc.rs` under the 500-line cap.
+- Split slab-cache compatibility into `crates/kernel/modules/src/linux_alloc_cache.rs` to keep `linux_alloc.rs` under the 500-line cap.
 - Extended `kpi/include/linux/slab.h`, `kpi/include/linux/mm.h`, and `tools/kpi-header-smoke.c` for the new allocator surface.
-- Valid Fedora module audit now resolves those allocator symbols. Overall audit still exits nonzero because remaining misses are in other KPI lanes: workqueue/time, USB gadget, module refcounting, device/sysfs helpers, compiler/runtime helpers, and target/SCSI-specific helpers.
+- Valid Fedora module audit now resolves those allocator symbols. Overall audit still exits nonzero because remaining misses include real `vmap`/`vunmap` page-table alias support plus other KPI lanes: workqueue/time, USB gadget, module refcounting, device/sysfs helpers, compiler/runtime helpers, and target/SCSI-specific helpers.
 
 ## Sync Follow-Up
 
@@ -87,9 +90,11 @@ F674 result:
 - Exported DMA/scatterlist matches now include `sg_alloc_table`, `sg_copy_to_buffer`, `sg_free_table`, `sg_init_table`, `sg_miter_next`, `sg_miter_start`, `sg_miter_stop`, `sgl_alloc_order`, and `sgl_free_n_order`.
 - After the string/runtime follow-up, the audit reported 570 exports, 280 undefined refs, 225 unique symbols, 118 missing symbols, 0 weak-missing, and 107 exported matches.
 - Exported `string-runtime` matches now cover 34 real-module references; no `MISSING | string-runtime` rows remain.
+- After the slab-cache allocator follow-up, the audit reported 575 exports, 280 undefined refs, 225 unique symbols, 113 missing symbols, 0 weak-missing, and 112 exported matches.
+- Exported allocator matches now include `__kmem_cache_create_args`, `kmem_cache_alloc_noprof`, `kmem_cache_destroy`, `kmem_cache_free`, and `vzalloc_noprof`; remaining allocator misses are `vmap` and `vunmap`, which were not stubbed because the current module layer lacks a real vmalloc VA/page-table alias primitive.
 
 The audit still exits nonzero overall because those same real modules require symbols in other KPI lanes, including device-core/sysfs, module refcounting, UBSAN/compiler runtime, x86 retpoline thunks, workqueue/time, USB gadget, and SCSI/target-specific surfaces.
-After the allocator, sync, DMA/scatterlist, and string/runtime follow-ups, the remaining audit misses no longer include the modern allocator, sync/RCU, DMA/scatterlist, or string/runtime symbols listed above.
+After the allocator, sync, DMA/scatterlist, and string/runtime follow-ups, the remaining audit misses no longer include the modern allocator slab-cache symbols, sync/RCU, DMA/scatterlist, or string/runtime symbols listed above. Real `vmap`/`vunmap` remain allocator work.
 
 ## Validation Passed
 
@@ -105,13 +110,15 @@ From `/home/nd/oxide/worktrees/kpi-debugfs-configfs`:
 - `cc -std=gnu11 -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
 - `clang -std=gnu11 -target x86_64-unknown-linux-gnu -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
 - `clang -std=gnu11 -target aarch64-unknown-linux-gnu -Ikpi/include -ffreestanding -fsyntax-only tools/kpi-header-smoke.c`
-- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining allocator, sync/RCU, DMA/scatterlist, string/runtime, or debugfs/configfs missing rows)
+- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` (expected nonzero overall; no remaining allocator slab-cache, sync/RCU, DMA/scatterlist, string/runtime, or debugfs/configfs missing rows)
+- `tools/kpi-audit --fail-on-missing <decompressed Fedora target_core_mod/libcomposite/industrialio-configfs .ko files>` after slab-cache allocator follow-up (expected nonzero overall; allocator missing rows reduced to real `vmap`/`vunmap` only)
 - `cargo run -q -p xtask -- kernel --arch x86_64`
 - `cargo run -q -p xtask -- kernel --arch aarch64`
 - `git diff --check`
 - Configfs source line-count check; all `crates/kernel/modules/src/linux_configfs/*.rs` files are under 500 lines.
 - Sync source line-count check; `crates/kernel/modules/src/linux_sync.rs` is 494 lines.
-- DMA source line-count check: `linux_dma.rs` is 452 lines, `linux_dma_sgl.rs` is 52 lines, `linux_dma_tests.rs` is 96 lines, and `linux_alloc.rs` is 453 lines.
+- DMA source line-count check: `linux_dma.rs` is 452 lines, `linux_dma_sgl.rs` is 52 lines, `linux_dma_tests.rs` is 96 lines.
+- Allocator source line-count check after slab-cache split: `linux_alloc.rs` is 469 lines, `linux_alloc_cache.rs` is 74 lines, and `linux_alloc_tests.rs` is 135 lines.
 - String/runtime line-count check: `linux_string.rs` is 23 lines; child files are 210 lines or less.
 
 ## Next Steps

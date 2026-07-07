@@ -1,4 +1,5 @@
 use super::*;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 unsafe fn cstr(p: *const u8) -> &'static str {
     // SAFETY: tests pass pointers returned by KPI string allocators.
@@ -74,6 +75,35 @@ fn modern_noprof_allocators_match_linux_entry_points() {
     kfree(d as *mut u8);
 }
 
+static CTOR_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn cache_ctor(obj: *mut c_void) {
+    CTOR_CALLS.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: cache object has at least one byte in this test.
+    unsafe { *(obj as *mut u8) = 0x5a; }
+}
+
+#[test]
+fn kmem_cache_create_alloc_free_destroy_honors_args() {
+    CTOR_CALLS.store(0, Ordering::SeqCst);
+    let args = cache::LinuxKmemCacheArgs {
+        align: 16,
+        useroffset: 0,
+        usersize: 0,
+        freeptr_offset: 0,
+        use_freeptr_offset: false,
+        ctor: Some(cache_ctor),
+    };
+    let cache = unsafe { cache::__kmem_cache_create_args(b"sample\0".as_ptr(), 32, &args, 0) };
+    assert!(!cache.is_null());
+    let obj = cache::kmem_cache_alloc_noprof(cache, GFP_ZERO);
+    assert!(!obj.is_null());
+    assert_eq!(CTOR_CALLS.load(Ordering::SeqCst), 1);
+    unsafe { assert_eq!(*obj, 0x5a); }
+    cache::kmem_cache_free(cache, obj as *mut c_void);
+    cache::kmem_cache_destroy(cache);
+}
+
 #[test]
 fn noprof_page_allocators_return_page_descriptors() {
     let page = alloc_pages_noprof(GFP_ZERO, 0);
@@ -96,7 +126,9 @@ fn export_symbols_registers_allocator_surface() {
         "free_pages", "page_address", "page_to_phys", "kstrdup", "kasprintf",
         "__kmalloc_noprof", "__kmalloc_cache_noprof", "__kvmalloc_node_noprof",
         "alloc_pages_noprof", "__alloc_pages_noprof", "kvfree", "kvfree_call_rcu",
-        "kmemdup_noprof", "kmalloc_caches", "random_kmalloc_seed",
+        "kmemdup_noprof", "__kmem_cache_create_args", "kmem_cache_alloc_noprof",
+        "kmem_cache_free", "kmem_cache_destroy", "vzalloc_noprof",
+        "kmalloc_caches", "random_kmalloc_seed",
     ] {
         assert!(crate::symtab::resolve(name, true).is_ok(), "{name}");
     }
