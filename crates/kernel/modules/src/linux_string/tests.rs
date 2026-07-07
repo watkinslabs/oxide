@@ -1,0 +1,61 @@
+use super::{cstr, format, mem, parse};
+use core::ffi::c_void;
+
+#[test]
+fn mem_and_cstr_helpers_match_c_contracts() {
+    let mut buf = [0u8; 8];
+    unsafe { mem::memset(buf.as_mut_ptr() as *mut c_void, b'a' as i32, 3); }
+    assert_eq!(&buf[..4], b"aaa\0");
+    unsafe { cstr::strcpy(buf.as_mut_ptr(), b"AbC\0".as_ptr()); }
+    assert_eq!(unsafe { cstr::strlen(buf.as_ptr()) }, 3);
+    assert_eq!(unsafe { cstr::strncasecmp(buf.as_ptr(), b"abc\0".as_ptr(), 3) }, 0);
+    assert!(!unsafe { cstr::strchr(buf.as_ptr(), b'b' as i32) }.is_null());
+}
+
+#[test]
+fn parse_helpers_convert_linux_numbers() {
+    let mut v8 = 0u8;
+    let mut v16 = 0u16;
+    let mut vi = 0i32;
+    let mut b = false;
+    assert_eq!(unsafe { parse::kstrtou8(b"0xff\n\0".as_ptr(), 0, &mut v8) }, 0);
+    assert_eq!(v8, 255);
+    assert_eq!(unsafe { parse::kstrtou16(b"0777\0".as_ptr(), 0, &mut v16) }, 0);
+    assert_eq!(v16, 0o777);
+    assert_eq!(unsafe { parse::kstrtoint(b"-42\0".as_ptr(), 10, &mut vi) }, 0);
+    assert_eq!(vi, -42);
+    assert_eq!(unsafe { parse::kstrtobool(b"on\n\0".as_ptr(), &mut b) }, 0);
+    assert!(b);
+}
+
+#[test]
+fn hex_helpers_round_trip_bytes() {
+    let mut bin = [0u8; 2];
+    let mut hex = [0u8; 4];
+    assert_eq!(unsafe { parse::hex2bin(bin.as_mut_ptr(), b"0aff".as_ptr(), 2) }, 0);
+    assert_eq!(bin, [0x0a, 0xff]);
+    unsafe { parse::bin2hex(hex.as_mut_ptr(), bin.as_ptr(), 2); }
+    assert_eq!(&hex, b"0aff");
+}
+
+#[test]
+fn format_exports_write_bounded_output() {
+    let mut out = [0u8; 8];
+    let n = unsafe { format::snprintf(out.as_mut_ptr(), out.len(), b"%s-%d\0".as_ptr(), b"irq\0".as_ptr(), -7i32) };
+    assert_eq!(n, 6);
+    assert_eq!(&out[..7], b"irq--7\0");
+}
+
+#[test]
+fn export_symbols_registers_string_surface() {
+    crate::symtab::_reset();
+    crate::linux_string::export_symbols();
+    for name in [
+        "memcpy", "memset", "memcmp", "strlen", "strcmp", "strncasecmp",
+        "kstrtou8", "kstrtou16", "kstrtoint", "hex_to_bin", "hex2bin", "bin2hex",
+        "snprintf", "scnprintf", "sprintf", "_printk", "__stack_chk_fail",
+        "_ctype", "__ref_stack_chk_guard",
+    ] {
+        assert!(crate::symtab::is_exported(name), "{name}");
+    }
+}

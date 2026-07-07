@@ -48,6 +48,7 @@
 #include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
+#include <linux/string.h>
 #include <linux/timer.h>
 #include <linux/uaccess.h>
 #include <linux/usb.h>
@@ -503,6 +504,15 @@ static int __init sample_init(void)
     struct shash_desc shash_desc;
     int usb_actual;
     char usb_buf[SAMPLE_USB_BULK_LEN];
+    char str_buf[32];
+    char str_copy[32];
+    char *str_cursor;
+    char *str_token;
+    unsigned char hex_bin[2];
+    char hex_out[4];
+    int parsed_int;
+    u16 parsed_u16;
+    bool parsed_bool;
     INIT_LIST_HEAD(&s.link);
     list_add(&s.link, &samples);
     set_bit(3, sample_bits);
@@ -529,6 +539,34 @@ static int __init sample_init(void)
     (void)kstrdup("driver", GFP_KERNEL);
     (void)kmemdup_noprof("driver", 6, GFP_KERNEL);
     (void)kasprintf(GFP_KERNEL, "driver %d", 1);
+    (void)memset(str_buf, 0, sizeof(str_buf));
+    (void)memcpy(str_copy, str_buf, sizeof(str_buf));
+    (void)memcmp(str_copy, str_buf, sizeof(str_buf));
+    (void)memcpy_and_pad(str_copy, sizeof(str_copy), "x", 1, 0);
+    (void)strcpy(str_buf, " yes ");
+    (void)strncpy(str_copy, str_buf, sizeof(str_copy));
+    (void)strlen(str_buf);
+    (void)strnlen(str_buf, sizeof(str_buf));
+    (void)strcmp(str_buf, " yes ");
+    (void)strncmp(str_buf, " yes ", 5);
+    (void)strncasecmp(str_buf, " YES ", 5);
+    (void)strchr(str_buf, 'y');
+    (void)strstr(str_buf, "yes");
+    (void)strim(str_buf);
+    (void)sized_strscpy(str_buf, "copy", sizeof(str_buf));
+    str_cursor = str_buf;
+    str_token = strsep(&str_cursor, ",");
+    (void)str_token;
+    (void)hex2bin(hex_bin, "0aff", sizeof(hex_bin));
+    (void)bin2hex(hex_out, hex_bin, sizeof(hex_bin));
+    (void)hex_to_bin('f');
+    (void)simple_strtoul("42", NULL, 10);
+    (void)kstrtoint("-7", 10, &parsed_int);
+    (void)kstrtou16("65535", 10, &parsed_u16);
+    (void)kstrtobool("on", &parsed_bool);
+    (void)snprintf(str_buf, sizeof(str_buf), "v=%d", parsed_int);
+    (void)scnprintf(str_buf, sizeof(str_buf), "v=%u", parsed_u16);
+    (void)sprintf(str_buf, "%s", "ok");
     (void)request_irq(SAMPLE_IRQ, sample_irq_handler, IRQF_SHARED, "sample", &s);
     disable_irq_nosync(SAMPLE_IRQ);
     enable_irq(SAMPLE_IRQ);

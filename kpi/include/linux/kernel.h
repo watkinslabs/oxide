@@ -14,6 +14,11 @@
 #define clamp(val, lo, hi) min((typeof(val))max(val, lo), hi)
 
 int printk(const char *fmt, ...) __printf(1, 2);
+int _printk(const char *fmt, ...) __printf(1, 2);
+int __warn_printk(const char *fmt, ...) __printf(1, 2);
+int snprintf(char *buf, size_t size, const char *fmt, ...) __printf(3, 4);
+int scnprintf(char *buf, size_t size, const char *fmt, ...) __printf(3, 4);
+int sprintf(char *buf, const char *fmt, ...) __printf(2, 3);
 #define pr_emerg(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_alert(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_crit(fmt, ...) printk(fmt, ##__VA_ARGS__)
