@@ -1,4 +1,4 @@
-use core::ffi::c_void;
+use core::ffi::{c_void, VaList};
 
 use super::cstr::{c_strlen, is_space, to_lower};
 
@@ -11,6 +11,7 @@ pub(crate) fn export_symbols() {
         ("hex2bin",      hex2bin      as *const () as usize),
         ("bin2hex",      bin2hex      as *const () as usize),
         ("simple_strtoul", simple_strtoul as *const () as usize),
+        ("sscanf",       sscanf       as *const () as usize),
         ("kstrtobool",   kstrtobool   as *const () as usize),
         ("kstrtoint",    kstrtoint    as *const () as usize),
         ("kstrtou8",     kstrtou8     as *const () as usize),
@@ -63,6 +64,11 @@ pub(crate) unsafe extern "C" fn simple_strtoul(cp: *const u8, endp: *mut *mut u8
         unsafe { *endp = end as *mut u8; }
     }
     v
+}
+
+pub(crate) unsafe extern "C" fn sscanf(s: *const u8, fmt: *const u8, mut ap: ...) -> i32 {
+    // SAFETY: caller supplies a scanf format and matching output pointers.
+    unsafe { scan_c(s, fmt, &mut ap) }
 }
 
 pub(crate) unsafe extern "C" fn kstrtobool(s: *const u8, res: *mut bool) -> i32 {
@@ -142,6 +148,15 @@ unsafe fn parse_signed(s: *const u8, base: u32, min: i64, max: i64) -> Result<i6
     } else { Ok(u as i64) }
 }
 
+pub(crate) unsafe fn parse_decimal_i32(s: *const u8) -> Result<i32, i32> {
+    unsafe { parse_signed(s, 0, i32::MIN as i64, i32::MAX as i64).map(|v| v as i32) }
+}
+
+pub(crate) unsafe fn parse_decimal_u64(s: *const u8) -> Result<u64, i32> {
+    let (v, end, ok) = unsafe { parse_unsigned(s, 0, u64::MAX) };
+    if !ok || !only_ws_or_nul(end) { Err(-LINUX_EINVAL) } else { Ok(v) }
+}
+
 unsafe fn parse_unsigned(mut s: *const u8, mut base: u32, max: u64) -> (u64, *const u8, bool) {
     if s.is_null() { return (0, s, false); }
     s = skip_ws(s);
@@ -207,4 +222,104 @@ fn digit(b: u8) -> i32 {
         b'A'..=b'Z' => (b - b'A') as i32 + 10,
         _ => -1,
     }
+}
+
+unsafe fn scan_c(mut s: *const u8, fmt: *const u8, ap: &mut VaList) -> i32 {
+    if s.is_null() || fmt.is_null() { return -LINUX_EINVAL; }
+    let mut assigned = 0i32;
+    let mut fi = 0usize;
+    loop {
+        let fc = unsafe { *fmt.add(fi) };
+        if fc == 0 { return assigned; }
+        if is_space(fc) {
+            while is_space(unsafe { *fmt.add(fi) }) { fi += 1; }
+            s = skip_ws(s);
+            continue;
+        }
+        if fc != b'%' {
+            if unsafe { *s } != fc { return assigned; }
+            s = unsafe { s.add(1) };
+            fi += 1;
+            continue;
+        }
+        fi += 1;
+        let mut c = unsafe { *fmt.add(fi) };
+        let mut width = usize::MAX;
+        if c.is_ascii_digit() {
+            width = 0;
+            while c.is_ascii_digit() {
+                width = width.saturating_mul(10).saturating_add((c - b'0') as usize);
+                fi += 1; c = unsafe { *fmt.add(fi) };
+            }
+        }
+        let mut long = 0u8;
+        while c == b'l' {
+            long = long.saturating_add(1);
+            fi += 1; c = unsafe { *fmt.add(fi) };
+        }
+        s = skip_ws(s);
+        match c {
+            b'd' | b'i' => {
+                let (v, end, ok) = unsafe { scan_signed_token(s, 0) };
+                if !ok { return assigned; }
+                if long >= 2 {
+                    let out = unsafe { ap.next_arg::<*mut i64>() };
+                    if !out.is_null() { unsafe { *out = v; } }
+                } else if long == 1 {
+                    let out = unsafe { ap.next_arg::<*mut i64>() };
+                    if !out.is_null() { unsafe { *out = v; } }
+                } else {
+                    let out = unsafe { ap.next_arg::<*mut i32>() };
+                    if !out.is_null() { unsafe { *out = v as i32; } }
+                }
+                s = end; assigned += 1;
+            }
+            b'u' | b'x' => {
+                let base = if c == b'x' { 16 } else { 10 };
+                let (v, end, ok) = unsafe { parse_unsigned(s, base, u64::MAX) };
+                if !ok { return assigned; }
+                if long >= 2 {
+                    let out = unsafe { ap.next_arg::<*mut u64>() };
+                    if !out.is_null() { unsafe { *out = v; } }
+                } else {
+                    let out = unsafe { ap.next_arg::<*mut u32>() };
+                    if !out.is_null() { unsafe { *out = v as u32; } }
+                }
+                s = end; assigned += 1;
+            }
+            b's' => {
+                let out = unsafe { ap.next_arg::<*mut u8>() };
+                let mut n = 0usize;
+                while unsafe { *s } != 0 && !is_space(unsafe { *s }) && n < width {
+                    if !out.is_null() { unsafe { *out.add(n) = *s; } }
+                    n += 1; s = unsafe { s.add(1) };
+                }
+                if n == 0 { return assigned; }
+                if !out.is_null() { unsafe { *out.add(n) = 0; } }
+                assigned += 1;
+            }
+            b'%' => {
+                if unsafe { *s } != b'%' { return assigned; }
+                s = unsafe { s.add(1) };
+            }
+            _ => return assigned,
+        }
+        fi += 1;
+    }
+}
+
+unsafe fn scan_signed_token(s: *const u8, base: u32) -> (i64, *const u8, bool) {
+    let mut p = skip_ws(s);
+    let mut neg = false;
+    let c = unsafe { *p };
+    if c == b'-' || c == b'+' {
+        neg = c == b'-';
+        p = unsafe { p.add(1) };
+    }
+    let (u, end, ok) = unsafe { parse_unsigned(p, base, i64::MAX as u64 + if neg { 1 } else { 0 }) };
+    if !ok { return (0, s, false); }
+    let v = if neg {
+        if u == i64::MAX as u64 + 1 { i64::MIN } else { -(u as i64) }
+    } else { u as i64 };
+    (v, end, true)
 }

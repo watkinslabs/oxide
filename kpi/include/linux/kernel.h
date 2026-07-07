@@ -20,6 +20,7 @@ int __warn_printk(const char *fmt, ...) __printf(1, 2);
 int snprintf(char *buf, size_t size, const char *fmt, ...) __printf(3, 4);
 int scnprintf(char *buf, size_t size, const char *fmt, ...) __printf(3, 4);
 int sprintf(char *buf, const char *fmt, ...) __printf(2, 3);
+void print_hex_dump(const char *level, const char *prefix, int prefix_type, int rowsize, int groupsize, const void *buf, size_t len, bool ascii);
 #define pr_emerg(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_alert(fmt, ...) printk(fmt, ##__VA_ARGS__)
 #define pr_crit(fmt, ...) printk(fmt, ##__VA_ARGS__)

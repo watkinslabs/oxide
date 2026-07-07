@@ -32,7 +32,9 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
+#include <linux/nls.h>
 #include <linux/of_device.h>
+#include <linux/parser.h>
 #include <linux/platform_device.h>
 #include <linux/pci.h>
 #include <linux/phy.h>
@@ -660,6 +662,7 @@ static int __init sample_init(void)
     (void)page_address(NULL);
     (void)page_to_phys(NULL);
     (void)kstrdup("driver", GFP_KERNEL);
+    (void)kstrndup("driver", 3, GFP_KERNEL);
     (void)kmemdup_noprof("driver", 6, GFP_KERNEL);
     (void)kasprintf(GFP_KERNEL, "driver %d", 1);
     (void)memset(str_buf, 0, sizeof(str_buf));
@@ -684,6 +687,7 @@ static int __init sample_init(void)
     (void)bin2hex(hex_out, hex_bin, sizeof(hex_bin));
     (void)hex_to_bin('f');
     (void)simple_strtoul("42", NULL, 10);
+    (void)sscanf("42 ok", "%d %s", &parsed_int, str_buf);
     (void)kstrtoint("-7", 10, &parsed_int);
     (void)kstrtou16("65535", 10, &parsed_u16);
     (void)kstrtobool("on", &parsed_bool);
@@ -691,6 +695,25 @@ static int __init sample_init(void)
     (void)scnprintf(str_buf, sizeof(str_buf), "v=%u", parsed_u16);
     (void)sprintf(str_buf, "%s", "ok");
     pr_debug("parsed=%d\n", parsed_int);
+    print_hex_dump("7", "sample", 0, 16, 1, random_buf, sizeof(random_buf), true);
+    {
+        static const struct match_token toks[] = {
+            { 7, "mode=%s" },
+            { 0, NULL },
+        };
+        substring_t args[1];
+        (void)match_token("mode=fast", toks, args);
+        (void)match_strdup(&args[0]);
+        (void)match_int(&args[0], &parsed_int);
+    }
+    (void)_find_first_bit(sample_bits, 128);
+    (void)_find_next_bit(sample_bits, 128, 1);
+    {
+        wchar_t wide[8];
+        u8 narrow[16];
+        (void)utf8s_to_utf16s((const u8 *)"ok", 2, UTF16_HOST_ENDIAN, wide, 8);
+        (void)utf16s_to_utf8s(wide, 2, UTF16_HOST_ENDIAN, narrow, 16);
+    }
     {
         DEFINE_DYNAMIC_DEBUG_METADATA(devdbg_descriptor, "dev=%s\n");
         __dynamic_dev_dbg(&devdbg_descriptor, &dev, "dev=%s\n", "sample");
