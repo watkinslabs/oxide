@@ -44,6 +44,7 @@ pub enum RegistryError {
     Inval,
     Exists,
     Load,
+    Init,
     Vermagic,
     Busy,
     Noent,
@@ -64,6 +65,9 @@ struct ModuleRecord {
     refcnt: usize,
     state:  ModuleState,
 }
+
+type InitFn = unsafe extern "C" fn() -> i32;
+type ExitFn = unsafe extern "C" fn();
 
 static REGISTRY: Spinlock<Vec<Option<ModuleRecord>>, ModulesLockClass>
     = Spinlock::new(Vec::new());
@@ -91,13 +95,7 @@ pub fn load_blob_named(bytes: &[u8], name: Option<&str>) -> Result<usize, Regist
         }
         None => synthetic_name(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
     };
-    let mut g = REGISTRY.lock();
-    if g.iter().any(|slot| slot.as_ref().is_some_and(|r| r.name == final_name)) {
-        return Err(RegistryError::Exists);
-    }
-    let idx = g.len();
-    g.push(Some(ModuleRecord { name: final_name, module: m, refcnt: 0, state: ModuleState::Live }));
-    Ok(idx)
+    register_loaded_module(final_name, m)
 }
 
 /// Snapshot for `/proc/modules`-style introspection.
@@ -127,18 +125,19 @@ pub fn count() -> usize {
 /// Legacy slot unload retained for internal callers; sys_delete_module uses names.
 /// # C: O(1)
 pub fn unload(idx: usize) -> bool {
-    let mut g = REGISTRY.lock();
-    unload_slot(&mut g, idx).is_ok()
+    unload_slot(idx).is_ok()
 }
 
 /// Linux-shaped unload by module name.
 /// # C: O(N)
 pub fn unload_by_name(name: &str) -> Result<(), RegistryError> {
     validate_name(name)?;
-    let mut g = REGISTRY.lock();
-    let idx = g.iter().position(|slot| slot.as_ref().is_some_and(|r| r.name == name))
-        .ok_or(RegistryError::Noent)?;
-    unload_slot(&mut g, idx)
+    let idx = {
+        let g = REGISTRY.lock();
+        g.iter().position(|slot| slot.as_ref().is_some_and(|r| r.name == name))
+            .ok_or(RegistryError::Noent)?
+    };
+    unload_slot(idx)
 }
 
 /// # C: O(1)
@@ -179,13 +178,135 @@ pub unsafe fn init_exports() {
     crate::linux_usb::export_symbols();
 }
 
-fn unload_slot(g: &mut Vec<Option<ModuleRecord>>, idx: usize) -> Result<(), RegistryError> {
-    let rec = g.get_mut(idx).ok_or(RegistryError::Noent)?
-        .as_mut().ok_or(RegistryError::Noent)?;
-    if rec.refcnt != 0 { return Err(RegistryError::Busy); }
-    rec.state = ModuleState::Going;
-    g[idx] = None;
+fn register_loaded_module(name: String, module: LoadedModule) -> Result<usize, RegistryError> {
+    validate_name(&name)?;
+    let init = init_fns(&module)?;
+    let idx = {
+        let mut g = REGISTRY.lock();
+        if g.iter().any(|slot| slot.as_ref().is_some_and(|r| r.name == name)) {
+            return Err(RegistryError::Exists);
+        }
+        let idx = g.len();
+        g.push(Some(ModuleRecord { name, module, refcnt: 0, state: ModuleState::Coming }));
+        idx
+    };
+    if run_init(&init).is_err() {
+        remove_after_init_failure(idx);
+        return Err(RegistryError::Init);
+    }
+    let mut g = REGISTRY.lock();
+    if let Some(Some(rec)) = g.get_mut(idx) {
+        rec.state = ModuleState::Live;
+    }
+    Ok(idx)
+}
+
+fn unload_slot(idx: usize) -> Result<(), RegistryError> {
+    let exit = {
+        let mut g = REGISTRY.lock();
+        let rec = g.get_mut(idx).ok_or(RegistryError::Noent)?
+            .as_mut().ok_or(RegistryError::Noent)?;
+        if rec.refcnt != 0 { return Err(RegistryError::Busy); }
+        rec.state = ModuleState::Going;
+        exit_fns(&rec.module)?
+    };
+    for f in exit.iter().rev() {
+        // SAFETY: function addresses come from relocated module exit sections or cleanup_module.
+        unsafe { f() };
+    }
+    let mut g = REGISTRY.lock();
+    if let Some(slot) = g.get_mut(idx) {
+        *slot = None;
+    }
     Ok(())
+}
+
+fn remove_after_init_failure(idx: usize) {
+    let mut g = REGISTRY.lock();
+    if let Some(slot) = g.get_mut(idx) {
+        if let Some(rec) = slot.as_mut() {
+            rec.state = ModuleState::Going;
+        }
+        *slot = None;
+    }
+}
+
+fn run_init(init: &[InitFn]) -> Result<(), ()> {
+    for f in init {
+        // SAFETY: function addresses come from relocated module init sections or init_module.
+        let rc = unsafe { f() };
+        if rc != 0 { return Err(()); }
+    }
+    Ok(())
+}
+
+fn init_fns(m: &LoadedModule) -> Result<Vec<InitFn>, RegistryError> {
+    if let Some(addr) = m.symbols.get("init_module").copied() {
+        // SAFETY: ET_REL symbol `init_module` has Linux module init ABI.
+        return Ok(alloc::vec![unsafe { init_fn(addr as usize) }]);
+    }
+    collect_initcall_sections(m)
+}
+
+fn exit_fns(m: &LoadedModule) -> Result<Vec<ExitFn>, RegistryError> {
+    if let Some(addr) = m.symbols.get("cleanup_module").copied() {
+        // SAFETY: ET_REL symbol `cleanup_module` has Linux module exit ABI.
+        return Ok(alloc::vec![unsafe { exit_fn(addr as usize) }]);
+    }
+    collect_exitcall_sections(m)
+}
+
+fn collect_initcall_sections(m: &LoadedModule) -> Result<Vec<InitFn>, RegistryError> {
+    let mut out = Vec::new();
+    for s in &m.sections {
+        if !is_initcall_section(&s.name) { continue; }
+        for addr in section_ptrs(&s.bytes)? {
+            // SAFETY: initcall section entries are relocated function pointers.
+            out.push(unsafe { init_fn(addr) });
+        }
+    }
+    Ok(out)
+}
+
+fn collect_exitcall_sections(m: &LoadedModule) -> Result<Vec<ExitFn>, RegistryError> {
+    let mut out = Vec::new();
+    for s in &m.sections {
+        if s.name != ".exitcall.exit" { continue; }
+        for addr in section_ptrs(&s.bytes)? {
+            // SAFETY: exitcall section entries are relocated function pointers.
+            out.push(unsafe { exit_fn(addr) });
+        }
+    }
+    Ok(out)
+}
+
+fn is_initcall_section(name: &str) -> bool {
+    name.starts_with(".initcall") && name.ends_with(".init")
+}
+
+fn section_ptrs(bytes: &[u8]) -> Result<Vec<usize>, RegistryError> {
+    const PTR: usize = core::mem::size_of::<usize>();
+    if bytes.len() % PTR != 0 { return Err(RegistryError::Load); }
+    let mut out = Vec::new();
+    let mut off = 0;
+    while off < bytes.len() {
+        let mut raw = [0u8; PTR];
+        raw.copy_from_slice(&bytes[off..off + PTR]);
+        let addr = usize::from_ne_bytes(raw);
+        if addr != 0 { out.push(addr); }
+        off += PTR;
+    }
+    Ok(out)
+}
+
+unsafe fn init_fn(addr: usize) -> InitFn {
+    // SAFETY: caller proves addr is an init function pointer with Linux module ABI.
+    unsafe { core::mem::transmute::<usize, InitFn>(addr) }
+}
+
+unsafe fn exit_fn(addr: usize) -> ExitFn {
+    // SAFETY: caller proves addr is an exit function pointer with Linux module ABI.
+    unsafe { core::mem::transmute::<usize, ExitFn>(addr) }
 }
 
 fn validate_name(name: &str) -> Result<(), RegistryError> {
@@ -249,82 +370,4 @@ extern "C" fn kassert_thunk(cond: u64, msg_p: *const u8, msg_len: usize) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::collections::BTreeMap;
-    use crate::PlacedSection;
-
-    fn reset() {
-        REGISTRY.lock().clear();
-        NEXT_ID.store(0, Ordering::Relaxed);
-    }
-
-    fn empty_module() -> LoadedModule {
-        LoadedModule { sections: Vec::new(), symbols: BTreeMap::new(), info: ModuleInfo::default() }
-    }
-
-    fn insert(name: &str, refcnt: usize) {
-        REGISTRY.lock().push(Some(ModuleRecord {
-            name: String::from(name),
-            module: empty_module(),
-            refcnt,
-            state: ModuleState::Live,
-        }));
-    }
-
-    #[test]
-    fn snapshot_reports_name_state_and_counts() {
-        reset();
-        let mut m = empty_module();
-        m.sections.push(PlacedSection {
-            name: String::from(".text"),
-            bytes: alloc::vec![0u8; 12],
-            vbase: 0,
-            flags: 0,
-        });
-        m.symbols.insert(String::from("init_module"), 1);
-        REGISTRY.lock().push(Some(ModuleRecord {
-            name: String::from("sample"),
-            module: m,
-            refcnt: 2,
-            state: ModuleState::Live,
-        }));
-        let s = snapshot();
-        assert_eq!(s.len(), 1);
-        assert_eq!(s[0].name, "sample");
-        assert_eq!(s[0].license, None);
-        assert_eq!(s[0].vermagic, None);
-        assert_eq!(s[0].params.len(), 0);
-        assert_eq!(s[0].size, 12);
-        assert_eq!(s[0].refcnt, 2);
-        assert_eq!(s[0].state.as_str(), "Live");
-        assert_eq!(s[0].sections, 1);
-        assert_eq!(s[0].symbols, 1);
-    }
-
-    #[test]
-    fn unload_by_name_removes_only_matching_live_record() {
-        reset();
-        insert("one", 0);
-        insert("two", 0);
-        assert_eq!(unload_by_name("one"), Ok(()));
-        assert_eq!(count(), 1);
-        assert_eq!(module_name(1), Some(String::from("two")));
-        assert_eq!(unload_by_name("one"), Err(RegistryError::Noent));
-    }
-
-    #[test]
-    fn unload_busy_module_fails() {
-        reset();
-        insert("busy", 1);
-        assert_eq!(unload_by_name("busy"), Err(RegistryError::Busy));
-        assert_eq!(count(), 1);
-    }
-
-    #[test]
-    fn invalid_names_are_rejected() {
-        reset();
-        assert_eq!(unload_by_name(""), Err(RegistryError::Inval));
-        assert_eq!(unload_by_name("bad/name"), Err(RegistryError::Inval));
-    }
-}
+mod tests;
