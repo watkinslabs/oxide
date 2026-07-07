@@ -40,7 +40,18 @@ fn trace_dbus_stream(data: &[u8]) {
         }
         klog::write_raw(b"]\n");
     }
-    let hit = has(data, b"login1")
+    // Widen to the gdm private connection: dump EVERY D-Bus frame written by a
+    // gdm process (daemon or session-worker) so the Hello handshake + any
+    // reentrant call/reply that stalls the greeter is visible in-order.
+    let is_gdm = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
+        .unwrap_or(false);
+    let hit = is_gdm
+        || has(data, b"login1")
+        || has(data, b"io.systemd")        // Varlink userdb queries (from any proc)
+        || has(data, b"UserRecord")        // Varlink userdb replies
+        || has(data, b"GroupRecord")
+        || has(data, b"groupMembers")
         || has(data, b"org.freedesktop.DBus.Error");
     if !hit { return; }
     let n = core::cmp::min(data.len(), 384);
