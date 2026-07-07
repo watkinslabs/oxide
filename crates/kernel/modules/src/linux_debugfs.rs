@@ -55,52 +55,6 @@ pub struct LinuxDentry {
     path: String,
 }
 
-struct DebugFileData {
-    ops: usize,
-    data: usize,
-}
-
-struct DebugFileOps;
-impl FileOps for DebugFileOps {
-    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = inode.private::<DebugFileData>().ok_or(VfsError::Einval)?;
-        let ops = linux_ops(d.ops).ok_or(VfsError::Einval)?;
-        let read = ops.read.ok_or(VfsError::Einval)?;
-        let mut opened = open_debug_file(ops, d.data)?;
-        let mut pos = off as i64;
-        // SAFETY: callback pointer comes from module-owned file_operations; VFS passes a valid kernel buffer.
-        let r = checked_size(unsafe { read(&mut opened.file, buf.as_mut_ptr() as *mut c_char, buf.len(), &mut pos) });
-        opened.release(ops);
-        r
-    }
-
-    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
-        let d = inode.private::<DebugFileData>().ok_or(VfsError::Einval)?;
-        let ops = linux_ops(d.ops).ok_or(VfsError::Einval)?;
-        let write = ops.write.ok_or(VfsError::Einval)?;
-        let mut opened = open_debug_file(ops, d.data)?;
-        let mut pos = off as i64;
-        // SAFETY: callback pointer comes from module-owned file_operations; VFS passes a valid kernel buffer.
-        let r = checked_size(unsafe { write(&mut opened.file, buf.as_ptr() as *const c_char, buf.len(), &mut pos) });
-        opened.release(ops);
-        r
-    }
-}
-
-struct OpenedFile {
-    inode: LinuxInode,
-    file:  LinuxFile,
-}
-
-impl OpenedFile {
-    fn release(&mut self, ops: &LinuxFileOperations) {
-        if let Some(release) = ops.release {
-            // SAFETY: release callback belongs to the same file_operations used for open/read/write.
-            let _ = unsafe { release(&mut self.inode, &mut self.file) };
-        }
-    }
-}
-
 #[derive(Copy, Clone)]
 enum NumKind { U8, U16, U32, U64, Bool }
 
@@ -160,7 +114,7 @@ extern "C" fn debugfs_create_dir(name: *const c_char, parent: *mut LinuxDentry) 
     create_entry(name, parent, None, DEFAULT_DIR_MODE, true)
 }
 
-extern "C" fn debugfs_create_file(
+pub(crate) extern "C" fn debugfs_create_file(
     name: *const c_char,
     mode: u16,
     parent: *mut LinuxDentry,
@@ -168,8 +122,7 @@ extern "C" fn debugfs_create_file(
     fops: *const LinuxFileOperations,
 ) -> *mut LinuxDentry {
     if fops.is_null() { return null_mut(); }
-    let d = DebugFileData { ops: fops as usize, data: data as usize };
-    let inode = regular_inode(mode, Arc::new(DebugFileOps), Arc::new(d));
+    let inode = crate::linux_debugfs_file::debug_file_inode(mode, data, fops, 0);
     create_entry(name, parent, Some(inode), mode, false)
 }
 
@@ -182,8 +135,7 @@ extern "C" fn debugfs_create_file_size(
     size: u64,
 ) -> *mut LinuxDentry {
     if fops.is_null() { return null_mut(); }
-    let d = DebugFileData { ops: fops as usize, data: data as usize };
-    let inode = regular_inode_size(mode, Arc::new(DebugFileOps), Arc::new(d), size);
+    let inode = crate::linux_debugfs_file::debug_file_inode(mode, data, fops, size);
     create_entry(name, parent, Some(inode), mode, false)
 }
 
@@ -323,24 +275,11 @@ impl FileOps for EmptyOps {
     fn write(&self, _inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
 }
 
-fn linux_ops(ptr: usize) -> Option<&'static LinuxFileOperations> {
+pub(crate) fn linux_ops(ptr: usize) -> Option<&'static LinuxFileOperations> {
     if ptr == 0 { None } else {
         // SAFETY: pointer comes from module-owned static file_operations.
         Some(unsafe { &*(ptr as *const LinuxFileOperations) })
     }
-}
-
-fn open_debug_file(ops: &LinuxFileOperations, data: usize) -> KResult<OpenedFile> {
-    let mut opened = OpenedFile {
-        inode: LinuxInode { i_rdev: 0, private: data as *mut c_void },
-        file: LinuxFile { private_data: data as *mut c_void },
-    };
-    if let Some(open) = ops.open {
-        // SAFETY: open callback pointer comes from module-owned file_operations.
-        let rc = unsafe { open(&mut opened.inode, &mut opened.file) };
-        if rc < 0 { return Err(errno_to_vfs(-rc)); }
-    }
-    Ok(opened)
 }
 
 pub(crate) fn read_bytes_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
@@ -372,11 +311,11 @@ pub(crate) const NULL_FILE_OPS: LinuxFileOperations = LinuxFileOperations {
     llseek: null_mut(),
 };
 
-fn checked_size(v: isize) -> KResult<usize> {
+pub(crate) fn checked_size(v: isize) -> KResult<usize> {
     if v < 0 { Err(errno_to_vfs((-v) as i32)) } else { Ok(v as usize) }
 }
 
-fn errno_to_vfs(e: i32) -> VfsError {
+pub(crate) fn errno_to_vfs(e: i32) -> VfsError {
     match e {
         2 => VfsError::Enoent,
         12 => VfsError::Enomem,
@@ -481,4 +420,5 @@ mod tests {
         debugfs_remove(d);
         assert!(tracefs::debug_root().lookup_path("debugfs_num").is_none());
     }
+
 }
