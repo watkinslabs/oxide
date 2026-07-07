@@ -14,6 +14,7 @@ use sync::{Spinlock, Timer as TimerLock};
 
 /// Periodic callback. Receives the current monotonic time (ns).
 pub type TimerFn = fn(u64);
+pub type OneShotFn = fn(usize);
 
 /// Opaque id for a registered periodic timer.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -32,8 +33,10 @@ impl TimerId {
 }
 
 struct Entry { id: TimerId, interval_ns: u64, last_ns: u64, f: TimerFn }
+struct OneShot { id: TimerId, deadline_ns: u64, arg: usize, f: OneShotFn }
 
 static TIMERS: Spinlock<Vec<Entry>, TimerLock> = Spinlock::new(Vec::new());
+static ONESHOTS: Spinlock<Vec<OneShot>, TimerLock> = Spinlock::new(Vec::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Register a periodic callback fired roughly every `interval_ns` from the
@@ -58,12 +61,32 @@ pub fn unregister_periodic(id: TimerId) -> bool {
     g.len() != before
 }
 
+/// Register a one-shot callback fired from the timer driver's process context
+/// when `now_ns >= deadline_ns`.
+/// # C: O(1) amortized
+pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
+    let id = next_id();
+    ONESHOTS.lock().push(OneShot { id, deadline_ns, arg, f });
+    id
+}
+
+/// Unregister a one-shot timer previously returned by `register_oneshot`.
+/// Returns true if the timer was still registered.
+/// # C: O(N registered)
+pub fn unregister_oneshot(id: TimerId) -> bool {
+    let mut g = ONESHOTS.lock();
+    let before = g.len();
+    g.retain(|entry| entry.id != id);
+    g.len() != before
+}
+
 /// Fire every registered timer whose interval has elapsed since its last
 /// run. Called by the timer driver kthread. Callbacks run WITHOUT the
 /// registry lock held, so a callback may itself arm timers.
 /// # C: O(N registered) + callback cost
 pub fn run_due(now_ns: u64) {
     let mut due: Vec<TimerFn> = Vec::new();
+    let mut one: Vec<(OneShotFn, usize)> = Vec::new();
     {
         let mut g = TIMERS.lock();
         for e in g.iter_mut() {
@@ -73,7 +96,25 @@ pub fn run_due(now_ns: u64) {
             }
         }
     }
+    {
+        let mut g = ONESHOTS.lock();
+        let mut i = 0;
+        while i < g.len() {
+            if now_ns >= g[i].deadline_ns {
+                let e = g.remove(i);
+                one.push((e.f, e.arg));
+            } else {
+                i += 1;
+            }
+        }
+    }
     for f in due { f(now_ns); }
+    for (f, arg) in one { f(arg); }
+}
+
+fn next_id() -> TimerId {
+    let raw = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    TimerId(if raw == 0 { NEXT_ID.fetch_add(1, Ordering::Relaxed) } else { raw })
 }
 
 #[cfg(test)]
@@ -86,6 +127,7 @@ mod tests {
 
     fn reset() {
         TIMERS.lock().clear();
+        ONESHOTS.lock().clear();
         NEXT_ID.store(1, Ordering::Relaxed);
         A.store(0, Ordering::Relaxed);
         B.store(0, Ordering::Relaxed);
@@ -136,5 +178,23 @@ mod tests {
         run_due(20);
 
         assert_eq!(A.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn oneshot_fires_once_and_unregisters() {
+        reset();
+
+        let a = register_oneshot(10, 3, |v| { A.fetch_add(v as u64, Ordering::Relaxed); });
+        let b = register_oneshot(20, 7, |v| { B.fetch_add(v as u64, Ordering::Relaxed); });
+        assert!(unregister_oneshot(b));
+        assert!(!unregister_oneshot(b));
+        run_due(9);
+        assert_eq!(A.load(Ordering::Relaxed), 0);
+        run_due(10);
+        run_due(30);
+
+        assert_eq!(A.load(Ordering::Relaxed), 3);
+        assert_eq!(B.load(Ordering::Relaxed), 0);
+        assert!(!unregister_oneshot(a));
     }
 }

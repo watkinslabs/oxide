@@ -1,9 +1,15 @@
 #include <linux/bitmap.h>
 #include <linux/atomic.h>
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/gfp.h>
+#include <linux/hrtimer.h>
 #include <linux/idr.h>
+#include <linux/interrupt.h>
+#include <linux/jiffies.h>
 #include <linux/kref.h>
+#include <linux/kthread.h>
+#include <linux/ktime.h>
 #include <linux/list.h>
 #include <linux/lockdep.h>
 #include <linux/mm.h>
@@ -15,9 +21,12 @@
 #include <linux/rwsem.h>
 #include <linux/seqlock.h>
 #include <linux/slab.h>
+#include <linux/sched.h>
 #include <linux/spinlock.h>
+#include <linux/timer.h>
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
+#include <linux/workqueue.h>
 
 struct sample {
     int value;
@@ -29,7 +38,12 @@ static LIST_HEAD(samples);
 static DEFINE_XARRAY(sample_xa);
 static DEFINE_IDR(sample_idr);
 static DECLARE_BITMAP(sample_bits, 128);
+static DECLARE_WORK(sample_work, NULL);
+static DECLARE_TASKLET(sample_tasklet, NULL, 0);
 static void sample_release(struct kref *kref) { (void)kref; }
+static int sample_thread(void *data) { return data != NULL; }
+static void sample_timer_fn(struct timer_list *timer) { (void)timer; }
+static enum hrtimer_restart sample_hrtimer_fn(struct hrtimer *timer) { (void)timer; return HRTIMER_NORESTART; }
 
 static int __init sample_init(void)
 {
@@ -42,6 +56,10 @@ static int __init sample_init(void)
     seqlock_t seq;
     struct completion comp;
     wait_queue_head_t wait;
+    struct timer_list timer;
+    struct hrtimer hrtimer;
+    struct delayed_work delayed;
+    struct task_struct *task;
     atomic_t atom;
     refcount_t refs;
     struct kref kref;
@@ -65,6 +83,42 @@ static int __init sample_init(void)
     (void)page_to_phys(NULL);
     (void)kstrdup("driver", GFP_KERNEL);
     (void)kasprintf(GFP_KERNEL, "driver %d", 1);
+    (void)jiffies;
+    (void)msecs_to_jiffies(10);
+    (void)jiffies_to_msecs(1);
+    (void)ktime_get();
+    (void)ktime_get_ns();
+    (void)ktime_add_ns(ns_to_ktime(1), 1);
+    msleep(1);
+    usleep_range(10, 20);
+    udelay(1);
+    mdelay(1);
+    timer_setup(&timer, sample_timer_fn, 0);
+    timer.expires = jiffies + msecs_to_jiffies(1);
+    add_timer(&timer);
+    (void)mod_timer(&timer, jiffies + 1);
+    (void)del_timer_sync(&timer);
+    hrtimer_init(&hrtimer, 0, HRTIMER_MODE_REL);
+    hrtimer.function = sample_hrtimer_fn;
+    (void)hrtimer_start(&hrtimer, ns_to_ktime(1), HRTIMER_MODE_REL);
+    (void)hrtimer_cancel(&hrtimer);
+    INIT_WORK(&sample_work, NULL);
+    (void)schedule_work(&sample_work);
+    flush_scheduled_work();
+    (void)cancel_work_sync(&sample_work);
+    INIT_DELAYED_WORK(&delayed, NULL);
+    (void)schedule_delayed_work(&delayed, 1);
+    (void)cancel_delayed_work_sync(&delayed);
+    task = kthread_run(sample_thread, &s, "sample");
+    (void)kthread_should_stop();
+    (void)kthread_stop(task);
+    set_current_state(TASK_INTERRUPTIBLE);
+    schedule();
+    tasklet_init(&sample_tasklet, NULL, 0);
+    tasklet_schedule(&sample_tasklet);
+    tasklet_disable(&sample_tasklet);
+    tasklet_enable(&sample_tasklet);
+    tasklet_kill(&sample_tasklet);
     spin_lock_init(&spl);
     spin_lock(&spl);
     spin_unlock(&spl);

@@ -156,6 +156,7 @@ pub unsafe fn init_exports() {
     export("kassert_thunk",      kassert_thunk            as *const () as usize, false);
     crate::linux_alloc::export_symbols();
     crate::linux_sync::export_symbols();
+    crate::linux_time::export_symbols();
 }
 
 fn unload_slot(g: &mut Vec<Option<ModuleRecord>>, idx: usize) -> Result<(), RegistryError> {
