@@ -13,7 +13,7 @@
 // from the saved frame; reordering breaks the boundary. Tests pin
 // every offset.
 
-use syscall::{dispatch, SyscallArgs};
+use syscall::SyscallArgs;
 
 /// Saved user-state on syscall / IRQ entry. The trampoline pushes
 /// caller-saved + callee-saved GPRs in this exact order; the
@@ -67,28 +67,6 @@ impl PtRegsX86_64 {
     }
 }
 
-/// Bridge from the trampoline's `PtRegsX86_64` frame to the
-/// architecture-neutral `syscall::dispatch`. The asm landing pad
-/// (`oxide_syscall_entry`) calls this with `regs = current
-/// per-CPU kernel-stack PtRegs frame`.
-///
-/// # SAFETY: `regs` points to a fully-populated `PtRegsX86_64` on
-/// the current kernel stack; the kernel owns the frame; userspace
-/// can't observe it until `sysretq` is reached.
-/// # C: O(1) + dispatch fn cost
-#[no_mangle]
-pub unsafe extern "C" fn oxide_dispatch_from_pt_regs_x86_64(regs: *mut PtRegsX86_64) {
-    // SAFETY: regs is a kernel-stack pointer to a populated frame
-    // per the function contract above; the trampoline guarantees
-    // it lives across this call. We need both a read (args+nr) and
-    // a write-back (rax) which is why we take `*mut`.
-    let r = unsafe { &mut *regs };
-    let nr   = r.syscall_nr();
-    let args = r.to_syscall_args();
-    let rv   = dispatch(nr, &args);
-    r.set_return(rv);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,18 +117,4 @@ mod tests {
         assert_eq!(args.a5, 0x0);
     }
 
-    #[test]
-    fn dispatch_writes_back_to_rax() {
-        let mut regs = PtRegsX86_64::default();
-        regs.rax = 7777; // unimplemented syscall ⇒ ENOSYS
-        // SAFETY: hosted test; `regs` is a stack-local PtRegs that
-        // lives across this call; `dispatch_from_pt_regs` reads
-        // nr+args and writes rax — exactly its documented contract.
-        unsafe {
-            oxide_dispatch_from_pt_regs_x86_64(&mut regs as *mut _);
-        }
-        // ENOSYS = 38; encoded as `-(38i32 as i64) as u64` per `15§1.3`.
-        let expected = -38i64 as u64;
-        assert_eq!(regs.rax, expected, "rax must hold -errno on ENOSYS");
-    }
 }

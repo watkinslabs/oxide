@@ -1,17 +1,14 @@
-// Syscall dispatch — Linux-numbered ABI table per docs/15.
+// Syscall ABI boundary crate per docs/15, docs/53. Holds the shared ABI
+// vocabulary only — NOT a dispatcher. The single kernel dispatcher is
+// `oxide_syscall_dispatch` in the `syscalls` crate (`15§4.1`), driven by the
+// per-arch syscall_entry asm; per-syscall work lives in `syscalls`/subsystems.
 //
-// `dispatch.rs` — `SyscallArgs`, `SyscallFn`, the 462-entry static
-// table, `dispatch(nr, args) -> i64` with the `15§1.3` encoding.
+// `args.rs` — `SyscallArgs` register block per `15§4`.
 // `userptr.rs` — `UserPtr<T>` / `UserSlice<T>` range + alignment
 // validation per `15§1.4`.
 // `errno.rs` — Linux-numbered `Errno` enum used as the universal
 // `KResult<T>` error type at the syscall boundary.
-//
-// Per-syscall handlers (`sys_read`, `sys_write`, `sys_mmap`, …) land
-// alongside their backing subsystems and replace the corresponding
-// `sys_enosys` slot at table-build time. The arch trampoline that
-// actually drives `dispatch` (`15§4.1`) is HAL-side and rides with
-// the per-arch syscall_entry asm.
+// `nrs.rs` — Linux syscall numbers. `tracepoint.rs` — sys_enter/exit hooks.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -20,21 +17,15 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
-pub mod dispatch;
+pub mod args;
 pub mod errno;
 pub mod nrs;
 pub mod tracepoint;
 pub mod userptr;
 
-pub use dispatch::{
-    dispatch, handler_for, is_enosys, sys_enosys, SyscallArgs, SyscallFn,
-    SYSCALL_TABLE, SYSCALL_TABLE_LEN,
-};
+pub use args::SyscallArgs;
 pub use errno::{Errno, KResult};
 pub use userptr::{scan_user_cstr, UserPtr, UserSlice};
-
-#[cfg(test)]
-mod tests;
 
 /// Subsystem-level error per `38`. Kept for the existing skeleton
 /// `init` shim; the canonical syscall-error type is `Errno` above.
