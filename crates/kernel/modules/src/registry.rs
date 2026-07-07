@@ -34,6 +34,7 @@ pub struct ModuleSnapshot {
     pub params:   Vec<ModuleParam>,
     pub size:     usize,
     pub refcnt:   usize,
+    pub taints:   u64,
     pub state:    ModuleState,
     pub sections: usize,
     pub symbols:  usize,
@@ -60,10 +61,12 @@ impl SymResolver for KernelSymResolver {
 }
 
 struct ModuleRecord {
-    name:   String,
-    module: LoadedModule,
-    refcnt: usize,
-    state:  ModuleState,
+    name:           String,
+    module:         LoadedModule,
+    refcnt:         usize,
+    taints:         u64,
+    state:          ModuleState,
+    unload_pending: bool,
 }
 
 type InitFn = unsafe extern "C" fn() -> i32;
@@ -72,6 +75,10 @@ type ExitFn = unsafe extern "C" fn();
 static REGISTRY: Spinlock<Vec<Option<ModuleRecord>>, ModulesLockClass>
     = Spinlock::new(Vec::new());
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+const TAINT_PROPRIETARY_MODULE: u64 = 1 << 0;
+const TAINT_FORCED_RMMOD:       u64 = 1 << 3;
+const TAINT_OOT_MODULE:         u64 = 1 << 12;
 
 /// Load + register a module from raw ELF ET_REL bytes.
 /// # C: O(N_sections + N_relocs)
@@ -109,6 +116,7 @@ pub fn snapshot() -> Vec<ModuleSnapshot> {
             params:   r.module.info.params.clone(),
             size:     module_size(&r.module),
             refcnt:   r.refcnt,
+            taints:   r.taints,
             state:    r.state,
             sections: r.module.sections.len(),
             symbols:  r.module.symbols.len(),
@@ -125,19 +133,55 @@ pub fn count() -> usize {
 /// Legacy slot unload retained for internal callers; sys_delete_module uses names.
 /// # C: O(1)
 pub fn unload(idx: usize) -> bool {
-    unload_slot(idx).is_ok()
+    unload_slot(idx, false).is_ok()
 }
 
 /// Linux-shaped unload by module name.
 /// # C: O(N)
 pub fn unload_by_name(name: &str) -> Result<(), RegistryError> {
+    unload_by_name_flags(name, false)
+}
+
+/// Linux-shaped unload by module name with force-taint intent.
+/// # C: O(N)
+pub fn unload_by_name_flags(name: &str, force: bool) -> Result<(), RegistryError> {
     validate_name(name)?;
     let idx = {
         let g = REGISTRY.lock();
         g.iter().position(|slot| slot.as_ref().is_some_and(|r| r.name == name))
             .ok_or(RegistryError::Noent)?
     };
-    unload_slot(idx)
+    unload_slot(idx, force)
+}
+
+/// Try to pin a live or coming module by name.
+/// # C: O(N)
+pub fn try_get_by_name(name: &str) -> bool {
+    if validate_name(name).is_err() { return false; }
+    let mut g = REGISTRY.lock();
+    let Some(rec) = g.iter_mut()
+        .filter_map(|slot| slot.as_mut())
+        .find(|r| r.name == name) else { return false; };
+    if rec.state == ModuleState::Going || rec.unload_pending { return false; }
+    rec.refcnt = rec.refcnt.saturating_add(1);
+    true
+}
+
+/// Drop a module pin and drain a pending unload when the last pin leaves.
+/// # C: O(N)
+pub fn put_by_name(name: &str) -> Result<(), RegistryError> {
+    if validate_name(name).is_err() { return Err(RegistryError::Inval); }
+    let drain = {
+        let mut g = REGISTRY.lock();
+        let Some((idx, rec)) = g.iter_mut().enumerate()
+            .filter_map(|(idx, slot)| slot.as_mut().map(|r| (idx, r)))
+            .find(|(_, r)| r.name == name) else { return Err(RegistryError::Noent); };
+        if rec.refcnt == 0 { return Err(RegistryError::Inval); }
+        rec.refcnt -= 1;
+        if rec.refcnt == 0 && rec.unload_pending { Some(idx) } else { None }
+    };
+    if let Some(idx) = drain { finish_unload_slot(idx)?; }
+    Ok(())
 }
 
 /// # C: O(1)
@@ -187,7 +231,10 @@ fn register_loaded_module(name: String, module: LoadedModule) -> Result<usize, R
             return Err(RegistryError::Exists);
         }
         let idx = g.len();
-        g.push(Some(ModuleRecord { name, module, refcnt: 0, state: ModuleState::Coming }));
+        let taints = module_taints(&module);
+        g.push(Some(ModuleRecord {
+            name, module, refcnt: 0, taints, state: ModuleState::Coming, unload_pending: false,
+        }));
         idx
     };
     if run_init(&init).is_err() {
@@ -201,14 +248,27 @@ fn register_loaded_module(name: String, module: LoadedModule) -> Result<usize, R
     Ok(idx)
 }
 
-fn unload_slot(idx: usize) -> Result<(), RegistryError> {
-    let exit = {
+fn unload_slot(idx: usize, force: bool) -> Result<(), RegistryError> {
+    {
         let mut g = REGISTRY.lock();
         let rec = g.get_mut(idx).ok_or(RegistryError::Noent)?
             .as_mut().ok_or(RegistryError::Noent)?;
-        if rec.refcnt != 0 { return Err(RegistryError::Busy); }
+        if rec.state == ModuleState::Going { return Err(RegistryError::Busy); }
         rec.state = ModuleState::Going;
-        exit_fns(&rec.module)?
+        rec.unload_pending = true;
+        if force { rec.taints |= TAINT_FORCED_RMMOD; }
+        if rec.refcnt != 0 { return Err(RegistryError::Busy); }
+    }
+    finish_unload_slot(idx)
+}
+
+fn finish_unload_slot(idx: usize) -> Result<(), RegistryError> {
+    let (name, exit) = {
+        let g = REGISTRY.lock();
+        let rec = g.get(idx).ok_or(RegistryError::Noent)?
+            .as_ref().ok_or(RegistryError::Noent)?;
+        if rec.refcnt != 0 { return Err(RegistryError::Busy); }
+        (rec.name.clone(), exit_fns(&rec.module)?)
     };
     for f in exit.iter().rev() {
         // SAFETY: function addresses come from relocated module exit sections or cleanup_module.
@@ -218,6 +278,7 @@ fn unload_slot(idx: usize) -> Result<(), RegistryError> {
     if let Some(slot) = g.get_mut(idx) {
         *slot = None;
     }
+    crate::symtab::unexport_module(&name);
     Ok(())
 }
 
@@ -319,6 +380,15 @@ fn validate_name(name: &str) -> Result<(), RegistryError> {
 
 fn module_size(m: &LoadedModule) -> usize {
     m.sections.iter().map(|s| s.len()).sum()
+}
+
+fn module_taints(m: &LoadedModule) -> u64 {
+    let mut t = TAINT_OOT_MODULE;
+    match m.info.license.as_deref() {
+        Some(license) if crate::symtab::license_is_gpl(license) => {}
+        _ => { t |= TAINT_PROPRIETARY_MODULE; }
+    }
+    t
 }
 
 fn synthetic_name(id: usize) -> String {

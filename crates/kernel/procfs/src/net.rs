@@ -176,9 +176,9 @@ fn modules_body() -> alloc::vec::Vec<u8> {
     for m in modules::registry::snapshot() {
         let license = m.license.as_deref().unwrap_or("-");
         let vermagic = m.vermagic.as_deref().unwrap_or("-");
-        let _ = writeln!(s, "{} {} {} - {} 0x0 sec={} sym={} license={} vermagic={} params={}",
+        let _ = writeln!(s, "{} {} {} - {} 0x0 sec={} sym={} taint=0x{:x} license={} vermagic={} params={}",
             m.name, m.size, m.refcnt, m.state.as_str(), m.sections, m.symbols,
-            license, vermagic, m.params.len());
+            m.taints, license, vermagic, m.params.len());
     }
     s.into_bytes()
 }
