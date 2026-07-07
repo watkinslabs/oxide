@@ -24,7 +24,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | D1 | pwritev / pwritev2 (296/328) | DONE | B632 #TBD | `296_pwritev.rs` now a positional write mirroring `preadv`: extracts pos_l/pos_h, writes each iovec at the running offset via `inode().write(off,buf)`, never touches `f_pos`. |
 | D2 | sync(2) | DONE | B633 #TBD | new `162_sync.rs sys_sync`: iterate `all_mounts()`, dedup superblocks by Arc identity, `sync_filesystem` each. Routed. |
 | D3 | syncfs(2) | DONE | B633 #TBD | new `sys_syncfs`: resolve fd → `file.vfsmount().sb().sync_filesystem()` (whole fs, not one inode). Split out of the fsync arm. |
-| D4 | shmat (SysV shm) | TODO | | `ipc/sysv_shm.rs:138` clones bytes per attach → not shared. One backing object shared by all attaches (real shmem). |
+| D4 | shmat (SysV shm) | DONE | B639 #TBD | ShmSegment now holds ONE shared shmem backing (anon tmpfs inode, built by new `029_shmget.rs` shim); every shmat maps it MAP_SHARED so attaches + forked children share frames. Replaces the per-attach `bytes.clone()`. |
 | D5 | chmod/chown/utimes ext4 persist (90/91/92/93/132/235/260/268/280/452) | TODO | | in-core only; add ext4 `InodeOps::setattr` + dirty/writeback in `vfs metadata set_perm/set_owner/set_times`. |
 
 ## P1 — non-functional facility / fake fd
@@ -41,14 +41,14 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
 | G1 | kill(-1) broadcast (62) | DONE | B634 #TBD | `post_broadcast`: signal every real user proc the caller may signal, excluding self + init(vtgid 1) + kthreads(vtgid 0). Returns 0 / ESRCH. |
-| G2 | nanosleep/clock_nanosleep EINTR (35/230) | TODO | | busy-yields, never checks sigpending, never writes `rem`. Make interruptible + write remaining. |
+| G2 | nanosleep/clock_nanosleep EINTR (35/230) | DONE | B638 #2803 | both loops now check `pending & !sigmask` each iteration → EINTR + write `rem` (TIMER_ABSTIME skips rem). |
 | G3 | getrusage/times (98/100) | TODO | | report wall-clock for utime, zeroed counters. Track real per-task CPU time + rusage counters. |
 | G4 | set_robust_list exit walk (273) | TODO | | registers head but thread-exit never walks the robust list to wake futex waiters. |
 | G5 | seccomp arg[5] (core.rs:26) | DONE | B635 #TBD | `check()` now passes the real `a5` (already read into args) instead of literal 0; filters inspecting args[5] evaluate correctly. |
 | G6 | process_madvise/process_mrelease (440/448) | TODO | | fake success; resolve pidfd → target AS and apply advice / reap. |
 | G7 | mlock family unmapped range (149-152) | DONE | B636 #TBD | split: `sys_mlock_range` (mlock/munlock) validates the page range via `find_vma` → ENOMEM on unmapped; `sys_mlockall` rejects bad MCL_* flags; `sys_munlockall` 0. |
 | G8 | signalfd mask-update + siginfo (282/289) | TODO | | mask-update on existing fd no-op; siginfo only fills ssi_signo. |
-| G9 | shmctl/semctl/msgctl IPC_STAT (31/191/71...) | TODO | | IPC_STAT/IPC_INFO return 0 without filling the user id_ds. Fill the struct. |
+| G9 | shmctl IPC_STAT (31) | DONE | B639 #TBD | shmctl IPC_STAT now fills shmid64_ds (key/mode/shm_segsz/shm_cpid/shm_nattch) instead of zeroing. sem/msg IPC_STAT fills remain as follow-up. |
 
 ## P2 — cleanup
 
