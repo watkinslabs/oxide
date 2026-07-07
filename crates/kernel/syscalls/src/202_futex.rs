@@ -70,5 +70,66 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     } else {
         0
     };
+    // debug-ustack: on a FUTEX_WAIT by gdm-session-worker against a STACK
+    // address (a GCond/join/barrier — the greeter deadlock), dump the user
+    // return-address chain so the exact glibc/GLib/gdm call site that never
+    // wakes can be symbolized offline (objdump of the stripped PIE). Equivalent
+    // to a gdb backtrace of the parked thread, but captured in the worker's own
+    // context (its CR3 is live) where the user stack is directly readable.
+    #[cfg(feature = "debug-boot")]
+    if (op_base == FUTEX_WAIT || op_base == FUTEX_WAIT_BITSET) && args.a0 >= 0x7fff_0000_0000 {
+        let is_worker = sched::live::current()
+            .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.ends_with("gdm-session-worker")) })
+            .unwrap_or(false);
+        if is_worker {
+            // SAFETY: dispatch context; current_user_full_frame() points at the
+            // 15-quadword saved-syscall block on THIS task's kernel stack. The
+            // r12 slot (+0x48 = index 9) holds the user RSP, rcx (+0x38 =
+            // index 7) the user RIP (see hal-x86_64 syscall.rs layout).
+            let ff = unsafe { hal_x86_64::current_user_full_frame() };
+            let user_rip = unsafe { *ff.add(7) };
+            let user_rsp = unsafe { *ff.add(9) };
+            // DIAG: read the cond word ourselves via the same read_volatile the
+            // futex uses — if this != val the read path is broken in this ctx.
+            let condw = unsafe { core::ptr::read_volatile(args.a0 as *const u64) };
+            klog::write_raw(b"[USTACK uaddr="); klog::write_hex_u64(args.a0);
+            klog::write_raw(b" rip="); klog::write_hex_u64(user_rip);
+            klog::write_raw(b" rsp="); klog::write_hex_u64(user_rsp);
+            klog::write_raw(b" condw="); klog::write_hex_u64(condw);
+            klog::write_raw(b" ubound="); klog::write_hex_u64(hal::USER_VA_END);
+            klog::write_raw(b"]\n");
+            // For each stack word that is a plausible CODE address (the PIE
+            // .text or a shared-lib mmap), resolve its VMA so the lib base
+            // (vma.start) + backing inode are known → offline symbolization.
+            let cur_task = sched::live::current();
+            let mm = cur_task.as_ref().and_then(|c| unsafe { c.mm_ref() });
+            let mut i = 0u64;
+            while i < 80 {
+                let a = user_rsp.wrapping_add(i * 8);
+                if a >= hal::USER_VA_END { break; }
+                let w = unsafe { core::ptr::read_volatile(a as *const u64) };
+                let is_code = (w >= 0x1_0000 && w < 0x2000_0000)
+                    || (w >= 0x7f00_0000_0000 && w < 0x8000_0000_0000);
+                if is_code {
+                    klog::write_raw(b"  +"); klog::write_dec_u64(i * 8);
+                    klog::write_raw(b" a="); klog::write_hex_u64(w);
+                    if let Some(m) = mm {
+                        if let Some(v) = hal::UserVirtAddr::new(w).and_then(|u| m.find_vma(u)) {
+                            klog::write_raw(b" base="); klog::write_hex_u64(v.start.as_u64());
+                            klog::write_raw(b" off="); klog::write_hex_u64(w - v.start.as_u64());
+                            match &v.backing {
+                                vmm::VmaBacking::File { backing, .. } => {
+                                    klog::write_raw(b" ino="); klog::write_dec_u64(backing.ino());
+                                }
+                                _ => klog::write_raw(b" anon"),
+                            }
+                        }
+                    }
+                    klog::write_raw(b"\n");
+                }
+                i += 1;
+            }
+        }
+    }
     ::ipc::live::futex::dispatch_timed(args.a0, op, args.a2 as u32, deadline_ns)
 }
