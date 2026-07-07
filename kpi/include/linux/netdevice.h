@@ -107,6 +107,7 @@ void __netif_napi_del_locked(struct napi_struct *napi);
 void napi_enable(struct napi_struct *napi);
 void napi_disable(struct napi_struct *napi);
 void __napi_schedule(struct napi_struct *napi);
+void __napi_schedule_irqoff(struct napi_struct *napi);
 bool napi_schedule_prep(struct napi_struct *napi);
 bool napi_complete_done(struct napi_struct *napi, int work_done);
 struct sk_buff *napi_alloc_skb(struct napi_struct *napi, unsigned int len);
@@ -125,6 +126,7 @@ void netdev_stats_to_stats64(struct rtnl_link_stats64 *stats,
 void netdev_stat_queue_sum(const struct net_device *dev,
                            struct rtnl_link_stats64 *stats);
 void netdev_rss_key_fill(void *buffer, size_t len);
+void net_dim_work_cancel(void *dim);
 void netdev_printk(const char *level, const struct net_device *dev,
                    const char *fmt, ...);
 void netdev_err(const struct net_device *dev, const char *fmt, ...);
