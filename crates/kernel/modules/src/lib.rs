@@ -60,6 +60,7 @@ pub mod linux_netdev;
 pub mod linux_pci;
 pub mod linux_sync;
 pub mod linux_time;
+pub mod linux_usb;
 
 pub mod loader;
 pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
