@@ -840,6 +840,7 @@ version = "0.1.0"
 dependencies = [
  "arch-irq",
  "elf",
+ "ext4",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
