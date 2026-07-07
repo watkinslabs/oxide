@@ -9,6 +9,8 @@ use super::types::{
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 
+const SYSFS_PAGE_SIZE: usize = crate::linux_alloc::PAGE_SIZE;
+
 /// Register Linux device-core KPI symbols.
 /// # C: O(1)
 pub(super) fn export_symbols() {
@@ -40,6 +42,8 @@ pub(super) fn export_symbols() {
         ("device_destroy",          device_destroy          as *const () as usize),
         ("device_create_file",      device_create_file      as *const () as usize),
         ("device_remove_file",      device_remove_file      as *const () as usize),
+        ("sysfs_emit",              sysfs_emit              as *const () as usize),
+        ("sysfs_emit_at",           sysfs_emit_at           as *const () as usize),
         ("devm_kmalloc",            devm_kmalloc            as *const () as usize),
         ("devm_kzalloc",            devm_kzalloc            as *const () as usize),
         ("devm_kfree",              devm_kfree              as *const () as usize),
@@ -234,6 +238,18 @@ extern "C" fn device_create_file(dev: *mut LinuxDevice, attr: *const LinuxDevice
 }
 
 extern "C" fn device_remove_file(_dev: *mut LinuxDevice, _attr: *const LinuxDeviceAttribute) {}
+
+unsafe extern "C" fn sysfs_emit(buf: *mut c_char, fmt: *const c_char, mut ap: ...) -> i32 {
+    // SAFETY: sysfs show callbacks pass a PAGE_SIZE output buffer and matching varargs.
+    unsafe { crate::linux_string::vscnprintf(buf as *mut u8, SYSFS_PAGE_SIZE, fmt as *const u8, &mut ap) }
+}
+
+unsafe extern "C" fn sysfs_emit_at(buf: *mut c_char, at: i32, fmt: *const c_char, mut ap: ...) -> i32 {
+    if at < 0 || at as usize >= SYSFS_PAGE_SIZE { return 0; }
+    let off = at as usize;
+    // SAFETY: off is within the sysfs PAGE_SIZE buffer and varargs match fmt.
+    unsafe { crate::linux_string::vscnprintf(buf.add(off) as *mut u8, SYSFS_PAGE_SIZE - off, fmt as *const u8, &mut ap) }
+}
 
 extern "C" fn devm_kmalloc(dev: *mut LinuxDevice, size: usize, flags: u32) -> *mut c_void {
     devres::alloc_devres(dev, size, flags & GFP_ZERO != 0)

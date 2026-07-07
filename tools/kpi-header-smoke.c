@@ -50,6 +50,7 @@
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 #include <linux/string.h>
+#include <linux/sysfs.h>
 #include <linux/timer.h>
 #include <linux/uaccess.h>
 #include <linux/usb.h>
@@ -580,6 +581,8 @@ static int __init sample_init(void)
     (void)snprintf(str_buf, sizeof(str_buf), "v=%d", parsed_int);
     (void)scnprintf(str_buf, sizeof(str_buf), "v=%u", parsed_u16);
     (void)sprintf(str_buf, "%s", "ok");
+    (void)sysfs_emit(str_buf, "v=%d\n", parsed_int);
+    (void)sysfs_emit_at(str_buf, 2, "u=%u\n", parsed_u16);
     (void)request_irq(SAMPLE_IRQ, sample_irq_handler, IRQF_SHARED, "sample", &s);
     disable_irq_nosync(SAMPLE_IRQ);
     enable_irq(SAMPLE_IRQ);
