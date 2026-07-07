@@ -8,12 +8,36 @@
 
 typedef int (*make_request_fn)(struct request_queue *q, struct bio *bio);
 typedef void (*request_fn_proc)(struct request_queue *q);
+typedef u32 blk_opf_t;
+typedef u32 blk_mq_req_flags_t;
+
+struct blk_mq_ops;
+struct blk_mq_tag_set;
+
+struct queue_limits {
+    u32 logical_block_size;
+    u32 physical_block_size;
+    u32 io_min;
+    u32 io_opt;
+    u32 max_hw_sectors;
+    u32 max_segments;
+    u32 discard_granularity;
+    u32 discard_alignment;
+};
 
 struct request_queue {
     make_request_fn make_request_fn;
     request_fn_proc request_fn;
     void *queuedata;
     u32 logical_block_size;
+    const struct blk_mq_ops *mq_ops;
+    struct blk_mq_tag_set *tag_set;
+    struct gendisk *disk;
+    u32 rq_timeout;
+    u32 nr_hw_queues;
+    u32 freeze_depth;
+    u32 quiesce_depth;
+    struct queue_limits limits;
 };
 
 struct block_device {
@@ -31,12 +55,26 @@ struct block_device_operations {
 
 struct request {
     struct request_queue *q;
+    void *mq_ctx;
+    void *mq_hctx;
     struct bio *bio;
-    u32 cmd_flags;
+    struct bio *biotail;
+    blk_opf_t cmd_flags;
+    u32 rq_flags;
+    int tag;
+    int internal_tag;
+    u32 timeout;
+    u32 __data_len;
+    sector_t __sector;
+    struct block_device *part;
+    u32 state;
+    blk_status_t status;
+    int (*end_io)(struct request *rq, blk_status_t error);
+    void *end_io_data;
 };
 
 struct blk_mq_tag_set {
-    const void *ops;
+    const struct blk_mq_ops *ops;
     unsigned int nr_hw_queues;
     unsigned int queue_depth;
     int numa_node;
@@ -52,5 +90,21 @@ void blk_queue_logical_block_size(struct request_queue *q, unsigned int size);
 int blk_mq_alloc_tag_set(struct blk_mq_tag_set *set);
 void blk_mq_free_tag_set(struct blk_mq_tag_set *set);
 struct request_queue *blk_mq_init_queue(struct blk_mq_tag_set *set);
+struct gendisk *__blk_alloc_disk(struct queue_limits *lim, int node, void *lkclass);
+struct request_queue *blk_mq_alloc_queue(struct blk_mq_tag_set *set, struct queue_limits *lim, void *queuedata);
+void blk_mq_destroy_queue(struct request_queue *q);
+void blk_put_queue(struct request_queue *q);
+int bdev_disk_changed(struct gendisk *disk, bool invalidate);
+int device_add_disk(struct device *parent, struct gendisk *disk, const void *groups);
+void blk_mark_disk_dead(struct gendisk *disk);
+void blk_queue_rq_timeout(struct request_queue *q, unsigned int timeout);
+void blk_sync_queue(struct request_queue *q);
+void blk_set_stacking_limits(struct queue_limits *lim);
+int blk_revalidate_disk_zones(struct gendisk *disk, void *report);
+const char *blk_op_str(unsigned int op);
+int blk_status_to_errno(blk_status_t status);
+blk_status_t errno_to_blk_status(int error);
+
+#define blk_alloc_disk(lim, node_id) __blk_alloc_disk((lim), (node_id), NULL)
 
 #endif

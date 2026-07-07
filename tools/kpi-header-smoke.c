@@ -1,4 +1,5 @@
 #include <linux/bitmap.h>
+#include <linux/blk-mq.h>
 #include <linux/blkdev.h>
 #include <linux/atomic.h>
 #include <linux/acpi.h>
@@ -11,6 +12,7 @@
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/firmware.h>
 #include <linux/gfp.h>
 #include <linux/hrtimer.h>
@@ -33,6 +35,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pci.h>
+#include <linux/phy.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
@@ -57,6 +60,7 @@
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
+#include <linux/xdp.h>
 #include <crypto/hash.h>
 
 struct sample {
@@ -166,12 +170,25 @@ static int sample_usb_probe(struct usb_interface *intf, const struct usb_device_
 static void sample_usb_disconnect(struct usb_interface *intf) { usb_set_intfdata(intf, NULL); }
 static int sample_net_open(struct net_device *dev) { (void)dev; return 0; }
 static int sample_net_stop(struct net_device *dev) { (void)dev; return 0; }
+static int sample_napi_poll(struct napi_struct *napi, int budget)
+{
+    (void)napi; return budget;
+}
+static void sample_phy_link_change(struct net_device *dev) { (void)dev; }
 static int sample_make_request(struct request_queue *queue, struct bio *bio)
 {
     (void)queue;
     bio->bi_status = BLK_STS_OK;
     return bio_op(bio) == REQ_OP_DISCARD ? 0 : (int)bio->bi_size;
 }
+static blk_status_t sample_queue_rq(struct blk_mq_hw_ctx *hctx, const struct blk_mq_queue_data *bd)
+{
+    (void)hctx;
+    blk_mq_start_request(bd->rq);
+    blk_mq_end_request(bd->rq, BLK_STS_OK);
+    return BLK_STS_OK;
+}
+static void sample_complete_rq(struct request *rq) { (void)rq; }
 static netdev_tx_t sample_net_xmit(struct sk_buff *skb, struct net_device *dev)
 {
     (void)dev;
@@ -264,6 +281,10 @@ static const struct net_device_ops sample_netdev_ops = {
 };
 static const struct block_device_operations sample_blk_ops = {
     .owner = THIS_MODULE,
+};
+static const struct blk_mq_ops sample_mq_ops = {
+    .queue_rq = sample_queue_rq,
+    .complete = sample_complete_rq,
 };
 static const struct dev_pm_ops sample_pm_ops = {
     SET_SYSTEM_SLEEP_PM_OPS(sample_pm_suspend, sample_pm_resume),
@@ -450,13 +471,28 @@ static int __init sample_init(void)
     struct net_device *netdev;
     struct sk_buff *skb;
     unsigned char *skb_data;
+    struct napi_struct napi;
+    struct phy_device phydev;
+    struct ethtool_ts_info tsinfo;
+    struct ethtool_eee eee;
+    unsigned long link_modes[1] = { 0 };
+    u32 legacy_modes = 0;
+    u8 ethtool_buf[ETH_GSTRING_LEN * 2];
+    u8 *ethtool_ptr = ethtool_buf;
+    char skb_copy[SAMPLE_SKB_LEN];
     struct request_queue *queue;
     struct request_queue *mq_queue;
     struct gendisk *disk;
+    struct gendisk *mq_disk;
     struct bio *bio;
+    struct request *rq;
     struct block_device bdev;
+    struct queue_limits limits = {
+        SAMPLE_BLOCK_SIZE, SAMPLE_BLOCK_SIZE, SAMPLE_BLOCK_SIZE, 0,
+        SAMPLE_DISK_SECTORS, SAMPLE_BIO_VECS, 0, 0
+    };
     struct blk_mq_tag_set tag_set = {
-        NULL, SAMPLE_BLK_HW_QUEUES, SAMPLE_BLK_QUEUE_DEPTH,
+        &sample_mq_ops, SAMPLE_BLK_HW_QUEUES, SAMPLE_BLK_QUEUE_DEPTH,
         0, 0, 0, &s
     };
     struct input_dev *input;
@@ -537,6 +573,7 @@ static int __init sample_init(void)
     char str_copy[32];
     char *str_cursor;
     char *str_token;
+    u8 mac_buf[ETH_ALEN];
     unsigned char hex_bin[2];
     char hex_out[4];
     int parsed_int;
@@ -777,8 +814,63 @@ static int __init sample_init(void)
         netif_stop_queue(netdev);
         netif_start_queue(netdev);
         netif_wake_queue(netdev);
+        netif_tx_lock(netdev);
+        netif_tx_unlock(netdev);
+        netif_tx_stop_all_queues(netdev);
+        netif_tx_wake_queue(netdev);
         netif_carrier_off(netdev);
         netif_carrier_on(netdev);
+        (void)netif_set_real_num_tx_queues(netdev, 1);
+        (void)netif_set_real_num_rx_queues(netdev, 1);
+        netif_set_tso_max_size(netdev, 65536);
+        netif_set_tso_max_segs(netdev, 64);
+        (void)__netif_set_xps_queue(netdev, NULL, 0);
+        (void)netif_enable_cpu_rmap(netdev, 1);
+        netif_napi_add_weight_locked(netdev, &napi, sample_napi_poll, NAPI_POLL_WEIGHT);
+        napi_enable(&napi);
+        __napi_schedule(&napi);
+        napi_disable(&napi);
+        netif_queue_set_napi(netdev, 0, &napi);
+        __netif_napi_del_locked(&napi);
+        (void)ethtool_op_get_link(netdev);
+        (void)ethtool_op_get_ts_info(netdev, &tsinfo);
+        ethtool_convert_legacy_u32_to_link_mode(link_modes, legacy_modes);
+        (void)ethtool_convert_link_mode_to_legacy_u32(&legacy_modes, link_modes);
+        ethtool_puts(&ethtool_ptr, "rx");
+        ethtool_sprintf(&ethtool_ptr, "tx");
+        (void)eth_validate_addr(netdev);
+        (void)eth_platform_get_mac_address(&dev, mac_buf);
+        (void)phy_connect_direct(netdev, &phydev, sample_phy_link_change, 0);
+        phy_start(&phydev);
+        phy_stop(&phydev);
+        (void)phy_resume(&phydev);
+        (void)phy_suspend(&phydev);
+        (void)phy_start_aneg(&phydev);
+        (void)phy_init_hw(&phydev);
+        (void)genphy_soft_reset(&phydev);
+        phy_get_pause(&phydev, NULL, NULL);
+        phy_set_asym_pause(&phydev, true, false);
+        phy_support_asym_pause(&phydev);
+        (void)phy_support_eee(&phydev);
+        (void)phy_ethtool_get_eee(&phydev, &eee);
+        (void)phy_ethtool_set_eee(&phydev, &eee);
+        (void)phy_ethtool_nway_reset(&phydev);
+        (void)phy_set_max_speed(&phydev, SPEED_1000);
+        (void)phy_speed_down(&phydev, false);
+        (void)phy_speed_up(&phydev);
+        (void)phy_modify(&phydev, 0, 0xff, 1);
+        (void)__phy_modify(&phydev, 0, 0xff, 1);
+        (void)phy_write_mmd(&phydev, 0, 0, 1);
+        (void)__phy_write_mmd(&phydev, 0, 0, 1);
+        (void)__phy_modify_mmd(&phydev, 0, 0, 0xff, 1);
+        (void)phy_read_paged(&phydev, 0, 0);
+        (void)phy_write_paged(&phydev, 0, 0, 1);
+        (void)phy_modify_paged(&phydev, 0, 0, 0xff, 1);
+        (void)phy_restore_page(&phydev, phy_select_page(&phydev, 0), 0);
+        phy_print_status(&phydev);
+        phy_attached_info(&phydev);
+        phy_mac_interrupt(&phydev);
+        phy_disconnect(&phydev);
         (void)netdev_priv(netdev);
         (void)register_netdev(netdev);
         skb = dev_alloc_skb(SAMPLE_SKB_LEN);
@@ -788,9 +880,25 @@ static int __init sample_init(void)
             (void)skb_data;
             skb->dev = netdev;
             skb->protocol = ETH_P_IP;
+            (void)skb_partial_csum_set(skb, 0, 0);
+            (void)skb_copy_bits(skb, 0, skb_copy, 4);
+            (void)__pskb_pull_tail(skb, 0);
+            skb_trim(skb, SAMPLE_SKB_LEN - ETH_HLEN);
+            (void)___pskb_trim(skb, SAMPLE_SKB_LEN - ETH_HLEN);
+            (void)__skb_pad(skb, 1, false);
+            skb_tstamp_tx(skb, NULL);
+            skb_clone_tx_timestamp(skb);
             (void)skb_tail_pointer(skb);
             (void)netif_rx(skb);
         }
+        skb = napi_alloc_skb(&napi, SAMPLE_SKB_LEN);
+        if (skb != NULL) {
+            napi_consume_skb(skb, 1);
+        }
+        (void)napi_get_frags(&napi);
+        (void)napi_gro_frags(&napi);
+        (void)__napi_alloc_frag_align(SAMPLE_SKB_LEN, 0);
+        (void)skb_page_frag_refill(SAMPLE_SKB_LEN, &s, GFP_KERNEL);
         unregister_netdev(netdev);
         free_netdev(netdev);
     }
@@ -820,19 +928,72 @@ static int __init sample_init(void)
                 bio->bi_opf = REQ_OP_FLUSH;
                 bio->bi_sector = 0;
                 (void)bio_add_page(bio, NULL, SAMPLE_BIO_LEN, 0);
+                (void)__bio_add_page(bio, NULL, SAMPLE_BIO_LEN, 0);
                 (void)submit_bio(bio);
+                submit_bio_noacct(bio);
+                (void)submit_bio_wait(bio);
                 bio->bi_opf = REQ_OP_DISCARD;
                 (void)submit_bio(bio);
+                (void)bio_split_to_limits(bio);
+                (void)bio_associate_blkg(bio);
+                (void)bio_blkcg_css(bio);
+                zero_fill_bio_iter(bio);
+                bio_chain(bio, bio);
+                bio_endio(bio);
                 bio_put(bio);
             }
+            (void)bdev_disk_changed(disk, false);
+            blk_mark_disk_dead(disk);
             del_gendisk(disk);
             put_disk(disk);
         }
         blk_cleanup_queue(queue);
     }
     if (blk_mq_alloc_tag_set(&tag_set) == 0) {
+        blk_mq_map_queues(&tag_set);
+        mq_queue = blk_mq_alloc_queue(&tag_set, &limits, &s);
+        if (mq_queue != NULL) {
+            blk_queue_rq_timeout(mq_queue, 1);
+            blk_mq_freeze_queue_nomemsave(mq_queue);
+            blk_mq_freeze_queue_wait(mq_queue);
+            blk_mq_unfreeze_queue_nomemrestore(mq_queue);
+            blk_mq_quiesce_queue(mq_queue);
+            blk_mq_unquiesce_queue(mq_queue);
+            blk_mq_stop_hw_queues(mq_queue);
+            blk_mq_start_stopped_hw_queues(mq_queue, false);
+            blk_mq_update_nr_hw_queues(&tag_set, SAMPLE_BLK_HW_QUEUES);
+            blk_mq_map_hw_queues(NULL, NULL, 0);
+            rq = blk_mq_alloc_request(mq_queue, REQ_OP_READ, 0);
+            if (rq != NULL) {
+                (void)blk_mq_unique_tag(rq);
+                blk_execute_rq_nowait(rq, false);
+                (void)blk_execute_rq(rq, false);
+                (void)blk_update_request(rq, BLK_STS_OK, 0);
+                blk_mq_requeue_request(rq, false);
+                blk_mq_free_request(rq);
+            }
+            blk_sync_queue(mq_queue);
+            blk_mq_destroy_queue(mq_queue);
+        }
         mq_queue = blk_mq_init_queue(&tag_set);
-        blk_cleanup_queue(mq_queue);
+        blk_put_queue(mq_queue);
+        mq_disk = blk_mq_alloc_disk(&tag_set, &limits, &s);
+        if (mq_disk != NULL) {
+            mq_disk->disk_name[0] = 'm';
+            mq_disk->disk_name[1] = 'q';
+            mq_disk->disk_name[2] = '0';
+            mq_disk->disk_name[3] = '\0';
+            (void)device_add_disk(&dev, mq_disk, NULL);
+            del_gendisk(mq_disk);
+            put_disk(mq_disk);
+        }
+        blk_set_stacking_limits(&limits);
+        (void)blk_revalidate_disk_zones(NULL, NULL);
+        (void)blk_status_to_errno(BLK_STS_OK);
+        (void)errno_to_blk_status(0);
+        (void)blk_op_str(REQ_OP_READ);
+        blk_mq_quiesce_tagset(&tag_set);
+        blk_mq_unquiesce_tagset(&tag_set);
         blk_mq_free_tag_set(&tag_set);
     }
     input_ev.tv_sec = 0;

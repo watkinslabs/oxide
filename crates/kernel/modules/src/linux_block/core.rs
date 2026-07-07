@@ -1,5 +1,4 @@
 extern crate alloc;
-
 use super::types::*;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -8,23 +7,19 @@ use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest};
 use core::ffi::{c_char, c_void};
 use core::ptr::{copy_nonoverlapping, null_mut};
-
 const DEFAULT_MINORS: i32 = 1;
 const DEFAULT_BIO_VEC_COUNT: u32 = 1;
 const DEFAULT_NODE_ID: i32 = 0;
 const GFP_KERNEL: u32 = 0;
 const BYTES_PER_KIB: u32 = 1024;
-
 struct BioOwner {
     bio: LinuxBio,
     buf: Vec<u8>,
     bdev: LinuxBlockDevice,
 }
-
 struct LinuxBlockAdapter {
     disk: usize,
 }
-
 impl BlockDevice for LinuxBlockAdapter {
     fn block_size(&self) -> u32 {
         let d = self.disk as *const LinuxGendisk;
@@ -36,7 +31,6 @@ impl BlockDevice for LinuxBlockAdapter {
         let bs = unsafe { (*q).logical_block_size };
         if bs == 0 { DEFAULT_LOGICAL_BLOCK_SIZE } else { bs }
     }
-
     fn capacity_blocks(&self) -> u64 {
         let d = self.disk as *const LinuxGendisk;
         if d.is_null() { return 0; }
@@ -44,7 +38,6 @@ impl BlockDevice for LinuxBlockAdapter {
         let sectors = unsafe { (*d).capacity };
         sectors_to_blocks(sectors, self.block_size())
     }
-
     fn submit_sync(&self, req: &mut BlockRequest) -> Result<(), BlockError> {
         let d = self.disk as *mut LinuxGendisk;
         if d.is_null() { return Err(BlockError::Enxio); }
@@ -75,7 +68,6 @@ impl BlockDevice for LinuxBlockAdapter {
         unsafe { bio_put(bio); }
         if r == LINUX_OK && ok { Ok(()) } else { Err(BlockError::Eio) }
     }
-
     fn flush(&self) -> Result<(), BlockError> {
         let mut req = BlockRequest::new_flush();
         self.submit_sync(&mut req)
@@ -107,16 +99,24 @@ pub(super) fn export_symbols() {
     export("blk_mq_init_queue",     blk_mq_init_queue     as *const () as usize, false);
 }
 
-extern "C" fn blk_alloc_queue(_gfp_mask: u32) -> *mut LinuxRequestQueue {
+pub(super) extern "C" fn blk_alloc_queue(_gfp_mask: u32) -> *mut LinuxRequestQueue {
     Box::into_raw(Box::new(LinuxRequestQueue {
         make_request_fn: None,
         request_fn: None,
         queuedata: null_mut(),
         logical_block_size: DEFAULT_LOGICAL_BLOCK_SIZE,
+        mq_ops: core::ptr::null(),
+        tag_set: null_mut(),
+        disk: null_mut(),
+        rq_timeout: 0,
+        nr_hw_queues: 1,
+        freeze_depth: 0,
+        quiesce_depth: 0,
+        limits: default_limits(),
     }))
 }
 
-unsafe extern "C" fn blk_cleanup_queue(q: *mut LinuxRequestQueue) {
+pub(super) unsafe extern "C" fn blk_cleanup_queue(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
     // SAFETY: q was allocated by blk_alloc_queue or blk_mq_init_queue.
     unsafe { drop(Box::from_raw(q)); }
@@ -134,11 +134,11 @@ unsafe extern "C" fn blk_queue_logical_block_size(q: *mut LinuxRequestQueue, siz
     unsafe { (*q).logical_block_size = size; }
 }
 
-extern "C" fn alloc_disk(minors: i32) -> *mut LinuxGendisk {
+pub(super) extern "C" fn alloc_disk(minors: i32) -> *mut LinuxGendisk {
     alloc_disk_node(minors, DEFAULT_NODE_ID)
 }
 
-extern "C" fn alloc_disk_node(minors: i32, _node_id: i32) -> *mut LinuxGendisk {
+pub(super) extern "C" fn alloc_disk_node(minors: i32, _node_id: i32) -> *mut LinuxGendisk {
     let dev = {
         // SAFETY: LinuxDevice is a C POD mirror; zero initialization matches kzalloc.
         unsafe { core::mem::zeroed() }
@@ -158,20 +158,23 @@ extern "C" fn alloc_disk_node(minors: i32, _node_id: i32) -> *mut LinuxGendisk {
     }))
 }
 
-unsafe extern "C" fn put_disk(disk: *mut LinuxGendisk) {
+pub(super) unsafe extern "C" fn put_disk(disk: *mut LinuxGendisk) {
     if disk.is_null() { return; }
     // SAFETY: disk was allocated by alloc_disk*.
     unsafe { drop(Box::from_raw(disk)); }
 }
 
-unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk) {
+pub(super) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk) {
     if disk.is_null() { return; }
     let name = disk_name(disk);
     if name.is_empty() { return; }
     let adapter = Arc::new(LinuxBlockAdapter { disk: disk as usize }) as Arc<dyn BlockDevice>;
     let idx = block::registry::register(&name, adapter);
     // SAFETY: disk is a live gendisk.
-    unsafe { (*disk).registered = if idx == 0 { 0 } else { 1 }; }
+    unsafe {
+        (*disk).registered = if idx == 0 { 0 } else { 1 };
+        if !(*disk).queue.is_null() { (*(*disk).queue).disk = disk; }
+    }
 }
 
 unsafe extern "C" fn del_gendisk(disk: *mut LinuxGendisk) {
@@ -194,7 +197,7 @@ unsafe extern "C" fn get_capacity(disk: *const LinuxGendisk) -> u64 {
     unsafe { (*disk).capacity }
 }
 
-unsafe extern "C" fn submit_bio(bio: *mut LinuxBio) -> i32 {
+pub(super) unsafe extern "C" fn submit_bio(bio: *mut LinuxBio) -> i32 {
     if bio.is_null() { return -LINUX_EINVAL; }
     // SAFETY: bio points to a LinuxBio.
     let disk = unsafe { (*bio).bi_disk };
@@ -209,7 +212,7 @@ unsafe extern "C" fn submit_bio(bio: *mut LinuxBio) -> i32 {
     unsafe { f(q, bio) }
 }
 
-extern "C" fn bio_alloc(_gfp_mask: u32, nr_iovecs: u32) -> *mut LinuxBio {
+pub(super) extern "C" fn bio_alloc(_gfp_mask: u32, nr_iovecs: u32) -> *mut LinuxBio {
     let len = (nr_iovecs.max(DEFAULT_BIO_VEC_COUNT) as usize) * BYTES_PER_KIB as usize;
     bio_alloc_with_len(len)
 }
@@ -232,14 +235,15 @@ unsafe extern "C" fn bio_set_dev(bio: *mut LinuxBio, bdev: *mut LinuxBlockDevice
     }
 }
 
-unsafe extern "C" fn bio_add_page(bio: *mut LinuxBio, _page: *mut c_void, len: u32, _off: u32) -> i32 {
+pub(super) unsafe extern "C" fn bio_add_page(bio: *mut LinuxBio, page: *mut c_void, len: u32, off: u32) -> i32 {
     if bio.is_null() { return 0; }
     // SAFETY: bio is live; capacity is owned by BioOwner.
     unsafe {
         let owner = (*bio).owner as *mut BioOwner;
         if owner.is_null() { return 0; }
         let n = (len as usize).min((*owner).buf.len());
-        (*bio).bi_data = (*owner).buf.as_mut_ptr();
+        let page_data = crate::linux_alloc::page_address(page as *mut crate::linux_alloc::LinuxPage);
+        (*bio).bi_data = if page_data.is_null() { (*owner).buf.as_mut_ptr() } else { page_data.add(off as usize) };
         (*bio).bi_size = n as u32;
         n as i32
     }
@@ -270,6 +274,7 @@ fn bio_alloc_with_len(len: usize) -> *mut LinuxBio {
             bi_status: BLK_STS_OK,
             bi_size: len as u32,
             bi_data: null_mut(),
+            bi_end_io: None,
             owner: null_mut(),
         },
         buf: alloc::vec![0u8; len],
@@ -344,6 +349,19 @@ unsafe fn copy_bio_to_request(bio: *const LinuxBio, req: &mut BlockRequest) {
 fn sectors_to_blocks(sectors: u64, block_size: u32) -> u64 {
     let factor = (block_size / LINUX_SECTOR_SIZE).max(1) as u64;
     sectors / factor
+}
+
+pub(super) fn default_limits() -> LinuxQueueLimits {
+    LinuxQueueLimits {
+        logical_block_size: DEFAULT_LOGICAL_BLOCK_SIZE,
+        physical_block_size: DEFAULT_LOGICAL_BLOCK_SIZE,
+        io_min: DEFAULT_LOGICAL_BLOCK_SIZE,
+        io_opt: 0,
+        max_hw_sectors: 1024,
+        max_segments: 128,
+        discard_granularity: 0,
+        discard_alignment: 0,
+    }
 }
 
 fn blocks_to_sectors(blocks: u64, block_size: u32) -> u64 {

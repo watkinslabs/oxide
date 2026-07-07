@@ -6,6 +6,8 @@ pub(super) type NdoOpen = unsafe extern "C" fn(*mut LinuxNetDevice) -> i32;
 pub(super) type NdoStop = unsafe extern "C" fn(*mut LinuxNetDevice) -> i32;
 pub(super) type NdoStartXmit = unsafe extern "C" fn(*mut LinuxSkBuff, *mut LinuxNetDevice) -> i32;
 pub(super) type NetdevSetup = unsafe extern "C" fn(*mut LinuxNetDevice);
+pub(super) type NapiPoll = unsafe extern "C" fn(*mut LinuxNapiStruct, i32) -> i32;
+pub(super) type PhyLinkChange = unsafe extern "C" fn(*mut LinuxNetDevice);
 
 pub(super) const IFNAMSIZ: usize = 16;
 pub(super) const ETH_ALEN: usize = 6;
@@ -19,16 +21,29 @@ pub(super) const NET_RX_SUCCESS: i32 = 0;
 pub(super) const NET_RX_DROP: i32 = 1;
 pub(super) const LINUX_OK: i32 = 0;
 pub(super) const LINUX_EINVAL: i32 = 22;
+pub(super) const LINUX_ENODEV: i32 = 19;
+pub(super) const LINUX_ENOMEM: i32 = 12;
 pub(super) const IFF_UP: u32 = 0x0001;
 pub(super) const IFF_BROADCAST: u32 = 0x0002;
 pub(super) const IFF_RUNNING: u32 = 0x0040;
 pub(super) const IFF_MULTICAST: u32 = 0x1000;
+pub(super) const CHECKSUM_NONE: u8 = 0;
+pub(super) const CHECKSUM_PARTIAL: u8 = 3;
+pub(super) const DUPLEX_FULL: i32 = 1;
+pub(super) const SPEED_1000: i32 = 1000;
+pub(super) const AUTONEG_ENABLE: u8 = 1;
 
 #[repr(C)]
 pub(super) struct LinuxNetDeviceOps {
     pub(super) ndo_open: Option<NdoOpen>,
     pub(super) ndo_stop: Option<NdoStop>,
     pub(super) ndo_start_xmit: Option<NdoStartXmit>,
+}
+
+#[repr(C)]
+pub(super) struct LinuxEtHToolOps {
+    pub(super) get_link: *const c_void,
+    pub(super) get_ts_info: *const c_void,
 }
 
 #[repr(C)]
@@ -57,6 +72,13 @@ pub(super) struct LinuxNetDevice {
     pub(super) ifindex: u32,
     pub(super) state: AtomicU32,
     pub(super) stats: LinuxRtnlLinkStats64,
+    pub(super) ethtool_ops: *const LinuxEtHToolOps,
+    pub(super) phydev: *mut LinuxPhyDevice,
+    pub(super) num_tx_queues: u32,
+    pub(super) real_num_tx_queues: u32,
+    pub(super) real_num_rx_queues: u32,
+    pub(super) tso_max_size: u32,
+    pub(super) tso_max_segs: u16,
 }
 
 #[repr(C)]
@@ -68,6 +90,45 @@ pub(super) struct LinuxSkBuff {
     pub(super) len: u32,
     pub(super) protocol: u16,
     pub(super) dev: *mut LinuxNetDevice,
+    pub(super) ip_summed: u8,
+    pub(super) csum_start: u16,
+    pub(super) csum_offset: u16,
+    pub(super) nr_frags: u8,
     pub(super) cb: [u8; SKB_CB_LEN],
     pub(super) owner: *mut c_void,
+}
+
+#[repr(C)]
+pub(super) struct LinuxNapiStruct {
+    pub(super) dev: *mut LinuxNetDevice,
+    pub(super) poll: Option<NapiPoll>,
+    pub(super) weight: i32,
+    pub(super) state: AtomicU32,
+    pub(super) rxq: u32,
+    pub(super) txq: u32,
+    pub(super) scheduled: AtomicU32,
+}
+
+#[repr(C)]
+pub(super) struct LinuxSockAddr {
+    pub(super) sa_family: u16,
+    pub(super) sa_data: [u8; 14],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(super) struct LinuxPhyDevice {
+    pub(super) attached_dev: *mut LinuxNetDevice,
+    pub(super) speed: i32,
+    pub(super) duplex: i32,
+    pub(super) link: u8,
+    pub(super) autoneg: u8,
+    pub(super) pause: u8,
+    pub(super) asym_pause: u8,
+    pub(super) interface: u32,
+    pub(super) irq: i32,
+    pub(super) page: i32,
+    pub(super) regs: [u16; 32],
+    pub(super) mmd_regs: [[u16; 32]; 8],
+    pub(super) link_change: Option<PhyLinkChange>,
 }
