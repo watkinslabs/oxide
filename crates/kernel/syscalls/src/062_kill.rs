@@ -55,11 +55,38 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
         let n = post_pgrp(pgid, bit, sig);
         if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
     } else if pid == -1 {
-        -(syscall::errno::Errno::Eperm.as_i32() as i64)
+        // Broadcast: signal every process the caller may signal, EXCEPT itself
+        // and init (pid 1) — Linux `kill(-1)`. Used by `killall5` and systemd's
+        // final SIGTERM/SIGKILL sweep at shutdown/reboot. Returns 0 if it
+        // signalled at least one, else ESRCH.
+        let n = post_broadcast(cur, bit, sig);
+        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
     } else {
         let n = post_pgrp((-pid) as u32, bit, sig);
         if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
     }
+}
+
+/// `kill(-1)` fan-out: post `sig` to every real user process the caller may
+/// signal, excluding itself, init (vtgid 1), and kernel threads (vtgid 0).
+/// Mirrors `post_pgrp`'s permission + wake handling over the whole task set.
+fn post_broadcast(cur: &sched::Task, bit: u64, sig: i32) -> usize {
+    use core::sync::atomic::Ordering;
+    let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return 0 };
+    let mut n = 0usize;
+    for t in &tasks {
+        let vtgid = t.vtgid.load(Ordering::Acquire);
+        if vtgid == 0 || vtgid == 1 { continue; } // skip kthreads + init(pid 1)
+        if t.tid == cur.tid { continue; }          // skip self
+        if !sig_perm_check(cur, t, sig) { continue; }
+        if sig != 0 {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+            if sig == 18 { sched::live::registry::wake_if_stopped(t); }
+            sched::live::wake_if_sleeping(t);
+        }
+        n += 1;
+    }
+    n
 }
 
 fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
