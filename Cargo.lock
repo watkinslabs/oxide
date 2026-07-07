@@ -842,7 +842,9 @@ dependencies = [
  "hal",
  "klog",
  "pmm",
+ "sched",
  "sync",
+ "timer",
 ]
 
 [[package]]

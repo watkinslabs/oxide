@@ -49,6 +49,7 @@ pub use modinfo::{KERNEL_VERMAGIC, ModuleInfo, ModuleParam};
 
 pub mod linux_alloc;
 pub mod linux_sync;
+pub mod linux_time;
 
 pub mod loader;
 pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
