@@ -8,6 +8,7 @@
 // - insert: recursive extent-tree insertion and inline-root growth.
 // - records: extent/index vector parsing, writing, sorting, splitting helpers.
 // - inode_io: raw inode byte I/O, extent-block writes, and block-group helpers.
+// - meta: on-disk mode/owner/timestamp writeback (the ext4 half of setattr).
 // - collect: extent leaf collection for SEEK_HOLE/SEEK_DATA.
 // - write: random writes, fallocate, and direct inode size updates.
 // - truncate: extent-tree truncation, subtree freeing, and i_blocks accounting.
@@ -16,6 +17,7 @@
 mod append;
 mod collect;
 mod inode_io;
+mod meta;
 mod insert;
 mod nlink;
 mod records;

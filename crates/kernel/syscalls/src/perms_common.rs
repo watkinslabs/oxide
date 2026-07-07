@@ -129,21 +129,13 @@ pub(crate) fn check_rofs(mnt_id: u64) -> Result<(), i64> {
     Ok(())
 }
 
-/// Current permission bits for the suid/sgid-kill: per-fs `perm()` first, then
-/// the inode_times overlay, then the statx default. # C: O(log N)
-fn effective_mode(inode: &InodeRef) -> u16 {
-    if let Some(p) = inode.perm() { return p; }
-    if let Some(o) = vfs::inode_times::get(inode) { if o.owner_set { return o.mode_bits; } }
-    0o600
-}
-
 /// Kernel `notify_change` (Linux `fs/attr.c`): the single convergence point for
 /// chmod/chown/truncate/utimes. EROFS gate on the owning mount, then the vfs
-/// `setattr_prepare` DAC+idmap decision, then apply each changed attribute via
-/// the inode's native op — falling back to the `inode_times` metadata overlay
-/// for pseudo-fs without native storage. ATTR_SIZE truncates directly (no
-/// overlay; its EROFS propagates). Owner ids in `ia` are vfs ids; `map_in_*`
-/// stores them as fs ids. # C: O(N_path)
+/// `setattr_prepare` DAC+idmap decision, then the inode's `i_op->setattr`
+/// (`simple_setattr` default for pseudo-fs; ext4 additionally journals the
+/// change through to disk). ATTR_SIZE truncate, owner `map_in_*`, and the
+/// suid/sgid-kill fold all live inside `setattr`; owner ids in `ia` are vfs
+/// ids. # C: O(N_path)
 pub(crate) fn notify_change(inode: &InodeRef, mnt_id: u64, mut ia: vfs::Iattr) -> i64 {
     if let Err(rv) = check_rofs(mnt_id) { return rv; }
     let idmap = vfs::mount::idmap_for(mnt_id);
@@ -162,41 +154,13 @@ pub(crate) fn notify_change(inode: &InodeRef, mnt_id: u64, mut ia: vfs::Iattr) -
     if inode.is_public_device() && ia.valid & (vfs::ATTR_UID | vfs::ATTR_GID | vfs::ATTR_MODE) != 0 {
         return 0;
     }
-    let now = now_ns();
-    // ATTR_SIZE — truncate; no overlay equivalent, propagate EROFS/errors.
-    if ia.valid & vfs::ATTR_SIZE != 0 {
-        if let Err(e) = inode.truncate(ia.size) { return -(e as i64); }
+    // ctime is stamped on every attribute change (Linux `setattr_copy`);
+    // `simple_setattr` writes it only when a time field is in the valid mask.
+    ia.ctime_ns = now_ns();
+    match inode.setattr(&idmap, &ia) {
+        Ok(()) => 0,
+        Err(e) => -(e as i64),
     }
-    // ATTR_UID/GID — native set_owner with idmap-in ids, else overlay
-    // (the overlay keeps `u32::MAX` for an unchanged field).
-    if ia.valid & (vfs::ATTR_UID | vfs::ATTR_GID) != 0 {
-        let uid = if ia.valid & vfs::ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { inode.uid().unwrap_or(0) };
-        let gid = if ia.valid & vfs::ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { inode.gid().unwrap_or(0) };
-        if inode.set_owner(uid, gid).is_err() {
-            let ov_uid = if ia.valid & vfs::ATTR_UID != 0 { uid } else { u32::MAX };
-            let ov_gid = if ia.valid & vfs::ATTR_GID != 0 { gid } else { u32::MAX };
-            vfs::inode_times::set_owner(inode, ov_uid, ov_gid, now);
-        }
-    }
-    // ATTR_MODE and/or ATTR_KILL_* — fold into one final mode.
-    let mut mode = ia.mode;
-    let mut set_mode = ia.valid & vfs::ATTR_MODE != 0;
-    if ia.valid & (vfs::ATTR_KILL_SUID | vfs::ATTR_KILL_SGID) != 0 {
-        let base = if set_mode { mode } else { effective_mode(inode) };
-        mode = vfs::apply_kill_priv(ia.valid, base);
-        set_mode = true;
-    }
-    if set_mode {
-        let m = mode & 0o7777;
-        if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(inode, m, now); }
-    }
-    // ATTR_ATIME/MTIME — native set_times (ctime stamped now) else overlay.
-    if ia.valid & (vfs::ATTR_ATIME | vfs::ATTR_MTIME) != 0 {
-        let a  = if ia.valid & vfs::ATTR_ATIME != 0 { Some(ia.atime_ns) } else { None };
-        let mt = if ia.valid & vfs::ATTR_MTIME != 0 { Some(ia.mtime_ns) } else { None };
-        if inode.set_times(a, mt, now).is_err() { vfs::inode_times::set(inode, a, mt, now); }
-    }
-    0
 }
 
 /// `chmod` work-fn shared by chmod/fchmod/fchmodat(2): routes through
