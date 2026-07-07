@@ -46,6 +46,7 @@ impl InodeOps for ModuleDirOps {
             "parameters" => Ok(make_param_dir(d.snap.clone())),
             "initstate"  => Ok(attr(initstate_body(&d.snap))),
             "refcnt"     => Ok(attr(line_usize(d.snap.refcnt))),
+            "taint"      => Ok(attr(line_u64_hex(d.snap.taints))),
             "license"    => Ok(attr(line_opt(d.snap.license.as_deref()))),
             "vermagic"   => Ok(attr(line_opt(d.snap.vermagic.as_deref()))),
             _ => Err(VfsError::Enoent),
@@ -63,9 +64,10 @@ impl FileOps for ModuleDirOps {
     }
 }
 
-const MODULE_ENTRIES: [(&str, FileType); 5] = [
+const MODULE_ENTRIES: [(&str, FileType); 6] = [
     ("initstate",  FileType::Regular),
     ("refcnt",     FileType::Regular),
+    ("taint",      FileType::Regular),
     ("license",    FileType::Regular),
     ("vermagic",   FileType::Regular),
     ("parameters", FileType::Directory),
@@ -152,6 +154,13 @@ fn line_usize(v: usize) -> Vec<u8> {
     let mut out = String::new();
     push_dec(&mut out, v);
     out.push('\n');
+    out.into_bytes()
+}
+
+fn line_u64_hex(v: u64) -> Vec<u8> {
+    use core::fmt::Write as _;
+    let mut out = String::new();
+    let _ = write!(out, "0x{:x}\n", v);
     out.into_bytes()
 }
 
