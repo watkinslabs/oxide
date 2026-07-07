@@ -11,6 +11,9 @@ struct dentry {
     void *d_fsdata;
 };
 
+struct vfsmount;
+typedef struct vfsmount *(*debugfs_automount_t)(struct dentry *dentry, void *data);
+
 struct debugfs_blob_wrapper {
     void *data;
     unsigned long size;
@@ -41,6 +44,7 @@ struct dentry *debugfs_create_x16(const char *name, umode_t mode, struct dentry 
 struct dentry *debugfs_create_x32(const char *name, umode_t mode, struct dentry *parent, u32 *value);
 struct dentry *debugfs_create_x64(const char *name, umode_t mode, struct dentry *parent, u64 *value);
 struct dentry *debugfs_create_bool(const char *name, umode_t mode, struct dentry *parent, bool *value);
+struct dentry *debugfs_create_automount(const char *name, struct dentry *parent, debugfs_automount_t f, void *data);
 struct dentry *debugfs_create_blob(const char *name, umode_t mode, struct dentry *parent, struct debugfs_blob_wrapper *blob);
 void debugfs_create_regset32(const char *name, umode_t mode, struct dentry *parent, struct debugfs_regset32 *regset);
 void debugfs_print_regs32(struct seq_file *s, const struct debugfs_reg32 *regs, int nregs, void __iomem *base, char *prefix);

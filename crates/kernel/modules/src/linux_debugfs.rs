@@ -138,6 +138,7 @@ pub fn export_symbols() {
         ("debugfs_create_x32",       debugfs_create_x32       as *const () as usize),
         ("debugfs_create_x64",       debugfs_create_x64       as *const () as usize),
         ("debugfs_create_bool",      debugfs_create_bool      as *const () as usize),
+        ("debugfs_create_automount", crate::linux_debugfs_automount::debugfs_create_automount as *const () as usize),
         ("debugfs_create_blob",      crate::linux_debugfs_extra::debugfs_create_blob as *const () as usize),
         ("debugfs_create_symlink",   crate::linux_debugfs_extra::debugfs_create_symlink as *const () as usize),
         ("simple_attr_open",         crate::linux_debugfs_extra::simple_attr_open as *const () as usize),
@@ -248,6 +249,10 @@ pub(crate) fn create_inode_entry(name: *const c_char, parent: *mut LinuxDentry, 
 pub(crate) fn create_path_entry(path: String, inode: InodeRef) -> *mut LinuxDentry {
     let _g = LOCK.lock();
     tracefs::debug_root().insert_path(&path, inode);
+    dentry_handle(path)
+}
+
+pub(crate) fn dentry_handle(path: String) -> *mut LinuxDentry {
     Box::into_raw(Box::new(LinuxDentry { magic: DENTRY_MAGIC, root: DEBUGFS_ROOT, path }))
 }
 
@@ -457,6 +462,7 @@ mod tests {
         export_symbols();
         assert!(crate::is_exported("debugfs_create_dir"));
         assert!(crate::is_exported("debugfs_create_file"));
+        assert!(crate::is_exported("debugfs_create_automount"));
         assert!(crate::is_exported("debugfs_remove_recursive"));
     }
 

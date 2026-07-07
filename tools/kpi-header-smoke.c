@@ -215,6 +215,10 @@ static int sample_seq_open(struct inode *inode, struct file *file)
     (void)inode;
     return single_open(file, sample_seq_show, NULL);
 }
+static struct vfsmount *sample_debugfs_automount(struct dentry *dentry, void *data)
+{
+    (void)dentry; (void)data; return NULL;
+}
 static const struct file_operations sample_seq_fops = {
     .owner = THIS_MODULE,
     .open = sample_seq_open,
@@ -608,6 +612,7 @@ static int __init sample_init(void)
     debugfs_remove(debug_file);
     debug_file = debugfs_create_file_size("simple", 0600, debug_dir, &debug_value, &sample_simple_fops, 8);
     debugfs_remove(debugfs_create_file("seq", 0400, debug_dir, NULL, &sample_seq_fops));
+    debugfs_remove(debugfs_create_automount("auto", debug_dir, sample_debugfs_automount, &debug_value));
     debug_blob.data = debug_blob_data;
     debug_blob.size = sizeof(debug_blob_data);
     debug_blob_file = debugfs_create_blob("blob", 0400, debug_dir, &debug_blob);
