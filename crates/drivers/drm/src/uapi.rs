@@ -45,7 +45,7 @@ pub const DRM_IOCTL_MODE_DIRTYFB:           u64 = 0xc01864b1;
 pub const DRM_IOCTL_MODE_CREATE_DUMB:       u64 = 0xc02064b2;
 pub const DRM_IOCTL_MODE_MAP_DUMB:          u64 = 0xc01064b3;
 pub const DRM_IOCTL_MODE_DESTROY_DUMB:      u64 = 0xc00464b4;
-pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u64 = 0xc00864b5;
+pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u64 = 0xc01064b5;
 pub const DRM_IOCTL_MODE_GETPLANE:          u64 = 0xc02064b6;
 pub const DRM_IOCTL_MODE_SETPLANE:          u64 = 0xc03064b7;
 // _IOWR(0x64, 0xb8, struct drm_mode_fb_cmd2): modern struct carries
