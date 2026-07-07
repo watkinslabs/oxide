@@ -54,6 +54,7 @@ pub mod linux_dma;
 pub mod linux_io;
 pub mod linux_irq;
 pub mod linux_firmware;
+pub mod linux_netdev;
 pub mod linux_pci;
 pub mod linux_sync;
 pub mod linux_time;
