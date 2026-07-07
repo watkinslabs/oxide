@@ -91,6 +91,10 @@ bitflags::bitflags! {
         /// only). Cleared by MADV_KEEPONFORK. systemd's random-util
         /// depends on this being FUNCTIONAL, not a hint.
         const WIPEONFORK = 1 << 7;
+        /// userfaultfd(2) UFFDIO_REGISTER MODE_MISSING (Linux
+        /// `VM_UFFD_MISSING`): a NotPresent fault in this VMA is routed
+        /// to the registered `uffd` context instead of being zero-filled.
+        const UFFD_MISSING = 1 << 8;
     }
 }
 
@@ -254,6 +258,11 @@ pub struct Vma {
     pub backing: VmaBacking,
     pub rss: AtomicU64,
     pub anon_vma: Option<Arc<AnonVma>>,
+    /// userfaultfd(2) `vm_userfaultfd_ctx` — the fd's inode state, set on
+    /// `UFFDIO_REGISTER(MODE_MISSING)` (see `flags & UFFD_MISSING`). The
+    /// fault handler calls `missing_fault` on a NotPresent fault here.
+    /// `None` for the overwhelming majority of VMAs.
+    pub uffd: Option<Arc<dyn crate::uffd::UffdContext>>,
 }
 
 impl core::fmt::Debug for Vma {
@@ -266,6 +275,7 @@ impl core::fmt::Debug for Vma {
             .field("backing", &self.backing)
             .field("rss", &self.rss.load(Ordering::Relaxed))
             .field("anon_vma_id", &self.anon_vma.as_ref().map(|a| a.id))
+            .field("uffd", &self.uffd.is_some())
             .finish()
     }
 }
@@ -295,6 +305,7 @@ impl Vma {
             start, end, prot, flags, backing,
             rss: AtomicU64::new(0),
             anon_vma,
+            uffd: None,
         }
     }
 
@@ -326,6 +337,11 @@ impl Vma {
         if self.end != next.start { return false; }
         if self.prot != next.prot { return false; }
         if self.flags != next.flags { return false; }
+        // Different userfaultfd registrations never coalesce (Linux
+        // `is_mergeable_vma` compares `vm_userfaultfd_ctx`). The flag
+        // check above already blocks registered↔unregistered; this
+        // blocks two ranges bound to distinct uffd fds.
+        if !crate::uffd::uffd_ptr_eq(&self.uffd, &next.uffd) { return false; }
         match (&self.backing, &next.backing) {
             (VmaBacking::Anonymous, VmaBacking::Anonymous) => true,
             (VmaBacking::File { backing: ab, off: a },
@@ -379,6 +395,9 @@ impl Vma {
             // `__split_vma` keeps both halves on the parent's anon_vma
             // (and adds a chain entry for the new half).
             anon_vma: self.anon_vma.as_ref().map(Arc::clone),
+            // Split VMA fragments inherit the uffd registration (Linux
+            // `__split_vma` copies `vm_userfaultfd_ctx`).
+            uffd: self.uffd.clone(),
         }
     }
 }
@@ -389,13 +408,21 @@ impl Clone for Vma {
             start: self.start,
             end:   self.end,
             prot:  self.prot,
-            flags: self.flags,
+            // The child does NOT inherit the uffd registration: we
+            // advertise no UFFD_FEATURE_EVENT_FORK, so Linux
+            // `dup_userfaultfd` clears `vm_userfaultfd_ctx` + the
+            // `__VM_UFFD_FLAGS` on the child (the parent's monitor owns
+            // the fd and would `UFFDIO_COPY` into the WRONG mm). Strip the
+            // MISSING flag here; `uffd` is dropped below. (`Vma::clone` is
+            // the fork-dup path exclusively; splits use `clone_subrange`.)
+            flags: self.flags.difference(VmaFlags::UFFD_MISSING),
             backing: self.backing.clone(),
             rss: AtomicU64::new(self.rss.load(Ordering::Relaxed)),
             // VmaTree::insert clones VMAs into the destination tree
             // at fork; we keep the SAME anon_vma so all forked
             // descendants share the chain.
             anon_vma: self.anon_vma.as_ref().map(Arc::clone),
+            uffd: None,
         }
     }
 }
