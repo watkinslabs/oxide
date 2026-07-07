@@ -1,28 +1,27 @@
 # KPI handoff - 2026-07-07
 
-Current branch: `F691-kpi-runtime-compiler-glue`
-Current worktree: `/home/nd/oxide/worktrees/F691-kpi-runtime-compiler-glue`
+Latest lane: `F692-kpi-runtime-utility-glue`
+Worktree used: `/home/nd/oxide/worktrees/F692-kpi-runtime-utility-glue`
 
-F690 is complete and merged as PR #2833.
+F692 status:
+- Runtime utility exports added in `crates/kernel/modules/src/linux_string/*` and `crates/kernel/modules/src/linux_alloc.rs`.
+- KPI headers added/updated for parser, NLS, bitops, slab, string, kernel diagnostics, and compiler attributes.
+- `kpi_fix.md` marks F692 `VERIFIED`.
+- No arch-owned assembly was added; this lane stays in portable runtime glue.
 
-F691 is implemented locally and ready for final publish flow:
-- Runtime/compiler exports are in `crates/kernel/modules/src/linux_runtime.rs`.
-- Export registration is wired from `crates/kernel/modules/src/registry.rs`.
-- `crates/arch/hal-x86_64/src/linux_retpoline.rs` owns the x86 retpoline thunk assembly; `modules` only exports arch-provided addresses.
-- `kpi_fix.md` marks F691 `VERIFIED`.
-
-Validation already completed:
-- `cargo test -q -p modules linux_runtime -- --test-threads=1`
+F692 validation:
+- `cargo test -q -p modules linux_string -- --test-threads=1`
 - `cargo test -q -p modules -- --test-threads=1`
-- `cc -std=gnu11 -Ikpi/include -ffreestanding -Wall -Wextra -Werror -fsyntax-only tools/kpi-header-smoke.c`
-- `clang -target x86_64-unknown-none -std=gnu11 -Ikpi/include -ffreestanding -Wall -Wextra -Werror -fsyntax-only tools/kpi-header-smoke.c`
-- `clang -target aarch64-unknown-none -std=gnu11 -Ikpi/include -ffreestanding -Wall -Wextra -Werror -fsyntax-only tools/kpi-header-smoke.c`
-- `git diff --check`
-- Line caps are under 500 lines for touched Rust files.
-- `cargo run -q -p xtask -- kernel --arch x86_64`
-- `cargo run -q -p xtask -- kernel --arch aarch64` passed on rerun after the fresh worktree fetched the aarch64 cross toolchain and generated `vdso-aarch64.so`.
-- `make smoke`: x86 reached `oxide login:` in 36s; arm reached `oxide login:` in 46s.
-- Fedora 6.16 audit against `target_core_mod`, `libcomposite`, `null_blk`, `e1000`, and `virtio_net` shows no missing rows for the F691 target symbols.
+- `cc -std=gnu11 -Wall -Werror -nostdinc -Ikpi/include -c tools/kpi-header-smoke.c -o /tmp/kpi-header-smoke-host.o`
+- `make x86`
+- `make arm`
+- `make smoke`: both arches completed after vendoring the fresh worktree ARM GRUB modules; arm reached `oxide login:` in 18s.
+- `make smoke-x86`: x86 reached `oxide login:` in 12s.
+- Fedora 6.16 sample audit now reports 150 missing symbols and no misses for the F692 targets.
 
-Still required before shutdown-safe completion:
-- Commit, fetch/merge fresh `origin/main`, push branch, open PR, merge PR, fast-forward `/home/nd/oxide/kernel`, delete branch/worktree.
+Remaining KPI work:
+- Biggest missing clusters are still netdev/device-model, DMA/scatterlist, virtqueue/virtio, PCI/resource, block/blk-mq, cpuhp/workqueue, xarray, badblocks, and VFS credential/file helpers.
+- `crates/kernel/modules/src/linux_alloc.rs` is near the 500-line cap; split allocator glue before adding more allocator exports.
+
+Publish flow for this lane:
+- Commit implementation, fetch/merge fresh `origin/main`, push `F692-kpi-runtime-utility-glue`, open PR, merge with `gh pr merge --merge --delete-branch=true`, fast-forward `/home/nd/oxide/kernel`, then remove the worktree/local branch.
