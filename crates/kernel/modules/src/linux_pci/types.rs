@@ -10,6 +10,10 @@ pub(super) const PCI_NAME_LEN: usize = 13;
 pub(super) const PCI_IRQ_LEGACY: u32 = 1 << 0;
 pub(super) const PCI_IRQ_MSI: u32 = 1 << 1;
 pub(super) const PCI_IRQ_MSIX: u32 = 1 << 2;
+pub(super) const PCI_D0: i32 = 0;
+pub(super) const PCI_D3HOT: i32 = 3;
+pub(super) const PCI_D3COLD: i32 = 4;
+pub(super) const PCI_POWER_ERROR: i32 = -1;
 
 pub(super) const LINUX_OK: i32 = 0;
 pub(super) const LINUX_EINVAL: i32 = 22;
@@ -55,6 +59,9 @@ pub(super) struct LinuxPciDev {
     pub(super) irq_vector_base: u32,
     pub(super) irq_vectors: i32,
     pub(super) name: [c_char; PCI_NAME_LEN],
+    pub(super) saved_config_space: [u32; PCI_CONFIG_DWORDS],
+    pub(super) current_state: i32,
+    pub(super) wake_enabled: bool,
 }
 
 #[repr(C)]

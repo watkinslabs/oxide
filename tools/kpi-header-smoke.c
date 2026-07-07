@@ -28,6 +28,9 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pci.h>
+#include <linux/pm.h>
+#include <linux/pm_runtime.h>
+#include <linux/pm_wakeup.h>
 #include <linux/refcount.h>
 #include <linux/rbtree.h>
 #include <linux/rwlock.h>
@@ -36,6 +39,7 @@
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/spinlock.h>
+#include <linux/suspend.h>
 #include <linux/timer.h>
 #include <linux/usb.h>
 #include <linux/wait.h>
@@ -103,6 +107,9 @@ enum { SAMPLE_ABS_FLAT = 2 };
 enum { SAMPLE_USB_DEVNUM = 1 };
 enum { SAMPLE_USB_BULK_LEN = 8 };
 enum { SAMPLE_USB_TIMEOUT = 100 };
+enum { SAMPLE_PM_AUTOSUSPEND_DELAY = 1 };
+enum { SAMPLE_PM_WAKE_MSEC = 1 };
+enum { SAMPLE_PM_SCHEDULE_DELAY = 0 };
 static const u8 sample_mac[ETH_ALEN] = { 0x02, 0x4f, 0x58, 0x00, 0x00, 0x01 };
 static void sample_release(struct kref *kref) { (void)kref; }
 static int sample_thread(void *data) { return data != NULL; }
@@ -126,6 +133,9 @@ static int sample_platform_remove(struct platform_device *pdev)
     return 0;
 }
 static void sample_platform_shutdown(struct platform_device *pdev) { (void)pdev; }
+static int sample_pm_suspend(struct device *dev) { (void)dev; return 0; }
+static int sample_pm_resume(struct device *dev) { (void)dev; return 0; }
+static int sample_pm_idle(struct device *dev) { (void)dev; return 0; }
 static int sample_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
     usb_set_intfdata(intf, (void *)id);
@@ -209,6 +219,10 @@ static const struct net_device_ops sample_netdev_ops = {
 static const struct block_device_operations sample_blk_ops = {
     .owner = THIS_MODULE,
 };
+static const struct dev_pm_ops sample_pm_ops = {
+    SET_SYSTEM_SLEEP_PM_OPS(sample_pm_suspend, sample_pm_resume),
+    SET_RUNTIME_PM_OPS(sample_pm_suspend, sample_pm_resume, sample_pm_idle),
+};
 static ssize_t sample_attr_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
     (void)dev; (void)attr; (void)buf; return 0;
@@ -288,6 +302,7 @@ static int __init sample_init(void)
             .owner = THIS_MODULE,
             .of_match_table = sample_of_ids,
             .acpi_match_table = sample_acpi_ids,
+            .pm = &sample_pm_ops,
         },
         .id_table = sample_platform_ids,
     };
@@ -350,9 +365,29 @@ static int __init sample_init(void)
     dev.driver = &driver;
     dev.init_name = "sample-dev";
     dev.release = NULL;
+    dev.power.runtime_status = RPM_ACTIVE;
     device_initialize(&dev);
     (void)dev_set_name(&dev, "sample%d", 1);
     (void)device_add(&dev);
+    pm_runtime_enable(&dev);
+    pm_runtime_set_suspended(&dev);
+    (void)pm_runtime_get_sync(&dev);
+    pm_runtime_mark_last_busy(&dev);
+    pm_runtime_set_autosuspend_delay(&dev, SAMPLE_PM_AUTOSUSPEND_DELAY);
+    pm_runtime_use_autosuspend(&dev);
+    (void)pm_runtime_autosuspend_expiration(&dev);
+    (void)pm_runtime_put_sync(&dev);
+    pm_runtime_dont_use_autosuspend(&dev);
+    (void)pm_schedule_suspend(&dev, SAMPLE_PM_SCHEDULE_DELAY);
+    (void)pm_runtime_suspended(&dev);
+    (void)device_init_wakeup(&dev, true);
+    (void)device_may_wakeup(&dev);
+    pm_wakeup_event(&dev, SAMPLE_PM_WAKE_MSEC);
+    pm_stay_awake(&dev);
+    pm_relax(&dev);
+    (void)dev_pm_suspend(&dev);
+    (void)dev_pm_resume(&dev);
+    (void)PM_SUSPEND_MEM;
     dev_set_drvdata(&dev, &s);
     (void)dev_get_drvdata(&dev);
     (void)dev_name(&dev);
@@ -588,6 +623,12 @@ static int __init sample_init(void)
     (void)pci_write_config_byte(&pdev, SAMPLE_PCI_CFG_COMMAND, pci_cfg8);
     (void)pci_write_config_word(&pdev, SAMPLE_PCI_CFG_COMMAND, pci_cfg16);
     (void)pci_write_config_dword(&pdev, SAMPLE_PCI_CFG_COMMAND, pci_cfg32);
+    (void)pci_save_state(&pdev);
+    (void)pci_set_power_state(&pdev, PCI_D3hot);
+    (void)pci_choose_state(&pdev, PMSG_SUSPEND);
+    (void)pci_enable_wake(&pdev, PCI_D3hot, true);
+    (void)pci_restore_state(&pdev);
+    (void)pci_set_power_state(&pdev, PCI_D0);
     pci_disable_device(&pdev);
     pci_unregister_driver(&pdrv);
     plat_resources[SAMPLE_PLATFORM_MEM_RESOURCE].start = SAMPLE_PCI_BAR_START;

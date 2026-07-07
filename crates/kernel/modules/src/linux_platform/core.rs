@@ -99,6 +99,7 @@ extern "C" fn platform_device_alloc(name: *const c_char, id: i32) -> *mut Platfo
             release: None,
             of_node: null_mut(),
             acpi_node: null_mut(),
+            power: crate::linux_pm::types::LinuxDevPmInfo::new(),
         },
         num_resources: 0,
         resource: null_mut(),
