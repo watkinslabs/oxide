@@ -8,6 +8,7 @@
 //   1000) — the /home volume. Serial `oxide-home`.
 //
 // Split out of rootfs.rs for the 1000-line cap (08§7).
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use crate::cmds::run;
 
@@ -47,10 +48,83 @@ fn build_root(
     dbg("mkdir /usr/local/bin")?;
     dbg("mkdir /usr/local/sbin")?;
     dbg("mkdir /home")?;
+    if std::env::var_os("OXIDE_DRM_RENDER_SMOKE").is_some() {
+        inject_drm_render_smoke(&root_img, arch)?;
+    }
     eprintln!("xtask rootfs: finalized {} ({} bytes)",
         root_img.display(),
         std::fs::metadata(&root_img).map(|m| m.len()).unwrap_or(0));
     Ok(())
+}
+
+fn inject_drm_render_smoke(root_img: &Path, arch: &str) -> Result<(), u8> {
+    let bin = build_drm_probe(arch)?;
+    let service = write_drm_render_service()?;
+    dbg(root_img, "mkdir /etc/systemd/system")?;
+    dbg(root_img, "mkdir /etc/systemd/system/multi-user.target.wants")?;
+    dbg_ignore(root_img, "rm /usr/local/bin/drm_render_probe");
+    dbg(root_img, &format!("write {} /usr/local/bin/drm_render_probe", bin.display()))?;
+    dbg(root_img, "sif /usr/local/bin/drm_render_probe mode 0100755")?;
+    dbg_ignore(root_img, "rm /etc/systemd/system/drm-render-smoke.service");
+    dbg(root_img, &format!("write {} /etc/systemd/system/drm-render-smoke.service", service.display()))?;
+    dbg_ignore(root_img, "rm /etc/systemd/system/multi-user.target.wants/drm-render-smoke.service");
+    dbg(root_img, "symlink /etc/systemd/system/multi-user.target.wants/drm-render-smoke.service ../drm-render-smoke.service")?;
+    eprintln!("xtask rootfs: injected DRM render smoke into {}", root_img.display());
+    Ok(())
+}
+
+fn build_drm_probe(arch: &str) -> Result<PathBuf, u8> {
+    let (trip, dir) = match arch {
+        "x86_64"  => ("x86_64-linux-musl", "x86_64-linux-musl-cross"),
+        "aarch64" => ("aarch64-linux-musl", "aarch64-linux-musl-cross"),
+        _ => { eprintln!("xtask rootfs: unsupported arch `{arch}` for DRM render smoke"); return Err(2); }
+    };
+    let cc = PathBuf::from(format!("vendor/cross/{dir}/bin/{trip}-cc"));
+    if !cc.is_file() {
+        eprintln!("xtask rootfs: missing {} for DRM render smoke", cc.display());
+        return Err(2);
+    }
+    let out_dir = PathBuf::from("target").join("smoke").join(arch);
+    std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
+    let out = out_dir.join("drm_render_probe");
+    let mut c = Command::new(cc);
+    c.args([
+        "-O2", "-static", "-Wall", "-Wextra",
+        "userspace/drm_probe/drm_probe.c",
+        "-o", out.to_str().unwrap(),
+    ]);
+    run(c)?;
+    Ok(out)
+}
+
+fn write_drm_render_service() -> Result<PathBuf, u8> {
+    let dir = PathBuf::from("target").join("smoke");
+    std::fs::create_dir_all(&dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
+    let path = dir.join("drm-render-smoke.service");
+    let body = "[Unit]\n\
+Description=Oxide DRM render node smoke\n\
+After=basic.target systemd-udev-settle.service\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+ExecStart=/bin/sh -c '/usr/local/bin/drm_render_probe >/dev/console 2>&1'\n\
+\n\
+[Install]\n\
+WantedBy=multi-user.target\n";
+    std::fs::write(&path, body).map_err(|e| { eprintln!("xtask rootfs: write service failed: {e}"); 1u8 })?;
+    Ok(path)
+}
+
+fn dbg(img: &Path, cmd: &str) -> Result<(), u8> {
+    let mut c = Command::new("debugfs");
+    c.args(["-w", "-R", cmd, img.to_str().unwrap()]);
+    c.stdout(std::process::Stdio::null());
+    c.stderr(std::process::Stdio::null());
+    run(c)
+}
+
+fn dbg_ignore(img: &Path, cmd: &str) {
+    let _ = dbg(img, cmd);
 }
 
 /// home disk = fresh 64 MiB ext4 with /home/alice owned by uid/gid 1000
