@@ -8,7 +8,18 @@ The greeter fails because of **systemic wakeup latency**, NOT anything polkit-sp
 - CLEAN boot (features=debug-watchdog only, NO klog firehose): polkit.service still ran the full **45s** and `[FAILED] start operation timed out` → so the slowness is REAL, not a tracing artifact. Read the systemd boot log directly off the framebuffer (qemu_screen as_text=False → PPM → png → Read).
 - Mechanism: mozjs (spidermonkey, polkit's JS rules engine) does thousands of SEQUENTIAL futex/poll round-trips; at ~150ms wake latency each, its init blows systemd's 45s TimeoutStartSec → polkit.service FAILED → upowerd SEGV on NULL authority → gdm exit 1 → no greeter. Other services (NetworkManager/logind/udisks) are less round-trip-bound so they squeak in [OK].
 
-## MECHANISM (traced to scheduler/timer core)
+## smp=4 does NOT help (KEY): polkit still 45s-times-out with 4 vCPUs
+So it is NOT single-CPU thread serialization and NOT primarily wake-latency (more CPUs would help that). It's a **CPU-count-INDEPENDENT slowness** ⇒ either a slow per-OPERATION syscall on polkit's critical path, or a global serial resource (but UP has no lock contention, and smp=4 didn't help either → leans per-op). mozjs (spidermonkey) is the differentiator (only JS-engine service; all non-mozjs services start [OK] fast).
+
+## Candidates CHECKED and cleared as THE cause (still real but not it):
+- **Global futex lock**: `core.rs:44 WAITERS: Spinlock<Vec<Waiter>>` — ONE global list, wake_key O(N) scan under a TtyClass (IRQ-off) spinlock. Real anti-pattern (Linux uses hashed buckets) and lengthens IRQ-off windows, BUT N≈100 waiters ⇒ µs scans; smp=1 timeout isn't lock contention. Worth fixing (bucketize) but NOT proven to be the 45s. Requeue (pthread_cond) re-keys across buckets ⇒ non-trivial (cross-bucket move + lock order + waitv) — do with a hosted futex test.
+- **mmap**: lazy demand-paged (009_mmap → glue_mmap inserts VMA; fault populates). Not eager. OK.
+- **mprotect**: per-page invlpg self-flush (pmm/user_as/foreign.rs mprotect_pages), NOT a full CR3 reload. On smp>1 it broadcasts a TLB-shootdown IPI (would hurt smp=4, not smp=1). OK on UP.
+
+## STILL UNPINNED: which per-op eats polkit's 45s wall-clock
+Need a real SAMPLING profiler (where is polkit's PC / which syscall dominates), not per-syscall klog (distorts ~100×). Options: (a) a low-rate timer-driven PC sampler for the polkitd task (record RIP at each tick into a ring, histogram kernel vs user + hot syscall); (b) a per-syscall CUMULATIVE-time counter keyed by nr (rdtsc delta summed per nr, dumped periodically — no per-call klog) to find the nr that dominates. Then fix that path. Suspects to weigh: getrandom blocking, madvise/GC path, ext4 read latency for rules files, page-fault handler cost (millions of faults into the mozjs heap), or the futex path after all.
+
+## MECHANISM (traced to scheduler/timer core — contributes, magnitude tracing-inflated)
 `arch-irq/src/lapic/dispatch.rs` `oxide_irq_resched_on_exit` (line ~153): the scheduler is **VOLUNTARY-preempt — it switches tasks ONLY on IRQ-exit to USER mode** (`from_user = (saved_cs & 3)==3`). The timer tick sets need_resched but a task in a long KERNEL section is NOT preempted until it returns to user or blocks. Meanwhile `note_tick` (dispatch.rs:49) firing with 334ms gaps means the LAPIC timer IRQ itself didn't fire for 334ms → IRQs were masked (IF=0) in some kernel section that long, OR the periodic tick stalled. Between them, a runnable thread waits ~150ms median to actually run.
 `hal-x86_64/src/timer.rs:174 set_oneshot` is a NO-OP stub — the LAPIC timer is periodic (armed once at bring-up), so gaps ⇒ IRQ-masked stalls, not a missing rearm. Suspects for the long IF=0 section: tick_poll (BSP hook, dispatch.rs:75, runs IRQs-masked — fbcon flush?), a spinlock held across slow work, or klog/UART done with IRQs off.
 
