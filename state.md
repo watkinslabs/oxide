@@ -19,9 +19,20 @@ Chain:
 6. **gdm exits code=1** (needs polkit/accounts); `gdm.service: Triggering OnFailure=`; restart loop.
 7. Everything cascades down (services stop; upower `stop-sigterm` timeout → SIGABRT). By ~t=120s only init+journald remain on the collapsing boots; on other boots it wedges with services idle.
 
-## What polkitd is doing when it stalls (two boots agree)
-- polkitd main (tid ~4241) and its GDBus worker (~4255) DO ping-pong cleanly via futex early (handoff healthy), then **freeze**: main `nsysc` plateaus at 4003 (2.9s CPU burned), worker at 457 — both parked in ppoll making **zero** further syscalls. A genuine terminal stall mid-startup, NOT slow-progress and NOT a hot busy-loop at the end.
-- So: polkitd gets partway through startup, then blocks in ppoll on a D-Bus reply (or a rules/JS/fs op) that never completes, so it never calls RequestName-complete → name never owned.
+## What polkitd is doing when it stalls (per-syscall [POL] trace, debug-polktrace)
+Threads (poltrace3 boot):
+- **tid 4241 (main)**: 525+ syscalls — futex:159, mmap:82, openat:36, read:28, mprotect:26, getdents64, clone3, inotify_add_watch(=1/2/3 SUCCESS on the dirs that exist). This is **mozjs (spidermonkey) JS-engine init + polkit rules loading**. At the END of the window it is STILL actively progressing (clone3 spawning threads, getdents enumerating /usr/share/polkit-1/rules.d, reading rules) — NOT deadlocked, just SLOW.
+- **tid 4269 (GDBus worker)**: recvmsg:18 / sendmsg:2 / write:8-byte eventfd wakeups — normal D-Bus I/O; only 2 D-Bus sends (Hello + 1). Alive.
+- **tid 4267**: glib missing-dir monitor retry — ppoll(timeout)=0 then 5× inotify_add_watch=-2 (ENOENT) on the 5 NON-EXISTENT dirs (/etc/polkit-1/actions, /run/polkit-1/{actions,rules.d}, /usr/local/share/polkit-1/{actions,rules.d}). This is glib's normal 4s missing-dir poll — NOT a hang, NOT the bug.
+
+**REFRAMED root cause:** polkit's `polkit_backend_authority_get()` (spidermonkey JS runtime init + compile/load of ~20 .rules files) is **pathologically slow** under our kernel — it exceeds systemd's 25s Type=dbus DefaultTimeoutStartSec, so systemd kills polkit before it finishes init and calls g_bus_own_name → RequestName. NOT a stub-able bug; NOT a hard deadlock in THIS boot.
+
+**BUT intermittent:** the earlier 320s futextrace boot showed polkit main FREEZE (nsysc plateau 4003, zero further syscalls) — a genuine hang. So across boots polkit is sometimes slow-progressing, sometimes frozen — a race/perf split. The mozjs-heavy init (159+ futex, 82+ mmap) is the sensitive path.
+
+**Two clean-boot facts:** (1) framebuffer on a minimal build (debug-watchdog only) stayed a TEXT console — greeter never rendered. (2) debug tracing (per-event UART klog) slows syscalls ~100× (0.7ms each), massively amplifying the timeout. So the debug boots' timing is NOT representative; whether polkit makes the 25s window on a truly clean boot is still UNPROVEN.
+
+## NEXT (perf, not deadlock): why is polkit's mozjs+rules init so slow?
+Profile which syscall dominates polkit's init wall-clock on a CLEAN boot (no per-syscall klog). Candidates: mmap/mprotect (mozjs GC arenas — 82 mmap), futex (159 — mozjs thread sync), getdents64/openat/read (rules files off ext4). If a specific syscall is pathologically slow (e.g. mmap fault-in, or futex, or ext4 read), fixing that unblocks polkit within 25s. Use debug-wakelat / a coarse per-syscall-latency counter, NOT the per-syscall klog firehose (which distorts). Also: the intermittent early udev-coldplug wedge (~17-20s, ~half of boots) is a SEPARATE blocker that also prevents reaching the greeter.
 
 ## RULED OUT this session (do not re-chase)
 - **D-Bus transport works.** Wire trace shows Hello, unique-name assignment (:1.8/:1.9/…), RequestName, NameOwnerChanged all flowing correctly over AF_UNIX.
