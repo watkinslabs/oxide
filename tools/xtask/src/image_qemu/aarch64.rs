@@ -107,6 +107,13 @@ pub(super) fn qemu_run_aarch64_grub(
     let root_drive = format!("if=none,id=root,format=raw,file={}", root_img.display());
     let home_drive = format!("if=none,id=home,format=raw,file={}", home_img.display());
     let netdev = ssh_fwd_netdev();
+    // Per-launch vhost-vsock guest CID (host-global — see qemu_vsock_cid), so
+    // concurrent worktree boots don't collide on a hardcoded CID. cid / cid+1.
+    let vsock_cid: u32 = std::env::var("OXIDE_QEMU_VSOCK_CID").ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| crate::buildns::qemu_vsock_cid(repo, id));
+    let vsock_dev = format!("vhost-vsock-pci,guest-cid={vsock_cid},disable-legacy=on,bus=pcie.0");
+    let vsock_dev2 = format!("vhost-vsock-pci,guest-cid={},disable-legacy=on,bus=pcie.0", vsock_cid + 1);
     let mut c = Command::new("qemu-system-aarch64");
     // OXIDE_QEMU_QMP_SOCK: QMP control socket for the keyboard-login smoke
     // (real virtio-keyboard `send-key` injection) — same as the x86 path.
@@ -143,7 +150,7 @@ pub(super) fn qemu_run_aarch64_grub(
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
         // D3.3: virtio-vsock (modern id 0x1053). guest-cid=3; the host
         // peer is always CID 2. Needs /dev/vhost-vsock on the host.
-        "-device", "vhost-vsock-pci,guest-cid=3,disable-legacy=on,bus=pcie.0",
+        "-device", vsock_dev.as_str(),
         // F454: virtio-snd (modern id 0x1059). Null audio backend is enough
         // for the CONTROLQ probe (config harvest + PCM_INFO); PR-C swaps to
         // a wav backend to capture real PCM output.
@@ -196,7 +203,7 @@ pub(super) fn qemu_run_aarch64_grub(
     }
     if std::env::var_os("OXIDE_VIRTIO_VSOCK_MULTIDEV_SMOKE").is_some() {
         c.args([
-            "-device", "vhost-vsock-pci,guest-cid=4,disable-legacy=on,bus=pcie.0",
+            "-device", vsock_dev2.as_str(),
         ]);
     }
     if std::env::var_os("OXIDE_STORAGE_MULTICTRL_SMOKE").is_some() {
