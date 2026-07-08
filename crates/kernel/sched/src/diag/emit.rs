@@ -53,7 +53,8 @@ fn dump_tasks_emit() {
         klog::write_raw(b" ");
         col_dec(t.tid as u64, 6);
         klog::write_raw(b" ");
-        col_str(t.name, 16);
+        let comm = t.comm();
+        col_str(&comm, 16);
         klog::write_raw(b" ");
         klog::write_raw(&[t.state().linux_char()]);
         klog::write_raw(b"  ");
