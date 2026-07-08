@@ -63,6 +63,12 @@ pub fn park_zombie(task: Arc<Task>) {
     // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
     // signalfd (systemd) — wake_wait4_parent only covers wait4 parkers.
     if let Some(p) = parent { wake_task_for_signal(&p); }
+    // The exiting task is now a Zombie, so ANY pidfd for it polls readable.
+    // Modern systemd tracks each service child via a pidfd in its epoll (not
+    // SIGCHLD), so a child exit must wake epoll waiters to re-scan + reap —
+    // else the oneshot service's exited child is never reaped and the service
+    // (journal-flush, sysctl, …) hangs its full start timeout, wedging the boot.
+    super::notify_epoll_waiters();
 }
 
 /// B117: queue a SIGCHLD child-exit `SigInfo` against `parent` so
@@ -158,6 +164,9 @@ pub fn signal_child_exit(task: &Task) {
     // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
     // signalfd (systemd) — wake_wait4_parent only covers wait4 parkers.
     if let Some(p) = parent { wake_task_for_signal(&p); }
+    // Wake epoll waiters polling this task's pidfd (systemd tracks service
+    // children via pidfd-in-epoll) so they re-scan + reap — see park_zombie.
+    super::notify_epoll_waiters();
 }
 
 /// Push `task` onto the ZOMBIES list. Used by `schedule()` when it
@@ -470,6 +479,16 @@ pub fn reparent_children(dying_tid: u32) {
             wake_wait4_parent(init_tid);
             wake_task_for_signal(p);
         }
+        // A child that was ALREADY a zombie when reparented posts SIGCHLD into
+        // init but that alone does not re-fire init's SIGCHLD signalfd if it is
+        // registered EPOLLET: waking the task without advancing the epoll
+        // readiness generation leaves `scan_once` computing new_edges==0, so
+        // init re-parks without reading the signalfd → the reparented orphan
+        // (a burst of modprobe/udevadm/mount/sysctl whose service parent exited)
+        // leaks forever and its oneshot unit hangs its start timeout, wedging
+        // the boot. Bump GLOBAL_EPOLL_GEN so the level-ready (has_zombies)
+        // signalfd fires. Mirrors the park_zombie notify.
+        super::notify_epoll_waiters();
     }
 }
 

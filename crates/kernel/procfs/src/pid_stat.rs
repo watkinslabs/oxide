@@ -13,7 +13,10 @@ pub fn body(tid: u32) -> Vec<u8> {
     let vpid = sched::live::registry::display_vpid(tid);
     let ppid = sched::live::registry::parent_vpid(tid);
     push_u64(&mut out, vpid);
-    push(&mut out, b" ("); push(&mut out, task.name.as_bytes()); push(&mut out, b") ");
+    // `comm` (field 2): the exec'd program's basename (Linux), not the generic
+    // fork-time name — `ps`/`top`/`pidof` key off this.
+    let comm = task.comm();
+    push(&mut out, b" ("); push(&mut out, comm.as_bytes()); push(&mut out, b") ");
     out.push(task.state().linux_char()); out.push(b' ');
     push_u64(&mut out, ppid);
     // Fields 5..52 (pgrp..). utime is field 14 → 10th of these; report the
