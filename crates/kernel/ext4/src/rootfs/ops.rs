@@ -56,7 +56,7 @@ impl RootfsState {
         let nlink = if inode.links_count != 0 { inode.links_count as u32 }
                     else if matches!(ft, vfs::FileType::Directory) { 2 } else { 1 };
         let (uid, gid) = (inode.uid, inode.gid);
-        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns);
+        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns, inode.crtime_ns);
         let st = self.clone();
         let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, times);
         // Route through the SB inode cache so a repeated lookup of the same ino
@@ -76,7 +76,7 @@ impl RootfsState {
         let size = inode.size;
         let mode = inode.mode;
         let (uid, gid) = (inode.uid, inode.gid);
-        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns);
+        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns, inode.crtime_ns);
         let nlink = if inode.links_count != 0 { inode.links_count as u32 } else { 1 };
         let st = self.clone();
         let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, times);
@@ -206,8 +206,7 @@ impl RootfsState {
         let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
         if !inode.is_dir() { return Err(vfs::VfsError::Enotdir); }
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        self.mount.dir_unlink(pino, name).map_err(|_| vfs::VfsError::Eio)?;
-        let _ = self.mount.free_inode(target);
+        self.mount.rmdir(pino, name).map_err(|_| vfs::VfsError::Eio)?;
         Ok(())
     }
 
@@ -247,10 +246,23 @@ impl RootfsState {
             .and_then(|v| self.mount.read_inode(v).ok())
             .map(|i| i.is_dir())
             .unwrap_or(false);
+        let moved_is_dir = inode.is_dir();
         self.mount.run_journaled(|m| {
             if dest_victim.is_some() { let _ = m.dir_unlink(to_p, &to_name); }
             m.dir_link(to_p, &to_name, target, ftype)?;
             m.dir_unlink(from_p, &from_name)?;
+            // Cross-parent DIRECTORY move (Linux ext4_rename dir path): the moved
+            // directory's `..` must point at its new parent, the old parent loses
+            // that back-reference, and the new parent gains it. Without this the
+            // subtree's `..` dangled at the old parent and both parents' i_nlink
+            // drifted every dir move.
+            if moved_is_dir && from_p != to_p {
+                m.set_dotdot(target, to_p)?;
+                m.adjust_nlink(from_p, -1)?;
+                // The new parent gains the `..` — UNLESS it simultaneously lost a
+                // replaced directory victim (whose own `..` back-ref cancels it).
+                if !dest_is_dir { m.adjust_nlink(to_p, 1)?; }
+            }
             Ok(())
         }).map_err(|_| vfs::VfsError::Eio)?;
         // In-memory nlink authority (mirror `unlink`): the dcache `d_unlink` no

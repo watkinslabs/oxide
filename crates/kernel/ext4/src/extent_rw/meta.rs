@@ -14,16 +14,51 @@ const OFF_GID_HI:      usize = 0x7A; // osd2 `l_i_gid_high`
 const OFF_CTIME_EXTRA: usize = 0x84;
 const OFF_MTIME_EXTRA: usize = 0x88;
 const OFF_ATIME_EXTRA: usize = 0x8C;
+const OFF_CRTIME:       usize = 0x90;
+const OFF_CRTIME_EXTRA: usize = 0x94;
+const OFF_FLAGS:        usize = 0x20; // i_flags (chattr flag word)
+
+impl Mount {
+    /// Persist `i_flags` (@0x20) to `ino`'s on-disk inode, journaled — the ext4
+    /// half of `FS_IOC_SETFLAGS`. Caller has already folded the user-modifiable
+    /// bits over the preserved kernel-internal ones. # C: O(1) I/O, 1 txn
+    pub fn persist_inode_flags(&self, ino: u32, flags: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            b[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+}
 
 /// Encode an absolute-ns timestamp into the ext4 `(i_*time, i_*time_extra)`
 /// pair: seconds low 32 bits in the base field; `(nsec << 2) | epoch_hi2` in
 /// the extra field (Linux `ext4_encode_extra_time`). # C: O(1)
-fn enc_time(ns: u64) -> (u32, u32) {
+pub(crate) fn enc_time(ns: u64) -> (u32, u32) {
     let secs = ns / 1_000_000_000;
     let nsec = (ns % 1_000_000_000) as u32;
     let lo = (secs & 0xFFFF_FFFF) as u32;
     let epoch = ((secs >> 32) & 0x3) as u32;
     (lo, (nsec << 2) | epoch)
+}
+
+/// Stamp a freshly-created inode's four timestamps (atime = ctime = mtime =
+/// crtime = `now_ns`) into its raw on-disk bytes — the `ext4_new_inode`
+/// `current_time(inode)` seeding that keeps a new file off the 1970 epoch.
+/// The nanosecond/epoch-high extras + `i_crtime` only exist in a >128-byte
+/// inode (`isize`). Caller owns the surrounding inode write. # C: O(1)
+pub(crate) fn stamp_new_inode_times(b: &mut [u8], isize: usize, now_ns: u64) {
+    let (lo, ex) = enc_time(now_ns);
+    b[OFF_ATIME..OFF_ATIME + 4].copy_from_slice(&lo.to_le_bytes());
+    b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&lo.to_le_bytes());
+    b[OFF_MTIME..OFF_MTIME + 4].copy_from_slice(&lo.to_le_bytes());
+    if isize >= OFF_CRTIME_EXTRA + 4 {
+        b[OFF_ATIME_EXTRA..OFF_ATIME_EXTRA + 4].copy_from_slice(&ex.to_le_bytes());
+        b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&ex.to_le_bytes());
+        b[OFF_MTIME_EXTRA..OFF_MTIME_EXTRA + 4].copy_from_slice(&ex.to_le_bytes());
+        b[OFF_CRTIME..OFF_CRTIME + 4].copy_from_slice(&lo.to_le_bytes());
+        b[OFF_CRTIME_EXTRA..OFF_CRTIME_EXTRA + 4].copy_from_slice(&ex.to_le_bytes());
+    }
 }
 
 impl Mount {
