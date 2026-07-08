@@ -1,3 +1,20 @@
+# Handoff — greeter: polkit STUCK in ppoll waiting for a D-Bus completion (NOT slow work)
+
+## DECISIVE (debug-syscost profiler, non-distorting per-syscall cumulative wall-time)
+polkitd's entire wall-clock is in **ppoll**: `ppoll total_ms=51667 cnt=47 avg=1.1s`. EVERY other syscall is fast: futex 343us avg, mmap 79us, read 78us, mprotect 34us, openat 4.8ms. So the earlier "slow mozjs / slow per-op / systemic wake latency" framings are WRONG — polkit does its init work FAST, then **blocks forever in one ~45s ppoll** waiting for a D-Bus event that never arrives, and systemd kills it at the 45s TimeoutStartSec. It is a **STUCK WAIT / lost D-Bus completion**, a hang — not slowness. (Reunifies with the original finding: polkit stalls at org.freedesktop.PolicyKit1 name-acquisition.)
+
+## THE GAP that hid it: debug-dbus only traced write(), NOT sendmsg()
+`trace_dbus_stream` is called in unix_sock/stream.rs write_inner (write path) but glib GDBus sends via **sendmsg**. So my earlier "polkit never sends RequestName" may be FALSE — I wasn't tracing sendmsg. The [POL] histogram showed sendmsg cnt≈2 for polkit's worker (Hello + possibly RequestName). So RequestName may BE sent and the REPLY never delivered, OR it's never sent. MUST trace the AF_UNIX sendmsg/recvmsg round-trip to know.
+
+## NEXT (direct path to the fix):
+1. Add trace_dbus_stream (or equivalent) to the AF_UNIX **sendmsg AND recvmsg** paths (not just write/read), filtered to polkit+dbus-broker. Boot, capture polkit's full bus exchange: does it send RequestName(PolicyKit1)? does dbus-broker recv it + reply? does the reply reach polkit? The dropped message/step IS the bug.
+2. Prime suspect given the profiler: a D-Bus message (RequestName or its reply, or a NameAcquired signal) is sent via sendmsg but not delivered to the peer's recv queue / doesn't wake the peer — an AF_UNIX **sendmsg** delivery or credential/ancillary path that differs from the write() path. (write() path delivery was verified wired; sendmsg path NOT yet.)
+
+## Profiler tool (committed, feature-gated debug-syscost)
+syscalls/src/syscost.rs: per-nr cumulative wall-time for polkitd, top-14 dumped every 800 target calls. Non-distorting (atomic adds, no per-call klog). Reusable for any exe (change is_target()). THIS is how to profile without the klog firehose distorting timing.
+
+---
+# (superseded framings below — kept for the ruled-out evidence trail)
 # Handoff — greeter blocked by SYSTEMIC WAKE LATENCY (timer-tick gaps), surfacing as polkit timeout
 
 ## TOP FINDING (2026-07-08, debug-wakelat, CLEAN boot confirms it's real)

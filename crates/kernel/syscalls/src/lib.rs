@@ -6,6 +6,7 @@
 extern crate alloc;
 
 mod anon_dname;
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
 // Moved out of the kernel binary with the syscall layer (docs/53):
 pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio; pub mod pidfd;
 // One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]
