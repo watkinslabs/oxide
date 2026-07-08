@@ -115,6 +115,36 @@ impl InodeOps for Ext4RegInodeOps {
         super::meta::ext4_fileattr_set(inode, fa)
     }
 
+    /// `ext4_fiemap` (`FS_IOC_FIEMAP`, filefrag/backup/dedup tools): report the
+    /// file's physical extents intersecting `[start, start+len)` as byte-unit
+    /// `FiemapExtent`s. Reuses the leaf-extent walk; an unwritten (fallocated)
+    /// extent is flagged `FIEMAP_EXTENT_UNWRITTEN`, and the final extent of the
+    /// file carries `FIEMAP_EXTENT_LAST` (Linux `EXT4_FIEMAP` semantics). `emit`
+    /// returning false (user array full) stops the walk. # C: O(N_extents)
+    fn fiemap(&self, inode: &Inode, start: u64, len: u64,
+              emit: &mut dyn FnMut(vfs::FiemapExtent) -> bool) -> KResult<()> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let bs = d.st.mount.sb.block_size.max(1) as u64;
+        let runs = d.st.mount.extent_map(d.ino).map_err(vfs_error_from_mount)?;
+        let range_end = start.saturating_add(len);
+        let last_idx = runs.len().wrapping_sub(1);
+        for (idx, &(rlog, rphys, rlen, unwritten)) in runs.iter().enumerate() {
+            let logical = rlog as u64 * bs;
+            let length  = rlen as u64 * bs;
+            let ext_end = logical.saturating_add(length);
+            // Report any extent whose byte span intersects the requested range;
+            // extents are reported whole (Linux does not split at the boundary).
+            if ext_end <= start || logical >= range_end { continue; }
+            let mut flags = 0u32;
+            if unwritten { flags |= vfs::inode::FIEMAP_EXTENT_UNWRITTEN; }
+            if idx == last_idx { flags |= vfs::inode::FIEMAP_EXTENT_LAST; }
+            if !emit(vfs::FiemapExtent { logical, physical: rphys * bs, length, flags }) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
         -> Result<(), vfs::XattrError>
     {
