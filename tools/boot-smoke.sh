@@ -33,10 +33,16 @@ case "$ARCH" in
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 
-# Serial marker signalling success. Defaults to the login prompt (the
-# real boot target); override e.g. SMOKE_MARKER='MB2' for incremental
-# bring-up milestones on the GRUB path.
-MARKER="${SMOKE_MARKER:-oxide login:}"
+# Serial marker signalling success. The quick-boot root is now a glibc
+# systemd image (images repo), which logs to serial (journald
+# forward_to_console) and boots to gdm on the framebuffer — it does NOT
+# print a serial `oxide login:`. `Reached target basic.target` proves the
+# glibc userspace + systemd came up (sysinit/sockets/timers done, before
+# any greeter), which is what this gate exists to catch (ABI/syscall-table/
+# arch-routing breaks fault long before basic.target). Override e.g.
+# SMOKE_MARKER='oxide login:' for a serial-getty profile, or 'MB2' for a
+# GRUB bring-up milestone.
+MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
