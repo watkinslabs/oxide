@@ -13,6 +13,27 @@ use crate::ARCH_CTX_SIZE;
 use super::{ArchCtxBuf, ArchFpuBuf, Creds, PosixTimer, SaHandler, SchedClass, Task, TaskState};
 
 impl Task {
+    /// Process name for a task dump / procfs `comm`: the basename of the exec'd
+    /// path (Linux sets `comm` from the invoked program at execve), falling back
+    /// to the fork-time `name` before the first exec — so `ps` / `/proc/<pid>/
+    /// comm` / a wedge task-dump show the REAL process (e.g. `systemd-journald`)
+    /// instead of the generic fork-time `fork-child`. # C: O(path_len)
+    pub fn comm(&self) -> alloc::string::String {
+        use alloc::string::String;
+        // SAFETY: the mm slot + `exe_path` mirror are single-mutator per `13§5`;
+        // this is a snapshot read (diagnostic / procfs), matching
+        // `proclink::task_exe_path`'s exe resolution.
+        let exe = unsafe { self.mm_ref() }.and_then(|mm| mm.exe_path())
+            .or_else(|| unsafe { (*self.exe_path.get()).clone() });
+        match exe {
+            Some(p) if !p.is_empty() => {
+                let base = p.rsplit('/').next().unwrap_or(p.as_str());
+                String::from(if base.is_empty() { self.name } else { base })
+            }
+            _ => String::from(self.name),
+        }
+    }
+
     /// Construct a new Runnable kernel-thread task (no `mm`). Tests
     /// use this; production allocation goes through
     /// `spawn_kernel_thread` once HAL `Context` is wired (`13§4`).
