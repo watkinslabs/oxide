@@ -1,4 +1,22 @@
-# Handoff — boot env FIXED (qemu CID conflict); chasing graphical.target
+# Handoff — boot env FIXED; desktop blocker = SIGCHLD/zombie-reap stall
+
+## DESKTOP BLOCKER (isolated on a CLEAN host — codex paused)
+Clean boot reaches ~10s guest: journal-flush **Finished** (the earlier timeout
+was pure codex CONTENTION, not a bug), userdbd Started — then WEDGES. sysrq task
+dump (scratchpad/wedge.log): **13 processes in `Z` zombie state, last syscall
+`nr#231` = exit_group** — systemd's early fork-children exited and are NEVER
+REAPED. `init`(pid1) parks in `epoll_wait`; CPU idle (`current=tid:0 state=R`).
+systemd reaps via SIGCHLD → signalfd → epoll_wait → waitid. So this is a
+**SIGCHLD-delivery / signalfd-epoll-wakeup / zombie-reap bug**. PRIME SUSPECT:
+commit **2257f275** "fix(fs): G8 — signalfd mask update + full signalfd_siginfo
+fill" (just landed on main; changed exactly this path). NEXT: check whether
+SIGCHLD reaches systemd's signalfd and wakes its epoll — likely a regression in
+2257f275; a hosted harness on signalfd+SIGCHLD+epoll, or a klog trace on the
+sig-deliver→signalfd-poll path. This is THE thing between here and gdm.
+Repro: `OXIDE_SMP=1 ./tools/boot-smoke.sh x86 90` (unique SMOKE_KEEP_LOG); it
+wedges ~10s and sysrq-dumps the zombies.
+
+# Handoff — boot env FIXED (qemu CID conflict)
 
 ## THE "BOOT BROKE ALL NIGHT" ROOT CAUSE — FIXED + MERGED (PR #2848)
 NOT a host fault, NOT the kernel (an earlier handoff wrongly blamed SeaBIOS).
