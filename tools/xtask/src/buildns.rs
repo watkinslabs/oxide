@@ -31,6 +31,36 @@ pub(crate) fn target_dir(repo: &Path, id: Option<&str>) -> PathBuf {
     repo.join("target").join("builds").join(id.unwrap_or("default"))
 }
 
+/// Per-launch vhost-vsock guest CID. A vsock CID is a HOST-GLOBAL kernel
+/// resource (exactly one qemu per host may own it), so hardcoding `3` made
+/// concurrent boots collide — across worktrees AND across a single worktree's
+/// boot-smoke RETRIES (a dying prior qemu still holds the CID). Derive it from
+/// the repo path + build id + THIS process's pid so every concurrent launch is
+/// unique. CIDs 0-2 are reserved; a second device uses `cid+1`, so pick an even
+/// base ≥100 with headroom. Override with `OXIDE_QEMU_VSOCK_CID`. # C: O(1)
+pub(crate) fn qemu_vsock_cid(repo: &Path, id: Option<&str>) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    repo.hash(&mut h);
+    id.hash(&mut h);
+    std::process::id().hash(&mut h);
+    100 + (h.finish() % 1_000_000) as u32 * 2
+}
+
+/// A host TCP port for a per-launch forward (ssh/gdb), derived like
+/// [`qemu_vsock_cid`] so concurrent worktree launches don't fight over a fixed
+/// port. `salt` distinguishes multiple ports in one launch. Kept in the
+/// ephemeral range. # C: O(1)
+pub(crate) fn qemu_host_port(repo: &Path, id: Option<&str>, salt: u16) -> u16 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    repo.hash(&mut h);
+    id.hash(&mut h);
+    std::process::id().hash(&mut h);
+    salt.hash(&mut h);
+    20000 + (h.finish() % 20000) as u16
+}
+
 /// Disk-image blob dir. C90: a build puts EVERYTHING under one folder
 /// `repo/target/builds/<id-or-"default">` (disk images alongside the ISO + ELF
 /// snapshot). Identical to `target_dir` — there is no separate blobs location.

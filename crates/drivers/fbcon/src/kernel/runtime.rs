@@ -30,7 +30,14 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     let mut vc_cons: [Option<alloc::boxed::Box<VcCell>>; crate::kernel::shared::N_SLOTS] =
         [const { None }; crate::kernel::shared::N_SLOTS];
     vc_cons[1] = Some(sys);
-    *VT_STATE.lock() = Some(VtState { vc_cons, fg: 1, renderer, cols, rows });
+    *VT_STATE.lock() = Some(VtState {
+        vc_cons,
+        graphics: [false; crate::kernel::shared::N_SLOTS],
+        fg: 1,
+        renderer,
+        cols,
+        rows,
+    });
     FLUSH_FN.store(flush as *mut (), Ordering::Release);
     READY.store(true, Ordering::Release);
     DIRTY.store(true, Ordering::Release);
@@ -64,8 +71,10 @@ pub fn vt_console_sink(bytes: &[u8]) {
                 if start < bytes.len() {
                     cell.em.feed_bytes(&mut cell.vc, &bytes[start..]);
                 }
-                vtdata::render(&mut cell.vc, &mut st.renderer);
-                DIRTY.store(true, Ordering::Release);
+                if !st.graphics[st.fg as usize] {
+                    vtdata::render(&mut cell.vc, &mut st.renderer);
+                    DIRTY.store(true, Ordering::Release);
+                }
                 let _ = cell.em.take_reply();
             }
         }
@@ -88,9 +97,10 @@ pub fn vt_write(vt: u8, bytes: &[u8]) {
         if let Some(st) = guard.as_mut() {
             let i = st.ensure(vt);
             let is_fg = i == st.fg as usize;
+            let may_blit = is_fg && !st.graphics[i];
             if let Some(cell) = st.vc_cons[i].as_mut() {
                 cell.em.feed_bytes(&mut cell.vc, bytes);
-                if is_fg {
+                if may_blit {
                     vtdata::render(&mut cell.vc, &mut st.renderer);
                     DIRTY.store(true, Ordering::Release);
                     blitted = true;
@@ -119,6 +129,9 @@ pub fn switch_vt(n: u8) {
         if let Some(st) = guard.as_mut() {
             let i = st.ensure(n);
             st.fg = i as u8;
+            if st.graphics[i] {
+                return;
+            }
             if let Some(cell) = st.vc_cons[i].as_mut() {
                 vtdata::switch(&mut cell.vc, &mut st.renderer);
                 DIRTY.store(true, Ordering::Release);
@@ -126,4 +139,28 @@ pub fn switch_vt(n: u8) {
         }
     }
     softirq::raise(softirq::Slot::FbconFlush);
+}
+
+pub fn set_vt_graphics_mode(n: u8, graphics: bool) {
+    if !READY.load(Ordering::Acquire) {
+        return;
+    }
+    let mut repaint = false;
+    {
+        let mut guard = VT_STATE.lock();
+        if let Some(st) = guard.as_mut() {
+            let i = st.ensure(n);
+            st.graphics[i] = graphics;
+            if i == st.fg as usize && !graphics {
+                if let Some(cell) = st.vc_cons[i].as_mut() {
+                    vtdata::switch(&mut cell.vc, &mut st.renderer);
+                    DIRTY.store(true, Ordering::Release);
+                    repaint = true;
+                }
+            }
+        }
+    }
+    if repaint {
+        softirq::raise(softirq::Slot::FbconFlush);
+    }
 }

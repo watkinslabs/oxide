@@ -124,6 +124,10 @@ pub fn set_kd_mode(n: u8, mode: u32) -> KResult<()> {
     }
     let mut g = SLOTS.lock();
     g[(n - 1) as usize].kd_mode = mode;
+    #[cfg(target_os = "oxide-kernel")]
+    fbcon::kernel::set_vt_graphics_mode(n, mode == KD_GRAPHICS);
+    #[cfg(test)]
+    fbcon::kernel::set_vt_graphics_mode(n, mode == KD_GRAPHICS);
     Ok(())
 }
 
