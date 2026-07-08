@@ -224,6 +224,13 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     if let SockKind::UnixListener(l) = &*sock.kind.lock() {
         let l = l.clone();
         let pair = l.accept_q.lock().pop_front().ok_or(NetError::Eagain)?;
+        #[cfg(feature = "debug-dbus")]
+        {
+            let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
+            klog::write_raw(b"[UXACCEPT comm="); klog::write_raw(nm.as_bytes());
+            klog::write_raw(b" pair="); klog::write_hex_u64(alloc::sync::Arc::as_ptr(&pair) as u64);
+            klog::write_raw(b"]\n");
+        }
         let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp());
         // The accepted connection is AF_UNIX: SO_DOMAIN must report AF_UNIX, not
         // the `new_tcp` default of AF_INET. dbus-broker's SASL EXTERNAL auth

@@ -1,3 +1,24 @@
+# Handoff — greeter: dbus-broker NEVER ACCEPTS polkit's system-bus connection (orphaned)
+
+## ROOT CAUSE — DEFINITIVE (UXCONNECT/UXACCEPT pair-identity correlation)
+Instrumented AF_UNIX connect (listener.rs) + accept (sock/ops.rs:226) to log comm + UnixPair pointer. Result (debug-dbus boot):
+- dbus-broker cleanly accepts **13 bus connections from ct=115–139** (resolved, rtkit, NM, machined, udisks, switcheroo, avahi, accounts, logind, upower, hostnamed, abrtd) — each within ~1–5s of connect.
+- **After ct≈139 dbus-broker's accept rate COLLAPSES** — only ~3 accepts in the next 90s.
+- **polkitd connects to /run/dbus/system_bus_socket at ct=151 (pair ffff800006246728) and again at 197 — NEITHER is EVER accepted.** Confirmed at ct=238: pair 6246728 never in any UXACCEPT; `polkit.service: start operation timed out`.
+So: polkit's connection sits **orphaned in the listener accept_q forever** → no server end reads its Hello / replies → polkit's GDBus worker infinite-ppolls the bus socket (empty read queue) → never posts main's GWakeup eventfd → RequestName never sent → 45s timeout → upowerd SEGV → gdm exit 1 → NO GREETER.
+
+## Two candidate mechanisms (FINAL discriminator = log the LISTENER pointer)
+1. **dbus-broker gets STUCK ~ct139** (blocked handling some request), so its accept loop stops draining the accept_q. (Its accept rate crashing to ~3/90s after a burst of 13 fits this.) Then polkit — and other late connectors — starve. Why dbus-broker blocks needs its own trace (what request ~ct139 wedges it).
+2. **Listener-identity split**: polkit's connect resolves (lookup_listener) to a DIFFERENT UnixPair listener than the one dbus-broker's inherited (socket-activated) fd accepts from — so polkit's pair is queued where dbus-broker never looks. Would happen if the bus socket got re-bound / a second listener registered for the path.
+NEXT: add the listener pointer to both UXCONNECT (which listener the pair was queued to) and UXACCEPT (which listener dbus-broker pops from). If polkit's queued-listener == dbus-broker's accept-listener but never drained → mechanism 1 (dbus-broker stuck). If different → mechanism 2 (fix lookup_listener / socket-activation listener identity so one canonical listener per path).
+
+## Diagnostic tools committed (feature-gated, reusable)
+- debug-syscost: per-syscall cumulative wall-time profiler + POLLFDS fd-set trace (syscalls/syscost.rs, 007_poll.rs). PROVED polkit is ppoll-stuck (all other syscalls us-fast).
+- debug-dbus UXCONNECT/UXACCEPT pair-identity correlation (listener.rs, sock/ops.rs). PINNED the orphaned-accept root cause.
+- debug-polktrace, debug-futextrace widening.
+
+---
+# (superseded framings below — the ppoll-stuck / perf / wake-latency layers all led here)
 # Handoff — greeter: polkit STUCK in ppoll waiting for a D-Bus completion (NOT slow work)
 
 ## DECISIVE (debug-syscost profiler, non-distorting per-syscall cumulative wall-time)
