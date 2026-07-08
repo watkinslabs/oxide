@@ -1,0 +1,52 @@
+// `/sys/class/dmi/id/*` - SMBIOS system identity (Linux `dmi` class).
+
+use alloc::format;
+use alloc::vec::Vec;
+
+use crate::register;
+use crate::make_body_inode;
+
+const DMI_ID_INO_BASE: vfs::Ino = 0x0000_0000_0DD1_0000;
+const DMI_CLASS_INO_OFFSET: vfs::Ino = 0x100;
+
+/// Register the DMI identity attributes under both the Linux paths systemd may
+/// read: the canonical `/sys/devices/virtual/dmi/id/<attr>` and the class alias
+/// `/sys/class/dmi/id/<attr>`. No-op when no SMBIOS tables were found. # C: O(1)
+pub fn init() {
+    let d = firmware::smbios::dmi();
+    if !d.present {
+        return;
+    }
+    let fields: [(&str, &str); 13] = [
+        ("sys_vendor", d.sys_vendor.as_str()),
+        ("product_name", d.product_name.as_str()),
+        ("product_version", d.product_version.as_str()),
+        ("product_serial", d.product_serial.as_str()),
+        ("product_uuid", d.product_uuid.as_str()),
+        ("bios_vendor", d.bios_vendor.as_str()),
+        ("bios_version", d.bios_version.as_str()),
+        ("bios_date", d.bios_date.as_str()),
+        ("board_vendor", d.board_vendor.as_str()),
+        ("board_name", d.board_name.as_str()),
+        ("board_version", d.board_version.as_str()),
+        ("chassis_vendor", d.chassis_vendor.as_str()),
+        ("chassis_version", d.chassis_version.as_str()),
+    ];
+    for (i, (name, val)) in fields.iter().enumerate() {
+        // Linux appends a trailing newline to each dmi attribute.
+        let body: Vec<u8> = {
+            let mut b = Vec::with_capacity(val.len() + 1);
+            b.extend_from_slice(val.as_bytes());
+            b.push(b'\n');
+            b
+        };
+        register(
+            &format!("/sys/devices/virtual/dmi/id/{name}"),
+            make_body_inode(body.clone(), DMI_ID_INO_BASE + i as vfs::Ino),
+        );
+        register(
+            &format!("/sys/class/dmi/id/{name}"),
+            make_body_inode(body, DMI_ID_INO_BASE + DMI_CLASS_INO_OFFSET + i as vfs::Ino),
+        );
+    }
+}
