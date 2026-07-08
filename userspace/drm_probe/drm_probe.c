@@ -1,6 +1,7 @@
 // /bin/drm_probe — D5a real DRM/KMS modeset-info regression.
 //
-// Proves the kernel's DRM card node returns REAL CRTC/connector/encoder
+// Proves the kernel's DRM primary/render nodes are Linux-shaped and the card
+// node returns REAL CRTC/connector/encoder
 // objects built from the virtio-gpu display info (not counts-only +
 // EINVAL). Opens /dev/dri/card0, then:
 //   1. MODE_GETRESOURCES 2-pass (learn counts, alloc, fetch ids) →
@@ -100,15 +101,18 @@ static int putdec(char *p, unsigned v) {
 
 int main(void) {
     int render = open("/dev/dri/renderD128", O_RDWR);
-    if (render >= 0) {
+    if (render < 0) {
+        emit("drm_probe: FAIL open /dev/dri/renderD128\n");
+        return 1;
+    }
+    struct drm_mode_card_res render_res;
+    memset(&render_res, 0, sizeof render_res);
+    if (ioctl(render, DRM_IOCTL_MODE_GETRESOURCES, &render_res) >= 0 || errno != EACCES) {
         close(render);
-        emit("drm_probe: FAIL render node published without render/GEM UAPI\n");
+        emit("drm_probe: FAIL render node allowed KMS ioctl\n");
         return 1;
     }
-    if (errno != ENOENT) {
-        emit("drm_probe: FAIL render node absence errno\n");
-        return 1;
-    }
+    close(render);
 
     int fd = open("/dev/dri/card0", O_RDWR);
     if (fd < 0) { emit("drm_probe: FAIL open /dev/dri/card0\n"); return 1; }
