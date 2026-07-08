@@ -1,4 +1,18 @@
-# Handoff — EPOLLET lost-edge FIXED (dbus-broker accepts polkit) but polkit STILL times out (2nd blocker)
+# Handoff — EPOLLET lost-edge FIXED (major progress); polkit now succeeds INTERMITTENTLY
+
+## STATUS: real verified fix landed; greeter renders intermittently, not yet reliably
+Two EPOLLET generation-edge fixes landed (commits f477c3ef + 79892ee1):
+1. Per-inode `PollSubscribers.gen` bumped on notify/notify_mask; scan_once treats an advanced gen as a fresh EPOLLET edge.
+2. Global `GLOBAL_EPOLL_GEN` bumped by broadcast_wake_all_epolls (the wake_peer_subs fallback path with no per-inode notify); scan_once also treats a global-gen advance as an edge.
+**VERIFIED** (uxread boot, UXREAD/UXWRITE trace): polkit's FULL D-Bus handshake works — AUTH→OK→Hello→reply→**RequestName**→**NameAcquired ×25**, polkit.service does NOT time out. This was IMPOSSIBLE before the fix (dbus-broker NEVER accepted polkit across 5+ boots). Clean boots now also reach seat0 + switcheroo-control Started (past the old immediate-fail point).
+**BUT INTERMITTENT**: on other clean boots polkit STILL times out (as does udisks2 in the uxread boot) — WHICH client starves varies. So a residual timing-dependent EPOLLET edge-loss (or dbus-broker per-connection service race) remains: dbus-broker intermittently fails to service ONE client's connection. Notably the traced (slower) boot succeeded while fast clean boots fail → the residual race is latency-sensitive (fewer scan opportunities on a fast boot).
+
+## NEXT (close the intermittency → reliable greeter):
+- The residual edge-loss: even with per-inode + global gen, an edge can be lost if the readiness event fires between the epoll_wait scan and the park, or via a wake path that bumps NEITHER gen. AUDIT every socket-readiness wake site (unix_sock/events.rs wake_peer_subs, dgram.rs, listener.rs notify_subs, net stack targeted wakes) — do they ALL either call poll_subs.notify() (per-inode gen) or go through broadcast_wake_all_epolls (global gen)? Any wake that does neither is a lost EPOLLET edge.
+- Consider: on EPOLL_CTL_ADD/MOD, if the fd is ALREADY ready, force a report on the first scan (don't wait for a gen advance) — an ADD/MOD of an already-level-ready fd MUST fire (Linux does). scan_once currently: ADD sets et_seen=0 so first scan reports (new_edges=ready). MOD sets et_seen=0 too. But last_gen/last_ggen are NOT reset on ADD/MOD — verify that's not causing a miss.
+- Re-verify with N sequential clean boots (count polkit-success / total) — the fix reduced but didn't eliminate; measure the rate.
+
+## (superseded) EPOLLET lost-edge FIXED (dbus-broker accepts polkit) but polkit STILL times out (2nd blocker)
 
 ## FIX LANDED + VERIFIED (commit f477c3ef): EPOLLET generation-edge
 Root cause CONFIRMED (LSCAN diagnostic): dbus-broker's EPOLLET listen socket (fd=9) + connected sockets show `raw=0x5` (ready) + `seen=0x5` (et_seen retained EPOLLIN) → `new_edges=0` → edge SUPPRESSED → a connection/message queued while et_seen still holds EPOLLIN is never reported → dbus-broker orphans the late client (polkit). (My earlier ETSUP=0 "disproof" was a FALSE NEGATIVE — the fs crate lacked the debug-syscost feature so the diagnostic never compiled. Fixed: fs now has debug-syscost.)
