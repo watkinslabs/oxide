@@ -19,8 +19,16 @@ use crate::parse_arg;
 /// # C: O(1)
 pub(super) fn ssh_fwd_netdev() -> String {
     match std::env::var("OXIDE_QEMU_SSH_FWD") {
-        Ok(v) if v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true") =>
-            "user,id=net0,hostfwd=tcp::2222-:22".to_string(),
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true") => {
+            // Per-launch host port (a fixed 2222 collides across concurrent
+            // worktrees — "Could not set up host forwarding"). Pid-derived so
+            // parallel launches differ; override with OXIDE_QEMU_SSH_PORT.
+            let port: u16 = std::env::var("OXIDE_QEMU_SSH_PORT").ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| 20000 + (std::process::id() % 20000) as u16);
+            eprintln!("xtask grub: ssh forward on host tcp::{port} → guest :22");
+            format!("user,id=net0,hostfwd=tcp::{port}-:22")
+        }
         _ => "user,id=net0".to_string(),
     }
 }
