@@ -1,15 +1,20 @@
 # Handoff — ext4 Linux-compliance batch (ext4fix.md Phase A) — BOOT ENV DOWN
 
 ## BLOCKER (needs host action — read first)
-QEMU cannot boot on this box this session. **SeaBIOS hangs at RIP=0xec1a**
-(real-mode, CS=f000, zero guest serial) on EVERY boot — verified across **KVM
-and TCG**, 5 boots, 4 different build namespaces, all hang *before the kernel
-runs*. So it is NOT the kernel and NOT KVM-specific; it's host/QEMU/SeaBIOS
-state. One stale `greeter-20260708T120409` qemu was reaped via the MCP early on
-(that fixed a contention BIOS-stall), but fresh boots still hang. The bash
-sandbox cannot `pkill` qemu (lesson §7). **Fix: user reboots the dev box (or
-resets KVM/qemu), then re-run the boot-verify below.** Until then the pre-push
-smoke hook will hang, so the branches below are committed LOCAL-ONLY, unpushed.
+QEMU cannot boot on this box this session. **SeaBIOS wedges in an infinite loop
+at RIP=0xec1a** (real-mode, CS=f000, zero guest serial) on EVERY boot, *before
+the kernel runs*. Confirmed conclusively — ruled OUT:
+  - stale qemu (reaped via MCP, `ps` count = 0),
+  - disk/RAM exhaustion (/home 2 TB free, 50 GB RAM free),
+  - KVM-specific fault (a pure **TCG** boot hangs identically at 0xec1a),
+  - slowness (regs BYTE-IDENTICAL across a 5-min gap at ~4.5 & ~9.5 min TCG —
+    frozen state rax=0x11 rsp=0x7ff60, a tight loop, not disk-probing).
+So it's a host/QEMU/SeaBIOS fault, not the kernel and not KVM. The bash sandbox
+cannot `pkill` qemu (lesson §7). **Fix: user reboots the dev box (or reloads the
+kvm module / checks the qemu-system + SeaBIOS install), then re-run boot-verify
+below.** Until then the pre-push smoke hook will hang → branches are LOCAL-ONLY,
+unpushed. (~6 boots + a patient 10-min TCG spent confirming this; do NOT keep
+retrying boots — it's environmental, per lesson §7/§8.)
 
 ## READY TO PUSH (stacked, hosted-verified + both-arch RELEASE-built, NOT pushed)
 Branch chain off `main`: **A1 → A2 → A4 → A3 → B3**
