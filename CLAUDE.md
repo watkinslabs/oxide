@@ -281,6 +281,13 @@ Examples:
 
 **Branch retention.** Delete branches on PR merge (remote via `gh pr merge --delete-branch=true`, local via `git branch -D <name>`), then remove the local worktree. Don't accumulate stale post-merge branches or parked local worktrees. Unmerged branches: keep until they're explicitly abandoned; never `git branch -D` an unmerged branch without confirmation.
 
+## Plans live in scratch/ (HARD RULE)
+
+Every plan / analysis / ledger doc (`*fix.md`, `*-plan.md`, audit writeups, compliance
+ledgers) goes in `scratch/`, never the repo root or `docs/`. `docs/` is specs only. Each
+plan carries a **Status** first column and a **Branch** column per work item, updated as
+lanes are claimed / merged.
+
 ## state.md is short-lived session memory, not history
 
 `state.md` is the hand-off note from the previous session — what
