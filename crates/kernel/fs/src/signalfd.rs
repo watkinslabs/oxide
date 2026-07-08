@@ -29,6 +29,8 @@ const SSI_INT:    usize = 44;  // s32 sigqueue value.sival_int
 const SSI_PTR:    usize = 48;  // u64 sigqueue value.sival_ptr
 /// SIGCHLD signal number (its queued siginfo carries pid/uid/status/code).
 const SIG_SIGCHLD: u32 = 17;
+/// SIGCHLD's `sigset_t` bit (bit `signo-1`), for masking against the fd's mask.
+const SIGCHLD_MASK_BIT: u64 = 1 << (SIG_SIGCHLD - 1);
 
 /// Per-inode signalfd state (Linux `i_private`): the signal mask read drains.
 pub struct SignalfdData {
@@ -53,7 +55,16 @@ impl FileOps for SignalfdFileOps {
         let mask = d.mask.load(Ordering::Acquire);
         let cur = match sched::current() { Some(c) => c, None => return Ok(0) };
         let pending = cur.sigpending.load(Ordering::Acquire);
-        let deliver = pending & mask;
+        let mut deliver = pending & mask;
+        // Match `poll`: SIGCHLD stays deliverable while an unwaited zombie
+        // child remains, even after the collapsed pending bit was cleared — so
+        // systemd keeps reading + reaping until the zombie list drains (a
+        // synthesised SIGCHLD carries ssi_signo only; systemd reaps via waitid,
+        // not the ssi_pid). Without this the fd goes EAGAIN with children still
+        // unreaped and the boot wedges.
+        if deliver == 0 && mask & SIGCHLD_MASK_BIT != 0 && sched::live::has_zombies(cur.tid) {
+            deliver = SIGCHLD_MASK_BIT;
+        }
         // Empty signalfd: Linux returns EAGAIN (nonblocking) rather than a
         // 0-byte read. systemd's event loop logs "Truncated read from signal
         // fd (0 bytes)" on a 0 return and can busy-spin re-reading; EAGAIN is
@@ -105,8 +116,22 @@ impl FileOps for SignalfdFileOps {
     /// # C: O(1)
     fn poll(&self, inode: &Inode) -> u32 {
         let mask = match inode.private::<SignalfdData>() { Some(d) => d.mask.load(Ordering::Acquire), None => return 0 };
-        let pending = sched::current().map_or(0, |c| c.sigpending.load(Ordering::Acquire));
-        if pending & mask != 0 { vfs::POLL_IN } else { 0 }
+        let cur = sched::current();
+        let pending = cur.as_ref().map_or(0, |c| c.sigpending.load(Ordering::Acquire));
+        let mut deliver = pending & mask;
+        // Linux: SIGCHLD is pending while the task has an unwaited exited child.
+        // The collapsed SIGCHLD bit can be cleared (a signalfd read draining
+        // `child_sigq`, or a wait4) while a zombie is still queued but not yet
+        // reaped — which would strand systemd in epoll_wait with the fd never
+        // reported readable, so its early fork-children pile up unreaped and the
+        // boot wedges before graphical.target. Re-derive SIGCHLD readiness from
+        // the zombie list so the fd stays ready until EVERY child is reaped.
+        if mask & SIGCHLD_MASK_BIT != 0 {
+            if let Some(ref c) = cur {
+                if sched::live::has_zombies(c.tid) { deliver |= SIGCHLD_MASK_BIT; }
+            }
+        }
+        if deliver != 0 { vfs::POLL_IN } else { 0 }
     }
 }
 
