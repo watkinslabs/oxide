@@ -453,6 +453,21 @@ fn scan_once(ep: &Arc<EpollData>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: 
                 // Drop edges that went not-ready so a later re-ready re-fires.
                 e.et_seen &= ready;
                 let new_edges = ready & !e.et_seen;
+                // debug-syscost DIAG: a still-ready EPOLLET fd suppressed for
+                // dbus-broker (ready but new_edges==0). If the D-Bus listen
+                // socket (ino tag 0x534f434b) shows here while polkit is queued,
+                // the EPOLLET lost-edge on accept IS the bug.
+                #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
+                if new_edges == 0 && ready != 0 {
+                    let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
+                    if is_db {
+                        klog::write_raw(b"[ETSUP fd="); klog::write_dec_u64(e.fd as u64);
+                        klog::write_raw(b" ino="); klog::write_hex_u64(f.inode().ino());
+                        klog::write_raw(b" ready="); klog::write_hex_u64(ready as u64);
+                        klog::write_raw(b" etseen="); klog::write_hex_u64(e.et_seen as u64);
+                        klog::write_raw(b"]\n");
+                    }
+                }
                 if new_edges == 0 { continue; }
                 e.et_seen |= ready;
             } else if ready == 0 {
