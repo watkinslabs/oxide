@@ -19,6 +19,7 @@ fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
         crate::MountError::Inode(crate::InodeError::BadLen) => vfs::VfsError::Einval,
         crate::MountError::NotFound => vfs::VfsError::Eopnotsupp,
         crate::MountError::DepthUnsupported | crate::MountError::ExtentTreeFull => vfs::VfsError::Eopnotsupp,
+        crate::MountError::CorruptExtentTree => vfs::VfsError::Eio,
         _ => vfs::VfsError::Eio,
     }
 }

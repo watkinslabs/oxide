@@ -24,7 +24,7 @@ mod records;
 mod truncate;
 mod write;
 
-const EXT4_MAX_EXTENT_DEPTH: u16 = 5;
+pub(crate) use crate::inode::EXT4_MAX_EXTENT_DEPTH;
 
 /// Cap per ext4 spec: an extent's `ee_len` is 16 bits, but the
 /// top bit signals "uninitialized"; usable max is 0x8000.
