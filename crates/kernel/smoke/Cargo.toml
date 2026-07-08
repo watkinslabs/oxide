@@ -22,6 +22,7 @@ elf-load = { path = "../exec" }
 arch-irq = { path = "../arch-irq" }
 ext4     = { path = "../ext4" }
 tty      = { path = "../tty" }
+cmdline  = { path = "../cmdline" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
