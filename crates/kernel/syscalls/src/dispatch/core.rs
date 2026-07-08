@@ -25,6 +25,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
     ptrace_syscall_stop_if_armed();
+    #[cfg(feature = "debug-syscost")]
+    let __syscost = crate::syscost::start();
     let rv = if let Some(rv) = dispatch_route_a(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_b(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_c(nr, &args) { rv }
@@ -48,6 +50,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         klog::write_raw(b"\n");
     }
     debug_ssh! { crate::signal_trace::syscall_nr_rv(nr, rv); }
+    #[cfg(feature = "debug-syscost")]
+    crate::syscost::record(nr, __syscost);
     sched::diag::record_syscall(nr as u32, rv);
     sched::timers::fire_due_timers();
     crate::proc::rseq_writeback();
