@@ -1,43 +1,50 @@
-# Handoff — ext4 Linux-compliance campaign (ext4fix.md)
+# Handoff — ext4 Linux-compliance batch (ext4fix.md Phase A) — BOOT ENV DOWN
 
-## STATUS
-Working through `scratch/ext4fix.md` (6-agent ext4-vs-Linux audit → prioritized
-plan with Status/Branch tracker). Building the P0/P1 fixes, hosted-verified.
+## BLOCKER (needs host action — read first)
+QEMU cannot boot on this box this session. **SeaBIOS hangs at RIP=0xec1a**
+(real-mode, CS=f000, zero guest serial) on EVERY boot — verified across **KVM
+and TCG**, 5 boots, 4 different build namespaces, all hang *before the kernel
+runs*. So it is NOT the kernel and NOT KVM-specific; it's host/QEMU/SeaBIOS
+state. One stale `greeter-20260708T120409` qemu was reaped via the MCP early on
+(that fixed a contention BIOS-stall), but fresh boots still hang. The bash
+sandbox cannot `pkill` qemu (lesson §7). **Fix: user reboots the dev box (or
+resets KVM/qemu), then re-run the boot-verify below.** Until then the pre-push
+smoke hook will hang, so the branches below are committed LOCAL-ONLY, unpushed.
 
-**Boot-smoke is blocked right now**: this dev box's cold KVM boots are hanging
-in SeaBIOS (RIP pinned 0x6b85/CS f000, zero serial) — 3/3 this session. One was
-a stale `greeter-2026...` qemu instance contending (reaped via qemu MCP); the
-other two are the documented ~50% cold-boot BIOS stall. Retry the boot later
-(re-run once per lesson §8) or `pkill -9 qemu-system` first. Do NOT push code
-that touches kernel/ until a clean boot verifies it (pre-push hook runs smoke).
+## READY TO PUSH (stacked, hosted-verified + both-arch RELEASE-built, NOT pushed)
+Branch chain off `main`: **A1 → A2 → A4 → A3**
+- `B656-ext4-mtime-on-write` (A1, §7.1): write/fallocate/create stamp mtime/
+  ctime/crtime; vfs CLOCK_REALTIME provider + file_update_time. Fixes frozen-1970.
+- `B657-ext4-sstate-lifecycle` (A2, §2.2): mark s_state dirty on mount / clean
+  on unmount, ++s_mnt_count, stamp s_mtime.
+- `B658-ext4-extent-descent-bound` (A4, §3.1): bound extent-tree descent +
+  recursion (EXT4_MAX_EXTENT_DEPTH + strictly-decreasing depth); reject corrupt/
+  cyclic trees → CorruptExtentTree instead of infinite I/O loop / stack overflow.
+- `B659-ext4-rmdir-reclaim` (A3, §4.1/§4.2): rmdir frees victim blocks+inode,
+  drops used-dirs, decrements parent nlink (Mount::rmdir).
+Each has its own hosted test (ext4 tests/*.rs) + green ext4 (87 lib + ~90
+integration) & vfs (98) suites. Both x86_64 + aarch64 kernels build clean.
 
-## LANDED (local, NOT pushed — awaiting batch boot-verify)
-**B656-ext4-mtime-on-write** (A1, §7.1) — the frozen-1970 fix.
-- vfs: CLOCK_REALTIME provider (`vfs::inode_times::set_realtime_provider` /
-  `realtime_now_ns`), installed in syscalls `install_vfs_hooks`. `File::write`/
-  `pwrite`/`write_iter` call `file_update_time` → `inode.update_time(
-  S_MTIME|S_CTIME|S_VERSION)` for regular files after a successful write.
-- ext4: `Ext4RegInodeOps::update_time` persists mtime/ctime to the journaled
-  on-disk inode; `init_inode` stamps atime=ctime=mtime=crtime=current_time;
-  `fallocate` advances mtime/ctime. Timestamp offsets + `enc_time` centralized
-  in `extent_rw/meta.rs::stamp_new_inode_times` (+ crtime @0x90/0x94).
-- Test `ext4/tests/mtime_on_write_image.rs`: create stamps now (not epoch 0),
-  write advances mtime/ctime with atime held, all persist across remount.
-- Verified: ext4 86 + vfs 98 hosted tests green; x86_64 + aarch64 kernel build.
-- NOTE: the commit also swept pre-existing `scratch/*→scratch/done/` archival
-  renames (harmless doc moves that were uncommitted in the tree).
+## BOOT-VERIFY + PUSH SEQUENCE (once box reboots)
+1. `pkill -9 qemu-system` (host), confirm none left.
+2. Boot-smoke B659 (has the whole stack): qemu MCP x86_64, wait `oxide login:`.
+   Also confirm A1: after boot, `stat` any freshly-written file shows a
+   2024+ mtime (not 1970); `journalctl` writes (with an empty /var/log/journal
+   in the image — see [[journald-empty-ext4-writeback]]).
+3. If green: push each branch bottom-up, open+merge PRs in order A1→A2→A4→A3
+   (they stack). Delete branches + worktrees on merge.
+4. Flip scratch/ext4fix.md rows VERIFIED-LOCAL → MERGED.
 
-## NEXT (in order, per ext4fix §9 Phase A)
-- **A2** s_state lifecycle: mark dirty on `Mount::open`, clean on unmount; bump
-  s_mnt_count/s_mtime. (§2.2 — journald "uncleanly shut down" cause.) NOT started.
-- A3 rmdir: free victim dir blocks + persist parent nlink-- + used_dirs--.
-- A4 extent descent bound (MAX_TREE_HEIGHT + strictly-decreasing depth) — DoS.
-- A5 jbd2 durability (mark journal dirty before txn). A6 REVOKE emission.
+## NEXT (ext4fix §9, after the batch lands)
+- A5 jbd2 durability (mark journal dirty before txn) — §6.1. A6 REVOKE — §6.2.
+  (Crash-safety; want boot-verify, so do after env is back.)
+- Phase B hosted-friendly items usable even before boot: B3 msync EIO (§7.4),
+  B2 FS_IOC_GETFLAGS/SETFLAGS (§7.3), B1 csum-verify-on-read + feature-gate at
+  mount (§2.1/2.3 — P0, hosted-testable with a corrupted fixture).
 
-## PLANS-IN-SCRATCH RULE (new, in CLAUDE.md)
-All plans/ledgers live in `scratch/` with Status-first + Branch columns.
-`scratch/ext4fix.md` is the tracker — flip rows TODO→CLAIMED→REVIEW→MERGED.
+## RULES REAFFIRMED
+Plans live in scratch/ (new CLAUDE.md rule). Branch counters in metadata/index.md
+(B next = 660). No cargo fmt. Author Chris Watkins. No Co-Authored-By.
 
 ## FIRST COMMAND NEXT SESSION
-Clean env then verify A1 boot, or continue A2:
-  `pkill -9 qemu-system 2>/dev/null; git -C . log --oneline -1 B656-ext4-mtime-on-write`
+`pkill -9 qemu-system 2>/dev/null; git -C /home/nd/oxide/kernel log --oneline main..B659-ext4-rmdir-reclaim`
