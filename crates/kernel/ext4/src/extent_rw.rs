@@ -17,7 +17,7 @@
 mod append;
 mod collect;
 mod inode_io;
-mod meta;
+pub(crate) mod meta;
 mod insert;
 mod nlink;
 mod records;
