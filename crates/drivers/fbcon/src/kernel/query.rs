@@ -15,6 +15,9 @@ pub fn force_repaint() {
         let mut guard = VT_STATE.lock();
         if let Some(st) = guard.as_mut() {
             let fg = st.fg as usize;
+            if st.graphics[fg] {
+                return;
+            }
             if let Some(cell) = st.vc_cons[fg].as_mut() {
                 vtdata::switch(&mut cell.vc, &mut st.renderer);
                 DIRTY.store(true, Ordering::Release);
@@ -32,6 +35,9 @@ pub fn scrolldelta(lines: isize) {
         let mut guard = VT_STATE.lock();
         if let Some(st) = guard.as_mut() {
             let fg = st.fg as usize;
+            if st.graphics[fg] {
+                return;
+            }
             if let Some(cell) = st.vc_cons[fg].as_mut() {
                 if lines > 0 {
                     cell.vc.scroll_view_up(lines as usize);
@@ -93,9 +99,10 @@ pub fn resize_vt(vt: u8, cols: u16, rows: u16) -> bool {
         }
         let i = st.ensure(vt);
         let is_fg = i == st.fg as usize;
+        let may_blit = is_fg && !st.graphics[i];
         if let Some(cell) = st.vc_cons[i].as_mut() {
             cell.vc.resize(cols, rows);
-            if is_fg {
+            if may_blit {
                 vtdata::switch(&mut cell.vc, &mut st.renderer);
                 DIRTY.store(true, Ordering::Release);
                 blitted = true;
