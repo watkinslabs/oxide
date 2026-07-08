@@ -64,6 +64,13 @@ impl InodeOps for Ext4RegInodeOps {
         if let Some(end) = off.checked_add(len) { d.frames.invalidate_range(off & !(4095u64), end); }
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
+        // ext4_fallocate stamps mtime + ctime (Linux) — the allocation mutates
+        // the file even under keep_size, so the change/modify times advance.
+        let raw = vfs::inode_times::realtime_now_ns();
+        if raw != 0 {
+            let now = vfs::inode_times::current_time(inode, raw);
+            self.update_time(inode, now, vfs::S_MTIME | vfs::S_CTIME)?;
+        }
         Ok(())
     }
 
@@ -79,6 +86,23 @@ impl InodeOps for Ext4RegInodeOps {
 
     fn setattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap, ia: &vfs::Iattr) -> KResult<()> {
         super::meta::ext4_setattr(inode, idmap, ia)
+    }
+
+    /// `ext4_update_time` — the `file_update_time` / `->update_time` backend:
+    /// apply the requested times to the in-core inode, then write them THROUGH
+    /// to the on-disk slot (journaled) so a write(2)-stamped mtime/ctime is
+    /// durable across eviction and remount. Mirrors `ext4_setattr`'s writeback.
+    /// # C: O(1) + one journaled inode write
+    fn update_time(&self, inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+        vfs::generic_update_time(inode, now, flags)?;
+        if let Some(d) = inode.private::<Ext4FileData>() {
+            d.st.mount.persist_inode_meta(
+                d.ino, inode.i_mode(),
+                inode.uid().unwrap_or(0), inode.gid().unwrap_or(0),
+                inode.atime().unwrap_or(0), inode.mtime().unwrap_or(0), inode.ctime().unwrap_or(0),
+            ).map_err(vfs_error_from_mount)?;
+        }
+        Ok(())
     }
 
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)

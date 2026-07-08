@@ -418,6 +418,11 @@ impl Mount {
         let mut i_block = [0u8; I_BLOCK_LEN];
         inode::write_extent_header(&mut i_block, &hdr);
         bytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(&i_block);
+        // ext4_new_inode stamps atime = ctime = mtime = crtime = current_time
+        // (Linux). Without this a new inode carries the zero-filled epoch and
+        // every file created under oxide shows mtime 1970 until first utimes.
+        crate::extent_rw::meta::stamp_new_inode_times(&mut bytes, self.sb.inode_size as usize,
+            vfs::inode_times::realtime_now_ns());
         self.write_inode_bytes(ino, &bytes)
     }
 
