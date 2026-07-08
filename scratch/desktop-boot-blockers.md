@@ -27,13 +27,21 @@ linker demand-paging the binary's shared libraries (libc, libsystemd, …). Ever
 `.so` page fault → an ext4 read. So loading one binary = hundreds/thousands of
 individual slow page-fault reads.
 
-Prime suspects (investigate hosted, NOT boot-per-hypothesis):
-- **No readahead on file-backed mmap page faults** — Linux faults in clusters +
-  does async readahead; if oxide faults ONE 4K page per fault with a full extent
-  walk + block read each time, a 2 MB `.so` = 512 slow round-trips. Add mmap /
-  page-cache readahead. (Highest-ROI lead.)
-- ext4 read path per-block cost: `resolve_pblock` extent walk per block (O(depth)
-  I/O each), framecache `fill_page` one block at a time. Batch/cache.
+CONFIRMED root-cause lead (code-read):
+- **`mount/io.rs:31 read_byte_range` goes STRAIGHT to the block device
+  (`dev.submit_sync`) with ZERO caching** — for data blocks AND extent-tree
+  interior nodes. `resolve_pblock` re-walks the extent tree on every
+  `read_file_block`, so every page fault while loading a `.so` re-reads the SAME
+  interior extent nodes + GDT + superblock from disk. A `block/src/pagecache.rs`
+  exists but the ext4 read path BYPASSES it. Loading a multi-MB library =
+  O(faults × tree-depth) redundant uncached metadata reads.
+  FIX: route ext4 metadata/data reads through the block pagecache (or a small
+  per-inode extent-map cache like Linux `extent_status`), so a re-read is a
+  cache hit. Highest-ROI.
+- Also add readahead on file-backed mmap faults (Linux clusters faults + async
+  readahead) so a `.so` loads in a few batched reads, not 512 single-page ones.
+- Possible per-request virtio-blk `submit_sync` latency — measure a single 4K
+  read; if it's ~100ms not ~1ms, the driver's completion poll is the sink.
 - A writeback/read livelock in the framecache (see [[journald-empty-ext4-writeback]]).
 
 NEXT: hosted harness — mmap a multi-MB file from an ext4 image, fault every page,
