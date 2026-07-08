@@ -11,9 +11,33 @@ FIXED = merged. VERIFIED = boot-confirmed, branch not merged. OPEN = not fixed.
 | 1 | qemu hardcoded `vhost-vsock guest-cid=3` (host-global) → parallel Codex agent's boot-loop wedged EVERY boot at launch | **FIXED** | PR #2848 merged (`buildns::qemu_vsock_cid`, per-launch CID+ports) |
 | 2 | systemd-journal-flush timeout | **not a bug** | pure codex CONTENTION; passes on a clean host |
 | 3 | SIGCHLD zombie-reap wedge: init parks in epoll_wait, exit_group children pile up unreaped (~13), boot freezes ~10s | **VERIFIED FIXED** | `B661-signalfd-sigchld-reap` (signalfd poll/read consult `has_zombies`). Proof: init reaps went 0→15, boot advances past the wedge |
-| 4 | **Demand-paging / ELF library loading is ~200× too slow** | **OPEN** ← desktop wall | ext4 read / fault path |
+| 4 | **`systemd-journal-flush` HANGS ~90s then times out** (NOT slow I/O — disproven) | **OPEN** ← desktop wall | journald ↔ ext4 write/mmap livelock |
 
-## Blocker #4 detail (the current wall)
+## Blocker #4 — CORRECTED (instrumented boot 2026-07-08)
+Earlier theory "demand-paging/ext4 reads are ~200× slow" is **DISPROVEN**. I
+instrumented the virtio-blk completion wait (`wait_for_completion`, `[BLKSLOW]`
+if an I/O > 20ms): across a whole boot only **ONE** slow I/O (a single 43ms
+read). Block I/O — read AND write — is FAST. So it is NOT paging/read slowness.
+
+What actually happens: `systemd-journal-flush.service` starts (~[9s]), its
+process is exec'd (~[10.3s]), then **HANGS for ~90s** doing NO block I/O, until
+systemd's `service_dispatch_timer` fires `start operation timed out. Terminating`
+(SIGTERM, status=15) at ~[99s]. The multi-minute boot (271s/552s earlier) is
+these ~90s service HANG-then-timeout cycles stacking, NOT slow reads.
+
+So #4 = the ORIGINAL journald problem (see [[journald-empty-ext4-writeback]]):
+journald's flush to /var/log/journal on ext4 **livelocks / blocks on a non-I/O
+op** (mmap/msync writeback loop, a lock, or an ext4 metadata op that spins). B653
+(fault-fill lock) + B655 (unwritten convert) were merged but journald still hangs.
+
+NEXT (decisive): a **task dump DURING the hang** to get journal-flush's stuck
+`last_syscall` + state. `OXIDE_SMP=1 ./tools/boot-smoke.sh x86 55` (unique
+SMOKE_KEEP_LOG) — the 55s timeout fires WHILE journal-flush is hung (it hangs
+[10..99s]) → boot-smoke injects sysrq `<NUL>t` → task dump shows the stuck
+syscall. That names the exact op (msync? fsync? a futex? an ext4 ioctl?) to fix.
+Do NOT re-chase "slow I/O" — it's fast.
+
+## OLD (disproven) #4 detail — kept for the record
 Clean-host boot (SMP=1, no contention): **552s to reach `local-fs.target`**
 (normally ~2-3s). Time is NOT uniform — it's a few HUGE discrete stalls:
 - **271s stall** right after `[10.4s] elf-load: interp place ok` → the next
