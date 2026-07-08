@@ -19,9 +19,10 @@ use std::process::Command;
 
 use crate::cmds::run;
 
-/// Default images profile to boot. The images repo builds these
+/// Default images profile to boot: `live-gnome` — the only glibc GNOME image
+/// packed for BOTH arches (ARM lockstep). The images repo builds these
 /// (`cd ../images && make <profile>-<arch>`) → output/<profile>-<arch>-root.img.
-const DEFAULT_PROFILE: &str = "gnome";
+const DEFAULT_PROFILE: &str = "live-gnome";
 
 /// Build the glibc `root-<arch>.img` boot disk by copying the images-repo
 /// pre-packed root image for `arch`.
