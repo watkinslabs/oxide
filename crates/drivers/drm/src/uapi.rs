@@ -23,6 +23,20 @@ pub const DRM_IOCTL_AUTH_MAGIC:     u64 = 0x40046411;
 pub const DRM_IOCTL_SET_MASTER:     u64 = 0x0000641e;
 pub const DRM_IOCTL_DROP_MASTER:    u64 = 0x0000641f;
 
+// virtio-gpu driver-specific ioctls (DRM_COMMAND_BASE=0x40; linux/virtio_gpu.h).
+// Mesa's `virtio_gpu` gallium driver probes these right after DRM_IOCTL_VERSION
+// reports driver name "virtio_gpu"; without them it can't decide 3D support and
+// spins, so mutter never reaches KMS. We answer the 2D/no-virgl path
+// (VIRTGPU_PARAM_3D_FEATURES=0) so Mesa falls back to llvmpipe over the KMS
+// dumb-buffer scanout — exactly what Linux virtio-gpu does on a device that
+// didn't negotiate VIRTIO_GPU_F_VIRGL.
+pub const DRM_IOCTL_VIRTGPU_GETPARAM: u64 = 0xc0106443; // _IOWR('d',0x43,drm_virtgpu_getparam[16])
+pub const DRM_IOCTL_VIRTGPU_GET_CAPS: u64 = 0xc0186449; // _IOWR('d',0x49,drm_virtgpu_get_caps[24])
+
+// VIRTGPU_GETPARAM param ids (linux/virtio_gpu.h).
+pub const VIRTGPU_PARAM_3D_FEATURES:       u64 = 1;
+pub const VIRTGPU_PARAM_CAPSET_QUERY_FIX:  u64 = 2;
+
 // Mode ioctls (drm_mode.h)
 pub const DRM_IOCTL_MODE_GETRESOURCES:      u64 = 0xc04064a0;
 pub const DRM_IOCTL_MODE_GETCRTC:           u64 = 0xc06864a1;
