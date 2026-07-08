@@ -169,7 +169,7 @@ Update Status + Branch on every lane transition (per the claim-before-start HARD
 
 | Status | Branch | # | Item | Refs |
 |--------|--------|---|------|------|
-| CLAIMED | B656-ext4-mtime-on-write | A1 | write/fallocate/truncate → update mtime/ctime; create stamps atime/mtime/ctime/crtime; wire VFS `update_time` | §7.1 — *fixes frozen-1970* |
+| VERIFIED-LOCAL | B656-ext4-mtime-on-write | A1 | write/fallocate/truncate → update mtime/ctime; create stamps atime/mtime/ctime/crtime; wire VFS `update_time` | §7.1 — *fixes frozen-1970* — hosted+2-arch green; boot-smoke pending clean env |
 | TODO | — | A2 | Mount lifecycle: mark `s_state` dirty on open, clean on unmount; bump `s_mnt_count`/`s_mtime` | §2.2 — *journald "uncleanly shut down"* |
 | TODO | — | A3 | rmdir: free victim dir data blocks + persist parent nlink-- + `bg_used_dirs_count`-- | §4.1, §4.2, §7.2 |
 | TODO | — | A4 | Extent descent: `EXT4_MAX_TREE_HEIGHT` cap + strictly-decreasing-depth + bad-header reject (kills DoS) | §3.1 |
