@@ -29,6 +29,22 @@ pub const S_IFSOCK: u16 = 0xC000;
 /// Extent header magic per `ext4_extent_header.eh_magic`.
 pub const EXT4_EXT_MAGIC: u16 = 0xF30A;
 
+/// Max extent-tree height (Linux `EXT4_MAX_EXTENT_DEPTH`). The root's
+/// `eh_depth` cannot exceed this; every descent step strictly decreases depth,
+/// so a walk is bounded — a corrupt/cyclic tree is rejected, not looped.
+pub const EXT4_MAX_EXTENT_DEPTH: u16 = 5;
+
+/// Valid extent-tree descent step: an interior node's child must be exactly one
+/// level shallower (all ext4 leaves sit at the same depth). Bounds every tree
+/// walk to the root depth — a step that is not strictly-decreasing-by-one marks
+/// a corrupt/cyclic tree and is rejected instead of descended. # C: O(1)
+#[inline]
+pub fn extent_child_depth_ok(parent_depth: u16, child_depth: u16) -> bool {
+    // `parent_depth - 1` (not `child_depth + 1`) so a `child_depth == u16::MAX`
+    // from a corrupt node cannot overflow; the `!= 0` guard makes the sub safe.
+    parent_depth != 0 && child_depth == parent_depth - 1
+}
+
 /// Length of the inline `i_block` array in bytes.
 pub const I_BLOCK_LEN: usize = 60;
 

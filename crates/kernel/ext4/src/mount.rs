@@ -55,6 +55,11 @@ pub enum MountError {
     /// Directory block has no free slot for a new entry and
     /// dir-block growth is not yet wired (P7b-03 minimum).
     DirFull,
+    /// Extent tree is malformed: root depth exceeds `EXT4_MAX_EXTENT_DEPTH`, or
+    /// an interior node's depth did not strictly decrease toward its child (a
+    /// cyclic / corrupt tree). Rejected instead of descended so a bad image
+    /// cannot spin the walk forever. Linux `__ext4_ext_check`.
+    CorruptExtentTree,
 }
 
 impl From<SuperblockError> for MountError { fn from(e: SuperblockError) -> Self { MountError::Superblock(e) } }

@@ -11,6 +11,7 @@ impl Mount {
         -> Result<Vec<(u32, u32)>, MountError>
     {
         let hdr = inode::parse_extent_header(i_block)?;
+        if hdr.depth > inode::EXT4_MAX_EXTENT_DEPTH { return Err(MountError::CorruptExtentTree); }
         let mut out: Vec<(u32, u32)> = Vec::new();
         if hdr.depth == 0 {
             for i in 0..hdr.entries {
@@ -21,7 +22,7 @@ impl Mount {
         } else {
             for i in 0..hdr.entries {
                 if let Some(idx) = inode::parse_extent_idx(i_block, &hdr, i) {
-                    self.collect_subtree_extents(idx.leaf_lba(), &mut out)?;
+                    self.collect_subtree_extents(idx.leaf_lba(), hdr.depth, &mut out)?;
                 }
             }
         }
@@ -30,13 +31,19 @@ impl Mount {
     }
 
     /// Recursive companion to `collect_leaf_extents`: walk the child block at
-    /// `lba`, appending its leaf extents (recursing through interior levels).
-    /// # C: O(subtree extents) + O(subtree depth) block I/Os
-    pub(super) fn collect_subtree_extents(&self, lba: u64, out: &mut Vec<(u32, u32)>)
-        -> Result<(), MountError>
+    /// `lba`, appending its leaf extents. `parent_depth` = the depth of the node
+    /// that pointed here; this node must be exactly one level shallower
+    /// (`extent_child_depth_ok`) or the tree is corrupt/cyclic and is rejected,
+    /// bounding recursion to the root depth (≤5) rather than overflowing the
+    /// kernel stack. # C: O(subtree extents) + O(subtree depth) I/Os
+    pub(super) fn collect_subtree_extents(&self, lba: u64, parent_depth: u16,
+        out: &mut Vec<(u32, u32)>) -> Result<(), MountError>
     {
         let buf = self.read_metadata_block(lba)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
+        if !inode::extent_child_depth_ok(parent_depth, hdr.depth) {
+            return Err(MountError::CorruptExtentTree);
+        }
         if hdr.depth == 0 {
             for i in 0..hdr.entries {
                 if let Some(e) = inode::parse_inline_extent_slice(&buf, &hdr, i) {
@@ -46,7 +53,7 @@ impl Mount {
         } else {
             for i in 0..hdr.entries {
                 if let Some(idx) = inode::parse_extent_idx_slice(&buf, &hdr, i) {
-                    self.collect_subtree_extents(idx.leaf_lba(), out)?;
+                    self.collect_subtree_extents(idx.leaf_lba(), hdr.depth, out)?;
                 }
             }
         }
