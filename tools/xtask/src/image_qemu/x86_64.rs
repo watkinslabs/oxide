@@ -51,7 +51,10 @@ pub(super) fn qemu_run_grub_x86_64(
     let ahci_img = ensure_ahci_img(repo, id, "x86_64");
     let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
     let smp_str = smp.to_string();
-    let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
+    // KVM by default when /dev/kvm exists (a heavy glibc GNOME root is
+    // impractically slow under TCG). Force TCG with OXIDE_QEMU_TCG=1 for the
+    // timing-sensitive bugs that only repro under emulation.
+    let accel = if std::env::var("OXIDE_QEMU_TCG").is_err()
         && std::path::Path::new("/dev/kvm").exists()
     { "kvm" } else { "tcg" };
     // Headless (CI / boot-smoke / login-smoke): a `stdio,signal=off`
@@ -107,7 +110,7 @@ pub(super) fn qemu_run_grub_x86_64(
         "-accel", accel,
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
-        "-m", "2G",
+        "-m", "4G",
         "-cdrom", iso.to_str().unwrap(),
         "-boot", "d",
         // Stage-2: ROOT + HOME disks. The kernel identifies each by the
