@@ -45,6 +45,15 @@ impl InodeOps for Ext4StatInodeOps {
         super::meta::ext4_setattr(inode, idmap, ia)
     }
 
+    /// `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` on a directory / special inode.
+    /// # C: O(1) [+ 1 journaled write on set]
+    fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
+        super::meta::ext4_fileattr_get(inode)
+    }
+    fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
+        super::meta::ext4_fileattr_set(inode, fa)
+    }
+
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
         -> Result<(), vfs::XattrError>
     {

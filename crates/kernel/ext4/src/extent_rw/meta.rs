@@ -16,6 +16,20 @@ const OFF_MTIME_EXTRA: usize = 0x88;
 const OFF_ATIME_EXTRA: usize = 0x8C;
 const OFF_CRTIME:       usize = 0x90;
 const OFF_CRTIME_EXTRA: usize = 0x94;
+const OFF_FLAGS:        usize = 0x20; // i_flags (chattr flag word)
+
+impl Mount {
+    /// Persist `i_flags` (@0x20) to `ino`'s on-disk inode, journaled — the ext4
+    /// half of `FS_IOC_SETFLAGS`. Caller has already folded the user-modifiable
+    /// bits over the preserved kernel-internal ones. # C: O(1) I/O, 1 txn
+    pub fn persist_inode_flags(&self, ino: u32, flags: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            b[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+}
 
 /// Encode an absolute-ns timestamp into the ext4 `(i_*time, i_*time_extra)`
 /// pair: seconds low 32 bits in the base field; `(nsec << 2) | epoch_hi2` in

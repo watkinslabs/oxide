@@ -87,6 +87,12 @@ pub struct Inode {
     pub mtime_ns:    u64,
     /// `i_ctime` in absolute ns (`i_ctime` @0x0C + `i_ctime_extra` @0x84).
     pub ctime_ns:    u64,
+    /// `i_flags` @0x20 — the ext4 inode flag word. Low bits are the `chattr`
+    /// user flags (`EXT4_*_FL` == `FS_*_FL`: SECRM/UNRM/COMPR/SYNC/IMMUTABLE/
+    /// APPEND/NODUMP/NOATIME/…); high bits are kernel-internal layout flags
+    /// (EXTENTS_FL 0x80000, INLINE_DATA_FL 0x10000000). Drives
+    /// `FS_IOC_GETFLAGS` and VFS immutable/append enforcement.
+    pub i_flags:     u32,
     /// Inline extent tree root + leaves (60 bytes verbatim).
     pub i_block:     [u8; I_BLOCK_LEN],
 }
@@ -149,6 +155,7 @@ impl Inode {
             atime_ns,
             mtime_ns,
             ctime_ns,
+            i_flags: u32::from_le_bytes([buf[0x20], buf[0x21], buf[0x22], buf[0x23]]),
             i_block,
         })
     }
