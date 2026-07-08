@@ -246,10 +246,23 @@ impl RootfsState {
             .and_then(|v| self.mount.read_inode(v).ok())
             .map(|i| i.is_dir())
             .unwrap_or(false);
+        let moved_is_dir = inode.is_dir();
         self.mount.run_journaled(|m| {
             if dest_victim.is_some() { let _ = m.dir_unlink(to_p, &to_name); }
             m.dir_link(to_p, &to_name, target, ftype)?;
             m.dir_unlink(from_p, &from_name)?;
+            // Cross-parent DIRECTORY move (Linux ext4_rename dir path): the moved
+            // directory's `..` must point at its new parent, the old parent loses
+            // that back-reference, and the new parent gains it. Without this the
+            // subtree's `..` dangled at the old parent and both parents' i_nlink
+            // drifted every dir move.
+            if moved_is_dir && from_p != to_p {
+                m.set_dotdot(target, to_p)?;
+                m.adjust_nlink(from_p, -1)?;
+                // The new parent gains the `..` — UNLESS it simultaneously lost a
+                // replaced directory victim (whose own `..` back-ref cancels it).
+                if !dest_is_dir { m.adjust_nlink(to_p, 1)?; }
+            }
             Ok(())
         }).map_err(|_| vfs::VfsError::Eio)?;
         // In-memory nlink authority (mirror `unlink`): the dcache `d_unlink` no
