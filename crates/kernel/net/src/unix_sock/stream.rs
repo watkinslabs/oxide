@@ -464,6 +464,21 @@ impl UnixPair {
             out.push(g.buf.pop_front().unwrap());
         }
         g.consumed += take as u64;
+        drop(g);
+        // debug-syscost DIAG: log dbus-broker/polkit connected-socket READS (pair +
+        // end + bytes). Distinguishes blocker #2: does dbus-broker READ polkit's
+        // AUTH (n>0 → AUTH/creds processing issue) or NEVER (n=0/absent → read edge)?
+        #[cfg(feature = "debug-syscost")]
+        {
+            let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
+            if nm.contains("dbus-broker") || nm.contains("polkit") {
+                klog::write_raw(b"[UXREAD comm="); klog::write_raw(nm.as_bytes());
+                klog::write_raw(b" pair="); klog::write_hex_u64(self as *const _ as u64);
+                klog::write_raw(if matches!(end, UnixEnd::A) { b" end=A" } else { b" end=B" });
+                klog::write_raw(b" n="); klog::write_dec_u64(out.len() as u64);
+                klog::write_raw(b"]\n");
+            }
+        }
         (out, fds_out)
     }
 
