@@ -176,6 +176,28 @@ pub fn unix_registry_for_path(path: &str) -> UnixRegRef {
     ns_unix_registry(unix_ns_for_path(path))
 }
 
+/// Resolve a pathname AF_UNIX address through the VFS, following symlinks —
+/// Linux `unix_find_other` resolves `sun_path` with `kern_path(LOOKUP_FOLLOW)`,
+/// so `connect`/`sendto` reach the socket the path's terminal symlink points
+/// at. Our registry is keyed by the bound path STRING, so a literal-string
+/// lookup of a symlinked address (e.g. `/dev/log` → `/run/systemd/journal/dev-log`,
+/// which is how glibc `syslog(3)` and journald's syslog compat socket work)
+/// misses and returns ECONNREFUSED even though the target is bound. Callers use
+/// this as a FALLBACK after a raw-string lookup miss (zero cost on the direct
+/// hit). Abstract addresses (leading NUL) and paths that don't resolve are
+/// returned unchanged. # C: O(path components) — only on a raw-lookup miss.
+#[cfg(target_os = "oxide-kernel")]
+pub fn canonicalize_unix_path(path: &str) -> alloc::string::String {
+    use alloc::string::String;
+    if crate::unix_sock::unix_path_is_abstract(path) || !path.starts_with('/') {
+        return String::from(path);
+    }
+    match vfs::resolve_path_dentry(path) {
+        Some(d) => String::from_utf8(d.absolute_path()).unwrap_or_else(|_| String::from(path)),
+        None => String::from(path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

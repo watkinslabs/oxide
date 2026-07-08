@@ -83,10 +83,19 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
                 // SC1: resolve in the registry that owns the address —
                 // pathname is global, abstract is the caller's net_ns.
-                if crate::net_ns::unix_registry_for_path(&path).dgram_lookup(&path).is_none() {
-                    return Err(NetError::Econnrefused);
-                }
-                q.set_peer(path);
+                // On a raw-string miss, follow symlinks (Linux LOOKUP_FOLLOW)
+                // so a symlinked address (e.g. /dev/log) still connects; store
+                // the canonical peer so later sends hit directly.
+                let peer = if crate::net_ns::unix_registry_for_path(&path).dgram_lookup(&path).is_some() {
+                    path
+                } else {
+                    let canon = crate::net_ns::canonicalize_unix_path(&path);
+                    if crate::net_ns::unix_registry_for_path(&canon).dgram_lookup(&canon).is_none() {
+                        return Err(NetError::Econnrefused);
+                    }
+                    canon
+                };
+                q.set_peer(peer);
                 return Ok(());
             }
             // B47: connect to a non-existent AF_UNIX path returns
@@ -94,8 +103,16 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // ENOBUFS which dhcpcd treated as fatal "out of buffer
             // memory" instead of "nobody home, I'll create my own
             // socket and listen".
-            let pair = crate::net_ns::unix_registry_for_path(&path)
-                .connect(&path).ok_or(NetError::Econnrefused)?;
+            // Follow symlinks on a raw-string miss (Linux LOOKUP_FOLLOW) so a
+            // stream connect to a symlinked socket path still reaches the listener.
+            let pair = match crate::net_ns::unix_registry_for_path(&path).connect(&path) {
+                Some(p) => p,
+                None => {
+                    let canon = crate::net_ns::canonicalize_unix_path(&path);
+                    crate::net_ns::unix_registry_for_path(&canon).connect(&canon)
+                        .ok_or(NetError::Econnrefused)?
+                }
+            };
             // F181a: client end is B; register subscribers before
             // setting kind so peer-A writes find live subs.
             pair.register_end_subs(crate::UnixEnd::B, &sock.poll_subs);
@@ -320,7 +337,17 @@ pub fn sendto(
             Some(RemoteAddr::UnixPath(p)) => p,
             _ => q.peer().ok_or(NetError::Eaddrnotavail)?,
         };
-        let q = crate::net_ns::unix_registry_for_path(&path).dgram_lookup(&path).ok_or(NetError::Econnrefused)?;
+        // Direct string lookup first; on miss, follow symlinks in the path
+        // (Linux LOOKUP_FOLLOW) so a symlinked address like /dev/log resolves
+        // to journald's bound /run/systemd/journal/dev-log instead of ECONNREFUSED.
+        let q = match crate::net_ns::unix_registry_for_path(&path).dgram_lookup(&path) {
+            Some(q) => q,
+            None => {
+                let canon = crate::net_ns::canonicalize_unix_path(&path);
+                crate::net_ns::unix_registry_for_path(&canon).dgram_lookup(&canon)
+                    .ok_or(NetError::Econnrefused)?
+            }
+        };
         crate::trace_dgram_journal(&path, payload);
         q.push(crate::UnixDgram {
             payload: payload.to_vec(),
