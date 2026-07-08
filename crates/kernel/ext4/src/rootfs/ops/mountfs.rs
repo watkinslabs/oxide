@@ -67,6 +67,11 @@ impl Ext4Mount {
         dev_t: Option<u64>,
     ) -> block::types::KResult<Arc<Self>> {
         let st = RootfsState::open(dev)?;
+        // ext4_setup_super: a rw mount marks the fs not-cleanly-unmounted +
+        // bumps the mount count, so a crash before Drop is fsck-visible.
+        // Best-effort — a marginal SB write must not fail an otherwise-good
+        // mount (Linux logs and continues).
+        let _ = st.mount.mark_state_dirty();
         Ok(Arc::new(Self { st, dev_t }))
     }
 
@@ -121,5 +126,8 @@ impl core::ops::Drop for Ext4Mount {
                 }
             }
         }
+        // ext4_put_super: orphans reaped and no writers remain — mark the fs
+        // cleanly unmounted. Best-effort on teardown.
+        let _ = self.st.mount.mark_state_clean();
     }
 }

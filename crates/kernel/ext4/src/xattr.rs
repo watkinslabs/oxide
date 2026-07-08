@@ -201,6 +201,10 @@ pub fn encode_ibody(ino_bytes: &mut [u8], hdr_off: usize, isize: usize,
     Ok(())
 }
 
+#[path = "xattr/external.rs"]
+mod external;
+pub use external::encode_block;
+
 impl Mount {
     /// `i_extra_isize` from a raw inode buffer, sanity-bounded so the ibody
     /// header lands inside the inode record. 0 = no ibody xattr area. # C: O(1)
@@ -267,6 +271,73 @@ impl Mount {
             m.write_inode_bytes(ino, &bytes)?;
             Ok(())
         })
+    }
+
+    /// Persist the full xattr set (Linux `ext4_xattr_set_handle` placement): try
+    /// the IBODY first; on overflow spill ALL on-disk entries to the EXTERNAL
+    /// block (`i_file_acl`), allocating one if needed and stamping its
+    /// header/hash/csum. When everything fits IBODY, any previously-allocated
+    /// external block is freed (else its stale entries would resurface, since
+    /// `load_xattrs` reads the block too). One journaled transaction. `NoSpace`
+    /// if the entries fit neither IBODY nor one external block. # C: O(N) + I/O
+    pub fn store_xattrs(&self, ino: u32, entries: &[(String, Vec<u8>)]) -> Result<(), MountError> {
+        let isize = self.sb.inode_size as usize;
+        if isize <= EXT4_GOOD_OLD_INODE_SIZE { return Err(MountError::NoSpace); }
+        let bs = self.sb.block_size as usize;
+        self.run_journaled(|m| {
+            let (mut bytes, _off) = m.read_inode_bytes(ino)?;
+            let mut extra = Self::extra_isize_of(&bytes, isize);
+            if extra == 0 {
+                if EXT4_GOOD_OLD_INODE_SIZE + DEFAULT_EXTRA_ISIZE + 4 > isize {
+                    return Err(MountError::NoSpace);
+                }
+                bytes[0x80..0x82].copy_from_slice(&(DEFAULT_EXTRA_ISIZE as u16).to_le_bytes());
+                extra = DEFAULT_EXTRA_ISIZE;
+            }
+            let hdr_off = EXT4_GOOD_OLD_INODE_SIZE + extra;
+            let old_facl = Self::file_acl_of(&bytes);
+            // Try IBODY-only. Encode into the live buffer; on overflow the buffer
+            // is discarded (re-read) before the external path.
+            if encode_ibody(&mut bytes, hdr_off, isize, entries).is_ok() {
+                if old_facl != 0 { Self::detach_external_block(&mut bytes, bs); }
+                m.write_inode_bytes(ino, &bytes)?;
+                if old_facl != 0 { m.free_block(old_facl)?; }
+                return Ok(());
+            }
+            // IBODY overflow → external block. Re-read to drop the partial encode.
+            let (mut bytes, _off) = m.read_inode_bytes(ino)?;
+            encode_ibody(&mut bytes, hdr_off, isize, &[]).map_err(|_| MountError::NoSpace)?;
+            let mut blk = encode_block(entries, bs).map_err(|_| MountError::NoSpace)?;
+            let block_nr = if old_facl != 0 { old_facl } else {
+                let b = m.alloc_block(0)?;
+                Self::attach_external_block(&mut bytes, b, bs);
+                b
+            };
+            crate::csum::stamp_xattr_block_csum(&m.sb, block_nr, &mut blk);
+            m.metadata_write(block_nr * bs as u64, &blk)?;
+            m.write_inode_bytes(ino, &bytes)?;
+            Ok(())
+        })
+    }
+
+    /// Point `i_file_acl` at `block_nr` and add its one fs-block to `i_blocks`.
+    /// # C: O(1)
+    fn attach_external_block(bytes: &mut [u8], block_nr: u64, bs: usize) {
+        bytes[0x68..0x6C].copy_from_slice(&((block_nr & 0xFFFF_FFFF) as u32).to_le_bytes());
+        bytes[0x76..0x78].copy_from_slice(&(((block_nr >> 32) & 0xFFFF) as u16).to_le_bytes());
+        let sectors = (bs / 512) as u32;
+        let ib = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
+        bytes[0x1C..0x20].copy_from_slice(&ib.saturating_add(sectors).to_le_bytes());
+    }
+
+    /// Clear `i_file_acl` and subtract its fs-block from `i_blocks` (block is
+    /// freed by the caller after the inode write). # C: O(1)
+    fn detach_external_block(bytes: &mut [u8], bs: usize) {
+        bytes[0x68..0x6C].copy_from_slice(&0u32.to_le_bytes());
+        bytes[0x76..0x78].copy_from_slice(&0u16.to_le_bytes());
+        let sectors = (bs / 512) as u32;
+        let ib = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
+        bytes[0x1C..0x20].copy_from_slice(&ib.saturating_sub(sectors).to_le_bytes());
     }
 }
 

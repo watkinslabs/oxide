@@ -45,6 +45,15 @@ impl InodeOps for Ext4StatInodeOps {
         super::meta::ext4_setattr(inode, idmap, ia)
     }
 
+    /// `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` on a directory / special inode.
+    /// # C: O(1) [+ 1 journaled write on set]
+    fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
+        super::meta::ext4_fileattr_get(inode)
+    }
+    fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
+        super::meta::ext4_fileattr_set(inode, fa)
+    }
+
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
         -> Result<(), vfs::XattrError>
     {
@@ -101,8 +110,11 @@ impl InodeOps for Ext4StatInodeOps {
             });
             if nonempty { return Err(VfsError::Enotempty); }
         }
-        mount.dir_unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
-        let _ = mount.free_inode(target);
+        // On-disk: free the victim's blocks, clear its inode, drop used-dirs,
+        // and decrement the parent's link count (ext4_rmdir). Replaces the old
+        // dirent-remove + inode-bit-free that leaked the dir's data blocks and
+        // never persisted the parent nlink drop.
+        mount.rmdir(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
         if let Some(sb) = d.st.i_sb() {
             if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
         }
@@ -266,7 +278,7 @@ impl FileOps for Ext4StatFileOps {
 /// CHR/BLK nodes (generic_fillattr reads it for those types only). # C: O(1)
 pub(crate) fn build_stat_inode(
     st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
-    uid: u32, gid: u32, times: (u64, u64, u64),
+    uid: u32, gid: u32, times: (u64, u64, u64, u64),
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
@@ -280,6 +292,7 @@ pub(crate) fn build_stat_inode(
         .rdev(rdev)
         .owner(uid, gid)
         .times(times.0, times.1, times.2)
+        .btime(times.3)
         .xattrs(xattrs)
         .private(data)
         .build()

@@ -48,11 +48,23 @@ impl Mount {
         if hdr.depth == 0 {
             return self.leaf_pblock_inline(i_block, &hdr, file_blk);
         }
+        if hdr.depth > inode::EXT4_MAX_EXTENT_DEPTH { return Err(MountError::CorruptExtentTree); }
         let bs = self.sb.block_size as usize;
+        // ext4 keeps every leaf at the same level, so each interior node's
+        // child is exactly one level shallower. Track the expected depth and
+        // require it to strictly decrease — a node that doesn't is a corrupt
+        // (potentially cyclic) tree, and descending it would loop forever doing
+        // block I/O (DoS / uninterruptible D-state). Bounds the walk to
+        // `hdr.depth` (≤ EXT4_MAX_EXTENT_DEPTH) iterations.
+        let mut expected_depth = hdr.depth;
         let mut child_lba = self.find_child_for(i_block, &hdr, file_blk)?;
         loop {
             let buf = read_byte_range(&*self.dev, child_lba * (bs as u64), bs)?;
             let chdr = inode::parse_extent_header_slice(&buf)?;
+            if !inode::extent_child_depth_ok(expected_depth, chdr.depth) {
+                return Err(MountError::CorruptExtentTree);
+            }
+            expected_depth = chdr.depth;
             if chdr.depth == 0 {
                 return self.leaf_pblock_slice(&buf, &chdr, file_blk);
             }

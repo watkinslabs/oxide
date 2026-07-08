@@ -87,6 +87,22 @@ pub const SB_OFF_FREE_BLOCKS_HI: usize = 0x150;
 /// name). Each listed inode chains to the previous head via its `i_dtime`
 /// field (`NEXT_ORPHAN`). Linux `ext4_orphan_add`/`_del`/`_cleanup`.
 pub const SB_OFF_LAST_ORPHAN:    usize = 0xE8;
+/// `s_mtime` (__le32 @0x2C): last-mount wall-clock (secs since epoch).
+pub const SB_OFF_MTIME:          usize = 0x2C;
+/// `s_wtime` (__le32 @0x30): last-write (superblock touch) wall-clock (secs).
+pub const SB_OFF_WTIME:          usize = 0x30;
+/// `s_mnt_count` (__le16 @0x34): mounts since last fsck.
+pub const SB_OFF_MNT_COUNT:      usize = 0x34;
+/// `s_state` (__le16 @0x3A): filesystem state bitmask.
+pub const SB_OFF_STATE:          usize = 0x3A;
+
+/// `s_state` EXT4_VALID_FS — set when the fs was cleanly unmounted. A rw mount
+/// clears it (Linux `ext4_setup_super`); a clean unmount restores it. e2fsck
+/// forces a check when it is clear.
+pub const EXT4_VALID_FS: u16 = 0x0001;
+/// `s_state` EXT4_ERROR_FS — set by the kernel on a detected fs error. Left
+/// untouched by the mount-lifecycle writeback.
+pub const EXT4_ERROR_FS: u16 = 0x0002;
 
 /// Read a little-endian u16 / u32 / u64 at offset `o`. Caller
 /// must ensure `buf.len() >= o + N`.

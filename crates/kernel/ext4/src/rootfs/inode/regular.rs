@@ -19,6 +19,7 @@ fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
         crate::MountError::Inode(crate::InodeError::BadLen) => vfs::VfsError::Einval,
         crate::MountError::NotFound => vfs::VfsError::Eopnotsupp,
         crate::MountError::DepthUnsupported | crate::MountError::ExtentTreeFull => vfs::VfsError::Eopnotsupp,
+        crate::MountError::CorruptExtentTree => vfs::VfsError::Eio,
         _ => vfs::VfsError::Eio,
     }
 }
@@ -64,6 +65,13 @@ impl InodeOps for Ext4RegInodeOps {
         if let Some(end) = off.checked_add(len) { d.frames.invalidate_range(off & !(4095u64), end); }
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
+        // ext4_fallocate stamps mtime + ctime (Linux) — the allocation mutates
+        // the file even under keep_size, so the change/modify times advance.
+        let raw = vfs::inode_times::realtime_now_ns();
+        if raw != 0 {
+            let now = vfs::inode_times::current_time(inode, raw);
+            self.update_time(inode, now, vfs::S_MTIME | vfs::S_CTIME)?;
+        }
         Ok(())
     }
 
@@ -79,6 +87,62 @@ impl InodeOps for Ext4RegInodeOps {
 
     fn setattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap, ia: &vfs::Iattr) -> KResult<()> {
         super::meta::ext4_setattr(inode, idmap, ia)
+    }
+
+    /// `ext4_update_time` — the `file_update_time` / `->update_time` backend:
+    /// apply the requested times to the in-core inode, then write them THROUGH
+    /// to the on-disk slot (journaled) so a write(2)-stamped mtime/ctime is
+    /// durable across eviction and remount. Mirrors `ext4_setattr`'s writeback.
+    /// # C: O(1) + one journaled inode write
+    fn update_time(&self, inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+        vfs::generic_update_time(inode, now, flags)?;
+        if let Some(d) = inode.private::<Ext4FileData>() {
+            d.st.mount.persist_inode_meta(
+                d.ino, inode.i_mode(),
+                inode.uid().unwrap_or(0), inode.gid().unwrap_or(0),
+                inode.atime().unwrap_or(0), inode.mtime().unwrap_or(0), inode.ctime().unwrap_or(0),
+            ).map_err(vfs_error_from_mount)?;
+        }
+        Ok(())
+    }
+
+    /// `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` (chattr/lsattr) — read/write the
+    /// on-disk `i_flags`. # C: O(1) [+ 1 journaled write on set]
+    fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
+        super::meta::ext4_fileattr_get(inode)
+    }
+    fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
+        super::meta::ext4_fileattr_set(inode, fa)
+    }
+
+    /// `ext4_fiemap` (`FS_IOC_FIEMAP`, filefrag/backup/dedup tools): report the
+    /// file's physical extents intersecting `[start, start+len)` as byte-unit
+    /// `FiemapExtent`s. Reuses the leaf-extent walk; an unwritten (fallocated)
+    /// extent is flagged `FIEMAP_EXTENT_UNWRITTEN`, and the final extent of the
+    /// file carries `FIEMAP_EXTENT_LAST` (Linux `EXT4_FIEMAP` semantics). `emit`
+    /// returning false (user array full) stops the walk. # C: O(N_extents)
+    fn fiemap(&self, inode: &Inode, start: u64, len: u64,
+              emit: &mut dyn FnMut(vfs::FiemapExtent) -> bool) -> KResult<()> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let bs = d.st.mount.sb.block_size.max(1) as u64;
+        let runs = d.st.mount.extent_map(d.ino).map_err(vfs_error_from_mount)?;
+        let range_end = start.saturating_add(len);
+        let last_idx = runs.len().wrapping_sub(1);
+        for (idx, &(rlog, rphys, rlen, unwritten)) in runs.iter().enumerate() {
+            let logical = rlog as u64 * bs;
+            let length  = rlen as u64 * bs;
+            let ext_end = logical.saturating_add(length);
+            // Report any extent whose byte span intersects the requested range;
+            // extents are reported whole (Linux does not split at the boundary).
+            if ext_end <= start || logical >= range_end { continue; }
+            let mut flags = 0u32;
+            if unwritten { flags |= vfs::inode::FIEMAP_EXTENT_UNWRITTEN; }
+            if idx == last_idx { flags |= vfs::inode::FIEMAP_EXTENT_LAST; }
+            if !emit(vfs::FiemapExtent { logical, physical: rphys * bs, length, flags }) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
@@ -211,9 +275,10 @@ impl AddressSpaceOps for Ext4FileMapping {
 
 /// Build a regular-file `vfs::Inode` for ext4 inode `ino`. `mode`/`size`/
 /// `nlink`/`times` are the captured on-disk metadata (read by the caller before
-/// the `iget` build closure). `times` = `(atime, mtime, ctime)` ns. # C: O(1)
+/// the `iget` build closure). `times` = `(atime, mtime, ctime, crtime)` ns
+/// (crtime `0` → no STATX_BTIME). # C: O(1)
 pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32,
-    uid: u32, gid: u32, times: (u64, u64, u64))
+    uid: u32, gid: u32, times: (u64, u64, u64, u64))
     -> InodeRef
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino);
@@ -229,6 +294,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .times(times.0, times.1, times.2)
+        .btime(times.3)
         .mapping(mapping)
         .xattrs(xattrs)
         .private(data)
