@@ -453,6 +453,12 @@ pub fn reparent_children(dying_tid: u32) {
                 // session stalls). Its parent_tid is now init_tid so reap_one
                 // matches; we just need the wake.
                 if matches!(t.state(), TaskState::Zombie) {
+                    // Re-queue the child-exit event onto init's SIGCHLD child
+                    // queue with the child's real vpid/status. Without a queued
+                    // record, init's signalfd read + systemd's waitid(P_ALL,
+                    // WNOWAIT) peek find ssi_pid=0 and reap nothing, so the
+                    // orphaned session helper leaks — stalling the session.
+                    if let Some(ref p) = init { push_child_event(&t, p); }
                     reparented_zombie = true;
                 }
             }
