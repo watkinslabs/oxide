@@ -29,10 +29,20 @@ impl AddressSpace {
         SR: FnMut(u64, &alloc::sync::Arc<crate::AnonVma>, u32),
         IR: FnMut(u64),
     {
-        // Per spec §5: read VMA tree (concurrent with other faults).
-        let g = self.vmas.read();
-        let vma = match g.find_containing(va) {
-            Some(v) => v,
+        // Per spec §5: read VMA tree (concurrent with other faults), but
+        // CLONE the VMA and DROP the read guard here — the File/SHARED arms
+        // below sleep on block I/O (`backing.shared_frame`/`read_at` →
+        // ext4 → virtio-blk park_blk → schedule). Holding this address-space
+        // -wide `vmas` read lock across that blocking I/O deadlocks any peer
+        // thread of the same mm that needs `vmas.write()` (mmap/munmap/
+        // mprotect/stack-grow) — the raw non-reentrant busy-spin never yields
+        // or checks signals, wedging the process uninterruptibly (and, via a
+        // held `Mount::state`, the whole ext4 fs). Multi-threaded mmap writers
+        // (systemd-journald, gnome-shell) hit this; single-threaded ones don't.
+        // Mirrors the correct drop-before-I/O pattern in the sibling
+        // write-protection handler (`fault/write.rs`).
+        let vma = match self.vmas.read().find_containing(va) {
+            Some(v) => v.clone(),
             None    => return Err(Error::Inval),    // EFAULT upstream
         };
         if !vma.permits(access) {
@@ -480,11 +490,11 @@ impl AddressSpace {
             }
             VmaBacking::KernelFrame { pa } => {
                 // SAFETY: same live-MMU and callback contracts as this fault fill path.
-                unsafe { self.map_kernel_frame::<M, _, _>(va, vma, *pa, dec_ref, inc_ref) }
+                unsafe { self.map_kernel_frame::<M, _, _>(va, &vma, *pa, dec_ref, inc_ref) }
             }
             VmaBacking::PhysRange { base_pa } => {
                 // SAFETY: same live-MMU and callback contracts as this fault fill path.
-                unsafe { self.map_phys_range::<M, _>(va, vma, *base_pa, dec_ref) }
+                unsafe { self.map_phys_range::<M, _>(va, &vma, *base_pa, dec_ref) }
             }
             VmaBacking::Special => Err(Error::NotImplemented),
         }
