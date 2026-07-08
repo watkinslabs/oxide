@@ -8,8 +8,17 @@ The greeter fails because of **systemic wakeup latency**, NOT anything polkit-sp
 - CLEAN boot (features=debug-watchdog only, NO klog firehose): polkit.service still ran the full **45s** and `[FAILED] start operation timed out` → so the slowness is REAL, not a tracing artifact. Read the systemd boot log directly off the framebuffer (qemu_screen as_text=False → PPM → png → Read).
 - Mechanism: mozjs (spidermonkey, polkit's JS rules engine) does thousands of SEQUENTIAL futex/poll round-trips; at ~150ms wake latency each, its init blows systemd's 45s TimeoutStartSec → polkit.service FAILED → upowerd SEGV on NULL authority → gdm exit 1 → no greeter. Other services (NetworkManager/logind/udisks) are less round-trip-bound so they squeak in [OK].
 
-## NEXT: find why the timer tick has 334ms gaps (single-CPU x86 KVM)
-The LAPIC timer should fire ~1ms; a 334ms gap = the timer IRQ didn't fire / wasn't rearmed, OR the CPU sat with IRQs masked / in a non-preempt section for 334ms. Suspects: LAPIC one-shot rearm delayed in the tick handler; a long IRQ-off kernel section; or the scheduler not reaching the tick/idle path under load. Fixing the tick regularity should collapse the wake latency → polkit inits in time → greeter renders. This is THE lever. (debug-wakelat WLTICK/WLTICKGAP/WLSCANGAP are the instruments; see crates/kernel/sched/src/live/wakelat + arch-irq.)
+## MECHANISM (traced to scheduler/timer core)
+`arch-irq/src/lapic/dispatch.rs` `oxide_irq_resched_on_exit` (line ~153): the scheduler is **VOLUNTARY-preempt — it switches tasks ONLY on IRQ-exit to USER mode** (`from_user = (saved_cs & 3)==3`). The timer tick sets need_resched but a task in a long KERNEL section is NOT preempted until it returns to user or blocks. Meanwhile `note_tick` (dispatch.rs:49) firing with 334ms gaps means the LAPIC timer IRQ itself didn't fire for 334ms → IRQs were masked (IF=0) in some kernel section that long, OR the periodic tick stalled. Between them, a runnable thread waits ~150ms median to actually run.
+`hal-x86_64/src/timer.rs:174 set_oneshot` is a NO-OP stub — the LAPIC timer is periodic (armed once at bring-up), so gaps ⇒ IRQ-masked stalls, not a missing rearm. Suspects for the long IF=0 section: tick_poll (BSP hook, dispatch.rs:75, runs IRQs-masked — fbcon flush?), a spinlock held across slow work, or klog/UART done with IRQs off.
+
+**CAVEAT:** the 334ms tick-gap magnitude may be partly INFLATED by debug-wakelat's own klog (per-WLBLK UART write, possibly IRQs-off). The CLEAN boot proves the slowness is REAL (polkit 45s timeout) but the exact latency without tracing is unmeasured. Confirm the tick-gap on a lighter instrument (a tick-gap counter that does NOT klog per-block; only emit a summary).
+
+## NEXT (THE lever — core scheduler/timer, high-risk, design carefully)
+1. Confirm+quantify the IF=0 stall: which kernel section runs with IRQs masked long enough to drop LAPIC ticks. Instrument IF=0 duration (rdtsc at cli/sti boundaries) rather than per-block klog.
+2. Likely fixes (pick after root-cause): add kernel preemption points (preempt on tick even from kernel at safe points), or shorten/eliminate the long IRQ-masked section (move fbcon flush / slow work out of IRQs-off), or make the softirq/tick_poll not run IRQs-off.
+3. This collapses wake latency → mozjs/polkit init finishes in time → gdm renders the greeter. It ALSO likely fixes the intermittent ~17-20s udev-coldplug boot wedge (same latency/preempt class).
+Do NOT patch the scheduler core at session end without a hosted causality test + N-boot verification.
 
 Framebuffer-read method (reliable greeter/boot-status check): qemu_start features=debug-watchdog; qemu_screen as_text=False; pnmtopng /tmp/oxide-qemu-*/screen.ppm; Read the png — shows systemd [OK]/[FAILED] log when `quiet` is removed (temporarily) OR the greeter when it renders.
 
