@@ -68,7 +68,7 @@ pub(crate) fn persist_inode_xattrs(inode: &Inode) {
                 .into_iter()
                 .filter_map(|n| store.get(&n).map(|v| (n, v)))
                 .collect();
-            let _ = st.mount.store_ibody_xattrs(ino, &entries);
+            let _ = st.mount.store_xattrs(ino, &entries);
         }
     }
 }

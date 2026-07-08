@@ -29,6 +29,22 @@ pub const S_IFSOCK: u16 = 0xC000;
 /// Extent header magic per `ext4_extent_header.eh_magic`.
 pub const EXT4_EXT_MAGIC: u16 = 0xF30A;
 
+/// Max extent-tree height (Linux `EXT4_MAX_EXTENT_DEPTH`). The root's
+/// `eh_depth` cannot exceed this; every descent step strictly decreases depth,
+/// so a walk is bounded — a corrupt/cyclic tree is rejected, not looped.
+pub const EXT4_MAX_EXTENT_DEPTH: u16 = 5;
+
+/// Valid extent-tree descent step: an interior node's child must be exactly one
+/// level shallower (all ext4 leaves sit at the same depth). Bounds every tree
+/// walk to the root depth — a step that is not strictly-decreasing-by-one marks
+/// a corrupt/cyclic tree and is rejected instead of descended. # C: O(1)
+#[inline]
+pub fn extent_child_depth_ok(parent_depth: u16, child_depth: u16) -> bool {
+    // `parent_depth - 1` (not `child_depth + 1`) so a `child_depth == u16::MAX`
+    // from a corrupt node cannot overflow; the `!= 0` guard makes the sub safe.
+    parent_depth != 0 && child_depth == parent_depth - 1
+}
+
 /// Length of the inline `i_block` array in bytes.
 pub const I_BLOCK_LEN: usize = 60;
 
@@ -71,6 +87,16 @@ pub struct Inode {
     pub mtime_ns:    u64,
     /// `i_ctime` in absolute ns (`i_ctime` @0x0C + `i_ctime_extra` @0x84).
     pub ctime_ns:    u64,
+    /// `i_crtime` (creation/birth time) in absolute ns (`i_crtime` @0x90 +
+    /// `i_crtime_extra` @0x94; present only in a >128-byte inode). Drives
+    /// `statx STATX_BTIME`; `0` when the inode has no crtime (128-byte inode).
+    pub crtime_ns:   u64,
+    /// `i_flags` @0x20 — the ext4 inode flag word. Low bits are the `chattr`
+    /// user flags (`EXT4_*_FL` == `FS_*_FL`: SECRM/UNRM/COMPR/SYNC/IMMUTABLE/
+    /// APPEND/NODUMP/NOATIME/…); high bits are kernel-internal layout flags
+    /// (EXTENTS_FL 0x80000, INLINE_DATA_FL 0x10000000). Drives
+    /// `FS_IOC_GETFLAGS` and VFS immutable/append enforcement.
+    pub i_flags:     u32,
     /// Inline extent tree root + leaves (60 bytes verbatim).
     pub i_block:     [u8; I_BLOCK_LEN],
 }
@@ -123,6 +149,9 @@ impl Inode {
         let atime_ns = decode_time(buf, 0x08, 0x8C, isize);
         let ctime_ns = decode_time(buf, 0x0C, 0x84, isize);
         let mtime_ns = decode_time(buf, 0x10, 0x88, isize);
+        // i_crtime @0x90 + i_crtime_extra @0x94 — only in a >128-byte inode;
+        // decode_time yields 0 when the extra word is out of range.
+        let crtime_ns = if isize > 0x90 { decode_time(buf, 0x90, 0x94, isize) } else { 0 };
         Ok(Inode {
             mode,
             size: size_lo | (size_hi << 32),
@@ -133,6 +162,8 @@ impl Inode {
             atime_ns,
             mtime_ns,
             ctime_ns,
+            crtime_ns,
+            i_flags: u32::from_le_bytes([buf[0x20], buf[0x21], buf[0x22], buf[0x23]]),
             i_block,
         })
     }
