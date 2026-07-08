@@ -43,11 +43,17 @@ fn trace_dbus_stream(data: &[u8]) {
     // Widen to the gdm private connection: dump EVERY D-Bus frame written by a
     // gdm process (daemon or session-worker) so the Hello handshake + any
     // reentrant call/reply that stalls the greeter is visible in-order.
-    let is_gdm = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
+    let is_tgt = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
+            s.contains("gdm") || s.contains("polkit") || s.contains("dbus-broker")
+            || s.contains("upower") || s.contains("switcheroo") || s.contains("accounts")) })
         .unwrap_or(false);
-    let hit = is_gdm
+    let hit = is_tgt
         || has(data, b"login1")
+        || has(data, b"PolicyKit1")        // polkit name-acquisition / activation
+        || has(data, b"RequestName")
+        || has(data, b"StartServiceByName")
+        || has(data, b"NameAcquired")
         || has(data, b"io.systemd")        // Varlink userdb queries (from any proc)
         || has(data, b"UserRecord")        // Varlink userdb replies
         || has(data, b"GroupRecord")
