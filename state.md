@@ -1,4 +1,20 @@
-# Handoff — greeter root-caused to polkitd D-Bus name-acquisition timeout
+# Handoff — greeter blocked by SYSTEMIC WAKE LATENCY (timer-tick gaps), surfacing as polkit timeout
+
+## TOP FINDING (2026-07-08, debug-wakelat, CLEAN boot confirms it's real)
+The greeter fails because of **systemic wakeup latency**, NOT anything polkit-specific:
+- Every thread's blocking wait (epoll/ppoll, kind=1) returns after **50–350ms** (median 149ms, mean 287ms, max 2.5s) with the fd ALREADY ready — the wakeup/arrival edge is slow, not the data.
+- Threads wake in BATCHES at identical timestamps (e.g. 3 services all wake after ~410ms at t=21.03s) — the scheduler wakes everyone together after a stall, not promptly.
+- **`WLTICKGAP us=334535`** + **`WLSCANGAP us=397861`**: the timer tick and the poll/epoll 20ms safety-rescan have **334–397ms GAPS** (should be ~1ms / 20ms). Avg tick period is ~1.2–1.4ms (WLTICK), so MOST ticks are fine but there are frequent hundreds-of-ms gaps.
+- CLEAN boot (features=debug-watchdog only, NO klog firehose): polkit.service still ran the full **45s** and `[FAILED] start operation timed out` → so the slowness is REAL, not a tracing artifact. Read the systemd boot log directly off the framebuffer (qemu_screen as_text=False → PPM → png → Read).
+- Mechanism: mozjs (spidermonkey, polkit's JS rules engine) does thousands of SEQUENTIAL futex/poll round-trips; at ~150ms wake latency each, its init blows systemd's 45s TimeoutStartSec → polkit.service FAILED → upowerd SEGV on NULL authority → gdm exit 1 → no greeter. Other services (NetworkManager/logind/udisks) are less round-trip-bound so they squeak in [OK].
+
+## NEXT: find why the timer tick has 334ms gaps (single-CPU x86 KVM)
+The LAPIC timer should fire ~1ms; a 334ms gap = the timer IRQ didn't fire / wasn't rearmed, OR the CPU sat with IRQs masked / in a non-preempt section for 334ms. Suspects: LAPIC one-shot rearm delayed in the tick handler; a long IRQ-off kernel section; or the scheduler not reaching the tick/idle path under load. Fixing the tick regularity should collapse the wake latency → polkit inits in time → greeter renders. This is THE lever. (debug-wakelat WLTICK/WLTICKGAP/WLSCANGAP are the instruments; see crates/kernel/sched/src/live/wakelat + arch-irq.)
+
+Framebuffer-read method (reliable greeter/boot-status check): qemu_start features=debug-watchdog; qemu_screen as_text=False; pnmtopng /tmp/oxide-qemu-*/screen.ppm; Read the png — shows systemd [OK]/[FAILED] log when `quiet` is removed (temporarily) OR the greeter when it renders.
+
+---
+# (earlier layer) greeter → polkitd D-Bus name-acquisition timeout
 
 **Branch:** `F693-quickboot-glibc-rootfs` (pushed, PR #2837).
 **Goal (NOT yet met):** graphical GNOME to a visible greeter, 100% Linux-compat, no stubs.
