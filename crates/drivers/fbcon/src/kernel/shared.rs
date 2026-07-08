@@ -16,6 +16,7 @@ pub(crate) const N_SLOTS: usize = N_VT + 1;
 
 pub(crate) struct VtState {
     pub(crate) vc_cons: [Option<Box<VcCell>>; N_SLOTS],
+    pub(crate) graphics: [bool; N_SLOTS],
     pub(crate) fg: u8,
     pub(crate) renderer: VcRenderer,
     pub(crate) cols: u16,

@@ -86,8 +86,11 @@ fn kdsetmode_kd_graphics_only_when_valid() {
     let _vts = reset();
     unsafe { init().unwrap(); }
     assert!(set_kd_mode(1, KD_GRAPHICS).is_ok());
+    assert!(set_kd_mode(1, KD_TEXT0).is_ok());
+    assert!(set_kd_mode(1, KD_TEXT1).is_ok());
+    assert!(set_kd_mode(1, KD_TEXT).is_ok());
     assert!(matches!(set_kd_mode(1, 99), Err(Error::Inval)));
-    assert_eq!(slot(1).unwrap().kd_mode, KD_GRAPHICS);
+    assert_eq!(slot(1).unwrap().kd_mode, KD_TEXT);
 }
 
 #[test]
@@ -257,5 +260,24 @@ fn switch_hook_fires_on_do_switch() {
     activate(4).unwrap();
     assert_eq!(active(), 4);
     assert_eq!(*SW_REC.lock().last().unwrap(), 4u8);
+    set_switch_hook(|_n| {});
+}
+
+#[test]
+fn process_switch_reldisp_fires_switch_hook_on_completion() {
+    let _vts = reset();
+    REC.lock().clear();
+    SW_REC.lock().clear();
+    set_signal_hook(rec_hook);
+    set_switch_hook(sw_hook);
+    unsafe { init().unwrap(); }
+    set_vt_mode(1, VtMode { mode: VT_PROCESS, waitv: 0, relsig: 10, acqsig: 0, frsig: 0 }, 100, 5000).unwrap();
+    activate(2).unwrap();
+    assert_eq!(active(), 1);
+    assert!(SW_REC.lock().is_empty());
+    reldisp(1, 100, 5000).unwrap();
+    assert_eq!(active(), 2);
+    assert_eq!(*SW_REC.lock().last().unwrap(), 2u8);
+    set_signal_hook(|_, _| {});
     set_switch_hook(|_n| {});
 }
