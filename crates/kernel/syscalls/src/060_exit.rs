@@ -135,7 +135,19 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_dec_u64(args.a0);
                 klog::write_raw(b"\n");
             }
-            sched::live::signal_child_exit(task);
+            // A non-leader CLONE_THREAD exit (tid != tgid) is NOT a process
+            // exit: Linux does not SIGCHLD the parent nor make it a
+            // wait4-reapable zombie. pthread_join is served entirely by the
+            // clear_child_tid FUTEX_WAKE above; the task is auto-released at
+            // the schedule() switch drain (release_task). Only a process /
+            // group-leader exit notifies the parent + parks a wait4 zombie.
+            // Without this, every glib worker thread (polkitd, NetworkManager,
+            // …) piled up as an unreapable zombie AND flooded its own process
+            // with spurious SIGCHLD — stalling the polkit-authorized gdm
+            // session setup so the greeter never launched.
+            if task.tid == task.tgid.load(Ordering::Acquire) {
+                sched::live::signal_child_exit(task);
+            }
         }
     }
     // SAFETY: process ctx; preempt-off; Zombie state means no re-enqueue.
