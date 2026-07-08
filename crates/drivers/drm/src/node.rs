@@ -1,6 +1,6 @@
-// DRM/KMS card nodes per `47`. /dev/dri/cardN dispatches ioctls through the
-// stable DrmDriver slot in the drm crate. Render nodes are intentionally not
-// published until a real render/GEM UAPI exists behind them.
+// DRM/KMS card + render nodes per `47`. /dev/dri/cardN dispatches KMS and
+// render ioctls through the stable DrmDriver slot; /dev/dri/renderD128+N is
+// render-only and rejects global/modeset/master ioctls.
 //
 // Module manifest:
 // - `auth`: per-file magic, master ownership, client capability, user-copy helpers.
@@ -38,6 +38,7 @@ use uapi::{
 use crate::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
     DRM_IOCTL_VIRTGPU_GETPARAM, DRM_IOCTL_VIRTGPU_GET_CAPS,
+    DRM_IOCTL_GEM_CLOSE, DRM_IOCTL_PRIME_HANDLE_TO_FD, DRM_IOCTL_PRIME_FD_TO_HANDLE,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_ATOMIC,
     DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
@@ -56,6 +57,14 @@ use crate::{
 };
 
 use vfs::File;
+
+fn render_allowed(req: u64) -> bool {
+    matches!(req,
+        DRM_IOCTL_VERSION | DRM_IOCTL_GET_CAP | DRM_IOCTL_GEM_CLOSE
+        | DRM_IOCTL_PRIME_HANDLE_TO_FD | DRM_IOCTL_PRIME_FD_TO_HANDLE
+        | DRM_IOCTL_VIRTGPU_GETPARAM | DRM_IOCTL_VIRTGPU_GET_CAPS
+    )
+}
 
 /// mmap backing for a DRM card inode (offset-keyed). Legacy raw lookup used
 /// by tests/diagnostics; production mmap should prefer `pin_mmap_backing` so
@@ -79,7 +88,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     let inode = file.inode();
     let (tag, card_id) = drm_inode_parts(inode)?;
     use syscall::errno::Errno;
-    if tag == DRM_RENDER_INO && crate::is_master_only(req) {
+    if tag == DRM_RENDER_INO && !render_allowed(req) {
         return Some(-(Errno::Eacces.as_i32() as i64));
     }
     if ioctl_takes_user_ptr(req) && (arg == 0 || arg >= hal::USER_VA_END) {
@@ -429,6 +438,10 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             None    => Some(-(Errno::Einval.as_i32() as i64)),
         },
         DRM_IOCTL_MODE_GETFB => Some(crate::kms_ext::get_fb(card_id, arg)),
+        DRM_IOCTL_GEM_CLOSE => Some(-(Errno::Einval.as_i32() as i64)),
+        DRM_IOCTL_PRIME_HANDLE_TO_FD | DRM_IOCTL_PRIME_FD_TO_HANDLE => {
+            Some(-(Errno::Einval.as_i32() as i64))
+        }
         DRM_IOCTL_VIRTGPU_GETPARAM => {
             // struct drm_virtgpu_getparam { param u64; value u64 (userptr); }.
             // arg pre-validated non-null < USER_VA_END by ioctl_takes_user_ptr.

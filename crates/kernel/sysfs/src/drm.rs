@@ -14,7 +14,6 @@
 //     cardN        -> ../../devices/<parent>/drm/cardN
 //                  -> ../../devices/virtual/drm/cardN when parentless
 //     renderD128+N -> ../../devices/<parent>/drm/renderD128+N
-//                    (only when a DRM driver publishes a real render minor)
 //   /sys/devices/virtual/drm/<name>/         (per-minor dir)
 //     dev                                     "226:<minor>\n"
 //     uevent                                  MAJOR=/MINOR=/DEVNAME=/DEVTYPE=
@@ -432,6 +431,12 @@ mod tests {
                 .with_devnode("drm", String::from("dri/card43"), Some((DRM_MAJOR, 43))),
         ))
         .expect("test drm registration");
+        let render = drv::try_device_add(Arc::new(
+            drv::Device::new("drm", String::from("sysfs-drm-render171"), 0, 0, 0)
+                .with_parent("virtio", String::from("virtio-gpu-parent0"))
+                .with_devnode("drm", String::from("dri/renderD171"), Some((DRM_MAJOR, 171))),
+        ))
+        .expect("test render registration");
 
         let class = make_sys_class_drm_inode();
         let class_link = class.lookup("card43").expect("card43 class link");
@@ -439,12 +444,17 @@ mod tests {
             class_link.readlink().expect("readlink"),
             b"../../devices/virtio/virtio-gpu-parent0/drm/card43".to_vec()
         );
+        assert_eq!(
+            class.lookup("renderD171").expect("render class link").readlink().expect("readlink"),
+            b"../../devices/virtio/virtio-gpu-parent0/drm/renderD171".to_vec()
+        );
 
         let devices = make_sys_devices_virtual_drm_inode();
         assert_eq!(devices.lookup("card43").err(), Some(VfsError::Enoent));
 
         let parent_drm = make_parent_drm_inode("virtio", String::from("virtio-gpu-parent0"));
         let card_dir = parent_drm.lookup("card43").expect("card43 parented sysfs dir");
+        assert!(parent_drm.lookup("renderD171").is_ok());
         let device = card_dir.lookup("device").expect("parent device link");
         assert_eq!(device.readlink().expect("readlink"), b"../..".to_vec());
         let subsystem = card_dir.lookup("subsystem").expect("subsystem link");
@@ -455,6 +465,7 @@ mod tests {
             b"../../../../../class/drm".to_vec()
         );
 
+        drv::device_del(&render);
         drv::device_del(&card);
         drv::device_del(&parent);
         assert_eq!(parent_drm.lookup("card43").err(), Some(VfsError::Enoent));

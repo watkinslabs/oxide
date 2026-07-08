@@ -15,6 +15,7 @@ use super::scanout::scanout_ops;
 
 struct DrmNodePair {
     card: Arc<drv::Device>,
+    render: Arc<drv::Device>,
 }
 
 static DRM_NODES: Spinlock<Vec<Option<DrmNodePair>>, OpsLockClass> = Spinlock::new(Vec::new());
@@ -75,8 +76,8 @@ impl vfs::FileOps for DrmCardFileOps {
     }
 }
 
-/// `file_operations` for the render node. Render nodes stay unpublished until
-/// a real render/GEM UAPI exists; the private test inode must not fake writes.
+/// `file_operations` for the render node. Render fds share the DRM ioctl path
+/// but `handle_drm_ioctl` rejects KMS/master-only requests for render inodes.
 pub(super) struct DrmSinkFileOps;
 impl vfs::FileOps for DrmSinkFileOps {
     fn read(&self, _inode: &vfs::Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
@@ -146,7 +147,7 @@ fn add_node(
     drv::try_device_add(Arc::new(dev)).ok()
 }
 
-/// Register a DRM card node for a stable DRM card id.
+/// Register DRM primary + render nodes for a stable DRM card id.
 /// # C: O(1)
 pub fn register(card_id: u32, parent: Option<(&'static str, alloc::string::String)>) -> bool {
     let mut nodes = DRM_NODES.lock();
@@ -158,20 +159,32 @@ pub fn register(card_id: u32, parent: Option<(&'static str, alloc::string::Strin
         return false;
     }
     let card_name = format!("dri/card{}", card_id);
+    let render_minor = crate::uapi::DRM_RENDER_MINOR_BASE + card_id;
+    let render_name = format!("dri/renderD{}", render_minor);
     let Some(card) = add_node(
         &card_name,
         "drm",
         (DRM_MAJOR, card_id),
         Arc::new(move || make_card_inode(card_id)),
-        parent,
+        parent.clone(),
     ) else {
         return false;
     };
-    nodes[idx] = Some(DrmNodePair { card });
+    let Some(render) = add_node(
+        &render_name,
+        "drm",
+        (DRM_MAJOR, render_minor),
+        Arc::new(move || make_render_inode(card_id)),
+        parent,
+    ) else {
+        drv::device_del(&card);
+        return false;
+    };
+    nodes[idx] = Some(DrmNodePair { card, render });
     true
 }
 
-/// Remove the DRM card node for a stable DRM card id.
+/// Remove DRM primary + render nodes for a stable DRM card id.
 /// # C: O(depth)
 pub fn unregister(card_id: u32) {
     let pair = {
@@ -186,6 +199,7 @@ pub fn unregister(card_id: u32) {
         clear_master_owner(card_id);
         clear_authorized_for_card(card_id);
         clear_unique_ready_for_card(card_id);
+        drv::device_del(&pair.render);
         drv::device_del(&pair.card);
     }
 }
@@ -204,6 +218,7 @@ pub fn unregister_all() {
         pairs
     };
     for pair in pairs.into_iter().rev() {
+        drv::device_del(&pair.render);
         drv::device_del(&pair.card);
     }
     reset_test_state();
