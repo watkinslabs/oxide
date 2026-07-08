@@ -12,7 +12,7 @@ resets KVM/qemu), then re-run the boot-verify below.** Until then the pre-push
 smoke hook will hang, so the branches below are committed LOCAL-ONLY, unpushed.
 
 ## READY TO PUSH (stacked, hosted-verified + both-arch RELEASE-built, NOT pushed)
-Branch chain off `main`: **A1 → A2 → A4 → A3**
+Branch chain off `main`: **A1 → A2 → A4 → A3 → B3**
 - `B656-ext4-mtime-on-write` (A1, §7.1): write/fallocate/create stamp mtime/
   ctime/crtime; vfs CLOCK_REALTIME provider + file_update_time. Fixes frozen-1970.
 - `B657-ext4-sstate-lifecycle` (A2, §2.2): mark s_state dirty on mount / clean
@@ -22,6 +22,8 @@ Branch chain off `main`: **A1 → A2 → A4 → A3**
   cyclic trees → CorruptExtentTree instead of infinite I/O loop / stack overflow.
 - `B659-ext4-rmdir-reclaim` (A3, §4.1/§4.2): rmdir frees victim blocks+inode,
   drops used-dirs, decrements parent nlink (Mount::rmdir).
+- `B660-ext4-msync-eio` (B3, §7.4): msync propagates writeback EIO instead of
+  swallowing it (flush_all_dirty → Result; sys_msync returns -EIO like fsync).
 Each has its own hosted test (ext4 tests/*.rs) + green ext4 (87 lib + ~90
 integration) & vfs (98) suites. Both x86_64 + aarch64 kernels build clean.
 
@@ -44,7 +46,7 @@ integration) & vfs (98) suites. Both x86_64 + aarch64 kernels build clean.
 
 ## RULES REAFFIRMED
 Plans live in scratch/ (new CLAUDE.md rule). Branch counters in metadata/index.md
-(B next = 660). No cargo fmt. Author Chris Watkins. No Co-Authored-By.
+(B next = 661). No cargo fmt. Author Chris Watkins. No Co-Authored-By.
 
 ## FIRST COMMAND NEXT SESSION
-`pkill -9 qemu-system 2>/dev/null; git -C /home/nd/oxide/kernel log --oneline main..B659-ext4-rmdir-reclaim`
+`pkill -9 qemu-system 2>/dev/null; git -C /home/nd/oxide/kernel log --oneline main..B660-ext4-msync-eio`
