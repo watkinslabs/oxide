@@ -44,7 +44,7 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, deadline_ns: u64) -> i
             // SAFETY: bounded user VA validated above; CR3 is current's.
             let cur_val = unsafe { load_user_u32(uaddr) };
             if cur_val != val { return -(Errno::Eagain.as_i32() as i64); }
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-displaystack")]
             if uaddr >= 0x7fff_0000_0000 {
                 let nm = sched::live::current()
                     .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) })

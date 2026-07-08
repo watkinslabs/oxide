@@ -62,6 +62,7 @@ drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 [features]
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW
 debug-boot = ["kmacros/debug-boot", "net/debug-boot", "drm/debug-boot"]
+debug-displaystack = []  # [VTIO]/[TGKILL]/[waitid] per-op display-stack bring-up traces; OFF by default (were under debug-boot / ungated, too noisy)
 debug-trace = ["kmacros/debug-trace"]
 debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]
 debug-scmfd = ["net/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe (dbus-broker two-hop pidfd trace)
