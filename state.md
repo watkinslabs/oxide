@@ -1,4 +1,16 @@
-# Handoff — greeter: dbus-broker NEVER ACCEPTS polkit's system-bus connection (orphaned)
+# Handoff — EPOLLET lost-edge FIXED (dbus-broker accepts polkit) but polkit STILL times out (2nd blocker)
+
+## FIX LANDED + VERIFIED (commit f477c3ef): EPOLLET generation-edge
+Root cause CONFIRMED (LSCAN diagnostic): dbus-broker's EPOLLET listen socket (fd=9) + connected sockets show `raw=0x5` (ready) + `seen=0x5` (et_seen retained EPOLLIN) → `new_edges=0` → edge SUPPRESSED → a connection/message queued while et_seen still holds EPOLLIN is never reported → dbus-broker orphans the late client (polkit). (My earlier ETSUP=0 "disproof" was a FALSE NEGATIVE — the fs crate lacked the debug-syscost feature so the diagnostic never compiled. Fixed: fs now has debug-syscost.)
+FIX: PollSubscribers gains a `gen` counter bumped on every notify/notify_mask; scan_once treats an advanced gen as a fresh EPOLLET edge (Linux ep_poll_callback: a readiness event IS the edge). VERIFIED WORKING: GRESCUE diagnostic fired 101× (rescuing suppressed edges on fds 12/14/17/… sockets), and **polkit's connect pair is now `accepted_by=dbus-broker`** (previously NEVER accepted, across 5+ boots).
+
+## BUT polkit STILL TIMES OUT — a SECOND blocker remains
+With the fix, on BOTH a heavily-traced boot AND a clean debug-watchdog boot: polkit's connection is accepted, dbus-broker rescues 101 edges, yet `polkit.service: start operation timed out` → upowerd SEGV → gdm FAIL → still NO greeter. So the EPOLLET lost-edge was ONE necessary fix but not sufficient. Candidates for blocker #2:
+- A lost-edge path the gen-counter can't cover: `wake_peer_subs` falls back to `sched::live::notify_epoll_waiters()` (GLOBAL broadcast, NO per-inode gen bump) when the peer's end-subs slot is empty. Any EPOLLET readiness delivered via that global fallback is still suppressed. Check if polkit↔dbus-broker connected-socket messages use the fallback (empty subs slot → race) → fix: make the fallback path bump the target inode's gen, or ensure register_end_subs always populates so notify() (gen-bumping) is used.
+- polkit's mozjs init genuinely too slow / another D-Bus round-trip stuck AFTER accept (the profiler earlier showed polkit ppoll-stuck waiting a reply — re-profile with the fix to see if it now gets further).
+NEXT: re-run debug-syscost profiler on polkit WITH the fix — does its ppoll wait shrink? does it now send RequestName? Trace where the post-accept D-Bus exchange stalls. Then fix blocker #2.
+
+## (earlier) Handoff — greeter: dbus-broker NEVER ACCEPTS polkit's system-bus connection (orphaned)
 
 ## MECHANISM STILL ELUSIVE after ruling out every concrete hypothesis (30 boots)
 Definitive: dbus-broker never accepts polkit's system-bus connection (UXACCEPT correlation). Ruled OUT:
