@@ -6,15 +6,25 @@ was pure codex CONTENTION, not a bug), userdbd Started — then WEDGES. sysrq ta
 dump (scratchpad/wedge.log): **13 processes in `Z` zombie state, last syscall
 `nr#231` = exit_group** — systemd's early fork-children exited and are NEVER
 REAPED. `init`(pid1) parks in `epoll_wait`; CPU idle (`current=tid:0 state=R`).
-systemd reaps via SIGCHLD → signalfd → epoll_wait → waitid. So this is a
-**SIGCHLD-delivery / signalfd-epoll-wakeup / zombie-reap bug**. PRIME SUSPECT:
-commit **2257f275** "fix(fs): G8 — signalfd mask update + full signalfd_siginfo
-fill" (just landed on main; changed exactly this path). NEXT: check whether
-SIGCHLD reaches systemd's signalfd and wakes its epoll — likely a regression in
-2257f275; a hosted harness on signalfd+SIGCHLD+epoll, or a klog trace on the
-sig-deliver→signalfd-poll path. This is THE thing between here and gdm.
-Repro: `OXIDE_SMP=1 ./tools/boot-smoke.sh x86 90` (unique SMOKE_KEEP_LOG); it
-wedges ~10s and sysrq-dumps the zombies.
+systemd reaps via SIGCHLD → signalfd → epoll_wait → waitid.
+CODE-PATH TRACED (all LOOKS correct — bug is a subtle runtime state issue):
+- `syscalls/060_exit.rs` sys_exit_group→sys_exit: for a group-leader
+  (tid==tgid) calls `sched::live::signal_child_exit(task)`.
+- `sched/live/zombies.rs signal_child_exit`: push_child_event → set parent
+  `sigpending |= SIGCHLD` → `wake_wait4_parent` → `wake_task_for_signal(parent)`
+  → `try_to_wake_up` (Sleeping→Runnable CAS; NO-OP if parent not Sleeping).
+- `fs/signalfd.rs poll()`: POLL_IN iff `sched::current().sigpending & mask`.
+So SIGCHLD IS posted + a wake IS attempted, yet systemd stays parked. Suspects
+(need a TRACE, not code-read): (a) `try_to_wake_up` CAS no-ops because systemd's
+epoll_wait park state isn't `Sleeping`; (b) epoll_wait, once roused, doesn't
+RE-POLL the signalfd; (c) signalfd `poll()` runs with `current()` != systemd so
+it reads the wrong sigpending; (d) 2257f275's child_sigq_pop / pending-bit-clear
+races the poll. NEXT: add klog trace at signal_child_exit (did CAS succeed?) +
+signalfd poll (called? current tid? bit set?) + epoll rewake; OR a hosted
+harness: task blocks epoll_wait on a SIGCHLD signalfd, another exits, assert the
+epoll wakes + read returns SIGCHLD. Commit 2257f275 is the prime regression.
+Repro: `OXIDE_SMP=1 ./tools/boot-smoke.sh x86 90` (unique SMOKE_KEEP_LOG); wedges
+~10s and sysrq-dumps ~13 zombies.
 
 # Handoff — boot env FIXED (qemu CID conflict)
 
