@@ -49,6 +49,23 @@ Do NOT re-chase "slow I/O" — it's fast.
   processes in epoll_wait/ppoll/pselect6 + transient exit_group zombies; comms
   are unresolved ("fork-child"), so journald's exact stuck syscall is NOT named.
 
+## UPDATE 2026-07-08 (after B661 + rt_sigqueue wake fix)
+Two more real fixes landed and boot-verified to help:
+- **B661** signalfd SIGCHLD-reap (verified: init reaps 0→15).
+- **rt_sigqueue wake** (`signal_common.rs rt_sigqueue_to` now `wake_if_sleeping`):
+  RT signal to an epoll-parked task now wakes it. Real bug (matched sys_kill etc.).
+Result: a clean boot now has **exactly ONE service timeout — systemd-journal-flush**
+— everything else runs; early targets (getty/cryptsetup/…) reached at [6.5s]. So
+the desktop is ONE isolated blocker away: journald's FLUSH OPERATION hangs (~90s).
+Note rt_sigqueue was NOT journal-flush's cause (still hangs) — journalctl --flush
+likely uses plain kill (which already woke); the hang is the flush WRITE itself.
+
+Strongest lead (memory [[journald-empty-ext4-writeback]]): journald finds the
+PREBUILT /var/log/journal/*/system.journal "corrupted / uncleanly shut down" and
+hangs RENAMING+replacing it (an ext4 rename/create/fallocate on the journal file
+never returns). CHEAP FIX TO TRY FIRST: ship an EMPTY /var/log/journal in the
+image (images repo, needs sudo) → journald makes a fresh file, no rename hang.
+
 ## #4 — DECISIVE next step (needs the debug shell, not code-reading)
 The image has `systemd.debug_shell=ttyS0` (passwordless root serial shell). Boot,
 and while journal-flush is hung (window [10..99s]) read journald's stuck syscall:
