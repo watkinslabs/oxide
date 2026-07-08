@@ -16,6 +16,10 @@ So it is NOT single-CPU thread serialization and NOT primarily wake-latency (mor
 - **mmap**: lazy demand-paged (009_mmap → glue_mmap inserts VMA; fault populates). Not eager. OK.
 - **mprotect**: per-page invlpg self-flush (pmm/user_as/foreign.rs mprotect_pages), NOT a full CR3 reload. On smp>1 it broadcasts a TLB-shootdown IPI (would hurt smp=4, not smp=1). OK on UP.
 
+## Scheduler is NOT the bug (WLLAT vs WLBLK)
+wakelat has two metrics: WLLAT = pure wake→run latency (note_runnable→note_switch_in, scheduler only); WLBLK = total busy/block wait INCLUDING time for the data to be produced. The wakelat boot emitted **only WLBLK (50–350ms), NO WLLAT** (below threshold) ⇒ the scheduler runs a woken task PROMPTLY; the long waits are tasks waiting for their DATA/EVENT to be produced. polkit is wait-bound (cputime ≈2.9s / wall 45s+). So it's not scheduler wake latency and not (on UP) lock contention — it's a **base per-operation slowness that makes every producer slow**, cascading. ttwu_inner DOES resched_curr on wake (ttwu.rs:251); wake path is fine.
+NOTE: the earlier "tick 334ms gap / voluntary preempt" framing is likely a debug-wakelat klog artifact (per-WLBLK UART write ~ms, IRQs-off) — DEPRIORITIZE it vs the base per-op slowness. Set_oneshot no-op + periodic LAPIC still true, but not confirmed as the cause.
+
 ## STILL UNPINNED: which per-op eats polkit's 45s wall-clock
 Need a real SAMPLING profiler (where is polkit's PC / which syscall dominates), not per-syscall klog (distorts ~100×). Options: (a) a low-rate timer-driven PC sampler for the polkitd task (record RIP at each tick into a ring, histogram kernel vs user + hot syscall); (b) a per-syscall CUMULATIVE-time counter keyed by nr (rdtsc delta summed per nr, dumped periodically — no per-call klog) to find the nr that dominates. Then fix that path. Suspects to weigh: getrandom blocking, madvise/GC path, ext4 read latency for rules files, page-fault handler cost (millions of faults into the mozjs heap), or the futex path after all.
 
