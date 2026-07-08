@@ -13,10 +13,12 @@ use super::core::{
 /// gdbus/gmain helper threads involved in the greeter pthread deadlock).
 #[cfg(feature = "debug-futextrace")]
 fn ftx_target_exe() -> bool {
-    // Both gdm processes: the daemon (/usr/bin/gdm) and the session worker
-    // (/usr/libexec/gdm-session-worker) — to see the cross-process wedge.
+    // gdm + the glib D-Bus services that block gdm's start (they hang while
+    // acquiring their bus name — main thread parks in futex). Trace their
+    // FTX-WAIT/WAKE to see whether the wake is lost.
     sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
+            s.contains("gdm") || s.contains("switcheroo") || s.contains("accounts-daemon")) })
         .unwrap_or(false)
 }
 

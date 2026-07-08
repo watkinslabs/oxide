@@ -19,10 +19,27 @@ From task dumps of a wedged live-gnome KVM boot:
   session c1 setup **loops** (repeated `FDSTORE=1` for session-c1-device-226-0) → gdm keeps re-creating the greeter.
 - ~24 late PROCESS zombies (gdm/sh/bash/session helpers) accumulate — SYMPTOM: they are children of gdm, which is
   blocked in ppoll and not reaping them (init reaps its own children fine early; the leak is gdm-side + a few reparented).
-- **NEW concrete lead:** `init=/usr/bin/bash` selected bash then the kernel took a **#PF (NP-W-K) at rip=ffffffff80257229,
-  cr2=user-stack** during PID1 stack-build/first-run. If the exec/stack path can #PF the kernel, gnome-shell's exec could
-  hit the same → killed → gdm relaunch loop = the greeter loop. INVESTIGATE this #PF first (hal fault handler / user_as
-  stack fault at 0x...57229) — it may be THE greeter blocker, not just a bash-as-init quirk.
+- RULED OUT: the `init=/usr/bin/bash` `#PF` (rip=0xffffffff80257229 = `smoke::elf::user_fault_handler` faulting on a
+  not-present user page) is SEPARATE — bash-as-PID1 only; the greeter boots have **zero [FAULT]**. Still a real bug
+  (fault handler #PFs for the init= spawn stack) but NOT the greeter blocker. Fix later.
+- ROOT-CAUSE CHAIN (found via `systemd.log_level=debug` on the cmdline — that's how to get userspace errors on serial):
+  gnome-shell never execs ← `gdm.service: starting held back, waiting for: switcheroo-control.service`
+  ← `switcheroo-control.service: start operation timed out. Terminating` — it forks /usr/libexec/switcheroo-control
+  (pid 114) but NEVER acquires its D-Bus name `net.hadess.SwitcherooControl` → systemd times it out → cascades to gdm.
+- SAME signature on switcheroo-control, accounts-daemon, upowerd, polkitd in the task dumps: **main thread parked in
+  `futex`, a worker thread zombied**. These are glib GDBus services hanging at STARTUP while acquiring their bus name.
+  => The real bug is kernel-side: a futex/thread-sync wake lost, or D-Bus-over-AF_UNIX message/poll delivery, in the
+  glib GDBus name-acquisition path. Fix this and gdm should proceed. NO stub — it's a real kernel bug.
+- RULED OUT (this session): raw futex lost-wakeup. The futex WAIT/WAKE/key code is correct (re-checks *uaddr under
+  WAITERS.lock; private key = shared mm.root_pa so cross-thread wakes match). Widened debug-futextrace to also trace
+  switcheroo-control/accounts-daemon (wait.rs ftx_target_exe) and a boot showed **0 FTX-WAIT/WAKE** for them — they do
+  NOT block on the traced futex path. So the hang is in the **D-Bus-over-AF_UNIX delivery** (dbus-broker RequestName
+  reply not arriving, or eventfd/epoll wake for the socket), NOT futex.
+- NEXT (last mile): trace switcheroo-control's actual blocking syscall (add a per-syscall trace filtered to its exe, or
+  debug-taskdump + read its last-syscall). Suspects: AF_UNIX sendmsg/recvmsg to /run/dbus/system_bus_socket, or
+  epoll/eventfd readiness for the D-Bus reply. Fix that IPC path and gdm's held-back start proceeds → greeter renders.
+  How to get userspace errors: `systemd.log_level=debug` on the cmdline dumps everything to serial (that's how the
+  gdm→switcheroo chain above was found).
 
 ## Tooling facts
 - `debug-taskdump` feature = the diagnostic: `qemu_start arch=x86_64 accel=kvm mem=4G features=debug-boot,debug-taskdump`,
