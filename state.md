@@ -35,11 +35,19 @@ From task dumps of a wedged live-gnome KVM boot:
   switcheroo-control/accounts-daemon (wait.rs ftx_target_exe) and a boot showed **0 FTX-WAIT/WAKE** for them — they do
   NOT block on the traced futex path. So the hang is in the **D-Bus-over-AF_UNIX delivery** (dbus-broker RequestName
   reply not arriving, or eventfd/epoll wake for the socket), NOT futex.
-- NEXT (last mile): trace switcheroo-control's actual blocking syscall (add a per-syscall trace filtered to its exe, or
-  debug-taskdump + read its last-syscall). Suspects: AF_UNIX sendmsg/recvmsg to /run/dbus/system_bus_socket, or
-  epoll/eventfd readiness for the D-Bus reply. Fix that IPC path and gdm's held-back start proceeds → greeter renders.
-  How to get userspace errors: `systemd.log_level=debug` on the cmdline dumps everything to serial (that's how the
-  gdm→switcheroo chain above was found).
+- ALSO RULED OUT: poll/ppoll lost-wakeup. 007_poll.rs subscribes to each fd's PollSubscribers BEFORE scanning AND
+  re-scans every RESCAN_NS=20ms (park_dl = min(deadline, now+20ms)) — self-heals from any lost wake in ≤20ms.
+  epoll_wait has the same bounded rescan. So neither futex nor poll can hang PERMANENTLY on a lost wake.
+- Therefore switcheroo-control's ppoll re-scans ~4500× over its 90s timeout and NEVER sees readiness => the D-Bus
+  RequestName reply genuinely never becomes readable. Two suspects, both concrete + kernel-side:
+    (a) dbus-broker never delivers switcheroo's message / reply — AF_UNIX SCM/message delivery drops it; OR
+    (b) the AF_UNIX socket poll()/readiness wrongly returns not-readable when data IS queued (so the 20ms rescan
+        never observes POLLIN). NOTE: sock/inode.rs poll() delegates to InetSocket::poll() — verify the UNIX-domain
+        (unix_sock stream) path has a correct poll/readiness that reflects queued rx bytes; it may be missing/wrong.
+- NEXT: trace one D-Bus round-trip: pick switcheroo-control (pid ~114) or accounts-daemon, trace its AF_UNIX
+  sendmsg/recvmsg on /run/dbus/system_bus_socket + the peer (dbus-broker) recv + the poll mask each computes. Find
+  where the message or the readiness is dropped. That IPC fix is the last mile to a visible GNOME greeter.
+- How to get userspace errors on serial: add `systemd.log_level=debug` to the dev cmdline (image_qemu/x86_64.rs).
 
 ## Tooling facts
 - `debug-taskdump` feature = the diagnostic: `qemu_start arch=x86_64 accel=kvm mem=4G features=debug-boot,debug-taskdump`,
