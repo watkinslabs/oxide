@@ -415,6 +415,7 @@ pub fn reparent_children(dying_tid: u32) {
     let init = registry::lookup_by_vpid(1);
     let init_tid = init.as_ref().map(|t| t.tid).unwrap_or(1);
     let init_weak = init.as_ref().map(alloc::sync::Arc::downgrade);
+    let mut reparented_zombie = false;
     for tid in registry::live_tids() {
         if let Some(t) = registry::lookup(tid) {
             if t.parent_tid.load(Ordering::Acquire) == dying_tid {
@@ -442,7 +443,26 @@ pub fn reparent_children(dying_tid: u32) {
                     // sole writer to its parent_arc cell during this rewrite.
                     unsafe { *t.parent_arc.get() = Some(w.clone()); }
                 }
+                // Linux forget_original_parent → do_notify_parent: a child that
+                // is ALREADY a zombie when reparented sent its SIGCHLD to the
+                // now-dead original parent, so the new parent (init) never
+                // learned to reap it. Re-notify init here, or the reparented
+                // zombie leaks forever (init parked in epoll on its SIGCHLD
+                // signalfd never wakes to wait4 it — systemd then can't observe
+                // the exit of a double-forked service, and gdm's graphical
+                // session stalls). Its parent_tid is now init_tid so reap_one
+                // matches; we just need the wake.
+                if matches!(t.state(), TaskState::Zombie) {
+                    reparented_zombie = true;
+                }
             }
+        }
+    }
+    if reparented_zombie {
+        if let Some(ref p) = init {
+            p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
+            wake_wait4_parent(init_tid);
+            wake_task_for_signal(p);
         }
     }
 }
