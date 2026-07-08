@@ -147,6 +147,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             Ok(()) => 0, Err(e) => crate::namei_common::errno_from_vfs(e),
         };
     }
+    // FS_IOC_FIEMAP (filefrag/backup/dedup): map a regular file's physical
+    // extents. A regular-file/dir fd is not a CharDev, so route here before the
+    // generic non-CharDev path returns ENOTTY.
+    if let Some(rv) = super::fiemap::handle_fiemap(&file.inode(), req, arg) { return rv; }
     // Block-device geometry ioctls (BLKGETSIZE64/BLKGETSIZE/BLKSSZGET/BLKBSZGET).
     // A block node is not a CharDev, so answer these before the generic
     // non-CharDev path returns ENOTTY — blkid/mkfs/udev probe them on /dev/vda.
