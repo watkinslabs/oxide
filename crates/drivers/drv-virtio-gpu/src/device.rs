@@ -145,6 +145,20 @@ impl drm::DrmDriver for VirtioGpuDrm {
     }
     fn cap(&self, c: u64) -> u64 { drm::default_cap(c) }
 
+    /// VIRTGPU_GETPARAM. This device does not negotiate VIRTIO_GPU_F_VIRGL, so
+    /// there is no host 3D/virgl — report 3D_FEATURES=0 so Mesa's virtio_gpu
+    /// driver declines and falls back to llvmpipe over the KMS dumb-buffer
+    /// scanout (Linux virtio-gpu behaviour on a 2D-only device). All other
+    /// params default to 0 (no blob/host-visible/context-init/cross-device).
+    /// # C: O(1)
+    fn virtgpu_getparam(&self, param: u64) -> Option<u64> {
+        Some(match param {
+            drm::VIRTGPU_PARAM_3D_FEATURES      => 0,
+            drm::VIRTGPU_PARAM_CAPSET_QUERY_FIX => 1,
+            _                                   => 0,
+        })
+    }
+
     // ---- D5a read-only modeset enumeration over enabled scanouts ----
     fn crtc_ids(&self) -> alloc::vec::Vec<u32> {
         (0..self.display.count_enabled as usize).map(drm::crtc_id_for).collect()
