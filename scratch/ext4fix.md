@@ -195,7 +195,7 @@ Update Status + Branch on every lane transition (per the claim-before-start HARD
 
 | Status | Branch | # | Item | Refs |
 |--------|--------|---|------|------|
-| TODO | — | C1 | FIEMAP (reuse `seek_hole_data` run logic) | §3.6 |
+| CLAIMED | B665-ext4-fiemap | C1 | FIEMAP (reuse `seek_hole_data` run logic) | §3.6 |
 | TODO | — | C2 | `PUNCH_HOLE`/`COLLAPSE_RANGE`/`INSERT_RANGE` | §3.5 |
 | TODO | — | C3 | htree create (linear→indexed) + leaf split on insert | §4.4, §4.5 |
 | TODO | — | C4 | Multi-block allocator (mballoc-lite: run search + goal locality + flex_bg), preserving free-count atomicity | §5.1, §5.4 |
