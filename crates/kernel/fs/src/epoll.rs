@@ -11,7 +11,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
@@ -68,6 +68,10 @@ pub struct EpollEntry {
     /// EPOLLET edge — even if et_seen still holds the bit (userspace drained with
     /// no intervening scan). Fixes EPOLLET losing an edge on accept/read.
     pub last_gen: u64,
+    /// GLOBAL_EPOLL_GEN at the last report — covers readiness delivered via the
+    /// global broadcast fallback (wake_peer_subs when the peer end-subs slot is
+    /// empty), which does NOT bump the per-inode gen.
+    pub last_ggen: u64,
 }
 
 /// EPOLLET — edge-triggered (Linux `EPOLLET` = 1<<31).
@@ -93,8 +97,19 @@ static EPOLLS: Spinlock<Vec<Arc<EpollData>>, TaskListClass>
 /// wakes its per-instance waitlist. Kernel-only — hosted tests
 /// don't run epoll_wait.
 /// # C: O(N_epoll_instances)
+/// Global readiness-event generation, bumped on every GLOBAL epoll broadcast
+/// (`broadcast_wake_all_epolls`, i.e. the `wake_peer_subs` fallback / any keyless
+/// wake). An EPOLLET entry whose per-inode PollSubscribers gen did NOT advance
+/// (the readiness event was delivered via the global fallback, not a targeted
+/// notify) still learns an edge fired if THIS counter advanced since its last
+/// report — closing the last EPOLLET lost-edge path (intermittent: dbus-broker
+/// occasionally never reads polkit's AUTH when the connected-socket wake took the
+/// fallback, so polkit's RequestName never completes → 45s Type=dbus timeout).
+pub static GLOBAL_EPOLL_GEN: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(target_os = "oxide-kernel")]
 pub fn broadcast_wake_all_epolls() {
+    GLOBAL_EPOLL_GEN.fetch_add(1, Ordering::AcqRel);
     let snapshot: Vec<Arc<EpollData>> = EPOLLS.lock().iter().cloned().collect();
     for ep in snapshot { ep.waiters.wake_all(); }
 }
@@ -254,7 +269,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
                     klog::write_raw(b"]\n");
                 }
             }
-            list.push(EpollEntry { fd, events, data, et_seen: 0, last_gen: 0,
+            list.push(EpollEntry { fd, events, data, et_seen: 0, last_gen: 0, last_ggen: 0,
                 inode: target_inode.as_ref().map(Arc::downgrade) });
             // F181: targeted-wake subscribe if the inode supports it.
             #[cfg(target_os = "oxide-kernel")]
@@ -492,8 +507,10 @@ fn scan_once(ep: &Arc<EpollData>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: 
                 // new_edges==0 and is never reported → dbus-broker never accepts the
                 // late client (polkit) → 45s Type=dbus timeout → no greeter.
                 let cur_gen = f.inode().poll_subscribers().map(|s| s.generation()).unwrap_or(e.last_gen);
-                let gen_edge = cur_gen != e.last_gen && ready != 0;
+                let cur_ggen = GLOBAL_EPOLL_GEN.load(Ordering::Acquire);
+                let gen_edge = (cur_gen != e.last_gen || cur_ggen != e.last_ggen) && ready != 0;
                 e.last_gen = cur_gen;
+                e.last_ggen = cur_ggen;
                 // Drop edges that went not-ready so a later re-ready re-fires.
                 e.et_seen &= ready;
                 let new_edges = ready & !e.et_seen;
