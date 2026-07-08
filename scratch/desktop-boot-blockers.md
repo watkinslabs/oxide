@@ -37,6 +37,29 @@ SMOKE_KEEP_LOG) — the 55s timeout fires WHILE journal-flush is hung (it hangs
 syscall. That names the exact op (msync? fsync? a futex? an ext4 ioctl?) to fix.
 Do NOT re-chase "slow I/O" — it's fast.
 
+## #4 — sub-hypotheses RULED OUT (hosted, no boot)
+- Slow block I/O: DISPROVEN (instrumented `wait_for_completion` — 1 slow I/O all boot).
+- Framecache writeback livelock: NO — `framecache.rs writeback()`/`writeback_idxs`
+  process the dirty set ONCE and return (re-dirty on failure is for a LATER call,
+  no internal loop). `msync`/`fsync` can't spin here.
+- `kill`/signal doesn't wake the target: NO — `syscalls/062_kill.rs sys_kill`
+  calls `sched::live::wake_if_sleeping(&t)` after setting the pending bit, which
+  routes through `try_to_wake_up` (wakes an epoll_wait-parked target).
+- journald IS reached: init reaps work (B661). Task dump during the hang shows
+  processes in epoll_wait/ppoll/pselect6 + transient exit_group zombies; comms
+  are unresolved ("fork-child"), so journald's exact stuck syscall is NOT named.
+
+## #4 — DECISIVE next step (needs the debug shell, not code-reading)
+The image has `systemd.debug_shell=ttyS0` (passwordless root serial shell). Boot,
+and while journal-flush is hung (window [10..99s]) read journald's stuck syscall:
+`ps aux | grep journald` → `cat /proc/<jpid>/syscall` and `/proc/<jpid>/stack`,
+and the flush target `cat /proc/<flushpid>/syscall`. That NAMES the blocked op
+(msync? fsync? a futex? a rename/link on ext4? a poll on a socket to journald?).
+Then fix that one op. Prior sessions' lead: journald writes 0 entries to
+`/var/log/journal` (see [[journald-empty-ext4-writeback]]) — likely the flush
+write to a NEW system.journal blocks. Cheap first try: ship an EMPTY
+`/var/log/journal` in the image (images repo) so journald makes a fresh file.
+
 ## OLD (disproven) #4 detail — kept for the record
 Clean-host boot (SMP=1, no contention): **552s to reach `local-fs.target`**
 (normally ~2-3s). Time is NOT uniform — it's a few HUGE discrete stalls:
