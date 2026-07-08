@@ -40,9 +40,12 @@ integration) & vfs (98) suites. Both x86_64 + aarch64 kernels build clean.
 ## NEXT (ext4fix §9, after the batch lands)
 - A5 jbd2 durability (mark journal dirty before txn) — §6.1. A6 REVOKE — §6.2.
   (Crash-safety; want boot-verify, so do after env is back.)
-- Phase B hosted-friendly items usable even before boot: B3 msync EIO (§7.4),
-  B2 FS_IOC_GETFLAGS/SETFLAGS (§7.3), B1 csum-verify-on-read + feature-gate at
-  mount (§2.1/2.3 — P0, hosted-testable with a corrupted fixture).
+- CAUTION: B1 (csum-verify-on-read + feature-gate at mount, §2.1/2.3), A5/A6
+  (jbd2 crash-safety) all touch the mount/boot path — a too-strict change there
+  can brick boot, and they CANNOT be safely landed while boot-verify is down.
+  Do them once the env is back.
+- Boot-independent, hosted-only-safe next item: B2 FS_IOC_GETFLAGS/SETFLAGS +
+  i_flags decode (§7.3 — chattr/lsattr; journald uses chattr +C).
 
 ## RULES REAFFIRMED
 Plans live in scratch/ (new CLAUDE.md rule). Branch counters in metadata/index.md
