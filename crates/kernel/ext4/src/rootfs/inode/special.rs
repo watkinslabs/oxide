@@ -101,8 +101,11 @@ impl InodeOps for Ext4StatInodeOps {
             });
             if nonempty { return Err(VfsError::Enotempty); }
         }
-        mount.dir_unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
-        let _ = mount.free_inode(target);
+        // On-disk: free the victim's blocks, clear its inode, drop used-dirs,
+        // and decrement the parent's link count (ext4_rmdir). Replaces the old
+        // dirent-remove + inode-bit-free that leaked the dir's data blocks and
+        // never persisted the parent nlink drop.
+        mount.rmdir(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
         if let Some(sb) = d.st.i_sb() {
             if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
         }

@@ -171,7 +171,7 @@ Update Status + Branch on every lane transition (per the claim-before-start HARD
 |--------|--------|---|------|------|
 | VERIFIED-LOCAL | B656-ext4-mtime-on-write | A1 | write/fallocate/truncate → update mtime/ctime; create stamps atime/mtime/ctime/crtime; wire VFS `update_time` | §7.1 — *fixes frozen-1970* — hosted+2-arch green; boot-smoke pending clean env |
 | VERIFIED-LOCAL | B657-ext4-sstate-lifecycle | A2 | Mount lifecycle: mark `s_state` dirty on open, clean on unmount; bump `s_mnt_count`/`s_mtime` | §2.2 — hosted+2-arch green |
-| TODO | — | A3 | rmdir: free victim dir data blocks + persist parent nlink-- + `bg_used_dirs_count`-- | §4.1, §4.2, §7.2 |
+| VERIFIED-LOCAL | B659-ext4-rmdir-reclaim | A3 | rmdir: free victim dir data blocks + persist parent nlink-- + `bg_used_dirs_count`-- | §4.1, §4.2, §7.2 |
 | VERIFIED-LOCAL | B658-ext4-extent-descent-bound | A4 | Extent descent: `EXT4_MAX_TREE_HEIGHT` cap + strictly-decreasing-depth + bad-header reject (kills DoS) | §3.1 |
 | TODO | — | A5 | jbd2 durability: write journal tail (`s_start`/`s_sequence`) BEFORE txn body | §6.1 |
 | TODO | — | A6 | jbd2 REVOKE emission + sequence-aware replay | §6.2, §6.5 |

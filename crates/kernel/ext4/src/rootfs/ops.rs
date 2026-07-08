@@ -206,8 +206,7 @@ impl RootfsState {
         let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
         if !inode.is_dir() { return Err(vfs::VfsError::Enotdir); }
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        self.mount.dir_unlink(pino, name).map_err(|_| vfs::VfsError::Eio)?;
-        let _ = self.mount.free_inode(target);
+        self.mount.rmdir(pino, name).map_err(|_| vfs::VfsError::Eio)?;
         Ok(())
     }
 
