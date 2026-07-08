@@ -188,7 +188,7 @@ Update Status + Branch on every lane transition (per the claim-before-start HARD
 | TODO | — | B6 | jbd2 commit/tag/journal-sb checksums + real descriptor UUID | §6.3, §6.7 |
 | VERIFIED-LOCAL | B662-ext4-fs-ioc-flags | B7 | Cross-parent dir rename fixes `..` + parent nlinks | §4.3 |
 | TODO | — | B8 | Backup superblock/GDT sync | §5.3 |
-| TODO | — | B9 | xattr external-block write + refcount + csum; POSIX ACL enforcement (VFS) | §7.5 |
+| VERIFIED-LOCAL | B666-ext4-xattr-external | B9 | xattr external-block write + csum (e2fsck-clean); ACL enforcement split to own VFS lane | §7.5 |
 | TODO | — | B10 | inline_data read/write support (+ mount gate) | §7.6 |
 
 **Phase C — features & perf (P2/P3):**
