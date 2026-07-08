@@ -157,7 +157,12 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let inode = match resolve_watch_path(s) {
-        Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
+        Some(i) => i,
+        None => {
+            #[cfg(feature = "debug-boot")]
+            { klog::write_raw(b"[INOTIFY-ENOENT path="); klog::write_raw(s.as_bytes()); klog::write_raw(b"]\n"); }
+            return -(Errno::Enoent.as_i32() as i64);
+        }
     };
     let key = inode_key(&inode);
     let mut g = inotify.watches.lock();
@@ -270,7 +275,12 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let inode = match resolve_watch_path(s) {
-        Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
+        Some(i) => i,
+        None => {
+            #[cfg(feature = "debug-boot")]
+            { klog::write_raw(b"[INOTIFY-ENOENT path="); klog::write_raw(s.as_bytes()); klog::write_raw(b"]\n"); }
+            return -(Errno::Enoent.as_i32() as i64);
+        }
     };
     if flags & FAN_MARK_ONLYDIR != 0 && inode.file_type() != FileType::Directory {
         return -(Errno::Enotdir.as_i32() as i64);
