@@ -1,51 +1,46 @@
-# Handoff — glibc quick-boot done; boot-to-GNOME blocked on intermittent hang
+# Handoff — glibc quick-boot done; boot-to-GNOME: 2 reap bugs fixed, greeter still blocked
 
-**Branch:** `F693-quickboot-glibc-rootfs` (pushed, PR #2837). 8 commits, all boot-tested where possible.
-**Goal in flight:** graphical GNOME desktop booting to a visible greeter, 100% Linux-compat, no stubs.
+**Branch:** `F693-quickboot-glibc-rootfs` (pushed, PR #2837).
+**Goal:** graphical GNOME booting to a visible greeter, 100% Linux-compat, no stubs.
 
-## DONE + verified (on the branch)
-- **musl → glibc quick-boot.** `xtask rootfs` (`rootfs_glibc.rs`) now COPIES the images-repo
-  pre-packed glibc image `../images/output/<profile>-<arch>-root.img` (default `live-gnome`)
-  as `root-<arch>.img` (cp --reflink, instant on btrfs). No dnf/sudo in the kernel repo.
-  Boot-verified: reaches systemd `graphical.target` + gdm, 57 ld-linux, **zero ld-musl**.
-- Deleted the musl staging (rootfs/{build,stage_system,stage_tools}, rootfs_{lists,dynprobe,etc,cache},
-  l2_deps) + 92 tools/fetch-*.sh + 1197 tracked musl vendor build artifacts + dead vendor/limine.
-  KEPT vendor/{firmware,grub,lib} + upstream source tarballs (packagectl builds glibc RPMs from those).
-- `make qemu-x86` / MCP default to **KVM + 4G** (was TCG/2G → GNOME impractically slow).
-- **rw root + service masks** (image_qemu/x86_64.rs cmdline): `root=... rw` (was `ro` → WRITE-EROFS)
-  + mask zram/firewalld/chronyd/ModemManager/plymouth/NM-wait-online. Cut graphical.target 137s→52s.
-- Per-op display-stack traces ([futex park]/[VTIO]/[TGKILL]/[waitid]) moved to opt-in
-  `debug-displaystack` feature (were flooding serial under debug-boot / ungated).
-- boot-smoke marker → `Reached target basic.target` (glibc gnome has no serial `oxide login:`).
+## DONE + verified
+- **musl → glibc quick-boot** (packs `../images/output/live-gnome-x86_64-root.img`; zero ld-musl).
+- **KVM + 4G** defaults; **rw root + service masks** (zram/firewalld/chronyd/modem/plymouth) → graphical.target 137s→52s.
+- **DRM VIRTGPU_GETPARAM/GET_CAPS** implemented (Mesa 2D/llvmpipe fallback) — correct, still unverified end-to-end (greeter never reaches mutter reliably).
+- Debug traces → opt-in `debug-displaystack`; boot-smoke marker → `Reached target basic.target`.
+- **`debug-taskdump` is the key diagnostic**: boot with `features=debug-boot,debug-taskdump`, it dumps
+  every task (state/last-syscall/futex/exe) every 20s from the timer tick. That's how the bugs below were found.
 
-## DONE, correct, but UNVERIFIED end-to-end (426b3819)
-- **DRM VIRTGPU_GETPARAM/GET_CAPS** implemented (drm uapi/core_api/node.rs + drv-virtio-gpu device.rs).
-  Root cause found via [DRMIOCTL] trace: Mesa's `virtio_gpu` driver (DRM VERSION name="virtio_gpu")
-  probes GETPARAM(0x43)/GET_CAPS(0x49) after opening card0; kernel returned ENOTTY → Mesa can't
-  decide 3D → loops, mutter never reaches KMS (GETRESOURCES/SETCRTC=0). Fix: PARAM_3D_FEATURES=0
-  (no virgl; device didn't negotiate F_VIRGL) → Mesa falls back to llvmpipe over KMS dumb-buffer.
-  UNVERIFIED because boots wedge before mutter reaches the DRM phase (see blocker).
+## Two kernel reap bugs FIXED this session (committed, verified via task dump)
+1. **c1ceabf5 — exited CLONE_THREAD threads must auto-release.** `sys_exit` treated a non-leader
+   thread (tid!=tgid) as a process: signal_child_exit (SIGCHLD to parent) + wait4-zombie. Linux
+   release_task auto-reaps threads (pthread_join = clear_child_tid FUTEX_WAKE only). polkitd piled up
+   19 zombie THREADS + flooded itself with spurious SIGCHLD. Fix: 060_exit skips signal_child_exit for
+   tid!=tgid; switch.rs drops (not enqueue_zombie) a non-leader-thread zombie. **thread-zombies 19→0.**
+2. **a01b0af5 — notify init when reparenting an already-zombie child** (forget_original_parent→do_notify_parent).
 
-## THE BLOCKER (next focus): intermittent userspace hang during greeter launch
-- 6 of 7 recent boots WEDGE at random timestamps (18/134/140/144/224/227s), during gdm
-  greeter-session setup: gdm spawns /usr/bin/sh helpers, wait4-reaps, logind re-opens card0,
-  `[B288 dgram /run/systemd/notify pidN] FDSTORE=1` loops — and **gnome-shell NEVER execs**
-  (0 elf-loads of it). One boot (with debug-futextrace) DID get through to gnome-shell + DRM
-  ioctls → it's timing-dependent, not a hard block.
-- Signature = intermittent lost-wakeup / scheduler / SIGCHLD-wait4 / futex race under heavy
-  fork/exec/wait churn. Note: `[wait4 reap]` logged the SAME tid multiple times in one run — look
-  at SIGCHLD delivery + wait4/reaping + futex wake races first.
-- Tooling hit walls: KVM gdb `qemu_interrupt` won't stop the CPU; no serial getty (image runs
-  getty on tty0, not ttyS0); kernel **ignores `init=` cmdline** (hardcodes /init in
-  smoke/src/elf.rs:95 — a real Linux-compat gap; honoring init= needs cmdline dep + init_path()
-  parser, gated target_os=oxide-kernel to not break smoke's hosted build).
+## STILL BLOCKED (pick up here) — greeter never launches gnome-shell
+Task dump at t=240s of a wedged live-gnome boot (KVM):
+- gdm IS alive (pid 223, 4 threads) but its main thread sits in **ppoll** — waiting on the
+  logind seat / `CanGraphical` handshake (a D-Bus reply), NOT reaping. gnome-shell/gdm-session-worker
+  never exec (0). So the block is the **gdm↔logind↔seat0/DRM-master handshake**, likely intermittent
+  (ONE boot with debug-futextrace DID reach gnome-shell + DRM ioctls).
+- **26 PROCESS zombies** (tid==tgid: gdm×3, sh×3, bash, true, nm-dispatcher, plymouth, session helpers)
+  parented to init (ptid=3235774466) that **init never reaps** even though it's in epoll_wait on its
+  SIGCHLD signalfd and I explicitly post SIGCHLD+wake it. Next suspect: signalfd read siginfo si_pid
+  (fs/signalfd.rs + sched push_child_event) — if the siginfo reports a wrong/stale si_pid, systemd
+  waitid(si_pid) reaps nothing → leak. Verify the child-exit event queue → signalfd_siginfo si_pid path.
+  TRIED: pushing push_child_event(&t, init) inside reparent_children so init's signalfd read gets the
+  right si_pid — the boot then wedged at ~18s (suspect: calling child_sigq_push in the preempt-off
+  sys_exit→reparent path, or just a flaky early wedge). Reverted (unverified). Retry carefully, or
+  push the child event OUTSIDE the preempt-off window.
+- Whether the zombie-reap gap and the gdm-seat wait are the same root or two bugs is unresolved.
 
-## Pick up here
-1. Get a deterministic repro of the hang: hosted stress harness over fork/exec/wait4/SIGCHLD/futex
-   (heavy churn like gdm), OR fix `init=` honoring to boot `init=/bin/bash` for a serial root shell
-   to inspect a live hang + verify the virtgpu fix at the DRM level (open card0, VIRTGPU_GETPARAM).
-2. Once a boot reaches mutter's DRM phase, confirm GETPARAM→GETRESOURCES→SETCRTC→scanout renders
-   the greeter (screen capture via qemu_screen; framebuffer currently shows the text console).
-3. First boot command: `make kernel boot` won't apply — use the MCP: qemu_start arch=x86_64
-   accel=kvm mem=4G features=debug-boot, then qemu_run_until on the SETCRTC req
-   `req=00000000c06864a2`; grep [DRMIOCTL] to map the mutter DRM sequence.
+## Facts / tooling
+- init tid = 3235774466 (vpid 1). Zombies keyed by parent_tid; reap_one matches parent_tid==parent.
+- gdb `qemu_interrupt` does NOT work under KVM; no serial getty (getty is on tty0); kernel IGNORES
+  `init=` cmdline (hardcodes /init at smoke/src/elf.rs:95 — a real compat gap; blocks init=/bin/bash shell).
+- Boots wedge intermittently (~6/7) at random points during greeter launch. Use debug-taskdump + grep
+  the t=NNNs dumps for state/last-syscall to see what each process is blocked on.
+- First command: qemu_start arch=x86_64 accel=kvm mem=4G features=debug-boot,debug-taskdump; run ~200s;
+  analyze the last [TASKDUMP] for gdm/gnome-shell/logind states + zombie parents.
