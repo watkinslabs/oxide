@@ -99,11 +99,22 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     ];
     let mut init_path: &[u8] = b"/init";
     let mut init_blob_opt = None;
-    for path in init_candidates {
-        if let Some(blob) = lookup_blob_by_path(path) {
-            init_path = path;
+    // Honor the Linux `init=<path>` kernel parameter first (init=/bin/bash for a
+    // rescue/diagnostic shell, init=/sbin/init, …). Falls through to the distro
+    // candidates when absent or the named path is missing from the rootfs.
+    if let Some(p) = cmdline::init_path() {
+        if let Some(blob) = lookup_blob_by_path(p) {
+            init_path = p;
             init_blob_opt = Some(blob);
-            break;
+        }
+    }
+    if init_blob_opt.is_none() {
+        for path in init_candidates {
+            if let Some(blob) = lookup_blob_by_path(path) {
+                init_path = path;
+                init_blob_opt = Some(blob);
+                break;
+            }
         }
     }
     hal::kassert!(init_blob_opt.is_some(),

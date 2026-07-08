@@ -37,6 +37,7 @@ use uapi::{
 
 use crate::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
+    DRM_IOCTL_VIRTGPU_GETPARAM, DRM_IOCTL_VIRTGPU_GET_CAPS,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_ATOMIC,
     DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
@@ -428,6 +429,31 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             None    => Some(-(Errno::Einval.as_i32() as i64)),
         },
         DRM_IOCTL_MODE_GETFB => Some(crate::kms_ext::get_fb(card_id, arg)),
+        DRM_IOCTL_VIRTGPU_GETPARAM => {
+            // struct drm_virtgpu_getparam { param u64; value u64 (userptr); }.
+            // arg pre-validated non-null < USER_VA_END by ioctl_takes_user_ptr.
+            // SAFETY: arg validated; 16-byte struct, two aligned u64 reads.
+            let param     = unsafe { core::ptr::read_volatile(arg as *const u64) };
+            let value_ptr = unsafe { core::ptr::read_volatile((arg + 8) as *const u64) };
+            match driver.as_ref().and_then(|d| d.virtgpu_getparam(param)) {
+                Some(v) => {
+                    if value_ptr == 0 || value_ptr >= hal::USER_VA_END {
+                        return Some(-(Errno::Efault.as_i32() as i64));
+                    }
+                    // SAFETY: value_ptr validated in user range; aligned u64 write of the param value.
+                    unsafe { core::ptr::write_volatile(value_ptr as *mut u64, v); }
+                    Some(0)
+                }
+                // Non-virtgpu card: Linux has no such ioctl → ENOTTY.
+                None => Some(-(Errno::Enotty.as_i32() as i64)),
+            }
+        }
+        DRM_IOCTL_VIRTGPU_GET_CAPS => {
+            // No virgl → no capsets. Linux returns EINVAL for an unknown/absent
+            // capset; Mesa, having read 3D_FEATURES=0, uses the llvmpipe path
+            // and does not depend on a capset blob.
+            Some(-(Errno::Einval.as_i32() as i64))
+        }
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }
 }

@@ -138,14 +138,15 @@ impl NetStack {
     /// front payload and leaves queue state unchanged.
     /// # C: O(log N + payload bytes when peeking)
     pub fn recv_udp_opts(&self, port: u16, peek: bool) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
-        let (src, sport, _, _, payload) = self.recv_udp_meta_opts(port, peek)?;
+        let (src, sport, _, _, _, payload) = self.recv_udp_meta_opts(port, peek)?;
         Some((src, sport, payload))
     }
 
-    /// Pop or peek one queued datagram with destination/interface metadata.
+    /// Pop or peek one queued datagram with destination/interface metadata
+    /// and the received IPv4 header TTL (IP_RECVTTL cmsg source).
     /// # C: O(log N + payload bytes when peeking)
     pub fn recv_udp_meta_opts(&self, port: u16, peek: bool)
-        -> Option<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, Vec<u8>)>
+        -> Option<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>)>
     {
         let q = { self.udp.lock().get(&port)?.clone() };
         let mut g = q.q.lock();

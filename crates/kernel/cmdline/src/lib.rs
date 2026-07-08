@@ -128,3 +128,29 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() { return None; }
     (0..=hay.len() - needle.len()).find(|&w| &hay[w..w + needle.len()] == needle)
 }
+
+/// Linux `init=<path>` kernel parameter: the executable PID 1 should run.
+/// Returns the path bytes if present. Matched only as a whole token (start of
+/// line or after whitespace) so it never matches `systemd.unit=`, etc. Value
+/// runs to the next whitespace. # C: O(line length)
+pub fn init_path() -> Option<&'static [u8]> { init_path_in(get()) }
+
+/// Pure form of [`init_path`] over an explicit slice (global-free, testable).
+/// # C: O(line length)
+pub fn init_path_in(line: &[u8]) -> Option<&[u8]> {
+    let mut i = 0;
+    while let Some(p) = find(&line[i..], b"init=") {
+        let at = i + p;
+        // Whole-token: preceded by start-of-line or whitespace (else it is the
+        // tail of another key like `systemd.unit=`... which has no `init=`, but
+        // guard anyway).
+        if at == 0 || line[at - 1].is_ascii_whitespace() {
+            let start = at + b"init=".len();
+            let mut end = start;
+            while end < line.len() && !line[end].is_ascii_whitespace() { end += 1; }
+            if end > start { return Some(&line[start..end]); }
+        }
+        i = at + b"init=".len();
+    }
+    None
+}

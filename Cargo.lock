@@ -1309,6 +1309,7 @@ name = "smoke"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "cmdline",
  "console",
  "elf-load",
  "ext4",

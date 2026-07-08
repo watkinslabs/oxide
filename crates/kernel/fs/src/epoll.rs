@@ -11,7 +11,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
@@ -63,6 +63,15 @@ pub struct EpollEntry {
     /// any parent epoll (e.g. Go's netpoller watching a fsnotify watcher
     /// epoll) spun forever.
     pub inode: Option<alloc::sync::Weak<vfs::Inode>>,
+    /// Watched fd's PollSubscribers generation at the last report. A later scan
+    /// seeing a higher gen knows a real readiness event fired since — a fresh
+    /// EPOLLET edge — even if et_seen still holds the bit (userspace drained with
+    /// no intervening scan). Fixes EPOLLET losing an edge on accept/read.
+    pub last_gen: u64,
+    /// GLOBAL_EPOLL_GEN at the last report — covers readiness delivered via the
+    /// global broadcast fallback (wake_peer_subs when the peer end-subs slot is
+    /// empty), which does NOT bump the per-inode gen.
+    pub last_ggen: u64,
 }
 
 /// EPOLLET — edge-triggered (Linux `EPOLLET` = 1<<31).
@@ -88,8 +97,19 @@ static EPOLLS: Spinlock<Vec<Arc<EpollData>>, TaskListClass>
 /// wakes its per-instance waitlist. Kernel-only — hosted tests
 /// don't run epoll_wait.
 /// # C: O(N_epoll_instances)
+/// Global readiness-event generation, bumped on every GLOBAL epoll broadcast
+/// (`broadcast_wake_all_epolls`, i.e. the `wake_peer_subs` fallback / any keyless
+/// wake). An EPOLLET entry whose per-inode PollSubscribers gen did NOT advance
+/// (the readiness event was delivered via the global fallback, not a targeted
+/// notify) still learns an edge fired if THIS counter advanced since its last
+/// report — closing the last EPOLLET lost-edge path (intermittent: dbus-broker
+/// occasionally never reads polkit's AUTH when the connected-socket wake took the
+/// fallback, so polkit's RequestName never completes → 45s Type=dbus timeout).
+pub static GLOBAL_EPOLL_GEN: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(target_os = "oxide-kernel")]
 pub fn broadcast_wake_all_epolls() {
+    GLOBAL_EPOLL_GEN.fetch_add(1, Ordering::AcqRel);
     let snapshot: Vec<Arc<EpollData>> = EPOLLS.lock().iter().cloned().collect();
     for ep in snapshot { ep.waiters.wake_all(); }
 }
@@ -237,7 +257,19 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             if list.iter().any(|e| e.fd == fd) {
                 return -(Errno::Eexist.as_i32() as i64);
             }
-            list.push(EpollEntry { fd, events, data, et_seen: 0,
+            // debug-syscost DIAG: which fds dbus-broker ADDs to its epoll +
+            // their ino (0x534f434b tag = socket) + events (0x80000000 = EPOLLET).
+            #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
+            {
+                let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
+                if is_db {
+                    klog::write_raw(b"[EPADD fd="); klog::write_dec_u64(fd as u64);
+                    klog::write_raw(b" ino="); klog::write_hex_u64(target_inode.as_ref().map(|i| i.ino()).unwrap_or(0));
+                    klog::write_raw(b" ev="); klog::write_hex_u64(events as u64);
+                    klog::write_raw(b"]\n");
+                }
+            }
+            list.push(EpollEntry { fd, events, data, et_seen: 0, last_gen: 0, last_ggen: 0,
                 inode: target_inode.as_ref().map(Arc::downgrade) });
             // F181: targeted-wake subscribe if the inode supports it.
             #[cfg(target_os = "oxide-kernel")]
@@ -448,12 +480,41 @@ fn scan_once(ep: &Arc<EpollData>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: 
             // poll_file passes the per-fd read cursor so append-only streams
             // (/dev/kmsg) report POLL_IN only with unread data — the default
             // always-ready poll() busy-loops journald's epoll otherwise.
-            let ready = f.poll() & e.events;
+            let raw_poll = f.poll();
+            let ready = raw_poll & e.events;
+            // debug-syscost DIAG: dbus-broker's scan of a LISTENER socket (ino tag
+            // 0x534f434b; raw poll bit0=POLLIN set iff accept_q non-empty). Shows
+            // whether the ready listener is even evaluated by dbus-broker's epoll,
+            // its events mask (0x80000000=EPOLLET), et_seen, and computed `ready`.
+            #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
+            if (f.inode().ino() & 0xffff_ffff_0000_0000) == 0x534f_434b_0000_0000 && (raw_poll & 0x1) != 0 {
+                let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
+                if is_db {
+                    klog::write_raw(b"[LSCAN fd="); klog::write_dec_u64(e.fd as u64);
+                    klog::write_raw(b" raw="); klog::write_hex_u64(raw_poll as u64);
+                    klog::write_raw(b" ev="); klog::write_hex_u64(e.events as u64);
+                    klog::write_raw(b" rdy="); klog::write_hex_u64(ready as u64);
+                    klog::write_raw(b" seen="); klog::write_hex_u64(e.et_seen as u64);
+                    klog::write_raw(b"]\n");
+                }
+            }
             if e.events & EPOLLET != 0 {
+                // A readiness EVENT (notify/notify_mask on the fd's PollSubscribers)
+                // since our last report is itself a fresh EPOLLET edge — even when
+                // the bit stayed level-set and no scan saw it drop (userspace drained
+                // via accept-until-EAGAIN / read-until-EAGAIN between scans). Without
+                // this, a connection queued while et_seen still holds EPOLLIN gives
+                // new_edges==0 and is never reported → dbus-broker never accepts the
+                // late client (polkit) → 45s Type=dbus timeout → no greeter.
+                let cur_gen = f.inode().poll_subscribers().map(|s| s.generation()).unwrap_or(e.last_gen);
+                let cur_ggen = GLOBAL_EPOLL_GEN.load(Ordering::Acquire);
+                let gen_edge = (cur_gen != e.last_gen || cur_ggen != e.last_ggen) && ready != 0;
+                e.last_gen = cur_gen;
+                e.last_ggen = cur_ggen;
                 // Drop edges that went not-ready so a later re-ready re-fires.
                 e.et_seen &= ready;
                 let new_edges = ready & !e.et_seen;
-                if new_edges == 0 { continue; }
+                if new_edges == 0 && !gen_edge { continue; }
                 e.et_seen |= ready;
             } else if ready == 0 {
                 continue;

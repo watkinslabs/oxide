@@ -1,45 +1,60 @@
-# Handoff — syscall Linux-compliance campaign COMPLETE
+# Handoff — resolved busy-loop FIXED (B650); next blocker = gdm crash-loop
 
-**Branch:** `main` (clean, builds both arches, boots to login — verified this session).
-**Plan of record:** `syscall-compliance-ledger.md` (repo root, on main) — 21 rows,
-all DONE. The campaign is finished.
+## STATUS
+Branch **B650-ip-recvttl-resolved-busyloop** (commit aecb2c53). Boot-verified.
 
-## Status: 21/21 rows DONE + merged
-A 4-reviewer audit found garbage stubs + a legacy "ghost" dispatcher. We removed
-the ghost and fixed every routed syscall to full Linux semantics, one PR per row.
-All 21 rows are merged; each new-behavior row is boot-verified with a `/bin/*_probe`.
+### What landed (B650)
+systemd-resolved was **busy-looping**: LLMNR/mDNS socket setup calls
+`socket_set_recvttl` → `setsockopt(IPPROTO_IP, IP_RECVTTL=12)`, which our
+handler didn't recognize → returned ENOPROTOOPT → resolved retried in a
+tight loop ("LLMNR-IPv4(UDP): Failed to set common socket options: Protocol
+not available", once per netlink event), starving polkit/dbus-broker on the
+scheduler → polkit.service (Type=dbus, 45s) timed out → no greeter.
+FIX: implement `IP_RECVTTL` (store flag + deliver received IPv4 TTL as an
+IP_TTL cmsg on recvmsg; plumbed ttl through UdpRxQueue tuple →
+recv_udp_meta_opts → Received.ttl → write_cmsgs, mirroring IPV6_HOPLIMIT)
+and accept `IP_MTU_DISCOVER`. Both arches build.
 
-Foundational: ghost-dispatcher removal (#2794), MM COW-invariant harness (#2792),
-pmm free-while-mapped debug-gate (#2793).
+### VERIFIED (recvttl1 + taskdump1 boots)
+- resolved LLMNR spam **GONE**; console reaches polkit-start cleanly.
+- Boot now advances all the way to gdm: at t=160s taskdump shows gdm
+  running (tgid 4316, ppoll) + NetworkManager/logind/dbus-broker/avahi/
+  cupsd all in normal waits. polkit NO LONGER the blocker.
 
-Rows (PRs #2795–#2827): S1/S2 seccomp+landlock fork inheritance, D1 pwritev,
-D2/D3 sync+syncfs, D4/G9 SysV shm + shmctl IPC_STAT, D5 ext4 chmod/chown/utimes
-persist (#2809), F1 userfaultfd MISSING-mode (#2815, `uffd_probe`), F2 pkey ENOSYS,
-F3 libaio (#2817, `aio_probe`), F4 quotactl faithful no-quota (#2819, `quota_probe`),
-G1 kill(-1), G2 nanosleep EINTR, G3 per-task cputime getrusage/times (#2821,
-`cputime_probe`), G4 robust-list crash-path recovery (#2824, `robust_probe`),
-G5 seccomp arg[5], G6 process_madvise/mrelease (#2827, `pmadvise_probe`),
-G7 mlock range, G8 signalfd mask-update + full siginfo (#2830?, `signalfd_probe`),
-X1 drop NR_LISTNS.
+## NEXT BLOCKER: gdm.service crash-loops (NEW frontier)
+Framebuffer at t=192s:
+```
+Failed to start gdm.service - GNOME Display Manager.
+gdm.service: Scheduled restart job, restart counter is at 3.
+[EXIT] name=fork-child exe=/proc/self/fd/9 code=271
+  recent syscalls: nr#14(sigprocmask) nr#13(sigaction) nr#9(mmap)
+  nr#125(capget) nr#157(prctl) nr#186(gettid) nr#104/102(getgid/uid)
+  nr#3(close ×many)
+```
+gdm starts, a child (/proc/self/fd/9, a gdm re-exec) exits code=271, gdm
+fails, restarts (counter climbing). Investigate WHY the gdm child dies.
 
-## What's next (pick up here)
-The syscall-compliance campaign is done. Next work is the master plan `00§3`
-phase ladder — audit "what phase are we actually in" (lowest unfinished phase)
-before starting. The kernel boots to a systemd login on both the syscall surface
-and userspace; the natural next targets are whatever `00§3` marks as the current
-phase gate. Read `docs/00§3` + `docs/MANIFEST.md` first.
+### First task next session
+Boot with `debug-stderr` (echoes userspace fd==2 writes to console) to
+capture gdm/gdm-session-worker's death message:
+```
+qemu_start arch=x86_64 name=gdmdbg features=debug-stderr,debug-watchdog accel=kvm mem=4G paused=false
+```
+Wait ~150s, screenshot framebuffer + grep serial for [STDERR]. code=271
+(0x10F) + the capget/prctl/close-storm pattern suggests a gdm helper
+failing during privilege/fd setup or exec — check what /proc/self/fd/9
+is exec'ing and why it exits. Also confirm polkitd is actually alive
+(one taskdump showed polkitd main tid 4241 in state Z — verify it's not
+also crashing, which could cascade into gdm).
 
-## Gotchas / facts (keep)
-- qemu MCP GOTCHA: `qemu_start paused=false` still leaves the CPU HALTED at the
-  gdb stub (RIP stuck at 0xec1a, serial empty). You MUST call `qemu_continue`
-  once to actually run it (it blocks ~120s w/ no stop event on a healthy boot —
-  expected; then `qemu_serial` shows the full boot). Not a GRUB hang.
-- Boot-verify pattern used all session: worktree branch → detach the MAIN tree to
-  the commit (`git checkout <sha>` in /home/nd/oxide/kernel, NOT the worktree —
-  qemu MCP builds from the main tree) → `qemu_start rebuild_rootfs=true` → login
-  → run `/bin/<probe>`. Restore `git checkout main` after.
-- `metadata/index.md` counter merges conflict on nearly every PR (parallel lanes
-  advance F/B); resolve by taking origin's higher F and your own bumped B.
-- ipc/mm-pmm reach sched-side exit hooks via fn-pointer hooks (set_*_hook in
-  sched::live, installed by kmain) to avoid dep cycles — mirror for new exit work.
-- Commits authored `Chris Watkins <chris@watkinslabs.com>`, never Co-Authored-By.
+## Push/PR
+B650 committed but NOT yet pushed. Push with SKIP_SMOKE=1 (kernel change,
+already boot-verified locally), open PR, merge. Then pursue gdm.
+
+## Notes
+- gdb-over-KVM is flaky in this env (qemu_break/regs/interrupt time out);
+  use debug-taskdump / debug-stderr feature boots instead of gdb.
+- `quiet` cmdline → systemd status goes to tty0 framebuffer, NOT serial;
+  serial freezes ~15s normally. Screenshot the framebuffer for real state.
+- Leftover debug-syscost diagnostics (LSCAN/EPADD/syscost.rs targeting
+  polkit) from the EPOLLET session are committed but gated off — harmless.

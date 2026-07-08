@@ -168,6 +168,14 @@ impl UnixRegistry {
         }
         let listener = self.lookup_listener(path)?;
         let pair = UnixPair::new();
+        #[cfg(feature = "debug-dbus")]
+        {
+            let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
+            klog::write_raw(b"[UXCONNECT comm="); klog::write_raw(nm.as_bytes());
+            klog::write_raw(b" pair="); klog::write_hex_u64(alloc::sync::Arc::as_ptr(&pair) as u64);
+            klog::write_raw(b" path="); klog::write_raw(path.as_bytes());
+            klog::write_raw(b"]\n");
+        }
         // Retain the listener's canonical bound path so getsockname (end A,
         // the accepted server socket) and getpeername (end B, the client)
         // report the real sun_path — e.g. "/run/systemd/private".

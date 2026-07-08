@@ -177,6 +177,8 @@ const MSG_CTRUNC: u32 = 0x08;
 const IPPROTO_IP: i32 = 0;
 const IPPROTO_IPV6: i32 = 41;
 const IP_PKTINFO: i32 = 8;
+/// cmsg_type for a received IPv4 TTL (delivered when IP_RECVTTL is set).
+const IP_TTL: i32 = 2;
 const IPV6_PKTINFO: i32 = 50;
 const IPV6_HOPLIMIT: i32 = 52;
 /// sizeof(struct cmsghdr): size_t cmsg_len + int cmsg_level + int cmsg_type.
@@ -241,6 +243,13 @@ fn write_cmsgs(
             data[4..8].copy_from_slice(&oct);
             data[8..12].copy_from_slice(&oct);
             w.push(IPPROTO_IP, IP_PKTINFO, &data, msg_flags);
+        }
+    }
+    if sock.opts.ip_recvttl.load(Ordering::Acquire) != 0 {
+        if let Some(ttl) = rcv.ttl {
+            // Linux delivers the received TTL as an int-sized IP_TTL cmsg.
+            let data = (ttl as i32).to_ne_bytes();
+            w.push(IPPROTO_IP, IP_TTL, &data, msg_flags);
         }
     }
     if sock.opts.ipv6_recvpktinfo.load(Ordering::Acquire) != 0 {

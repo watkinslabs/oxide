@@ -100,6 +100,14 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             sock.opts.ip_pktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
+        (IPPROTO_IP, IP_RECVTTL) => {
+            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ip_recvttl.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
+        (IPPROTO_IP, IP_MTU_DISCOVER) => {
+            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.opts.ip_mtu_discover.store(v, Ordering::Release);
+        }
         (IPPROTO_IP, IP_MULTICAST_TTL) => {
             let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
             if !(0..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }

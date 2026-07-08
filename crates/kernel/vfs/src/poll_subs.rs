@@ -14,6 +14,7 @@
 extern crate alloc;
 use alloc::sync::Weak;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as PollLockClass};
 
 /// Wake callback published by an epoll instance (fs::EpollInode).
@@ -56,13 +57,27 @@ const ALWAYS_WAKE: u32 = crate::inode::POLL_ERR | crate::inode::POLL_HUP;
 /// SMP-ready when SMP lands).
 pub struct PollSubscribers {
     subs: Spinlock<Vec<Subscription>, PollLockClass>,
+    /// Monotonic readiness-event counter, bumped on every `notify`/`notify_mask`.
+    /// An EPOLLET epoll entry records the value at its last report; a later scan
+    /// seeing a higher value knows a real readiness EVENT occurred since — even
+    /// if the fd stayed level-set and no scan observed it drop (userspace drained
+    /// with no intervening scan). Fixes EPOLLET losing an edge: a listener whose
+    /// accept_q gains a connection while `et_seen` still holds EPOLLIN yields
+    /// `new_edges==0` and is never reported → dbus-broker never accepts the late
+    /// client (polkit) → 45s Type=dbus timeout → no greeter. (Confirmed: LSCAN
+    /// showed fd=9/12/13/14 with raw=0x5 seen=0x5 → suppressed.)
+    gen: AtomicU64,
 }
 
 impl PollSubscribers {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { subs: Spinlock::new(Vec::new()) }
+        Self { subs: Spinlock::new(Vec::new()), gen: AtomicU64::new(0) }
     }
+
+    /// Current readiness-event generation. An EPOLLET scan treats an increase
+    /// since its last report as a fresh edge. # C: O(1)
+    pub fn generation(&self) -> u64 { self.gen.load(Ordering::Acquire) }
 
     /// Add a subscriber keyed by `id` (epoll instance id), interested
     /// in every event (`mask = !0`). Idempotent: a re-add with the same
@@ -117,6 +132,7 @@ impl PollSubscribers {
     /// transition (or want the legacy broadcast) call this.
     /// # C: O(N)
     pub fn notify(&self) {
+        self.gen.fetch_add(1, Ordering::AcqRel);
         let mut g = self.subs.lock();
         g.retain(|s| s.wake.upgrade().is_some());
         for s in g.iter() {
@@ -143,6 +159,7 @@ impl PollSubscribers {
     /// [`subscribe_exclusive`]: Self::subscribe_exclusive
     /// # C: O(N)
     pub fn notify_mask(&self, events: u32) {
+        self.gen.fetch_add(1, Ordering::AcqRel);
         let mut g = self.subs.lock();
         g.retain(|s| s.wake.upgrade().is_some());
         let always = events & ALWAYS_WAKE != 0;

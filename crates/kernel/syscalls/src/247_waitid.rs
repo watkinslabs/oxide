@@ -20,6 +20,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     let id      = args.a1 as i32;
     let infop   = args.a2;
     let options = args.a3;
+    #[cfg(feature = "debug-displaystack")]
     {
         if let Some(cur) = sched::live::current() {
             if cur.name == "fork-child" {
@@ -50,6 +51,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         }
         _ => return -(syscall::errno::Errno::Einval.as_i32() as i64),
     };
+    #[cfg(feature = "debug-displaystack")]
     let debug_waitid_parent = sched::live::current().and_then(|cur| {
         if cur.name == "fork-child" {
             Some((
@@ -61,6 +63,8 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             None
         }
     });
+    #[cfg(not(feature = "debug-displaystack"))]
+    let debug_waitid_parent: Option<(u32, u32, bool)> = None;
     // DIAG (debug-watchdog): a garbage pid_for_wait4 distinguishes systemd
     // memory corruption (P_PID/P_PGID with a garbage id) from a kernel
     // pidfd-conversion bug (P_PIDFD → display_vpid returns garbage).
