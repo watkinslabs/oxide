@@ -20,7 +20,7 @@ pub(super) fn build_grub_iso(
     let cfg = format!(
         "set timeout=0\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
          menuentry \"oxide (multiboot2)\" {{\n    \
-         multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 rw quiet console=ttyS0,115200 console=tty0 systemd.mask=systemd-zram-setup@zram0.service systemd.mask=dev-zram0.swap systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service\n    \
+         multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 rw quiet console=ttyS0,115200 console=tty0 systemd.mask=systemd-zram-setup@zram0.service systemd.mask=dev-zram0.swap systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.debug_shell=ttyS0\n    \
          boot\n}}\n");
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = crate::buildns::iso_path(repo, id, arch);
@@ -75,6 +75,19 @@ pub(super) fn qemu_run_grub_x86_64(
         },
     };
     let netdev = ssh_fwd_netdev();
+    // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on
+    // the whole machine may own a given CID. Hardcoding 3 made concurrent boots
+    // from DIFFERENT worktrees collide ("vhost-vsock: unable to set guest cid:
+    // Address already in use") — worktrees isolate the filesystem, not the CID
+    // namespace. Derive a stable per-worktree CID from the repo path (+id) so
+    // parallel worktrees coexist; override with OXIDE_QEMU_VSOCK_CID. CIDs 0-2
+    // are reserved; the multidev smoke needs a second CID, so pick an even base
+    // ≥100 and use base / base+1.
+    let vsock_cid: u32 = std::env::var("OXIDE_QEMU_VSOCK_CID").ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| crate::buildns::qemu_vsock_cid(repo, id));
+    let vsock_dev = format!("vhost-vsock-pci,guest-cid={vsock_cid},disable-legacy=on,bus=pcie.0");
+    let vsock_dev2 = format!("vhost-vsock-pci,guest-cid={},disable-legacy=on,bus=pcie.0", vsock_cid + 1);
     let mut c = Command::new("qemu-system-x86_64");
     // Optional CPU/interrupt tracing: OXIDE_QEMU_DINT=<file> adds
     // `-d int,guest_errors -D <file>` so a boot fault's exception
@@ -86,13 +99,18 @@ pub(super) fn qemu_run_grub_x86_64(
             c.args(["-d", "int,guest_errors", "-D", p.as_str()]);
         }
     }
-    // OXIDE_QEMU_GDB=1 exposes a gdb stub on tcp::1234 (no pause) so a
-    // wedged/idle SMP boot can be inspected per-CPU (rip/backtrace) when the
-    // in-kernel serial-sysrq path can't run. OXIDE_QEMU_GDB=wait also passes
-    // -S (start halted) to set breakpoints before the first instruction.
+    // OXIDE_QEMU_GDB=1 exposes a gdb stub (no pause) so a wedged/idle SMP boot
+    // can be inspected per-CPU (rip/backtrace) when the in-kernel serial-sysrq
+    // path can't run. OXIDE_QEMU_GDB=wait also passes -S (start halted) to set
+    // breakpoints before the first instruction. The port is per-launch (a fixed
+    // 1234 collides across concurrent worktrees); override with OXIDE_QEMU_GDB_PORT.
     if let Ok(g) = std::env::var("OXIDE_QEMU_GDB") {
         if !g.is_empty() {
-            c.args(["-gdb", "tcp::1234"]);
+            let gdb_port: u16 = std::env::var("OXIDE_QEMU_GDB_PORT").ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| crate::buildns::qemu_host_port(repo, id, 0));
+            c.args(["-gdb", &format!("tcp::{gdb_port}")]);
+            eprintln!("xtask grub: gdb stub on tcp::{gdb_port}");
             if g == "wait" { c.arg("-S"); }
         }
     }
@@ -137,9 +155,10 @@ pub(super) fn qemu_run_grub_x86_64(
         // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
         // this at boot and backs /dev/hwrng with it.
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
-        // D3.3: virtio-vsock (modern id 0x1053). guest-cid=3; the host
-        // peer is always CID 2. Needs /dev/vhost-vsock on the host.
-        "-device", "vhost-vsock-pci,guest-cid=3,disable-legacy=on,bus=pcie.0",
+        // D3.3: virtio-vsock (modern id 0x1053). guest-cid is per-launch
+        // (host-global — see buildns::qemu_vsock_cid); host peer is CID 2.
+        // Needs /dev/vhost-vsock on the host.
+        "-device", vsock_dev.as_str(),
         // F454: virtio-snd (modern id 0x1059). Null audio backend is enough
         // for the CONTROLQ probe (config harvest + PCM_INFO); PR-C swaps to
         // a wav backend to capture real PCM output.
@@ -195,7 +214,7 @@ pub(super) fn qemu_run_grub_x86_64(
     }
     if std::env::var_os("OXIDE_VIRTIO_VSOCK_MULTIDEV_SMOKE").is_some() {
         c.args([
-            "-device", "vhost-vsock-pci,guest-cid=4,disable-legacy=on,bus=pcie.0",
+            "-device", vsock_dev2.as_str(),
         ]);
     }
     if std::env::var_os("OXIDE_STORAGE_MULTICTRL_SMOKE").is_some() {
