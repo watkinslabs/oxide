@@ -151,18 +151,49 @@ impl Mount {
     /// Returns the final inode number.
     /// # C: O(path components × dir size)
     pub fn lookup_path(&self, path: &[u8]) -> Result<u32, MountError> {
-        let mut cur_ino = 2u32;
         if path.is_empty() || path[0] != b'/' { return Err(MountError::NotFound); }
-        let mut i = 1usize;
+        self.lookup_path_from(2, path, 0)
+    }
+
+    /// Component walk with symlink following (Linux `link_path_walk`), starting
+    /// at directory `start` (used for resolving a symlink target relative to the
+    /// directory that held it). An absolute `path` restarts at the root (ino 2).
+    /// Both intermediate directory symlinks (usrmerge `/lib`→`usr/lib`) and a
+    /// final symlink (`/sbin/init`→`../lib/systemd/systemd`) are resolved, so a
+    /// stock Fedora rootfs boots with no init-path hack. `depth` bounds symlink
+    /// chains (ELOOP → NotFound). # C: O(components × symlink depth)
+    fn lookup_path_from(&self, start: u32, path: &[u8], depth: u32) -> Result<u32, MountError> {
+        const SYMLINK_MAX_DEPTH: u32 = 40;
+        if depth > SYMLINK_MAX_DEPTH { return Err(MountError::NotFound); }
+        let mut cur = if !path.is_empty() && path[0] == b'/' { 2u32 } else { start };
+        let mut i = 0usize;
         while i < path.len() {
             while i < path.len() && path[i] == b'/' { i += 1; }
             if i >= path.len() { break; }
-            let start = i;
+            let s = i;
             while i < path.len() && path[i] != b'/' { i += 1; }
-            let comp = &path[start..i];
-            let dir_node = self.read_inode(cur_ino)?;
-            cur_ino = self.lookup_in_dir(&dir_node, comp)?;
+            let comp = &path[s..i];
+            let dir_node = self.read_inode(cur)?;
+            let child = self.lookup_in_dir(&dir_node, comp)?;
+            let child_node = self.read_inode(child)?;
+            if child_node.is_link() {
+                // Resolve the symlink target relative to the directory that held
+                // it (`cur`), then continue the walk from the resolved inode.
+                let target = self.read_symlink_target(child, &child_node)?;
+                cur = self.lookup_path_from(cur, &target, depth + 1)?;
+            } else {
+                cur = child;
+            }
         }
-        Ok(cur_ino)
+        Ok(cur)
+    }
+
+    /// Read a symlink's target bytes: fast (≤60B, inline in `i_block`) or slow
+    /// (first data block, truncated to `i_size`). # C: O(1) or 1 block I/O
+    fn read_symlink_target(&self, _ino: u32, inode: &Inode) -> Result<Vec<u8>, MountError> {
+        if let Some(t) = inode.fast_symlink_target() { return Ok(t.to_vec()); }
+        let blk = self.read_file_block(inode, 0)?;
+        let n = (inode.size as usize).min(blk.len());
+        Ok(blk[..n].to_vec())
     }
 }
