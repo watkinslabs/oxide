@@ -1,70 +1,60 @@
-# Handoff — resolved busy-loop FIXED (B650); next blocker = gdm crash-loop
+# Handoff — B664 child-exit epoll-notify (advances sysinit); ext4 stack pending merge
 
 ## STATUS
-Branch **B650-ip-recvttl-resolved-busyloop** (commit aecb2c53). Boot-verified.
+Branch **B664-epoll-notify-child-exit** (commit 710d9781), based on origin/main
+f34dee98 + unmerged B661 (signalfd) + B663 (comm) + B664. 9 commits ahead of main.
 
-### What landed (B650)
-systemd-resolved was **busy-looping**: LLMNR/mDNS socket setup calls
-`socket_set_recvttl` → `setsockopt(IPPROTO_IP, IP_RECVTTL=12)`, which our
-handler didn't recognize → returned ENOPROTOOPT → resolved retried in a
-tight loop ("LLMNR-IPv4(UDP): Failed to set common socket options: Protocol
-not available", once per netlink event), starving polkit/dbus-broker on the
-scheduler → polkit.service (Type=dbus, 45s) timed out → no greeter.
-FIX: implement `IP_RECVTTL` (store flag + deliver received IPv4 TTL as an
-IP_TTL cmsg on recvmsg; plumbed ttl through UdpRxQueue tuple →
-recv_udp_meta_opts → Received.ttl → write_cmsgs, mirroring IPV6_HOPLIMIT)
-and accept `IP_MTU_DISCOVER`. Both arches build.
+### B664 — confirmed correct, load-bearing
+`crates/kernel/sched/src/live/zombies.rs`: `park_zombie` AND `reparent_children`
+now call `notify_epoll_waiters()` (bumps GLOBAL_EPOLL_GEN via the installed
+broadcast hook). A child going Zombie makes its pidfd poll-ready and its
+parent's SIGCHLD signalfd level-ready, but neither path advanced the epoll
+readiness generation → an EPOLLET-registered pidfd/signalfd computed
+`new_edges==0` in `scan_once` and re-parked without reading. Without the gen
+bump, systemd never woke on child-exit edges → sysinit oneshot services
+(journal-flush etc.) hung their start timeout.
 
-### VERIFIED (recvttl1 + taskdump1 boots)
-- resolved LLMNR spam **GONE**; console reaches polkit-start cleanly.
-- Boot now advances all the way to gdm: at t=160s taskdump shows gdm
-  running (tgid 4316, ppoll) + NetworkManager/logind/dbus-broker/avahi/
-  cupsd all in normal waits. polkit NO LONGER the blocker.
+**Verified from boot log gfx3** (`scratchpad/gfx3.log`): with B664, the
+`[wait4 reap]` trace shows init (tid 3235774466) reaping the sysinit children
+tids 34–53 at t=8.4–10.3s, and units Finish (sysctl, remount-fs, random-seed,
+journal-flush, udev-trigger, userdbd). Before B664 those reaps never fire.
 
-## NEXT BLOCKER: gdm greeter session HANGS (not crashes) → SIGTERM → crash-loop
-Diagnosed across taskdump1 + scmfd1 boots:
-- gdm daemon (tgid ~4277) stays ALIVE in ppoll with an idle worker-thread
-  pool; the process that dies is gdm's **session wrapper** (exec'd via
-  `/proc/self/fd/9`, e.g. gdm-wayland-session / gdm-x-session).
-- It exits `code=271` = **256+15 = SIGTERM** (code=265 = 256+9 = SIGKILL),
-  ~46s apart (t≈100s, 146s) → killed after a ~45s HANG, then gdm retries →
-  "restart counter is at 3" → "Failed to start gdm.service".
-- **No SIGSEGV/fault anywhere** in the boot (greeter does NOT crash — hangs).
-- **No `gnome-shell` exe ever appears** and **no SCM_RIGHTS pidfd relay fires**
-  (debug-scmfd = 0 traces) → gdm hangs LAUNCHING the greeter session, BEFORE
-  logind CreateSession(WithPIDFD). Suspects: DRM master / VT switch / a D-Bus
-  call to gdm/logind that never returns / gdm-session-worker setup.
+### Dump "zombies" = benign pidfd-pin artifact (NOT a leak)
+`reap_one` removes from ZOMBIES + `drop(t)`, but each open pidfd holds
+`Arc<Task>` (PidfdInode.target), so a reaped child lingers as a Zombie-state
+entry in `registry::try_snapshot()` until systemd closes the pidfd. Linux-
+correct (pidfd keeps struct pid alive post-reap). The 13 "zombies" in the
+195s task dump were ALL already reaped by 10.3s — a red herring.
 
-### Hard limit hit: gdm's real error is in the JOURNAL, unreadable
-gdm redirects stderr to the journal (debug-stderr does NOT catch it), and
-there is NO serial getty (getty runs on tty1, not ttyS0 — sending Enter to
-serial yields no login). So the decisive error message is inaccessible
-without either (a) a tty1/graphical shell (the broken thing), or (b) many
-gdm-reaching boots with display-stack tracing — but boots are intermittent
-(~50% wedge early at ~cups/t31s, a SEPARATE bug) and the user forbids
-boot-per-hypothesis loops.
+## NEXT BLOCKER (desktop, standing goal)
+`systemd-tmpfiles-setup-dev-early.service` process (tid 43, /usr/bin/systemd-
+tmpfiles) is genuinely **wedged in epoll_wait** (~3790 syscalls then parked,
+never reaped, state S) → sysinit.target never completes → boot stalls at ~10s,
+never reaching gdm. `sh` (tid 33) also parked in pselect6.
 
-### First task next session (need a gdm-reaching boot)
-Options to get gdm's error / pin the hang:
-1. Enable a serial getty (systemd `serial-getty@ttyS0`) or console=ttyS0 in
-   the image cmdline so a shell is reachable over serial → `journalctl -u
-   gdm -b` gives the exact failure. (Best ROI — do this first.)
-2. Or `features=debug-displaystack` / `debug-futextrace` on a gdm-reaching
-   boot → see the greeter wrapper's stuck futex/VT/ioctl op.
-3. Static-audit the gdm-session-worker → VT/DRM ioctl path (VT_ACTIVATE,
-   DRM_IOCTL_SET_MASTER, KDSETMODE) for an ioctl we stub/hang on — the
-   greeter wrapper does capget/prctl/close-storm then hangs, consistent with
-   a VT/DRM setup ioctl that never returns.
-Also: fix the intermittent early wedge (boot with debug-taskdump, catch the
-stuck task at ~t31s) so gdm-reaching boots are reliable.
+DISCREPANCY to resolve: B650 state.md claimed boot reached gdm at 160s; current
+main+fixes hangs at tmpfiles ~10s. Both my boots (gfx2,gfx3) hang there, so
+NOT pure flake. Unknown whether cause is (a) my B661/B663 fixes, (b) a post-B650
+main regression, or (c) intermittent. B664 only ADDS safe spurious wakes so is
+an unlikely wedge cause. **Do NOT declare tmpfiles the root blocker from these
+boots** — needs a clean origin/main baseline boot + a trace of which fd tid 43
+polls (varlink→userdbd? inotify? udev?), when boots are acceptable.
 
-## Push/PR — DONE
-B650 pushed + PR #2838 MERGED to main (commit a1f650c0). Boot-verified.
+## UNMERGED BACKLOG (all based on/near origin/main, none merged)
+- B664 (this) — sched epoll-notify. Ready to PR (stacked on B661).
+- B661-signalfd-sigchld-reap — signalfd has_zombies + rt_sigqueue wake.
+- B663-task-comm-from-exec — ps/procfs/dump names from exe basename.
+- ext4 stack (hosted-tested, per scratch/ext4fix.md on B662 branch):
+  B656 mtime-on-write, B657 s_state lifecycle, B658 extent-descent-bound,
+  B659 rmdir-reclaim, B660 msync-EIO, B662 FS_IOC_*FLAGS. B662 is 17 ahead
+  (cumulative). Need boot-verify + PRs in dependency order.
 
-## Notes
-- gdb-over-KVM is flaky in this env (qemu_break/regs/interrupt time out);
-  use debug-taskdump / debug-stderr feature boots instead of gdb.
-- `quiet` cmdline → systemd status goes to tty0 framebuffer, NOT serial;
-  serial freezes ~15s normally. Screenshot the framebuffer for real state.
-- Leftover debug-syscost diagnostics (LSCAN/EPADD/syscost.rs targeting
-  polkit) from the EPOLLET session are committed but gated off — harmless.
+## FIRST TASK NEXT SESSION
+Per user's explicit redirect: build ext4fix queue (hosted, no boots).
+Plan: `git show B662-ext4-fs-ioc-flags:scratch/ext4fix.md`. Next unclaimed
+item = **C1 FIEMAP** (scoped): override `fiemap()` in ext4 regular.rs (needs a
+physical-aware extent collector — existing `collect_leaf_extents` drops phys;
+add one returning (logical, phys, len, unwritten)) + wire `FS_IOC_FIEMAP`
+ioctl in syscalls/016_ioctl (copy struct in, call inode.fiemap, copy extents
+out) + hosted test. VFS `FiemapExtent` struct + `fiemap` i_op already exist
+(default Eopnotsupp).
