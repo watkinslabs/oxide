@@ -1,4 +1,12 @@
 use crate::*;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+static KERNEL_TEST_LOCK: sync::Spinlock<(), sync::Tty> = sync::Spinlock::new(());
+static FLUSH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn count_flush(_pixels: &[u8]) {
+    FLUSH_COUNT.fetch_add(1, Ordering::Relaxed);
+}
 
 #[test]
 fn psf2_header_layout() {
@@ -115,4 +123,30 @@ fn sgr_red_changes_fg() {
     let mut c = Console::new(640, 480);
     c.put(b"\x1b[31m");
     assert_eq!(c.fg, VGA_PALETTE[1]);
+}
+
+#[test]
+fn kernel_graphics_mode_suppresses_foreground_rendering() {
+    let _guard = KERNEL_TEST_LOCK.lock();
+    kernel::kernel_unregister();
+    kernel::kernel_init(640, 480, count_flush);
+    FLUSH_COUNT.store(0, Ordering::Relaxed);
+
+    kernel::vt_write(1, b"text");
+    // SAFETY: hosted unit test owns the fbcon flush slot under KERNEL_TEST_LOCK.
+    unsafe { softirq::run_pending(); }
+    assert!(FLUSH_COUNT.load(Ordering::Relaxed) > 0);
+
+    FLUSH_COUNT.store(0, Ordering::Relaxed);
+    kernel::set_vt_graphics_mode(1, true);
+    kernel::vt_write(1, b"graphics");
+    // SAFETY: hosted unit test owns the fbcon flush slot under KERNEL_TEST_LOCK.
+    unsafe { softirq::run_pending(); }
+    assert_eq!(FLUSH_COUNT.load(Ordering::Relaxed), 0);
+
+    kernel::set_vt_graphics_mode(1, false);
+    // SAFETY: hosted unit test owns the fbcon flush slot under KERNEL_TEST_LOCK.
+    unsafe { softirq::run_pending(); }
+    assert!(FLUSH_COUNT.load(Ordering::Relaxed) > 0);
+    kernel::kernel_unregister();
 }
