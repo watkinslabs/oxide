@@ -183,7 +183,7 @@ Update Status + Branch on every lane transition (per the claim-before-start HARD
 | TODO | — | B1 | Feature gating + csum verification in `Mount::open` (mask INCOMPAT/RO_COMPAT; verify all csums on read; RO-fallback) | §2.1, §2.3, §3.2 |
 | VERIFIED-LOCAL | B662-ext4-fs-ioc-flags | B2 | `FS_IOC_GETFLAGS/SETFLAGS` + `i_flags` decode/encode; VFS ioctl dispatch + ext4 `fileattr_get/set` | §7.3 |
 | VERIFIED-LOCAL | B660-ext4-msync-eio | B3 | msync EIO propagation | §7.4 |
-| TODO | — | B4 | Orphan cleanup resumes interrupted truncates | §5.2 |
+| VERIFIED-LOCAL | B662-ext4-fs-ioc-flags | B4 | Orphan cleanup resumes interrupted truncates | §5.2 |
 | PARTIAL | B655 (merged) | B5 | True unwritten-extent split on write (replace whole-extent-zero); lazy-unwritten `fallocate` | §3.4, §3.3 |
 | TODO | — | B6 | jbd2 commit/tag/journal-sb checksums + real descriptor UUID | §6.3, §6.7 |
 | VERIFIED-LOCAL | B662-ext4-fs-ioc-flags | B7 | Cross-parent dir rename fixes `..` + parent nlinks | §4.3 |

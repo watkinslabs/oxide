@@ -284,6 +284,14 @@ impl Mount {
                 // (its internal `orphan_del`), so the list shrinks as we go.
                 let _ = self.free_orphan_inode(head);
             } else {
+                // nlink>0 orphan = a truncate interrupted by a crash: i_size is
+                // the truncate TARGET but blocks past it were not all freed.
+                // Resume the truncate (Linux `ext4_orphan_cleanup` →
+                // `ext4_truncate`) to reclaim the leaked blocks, THEN splice it
+                // off the list — else those blocks leak until an e2fsck.
+                let size = u32::from_le_bytes([bytes[0x04], bytes[0x05], bytes[0x06], bytes[0x07]]) as u64
+                    | ((u32::from_le_bytes([bytes[0x6C], bytes[0x6D], bytes[0x6E], bytes[0x6F]]) as u64) << 32);
+                let _ = self.truncate_inode(head, size);
                 let _ = self.orphan_del(head);
             }
             head = next;
