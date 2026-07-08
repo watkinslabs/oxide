@@ -2,7 +2,6 @@ use super::auth::{clear_master_owner, is_magic_authorized, DRM_FILE_CAP_ATOMIC};
 use super::publication::{make_card_inode, make_render_inode};
 use super::uapi::{DrmModeAtomic, DrmSetVersion, DrmUnique, DRM_IF_MAJOR, DRM_IF_MINOR};
 use super::*;
-use crate::uapi::DRM_RENDER_MINOR_BASE;
 use alloc::format;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -13,6 +12,8 @@ use vfs::{Dentry, File, OpenFlags};
 mod client_cap;
 #[path = "tests/get_cap.rs"]
 mod get_cap;
+#[path = "tests/publication.rs"]
+mod publication;
 
 static LAST_SCANOUT_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 
@@ -122,114 +123,13 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
     }
 
     #[test]
-    fn register_rejects_duplicate_card_id_without_republishing() {
-        let _guard = crate::TEST_LOCK.lock();
-        let card_id = 0x7ff0;
-        unregister(card_id);
-
-        assert!(register(card_id, None));
-        assert!(!register(card_id, None));
-        assert_eq!(
-            drv::devices()
-                .iter()
-                .filter(|d| d.bus == "drm" && d.addr == format!("dri/card{card_id}"))
-                .count(),
-            1
-        );
-
-        unregister(card_id);
-    }
-
-    #[test]
-    fn unregister_then_register_restores_card_node_only() {
-        let _guard = crate::TEST_LOCK.lock();
-        let card_id = 0x7ff2;
-        let card_name = format!("dri/card{card_id}");
-        let render_minor = DRM_RENDER_MINOR_BASE + card_id;
-        let render_name = format!("dri/renderD{render_minor}");
-        unregister(card_id);
-
-        assert!(register(card_id, None));
-        assert!(registered_card_ids().contains(&card_id));
-        assert_eq!(
-            drv::devices()
-                .iter()
-                .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
-                .count(),
-            1
-        );
-        assert!(drv::devices().iter().any(|d| d.bus == "drm" && d.addr == card_name));
-        assert!(drv::devices().iter().all(|d| d.bus != "drm" || d.addr != render_name));
-
-        unregister(card_id);
-        assert!(!registered_card_ids().contains(&card_id));
-        assert_eq!(
-            drv::devices()
-                .iter()
-                .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
-                .count(),
-            0
-        );
-
-        assert!(register(card_id, None));
-        assert!(registered_card_ids().contains(&card_id));
-        assert_eq!(
-            drv::devices()
-                .iter()
-                .filter(|d| d.bus == "drm" && (d.addr == card_name || d.addr == render_name))
-                .count(),
-            1
-        );
-        assert!(drv::devices().iter().any(|d| d.bus == "drm" && d.addr == card_name));
-        assert!(drv::devices().iter().all(|d| d.bus != "drm" || d.addr != render_name));
-
-        unregister(card_id);
-    }
-
-    #[test]
-    fn register_does_not_publish_render_node() {
-        let _guard = crate::TEST_LOCK.lock();
-        let card_id = 0x7ff1;
-        unregister(card_id);
-        let render_minor = DRM_RENDER_MINOR_BASE + card_id;
-        let render_name = format!("dri/renderD{render_minor}");
-
-        assert!(register(card_id, None));
-        assert!(registered_card_ids().contains(&card_id));
-        assert!(drv::devices().iter().all(|d| d.bus != "drm" || d.addr != render_name));
-        unregister(card_id);
-    }
-
-    #[test]
-    fn register_publishes_card_node_metadata_per_stable_slot() {
-        let _guard = crate::TEST_LOCK.lock();
-        let card_id = 0x7ff3;
-        let card_name = format!("dri/card{card_id}");
-        unregister(card_id);
-
-        assert!(register(card_id, None));
-        let dev = drv::devices()
-            .into_iter()
-            .find(|d| d.bus == "drm" && d.addr == card_name)
-            .expect("drm card model device");
-        assert_eq!(dev.dev_class, "drm");
-        assert_eq!(dev.devname.as_deref(), Some(card_name.as_str()));
-        assert_eq!(dev.dev_t, Some((crate::DRM_MAJOR, card_id)));
-        let inode = dev.node_factory.as_ref().expect("drm card factory")();
-        assert_eq!(inode.file_type(), vfs::FileType::CharDev);
-        assert_eq!(super::publication::drm_inode_parts(&inode), Some((super::publication::DRM_CARD_INO, card_id)));
-
-        unregister(card_id);
-    }
-
-    #[test]
     fn render_node_rejects_master_only_ioctls() {
         let _guard = crate::TEST_LOCK.lock();
         use syscall::errno::Errno;
 
         let render = open_file(make_render_inode(0));
         assert_eq!(
-            handle_drm_ioctl(&render, DRM_IOCTL_MODE_SETCRTC, 1),
+            handle_drm_ioctl(&render, DRM_IOCTL_MODE_GETRESOURCES, 1),
             Some(-(Errno::Eacces.as_i32() as i64))
         );
         assert_eq!(
