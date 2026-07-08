@@ -148,6 +148,12 @@ pub struct SockOpts {
     pub ip_ttl:    core::sync::atomic::AtomicI32,
     pub ip_tos:    core::sync::atomic::AtomicI32,
     pub ip_pktinfo: core::sync::atomic::AtomicI32, pub ip_mcast_ttl: core::sync::atomic::AtomicI32, pub ip_mcast_loop: core::sync::atomic::AtomicI32, pub ip_mcast_ifaddr: core::sync::atomic::AtomicU32, pub ip_mcast_ifindex: core::sync::atomic::AtomicU32,
+    /// IP_RECVTTL: deliver the received IPv4 header TTL as an IP_TTL cmsg on
+    /// recvmsg (systemd-resolved LLMNR/mDNS hop check). IP_MTU_DISCOVER:
+    /// per-socket PMTU mode — stored for getsockopt round-trip; we never
+    /// fragment/set DF on the loopback + local paths so it's advisory.
+    pub ip_recvttl: core::sync::atomic::AtomicI32,
+    pub ip_mtu_discover: core::sync::atomic::AtomicI32,
     pub ipv6_v6only: core::sync::atomic::AtomicI32,
     /// IPV6_UNICAST_HOPS / IPV6_MULTICAST_HOPS: outbound hop limit for
     /// unicast / multicast IPv6 datagrams. Linux sentinel `-1` = derive the
@@ -203,6 +209,7 @@ impl Default for SockOpts {
             ip_ttl:      AtomicI32::new(crate::ipv4::IPV4_DEFAULT_TTL as i32),
             ip_tos:      AtomicI32::new(0),
             ip_pktinfo:  AtomicI32::new(0), ip_mcast_ttl: AtomicI32::new(1), ip_mcast_loop: AtomicI32::new(1), ip_mcast_ifaddr: AtomicU32::new(0), ip_mcast_ifindex: AtomicU32::new(0),
+            ip_recvttl: AtomicI32::new(0), ip_mtu_discover: AtomicI32::new(0),
             ipv6_v6only: AtomicI32::new(0),
             ipv6_ucast_hops: AtomicI32::new(-1),
             ipv6_mcast_hops: AtomicI32::new(-1),

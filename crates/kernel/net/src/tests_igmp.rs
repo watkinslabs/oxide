@@ -118,7 +118,7 @@ fn ipv4_multicast_source_filter_drops_denied_udp_source() {
 
     let accepted = udp_packet(allowed, group, 32001, port, b"accepted");
     stack.deliver_rx(id, &accepted).unwrap();
-    let (src, sport, dst, iface, body) = stack.recv_udp_meta_opts(port, false).unwrap();
+    let (src, sport, dst, iface, _ttl, body) = stack.recv_udp_meta_opts(port, false).unwrap();
     assert_eq!(src, allowed);
     assert_eq!(sport, 32001);
     assert_eq!(dst, group);
