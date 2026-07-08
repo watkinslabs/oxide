@@ -87,6 +87,10 @@ pub struct Inode {
     pub mtime_ns:    u64,
     /// `i_ctime` in absolute ns (`i_ctime` @0x0C + `i_ctime_extra` @0x84).
     pub ctime_ns:    u64,
+    /// `i_crtime` (creation/birth time) in absolute ns (`i_crtime` @0x90 +
+    /// `i_crtime_extra` @0x94; present only in a >128-byte inode). Drives
+    /// `statx STATX_BTIME`; `0` when the inode has no crtime (128-byte inode).
+    pub crtime_ns:   u64,
     /// `i_flags` @0x20 — the ext4 inode flag word. Low bits are the `chattr`
     /// user flags (`EXT4_*_FL` == `FS_*_FL`: SECRM/UNRM/COMPR/SYNC/IMMUTABLE/
     /// APPEND/NODUMP/NOATIME/…); high bits are kernel-internal layout flags
@@ -145,6 +149,9 @@ impl Inode {
         let atime_ns = decode_time(buf, 0x08, 0x8C, isize);
         let ctime_ns = decode_time(buf, 0x0C, 0x84, isize);
         let mtime_ns = decode_time(buf, 0x10, 0x88, isize);
+        // i_crtime @0x90 + i_crtime_extra @0x94 — only in a >128-byte inode;
+        // decode_time yields 0 when the extra word is out of range.
+        let crtime_ns = if isize > 0x90 { decode_time(buf, 0x90, 0x94, isize) } else { 0 };
         Ok(Inode {
             mode,
             size: size_lo | (size_hi << 32),
@@ -155,6 +162,7 @@ impl Inode {
             atime_ns,
             mtime_ns,
             ctime_ns,
+            crtime_ns,
             i_flags: u32::from_le_bytes([buf[0x20], buf[0x21], buf[0x22], buf[0x23]]),
             i_block,
         })

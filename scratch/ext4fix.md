@@ -199,7 +199,7 @@ Update Status + Branch on every lane transition (per the claim-before-start HARD
 | TODO | — | C2 | `PUNCH_HOLE`/`COLLAPSE_RANGE`/`INSERT_RANGE` | §3.5 |
 | TODO | — | C3 | htree create (linear→indexed) + leaf split on insert | §4.4, §4.5 |
 | TODO | — | C4 | Multi-block allocator (mballoc-lite: run search + goal locality + flex_bg), preserving free-count atomicity | §5.1, §5.4 |
-| TODO | — | C5 | 64bit `s_blocks_count_hi`, `s_first_ino`, `s_desc_size`, huge_file `i_blocks`, crtime, flex_bg tracking | §2.4, §2.6, §5.6, §7.7, §7.8 |
+| PARTIAL | B667-ext4-crtime-btime | C5 | **crtime→statx STATX_BTIME DONE** (B667, 3 tests); remaining: 64bit `s_blocks_count_hi`, `s_first_ino`, `s_desc_size`, huge_file `i_blocks`, flex_bg | §2.4, §2.6, §5.6, §7.7, §7.8 |
 | TODO | — | C6 | jbd2 batching/checkpoint (running vs committing txn) | §6.6 |
 
 **Test discipline (every phase):** each fix ships with a hosted `cargo test -p ext4` against a real

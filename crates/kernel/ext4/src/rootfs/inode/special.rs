@@ -278,7 +278,7 @@ impl FileOps for Ext4StatFileOps {
 /// CHR/BLK nodes (generic_fillattr reads it for those types only). # C: O(1)
 pub(crate) fn build_stat_inode(
     st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
-    uid: u32, gid: u32, times: (u64, u64, u64),
+    uid: u32, gid: u32, times: (u64, u64, u64, u64),
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
@@ -292,6 +292,7 @@ pub(crate) fn build_stat_inode(
         .rdev(rdev)
         .owner(uid, gid)
         .times(times.0, times.1, times.2)
+        .btime(times.3)
         .xattrs(xattrs)
         .private(data)
         .build()

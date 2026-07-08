@@ -275,9 +275,10 @@ impl AddressSpaceOps for Ext4FileMapping {
 
 /// Build a regular-file `vfs::Inode` for ext4 inode `ino`. `mode`/`size`/
 /// `nlink`/`times` are the captured on-disk metadata (read by the caller before
-/// the `iget` build closure). `times` = `(atime, mtime, ctime)` ns. # C: O(1)
+/// the `iget` build closure). `times` = `(atime, mtime, ctime, crtime)` ns
+/// (crtime `0` → no STATX_BTIME). # C: O(1)
 pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32,
-    uid: u32, gid: u32, times: (u64, u64, u64))
+    uid: u32, gid: u32, times: (u64, u64, u64, u64))
     -> InodeRef
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino);
@@ -293,6 +294,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .times(times.0, times.1, times.2)
+        .btime(times.3)
         .mapping(mapping)
         .xattrs(xattrs)
         .private(data)
