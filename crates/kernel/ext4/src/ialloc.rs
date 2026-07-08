@@ -386,6 +386,38 @@ impl Mount {
         })
     }
 
+    /// `ext4_rmdir`: remove the (caller-verified-empty) directory `name` from
+    /// `parent_ino`. Unlike `unlink` (which decrements a hardlink count), a
+    /// directory removal: frees ALL the victim's data blocks (via `truncate` —
+    /// any extent-tree depth, with `i_blocks` accounting), drops its group's
+    /// `bg_used_dirs_count`, clears the victim inode (`i_links_count`=0, dtime),
+    /// frees its inode bit, and decrements the PARENT's `i_links_count` (the
+    /// victim's `..` back-link is gone). One atomic (re-entrant) journal scope.
+    /// Returns the freed inode number. # C: O(parent entries + victim blocks)
+    pub fn rmdir(&self, parent_ino: u32, name: &[u8]) -> Result<u32, MountError> {
+        self.run_journaled(|m| {
+            let target = m.dir_unlink(parent_ino, name)?;
+            // Free every data block of the directory (all extents, any depth).
+            m.truncate_inode(target, 0)?;
+            // No longer a directory in its block group.
+            let g = (target - 1) / m.sb.inodes_per_group;
+            { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
+            m.persist_gdt_slot_meta(g)?;
+            // Clear the victim inode: links=0 + deletion time.
+            let (mut b, _) = m.read_inode_bytes(target)?;
+            b[0x1A..0x1C].copy_from_slice(&0u16.to_le_bytes());
+            b[0x14..0x18].copy_from_slice(&DELETED_DTIME.to_le_bytes());
+            m.write_inode_bytes(target, &b)?;
+            m.free_inode(target)?;
+            // Parent loses the child's `..` back-reference.
+            let (mut pb, _) = m.read_inode_bytes(parent_ino)?;
+            let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_sub(1);
+            pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
+            m.write_inode_bytes(parent_ino, &pb)?;
+            Ok(target)
+        })
+    }
+
     /// Write a fresh inode struct (mode + nlink + owner + empty extent
     /// tree, size=0, blocks=0). `uid`/`gid` are the fs-domain owner ids
     /// (Linux `ext4_new_inode` stamps `current_fsuid`/`current_fsgid` mapped
