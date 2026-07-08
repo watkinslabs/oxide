@@ -43,11 +43,17 @@ fn trace_dbus_stream(data: &[u8]) {
     // Widen to the gdm private connection: dump EVERY D-Bus frame written by a
     // gdm process (daemon or session-worker) so the Hello handshake + any
     // reentrant call/reply that stalls the greeter is visible in-order.
-    let is_gdm = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
+    let is_tgt = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
+            s.contains("gdm") || s.contains("polkit") || s.contains("dbus-broker")
+            || s.contains("upower") || s.contains("switcheroo") || s.contains("accounts")) })
         .unwrap_or(false);
-    let hit = is_gdm
+    let hit = is_tgt
         || has(data, b"login1")
+        || has(data, b"PolicyKit1")        // polkit name-acquisition / activation
+        || has(data, b"RequestName")
+        || has(data, b"StartServiceByName")
+        || has(data, b"NameAcquired")
         || has(data, b"io.systemd")        // Varlink userdb queries (from any proc)
         || has(data, b"UserRecord")        // Varlink userdb replies
         || has(data, b"GroupRecord")
@@ -307,6 +313,21 @@ impl UnixPair {
                     c.creds.egid.load(Relaxed),
                 );
             }
+            // debug-syscost DIAG: log dbus-broker's / polkit's connected-socket
+            // writes (pair ptr + end + nbytes) to trace the polkit↔broker reply
+            // path. dbus-broker writing end A → a_to_b IS the reply polkit waits
+            // for on its ppoll (fd=6, empty read queue = no reply landed).
+            #[cfg(feature = "debug-syscost")]
+            {
+                let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
+                if nm.contains("dbus-broker") || nm.contains("polkit") {
+                    klog::write_raw(b"[UXWRITE comm="); klog::write_raw(nm.as_bytes());
+                    klog::write_raw(b" pair="); klog::write_hex_u64(self as *const _ as u64);
+                    klog::write_raw(if matches!(end, UnixEnd::A) { b" end=A" } else { b" end=B" });
+                    klog::write_raw(b" n="); klog::write_dec_u64(n as u64);
+                    klog::write_raw(b"]\n");
+                }
+            }
             // Writer on `end` feeds the ring the OTHER end reads from.
             let waiters = match end {
                 UnixEnd::A => &self.a_to_b_waiters,
@@ -443,6 +464,21 @@ impl UnixPair {
             out.push(g.buf.pop_front().unwrap());
         }
         g.consumed += take as u64;
+        drop(g);
+        // debug-syscost DIAG: log dbus-broker/polkit connected-socket READS (pair +
+        // end + bytes). Distinguishes blocker #2: does dbus-broker READ polkit's
+        // AUTH (n>0 → AUTH/creds processing issue) or NEVER (n=0/absent → read edge)?
+        #[cfg(feature = "debug-syscost")]
+        {
+            let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
+            if nm.contains("dbus-broker") || nm.contains("polkit") {
+                klog::write_raw(b"[UXREAD comm="); klog::write_raw(nm.as_bytes());
+                klog::write_raw(b" pair="); klog::write_hex_u64(self as *const _ as u64);
+                klog::write_raw(if matches!(end, UnixEnd::A) { b" end=A" } else { b" end=B" });
+                klog::write_raw(b" n="); klog::write_dec_u64(out.len() as u64);
+                klog::write_raw(b"]\n");
+            }
+        }
         (out, fds_out)
     }
 

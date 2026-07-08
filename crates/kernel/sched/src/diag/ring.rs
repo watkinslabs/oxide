@@ -24,14 +24,28 @@ static RING_RET: [core::sync::atomic::AtomicI64; RING_N] =
 static RING_POS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 pub fn record_syscall(nr: u32, ret: i64) {
-    let tid = match current_task() {
-        Some(t) => t.tid,
+    let t = match current_task() {
+        Some(t) => t,
         None => return,
     };
+    let tid = t.tid;
     let i = RING_POS.fetch_add(1, Ordering::Relaxed) % RING_N;
     RING_TID[i].store(tid, Ordering::Relaxed);
     RING_NR[i].store(nr, Ordering::Relaxed);
     RING_RET[i].store(ret, Ordering::Relaxed);
+    // debug-polktrace: live per-syscall stream for polkitd only, to locate the
+    // authority-init stall (never reaches RequestName). exe-filtered so overhead
+    // is bounded to one process. # nr/ret only; args live in per-handler traces.
+    #[cfg(feature = "debug-polktrace")]
+    {
+        let is_pol = unsafe { (*t.exe_path.get()).as_ref().map(|s| s.contains("polkit")).unwrap_or(false) };
+        if is_pol {
+            klog::write_raw(b"[POL tid="); klog::write_dec_u64(tid as u64);
+            klog::write_raw(b" nr="); klog::write_dec_u64(nr as u64);
+            klog::write_raw(b" ret="); if ret < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-ret) as u64); } else { klog::write_dec_u64(ret as u64); }
+            klog::write_raw(b"]\n");
+        }
+    }
 }
 
 #[cfg(feature = "debug-watchdog")]

@@ -19,7 +19,7 @@ pub fn vt_switch_wake() { VT_SWITCH_WAIT.wake_all(); }
 /// KD_*/VT_* ioctls on /dev/tty<N> via the vt crate. Returns
 /// debug-boot: true when the current task is part of the display stack whose VT
 /// handshake gates the greeter (gdm / logind / mutter / gnome-shell). # C: O(len)
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-displaystack")]
 fn vt_is_ui_caller() -> bool {
     sched::live::current()
         .and_then(|c| unsafe {
@@ -51,7 +51,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
     // If any of these fails, the session has vtnr=0, logind assigns no seat, and
     // mutter's TakeDevice(card0) returns ENODEV ("No GPUs found"). Log the op +
     // target + caller so the VT-allocation handshake can be followed offline.
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-displaystack")]
     if vt_is_ui_caller() {
         klog::write_raw(b"[VTIO req="); klog::write_hex_u64(req);
         klog::write_raw(b" tgt="); klog::write_dec_u64(vt_target as u64);
@@ -110,7 +110,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         }
         vt::VT_OPENQRY => {
             let id = match vt::openqry() { Ok(n) => n as u32, Err(_) => return Some(errno(Errno::Ebusy)) };
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-displaystack")]
             if vt_is_ui_caller() {
                 klog::write_raw(b"[VTIO OPENQRY->"); klog::write_dec_u64(id as u64); klog::write_raw(b"]\n");
             }
@@ -122,7 +122,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         }
         vt::VT_GETSTATE => {
             let st = vt::get_state();
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-displaystack")]
             if vt_is_ui_caller() {
                 klog::write_raw(b"[VTIO GETSTATE active="); klog::write_dec_u64(st.v_active as u64); klog::write_raw(b"]\n");
             }

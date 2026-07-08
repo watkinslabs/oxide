@@ -13,10 +13,13 @@ use super::core::{
 /// gdbus/gmain helper threads involved in the greeter pthread deadlock).
 #[cfg(feature = "debug-futextrace")]
 fn ftx_target_exe() -> bool {
-    // Both gdm processes: the daemon (/usr/bin/gdm) and the session worker
-    // (/usr/libexec/gdm-session-worker) — to see the cross-process wedge.
+    // gdm + the glib D-Bus services that block gdm's start (they hang while
+    // acquiring their bus name — main thread parks in futex). Trace their
+    // FTX-WAIT/WAKE to see whether the wake is lost.
     sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("gdm")) })
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
+            s.contains("gdm") || s.contains("switcheroo") || s.contains("accounts-daemon")
+            || s.contains("polkit") || s.contains("upower")) })
         .unwrap_or(false)
 }
 
@@ -44,7 +47,7 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, deadline_ns: u64) -> i
             // SAFETY: bounded user VA validated above; CR3 is current's.
             let cur_val = unsafe { load_user_u32(uaddr) };
             if cur_val != val { return -(Errno::Eagain.as_i32() as i64); }
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-displaystack")]
             if uaddr >= 0x7fff_0000_0000 {
                 let nm = sched::live::current()
                     .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) })

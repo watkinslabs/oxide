@@ -75,7 +75,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
                 if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
                 sched::live::wake_if_sleeping(&t);
             }
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-displaystack")]
             if sig >= 32 {
                 let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
                 if is_gdm {
@@ -90,7 +90,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
             0
         }
         None => {
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-displaystack")]
             if sig >= 32 {
                 let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
                 if is_gdm {

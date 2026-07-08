@@ -62,6 +62,35 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
             }
         }
     }
+    // debug-syscost: dump polkitd's polled fd set (fd/events/ino/readiness) +
+    // timeout on entry, so the stuck ~45s ppoll's fds are visible (which fd it
+    // waits on, whether it's already ready, infinite vs timed).
+    #[cfg(feature = "debug-syscost")]
+    {
+        let is_pol = sched::live::current()
+            .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("polkit")) })
+            .unwrap_or(false);
+        if is_pol {
+            klog::write_raw(b"[POLLFDS tid="); klog::write_dec_u64(cur.tid as u64);
+            klog::write_raw(b" nfds="); klog::write_dec_u64(nfds);
+            klog::write_raw(b" tmo="); klog::write_dec_u64(timeout as u32 as u64);
+            let mut i = 0u64;
+            while i < nfds && i < 12 {
+                let p = fds_ptr + i * 8;
+                // SAFETY: pollfd[i] inside validated nfds*8 range.
+                let fd = unsafe { core::ptr::read_volatile(p as *const i32) };
+                let ev = unsafe { core::ptr::read_volatile((p + 4) as *const i16) };
+                klog::write_raw(b" fd="); klog::write_dec_u64(fd as u64);
+                klog::write_raw(b"/ev="); klog::write_hex_u64(ev as u16 as u64);
+                if let Ok(file) = fdt.get(fd) {
+                    klog::write_raw(b"/ino="); klog::write_hex_u64(file.inode().ino());
+                    klog::write_raw(b"/rdy="); klog::write_hex_u64(file.poll() as u64);
+                }
+                i += 1;
+            }
+            klog::write_raw(b"\n");
+        }
+    }
     let rv: i64 = loop {
         let mut ready: i64 = 0;
         for i in 0..nfds {

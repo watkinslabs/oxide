@@ -139,7 +139,7 @@ impl NetStack {
                     let drop = { q.bpf_filter.lock().as_ref()
                         .map(|insns| !bpf_accept(insns, body)).unwrap_or(false) };
                     if drop { return Ok(()); }
-                    q.q.lock().push_back((hdr.src, udp.src_port, hdr.dst, iface, body.to_vec()));
+                    q.q.lock().push_back((hdr.src, udp.src_port, hdr.dst, iface, hdr.ttl, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
                     {
                         q.waiters.wake_all();

@@ -62,6 +62,11 @@ pub trait DrmDriver: Send + Sync {
     fn dim_bounds(&self) -> (u32, u32, u32, u32);
     fn cap(&self, cap: u64) -> u64;
 
+    /// VIRTGPU_GETPARAM: `Some(value)` if this is a virtio-gpu driver answering
+    /// `param`; `None` → not a virtgpu driver (caller returns ENOTTY, matching
+    /// Linux where non-virtgpu cards lack the ioctl). # C: O(1)
+    fn virtgpu_getparam(&self, _param: u64) -> Option<u64> { None }
+
     fn crtc_ids(&self) -> Vec<u32> { Vec::new() }
     fn connector_ids(&self) -> Vec<u32> { Vec::new() }
     fn encoder_ids(&self) -> Vec<u32> { Vec::new() }

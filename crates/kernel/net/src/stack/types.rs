@@ -3,8 +3,10 @@ use super::*;
 pub struct UdpRxQueue {
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
-    /// Datagrams waiting for a reader: (src, sport, dst, iface, payload).
-    pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, Vec<u8>)>, StackLockClass>,
+    /// Datagrams waiting for a reader: (src, sport, dst, iface, ttl, payload).
+    /// `ttl` = received IPv4 header TTL, delivered as IP_TTL cmsg when the
+    /// socket set IP_RECVTTL (systemd-resolved LLMNR hop-count check).
+    pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>)>, StackLockClass>,
     /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
