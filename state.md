@@ -6,7 +6,19 @@ polkitd's entire wall-clock is in **ppoll**: `ppoll total_ms=51667 cnt=47 avg=1.
 ## sendmsg IS traced (corrected): polkit genuinely never sends RequestName
 Verified: AF_UNIX sendmsg on a connected stream → sock/ops.rs:308 `pair.write` → stream.rs write_inner → trace_dbus_stream. So sendmsg WAS covered by debug-dbus. So the earlier finding holds: **polkit never sends RequestName(org.freedesktop.PolicyKit1)** (only Hello + ~1 other). It reaches its GMainLoop (ppoll) but g_bus_own_name's pre-RequestName state machine is stuck — main ppolls forever waiting for something, killed at 45s.
 
-## NEXT (direct path to the fix): what does the stuck 45s ppoll wait for?
+## PRECISE LOCALIZATION (debug-syscost POLLFDS trace)
+polkit's two stuck threads:
+- **worker (tid 4258)**: infinite ppoll (tmo=-1) on `fd=6` = the D-Bus **bus socket** (ino tag 0x534f434b="SOCK"), waiting POLLIN, but `rdy=0x4` (POLLOUT only) — the socket **never becomes readable**, i.e. dbus-broker never sends it a reply. + fd=7 (eventfd).
+- **main (tid 4255)**: infinite ppoll on `fd=4` = an **eventfd** (ino 0x40000023, glib GMainContext GWakeup), waiting POLLIN, `rdy=0x4` (counter=0, never readable) — the worker never posts main's wakeup. + fd=3 (ino 0x71000000).
+
+So: dbus-broker never writes a reply into polkit's bus-socket read queue → worker never completes the exchange → never posts main's GWakeup eventfd → main never proceeds to RequestName → 45s timeout. polkit is STUCK forever (infinite ppoll, NOT 20ms-rescan-limited), so it is NOT a lost notify (those self-heal in 20ms) — the reply data is genuinely never produced.
+
+Connect/accept wiring VERIFIED correct (sock/ops.rs:226-246: client=end B, server=end A of the SAME UnixPair; B reads a_to_b, A writes a_to_b). So the wiring isn't the bug. => dbus-broker either (a) never ACCEPTED polkit's connection (orphaned in listener.accept_q → no server end ever reads polkit's Hello / replies), or (b) accepted but never replies. Given other services DO connect+register, suspect a socket-activation listener-identity mismatch OR an intermittent accept race specific to polkit's connection.
+
+## NEXT (final step to the fix): correlate dbus-broker's side of polkit's connection
+Boot debug-boot,debug-dbus,debug-syscost. For polkit's bus socket: does dbus-broker ACCEPT the connection (trace sock/ops.rs:226 accept + which tid)? does it recv polkit's Hello and send a reply? If never accepted → the socket-activation listen-fd → registry-listener identity is wrong for this connection (systemd-passed listen fd vs path-lookup listener mismatch). If accepted-but-silent → dbus-broker policy/state. The [DBUSCONN]/[DBUS] traces + a new accept-side trace pin it. THAT is the bug; fix it → polkit gets its reply → RequestName → greeter.
+
+## (older) NEXT: what does the stuck 45s ppoll wait for?
 polkit's main thread does one ~45s ppoll. Trace its ARGS: nfds, the fd list, the timeout, and the return (revents / =0 timeout). Add a ppoll-arg trace filtered to polkit (in 007_poll.rs, log fds+timeout on entry and revents on return). Then:
 - If it times out (=0) repeatedly on a ~1s glib timer with revents=0 → it's waiting for a callback that a worker thread must post to main's GMainContext (eventfd wake) — check the worker→main GWakeup eventfd delivery for THIS specific case.
 - If it blocks on a specific fd that never becomes ready → that producer is stuck.
