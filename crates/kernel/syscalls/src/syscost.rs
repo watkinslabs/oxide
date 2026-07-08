@@ -14,10 +14,10 @@ static COST_CNT: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static CALLS: AtomicU64 = AtomicU64::new(0);
 const DUMP_EVERY: u64 = 800;
 
-/// True iff the current task's exe is dbus-broker (bounded to one process).
+/// True iff the current task's exe is polkitd (bounded to one process).
 fn is_target() -> bool {
     sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) })
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("polkit")) })
         .unwrap_or(false)
 }
 
@@ -64,7 +64,7 @@ fn dump() {
         for j in 1..14 { if val[j] < val[min_j] { min_j = j; } }
         if t > val[min_j] { val[min_j] = t; idx[min_j] = i; }
     }
-    klog::write_raw(b"[SYSCOST dbus-broker top-by-total-ms]\n");
+    klog::write_raw(b"[SYSCOST polkitd top-by-total-ms]\n");
     // print in descending order (selection sort on the 14)
     for _ in 0..14 {
         let mut best = 0;
