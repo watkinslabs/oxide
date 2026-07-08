@@ -5,6 +5,8 @@
 // - blocks: inode reads, extent walks, file-block I/O, and inode flag helpers.
 // - dirs: directory mutation, directory lookup, and absolute path walk.
 // - io: raw byte-range block-device helpers shared by sibling modules.
+// - lifecycle: superblock state/mount-count/time writeback (mount = dirty,
+//   unmount = clean), the Linux ext4_setup_super / ext4_put_super half.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -21,6 +23,7 @@ mod blocks;
 mod core;
 mod dirs;
 mod io;
+mod lifecycle;
 
 pub(crate) use io::{read_byte_range_pub, write_byte_range};
 
