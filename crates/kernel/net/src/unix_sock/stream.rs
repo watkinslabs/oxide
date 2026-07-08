@@ -313,6 +313,21 @@ impl UnixPair {
                     c.creds.egid.load(Relaxed),
                 );
             }
+            // debug-syscost DIAG: log dbus-broker's / polkit's connected-socket
+            // writes (pair ptr + end + nbytes) to trace the polkit↔broker reply
+            // path. dbus-broker writing end A → a_to_b IS the reply polkit waits
+            // for on its ppoll (fd=6, empty read queue = no reply landed).
+            #[cfg(feature = "debug-syscost")]
+            {
+                let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
+                if nm.contains("dbus-broker") || nm.contains("polkit") {
+                    klog::write_raw(b"[UXWRITE comm="); klog::write_raw(nm.as_bytes());
+                    klog::write_raw(b" pair="); klog::write_hex_u64(self as *const _ as u64);
+                    klog::write_raw(if matches!(end, UnixEnd::A) { b" end=A" } else { b" end=B" });
+                    klog::write_raw(b" n="); klog::write_dec_u64(n as u64);
+                    klog::write_raw(b"]\n");
+                }
+            }
             // Writer on `end` feeds the ring the OTHER end reads from.
             let waiters = match end {
                 UnixEnd::A => &self.a_to_b_waiters,
