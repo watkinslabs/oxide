@@ -18,7 +18,8 @@ fn ftx_target_exe() -> bool {
     // FTX-WAIT/WAKE to see whether the wake is lost.
     sched::live::current()
         .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
-            s.contains("gdm") || s.contains("switcheroo") || s.contains("accounts-daemon")) })
+            s.contains("gdm") || s.contains("switcheroo") || s.contains("accounts-daemon")
+            || s.contains("polkit") || s.contains("upower")) })
         .unwrap_or(false)
 }
 
