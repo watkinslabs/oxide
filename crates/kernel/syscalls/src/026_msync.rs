@@ -26,7 +26,9 @@ pub fn sys_msync(args: &SyscallArgs) -> i64 {
     if addr & PAGE_MASK != 0 { return -(Errno::Einval.as_i32() as i64); }
     if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0 { return -(Errno::Einval.as_i32() as i64); }
     if (flags & MS_SYNC != 0) && (flags & MS_ASYNC != 0) { return -(Errno::Einval.as_i32() as i64); }
-    // D8: persist dirty ext4 frame stores (mmap writes reach disk here).
-    ext4::flush_all_dirty();
+    // D8: persist dirty ext4 frame stores (mmap writes reach disk here). A
+    // writeback failure surfaces as EIO — msync must not silently swallow a
+    // lost store the way it did before (Linux msync returns -EIO like fsync).
+    if ext4::flush_all_dirty().is_err() { return -(Errno::Eio.as_i32() as i64); }
     0
 }

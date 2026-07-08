@@ -98,6 +98,35 @@ impl Mount {
         Err(MountError::NotFound)
     }
 
+    /// Rewrite directory `dir_ino`'s `..` entry to point at `new_parent` — the
+    /// on-disk half of a cross-parent directory move (Linux `ext4_rename`
+    /// `ext4_rename_dir_finish`/`ext4_setent`). `..` lives in the first dir
+    /// block; the dirent-tail metadata_csum is re-stamped by `write_dir_block`.
+    /// Journaled. # C: O(entries in block 0) + 2 block I/Os
+    pub fn set_dotdot(&self, dir_ino: u32, new_parent: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| m.set_dotdot_inner(dir_ino, new_parent))
+    }
+
+    fn set_dotdot_inner(&self, dir_ino: u32, new_parent: u32) -> Result<(), MountError> {
+        let dir_node = self.read_inode(dir_ino)?;
+        if !dir_node.is_dir() { return Err(MountError::NotDir); }
+        let (_flags, gen) = self.inode_flags_gen(dir_ino)?;
+        let bs = self.sb.block_size as usize;
+        let mut blk = self.read_file_block_meta(&dir_node, 0)?;
+        if blk.len() < bs { blk.resize(bs, 0); }
+        let mut off = 0usize;
+        loop {
+            let (e, next) = match dir::next_entry(&blk, off) { Ok(v) => v, Err(_) => break };
+            if e.inode != 0 && e.name == b".." {
+                blk[off..off + 4].copy_from_slice(&new_parent.to_le_bytes());
+                return self.write_dir_block(&dir_node, dir_ino, gen, 0, &mut blk);
+            }
+            if next <= off || next >= blk.len() { break; }
+            off = next;
+        }
+        Err(MountError::NotFound)
+    }
+
     /// Look `name` up in the directory. Walks all data blocks
     /// covered by the inode's `i_size`, not just the first —
     /// rootfs `/bin` overflows one 1 KiB block once we stage

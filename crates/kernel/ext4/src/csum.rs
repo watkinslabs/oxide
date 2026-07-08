@@ -245,6 +245,25 @@ pub fn stamp_extent_block_csum(sb: &Superblock, ino: u32, generation: u32, block
     block[bs - EXTENT_TAIL_SIZE..bs].copy_from_slice(&csum.to_le_bytes());
 }
 
+/// `h_checksum` byte offset in `struct ext4_xattr_header`
+/// (magic@0, refcount@4, blocks@8, hash@12, checksum@16).
+const XATTR_HDR_CSUM_OFF: usize = 16;
+
+/// crc32c of an EXTERNAL xattr block per `ext4_xattr_block_csum`: keyed by the
+/// fs metadata seed folded with the block's disk address, over the whole block
+/// with the `h_checksum` field taken as zero. Stored in `h_checksum`. No-op
+/// without metadata_csum. # C: O(bs)
+pub fn stamp_xattr_block_csum(sb: &Superblock, block_nr: u64, block: &mut [u8]) {
+    if !sb.has_metadata_csum() { return; }
+    let bs = block.len();
+    let dummy = [0u8; 4];
+    let mut csum = crc32c_update(sb.metadata_csum_seed(), &block_nr.to_le_bytes());
+    csum = crc32c_update(csum, &block[..XATTR_HDR_CSUM_OFF]);
+    csum = crc32c_update(csum, &dummy); // h_checksum read as zero
+    csum = crc32c_update(csum, &block[XATTR_HDR_CSUM_OFF + 4..bs]);
+    block[XATTR_HDR_CSUM_OFF..XATTR_HDR_CSUM_OFF + 4].copy_from_slice(&csum.to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

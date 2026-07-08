@@ -133,9 +133,26 @@ impl File {
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // inotify IN_MODIFY hook (no-op when nothing installed).
         if n > 0 {
+            self.file_update_time();
             fire_write_hook(&self.inode);
         }
         Ok(n)
+    }
+
+    /// `file_update_time` (Linux fs/inode.c) — after a modifying write, stamp
+    /// the inode's mtime + ctime to the current wall clock via its
+    /// `i_op->update_time` (ext4 & co. persist through to the backend; the
+    /// generic default updates the in-core fields). Scoped to regular files:
+    /// pipe/socket/tty/device writes route through this same `File::write` but
+    /// do not carry an mtime the Linux `generic_file_write_iter` path would
+    /// bump. No clock installed yet (early boot) → `current_time` floors 0 and
+    /// the op is skipped. # C: O(1) + one backend inode writeback
+    fn file_update_time(&self) {
+        if !matches!(self.inode.file_type(), FileType::Regular) { return; }
+        let raw = crate::inode_times::realtime_now_ns();
+        if raw == 0 { return; }
+        let now = crate::inode_times::current_time(&*self.inode, raw);
+        let _ = self.inode.update_time(now, crate::S_MTIME | crate::S_CTIME | crate::S_VERSION);
     }
 
     /// `lseek(2)` SEEK_SET / CUR / END. Returns the new position.
@@ -254,6 +271,7 @@ impl File {
             self.f_op.write(&self.inode, pos, buf)?
         };
         if n > 0 {
+            self.file_update_time();
             fire_write_hook(&self.inode);
         }
         Ok(n)
@@ -361,6 +379,7 @@ impl File {
         drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
+            self.file_update_time();
             fire_write_hook(&self.inode);
         }
         Ok(total as usize)

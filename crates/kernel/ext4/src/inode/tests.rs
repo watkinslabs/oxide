@@ -146,3 +146,18 @@ fn file_type_helpers() {
     assert_eq!(mode_dir & S_IFMT, S_IFDIR);
     assert_eq!(mode_lnk & S_IFMT, S_IFLNK);
 }
+
+#[test]
+fn extent_child_depth_bounds_descent() {
+    // Valid step: child exactly one level shallower.
+    assert!(extent_child_depth_ok(5, 4));
+    assert!(extent_child_depth_ok(1, 0));
+    // Non-decreasing (cycle) / equal / deeper: rejected.
+    assert!(!extent_child_depth_ok(2, 2));
+    assert!(!extent_child_depth_ok(2, 3));
+    assert!(!extent_child_depth_ok(3, 1)); // skipped a level
+    // A leaf (parent depth 0) can have no children.
+    assert!(!extent_child_depth_ok(0, 0));
+    // u16 edge: child_depth+1 must not wrap to match parent 0.
+    assert!(!extent_child_depth_ok(0, u16::MAX));
+}
