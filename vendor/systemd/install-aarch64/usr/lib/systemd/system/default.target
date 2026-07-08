@@ -1,7 +1,0 @@
-[Unit]
-Description=Oxide Default Target
-Documentation=man:systemd.special(7)
-DefaultDependencies=no
-Wants=console-getty.service
-After=console-getty.service
-AllowIsolate=yes
