@@ -66,13 +66,20 @@ impl Mount {
         for _ in cur_blocks..new_blocks {
             self.append_block(ino, &zero_blk)?;
         }
-        // Phase 2: RMW each touched block. Re-read inode (extents
-        // changed during phase 1).
-        let inode2 = self.read_inode(ino)?;
+        // Phase 2: RMW each touched block.
         let first_lb = (off / bs) as u32;
         let last_lb  = ((end - 1) / bs) as u32;
         let mut written = 0usize;
         for lb in first_lb..=last_lb {
+            // A block sitting in an UNWRITTEN extent (prebuilt-image fallocate,
+            // e.g. journald's system.journal) must be converted to a written
+            // extent first, or read_file_block/write_file_block below reject it
+            // with NotFound and the write is silently lost. No-op for written
+            // extents / holes. Re-read the inode after — the conversion staged
+            // the cleared unwritten flag into the journal shadow (read-your-
+            // writes), and phase-1 appends also mutated the extent tree.
+            self.convert_unwritten_at(ino, lb)?;
+            let inode2 = self.read_inode(ino)?;
             let blk_start_byte = (lb as u64) * bs;
             let in_blk_off = if blk_start_byte >= off { 0usize }
                              else { (off - blk_start_byte) as usize };
@@ -80,7 +87,13 @@ impl Mount {
             let copy_end_in_blk = if end >= blk_end_byte { bs_us }
                                   else { (end - blk_start_byte) as usize };
             let copy_len = copy_end_in_blk - in_blk_off;
-            let mut blk = self.read_file_block(&inode2, lb)?;
+            // A hole (no extent) reads as zeros (Linux sparse-file semantics);
+            // the RMW then writes through it. Any other error is real.
+            let mut blk = match self.read_file_block(&inode2, lb) {
+                Ok(b) => b,
+                Err(MountError::NotFound) => alloc::vec![0u8; bs_us],
+                Err(e) => return Err(e),
+            };
             if blk.len() < bs_us { blk.resize(bs_us, 0); }
             blk[in_blk_off..in_blk_off + copy_len]
                 .copy_from_slice(&data[written .. written + copy_len]);
