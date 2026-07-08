@@ -174,6 +174,83 @@ impl Mount {
         self.metadata_write(byte_off, data)
     }
 
+    /// Convert the UNWRITTEN extent covering logical block `file_blk` to a
+    /// written (initialized) extent, in place. Linux `fallocate` leaves
+    /// preallocated ranges as "unwritten" extents (`len` top bit set / `len >
+    /// 32768`) whose backing blocks may hold arbitrary on-disk bytes but which
+    /// READ as zeros; a write into such a range must make the not-yet-written
+    /// blocks read as their true zero value AND flip the extent to initialized
+    /// so the write persists and is visible on read. Our own fallocate is eager
+    /// (never produces unwritten extents), but a PREBUILT rootfs image
+    /// (mkfs/fallocate on real Linux) carries them — notably systemd-journald's
+    /// preallocated `system.journal`, whose mmap writeback failed with
+    /// `NotFound` (`leaf_pblock_*` rejects unwritten) before this path,
+    /// re-dirtying the page forever and silently losing every log line.
+    ///
+    /// Strategy: zero the WHOLE extent's blocks on disk (so blocks the caller
+    /// does not overwrite still read as zeros — the unwritten-read contract),
+    /// then clear the unwritten flag in the extent record and persist it (inode
+    /// i_block for depth 0, the covering leaf block for depth>0). No split
+    /// needed; matches our eager-fallocate model. No-op when `file_blk` already
+    /// maps to a written extent or a hole. MUST run inside a `run_journaled`
+    /// scope (write_at does): the flag-clear stages in the shadow and commits
+    /// atomically; block zeroing is direct data I/O sequenced before the commit.
+    /// # C: O(real_len) zero I/O + O(depth) walk + O(1) metadata persist
+    pub(crate) fn convert_unwritten_at(&self, ino: u32, file_blk: u32) -> Result<(), MountError> {
+        let (mut ibytes, _off) = self.read_inode_bytes(ino)?;
+        let mut i_block = [0u8; inode::I_BLOCK_LEN];
+        i_block.copy_from_slice(&ibytes[0x28..0x28 + inode::I_BLOCK_LEN]);
+        let hdr = inode::parse_extent_header(&i_block)?;
+        if hdr.depth == 0 {
+            for i in 0..hdr.entries {
+                let e = inode::parse_inline_extent(&i_block, &hdr, i).ok_or(MountError::BlockIo)?;
+                if file_blk >= e.block && file_blk < e.block + e.real_len() {
+                    if !e.is_unwritten() { return Ok(()); }
+                    self.zero_extent_blocks(e.start_lba(), e.real_len())?;
+                    let mut ew = e;
+                    ew.len = e.real_len() as u16;                 // clear the unwritten flag
+                    inode::write_inline_extent(&mut i_block, i, &ew);
+                    ibytes[0x28..0x28 + inode::I_BLOCK_LEN].copy_from_slice(&i_block);
+                    return self.write_inode_bytes(ino, &ibytes);
+                }
+            }
+            return Ok(());                                        // hole
+        }
+        let bs = self.sb.block_size as u64;
+        let mut child_lba = self.find_child_for(&i_block, &hdr, file_blk)?;
+        loop {
+            let mut buf = self.read_metadata_block(child_lba)?;
+            let chdr = inode::parse_extent_header_slice(&buf)?;
+            if chdr.depth == 0 {
+                for i in 0..chdr.entries {
+                    let e = inode::parse_inline_extent_slice(&buf, &chdr, i).ok_or(MountError::BlockIo)?;
+                    if file_blk >= e.block && file_blk < e.block + e.real_len() {
+                        if !e.is_unwritten() { return Ok(()); }
+                        self.zero_extent_blocks(e.start_lba(), e.real_len())?;
+                        let mut ew = e;
+                        ew.len = e.real_len() as u16;
+                        inode::write_inline_extent_slice(&mut buf, i, &ew);
+                        return self.metadata_write(child_lba * bs, &buf);
+                    }
+                }
+                return Ok(());
+            }
+            child_lba = self.find_child_for_slice(&buf, &chdr, file_blk)?;
+        }
+    }
+
+    /// Zero `len` filesystem blocks starting at physical LBA `start_lba` (direct
+    /// data write, not journaled) — the not-yet-written blocks of an
+    /// unwritten extent being initialized. # C: O(len) block I/O
+    fn zero_extent_blocks(&self, start_lba: u64, len: u32) -> Result<(), MountError> {
+        let bs = self.sb.block_size as usize;
+        let zero = alloc::vec![0u8; bs];
+        for i in 0..len as u64 {
+            write_byte_range(&*self.dev, (start_lba + i) * (bs as u64), &zero)?;
+        }
+        Ok(())
+    }
+
     /// Read `(i_flags, i_generation)` for `ino` from its raw slot.
     /// `i_flags` drives the htree (`EXT4_INDEX_FL`) branch; the
     /// generation keys the dir-block metadata_csum.
