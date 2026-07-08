@@ -57,20 +57,20 @@ Not done / not Linux-complete:
 
 ## Current priority plan
 
-The immediate project goal is not generic feature growth; it is reaching a reliable graphical GNOME boot on the integrated `main` tree, then tightening the Linux-compat surface exposed by that boot.
+The immediate project goal is not generic feature growth; it is closing the pre-GUI Linux subsystem contracts that graphical boot depends on, then using the integrated `main` tree to reach a reliable graphical GNOME boot once the lower layers are observable and testable.
 
 | Priority | Work | Why it is first |
 |---|---|---|
-| P0 | Make graphical boot observable over serial: enable a serial getty or equivalent journal extraction path for the live GNOME image. | Current gdm failures hide decisive errors in the journal; without this, boot debugging devolves into slow hypothesis loops. |
-| P1 | Stabilize the boot harness: one fresh integrated artifact path, exclusive QEMU runs, explicit image directory, and a smoke target for "reached gdm / reached greeter / failed with journal excerpt". | Recent work proved stale artifacts and mismatched image roots can invalidate results. |
-| P2 | Pin the current gdm greeter hang: capture `journalctl -u gdm -b`, task state, and the last VT/DRM/logind/D-Bus operation before the session wrapper receives SIGTERM. | The last known blocker is the greeter session wrapper hanging before `gnome-shell` starts, not a kernel fault or SIGSEGV. |
-| P3 | Complete the VT/DRM/logind contract needed by gdm: DRM master/auth ioctls, render node permissions, VT activation/KD mode behavior, seat device access, and session handoff semantics. | This is the highest-probability contract surface between a booting systemd stack and a visible graphical login. |
-| P4 | Finish userspace readiness around systemd: udev device events, D-Bus/polkit/logind latency, PAM/NSS paths, tmpfiles/sysusers side effects, and service failure diagnostics. | GNOME depends on these daemons behaving like Linux, not just starting. |
-| P5 | Repair known boot reliability defects before broad feature work: intermittent early wedge, stale-artifact risk, serial-vs-framebuffer ambiguity, and missing boot-result classification. | A reliable boot loop is the multiplier for every later fix. |
-| P6 | Run generated syscall and UAPI audits after GNOME reaches greeter: remove old fallback stubs, prove declared syscall constants are routed, and rank remaining Linux-compat gaps by real userspace demand. | Once the graphical path is observable, syscall work should be driven by actual failing programs and generated coverage. |
-| P7 | Continue broad Linux parity in dependency order: io_uring, userfaultfd, perf/BPF depth, module hardening, USB/HID/storage, Wi-Fi/Bluetooth, ACPI runtime, filesystems, and package-management depth. | These matter, but they do not outrank the current boot-to-GNOME path. |
+| P0 | Make the prerequisite path observable without relying on GNOME: targeted probes and boot smokes for VT ioctls, DRM card/render node semantics, AF_UNIX control-message passing, pidfd/fd handoff, and wakeup latency. | The graphical stack is currently blocked; subsystem probes let agents prove Linux contracts before a full desktop session is testable. |
+| P1 | Complete VT/KD tty behavior from `docs/50-vt.md`: `VT_ACTIVATE`, `VT_WAITACTIVE`, `VT_GETSTATE`, `VT_GETMODE`, `VT_SETMODE`, `VT_RELDISP`, `KDGETMODE`, and `KDSETMODE`. | Display managers, seat managers, Xorg, Wayland compositors, and console tooling all depend on Linux VT switching and graphics/text mode semantics. |
+| P2 | Complete DRM card/render node master/auth behavior from `docs/47-drm-kms.md`: render-node publication, render-node ioctl filtering, card-node master ownership, `SET_MASTER`, `DROP_MASTER`, `GET_MAGIC`, and `AUTH_MAGIC`. | Userland must see Linux-compatible `/dev/dri/card*` and `/dev/dri/renderD*` behavior before compositor or 3D paths can be trusted. |
+| P3 | Complete seat/device handoff prerequisites outside GNOME: devfs/sysfs/udev metadata for tty, input, card, and render nodes; permissions; open/close lifetime; and fd-passing compatibility. | logind-style device ownership is a kernel/userspace contract, not a GNOME feature. |
+| P4 | Complete D-Bus substrate prerequisites: AF_UNIX `SCM_RIGHTS`, `SCM_CREDENTIALS`, pidfd/fd transfer, poll/epoll readiness, shutdown/hangup behavior, and wakeups under dbus-broker-like load. | D-Bus is the control plane for systemd services and session setup; hangs here can masquerade as graphical failures. |
+| P5 | Investigate scheduler/wakeup latency only after P1-P4 probes disprove missing contract semantics. | Prior work already found one service starvation bug; further scheduler work needs traces proving lost wakeups or unacceptable latency. |
+| P6 | Repair known boot reliability defects in the harness: intermittent early wedge, stale-artifact risk, serial-vs-framebuffer ambiguity, and missing boot-result classification. | A reliable boot loop is still required before integrated graphical validation can be decisive. |
+| P7 | Continue broad Linux parity in dependency order: generated syscall/UAPI audits, io_uring, userfaultfd, perf/BPF depth, module hardening, USB/HID/storage, Wi-Fi/Bluetooth, ACPI runtime, filesystems, and package-management depth. | These matter, but they do not outrank the lower display/session contracts currently blocking the path. |
 
-Near-term working rule: each fix should include a hosted/unit proof where possible and a single boot-facing proof when it touches runtime behavior. Do not use repeated cold boots as the inner loop; add targeted probes or serial/journal extraction first.
+Near-term working rule: each subsystem fix should include a hosted/unit proof where possible and a boot-facing probe when it touches runtime behavior. Do not use repeated cold boots as the inner loop; add targeted probes, tracepoints, or serial/journal extraction first. The pre-GUI execution plan is tracked in `work/pre-gui-subsystem-plan.md`.
 
 The active handoff state is tracked in `state.md`; recent merged work is best read from `git log --oneline --decorate -40`.
 
