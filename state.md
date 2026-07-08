@@ -1,45 +1,51 @@
-# Handoff — syscall Linux-compliance campaign COMPLETE
+# Handoff — glibc quick-boot done; boot-to-GNOME blocked on intermittent hang
 
-**Branch:** `main` (clean, builds both arches, boots to login — verified this session).
-**Plan of record:** `syscall-compliance-ledger.md` (repo root, on main) — 21 rows,
-all DONE. The campaign is finished.
+**Branch:** `F693-quickboot-glibc-rootfs` (pushed, PR #2837). 8 commits, all boot-tested where possible.
+**Goal in flight:** graphical GNOME desktop booting to a visible greeter, 100% Linux-compat, no stubs.
 
-## Status: 21/21 rows DONE + merged
-A 4-reviewer audit found garbage stubs + a legacy "ghost" dispatcher. We removed
-the ghost and fixed every routed syscall to full Linux semantics, one PR per row.
-All 21 rows are merged; each new-behavior row is boot-verified with a `/bin/*_probe`.
+## DONE + verified (on the branch)
+- **musl → glibc quick-boot.** `xtask rootfs` (`rootfs_glibc.rs`) now COPIES the images-repo
+  pre-packed glibc image `../images/output/<profile>-<arch>-root.img` (default `live-gnome`)
+  as `root-<arch>.img` (cp --reflink, instant on btrfs). No dnf/sudo in the kernel repo.
+  Boot-verified: reaches systemd `graphical.target` + gdm, 57 ld-linux, **zero ld-musl**.
+- Deleted the musl staging (rootfs/{build,stage_system,stage_tools}, rootfs_{lists,dynprobe,etc,cache},
+  l2_deps) + 92 tools/fetch-*.sh + 1197 tracked musl vendor build artifacts + dead vendor/limine.
+  KEPT vendor/{firmware,grub,lib} + upstream source tarballs (packagectl builds glibc RPMs from those).
+- `make qemu-x86` / MCP default to **KVM + 4G** (was TCG/2G → GNOME impractically slow).
+- **rw root + service masks** (image_qemu/x86_64.rs cmdline): `root=... rw` (was `ro` → WRITE-EROFS)
+  + mask zram/firewalld/chronyd/ModemManager/plymouth/NM-wait-online. Cut graphical.target 137s→52s.
+- Per-op display-stack traces ([futex park]/[VTIO]/[TGKILL]/[waitid]) moved to opt-in
+  `debug-displaystack` feature (were flooding serial under debug-boot / ungated).
+- boot-smoke marker → `Reached target basic.target` (glibc gnome has no serial `oxide login:`).
 
-Foundational: ghost-dispatcher removal (#2794), MM COW-invariant harness (#2792),
-pmm free-while-mapped debug-gate (#2793).
+## DONE, correct, but UNVERIFIED end-to-end (426b3819)
+- **DRM VIRTGPU_GETPARAM/GET_CAPS** implemented (drm uapi/core_api/node.rs + drv-virtio-gpu device.rs).
+  Root cause found via [DRMIOCTL] trace: Mesa's `virtio_gpu` driver (DRM VERSION name="virtio_gpu")
+  probes GETPARAM(0x43)/GET_CAPS(0x49) after opening card0; kernel returned ENOTTY → Mesa can't
+  decide 3D → loops, mutter never reaches KMS (GETRESOURCES/SETCRTC=0). Fix: PARAM_3D_FEATURES=0
+  (no virgl; device didn't negotiate F_VIRGL) → Mesa falls back to llvmpipe over KMS dumb-buffer.
+  UNVERIFIED because boots wedge before mutter reaches the DRM phase (see blocker).
 
-Rows (PRs #2795–#2827): S1/S2 seccomp+landlock fork inheritance, D1 pwritev,
-D2/D3 sync+syncfs, D4/G9 SysV shm + shmctl IPC_STAT, D5 ext4 chmod/chown/utimes
-persist (#2809), F1 userfaultfd MISSING-mode (#2815, `uffd_probe`), F2 pkey ENOSYS,
-F3 libaio (#2817, `aio_probe`), F4 quotactl faithful no-quota (#2819, `quota_probe`),
-G1 kill(-1), G2 nanosleep EINTR, G3 per-task cputime getrusage/times (#2821,
-`cputime_probe`), G4 robust-list crash-path recovery (#2824, `robust_probe`),
-G5 seccomp arg[5], G6 process_madvise/mrelease (#2827, `pmadvise_probe`),
-G7 mlock range, G8 signalfd mask-update + full siginfo (#2830?, `signalfd_probe`),
-X1 drop NR_LISTNS.
+## THE BLOCKER (next focus): intermittent userspace hang during greeter launch
+- 6 of 7 recent boots WEDGE at random timestamps (18/134/140/144/224/227s), during gdm
+  greeter-session setup: gdm spawns /usr/bin/sh helpers, wait4-reaps, logind re-opens card0,
+  `[B288 dgram /run/systemd/notify pidN] FDSTORE=1` loops — and **gnome-shell NEVER execs**
+  (0 elf-loads of it). One boot (with debug-futextrace) DID get through to gnome-shell + DRM
+  ioctls → it's timing-dependent, not a hard block.
+- Signature = intermittent lost-wakeup / scheduler / SIGCHLD-wait4 / futex race under heavy
+  fork/exec/wait churn. Note: `[wait4 reap]` logged the SAME tid multiple times in one run — look
+  at SIGCHLD delivery + wait4/reaping + futex wake races first.
+- Tooling hit walls: KVM gdb `qemu_interrupt` won't stop the CPU; no serial getty (image runs
+  getty on tty0, not ttyS0); kernel **ignores `init=` cmdline** (hardcodes /init in
+  smoke/src/elf.rs:95 — a real Linux-compat gap; honoring init= needs cmdline dep + init_path()
+  parser, gated target_os=oxide-kernel to not break smoke's hosted build).
 
-## What's next (pick up here)
-The syscall-compliance campaign is done. Next work is the master plan `00§3`
-phase ladder — audit "what phase are we actually in" (lowest unfinished phase)
-before starting. The kernel boots to a systemd login on both the syscall surface
-and userspace; the natural next targets are whatever `00§3` marks as the current
-phase gate. Read `docs/00§3` + `docs/MANIFEST.md` first.
-
-## Gotchas / facts (keep)
-- qemu MCP GOTCHA: `qemu_start paused=false` still leaves the CPU HALTED at the
-  gdb stub (RIP stuck at 0xec1a, serial empty). You MUST call `qemu_continue`
-  once to actually run it (it blocks ~120s w/ no stop event on a healthy boot —
-  expected; then `qemu_serial` shows the full boot). Not a GRUB hang.
-- Boot-verify pattern used all session: worktree branch → detach the MAIN tree to
-  the commit (`git checkout <sha>` in /home/nd/oxide/kernel, NOT the worktree —
-  qemu MCP builds from the main tree) → `qemu_start rebuild_rootfs=true` → login
-  → run `/bin/<probe>`. Restore `git checkout main` after.
-- `metadata/index.md` counter merges conflict on nearly every PR (parallel lanes
-  advance F/B); resolve by taking origin's higher F and your own bumped B.
-- ipc/mm-pmm reach sched-side exit hooks via fn-pointer hooks (set_*_hook in
-  sched::live, installed by kmain) to avoid dep cycles — mirror for new exit work.
-- Commits authored `Chris Watkins <chris@watkinslabs.com>`, never Co-Authored-By.
+## Pick up here
+1. Get a deterministic repro of the hang: hosted stress harness over fork/exec/wait4/SIGCHLD/futex
+   (heavy churn like gdm), OR fix `init=` honoring to boot `init=/bin/bash` for a serial root shell
+   to inspect a live hang + verify the virtgpu fix at the DRM level (open card0, VIRTGPU_GETPARAM).
+2. Once a boot reaches mutter's DRM phase, confirm GETPARAM→GETRESOURCES→SETCRTC→scanout renders
+   the greeter (screen capture via qemu_screen; framebuffer currently shows the text console).
+3. First boot command: `make kernel boot` won't apply — use the MCP: qemu_start arch=x86_64
+   accel=kvm mem=4G features=debug-boot, then qemu_run_until on the SETCRTC req
+   `req=00000000c06864a2`; grep [DRMIOCTL] to map the mutter DRM sequence.
