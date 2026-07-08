@@ -21,35 +21,45 @@ and accept `IP_MTU_DISCOVER`. Both arches build.
   running (tgid 4316, ppoll) + NetworkManager/logind/dbus-broker/avahi/
   cupsd all in normal waits. polkit NO LONGER the blocker.
 
-## NEXT BLOCKER: gdm.service crash-loops (NEW frontier)
-Framebuffer at t=192s:
-```
-Failed to start gdm.service - GNOME Display Manager.
-gdm.service: Scheduled restart job, restart counter is at 3.
-[EXIT] name=fork-child exe=/proc/self/fd/9 code=271
-  recent syscalls: nr#14(sigprocmask) nr#13(sigaction) nr#9(mmap)
-  nr#125(capget) nr#157(prctl) nr#186(gettid) nr#104/102(getgid/uid)
-  nr#3(close ×many)
-```
-gdm starts, a child (/proc/self/fd/9, a gdm re-exec) exits code=271, gdm
-fails, restarts (counter climbing). Investigate WHY the gdm child dies.
+## NEXT BLOCKER: gdm greeter session HANGS (not crashes) → SIGTERM → crash-loop
+Diagnosed across taskdump1 + scmfd1 boots:
+- gdm daemon (tgid ~4277) stays ALIVE in ppoll with an idle worker-thread
+  pool; the process that dies is gdm's **session wrapper** (exec'd via
+  `/proc/self/fd/9`, e.g. gdm-wayland-session / gdm-x-session).
+- It exits `code=271` = **256+15 = SIGTERM** (code=265 = 256+9 = SIGKILL),
+  ~46s apart (t≈100s, 146s) → killed after a ~45s HANG, then gdm retries →
+  "restart counter is at 3" → "Failed to start gdm.service".
+- **No SIGSEGV/fault anywhere** in the boot (greeter does NOT crash — hangs).
+- **No `gnome-shell` exe ever appears** and **no SCM_RIGHTS pidfd relay fires**
+  (debug-scmfd = 0 traces) → gdm hangs LAUNCHING the greeter session, BEFORE
+  logind CreateSession(WithPIDFD). Suspects: DRM master / VT switch / a D-Bus
+  call to gdm/logind that never returns / gdm-session-worker setup.
 
-### First task next session
-Boot with `debug-stderr` (echoes userspace fd==2 writes to console) to
-capture gdm/gdm-session-worker's death message:
-```
-qemu_start arch=x86_64 name=gdmdbg features=debug-stderr,debug-watchdog accel=kvm mem=4G paused=false
-```
-Wait ~150s, screenshot framebuffer + grep serial for [STDERR]. code=271
-(0x10F) + the capget/prctl/close-storm pattern suggests a gdm helper
-failing during privilege/fd setup or exec — check what /proc/self/fd/9
-is exec'ing and why it exits. Also confirm polkitd is actually alive
-(one taskdump showed polkitd main tid 4241 in state Z — verify it's not
-also crashing, which could cascade into gdm).
+### Hard limit hit: gdm's real error is in the JOURNAL, unreadable
+gdm redirects stderr to the journal (debug-stderr does NOT catch it), and
+there is NO serial getty (getty runs on tty1, not ttyS0 — sending Enter to
+serial yields no login). So the decisive error message is inaccessible
+without either (a) a tty1/graphical shell (the broken thing), or (b) many
+gdm-reaching boots with display-stack tracing — but boots are intermittent
+(~50% wedge early at ~cups/t31s, a SEPARATE bug) and the user forbids
+boot-per-hypothesis loops.
 
-## Push/PR
-B650 committed but NOT yet pushed. Push with SKIP_SMOKE=1 (kernel change,
-already boot-verified locally), open PR, merge. Then pursue gdm.
+### First task next session (need a gdm-reaching boot)
+Options to get gdm's error / pin the hang:
+1. Enable a serial getty (systemd `serial-getty@ttyS0`) or console=ttyS0 in
+   the image cmdline so a shell is reachable over serial → `journalctl -u
+   gdm -b` gives the exact failure. (Best ROI — do this first.)
+2. Or `features=debug-displaystack` / `debug-futextrace` on a gdm-reaching
+   boot → see the greeter wrapper's stuck futex/VT/ioctl op.
+3. Static-audit the gdm-session-worker → VT/DRM ioctl path (VT_ACTIVATE,
+   DRM_IOCTL_SET_MASTER, KDSETMODE) for an ioctl we stub/hang on — the
+   greeter wrapper does capget/prctl/close-storm then hangs, consistent with
+   a VT/DRM setup ioctl that never returns.
+Also: fix the intermittent early wedge (boot with debug-taskdump, catch the
+stuck task at ~t31s) so gdm-reaching boots are reliable.
+
+## Push/PR — DONE
+B650 pushed + PR #2838 MERGED to main (commit a1f650c0). Boot-verified.
 
 ## Notes
 - gdb-over-KVM is flaky in this env (qemu_break/regs/interrupt time out);
