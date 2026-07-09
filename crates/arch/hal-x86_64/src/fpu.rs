@@ -17,20 +17,21 @@ use crate::cpuid::{cpuid, cpuid_count};
 /// FXSAVE area size per Intel SDM Vol. 1 Tab. 10-2.
 pub const FPU_STATE_BYTES: usize = 512;
 
-/// Hard cap on the XSAVE area this HAL will use. We enable x87+SSE+AVX
-/// only (see `XCR0_WANT`), whose area is 512 legacy + 64 header + 256 AVX
-/// Hi128 = 832; 1024 leaves headroom. Deliberately NOT AVX512: its state
-/// is huge (~2.7 KB) and would bloat every by-value `Task`; glibc gates
-/// its AVX512 IFUNC paths on `xgetbv` and safely falls back to AVX2 when
-/// XCR0 lacks the AVX512 bits, so we save what glibc will actually use.
-/// The per-task `ArchFpuBuf` backing (`sched::ARCH_FPU_SIZE`) MUST be ≥
-/// this and 64-byte aligned.
-pub const XSAVE_MAX_BYTES: usize = 1024;
+/// Hard cap on the XSAVE area this HAL will use — the full x87+SSE+AVX+
+/// AVX512 state (512 legacy + 64 header + 256 AVX + 64 opmask + 512
+/// ZMM_Hi256 + 1024 Hi16_ZMM ≈ 2432); 4096 leaves headroom. The per-task
+/// `ArchFpuBuf` area (`sched::ARCH_FPU_SIZE`) is heap-allocated 64-aligned
+/// and MUST be ≥ this — so, unlike an inline-in-`Task` buffer, enabling the
+/// full state costs only heap, never a by-value `Task` bloat. Linux/Redox
+/// both keep the xstate off the task struct for exactly this reason.
+pub const XSAVE_MAX_BYTES: usize = 4096;
 
-/// XCR0 components the kernel context-switches: x87(0)|SSE(1)|AVX(2).
-/// Intersected with CPU-supported. AVX512 (bits 5/6/7) intentionally
-/// excluded — see `XSAVE_MAX_BYTES`.
-const XCR0_WANT: u64 = 0b0000_0111;
+/// XCR0 components the kernel context-switches, intersected with CPU-
+/// supported (CPUID.0Dh:EAX): x87(0)|SSE(1)|AVX(2)|opmask(5)|ZMM_Hi256(6)|
+/// Hi16_ZMM(7). We save the FULL state the CPU offers so glibc's AVX/AVX512
+/// IFUNC paths — which it selects via `xgetbv(XCR0)` — are all correct
+/// across a mid-SIMD-loop preemption (the Linux way).
+const XCR0_WANT: u64 = 0b1110_0111;
 
 /// True once `xstate_init` enabled XSAVE on the boot CPU (CR4.OSXSAVE +
 /// XCR0). Read by `fpu_save`/`fpu_restore` to pick XSAVE vs the FXSAVE

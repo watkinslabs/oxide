@@ -35,18 +35,29 @@ impl PosixTimer {
 #[repr(C, align(8))]
 pub struct ArchCtxBuf(pub [u8; ARCH_CTX_SIZE]);
 
-/// Opaque per-arch FPU/SIMD state buffer; per-arch crate casts to
-/// FpuStateX86_64 / FpuStateAArch64. align(64) per XSAVE (superset of FXSAVE/NEON)
-/// store-pair requirements.
+/// 64-byte-aligned raw storage for the per-arch FPU/SIMD save area. XSAVE
+/// #GPs on <64B alignment (FXSAVE's 16B / NEON store-pair is a subset).
 #[repr(C, align(64))]
-pub struct ArchFpuBuf(pub [u8; ARCH_FPU_SIZE]);
+struct FpuArea([u8; ARCH_FPU_SIZE]);
+
+/// Per-arch FPU/SIMD save area, **heap-allocated off the `Task`** (the
+/// `Task` holds only this 8-byte `Box` pointer). Mirrors how Linux keeps the
+/// xstate as a dynamically-sized trailing member of `task_struct` and how
+/// Redox uses an `AlignedBox` `kfx`: the area must be large enough for the
+/// full XSAVE state (AVX YMM / AVX512 ZMM) AND 64-byte aligned, and embedding
+/// that by value would bloat every by-value `Task` move + force a 64-aligned
+/// `Task` heap slot (which intermittently corrupted neighbouring allocations).
+/// The ctxsw casts `as_mut_ptr()` to the HAL's `FpuStateX86_64`/`AArch64`.
+pub struct ArchFpuBuf(alloc::boxed::Box<FpuArea>);
 
 impl ArchFpuBuf {
     /// Fresh-task FPU image. NOT all-zeros: a zeroed x86 FXSAVE area has
     /// MXCSR=0 (all SSE exceptions UNMASKED) and FCW=0, which makes the
     /// first inexact/denormal SSE op in userspace #XM → spurious SIGFPE.
     /// Seed the architectural defaults (x86: FCW=0x037f, MXCSR=0x1f80) so a
-    /// first-run task the ctxsw `fxrstor`s starts with a sane control word.
+    /// first-run task the ctxsw `fxrstor`/`xrstor`s starts with a sane control
+    /// word. For XSAVE, the zeroed XSTATE_BV header (bytes 512..520) makes
+    /// `xrstor` init every component (YMM/ZMM=0), which is correct fresh state.
     /// # C: O(1)
     pub fn arch_default() -> Self {
         let mut b = [0u8; ARCH_FPU_SIZE];
@@ -56,7 +67,20 @@ impl ArchFpuBuf {
             b[0] = 0x7f; b[1] = 0x03;
             b[24] = 0x80; b[25] = 0x1f;
         }
-        ArchFpuBuf(b)
+        ArchFpuBuf(alloc::boxed::Box::new(FpuArea(b)))
+    }
+
+    /// Raw pointer to the 64-aligned save area for `fxsave`/`xsave` (write)
+    /// and `fxrstor`/`xrstor` (read). Mutation is sound via the enclosing
+    /// `UnsafeCell<ArchFpuBuf>` in `Task` (ctxsw is the single mutator).
+    /// # C: O(1)
+    pub fn as_mut_ptr(&self) -> *mut u8 {
+        self.0.0.as_ptr() as *mut u8
+    }
+
+    /// Const view of the save area (ptrace GETREGSET reads it). # C: O(1)
+    pub fn as_ptr(&self) -> *const u8 {
+        self.0.0.as_ptr()
     }
 }
 
