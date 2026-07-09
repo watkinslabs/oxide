@@ -23,19 +23,23 @@ HERRINGS — userdbd starts fine; probing with `systemctl` PERTURBS the deadlock
 Verified: those EINVALs are gone; 8+ more services now Finish.
 
 **REMAINING pivot_root EINVAL (the last piece): `put_old mount is SHARED`.**
-Traced precisely: `po_mnt=140 nr_id=140 root_id=120` — the service rootfs mount
-(140) is genuinely SHARED when Linux requires it PRIVATE. systemd builds it as a
-**detached `open_tree(OPEN_TREE_CLONE|AT_RECURSIVE)` tree** (ops on
-`/proc/self/fd/4`) then `move_mount`s it to /run/systemd/mount-rootfs. A detached
-clone must be PRIVATE; ours ends up SHARED — either `open_tree(CLONE)` clones the
-propagation of the rshared `/` (should reset to private), or `move_mount` grafts
-it under shared `/run` and `propagate_mount` shares it (a moved detached tree must
-NOT join the dest peer group). **First task: fix open_tree(CLONE)/move_mount so
-the detached/moved service-rootfs stays PRIVATE.** Look at the open_tree +
-move_mount handlers + `propagate_mount` (vfs/src/mount/propagation.rs) — skip
-peer-group sharing for a detached/moved tree, and have `open_tree(OPEN_TREE_CLONE)`
-set the clone PRIVATE. Then the `put_old SHARED` EINVAL clears and pivot_root
-succeeds → services start → sysinit completes → getty/login.
+Traced: `po_mnt=140 nr_id=140 root_id=120` — service rootfs mount 140 is genuinely
+SHARED when Linux needs PRIVATE. RULED OUT: open_tree(CLONE) (clones are
+`CloneType::Private`, clone_tree.rs) and detached move_mount (429:77
+`commit_tree_hashonly`, doesn't share). The SHARED comes from 140's CREATION:
+`mount(MS_BIND|MS_REC, /proc/self/fd/4, /run/systemd/mount-rootfs)` grafted under
+`/run`, which is STILL SHARED, so the bind inherits it (Linux `do_add_mount`: dest
+shared ⇒ new mount joins peer group). systemd's `make-rslave /` SHOULD have made
+`/run` slave first — 140 still shared ⇒ **the recursive make-slave isn't reaching
+`/run`.** **First task: find why.** Suspects: (a) the make-slave runs in the
+service's NEW mount ns (CLONE_NEWNS) and our ns copy/isolation is off so
+`subtree_ids(root)` there omits `/run`; (b) `subtree_ids` returns only direct
+children not the transitive subtree; (c) the target resolves to the wrong ns root.
+Trace `set_propagation_recursive` in the failing service ns — does it enumerate +
+slave `/run`'s mount? Also verify `mount(MS_BIND)` graft honors a slave/private
+dest (doesn't share). Fix so `/run` is slave at bind time ⇒ 140 private ⇒
+pivot_root succeeds ⇒ sysinit completes ⇒ getty/login. See CLONE_NEWNS ns copy +
+`subtree_ids` (vfs/src/mount/model.rs) + bind graft propagation.
 
 DEBUG: gated `[PIVOT-EINVAL]`/`[PIVOT-SYSCALL]` (debug-mnt) + `[MNTCREATE]` probes
 are IN-TREE to pin this. Boot `features=debug-mnt`; add `systemd.log_level=debug`
