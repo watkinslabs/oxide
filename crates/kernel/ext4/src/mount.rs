@@ -60,6 +60,11 @@ pub enum MountError {
     /// cyclic / corrupt tree). Rejected instead of descended so a bad image
     /// cannot spin the walk forever. Linux `__ext4_ext_check`.
     CorruptExtentTree,
+    /// metadata_csum verification failed on a read: the stored crc32c of a
+    /// superblock / group descriptor / bitmap / inode / directory block /
+    /// extent node does not match a recompute (Linux `EFSBADCRC`). The bytes
+    /// are refused instead of silently accepted as valid. Surfaces as EIO.
+    BadChecksum,
 }
 
 impl From<SuperblockError> for MountError { fn from(e: SuperblockError) -> Self { MountError::Superblock(e) } }
