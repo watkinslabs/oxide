@@ -35,6 +35,8 @@ impl InodeOps for Ext4RegInodeOps {
         d.st.mount.truncate_inode(d.ino, len).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
+        #[cfg(feature = "ext4-frame-cache")]
+        d.frames.set_size(len);
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
         Ok(())
@@ -65,6 +67,8 @@ impl InodeOps for Ext4RegInodeOps {
         if let Some(end) = off.checked_add(len) { d.frames.invalidate_range(off & !(4095u64), end); }
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
+        #[cfg(feature = "ext4-frame-cache")]
+        d.frames.set_size(d.size_hint.load(Ordering::Acquire));
         // ext4_fallocate stamps mtime + ctime (Linux) — the allocation mutates
         // the file even under keep_size, so the change/modify times advance.
         let raw = vfs::inode_times::realtime_now_ns();
@@ -177,10 +181,17 @@ impl FileOps for Ext4RegFileOps {
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        d.st.mount.write_at(d.ino, off, buf).map_err(|_| VfsError::Eio)?;
-        d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        // Linux buffered write: land the bytes in the page cache (dirty) and
+        // return; disk I/O is deferred to writeback (fsync/msync/sync/drop).
+        // Without the frame cache there is nowhere to buffer, so fall back to
+        // the synchronous write-through path.
         #[cfg(feature = "ext4-frame-cache")]
-        d.frames.update_resident(off, buf);
+        { d.frames.write_buffered(off, buf).map_err(|_| VfsError::Eio)?; }
+        #[cfg(not(feature = "ext4-frame-cache"))]
+        {
+            d.st.mount.write_at(d.ino, off, buf).map_err(|_| VfsError::Eio)?;
+            d.st.page_cache.invalidate(InodeId(d.ino as u64));
+        }
         let end = off.saturating_add(buf.len() as u64);
         d.size_hint.fetch_max(end, Ordering::AcqRel);
         inode.i_size_fetch_max(end);
@@ -281,7 +292,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     uid: u32, gid: u32, times: (u64, u64, u64, u64))
     -> InodeRef
 {
-    let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino);
+    let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino, size);
     let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size), frames });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();
