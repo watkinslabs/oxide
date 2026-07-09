@@ -1,5 +1,18 @@
 # Handoff — console+desktop = one sysinit stall (multi-bug); 4 fixes merged
 
+## ★ XSAVE/AVX ctxsw FIXED + LANDED (F698, 2026-07-09m)
+Kernel context-switch was FXSAVE-only (x87+SSE) → dropped AVX YMM / AVX512 ZMM
+upper state across a switch (a real Linux-compat gap; latent corruption for any
+AVX-heavy userspace incl. GNOME). Now proper XSAVE/XRSTOR + CR4.OSXSAVE + XCR0
+(full x87+SSE+AVX+AVX512), FPU area **heap-allocated off `Task`** the Linux/Redox
+way (`Box<FpuArea>`, 64-aligned, ARCH_FPU_SIZE=4096; CPUID area=2432 on this
+host). First inline-buffer attempt intermittently corrupted BTreeMaps (by-value
+Task bloat + undersize); heap redesign fixed it — **4/4 clean boots, `[FPUMODE
+xsave area=2432]` active**, both arches build (arm boot deferred — no arm rootfs
+packed in this env). **This does NOT fix systemd-hwdb** (SIMD-corruption
+hypothesis disproven — hwdb still spins with correct AVX save). hwdb root cause
+remains open below.
+
 ## Merged this session (main a0962d5e)
 - **F696** ext4 read-verify completion (extent-block/dirent-tail/bitmap csum).
 - **B677** AF_UNIX nonblocking read → EAGAIN (was blocking; console2.md suspect #1).
