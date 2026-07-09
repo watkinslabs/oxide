@@ -47,6 +47,12 @@ pub struct Task {
     pub on_cpu:   AtomicBool,
     /// cgroup v2 freezer: held off every runqueue (enqueue no-op) until thawed.
     pub frozen:   AtomicBool,
+    /// True once `wait4`/`waitid` has collected this task's exit status (Linux
+    /// `release_task`). The Task may still be pinned alive by an open pidfd, but
+    /// a reaped process MUST vanish from `/proc`: procfs enumeration
+    /// (`live_vpids`/`live_tids`/`live_counts`) skips reaped tasks, so ps/htop
+    /// never show a reaped-but-pidfd-pinned child as a lingering zombie.
+    pub reaped:   AtomicBool,
     pub cpu:      AtomicU16,
     pub vruntime: AtomicU64,
     /// Monotonic ns this task last (re)started running; update_curr charges
