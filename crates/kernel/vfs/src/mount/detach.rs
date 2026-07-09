@@ -85,6 +85,19 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
 /// [`unregister`] → `mount_exact_at` finds the mirror mount); a plain `descend`
 /// would cross INTO the now-present mirror and return its root, which is not a
 /// mountpoint. `rel` empty ⇒ `base`. # C: O(components)
+/// Resolve absolute `abs` to the MOUNTPOINT dentry of its final component (the
+/// dentry a mount is grafted AT) WITHOUT crossing into a mount attached there.
+/// `pivot_root(2)`'s new_root needs this: a plain path resolve crosses INTO the
+/// mount and yields its ROOT dentry — which is ambiguous for a bind (shares the
+/// source's root dentry) and which `mount_exact_at` (keyed by MOUNTPOINT dentry)
+/// cannot match, so pivot_root wrongly EINVAL'd "new_root not a mount root" and
+/// every service using mount-namespacing (ProtectSystem=, etc.) failed to start.
+/// # C: O(components)
+pub fn mountpoint_dentry_of(abs: &str) -> Option<Arc<Dentry>> {
+    let base = global_root()?;
+    descend_mountpoint(&base, abs.trim_start_matches('/'))
+}
+
 fn descend_mountpoint(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
     let comps: Vec<&str> = rel.split('/').filter(|c| !c.is_empty()).collect();
     let Some((last, parents)) = comps.split_last() else { return Some(base.clone()); };

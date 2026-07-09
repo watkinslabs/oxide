@@ -302,8 +302,23 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // registry rather than vfs::mount::TABLE (fragmented table —
         // unified in later K2/K3 work); for those, accept-and-noop as
         // before rather than spuriously EINVAL and regress systemd.
-        if let Some(td) = crate::pathresolve::mount_dentry(&target) {
-            let _ = vfs::mount::set_propagation(&td, kind);
+        // Resolve to the MOUNTPOINT dentry (not crossing into a mount attached
+        // there) so `set_propagation`'s `mount_exact_at` finds the mount grafted
+        // AT target. A plain resolve crosses in and yields the mount's ROOT
+        // dentry, which mount_exact_at can't match → the retune silently no-ops
+        // and e.g. systemd's `make-rslave /run/systemd/mount-rootfs` leaves the
+        // service rootfs SHARED, so its later pivot_root -EINVAL'd. Falls back to
+        // the crossing resolve when target isn't a mountpoint (a plain dir).
+        if let Some(td) = vfs::mount::mountpoint_dentry_of(&target)
+            .or_else(|| crate::pathresolve::mount_dentry(&target)) {
+            if flags & MS_REC != 0 {
+                // Recursive retune (systemd `make-rslave /` before pivot_root):
+                // apply to the target mount AND its whole subtree, else the
+                // bind-cloned service rootfs stays SHARED and pivot_root EINVALs.
+                let _ = vfs::mount::set_propagation_recursive(&td, kind);
+            } else {
+                let _ = vfs::mount::set_propagation(&td, kind);
+            }
         }
         return 0;
     }
