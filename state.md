@@ -35,10 +35,22 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    → **A userspace infinite/pathological loop triggered by our env** (a libc/hwdb
    interaction over some syscall result). NOT ext4-read (inputs read correctly),
    NOT slow I/O (stime=0), NOT TCG (KVM confirmed by fast boot).
+   **Perf hypotheses DISPROVEN (rigorously, via debug-shell micro-bench):**
+   - register arithmetic: 50k shell iters in ~1s → NORMAL.
+   - memory/CPU: 1st sha256 of 13.5MB hwdb.bin = 5s but 2nd (cached) = ~1s → the 5s
+     was ext4 COLD-READ I/O, hashing itself is ~1s = NORMAL. So userspace mem/CPU is
+     NOT uncached/slow; hwdb's stime=0 spin is a genuine INSTRUCTION-COUNT blowup =
+     a real loop, not slowness. Manual `systemd-hwdb update` ran >200s, never
+     returned → effectively infinite.
    **BLOCKED ON TOOLING:** gdb `qemu_interrupt` can't stop the guest under the 100%
    spin; `/proc/<pid>/syscall`+`wchan` are stubbed (always running/0). Need either
-   userspace-symbol gdb on hwdb, or a startup syscall trace of tid=hwdb to see the
-   LAST syscalls before it stops syscalling (what data/config it consumed).
+   userspace-symbol gdb on hwdb, or break on `arch-irq::tick_poll` (fires every
+   timer tick even during a userspace spin — from_user=true) and read the saved
+   user RIP from the IRQ frame, or a startup syscall trace of tid=hwdb.
+
+   **SEPARATE perf bug found: ext4 COLD-READ is slow (~2.7 MB/s)** — 13.5MB took 5s
+   cold, ~1s cached. Contributes to the general boot crawl (every service reads
+   files cold). Real ext4 (goal-2) perf item; not the hwdb loop but stacks with it.
 2. **Later stall: sysusers/userwork exit → zombies unreaped ~45s** while init/userdbd
    sleep in epoll_wait. B678 targets this (reap-wake gen race). Unverified because
    #1 blocks first.
