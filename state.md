@@ -37,21 +37,35 @@ that path now looks correct (`UnixRegistry::connect` net/src/unix_sock/listener.
 pushes accept_q + notify_subs; listener poll() returns POLL_IN from non-empty
 accept_q net/src/sock/io.rs:207,229; register_subs wires epoll net/src/sock/ops.rs:33,207).
 
-**IMPORTANT NUANCE:** in the debug-wakelat capture that reached 144s, `[USERIP]`
-sample counts are ALL low (≤7 per tid over the whole window) — so NO task is
-spinning in USER mode. Yet gdb can't interrupt the debug-boot VM at 82s. That
-points to a **KERNEL-mode spin** (spinlock contention / a kernel busy-loop the
-user-RIP sampler, which only fires `from_user`, can't see) — a DIFFERENT class
-from hwdb's userspace stall. OR the 82s debug-boot "spin" is a transient hwdb-
-cleanup artifact and the boot slow-progresses (debug-wakelat did reach 144s).
+**PINNED (2026-07-09): it is an IDLE-WAIT hang, NOT a spin and NOT a stall.**
+Chased two red herrings — ruled BOTH out with evidence:
+- NOT a spin: `[KERNIP]` (kernel-mode RIP sampler, added to arch-irq dispatch.rs)
+  shows no repeated kernel RIP; `[USERIP]` counts all ≤6. Neither mode spins.
+- NOT a commit/undo stall: `[COMMIT n=]` probe showed only **5 commits total**
+  (max 9 blocks) — commits are tiny/rare now, NOT near the `[WLTICKGAP]`s. The
+  `[WLTICKGAP]` "gaps" of a consistent **~7.5s** are **tickless-idle**: the CPU
+  halts until the next ~7.5s timeout because everything is BLOCKED. journald (tid
+  4123) sits in epoll_wait (sc232); systemd (init) polls every 500ms. Boot runs
+  183-368s, **no login** — a genuine hang waiting on a service that never
+  completes. Only 8 WAEXT total (last 12s) → ext4 writeback fine.
 
-**First task:** disambiguate. Boot debug-boot, at the ~82s stall use the qemu
-MCP to break into the KERNEL (gdb can attach to kernel even during a user spin
-if it's not 100% KVM; if it IS, the spin is in-guest). If kernel-mode: find the
-hot kernel loop (backtrace / which lock). If it slow-progresses instead, measure
-where wall-time goes in the remaining services. Add a kernel-side per-tid
-on-CPU-ticks counter (like the old [HWCPU]) to see if a KERNEL thread or a user
-task dominates.
+Landed alongside: **undo frame O(n²)→O(n log n)** (BTreeMap-keyed, mount.rs/
+core.rs) — a real defensive fix (a big op staging many blocks no longer linear-
+scans the undo under the state lock) but NOT the boot blocker (it didn't change
+the gaps; hwdb's writeback stages only ~tens of metadata blocks, data writes
+direct).
+
+**Real blocker = a sysinit oneshot idle-hangs.** Candidates (Starting, never
+Finished): systemd-journal-flush, systemd-random-seed, systemd-userdbd,
+sys-kernel-config.mount. Late-active tids: 4141 (statx sc332 @234s), 4146 (fstat
+sc5 @309s) — a fs walker (tmpfiles?) still doing work, plus the hung oneshot.
+
+**First task:** boot debug-boot and let it run LONG (>5 min) so systemd's per-
+service start-timeout (90s each) fires and LOGS which unit timed out (that's how
+hwdb was named). That names the hung service. Then trace THAT service's blocking
+syscall in debug-wakelat (its tid's `lastsc` + what it waits on — a socket
+reply / a mount / a file). The 7.5s idle cadence hints at a fixed retry/timeout
+in the waiter. NOTE: journald idle-in-epoll is NORMAL, not the bug.
 
 ## First command next session
 `cd /home/nd/oxide/kernel && git log --oneline -3`  # confirm main @ 8537de19
