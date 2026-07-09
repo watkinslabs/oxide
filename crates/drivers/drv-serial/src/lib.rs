@@ -67,6 +67,10 @@ pub fn present() -> bool { uart::present() }
 /// # C: O(len(bytes))
 pub fn emit(bytes: &[u8]) { uart::emit(bytes); }
 
+/// Reprogram the console UART baud (TCSETS `c_ospeed`). Dispatches to the
+/// arch UART (16550 divisor latch on x86; firmware-fixed on PL011). # C: O(1)
+pub fn set_baud(baud: u32) { uart::set_baud(baud); }
+
 /// RX interrupt drain — delegates to the active UART crate, passing this
 /// crate's `deliver` as the byte callback.
 /// # C: O(bytes pending)

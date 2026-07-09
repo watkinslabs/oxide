@@ -77,6 +77,16 @@ mod imp {
         }
     }
 
+    /// Reprogram the line baud (TCSETS `c_ospeed`). The PL011 divisor
+    /// (IBRD/FBRD) is derived from `UARTCLK`, the reference clock supplied by
+    /// firmware and described in the DTB (`/pl011/clocks`). v1 does not yet
+    /// parse the DTB clock tree, and the PL011 line is left at the
+    /// firmware/bootloader-programmed baud (qemu's `-serial` ignores the rate
+    /// on a host chardev), so a rate change without a known UARTCLK cannot be
+    /// computed correctly — reprogramming is deferred to when the DTB clock is
+    /// available rather than writing a wrong divisor. # C: O(1)
+    pub fn set_baud(_baud: u32) {}
+
     fn drain_rx(dlv: fn(u8)) {
         let va = base(); if va == 0 { return; }
         let mut n = 0;
@@ -159,6 +169,9 @@ mod imp {
     /// No PL011 on non-arm arches; TX no-op.
     /// # C: O(1)
     pub fn emit(_bytes: &[u8]) {}
+    /// No PL011 on non-arm arches; baud no-op.
+    /// # C: O(1)
+    pub fn set_baud(_baud: u32) {}
     /// No PL011 on non-arm arches.
     /// # C: O(1)
     pub fn rx_isr(_dlv: fn(u8)) {}
@@ -176,7 +189,7 @@ mod imp {
     pub(super) unsafe fn shutdown() {}
 }
 
-pub use imp::{emit, rx_isr};
+pub use imp::{emit, rx_isr, set_baud};
 
 // ------------------------------------------------ drv model
 /// The PL011 console as a drv model driver. Probe performs detection; a

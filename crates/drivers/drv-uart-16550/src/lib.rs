@@ -80,6 +80,7 @@ mod imp {
     // 8250 register offsets from the port base.
     const RBR: u16 = 0; // THR on write
     const IER: u16 = 1;
+    const LCR: u16 = 3; // line control; bit7 = DLAB (selects DLL/DLM at base+0/+1)
     const LSR: u16 = 5; // bit0 = RX data ready, bit5 = THR empty
     const SCR: u16 = 7; // scratch
 
@@ -118,6 +119,25 @@ mod imp {
             while n < 100_000 && unsafe { inb(b + LSR) } & 0x20 == 0 { n += 1; }
             // SAFETY: THR write at CPL=0 to the detected COM base.
             unsafe { outb(b + RBR, c); }
+        }
+    }
+
+    /// Reprogram the line baud (TCSETS `c_ospeed`). Standard PC 16550 base
+    /// clock is 1.8432 MHz, so the 16-bit divisor = 115200 / baud. Toggle DLAB
+    /// to expose the divisor latch (DLL @ base+0, DLM @ base+1), write it, then
+    /// restore the line-control byte. # C: O(1) port I/O
+    pub fn set_baud(baud: u32) {
+        let b = base();
+        if b == 0 || baud == 0 { return; }
+        let divisor = (115_200 / baud).clamp(1, 0xFFFF) as u16;
+        // SAFETY: DLAB toggle + divisor-latch writes at CPL=0 to the detected
+        // COM base; DLL/DLM alias base+0/+1 only while DLAB=1, restored after.
+        unsafe {
+            let lcr = inb(b + LCR);
+            outb(b + LCR, lcr | 0x80);            // DLAB=1
+            outb(b + RBR, (divisor & 0xff) as u8);  // DLL
+            outb(b + IER, (divisor >> 8) as u8);    // DLM
+            outb(b + LCR, lcr & !0x80);           // DLAB=0: restore data regs + line ctl
         }
     }
 
@@ -238,6 +258,9 @@ mod imp {
     /// No 16550 on non-x86 arches; TX no-op.
     /// # C: O(1)
     pub fn emit(_bytes: &[u8]) {}
+    /// No 16550 on non-x86 arches; baud no-op.
+    /// # C: O(1)
+    pub fn set_baud(_baud: u32) {}
     /// No 16550 on non-x86 arches.
     /// # C: O(1)
     pub fn rx_isr(_dlv: fn(u8)) {}
@@ -255,7 +278,7 @@ mod imp {
     pub(super) unsafe fn shutdown() {}
 }
 
-pub use imp::{emit, rx_isr};
+pub use imp::{emit, rx_isr, set_baud};
 
 // ------------------------------------------------ drv model
 /// The 16550 console as a drv model driver. Probe performs detection and

@@ -20,6 +20,7 @@ fbdev       = { path = "../../drivers/fbdev" }
 console     = { path = "../../kernel/console" }
 tty         = { path = "../../kernel/tty" }
 sched       = { path = "../../kernel/sched" }
+cmdline     = { path = "../../kernel/cmdline" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64  = { path = "../../arch/hal-x86_64" }

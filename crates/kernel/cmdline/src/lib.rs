@@ -12,7 +12,6 @@
 // semantics is enough; we use a plain `&'static [u8]` slot mutated
 // only from the BSP-pre-userspace phase.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
@@ -123,6 +122,33 @@ pub fn preferred_console_in(line: &[u8]) -> ConsoleKind {
     chosen
 }
 
+/// Does the cmdline request a printk console of each class? Linux registers a
+/// `struct console` per `console=` token; a class NOT named gets no printk (its
+/// `/dev` tty still works). `(serial, vt)`. If NO parseable `console=` token is
+/// present, both are true (safe default: keep every sink, matching the arch
+/// default `console=ttyS0 console=tty0`). # C: O(line length)
+pub fn console_classes() -> (bool, bool) { console_classes_in(get()) }
+
+/// Pure, global-free form of [`console_classes`] (unit-testable). # C: O(len)
+pub fn console_classes_in(line: &[u8]) -> (bool, bool) {
+    let mut serial = false;
+    let mut vt = false;
+    let mut any = false;
+    let mut i = 0;
+    while let Some(p) = find(&line[i..], b"console=") {
+        let start = i + p + b"console=".len();
+        let mut end = start;
+        while end < line.len() && line[end] != b',' && !line[end].is_ascii_whitespace() { end += 1; }
+        match classify(&line[start..end]) {
+            Some(ConsoleKind::Serial) => { serial = true; any = true; }
+            Some(ConsoleKind::Vt(_))  => { vt = true; any = true; }
+            None => {}
+        }
+        i = end;
+    }
+    if !any { (true, true) } else { (serial, vt) }
+}
+
 /// First index of `needle` in `hay`, or `None`. # C: O(len)
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() { return None; }
@@ -153,4 +179,41 @@ pub fn init_path_in(line: &[u8]) -> Option<&[u8]> {
         i = at + b"init=".len();
     }
     None
+}
+
+#[cfg(test)]
+mod console_class_tests {
+    use super::{console_classes_in, ConsoleKind, preferred_console_in};
+
+    #[test]
+    fn both_default_cmdline() {
+        let (s, v) = console_classes_in(b"root=/dev/oxide0 console=ttyS0,115200 console=tty0");
+        assert!(s && v, "default cmdline registers serial + vt");
+        assert_eq!(preferred_console_in(b"console=ttyS0 console=tty0"), ConsoleKind::Vt(0));
+    }
+    #[test]
+    fn serial_only() {
+        let (s, v) = console_classes_in(b"quiet console=ttyS0,115200");
+        assert!(s && !v, "console=ttyS0 only → serial printk, no VT");
+    }
+    #[test]
+    fn vt_only() {
+        let (s, v) = console_classes_in(b"console=tty0");
+        assert!(!s && v, "console=tty0 only → VT printk, no serial");
+    }
+    #[test]
+    fn none_defaults_both() {
+        let (s, v) = console_classes_in(b"root=/dev/oxide0 ro quiet");
+        assert!(s && v, "no console= token → keep both sinks (safe default)");
+    }
+    #[test]
+    fn arm_pl011_is_serial() {
+        let (s, v) = console_classes_in(b"console=ttyAMA0,115200 console=tty0");
+        assert!(s && v, "ttyAMA0 counts as serial");
+    }
+    #[test]
+    fn vt_n_counts_as_vt() {
+        let (s, v) = console_classes_in(b"console=tty1");
+        assert!(!s && v, "console=tty1 is a VT console");
+    }
 }
