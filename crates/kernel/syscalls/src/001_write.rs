@@ -59,6 +59,48 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+    // DIAG (debug-wakelat): symbolize systemd-hwdb (tid 4135)'s write() CALLER
+    // stack during its serialize-spin. The USERIP sampler only catches the libc
+    // syscall wrapper (0x7ffff71af75e); the real infinite loop is hwdb's own .text
+    // (~0x10xxxxxx) calling write. Walk the user stack, print (ino, file-offset) for
+    // each return address in a File-backed EXEC VMA → objdump the hwdb binary /
+    // libc at foff to name the loop. Modeled on 024_sched_yield's YIELD-SPIN probe.
+    // Rate-limited (1/2048) so the spin doesn't flood.
+    #[cfg(all(feature = "debug-wakelat", target_arch = "x86_64"))]
+    if cur.tid == 4135 {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static WSYM: AtomicU64 = AtomicU64::new(0);
+        let k = WSYM.fetch_add(1, Ordering::Relaxed);
+        if k >= 40 && k % 256 == 0 && k < 40000 {
+            // SAFETY: current_user_frame()[2] is the saved user rsp on this task's syscall kstack.
+            let ursp = unsafe { (*hal_x86_64::current_user_frame())[2] };
+            klog::write_raw(b"[HWSTK ursp="); klog::write_hex_u64(ursp); klog::write_raw(b"]\n");
+            // SAFETY: running task on this CPU; single-mutator mm slot per 13§5.
+            if let Some(mm) = unsafe { cur.mm_ref() } {
+                let mut i = 0u64;
+                let mut found = 0u32;
+                while i < 220 && found < 20 {
+                    // SAFETY: reading this task's own user stack; range validated as a live user VA below.
+                    let a = unsafe { core::ptr::read_volatile((ursp + i * 8) as *const u64) };
+                    if let Some(uva) = hal::UserVirtAddr::new(a) {
+                        if let Some(vma) = mm.find_vma(uva) {
+                            if vma.prot.contains(vmm::VmaProt::EXEC) {
+                                if let vmm::VmaBacking::File { backing, off } = &vma.backing {
+                                    let foff = off.wrapping_add(a - vma.start.as_u64());
+                                    klog::write_raw(b"[HWCALL a="); klog::write_hex_u64(a);
+                                    klog::write_raw(b" ino="); klog::write_hex_u64(backing.ino());
+                                    klog::write_raw(b" foff="); klog::write_hex_u64(foff);
+                                    klog::write_raw(b"]\n");
+                                    found += 1;
+                                }
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
     // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
     let slice: &[u8] = unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) };
     #[cfg(feature = "debug-session")]

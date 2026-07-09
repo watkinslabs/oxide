@@ -68,6 +68,32 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    getdents loop/dup? Likely ties to the ext4 read side (cold-read was already ~2.7
    MB/s) or a memory/malloc bug. Fix that → trie is finite → hwdb finishes → sysinit
    proceeds → getty.
+   **★ LOOP PINNED (2026-07-09k): systemd `trie_store_nodes` recursion.** Built a
+   user-stack backtrace probe in sys_write ([HWSTK]/[HWCALL], debug-wakelat, tid
+   4135), modeled on 024_sched_yield's YIELD-SPIN symbolizer: it walks hwdb's user
+   stack and prints (ino, file-offset) for each return address in a File-backed EXEC
+   VMA. The spin stack (bottom→top):
+     libsystemd-shared-257.so 0xd8150 (RECURSIVE, ~15-20 frames, offset 0xd8332
+       repeats) → fwrite@plt → libc fwrite → _IO_file_xsputn → _IO_do_write →
+       _IO_file_write → __write → syscall.
+   objdump of 0xd82f0-0xd83a0 CONFIRMS 0xd8150 = **`trie_store_nodes`**: a
+   `for i in 0..node->children_count` loop (cmp %rdx,%r15 @0xd836c) that `call
+   0xd8150`s recursively per child (@0xd832d, ret→0xd8332) then `fwrite`s the node
+   (16-byte child entries @0xd8390). So the blocker IS hwdb's recursive trie
+   serialization. It's CPU-bound (fwrite buffers in glibc; neither ext4 write path
+   fires during the 60s spin) → the trie has FAR too many nodes. Build grew brk to
+   28MB (real Linux dedups the same 9.3MB input to ~5MB) → **the trie is degenerate
+   (~5-6× too many nodes) because build-time prefix DEDUP failed** → trie_store_nodes
+   walks a bloated tree for 60s+ → single-CPU starvation → boot never reaches getty.
+   **NEXT (the actual fix): the build-side dedup.** hwdb `trie_insert`/node-match
+   compares string bytes (memcmp/strcmp) to merge common prefixes; on our system it
+   under-merges. Suspect a glibc SIMD memcmp/strcmp IFUNC mis-selected under our
+   CPUID (or a subtle wrong result). Trace hwdb's memcmp/strcmp results, or add a
+   trie-node COUNT probe (how many trie_store_nodes calls = node count; if ≫ real
+   Linux, dedup is the bug). ALSO a real gap surfaced: **/proc/<pid>/maps returns NO
+   pathnames** (broke every maps query) + /proc/<pid>/{syscall,wchan,fdinfo} stubbed
+   — implement these (Linux-compat + unblocks future userspace debugging).
+
    **EVERY KERNEL ALLOCATOR PATH EXONERATED (2026-07-09j):** traced hwdb's brk
    growth ([HWBRK], since reverted): heap starts 0x10005000, cap 0x14005000 (the
    64MB load.rs HEAP_RESERVE). hwdb's brk grows steadily +4MB/step to 0x11be2000
