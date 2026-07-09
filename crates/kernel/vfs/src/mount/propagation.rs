@@ -92,6 +92,14 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     };
     // CL_MAKE_SHARED over the source: it and its peer copies form a NEW group.
     let parent_pg = parent.peer_group.load(Ordering::Acquire);
+    #[cfg(feature = "debug-mnt")]
+    {
+        klog::write_raw(b"[PROP-SHARE] new="); klog::write_dec_u64(newm.mnt_id);
+        klog::write_raw(b" mp="); klog::write_raw(newm.mount_point_str().as_bytes());
+        klog::write_raw(b" parent="); klog::write_dec_u64(parent.mnt_id);
+        klog::write_raw(b" parent_prop="); klog::write_dec_u64(parent.propagation.load(Ordering::Acquire) as u64);
+        klog::write_raw(b"\n");
+    }
     let grp = make_shared_group(&newm);
     let mut n = 0;
     for peer in targets {
@@ -218,7 +226,21 @@ pub fn set_propagation_recursive(d: &Arc<Dentry>, kind: Propagation) -> KResult<
     let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
     let ns = m.ns;
     apply_propagation(&m, kind);
-    for id in super::subtree_ids(ns, m.mnt_id) {
+    let sub = super::subtree_ids(ns, m.mnt_id);
+    #[cfg(feature = "debug-mnt")]
+    {
+        klog::write_raw(b"[PROP-REC] ns="); klog::write_dec_u64(ns);
+        klog::write_raw(b" target="); klog::write_dec_u64(m.mnt_id);
+        klog::write_raw(b" n_subtree="); klog::write_dec_u64(sub.len() as u64);
+        klog::write_raw(b" mps=");
+        for id in sub.iter().take(24) {
+            if let Some(cm) = super::mount_by_id(*id) {
+                klog::write_raw(cm.mount_point_str().as_bytes()); klog::write_raw(b",");
+            }
+        }
+        klog::write_raw(b"\n");
+    }
+    for id in sub {
         if id == m.mnt_id { continue; }
         if let Some(cm) = super::mount_by_id(id) { apply_propagation(&cm, kind); }
     }
