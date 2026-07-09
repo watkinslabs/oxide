@@ -24,7 +24,9 @@ impl Mount {
         if !crate::csum::verify_inode_csum(&self.sb, ino, &buf) {
             return Err(MountError::BadChecksum);
         }
-        Ok(Inode::parse(&buf, &self.sb)?)
+        let mut node = Inode::parse(&buf, &self.sb)?;
+        node.ino = ino; // stamp so dir/extent-block verify can key the inode seed
+        Ok(node)
     }
 
     /// Read the data of `inode`'s `file_blk`-th logical block.
@@ -36,7 +38,7 @@ impl Mount {
     /// + leaves); deeper trees surface DepthUnsupported.
     /// # C: O(depth × log N) — small constant in practice
     pub fn read_file_block(&self, inode: &Inode, file_blk: u32) -> Result<Vec<u8>, MountError> {
-        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        let phys = self.resolve_pblock(inode, file_blk)?;
         let byte_off = phys * (self.sb.block_size as u64);
         read_byte_range(&*self.dev, byte_off, self.sb.block_size as usize)
     }
@@ -47,15 +49,15 @@ impl Mount {
     /// `ext4_find_extent`). Replaces the old depth-0/1/2 hand-unroll that
     /// returned `DepthUnsupported` past depth 2.
     /// # C: O(depth) block I/Os + O(entries) per level
-    pub(crate) fn resolve_pblock(&self, i_block: &[u8; inode::I_BLOCK_LEN], file_blk: u32)
+    pub(crate) fn resolve_pblock(&self, inode: &Inode, file_blk: u32)
         -> Result<u64, MountError>
     {
+        let i_block = &inode.i_block;
         let hdr = inode::parse_extent_header(i_block)?;
         if hdr.depth == 0 {
             return self.leaf_pblock_inline(i_block, &hdr, file_blk);
         }
         if hdr.depth > inode::EXT4_MAX_EXTENT_DEPTH { return Err(MountError::CorruptExtentTree); }
-        let bs = self.sb.block_size as usize;
         // ext4 keeps every leaf at the same level, so each interior node's
         // child is exactly one level shallower. Track the expected depth and
         // require it to strictly decrease — a node that doesn't is a corrupt
@@ -65,7 +67,19 @@ impl Mount {
         let mut expected_depth = hdr.depth;
         let mut child_lba = self.find_child_for(i_block, &hdr, file_blk)?;
         loop {
-            let buf = read_byte_range(&*self.dev, child_lba * (bs as u64), bs)?;
+            // Read interior nodes through the shadow-coherent metadata path, not
+            // raw `read_byte_range`: an in-flight journal scope keeps freshly
+            // written extent blocks in `state.shadow` before they hit disk, so a
+            // raw read mid-transaction would see stale bytes.
+            let buf = self.read_metadata_block(child_lba)?;
+            // External extent block carries an owned metadata_csum tail; verify
+            // it against the per-inode seed (skip when ino unset, e.g. journal
+            // inode built before stamping). No-op without the metadata_csum feat.
+            if inode.ino != 0
+                && !crate::csum::verify_extent_block_csum(&self.sb, inode.ino, inode.generation, &buf)
+            {
+                return Err(MountError::BadChecksum);
+            }
             let chdr = inode::parse_extent_header_slice(&buf)?;
             if !inode::extent_child_depth_ok(expected_depth, chdr.depth) {
                 return Err(MountError::CorruptExtentTree);
@@ -157,7 +171,7 @@ impl Mount {
         if data.len() != self.sb.block_size as usize {
             return Err(MountError::Inode(InodeError::BadLen));
         }
-        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        let phys = self.resolve_pblock(inode, file_blk)?;
         let byte_off = phys * (self.sb.block_size as u64);
         write_byte_range(&*self.dev, byte_off, data)
     }
@@ -169,7 +183,7 @@ impl Mount {
     pub fn read_file_block_meta(&self, inode: &Inode, file_blk: u32)
         -> Result<Vec<u8>, MountError>
     {
-        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        let phys = self.resolve_pblock(inode, file_blk)?;
         self.read_metadata_block(phys)
     }
 
@@ -187,7 +201,7 @@ impl Mount {
         if data.len() != self.sb.block_size as usize {
             return Err(MountError::Inode(InodeError::BadLen));
         }
-        let phys = self.resolve_pblock(&inode.i_block, file_blk)?;
+        let phys = self.resolve_pblock(inode, file_blk)?;
         let byte_off = phys * (self.sb.block_size as u64);
         self.metadata_write(byte_off, data)
     }
