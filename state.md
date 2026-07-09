@@ -20,19 +20,30 @@ So the ONLY thing to fix is the sysinit stall.
 
 ## The sysinit stall = MULTIPLE distinct bugs (live-boot confirmed via qemu MCP)
 Clean boot (features=debug-watchdog, no debug-boot flood): systemd reaches the
-socket/target setup in ~2.5s, then CRAWLS ~45s per userland-touching service.
-Kernel + serial debug-shell stay fully alive throughout (not hung). Two confirmed:
+socket/target setup in ~2.5s, then CRAWLS ~45s+ per userland-touching service.
+Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
 
-1. **~10s stall: tmpfiles-setup-dev-early / udev-trigger "Starting", never Finish,
-   ZERO zombies present.** NOT a reap issue — the service itself is blocked on
-   something (udev coldplug? a device/sysfs access? a fork child?). **UNDIAGNOSED —
-   this is the current front blocker.** Next: find which task is R/D and on what.
+1. **FRONT BLOCKER — `systemd-hwdb update` BUSY-SPINS in pure userspace.** At the
+   ~10s stall, exactly one non-shell task is state `R`: `/proc/39 [systemd-hwdb
+   update]`. `/proc/39/stat` utime≈5712 stime=0 → ~57s of USERSPACE CPU, ZERO
+   kernel time, under KVM (native speed). It reads the 35 input files
+   (/usr/lib/udev/hwdb.d/*.hwdb, 9.3MB, all read fine) then loops FOREVER building
+   the trie — **never reaches the write phase** (no hwdb.bin temp file appears; the
+   old 13.5MB /etc/udev/hwdb.bin stays read-only+untouched). In a debug-boot run it
+   spun to the 90s DefaultTimeoutStartSec and systemd killed it ("Failed to start
+   systemd-hwdb-update"), then the boot limped on. On real Linux this is <2s.
+   → **A userspace infinite/pathological loop triggered by our env** (a libc/hwdb
+   interaction over some syscall result). NOT ext4-read (inputs read correctly),
+   NOT slow I/O (stime=0), NOT TCG (KVM confirmed by fast boot).
+   **BLOCKED ON TOOLING:** gdb `qemu_interrupt` can't stop the guest under the 100%
+   spin; `/proc/<pid>/syscall`+`wchan` are stubbed (always running/0). Need either
+   userspace-symbol gdb on hwdb, or a startup syscall trace of tid=hwdb to see the
+   LAST syscalls before it stops syscalling (what data/config it consumed).
 2. **Later stall: sysusers/userwork exit → zombies unreaped ~45s** while init/userdbd
    sleep in epoll_wait. B678 targets this (reap-wake gen race). Unverified because
    #1 blocks first.
-
-Earlier debug-boot run also showed a userdb varlink stall (tmpfiles↔userdbd,
-userwork idle in ppoll) — may be same root as #1 or #2.
+3. Earlier debug-boot run also showed a userdb varlink stall (tmpfiles↔userdbd,
+   userwork idle in ppoll) — may be same root as #2.
 
 ## /proc bugs found (real, separate, worth fixing)
 - `/proc/<pid>/syscall` always returns `running` (never the blocked syscall) —
@@ -51,7 +62,11 @@ userwork idle in ppoll) — may be same root as #1 or #2.
   how I got the ST/last-syscall table. **image has NO awk, NO ps** — use /proc + sh.
 
 ## First task next session
-Diagnose stall #1: `qemu_start` clean, at the ~10s stall dump task states
-(comm/State/PPid via /proc, no awk) — find the R/D task and what tmpfiles-setup-dev-
-early or udev-trigger is blocked on. That's the front blocker; everything else is
-downstream. Then re-check B678 helps the reap stall once #1 clears.
+Root-cause the `systemd-hwdb update` userspace spin (front blocker). Options:
+(a) run gdb with hwdb's userspace symbols (or catch RIP by interrupting BEFORE the
+spin starts — break early, single-step into the loop); (b) boot `features=debug-all`
+and grep the syscall trace for hwdb's tid to see the LAST syscalls before it stops
+syscalling (what it read/mmapped/configured); (c) test the hypothesis that a
+specific libc call (getline/mmap/qsort/nss) returns wrong data by running a minimal
+repro under the debug-shell. Once hwdb finishes, re-verify B678 clears the reap
+stall and whether getty.target is reached.
