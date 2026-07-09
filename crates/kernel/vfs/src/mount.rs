@@ -39,12 +39,12 @@ pub use crate::mntns::{
 // Mount-propagation engine (peer/slave fan-out) lives in a submodule to hold
 // the line cap; its public surface stays `vfs::mount::*` verbatim.
 mod propagation;
-pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propagation};
+pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propagation, set_propagation_recursive};
 
 // Umount / detach tear-down (umount(2), d_invalidate detach, propagate_umount)
 // lives in a submodule to hold the line cap; public surface stays `vfs::mount::*`.
 mod detach;
-pub use detach::{unregister, unregister_top};
+pub use detach::{mountpoint_dentry_of, unregister, unregister_top};
 pub(crate) use detach::detach_mounts_on;
 
 // mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /

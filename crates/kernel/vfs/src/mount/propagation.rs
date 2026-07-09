@@ -203,6 +203,32 @@ fn unlink_from_master(m: &Arc<Mount>) {
 /// PRIVATE/UNBINDABLE additionally detach from that master. # C: O(N_mounts)
 pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
     let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
+    apply_propagation(&m, kind);
+    mntns::bump_gen(m.ns);
+    Ok(())
+}
+
+/// Recursive propagation retune (`MS_REC` — Linux `mount(NULL, target,
+/// MS_REC|MS_SLAVE, …)`): apply `kind` to the mount at `d` AND every mount in
+/// its subtree. systemd's per-service namespace setup does `make-rslave /` to
+/// break propagation before `pivot_root`; without the recursion the bind-cloned
+/// service rootfs stayed SHARED and `pivot_root` -EINVAL'd ("old_mnt shared"),
+/// deadlocking sysinit. # C: O(N_subtree)
+pub fn set_propagation_recursive(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
+    let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
+    let ns = m.ns;
+    apply_propagation(&m, kind);
+    for id in super::subtree_ids(ns, m.mnt_id) {
+        if id == m.mnt_id { continue; }
+        if let Some(cm) = super::mount_by_id(id) { apply_propagation(&cm, kind); }
+    }
+    mntns::bump_gen(ns);
+    Ok(())
+}
+
+/// Apply one propagation transition to a single mount (Linux
+/// `change_mnt_propagation`). # C: O(N_peers) worst case
+fn apply_propagation(m: &Arc<Mount>, kind: Propagation) {
     match kind {
         Propagation::Shared => {
             if m.peer_group.load(Ordering::Acquire) == 0 {
@@ -211,7 +237,7 @@ pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
             m.propagation.store(Propagation::Shared as u8, Ordering::Release);
         }
         Propagation::Slave => {
-            do_make_slave(&m);
+            do_make_slave(m);
             // `master:<pg>` mountinfo render reads the MASTER's group id.
             let mpg = m.mnt_master.lock().upgrade()
                 .map(|x| x.peer_group.load(Ordering::Acquire)).unwrap_or(0);
@@ -219,12 +245,10 @@ pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
             m.propagation.store(Propagation::Slave as u8, Ordering::Release);
         }
         Propagation::Private | Propagation::Unbindable => {
-            do_make_slave(&m);
-            unlink_from_master(&m);
+            do_make_slave(m);
+            unlink_from_master(m);
             m.peer_group.store(0, Ordering::Release);
             m.propagation.store(kind as u8, Ordering::Release);
         }
     }
-    mntns::bump_gen(m.ns);
-    Ok(())
 }

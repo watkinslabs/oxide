@@ -13,7 +13,14 @@ fn set_mountpoint_dentry(m: &Arc<Mount>, new_d: Option<Arc<Dentry>>, rendered: S
 /// `pivot_root(new_root, put_old)` (`docs/16§6`). # C: O(N_mounts × depth)
 pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> {
     let ns = current_ns();
-    let nr_m = mount_exact_at(ns, new_root).ok_or(VfsError::Einval)?;
+    let nr_m = match mount_exact_at(ns, new_root) {
+        Some(m) => m,
+        None => {
+            #[cfg(feature = "debug-mnt")]
+            klog::write_raw(b"[PIVOT-EINVAL] new_root not a mount root\n");
+            return Err(VfsError::Einval);
+        }
+    };
     let nr_mp = nr_m.mountpoint();
     let nr_id = nr_m.mnt_id;
     let nr_subtree = subtree_ids(ns, nr_id);
@@ -33,17 +40,39 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     //     corrupt its peers when the re-root mutates it
     //     (`IS_MNT_SHARED(old_mnt) || IS_MNT_SHARED(new_mnt->mnt_parent) ||
     //       IS_MNT_SHARED(root_mnt->mnt_parent)`).
-    if nr_m.is_locked() { return Err(VfsError::Einval); }
+    if nr_m.is_locked() {
+        #[cfg(feature = "debug-mnt")]
+        klog::write_raw(b"[PIVOT-EINVAL] new_root mount is LOCKED\n");
+        return Err(VfsError::Einval);
+    }
     if let Some(p) = mount_by_id(nr_m.parent_id.load(Ordering::Acquire)) {
-        if is_shared(&p) { return Err(VfsError::Einval); }
+        if is_shared(&p) {
+            #[cfg(feature = "debug-mnt")]
+            klog::write_raw(b"[PIVOT-EINVAL] new_root parent is SHARED\n");
+            return Err(VfsError::Einval);
+        }
     }
     if let Some(rm) = old_root_id.and_then(mount_by_id) {
         if let Some(rp) = mount_by_id(rm.parent_id.load(Ordering::Acquire)) {
-            if is_shared(&rp) { return Err(VfsError::Einval); }
+            if is_shared(&rp) {
+                #[cfg(feature = "debug-mnt")]
+                klog::write_raw(b"[PIVOT-EINVAL] old-root parent is SHARED\n");
+                return Err(VfsError::Einval);
+            }
         }
     }
     if let Some(om) = mount_by_id(po_mnt) {
-        if is_shared(&om) { return Err(VfsError::Einval); }
+        if is_shared(&om) {
+            #[cfg(feature = "debug-mnt")]
+            {
+                klog::write_raw(b"[PIVOT-EINVAL] put_old mount SHARED po_mnt=");
+                klog::write_dec_u64(po_mnt);
+                klog::write_raw(b" nr_id="); klog::write_dec_u64(nr_id);
+                klog::write_raw(b" root_id="); klog::write_dec_u64(old_root_id.unwrap_or(0));
+                klog::write_raw(b"\n");
+            }
+            return Err(VfsError::Einval);
+        }
     }
     let mounts = mounts_in_ns(ns);
     // Position of a PRESERVE-set mount under the new root, MOUNT-AWARE: seed the
@@ -73,7 +102,11 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     let old_dst = match rel_under_seeded(&po_d, po_mnt, nr_mp.as_ref()) {
         Some(r) if !r.is_empty() => r,
         _ if nr_mp.is_none() => rel_under_seeded(&po_d, po_mnt, None).unwrap_or_default(),
-        _ => return Err(VfsError::Einval),
+        _ => {
+            #[cfg(feature = "debug-mnt")]
+            klog::write_raw(b"[PIVOT-EINVAL] put_old not under new_root (non-stacking)\n");
+            return Err(VfsError::Einval);
+        }
     };
     if top_mount_on(ns, &po_d).is_some() { return Err(VfsError::Ebusy); }
     let new_paths: Vec<(u64, String)> = mounts.iter().map(|m| {
