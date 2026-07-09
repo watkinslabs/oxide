@@ -76,8 +76,12 @@ impl Mount {
             Some(b) => b,
             None    => return Ok(None),
         };
-        let final_bit = if group == 0 && bit < 10 {
-            let mut b = 10usize;
+        // Group 0's low inodes are reserved (1..s_first_ino); the first
+        // allocatable inode is `s_first_ino` → 0-based bit `s_first_ino - 1`
+        // (10 for the stock first_ino=11). Read from the sb, not hardcoded.
+        let first_bit = self.sb.first_ino.saturating_sub(1) as usize;
+        let final_bit = if group == 0 && bit < first_bit {
+            let mut b = first_bit;
             while b < self.sb.inodes_per_group as usize {
                 if (bitmap[b >> 3] & (1u8 << (b & 7))) == 0 { break; }
                 b += 1;

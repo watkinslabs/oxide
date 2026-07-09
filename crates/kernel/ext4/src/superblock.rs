@@ -73,6 +73,16 @@ pub const RO_COMPAT_METADATA_CSUM_SEED: u32 = 0x0020_0000;
 pub struct Superblock {
     pub inodes_count:    u32,
     pub blocks_count_lo: u32,
+    /// `s_blocks_count_hi` (0x158) — high 32 bits of the total block count on a
+    /// 64bit fs (0 otherwise). Merged with `_lo` by [`Superblock::blocks_count`]
+    /// so >2³²-block (>16 TiB) filesystems are not truncated.
+    pub blocks_count_hi: u32,
+    /// `s_first_ino` (0x54) — first non-reserved inode (11 on stock ext4). Drives
+    /// where inode allocation may begin; read instead of hardcoded.
+    pub first_ino: u32,
+    /// `s_desc_size` (0xFE) — on-disk group-descriptor size for a 64bit fs (>=64,
+    /// may exceed 64 on future layouts); 32 without 64bit. Read instead of derived.
+    pub desc_size: u16,
     /// Filesystem block size in bytes. Computed from
     /// `1024 << s_log_block_size`.
     pub block_size:      u32,
@@ -165,9 +175,15 @@ impl Superblock {
         }
         let free_blocks_lo = rd_u32(buf, SB_OFF_FREE_BLOCKS_LO) as u64;
         let free_blocks_hi = rd_u32(buf, SB_OFF_FREE_BLOCKS_HI) as u64;
+        let is_64bit = (rd_u32(buf, 0x60) & INCOMPAT_64BIT) != 0;
+        let first_ino = { let v = rd_u32(buf, 0x54); if v < 11 { 11 } else { v } };
+        let desc_size = if is_64bit { let d = rd_u16(buf, 0xFE); if d < 64 { 64 } else { d } } else { 32 };
         Ok(Superblock {
             inodes_count:      rd_u32(buf, 0x00),
             blocks_count_lo:   rd_u32(buf, 0x04),
+            blocks_count_hi:   if is_64bit { rd_u32(buf, 0x158) } else { 0 },
+            first_ino,
+            desc_size,
             block_size,
             blocks_per_group:  rd_u32(buf, 0x20),
             inodes_per_group:  rd_u32(buf, 0x28),
@@ -202,9 +218,15 @@ impl Superblock {
 
     /// Number of block groups, derived from blocks_count + blocks_per_group.
     /// # C: O(1)
+    /// Total block count, merging `s_blocks_count_hi` (64bit fs). # C: O(1)
+    pub fn blocks_count(&self) -> u64 {
+        (self.blocks_count_lo as u64) | ((self.blocks_count_hi as u64) << 32)
+    }
+
     pub fn group_count(&self) -> u32 {
         if self.blocks_per_group == 0 { return 0; }
-        (self.blocks_count_lo + self.blocks_per_group - 1) / self.blocks_per_group
+        let total = self.blocks_count();
+        ((total + self.blocks_per_group as u64 - 1) / self.blocks_per_group as u64) as u32
     }
 
     /// True iff the FS was built with metadata_csum.
