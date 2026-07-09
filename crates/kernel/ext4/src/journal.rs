@@ -110,10 +110,22 @@ impl Mount {
         // Write commit.
         let cbuf = build_commit_block(seq, bs);
         log.write_journal_block(commit_at, &cbuf)?;
-        // Now apply each staged block to its target.
-        self.apply_staged_to_target(&staged)?;
-        // Mark journal clean (s_start = 0, bump sequence).
+        // WAL barrier (jbd2 write-ahead, ext4fix §6.1): make the journal body
+        // durable, THEN durably record s_start=desc_at + s_sequence=seq in the
+        // journal SB, THEN (and only then) write the targets. Previously s_start
+        // stayed 0 ("nothing to recover") for the whole window, so a crash after
+        // the commit block but before the target writes finished lost the txn and
+        // left the fs half-updated. Now such a crash replays [desc_at..commit].
         let mut sb_bytes = sb_bytes;
+        let _ = self.dev.flush(); // journal body (desc+data+commit) durable first
+        sb_bytes[0x18..0x1C].copy_from_slice(&seq.to_be_bytes());      // s_sequence = seq
+        sb_bytes[0x1C..0x20].copy_from_slice(&desc_at.to_be_bytes());  // s_start = desc_at
+        log.write_journal_block(0, &sb_bytes)?;
+        let _ = self.dev.flush(); // "recover from desc_at" durable before targets
+        // Journal now leads the fs; apply staged blocks to their targets.
+        self.apply_staged_to_target(&staged)?;
+        let _ = self.dev.flush(); // targets durable before dropping the journal
+        // Checkpoint complete: mark the journal clean (s_start = 0, bump sequence).
         sb_bytes[0x18..0x1C].copy_from_slice(&seq.wrapping_add(1).to_be_bytes());
         sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
         log.write_journal_block(0, &sb_bytes)?;
