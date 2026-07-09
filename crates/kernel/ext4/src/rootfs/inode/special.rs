@@ -86,7 +86,8 @@ impl InodeOps for Ext4StatInodeOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let perm = ctx.apply_umask(mode) as u16;
-        d.st.mount.create_dir(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
+        d.st.mount.create_dir(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid())
+            .map_err(super::regular::vfs_error_from_mount)?;
         let child = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Eio)?;
         d.st.wrap_any_ino(child).ok_or(VfsError::Eio)
     }
@@ -127,7 +128,8 @@ impl InodeOps for Ext4StatInodeOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let perm = ctx.apply_umask(mode) as u16;
-        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
+        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid())
+            .map_err(super::regular::vfs_error_from_mount)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         d.st.wrap_file(ino).ok_or(VfsError::Eio)
     }
@@ -173,7 +175,8 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
+        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, ctx.fsuid(), ctx.fsgid())
+            .map_err(super::regular::vfs_error_from_mount)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         Ok(())
     }

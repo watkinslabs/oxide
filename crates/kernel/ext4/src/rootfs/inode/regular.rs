@@ -13,12 +13,18 @@ use super::data::{Ext4FileData, persist_inode_xattrs};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
 
-fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
+pub(crate) fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
     match e {
-        crate::MountError::NoSpace => vfs::VfsError::Enospc,
+        // A directory with no free dirent slot whose block growth path isn't
+        // wired is an out-of-space condition, not an I/O error (Linux ext4 grows
+        // the dir; where we can't, ENOSPC is the honest errno — blanket EIO here
+        // hid the real cause of the boot's `mkdir /run/udev`/`/var/log/journal`).
+        crate::MountError::NoSpace | crate::MountError::DirFull => vfs::VfsError::Enospc,
+        crate::MountError::NotDir => vfs::VfsError::Enotdir,
         crate::MountError::Inode(crate::InodeError::BadLen) => vfs::VfsError::Einval,
         crate::MountError::NotFound => vfs::VfsError::Eopnotsupp,
-        crate::MountError::DepthUnsupported | crate::MountError::ExtentTreeFull => vfs::VfsError::Eopnotsupp,
+        crate::MountError::DepthUnsupported | crate::MountError::ExtentTreeFull
+            | crate::MountError::NotExtents => vfs::VfsError::Eopnotsupp,
         crate::MountError::CorruptExtentTree => vfs::VfsError::Eio,
         crate::MountError::BadChecksum => vfs::VfsError::Eio,
         crate::MountError::UnsupportedFeature => vfs::VfsError::Einval,
