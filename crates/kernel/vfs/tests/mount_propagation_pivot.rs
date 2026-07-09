@@ -205,6 +205,24 @@ fn full_service_setup_pivot_and_switch_root_detach() {
         "service rootfs bind must be PRIVATE, not SHARED");
     let stage_id = bindm.mnt_id;
 
+    // Submount carry-through: bind_submounts_rec MUST replicate the tmpfs /run
+    // (and pseudo-fs) UNDER the stage, so after pivot `/run` resolves to tmpfs,
+    // not the ext4 underlay. If the tmpfs submount is dropped, `mkdir /run/udev`
+    // lands on ext4 -> the boot's `mkdir /run/udev err=5`. Assert a tmpfs mount
+    // now lives inside the stage subtree.
+    let is_under = |m: &Arc<vfs::mount::Mount>, top: u64| -> bool {
+        let mut id = m.parent_id.load(Ordering::Acquire);
+        for _ in 0..64 { if id == top { return true; } match vfs::mount::mount_by_id(id) {
+            Some(p) => { let np = p.parent_id.load(Ordering::Acquire); if np == id { break; } id = np; }
+            None => break, } }
+        false
+    };
+    let tmpfs_under_stage = vfs::mount::all_mounts().iter()
+        .filter(|m| m.ns == sandbox && m.fs().name() == "tmpfs" && is_under(m, stage_id))
+        .count();
+    assert!(tmpfs_under_stage >= 1,
+        "tmpfs /run must be carried UNDER the stage by bind_submounts_rec (else mkdir /run/udev hits ext4 -> EIO)");
+
     // 5. pivot_root(stage, stage) — stacked. MUST succeed; stage becomes `/`.
     let old_root_id = vfs::mount::root_mount_id(sandbox).expect("pre-pivot root id");
     assert_ne!(old_root_id, stage_id, "precondition: stage != old root");
