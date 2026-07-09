@@ -69,7 +69,11 @@ fn create_symlink_fast_inline_target() {
     let m = ext4::Mount::open(disk).unwrap();
     let target: &[u8] = b"/etc/passwd";
     let n = m.create_symlink(2, b"shortlink", target, 0, 0).unwrap();
-    let got = m.lookup_path(b"/shortlink").unwrap();
+    // lookup_path FOLLOWS symlinks (Linux link_path_walk, B668) and /etc/passwd
+    // does not exist in mini.img, so resolve the dir entry WITHOUT following via
+    // the parent to get the symlink inode itself (lstat-equivalent).
+    let root = m.read_inode(2).unwrap();
+    let got = m.lookup_in_dir(&root, b"shortlink").unwrap();
     assert_eq!(got, n);
     let inode = m.read_inode(n).unwrap();
     assert!(inode.is_link());
@@ -106,7 +110,10 @@ fn create_dir_has_block_and_is_linkable() {
     assert!(inode.is_dir());
     assert_eq!(inode.size, m.sb.block_size as u64, "new dir has its initial . / .. block");
     let link = m.create_symlink(d, b"inside", b"/etc/passwd", 0, 0).unwrap();
-    assert_eq!(m.lookup_path(b"/subdir/inside").unwrap(), link);
+    // Resolve without following (lookup_path would follow the dangling
+    // /etc/passwd target); the entry must exist in the freshly-created subdir.
+    let subdir = m.read_inode(d).unwrap();
+    assert_eq!(m.lookup_in_dir(&subdir, b"inside").unwrap(), link);
 }
 
 #[test]
