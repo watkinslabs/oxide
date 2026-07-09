@@ -68,6 +68,29 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    getdents loop/dup? Likely ties to the ext4 read side (cold-read was already ~2.7
    MB/s) or a memory/malloc bug. Fix that → trie is finite → hwdb finishes → sysinit
    proceeds → getty.
+   **EVERY KERNEL ALLOCATOR PATH EXONERATED (2026-07-09j):** traced hwdb's brk
+   growth ([HWBRK], since reverted): heap starts 0x10005000, cap 0x14005000 (the
+   64MB load.rs HEAP_RESERVE). hwdb's brk grows steadily +4MB/step to 0x11be2000
+   (~28MB in) then STOPS — never DENIED, never near the 64MB cap. So (a) the 64MB
+   heap-cap is NOT the trigger, and (b) the whole 28MB trie lives in the brk heap →
+   glibc never needed mmap arenas → **mmap/mremap are not even used for the trie**.
+   Combined with find_hole (hole.rs) being correct on inspection, EVERY inspectable
+   kernel allocator path is clean: brk grows fine, mmap/mremap unused, ext4 read/
+   write correct, output bounded. The build completes normally (brk stops at 28MB at
+   t≈14.7s) THEN the userspace serialize-spin begins (t≈15s, lastsc=1, bounded
+   512KB output, <30000 syscalls in 110s = COMPUTE-bound not syscall-bound).
+   **Only two suspects remain, both hard:** (1) the deep COW/rmap anon fault-fill
+   (handle_page_fault_cow_rmap) hands hwdb an aliased/non-zeroed brk frame — but
+   that machinery is broadly exercised and a bug would corrupt EVERY process, and
+   the rest of the boot is fine, so unlikely; (2) a genuine hwdb/glibc userspace
+   bug our env triggers via some subtle syscall-result difference. Distinguishing
+   them REQUIRES seeing hwdb's userspace loop, which the gdb-can't-stop-the-spin +
+   stubbed-/proc walls block. **The real unblock is a working userspace-disasm path:
+   a gdb breakpoint with a large ignore-count (boot paused → break sys_write →
+   continue → clean stop mid-spin, no async interrupt) to read the syscall frame's
+   saved user RIP/RSP and name hwdb's caller; OR implement /proc/<pid>/{maps,syscall,
+   wchan,fdinfo} for real so the debug-shell can introspect the spinning task.**
+
    **BIG CORRECTION (2026-07-09i): hwdb's output is BOUNDED (~512KB), NOT an
    unbounded/circular trie filling RAM.** A [FCSIZE] probe in framecache
    `write_buffered` (logs any buffered file crossing an 8MB boundary) stayed SILENT
