@@ -95,6 +95,20 @@ pub struct MountState {
     /// subsequent ops within the same scope. Drained at scope
     /// close + committed as one JBD2 transaction.
     pub(crate) shadow: Option<alloc::collections::BTreeMap<u64, Vec<u8>>>,
+    /// Cross-operation batching (Linux jbd2 running-transaction model). When
+    /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
+    /// the running transaction instead of committing its own, and the batch is
+    /// drained by `commit_batch` on a trigger (size threshold / fsync / sync /
+    /// unmount). Committing per-op (the default) makes every fs-heavy service
+    /// pay a full commit + 3 device flushes per operation — the systematic
+    /// sysinit slowness. Opt-in per mount (rootfs enables it).
+    pub(crate) batch: bool,
+    /// Per-op undo stack (batch mode only). Each `run_journaled` op that joins
+    /// the running transaction pushes a frame recording the pre-op shadow value
+    /// of every LBA it stages; on op failure the frame is replayed to restore
+    /// the shared shadow (so ONE op's failure never corrupts prior batched ops),
+    /// on success it merges into the parent frame (or is dropped at top level).
+    pub(crate) undo: Vec<Vec<(u64, Option<Vec<u8>>)>>,
 }
 
 pub type MountStateGuard<'a> = Guard<'a, MountState, SuperblockLockClass>;
