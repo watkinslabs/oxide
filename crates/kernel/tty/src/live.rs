@@ -22,12 +22,12 @@ pub const N_VT: usize = 63;
 /// Foreground VT (1..=N_VT) — the keyboard-input target a VT switch sets.
 static FOREGROUND_VT: AtomicU8 = AtomicU8::new(1);
 
-/// Keyboard → system-console input sink. The interactive console (where
-/// `console-getty` runs) is `/dev/console` — a real `TtyStruct`/N_TTY fed
-/// from the UART RX. The physical keyboard is just a SECOND input source for
-/// that same console (Linux: the VT keyboard driver feeds the foreground
-/// console tty's flip buffer). Registered at boot to
-/// `console::static_console::rx_byte`. `null` = not yet installed.
+/// Keyboard → console input sink. The physical keyboard drives the VT
+/// subsystem (Linux: the VT keyboard driver feeds the FOREGROUND VT's flip
+/// buffer / N_TTY). Registered at boot (`kmain` runtime) to `console::kbd_input`,
+/// which pushes each byte into the foreground numbered VT's `TtyStruct`
+/// (`console::vt_tty`) — NOT the serial `static_console`. `null` = not yet
+/// installed.
 static KBD_SINK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Register the keyboard → system-console RX sink (boot wiring, once).
