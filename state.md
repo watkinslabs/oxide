@@ -60,17 +60,31 @@ Finished): systemd-journal-flush, systemd-random-seed, systemd-userdbd,
 sys-kernel-config.mount. Late-active tids: 4141 (statx sc332 @234s), 4146 (fstat
 sc5 @309s) — a fs walker (tmpfiles?) still doing work, plus the hung oneshot.
 
-**First task (debug-boot won't help — its journal echo STOPS when systemd goes
-idle at ~86s):** the live tid is **4141** (a fs walker: `statx` sc332 @234s,
-`fstat` sc5 @309s — active for MINUTES, slow-progressing). Trace IT in
-debug-wakelat: add a >50ms timing probe to `sys_statx`/`sys_newfstatat` +
-the ext4 path-lookup (`lookup_path`/`resolve`) — is EACH statx slow (an ext4
-path-resolution / large-dir / synchronous-read cost) or does the service SLEEP
-~7.5s BETWEEN statx calls (a userspace retry — then find what it retries on)?
-The consistent 7.5s tickless-idle cadence favors the userspace-retry case: the
-walker does a statx, blocks 7.5s waiting for something, retries. Identify what
-tid 4141 is (map its exe via `[USERIP]` name / /proc) and what it waits on
-between statx calls. journald idle-in-epoll is NORMAL, not the bug.
+**IDENTIFIED via live debug-shell (systemctl works over ttyS0):** `list-jobs` =
+**0 running / 36 waiting** = a sysinit deadlock. The one "activating" unit is
+**systemd-tmpfiles-setup.service** (PID 27, State S sleeping, blocked on userdb
+**socket fd 30** = `/run/systemd/userdb/io.systemd.Multiplexer`). **systemd-userdbd
+.service is "waiting" (never dispatched)** though its `After=` (userdbd.socket,
+system.slice, journald.socket) are ALL satisfied. **`systemctl start
+systemd-userdbd.service` → userdbd active + tmpfiles unblocks.** ⇒ NOT a deps/
+ordering deadlock, NOT the old GetMemberships-varlink theory — **systemd's main
+event loop isn't being woken to dispatch its ready job queue** after the
+socket-activation queues userdbd (a manual dbus command injects an event that
+wakes it and it runs). Full detail + next-trace in memory
+[[desktop-blocker-tmpfiles-userdbd]] (UPDATE 2026-07-09d).
+
+**First task:** trace what systemd (pid 1) blocks in at the deadlock and what
+SHOULD wake it when a job becomes runnable. Since early jobs (modprobe, remount-
+fs, sysctl) DID dispatch, the loop-wakeup works generally — find what's different
+about the socket-activation-queued userdbd job: does queuing it fail to self-wake
+the sd-event loop (eventfd/signalfd self-pipe write→epoll wake), or did the
+socket-ready notify that queued the job not also wake the loop? Likely a kernel
+eventfd/epoll self-wake path. Reproduce the deadlock, break into systemd's
+epoll_wait, and check the eventfd/signalfd it should have been woken on.
+DEBUG TECHNIQUE THAT WORKS: the `systemd.debug_shell=ttyS0` root shell — pipe
+`systemctl`/`/proc` queries via `qemu_send_serial` after the boot goes idle
+(~90s). `/proc/<pid>/{syscall,wchan,stack}` are STUBBED (empty) — use
+`/proc/<pid>/status` State + `/proc/<pid>/fd`.
 
 ## First command next session
 `cd /home/nd/oxide/kernel && git log --oneline -3`  # confirm main @ 8537de19
