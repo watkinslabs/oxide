@@ -311,7 +311,20 @@ impl Ext4FrameStore {
             self.mark_dirty(idx);
             done += chunk;
         }
-        self.size.fetch_max(off + src.len() as u64, Ordering::AcqRel);
+        let newsz = off + src.len() as u64;
+        #[cfg_attr(not(feature = "debug-wakelat"), allow(unused_variables))]
+        let prev = self.size.fetch_max(newsz, Ordering::AcqRel);
+        // DIAG (debug-wakelat): a buffered file whose size climbs past ~16MB is the
+        // systemd-hwdb unbounded/circular-trie signature (hwdb.bin should be ~13.5MB).
+        // Log each 8MB boundary crossing with the inode; if this keeps climbing for
+        // one inode, the trie is unbounded (allocator-corruption). If it plateaus at
+        // ~13.5MB, the spin is NOT unbounded output. Cheap: fires once per 8MB.
+        #[cfg(feature = "debug-wakelat")]
+        if newsz.max(prev) >> 23 != prev >> 23 {
+            klog::write_raw(b"[FCSIZE ino="); klog::write_dec_u64(self.ino as u64);
+            klog::write_raw(b" size="); klog::write_dec_u64(newsz);
+            klog::write_raw(b"]\n");
+        }
         Ok(done)
     }
 

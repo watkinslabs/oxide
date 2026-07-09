@@ -68,6 +68,32 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    getdents loop/dup? Likely ties to the ext4 read side (cold-read was already ~2.7
    MB/s) or a memory/malloc bug. Fix that → trie is finite → hwdb finishes → sysinit
    proceeds → getty.
+   **BIG CORRECTION (2026-07-09i): hwdb's output is BOUNDED (~512KB), NOT an
+   unbounded/circular trie filling RAM.** A [FCSIZE] probe in framecache
+   `write_buffered` (logs any buffered file crossing an 8MB boundary) stayed SILENT
+   for a full 98s while hwdb (tid 4135) spun at `write()` (lastsc=1, rip
+   0x7ffff71af75e = __internal_syscall_cancel). No framecache file ever exceeds 8MB;
+   the only growing file is ino 9521 stuck at 512KB, re-flushed span=0. So the
+   "unbounded/circular trie fills 2GB RAM" narrative (2026-07-09f) is WRONG — hwdb
+   is in an INFINITE LOOP writing a BOUNDED ~512KB file forever. Since old [HWDBWR]
+   showed write() returning n=1024=cnt (full success), glibc loop_write advances
+   correctly → the loop is in hwdb's OWN outer logic (a bounded circular node
+   traversal, or a write-verify-retry cycle), NOT a write-returns-0 and NOT an
+   allocator-produced-unbounded-structure. The allocator-corruption theory is
+   WEAKENED (a bounded loop needn't be memory corruption at all).
+   **TOOLING WALL (why not yet pinned): can't see hwdb's userspace loop.**
+   gdb can't stop a 100%-spinning KVM guest (qemu_interrupt/regs wedge); under TCG
+   the interrupt also wedged. /proc/<pid>/{fdinfo,wchan,syscall,stack,maps-via-shell}
+   are stubbed or the starved debug-shell has no awk. So the exact hwdb loop is not
+   yet disassembled. **UNBLOCK OPTIONS (next session):** (a) gdb clean STOP via a
+   pre-set breakpoint on `sys_write` with a large ignore-count (boot paused → break →
+   continue → stops mid-spin without async-interrupt) → read the syscall frame's
+   saved user RIP/RSP → name hwdb's caller; (b) a kernel trace of tid-4135 write()
+   fd+file-offset+count (does the offset cycle 0..512KB [circular traverse] or stay
+   fixed [retry]?) — distinguishes the two loop shapes; (c) implement
+   /proc/<pid>/{fdinfo,syscall,wchan} for real (a genuine gap regardless). The
+   write-offset trace (b) is the cheapest decisive next measurement.
+
    **CORRUPTION SOURCE NARROWED to in-memory build (2026-07-09h) — ext4 fully out:**
    Two independent disproofs this session localize hwdb's unbounded/circular trie to
    its OWN in-memory build (a kernel MEMORY-ALLOCATOR bug), NOT any fs path:
