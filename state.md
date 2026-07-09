@@ -55,8 +55,24 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    syscall+fd+retval with `features=debug-all` filtered to hwdb's tid, or test
    writes to the same fd type in the debug-shell. **This likely also explains the
    general boot crawl** (any service hitting the same write-0 path).
-   **FULLY TRACED (2026-07-09e): hwdb makes SUCCESSFUL write() syscalls in an
-   infinite loop.** [USERIP]+lastsc: tid=4135 starts `lastsc=0` (read, ~10-11s
+   **DEFINITIVE ROOT CAUSE (2026-07-09f): hwdb serializes a corrupt/UNBOUNDED trie
+   to an ext4 O_TMPFILE forever.** [HWDBWR] trace of hwdb's steady-state writes:
+   `fd=3 type=0(regular) cnt=1024 n=1024 path="/" b=[binary trie bytes]` — 1024-byte
+   binary chunks to an anonymous O_TMPFILE (path renders "/" = the hwdb.bin output
+   opened O_TMPFILE in /etc/udev). Each write fully SUCCEEDS, yet it runs 60+s ≫ the
+   13.5MB output → the trie being written is UNBOUNDED/CIRCULAR. So the write+ext4
+   path is fine; hwdb built a corrupt trie earlier (read phase, lastsc=0). **ROOT is
+   UPSTREAM of the write:** a bad input read / getdents / malloc made the trie
+   circular. **NEXT: trace the READ/getdents phase** (fd + retval + bytes for tid's
+   read/getdents before it flips to write) — did a read return wrong bytes or a
+   getdents loop/dup? Likely ties to the ext4 read side (cold-read was already ~2.7
+   MB/s) or a memory/malloc bug. Fix that → trie is finite → hwdb finishes → sysinit
+   proceeds → getty.
+   **ALSO CONFIRMED BUG: task `comm` is never updated on exec** (kernel task.name +
+   /proc/<pid>/comm both stay "fork-child"). Real Linux-compat gap; fix in the exec
+   path (set comm to the new binary basename). It's why name-based diag filters fail.
+
+   **(superseded) hwdb makes SUCCESSFUL write() syscalls in an infinite loop.** [USERIP]+lastsc: tid=4135 starts `lastsc=0` (read, ~10-11s
    reading input) then LOCKS `lastsc=1` (write) for 60+s at rip 0x7ffff71af75e =
    libc `__internal_syscall_cancel` FAST-PATH post-`syscall` return (objdump). The
    write neither returns 0 (`[WRITE0]` silent) nor errors (`[WRITEERR]` silent for
