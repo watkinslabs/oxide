@@ -87,9 +87,15 @@ pub fn try_snapshot() -> Option<Vec<Arc<Task>>> {
 /// `Weak<Task>` has decayed; opportunistically prunes them.
 /// # C: O(N_tasks)
 pub fn live_tids() -> Vec<u32> {
+    use core::sync::atomic::Ordering;
     let mut g = REG.lock();
     g.retain(|(_, w)| w.strong_count() > 0);
-    g.iter().map(|(t, _)| *t).collect()
+    // Skip reaped-but-pinned tasks (Linux release_task): gone from the process
+    // table, and never a valid reparent target / procfs entry.
+    g.iter()
+        .filter(|(_, w)| w.upgrade().map_or(false, |t| !t.reaped.load(Ordering::Acquire)))
+        .map(|(t, _)| *t)
+        .collect()
 }
 
 /// `(total_live, runnable)` — used by `/proc/stat`'s `processes` and
@@ -97,12 +103,16 @@ pub fn live_tids() -> Vec<u32> {
 /// callers can compute if they care; v1 procfs reports only running.
 /// # C: O(N_tasks)
 pub fn live_counts() -> (u64, u64) {
+    use core::sync::atomic::Ordering;
     let mut g = REG.lock();
     g.retain(|(_, w)| w.strong_count() > 0);
     let mut total = 0u64;
     let mut runnable = 0u64;
     for (_, w) in g.iter() {
         if let Some(t) = w.upgrade() {
+            // Skip reaped-but-pidfd-pinned tasks (Linux release_task): they are
+            // gone from the process table even though the Arc is still alive.
+            if t.reaped.load(Ordering::Acquire) { continue; }
             total += 1;
             if matches!(t.state(), TaskState::Runnable) {
                 runnable += 1;
@@ -124,6 +134,10 @@ pub fn live_vpids() -> Vec<u32> {
     let mut out: Vec<u32> = g
         .iter()
         .filter_map(|(_, w)| w.upgrade())
+        // Skip reaped tasks (Linux release_task): a pidfd-pinned reaped child is
+        // still strong-ref alive but must not appear in /proc (else ps/htop show
+        // it as a lingering zombie).
+        .filter(|t| !t.reaped.load(Ordering::Acquire))
         .map(|t| t.vtgid.load(Ordering::Acquire))
         .filter(|&v| v != 0)
         .collect();

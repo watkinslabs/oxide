@@ -369,6 +369,11 @@ pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
     // same value fork() returned.
     let vpid = t.vtgid.load(Ordering::Acquire);
     let code = t.exit_status.load(Ordering::Acquire);
+    // Linux release_task: a reaped process leaves /proc immediately, even if a
+    // pidfd still pins the task_struct. Mark it so procfs enumeration drops it —
+    // otherwise a pidfd-pinned reaped child lingers as a visible zombie in
+    // ps/htop (the strong Arc keeps the registry Weak alive).
+    t.reaped.store(true, Ordering::Release);
     drop(t);  // strong-ref released; Task freed if no other holders
     Some((vpid, code))
 }
