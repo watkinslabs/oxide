@@ -156,7 +156,16 @@ pub fn all_mounts() -> Vec<Arc<Mount>> { MOUNTS.lock().values().cloned().collect
 /// The (top) mount attached EXACTLY at mountpoint dentry `d` in `ns`, by
 /// IDENTITY. # C: O(log N)
 pub(super) fn mount_exact_at(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
-    if is_ns_root_dentry(d) { return root_mount_id(ns).and_then(mount_by_id); }
+    if is_ns_root_dentry(d) {
+        let rootid = root_mount_id(ns)?;
+        // A mount STACKED ON the ns root (Linux overmount) is the visible top at
+        // the root dentry — return it, not the underlay root mount. This is the
+        // old root left by `pivot_root(".", ".")`: without this, `umount2(".",
+        // MNT_DETACH)` (systemd's post-pivot switch-root cleanup) can't find it
+        // and EINVALs. Falls back to the root mount when nothing is stacked.
+        if let Some(over) = hash_top(rootid, dptr(d)) { return mount_by_id(over); }
+        return mount_by_id(rootid);
+    }
     let parent = parent_by_dentry(ns, d);
     let id = hash_top(parent, dptr(d))?;
     mount_by_id(id)
@@ -202,7 +211,12 @@ pub fn mount_by_id(id: u64) -> Option<Arc<Mount>> {
 /// the dentry crossing link (Linux `lookup_mnt`). # C: O(log N)
 pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     let ns = current_ns();
-    if is_ns_root_dentry(d) { return root_mount_id(ns).and_then(mount_by_id); }
+    if is_ns_root_dentry(d) {
+        // Prefer a mount stacked ON the ns root (overmount, e.g. `pivot_root(.,.)`
+        // old root); fall back to the underlay root mount when none is stacked.
+        if let Some(id) = top_mount_on(ns, d) { return mount_by_id(id); }
+        return root_mount_id(ns).and_then(mount_by_id);
+    }
     let id = top_mount_on(ns, d)?;
     mount_by_id(id)
 }
