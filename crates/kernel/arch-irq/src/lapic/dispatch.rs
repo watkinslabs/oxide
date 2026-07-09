@@ -82,6 +82,8 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                     if let Some(c) = sched::live::current() {
                         klog::write_raw(b" tid=");
                         klog::write_dec_u64(c.tid as u64);
+                        klog::write_raw(b" lastsc=");
+                        klog::write_dec_u64(c.last_syscall_nr.load(Ordering::Relaxed) as u64);
                         klog::write_raw(b" ");
                         klog::write_raw(c.name.as_bytes());
                     }
