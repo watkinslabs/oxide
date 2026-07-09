@@ -137,8 +137,19 @@ impl Mount {
         let block_size = self.sb.block_size as u64;
         let total = dir_inode.size;
         let nblocks = ((total + block_size - 1) / block_size) as u32;
+        // Linear dirs carry an `ext4_dir_entry_tail` metadata_csum on every
+        // block (Linux ext4_dirblock_csum_verify → EFSBADCRC). htree dirs are
+        // skipped here: their block 0 is a `dx_root` with a `dx_tail`, not a
+        // dirent tail, so verifying it against the dirent seed would false-
+        // reject. htree dx-block verify is a separate item. No-op w/o csum.
+        let verify_tail = (dir_inode.i_flags & EXT4_INDEX_FL) == 0 && dir_inode.ino != 0;
         for fb in 0..nblocks {
             let blk = self.read_file_block(dir_inode, fb)?;
+            if verify_tail
+                && !crate::csum::verify_dirent_tail(&self.sb, dir_inode.ino, dir_inode.generation, &blk)
+            {
+                return Err(MountError::BadChecksum);
+            }
             match dir::lookup(&blk, name)? {
                 Some(e) => return Ok(e.inode),
                 None    => continue,

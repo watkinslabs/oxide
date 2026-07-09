@@ -212,3 +212,51 @@ covers happy paths. Boot-verify on both arches per the lockstep rule after any w
 - Online resize / `resize2fs` (`s_reserved_gdt_blocks`, resize inode) — no runtime need yet.
 - `bigalloc`, `meta_bg`, `mmp`, `encrypt`, `project`, `verity`, `casefold` — **reject at mount** (Phase B item 7)
   rather than implement, until a concrete image needs them. Rejecting cleanly IS the compliant behavior.
+
+---
+## Session status update (2026-07-08) — correctness P0/P1 landed
+
+DONE this session (all merged to main, hosted-tested + boot-verified):
+- §4/§5 deep-tree extent leak on unlink/orphan-free → truncate_inode (B673).
+- §2.1 metadata_csum VERIFY on read — superblock + every GDT descriptor + every
+  inode (read_inode), MountError::BadChecksum→EIO (F695).
+- §2.3 feature gating at Mount::open — refuse unknown INCOMPAT / unwritable
+  RO_COMPAT (bigalloc etc.), MountError::UnsupportedFeature→EINVAL (B674).
+- §2.4+§2.6 read s_blocks_count_hi (64-bit) / s_first_ino / s_desc_size (B675).
+- §6.1 jbd2 write-ahead barrier: journal SB s_start=desc_at durable (flush) BEFORE
+  target writes; crash mid-apply now replays (B676).
+- (earlier) A1 mtime B656, buffered write-back B669, symlink-follow lookup B668.
+
+RECLASSIFIED:
+- §6.2 REVOKE emission — **N/A in the current single-transaction model**:
+  commit_metadata checkpoints + cleans the journal (s_start=0) after EVERY txn,
+  so there is never >1 un-checkpointed txn; the freed-then-reused-block
+  resurrection revokes guard against cannot occur without txn batching (§6.6).
+  Becomes required only if/when §6.6 (running-vs-committing batching) is added.
+
+DONE (2026-07-09, F696 — read-verify completion, hosted-tested + x86 boot-verified
+0 false BadChecksum through journal-flush; arm builds, arm lite image not built here):
+- §2.1/§3.2 read-verify completed: external extent-block et_checksum
+  (resolve_pblock, now reads interior nodes via the shadow-coherent
+  read_metadata_block path so in-flight journal scopes don't false-reject),
+  linear-dir dirent-tail (lookup_in_dir; htree dirs skipped — see backlog),
+  block + inode alloc bitmaps (balloc/ialloc, uninit-group-aware via
+  verify_{block,inode}_bitmap_csum_at). ino/gen now carried on Inode + stamped
+  by read_inode. Negative test corrupt_external_extent_block_tail_is_rejected.
+
+REMAINING (tracked backlog; normal-use fs correctness is now solid — these are
+rare-corruption / crash-only / perf / feature / cosmetic):
+- htree dir-block read-verify: dx_root / dx index blocks carry a `dx_tail`
+  (ext4_dx_csum), NOT an ext4_dir_entry_tail, so the linear dirent-tail verify
+  skips htree dirs. Needs a dx_csum verify + block-role awareness in the reader.
+- §6.3 jbd2 commit/tag/sb checksums (torn-commit detection) — crash-only.
+- §6.4 data-block ordered-mode journaling — crash-only.
+- §3.3 lazy (unwritten) fallocate + §3.4 true per-block unwritten split — perf +
+  tree-shape (data already correct: unwritten reads as zero). Do together.
+- §4.4 htree leaf split + §4.5 htree create — large-dir write functionality.
+- §5.1 mballoc multi-block allocator + §5.3 backup SB/GDT + §5.4 flex_bg/Orlov
+  placement — perf/recovery.
+- §7.6 inline_data, §7.5 POSIX ACL enforcement, §3.5 PUNCH/COLLAPSE/INSERT —
+  features (clean-fail today, gated by feature-gating for inline_data).
+- P3: §2.5 flex_bg parse, §2.8 sb misc fields, §4.6/4.7/4.8, §7.3 more ioctls,
+  §7.8 huge_file i_blocks units.

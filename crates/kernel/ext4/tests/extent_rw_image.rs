@@ -69,27 +69,33 @@ fn extent_header_depth(buf: &[u8]) -> u16 {
     u16::from_le_bytes([buf[6], buf[7]])
 }
 
-fn force_external_extent_maxes(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32, max: u16) {
+fn force_external_extent_maxes(disk: &Arc<dyn BlockDevice>, sb: &ext4::Superblock,
+                               ino: u32, gen: u32, fs_lba: u64, fs_bs: u32, max: u16) {
     let mut buf = read_fs_block(disk, fs_lba, fs_bs);
     let entries = extent_header_entries(&buf) as usize;
     let depth = extent_header_depth(&buf);
     buf[4..6].copy_from_slice(&max.to_le_bytes());
+    // Poking eh_max invalidates the block's metadata_csum tail; re-stamp it so
+    // the on-disk block stays consistent (mirrors what a real e2fsprogs tool
+    // would do). Without this, read-side verify correctly rejects the block.
+    ext4::csum::stamp_extent_block_csum(sb, ino, gen, &mut buf);
     write_fs_block(disk, fs_lba, fs_bs, buf.clone());
 
     if depth > 0 {
         for i in 0..entries {
-            force_external_extent_maxes(disk, slice_idx_lba(&buf, i), fs_bs, max);
+            force_external_extent_maxes(disk, sb, ino, gen, slice_idx_lba(&buf, i), fs_bs, max);
         }
     }
 }
 
-fn force_tree_external_maxes(disk: &Arc<dyn BlockDevice>, i_block: &[u8], fs_bs: u32, max: u16) {
+fn force_tree_external_maxes(disk: &Arc<dyn BlockDevice>, sb: &ext4::Superblock,
+                             ino: u32, gen: u32, i_block: &[u8], fs_bs: u32, max: u16) {
     let depth = extent_header_depth(i_block);
     if depth == 0 {
         return;
     }
     for i in 0..extent_header_entries(i_block) as usize {
-        force_external_extent_maxes(disk, inline_idx_lba(i_block, i), fs_bs, max);
+        force_external_extent_maxes(disk, sb, ino, gen, inline_idx_lba(i_block, i), fs_bs, max);
     }
 }
 
@@ -270,13 +276,15 @@ fn fallocate_sparse_extents_promotes_full_root_to_depth3() {
     // mini.img has 1 KiB blocks, so real external extent nodes hold ~84
     // entries. Constrain only this test-created tree's external eh_max fields
     // to 4 so the same split propagation reaches depth 3 within the fixture.
-    force_tree_external_maxes(&disk, &m.read_inode(n).unwrap().i_block, m.sb.block_size, 4);
+    let inode0 = m.read_inode(n).unwrap();
+    force_tree_external_maxes(&disk, &m.sb, n, inode0.generation, &inode0.i_block, m.sb.block_size, 4);
 
     let mut next_lb = 10u32;
     while ext4::parse_extent_header(&m.read_inode(n).unwrap().i_block).unwrap().depth < 3 {
         m.fallocate_inode(n, next_lb as u64 * bs as u64, bs as u64, true).unwrap();
         logicals.push(next_lb);
-        force_tree_external_maxes(&disk, &m.read_inode(n).unwrap().i_block, m.sb.block_size, 4);
+        let ino_cur = m.read_inode(n).unwrap();
+        force_tree_external_maxes(&disk, &m.sb, n, ino_cur.generation, &ino_cur.i_block, m.sb.block_size, 4);
         next_lb += 2;
         assert!(logicals.len() < 96, "test should reach depth 3 with constrained fanout");
     }
@@ -337,6 +345,41 @@ fn append_promotes_inline_to_depth1_when_full() {
         let got = m.read_file_block(&inode, i as u32).unwrap();
         assert_eq!(&got[..], &want[..], "logical block {} round-trips", i);
     }
+}
+
+#[test]
+fn corrupt_external_extent_block_tail_is_rejected() {
+    // Read-side metadata_csum verify (Linux ext4_extent_block_csum_verify): an
+    // external extent block whose et_checksum tail no longer matches must fail
+    // the read rather than silently returning wrong data.
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    if !m.sb.has_metadata_csum() { return; } // no-op on non-csum images
+    let n = m.create_file(2, b"corrupt.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as usize;
+    let payloads: std::vec::Vec<std::vec::Vec<u8>> = (0..5).map(|i| std::vec![i as u8; bs]).collect();
+    for i in 0..5 {
+        let _spacer = m.alloc_block(0).unwrap();
+        m.append_block(n, &payloads[i]).unwrap();
+    }
+    let inode = m.read_inode(n).unwrap();
+    assert!(ext4::parse_extent_header(&inode.i_block).unwrap().depth >= 1);
+
+    // Clean read succeeds first.
+    m.read_file_block(&inode, 0).unwrap();
+
+    // Corrupt the first external (leaf) block's csum tail on disk.
+    let leaf_lba = inline_idx_lba(&inode.i_block, 0);
+    let mut leaf = read_fs_block(&disk, leaf_lba, m.sb.block_size);
+    let last = leaf.len() - 1;
+    leaf[last] ^= 0xFF;
+    write_fs_block(&disk, leaf_lba, m.sb.block_size, leaf);
+
+    // A fresh mount (bypasses any cached block) must now reject the read.
+    let m2 = ext4::Mount::open(disk).unwrap();
+    let inode2 = m2.read_inode(n).unwrap();
+    assert!(m2.read_file_block(&inode2, 0).is_err(),
+        "corrupted extent-block csum tail must be rejected on read");
 }
 
 #[test]
