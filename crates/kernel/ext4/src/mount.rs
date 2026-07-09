@@ -108,7 +108,10 @@ pub struct MountState {
     /// of every LBA it stages; on op failure the frame is replayed to restore
     /// the shared shadow (so ONE op's failure never corrupts prior batched ops),
     /// on success it merges into the parent frame (or is dropped at top level).
-    pub(crate) undo: Vec<Vec<(u64, Option<Vec<u8>>)>>,
+    /// Keyed by LBA (BTreeMap) so recording is O(log n) per staged block and
+    /// auto-dedups to the EARLIEST pre-op value — a Vec + linear dedup scan was
+    /// O(n²) per op and stalled the state lock for seconds on a large writeback.
+    pub(crate) undo: Vec<alloc::collections::BTreeMap<u64, Option<Vec<u8>>>>,
 }
 
 pub type MountStateGuard<'a> = Guard<'a, MountState, SuperblockLockClass>;

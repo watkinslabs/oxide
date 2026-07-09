@@ -108,10 +108,11 @@ impl Mount {
                     let lo = (i * bs) as usize;
                     let hi = lo + bs as usize;
                     if record {
-                        let prev = s.shadow.as_ref().unwrap().get(&lba).cloned();
-                        // Only the EARLIEST pre-value per LBA within this frame.
-                        if !s.undo.last().unwrap().iter().any(|(l, _)| *l == lba) {
-                            s.undo.last_mut().unwrap().push((lba, prev));
+                        // O(log n) keyed record; keep only the EARLIEST pre-value
+                        // per LBA in this frame (contains_key guards the clone).
+                        if !s.undo.last().unwrap().contains_key(&lba) {
+                            let prev = s.shadow.as_ref().unwrap().get(&lba).cloned();
+                            s.undo.last_mut().unwrap().insert(lba, prev);
                         }
                     }
                     s.shadow.as_mut().unwrap().insert(lba, full_buf[lo..hi].to_vec());
@@ -170,7 +171,7 @@ impl Mount {
             // its gdt_buf/counter mutations, refreshed from the restored shadow)
             // without discarding prior batched ops. Success merges the frame up
             // (or drops it at top level, leaving the writes in the running txn).
-            self.state.lock().undo.push(Vec::new());
+            self.state.lock().undo.push(alloc::collections::BTreeMap::new());
             let r = f(self);
             match r {
                 Ok(v) => { self.batch_frame_commit(); self.maybe_commit_batch()?; Ok(v) }
@@ -238,9 +239,8 @@ impl Mount {
         let mut s = self.state.lock();
         let frame = match s.undo.pop() { Some(f) => f, None => return };
         if let Some(parent) = s.undo.last_mut() {
-            for (lba, prev) in frame {
-                if !parent.iter().any(|(l, _)| *l == lba) { parent.push((lba, prev)); }
-            }
+            // Keep the parent's (earlier) pre-value where it already has the LBA.
+            for (lba, prev) in frame { parent.entry(lba).or_insert(prev); }
         }
     }
 
@@ -252,7 +252,8 @@ impl Mount {
         {
             let mut s = self.state.lock();
             if let Some(shadow) = s.shadow.as_mut() {
-                for (lba, prev) in frame.into_iter().rev() {
+                // Frame is keyed by LBA (one earliest pre-value each) — order-free.
+                for (lba, prev) in frame {
                     match prev { Some(bytes) => { shadow.insert(lba, bytes); }
                                  None => { shadow.remove(&lba); } }
                 }
