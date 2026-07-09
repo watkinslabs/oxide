@@ -42,11 +42,23 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
      NOT uncached/slow; hwdb's stime=0 spin is a genuine INSTRUCTION-COUNT blowup =
      a real loop, not slowness. Manual `systemd-hwdb update` ran >200s, never
      returned → effectively infinite.
-   **BLOCKED ON TOOLING:** gdb `qemu_interrupt` can't stop the guest under the 100%
-   spin; `/proc/<pid>/syscall`+`wchan` are stubbed (always running/0). Need either
-   userspace-symbol gdb on hwdb, or break on `arch-irq::tick_poll` (fires every
-   timer tick even during a userspace spin — from_user=true) and read the saved
-   user RIP from the IRQ frame, or a startup syscall trace of tid=hwdb.
+   **LOCALIZED (2026-07-09c): hwdb spins at a FIXED user RIP `0x7ffff71af75e`** for
+   100+s straight — captured by a NEW `[USERIP]` sampler I added to the timer ISR
+   (arch-irq lapic/dispatch.rs, gated `debug-wakelat`: reads user rip from IRQ
+   frame+88, rate-limited). Boot with `features=debug-wakelat` → `[USERIP rip=...
+   tid=4135 ...]` repeats the same rip = the spin site. It's in libc/libsystemd
+   (0x7ffff7... region), a userspace busy-WAIT loop (NOT the vDSO — init's hot rip
+   0x7ffffe71f75e is a different offset). init/journald do NOT spin (they block+wake
+   every ~500ms — see [WLBLK]); only hwdb is stuck.
+   **NEXT (to name the function):** boot debug-wakelat, at the spin `cat
+   /proc/<hwdb-pid>/maps` (find pid via `grep -la hwdb /proc/*/cmdline`) BEFORE
+   systemd kills hwdb at its 90s timeout; compute `0x7ffff71af75e - libbase`; then
+   `objdump -d` that library (from ../images) at the offset. That names the exact
+   busy-wait (likely a clock/futex/timeout spin) → then fix the kernel syscall/clock
+   whose wrong return traps the loop.
+   **Also:** init+journald block/wake on a ~500ms cadence (`[WLBLK] waited_us≈500000
+   ready=1`) — looks like a 500ms poll timeout instead of event-driven wakeups;
+   likely the epoll-wake latency issue (B678 area) — a SECOND contributor.
 
    **SEPARATE perf bug found: ext4 COLD-READ is slow (~2.7 MB/s)** — 13.5MB took 5s
    cold, ~1s cached. Contributes to the general boot crawl (every service reads
