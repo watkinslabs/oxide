@@ -66,8 +66,59 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     #[cfg(feature = "debug-stderr")]
     trace_stderr_write(fd, slice);
     match file.write(slice) {
-        Ok(n)  => n as i64,
+        Ok(n)  => {
+            // DIAG (debug-wakelat): a write() returning 0 for a NON-zero request is
+            // a Linux violation (must write >0, block, or error) and spins glibc's
+            // write-all loop forever (the systemd-hwdb sysinit busy-spin). Log the
+            // offending fd/type/path once. Rate-limited so the spin doesn't flood.
+            #[cfg(feature = "debug-wakelat")]
+            if n == 0 && cnt > 0 {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static W0: AtomicU64 = AtomicU64::new(0);
+                if W0.fetch_add(1, Ordering::Relaxed) < 12 {
+                    klog::write_raw(b"[WRITE0] pid=");
+                    klog::write_dec_u64(cur.tid as u64);
+                    klog::write_raw(b" name=");
+                    klog::write_raw(cur.name.as_bytes());
+                    klog::write_raw(b" fd=");
+                    klog::write_dec_u64(fd as u64);
+                    klog::write_raw(b" type=");
+                    klog::write_dec_u64(file.inode().file_type() as u64);
+                    klog::write_raw(b" cnt=");
+                    klog::write_dec_u64(cnt as u64);
+                    klog::write_raw(b" path=\"");
+                    klog::write_raw(&file.dentry().absolute_path());
+                    klog::write_raw(b"\"\n");
+                }
+            }
+            n as i64
+        }
         Err(e) => {
+            // DIAG (debug-wakelat): any write() Err — the systemd-hwdb sysinit spin
+            // is a glibc cancellable-write retry loop on some non-EROFS error
+            // (EAGAIN on a blocking fd, spurious EINTR, …). Name the errno+fd+type.
+            #[cfg(feature = "debug-wakelat")]
+            {
+                use core::sync::atomic::{AtomicU64, Ordering};
+                static WE: AtomicU64 = AtomicU64::new(0);
+                if WE.fetch_add(1, Ordering::Relaxed) < 16 {
+                    klog::write_raw(b"[WRITEERR] pid=");
+                    klog::write_dec_u64(cur.tid as u64);
+                    klog::write_raw(b" name=");
+                    klog::write_raw(cur.name.as_bytes());
+                    klog::write_raw(b" fd=");
+                    klog::write_dec_u64(fd as u64);
+                    klog::write_raw(b" type=");
+                    klog::write_dec_u64(file.inode().file_type() as u64);
+                    klog::write_raw(b" cnt=");
+                    klog::write_dec_u64(cnt as u64);
+                    klog::write_raw(b" errno=");
+                    klog::write_dec_u64(e as u64);
+                    klog::write_raw(b" path=\"");
+                    klog::write_raw(&file.dentry().absolute_path());
+                    klog::write_raw(b"\"\n");
+                }
+            }
             if e == vfs::VfsError::Erofs {
                 klog::write_raw(b"[WRITE-EROFS] pid=");
                 klog::write_dec_u64(cur.tid as u64);
