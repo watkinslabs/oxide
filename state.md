@@ -23,20 +23,35 @@ samples), no O(n²) writeback, no fs write errors, early sysinit all completes.
 hwdb may still exit status=1 (its own logic / missing hwdb.d input) — non-fatal,
 sysinit continues.
 
-## NEXT blocker — CONFIRM before assuming
-Post-hwdb the boot enters a periodic ~500ms wait (WLBLK on tid 4123 journald +
-init 3235774466). The old memory note blamed a `tmpfiles↔userdbd` AF_UNIX
-accept-readiness/epoll-wakeup bug — but that path now looks **correct**:
-`UnixRegistry::connect` (net/src/unix_sock/listener.rs:151) pushes to `accept_q`
-+ `notify_subs()`; the listener `poll()` returns POLL_IN from a non-empty
-`accept_q` (net/src/sock/io.rs:207,229); `register_subs` wires the listener to
-the epoll instance (net/src/sock/ops.rs:33,207). So DON'T assume the old theory.
+## NEXT blocker — a SEPARATE post-hwdb 100%-KVM spin (confirmed 2026-07-09)
+After hwdb fails+reaps (~82s, debug-boot), a task **busy-spins at 100% CPU**
+(`qemu_regs`/gdb cannot async-interrupt = classic KVM spin, same signature hwdb
+had). So batching FIXED hwdb but a DIFFERENT service now spins. Services that
+"Starting…" but never "Finished" in the window: `systemd-journal-flush`,
+`systemd-random-seed`, `systemd-userdbd`, `sys-kernel-config.mount`. The
+debug-wakelat boot reached 144s in periodic ~500ms WLBLK waits (tid 4123
+journald + init) — so it's slow-progressing, not hard-hung.
 
-**First task:** boot `debug-boot` x86_64, run past hwdb, and identify WHICH
-service the 500ms-periodic wait belongs to (grep the systemd MESSAGE= lines for
-the last "Starting …" with no matching "Finished"/"Started"). Then trace that
-service's blocking syscall (a `debug-wakelat` boot shows the WLBLK tid + the
-`[USERIP]`/`lastsc` of the waiter). Only then pick the subsystem.
+Ruled out for THIS spin: the old `tmpfiles↔userdbd` AF_UNIX accept/epoll theory —
+that path now looks correct (`UnixRegistry::connect` net/src/unix_sock/listener.rs:151
+pushes accept_q + notify_subs; listener poll() returns POLL_IN from non-empty
+accept_q net/src/sock/io.rs:207,229; register_subs wires epoll net/src/sock/ops.rs:33,207).
+
+**IMPORTANT NUANCE:** in the debug-wakelat capture that reached 144s, `[USERIP]`
+sample counts are ALL low (≤7 per tid over the whole window) — so NO task is
+spinning in USER mode. Yet gdb can't interrupt the debug-boot VM at 82s. That
+points to a **KERNEL-mode spin** (spinlock contention / a kernel busy-loop the
+user-RIP sampler, which only fires `from_user`, can't see) — a DIFFERENT class
+from hwdb's userspace stall. OR the 82s debug-boot "spin" is a transient hwdb-
+cleanup artifact and the boot slow-progresses (debug-wakelat did reach 144s).
+
+**First task:** disambiguate. Boot debug-boot, at the ~82s stall use the qemu
+MCP to break into the KERNEL (gdb can attach to kernel even during a user spin
+if it's not 100% KVM; if it IS, the spin is in-guest). If kernel-mode: find the
+hot kernel loop (backtrace / which lock). If it slow-progresses instead, measure
+where wall-time goes in the remaining services. Add a kernel-side per-tid
+on-CPU-ticks counter (like the old [HWCPU]) to see if a KERNEL thread or a user
+task dominates.
 
 ## First command next session
 `cd /home/nd/oxide/kernel && git log --oneline -3`  # confirm main @ 8537de19
