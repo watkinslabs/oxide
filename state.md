@@ -1,48 +1,59 @@
-# Handoff — desktop blocker pinpointed (af_unix socket-activation) + ext4 C1/B9 done
+# Handoff — goals 1&2 done+merged; goal 3 (desktop) deadlock persists
 
-## DESKTOP (standing goal) — blocker precisely identified, NOT fixed
-Live-gnome boot stalls ~10s in sysinit, never reaches gdm/graphics.
-- **B664** (`B664-epoll-notify-child-exit`, unmerged) IS correct + load-bearing:
-  child-exit epoll-notify makes systemd wake + reap sysinit services (verified
-  `[wait4 reap]` 8–10s; journal-flush now Finishes). Dump "zombies" = benign
-  pidfd-pin artifact, not a leak.
-- **Real blocker (trace-confirmed):** `systemd-tmpfiles-setup-dev-early` wedged
-  in epoll_wait on a varlink query to `systemd-userdbd.socket` (socket-activated,
-  userdbd up 10.3s but idle). tmpfiles connects (POLLOUT ok) + sends, but the
-  reply (POLLIN) never comes; it retries every ~15s (fresh socket+timerfd; the
-  timerfd fd7 is just its retry backstop, working fine); a reply trickles at ~40s.
-  → **af_unix socket-activation listener accept-readiness not reliably waking the
-  accepting service's epoll.** `UnixRegistry::connect` does accept_q push +
-  accept_waiters.wake_all() + notify_subs(); listener poll() correctly returns
-  POLL_IN on non-empty accept_q (sock/io.rs:166). Suspect an EPOLLET edge
-  suppressed for userdbd's epoll (connect bumps a poll_subs gen the service's
-  epoll entry doesn't watch) so the 20ms level-rescan can't rescue it.
-  Full detail in memory [[desktop-blocker-tmpfiles-userdbd]].
-- **Next step needs boots** (a trace of userdbd's accept + the connect peer path,
-  or a hosted repro of listener→multi-subscriber wake). User has been averse to
-  boot churn — get the go-ahead before the next trace boot.
-- Diagnostic traces are on disposable branch `int-diag-tmpfiles` (not for merge);
-  trace logs saved: scratchpad/tmpf.log, tmpf2.log.
+## DONE this session (merged to main, e3f9242e)
+- **GOAL 1 — console 100% Linux-compat**: F694 (prior) — N_TTY/VT/fbcon verified
+  real; `console=` cmdline classes. console.md analysis is accurate.
+- **GOAL 2 — ext4 correctness complete**: **F696** (PR #2863, merged). Closed the
+  metadata_csum read-verify chain begun in F695:
+  - external extent-block `et_checksum` (resolve_pblock, now reads interior nodes
+    via the shadow-coherent `read_metadata_block` so in-flight journal scopes
+    don't false-reject);
+  - linear-dir dirent tails (lookup_in_dir; htree dirs skipped — dx_csum is
+    backlog);
+  - block + inode alloc bitmaps (balloc/ialloc, uninit-group-aware).
+  - Inode carries ino+gen (stamped by read_inode). Negative test
+    `corrupt_external_extent_block_tail_is_rejected`.
+  - Verified: full ext4 suite green; x86 lite boot clean through journal-flush,
+    **0 false BadChecksum**; both arches build. arm lite image not built locally.
+  - Remaining ext4 = genuine features/perf/crash-only (mballoc, htree-create, ACL,
+    inline_data, punch/collapse, jbd2 commit csums) — none block the desktop.
+    Tracked in `scratch/ext4fix.md`.
 
-## EXT4 (per user's explicit "build ext4" — hosted, no boots)
-This session, both committed + hosted-verified + both arches build:
-- **C1 FIEMAP** (`B665-ext4-fiemap`): physical extent-map walker + FS_IOC_FIEMAP
-  ioctl; 5 hosted tests.
-- **B9 external xattr block** (`B666-ext4-xattr-external`): store_xattrs spills
-  to i_file_acl block (e_hash/h_hash/h_checksum), e2fsck-clean; 4 hosted tests.
-Full done list (11 items, all unmerged): A1 B656 · A2 B657 · A3 B659 · A4 B658 ·
-B2/B4/B7 B662 · B3 B660 · C1 B665 · B9 B666. Plan: `scratch/ext4fix.md`.
-Queue TODO: A5/A6/B6 jbd2, B1 mount-csum (boot-risky); B8 backup-SB; B10
-inline_data; C2 punch/collapse/insert; C3 htree; C4 mballoc; C5 (crtime→statx
-btime, huge_file i_blocks, 64bit fields); C6 jbd2 batching.
+## GOAL 3 — live-gnome boot (ACTIVE, NOT fixed)
+Boot reaches ~9.8s (userdbd Started, journal-flush Finished), then **idle-quiet /
+deadlocked** — all tasks blocked, guest clock stops advancing (no output for the
+remaining ~100s of a 110s boot). Same frontier as prior sessions:
+tmpfiles↔userdbd varlink query never completes → sysinit stalls → no getty/graphics.
 
-## UNMERGED BACKLOG — needs merging (grows every session)
-Desktop: B661, B663, B664. ext4: B656–B660, B662, B665, B666 (stacked).
-None on origin/main. `make smoke` (console-login profile, ~1min, NOT the hung
-gnome boot) gates a kernel push — should pass. Merge in dependency order when ready.
+### Hypothesis TESTED + DISPROVEN this session
+- **Suspect:** `UnixListener::notify_subs` (net/src/unix_sock/listener.rs:44-50) is
+  the ONLY readiness-wake path missing the global-rescan backstop that every
+  sibling has (cf. `wake_peer_subs` events.rs:12-24 → `sched::live::notify_epoll_waiters()`).
+  For an EPOLLET listener whose POLLIN is already `et_seen`, a new connection is
+  reported only if `gen_edge` (epoll.rs:501-518): the fd's poll_subs gen advanced
+  (needs notify_subs' Weak to upgrade) OR GLOBAL_EPOLL_GEN advanced (needs the
+  global fallback). If notify_subs no-ops, the connection is silently suppressed.
+  `broadcast_wake_all_epolls` (epoll.rs:110-115) bumps GLOBAL_EPOLL_GEN — the
+  fallback would provably cover the EPOLLET case.
+- **Applied** the fallback (mirroring wake_peer_subs), built both arches, booted.
+- **Result: NO CHANGE** — boot still deadlocks at ~9.8s. **Reverted** (unproven
+  boot-path change; wake path is `cfg(oxide-kernel)`-only so no hosted test
+  possible). So notify_subs is NOT the blocker (or not the only one): most likely
+  the listener's `subs` Weak IS alive (systemd + userdbd share the same
+  Arc<InetSocket>/poll_subs across the socket-activation fd handoff), notify fires,
+  gen advances — and the deadlock is elsewhere (reply direction? userdbd's own
+  event loop? a different blocked resource).
 
-## FIRST TASK NEXT SESSION
-Decide with user: (a) fix the af_unix socket-activation blocker (needs trace
-boots) to advance the desktop, or (b) keep grinding ext4 (boot-free). If (b),
-next completable item = C5 crtime→STATX_BTIME (add crtime to ext4 Inode + plumb
-VFS Kstat btime) or B10 inline_data.
+### Next step needs LIVE INSPECTION — blocked on tooling
+- **qemu MCP is NOT connected this session** (`mcp__qemu__*` unavailable), so the
+  CLAUDE.md-recommended warm-VM breakpoint+inspect can't run here.
+- Boot-per-hypothesis trace loops are user-forbidden (memory [[no-repeated-long-boots]]).
+- **Need from user (pick one):** (a) enable the qemu MCP so we can boot once, break
+  at the stall, dump task states / who's blocked on which fd; or (b) authorize a
+  bounded trace-boot budget (klog in notify_subs upgrade-success + subscriber count,
+  connect enqueue, userdbd accept, and the connected-socket reply wake) to locate
+  the actual blocked-on resource.
+- Prior detail: memory [[desktop-blocker-tmpfiles-userdbd]], [[qemu-vsock-cid-and-sigchld-reap]].
+
+## First command next session
+    OXIDE_QUICKBOOT_PROFILE=lite make qemu-x86 SMP=2   # reproduce ~9.8s stall; then inspect via qemu MCP
