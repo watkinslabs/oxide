@@ -21,6 +21,7 @@ fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
         crate::MountError::DepthUnsupported | crate::MountError::ExtentTreeFull => vfs::VfsError::Eopnotsupp,
         crate::MountError::CorruptExtentTree => vfs::VfsError::Eio,
         crate::MountError::BadChecksum => vfs::VfsError::Eio,
+        crate::MountError::UnsupportedFeature => vfs::VfsError::Einval,
         _ => vfs::VfsError::Eio,
     }
 }
