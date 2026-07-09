@@ -65,6 +65,12 @@ pub enum MountError {
     /// extent node does not match a recompute (Linux `EFSBADCRC`). The bytes
     /// are refused instead of silently accepted as valid. Surfaces as EIO.
     BadChecksum,
+    /// The superblock advertises an INCOMPAT feature we don't implement, or a
+    /// RO_COMPAT feature we can't safely write (and we have no RO-mount path):
+    /// mounting would misinterpret the layout (bigalloc cluster bitmap, meta_bg,
+    /// inline_data, encrypt, …). Refused at `Mount::open` (Linux
+    /// `EXT4_FEATURE_*_SUPP` check). Surfaces as EINVAL.
+    UnsupportedFeature,
 }
 
 impl From<SuperblockError> for MountError { fn from(e: SuperblockError) -> Self { MountError::Superblock(e) } }

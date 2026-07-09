@@ -14,6 +14,16 @@ impl Mount {
     pub fn open(dev: alloc::sync::Arc<dyn block::BlockDevice>) -> Result<Self, MountError> {
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
+        // Feature gating (Linux EXT4_FEATURE_{INCOMPAT,RO_COMPAT}_SUPP): refuse a
+        // fs whose INCOMPAT bits we don't implement (layout would be misread) or
+        // whose RO_COMPAT bits we can't safely write (no RO-mount path yet).
+        // Catches bigalloc/meta_bg/inline_data/encrypt/… instead of silently
+        // misinterpreting them.
+        if (sb.feature_incompat & !crate::superblock::SUPPORTED_INCOMPAT) != 0
+            || (sb.feature_ro_compat & !crate::superblock::SUPPORTED_RO_COMPAT) != 0
+        {
+            return Err(MountError::UnsupportedFeature);
+        }
         // metadata_csum verify on mount: refuse a superblock whose stored
         // s_checksum does not match (Linux ext4_superblock_csum_verify → EFSBADCRC).
         // No-op without metadata_csum.

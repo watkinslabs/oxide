@@ -110,3 +110,41 @@ fn lookup_in_dir_missing_returns_notfound() {
     let err = m.lookup_in_dir(&root, b"no-such-child").err().expect("err");
     assert_eq!(err, ext4::MountError::NotFound);
 }
+
+#[test]
+fn open_refuses_unsupported_incompat_feature() {
+    // Set INCOMPAT_INLINE_DATA (0x8000) in the SB — a layout we do not
+    // implement. The feature gate must refuse the mount rather than
+    // misinterpret it (Linux EXT4_FEATURE_INCOMPAT_SUPP).
+    let mut img = IMAGE.to_vec();
+    img[1024 + 0x60 + 1] |= 0x80; // s_feature_incompat |= 0x8000
+    let cap = (img.len() as u64) / (BLOCK_SIZE as u64);
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img };
+    disk.submit_sync(&mut req).unwrap();
+    let disk: Arc<dyn BlockDevice> = disk;
+    assert!(matches!(ext4::Mount::open(disk), Err(ext4::MountError::UnsupportedFeature)),
+        "unsupported INCOMPAT feature must refuse the mount");
+}
+
+#[test]
+fn open_refuses_unsupported_ro_compat_feature() {
+    // Set RO_COMPAT_BIGALLOC (0x0200) — a cluster-bitmap layout we'd misread as
+    // per-block. No RO-mount path, so refuse rather than risk write corruption.
+    let mut img = IMAGE.to_vec();
+    img[1024 + 0x64 + 1] |= 0x02; // s_feature_ro_compat |= 0x0200
+    let cap = (img.len() as u64) / (BLOCK_SIZE as u64);
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img };
+    disk.submit_sync(&mut req).unwrap();
+    let disk: Arc<dyn BlockDevice> = disk;
+    assert!(matches!(ext4::Mount::open(disk), Err(ext4::MountError::UnsupportedFeature)),
+        "unsupported RO_COMPAT feature must refuse the mount");
+}
+
+#[test]
+fn open_accepts_supported_features() {
+    // Stock mini.img (filetype/extent/64bit/flex_bg/csum_seed + metadata_csum
+    // family) must still mount cleanly through the gate.
+    assert!(ext4::Mount::open(build_disk()).is_ok(), "supported-feature image mounts");
+}
