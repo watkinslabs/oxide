@@ -36,9 +36,9 @@ impl PosixTimer {
 pub struct ArchCtxBuf(pub [u8; ARCH_CTX_SIZE]);
 
 /// Opaque per-arch FPU/SIMD state buffer; per-arch crate casts to
-/// FpuStateX86_64 / FpuStateAArch64. align(16) per FXSAVE / NEON
+/// FpuStateX86_64 / FpuStateAArch64. align(64) per XSAVE (superset of FXSAVE/NEON)
 /// store-pair requirements.
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 pub struct ArchFpuBuf(pub [u8; ARCH_FPU_SIZE]);
 
 impl ArchFpuBuf {

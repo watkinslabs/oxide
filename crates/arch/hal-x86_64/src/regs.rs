@@ -116,6 +116,12 @@ pub unsafe fn enable_sse() {
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
         cr4 |= (1u64 << 9) | (1u64 << 10);
         asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
+        // Enable full extended-state (AVX/AVX512) context-switching on this
+        // CPU: CR4.OSXSAVE + XCR0 so fpu_save/restore use XSAVE, not the
+        // FXSAVE that drops YMM/ZMM. Must follow OSFXSR above. No-op on a
+        // CPU without XSAVE (keeps the FXSAVE fallback). SAFETY: same
+        // per-CPU-pre-userspace contract as this fn; CR4/XCR0 per-CPU.
+        crate::fpu::xstate_init();
     }
 }
 

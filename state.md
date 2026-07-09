@@ -68,6 +68,35 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    getdents loop/dup? Likely ties to the ext4 read side (cold-read was already ~2.7
    MB/s) or a memory/malloc bug. Fix that → trie is finite → hwdb finishes → sysinit
    proceeds → getty.
+   **XSAVE/AVX FIX ATTEMPTED → DISPROVEN for hwdb + has a corruption bug
+   (2026-07-09l, branch F697-x86-xsave-xstate, NOT merged).** Found the FPU
+   context-switch uses FXSAVE only (x87+SSE), never XSAVE — so AVX YMM / AVX512
+   ZMM upper state is dropped across a switch (a real Linux-compat gap; fpu.rs
+   comment admits it). Hypothesis: glibc AVX memcmp/strcmp corrupt mid-loop →
+   hwdb trie dedup fails → bloat. Implemented XSAVE/XRSTOR + CR4.OSXSAVE + XCR0
+   (x87|SSE|AVX only; AVX512 excluded — glibc falls back via xgetbv) in
+   fpu.rs/regs.rs, bumped ARCH_FPU_SIZE. RESULT:
+   - **hwdb STILL spins with AVX-XSAVE on → the SIMD-corruption hypothesis is
+     DISPROVEN.** The trie bloat is NOT from unsaved AVX state.
+   - **The implementation itself REGRESSES: intermittent BTreeMap memory
+     corruption** ([PANIC] btree navigate.rs:534 / node.rs:1232, ~1 boot in 3;
+     ARCH_FPU_SIZE=4096 → deterministic clone panic, =1088 → intermittent).
+     Root: the FPU buffer is embedded BY VALUE in `Task` (`fpu_state:
+     UnsafeCell<ArchFpuBuf>`), so growing it + align(64) either bloats the
+     by-value Task on the kernel stack or perturbs the align-64 heap alloc →
+     corrupts adjacent allocations. **Correct redesign: heap-allocate the FPU
+     save area (`Box<align-64 area>`), keeping Task small/low-align; size the
+     area from CPUID.0Dh:EBX; verify over N boots + both arches.** F697 is WIP,
+     pushed, NOT merged (main stays known-good). Do not merge as-is.
+   **hwdb root cause REMAINS OPEN.** Disproven this session: ext4 read/write,
+   kernel allocator (brk/mmap/mremap/find_hole), AVX/SIMD ctxsw state. Confirmed:
+   CPU-bound recursive `trie_store_nodes` serialization (libsystemd-shared
+   0xd8150) over a too-large trie. Next hypotheses to probe: a non-SIMD
+   userspace/libc miscompare in the trie build dedup, or a getdents/readdir
+   double-count feeding hwdb duplicate entries. Also real gaps found:
+   /proc/<pid>/{maps pathnames,syscall,wchan,fdinfo} stubbed; task comm not
+   updated on exec.
+
    **★ LOOP PINNED (2026-07-09k): systemd `trie_store_nodes` recursion.** Built a
    user-stack backtrace probe in sys_write ([HWSTK]/[HWCALL], debug-wakelat, tid
    4135), modeled on 024_sched_yield's YIELD-SPIN symbolizer: it walks hwdb's user
