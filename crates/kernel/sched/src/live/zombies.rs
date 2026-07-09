@@ -176,6 +176,13 @@ pub fn signal_child_exit(task: &Task) {
 /// # C: O(1) push.
 pub fn enqueue_zombie(task: Arc<Task>) {
     ZOMBIES.lock().push(task);
+    // The zombie is only NOW reapable + `has_zombies`-visible — but its SIGCHLD
+    // + epoll gen bump already fired in `signal_child_exit` before this point.
+    // Advance the gen again so the parent's next epoll_wait rescan re-evaluates
+    // its signalfd/pidfd (which now reports POLL_IN) and reaps, instead of
+    // EPOLLET-suppressing the already-`et_seen` bit until an unrelated event
+    // (~45s later). Gen-bump only (no wake) — safe in the switch tail.
+    super::bump_epoll_gen();
 }
 
 /// Park the current task in WAITERS, marking it Sleeping. Caller
