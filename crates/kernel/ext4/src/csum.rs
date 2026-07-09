@@ -264,6 +264,121 @@ pub fn stamp_xattr_block_csum(sb: &Superblock, block_nr: u64, block: &mut [u8]) 
     block[XATTR_HDR_CSUM_OFF..XATTR_HDR_CSUM_OFF + 4].copy_from_slice(&csum.to_le_bytes());
 }
 
+// ─────────────────────────── verify (read-side) ───────────────────────────
+// Each verify_* recomputes via the matching *_csum fn and compares to the
+// stored field. All return `true` when the fs lacks metadata_csum (nothing to
+// check) — callers gate reads on the result and surface EFSBADCRC on `false`.
+
+/// `ext4_inode_csum_verify`: stored `i_checksum_lo` (+`_hi` when it fits the
+/// extra window) vs a recompute. When hi does not fit, only the low 16 bits are
+/// compared (Linux masks the calculated value). # C: O(inode_size)
+pub fn verify_inode_csum(sb: &Superblock, ino: u32, raw: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let mut calc = inode_csum(sb, ino, raw);
+    let mut provided = u16::from_le_bytes([raw[I_CHECKSUM_LO], raw[I_CHECKSUM_LO + 1]]) as u32;
+    if sb.inode_size as usize > EXT4_GOOD_OLD_INODE_SIZE && fits_checksum_hi(raw) {
+        let hi = u16::from_le_bytes([raw[I_CHECKSUM_HI], raw[I_CHECKSUM_HI + 1]]) as u32;
+        provided |= hi << 16;
+    } else {
+        calc &= 0xFFFF;
+    }
+    provided == calc
+}
+
+/// `ext4_group_desc_csum_verify` (metadata_csum crc32c variant): `bg_checksum`
+/// vs a recompute. # C: O(desc_size)
+pub fn verify_group_desc_csum(sb: &Superblock, n: u32, desc_slot: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let want = group_desc_csum(sb, n, desc_slot);
+    let stored = u16::from_le_bytes([desc_slot[GD_CHECKSUM], desc_slot[GD_CHECKSUM + 1]]);
+    stored == want
+}
+
+/// `ext4_superblock_csum_verify`: `s_checksum` vs a recompute over `[0,0x3FC)`.
+/// # C: O(1024)
+pub fn verify_superblock_csum(sb: &Superblock, sb_bytes: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    if sb_bytes.len() < SB_OFF_CHECKSUM + 4 { return false; }
+    let want = superblock_csum(sb_bytes);
+    let stored = u32::from_le_bytes([sb_bytes[SB_OFF_CHECKSUM], sb_bytes[SB_OFF_CHECKSUM + 1],
+                                     sb_bytes[SB_OFF_CHECKSUM + 2], sb_bytes[SB_OFF_CHECKSUM + 3]]);
+    stored == want
+}
+
+/// `ext4_block_bitmap_csum_verify`: descriptor slot's stored block-bitmap csum
+/// (lo@0x18, hi@0x38 for 64-bit descriptors) vs a recompute over `bitmap`.
+/// # C: O(nbits/8)
+pub fn verify_block_bitmap_csum(sb: &Superblock, desc_slot: &[u8], bitmap: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let calc = bitmap_csum(sb, bitmap, sb.blocks_per_group);
+    let dsize = desc_size_for(sb) as usize;
+    let mut stored = u16::from_le_bytes([desc_slot[GD_BLOCK_BITMAP_CSUM_LO], desc_slot[GD_BLOCK_BITMAP_CSUM_LO + 1]]) as u32;
+    if dsize > 32 {
+        stored |= (u16::from_le_bytes([desc_slot[GD_BLOCK_BITMAP_CSUM_HI], desc_slot[GD_BLOCK_BITMAP_CSUM_HI + 1]]) as u32) << 16;
+        stored == calc
+    } else {
+        stored == (calc & 0xFFFF)
+    }
+}
+
+/// `ext4_inode_bitmap_csum_verify`: descriptor slot's stored inode-bitmap csum
+/// (lo@0x1A, hi@0x3A) vs a recompute over `bitmap`. # C: O(nbits/8)
+pub fn verify_inode_bitmap_csum(sb: &Superblock, desc_slot: &[u8], bitmap: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let calc = bitmap_csum(sb, bitmap, sb.inodes_per_group);
+    let dsize = desc_size_for(sb) as usize;
+    let mut stored = u16::from_le_bytes([desc_slot[GD_INODE_BITMAP_CSUM_LO], desc_slot[GD_INODE_BITMAP_CSUM_LO + 1]]) as u32;
+    if dsize > 32 {
+        stored |= (u16::from_le_bytes([desc_slot[GD_INODE_BITMAP_CSUM_HI], desc_slot[GD_INODE_BITMAP_CSUM_HI + 1]]) as u32) << 16;
+        stored == calc
+    } else {
+        stored == (calc & 0xFFFF)
+    }
+}
+
+/// `ext4_dirblock_csum_verify`: the `ext4_dir_entry_tail` trailing crc32c vs a
+/// recompute over `[0, bs-12)`. # C: O(bs)
+pub fn verify_dirent_tail(sb: &Superblock, ino: u32, generation: u32, block: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let bs = block.len();
+    if bs < DIRENT_TAIL_SIZE { return false; }
+    let want = dirent_csum(sb, ino, generation, block);
+    let stored = u32::from_le_bytes([block[bs - 4], block[bs - 3], block[bs - 2], block[bs - 1]]);
+    stored == want
+}
+
+/// `ext4_extent_block_csum_verify`: external extent block's 4-byte `et_checksum`
+/// tail vs a recompute over `header + eh_max records`. # C: O(bs)
+pub fn verify_extent_block_csum(sb: &Superblock, ino: u32, generation: u32, block: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let bs = block.len();
+    if bs < EXTENT_TAIL_SIZE + 12 { return false; }
+    let eh_max = u16::from_le_bytes([block[4], block[5]]) as usize;
+    let covered = 12 + eh_max * 12;
+    if covered > bs - EXTENT_TAIL_SIZE { return false; }
+    let seed = inode_seed(sb, ino, generation);
+    let want = crc32c_update(seed, &block[..covered]);
+    let stored = u32::from_le_bytes([block[bs - EXTENT_TAIL_SIZE], block[bs - EXTENT_TAIL_SIZE + 1],
+                                     block[bs - EXTENT_TAIL_SIZE + 2], block[bs - EXTENT_TAIL_SIZE + 3]]);
+    stored == want
+}
+
+/// `ext4_xattr_block_csum_verify`: external xattr block `h_checksum` vs a
+/// recompute (block address folded, `h_checksum` read as zero). # C: O(bs)
+pub fn verify_xattr_block_csum(sb: &Superblock, block_nr: u64, block: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let bs = block.len();
+    if bs < XATTR_HDR_CSUM_OFF + 4 { return false; }
+    let dummy = [0u8; 4];
+    let mut csum = crc32c_update(sb.metadata_csum_seed(), &block_nr.to_le_bytes());
+    csum = crc32c_update(csum, &block[..XATTR_HDR_CSUM_OFF]);
+    csum = crc32c_update(csum, &dummy);
+    csum = crc32c_update(csum, &block[XATTR_HDR_CSUM_OFF + 4..bs]);
+    let stored = u32::from_le_bytes([block[XATTR_HDR_CSUM_OFF], block[XATTR_HDR_CSUM_OFF + 1],
+                                     block[XATTR_HDR_CSUM_OFF + 2], block[XATTR_HDR_CSUM_OFF + 3]]);
+    stored == csum
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

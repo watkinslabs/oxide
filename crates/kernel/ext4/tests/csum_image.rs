@@ -100,3 +100,54 @@ fn dirent_csum_reproduces_root_dir_block() {
     let computed = ext4::csum::dirent_csum(&m.sb, 2, 0, &blk);
     assert_eq!(computed, stored, "dir block tail csum matches mke2fs");
 }
+
+#[test]
+fn verify_accepts_mke2fs_metadata() {
+    // No-false-positives: every metadata_csum structure mke2fs wrote into
+    // mini.img must PASS our read-side verify (else wiring verify into the read
+    // paths would brick a real image).
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let dsize = ext4::desc_size_for(&m.sb) as usize;
+    let bs = m.sb.block_size as usize;
+
+    // superblock
+    let sbb = m.read_meta_byte_range(1024, 1024).unwrap();
+    assert!(ext4::csum::verify_superblock_csum(&m.sb, &sbb), "sb csum verifies");
+    // group descriptor 0
+    let gdt = m.read_meta_byte_range(m.gdt_byte_offset(), dsize).unwrap();
+    assert!(ext4::csum::verify_group_desc_csum(&m.sb, 0, &gdt), "gd0 csum verifies");
+    // block + inode bitmap (csum stored in the descriptor)
+    let gd = m.group_desc(0).unwrap();
+    let bbm = m.read_meta_byte_range(gd.block_bitmap * bs as u64, bs).unwrap();
+    let ibm = m.read_meta_byte_range(gd.inode_bitmap * bs as u64, bs).unwrap();
+    assert!(ext4::csum::verify_block_bitmap_csum(&m.sb, &gdt, &bbm), "block bitmap verifies");
+    assert!(ext4::csum::verify_inode_bitmap_csum(&m.sb, &gdt, &ibm), "inode bitmap verifies");
+    // root inode
+    let (raw, _o) = m.read_inode_bytes(2).unwrap();
+    assert!(ext4::csum::verify_inode_csum(&m.sb, 2, &raw), "root inode verifies");
+    // root directory block tail
+    let root = m.read_inode(2).unwrap();
+    let (_g, gen) = m.inode_flags_gen(2).unwrap();
+    let blk = m.read_file_block(&root, 0).unwrap();
+    assert!(ext4::csum::verify_dirent_tail(&m.sb, 2, gen, &blk), "root dir tail verifies");
+}
+
+#[test]
+fn verify_rejects_corruption() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    // inode: flip a covered byte (i_block region), csum field untouched → fail.
+    let (mut raw, _o) = m.read_inode_bytes(2).unwrap();
+    raw[0x30] ^= 0xFF;
+    assert!(!ext4::csum::verify_inode_csum(&m.sb, 2, &raw), "corrupted inode rejected");
+    // superblock: flip a covered byte.
+    let mut sbb = m.read_meta_byte_range(1024, 1024).unwrap();
+    sbb[0x100] ^= 0xFF;
+    assert!(!ext4::csum::verify_superblock_csum(&m.sb, &sbb), "corrupted sb rejected");
+    // group desc: flip a covered byte (not bg_checksum @0x1E).
+    let dsize = ext4::desc_size_for(&m.sb) as usize;
+    let mut gdt = m.read_meta_byte_range(m.gdt_byte_offset(), dsize).unwrap();
+    gdt[0x00] ^= 0xFF;
+    assert!(!ext4::csum::verify_group_desc_csum(&m.sb, 0, &gdt), "corrupted gd rejected");
+}

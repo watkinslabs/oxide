@@ -146,25 +146,24 @@ fn orphan_free_isolated_to_owning_mount() {
     let n = ext4::rootfs::ext4_unwrap_ino(v);
     assert!(b.state().orphan_contains(n), "B tracks the orphan");
 
-    // Snapshot A's inode at the SAME on-disk number (it exists on A's
-    // device, with its own links_count). It must survive B's free.
-    let a_before = a.state().mount.read_inode(n)
-        .expect("A has an inode at the colliding number");
+    // Snapshot A's RAW inode SLOT at the same on-disk number. Use the raw-bytes
+    // read (not read_inode) because that number may be UNALLOCATED on A — a
+    // pristine zeroed slot fails the metadata_csum verify read_inode now runs
+    // (correctly: it is not a live inode). The isolation invariant is a
+    // byte-for-byte slot comparison, which is exactly what read_inode_bytes gives.
+    let (a_before, _off) = a.state().mount.read_inode_bytes(n)
+        .expect("A has an inode slot at the colliding number");
 
     // Free the orphan against B's owning state (what close_hook does via
     // the wrapper's `st`). Must NOT call root() / mount A.
     b.state().free_orphan_inode(n).expect("free B's orphan");
     b.state().orphan_remove(n);
 
-    // A's inode at N is byte-for-byte intact: no cross-mount corruption.
-    let a_after = a.state().mount.read_inode(n)
-        .expect("A's inode at N still readable after B's free");
-    assert_eq!(a_before.links_count, a_after.links_count,
-        "B's orphan free must not alter A's inode links_count");
-    assert_eq!(a_before.size, a_after.size,
-        "B's orphan free must not alter A's inode size");
-    assert_eq!(a_before.mode, a_after.mode,
-        "B's orphan free must not alter A's inode mode");
+    // A's inode slot at N is byte-for-byte intact: no cross-mount corruption.
+    let (a_after, _off2) = a.state().mount.read_inode_bytes(n)
+        .expect("A's inode slot at N still readable after B's free");
+    assert_eq!(a_before, a_after,
+        "B's orphan free must not alter A's inode slot (byte-for-byte)");
     // A's own root dir still resolves its real contents.
     assert!(a.state().lookup_path(b"/hello.txt").is_some(),
         "A's tree intact after B orphan free");
