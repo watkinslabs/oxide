@@ -13,6 +13,27 @@ packed in this env). **This does NOT fix systemd-hwdb** (SIMD-corruption
 hypothesis disproven — hwdb still spins with correct AVX save). hwdb root cause
 remains open below.
 
+## hwdb blocker — EVERY kernel cause exonerated (2026-07-09n)
+Exhaustive measurement (all debug-wakelat probes, since reverted):
+- **[HWTOT]** path-agnostic total bytes hwdb writes: crossed 4MB at t=82s (~62 KB/s)
+  then plateaued — NOT unbounded (not a circular trie), just ~100× too slow (real
+  Linux hwdb = 7 MB/s). fd=3 O_TMPFILE, type=0 regular.
+- **[HWFLT]** global user page-fault counter: ZERO fires in 60s → hwdb takes
+  <200k faults → NOT a fault storm / slow fault handler.
+- Prior: <30k syscalls in 110s (few), stime≈0 (utime≈57s = pure USER cpu),
+  ext4 read/write correct, brk/mmap/mremap/find_hole clean, AVX now saved (XSAVE),
+  cr0=0x80010013 (CD clear = caching on), no PAT/MTRR override + user PTEs PCD=PWT=0
+  (WB/cached, not uncached). So NOT faults, syscalls, fs, allocator, SIMD, or
+  cacheability.
+- **CONCLUSION: hwdb burns ~57s of USER CPU (~14µs/output-byte) purely inside
+  libsystemd-shared `trie_store_nodes` recursion → fwrite (confirmed by [HWCALL]
+  stacks + objdump).** This is a userspace-algorithmic pathology (degenerate/O(n²)
+  trie), NOT any kernel-side bug — every kernel path is exonerated. Cracking it
+  needs USERSPACE PROFILING (perf / gdb-with-symbols on hwdb), which this env blocks
+  (gdb can't stop the 100%-KVM spin; no perf; no easy hwdb symbols). NEXT: build a
+  perf-capable path, or a poor-man's timer-tick userspace-stack histogram of tid
+  4135 to name the exact hot function inside trie_store_nodes/the build's dedup.
+
 ## Merged this session (main a0962d5e)
 - **F696** ext4 read-verify completion (extent-block/dirent-tail/bitmap csum).
 - **B677** AF_UNIX nonblocking read → EAGAIN (was blocking; console2.md suspect #1).
