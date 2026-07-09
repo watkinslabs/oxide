@@ -51,27 +51,68 @@ impl InetSocket {
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
             return Ok(0);
         }
-        if let SockKind::TcpConn(entry) = &*self.kind.lock() {
-            drain_loopback();
-            let got = stack().tcp_recv(entry, buf.len());
-            if !got.is_empty() {
-                let n = got.len();
-                buf[..n].copy_from_slice(&got);
-                return Ok(n);
-            }
-            let st = entry.conn.lock().state;
-            if st == crate::tcp_state::TcpState::Closed
-                || st == crate::tcp_state::TcpState::CloseWait
-                || st == crate::tcp_state::TcpState::LastAck
-            {
-                return Ok(0);
-            }
-            return Err(vfs::VfsError::Eagain);
+        // Snapshot the kind out of its lock (never park while holding it, and
+        // never call the *blocking* read() for AF_UNIX — a nonblocking read on
+        // an empty-but-open AF_UNIX stream MUST return EAGAIN, not sleep, or a
+        // systemd varlink/sd-event fd drains into a park and wedges sysinit).
+        enum K {
+            Unix(Arc<crate::UnixPair>, crate::UnixEnd),
+            UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
+            Tcp(Arc<TcpEntry>),
+            Other,
         }
-        // Fall back to the blocking path for non-TCP sock kinds — their
-        // existing read() impl already returns Eagain for empty queues
-        // where applicable (UnixMsgPair).
-        self.read(_off, buf)
+        let k = match &*self.kind.lock() {
+            SockKind::Unix(p, e)        => K::Unix(p.clone(), *e),
+            SockKind::UnixMsgPair(p, e) => K::UnixMsgPair(p.clone(), *e),
+            SockKind::TcpConn(e)        => K::Tcp(e.clone()),
+            _                            => K::Other,
+        };
+        match k {
+            K::Tcp(entry) => {
+                drain_loopback();
+                let got = stack().tcp_recv(&entry, buf.len());
+                if !got.is_empty() {
+                    let n = got.len();
+                    buf[..n].copy_from_slice(&got);
+                    return Ok(n);
+                }
+                let st = entry.conn.lock().state;
+                if st == crate::tcp_state::TcpState::Closed
+                    || st == crate::tcp_state::TcpState::CloseWait
+                    || st == crate::tcp_state::TcpState::LastAck
+                {
+                    return Ok(0);
+                }
+                Err(vfs::VfsError::Eagain)
+            }
+            // AF_UNIX SOCK_STREAM: drain what's queued; empty → EOF (peer closed
+            // + drained) gives Ok(0), else EAGAIN. Never parks.
+            K::Unix(pair, end) => {
+                let got = pair.read(end, buf.len());
+                if !got.is_empty() {
+                    let n = got.len();
+                    buf[..n].copy_from_slice(&got);
+                    return Ok(n);
+                }
+                if pair.is_eof(end) { return Ok(0); }
+                Err(vfs::VfsError::Eagain)
+            }
+            // AF_UNIX SOCK_SEQPACKET/DGRAM pair: recv() returns None when nothing
+            // pending AND not EOF, Some(empty) on EOF, Some(data) otherwise.
+            K::UnixMsgPair(pair, end) => {
+                match pair.recv(end, buf.len()) {
+                    Some(msg) => {
+                        let n = msg.len();
+                        buf[..n].copy_from_slice(&msg);
+                        Ok(n)
+                    }
+                    None => Err(vfs::VfsError::Eagain),
+                }
+            }
+            // Udp / UnixDgram / Packet / TcpInit / TcpListener: read() returns
+            // EINVAL for these (they use recvfrom/recvmsg) — no blocking path.
+            K::Other => self.read(_off, buf),
+        }
     }
 
     /// # C: backend-dependent
