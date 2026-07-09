@@ -90,6 +90,34 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                     klog::write_raw(b"]\n");
                 }
             }
+            // DIAG (debug-wakelat): `[KERNIP]` — a tick that interrupted KERNEL
+            // mode on a REAL user task (not idle) samples the kernel RIP. A fixed
+            // RIP repeating = a kernel-mode busy-spin (spinlock livelock / a kernel
+            // loop) that `[USERIP]` (from_user only) can't see. Feed the RIP to
+            // addr2line on the kernel ELF. Excludes the idle/kthread sink (tgid==0).
+            // Rate-limited 1/128 to match USERIP.
+            #[cfg(feature = "debug-wakelat")]
+            if !from_user {
+                if let Some(c) = sched::live::current() {
+                    if c.tgid.load(Ordering::Relaxed) != 0 {
+                        static KRIP_SAMP: AtomicU64 = AtomicU64::new(0);
+                        if KRIP_SAMP.fetch_add(1, Ordering::Relaxed) % 128 == 0 {
+                            // SAFETY: frame+88 is the CPU-pushed RIP slot; same offset
+                            // for kernel-mode ticks (no SS/RSP pushed, but RIP is top).
+                            let rip = unsafe { core::ptr::read_volatile(frame.add(88) as *const u64) };
+                            klog::write_raw(b"[KERNIP rip=");
+                            klog::write_hex_u64(rip);
+                            klog::write_raw(b" tid=");
+                            klog::write_dec_u64(c.tid as u64);
+                            klog::write_raw(b" lastsc=");
+                            klog::write_dec_u64(c.last_syscall_nr.load(Ordering::Relaxed) as u64);
+                            klog::write_raw(b" ");
+                            klog::write_raw(c.name.as_bytes());
+                            klog::write_raw(b"]\n");
+                        }
+                    }
+                }
+            }
             // BSP timer hook runs only on the boot CPU. The softirq drain is
             // PER-CPU (Linux: every CPU runs its own
             // __do_softirq from irq_exit) — each CPU drains its OWN pending
