@@ -68,6 +68,18 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    getdents loop/dup? Likely ties to the ext4 read side (cold-read was already ~2.7
    MB/s) or a memory/malloc bug. Fix that → trie is finite → hwdb finishes → sysinit
    proceeds → getty.
+   **ext4 READ RULED OUT (2026-07-09g):** guest sha256 of the 3 largest hwdb.d
+   inputs (incl. the 4.1MB 20-pci-vendor-model.hwdb) MATCH the host byte-for-byte
+   (0c4708…/bf7886…/334e55…). So ext4 read returns correct bytes even for a 4MB
+   file → the trie corruption is NOT a bad read. With writes fast+buffered (O_TMPFILE
+   uses wrap_file→framecache) and CPU/mem-ops normal, yet output unbounded (>200s ×
+   ~11k writes/s ≈ GBs ≫ 13.5MB) → **prime suspect is a kernel MEMORY bug
+   (mmap/brk/realloc) corrupting hwdb's large trie into a cycle** during the build.
+   Other large-allocating userspace (GNOME) would hit the same. **NEXT: trace hwdb's
+   mmap/brk/munmap** (addrs+lens) for overlaps/reuse-while-live, or a hosted mmap/brk
+   stress test of large + realloc patterns. (disprove-don't-hack: ext4-read theory
+   killed by the hash match.)
+
    **ALSO CONFIRMED BUG: task `comm` is never updated on exec** (kernel task.name +
    /proc/<pid>/comm both stay "fork-child"). Real Linux-compat gap; fix in the exec
    path (set comm to the new binary basename). It's why name-based diag filters fail.
