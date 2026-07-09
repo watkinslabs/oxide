@@ -321,6 +321,36 @@ pub fn verify_block_bitmap_csum(sb: &Superblock, desc_slot: &[u8], bitmap: &[u8]
     }
 }
 
+/// `verify_block_bitmap_csum` keyed by group `n`'s slot inside the full `gdt`
+/// buffer (mirrors `set_block_bitmap_csum`). Skips `EXT4_BG_BLOCK_UNINIT`
+/// groups: their on-disk bitmap block is not materialized (Linux synthesizes
+/// it via `ext4_init_block_bitmap` before ever verifying), so a raw recompute
+/// would false-reject. # C: O(nbits/8)
+pub fn verify_block_bitmap_csum_at(sb: &Superblock, gdt: &[u8], n: u32, bitmap: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if gdt.len() < off + dsize { return false; }
+    let slot = &gdt[off..off + dsize];
+    let flags = u16::from_le_bytes([slot[crate::gdt::GD_OFF_FLAGS], slot[crate::gdt::GD_OFF_FLAGS + 1]]);
+    if flags & crate::gdt::EXT4_BG_BLOCK_UNINIT != 0 { return true; }
+    verify_block_bitmap_csum(sb, slot, bitmap)
+}
+
+/// `verify_inode_bitmap_csum` keyed by group `n`'s slot inside the full `gdt`
+/// buffer (mirrors `set_inode_bitmap_csum`). Skips `EXT4_BG_INODE_UNINIT`
+/// groups (unmaterialized bitmap, as above). # C: O(nbits/8)
+pub fn verify_inode_bitmap_csum_at(sb: &Superblock, gdt: &[u8], n: u32, bitmap: &[u8]) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if gdt.len() < off + dsize { return false; }
+    let slot = &gdt[off..off + dsize];
+    let flags = u16::from_le_bytes([slot[crate::gdt::GD_OFF_FLAGS], slot[crate::gdt::GD_OFF_FLAGS + 1]]);
+    if flags & crate::gdt::EXT4_BG_INODE_UNINIT != 0 { return true; }
+    verify_inode_bitmap_csum(sb, slot, bitmap)
+}
+
 /// `ext4_inode_bitmap_csum_verify`: descriptor slot's stored inode-bitmap csum
 /// (lo@0x1A, hi@0x3A) vs a recompute over `bitmap`. # C: O(nbits/8)
 pub fn verify_inode_bitmap_csum(sb: &Superblock, desc_slot: &[u8], bitmap: &[u8]) -> bool {

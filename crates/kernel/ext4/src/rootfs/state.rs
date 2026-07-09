@@ -189,7 +189,7 @@ impl RootfsState {
                 // Also resolve the physical block: if PHYS varies across reads
                 // → extent-mapping race; if PHYS is stable but the bytes vary →
                 // data-read race in virtio-blk.
-                let phys = self.mount.resolve_pblock(&inode.i_block, k as u32).unwrap_or(0);
+                let phys = self.mount.resolve_pblock(&inode, k as u32).unwrap_or(0);
                 klog::write_raw(b"[mnt] LIBCBLK ino=");
                 klog::write_dec_u64(ino as u64);
                 klog::write_raw(b" phys=");

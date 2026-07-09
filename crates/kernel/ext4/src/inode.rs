@@ -99,6 +99,13 @@ pub struct Inode {
     pub i_flags:     u32,
     /// Inline extent tree root + leaves (60 bytes verbatim).
     pub i_block:     [u8; I_BLOCK_LEN],
+    /// This inode's number, stamped by `read_inode` after parse (parse itself
+    /// only sees the slot bytes). 0 = unknown (a bare `parse` result); read-side
+    /// metadata_csum verify of this inode's dir blocks / external extent nodes
+    /// keys on `inode_seed(ino, generation)`, so it is skipped when `ino == 0`.
+    pub ino:         u32,
+    /// `i_generation` @0x64 — the per-inode csum-seed input (with `ino`).
+    pub generation:  u32,
 }
 
 /// Decode an ext4 `(i_*time, i_*time_extra)` pair to absolute ns: `base` holds
@@ -165,6 +172,8 @@ impl Inode {
             crtime_ns,
             i_flags: u32::from_le_bytes([buf[0x20], buf[0x21], buf[0x22], buf[0x23]]),
             i_block,
+            ino: 0, // stamped by read_inode (parse has no ino)
+            generation: u32::from_le_bytes([buf[0x64], buf[0x65], buf[0x66], buf[0x67]]),
         })
     }
 
