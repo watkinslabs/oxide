@@ -65,6 +65,21 @@ pub(super) fn current_key(uaddr: u64, private: bool) -> Option<Key> {
     if private {
         return Some(Key { mm_root: mm.root_pa(), va: uaddr });
     }
+    // Linux `get_futex_key`: the physical/inode key is used ONLY for a genuinely
+    // shared (VM_SHARED) mapping. A "shared" futex OP on a PRIVATE mapping (anon
+    // or MAP_PRIVATE file — e.g. a glibc process-shared condvar that still lives
+    // in private-anon memory) keys on `(mm, addr)`, exactly like a private op.
+    // Otherwise a shared-op WAIT and a private-op WAKE on the SAME private-anon
+    // word compute different keys (phys vs mm+va) and the wake is lost — the
+    // journald flush hang that wedged sysinit (main thread WAITs shared, worker
+    // WAKEs private on the same condvar word).
+    let vm_shared = hal::UserVirtAddr::new(uaddr)
+        .and_then(|u| mm.find_vma(u))
+        .map(|v| v.flags.contains(vmm::VmaFlags::SHARED))
+        .unwrap_or(false);
+    if !vm_shared {
+        return Some(Key { mm_root: mm.root_pa(), va: uaddr });
+    }
     use hal::{MmuOps, Va};
     #[cfg(target_arch = "x86_64")]
     let pa = hal_x86_64::mmu_ops::X86Mmu::translate(Va(uaddr)).map(|(p, _)| p.0);
