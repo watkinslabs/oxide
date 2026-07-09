@@ -19,6 +19,10 @@ pub fn sys_sync(_args: &SyscallArgs) -> i64 {
         synced.push(key);
         let _ = sb.sync_filesystem();
     }
+    // Commit the ext4 root running journal transaction (cross-op batching): the
+    // per-sb sync flushed dirty pages into the running txn; sync(2) must make it
+    // durable. No-op when batching is off / empty / non-ext4 root.
+    let _ = ext4::commit_rootfs_journal();
     0
 }
 
@@ -48,5 +52,7 @@ pub fn sys_syncfs(args: &SyscallArgs) -> i64 {
             return -(Errno::Eio.as_i32() as i64);
         }
     }
+    // Make the ext4 root running journal transaction durable (cross-op batching).
+    if ext4::commit_rootfs_journal().is_err() { return -(Errno::Eio.as_i32() as i64); }
     0
 }

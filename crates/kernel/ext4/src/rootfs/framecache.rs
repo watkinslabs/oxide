@@ -492,10 +492,21 @@ fn register(s: &Arc<Ext4FrameStore>) {
 pub fn flush_all_dirty() -> Result<(), ()> {
     let snapshot: Vec<Weak<Ext4FrameStore>> = { DIRTY_STORES.lock().iter().cloned().collect() };
     let mut failed = false;
+    let mut mount: Option<alloc::sync::Arc<crate::Mount>> = None;
     for w in &snapshot {
-        if let Some(s) = w.upgrade() { if s.writeback().is_err() { failed = true; } }
+        if let Some(s) = w.upgrade() {
+            if mount.is_none() { mount = Some(s.st.mount.clone()); }
+            if s.writeback().is_err() { failed = true; }
+        }
     }
     DIRTY_STORES.lock().retain(|w| w.strong_count() > 0);
+    // Durability point (sync/syncfs/msync): drain the running batch to disk so
+    // the metadata the writebacks just staged is actually committed. In batch
+    // mode `write_at` only joins the running transaction — without this the
+    // flush would return "durable" while the metadata sat un-committed. No-op
+    // when batching is off. (Plain inode-Drop writeback does NOT reach here —
+    // close is not fsync, so those stay in the running txn per Linux.)
+    if let Some(m) = mount { if m.commit_batch().is_err() { failed = true; } }
     if failed { Err(()) } else { Ok(()) }
 }
 
