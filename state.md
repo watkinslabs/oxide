@@ -73,18 +73,37 @@ socket-activation queues userdbd (a manual dbus command injects an event that
 wakes it and it runs). Full detail + next-trace in memory
 [[desktop-blocker-tmpfiles-userdbd]] (UPDATE 2026-07-09d).
 
-**First task:** trace what systemd (pid 1) blocks in at the deadlock and what
-SHOULD wake it when a job becomes runnable. Since early jobs (modprobe, remount-
-fs, sysctl) DID dispatch, the loop-wakeup works generally — find what's different
-about the socket-activation-queued userdbd job: does queuing it fail to self-wake
-the sd-event loop (eventfd/signalfd self-pipe write→epoll wake), or did the
-socket-ready notify that queued the job not also wake the loop? Likely a kernel
-eventfd/epoll self-wake path. Reproduce the deadlock, break into systemd's
-epoll_wait, and check the eventfd/signalfd it should have been woken on.
-DEBUG TECHNIQUE THAT WORKS: the `systemd.debug_shell=ttyS0` root shell — pipe
-`systemctl`/`/proc` queries via `qemu_send_serial` after the boot goes idle
-(~90s). `/proc/<pid>/{syscall,wchan,stack}` are STUBBED (empty) — use
-`/proc/<pid>/status` State + `/proc/<pid>/fd`.
+**NARROWED FURTHER (same session) — NOT a kernel epoll-wakeup bug:**
+- `sys_epoll_wait` (fs/epoll.rs:413) already re-scans every **20ms** even for
+  timeout<0, so systemd's loop re-iterates frequently regardless of targeted
+  wakes. AF_UNIX listener→epoll notify is code-verified correct (same
+  PollSubscribers; notify bumps gen+wakes) AND systemd DID queue userdbd (it saw
+  the connect). So the kernel wake path works.
+- **⚠ PROBING PERTURBS IT:** ANY `systemctl` at the deadlock injects a dbus fd
+  event that resumes systemd's whole run queue (measured: querying userdbd made
+  it go active). So `systemctl start userdbd` "fixing" it was NOT userdbd-
+  specific. Prior sessions' systemctl probing was self-defeating. **Diagnose ONLY
+  with /proc reads or a kernel-side trace, never systemctl.**
+- ⇒ **The stall is systemd's JOB ENGINE not advancing its run queue after hwdb
+  FAILS (list-jobs = 0 running / 36 waiting — the whole queue frozen, not just
+  userdbd), until an external event re-triggers it.** systemd DID reap hwdb
+  (`[wait4 reap] reaped_tid=39`), so SIGCHLD→reap works; but job-completion →
+  re-run-queue doesn't re-fire on its own.
+
+**First task (non-perturbing):** kernel-trace pid-1/init's syscalls across the
+window where hwdb exits and the queue freezes — gate a probe on `current().tgid==1`
+(init/systemd; [USERIP] shows it as name "init", tid 3235774466) in the syscall
+dispatch, logging epoll_wait(timeout,nready), clone/fork, and the signalfd
+read/rt_sigreturn around the hwdb SIGCHLD. Question: after reaping hwdb, does
+systemd stop calling clone (never tries to fork the next service) → job-engine
+frozen; or does it loop epoll_wait(20ms)→0 forever. If frozen post-reap, suspect
+the SIGCHLD/waitid completion or the child-exit → parent-notify path leaves
+systemd's manager without re-enabling its run-queue defer (a subtle exit-signal/
+si_code or wait-status detail systemd keys off). Cross-check vs [[hwdb-blocker-ext4
+-writeback-commits]] (hwdb now EXITS status=1 fast instead of timing out — the
+FAILURE path is newly exercised; the freeze may be specific to handling a FAILED
+oneshot's exit). Full detail: memory [[desktop-blocker-tmpfiles-userdbd]] UPDATE
+2026-07-09d. `/proc/<pid>/{syscall,wchan,stack}` are stubbed — use status State + fd.
 
 ## First command next session
 `cd /home/nd/oxide/kernel && git log --oneline -3`  # confirm main @ 8537de19
