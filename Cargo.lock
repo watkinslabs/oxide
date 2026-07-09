@@ -310,6 +310,7 @@ dependencies = [
 name = "drv-virtio-gpu"
 version = "0.1.0"
 dependencies = [
+ "cmdline",
  "console",
  "drm",
  "drv",

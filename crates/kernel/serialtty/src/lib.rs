@@ -52,6 +52,10 @@ pub trait SerialOut {
     /// Push already-cooked output bytes to the UART transmitter.
     /// # C: O(N) bytes
     fn emit(&mut self, bytes: &[u8]);
+
+    /// Reprogram the UART baud rate (from TCSETS `c_ospeed`). Default no-op
+    /// (test sinks have no real UART). # C: O(1)
+    fn set_baud(&mut self, _baud: u32) {}
 }
 
 /// `SerialOut` that drives the real UART via `drv_serial::emit`. The
@@ -72,6 +76,8 @@ impl SerialOut for KernelUart {
         // and VT consoles independent.
         drv_serial::emit(bytes);
     }
+    /// # C: O(1) UART divisor program
+    fn set_baud(&mut self, baud: u32) { drv_serial::set_baud(baud); }
 }
 
 /// Sink for ISIG signals raised on the fg pgrp (same pattern as the T5
@@ -167,11 +173,20 @@ impl<U: SerialOut, S: FgSignal> TtyDriver for SerialTtyDriver<U, S> {
         self.sig.raise(pgrp, sig);
     }
 
-    /// Termios change (TCSETS*): a real UART would reprogram baud here.
-    /// The QEMU/16550 + PL011 lines run at a fixed boot baud; no device
-    /// reprogramming is wired in T6 (additive). No-op.
-    /// # C: O(1)
-    fn set_termios(&mut self, _new: &[u8; TERMIOS_BYTES]) {}
+    /// Termios change (TCSETS*): reprogram the UART baud from `c_ospeed`
+    /// (Linux `uart_set_termios` → `->set_termios`). `c_ospeed` is the explicit
+    /// output speed at offset 40 of `struct termios` (termios2/BOTHER style, as
+    /// glibc cfsetospeed writes). A zero speed (B0 / unset) leaves the current
+    /// rate. # C: O(1) + one divisor program
+    fn set_termios(&mut self, new: &[u8; TERMIOS_BYTES]) {
+        let ospeed = u32::from_le_bytes([
+            new[tty::pty::TERMIOS_OFF_OSPEED],
+            new[tty::pty::TERMIOS_OFF_OSPEED + 1],
+            new[tty::pty::TERMIOS_OFF_OSPEED + 2],
+            new[tty::pty::TERMIOS_OFF_OSPEED + 3],
+        ]);
+        if ospeed != 0 { self.out.set_baud(ospeed); }
+    }
 }
 
 /// Assemble a `TtyStruct` around a `SerialTtyDriver`. The T6 deliverable:
