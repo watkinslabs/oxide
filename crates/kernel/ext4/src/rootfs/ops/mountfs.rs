@@ -35,6 +35,12 @@ impl vfs::SuperOps for Ext4SuperOps {
     }
 
     fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
+        // sync(2)/syncfs(2): flush buffered file-data pages (Linux buffered
+        // writes sit dirty in the page cache until writeback) before the
+        // journal tx + device flush. fsync/msync flush per-inode; this is the
+        // whole-fs pass.
+        #[cfg(feature = "ext4-frame-cache")]
+        crate::flush_all_dirty().map_err(|_| vfs::VfsError::Eio)?;
         self.st.mount.flush_pending_tx().map_err(|_| vfs::VfsError::Eio)?;
         self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
         Ok(())

@@ -19,7 +19,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use block::types::InodeId;
 use sync::{Spinlock, TaskList as TaskListClass};
@@ -39,6 +39,14 @@ pub(crate) struct Ext4FrameStore {
     pub(crate) st:  Arc<RootfsState>,
     /// ext4 inode number this store backs.
     pub(crate) ino: u32,
+    /// Authoritative in-memory file size (bytes). A buffered `write(2)` grows
+    /// this WITHOUT touching disk (Linux page-cache / delayed writeback); the
+    /// on-disk `i_size` catches up only at `writeback`. `writeback_idxs` clamps
+    /// flushed pages to `max(this, on-disk i_size)`, so a buffered growth is
+    /// never truncated at flush and a store that predates a write still honors
+    /// the real on-disk size. Kept in step with `Ext4FileData.size_hint` /
+    /// `inode.i_size` by write/truncate/fallocate.
+    size: AtomicU64,
     /// `page_idx -> frame pa`. Sparse: an absent page is filled from disk on
     /// first touch (a hole reads as zero).
     pages: Spinlock<BTreeMap<u64, u64>, TaskListClass>,
@@ -75,10 +83,12 @@ fn page_sum(base: *const u8) -> u64 {
 }
 
 impl Ext4FrameStore {
-    /// Build a frame store for `ino` on mount `st`. # C: O(1)
-    pub(crate) fn new(st: Arc<RootfsState>, ino: u32) -> Arc<Ext4FrameStore> {
+    /// Build a frame store for `ino` on mount `st`, seeded with the inode's
+    /// current on-disk `size`. # C: O(1)
+    pub(crate) fn new(st: Arc<RootfsState>, ino: u32, size: u64) -> Arc<Ext4FrameStore> {
         let s = Arc::new(Ext4FrameStore {
             st, ino,
+            size: AtomicU64::new(size),
             pages: Spinlock::new(BTreeMap::new()),
             dirty: Spinlock::new(BTreeSet::new()),
             me: Spinlock::new(Weak::new()),
@@ -254,31 +264,60 @@ impl Ext4FrameStore {
         Ok(written)
     }
 
-    /// write(2) coherency: patch any RESIDENT frame in `[off, off+src.len())`
-    /// with `src`, so a `MAP_SHARED` mapper and a subsequent `read` observe the
-    /// write. The bytes are also written through to disk by the caller
-    /// (`Ext4RegFileOps::write`), so a non-resident page need not be faulted —
-    /// its next fault reads the updated disk bytes. # C: O(src.len)
-    pub(crate) fn update_resident(&self, off: u64, src: &[u8]) {
+    /// Buffered `write(2)` (Linux `generic_perform_write`): copy `src` into the
+    /// inode's page frames and tag them dirty — NO synchronous disk I/O. A
+    /// partial or growing page is faulted in from disk first (RMW / zero-fill
+    /// past EOF) so untouched bytes survive; the authoritative in-memory `size`
+    /// grows to cover the write. Data reaches disk lazily via `writeback`
+    /// (fsync/msync/sync/inode-drop). Replaces the old per-write `write_at`
+    /// write-through, which cost one synchronous block RMW + inode round-trip
+    /// per write(2) (systemd-hwdb-update: ~11.6k writes ≈ 56s). # C: O(src.len)
+    pub(crate) fn write_buffered(&self, off: u64, src: &[u8]) -> Result<usize, ()> {
+        if src.is_empty() { return Ok(0); }
+        // Do NOT read the on-disk inode on the hot path. A write that lands in an
+        // already-resident page needs nothing from it — Linux writes go through
+        // the in-core inode, never a per-write disk read. read_inode here is an
+        // UNCACHED, busy-polled device read of the inode-table block; doing it
+        // per write(2) made systemd-hwdb-update (~16k small writes) burn ~10ms
+        // CPU per write. Read it lazily, once, only when a page actually misses
+        // and must be RMW-filled from disk.
+        let mut dinode: Option<crate::Inode> = None;
         let mut done = 0usize;
         while done < src.len() {
             let cur = off + done as u64;
             let idx = cur / PG as u64;
             let pgoff = (cur % PG as u64) as usize;
             let chunk = (PG - pgoff).min(src.len() - done);
-            let pa = self.pages.lock().get(&idx).copied();
-            if let Some(pa) = pa {
-                if let Some(base) = pmm::setup::frame_ptr(pa) {
-                    // SAFETY: pa is an inode-owned resident frame; [pgoff,
-                    // pgoff+chunk) ⊆ [0, PG); src slice is distinct.
-                    unsafe { core::ptr::copy_nonoverlapping(src[done..].as_ptr(), base.add(pgoff), chunk); }
-                    #[cfg(feature = "debug-fillverify")]
-                    self.sums.lock().remove(&idx); // DIAG: legit write(2) patch
+            // Bind in a `let` so the pages-lock guard drops HERE — a match
+            // scrutinee temporary lives for the whole match, and ensure_page
+            // re-locks pages (self-deadlock).
+            let resident = self.pages.lock().get(&idx).copied();
+            let pa = match resident {
+                Some(pa) => pa, // resident: pure memcpy, no inode, no device I/O
+                None => {
+                    if dinode.is_none() {
+                        let di = self.st.mount.read_inode(self.ino).map_err(|_| ())?;
+                        if !di.is_reg() { return Err(()); }
+                        dinode = Some(di);
+                    }
+                    self.ensure_page(dinode.as_ref().unwrap(), idx).ok_or(())?
                 }
-            }
+            };
+            let base = pmm::setup::frame_ptr(pa).ok_or(())?;
+            // SAFETY: pa is an inode-owned resident frame (resident or just
+            // filled); [pgoff, pgoff+chunk) ⊆ [0, PG); src is a distinct caller
+            // slice, non-overlapping with the HHDM frame mirror.
+            unsafe { core::ptr::copy_nonoverlapping(src[done..].as_ptr(), base.add(pgoff), chunk); }
+            self.mark_dirty(idx);
             done += chunk;
         }
+        self.size.fetch_max(off + src.len() as u64, Ordering::AcqRel);
+        Ok(done)
     }
+
+    /// Set the authoritative in-memory `size` (truncate/fallocate: the size
+    /// change is on disk, keep the writeback clamp in step). # C: O(1)
+    pub(crate) fn set_size(&self, size: u64) { self.size.store(size, Ordering::Release); }
 
     /// Flush dirty frames (whole file) to disk via `Mount::write_at`
     /// (journaled), clamped to i_size. `fsync`/`msync`/inode-drop driver.
@@ -357,7 +396,11 @@ impl Ext4FrameStore {
     /// runs WITHOUT the `pages` lock held. A failed page is re-marked dirty.
     fn writeback_idxs(&self, idxs: Vec<u64>) -> Result<(), ()> {
         if idxs.is_empty() { return Ok(()); }
-        let size = self.st.mount.read_inode(self.ino).map(|i| i.size).unwrap_or(0);
+        // Clamp to the authoritative in-memory size (a buffered write grows this
+        // before the on-disk i_size), but never below the on-disk size — so a
+        // store that predates any buffered write still flushes its full extent.
+        let disk = self.st.mount.read_inode(self.ino).map(|i| i.size).unwrap_or(0);
+        let size = self.size.load(Ordering::Acquire).max(disk);
         // Plan under the lock: (idx, page_start, len, pa). No I/O here.
         let mut plan: Vec<(u64, u64, usize, u64)> = Vec::new();
         {

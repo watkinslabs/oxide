@@ -162,6 +162,82 @@ fn multipage_frame_read_matches_legacy_and_source_b240() {
 }
 
 #[test]
+fn buffered_growing_write_persists_full_extent_across_remount() {
+    // The size-authority path: a buffered write(2) grows the file WELL past its
+    // on-disk i_size across several pages. Writeback must flush the whole new
+    // extent (clamped to the in-memory size, not the stale on-disk size) or the
+    // tail is silently truncated. Flush is driven by inode/mount Drop only (no
+    // explicit writeback) — proves the durability-on-eviction path too.
+    common::boot_hosted_pmm();
+    let disk = fresh_disk();
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+
+    let total = 3 * PG + 777; // multi-page, partial final page
+    let mut pat = alloc::vec![0u8; total];
+    for (i, b) in pat.iter_mut().enumerate() { *b = (i as u32).wrapping_mul(2246822519).to_le_bytes()[1]; }
+
+    {
+        let (m, _sb) = open_with_sb(dev.clone());
+        let st = m.state();
+        let root = st.lookup_path(b"/").expect("root");
+        let ino = st.mount.create_file(root, b"grow.bin", 0o644, 0, 0).expect("create grow.bin");
+        let f = st.wrap_file(ino).expect("wrap grow.bin");
+        // One buffered write extends 0 -> total across pages. No writeback call:
+        // rely on Drop flushing dirty pages at eviction.
+        let n = f.write(0, &pat).expect("buffered write");
+        assert_eq!(n, total, "write returns full length");
+        assert_eq!(f.size(), total as u64, "i_size reflects the buffered growth immediately");
+        // mount + sb + inode drop here → Drop flushes dirty frames.
+    }
+
+    let (m2, _sb2) = open_with_sb(dev.clone());
+    let ino2 = m2.state().lookup_path(b"/grow.bin").expect("grow.bin after remount");
+    let f2 = m2.state().wrap_file(ino2).expect("wrap after remount");
+    assert_eq!(f2.size(), total as u64, "on-disk i_size == full buffered size after flush");
+    let mut got = alloc::vec![0u8; total];
+    let r = f2.read(0, &mut got).expect("read after remount");
+    assert_eq!(r, total, "reads the full extent back");
+    assert_eq!(&got[..], &pat[..], "every byte of the grown file persisted (no tail truncation)");
+}
+
+#[test]
+fn buffered_partial_overwrite_preserves_untouched_bytes() {
+    // Partial-page RMW: overwrite bytes in the MIDDLE of an existing file via a
+    // buffered write. The untouched head/tail of the page must be faulted in
+    // from disk and survive the flush (Linux read-modify-write of a partial
+    // page), not be zeroed.
+    common::boot_hosted_pmm();
+    let disk = fresh_disk();
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+
+    let base_len = PG + 500;
+    let mut base = alloc::vec![0u8; base_len];
+    for (i, b) in base.iter_mut().enumerate() { *b = (i as u8).wrapping_add(1); }
+
+    {
+        let (m, _sb) = open_with_sb(dev.clone());
+        let st = m.state();
+        let root = st.lookup_path(b"/").expect("root");
+        let ino = st.mount.create_file(root, b"rmw.bin", 0o644, 0, 0).expect("create rmw.bin");
+        let f = st.wrap_file(ino).expect("wrap rmw.bin");
+        f.write(0, &base).expect("write base");
+        f.i_mapping().unwrap().writeback().expect("flush base");
+        // Now overwrite an 8-byte middle span crossing no page boundary.
+        let patch = *b"MIDPATCH";
+        f.write(1000, &patch).expect("buffered middle overwrite");
+        base[1000..1008].copy_from_slice(&patch);
+        f.i_mapping().unwrap().writeback().expect("flush patch");
+    }
+
+    let (m2, _sb2) = open_with_sb(dev.clone());
+    let ino2 = m2.state().lookup_path(b"/rmw.bin").expect("rmw.bin after remount");
+    let f2 = m2.state().wrap_file(ino2).expect("wrap after remount");
+    let mut got = alloc::vec![0u8; base_len];
+    f2.read(0, &mut got).expect("read after remount");
+    assert_eq!(&got[..], &base[..], "middle overwrite applied, surrounding bytes preserved");
+}
+
+#[test]
 fn writeback_persists_across_remount() {
     common::boot_hosted_pmm();
     let disk = fresh_disk();
