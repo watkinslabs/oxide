@@ -114,12 +114,23 @@ pub fn broadcast_wake_all_epolls() {
     for ep in snapshot { ep.waiters.wake_all(); }
 }
 
+/// Bump ONLY the global epoll generation (no lock, no waitlist wake) — the
+/// switch-tail-safe half of the broadcast, driven by `sched::live::bump_epoll_gen`
+/// when a zombie enters `ZOMBIES` after its exit-time notify already consumed a
+/// gen edge. The next `epoll_wait` safety-net rescan re-evaluates and reaps.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn bump_global_epoll_gen() {
+    GLOBAL_EPOLL_GEN.fetch_add(1, Ordering::AcqRel);
+}
+
 /// One-shot boot wiring: tell sched how to broadcast epoll wakes
 /// without taking a fs dependency.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn install_epoll_broadcast() {
     sched::live::set_epoll_broadcast_hook(broadcast_wake_all_epolls);
+    sched::live::set_epoll_gen_bump_hook(bump_global_epoll_gen);
 }
 static NEXT_EPOLL_ID: AtomicU32 = AtomicU32::new(0);
 
