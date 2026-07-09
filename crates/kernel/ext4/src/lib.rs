@@ -59,6 +59,7 @@ pub mod journal;
 pub mod rootfs;
 /// D8: flush every dirty ext4 frame store (the `msync(2)` durability path).
 pub use rootfs::flush_all_dirty;
+pub use rootfs::commit_rootfs_journal;
 pub use journal::ExtentLogReader;
 pub mod jbd2;
 pub use crate::jbd2::StagedBlock;
