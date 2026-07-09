@@ -428,16 +428,27 @@ impl Ext4FrameStore {
             }
         }
         let mut err = false;
-        for (idx, page_start, len, pa) in plan {
-            let base = match pmm::setup::frame_ptr(pa) { Some(b) => b, None => { err = true; continue; } };
-            // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
-            // read-only view handed to the block layer for the duration.
-            let slice = unsafe { core::slice::from_raw_parts(base, len) };
-            if self.st.mount.write_at(self.ino, page_start, slice).is_err() {
-                self.dirty.lock().insert(idx); // re-dirty for a later retry
-                err = true;
+        // Batch every dirty page of this writeback into ONE journal transaction
+        // (Linux jbd2 model). `run_journaled` is re-entrant: the outer scope
+        // opens the shadow, each inner `write_at` joins it and stages into the
+        // shared shadow (read-your-writes: a later page sees the size an earlier
+        // page set, so NO re-zero-extend), and the single outer commit persists
+        // all pages once. Without this, an N-page flush = N synchronous journal
+        // commits — the systemd-hwdb-update sysinit stall (~1358 commits for a
+        // 13.5MB file). Verified by tests/writeback_amp_image + writeback_ryw.
+        let _ = self.st.mount.run_journaled(|_m| {
+            for (idx, page_start, len, pa) in &plan {
+                let base = match pmm::setup::frame_ptr(*pa) { Some(b) => b, None => { err = true; continue; } };
+                // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
+                // read-only view handed to the block layer for the duration.
+                let slice = unsafe { core::slice::from_raw_parts(base, *len) };
+                if self.st.mount.write_at(self.ino, *page_start, slice).is_err() {
+                    self.dirty.lock().insert(*idx); // re-dirty for a later retry
+                    err = true;
+                }
             }
-        }
+            Ok::<(), crate::mount::MountError>(())
+        });
         // Drop the legacy Vec page-cache view so the metadata path re-reads.
         self.st.page_cache.invalidate(InodeId(self.ino as u64));
         if err { Err(()) } else { Ok(()) }
