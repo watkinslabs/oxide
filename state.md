@@ -42,7 +42,55 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
      NOT uncached/slow; hwdb's stime=0 spin is a genuine INSTRUCTION-COUNT blowup =
      a real loop, not slowness. Manual `systemd-hwdb update` ran >200s, never
      returned → effectively infinite.
-   **LOCALIZED (2026-07-09c): hwdb spins at a FIXED user RIP `0x7ffff71af75e`** for
+   **ROOT-CAUSE LOCALIZED (2026-07-09d): hwdb is in a `write()`-returns-0 retry
+   loop.** The spin RIP `0x7ffff71af75e` = libc offset `0x6e75e` (mapping
+   7ffff7141000-…, lite libc.so.6 single R+E seg @vaddr0) = the instr right AFTER
+   the `syscall` in `__internal_syscall_cancel` (objdump: `6e75c: syscall / 6e75e:
+   leave`). So NOT a pure-userspace loop — hwdb hammers a cancellable syscall that
+   returns instantly (stime rounds to ~0). With the task dump's last_syscall=write
+   nsysc=15952 → **write() returns 0 on hwdb's output fd**, so glibc's write-all
+   loop `while(left){n=write();left-=n}` with n==0 spins forever. FIX = find the fd
+   type hwdb writes hwdb.bin (or its stdout/pipe) to and stop write() returning 0
+   for a non-zero request (must write, block, or error). CONFIRM the exact
+   syscall+fd+retval with `features=debug-all` filtered to hwdb's tid, or test
+   writes to the same fd type in the debug-shell. **This likely also explains the
+   general boot crawl** (any service hitting the same write-0 path).
+   **FULLY TRACED (2026-07-09e): hwdb makes SUCCESSFUL write() syscalls in an
+   infinite loop.** [USERIP]+lastsc: tid=4135 starts `lastsc=0` (read, ~10-11s
+   reading input) then LOCKS `lastsc=1` (write) for 60+s at rip 0x7ffff71af75e =
+   libc `__internal_syscall_cancel` FAST-PATH post-`syscall` return (objdump). The
+   write neither returns 0 (`[WRITE0]` silent) nor errors (`[WRITEERR]` silent for
+   hwdb) → each write SUCCEEDS. Target is a pipe/socket DRAINED by journald (tid
+   4123 wakes constantly in [WLBLK]) — no output file, no backpressure. So hwdb
+   isn't blocked; it's genuinely writing forever. Most likely mechanism: the read
+   phase got bad/premature-EOF data → hwdb built a CIRCULAR/corrupt trie → the
+   serialization walk writes forever. **NEXT: full arg-trace** (features=debug-all,
+   filter hwdb tid) to see write(fd,buf,len) target + the read() that preceded it
+   (did a read return 0 early / wrong bytes?), or read hwdb's source. Suspect the
+   read/EOF path (ties to the ext4 cold-read slowness + a possible premature-EOF).
+   **INCIDENTAL BUG FOUND: write to `/proc/pressure/memory` returns EINVAL(22)** for
+   systemd PSI threshold setup (init + several children) — a real /proc PSI-write
+   gap, separate from hwdb.
+   Diagnostics landed (all debug-wakelat-gated, zero-cost off): `[USERIP]`+lastsc,
+   `[WRITE0]`, `[WRITEERR]`.
+
+   **UPDATE: NOT plain write().** Added a `[WRITE0]` trace in sys_write (Ok(0) on a
+   non-zero request, debug-wakelat) — it NEVER fired while hwdb spun. So the looping
+   cancellable syscall is NOT the `write` slot: it's another cancellation-point
+   syscall returning instantly in a retry loop — `writev`/`ppoll`/`pselect`/
+   `sendmsg`/`nanosleep`/`fsync` etc. (the task dump's `last-sysc=write` was likely
+   stale). **NEXT: name the exact syscall** — boot `features=debug-watchdog,debug-
+   wakelat`, at the spin read the `[sysrq] task dump` `last-sysc` column for tid=4135
+   (auto-dumps on no-progress), OR add a rate-limited syscall-nr trace in the syscall
+   dispatch filtered to the spinning tid. Then fix that syscall's return-0/instant
+   path (must make progress, block, or error — not return a value that spins the
+   glibc cancellable-syscall retry). Two reusable diagnostics landed: `[USERIP]`
+   (C103) + `[WRITE0]` (this change).
+   NOTE the earlier "infinite userspace loop / mem-cache / write-0" framings were
+   each WRONG — corrected step by step by [USERIP]+objdump+[WRITE0] (disprove-don't-
+   hack).
+
+   **(prior localization) hwdb spins at a FIXED user RIP `0x7ffff71af75e`** for
    100+s straight — captured by a NEW `[USERIP]` sampler I added to the timer ISR
    (arch-irq lapic/dispatch.rs, gated `debug-wakelat`: reads user rip from IRQ
    frame+88, rate-limited). Boot with `features=debug-wakelat` → `[USERIP rip=...
