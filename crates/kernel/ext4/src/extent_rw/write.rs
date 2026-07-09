@@ -63,6 +63,26 @@ impl Mount {
         let new_blocks = (new_size + bs - 1) / bs;
         // Phase 1: zero-extend file to new_blocks worth of blocks.
         let zero_blk = alloc::vec![0u8; bs_us];
+        // DIAG (debug-wakelat): a write landing far past EOF makes this loop run
+        // O(file-size) append_block calls (the O(n²) writeback stall). Log the
+        // zero-extend span + the growing file size; a span ≫ 1 = out-of-order
+        // writeback gap; new_size climbing past ~16MB for hwdb.bin (should be
+        // ~13.5MB) = an unbounded/circular trie. Rate-limited.
+        #[cfg(feature = "debug-wakelat")]
+        {
+            use core::sync::atomic::{AtomicU64, Ordering};
+            static WA: AtomicU64 = AtomicU64::new(0);
+            let span = new_blocks.saturating_sub(cur_blocks);
+            let k = WA.fetch_add(1, Ordering::Relaxed);
+            if span > 4 || (new_size >> 24) != (cur_size >> 24) || k < 8 {
+                klog::write_raw(b"[WAEXT ino="); klog::write_dec_u64(ino as u64);
+                klog::write_raw(b" off="); klog::write_hex_u64(off);
+                klog::write_raw(b" cursz="); klog::write_dec_u64(cur_size);
+                klog::write_raw(b" newsz="); klog::write_dec_u64(new_size);
+                klog::write_raw(b" span="); klog::write_dec_u64(span);
+                klog::write_raw(b"]\n");
+            }
+        }
         for _ in cur_blocks..new_blocks {
             self.append_block(ino, &zero_blk)?;
         }

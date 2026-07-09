@@ -68,6 +68,29 @@ Kernel + serial debug-shell stay fully alive throughout (not hung). Confirmed:
    getdents loop/dup? Likely ties to the ext4 read side (cold-read was already ~2.7
    MB/s) or a memory/malloc bug. Fix that → trie is finite → hwdb finishes → sysinit
    proceeds → getty.
+   **CORRUPTION SOURCE NARROWED to in-memory build (2026-07-09h) — ext4 fully out:**
+   Two independent disproofs this session localize hwdb's unbounded/circular trie to
+   its OWN in-memory build (a kernel MEMORY-ALLOCATOR bug), NOT any fs path:
+   (a) ext4 READ correct — guest sha256 of the 3 largest hwdb.d inputs (incl. the
+       4.1MB 20-pci-vendor-model.hwdb) MATCH the host byte-for-byte.
+   (b) ext4 WRITE not involved — with a [WAEXT] probe in `write_at_inner` (ext4
+       debug-wakelat), the whole hwdb write-spin phase (both KVM & TCG boots) emits
+       ZERO write_at events for hwdb's inode. hwdb's writes land in the buffered
+       frame cache (O(1), no disk) — the spin is NOT the ext4 append/writeback path.
+   Phase structure (TCG [USERIP] tid=4135): ~23-27s = varied RIPs, lastsc=0 (real
+   read/build work, finite); then ~28s onward LOCKS to RIP 0x7ffff71af75e lastsc=1
+   = __internal_syscall_cancel (the write() wrapper, per below) serializing forever.
+   So: build completes → produces a CYCLE → serialize hammers write() unbounded →
+   buffered into RAM → single-vCPU starvation → all services get 0.5-15s [WLBLK]/
+   [WLLAT] stalls → boot never reaches getty (console+gnome both blocked).
+   **NEXT (the fix): find the kernel allocator bug that corrupts a large userspace
+   allocation into an aliased/overlapping region** (mmap address-picker overlap,
+   brk/heap, or an mmap-of-many + free + remap reuse). Cheapest: a HOSTED test of
+   the user-AS mmap allocator (many map/unmap/remap, assert no two live regions
+   overlap); or a kernel trace of hwdb's mmap RETURNS checked for overlap (the
+   [HWMMAP] probe, un-capped, correlated to a live-VMA set). Prior art: the
+   MAP_SHARED|ANON COW-split-on-fork bug (memory index) shows this class is real.
+
    **ext4 READ RULED OUT (2026-07-09g):** guest sha256 of the 3 largest hwdb.d
    inputs (incl. the 4.1MB 20-pci-vendor-model.hwdb) MATCH the host byte-for-byte
    (0c4708…/bf7886…/334e55…). So ext4 read returns correct bytes even for a 4MB
