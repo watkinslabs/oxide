@@ -12,7 +12,7 @@ use core::arch::asm;
 /// # SAFETY: `cpuid` is unprivileged; no memory effects.
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-unsafe fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
+pub(crate) unsafe fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
     let (a, b, c, d): (u32, u32, u32, u32);
     // SAFETY: `cpuid` reads CPU identification registers; no
     // privilege required, no memory effects, no flag changes.
@@ -36,7 +36,7 @@ unsafe fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
 /// # SAFETY: `cpuid` is unprivileged; no memory effects.
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-unsafe fn cpuid_count(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
+pub(crate) unsafe fn cpuid_count(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
     let (a, b, c, d): (u32, u32, u32, u32);
     // SAFETY: cpuid reads CPU id registers; unprivileged, no memory effects.
     unsafe {

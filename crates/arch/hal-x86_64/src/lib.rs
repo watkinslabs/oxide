@@ -39,7 +39,8 @@ pub use fault::{
     vector_stub_addr, FaultFrame, FaultGprs, FaultHandler, UserTrapHook,
 };
 pub use fpu::{
-    fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES,
+    fpu_disable, fpu_enable, fpu_restore, fpu_save, xsave_active, xsave_area_bytes, xstate_init,
+    FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES,
 };
 pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, USER_CS, USER_DS};
 pub use idt::{

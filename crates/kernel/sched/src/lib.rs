@@ -59,7 +59,7 @@ pub const ARCH_CTX_SIZE: usize = 128;
 ///   x86_64 FXSAVE area = 512 B
 ///   aarch64 NEON V regs + FPCR/FPSR = 528 B
 /// Plus 16-byte alignment slack. 544 satisfies both with align(16).
-pub const ARCH_FPU_SIZE: usize = 544;
+pub const ARCH_FPU_SIZE: usize = 1088; // XSAVE area (x87+SSE+AVX = 832) + slack, 64-aligned; FXSAVE used only 512
 
 #[cfg(test)]
 mod tests;
