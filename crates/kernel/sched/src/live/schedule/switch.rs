@@ -319,19 +319,27 @@ pub unsafe fn schedule() {
                 hal_x86_64::set_syscall_kstack(top as u64);
             }
         }
-        // SAFETY: both fpu_state buffers are align(16) ArchFpuBuf; CR0.TS is clear (kernel never sets it) so FXSAVE/FXRSTOR don't #NM; prev_ref is the outgoing task whose live FPU is in the CPU now, `now` is the incoming task; single-CPU + preempt-off here per `13§5`.
+        // SAFETY: both fpu_state areas are heap-allocated 64-aligned ArchFpuBuf
+        // (as_mut_ptr → the aligned XSAVE region); CR0.TS is clear (kernel never
+        // sets it) so FXSAVE/XSAVE don't #NM; prev_ref is the outgoing task whose
+        // live FPU is in the CPU now, `now` is the incoming task; single-CPU +
+        // preempt-off here per `13§5`.
         unsafe {
-            hal_x86_64::fpu_save(prev_ref.fpu_state.get() as *mut hal_x86_64::FpuStateX86_64);
-            hal_x86_64::fpu_restore(now.fpu_state.get() as *const hal_x86_64::FpuStateX86_64);
+            hal_x86_64::fpu_save((*prev_ref.fpu_state.get()).as_mut_ptr() as *mut hal_x86_64::FpuStateX86_64);
+            hal_x86_64::fpu_restore((*now.fpu_state.get()).as_mut_ptr() as *const hal_x86_64::FpuStateX86_64);
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
         let now = unsafe { rq.current_ref() };
-        // SAFETY: fpu_state buffers are align(16); CPACR_EL1.FPEN is enabled kernel-wide (boot `fpu_enable`) so the q-reg store/load doesn't trap; prev_ref is outgoing (live FPSIMD in the CPU), `now` is incoming; single-CPU + preempt-off here per `13§5`.
+        // SAFETY: fpu_state areas are heap-allocated 64-aligned ArchFpuBuf
+        // (as_mut_ptr → the aligned save region); CPACR_EL1.FPEN is enabled
+        // kernel-wide (boot `fpu_enable`) so the q-reg store/load doesn't trap;
+        // prev_ref is outgoing (live FPSIMD in the CPU), `now` is incoming;
+        // single-CPU + preempt-off here per `13§5`.
         unsafe {
-            hal_aarch64::fpu_save(prev_ref.fpu_state.get() as *mut hal_aarch64::FpuStateAArch64);
-            hal_aarch64::fpu_restore(now.fpu_state.get() as *const hal_aarch64::FpuStateAArch64);
+            hal_aarch64::fpu_save((*prev_ref.fpu_state.get()).as_mut_ptr() as *mut hal_aarch64::FpuStateAArch64);
+            hal_aarch64::fpu_restore((*now.fpu_state.get()).as_mut_ptr() as *const hal_aarch64::FpuStateAArch64);
         }
     }
 

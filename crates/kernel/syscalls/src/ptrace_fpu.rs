@@ -18,7 +18,7 @@ pub fn snapshot_current() {
     if cur.traced_by.load(Ordering::Acquire) == 0 { return; }
     // SAFETY: running task on this CPU; preempt-off; fpu_state slot is single-mutator per `13§5`; FpuState{X86_64,AArch64} layout matches ArchFpuBuf's 16-byte alignment.
     unsafe {
-        let buf = (*cur.fpu_state.get()).0.as_mut_ptr();
+        let buf = (*cur.fpu_state.get()).as_mut_ptr();
         #[cfg(target_arch = "x86_64")]
         {
             hal_x86_64::fpu_save(buf as *mut hal_x86_64::FpuStateX86_64);
@@ -106,7 +106,7 @@ pub fn get_fpregs(pid: u32, data: u64) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf(data, n as u64, 16) { return rv; }
     // SAFETY: target parked under ptrace; fpu_state single-mutator per `13§5`; CPL=0 copies 512/528B into a validated user buffer.
     unsafe {
-        let src = (*target.fpu_state.get()).0.as_ptr();
+        let src = (*target.fpu_state.get()).as_ptr();
         for i in 0..n {
             core::ptr::write_volatile((data + i as u64) as *mut u8,
                 core::ptr::read(src.add(i)));
@@ -132,7 +132,7 @@ pub fn set_fpregs(pid: u32, data: u64) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf(data, n as u64, 16) { return rv; }
     // SAFETY: target parked under ptrace; fpu_state single-mutator per `13§5`; CPL=0 reads from a validated user buffer into the per-task FPU slot.
     unsafe {
-        let dst = (*target.fpu_state.get()).0.as_mut_ptr();
+        let dst = (*target.fpu_state.get()).as_mut_ptr();
         for i in 0..n {
             core::ptr::write(dst.add(i),
                 core::ptr::read_volatile((data + i as u64) as *const u8));
@@ -152,7 +152,7 @@ pub fn restore_if_dirty() {
     if !cur.ptrace_fpu_dirty.swap(false, Ordering::AcqRel) { return; }
     // SAFETY: running task on this CPU; preempt-off; fpu_state slot is single-mutator per `13§5`; restore loads 512/528 B from a validated per-task buffer; matches the snapshot in snapshot_current.
     unsafe {
-        let buf = (*cur.fpu_state.get()).0.as_ptr();
+        let buf = (*cur.fpu_state.get()).as_ptr();
         #[cfg(target_arch = "x86_64")]
         {
             hal_x86_64::fpu_restore(buf as *const hal_x86_64::FpuStateX86_64);
