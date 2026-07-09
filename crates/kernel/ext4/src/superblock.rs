@@ -16,11 +16,37 @@ pub const INCOMPAT_FILETYPE: u32 = 0x0002;
 pub const INCOMPAT_RECOVER:  u32 = 0x0004;
 pub const INCOMPAT_EXTENTS:  u32 = 0x0040;
 pub const INCOMPAT_64BIT:    u32 = 0x0080;
+pub const INCOMPAT_FLEX_BG:  u32 = 0x0200;
+/// `s_feature_incompat` CSUM_SEED — `s_checksum_seed` overrides the UUID seed.
+pub const INCOMPAT_CSUM_SEED: u32 = 0x2000;
 /// `s_feature_compat` HAS_JOURNAL bit.
 pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
 /// `s_feature_ro_compat` METADATA_CSUM bit.
 pub const RO_COMPAT_METADATA_CSUM: u32 = 0x0400;
 pub const RO_COMPAT_GDT_CSUM:      u32 = 0x0010;
+pub const RO_COMPAT_SPARSE_SUPER:  u32 = 0x0001;
+pub const RO_COMPAT_LARGE_FILE:    u32 = 0x0002;
+pub const RO_COMPAT_HUGE_FILE:     u32 = 0x0008;
+pub const RO_COMPAT_DIR_NLINK:     u32 = 0x0020;
+pub const RO_COMPAT_EXTRA_ISIZE:   u32 = 0x0040;
+
+/// INCOMPAT features this driver understands well enough to interpret the
+/// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. META_BG, MMP, INLINE_
+/// DATA, ENCRYPT, CASEFOLD, LARGEDIR, EA_INODE) means the layout would be
+/// misread → refuse the mount (Linux `EXT4_FEATURE_INCOMPAT_SUPP`).
+pub const SUPPORTED_INCOMPAT: u32 =
+    INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_EXTENTS | INCOMPAT_64BIT
+    | INCOMPAT_FLEX_BG | INCOMPAT_CSUM_SEED;
+
+/// RO_COMPAT features this driver can safely WRITE. A bit outside this set
+/// (notably BIGALLOC=0x200, whose cluster bitmap we'd misread as per-block, or
+/// PROJECT/VERITY) means the fs must not be written by us (Linux
+/// `EXT4_FEATURE_RO_COMPAT_SUPP` → RO mount). We have no RO-mount path yet, so
+/// an unknown RO_COMPAT bit refuses the mount rather than risk write corruption.
+pub const SUPPORTED_RO_COMPAT: u32 =
+    RO_COMPAT_METADATA_CSUM | RO_COMPAT_GDT_CSUM | RO_COMPAT_SPARSE_SUPER
+    | RO_COMPAT_LARGE_FILE | RO_COMPAT_HUGE_FILE | RO_COMPAT_DIR_NLINK
+    | RO_COMPAT_EXTRA_ISIZE | RO_COMPAT_METADATA_CSUM_SEED;
 
 /// Errors decoded from `parse`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
