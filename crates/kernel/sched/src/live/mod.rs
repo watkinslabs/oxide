@@ -153,6 +153,34 @@ pub fn set_epoll_broadcast_hook(f: fn()) {
     EPOLL_BROADCAST_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
 }
 
+/// Lightweight sibling of `notify_epoll_waiters`: bump ONLY the global epoll
+/// generation (no waitlist wake). The next `epoll_wait` safety-net rescan then
+/// re-evaluates level-ready fds that EPOLLET already marked `et_seen` — needed
+/// when a fd becomes ready AFTER its exit-time notify already advanced/consumed
+/// the gen. The concrete case: a child's SIGCHLD + gen bump fire in
+/// `signal_child_exit` BEFORE the zombie is enqueued into `ZOMBIES` (that
+/// happens later in the context-switch tail via `enqueue_zombie`), so the
+/// parent's signalfd/pidfd only reports `has_zombies` readiness on a fresh gen
+/// edge — which never comes, stalling the reap ~45s until an unrelated event.
+/// Safe to call from the switch tail where a full wake is not: a single atomic
+/// `fetch_add` behind the hook. # C: O(1)
+pub fn bump_epoll_gen() {
+    let p = EPOLL_GEN_BUMP_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: hook installed via set_epoll_gen_bump_hook with the documented
+    // `fn()` signature; Acquire-paired with the Release store in the setter.
+    let f: fn() = unsafe { core::mem::transmute(p) };
+    f();
+}
+
+static EPOLL_GEN_BUMP_HOOK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1)
+pub fn set_epoll_gen_bump_hook(f: fn()) {
+    EPOLL_GEN_BUMP_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
 /// Robust-futex exit walk (`ipc::live::futex::exit_robust_list`), installed at
 /// boot by kmain. Lives here as a hook because the walk body is in `ipc`, and
 /// `ipc` already depends on `sched` — a direct `sched -> ipc` dep would cycle.
