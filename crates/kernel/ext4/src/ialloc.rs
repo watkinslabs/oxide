@@ -321,21 +321,12 @@ impl Mount {
             // This also clears `i_dtime`; the genuine deletion timestamp is
             // re-stamped below.
             m.orphan_del(ino)?;
-            // Re-read after orphan_del rewrote the slot's i_dtime field.
+            // Free EVERY data + interior-node block at ANY tree depth (see the
+            // matching note in `unlink`); the old depth==0-only walk leaked a
+            // deep-tree file's blocks + interior nodes.
+            m.truncate_inode(ino, 0)?;
+            // Re-read after orphan_del + truncate rewrote the slot.
             let (mut bytes, off) = m.read_inode_bytes(ino)?;
-            let mut i_block = [0u8; I_BLOCK_LEN];
-            i_block.copy_from_slice(&bytes[0x28..0x28 + I_BLOCK_LEN]);
-            if let Ok(hdr) = inode::parse_extent_header(&i_block) {
-                if hdr.depth == 0 {
-                    for i in 0..hdr.entries {
-                        if let Some(e) = inode::parse_inline_extent(&i_block, &hdr, i) {
-                            for k in 0..e.len as u64 {
-                                let _ = m.free_block(e.start_lba() + k);
-                            }
-                        }
-                    }
-                }
-            }
             bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
             bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
             bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
@@ -367,19 +358,12 @@ impl Mount {
                     { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
                     m.persist_gdt_slot_meta(g)?;
                 }
-                let mut i_block = [0u8; I_BLOCK_LEN];
-                i_block.copy_from_slice(&bytes[0x28..0x28 + I_BLOCK_LEN]);
-                if let Ok(hdr) = inode::parse_extent_header(&i_block) {
-                    if hdr.depth == 0 {
-                        for i in 0..hdr.entries {
-                            if let Some(e) = inode::parse_inline_extent(&i_block, &hdr, i) {
-                                for k in 0..e.len as u64 {
-                                    let _ = m.free_block(e.start_lba() + k);
-                                }
-                            }
-                        }
-                    }
-                }
+                // Free EVERY data + interior-node block at ANY tree depth (Linux
+                // ext4_truncate → ext4_ext_remove_space). The old inline-only
+                // (depth==0) walk leaked all blocks AND interior nodes of a
+                // deep-tree (large) file. truncate_inode walks the full extent
+                // tree — the same path rmdir already uses.
+                m.truncate_inode(target_ino, 0)?;
                 bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
                 bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
                 bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
