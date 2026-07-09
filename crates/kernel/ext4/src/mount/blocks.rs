@@ -18,6 +18,12 @@ impl Mount {
         let off_in_table = (idx as u64) * (self.sb.inode_size as u64);
         let byte_off = gd.inode_table * (self.sb.block_size as u64) + off_in_table;
         let buf = self.read_meta_byte_range(byte_off, self.sb.inode_size as usize)?;
+        // metadata_csum verify on read (Linux ext4_inode_csum_verify → EFSBADCRC):
+        // refuse a slot whose stored i_checksum does not match a recompute rather
+        // than silently trusting corrupt bytes. No-op without metadata_csum.
+        if !crate::csum::verify_inode_csum(&self.sb, ino, &buf) {
+            return Err(MountError::BadChecksum);
+        }
         Ok(Inode::parse(&buf, &self.sb)?)
     }
 

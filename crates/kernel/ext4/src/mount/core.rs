@@ -14,11 +14,29 @@ impl Mount {
     pub fn open(dev: alloc::sync::Arc<dyn block::BlockDevice>) -> Result<Self, MountError> {
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
+        // metadata_csum verify on mount: refuse a superblock whose stored
+        // s_checksum does not match (Linux ext4_superblock_csum_verify → EFSBADCRC).
+        // No-op without metadata_csum.
+        if !crate::csum::verify_superblock_csum(&sb, &sb_bytes) {
+            return Err(MountError::BadChecksum);
+        }
         let groups = sb.group_count() as usize;
         let dsize = gdt::desc_size_for(&sb) as usize;
         let gdt_byte_offset = gdt_byte_offset_for(&sb);
         let gdt_len = groups * dsize;
         let gdt_buf = read_byte_range(&*dev, gdt_byte_offset, gdt_len)?;
+        // Verify every group descriptor's bg_checksum (Linux
+        // ext4_group_desc_csum_verify). A corrupt GDT slot is refused rather
+        // than misinterpreted (wrong bitmap/inode-table blocks).
+        if sb.has_metadata_csum() {
+            for n in 0..groups {
+                let off = n * dsize;
+                if off + dsize > gdt_buf.len()
+                    || !crate::csum::verify_group_desc_csum(&sb, n as u32, &gdt_buf[off..off + dsize]) {
+                    return Err(MountError::BadChecksum);
+                }
+            }
+        }
         let state = MountState {
             gdt_buf,
             sb_free_blocks: sb.free_blocks_count,
