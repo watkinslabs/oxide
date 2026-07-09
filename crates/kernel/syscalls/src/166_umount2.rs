@@ -58,7 +58,23 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     let path_raw = match read_user_cstr_owned(target_ptr, 256) {
         Ok(p) => p, Err(rv) => return rv,
     };
-    let path = crate::pathresolve::resolve_cwd(&path_raw);
+    // A RELATIVE target (systemd's post-pivot `umount2(".", MNT_DETACH)` switch-
+    // root cleanup) must resolve against the LIVE cwd dentry, not the recorded
+    // cwd path STRING: a pivot_root/MS_MOVE just relocated the mount, so the
+    // string is stale and re-resolving it lands on the wrong (nested) mount →
+    // spurious EINVAL that aborts the sandbox. Walk from `cwd_vfs.dentry` (which
+    // travelled WITH the moved mount) and take its absolute path — same stale-cwd
+    // fix as chroot(2), see 161_chroot.rs. Absolute targets keep string
+    // normalisation.
+    let path = if path_raw.starts_with('/') {
+        crate::pathresolve::resolve_cwd(&path_raw)
+    } else {
+        match crate::pathresolve::resolve_path_result(&path_raw, false) {
+            Ok(p) => alloc::string::String::from_utf8(p.dentry.absolute_path())
+                .unwrap_or_else(|_| crate::pathresolve::resolve_cwd(&path_raw)),
+            Err(_) => crate::pathresolve::resolve_cwd(&path_raw),
+        }
+    };
     let trimmed: &str = match path.as_str() {
         s if s.len() > 1 && s.ends_with('/') => &s[..s.len() - 1],
         s => s,
