@@ -48,6 +48,9 @@ impl Mount {
             };
             let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
             let mut bitmap = m.read_meta_byte_range(bbm_byte_off, m.sb.block_size as usize)?;
+            if !crate::csum::verify_block_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &bitmap) {
+                return Err(MountError::BadChecksum);
+            }
             let bidx = bit as usize;
             let mask = 1u8 << (bidx & 7);
             if (bitmap[bidx >> 3] & mask) == 0 {
@@ -83,6 +86,9 @@ impl Mount {
         if gd_orig.free_blocks_count == 0 { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let mut bitmap = self.read_meta_byte_range(bbm_byte_off, self.sb.block_size as usize)?;
+        if !crate::csum::verify_block_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+            return Err(MountError::BadChecksum);
+        }
         let blocks_in_group = self.blocks_in_group(group);
         let bit = match find_first_clear(&bitmap, blocks_in_group) {
             Some(b) => b,

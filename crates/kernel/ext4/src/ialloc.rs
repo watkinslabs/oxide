@@ -72,6 +72,9 @@ impl Mount {
         if gd_orig.free_inodes_count == 0 { return Ok(None); }
         let ibm_byte_off = gd_orig.inode_bitmap * (self.sb.block_size as u64);
         let mut bitmap = self.read_meta_byte_range(ibm_byte_off, self.sb.block_size as usize)?;
+        if !crate::csum::verify_inode_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+            return Err(MountError::BadChecksum);
+        }
         let bit = match find_first_clear(&bitmap, self.sb.inodes_per_group) {
             Some(b) => b,
             None    => return Ok(None),
@@ -128,6 +131,9 @@ impl Mount {
             };
             let ibm_byte_off = gd_orig.inode_bitmap * (m.sb.block_size as u64);
             let mut bitmap = m.read_meta_byte_range(ibm_byte_off, m.sb.block_size as usize)?;
+            if !crate::csum::verify_inode_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &bitmap) {
+                return Err(MountError::BadChecksum);
+            }
             let bidx = bit as usize;
             let mask = 1u8 << (bidx & 7);
             if (bitmap[bidx >> 3] & mask) == 0 { return Err(MountError::DoubleFree); }
