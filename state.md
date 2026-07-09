@@ -60,12 +60,17 @@ Finished): systemd-journal-flush, systemd-random-seed, systemd-userdbd,
 sys-kernel-config.mount. Late-active tids: 4141 (statx sc332 @234s), 4146 (fstat
 sc5 @309s) — a fs walker (tmpfiles?) still doing work, plus the hung oneshot.
 
-**First task:** boot debug-boot and let it run LONG (>5 min) so systemd's per-
-service start-timeout (90s each) fires and LOGS which unit timed out (that's how
-hwdb was named). That names the hung service. Then trace THAT service's blocking
-syscall in debug-wakelat (its tid's `lastsc` + what it waits on — a socket
-reply / a mount / a file). The 7.5s idle cadence hints at a fixed retry/timeout
-in the waiter. NOTE: journald idle-in-epoll is NORMAL, not the bug.
+**First task (debug-boot won't help — its journal echo STOPS when systemd goes
+idle at ~86s):** the live tid is **4141** (a fs walker: `statx` sc332 @234s,
+`fstat` sc5 @309s — active for MINUTES, slow-progressing). Trace IT in
+debug-wakelat: add a >50ms timing probe to `sys_statx`/`sys_newfstatat` +
+the ext4 path-lookup (`lookup_path`/`resolve`) — is EACH statx slow (an ext4
+path-resolution / large-dir / synchronous-read cost) or does the service SLEEP
+~7.5s BETWEEN statx calls (a userspace retry — then find what it retries on)?
+The consistent 7.5s tickless-idle cadence favors the userspace-retry case: the
+walker does a statx, blocks 7.5s waiting for something, retries. Identify what
+tid 4141 is (map its exe via `[USERIP]` name / /proc) and what it waits on
+between statx calls. journald idle-in-epoll is NORMAL, not the bug.
 
 ## First command next session
 `cd /home/nd/oxide/kernel && git log --oneline -3`  # confirm main @ 8537de19
