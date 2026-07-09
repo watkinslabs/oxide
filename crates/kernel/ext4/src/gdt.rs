@@ -13,7 +13,10 @@ use crate::superblock::{Superblock, INCOMPAT_64BIT};
 /// 32 bytes pre-64bit, 64 bytes when INCOMPAT_64BIT is on.
 /// # C: O(1)
 pub fn desc_size_for(sb: &Superblock) -> u16 {
-    if (sb.feature_incompat & INCOMPAT_64BIT) != 0 { 64 } else { 32 }
+    // Read from s_desc_size (a 64bit fs may use >64-byte descriptors); parse()
+    // already normalised it (>=64 when 64bit, 32 otherwise).
+    let _ = INCOMPAT_64BIT;
+    sb.desc_size
 }
 
 /// Errors decoded from `parse_descriptor`.
