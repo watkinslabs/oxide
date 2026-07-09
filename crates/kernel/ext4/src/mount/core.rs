@@ -52,6 +52,8 @@ impl Mount {
             sb_free_blocks: sb.free_blocks_count,
             sb_free_inodes: sb.free_inodes_count,
             shadow: None,
+            batch: false,
+            undo: Vec::new(),
         };
         let m = Self { dev, sb, state: sync::Spinlock::new(state) };
         let _ = m.recover_journal();
@@ -95,12 +97,24 @@ impl Mount {
         full_buf[inner_off .. inner_off + data.len()].copy_from_slice(data);
         {
             let mut s = self.state.lock();
-            if let Some(shadow) = s.shadow.as_mut() {
+            if s.shadow.is_some() {
+                // Batch mode: record each LBA's pre-op shadow value into the
+                // current op's undo frame BEFORE overwriting, so op failure can
+                // restore the shared running transaction. No frame => no undo
+                // (non-batch nested scope keeps the original commit-or-drop-all).
+                let record = s.batch && !s.undo.is_empty();
                 for i in 0..n_blocks as u64 {
                     let lba = first_blk + i;
                     let lo = (i * bs) as usize;
                     let hi = lo + bs as usize;
-                    shadow.insert(lba, full_buf[lo..hi].to_vec());
+                    if record {
+                        let prev = s.shadow.as_ref().unwrap().get(&lba).cloned();
+                        // Only the EARLIEST pre-value per LBA within this frame.
+                        if !s.undo.last().unwrap().iter().any(|(l, _)| *l == lba) {
+                            s.undo.last_mut().unwrap().push((lba, prev));
+                        }
+                    }
+                    s.shadow.as_mut().unwrap().insert(lba, full_buf[lo..hi].to_vec());
                 }
                 return Ok(());
             }
@@ -148,22 +162,133 @@ impl Mount {
     pub fn run_journaled<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
-        let already_open = self.state.lock().shadow.is_some();
-        if already_open { return f(self); }
-        self.state.lock().shadow = Some(alloc::collections::BTreeMap::new());
-        let r = f(self);
-        let shadow = self.state.lock().shadow.take().unwrap_or_default();
-        match r {
-            Ok(v) => {
-                if !shadow.is_empty() {
-                    let staged: Vec<StagedBlock> = shadow.into_iter()
-                        .map(|(target_lba, data)| StagedBlock { target_lba, data })
-                        .collect();
-                    let _ = self.commit_metadata(staged)?;
-                }
-                Ok(v)
+        let (already_open, batch) = { let s = self.state.lock(); (s.shadow.is_some(), s.batch) };
+        if already_open {
+            if !batch { return f(self); }
+            // Batch mode: this op JOINS the running transaction. Push an undo
+            // frame so a failure rolls back only THIS op's staged blocks (and
+            // its gdt_buf/counter mutations, refreshed from the restored shadow)
+            // without discarding prior batched ops. Success merges the frame up
+            // (or drops it at top level, leaving the writes in the running txn).
+            self.state.lock().undo.push(Vec::new());
+            let r = f(self);
+            match r {
+                Ok(v) => { self.batch_frame_commit(); self.maybe_commit_batch()?; Ok(v) }
+                Err(e) => { self.batch_frame_rollback(); Err(e) }
             }
-            Err(e) => Err(e),
+        } else {
+            self.state.lock().shadow = Some(alloc::collections::BTreeMap::new());
+            let r = f(self);
+            let shadow = self.state.lock().shadow.take().unwrap_or_default();
+            match r {
+                Ok(v) => {
+                    if !shadow.is_empty() {
+                        let staged: Vec<StagedBlock> = shadow.into_iter()
+                            .map(|(target_lba, data)| StagedBlock { target_lba, data })
+                            .collect();
+                        let _ = self.commit_metadata(staged)?;
+                    }
+                    Ok(v)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Enable cross-operation batching: the metadata shadow persists across
+    /// `run_journaled` scopes as one running jbd2 transaction, drained by
+    /// `commit_batch`. Idempotent. # C: O(1)
+    pub fn begin_batch(&self) {
+        let mut s = self.state.lock();
+        s.batch = true;
+        if s.shadow.is_none() { s.shadow = Some(alloc::collections::BTreeMap::new()); }
+    }
+
+    /// Drain + commit the running transaction as ONE jbd2 commit, then reopen an
+    /// empty running shadow (batch stays active). No-op when the shadow is empty
+    /// or batching is off. Durability trigger — call on fsync/sync/unmount.
+    /// # C: O(N shadow blocks) — one commit + 3 flushes for the whole batch
+    pub fn commit_batch(&self) -> Result<(), MountError> {
+        let staged: Vec<StagedBlock> = {
+            let mut s = self.state.lock();
+            if !s.batch { return Ok(()); }
+            let drained = match s.shadow.take() { Some(m) => m, None => Default::default() };
+            s.shadow = Some(alloc::collections::BTreeMap::new()); // fresh running txn
+            drained.into_iter().map(|(target_lba, data)| StagedBlock { target_lba, data }).collect()
+        };
+        if !staged.is_empty() { let _ = self.commit_metadata(staged)?; }
+        Ok(())
+    }
+
+    /// Size-triggered auto-commit: keep the running transaction bounded so its
+    /// memory stays small and durability is periodic (Linux jbd2 commits on
+    /// buffer pressure too). Fires only at a top-level batched op boundary.
+    /// # C: amortized O(1); O(N) on the commit tick.
+    fn maybe_commit_batch(&self) -> Result<(), MountError> {
+        const BATCH_MAX_BLOCKS: usize = 512; // ~2 MiB of staged metadata
+        let over = { let s = self.state.lock();
+            s.undo.is_empty() && s.shadow.as_ref().map_or(0, |m| m.len()) >= BATCH_MAX_BLOCKS };
+        if over { self.commit_batch()?; }
+        Ok(())
+    }
+
+    /// Op succeeded: merge its undo frame into the parent (so an enclosing op's
+    /// failure still rolls these writes back), or drop it at top level. # C: O(frame)
+    fn batch_frame_commit(&self) {
+        let mut s = self.state.lock();
+        let frame = match s.undo.pop() { Some(f) => f, None => return };
+        if let Some(parent) = s.undo.last_mut() {
+            for (lba, prev) in frame {
+                if !parent.iter().any(|(l, _)| *l == lba) { parent.push((lba, prev)); }
+            }
+        }
+    }
+
+    /// Op failed: replay its undo frame to restore the shared shadow to the
+    /// pre-op state, then refresh the in-memory gdt_buf + free counters from the
+    /// restored shadow/disk (they mirror shadow-staged blocks). # C: O(frame)
+    fn batch_frame_rollback(&self) {
+        let frame = { let mut s = self.state.lock(); s.undo.pop().unwrap_or_default() };
+        {
+            let mut s = self.state.lock();
+            if let Some(shadow) = s.shadow.as_mut() {
+                for (lba, prev) in frame.into_iter().rev() {
+                    match prev { Some(bytes) => { shadow.insert(lba, bytes); }
+                                 None => { shadow.remove(&lba); } }
+                }
+            }
+        }
+        // Mirrors of shadow-staged metadata: reload from the restored state so a
+        // failed alloc/free doesn't leave gdt_buf / free-counters diverged.
+        self.refresh_cached_meta();
+    }
+
+    /// Reload the in-memory `gdt_buf` + free counters from the (shadow-aware)
+    /// current metadata, used after a batch op rollback: those mirrors are
+    /// mutated in place by alloc/free and persisted to the shadow, so restoring
+    /// the shadow requires re-reading them to stay in step. # C: O(gdt size) I/O
+    fn refresh_cached_meta(&self) {
+        // ext4 superblock field offsets (bytes into the 1024-byte SB @ byte 1024).
+        const SB_BYTE_OFF: u64 = 1024;
+        const SB_FREE_BLOCKS_LO: usize = 0x0C;
+        const SB_FREE_INODES:    usize = 0x10;
+        const SB_FREE_BLOCKS_HI: usize = 0x158;
+        const SB_READ_LEN: usize = SB_FREE_BLOCKS_HI + 4;
+        let gdt_off = gdt_byte_offset_for(&self.sb);
+        let gdt_len = self.state.lock().gdt_buf.len();
+        if let Ok(bytes) = self.read_meta_byte_range(gdt_off, gdt_len) {
+            self.state.lock().gdt_buf = bytes;
+        }
+        if let Ok(sbb) = self.read_meta_byte_range(SB_BYTE_OFF, SB_READ_LEN) {
+            let fb_lo = u32::from_le_bytes([sbb[SB_FREE_BLOCKS_LO], sbb[SB_FREE_BLOCKS_LO+1],
+                                            sbb[SB_FREE_BLOCKS_LO+2], sbb[SB_FREE_BLOCKS_LO+3]]) as u64;
+            let fb_hi = u32::from_le_bytes([sbb[SB_FREE_BLOCKS_HI], sbb[SB_FREE_BLOCKS_HI+1],
+                                            sbb[SB_FREE_BLOCKS_HI+2], sbb[SB_FREE_BLOCKS_HI+3]]) as u64;
+            let fi = u32::from_le_bytes([sbb[SB_FREE_INODES], sbb[SB_FREE_INODES+1],
+                                         sbb[SB_FREE_INODES+2], sbb[SB_FREE_INODES+3]]);
+            let mut s = self.state.lock();
+            s.sb_free_blocks = (fb_hi << 32) | fb_lo;
+            s.sb_free_inodes = fi;
         }
     }
 

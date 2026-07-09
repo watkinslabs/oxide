@@ -19,5 +19,10 @@ pub fn sys_fsync(args: &SyscallArgs) -> i64 {
     if let Some(m) = file.inode().i_mapping() {
         if m.writeback().is_err() { return errno(Errno::Eio); }
     }
+    // Durability: the writeback above staged the file's metadata into the ext4
+    // running journal transaction (cross-op batching); fsync must commit it so
+    // the metadata is actually on disk, not just in the running txn. No-op when
+    // batching is off / batch empty / non-ext4 backend.
+    if ext4::commit_rootfs_journal().is_err() { return errno(Errno::Eio); }
     0
 }
