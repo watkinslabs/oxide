@@ -65,6 +65,29 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // the interrupted task's user/kernel CPU-time bucket (getrusage/
             // times). IRQ-context: atomics only.
             sched::cpustat::charge_current_tick(from_user);
+            // DIAG (debug-wakelat): `[USERIP]` — sample the interrupted USER rip
+            // so a pure-userspace busy-spin (a task stuck in a userspace loop with
+            // stime=0, invisible to /proc/<pid>/syscall which is stubbed) reveals
+            // its loop PC + owning task. A fixed rip repeating across samples = the
+            // spin site; feed (rip - lib_base from /proc/<pid>/maps) to objdump.
+            // Rate-limited to ~1/128 user ticks to avoid flooding.
+            #[cfg(feature = "debug-wakelat")]
+            if from_user {
+                static URIP_SAMP: AtomicU64 = AtomicU64::new(0);
+                if URIP_SAMP.fetch_add(1, Ordering::Relaxed) % 128 == 0 {
+                    // SAFETY: frame+88 is the CPU-pushed user RIP slot (layout above).
+                    let rip = unsafe { core::ptr::read_volatile(frame.add(88) as *const u64) };
+                    klog::write_raw(b"[USERIP rip=");
+                    klog::write_hex_u64(rip);
+                    if let Some(c) = sched::live::current() {
+                        klog::write_raw(b" tid=");
+                        klog::write_dec_u64(c.tid as u64);
+                        klog::write_raw(b" ");
+                        klog::write_raw(c.name.as_bytes());
+                    }
+                    klog::write_raw(b"]\n");
+                }
+            }
             // BSP timer hook runs only on the boot CPU. The softirq drain is
             // PER-CPU (Linux: every CPU runs its own
             // __do_softirq from irq_exit) — each CPU drains its OWN pending
