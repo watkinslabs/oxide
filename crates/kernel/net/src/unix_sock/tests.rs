@@ -102,6 +102,30 @@ fn empty_read_returns_empty() {
 }
 
 #[test]
+fn empty_open_stream_is_not_eof_but_closed_is() {
+    // Exact contract InetSocket::read_nonblock relies on: an empty but still-
+    // OPEN stream reads empty AND reports !is_eof → nonblocking read must return
+    // EAGAIN, never a spurious EOF that would truncate a systemd varlink reply.
+    // Once the peer closes with the stream drained, the same empty read is EOF.
+    let p = UnixPair::new();
+    assert!(p.read(UnixEnd::B, 64).is_empty());
+    assert!(!p.is_eof(UnixEnd::B), "open+empty must not be EOF (→ EAGAIN)");
+    p.close_writer(UnixEnd::A);
+    assert!(p.read(UnixEnd::B, 64).is_empty());
+    assert!(p.is_eof(UnixEnd::B), "closed+drained must be EOF (→ Ok(0))");
+}
+
+#[test]
+fn msgpair_empty_open_recv_is_none_closed_is_some_empty() {
+    // recv() contract the msg-pair arm of read_nonblock relies on: None when
+    // nothing pending AND not EOF (→ EAGAIN); Some(empty) once peer closed (→ EOF).
+    let p = UnixMsgPair::new();
+    assert!(p.recv(UnixEnd::B, 64).is_none(), "open+empty recv → None (EAGAIN)");
+    p.close_writer(UnixEnd::A);
+    assert_eq!(p.recv(UnixEnd::B, 64), Some(alloc::vec::Vec::new()), "closed → Some(empty) (EOF)");
+}
+
+#[test]
 fn msgpair_preserves_boundaries() {
     let p = UnixMsgPair::new();
     p.send(UnixEnd::A, b"one");
