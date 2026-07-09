@@ -60,7 +60,8 @@ fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
 
 fn setup_host(host: u64) -> Arc<Dentry> {
     set_ns(host);
-    let root_inode = dir(2, &[("run", dir(0x13, &[])), ("etc", dir(0x14, &[]))]);
+    let root_inode = dir(2, &[("run", dir(0x13, &[])), ("etc", dir(0x14, &[])),
+        ("proc", dir(0x15, &[])), ("sys", dir(0x16, &[])), ("dev", dir(0x17, &[]))]);
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     let _ = HOST_ROOT_INODE.set(root_inode.clone());
     vfs::set_root_dentry_provider(root_provider);
@@ -119,4 +120,115 @@ fn open_tree_clone_of_shared_mount_is_private() {
     let top = &clone[0].m;
     assert_ne!(top.propagation.load(Ordering::Acquire), Propagation::Shared as u8,
         "open_tree(OPEN_TREE_CLONE) of a SHARED mount must yield a PRIVATE clone");
+}
+
+/// The `mount(MS_BIND, source, target)` syscall must NOT make the new mount a
+/// peer of the SOURCE. Linux `do_loopback` clones with flag 0 (no CL_MAKE_SHARED):
+/// a bind's shared-ness comes ONLY from the destination. This is exactly the
+/// `165_mount.rs` regression that EINVAL'd pivot_root — the syscall used to
+/// `join_peer_group(target, peer_group_of(source))`, so binding a SHARED source
+/// onto a NON-shared dest wrongly produced a SHARED mount. Pin it: bind a shared
+/// source onto a private `/run` child; the bind must stay PRIVATE (pg 0).
+#[test]
+fn bind_of_shared_source_onto_private_dest_stays_private() {
+    let _g = guard();
+    let host: u64 = 0x5150_3000;
+    vfs::mount::set_current_ns_provider(cur_ns);
+    let root = setup_host(host);
+    // Make the SOURCE (`/`) shared — the boot's `make-rshared /`.
+    vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
+    let srcm = vfs::mount::mount_at_path_exact(&root).expect("root mount");
+    assert_ne!(srcm.peer_group.load(Ordering::Acquire), 0, "precondition: source is in a peer group");
+    // `/run` (the destination parent) is a PLAIN mount (private) — models the
+    // per-service ns where `make-rslave /` already broke propagation.
+    let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/mount-rootfs", LookupFlags::default()).expect("stage");
+    let hri = HOST_ROOT_INODE.get().unwrap().clone();
+    // The Linux-correct bind path (register_bind + dest-based propagate_mount),
+    // WITHOUT the removed source-peer-group inheritance.
+    vfs::mount::register_bind(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), hri).expect("bind");
+    let _ = vfs::mount::propagate_mount(&stage_d);
+    let bindm = vfs::mount::mount_at_path_exact(&stage_d).expect("bind mount");
+    assert_ne!(bindm.propagation.load(Ordering::Acquire), Propagation::Shared as u8,
+        "bind of a SHARED source onto a private dest must NOT be shared (Linux do_loopback flag 0)");
+    assert_eq!(bindm.peer_group.load(Ordering::Acquire), 0,
+        "bind must NOT inherit the source's peer group");
+}
+
+// Small helper: register a pseudo-fs submount at `path` under the ns root.
+fn mount_pseudo(root: &Arc<Dentry>, path: &str, name: &'static str, ino: u64) -> Arc<Dentry> {
+    let (_, d) = vfs::path_lookup(root.clone(), root.clone(), path, LookupFlags::default()).expect(path);
+    vfs::mount::register(Some(d.clone()), Arc::new(NamedFs { n: name, root: facdir(ino) })).expect("pseudo mount");
+    d
+}
+
+/// END-TO-END model of the COMPLETE systemd per-service mount-namespace +
+/// switch-root idiom sysinit runs, so post-pivot behavior (`umount2` MNT_DETACH,
+/// `MS_MOVE`) is pinned hosted instead of discovered one-boot-at-a-time. Sequence
+/// (systemd `setup_namespace` + `mount_switch_root`, Linux fs/namespace.c):
+///   1. boot: make-rshared `/` (recursive).
+///   2. per service: unshare(CLONE_NEWNS) -> sandbox ns.
+///   3. make-rslave `/` (recursive) — detach propagation from host.
+///   4. mount /proc /sys /dev, then recursive-bind `/` -> /run/mount-rootfs.
+///   5. pivot_root(stage, stage) [stacked] — MUST succeed; stage becomes `/`.
+///   6. umount2(old_root, MNT_DETACH) — the old root is stacked; MUST detach.
+/// Asserts the tree at each step. A SHARED bind (the fixed bug) fails step 5; a
+/// broken post-pivot detach fails step 6.
+#[test]
+fn full_service_setup_pivot_and_switch_root_detach() {
+    let _g = guard();
+    let host: u64 = 0x5150_4000;
+    let sandbox: u64 = 0x5150_4001;
+    vfs::mount::set_current_ns_provider(cur_ns);
+    let root = setup_host(host);
+    // Real submounts under `/` so the recursive bind + pivot carry a subtree.
+    mount_pseudo(&root, "/proc", "procfs", 0x500);
+    mount_pseudo(&root, "/sys", "sysfs", 0x501);
+    mount_pseudo(&root, "/dev", "devtmpfs", 0x502);
+
+    // 1. make-rshared / at boot.
+    vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
+    // 2. unshare -> sandbox.
+    vfs::mount::copy_mnt_ns(host, sandbox);
+    set_ns(sandbox);
+    // 3. make-rslave / (recursive) — breaks propagation to host.
+    vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
+
+    // 4. recursive-bind / onto the stage (+ its /proc,/sys,/dev submounts).
+    let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/mount-rootfs", LookupFlags::default()).expect("stage");
+    let hri = HOST_ROOT_INODE.get().unwrap().clone();
+    vfs::mount::register_bind(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), hri).expect("bind /");
+    vfs::mount::propagate_mount(&stage_d);
+    vfs::mount::bind_submounts_rec(&root, &stage_d);
+    // The bind must be PRIVATE (the fix): a shared put_old EINVALs pivot_root.
+    let bindm = vfs::mount::mount_at_path_exact(&stage_d).expect("bind mount");
+    assert_ne!(bindm.propagation.load(Ordering::Acquire), Propagation::Shared as u8,
+        "service rootfs bind must be PRIVATE, not SHARED");
+    let stage_id = bindm.mnt_id;
+
+    // 5. pivot_root(stage, stage) — stacked. MUST succeed; stage becomes `/`.
+    let old_root_id = vfs::mount::root_mount_id(sandbox).expect("pre-pivot root id");
+    assert_ne!(old_root_id, stage_id, "precondition: stage != old root");
+    vfs::mount::pivot_root(&stage_d, &stage_d).expect("pivot_root(stage, stage)");
+    let new_root_id = vfs::mount::root_mount_id(sandbox).expect("post-pivot root id");
+    assert_eq!(new_root_id, stage_id, "after pivot_root the stage bind IS the ns root");
+
+    // 6. umount2(old_root, MNT_DETACH): the old root is now stacked under `/`.
+    //    systemd's `pivot_root(., .); umount2(., MNT_DETACH)` idiom. The old-root
+    //    mount must still exist and detach cleanly (recursive == MNT_DETACH lazy).
+    let om = vfs::mount::mount_by_id(old_root_id).expect("old root still present after pivot");
+    let omp = om.mountpoint().expect("old root has a mountpoint after stacking pivot");
+    // Overmount lookup (Linux `lookup_mnt`): resolving the mountpoint dentry that
+    // `.`/`/` map to after the stacking pivot MUST find the STACKED old root, not
+    // the underlay ns-root. This is precisely what lets the syscall's
+    // `umount2(".", MNT_DETACH)` (resolved via the live cwd dentry) reach the old
+    // root instead of the ns-root — without it, the switch-root cleanup EINVALs.
+    assert_eq!(vfs::mount::mount_at_path_exact(&omp).map(|m| m.mnt_id), Some(old_root_id),
+        "mountpoint dentry must resolve to the stacked old root (overmount), not the ns-root");
+    let n = vfs::mount::unregister_top(&omp, true);
+    assert!(n > 0, "umount2(old_root, MNT_DETACH) must detach the stacked old root (got {n})");
+    assert!(vfs::mount::mount_by_id(old_root_id).is_none(),
+        "old root gone from the ns after detach");
+    // The ns root is still the stage bind — the switch-root completed.
+    assert_eq!(vfs::mount::root_mount_id(sandbox), Some(stage_id),
+        "ns root remains the stage bind after old-root detach");
 }

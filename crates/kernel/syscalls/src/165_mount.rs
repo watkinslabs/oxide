@@ -245,10 +245,6 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let target_d = match crate::pathresolve::mount_dentry(&target) {
             Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
         };
-        // Peer-group inheritance (docs/16§6): binding a SHARED source
-        // makes the new mount a peer of the source's group (same shared:N,
-        // future propagation events reach it). Captured before the bind.
-        let src_pg = vfs::mount::peer_group_of(&source_d);
         let bind = Arc::new(BindFs { source: source.clone() });
         // Linux `do_add_mount` keys the target on the caller's `struct path`
         // (`vfsmount` + `dentry`), NOT the dentry alone. When the target dentry is
@@ -275,7 +271,12 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
             // group in ONE engine call.
             let _ = vfs::mount::attach_recursive_mnt(Some(target_d.clone()), bind, Some(root));
         }
-        vfs::mount::join_peer_group(&target_d, src_pg);
+        // Linux `do_loopback` creates the bind via `clone_mnt(old, dentry, 0)`
+        // (flag 0, NOT CL_MAKE_SHARED): a bind is NEVER a peer of its source.
+        // Shared-ness propagates ONLY from the destination, handled above by
+        // `attach_recursive_mnt`/`propagate_mount`. Do NOT join the source's
+        // peer group — that made the service rootfs SHARED and EINVAL'd
+        // pivot_root (systemd `make-rslave /` + open_tree bind must stay private).
         // MS_REC: also clone every mount nested under `source` to the
         // matching path under `target` (recursive bind, docs/16§6).
         if flags & MS_REC != 0 {
