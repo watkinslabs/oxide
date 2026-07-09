@@ -1,59 +1,57 @@
-# Handoff — goals 1&2 done+merged; goal 3 (desktop) deadlock persists
+# Handoff — console+desktop = one sysinit stall (multi-bug); 4 fixes merged
 
-## DONE this session (merged to main, e3f9242e)
-- **GOAL 1 — console 100% Linux-compat**: F694 (prior) — N_TTY/VT/fbcon verified
-  real; `console=` cmdline classes. console.md analysis is accurate.
-- **GOAL 2 — ext4 correctness complete**: **F696** (PR #2863, merged). Closed the
-  metadata_csum read-verify chain begun in F695:
-  - external extent-block `et_checksum` (resolve_pblock, now reads interior nodes
-    via the shadow-coherent `read_metadata_block` so in-flight journal scopes
-    don't false-reject);
-  - linear-dir dirent tails (lookup_in_dir; htree dirs skipped — dx_csum is
-    backlog);
-  - block + inode alloc bitmaps (balloc/ialloc, uninit-group-aware).
-  - Inode carries ino+gen (stamped by read_inode). Negative test
-    `corrupt_external_extent_block_tail_is_rejected`.
-  - Verified: full ext4 suite green; x86 lite boot clean through journal-flush,
-    **0 false BadChecksum**; both arches build. arm lite image not built locally.
-  - Remaining ext4 = genuine features/perf/crash-only (mballoc, htree-create, ACL,
-    inline_data, punch/collapse, jbd2 commit csums) — none block the desktop.
-    Tracked in `scratch/ext4fix.md`.
+## Merged this session (main a0962d5e)
+- **F696** ext4 read-verify completion (extent-block/dirent-tail/bitmap csum).
+- **B677** AF_UNIX nonblocking read → EAGAIN (was blocking; console2.md suspect #1).
+  Correct Linux-compat + hosted tests, but NOT the boot blocker.
+- **B678** zombie-reap epoll-gen race: `enqueue_zombie` now bumps GLOBAL_EPOLL_GEN
+  AFTER the zombie is in ZOMBIES (signal_child_exit's exit-time bump fires before
+  the zombie is reapable → EPOLLET-suppressed reap ~45s). Code-proven; low-risk;
+  NOT yet boot-verified sufficient (earlier stall blocks first).
+- **D167** state handoff.
 
-## GOAL 3 — live-gnome boot (ACTIVE, NOT fixed)
-Boot reaches ~9.8s (userdbd Started, journal-flush Finished), then **idle-quiet /
-deadlocked** — all tasks blocked, guest clock stops advancing (no output for the
-remaining ~100s of a 110s boot). Same frontier as prior sessions:
-tmpfiles↔userdbd varlink query never completes → sysinit stalls → no getty/graphics.
+## THE reframing (correct now)
+Console-login and live-gnome are the SAME problem: the graphical window is a
+working fbcon/klog mirror, but **no `getty@tty1` ever runs because sysinit never
+completes**. The console/VT/fbcon stack + /dev/console routing are already Linux-
+correct (see console2.md "Code analysis update"). The serial `sh` prompt is the
+`systemd.debug_shell=ttyS0` **debug hack** (remove for a real install), NOT a getty.
+So the ONLY thing to fix is the sysinit stall.
 
-### Hypothesis TESTED + DISPROVEN this session
-- **Suspect:** `UnixListener::notify_subs` (net/src/unix_sock/listener.rs:44-50) is
-  the ONLY readiness-wake path missing the global-rescan backstop that every
-  sibling has (cf. `wake_peer_subs` events.rs:12-24 → `sched::live::notify_epoll_waiters()`).
-  For an EPOLLET listener whose POLLIN is already `et_seen`, a new connection is
-  reported only if `gen_edge` (epoll.rs:501-518): the fd's poll_subs gen advanced
-  (needs notify_subs' Weak to upgrade) OR GLOBAL_EPOLL_GEN advanced (needs the
-  global fallback). If notify_subs no-ops, the connection is silently suppressed.
-  `broadcast_wake_all_epolls` (epoll.rs:110-115) bumps GLOBAL_EPOLL_GEN — the
-  fallback would provably cover the EPOLLET case.
-- **Applied** the fallback (mirroring wake_peer_subs), built both arches, booted.
-- **Result: NO CHANGE** — boot still deadlocks at ~9.8s. **Reverted** (unproven
-  boot-path change; wake path is `cfg(oxide-kernel)`-only so no hosted test
-  possible). So notify_subs is NOT the blocker (or not the only one): most likely
-  the listener's `subs` Weak IS alive (systemd + userdbd share the same
-  Arc<InetSocket>/poll_subs across the socket-activation fd handoff), notify fires,
-  gen advances — and the deadlock is elsewhere (reply direction? userdbd's own
-  event loop? a different blocked resource).
+## The sysinit stall = MULTIPLE distinct bugs (live-boot confirmed via qemu MCP)
+Clean boot (features=debug-watchdog, no debug-boot flood): systemd reaches the
+socket/target setup in ~2.5s, then CRAWLS ~45s per userland-touching service.
+Kernel + serial debug-shell stay fully alive throughout (not hung). Two confirmed:
 
-### Next step needs LIVE INSPECTION — blocked on tooling
-- **qemu MCP is NOT connected this session** (`mcp__qemu__*` unavailable), so the
-  CLAUDE.md-recommended warm-VM breakpoint+inspect can't run here.
-- Boot-per-hypothesis trace loops are user-forbidden (memory [[no-repeated-long-boots]]).
-- **Need from user (pick one):** (a) enable the qemu MCP so we can boot once, break
-  at the stall, dump task states / who's blocked on which fd; or (b) authorize a
-  bounded trace-boot budget (klog in notify_subs upgrade-success + subscriber count,
-  connect enqueue, userdbd accept, and the connected-socket reply wake) to locate
-  the actual blocked-on resource.
-- Prior detail: memory [[desktop-blocker-tmpfiles-userdbd]], [[qemu-vsock-cid-and-sigchld-reap]].
+1. **~10s stall: tmpfiles-setup-dev-early / udev-trigger "Starting", never Finish,
+   ZERO zombies present.** NOT a reap issue — the service itself is blocked on
+   something (udev coldplug? a device/sysfs access? a fork child?). **UNDIAGNOSED —
+   this is the current front blocker.** Next: find which task is R/D and on what.
+2. **Later stall: sysusers/userwork exit → zombies unreaped ~45s** while init/userdbd
+   sleep in epoll_wait. B678 targets this (reap-wake gen race). Unverified because
+   #1 blocks first.
 
-## First command next session
-    OXIDE_QUICKBOOT_PROFILE=lite make qemu-x86 SMP=2   # reproduce ~9.8s stall; then inspect via qemu MCP
+Earlier debug-boot run also showed a userdb varlink stall (tmpfiles↔userdbd,
+userwork idle in ppoll) — may be same root as #1 or #2.
+
+## /proc bugs found (real, separate, worth fixing)
+- `/proc/<pid>/syscall` always returns `running` (never the blocked syscall) —
+  breaks `has_zombies`-independent diagnosis. Stub/broken.
+- `/proc/<pid>/comm` not updated on exec (stays `fork-child`). Cosmetic but wrong.
+
+## qemu MCP recipe (WORKS this session — use it)
+- `qemu_start(arch=x86_64, accel=kvm, features="debug-watchdog", paused=false)` —
+  builds+boots; clean klog so the serial debug-shell is readable.
+- Image: `../images/output/live-gnome-x86_64-root.img` is a symlink → lite (I made
+  it so the MCP's default profile boots; the images repo hasn't built live-gnome).
+- `qemu_run_until(pattern, timeout)`, `qemu_send_serial`, `qemu_serial(clear=True)`,
+  `qemu_screen`. Serial task dump: SYSRQ_ARM=0x00 then 't' — but I couldn't send a
+  raw NUL via qemu_send_serial; `/proc/sysrq-trigger` is EROFS (not wired). The
+  debug-boot watchdog auto-dumps tasks (`[sysrq] task dump`) on no-progress — that's
+  how I got the ST/last-syscall table. **image has NO awk, NO ps** — use /proc + sh.
+
+## First task next session
+Diagnose stall #1: `qemu_start` clean, at the ~10s stall dump task states
+(comm/State/PPid via /proc, no awk) — find the R/D task and what tmpfiles-setup-dev-
+early or udev-trigger is blocked on. That's the front blocker; everything else is
+downstream. Then re-check B678 helps the reap stall once #1 clears.
