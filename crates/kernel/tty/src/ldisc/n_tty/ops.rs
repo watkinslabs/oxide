@@ -77,10 +77,11 @@ impl LdiscOps for NTty {
             }
             n
         } else {
-            // Raw: VMIN bytes minimum semantics — return what's available
-            // up to buf.len(). VTIME is a documented simplification: we
-            // do not implement the inter-byte timer (no clock at this
-            // layer); the tty core's blocking honours VMIN.
+            // Raw: non-blocking drain — return what's available up to buf.len(),
+            // gated only by VMIN here (no clock at the ldisc layer). The full
+            // VMIN/VTIME blocking policy (all 4 Linux cases, incl. the read +
+            // inter-byte timers) lives in the tty core `read_raw`
+            // (`core/tty.rs`), which drives `park_commit_deadline` off `vtime()`.
             let vmin = self.cc(cc::VMIN) as usize;
             if self.readq.len() < vmin && vmin > 0 {
                 return 0;

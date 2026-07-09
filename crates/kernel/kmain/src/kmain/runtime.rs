@@ -42,7 +42,11 @@ fn init_serial_console() {
     let uart_drv = drv_serial::uart_driver();
     let dev = platform_device_or_panic(SERIAL_PLATFORM_ADDR);
     drv::register_driver(uart_drv);
-    if dev.bound() == Some(drv::Driver::name(uart_drv)) {
+    // Register the serial printk console only if a `console=ttyS*/ttyAMA*` token
+    // asked for it (Linux `register_console` per `console=`), not unconditionally.
+    // The serial /dev/ttyS0 tty is installed regardless; this gates only klog
+    // fan-out. No `console=` at all → default true (keep the sink).
+    if dev.bound() == Some(drv::Driver::name(uart_drv)) && crate::boot_cmdline::console_classes().0 {
         klog::set_byte_sink(drv_serial::emit);
     }
 }

@@ -244,7 +244,13 @@ pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
     fbdev::set_yield_hook(fbdev_vsync_yield);
     fbdev::set_now_hook(monotonic_now_ns);
-    klog::set_aux_sink(fbcon::kernel::vt_console_sink);
+    // Register the fbcon printk console only if a `console=tty<n>` token asked
+    // for it (Linux `register_console` per `console=`). The VT ttys + scanout
+    // are set up regardless; this gates only klog fan-out to the framebuffer.
+    // No `console=` at all → default true (keep the sink).
+    if cmdline::console_classes().1 {
+        klog::set_aux_sink(fbcon::kernel::vt_console_sink);
+    }
     fbcon::kernel::set_reply_sink(console::vt_reply_sink);
     tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
     tty::live::set_bracketed_paste_query(fbcon::kernel::fg_bracketed_paste);
