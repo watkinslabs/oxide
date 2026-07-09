@@ -15,7 +15,8 @@ routed into the foreground VT's ldisc, job control, ctty, and `console=` parsing
 So the "terminal is broken" feeling is mostly **misattribution**: the window is
 blank because the boot **stalls at sysinit** (the userdb `GetMemberships("lp")`
 loop, see `poll.md`) **before `getty.target`**, so no `getty@tty1` ever runs in
-the window and no `serial-getty@ttyS0` ever runs on the wire. The only shell you
+the window and no `serial-getty@ttyS0` ever runs on the wire. The only shell youmlinks present or not, and whether the lp lookup hangs). That pins the userdb root cause without depending on you or boot-looping. This is the right way to use the debug shell we kept on serial.
+
 get is `systemd.debug_shell=ttyS0` (deliberately started early for debugging).
 
 Real, fixable divergences from Linux do exist, but they are narrow (below).
