@@ -34,15 +34,31 @@ pub fn sys_pivot_root(args: &SyscallArgs) -> i64 {
         klog::write_raw(b" target="); klog::write_raw(po.as_bytes());
         klog::write_raw(b"\n");
     }
-    // The two namei walks pivot_root(2) hands the engine: new_root + put_old
-    // mountpoint dentries (Linux `struct path.dentry`). The SAME `Arc`s the
-    // engine compares by identity (the `pivot_root(".",".")` stacking case).
-    let nr_d = match crate::pathresolve::mount_dentry(&nr) {
-        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+    // new_root MUST be a mount; resolve it to the MOUNTPOINT dentry (the dentry
+    // the mount is grafted at) WITHOUT crossing into that mount. A plain resolve
+    // crosses in and yields the mount's ROOT dentry — ambiguous for a bind
+    // (shares the source root dentry) and unmatchable by `mount_exact_at` (keyed
+    // by mountpoint dentry) → the "new_root not a mount root" EINVAL that broke
+    // systemd service mount-namespacing (ProtectSystem= et al) and deadlocked
+    // sysinit. put_old resolves normally (a dir inside new_root's mount).
+    let nr_d = match vfs::mount::mountpoint_dentry_of(&nr) {
+        Some(d) => d,
+        None => {
+            #[cfg(feature = "debug-mount")]
+            { klog::write_raw(b"[PIVOT-SYSCALL] new_root mountpoint None nr="); klog::write_raw(nr.as_bytes()); klog::write_raw(b"\n"); }
+            return -(Errno::Einval.as_i32() as i64);
+        }
     };
     let po_d = match crate::pathresolve::mount_dentry(&po) {
-        Some(d) => d, None => return -(Errno::Einval.as_i32() as i64),
+        Some(d) => d,
+        None => {
+            #[cfg(feature = "debug-mount")]
+            { klog::write_raw(b"[PIVOT-SYSCALL] put_old None po="); klog::write_raw(po.as_bytes()); klog::write_raw(b"\n"); }
+            return -(Errno::Einval.as_i32() as i64);
+        }
     };
+    #[cfg(feature = "debug-mount")]
+    { klog::write_raw(b"[PIVOT-SYSCALL] reached vfs::pivot_root nr="); klog::write_raw(nr.as_bytes()); klog::write_raw(b" po="); klog::write_raw(po.as_bytes()); klog::write_raw(b"\n"); }
     match vfs::mount::pivot_root(&nr_d, &po_d) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
