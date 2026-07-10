@@ -144,7 +144,13 @@ impl Mount {
         // reject. htree dx-block verify is a separate item. No-op w/o csum.
         let verify_tail = (dir_inode.i_flags & EXT4_INDEX_FL) == 0 && dir_inode.ino != 0;
         for fb in 0..nblocks {
-            let blk = self.read_file_block(dir_inode, fb)?;
+            // Shadow-aware read (read-your-writes): under cross-op batching a dir
+            // block just written by `dir_link` lives in `MountState.shadow` until
+            // `commit_batch`. Reading via the plain `read_file_block` returned the
+            // stale on-disk block, so a lookup of an entry created earlier in the
+            // SAME batch missed it — Linux sees a transaction's own metadata
+            // writes through the buffer cache; our shadow is that buffer.
+            let blk = self.read_file_block_meta(dir_inode, fb)?;
             if verify_tail
                 && !crate::csum::verify_dirent_tail(&self.sb, dir_inode.ino, dir_inode.generation, &blk)
             {
@@ -203,7 +209,9 @@ impl Mount {
     /// (first data block, truncated to `i_size`). # C: O(1) or 1 block I/O
     fn read_symlink_target(&self, _ino: u32, inode: &Inode) -> Result<Vec<u8>, MountError> {
         if let Some(t) = inode.fast_symlink_target() { return Ok(t.to_vec()); }
-        let blk = self.read_file_block(inode, 0)?;
+        // Shadow-aware (read-your-writes): a slow symlink created earlier in the
+        // same batch has its target block staged in the shadow, not yet on disk.
+        let blk = self.read_file_block_meta(inode, 0)?;
         let n = (inode.size as usize).min(blk.len());
         Ok(blk[..n].to_vec())
     }
