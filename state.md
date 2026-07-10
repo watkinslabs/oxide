@@ -37,7 +37,35 @@ CORRUPTED with the value 0x60.
   [UAF] fault-probe didn't catch it since the write isn't a freed-block read).
 - No obvious id↔ptr cast in mntns.rs/mount/*.rs (grepped `as *`/from_raw/transmute).
 
+## round2.md (parallel investigation) — CONFIRMS the diagnosis + strongest lead
+`round2.md` (repo root, read-only pass) independently confirms: external heap
+corruption of a NAMESPACES BTreeMap edge → 0x60 (≈ ns-id 96 ≈ live ns count).
+Its strongest code lead — the **mount-namespace lifecycle is SPLIT into two
+models** (a real broken system, fix candidate):
+- `mntns.rs` declares the canonical registry + `alloc_ns_id()` + `mnt_ns_enter/exit`
+  pin/reap — but `mnt_ns_enter/exit` are DEAD outside tests.
+- Production ns transitions bypass it with raw-id `AtomicU64::store`:
+  `syscalls/src/272_unshare.rs` has its OWN `static NEXT_MOUNT_NS` (not
+  `alloc_ns_id`), `apply_new_namespaces()` does `task.mount_ns.store(new_id)` with
+  no enter/exit; `056_clone.rs` copies `child.mount_ns.store(...)`; `nscg/proc_ns.rs`
+  setns does `cur.mount_ns.store(ns.id)`; `sys_exit`/`terminate_current_with_signal`
+  never `mnt_ns_exit`. → no coherent live-object graph under sandbox churn; a ns
+  object may be reaped/freed while still referenced (→ UAF → the wild-write), or
+  the two id spaces (NEXT_MOUNT_NS vs NEXT_NS_ID) diverge.
+- `Task::mount_ns` is NOT at offset 0x60, so it's not a trivial task-field clobber.
+round2.md's explicit rule: **"No guess-fix should land here — catch the first
+mutation of the bad node, not patch around the crash."** (matches no-hacks.)
+
 ## NEXT — catch the wild-writer (do NOT guess-fix heap corruption = a hack)
+0. **Redzone attempt MASKS it:** the uncommitted redzone helpers in
+   `kalloc/src/poison.rs` (parallel agent) + wiring them caused a 35s stall
+   (32B/alloc layout shift + per-free check overhead moves the victim earlier) —
+   confirms heap-layout-sensitivity but doesn't reach the 53s overflow. Prefer
+   round2.md's LESS-disruptive probes below.
+1. **NAMESPACES integrity check** around each ns transition (round2.md): before/
+   after `devfs::snapshot_ns`, `vfs::mount::snapshot_ns`, `task.mount_ns.store`,
+   `setns_apply` — walk NAMESPACES asserting node ptrs are canonical; first trip
+   narrows the corruptor to that op. + log every raw ns transition (tid/old/new).
 1. **GDB hardware watchpoint**: boot paused, break at `resolve_mount`, at ~53s read
    `NAMESPACES` root-node addr (`vfs::mntns::NAMESPACES`), set a `watch` on its edges
    region (offset 0xc0..), continue — the trap names the writer.
