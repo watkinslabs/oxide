@@ -20,18 +20,21 @@ impl Mount {
             | ((u32::from_le_bytes([ino_bytes[0x6C], ino_bytes[0x6D], ino_bytes[0x6E], ino_bytes[0x6F]]) as u64) << 32);
         let new_logical = ((cur_size + bs as u64 - 1) / bs as u64) as u32;
         let new_size = cur_size + bs as u64;
-        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size)
+        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, new_logical, data, new_size, false)
     }
 
-    pub(super) fn append_logical_block_inner(&self, ino: u32, logical: u32, data: &[u8], new_size: u64) -> Result<u32, MountError> {
-        let bs = self.sb.block_size as usize;
-        if data.len() != bs {
-            return Err(MountError::Inode(inode::InodeError::BadLen));
-        }
+    /// Map `logical` as a preallocated UNWRITTEN block (no data I/O) — the
+    /// O(1)-write fallocate path. If the block is already mapped this is a no-op.
+    /// # C: O(N_extents) + 1 alloc
+    pub(super) fn map_unwritten_block_inner(&self, ino: u32, logical: u32, new_size: u64) -> Result<u32, MountError> {
         let (mut ino_bytes, ino_byte_off) = self.read_inode_bytes(ino)?;
-        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, logical, data, new_size)
+        self.insert_logical_block_with_inode_bytes(ino, &mut ino_bytes, ino_byte_off, logical, &[], new_size, true)
     }
 
+    /// `unwritten`: map the block as a preallocated UNWRITTEN extent — allocate
+    /// the block but do NOT write `data` (reads serve zeros until a later write
+    /// converts it). This is the O(1)-I/O fallocate path (Linux
+    /// `ext4_ext_map_blocks` with `EXT4_GET_BLOCKS_UNWRIT_EXT`).
     pub(super) fn insert_logical_block_with_inode_bytes(
         &self,
         ino: u32,
@@ -40,6 +43,7 @@ impl Mount {
         logical: u32,
         data: &[u8],
         new_size: u64,
+        unwritten: bool,
     ) -> Result<u32, MountError> {
         let mut i_block: [u8; I_BLOCK_LEN] = {
             let mut b = [0u8; I_BLOCK_LEN];
@@ -49,7 +53,7 @@ impl Mount {
         let hdr = inode::parse_extent_header(&i_block)?;
         if hdr.depth > EXT4_MAX_EXTENT_DEPTH { return Err(MountError::DepthUnsupported); }
         if hdr.depth == 0 {
-            return self.insert_inline_sorted(ino, ino_bytes, ino_byte_off, &mut i_block, hdr, new_size, logical, data);
+            return self.insert_inline_sorted(ino, ino_bytes, ino_byte_off, &mut i_block, hdr, new_size, logical, data, unwritten);
         }
 
         let bs = self.sb.block_size as usize;
@@ -61,8 +65,12 @@ impl Mount {
 
         let hint_group = Self::extent_hint_group(self, &leaf_extents, logical);
         let phys = self.alloc_block(hint_group)?;
-        write_byte_range(&*self.dev, phys * bs as u64, data)?;
-        let new_extent = Self::extent_for(logical, phys);
+        let new_extent = if unwritten {
+            Self::extent_for_unwritten(logical, phys, 1)
+        } else {
+            write_byte_range(&*self.dev, phys * bs as u64, data)?;
+            Self::extent_for(logical, phys)
+        };
 
         let mut simulated_extents = leaf_extents;
         Self::insert_extent_record(&mut simulated_extents, new_extent)?;

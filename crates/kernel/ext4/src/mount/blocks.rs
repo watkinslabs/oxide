@@ -38,9 +38,18 @@ impl Mount {
     /// + leaves); deeper trees surface DepthUnsupported.
     /// # C: O(depth × log N) — small constant in practice
     pub fn read_file_block(&self, inode: &Inode, file_blk: u32) -> Result<Vec<u8>, MountError> {
-        let phys = self.resolve_pblock(inode, file_blk)?;
-        let byte_off = phys * (self.sb.block_size as u64);
-        read_byte_range(&*self.dev, byte_off, self.sb.block_size as usize)
+        match self.resolve_pblock(inode, file_blk) {
+            Ok(phys) => {
+                let byte_off = phys * (self.sb.block_size as u64);
+                read_byte_range(&*self.dev, byte_off, self.sb.block_size as usize)
+            }
+            // A hole (no extent) OR an UNWRITTEN (fallocate-preallocated) block
+            // reads as zeros — Linux sparse/unwritten file-data semantics. This
+            // keeps `read_file_block` a transparent file-data primitive so no
+            // caller must special-case unwritten extents.
+            Err(MountError::NotFound) => Ok(alloc::vec![0u8; self.sb.block_size as usize]),
+            Err(e) => Err(e),
+        }
     }
 
     /// Map a file-logical block → physical LBA by descending the extent
