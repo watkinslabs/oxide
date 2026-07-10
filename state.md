@@ -1,49 +1,43 @@
-# Handoff — ext4 100% COMPLETE (14/14 lanes); 2 boot blockers fixed
+# Handoff — live-gnome sysinit blocker isolated to virtio-blk per-op I/O latency
 
-Main = `cb345bd5`. ~19 PRs merged this session. ext4 completion done hosted +
-e2fsck-gated (NO booting, per user). Console/live-gnome share the sysinit path.
+Main = `ba551767`. 2 fixes merged this session; live-gnome blocker DIAGNOSED (not yet fixed).
 
-## ★★ ext4 = 100% complete — all 14 lanes of scratch/ext4-compat-plan.md
-All e2fsck-clean (e2fsck present) or unit-verified:
-- L1 sync_fs→commit_batch (#2899) · L1b batch shadow-aware lookup (#2900)
-- L2 Drop commits batch (#2901) · L3 concurrent-create op_lock race (#2902)
-- L10 lazy unwritten fallocate (#2905) · sparse writes leave holes (#2906)
-- L14 huge_file i_blocks (#2908) · L12 POSIX ACL enforcement (#2909)
-- **L6+7+8 full htree write path (#2911)** — leaf split, linear→indexed create,
-  root grow (1→2 level), node split, dx_tail checksums + inode-bitmap padding fix.
-  Verified: 6000 creates build a clean 2-level index; e2fsck clean.
-- **L13 fallocate PUNCH_HOLE (#2913)** — deallocate range → holes, extent rebuild,
-  plumbed through VFS `InodeOps::fallocate` (tmpfs + ext4). e2fsck clean.
-- **L4/L5 jbd2 (#2914)** — revoke N/A (single-txn checkpoint model); checksums N/A
-  (no real ext4 journal uses jbd2 csum — e2fsprogs 1.47 won't make one; all images
-  = "Journal features: (none)"); defensive CSUM_V2/V3 gate added.
-- L9 allocator run-length SUPERSEDED by extent coalescing; L11 backup SB NON-ISSUE.
+## Landed (merged to main)
+- **B699 (#2916)** ext4: op_lock held across `dev.flush` (sleeps on virtio) → boot
+  livelock. Now defers the size-triggered batch commit out of op_lock (`create_op`,
+  `creating` atomic). Boot cleared the old ~55s hard-hang; hwdb now finishes ~55s.
+- **B700 (#2917)** net: race-free AF_UNIX accept park (`arm_accept_wait` under the
+  accept_q lock, mirrors read_or_park) + 20ms safety-net rescan on accept (UNIX+TCP).
 
-## ★★ Also fixed + boot-verified earlier this session
-1. **sysinit pivot_root deadlock (#2895)** — 3 mount bugs.
-2. **boot mkdir err=5 (#2902)** — the ext4 concurrent-create allocator race → op_lock.
-   ext4 perf fixes halved the hwdb boot gap (72s→37s).
+## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
+`systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.
+Root cause chain (4 diagnostic boots + code trace, DEFINITIVE):
+- Not AF_UNIX wake, not the scheduler tick, not data-journaling (data is already
+  written direct-to-target = data=ordered). Writeback amplification is bounded
+  (tests/writeback_amp_image passes ~8 ops/page).
+- debug-taskdump: **systemd-hwdb blocks in ONE fsync ~50s** (nsysc frozen, low CPU
+  → I/O-blocked). 13.5MB fresh file = ~27k single-block ops at **~2ms/op** (KVM
+  should be µs). = [[hwdb-blocker-ext4-writeback-commits]].
+- STRONGEST hypothesis: virtio-blk is **single-inflight** (`acquire_turn` serializes
+  every op, engine.rs:205). Linux pipelines queue-depth 128+; ours pays the host
+  round-trip SERIALLY → 27k×2ms≈50s. Secondary suspect: MSI not firing (enum logged
+  virtio-blk `msi_fires=0`) so completions caught only by the 200k spin.
 
-## Remaining GOAL = live-gnome bootable (NON-ext4; console is unblocked by sysinit)
-console.md: the tty/N_TTY/fbcon stack is REAL + largely Linux-compatible; the
-window is blank ONLY because sysinit stalls before getty.target. So console (goal 1)
-completes when sysinit completes. The live-gnome/console BLOCKER is:
-**`systemd-tmpfiles-setup-dev-early.service` hangs 210s** (boot gap 53→263s),
-creating static /dev nodes, then timeout-killed. NOT ext4 — devtmpfs/tmpfs mknod
-or a tmpfiles/varlink wait. NEXT: boot `features=debug-mnt`, find its vpid, read
-/proc/<pid>/status State + fd during the hang (a mknod? a socket wait?).
+## First commands next session
+1. `cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ ba551767
+2. Instrument `wait_for_completion` (drv-virtio-blk/src/modern/engine.rs:175):
+   count park-vs-spin-hit + wall-ns/op behind a debug feature; ONE boot to confirm
+   the ~2ms/op and whether it parks every op. (per user: no repeated long boots.)
+3. Fix = multi-inflight virtio-blk queue OR coalesce contiguous writeback
+   `write_byte_range` calls into multi-block requests (data blocks already direct).
+   Validate hosted (StatsDev op-count, writeback_amp template) + e2fsck, then boot.
 
-## First command next session
-`cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ cb345bd5
-ext4 is DONE — next is live-gnome: trace + fix the tmpfiles-setup-dev-early 210s
-hang (non-ext4), then boot to getty/graphical.
+## Then continue the audit (scratch/kernel-audit2.md → gnome-boot-campaign.md ledger)
+udev uevents, systemd mount contract, cgroup v2, AF_UNIX/dbus, procfs/sysfs, then
+P1 (DRM/KMS, input, VT/logind, swap, net). Each ships a hosted harness; boot to verify.
 
 ## Gotchas
-- NEVER `git add -A` (swept ext42.md + rustc-ice dumps; gitignored). Stage explicit.
-- e2fsck (/usr/bin/e2fsck) is THE gate for format-critical ext4; e2fsck_image.rs can
-  mke2fs a fresh fixture at runtime (see htree_create_split test) for paths the
-  committed images can't reach.
-- User forbids booting for ext4 work — iterate hosted. [[ext4-work-no-booting]]
-- `fs` crate standalone `cargo test` fails on `sched::live` (pre-existing feature
-  gating, NOT a real break) — test ext4/vfs directly.
-- aarch64: fixes arch-neutral; compile; arm boot untestable here.
+- NEVER `git add -A` (untracked ext42.md/ICE dumps). Stage explicit paths.
+- ext4 work: iterate hosted + e2fsck, don't boot [[ext4-work-no-booting]].
+- Boot only via qemu MCP (debug-dbus / debug-taskdump were the useful features here).
+- ext4 = 100% complete/correct; this is a virtio-blk/perf issue, not an ext4 bug.
