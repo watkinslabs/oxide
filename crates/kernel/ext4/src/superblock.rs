@@ -235,6 +235,15 @@ impl Superblock {
         (self.feature_ro_compat & RO_COMPAT_METADATA_CSUM) != 0
     }
 
+    /// `EXT4_FEATURE_RO_COMPAT_HUGE_FILE`: when set, `i_blocks` uses the 48-bit
+    /// (`i_blocks_lo` + `l_i_blocks_high`) form and a per-inode `EXT4_HUGE_FILE_FL`
+    /// may switch its unit from 512-byte sectors to fs-blocks. When CLEAR,
+    /// `i_blocks` is 32-bit `i_blocks_lo` only and `0x74` is `l_i_reserved` (must
+    /// NOT be merged in as high bits). # C: O(1)
+    pub fn has_huge_file(&self) -> bool {
+        (self.feature_ro_compat & RO_COMPAT_HUGE_FILE) != 0
+    }
+
     /// True iff GDT_CSUM (legacy CRC16) is on instead of CRC32C.
     /// # C: O(1)
     pub fn has_gdt_csum(&self) -> bool {
