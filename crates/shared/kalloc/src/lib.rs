@@ -32,6 +32,19 @@ use sync::{KMalloc, Spinlock};
 mod holes;
 pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 
+#[cfg(feature = "debug-heappoison")]
+mod poison;
+/// Diagnostic (`debug-heappoison`): if `addr` points into a currently
+/// quarantined (freed-but-poisoned) block, return its `(base, size)`. A hit
+/// means `addr` is a use-after-free; `size` names the victim's type. Always
+/// present so the arch fault handler can call it unconditionally; returns
+/// `None` (ring empty) when the feature is off.
+/// # C: O(QN) when armed, O(1) otherwise
+#[cfg(feature = "debug-heappoison")]
+pub fn uaf_lookup(addr: u64) -> Option<(u64, u32)> { poison::uaf_lookup(addr) }
+#[cfg(not(feature = "debug-heappoison"))]
+pub fn uaf_lookup(_addr: u64) -> Option<(u64, u32)> { None }
+
 /// Heap size carved out of BSS for the kernel's static heap. 64 MiB
 /// covers early-boot subsystems (vmm VMA tree, sched runqueues, vfs
 /// dentry cache) BEFORE the PMM grow hook is wired (kmain); after that,
@@ -186,6 +199,20 @@ unsafe impl GlobalAlloc for KAlloc {
         // SAFETY: caller-asserted that `ptr` was previously returned by
         // `alloc(layout)` and is no longer borrowed.
         let nn = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
+        // debug-heappoison: poison + quarantine small blocks (delay reuse) so a
+        // UAF read hits 0xEE deterministically; only really free an evicted one.
+        #[cfg(feature = "debug-heappoison")]
+        if layout.size() <= poison::POISON_MAX {
+            // SAFETY: `ptr`/`layout` from a prior alloc, no longer borrowed.
+            if let Some((vptr, vlayout)) = unsafe { poison::quarantine(ptr, layout) } {
+                // SAFETY: `vptr` was quarantined from a prior alloc via `quarantine`; now evicted, so reclaim it to the hole list.
+                let vnn = unsafe { core::ptr::NonNull::new_unchecked(vptr) };
+                let mut g = self.inner.lock();
+                // SAFETY: evicted quarantined block; re-insert into the hole list.
+                unsafe { g.dealloc(vnn, vlayout) };
+            }
+            return;
+        }
         let mut g = self.inner.lock();
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
