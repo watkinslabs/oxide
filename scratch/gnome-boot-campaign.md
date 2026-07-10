@@ -99,7 +99,27 @@ coalesce: tmpfiles/userwork still crawl (userdb nss /etc/group reads, small-file
 reads), each blocking-read paying the single-inflight round-trip. hwdb's large
 sequential write coalesced; the many small reads did not.
 
-## THE FINAL LEVER — virtio-blk per-op latency / multi-inflight (driver)
+## ★ MAJOR CORRECTION 2026-07-10 (BLKLAT probe, measured then reverted)
+virtio-blk I/O is **~16µs/op and NEVER parks** (`[BLKLAT] ops=262144 parked=12
+avg_us=15`). The per-op-latency / multi-inflight theory below is WRONG — I/O is fast.
+TWO separate problems:
+ (A) I/O VOLUME: ~262k block ops in the first ~11s (t5–16) from ext4 metadata
+     amplification. B701/B702 reduce it; more possible (cache metadata reads).
+ (B) **THE 249s BLOCKER**: block I/O STOPS at t≈16s but boot keeps stalling. The
+     tmpfiles-setup-dev-early 249s is a phase-2 **AF_UNIX/varlink WAKE MISS** (15s
+     cadence — a userspace varlink timeout breaks a tmpfiles↔userwork mutual block).
+     NOT I/O, NOT CPU, NOT the scheduler tick. B700 fixed the accept race but the
+     cadence persists → another missed wake in the varlink round-trip.
+NEXT (do this, ignore multi-inflight): instrument the AF_UNIX round-trip — add a
+trace to read_unix_stream_blocking (park/wake, deadline), sys_accept, and the userdbd
+worker-spawn/SIGCHLD path, keyed to the userdb sockets. One boot shows WHO parks, who
+should wake it, and what fires at the 15s mark. Static analysis says every wake
+"should" fire (register_subs/notify_subs share sock.poll_subs; ppoll has the safety
+net; blocking-read wake is race-free) — so only a live trace will catch the miss.
+Candidate: blocking-read reply wake to tmpfiles (deadline 0, NO safety net) — if that
+one targeted wake is dropped, tmpfiles stalls until the 15s varlink timeout.
+
+## (SUPERSEDED by the correction above) virtio-blk per-op latency / multi-inflight
 Every block op serializes through acquire_turn + one bounce buffer + descriptor 0
 (engine.rs:107,127,205). Under KVM each op pays the full host round-trip SERIALLY;
 Linux hides this with queue-depth 128+. Small scattered reads (nss, dyld, config)
