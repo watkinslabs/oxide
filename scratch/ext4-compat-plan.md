@@ -14,7 +14,7 @@ TODO | CLAIMED <branch> | IN-REVIEW <pr> | DONE <pr>
 | 1 | Batch-drain durability | P0 | DONE | B688/#TBD |
 | 1b | Batch read-your-writes (shadow-aware lookup) | P0 | DONE | B689 |
 | 2 | Batch clean-drop ordering | P0 | DONE | B690 |
-| 3 | Concurrent-create allocator race (boot mkdir EIO) | P0-boot | TODO | B690 |
+| 3 | Concurrent-create allocator race (boot mkdir EIO) | P0-boot | DONE | B691 |
 | 4 | jbd2 revoke emission + sequence-aware replay | P0/P1 | TODO | B691 |
 | 5 | jbd2 commit + descriptor-tag checksums | P1 | TODO | B692 |
 | 6 | htree leaf split | P1 | TODO | B693 |
