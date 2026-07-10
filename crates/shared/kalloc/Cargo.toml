@@ -13,3 +13,5 @@ sync = { path = "../../shared/sync" }
 [features]
 default = []
 hosted  = []
+# Diagnostic UAF localizer: poison + quarantine freed blocks (docs/02, dev-only).
+debug-heappoison = []
