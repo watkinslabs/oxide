@@ -55,7 +55,7 @@ impl Mount {
             batch: false,
             undo: Vec::new(),
         };
-        let m = Self { dev, sb, state: sync::Spinlock::new(state) };
+        let m = Self { dev, sb, state: sync::Spinlock::new(state), op_lock: sync::Spinlock::new(()) };
         let _ = m.recover_journal();
         let _ = m.orphan_cleanup();
         Ok(m)
