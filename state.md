@@ -1,75 +1,55 @@
-# Handoff — Goal 3 blocker CONFIRMED a UAF in udevd's kernel path (heap-poison proved it)
+# Handoff — ext4 SMP corruption FIXED (B707); live-gnome now blocks on an all-idle wakeup stall
 
-Goals 1 (console) + 2 (ext4) done. Goal 3: boot runs the full dbus/logind/NM
-stack; dies ~55-65s in a refcount abort BEFORE gnome-shell/gdm. This session
-BUILT a heap-poison diagnostic and used it to PROVE the crash is a use-after-free
-(not an overflow, not an SMP race) living in udevd's device-enumeration path.
+Goals 1 (console) + 2 (ext4) done. Goal 3 (visible gnome desktop): the big
+blocker of this whole campaign is FIXED and boot-verified. New frontier below.
 
-## What's proven now (evidence, not hypothesis)
-1. **Not an SMP race.** smp=1 PANICs `alloc/src/sync.rs:3287` (Weak::upgrade
-   overflow) ~65s; smp=2 #UDs on an Arc<File> strong-clone in epoll scan_once
-   ~55s. A count > isize::MAX ⇒ reading freed-and-reused memory ⇒ UAF.
-2. **It's a UAF in udevd's kernel path (CONFIRMED causally).** With
-   `debug-heappoison` on (poison the leading 16B of freed blocks 0xEE +
-   quarantine to delay reuse):
-   - NON-poison boot: `Started systemd-udevd.service` at 46.6s (udevd works).
-   - POISON boot (full-block AND 16B-head): udevd `Main process exited,
-     code=exited, status=1/FAILURE` on its FIRST start, restart-loops forever.
-   ⇒ udevd's kernel path READS a freed object's leading word (refcount/ptr at
-   off 0-16). Non-poison: that block is reused → garbage huge count → epoll #UD.
-   Poison: leading word = 0xEE → udevd gets bad data → exit 1. Same root UAF.
-3. Because udevd dies under poison, the fork/openat/epoll STORM never builds →
-   the original #UD is masked → the [UAF] fault-probe never fires (udevd exits
-   cleanly, no CPU fault). So the tool CONFIRMED the UAF but hasn't NAMED the
-   exact free-site yet.
+## Landed this session (merged to main)
+- **B707 / PR#2936 — ext4 metadata-transaction race (the rootfs corruptor).**
+  `run_journaled` (write_at/unlink/truncate/alloc_block/free_block/inode-alloc)
+  had NO serialization; only `create_op` held `op_lock`. Concurrent tasks/CPUs
+  raced the group bitmaps/GDT/counters/shadow → double-alloc, wrong counts, stale
+  csums, unattached inodes. This corrupted the rootfs during boot (e2fsck: group
+  13 block-bitmap csum, group 5 inode-bitmap csum, unattached inode 43017) and
+  the resulting garbage inode-table blocks yielded garbage `Arc<dyn InodeOps>` →
+  the ~55-65s #UD / `Weak::upgrade` panic that dominated this session. NOT a
+  kernel UAF, NOT udevd (the debug-heappoison "udevd UAF" lead was a misdirection;
+  the user's e2fsck evidence cracked it). Fix: reentrant transaction gate in
+  `run_journaled` keyed on `ctx_id()` (kernel: task-id hook set by kmain via
+  `ext4::mount::set_ctx_id_hook`; hosted: per-thread). Gate:
+  `crates/kernel/ext4/tests/balloc_uninit_e2fsck.rs` — 4-thread create/write/unlink
+  churn on a clean-image copy, asserts `e2fsck -fn` clean (reproduced the exact
+  boot corruption before, clean after, 3/3). Full ext4 suite + both arches green.
+  [[gnome-blocker-refcount-uaf]] [[ext4-work-no-booting]]
+- **C108 / PR#2935 — debug-heappoison** (off-by-default UAF localizer). Kept as a
+  tool though its "udevd UAF" conclusion was wrong.
 
-## The diagnostic tool (merged, off by default) — `debug-heappoison`
-- `crates/shared/kalloc/src/poison.rs`: poison leading 16B of freed blocks
-  <=4096B with 0xEE, hold in a 2048-entry quarantine ring (delay reuse), really
-  free only on eviction. `kalloc::uaf_lookup(addr)` → (base,size) if addr is in
-  a quarantined (freed) block.
-- `crates/arch/hal-x86_64/src/fault.rs`: on an unhandled fault, sweeps every GPR
-  through `uaf_lookup` and prints `[UAF] reg=.. ptr=.. IN FREED block base=..
-  size=..` — size names the victim type. (Only fires on a CPU fault.)
-- Cascade: `kmain` feature `debug-heappoison = ["kalloc/debug-heappoison"]`.
-  Boot: `qemu_start features=debug-boot,debug-heappoison smp=2`.
+## Boot-verify (smp=2, fresh rootfs) — corruption GONE
+No FAULT / PANIC / EIO / BadChecksum / spawn-fail. Boots clean through
+journal-flush + userdbd (~24s). The ext4 fix is confirmed end-to-end.
 
-## NEXT — the victim is a freed INODE/DENTRY read as DATA (no CPU fault to catch)
-Key deduction: 0xEEEE…EEEE is ALREADY non-canonical, so if the poisoned leading
-word were a kernel-deref'd POINTER, udevd's read would have #GP'd and the GPR
-sweep would have fired. It DIDN'T. ⇒ the poisoned bytes are returned to udevd as
-DATA (a stat field / sysfs attribute / readdir entry the kernel builds from a
-FREED inode/dentry), so there is no CPU fault — the [UAF] fault-probe cannot name
-it. So a non-canonical-poison boot is FUTILE; do NOT waste a boot on it.
-Do this instead (source audit, no boot):
-1. **Audit the devtmpfs/sysfs INODE+DENTRY lifecycle for a UAF.** udevd's
-   startup stats/reads /dev (devtmpfs/devfs) + /sys (kernfs/sysfs). Prime: an
-   `Arc<Inode>`/`Arc<Dentry>` freed while still linked in the dcache/icache or a
-   devfs registry, so a later stat/readdir/open reads its (freed) fields. The
-   poisoned bytes are the inode/dentry's leading 16B (refcount/ino/mode/ptr).
-   Strong prior leads: [[mknod-bypasses-dcache-negative]] (devfs bind/mknod skips
-   dcache), [[mount-dentry-sharing-gotcha]]. Look at devfs/devtmpfs node
-   create/remove vs icache/dcache eviction, and sysfs/kernfs dynamic-node drop.
-2. To NAME it deterministically, extend the tool to record a FREE-SITE tag per
-   quarantined block (store a small caller id, since frame-pointers are off pass
-   an explicit tag from the Drop sites of Inode/Dentry) and dump the tag for the
-   block whose bytes udevd read — OR add a targeted klog in Arc<Inode>/Arc<Dentry>
-   Drop that asserts the object is unlinked from every cache before free.
-- RULED OUT by code-read (refcount-correct): fdtable fork_clone/get/close/dup,
-  epoll scan_once, zombies park/unpark, File Drop, runqueue swap_current.
+## NEW frontier — all-idle missing-wakeup at ~24-35s (separate, pre-existing)
+After `systemd-userdbd` starts (~24s), the system goes fully idle and a watchdog
+fires: `[CPU-STALL] cpu=0 no heartbeat for 10s (seen by cpu=1) tid=0 syscall=none
+nr_running=0`. All tasks blocked, nothing runnable, nothing wakes CPU 0 → missing
+wakeup. NOT the txn gate (a gate spin-deadlock would show nr_running>=1; this is
+nr_running==0). Prime suspect: af_unix listener accept-readiness → epoll wake for
+userdbd's varlink socket, or a timerfd/futex wake. [[desktop-blocker-tmpfiles-userdbd]]
+Note: this boot used `rebuild_rootfs=true`; confirm the fresh image carries the
+../images nss fix (`group: files systemd`) — if not, this may be the userdb stall.
 
 ## First commands next session
-1. `cd /home/nd/oxide/kernel && git log --oneline -3`
-2. Experiment 1: edit `crates/shared/kalloc/src/poison.rs` POISON to a
-   non-canonical ptr for the first 8B, rebuild, `qemu_start
-   features=debug-boot,debug-heappoison smp=2`, run_until '\[UAF\]|FAULT|PANIC'.
-3. If it faults with [UAF] size=N → find the type with sizeof == N → audit its
-   free vs the udevd read that keeps a stale ref.
+1. `cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ 200552b9 (B707 merge)
+2. Repro: `mcp__qemu__qemu_start arch=x86_64 features=debug-boot,debug-wakelat smp=2 mem=4G rebuild_rootfs=true`
+   → run_until 'CPU-STALL' (fires ~35s). debug-wakelat shows the last WLBLK (what
+   the idle tasks are parked on) before the stall.
+3. Identify the parked service + what should have woken it (af_unix accept / epoll
+   gen / timerfd). Hosted-repro the wake path if possible.
 
 ## Gotchas
-- gdb `qemu_interrupt` will NOT preempt a `cli;hlt` panic-halt (times out) — read
-  crashes from serial, not the backtrace.
-- run_until buffers exceed the token cap; parse the saved tool-result file w/ python.
-- No boot-per-hypothesis loops [[no-repeated-long-boots]] — 3 poison boots done;
-  the non-canonical variant is the ONE decisive next boot, then audit.
-- live-gnome→gnome image (2.8GB); backups ../images/out/*.premerge.bak.
+- run_until / qemu_serial buffers hit the 63KB token cap — the visible tail may be
+  EARLIER than the guest's real position; parse the saved tool-result file, and
+  check for `[CPU-STALL]` / `[NMI-BT]` which appear at the true tail.
+- gdb `qemu_interrupt` won't preempt a `cli;hlt` idle/panic — read serial.
+- ext4 corruption: reproduce hosted (writable image copy + `e2fsck -fn`),
+  CONCURRENTLY (single-threaded churn is clean). No boots for ext4 [[ext4-work-no-booting]].
+- Clean gnome image: `/home/nd/oxide/images/out/gnome-x86_64-root.img` (dumpe2fs/e2fsck OK).
