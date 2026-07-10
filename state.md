@@ -1,7 +1,18 @@
-# Handoff — live-gnome blocker is systemd userspace; kernel measured-correct
+# Handoff — Goals 1+2 complete; Goal 3 blocker is stock-systemd userspace
 
-Main = `6f9cd052` (B703 #2927 merged). Live-gnome blocker unchanged:
-CONFIRMED-USERSPACE (systemd-userdb varlink streaming), not a kernel defect.
+Main has B703 #2927 + B704 #2929 merged. Goal 1 (console) + Goal 2 (ext4) DONE.
+Goal 3 (live-gnome) blocker = CONFIRMED stock-systemd userspace varlink streaming
+(NOT a kernel defect; systemd = Fedora RPM binaries, needs sudo image re-compose).
+
+## Goal 1 (console 100% Linux-compat) — COMPLETE this session
+console.md re-audited: G1 closed by observation (fbcon scans out — window shows
+live kernel log), G3(x86)/G4/G5/G6 all already implemented, full VT/KD ioctl
+handshake (VT_ACTIVATE/WAITACTIVE/SETMODE/RELDISP, KDSETMODE, VT_RESIZE→SIGWINCH)
+audited real (not stubs). The ONE real remaining divergence — pl011/aarch64 TCSETS
+baud reprogram was a no-op — FIXED in **B704** (`pl011_set_termios`: disable→drain
+BUSY→program IBRD/FBRD→relatch LCRH→restore CR; UARTCLK=24MHz until DTB-clock;
+pure host-tested `pl011_divisor`). console.md §5/§6/bottom-line refreshed to accurate
+state. Console is kernel-ready for a getty login; only G2 (userspace) gates it.
 
 ## Landed this session
 - **B703** vfs: AF_UNIX `bind(2)` materialises the path node via `mknod_child`
