@@ -198,7 +198,7 @@ pub trait InodeOps: Send + Sync {
 
     /// `i_op->fallocate` — ensure backing for `[offset, offset+len)`. Default
     /// `Eopnotsupp`. # C: backend-dependent
-    fn fallocate(&self, _inode: &Inode, _offset: u64, _len: u64, _keep_size: bool, _zero_range: bool)
+    fn fallocate(&self, _inode: &Inode, _offset: u64, _len: u64, _keep_size: bool, _zero_range: bool, _punch: bool)
         -> KResult<()> { Err(VfsError::Eopnotsupp) }
 
     /// `i_op->truncate` — set the file length to `len`. Default `Erofs`

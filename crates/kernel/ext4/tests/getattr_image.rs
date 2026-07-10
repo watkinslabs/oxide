@@ -33,7 +33,7 @@ fn st_blocks_reflects_real_allocation_not_size() {
     let st = m.state();
     let inode = st.create_at(b"/prealloc.bin", 0o644).expect("create");
     // Preallocate 4 fs-blocks (16 KiB) but keep the file size at 0.
-    inode.fallocate(0, 16 * 1024, /*keep_size=*/true, /*zero_range=*/false)
+    inode.fallocate(0, 16 * 1024, /*keep_size=*/true, /*zero_range=*/false, /*punch=*/false)
         .expect("fallocate keep_size");
 
     let k = inode.getattr(&Idmap::identity(), None);
