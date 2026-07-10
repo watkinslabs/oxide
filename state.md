@@ -21,11 +21,19 @@ blocker is ROOT-CAUSED and FIXED (B712). Boot now advances past it.
 ## Goal status
 - Goal 1 console: DONE. Goal 2 ext4: DONE (verified). Goal 3 live-gnome: past the ~55s wall,
   two frontiers remain:
-  1. **Residual, RARER second corruptor** — one own-qemu boot still #UD'd at 52.9s in
-     `resolve_mount+4751` = handle_alloc_error (a Vec grew to a HUGE capacity → a LARGE-value
-     write, UNLIKE B712's write-0 → likely a SECOND UAF, not the on_cpu one). Post-B712 the
-     MCP boot instead reached 58.6s (no crash). So B712 fixed the dominant case; a rarer
-     writer remains.
+  1. **Residual, RARER second corruptor** — #UD at ~52s, `resolve_mount+4751` = a `ud2`
+     immediately before `call handle_alloc_error` = a Vec **capacity-overflow / alloc-fail
+     abort**. Forensic (own-qemu, caught 2/2 attempts) shows `rax` at a partially-built
+     collection of SEQUENTIAL mount-ids 0xe..0x13 (14..19) → this is `mounts_in_ns`
+     (`MOUNTS.lock().values().filter(ns).cloned().collect()`). So the `collect()`/`reserve()`
+     got a HUGE size → a collection's len/cap (or the BTreeMap size_hint = MOUNTS.length) was
+     scribbled to a huge/pointer value. LARGE-value write, UNLIKE B712's write-0 → a SECOND
+     raw write to a freed+reused block. Post-B712 the MCP boot instead reached 58.6s (no
+     crash), so B712 fixed the dominant case; this fires in a minority of boots.
+     NEXT: (a) MOUNTS is a `static Spinlock<BTreeMap<u64,Arc<Mount>>>` — its `.length` field
+     is at a STABLE static address, so a conditional hw watchpoint there (`if len > 0x10000`)
+     could catch the writer despite the non-determinism; OR (b) audit sched/other for a raw
+     write of a POINTER/large value to a reaped Task (B712 only covered on_cpu=0/false).
   2. **Busy-spin at ~58.6s** (after sshd-keygen@ed25519 Finished) — 94.9% CPU, IRQs-off
      (gdb async-break + qemu_interrupt both fail to stop it) = a spinlock livelock. Reached
      only when the corruption is avoided. Likely a known stall blocker now exposed
