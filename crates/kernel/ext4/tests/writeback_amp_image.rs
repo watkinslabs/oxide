@@ -61,13 +61,24 @@ fn large_file_writeback_is_not_per_page_commit() {
         off += chunk;
     }
 
-    let (_, _, w_before, _, _) = stats.snapshot();
+    let (r_before, _, w_before, _, _) = stats.snapshot();
     f.i_mapping().unwrap().writeback().expect("writeback");
-    let (_, _, w_after, _, _) = stats.snapshot();
+    let (r_after, _, w_after, _, _) = stats.snapshot();
 
     let writes = w_after - w_before;
-    eprintln!("writeback of {} pages: {} block-write ops ({:.2}/page)",
-              NPAGES, writes, writes as f64 / NPAGES as f64);
+    let reads = r_after - r_before;
+    eprintln!("writeback of {} pages: {} block-write ops ({:.2}/page), {} block-read ops",
+              NPAGES, writes, writes as f64 / NPAGES as f64, reads);
+
+    // Full-block, block-aligned data writes must SKIP the read-modify-write
+    // pre-read (the whole block is overwritten). Before the write_byte_range
+    // fast path, every data block did a useless pre-read — 27k serialized
+    // reads on hwdb's 13.5MB file, doubling its fsync I/O. A per-page pre-read
+    // regression trips this (reads would be >= NPAGES).
+    assert!(reads < NPAGES as u64,
+        "writeback issued {} block-read ops for {} full-block pages — the RMW \
+         pre-read for block-aligned full-block writes is dead I/O (should be ~0)",
+        reads, NPAGES);
 
     // Each per-page journal commit writes descriptor + data + commit + journal-SB
     // (twice) + the target metadata: ~20 write-ops/page on this journaled image
