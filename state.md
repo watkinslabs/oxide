@@ -35,10 +35,21 @@ block ~15s per query** (a backend they fan out to never replies → fixed varlin
 timeout). This matches the prior 2026-07-08 DEFINITIVE conclusion (userspace varlink
 GetMemberships/Multiplexer completion). Every kernel af_unix/epoll/timer/IO path is
 measured-correct — do NOT re-chase them.
-NEXT: trace the userwork worker's OWN outbound connects/reads during its 15s (which
-backend socket it blocks on + why no reply). Likely image/systemd config (a userdb
-backend .service that can't start / isn't present), not a kernel fix. See
-[[desktop-blocker-tmpfiles-userdbd]] + [[hwdb-blocker-ext4-writeback-commits]].
+MECHANISM PINNED (UWSYS syscall trace of systemd-userwork): per Multiplexer query the
+worker accept4(listen)→handle(nss file statx/openat + sendto/recvfrom)→reply→**ppoll
+that BLOCKS ~14.2s**→close(conn fd)→accept4 next. So the worker holds its accepted
+client connection idle, ppoll-waiting for the client to send more OR close, and only
+the ~15s ppoll timeout frees it → 3 workers × ~1 query/15s → 249s.
+Pair-level AF_UNIX EOF/HUP is KERNEL-CORRECT (unix_sock/tests pass; InetSocket::Drop
+calls close_writer + wakes peer; ppoll rescans 100ms). So the worker would wake FAST
+if the client closed AND that close fired InetSocket::Drop. Fork: (a) tmpfiles/
+nss-systemd keeps the varlink connection open (worker idle-timeout = userspace/worker-
+count), OR (b) closing the client fd doesn't drop the last Arc<InetSocket> so Drop
+never fires (kernel refcount leak — fixable). NOTE crate::sock/InetSocket is
+kernel-target-only (can't hosted-test the Drop chain).
+NEXT (decisive, one focused boot): trace InetSocket::Drop firing (close_writer called?)
+on tmpfiles' userdb-socket close. Drop fires → userspace/image; not → kernel Arc leak.
+See [[desktop-blocker-tmpfiles-userdbd]] (full trace evidence).
 
 ## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
 `systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.
