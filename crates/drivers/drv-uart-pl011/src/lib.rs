@@ -16,11 +16,15 @@ extern crate alloc;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// PL011 reference clock (`UARTCLK`). qemu `virt` wires the PL011 to a fixed
-/// 24 MHz clock, which is also the near-universal AMBA PL011 reference rate that
-/// Linux reads from the DTB `clocks` phandle. v1 does not yet parse the DTB clock
-/// tree, so this is the assumed rate; when DTB-clock parsing lands, source it
-/// from `/pl011/clocks` instead of this constant.
+/// PL011 reference clock (`UARTCLK`) fallback / test reference. qemu `virt`
+/// wires the PL011 to a fixed 24 MHz clock (also the near-universal AMBA PL011
+/// rate). The live rate is resolved from the DTB clock tree at boot
+/// (`boot-aarch64::dtb::pl011_clock_hz` → `hal_aarch64::pl011::set_uartclk_hz`)
+/// and read by `set_baud` via `hal_aarch64::pl011::uartclk_hz()`; this constant
+/// is the seed/fallback and the divisor test's reference rate. (The live rate
+/// lives in `hal_aarch64::pl011`; this is only the documented reference/test
+/// constant, so it is unused in a non-test host build.)
+#[allow(dead_code)]
 const UARTCLK_HZ: u32 = 24_000_000;
 
 /// PL011 baud divisor (Linux `pl011_calc_divisor`): the 16×-oversampled clock
@@ -106,14 +110,15 @@ mod imp {
     /// → `pl011_setup_baud`. Sequence per the PL011 TRM: disable the UART, wait
     /// for the in-flight char to drain (FR.BUSY clear), program IBRD/FBRD, re-
     /// write LCRH to latch the new divisor, then restore CR (re-enabling with the
-    /// prior 8N1/FIFO bits preserved). `UARTCLK` is the assumed 24 MHz until DTB-
-    /// clock parsing lands (`UARTCLK_HZ`). `baud==0` (B0) leaves the current rate.
+    /// prior 8N1/FIFO bits preserved). `UARTCLK` is the DTB-resolved reference
+    /// rate (`hal_aarch64::pl011::uartclk_hz()`, 24 MHz fallback). `baud==0` (B0)
+    /// leaves the current rate.
     /// # SAFETY: MMIO through the published PL011 Device VA; single register
     ///   dance, no concurrent UART reconfigure (TCSETS is serialized per-tty).
     /// # C: O(1) + brief BUSY spin
     pub fn set_baud(baud: u32) {
         let va = base(); if va == 0 || baud == 0 { return; }
-        let (ibrd, fbrd) = super::pl011_divisor(super::UARTCLK_HZ, baud);
+        let (ibrd, fbrd) = super::pl011_divisor(hal_aarch64::pl011::uartclk_hz(), baud);
         // SAFETY: CR/LCRH read + baud reprogram through the published PL011 VA.
         unsafe {
             let cr = core::ptr::read_volatile((va + PL011_CR) as *const u32);

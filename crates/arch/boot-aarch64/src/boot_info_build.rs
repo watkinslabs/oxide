@@ -154,6 +154,10 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
     let mut nregions = 0usize;
     // ACPI table extent to pin Reserved when reclaiming boot-services; (0,0)=none.
     let mut acpi_blk: (u64, u64) = (0, 0);
+    // Publish the DTB-resolved PL011 UARTCLK before consuming the memmap, so the
+    // runtime UART driver's baud reprogram uses the real reference clock.
+    // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
+    unsafe { publish_pl011_clock(pa); }
     // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
     match unsafe { read_dtb_memory(pa) } {
         Some((base, size)) => { regions[0] = (base, size); nregions = 1; }
@@ -319,6 +323,27 @@ unsafe fn read_dtb_memory(pa: u64) -> Option<(u64, u64)> {
     // length checks inside first_memory_region.
     let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
     dtb::first_memory_region(blob)
+}
+
+/// Resolve the PL011 `UARTCLK` from the DTB clock tree and publish it to
+/// `hal_aarch64::pl011` (Linux `pl011_probe`→`clk_get_rate`). The runtime UART
+/// driver's TCSETS baud reprogram then computes the divisor against the real
+/// reference clock instead of an assumed constant. No-op if the DTB is
+/// missing/invalid or describes no PL011 clock (the hal keeps its 24 MHz
+/// fallback). # SAFETY: `pa` is the bootloader DTB pointer; the read is bounded
+/// by the header totalsize and HHDM-mapped. # C: O(dtb)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn publish_pl011_clock(pa: u64) {
+    if pa == 0 { return; }
+    let va = selfboot::ARM_SELFBOOT_HHDM + pa;
+    // SAFETY: reads the HHDM-mapped magic+totalsize prefix.
+    let ts = unsafe { dtb_totalsize(pa) } as usize;
+    if ts < 40 || ts > 4 * 1024 * 1024 { return; }
+    // SAFETY: blob bounded by its own header totalsize; HHDM-mapped.
+    let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
+    if let Some(hz) = dtb::pl011_clock_hz(blob) {
+        hal_aarch64::pl011::set_uartclk_hz(hz);
+    }
 }
 
 /// DTB `totalsize` at phys `pa` (HHDM-mapped); 0 if the magic is wrong.
