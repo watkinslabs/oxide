@@ -1,74 +1,66 @@
-# Handoff — sysinit blocker = pivot_root (service mount-namespacing); 2/3 fixed
+# Handoff — sysinit pivot_root deadlock BROKEN; boot advances 90s→573s
 
-Main = `98750130`. Goal: console login → live-gnome. 10 PRs merged this session.
+Main = `66c1c7e7` (+ C107 ext42.md→scratch merged). Goal: console login → live-gnome.
+This session: 4 PRs merged (#2895 #2896 #2897 #2898).
 
-## ★★ THE REAL SYSINIT BLOCKER: `pivot_root` (found via systemd debug log)
-After hwdb was fixed (below), the boot deadlocks in sysinit (`systemctl list-jobs`
-= 0 running / 36 waiting). The technique that finally cracked years of fog: boot
-with **`systemd.log_level=debug`** on the kernel cmdline → systemd prints its own
-job/mount reasoning. It showed the chain `tmpfiles-setup-dev-early → sysusers →
-tmpfiles-setup → …` and **`Failed to pivot root to '/run/systemd/mount-rootfs':
-Invalid argument`** — every service using mount-namespacing (`ProtectSystem=`,
-etc.) can't enter its private rootfs, so it hangs and sysinit deadlocks.
-(The userdbd / systemd-event-loop / varlink theories from earlier were RED
-HERRINGS — userdbd starts fine; probing with `systemctl` PERTURBS the deadlock.)
+## ★★ BREAKTHROUGH: the multi-session sysinit pivot_root deadlock is FIXED (B685/#2895)
+Every service using mount-namespacing (`ProtectSystem=` etc.) deadlocked sysinit at
+`pivot_root -EINVAL`. THREE Linux-correctness bugs, all fixed + boot-verified:
+1. **Bind inherited SOURCE peer group** (`165_mount.rs`): binding the shared open_tree
+   clone of `/` made the service rootfs SHARED → pivot EINVAL. Linux `do_loopback`
+   clones flag 0 (never a peer of source). Removed `join_peer_group(target, src_pg)`.
+2. **Overmount on ns root invisible** (`vfs mount/model.rs`): `mount_exact_at`/
+   `mount_at_path_exact` short-circuited `is_ns_root_dentry` → underlay root, ignoring a
+   stacked mount. After `pivot_root(.,.)` the old root is stacked on `/`; `umount2(.,
+   MNT_DETACH)` returned 0 → EINVAL. Now check for overmount first (Linux `lookup_mnt`).
+3. **`umount2(".")` used STALE cwd string** (`166_umount2.rs`): after pivot relocates the
+   mount the cwd string is stale. Resolve relative targets via live `cwd_vfs` dentry
+   (same fix chroot(2) already had).
+Boot proof: PIVOT-EINVAL gone, `umount2(.) rv=0`, journald/udev/sysctl/tmpfiles now
+START; boot reaches 573s (was hard-deadlock ~90s).
 
-**pivot_root had 3 Linux-faithful bugs — FIXED in B683/PR#2890:**
-1. new_root resolved by CROSSING into the mount grafted there (→ ambiguous root
-   dentry) not the mountpoint dentry `mount_exact_at` needs → "new_root not a
-   mount root". Fixed via new `mount::mountpoint_dentry_of`.
-2. `MS_REC` propagation was a no-op stub → `make-rslave /` only changed one mount.
-   Fixed via `set_propagation_recursive`.
-3. propagation-change target had the same crossing bug → silent no-op. Fixed.
-Verified: those EINVALs are gone; 8+ more services now Finish.
+## Comprehensive FS/mount harness built (B686/#2896, B687/#2897) — the "does the FS work" test
+- `vfs/tests/mount_propagation_pivot.rs`: full systemd idiom end-to-end (make-rshared →
+  unshare → make-rslave → bind → pivot → umount2 MNT_DETACH) + submount-carry assertions.
+- `ext4/tests/fs_ops_stress_image.rs`: mkdir chains, dir-block growth, symlinks, files,
+  persist (mini-j.img, CI).
+- `ext4/tests/real_rootfs_mkdir_repro.rs` (#[ignore], env-gated `OXIDE_ROOTFS_IMG`):
+  opens the REAL boot rootfs and drives per-op + batched + 15.6k-op churn + the
+  VFS/framecache path (`mkdir_at`/`write_file`). Run:
+  `OXIDE_ROOTFS_IMG=/home/nd/oxide/images/output/live-gnome-x86_64-root.img cargo test
+   -p ext4 --test real_rootfs_mkdir_repro -- --ignored --nocapture`
+- B686 also fixed the swallowed-EIO: ext4 create ops now map real MountError
+  (DirFull/NoSpace→ENOSPC, Depth→ENOTSUP, genuine IO→EIO) via `vfs_error_from_mount`.
 
-**REMAINING pivot_root EINVAL (the last piece): `put_old mount is SHARED`.**
-Traced: `po_mnt=140 nr_id=140 root_id=120` — service rootfs mount 140 is genuinely
-SHARED when Linux needs PRIVATE. RULED OUT: open_tree(CLONE) (clones are
-`CloneType::Private`, clone_tree.rs) and detached move_mount (429:77
-`commit_tree_hashonly`, doesn't share). The SHARED comes from 140's CREATION:
-`mount(MS_BIND|MS_REC, /proc/self/fd/4, /run/systemd/mount-rootfs)` grafted under
-`/run`, which is STILL SHARED, so the bind inherits it (Linux `do_add_mount`: dest
-shared ⇒ new mount joins peer group). systemd's `make-rslave /` SHOULD have made
-`/run` slave first — 140 still shared ⇒ **the recursive make-slave isn't reaching
-`/run`.** **First task: find why.** Suspects: (a) the make-slave runs in the
-service's NEW mount ns (CLONE_NEWNS) and our ns copy/isolation is off so
-`subtree_ids(root)` there omits `/run`; (b) `subtree_ids` returns only direct
-children not the transitive subtree; (c) the target resolves to the wrong ns root.
-Trace `set_propagation_recursive` in the failing service ns — does it enumerate +
-slave `/run`'s mount? Also verify `mount(MS_BIND)` graft honors a slave/private
-dest (doesn't share). Fix so `/run` is slave at bind time ⇒ 140 private ⇒
-pivot_root succeeds ⇒ sysinit completes ⇒ getty/login. See CLONE_NEWNS ns copy +
-`subtree_ids` (vfs/src/mount/model.rs) + bind graft propagation.
+## Remaining boot issue #1: `mkdir /var/log/journal/<id> err=5` + `/run/udev err=5`
+NARROWED to CONCURRENCY. EVERY single-threaded hosted layer SUCCEEDS on the real image
+(raw Mount, batched, 15.6k-op churn, VFS/framecache path). With the B686 errno fix the
+boot STILL shows err=5 (EIO) — so it's NOT htree DirFull (→ENOSPC now), NoSpace, dir-
+growth, submount-carry, or image state. It's a genuine Dir/BlockIo/Inode error → a
+multi-task race in `create_dir`'s bitmap/GDT/inode allocation (services create in
+different parent dirs concurrently; parent i_rwsem serializes same-dir but the GLOBAL
+allocator is shared). NEXT: (a) klog the MountError variant in-boot (needs ext4
+`debug-mount` feature wired into the kernel build), or (b) a hosted multi-thread
+concurrency stress test on `Arc<Mount>`. Likely non-fatal (journald falls back to
+volatile /run) — boot progressed past it.
 
-DEBUG: gated `[PIVOT-EINVAL]`/`[PIVOT-SYSCALL]` (debug-mnt) + `[MNTCREATE]` probes
-are IN-TREE to pin this. Boot `features=debug-mnt`; add `systemd.log_level=debug`
-to `tools/xtask/src/image_qemu/x86_64.rs:23` cmdline for systemd's view (REVERT
-before shipping — I reverted it). Live debug-shell works over ttyS0 via
-`qemu_send_serial` BUT any `systemctl` perturbs the deadlock — use `/proc` reads
-or kernel traces. `/proc/<pid>/{syscall,wchan,stack}` are stubbed; use status
-State + fd.
-
-## hwdb blocker — FIXED (was gating all 3 goals for many sessions)
-Sysinit stalled ~90s at `systemd-hwdb-update`. Real cause: **ext4 committed the
-journal PER metadata op** (commit + 3 `dev.flush()` each) → every fs-heavy
-service 20-90× too slow. Fixes (all merged, boot-verified, hosted-tested):
-- **B679/#2880** batch per-page writeback → 1 commit.
-- **B681/#2883** jbd2-style cross-op running transaction (fsync/sync/msync/512-blk
-  drained; per-op undo rollback).
-- **B682/#2886** undo frame O(n²)→O(n log n) + `[KERNIP]` sampler.
-hwdb now runs ONCE (was dozens of spin samples). Ruled out (evidence): cacheability
-(PAT/MTRR=WB), TLB, AVX/XSAVE (F698), page faults. See memory
-[[hwdb-blocker-ext4-writeback-commits]].
+## Full ext4 roadmap: `scratch/ext42.md` (thorough audit, this session)
+P0 durability: **`SuperOps::sync_fs` calls the no-op `flush_pending_tx()` not
+`commit_batch()`** (`rootfs/ops/mountfs.rs:37`) → batched metadata on non-root ext4
+(`/home`) can be lost on syncfs. Small clear fix + remount test. Also: Drop commits
+clean-bit into the same undrained shadow (2.2). P1: htree leaf-split + htree-create
+absent (populated indexed dirs) ; jbd2 revoke/checksum absent (crash-only). See §7 fix
+order + §9 files.
 
 ## First command next session
-`cd /home/nd/oxide/kernel && git log --oneline -3`  # confirm main @ 98750130
-Then: fix open_tree(CLONE)/move_mount propagation (make the detached service
-rootfs PRIVATE); boot `features=debug-mnt` + `systemd.log_level=debug`; watch the
-`put_old SHARED` PIVOT-EINVAL clear → Reached target sysinit → getty/login.
+`cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ 66c1c7e7
+Then EITHER: fix the P0 batch-drain (`sync_fs`→`commit_batch`, ext42 §2.1) — small, clear;
+OR pin the boot mkdir-EIO variant: wire ext4 `debug-mount` into the kernel build, klog the
+MountError in `special.rs` mkdir, one boot; OR verify how far the (now-unblocked) boot
+reaches — boot `features=debug-mnt`, watch for graphical.target / login past 573s.
 
 ## Notes
-- aarch64: all fixes arch-neutral (ext4/vfs-mount/syscalls); compile; arm BOOT
-  untestable here (no packed arm rootfs image).
-- Pre-push `make smoke` can't reach login yet → ext4/mount-only, boot-A/B-verified
+- Boot-verify centrally on main; `make smoke` can't reach login yet → mount/ext4-only
   pushes use `SKIP_SMOKE=1`.
+- aarch64: all fixes arch-neutral; compile; arm boot untestable here (no packed image).
+- C107 branch used a below-`next` counter (107<108) — harmless, merged; index still @108.
