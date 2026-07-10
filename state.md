@@ -1,51 +1,64 @@
-# Handoff — BREAKTHROUGH: live-gnome boots past the userdb stall to graphical.target
+# Handoff — Goal 3 blocker UNIFIED: one heap/UAF refcount-corruption bug (NOT an SMP race)
 
-Main = `e124a3f1`. Goals 1+2 done. **Goal 3 unblocked: the ~240s userdb stall is FIXED
-and the system now BOOTS to graphical.target in ~50s** (was never reaching sysinit).
+Main has B706+B703/B704/B705 + nss fix merged. Goals 1 (console) + 2 (ext4) done.
+**Goal 3 (visible gnome desktop): boot now runs the full D-Bus/logind/NetworkManager
+service stack up to ~62-65s, then dies in a refcount abort BEFORE gnome-shell/gdm.**
 
-## THE FIX (this session) — userdb stall root cause + resolution
-- Root cause (proven over many traces): NOT a kernel bug. The nsswitch
-  `group: files [SUCCESS=merge] systemd` fired a systemd-userdb GetMemberships
-  merge query per device-node group; the systemd-userwork worker held each
-  connection for its `CONNECTION_IDLE_USEC=15s` keep-alive → ~15s × ~17 groups
-  ≈ 240s → `systemd-tmpfiles-setup-dev-early` never finished → no sysinit.target.
-  Every kernel theory (idle-halt ×4, TSC-deadline timer, fbcon submit_one spin)
-  was disproven — the 15s floor never moved. See [[desktop-blocker-tmpfiles-userdbd]].
-- FIX applied in **../images** (NOT the kernel): dropped `[SUCCESS=merge]` →
-  `group: files systemd` on BOTH lite + gnome trees
-  (`build/{lite,gnome}-x86_64-root/etc/authselect/nsswitch.conf`), re-packed both
-  images inside `unshare --user --map-root-user --map-auto` (mkfs.ext4 -O ^has_journal
-  -d), and repointed `output/live-gnome-x86_64-root.img -> gnome-x86_64-root.img`
-  (was → lite, which has no gdm/gnome-shell). Backups: `out/*.img.premerge.bak`.
-  It's a valid minimal-Fedora config, functionally a no-op for our groups (they have
-  no extra systemd members); the user asked "do we even need this" — we don't.
-- RESULT (boot-verified, qemu MCP KVM): lite image → graphical.target + getty in 50s.
-  gnome image → reaches **gdm.service / GNOME Display Manager starting @58s**, all
-  targets through graphical.target. `Startup finished ... = 50.087s`.
+## THE correction to the prior handoff (important)
+Prior state.md said "smp=1 doesn't crash → the epoll #UD is an SMP race." **WRONG.**
+This session proved smp=1 ALSO dies — a `[PANIC] alloc/src/sync.rs:3287` (the
+`assert!(n <= MAX_REFCOUNT)` inside **`Weak::upgrade`**) at ~65.3s. smp=2 dies at
+~55s with the epoll **`#UD`** (an `Arc<File>` strong-clone `lock incq; jle` abort).
+Same root cause, two victims, both SMP configs. NOT an SMP-only race.
 
-## NEXT BLOCKER (freshly exposed, precisely located) — mkdir → EIO in service setup
-On the gnome image, ~9 services fail identically: **"Failed to spawn 'start' task:
-Input/output error"** (ERRNO=5). Traced to: `[NAMEI] mkdir path="…" err=5` from
-`sys_mkdirat` (258_mkdirat.rs:49) where `pino.mkdir` returns `VfsError::Eio` — the
-PARENT resolves fine, the BACKEND mkdir returns EIO. Hits BOTH
-`/var/tmp/systemd-private-<id>-<svc>-<rand>` (ext4) AND `/run/udev` (tmpfs), only
-during systemd's mount-namespace / sandbox setup (PrivateTmp/ProtectSystem). Both-fs
-→ NOT the backing fs; suspect the CLONE_NEWNS mount-namespace clone leaving the target
-mount in a state whose backend mkdir returns EIO. Affected: dbus-broker, systemd-
-logind, systemd-resolved, systemd-udevd, rtkit, upower, switcheroo-control. gdm/gnome
-need dbus + logind → blocked here. tmpfs mkdir = fs/src/tmpfs/dir.rs:117 (doesn't
-return Eio itself → the Eio is upstream of the backend, likely the mount cross / clone).
+## Unified diagnosis (evidence-backed)
+- A count > `isize::MAX` (MAX_REFCOUNT) is NOT reachable by legit over-cloning; it
+  means the Arc/Weak inner pointer is reading a **freed-and-reused allocation** whose
+  bytes now read as a huge refcount word. => **heap corruption / use-after-free.**
+- Two DIFFERENT victim types (`Arc<File>` in epoll `scan_once`; a `Weak<_>` upgraded
+  during `openat` — SuperBlock/inode/dentry) => it's clobbered memory landing on
+  whatever refcount word, not one type's own refcount logic.
+- Correlated with **fork-child** churn: `[USERIP ... tid=42xx lastsc=257 fork-child]`
+  (257=openat) immediately precedes the abort; heavy fork+openat+epoll load (gnome
+  session setup) triggers it. Not seen on lighter `lite` image.
+- Strong prior-session correlation: [[qemu-vsock-cid-and-sigchld-reap]] flagged a
+  SIGCHLD/zombie-reap stall (~13 zombies unreaped, suspect signalfd commit 2257275).
+  Unreaped zombie `Arc<Task>`s + a reap-path refcount imbalance = this exact family.
+
+## RULED OUT this session (read the code, refcount-correct)
+- `vfs/src/fdtable/ops.rs` `fork_clone` (slot.clone() bumps each Arc<File>; bitmaps
+  copied consistently), `get`, `close`, `dup*` — all balanced.
+- `fs/src/epoll.rs` `scan_once` — `fdt.get(e.fd)` clone is correct; f is a fresh Arc.
+- `sched/.../zombies.rs` `park_for_wait4`/`unpark_self_from_wait4` — increment_strong
+  + from_raw pairing is balanced (+1 into WAITERS, -1 on swap_remove).
+- `vfs/src/file/{lifetime,io}.rs` File Drop — no raw Arc juggling.
+
+## PRIME suspects (unread / needs tooling)
+1. Scheduler `Arc<Task>` round-trip: `sched/src/live/runqueue.rs` `Arc::into_raw(next)`
+   on EVERY ctx switch + `from_raw(prev)`; interaction with fork (new task) + zombie
+   reap + wait_list/futex `increment_strong_count`. Hottest path, touches every child.
+2. signalfd/SIGCHLD reap (commit 2257275) x zombie `Arc<Task>` lifetime.
+3. A plain buffer overrun somewhere writing past an alloc into an adjacent Arc header.
+
+## NEXT — get EVIDENCE, do NOT ship a speculative patch (UAF patch w/o repro = hack)
+Two viable tools (pick one; both avoid boot-per-hypothesis loops):
+- **Poisoning allocator (boot ONCE):** add a debug-feature to the kernel heap/slab to
+  fill freed blocks with 0xEE + quarantine (delay reuse) + record free-site backtrace.
+  A UAF read then deterministically reads 0xEEEE… (huge count) → same abort, but now
+  with the FREE site captured. Boot the gnome image once, read the free backtrace.
+- **loom model:** model runqueue switch + park_for_wait4 + reap + fork concurrency for
+  the Task-Arc into_raw/from_raw imbalance.
+Then fix the real lifecycle bug; hosted-verify; ONE boot to confirm gnome-shell/gdm.
 
 ## First commands next session
-1. `cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ e124a3f1
-2. Repro: `mcp__qemu__qemu_start arch=x86_64 features=debug-boot accel=kvm smp=2 mem=4G rebuild_rootfs=true`
-   → run_until 'gdm|Failed to spawn' → the mkdir-EIO fires ~50s.
-3. Find why `pino.mkdir` → Eio for a mkdir inside a CLONE_NEWNS child on both tmpfs
-   + ext4. Trace: does the parent inode belong to a cloned mount? Is the write going
-   to a detached/broken cloned mount? Check clone_tree + the mount the child's
-   /var/tmp + /run resolve to. A hosted mount-ns-clone + mkdir test would nail it.
+1. `cd /home/nd/oxide/kernel && git log --oneline -3`
+2. Repro (fresh, smp=1): `mcp__qemu__qemu_start arch=x86_64 features=debug-boot,debug-wakelat smp=1 mem=4G paused=false`
+   → run_until 'PANIC|FAULT' — fires ~65s (smp=1) / ~55s (smp=2). It IS the gnome image.
+3. Read `sched/src/live/runqueue.rs` (into_raw/from_raw) + add the poison-alloc feature.
 
 ## Gotchas
-- NEVER `git add -A`. ext4 = iterate hosted + e2fsck [[ext4-work-no-booting]].
-- nss change is in ../images (config, not kernel); backups at out/*.img.premerge.bak.
-- Merged this session: B703 (dcache neg-dentry), B704 (pl011 baud), B705 (fbcon bulk-copy).
+- gdb `qemu_interrupt` will NOT preempt the `cli;hlt` panic-halt (times out) — read the
+  crash from serial (PANIC file:line), not the backtrace.
+- run_until buffers hit the token cap; parse the saved tool-result file with python.
+- NEVER `git add -A`. No boot-per-hypothesis loops [[no-repeated-long-boots]].
+- live-gnome→gnome image (2.8GB); backups ../images/out/*.premerge.bak.
