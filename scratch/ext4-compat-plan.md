@@ -17,9 +17,9 @@ TODO | CLAIMED <branch> | IN-REVIEW <pr> | DONE <pr>
 | 3 | Concurrent-create allocator race (boot mkdir EIO) | P0-boot | DONE | B691 |
 | 4 | jbd2 revoke emission + sequence-aware replay | P0/P1 | TODO | B691 |
 | 5 | jbd2 commit + descriptor-tag checksums | P1 | TODO | B692 |
-| 6 | htree leaf split | P1 | TODO | B693 |
-| 7 | htree creation (linear→indexed) | P1 | TODO | B694 |
-| 8 | htree dx checksum verify | P1 | TODO | B695 |
+| 6 | htree leaf split | P1 | DONE | B696 |
+| 7 | htree creation + root-grow + node-split | P1 | DONE | B696 |
+| 8 | htree dx checksum | P1 | DONE | B696 |
 | 9 | Block allocator run-length + goal/locality | P1 | TODO | B696 |
 | 10 | Lazy unwritten extents (fallocate) | P1 | DONE | B692 |
 | 11 | Backup superblock/GDT mirroring | P1 | TODO | B698 |

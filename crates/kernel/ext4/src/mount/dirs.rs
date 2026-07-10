@@ -57,6 +57,13 @@ impl Mount {
                 Err(e) => return Err(MountError::Dir(e)),
             }
         }
+        // Block 0 is full and dir_index is enabled → convert to an INDEXED
+        // (htree) directory instead of appending a 2nd linear block (Linux
+        // `make_indexed_dir` at the 1→2 block boundary; keeps lookup O(log N)).
+        const COMPAT_DIR_INDEX: u32 = 0x0020;
+        if nblocks == 1 && (self.sb.feature_compat & COMPAT_DIR_INDEX) != 0 {
+            return self.htree_create(dir_ino, gen, name, child_ino, file_type);
+        }
         let mut newblk = alloc::vec![0u8; bs];
         newblk[0..4].copy_from_slice(&0u32.to_le_bytes());
         newblk[4..6].copy_from_slice(&(usable as u16).to_le_bytes());

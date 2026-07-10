@@ -274,3 +274,120 @@ fn sparse_write_past_eof_leaves_a_hole_not_zeros() {
         None        => eprintln!("e2fsck not available — skipped fsck assertion"),
     }
 }
+
+#[test]
+fn htree_leaf_split_stays_e2fsck_clean() {
+    // Lane 6/8: filling an indexed dir's leaves forces `htree_split` — allocate a
+    // new leaf, redistribute entries by hash, add a dx_entry, re-stamp the
+    // dx_tail csum. Create many files in /bigdir, confirm EVERY one resolves via
+    // the hash-descent lookup, then e2fsck the result (validates leaf tails, the
+    // new dx_entry, and the dx checksum).
+    let (disk, cap) = build_disk(HTREE);
+    const N: usize = 360; // htree.img has ~420 free inodes
+    {
+        let m = ext4::Mount::open(disk.clone()).unwrap();
+        let dino = m.lookup_path(b"/bigdir").unwrap();
+        let (flags, _g) = m.inode_flags_gen(dino).unwrap();
+        assert!(flags & ext4::EXT4_INDEX_FL != 0, "bigdir is htree-indexed");
+        for i in 0..N {
+            let name = std::format!("split_probe_entry_{i:05}");
+            m.create_file(dino, name.as_bytes(), 0o644, 0, 0)
+                .unwrap_or_else(|e| panic!("create #{i} into htree dir: {e:?}"));
+        }
+        // Every inserted name must resolve through the htree hash lookup.
+        let dnode = m.read_inode(dino).unwrap();
+        for i in 0..N {
+            let name = std::format!("split_probe_entry_{i:05}");
+            m.lookup_in_dir(&dnode, name.as_bytes())
+                .unwrap_or_else(|e| panic!("lookup #{i} after splits: {e:?}"));
+        }
+    }
+    // Remount + re-lookup a sample to prove on-disk persistence, then e2fsck.
+    {
+        let m2 = ext4::Mount::open(disk.clone()).unwrap();
+        let d2 = m2.lookup_path(b"/bigdir").unwrap();
+        let n2 = m2.read_inode(d2).unwrap();
+        for i in (0..N).step_by(37) {
+            let name = std::format!("split_probe_entry_{i:05}");
+            m2.lookup_in_dir(&n2, name.as_bytes()).unwrap_or_else(|e| panic!("remount lookup #{i}: {e:?}"));
+        }
+    }
+    let bytes = dump_disk(&disk, cap);
+    match e2fsck_clean(&bytes) {
+        Some(true)  => {}
+        Some(false) => panic!("e2fsck reported errors after htree leaf splits"),
+        None        => eprintln!("e2fsck not available — skipped fsck assertion"),
+    }
+}
+
+/// Lane 7: overflow a 1-level htree ROOT to force `htree_grow` (single→two
+/// level). Generates a near-root-capacity indexed /bigdir with mke2fs, then
+/// adds enough entries to overflow the dx_root; verifies every add resolves and
+/// e2fsck accepts the grown 2-level tree. Skips cleanly if mke2fs is absent.
+#[test]
+fn htree_create_split_and_root_grow_stays_e2fsck_clean() {
+    use std::process::Command;
+    if Command::new("mke2fs").arg("-V").output().is_err() { eprintln!("SKIP: mke2fs absent"); return; }
+    // A FRESH empty ext4 (1024-block, dir_index, metadata_csum). Our code then
+    // mkdirs a dir and adds thousands of files: block 0 fills → htree_create
+    // (linear→indexed), leaves fill → htree_split, and the dx_root fills → grow
+    // (1→2 level). e2fsck validates the whole indexed tree we built.
+    let base = std::env::temp_dir().join(std::format!("oxide-htbuild-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let img = base.join("fresh.img");
+    let ok = Command::new("mke2fs")
+        .args(["-F", "-q", "-t", "ext4", "-b", "1024", "-O", "^has_journal,^resize_inode", "-N", "12000"])
+        .arg(&img).arg("18000").status().map(|s| s.success()).unwrap_or(false);
+    if !ok { let _ = std::fs::remove_dir_all(&base); eprintln!("SKIP: mke2fs failed"); return; }
+    let bytes = std::fs::read(&img).unwrap();
+    let _ = std::fs::remove_dir_all(&base);
+
+    let cap = (bytes.len() as u64) / (SECTOR as u64);
+    let disk: std::sync::Arc<block::MemDisk<sync::TaskList>> = block::MemDisk::new(SECTOR, cap);
+    let mut req = block::BlockRequest { op: block::BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    use block::BlockDevice as _;
+    disk.submit_sync(&mut req).unwrap();
+    let dev: std::sync::Arc<dyn block::BlockDevice> = disk.clone();
+
+    const N: usize = 6000; // > root capacity (~122 leaves × ~40) → forces the grow
+    {
+        let m = ext4::Mount::open(dev.clone()).unwrap();
+        let dino = m.create_dir(2, b"idx", 0o755, 0, 0).unwrap();
+        let flags0 = m.inode_flags_gen(dino).unwrap().0;
+        assert_eq!(flags0 & ext4::EXT4_INDEX_FL, 0, "starts as a linear dir");
+        for i in 0..N {
+            let name = std::format!("f_{i:06}");
+            m.create_file(dino, name.as_bytes(), 0o644, 0, 0)
+                .unwrap_or_else(|e| panic!("create #{i}: {e:?}"));
+        }
+        // Now indexed and, at 6000 entries, grown to a 2-level tree.
+        let flags1 = m.inode_flags_gen(dino).unwrap().0;
+        assert_ne!(flags1 & ext4::EXT4_INDEX_FL, 0, "dir became htree-indexed (htree_create)");
+        let dnode = m.read_inode(dino).unwrap();
+        let level = m.read_file_block_meta(&dnode, 0).unwrap()[0x1E];
+        eprintln!("htree indirect_levels after {N} creates = {level}");
+        assert_eq!(level, 1, "root grew to a 2-level index (htree_grow)");
+        // Every name resolves through the hash-descent lookup.
+        for i in 0..N {
+            let name = std::format!("f_{i:06}");
+            m.lookup_in_dir(&dnode, name.as_bytes()).unwrap_or_else(|e| panic!("lookup #{i}: {e:?}"));
+        }
+    }
+    // Remount + spot-check persistence, then e2fsck the built index.
+    {
+        let m2 = ext4::Mount::open(dev.clone()).unwrap();
+        let d2 = m2.lookup_path(b"/idx").unwrap();
+        let n2 = m2.read_inode(d2).unwrap();
+        for i in (0..N).step_by(101) {
+            let name = std::format!("f_{i:06}");
+            m2.lookup_in_dir(&n2, name.as_bytes()).unwrap_or_else(|e| panic!("remount lookup #{i}: {e:?}"));
+        }
+    }
+    let mut rreq = block::BlockRequest::new_read(0, cap as u32, SECTOR);
+    disk.submit_sync(&mut rreq).unwrap();
+    match e2fsck_clean(&rreq.buffer) {
+        Some(true)  => {}
+        Some(false) => panic!("e2fsck reported errors on the htree we built (create+split+grow)"),
+        None        => eprintln!("e2fsck unavailable — skipped fsck"),
+    }
+}
