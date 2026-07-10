@@ -47,9 +47,17 @@ nss-systemd keeps the varlink connection open (worker idle-timeout = userspace/w
 count), OR (b) closing the client fd doesn't drop the last Arc<InetSocket> so Drop
 never fires (kernel refcount leak — fixable). NOTE crate::sock/InetSocket is
 kernel-target-only (can't hosted-test the Drop chain).
-NEXT (decisive, one focused boot): trace InetSocket::Drop firing (close_writer called?)
-on tmpfiles' userdb-socket close. Drop fires → userspace/image; not → kernel Arc leak.
-See [[desktop-blocker-tmpfiles-userdbd]] (full trace evidence).
+RESOLVED (UXDROP/UXCLOSE traces, definitive): across a FULL 27s boot window, ZERO
+InetSocket::Drop and ZERO close_writer fired for any userdb socket. The AF_UNIX
+Drop→close_writer→POLL_HUP path is proven-working (sshd peer-EOF fix relies on it),
+so the kernel WOULD deliver HUP the instant a userdb connection closed. It never
+closes → tmpfiles/nss-systemd holds every varlink connection OPEN (the "more":true
+streaming GetMemberships never concludes; server replies NoRecordFound but the client
+doesn't terminate the stream). Workers ppoll idle to their ~15s timeout → 249s.
+**KERNEL IS CORRECT. The blocker is a systemd/nss-systemd varlink streaming-
+termination issue — userspace/image (../images), NOT the kernel.** Every kernel
+af_unix/epoll/timer/IO/close path was measured-correct this session. Do NOT re-chase
+kernel fixes. See [[desktop-blocker-tmpfiles-userdbd]] for the full trace evidence.
 
 ## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
 `systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.
