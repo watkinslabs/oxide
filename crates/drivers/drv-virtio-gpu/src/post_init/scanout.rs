@@ -25,10 +25,15 @@ pub fn fbcon_flush_pixels(pixels: &[u8]) {
     }
     let n = (ctx.fb_bytes as usize).min(pixels.len());
     unsafe {
-        let dst = ctx.fb_va as *mut u8;
-        for i in 0..n {
-            core::ptr::write_volatile(dst.add(i), pixels[i]);
-        }
+        // Bulk copy the frame into the GPU resource backing (guest RAM, WB — not
+        // MMIO, so no per-byte volatile needed). The old byte-by-byte
+        // `write_volatile` loop ran millions of volatile stores per flush with the
+        // CTX lock held (IRQ-masked), so a burst of console output (every systemd
+        // log line renders here) stalled the LAPIC timer for seconds — surfacing
+        // as multi-second scheduler wake gaps that serialized sysinit. A single
+        // `copy_nonoverlapping` (memcpy) is ~1-2 orders of magnitude faster and
+        // keeps the IRQ-masked window short.
+        core::ptr::copy_nonoverlapping(pixels.as_ptr(), ctx.fb_va as *mut u8, n);
     }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let res_id = ctx.res_id;
