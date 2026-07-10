@@ -1,93 +1,48 @@
-# Handoff — live-gnome sysinit blocker isolated to virtio-blk per-op I/O latency
+# Handoff — live-gnome blocker is systemd userspace; kernel measured-correct
 
-Main = `ba551767`. 2 fixes merged this session; live-gnome blocker DIAGNOSED (not yet fixed).
+Main = `6f9cd052` (B703 #2927 merged). Live-gnome blocker unchanged:
+CONFIRMED-USERSPACE (systemd-userdb varlink streaming), not a kernel defect.
 
-## Landed (merged to main)
-- **B699 (#2916)** ext4: op_lock held across `dev.flush` (sleeps on virtio) → boot
-  livelock. Now defers the size-triggered batch commit out of op_lock (`create_op`,
-  `creating` atomic). Boot cleared the old ~55s hard-hang.
-- **B700 (#2917)** net: race-free AF_UNIX accept park (`arm_accept_wait` under the
-  accept_q lock, mirrors read_or_park) + 20ms safety-net rescan on accept (UNIX+TCP).
-- **B701 (#2919)** ext4: write_byte_range skipped the dead RMW pre-read for
-  block-aligned full-block writes — HALVES hwdb's fsync I/O (block-reads 53->13 on
-  writeback_amp). Correct: e2fsck clean, all ext4 tests pass.
-- **B702 (#2921)** ext4: coalesce contiguous data-block writes into 128KB virtio
-  ops (write_at_inner defers per-block writes → flush_pending_data_writes). 4.3→1.3
-  write-ops/page; read-back verified; e2fsck clean; 235 tests pass. BOOT-VERIFIED:
-  hwdb fsync 50s→~30s. Improved but boot still doesn't reach gdm.
+## Landed this session
+- **B703** vfs: AF_UNIX `bind(2)` materialises the path node via `mknod_child`
+  straight off the parent inode op, bypassing namei's `d_instantiate`. A NEGATIVE
+  dentry cached by an earlier `stat(path)==ENOENT` then shadowed the new node
+  forever (namei walk treats a cached negative as definitive ENOENT → stat ENOENT
+  while readdir shows the child). Fix: `mount::drop_stale_negative(abs)` (new child
+  module `mount/invalidate.rs`), called from bind after a successful `mknod_child`.
+  Hosted regression `dcache::tests::drop_negative_forces_relookup`. Both arches
+  build clean. This is a REAL Linux-incompat bug but **NOT the live-gnome blocker**
+  (userdb sockets are bound before nss-systemd first stats them → no negative
+  cached for them). See [[mknod-bypasses-dcache-negative]].
+- Prior (already merged to main): B699/B700/B701/B702 (op_lock livelock, accept
+  race, RMW skip, data-write coalescing → hwdb fsync 50s→~30s). ext4 = 100%.
 
-## ★ MAJOR CORRECTION — I/O is NOT the blocker (measured 16µs/op)
-A BLKLAT probe (added to wait_for_completion, measured, reverted) proved virtio-blk
-I/O is **~16µs/op and never parks** (`ops=262144 parked=12 avg_us=15`). The
-per-op-latency / multi-inflight theory was WRONG. Two separate problems:
-- (A) I/O VOLUME: ~262k ops in the first ~11s (ext4 metadata amplification) —
-  B701/B702 reduce it.
-- (B) **THE 249s BLOCKER**: I/O STOPS at t≈16s, boot keeps stalling. tmpfiles's
-  ~249s is a phase-2 **AF_UNIX/varlink WAKE MISS** (15s cadence = a userspace varlink
-  timeout breaking a tmpfiles↔userwork mutual block). NOT I/O/CPU/tick.
-
-## ★ CONFIRMED-USERSPACE — the 249s blocker is a systemd-userdb timeout, NOT kernel
-Measured this session (probes added, measured, reverted): virtio-blk I/O = ~16µs/op
-never parks (BLKLAT); userwork DOES ppoll-rescan every ~100ms (PPARK); LAPIC
-timer_reload before idle hlt = NO change (reverted). The Multiplexer accept cadence
-is EXACTLY 15.0s with a "3-fast-then-15s" shape ⇒ **3 systemd-userwork workers each
-block ~15s per query** (a backend they fan out to never replies → fixed varlink
-timeout). This matches the prior 2026-07-08 DEFINITIVE conclusion (userspace varlink
-GetMemberships/Multiplexer completion). Every kernel af_unix/epoll/timer/IO path is
-measured-correct — do NOT re-chase them.
-MECHANISM PINNED (UWSYS syscall trace of systemd-userwork): per Multiplexer query the
-worker accept4(listen)→handle(nss file statx/openat + sendto/recvfrom)→reply→**ppoll
-that BLOCKS ~14.2s**→close(conn fd)→accept4 next. So the worker holds its accepted
-client connection idle, ppoll-waiting for the client to send more OR close, and only
-the ~15s ppoll timeout frees it → 3 workers × ~1 query/15s → 249s.
-Pair-level AF_UNIX EOF/HUP is KERNEL-CORRECT (unix_sock/tests pass; InetSocket::Drop
-calls close_writer + wakes peer; ppoll rescans 100ms). So the worker would wake FAST
-if the client closed AND that close fired InetSocket::Drop. Fork: (a) tmpfiles/
-nss-systemd keeps the varlink connection open (worker idle-timeout = userspace/worker-
-count), OR (b) closing the client fd doesn't drop the last Arc<InetSocket> so Drop
-never fires (kernel refcount leak — fixable). NOTE crate::sock/InetSocket is
-kernel-target-only (can't hosted-test the Drop chain).
-RESOLVED (UXDROP/UXCLOSE traces, definitive): across a FULL 27s boot window, ZERO
-InetSocket::Drop and ZERO close_writer fired for any userdb socket. The AF_UNIX
-Drop→close_writer→POLL_HUP path is proven-working (sshd peer-EOF fix relies on it),
-so the kernel WOULD deliver HUP the instant a userdb connection closed. It never
-closes → tmpfiles/nss-systemd holds every varlink connection OPEN (the "more":true
-streaming GetMemberships never concludes; server replies NoRecordFound but the client
-doesn't terminate the stream). Workers ppoll idle to their ~15s timeout → 249s.
-**KERNEL IS CORRECT. The blocker is a systemd/nss-systemd varlink streaming-
-termination issue — userspace/image (../images), NOT the kernel.** Every kernel
-af_unix/epoll/timer/IO/close path was measured-correct this session. Do NOT re-chase
-kernel fixes. See [[desktop-blocker-tmpfiles-userdbd]] for the full trace evidence.
-
-## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
-`systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.
-Root cause chain (4 diagnostic boots + code trace, DEFINITIVE):
-- Not AF_UNIX wake, not the scheduler tick, not data-journaling (data is already
-  written direct-to-target = data=ordered). Writeback amplification is bounded
-  (tests/writeback_amp_image passes ~8 ops/page).
-- debug-taskdump: **systemd-hwdb blocks in ONE fsync ~50s** (nsysc frozen, low CPU
-  → I/O-blocked). 13.5MB fresh file = ~27k single-block ops at **~2ms/op** (KVM
-  should be µs). = [[hwdb-blocker-ext4-writeback-commits]].
-- STRONGEST hypothesis: virtio-blk is **single-inflight** (`acquire_turn` serializes
-  every op, engine.rs:205). Linux pipelines queue-depth 128+; ours pays the host
-  round-trip SERIALLY → 27k×2ms≈50s. Secondary suspect: MSI not firing (enum logged
-  virtio-blk `msi_fires=0`) so completions caught only by the 200k spin.
+## ★ live-gnome blocker (goal 3) — DEFINITIVE, userspace, not kernel
+`systemd-tmpfiles-setup-dev-early` stalls ~249s → never reaches gdm. Root cause
+(traced UWSYS/UXDROP, definitive): systemd-userwork workers each ppoll-BLOCK ~15s
+per Multiplexer varlink query waiting for the client to send-more-or-close; the
+client (nss-systemd, triggered by nsswitch `group: files [SUCCESS=merge] systemd`)
+holds the streaming GetMemberships connection OPEN after NoRecordFound (`"more":
+true` stream never concludes). 3 workers × ~1 query/15s ⇒ 249s. Across a full 27s
+window ZERO InetSocket::Drop / close_writer fired for any userdb socket → the conn
+genuinely never closes. **KERNEL af_unix/epoll/timer/IO/close all measured-correct
+this session and prior — do NOT re-chase them.** Fix lives in ../images (systemd/
+nss-systemd varlink streaming-termination or nsswitch config). See
+[[desktop-blocker-tmpfiles-userdbd]].
 
 ## First commands next session
-1. `cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ ba551767
-2. Instrument `wait_for_completion` (drv-virtio-blk/src/modern/engine.rs:175):
-   count park-vs-spin-hit + wall-ns/op behind a debug feature; ONE boot to confirm
-   the ~2ms/op and whether it parks every op. (per user: no repeated long boots.)
-3. Fix = multi-inflight virtio-blk queue OR coalesce contiguous writeback
-   `write_byte_range` calls into multi-block requests (data blocks already direct).
-   Validate hosted (StatsDev op-count, writeback_amp template) + e2fsck, then boot.
-
-## Then continue the audit (scratch/kernel-audit2.md → gnome-boot-campaign.md ledger)
-udev uevents, systemd mount contract, cgroup v2, AF_UNIX/dbus, procfs/sysfs, then
-P1 (DRM/KMS, input, VT/logind, swap, net). Each ships a hosted harness; boot to verify.
+1. `cd /home/nd/oxide/kernel && git log --oneline -3`
+2. `gh pr create` for B703 if not merged (push was network-flaky this session).
+3. Goal 3 is a ../images userspace fix, NOT a kernel change. Either work it there
+   (nsswitch `[SUCCESS=merge]` → the streaming query; or nss-systemd stream
+   termination) or pick the next kernel audit item from scratch/kernel-audit2.md.
 
 ## Gotchas
-- NEVER `git add -A` (untracked ext42.md/ICE dumps). Stage explicit paths.
+- NEVER `git add -A` (untracked dumps). Stage explicit paths.
 - ext4 work: iterate hosted + e2fsck, don't boot [[ext4-work-no-booting]].
-- Boot only via qemu MCP (debug-dbus / debug-taskdump were the useful features here).
-- ext4 = 100% complete/correct; this is a virtio-blk/perf issue, not an ext4 bug.
+- Boot only via qemu MCP; no repeated long boots [[no-repeated-long-boots]].
+- aarch64 `xtask kernel` aborts on missing rootfs img (../images) BEFORE compile;
+  to compile-check aarch64 directly: `cargo build -Z build-std=core,compiler_builtins,alloc
+  -Z build-std-features=compiler-builtins-mem -Z unstable-options -Z json-target-spec
+  --target ./targets/aarch64-unknown-oxide-kernel.json --profile release -p kmain
+  -p boot-aarch64 -p kernel-bin-aarch64`.
