@@ -16,6 +16,15 @@ pub fn dget(d: &Arc<Dentry>) -> Arc<Dentry> { d.inc_count(); Arc::clone(d) }
 /// `d_count`, is the actual free trigger. # C: O(1)
 pub fn dput(d: Arc<Dentry>) {
     if d.dec_count() == 0 {
+        // A superblock ROOT is owned by its `sb` (via `s_root`) for the whole
+        // mount lifetime and is reclaimed ONLY by `shrink_dcache_for_umount` at
+        // umount — never by a transient `dput`-to-0 (Linux keeps the root's
+        // lockref ≥1 through the `sb`'s ref, so it never reaches the kill path).
+        // Killing it here would `mark_dead` a dentry the mount tree still points
+        // at (`s_root`, `mnt_root`): every later mount-crossing open re-finds the
+        // now-DEAD root and `mounts_in_ns`/`resolve_mount` fault dereferencing a
+        // reclaimed dentry. Retain it unconditionally. # C: O(1)
+        if d.is_root() { drop(d); return; }
         let delete = d.d_op().and_then(|o| o.d_delete).map(|f| f(&d)).unwrap_or(false);
         // Linux `retain_dentry`: only a HASHED (cacheable) dentry that is NOT
         // marked `DCACHE_DONTCACHE` is retained on the LRU for the shrinker. An
