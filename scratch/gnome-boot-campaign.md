@@ -68,3 +68,26 @@ op-count assertion (existing writeback_amp is the template).
 ## Landed this session
 - B699 (#2916): ext4 op_lock held across dev.flush livelock — deferred batch commit.
 - B700 (#2917): race-free AF_UNIX accept park + accept/TCP 20ms safety-net rescan.
+- B701 (#2919): write_byte_range skipped the RMW pre-read for block-aligned
+  full-block writes — hwdb's 13.5MB fresh file was all full-block writes, so every
+  data block did a dead pre-read (~3400 useless serialized reads). Measured
+  block-reads 53->13 on writeback_amp; e2fsck clean. ~HALVES hwdb fsync I/O.
+
+## NEXT LEVER (high-impact, mechanism-verified) — coalesce data writes to 128KB
+virtio-blk BOUNCE_DATA_BYTES = 128 KiB (drivers/virtio/src/blk.rs:42) → ONE virtio
+op moves 32×4KB blocks. But ext4 writes data per-4KB-block: write_at_inner
+(extent_rw/write.rs) loops per logical block calling write_file_block /
+insert_logical_block → one write_byte_range (1 block) each. hwdb 13.5MB = ~3456
+single-block ops; coalescing contiguous PHYSICAL runs into 128KB write_byte_range
+calls = ~108 ops (32× fewer serialized). write_byte_range already issues one
+multi-block virtio request (submit handles data_len up to 128KB). FIX: in
+write_at_inner, after mapping logical→physical for the range, group contiguous
+physical blocks and issue one write_byte_range per run (data blocks are already
+direct-to-target so this is a pure data-path batching change; metadata journal path
+unchanged). Validate: extend writeback_amp to assert ops/page drops + e2fsck +
+concurrent-write stress, then boot. Risk: rootfs data-path — test thoroughly.
+
+Alternative/complementary: multi-inflight virtio-blk. Current engine uses a SINGLE
+bounce buffer + descriptor 0 per request (modern/engine.rs:107,127) = structural
+single-inflight. Full fix needs a bounce POOL + per-descriptor completion tracking
+via the used-ring id + per-waiter wake. Bigger rewrite; coalescing is the smaller win.
