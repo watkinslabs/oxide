@@ -131,6 +131,13 @@ impl vfs::fs::FileSystem for Ext4Mount {
 
 impl core::ops::Drop for Ext4Mount {
     fn drop(&mut self) {
+        // Linux `generic_shutdown_super` → `put_super` writes back before the
+        // final clean mark. Under cross-op batching the whole session's metadata
+        // sits in `MountState.shadow`; if the mount drops without an explicit
+        // sync it would be LOST. Drain it first, then reap orphans + mark clean,
+        // then drain again so the clean bit itself is a durable commit (not
+        // staged behind data in a shadow that dies with the mount).
+        let _ = self.st.mount.commit_batch();
         let orphans: alloc::vec::Vec<u32> = self.st.orphans.lock().drain(..).collect();
         for ino in orphans {
             if let Ok(inode) = self.st.mount.read_inode(ino) {
@@ -142,5 +149,6 @@ impl core::ops::Drop for Ext4Mount {
         // ext4_put_super: orphans reaped and no writers remain — mark the fs
         // cleanly unmounted. Best-effort on teardown.
         let _ = self.st.mount.mark_state_clean();
+        let _ = self.st.mount.commit_batch();
     }
 }
