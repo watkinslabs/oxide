@@ -16,6 +16,25 @@ extern crate alloc;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// PL011 reference clock (`UARTCLK`). qemu `virt` wires the PL011 to a fixed
+/// 24 MHz clock, which is also the near-universal AMBA PL011 reference rate that
+/// Linux reads from the DTB `clocks` phandle. v1 does not yet parse the DTB clock
+/// tree, so this is the assumed rate; when DTB-clock parsing lands, source it
+/// from `/pl011/clocks` instead of this constant.
+const UARTCLK_HZ: u32 = 24_000_000;
+
+/// PL011 baud divisor (Linux `pl011_calc_divisor`): the 16×-oversampled clock
+/// yields a 6.6 fixed-point divisor — `IBRD` = integer part, `FBRD` = the 6
+/// fractional bits. `div = round(UARTCLK*4 / baud)` (×4 because 16× oversample
+/// over the 6-bit fraction = ÷64 → ×4 net), then `IBRD = div>>6`, `FBRD = div&63`.
+/// `baud==0` ⇒ (0,0) (caller treats B0 as "leave current"). Pure + host-tested.
+/// # C: O(1)
+pub fn pl011_divisor(uartclk: u32, baud: u32) -> (u32, u32) {
+    if baud == 0 { return (0, 0); }
+    let div = ((uartclk as u64) * 4 + (baud as u64) / 2) / baud as u64;
+    ((div >> 6) as u32, (div & 0x3f) as u32)
+}
+
 /// Detected PL011 MMIO base VA. 0 ⇒ no UART bound.
 static BASE: AtomicU64 = AtomicU64::new(0);
 static PRESENT: AtomicBool = AtomicBool::new(false);
@@ -58,8 +77,14 @@ mod imp {
     use super::*;
     const PL011_DR: u64 = 0x00;
     const PL011_FR: u64 = 0x18;
+    const PL011_IBRD: u64 = 0x24;
+    const PL011_FBRD: u64 = 0x28;
+    const PL011_LCRH: u64 = 0x2C;
+    const PL011_CR:   u64 = 0x30;
     const FR_RXFE:  u32 = 1 << 4;
     const FR_TXFF:  u32 = 1 << 5;
+    const FR_BUSY:  u32 = 1 << 3;
+    const CR_UARTEN: u32 = 1 << 0;
     const PL011_INTID: u32 = 33;
 
     fn base() -> u64 { BASE.load(Ordering::Acquire) }
@@ -77,15 +102,34 @@ mod imp {
         }
     }
 
-    /// Reprogram the line baud (TCSETS `c_ospeed`). The PL011 divisor
-    /// (IBRD/FBRD) is derived from `UARTCLK`, the reference clock supplied by
-    /// firmware and described in the DTB (`/pl011/clocks`). v1 does not yet
-    /// parse the DTB clock tree, and the PL011 line is left at the
-    /// firmware/bootloader-programmed baud (qemu's `-serial` ignores the rate
-    /// on a host chardev), so a rate change without a known UARTCLK cannot be
-    /// computed correctly — reprogramming is deferred to when the DTB clock is
-    /// available rather than writing a wrong divisor. # C: O(1)
-    pub fn set_baud(_baud: u32) {}
+    /// Reprogram the line baud (TCSETS `c_ospeed`) — Linux `pl011_set_termios`
+    /// → `pl011_setup_baud`. Sequence per the PL011 TRM: disable the UART, wait
+    /// for the in-flight char to drain (FR.BUSY clear), program IBRD/FBRD, re-
+    /// write LCRH to latch the new divisor, then restore CR (re-enabling with the
+    /// prior 8N1/FIFO bits preserved). `UARTCLK` is the assumed 24 MHz until DTB-
+    /// clock parsing lands (`UARTCLK_HZ`). `baud==0` (B0) leaves the current rate.
+    /// # SAFETY: MMIO through the published PL011 Device VA; single register
+    ///   dance, no concurrent UART reconfigure (TCSETS is serialized per-tty).
+    /// # C: O(1) + brief BUSY spin
+    pub fn set_baud(baud: u32) {
+        let va = base(); if va == 0 || baud == 0 { return; }
+        let (ibrd, fbrd) = super::pl011_divisor(super::UARTCLK_HZ, baud);
+        // SAFETY: CR/LCRH read + baud reprogram through the published PL011 VA.
+        unsafe {
+            let cr = core::ptr::read_volatile((va + PL011_CR) as *const u32);
+            let lcrh = core::ptr::read_volatile((va + PL011_LCRH) as *const u32);
+            // Disable the UART, then wait for the current character to finish.
+            core::ptr::write_volatile((va + PL011_CR) as *mut u32, cr & !CR_UARTEN);
+            let mut n = 0u32;
+            while n < 100_000 && (core::ptr::read_volatile((va + PL011_FR) as *const u32) & FR_BUSY) != 0 { n += 1; }
+            // Program the new divisor; a write to LCRH latches IBRD/FBRD.
+            core::ptr::write_volatile((va + PL011_IBRD) as *mut u32, ibrd);
+            core::ptr::write_volatile((va + PL011_FBRD) as *mut u32, fbrd);
+            core::ptr::write_volatile((va + PL011_LCRH) as *mut u32, lcrh);
+            // Restore CR (re-enables with the prior line/FIFO/TX/RX bits intact).
+            core::ptr::write_volatile((va + PL011_CR) as *mut u32, cr);
+        }
+    }
 
     fn drain_rx(dlv: fn(u8)) {
         let va = base(); if va == 0 { return; }
@@ -235,3 +279,37 @@ impl drv::Driver for UartPl011Drv {
 /// device kmain registers. Exposed so `drv-serial::init` registers the
 /// per-arch UART driver uniformly.
 pub static UART_DRIVER: &dyn drv::Driver = &UartPl011Drv;
+
+#[cfg(test)]
+mod tests {
+    use super::{pl011_divisor, UARTCLK_HZ};
+
+    // Reference divisors for the standard qemu-virt 24 MHz UARTCLK, cross-checked
+    // against Linux `pl011_calc_divisor` (div = round(uartclk*4/baud); ibrd=div>>6,
+    // fbrd=div&63). 115200 → 13.0208 → IBRD=13, FBRD=1 is the canonical PL011 value.
+    #[test]
+    fn divisor_24mhz_reference_rates() {
+        assert_eq!(pl011_divisor(UARTCLK_HZ, 115200), (13, 1));
+        assert_eq!(pl011_divisor(UARTCLK_HZ, 38400),  (39, 4));
+        assert_eq!(pl011_divisor(UARTCLK_HZ, 9600),   (156, 16));
+    }
+
+    // B0 / unset speed → (0,0); the driver treats that as "leave current rate".
+    #[test]
+    fn divisor_zero_baud_is_noop_sentinel() {
+        assert_eq!(pl011_divisor(UARTCLK_HZ, 0), (0, 0));
+    }
+
+    // The 6.6 fixed-point round-trip: reconstructed rate is within the PL011's
+    // representable granularity of the requested rate (no gross divisor error).
+    #[test]
+    fn divisor_reconstructs_close_to_requested() {
+        for &baud in &[9600u32, 19200, 38400, 57600, 115200, 230400] {
+            let (ibrd, fbrd) = pl011_divisor(UARTCLK_HZ, baud);
+            let div64 = (ibrd * 64 + fbrd) as u64; // 6.6 fixed point × 64
+            let got = (UARTCLK_HZ as u64 * 4) / div64; // baud = uartclk*4/div64
+            let err = if got > baud as u64 { got - baud as u64 } else { baud as u64 - got };
+            assert!(err * 1000 < baud as u64 * 5, "baud {baud}: err {err} > 0.5%");
+        }
+    }
+}

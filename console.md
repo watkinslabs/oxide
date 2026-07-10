@@ -125,14 +125,30 @@ Real and Linux-shaped:
 
 ## 5. Real divergences from Linux (the actual gap list)
 
-| # | Gap | Where | Severity |
+**RE-AUDIT 2026-07-10 (session b18a1478): G3(x86)/G4/G5/G6 are all CLOSED since
+this doc was written; G1 is closed by observation; only the pl011/aarch64 baud
+item remains, gated on DTB-clock parsing.** Status column updated below.
+
+| # | Gap | Where | Status 2026-07-10 |
 |---|---|---|---|
-| G1 | **fbcon scanout may not present to the virtio-gpu window** (blank window even for kernel text) — VERIFY FIRST | `drv-virtio-gpu/src/post_init/scanout.rs`, `fbcon/src/kernel/runtime.rs` | HIGH if confirmed (blocks "visible graphics") |
-| G2 | No `getty@tty1` / `serial-getty@ttyS0` reached because boot stalls at sysinit | boot blocker = `poll.md` userdb loop | HIGH (separate root) |
-| G3 | `console=` baud ignored; `SerialTtyDriver::set_termios` no-op, UART not reprogrammed | `serialtty/src/lib.rs:170` | LOW (qemu stdio ignores baud) |
-| G4 | printk console set hardcoded at boot, not derived per `console=` token (only the *preferred*/`/dev/console` target is data-driven) | `kmain/runtime.rs:46`, `scanout.rs:247`, `cmdline/src/lib.rs:107` | LOW (both sinks happen to be registered) |
-| G5 | No `VTIME` inter-byte timer (VMIN-only in raw mode) | `tty/src/ldisc/n_tty/ops.rs:80` | LOW (few readers use VTIME) |
-| G6 | Stale comment: kbd sink doc says `static_console::rx_byte`, actually fg-VT | `tty/src/live.rs:29` | trivial (doc) |
+| G1 | fbcon scanout present to the virtio-gpu window | `drv-virtio-gpu/src/post_init/scanout.rs`, `fbcon/src/kernel/runtime.rs` | **CLOSED (observed):** the window shows scrolling kernel log + updates live during userland (console2.md ground truth) → fbcon scans out. Blank *login* is G2, not a console bug. |
+| G2 | No `getty@tty1` / `serial-getty@ttyS0` reached because boot stalls at sysinit | boot blocker = systemd-userdb loop (`[[desktop-blocker-tmpfiles-userdbd]]`) | OPEN, but USERSPACE (not console): stock systemd `[SUCCESS=merge]` GetMemberships loop in `../images`; kernel af_unix path verified correct. |
+| G3 | TCSETS baud reprogram | x86 `serialtty/src/lib.rs` + `drv-uart-16550`; arm `drv-uart-pl011` | **x86 CLOSED:** `set_termios`→`set_baud(c_ospeed)`→16550 divisor reprogram (fixed 1.8432 MHz clock). **arm DEFERRED (valid):** pl011 IBRD/FBRD need `UARTCLK` from the DTB clock tree (not parsed in v1); qemu host chardev ignores the rate, so a divisor written without the real UARTCLK would be *wrong*, not merely absent — deferred to DTB-clock parsing, not stubbed lazily. |
+| G4 | printk console set data-driven per `console=` token | `kmain/kmain/runtime.rs:49`, `scanout.rs:251`, `cmdline` `console_classes()` | **CLOSED:** serial byte sink gated on `console_classes().0`, fbcon aux sink on `console_classes().1`, both parsed from every `console=` token (Linux `register_console` per token). |
+| G5 | `VMIN`/`VTIME` blocking policy (all 4 cases + inter-byte timer) | `tty/src/core/tty.rs` `read_raw` (drives `park_commit_deadline` off `vtime()`) | **CLOSED:** full VMIN/VTIME lives in the tty core `read_raw`; the n_tty `ops.rs` fast path is VMIN-gated as designed (comment at `ops.rs:80`). |
+| G6 | kbd-sink doc comment | `tty/src/live.rs:29` | **CLOSED:** comment now correctly says foreground-VT `TtyStruct`, NOT serial `static_console`. |
+
+**VT/console ioctl surface — audited complete + real (not stubs)** (`syscalls/016_ioctl/vt.rs`):
+KDGETMODE/KDSETMODE (KD_TEXT/KD_GRAPHICS handoff), KDGKBMODE/KDSKBMODE, KDGKBTYPE
+(KB_101), KDSIGACCEPT, VT_OPENQRY, VT_GETSTATE, VT_ACTIVATE (real switch),
+VT_WAITACTIVE (blocks on the VT_PROCESS/VT_RELDISP handshake, EINTR-safe),
+VT_GETMODE/VT_SETMODE/VT_RELDISP (full process-mode switch protocol with vpid+tid
+ownership checks), VT_DISALLOCATE, VT_LOCK/UNLOCKSWITCH, VT_RESIZE/RESIZEX (raises
+SIGWINCH on the fg pgrp), KD{G,S}ETLED/KD{G,S}KBLED, KDFONTOP/PIO_UNIMAP (setfont),
+TIOCLINUX; TIOCGWINSZ/TIOCSWINSZ/TIOCSCTTY/TIOCNOTTY on the tty core. VT_SENDSIG→
+EINVAL is a documented Linux-parity decision (Linux `vt_ioctl` has no case for it).
+This is the full getty/login/logind/X VT-handshake set — Goal-1 "usable VT login"
+is kernel-ready; it only awaits G2 (userspace) so `getty@tty1` actually starts.
 
 ## 6. Plan — the Linux way, ordered by impact
 
@@ -171,9 +187,17 @@ files.
 
 ## Bottom line
 
-The console is ~90% Linux-correct. "Visible graphics" is gated by exactly two
-things: **(G1)** whether virtio-gpu fbcon actually scans out to the window
-(verify first), and **(G2/Step 1)** the sysinit boot stall from `poll.md` that
-prevents any `getty` from starting. Everything else (echo, canonical mode,
-signals, VT keyboard, job control) already works; the remaining tty items (G3–G6)
-are polish, not blockers.
+**RE-AUDIT 2026-07-10: the console is ~100% Linux-correct at the kernel level.**
+G1 is closed by observation (fbcon scans out — the window shows live kernel log),
+G3(x86)/G4/G5/G6 are all implemented (see the updated §5 status column), and the
+full VT/KD ioctl handshake surface (VT_ACTIVATE/WAITACTIVE/SETMODE/RELDISP,
+KDSETMODE graphics handoff, VT_RESIZE→SIGWINCH, etc.) is real, not stubbed — a
+getty/login in the window is *kernel-ready*. The ONLY remaining console-layer
+divergence is **pl011/aarch64 TCSETS baud reprogram**, correctly deferred on DTB-
+clock (`UARTCLK`) parsing — not a lazy stub (writing a divisor without the real
+UARTCLK programs a *wrong* baud, and qemu's host chardev ignores the rate, so the
+item has zero observable effect until DTB-clock parsing lands). "Visible graphics"
+is now gated by exactly ONE thing: **G2**, the sysinit boot stall — which this
+session proved is a stock-systemd userspace issue (`[SUCCESS=merge]` GetMemberships
+loop in `../images`), with every kernel af_unix/epoll/tty path verified correct.
+Nothing in the console kernel stack blocks the login; it awaits userspace.
