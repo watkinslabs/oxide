@@ -5,9 +5,14 @@ Main = `ba551767`. 2 fixes merged this session; live-gnome blocker DIAGNOSED (no
 ## Landed (merged to main)
 - **B699 (#2916)** ext4: op_lock held across `dev.flush` (sleeps on virtio) → boot
   livelock. Now defers the size-triggered batch commit out of op_lock (`create_op`,
-  `creating` atomic). Boot cleared the old ~55s hard-hang; hwdb now finishes ~55s.
+  `creating` atomic). Boot cleared the old ~55s hard-hang.
 - **B700 (#2917)** net: race-free AF_UNIX accept park (`arm_accept_wait` under the
   accept_q lock, mirrors read_or_park) + 20ms safety-net rescan on accept (UNIX+TCP).
+- **B701 (#2919)** ext4: write_byte_range skipped the dead RMW pre-read for
+  block-aligned full-block writes — HALVES hwdb's fsync I/O (block-reads 53->13 on
+  writeback_amp). Correct: e2fsck clean, all ext4 tests pass.
+- NEXT (specified in gnome-boot-campaign.md): coalesce data writes to 128KB virtio
+  ops in write_at_inner (32x fewer serialized ops) — the remaining hwdb-fsync lever.
 
 ## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
 `systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.
