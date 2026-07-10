@@ -160,6 +160,19 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
     if let Some(rq) = global() {
         // SAFETY: the switcher acquired rq.inner via lock() and mem::forget'd the guard; this is the matching 1:1 release on the incoming stack.
         unsafe { rq.inner.raw_unlock(); }
+        // Write `switched_from->on_cpu = false` FIRST, while the outgoing task is
+        // still alive. For a self-reaping non-leader thread exit the outgoing
+        // task (switched_from) IS the reap_pending task; draining reap_pending
+        // below drops its last Arc and frees it, so doing the on_cpu write AFTER
+        // the drain would store `false` (0) through a raw pointer into freed —
+        // then reused — memory (a use-after-free that scribbles whatever object
+        // the allocator later placed in that Task's slot: BTree node, Vec buffer,
+        // dcache Weak, VMA, etc. — the ~55s live-gnome heap-corruption blocker).
+        // reap_pending still holds the Arc here, so the task is guaranteed live.
+        // SAFETY: schedule_tail is the normal handoff completion point for
+        // this CPU's previous switch; the outgoing task is kept alive by
+        // reap_pending (drained below) or its runqueue/registry membership.
+        unsafe { finish_switched_from(rq); }
         let raw = rq.reap_pending.swap(core::ptr::null_mut(), Ordering::AcqRel);
         if !raw.is_null() {
             // SAFETY: `raw` came from `Arc::into_raw` in schedule()'s zombie path; reclaim it and hand ownership to ZOMBIES.
@@ -176,9 +189,6 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
                 super::super::zombies::enqueue_zombie(dying);
             }
         }
-        // SAFETY: schedule_tail is the normal handoff completion point for
-        // this CPU's previous switch.
-        unsafe { finish_switched_from(rq); }
     }
     crate::preempt::preempt_enable_no_check();
 }
