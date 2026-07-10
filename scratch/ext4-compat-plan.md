@@ -15,14 +15,14 @@ TODO | CLAIMED <branch> | IN-REVIEW <pr> | DONE <pr>
 | 1b | Batch read-your-writes (shadow-aware lookup) | P0 | DONE | B689 |
 | 2 | Batch clean-drop ordering | P0 | DONE | B690 |
 | 3 | Concurrent-create allocator race (boot mkdir EIO) | P0-boot | DONE | B691 |
-| 4 | jbd2 revoke emission + sequence-aware replay | P0/P1 | TODO | B691 |
-| 5 | jbd2 commit + descriptor-tag checksums | P1 | TODO | B692 |
+| 4 | jbd2 revoke | P0/P1 | N/A (single-txn checkpoint) | B698 |
+| 5 | jbd2 checksums (gated) | P1 | N/A (no real journal uses it) + gate | B698 |
 | 6 | htree leaf split | P1 | DONE | B696 |
 | 7 | htree creation + root-grow + node-split | P1 | DONE | B696 |
 | 8 | htree dx checksum | P1 | DONE | B696 |
-| 9 | Block allocator run-length + goal/locality | P1 | TODO | B696 |
+| 9 | allocator run-length | P1 | SUPERSEDED (extent coalescing) | - |
 | 10 | Lazy unwritten extents (fallocate) | P1 | DONE | B692 |
-| 11 | Backup superblock/GDT mirroring | P1 | TODO | B698 |
+| 11 | backup SB/GDT | P1 | NON-ISSUE (Linux keeps primary authoritative) | - |
 | 12 | POSIX ACL enforcement | P2 | DONE | B695 |
 | 13 | fallocate PUNCH_HOLE | P2 | DONE | B697 |
 | 14 | huge_file i_blocks units | P2 | DONE | B694 |
