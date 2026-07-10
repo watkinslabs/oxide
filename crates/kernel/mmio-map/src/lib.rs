@@ -47,6 +47,14 @@ pub unsafe fn map_pages(pa: u64, n_pages: u64) -> u64 {
             <ArmMmu as MmuOps>::map(Va(va), Pa(pa_i), device_flags(), PageSize::P4K);
         }
     }
+    // x86: these MMIO pages were spliced into the ACTIVE AS only; APs run on the
+    // captured `kernel_master()` CR3 and would #PF (NP) if they touched this
+    // device VA (e.g. an fbcon GPU-queue kick or IRQ scheduled on an AP) before
+    // it propagated. Push the kernel-half PML4 into the master now (no-op when
+    // no APs / already master). Closes the intra-PCI-enum virtio-notify #PF race.
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: pure PML4 kernel-half copy active→master; safe at any point post-map.
+    unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
     base
 }
 
@@ -70,6 +78,9 @@ pub unsafe fn map_page_list(pages: &[u64], flags: PageFlags) -> u64 {
             <ArmMmu as MmuOps>::map(Va(va), Pa(pa_i), flags, PageSize::P4K);
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: propagate the just-spliced MMIO PML4 entries to the AP master (see map_pages).
+    unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
     base
 }
 
@@ -133,4 +144,7 @@ pub unsafe fn unmap_pages(base_va: u64, n_pages: u64) {
             <ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: propagate the teardown to the AP master so no stale device VA lingers there.
+    unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
 }

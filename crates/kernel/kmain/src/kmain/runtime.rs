@@ -22,6 +22,9 @@ pub unsafe fn init(info: &BootInfo) {
     init_runtime_subsystems();
     init_vt_and_drv_hooks();
     init_network_and_pci();
+    // NB: the AP master page-table gets each device's MMIO mapping propagated
+    // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF
+    // on a virtio notify/config VA mid-enumeration — no post-enum resync needed.
 }
 
 #[cfg(target_os = "oxide-kernel")]

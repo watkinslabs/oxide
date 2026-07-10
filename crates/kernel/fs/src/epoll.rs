@@ -48,6 +48,13 @@ const EPOLL_DATA_OFF: usize = 8;
 #[derive(Clone)]
 pub struct EpollEntry {
     pub fd: i32,
+    /// Unique per-epitem subscription id (Linux registers a wait-queue callback
+    /// per epitem, NOT per epoll instance). Keying the inode's `PollSubscribers`
+    /// on this — not `ep.id` — is what lets ONE epoll watch several fds that
+    /// share a `PollSubscribers` source without one ADD replacing another's
+    /// registration, and lets a `DEL` of one such fd not orphan the others'
+    /// wake (the missing-wake that stalled socket-activated userdbd).
+    pub sub_id: u32,
     pub events: u32,
     pub data: u64,
     /// EPOLLET edge tracking: ready bits already edge-delivered and still
@@ -133,6 +140,8 @@ pub fn install_epoll_broadcast() {
     sched::live::set_epoll_gen_bump_hook(bump_global_epoll_gen);
 }
 static NEXT_EPOLL_ID: AtomicU32 = AtomicU32::new(0);
+/// Monotonic per-epitem subscription id source (see `EpollEntry::sub_id`).
+static NEXT_SUB_ID: AtomicU32 = AtomicU32::new(1);
 
 /// `make_epoll_inode()` — a CharDev pseudo-inode; registered in the global
 /// table so epoll_ctl/wait reach its state by id. # C: O(1)
@@ -280,35 +289,58 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
                     klog::write_raw(b"]\n");
                 }
             }
-            list.push(EpollEntry { fd, events, data, et_seen: 0, last_gen: 0, last_ggen: 0,
+            let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
+            list.push(EpollEntry { fd, sub_id, events, data, et_seen: 0, last_gen: 0, last_ggen: 0,
                 inode: target_inode.as_ref().map(Arc::downgrade) });
-            // F181: targeted-wake subscribe if the inode supports it.
+            // F181: targeted-wake subscribe if the inode supports it. Key the
+            // subscription on the per-epitem `sub_id`, not `ep.id`, so two fds of
+            // this epoll sharing one PollSubscribers each get their own entry.
             #[cfg(target_os = "oxide-kernel")]
             if let Some(inode) = target_inode.as_ref() {
                 if let Some(subs) = inode.poll_subscribers() {
                     let weak: alloc::sync::Weak<dyn vfs::EpollNotify> =
                         alloc::sync::Arc::downgrade(&(Arc::clone(&ep) as Arc<dyn vfs::EpollNotify>));
-                    subs.subscribe(ep.id, weak);
+                    subs.subscribe(sub_id, weak);
                 }
             }
             0
         }
         EPOLL_CTL_MOD => {
+            // Re-register the subscription too (Linux re-arms the epitem callback):
+            // updates nothing wake-relevant today since we subscribe with mask=!0,
+            // but keeps the PollSubscribers entry live even if a prior collision on
+            // a shared source had dropped it.
+            let mut sub_id = None;
             for e in list.iter_mut() {
-                if e.fd == fd { e.events = events; e.data = data; e.et_seen = 0; return 0; }
+                if e.fd == fd { e.events = events; e.data = data; e.et_seen = 0; sub_id = Some(e.sub_id); break; }
             }
-            -(Errno::Enoent.as_i32() as i64)
-        }
-        EPOLL_CTL_DEL => {
-            let n = list.len();
-            list.retain(|e| e.fd != fd);
-            if list.len() == n { return -(Errno::Enoent.as_i32() as i64); }
+            let Some(sub_id) = sub_id else { return -(Errno::Enoent.as_i32() as i64); };
             #[cfg(target_os = "oxide-kernel")]
             if let Some(inode) = target_inode.as_ref() {
                 if let Some(subs) = inode.poll_subscribers() {
-                    subs.unsubscribe(ep.id);
+                    let weak: alloc::sync::Weak<dyn vfs::EpollNotify> =
+                        alloc::sync::Arc::downgrade(&(Arc::clone(&ep) as Arc<dyn vfs::EpollNotify>));
+                    subs.subscribe(sub_id, weak);
                 }
             }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            let _ = sub_id;
+            0
+        }
+        EPOLL_CTL_DEL => {
+            // Capture the removed epitem's sub_id so DEL drops ONLY this fd's
+            // subscription — not a sibling fd sharing the same PollSubscribers.
+            let sub_id = list.iter().find(|e| e.fd == fd).map(|e| e.sub_id);
+            let Some(sub_id) = sub_id else { return -(Errno::Enoent.as_i32() as i64); };
+            list.retain(|e| e.fd != fd);
+            #[cfg(target_os = "oxide-kernel")]
+            if let Some(inode) = target_inode.as_ref() {
+                if let Some(subs) = inode.poll_subscribers() {
+                    subs.unsubscribe(sub_id);
+                }
+            }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            let _ = sub_id;
             0
         }
         _ => -(Errno::Einval.as_i32() as i64),
