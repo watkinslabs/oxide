@@ -129,4 +129,12 @@ pub struct Mount {
     /// holding this (ascending 59→60). Internal helpers (alloc_inode/alloc_block/
     /// dir_link) run UNDER it and must NOT re-acquire it. # Lk: outermost.
     pub(crate) op_lock: Spinlock<(), Ext4AllocLockClass>,
+    /// True while a create op holds `op_lock`. The size-triggered batch commit
+    /// (`maybe_commit_batch` → `dev.flush`, which SLEEPS on the virtio
+    /// completion) must NOT fire while `op_lock` is held: `op_lock` is a
+    /// busy-wait spinlock, so a holder that yields for I/O while a contender
+    /// spins the lock livelocks (hard hang). The commit is deferred to AFTER the
+    /// creator releases `op_lock`; it still drains the shadow atomically under
+    /// `state.lock`, so it stays serialized. # Lk: none (atomic).
+    pub(crate) creating: ::core::sync::atomic::AtomicBool,
 }
