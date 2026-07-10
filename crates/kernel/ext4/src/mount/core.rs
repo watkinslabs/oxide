@@ -55,7 +55,8 @@ impl Mount {
             batch: false,
             undo: Vec::new(),
         };
-        let m = Self { dev, sb, state: sync::Spinlock::new(state), op_lock: sync::Spinlock::new(()) };
+        let m = Self { dev, sb, state: sync::Spinlock::new(state), op_lock: sync::Spinlock::new(()),
+                       creating: ::core::sync::atomic::AtomicBool::new(false) };
         let _ = m.recover_journal();
         let _ = m.orphan_cleanup();
         Ok(m)
@@ -196,6 +197,28 @@ impl Mount {
         }
     }
 
+    /// Run a top-level create op under `op_lock` with `creating` set, then defer
+    /// the size-triggered batch commit until AFTER `op_lock` is released.
+    /// `op_lock` is a busy-wait spinlock and the batch commit's `dev.flush`
+    /// SLEEPS on the virtio completion — yielding I/O under the held spinlock
+    /// livelocks a spinning contender (hard hang). The commit still drains the
+    /// shadow atomically under `state.lock`, so ordering is preserved.
+    /// # C: same as the inner op + amortized O(1) deferred commit
+    pub(crate) fn create_op<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        let r = {
+            let _op = self.op_lock.lock();
+            self.creating.store(true, ::core::sync::atomic::Ordering::Release);
+            let r = self.run_journaled(f);
+            self.creating.store(false, ::core::sync::atomic::Ordering::Release);
+            r
+        };
+        let v = r?;
+        self.maybe_commit_batch()?;
+        Ok(v)
+    }
+
     /// Enable cross-operation batching: the metadata shadow persists across
     /// `run_journaled` scopes as one running jbd2 transaction, drained by
     /// `commit_batch`. Idempotent. # C: O(1)
@@ -225,8 +248,13 @@ impl Mount {
     /// memory stays small and durability is periodic (Linux jbd2 commits on
     /// buffer pressure too). Fires only at a top-level batched op boundary.
     /// # C: amortized O(1); O(N) on the commit tick.
-    fn maybe_commit_batch(&self) -> Result<(), MountError> {
+    pub(crate) fn maybe_commit_batch(&self) -> Result<(), MountError> {
         const BATCH_MAX_BLOCKS: usize = 512; // ~2 MiB of staged metadata
+        // Skip while a create op holds `op_lock`: the commit's `dev.flush` SLEEPS
+        // on the virtio completion, and yielding I/O under the busy-wait `op_lock`
+        // livelocks a spinning contender (hard hang). The creator re-invokes this
+        // AFTER releasing `op_lock`, where the flush can safely sleep.
+        if self.creating.load(::core::sync::atomic::Ordering::Acquire) { return Ok(()); }
         let over = { let s = self.state.lock();
             s.undo.is_empty() && s.shadow.as_ref().map_or(0, |m| m.len()) >= BATCH_MAX_BLOCKS };
         if over { self.commit_batch()?; }
