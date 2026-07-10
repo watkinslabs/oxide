@@ -145,3 +145,6 @@ vendor/dropbear/dropbear-2024.86/
 vendor/openssh/openssh-*.tar.*
 vendor/openssh/openssh-9.9p2/
 crates/kernel/syscalls/vdso/*.so
+
+# rustc incremental-compilation crash dumps (transient, never commit)
+rustc-ice-*.txt
