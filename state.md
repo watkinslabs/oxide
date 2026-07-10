@@ -37,7 +37,33 @@ CORRUPTED with the value 0x60.
   [UAF] fault-probe didn't catch it since the write isn't a freed-block read).
 - No obvious id↔ptr cast in mntns.rs/mount/*.rs (grepped `as *`/from_raw/transmute).
 
-## ROUND 3 (this session) — diagnosis SHARPENED: it's a Dentry refcount imbalance, NOT a ns-id
+## ROUND 4 — ROOT CAUSE CAUGHT (non-perturbing): dentry d_count over-put in fd-close/File::drop
+A non-perturbing probe (klog in `Lockref::put` when the result < 0 — klog does NOT
+allocate, so heap layout is unchanged and the bug does NOT move) caught the ROOT,
+DETERMINISTICALLY and EARLY (~21s, right after init spawn, long before the 53s crash):
+- `[LOCKREF-UNDERFLOW] d_count@=ffffffff828efe90 now=0xffffffffffffff80` (= -128 =
+  `LOCKREF_DEAD`). The address is inside `kalloc::STATIC_HEAP` → a normal heap dentry.
+- A SPECIFIC dentry's `d_count` (Linux lockref, `dentry/lockref.rs`) is **over-put**
+  (`put()` = `fetch_sub(1)-1`, NO underflow floor) → driven negative to `LOCKREF_DEAD`
+  → the dentry reads as DEAD → the next `dget` (`lock incq; jg; ud2` in
+  `dcache::alloc::d_lookup_reval`) #UDs, AND freed/reused dead-dentry memory corrupts
+  adjacent heap (the NAMESPACES BTreeMap edge → the 53s `resolve_mount` #PF). ONE root,
+  layout-dependent symptom.
+- Stack scan + an int3 trap's fault regs (`rbx = FdTable::close`) place the over-put in:
+  **`FdTable::close` → `Arc<File>::drop_slow` → `File::drop` → `dput(self.dentry)`**
+  (`vfs/src/file/lifetime.rs:53`). `File::new_at` DOES `dget` (`file/model.rs:75`), so
+  the imbalance is an EXTRA dput per open/close cycle on this dentry — a MISSING `dget`
+  where the File's dentry is set, or a second dput in the close/flush/close-hook path.
+  Audited & NOT the culprit: `d_unlink`/`d_delete` (no dput), `d_prune_aliases` (skips
+  `d_count>0`), `free_orphan_inode` (pure ext4 metadata). int3 does NOT break into gdb
+  (kernel #BP handler intercepts it).
+- NEXT (final narrowing): boot, `watch *(long*)0xffffffff828efe90` after the dentry is
+  first alloc'd (or set a gdb breakpoint at `dcache::lifecycle::dput` filtered to that
+  dentry) → the caller of the EXTRA dput is the bug. Then fix (balance the dget/dput; and
+  defensively floor `Lockref::put` / warn at 0→negative). This is the WHOLE live-gnome
+  blocker chain's root.
+
+## ROUND 3 — diagnosis (superseded by ROUND 4 above; kept for context)
 A temporary NAMESPACES integrity probe (walk-the-map between each CLONE_NEWNS
 sub-step in `apply_new_namespaces`; reverted) proved:
 - **All 16 NAMESPACES checks PASS (`ok`)** under the probe's layout — NAMESPACES is
