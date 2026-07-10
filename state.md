@@ -1,44 +1,64 @@
-# Handoff — live-gnome boots to graphical.target + gdm; 2 real fixes; next = epoll File-refcount #UD
+# Handoff — Goal 3 blocker UNIFIED: one heap/UAF refcount-corruption bug (NOT an SMP race)
 
-Main has B706 merged (+ B703/B704/B705 earlier). Goals 1+2 done. **Goal 3 hugely
-advanced this session: from "246s userdb stall, never reaches sysinit" → boots to
-graphical.target in ~50s, gnome services spawn (dbus-broker/udevd/resolved start),
-gdm reaching. Blocked now at ~55s on a kernel #UD in epoll scan_once.**
+Main has B706+B703/B704/B705 + nss fix merged. Goals 1 (console) + 2 (ext4) done.
+**Goal 3 (visible gnome desktop): boot now runs the full D-Bus/logind/NetworkManager
+service stack up to ~62-65s, then dies in a refcount abort BEFORE gnome-shell/gdm.**
 
-## Landed this session (all merged)
-- **nss fix (../images, config)**: dropped `[SUCCESS=merge]` → `group: files systemd`
-  on lite+gnome trees; re-packed both images (userns mkfs.ext4 -O ^has_journal -d);
-  repointed `output/live-gnome-x86_64-root.img -> gnome-x86_64-root.img`. Killed the
-  ~240s userdb keep-alive stall. Backups `out/*.img.premerge.bak`. [[desktop-blocker-tmpfiles-userdbd]]
-- **B706 (#2933)** ext4: alloc_inode read+csum-verified the on-disk inode bitmap for
-  EXT4_BG_INODE_UNINIT groups (mkfs lazy-inits high groups on large images) → stale
-  block → BadChecksum → EIO. On the 2.8GB gnome image (groups 6-21 UNINIT) every
-  PrivateTmp service's mkdir /var/tmp/... + /run/udev EIO'd → "Failed to spawn 'start'
-  task: EIO" → all of dbus/logind/resolved/udev/rtkit/upower failed. Fix: synthesize a
-  zeroed bitmap for UNINIT groups. Boot-verified spawn failures 19→0. Real ext4 bug.
+## THE correction to the prior handoff (important)
+Prior state.md said "smp=1 doesn't crash → the epoll #UD is an SMP race." **WRONG.**
+This session proved smp=1 ALSO dies — a `[PANIC] alloc/src/sync.rs:3287` (the
+`assert!(n <= MAX_REFCOUNT)` inside **`Weak::upgrade`**) at ~65.3s. smp=2 dies at
+~55s with the epoll **`#UD`** (an `Arc<File>` strong-clone `lock incq; jle` abort).
+Same root cause, two victims, both SMP configs. NOT an SMP-only race.
 
-## NEXT BLOCKER (precisely located) — #UD in epoll scan_once (File Arc refcount)
-At ~54.9s (gnome services starting): `[FAULT] vec=6 (#UD) rip=ffffffff80104f79`.
-addr2line → `fs/src/epoll.rs` `scan_once`. Disasm: the abort is reached via
-`0x80104c13: lock incq (%r14); 0x80104c17: jle <ud2>` — an **Arc<File> strong-count
-increment inside `fdt.get(e.fd)`** (r15=FdTable, rdx=e.fd, r14=the File* at that slot)
-that aborts because the incremented count is <= 0 (overflow/corruption). So epoll's
-per-scan `fdt.get(e.fd)` clones a File whose refcount is garbage → **use-after-free /
-dangling File in the fd table** (or a refcount that wrapped), exposed by gnome's heavy
-fd open/close churn. Not reproduced on lite (lighter fd load).
-NEXT: instrument scan_once to log e.fd + File ptr + strong_count before the clone; find
-which fd (type/name) has the bad File. Likely a fd-table slot not cleared on close while
-still in an epoll interest set, or an epoll entry holding a stale fd whose slot was
-reused. Hosted test: register an fd in epoll, close it, epoll_wait → must not UAF.
+## Unified diagnosis (evidence-backed)
+- A count > `isize::MAX` (MAX_REFCOUNT) is NOT reachable by legit over-cloning; it
+  means the Arc/Weak inner pointer is reading a **freed-and-reused allocation** whose
+  bytes now read as a huge refcount word. => **heap corruption / use-after-free.**
+- Two DIFFERENT victim types (`Arc<File>` in epoll `scan_once`; a `Weak<_>` upgraded
+  during `openat` — SuperBlock/inode/dentry) => it's clobbered memory landing on
+  whatever refcount word, not one type's own refcount logic.
+- Correlated with **fork-child** churn: `[USERIP ... tid=42xx lastsc=257 fork-child]`
+  (257=openat) immediately precedes the abort; heavy fork+openat+epoll load (gnome
+  session setup) triggers it. Not seen on lighter `lite` image.
+- Strong prior-session correlation: [[qemu-vsock-cid-and-sigchld-reap]] flagged a
+  SIGCHLD/zombie-reap stall (~13 zombies unreaped, suspect signalfd commit 2257275).
+  Unreaped zombie `Arc<Task>`s + a reap-path refcount imbalance = this exact family.
+
+## RULED OUT this session (read the code, refcount-correct)
+- `vfs/src/fdtable/ops.rs` `fork_clone` (slot.clone() bumps each Arc<File>; bitmaps
+  copied consistently), `get`, `close`, `dup*` — all balanced.
+- `fs/src/epoll.rs` `scan_once` — `fdt.get(e.fd)` clone is correct; f is a fresh Arc.
+- `sched/.../zombies.rs` `park_for_wait4`/`unpark_self_from_wait4` — increment_strong
+  + from_raw pairing is balanced (+1 into WAITERS, -1 on swap_remove).
+- `vfs/src/file/{lifetime,io}.rs` File Drop — no raw Arc juggling.
+
+## PRIME suspects (unread / needs tooling)
+1. Scheduler `Arc<Task>` round-trip: `sched/src/live/runqueue.rs` `Arc::into_raw(next)`
+   on EVERY ctx switch + `from_raw(prev)`; interaction with fork (new task) + zombie
+   reap + wait_list/futex `increment_strong_count`. Hottest path, touches every child.
+2. signalfd/SIGCHLD reap (commit 2257275) x zombie `Arc<Task>` lifetime.
+3. A plain buffer overrun somewhere writing past an alloc into an adjacent Arc header.
+
+## NEXT — get EVIDENCE, do NOT ship a speculative patch (UAF patch w/o repro = hack)
+Two viable tools (pick one; both avoid boot-per-hypothesis loops):
+- **Poisoning allocator (boot ONCE):** add a debug-feature to the kernel heap/slab to
+  fill freed blocks with 0xEE + quarantine (delay reuse) + record free-site backtrace.
+  A UAF read then deterministically reads 0xEEEE… (huge count) → same abort, but now
+  with the FREE site captured. Boot the gnome image once, read the free backtrace.
+- **loom model:** model runqueue switch + park_for_wait4 + reap + fork concurrency for
+  the Task-Arc into_raw/from_raw imbalance.
+Then fix the real lifecycle bug; hosted-verify; ONE boot to confirm gnome-shell/gdm.
 
 ## First commands next session
-1. `cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ dbf588a9
-2. Boot: `mcp__qemu__qemu_start arch=x86_64 features=debug-boot accel=kvm smp=2 mem=4G rebuild_rootfs=true`
-   → run_until 'FAULT.*UD' (fires ~55s). It IS the gnome image now (live-gnome→gnome).
-3. Add a scan_once trace (e.fd, Arc::strong_count(&f)) BEFORE the fdt.get clone; boot;
-   the last fd before #UD = the culprit. Then fix the fd/File lifecycle bug.
+1. `cd /home/nd/oxide/kernel && git log --oneline -3`
+2. Repro (fresh, smp=1): `mcp__qemu__qemu_start arch=x86_64 features=debug-boot,debug-wakelat smp=1 mem=4G paused=false`
+   → run_until 'PANIC|FAULT' — fires ~65s (smp=1) / ~55s (smp=2). It IS the gnome image.
+3. Read `sched/src/live/runqueue.rs` (into_raw/from_raw) + add the poison-alloc feature.
 
 ## Gotchas
-- NEVER `git add -A`. ext4 = hosted + e2fsck [[ext4-work-no-booting]].
-- live-gnome now boots the GNOME image (2.8GB); backups at ../images/out/*.premerge.bak.
-- gnome image geometry: 22 groups, 6-21 INODE_UNINIT (why B706 mattered).
+- gdb `qemu_interrupt` will NOT preempt the `cli;hlt` panic-halt (times out) — read the
+  crash from serial (PANIC file:line), not the backtrace.
+- run_until buffers hit the token cap; parse the saved tool-result file with python.
+- NEVER `git add -A`. No boot-per-hypothesis loops [[no-repeated-long-boots]].
+- live-gnome→gnome image (2.8GB); backups ../images/out/*.premerge.bak.
