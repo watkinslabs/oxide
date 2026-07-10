@@ -65,6 +65,9 @@ impl Mount {
     }
 
     fn try_alloc_inode_in_group(&self, group: u32) -> Result<Option<u32>, MountError> {
+        // NB: the bitmap read-modify-write is serialized by the caller holding
+        // `op_lock` across the whole create operation (see create.rs) — two
+        // concurrent creates cannot pick the same free bit.
         let gd_orig = {
             let s = self.state.lock();
             gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?

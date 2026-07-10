@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use block::BlockDevice;
-use sync::{Guard, Spinlock, Superblock as SuperblockLockClass};
+use sync::{Guard, Spinlock, Superblock as SuperblockLockClass, Ext4Alloc as Ext4AllocLockClass};
 
 use crate::dir;
 use crate::gdt::{GdtError, GroupDesc};
@@ -121,4 +121,12 @@ pub struct Mount {
     pub(crate) dev: Arc<dyn BlockDevice>,
     pub sb: Superblock,
     pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
+    /// Serializes a whole top-level mutating operation (create_dir/create_file/
+    /// create_symlink/create_mknod) so concurrent ops cannot (a) read the same
+    /// group bitmap and double-allocate one inode/block (Linux `ext4_lock_group`)
+    /// nor (b) race the shared `MountState.shadow` lifecycle. Held across the
+    /// entire `run_journaled` scope; the SB/state lock (60) is taken WHILE
+    /// holding this (ascending 59→60). Internal helpers (alloc_inode/alloc_block/
+    /// dir_link) run UNDER it and must NOT re-acquire it. # Lk: outermost.
+    pub(crate) op_lock: Spinlock<(), Ext4AllocLockClass>,
 }

@@ -80,6 +80,13 @@ decl_lock_class! {
     // outermost-of-the-mount-locks). NEVER held across a sleeping descend
     // (`namei`/`inode.lookup`) or `put_super`; those run outside the region.
     MountWrite   = 58,
+    // ext4 block/inode allocator bitmap serialization (Linux `ext4_lock_group`):
+    // held across a group bitmap read-modify-write (read → find-free-bit → set →
+    // write) so two concurrent allocations cannot pick the SAME free bit and
+    // double-allocate one inode/block. Ranked just BELOW `Superblock` (60) — the
+    // allocator takes the SB/state lock (60) for the GDT/counter update WHILE
+    // holding this, so ascending order is `Ext4Alloc` (59) → `Superblock` (60).
+    Ext4Alloc    = 59,
     Superblock   = 60,
     Modules      = 65,
     MountTable   = 70,
