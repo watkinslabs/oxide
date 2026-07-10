@@ -39,6 +39,29 @@ impl UnixListener {
         *self.subs.lock() = Some(Arc::downgrade(subs));
     }
 
+    /// Race-free accept park (Linux `prepare_to_wait`): under the `accept_q`
+    /// lock, either observe a queued connection (return `false`, caller retries
+    /// `accept`) or arm the caller on `accept_waiters` and return `true`
+    /// (caller MUST `schedule()`). `UnixRegistry::connect` pushes to `accept_q`
+    /// UNDER this same lock and only `wake_all`s after dropping it, so a
+    /// connect+wake cannot land between the emptiness re-check and the park and
+    /// be lost — the missed-wake that stalled socket-activated userdb/userwork
+    /// accepts 15–37 s each (tmpfiles-setup-dev-early's 249 s boot stall).
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_accept_wait(&self, deadline_ns: u64) -> bool {
+        let q = self.accept_q.lock();
+        if !q.is_empty() { return false; }
+        // SAFETY: process ctx (sys_accept); preempt-off owned by the syscall
+        // stub; park_with_deadline marks Sleeping + enqueues on accept_waiters
+        // while we hold accept_q — connect() must take accept_q to push, so it
+        // cannot wake us before we are enqueued. Lock dropped below; caller
+        // owns the schedule().
+        unsafe { self.accept_waiters.park_with_deadline(deadline_ns); }
+        drop(q);
+        true
+    }
+
     /// Wake epoll waiters on a new pending connection.
     /// # C: O(N_waiters)
     pub fn notify_subs(&self) {
