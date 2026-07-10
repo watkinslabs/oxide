@@ -1,7 +1,9 @@
 # state — live-gnome boot (Goal 3)
 
-Branch: `main` (clean). BREAKTHROUGH this session: the multi-session ~55s heap-corruption
-blocker is ROOT-CAUSED and FIXED (B712). Boot now advances past it.
+Branch: `main` (clean). B712 fixed the DOMINANT ~55s corruptor. ONE residual corruptor
+remains (pointer-sized scribble, roving victim, ~50s) — it is the SOLE Goal-3 blocker: the
+"~58s busy-spin" is DISPROVEN as independent (it's downstream of this same corruptor). Static
+reading of every sched/exit/reap/ttwu/vfork path is exhausted; next step is a DYNAMIC catch.
 
 ## Landed this session (8 PRs)
 - **B712 (#2951)** — THE big one: scheduler switch-tail UAF. `oxide_finish_task_switch`
@@ -34,10 +36,36 @@ blocker is ROOT-CAUSED and FIXED (B712). Boot now advances past it.
      is at a STABLE static address, so a conditional hw watchpoint there (`if len > 0x10000`)
      could catch the writer despite the non-determinism; OR (b) audit sched/other for a raw
      write of a POINTER/large value to a reaped Task (B712 only covered on_cpu=0/false).
-  2. **Busy-spin at ~58.6s** (after sshd-keygen@ed25519 Finished) — 94.9% CPU, IRQs-off
-     (gdb async-break + qemu_interrupt both fail to stop it) = a spinlock livelock. Reached
-     only when the corruption is avoided. Likely a known stall blocker now exposed
-     ([[hwdb-blocker-ext4-writeback-commits]] / [[desktop-blocker-tmpfiles-userdbd]]).
+  2. **Busy-spin at ~58.6s** — DISPROVEN as a Spinlock livelock this turn (C109 #2954).
+     Wired `--features debug-smp` through boot→kmain→sched+sync to expose the existing
+     `[SMP-STALL]` probe (sched `smp_spin_warn` names any lock spinning >200M iters). A
+     forensic debug-smp boot spun then #GP'd — NO `[SMP-STALL]` fired → NOT a Spinlock.
+     The spin is `sys_exit.rs:156` / `terminate_current_with_signal` (zombies.rs:547)
+     `loop{spin_loop()}` reached IFF a Zombie RETURNS from `schedule()`. DISPROVEN as
+     reachable without prior corruption: ttwu rejects zombie wakes (ttwu.rs:178 state!=
+     Runnable→false), `pick_next_task` returns idle NOT current (runqueue.rs:81), zombie
+     current is never re-enqueued (switch.rs:236 needs Runnable). So a Zombie cannot come
+     back from schedule() → BOTH the spin AND the #GP are DOWNSTREAM of the ONE corruptor.
+
+## Corruptor — sharpened (this turn)
+- debug-smp forensic boot: deterministic **#GP at ~50s in `vfs::poll_subs::PollSubscribers
+  ::subscribe`**, faulting on `lock cmpxchg %r12b,0x18(%rdi)` (the embedded Spinlock CAS)
+  with **`rdi`(self)=`0x8341b274db8548fd`** — a fully-garbage (non-canonical, not a partial
+  HHDM-ptr scribble) pointer. id/wake args looked valid → caller loaded a stale/corrupt
+  `&PollSubscribers` (roving victim; layout shifted by debug-smp vs the mount-collect victim).
+- CONFIRMED **B712 switch-tail is complete**: `finish_switched_from` only writes `on_cpu`
+  (bool 0/1); the residual writes a POINTER-sized value → a DIFFERENT writer, not the switch.
+- Audited this turn, all correct on inspection: switch.rs full tail (fpu_save/ArchCtx::switch
+  write prev BEFORE the switch while prev_arc/reap_pending pins it), ttwu claim-CAS, vfork
+  parent-park (watch Arc pins parent across the wait), zombies enqueue/reap/park_for_wait4,
+  terminate_current_with_signal (replace_mm(None) before CR3-switch — but SAME as sys_exit,
+  would corrupt every exit if broken). Corruptor evades static reading across many sessions.
+- CONCLUSION: next tool must be DYNAMIC. Victim roves per-boot so a fixed hw-watchpoint can't
+  pre-target it. Best options: (a) poison quarantine-SCAN — poison MASKS the crash by delaying
+  reuse but the corruptor STILL writes the freed(now-quarantined) block, so verify-on-scan of
+  quarantined blocks catches the corrupted block + backtrace (needs the other lane's poison.rs
+  or a fresh redzone-verify in KAlloc); (b) narrow to the ~50s window (gnome thread churn) and
+  bisect which SUBSYSTEM's teardown fires then (epoll/inode close is implicated by the victim).
 
 ## Forensic harness (PROVEN, reuse it) — see [[gnome-blocker-refcount-uaf]]
 Own-qemu (replicate the MCP device set: q35 -cpu host -enable-kvm -m 2G -smp 1, virtio-blk
@@ -50,10 +78,11 @@ BACKGROUNDED (`nohup … &` + Monitor on a DONE marker) to beat Bash's 120s time
 via `echo quit | socat - unix-connect:mon.sock` (voluntary qemu exit, safe vs can't-kill).
 
 ## First command next session
-Re-run the v6-loop forensic on a fresh (post-B712) build to capture the RESIDUAL #UD's
-corrupt object + neighbors (identify the 2nd writer), OR attack the ~58.6s busy-spin (needs
-a way to stop the IRQ-off spin — e.g. hw breakpoint on the suspected spinlock, or add a
-non-perturbing klog in the spin path).
+Build a DYNAMIC corruptor catcher (static reading is exhausted — every candidate path reads
+correct). Fastest repro now: `mcp__qemu__qemu_start arch=x86_64 features=debug-smp` (KVM),
+`qemu_continue` (times out at 120s = fine), then `qemu_serial` — the #GP dump lands at ~50s.
+Then implement quarantine-verify-on-scan in KAlloc (catch the write to the freed block even
+though the victim roves) OR window-bisect the ~50s teardown by subsystem.
 
 NOTE: a stray own-qemu (scratchpad/wp) may still be running — ask user to `pkill -9 qemu-system`
 if boots foul. Uncommitted diag: kalloc poison.rs (other lane) + Cargo.toml (feature-gated off).
