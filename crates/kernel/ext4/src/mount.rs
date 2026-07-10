@@ -24,6 +24,9 @@ mod core;
 /// Register the current-context id source for the transaction gate (kernel).
 #[cfg(target_os = "oxide-kernel")]
 pub use core::set_ctx_id_hook;
+/// Register the transaction-gate spin-yield source (kernel).
+#[cfg(target_os = "oxide-kernel")]
+pub use core::set_yield_hook;
 mod dirs;
 mod io;
 mod lifecycle;
