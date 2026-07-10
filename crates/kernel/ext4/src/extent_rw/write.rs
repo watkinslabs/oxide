@@ -1,7 +1,41 @@
 use crate::inode;
-use crate::mount::{Mount, MountError};
+use crate::mount::{Mount, MountError, write_byte_range};
 
 impl Mount {
+    /// Write a list of `(physical_block, block_bytes)` in COALESCED runs: sort
+    /// by physical block, then issue ONE `write_byte_range` per maximal run of
+    /// contiguous physical blocks (capped at the device's max request so the
+    /// virtio-blk bounce buffer isn't overrun). Collapses a fresh sequential
+    /// file's per-4KB-block writes (contiguous by the allocator) into ~one
+    /// request per 128KB — the systemd-hwdb fsync-stall fix. Data-only: callers
+    /// must have already mapped the WRITTEN extents (data=ordered — the writes
+    /// land before the batch commit persists the metadata).
+    /// # C: O(N log N) sort + O(N/COALESCE) device requests
+    fn flush_pending_data_writes(&self, mut pending: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>) -> Result<(), MountError> {
+        if pending.is_empty() { return Ok(()); }
+        let bs = self.sb.block_size as u64;
+        // Match the virtio-blk single-request data cap (BOUNCE_DATA_BYTES) so
+        // one coalesced write is one device op; a larger run splits here.
+        const MAX_REQ_BYTES: u64 = 128 * 1024;
+        let max_blocks = (MAX_REQ_BYTES / bs).max(1);
+        pending.sort_by_key(|(p, _)| *p);
+        let mut i = 0usize;
+        while i < pending.len() {
+            let start = pending[i].0;
+            let mut buf = core::mem::take(&mut pending[i].1);
+            let mut next = start + 1;
+            let mut j = i + 1;
+            while j < pending.len() && pending[j].0 == next && (next - start) < max_blocks {
+                buf.extend_from_slice(&pending[j].1);
+                next += 1;
+                j += 1;
+            }
+            write_byte_range(&*self.dev, start * bs, &buf)?;
+            i = j;
+        }
+        Ok(())
+    }
+
     /// Patch the on-disk inode `i_size` field directly.
     /// # C: O(1) I/O
     pub fn set_inode_size(&self, ino: u32, size: u64) -> Result<(), MountError> {
@@ -89,8 +123,20 @@ impl Mount {
             }
         }
         // RMW / map each touched block; blocks in the gap are never mapped.
+        // Each block's assembled bytes + its physical block are collected into
+        // `pending`, then written in COALESCED runs (contiguous physical blocks
+        // in ONE device request, up to a device-request cap). Under the
+        // single-inflight virtio-blk driver a fresh large file (systemd-hwdb's
+        // 13.5MB) was ~3456 serialised 4KB writes; the allocator hands out
+        // contiguous blocks (find_first_clear), so coalescing collapses them to
+        // ~1 request per 128KB. Data blocks are written direct-to-target
+        // (data=ordered), so deferring + coalescing the writes is correct: they
+        // all land before the batch commit persists the (already-WRITTEN)
+        // extents. Partial-block edges keep the per-block RMW.
         let first_lb = (off / bs) as u32;
         let last_lb  = ((end - 1) / bs) as u32;
+        // (phys_block, assembled block bytes) in logical order.
+        let mut pending: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
         let mut written = 0usize;
         for lb in first_lb..=last_lb {
             // An UNWRITTEN (fallocate-preallocated) extent must be converted to a
@@ -105,11 +151,15 @@ impl Mount {
             let copy_end_in_blk = if end >= blk_end_byte { bs_us }
                                   else { (end - blk_start_byte) as usize };
             let copy_len = copy_end_in_blk - in_blk_off;
+            let full_block = in_blk_off == 0 && copy_len == bs_us;
             // Is this logical block already mapped to a real (written) block?
             let mapped = self.resolve_pblock(&inode2, lb).is_ok();
             // Base contents: the existing block if mapped, else zeros (a hole /
             // partial-block write starts from zeros — Linux sparse semantics).
-            let mut blk = if mapped {
+            // A full-block write fully specifies the block, so skip the read.
+            let mut blk = if full_block {
+                alloc::vec![0u8; bs_us]
+            } else if mapped {
                 self.read_file_block(&inode2, lb)?
             } else {
                 alloc::vec![0u8; bs_us]
@@ -117,18 +167,22 @@ impl Mount {
             if blk.len() < bs_us { blk.resize(bs_us, 0); }
             blk[in_blk_off..in_blk_off + copy_len]
                 .copy_from_slice(&data[written .. written + copy_len]);
-            if mapped {
-                self.write_file_block(&inode2, lb, &blk)?;
+            let phys = if mapped {
+                self.resolve_pblock(&inode2, lb)?
             } else {
-                // Allocate + map THIS logical block (leaving the gap holes),
-                // writing the assembled block data. `extent_vec_contains` guards
-                // a re-map, so this is safe if a prior iteration mapped it.
+                // Allocate + map THIS logical block as a WRITTEN extent (leaving
+                // the gap holes) WITHOUT writing the data now — deferred to the
+                // coalesced flush below. `extent_vec_contains` guards a re-map.
                 let vis = core::cmp::max(inode2.size, blk_end_byte);
                 let (mut ib, ioff) = self.read_inode_bytes(ino)?;
-                self.insert_logical_block_with_inode_bytes(ino, &mut ib, ioff, lb, &blk, vis, false)?;
-            }
+                self.alloc_written_block_defer(ino, &mut ib, ioff, lb, vis)?;
+                let inode3 = self.read_inode(ino)?;
+                self.resolve_pblock(&inode3, lb)?
+            };
+            pending.push((phys, blk));
             written += copy_len;
         }
+        self.flush_pending_data_writes(pending)?;
         // Persist the (potentially partial-block) i_size.
         self.set_inode_size(ino, new_size)?;
         Ok(())
