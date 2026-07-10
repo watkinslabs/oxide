@@ -50,11 +50,15 @@ impl InodeOps for Ext4RegInodeOps {
         Ok(())
     }
 
-    fn fallocate(&self, inode: &Inode, off: u64, len: u64, keep_size: bool, zero_range: bool)
+    fn fallocate(&self, inode: &Inode, off: u64, len: u64, keep_size: bool, zero_range: bool, punch: bool)
         -> KResult<()>
     {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        if zero_range {
+        if punch {
+            // FALLOC_FL_PUNCH_HOLE: deallocate the range → holes (read zeros),
+            // size unchanged. Linux requires KEEP_SIZE with PUNCH_HOLE.
+            d.st.mount.punch_hole_inode(d.ino, off, len).map_err(vfs_error_from_mount)?;
+        } else if zero_range {
             let old = d.size_hint.load(Ordering::Acquire);
             let end = off.checked_add(len).ok_or(VfsError::Einval)?;
             let bs = d.st.mount.sb.block_size.max(1) as usize;

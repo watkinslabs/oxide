@@ -30,11 +30,20 @@ pub fn sys_fallocate(args: &SyscallArgs) -> i64 {
     if offset.checked_add(len).is_none() {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let supported = FALLOC_FL_KEEP_SIZE | FALLOC_FL_ZERO_RANGE;
+    // PUNCH_HOLE deallocates a range (must be paired with KEEP_SIZE, Linux
+    // `ext4_fallocate`). COLLAPSE_RANGE / INSERT_RANGE shift the file and remain
+    // unimplemented.
+    let supported = FALLOC_FL_KEEP_SIZE | FALLOC_FL_ZERO_RANGE | FALLOC_FL_PUNCH_HOLE;
     if mode & !supported != 0
-        || mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE) != 0
+        || mode & (FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE) != 0
     {
         return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
+    // PUNCH_HOLE requires KEEP_SIZE and is incompatible with ZERO_RANGE.
+    if mode & FALLOC_FL_PUNCH_HOLE != 0
+        && (mode & FALLOC_FL_KEEP_SIZE == 0 || mode & FALLOC_FL_ZERO_RANGE != 0)
+    {
+        return -(Errno::Einval.as_i32() as i64);
     }
     let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -51,7 +60,8 @@ pub fn sys_fallocate(args: &SyscallArgs) -> i64 {
     }
     let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
     let zero_range = mode & FALLOC_FL_ZERO_RANGE != 0;
-    match file.inode().fallocate(offset, len, keep_size, zero_range) {
+    let punch = mode & FALLOC_FL_PUNCH_HOLE != 0;
+    match file.inode().fallocate(offset, len, keep_size, zero_range, punch) {
         Ok(()) => 0,
         Err(e) => -(e as i64),
     }

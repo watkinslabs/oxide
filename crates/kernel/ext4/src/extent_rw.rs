@@ -20,6 +20,7 @@ mod inode_io;
 pub(crate) mod meta;
 mod insert;
 mod nlink;
+mod punch;
 mod records;
 mod truncate;
 mod write;
