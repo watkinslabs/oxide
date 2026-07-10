@@ -36,4 +36,6 @@ debug-boot = []
 debug-irq  = ["hal-aarch64/debug-irq"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`); rides kmain.
 debug-watchdog = ["kmain/debug-watchdog", "hal-aarch64/debug-watchdog"]
+# Spin-stall probe (`sync` debug-smp): names a livelocked lock's rank. Rides kmain.
+debug-smp = ["kmain/debug-smp"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]
