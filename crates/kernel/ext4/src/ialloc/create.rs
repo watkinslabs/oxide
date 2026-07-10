@@ -27,8 +27,8 @@ impl Mount {
     ) -> Result<u32, MountError> {
         // Serialize the whole create (Linux `ext4_lock_group` + txn): concurrent
         // creates must not double-allocate an inode/block or race the shadow.
-        let _op = self.op_lock.lock();
-        self.run_journaled(|m| {
+        // `create_op` holds `op_lock` for the op and defers the batch commit.
+        self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
             m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
@@ -52,8 +52,7 @@ impl Mount {
         uid: u32,
         gid: u32,
     ) -> Result<u32, MountError> {
-        let _op = self.op_lock.lock();
-        self.run_journaled(|m| {
+        self.create_op(|m| {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
@@ -107,8 +106,7 @@ impl Mount {
         if target.is_empty() || target.len() > bs {
             return Err(MountError::Inode(inode::InodeError::BadLen));
         }
-        let _op = self.op_lock.lock();
-        self.run_journaled(|m| {
+        self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
             m.init_inode(new_ino, S_IFLNK | 0o777, 1, uid, gid)?;
@@ -160,8 +158,7 @@ impl Mount {
             S_IFSOCK => dir::DT_SOCK,
             _ => return Err(MountError::Inode(inode::InodeError::BadLen)),
         };
-        let _op = self.op_lock.lock();
-        self.run_journaled(|m| {
+        self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
             let mut bytes = vec![0u8; m.sb.inode_size as usize];
