@@ -312,7 +312,19 @@ pub fn get_mountpoint(d: &Arc<Dentry>) -> Arc<Mountpoint> {
     // mount (overmount / cross-ns clone) on the same dentry only bumps the
     // count and leaves the bit set.
     let prev = mp.m_count.fetch_add(1, Ordering::AcqRel);
-    if prev == 0 { d.set_mounted(); }
+    if prev == 0 {
+        // Pin the dentry's `d_count` lockref for the life of the mount (Linux
+        // `mp->m_dentry = dget(dentry)`): a mounted dentry must NEVER reach
+        // `dput` count 0, else `dentry_kill` stamps `LOCKREF_DEAD` and then
+        // `d_drop`'s `is_mounted()` guard refuses to unhash it, leaving a
+        // DEAD-but-HASHED mountpoint that every later `open()` re-finds and
+        // pins (get/put-on-dead) until its `Arc` frees underneath the hash →
+        // dangling entry → heap corruption. The `Arc` clone in `m_dentry`
+        // alone pins memory but NOT `d_count`; this `inc_count` supplies the
+        // missing VFS pin. Released in `put_mountpoint` on the last unmount.
+        d.inc_count();
+        d.set_mounted();
+    }
     mp
 }
 
@@ -323,8 +335,13 @@ pub fn put_mountpoint(mp: &Arc<Mountpoint>) {
     // Last drop (1→0): clear the `D_MOUNTED` hint (Linux `__put_mountpoint`)
     // and remove the registry entry.
     if prev <= 1 {
+        // Clear the hint FIRST so `is_mounted()` reads false, then release the
+        // `d_count` pin taken in `get_mountpoint` through a real `dput`: now
+        // that the dentry is no longer mounted, `dput` correctly retains it on
+        // the LRU or kills+unhashes it (the `d_drop` guard no longer blocks).
         mp.m_dentry.clear_mounted();
         MOUNTPOINTS.lock().remove(&dptr(&mp.m_dentry));
+        crate::dcache::dput(mp.m_dentry.clone());
     }
 }
 

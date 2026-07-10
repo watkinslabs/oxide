@@ -12,6 +12,16 @@ use super::lifecycle::d_drop;
 /// inode alias. # C: O(1)
 pub fn d_make_root(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Dentry> {
     let root = Dentry::new_root_in_sb(inode.clone(), sb);
+    // Pin the root's `d_count` for the mount's lifetime (Linux `__d_alloc` seeds
+    // `d_lockref.count = 1`; the mount owns that ref via `sb->s_root`). Without
+    // it the root starts at 0, so the FIRST open (dget→1) + close (dput→0) drives
+    // `dentry_kill` → `mark_dead`: the root is NOT a mountpoint (`D_MOUNTED` sits
+    // on the mountpoint in the PARENT fs, not the mounted-fs root), so `d_drop`
+    // unhashes it — yet `resolve_path` crossing the mount keeps returning the
+    // SB-pinned `s_root` Arc, now DEAD, to every later open (get/put-on-dead) →
+    // eventual `resolve_mount` #PF. `shrink_dcache_for_umount` force-detaches the
+    // root regardless of `d_count` at umount, consuming this pin.
+    root.inc_count();
     sb.set_s_root(root.clone());
     if let Some(s) = inode.i_sb() { s.i_add_alias(&inode, &root); }
     root.grab_inode_hold(); // D3/D37: root dentry counts its inode hold
