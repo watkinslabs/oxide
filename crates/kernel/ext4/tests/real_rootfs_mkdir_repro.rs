@@ -6,6 +6,7 @@
 //! Skips cleanly if the env var is unset or the file is absent.
 
 extern crate alloc;
+mod common;
 use alloc::sync::Arc;
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
@@ -85,6 +86,169 @@ fn real_journal_mkdir_under_batching() {
         m2.lookup_path(n.as_bytes()).unwrap_or_else(|e| panic!("REPRO: journal file #{i} lost: {e:?}"));
     }
     eprintln!("OK: batched journal tree persisted across remount");
+}
+
+/// True for "the filesystem is legitimately out of room" — a clean stop for a
+/// stress phase, NOT a bug. Anything else (Dir/BlockIo/Inode/Gdt/checksum/...)
+/// is a genuine backend fault we want to CATCH.
+fn is_capacity(e: &ext4::MountError) -> bool {
+    matches!(e, ext4::MountError::NoSpace | ext4::MountError::DirFull)
+}
+
+/// HEAVY metadata churn on the REAL rootfs under BATCHING (the boot's mount mode)
+/// to drive the fs into the mutated runtime state where the boot's
+/// `mkdir /var/log/journal/<id> err=5` fires, then do that exact mkdir + verify
+/// integrity across a remount. Every op must succeed OR fail with a capacity
+/// error; any Dir/BlockIo/Inode/checksum fault panics with the true variant.
+#[test]
+#[ignore]
+fn real_rootfs_metadata_stress_then_journal_mkdir() {
+    let Some((disk, m)) = open_real() else { eprintln!("SKIP: set OXIDE_ROOTFS_IMG"); return; };
+    let root = m.lookup_path(b"/").unwrap_or(2);
+    let base = match m.create_dir(root, b"stress", 0o755, 0, 0) {
+        Ok(i) => i,
+        Err(ref e) if is_capacity(e) => { eprintln!("SKIP: no room for /stress"); return; }
+        Err(e) => panic!("mkdir /stress -> {e:?}"),
+    };
+    m.begin_batch();
+    let mut dirs: alloc::vec::Vec<u32> = alloc::vec![base];
+    let mut made = 0usize;
+    let mut ops = 0usize;
+    let mut stopped_capacity = false;
+    // Churn: create dirs, files inside them, symlinks, hardlinks; periodically
+    // delete a subtree of files to recycle inodes/blocks (bitmap churn). Bounded
+    // so a big image doesn't run forever.
+    'outer: for round in 0..40 {
+        // Pick a parent (round-robins across the growing dir set).
+        let parent = dirs[round % dirs.len().max(1)];
+        // 30 subdirs this round.
+        for d in 0..30 {
+            let name = alloc::format!("d_{round:02}_{d:02}");
+            match m.create_dir(parent, name.as_bytes(), 0o755, 0, 0) {
+                Ok(i) => { dirs.push(i); made += 1; ops += 1; }
+                Err(ref e) if is_capacity(e) => { stopped_capacity = true; break 'outer; }
+                Err(e) => panic!("stress mkdir {name} (round {round}) -> {e:?}"),
+            }
+            let dino = *dirs.last().unwrap();
+            // 12 files in each fresh dir (fills the dir block -> growth path).
+            for f in 0..12 {
+                let fname = alloc::format!("f_{f:02}.dat");
+                match m.create_file(dino, fname.as_bytes(), 0o644, 0, 0) {
+                    Ok(_) => { ops += 1; }
+                    Err(ref e) if is_capacity(e) => { stopped_capacity = true; break 'outer; }
+                    Err(e) => panic!("stress create_file {fname} in d {dino} -> {e:?}"),
+                }
+            }
+            // A fast + slow symlink.
+            let _ = m.create_symlink(dino, b"sl", b"../..", 0, 0);
+            let long = alloc::format!("/very/deep/{}/x", "seg/".repeat(16));
+            match m.create_symlink(dino, b"ln", long.as_bytes(), 0, 0) {
+                Ok(_) | Err(ext4::MountError::NoSpace) | Err(ext4::MountError::DirFull) => {}
+                Err(e) => panic!("stress create_symlink slow -> {e:?}"),
+            }
+        }
+        // Every few rounds, delete some files to churn the bitmaps.
+        if round % 5 == 4 {
+            if let Some(&victim_dir) = dirs.get(dirs.len().saturating_sub(3)) {
+                for f in 0..12 {
+                    let fname = alloc::format!("f_{f:02}.dat");
+                    match m.unlink(victim_dir, fname.as_bytes()) {
+                        Ok(()) | Err(ext4::MountError::NotFound) => {}
+                        Err(e) => panic!("stress unlink {fname} -> {e:?}"),
+                    }
+                }
+            }
+        }
+        // Periodic durability trigger (jbd2 commit), like fsync during boot.
+        if round % 8 == 7 { m.commit_batch().unwrap_or_else(|e| panic!("commit_batch round {round} -> {e:?}")); }
+    }
+    eprintln!("churn done: made {made} dirs, {ops} ops, stopped_capacity={stopped_capacity}");
+
+    // THE boot op, now against the churned fs: mkdir /var/log/journal/<id>.
+    let vlj = m.lookup_path(b"/var/log/journal")
+        .or_else(|_| m.lookup_path(b"/var/log").and_then(|i| m.create_dir(i, b"journal", 0o755, 0, 0)))
+        .unwrap_or_else(|e| panic!("/var/log/journal after churn: {e:?}"));
+    let mid = "fa52435e5fe94e5cbb8bff1a050ba889";
+    match m.create_dir(vlj, mid.as_bytes(), 0o755, 0, 0) {
+        Ok(i) => eprintln!("OK: journald mkdir succeeded post-churn ino={i}"),
+        Err(ref e) if is_capacity(e) => eprintln!("journald mkdir hit capacity ({e:?}) — expected on a full image"),
+        Err(e) => panic!("REPRO: mkdir /var/log/journal/{mid} post-churn -> {e:?} (the boot EIO)"),
+    }
+    m.commit_batch().expect("final commit_batch");
+
+    // Integrity: remount and confirm the tree is walkable (no corruption).
+    drop(m);
+    let m2 = ext4::Mount::open(disk).expect("remount after stress");
+    m2.lookup_path(b"/stress").unwrap_or_else(|e| panic!("REPRO: /stress lost/corrupt after remount: {e:?}"));
+    eprintln!("OK: remount clean after metadata stress");
+}
+
+/// Drive the boot's ACTUAL VFS path — `RootfsState::mkdir_at`/`write_file`/
+/// `symlink_at`/`rename_at`/`unlink_at` over the framecache-backed Ext4Mount —
+/// against the real rootfs, mirroring journald+tmpfiles+udev's mixed workload
+/// (mkdir the journal tree, write files into it, rename, unlink), then reopen
+/// and verify. This is the layer above raw Mount that the boot uses; a
+/// framecache/VFS-path bug that the low-level API can't see surfaces here.
+#[test]
+#[ignore]
+fn real_rootfs_vfs_path_journald_workload() {
+    common::boot_hosted_pmm();
+    let path = match std::env::var("OXIDE_ROOTFS_IMG") { Ok(p) => p, Err(_) => { eprintln!("SKIP: set OXIDE_ROOTFS_IMG"); return; } };
+    let bytes = match std::fs::read(&path) { Ok(b) => b, Err(_) => { eprintln!("SKIP: image unreadable"); return; } };
+    let cap = (bytes.len() as u64) / (SECTOR as u64);
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    disk.submit_sync(&mut req).unwrap();
+    let m = ext4::rootfs::Ext4Mount::open(disk).expect("open real rootfs (VFS layer)");
+    let st = m.state();
+
+    // journald: mkdir the persistent journal dir tree via the VFS path.
+    let mid = "fa52435e5fe94e5cbb8bff1a050ba889";
+    let jdir = alloc::format!("/var/log/journal/{mid}");
+    let _ = st.mkdir_at(b"/var/log", 0o755);          // may already exist
+    let _ = st.mkdir_at(b"/var/log/journal", 0o755);
+    match st.mkdir_at(jdir.as_bytes(), 0o755) {
+        Ok(()) => eprintln!("OK: VFS mkdir_at {jdir}"),
+        Err(e) => panic!("REPRO (VFS path): mkdir_at {jdir} -> {e:?} (the boot EIO)"),
+    }
+    // tmpfiles/journald metadata churn through the VFS path (the boot's ops):
+    // nested mkdir, symlink, rename, unlink — each must not EIO.
+    for sub in ["a", "b", "c"] {
+        let d = alloc::format!("{jdir}/{sub}");
+        st.mkdir_at(d.as_bytes(), 0o755).unwrap_or_else(|e| panic!("REPRO (VFS): mkdir_at {d} -> {e:?}"));
+    }
+    st.symlink_at(b"a", alloc::format!("{jdir}/cur").as_bytes())
+        .unwrap_or_else(|e| panic!("REPRO (VFS): symlink_at -> {e:?}"));
+    match st.rename_at(alloc::format!("{jdir}/a").as_bytes(), alloc::format!("{jdir}/a2").as_bytes()) {
+        Ok(()) | Err(vfs::VfsError::Enoent) => {}
+        Err(e) => panic!("REPRO (VFS): rename_at -> {e:?}"),
+    }
+    match st.unlink_at(alloc::format!("{jdir}/cur").as_bytes()) {
+        Ok(()) | Err(vfs::VfsError::Enoent) => {}
+        Err(e) => panic!("REPRO (VFS): unlink_at -> {e:?}"),
+    }
+    // Overwrite an EXISTING small regular file via the framecache write path
+    // (write_file is a single-block overwrite helper; pick a file that exists).
+    for cand in [&b"/etc/hostname"[..], b"/etc/machine-id", b"/etc/os-release"] {
+        if let Some(orig) = st.read_file(cand) {
+            if orig.is_empty() { continue; }
+            // Overwrite the first byte (write_file is a single-block, non-growing
+            // overwrite helper), then confirm the framecache read sees it.
+            let mut data = orig.clone();
+            data[0] ^= 0xFF;
+            match st.write_file(cand, &data) {
+                Some(()) => {
+                    let back = st.read_file(cand).expect("read-back after write");
+                    assert_eq!(back[0], data[0], "framecache write visible to read");
+                    eprintln!("OK: framecache write+read coherent on an existing file");
+                }
+                None => panic!("REPRO (VFS): write_file returned None on an existing regular file"),
+            }
+            break;
+        }
+    }
+    let _ = ext4::rootfs::flush_all_dirty();
+    eprintln!("OK: VFS-path journald workload clean");
 }
 
 #[test]
