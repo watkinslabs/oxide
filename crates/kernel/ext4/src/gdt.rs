@@ -144,6 +144,20 @@ fn write_itable_unused(buf: &mut [u8], off: usize, dsize: usize, v: u32) {
     }
 }
 
+/// True if group `n` has EXT4_BG_INODE_UNINIT set: its on-disk inode bitmap is
+/// NOT materialized (implicitly all-free), so a reader must synthesize a zeroed
+/// bitmap rather than read + csum-verify the stale on-disk block. mkfs leaves
+/// high groups INODE_UNINIT on large images (lazy bitmap init); reading them
+/// spuriously fails the bitmap csum → EIO on inode alloc fallback.
+/// # C: O(1)
+pub fn inode_uninit(buf: &[u8], n: u32, sb: &Superblock) -> bool {
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if off + GD_OFF_FLAGS + 2 > buf.len() { return false; }
+    let flags = u16::from_le_bytes([buf[off + GD_OFF_FLAGS], buf[off + GD_OFF_FLAGS + 1]]);
+    flags & EXT4_BG_INODE_UNINIT != 0
+}
+
 /// Post-inode-allocation descriptor upkeep for group `n`: clear the
 /// EXT4_BG_INODE_UNINIT flag and clamp `bg_itable_unused` to the new
 /// high-water mark `inodes_per_group - (bit + 1)` (never increases).
