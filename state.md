@@ -25,21 +25,35 @@ trigger is deterministic (~54s live-gnome boot). All one bug:
 corruption already propagated past the quarantine window. It only names a victim while a
 GPR still points into freed+poisoned memory.
 
-## Next task (do NOT blind-boot per no-repeated-long-boots)
-Catch the WRITER, two options:
-1. **HW write-watchpoint (non-perturbing, preferred).** The victim VA is stable across builds
-   (dead-root was 0x810d7b28 / lockref +0x68 = 0x810d7b90). Boot a debug-boot build, set a
-   gdb hardware write-watchpoint on that qword before ~54s, catch the store of the garbage
-   value → names the corruptor + stack. (Same build, <=2 boots.)
-2. **Wire redzone / poison-verify into KAlloc.** `crates/shared/kalloc/src/poison.rs` already
-   has (uncommitted) `alloc_layout`/`arm_redzone`/`check_redzone` (REDZONE_BYTES=32). Pad every
-   alloc + verify at dealloc -> catches an overflow writer at free time. Also add a
-   full-block-fill + verify-on-eviction to catch a UAF write into a quarantined block.
-   NOTE: poison-based tooling MOVES this layout-sensitive bug (see memory); watchpoint is
-   less perturbing.
+## NEW this session — it is a REUSE-dependent UAF (proven)
+Enlarging the poison quarantine ring (QN 2048->16384, ~64MB held-out, 4G RAM) delayed block
+REUSE and pushed the boot 55s -> 162s (past nearly all services, into systemd-udevd) with NO
+crash. So the crash needs a freed block to be REUSED; holding it out avoids the fault. That
+is a use-after-free where REUSE supplies the garbage the stale ref then derefs (faults are
+consistently near-null derefs: cr2 = 4/9/0x71/0xbb = a pointer field read as null/small).
+Poison variants tried this session (all feature-gated `debug-heappoison`, OFF by default;
+uncommitted diag lives in `crates/shared/kalloc/{src/poison.rs,Cargo.toml}` layered on top of
+another lane's redzone helpers — do NOT `git checkout` poison.rs, it would nuke their work):
+- verify-on-eviction + periodic poison-head scan (first 16B, offset 0/8 = Arc refcounts):
+  fired NOTHING -> corruption is NOT a write to a quarantined block's head.
+- big ring (QN 2048->16384) + full-block 0xEE poison: NO crash, NO uaf hit, boot crawls to
+  152-162s. => poison MASKS this bug (holding blocks out of reuse removes the trigger; the
+  stale ref never reads a still-poisoned block in the window). Confirms reuse-dependent UAF
+  but poison-catching is a dead end here.
 
-Suspects (prior notes): fork/COW churn; a Weak/raw ptr outliving its Arc (smp=1 panic
-Weak::upgrade sync.rs:3287); epoll Arc<File> (smp=2 #UD).
+## Next task (do NOT blind-boot / do NOT spin more poison variants — that is the thrash)
+The decisive non-perturbing tool is a **HW watchpoint** on the recurring victim slot in a
+NORMAL (non-poison) build:
+1. Boot a debug-boot build, reach the ~55s crash, note the corrupted victim VA from the FAULT
+   regs (mounts_in_ns is the most frequent site; dead-root was 0x810d7b28 pre-B709).
+2. Reboot the SAME build; DON'T set breakpoints at entry (kernel VA unmapped -> "Cannot insert
+   breakpoint"). Instead run_until an early post-paging marker (~5s), interrupt, then set a
+   gdb hardware `watch`/`rwatch` on that VA, continue, catch the store/read + backtrace = the
+   corruptor. (Note: can't interrupt AFTER a fault — the handler does cli;hlt — so set the
+   watchpoint BEFORE ~55s.)
+
+Suspects: fork/COW churn; a Weak/raw ptr outliving its Arc (smp=1 panic Weak::upgrade
+sync.rs:3287); epoll Arc<File> (smp=2 #UD); the MOUNTS BTreeMap (mounts_in_ns most frequent).
 
 ## First command next session
 Boot debug build, capture exact victim addr at the ~54s crash, reboot same build paused,
