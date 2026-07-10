@@ -47,6 +47,25 @@ const CR_ENABLE: u32 = (1 << 9) | (1 << 8) | (1 << 0);
 #[cfg(target_os = "oxide-kernel")]
 static PL011_BASE_VA: AtomicU64 = AtomicU64::new(0);
 
+/// PL011 `UARTCLK` (Hz), resolved from the DTB clock tree at boot
+/// (`boot-aarch64::dtb::pl011_clock_hz`) and consumed by the runtime driver's
+/// TCSETS baud reprogram. Seeded to the qemu-virt / near-universal 24 MHz
+/// fallback so a DTB without an explicit PL011 clock still programs a correct
+/// divisor. Published here (beside `PL011_BASE_VA`) because both boot and the
+/// driver already depend on this crate.
+static PL011_UARTCLK_HZ: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(24_000_000);
+
+/// Publish the DTB-resolved PL011 `UARTCLK` (Hz). `0` is ignored (keeps the
+/// fallback). Called once at boot after the DTB is parsed. # C: O(1)
+pub fn set_uartclk_hz(hz: u32) {
+    if hz != 0 { PL011_UARTCLK_HZ.store(hz, core::sync::atomic::Ordering::Release); }
+}
+
+/// The resolved PL011 `UARTCLK` (Hz) — the DTB rate, or the 24 MHz fallback.
+/// # C: O(1)
+pub fn uartclk_hz() -> u32 { PL011_UARTCLK_HZ.load(core::sync::atomic::Ordering::Acquire) }
+
 /// Initialize the chip for 115200 8N1 + FIFO at the given mapped VA,
 /// then publish so `pl011_emit` becomes the live klog sink path.
 ///
