@@ -1,59 +1,51 @@
-# Handoff — Goals 1+2 complete; Goal 3 blocker is stock-systemd userspace
+# Handoff — BREAKTHROUGH: live-gnome boots past the userdb stall to graphical.target
 
-Main has B703 #2927 + B704 #2929 merged. Goal 1 (console) + Goal 2 (ext4) DONE.
-Goal 3 (live-gnome) blocker = CONFIRMED stock-systemd userspace varlink streaming
-(NOT a kernel defect; systemd = Fedora RPM binaries, needs sudo image re-compose).
+Main = `e124a3f1`. Goals 1+2 done. **Goal 3 unblocked: the ~240s userdb stall is FIXED
+and the system now BOOTS to graphical.target in ~50s** (was never reaching sysinit).
 
-## Goal 1 (console 100% Linux-compat) — COMPLETE this session
-console.md re-audited: G1 closed by observation (fbcon scans out — window shows
-live kernel log), G3(x86)/G4/G5/G6 all already implemented, full VT/KD ioctl
-handshake (VT_ACTIVATE/WAITACTIVE/SETMODE/RELDISP, KDSETMODE, VT_RESIZE→SIGWINCH)
-audited real (not stubs). The ONE real remaining divergence — pl011/aarch64 TCSETS
-baud reprogram was a no-op — FIXED in **B704** (`pl011_set_termios`: disable→drain
-BUSY→program IBRD/FBRD→relatch LCRH→restore CR; UARTCLK=24MHz until DTB-clock;
-pure host-tested `pl011_divisor`). console.md §5/§6/bottom-line refreshed to accurate
-state. Console is kernel-ready for a getty login; only G2 (userspace) gates it.
+## THE FIX (this session) — userdb stall root cause + resolution
+- Root cause (proven over many traces): NOT a kernel bug. The nsswitch
+  `group: files [SUCCESS=merge] systemd` fired a systemd-userdb GetMemberships
+  merge query per device-node group; the systemd-userwork worker held each
+  connection for its `CONNECTION_IDLE_USEC=15s` keep-alive → ~15s × ~17 groups
+  ≈ 240s → `systemd-tmpfiles-setup-dev-early` never finished → no sysinit.target.
+  Every kernel theory (idle-halt ×4, TSC-deadline timer, fbcon submit_one spin)
+  was disproven — the 15s floor never moved. See [[desktop-blocker-tmpfiles-userdbd]].
+- FIX applied in **../images** (NOT the kernel): dropped `[SUCCESS=merge]` →
+  `group: files systemd` on BOTH lite + gnome trees
+  (`build/{lite,gnome}-x86_64-root/etc/authselect/nsswitch.conf`), re-packed both
+  images inside `unshare --user --map-root-user --map-auto` (mkfs.ext4 -O ^has_journal
+  -d), and repointed `output/live-gnome-x86_64-root.img -> gnome-x86_64-root.img`
+  (was → lite, which has no gdm/gnome-shell). Backups: `out/*.img.premerge.bak`.
+  It's a valid minimal-Fedora config, functionally a no-op for our groups (they have
+  no extra systemd members); the user asked "do we even need this" — we don't.
+- RESULT (boot-verified, qemu MCP KVM): lite image → graphical.target + getty in 50s.
+  gnome image → reaches **gdm.service / GNOME Display Manager starting @58s**, all
+  targets through graphical.target. `Startup finished ... = 50.087s`.
 
-## Landed this session
-- **B703** vfs: AF_UNIX `bind(2)` materialises the path node via `mknod_child`
-  straight off the parent inode op, bypassing namei's `d_instantiate`. A NEGATIVE
-  dentry cached by an earlier `stat(path)==ENOENT` then shadowed the new node
-  forever (namei walk treats a cached negative as definitive ENOENT → stat ENOENT
-  while readdir shows the child). Fix: `mount::drop_stale_negative(abs)` (new child
-  module `mount/invalidate.rs`), called from bind after a successful `mknod_child`.
-  Hosted regression `dcache::tests::drop_negative_forces_relookup`. Both arches
-  build clean. This is a REAL Linux-incompat bug but **NOT the live-gnome blocker**
-  (userdb sockets are bound before nss-systemd first stats them → no negative
-  cached for them). See [[mknod-bypasses-dcache-negative]].
-- Prior (already merged to main): B699/B700/B701/B702 (op_lock livelock, accept
-  race, RMW skip, data-write coalescing → hwdb fsync 50s→~30s). ext4 = 100%.
-
-## ★ live-gnome blocker (goal 3) — DEFINITIVE, userspace, not kernel
-`systemd-tmpfiles-setup-dev-early` stalls ~249s → never reaches gdm. Root cause
-(traced UWSYS/UXDROP, definitive): systemd-userwork workers each ppoll-BLOCK ~15s
-per Multiplexer varlink query waiting for the client to send-more-or-close; the
-client (nss-systemd, triggered by nsswitch `group: files [SUCCESS=merge] systemd`)
-holds the streaming GetMemberships connection OPEN after NoRecordFound (`"more":
-true` stream never concludes). 3 workers × ~1 query/15s ⇒ 249s. Across a full 27s
-window ZERO InetSocket::Drop / close_writer fired for any userdb socket → the conn
-genuinely never closes. **KERNEL af_unix/epoll/timer/IO/close all measured-correct
-this session and prior — do NOT re-chase them.** Fix lives in ../images (systemd/
-nss-systemd varlink streaming-termination or nsswitch config). See
-[[desktop-blocker-tmpfiles-userdbd]].
+## NEXT BLOCKER (freshly exposed, precisely located) — mkdir → EIO in service setup
+On the gnome image, ~9 services fail identically: **"Failed to spawn 'start' task:
+Input/output error"** (ERRNO=5). Traced to: `[NAMEI] mkdir path="…" err=5` from
+`sys_mkdirat` (258_mkdirat.rs:49) where `pino.mkdir` returns `VfsError::Eio` — the
+PARENT resolves fine, the BACKEND mkdir returns EIO. Hits BOTH
+`/var/tmp/systemd-private-<id>-<svc>-<rand>` (ext4) AND `/run/udev` (tmpfs), only
+during systemd's mount-namespace / sandbox setup (PrivateTmp/ProtectSystem). Both-fs
+→ NOT the backing fs; suspect the CLONE_NEWNS mount-namespace clone leaving the target
+mount in a state whose backend mkdir returns EIO. Affected: dbus-broker, systemd-
+logind, systemd-resolved, systemd-udevd, rtkit, upower, switcheroo-control. gdm/gnome
+need dbus + logind → blocked here. tmpfs mkdir = fs/src/tmpfs/dir.rs:117 (doesn't
+return Eio itself → the Eio is upstream of the backend, likely the mount cross / clone).
 
 ## First commands next session
-1. `cd /home/nd/oxide/kernel && git log --oneline -3`
-2. `gh pr create` for B703 if not merged (push was network-flaky this session).
-3. Goal 3 is a ../images userspace fix, NOT a kernel change. Either work it there
-   (nsswitch `[SUCCESS=merge]` → the streaming query; or nss-systemd stream
-   termination) or pick the next kernel audit item from scratch/kernel-audit2.md.
+1. `cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ e124a3f1
+2. Repro: `mcp__qemu__qemu_start arch=x86_64 features=debug-boot accel=kvm smp=2 mem=4G rebuild_rootfs=true`
+   → run_until 'gdm|Failed to spawn' → the mkdir-EIO fires ~50s.
+3. Find why `pino.mkdir` → Eio for a mkdir inside a CLONE_NEWNS child on both tmpfs
+   + ext4. Trace: does the parent inode belong to a cloned mount? Is the write going
+   to a detached/broken cloned mount? Check clone_tree + the mount the child's
+   /var/tmp + /run resolve to. A hosted mount-ns-clone + mkdir test would nail it.
 
 ## Gotchas
-- NEVER `git add -A` (untracked dumps). Stage explicit paths.
-- ext4 work: iterate hosted + e2fsck, don't boot [[ext4-work-no-booting]].
-- Boot only via qemu MCP; no repeated long boots [[no-repeated-long-boots]].
-- aarch64 `xtask kernel` aborts on missing rootfs img (../images) BEFORE compile;
-  to compile-check aarch64 directly: `cargo build -Z build-std=core,compiler_builtins,alloc
-  -Z build-std-features=compiler-builtins-mem -Z unstable-options -Z json-target-spec
-  --target ./targets/aarch64-unknown-oxide-kernel.json --profile release -p kmain
-  -p boot-aarch64 -p kernel-bin-aarch64`.
+- NEVER `git add -A`. ext4 = iterate hosted + e2fsck [[ext4-work-no-booting]].
+- nss change is in ../images (config, not kernel); backups at out/*.img.premerge.bak.
+- Merged this session: B703 (dcache neg-dentry), B704 (pl011 baud), B705 (fbcon bulk-copy).
