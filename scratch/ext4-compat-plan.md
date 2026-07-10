@@ -25,7 +25,7 @@ TODO | CLAIMED <branch> | IN-REVIEW <pr> | DONE <pr>
 | 11 | Backup superblock/GDT mirroring | P1 | TODO | B698 |
 | 12 | POSIX ACL enforcement in generic_permission | P2 | TODO | B699 |
 | 13 | fallocate PUNCH_HOLE/COLLAPSE/INSERT range | P2 | TODO | B700 |
-| 14 | huge_file i_blocks units audit | P2 | TODO | B701 |
+| 14 | huge_file i_blocks units | P2 | DONE | B694 |
 
 ## Lane details (Linux-faithful spec per lane)
 

@@ -34,6 +34,10 @@ pub const EXT4_EXT_MAGIC: u16 = 0xF30A;
 /// so a walk is bounded — a corrupt/cyclic tree is rejected, not looped.
 pub const EXT4_MAX_EXTENT_DEPTH: u16 = 5;
 
+/// `EXT4_HUGE_FILE_FL` in `i_flags` — `i_blocks` is counted in fs-blocks, not
+/// 512-byte sectors (only with the huge_file RO_COMPAT feature). # C: n/a
+pub const EXT4_HUGE_FILE_FL: u32 = 0x0004_0000;
+
 /// Valid extent-tree descent step: an interior node's child must be exactly one
 /// level shallower (all ext4 leaves sit at the same depth). Bounds every tree
 /// walk to the root depth — a step that is not strictly-decreasing-by-one marks
@@ -133,13 +137,26 @@ impl Inode {
         let mode  = u16::from_le_bytes([buf[0x00], buf[0x01]]);
         let size_lo = u32::from_le_bytes([buf[0x04], buf[0x05], buf[0x06], buf[0x07]]) as u64;
         let links = u16::from_le_bytes([buf[0x1A], buf[0x1B]]);
-        // i_blocks_lo @0x1C (512-byte sectors) + l_i_blocks_high @0x74 (osd2,
-        // u16). 0x74..0x76 is inside even a 128-byte inode, so the read is
-        // always in range. HUGE_FILE (fs-block units) is not advertised by the
-        // images we mount, so the count stays in 512-byte sectors.
+        // i_blocks interpretation, exactly Linux `ext4_inode_blocks`:
+        //  * huge_file feature CLEAR → 32-bit `i_blocks_lo` in 512-byte sectors;
+        //    `0x74` is `l_i_reserved`, NOT high bits — merging it would corrupt
+        //    the count on any pre-huge_file image.
+        //  * huge_file feature SET → 48-bit `i_blocks_lo | (l_i_blocks_high<<32)`;
+        //    if the inode's EXT4_HUGE_FILE_FL is set the unit is fs-BLOCKS, so
+        //    shift up by `block_bits - 9` to normalise to 512-byte sectors.
+        let i_flags_raw = u32::from_le_bytes([buf[0x20], buf[0x21], buf[0x22], buf[0x23]]);
         let blocks_lo = u32::from_le_bytes([buf[0x1C], buf[0x1D], buf[0x1E], buf[0x1F]]) as u64;
-        let blocks_hi = u16::from_le_bytes([buf[0x74], buf[0x75]]) as u64;
-        let i_blocks  = blocks_lo | (blocks_hi << 32);
+        let i_blocks = if sb.has_huge_file() {
+            let blocks_hi = u16::from_le_bytes([buf[0x74], buf[0x75]]) as u64;
+            let raw = blocks_lo | (blocks_hi << 32);
+            if i_flags_raw & EXT4_HUGE_FILE_FL != 0 {
+                raw << (sb.block_size.trailing_zeros().saturating_sub(9))
+            } else {
+                raw
+            }
+        } else {
+            blocks_lo
+        };
         let mut i_block = [0u8; I_BLOCK_LEN];
         i_block.copy_from_slice(&buf[0x28..0x28 + I_BLOCK_LEN]);
         // i_size_high lives in the EXT4_FEATURE_RO_COMPAT_LARGE_FILE
@@ -170,7 +187,7 @@ impl Inode {
             mtime_ns,
             ctime_ns,
             crtime_ns,
-            i_flags: u32::from_le_bytes([buf[0x20], buf[0x21], buf[0x22], buf[0x23]]),
+            i_flags: i_flags_raw,
             i_block,
             ino: 0, // stamped by read_inode (parse has no ino)
             generation: u32::from_le_bytes([buf[0x64], buf[0x65], buf[0x66], buf[0x67]]),
