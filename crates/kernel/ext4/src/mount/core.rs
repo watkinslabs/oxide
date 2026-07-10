@@ -7,6 +7,45 @@ use crate::superblock::{SUPERBLOCK_LEN, SUPERBLOCK_OFFSET, Superblock};
 use super::{GroupDesc, Mount, MountError, MountState};
 use super::io::read_byte_range;
 
+/// Kernel: fn returning a unique id for the current execution CONTEXT (task).
+/// The reentrant transaction gate keys ownership on this so a task that sleeps
+/// mid-transaction (at I/O) is not mistaken for a different task on the same CPU.
+/// 0 ⇒ unset (early single-threaded boot) → `ctx_id` returns 1.
+#[cfg(target_os = "oxide-kernel")]
+static CTX_ID_HOOK: ::core::sync::atomic::AtomicU64 = ::core::sync::atomic::AtomicU64::new(0);
+
+/// Register the current-context id source. kmain calls this once (before the
+/// rootfs mount / SMP bring-up) with a fn returning the current task id.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn set_ctx_id_hook(f: fn() -> u64) {
+    CTX_ID_HOOK.store(f as usize as u64, ::core::sync::atomic::Ordering::Release);
+}
+
+/// Unique-per-concurrent-context id for the transaction gate.
+#[cfg(target_os = "oxide-kernel")]
+fn ctx_id() -> u64 {
+    let raw = CTX_ID_HOOK.load(::core::sync::atomic::Ordering::Acquire);
+    if raw == 0 { return 1; } // pre-registration: boot is single-threaded
+    // SAFETY: `raw` is a `fn() -> u64` pointer stored only by set_ctx_id_hook.
+    let f: fn() -> u64 = unsafe { ::core::mem::transmute(raw as usize) };
+    let id = f();
+    if id == 0 { 1 } else { id }
+}
+
+/// Hosted tests: a unique nonzero id per thread (thread-local, stable) so the
+/// concurrent-churn tests exercise real cross-context serialization.
+/// Host builds: a unique nonzero id per thread (thread-local, stable) so the
+/// concurrent-churn tests exercise real cross-context serialization.
+#[cfg(not(target_os = "oxide-kernel"))]
+fn ctx_id() -> u64 {
+    std::thread_local!(static ID: u64 = {
+        static NEXT: ::core::sync::atomic::AtomicU64 = ::core::sync::atomic::AtomicU64::new(2);
+        NEXT.fetch_add(1, ::core::sync::atomic::Ordering::Relaxed)
+    });
+    ID.with(|&id| id)
+}
+
 impl Mount {
     /// Open the filesystem on `dev`. Reads + parses the
     /// superblock + group descriptor table.
@@ -55,7 +94,9 @@ impl Mount {
             batch: false,
             undo: Vec::new(),
         };
-        let m = Self { dev, sb, state: sync::Spinlock::new(state), op_lock: sync::Spinlock::new(()),
+        let m = Self { dev, sb, state: sync::Spinlock::new(state),
+                       txn_owner: ::core::sync::atomic::AtomicU64::new(0),
+                       txn_depth: ::core::sync::atomic::AtomicU32::new(0),
                        creating: ::core::sync::atomic::AtomicBool::new(false) };
         let _ = m.recover_journal();
         let _ = m.orphan_cleanup();
@@ -161,7 +202,45 @@ impl Mount {
     /// Re-entrant: nested calls participate in the outermost
     /// shadow without opening a new one.
     /// # C: O(N shadow blocks) commit + 2 journal I/Os + N target I/Os
+    /// Serialize + run a top-level metadata transaction. Acquires the reentrant
+    /// transaction gate for the current context so concurrent tasks/CPUs can't
+    /// race the group bitmaps / GDT / superblock counters / shadow; nested
+    /// same-context calls join without re-locking. # C: same as inner.
     pub fn run_journaled<R, F>(&self, f: F) -> Result<R, MountError>
+    where F: FnOnce(&Self) -> Result<R, MountError>
+    {
+        self.txn_acquire();
+        let r = self.run_journaled_inner(f);
+        self.txn_release();
+        r
+    }
+
+    /// Reentrant transaction-gate acquire keyed on `ctx_id()`. Nested calls on
+    /// the same context bump the depth; a different context spins until free.
+    /// # C: O(contention)
+    fn txn_acquire(&self) {
+        use ::core::sync::atomic::Ordering;
+        let me = ctx_id();
+        if self.txn_owner.load(Ordering::Acquire) == me {
+            self.txn_depth.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        while self.txn_owner.compare_exchange_weak(0, me, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+            ::core::hint::spin_loop();
+        }
+        self.txn_depth.store(1, Ordering::Relaxed);
+    }
+
+    /// Release one level of the transaction gate; frees it at depth 0.
+    /// # C: O(1)
+    fn txn_release(&self) {
+        use ::core::sync::atomic::Ordering;
+        if self.txn_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.txn_owner.store(0, Ordering::Release);
+        }
+    }
+
+    fn run_journaled_inner<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
         let (already_open, batch) = { let s = self.state.lock(); (s.shadow.is_some(), s.batch) };
@@ -197,18 +276,18 @@ impl Mount {
         }
     }
 
-    /// Run a top-level create op under `op_lock` with `creating` set, then defer
-    /// the size-triggered batch commit until AFTER `op_lock` is released.
-    /// `op_lock` is a busy-wait spinlock and the batch commit's `dev.flush`
-    /// SLEEPS on the virtio completion — yielding I/O under the held spinlock
-    /// livelocks a spinning contender (hard hang). The commit still drains the
-    /// shadow atomically under `state.lock`, so ordering is preserved.
+    /// Run a top-level create op with `creating` set (which defers the
+    /// size-triggered batch commit until AFTER the transaction gate is released:
+    /// the batch commit's `dev.flush` SLEEPS on the virtio completion, and
+    /// yielding I/O while the gate is held livelocks a spinning contender). The
+    /// gate is now taken inside `run_journaled` for EVERY mutator, so creates no
+    /// longer need a separate lock; the commit still drains the shadow atomically
+    /// under `state.lock`, so ordering is preserved.
     /// # C: same as the inner op + amortized O(1) deferred commit
     pub(crate) fn create_op<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
         let r = {
-            let _op = self.op_lock.lock();
             self.creating.store(true, ::core::sync::atomic::Ordering::Release);
             let r = self.run_journaled(f);
             self.creating.store(false, ::core::sync::atomic::Ordering::Release);

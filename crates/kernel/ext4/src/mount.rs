@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use block::BlockDevice;
-use sync::{Guard, Spinlock, Superblock as SuperblockLockClass, Ext4Alloc as Ext4AllocLockClass};
+use sync::{Guard, Spinlock, Superblock as SuperblockLockClass};
 
 use crate::dir;
 use crate::gdt::{GdtError, GroupDesc};
@@ -21,6 +21,9 @@ use crate::superblock::{Superblock, SuperblockError};
 
 mod blocks;
 mod core;
+/// Register the current-context id source for the transaction gate (kernel).
+#[cfg(target_os = "oxide-kernel")]
+pub use core::set_ctx_id_hook;
 mod dirs;
 mod io;
 mod lifecycle;
@@ -121,14 +124,17 @@ pub struct Mount {
     pub(crate) dev: Arc<dyn BlockDevice>,
     pub sb: Superblock,
     pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
-    /// Serializes a whole top-level mutating operation (create_dir/create_file/
-    /// create_symlink/create_mknod) so concurrent ops cannot (a) read the same
-    /// group bitmap and double-allocate one inode/block (Linux `ext4_lock_group`)
-    /// nor (b) race the shared `MountState.shadow` lifecycle. Held across the
-    /// entire `run_journaled` scope; the SB/state lock (60) is taken WHILE
-    /// holding this (ascending 59→60). Internal helpers (alloc_inode/alloc_block/
-    /// dir_link) run UNDER it and must NOT re-acquire it. # Lk: outermost.
-    pub(crate) op_lock: Spinlock<(), Ext4AllocLockClass>,
+    /// Reentrant transaction gate — serializes EVERY top-level mutating op
+    /// (create/write/unlink/truncate/alloc_block/…), not just creates, so
+    /// concurrent tasks/CPUs cannot (a) read the same group bitmap and
+    /// double-allocate one inode/block (Linux `ext4_lock_group`) nor (b) race
+    /// the shared `MountState.shadow` transaction lifecycle. `run_journaled`
+    /// acquires it at the OUTERMOST scope keyed on the current context
+    /// (`ctx_id`); nested same-context calls bump `txn_depth` and join without
+    /// re-locking; concurrent contexts spin until free. `txn_owner`==0 ⇒ free.
+    /// # Lk: outermost (held across the whole `run_journaled` scope + commit).
+    pub(crate) txn_owner: ::core::sync::atomic::AtomicU64,
+    pub(crate) txn_depth: ::core::sync::atomic::AtomicU32,
     /// True while a create op holds `op_lock`. The size-triggered batch commit
     /// (`maybe_commit_batch` → `dev.flush`, which SLEEPS on the virtio
     /// completion) must NOT fire while `op_lock` is held: `op_lock` is a
