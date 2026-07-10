@@ -11,8 +11,20 @@ Main = `ba551767`. 2 fixes merged this session; live-gnome blocker DIAGNOSED (no
 - **B701 (#2919)** ext4: write_byte_range skipped the dead RMW pre-read for
   block-aligned full-block writes — HALVES hwdb's fsync I/O (block-reads 53->13 on
   writeback_amp). Correct: e2fsck clean, all ext4 tests pass.
-- NEXT (specified in gnome-boot-campaign.md): coalesce data writes to 128KB virtio
-  ops in write_at_inner (32x fewer serialized ops) — the remaining hwdb-fsync lever.
+- **B702 (#2921)** ext4: coalesce contiguous data-block writes into 128KB virtio
+  ops (write_at_inner defers per-block writes → flush_pending_data_writes). 4.3→1.3
+  write-ops/page; read-back verified; e2fsck clean; 235 tests pass. BOOT-VERIFIED:
+  hwdb fsync 50s→~30s. Improved but boot still doesn't reach gdm.
+
+## FINAL BLOCKER (boot-isolated) — virtio-blk per-op I/O latency on SMALL reads
+B702 coalesced hwdb's large sequential write, but sysinit is now bottlenecked on
+MANY SMALL scattered reads (userdb nss /etc/group, small-file/dyld reads) that
+can't coalesce — each blocking read pays the single-inflight virtio round-trip
+(~1-2ms). tmpfiles/userwork still crawl. Fix is driver-level (gnome-boot-campaign.md
+"FINAL LEVER"): (1) FIRST verify the MSI completion IRQ actually fires at runtime
+(enum logged msi_fires=0; if completions rely on the 200k spin not a prompt IRQ
+wake, fixing MSI makes every op ~µs — cheap); (2) else multi-inflight virtio-blk
+(bounce pool + per-descriptor completion). Needs ONE instrumented boot to pin (1).
 
 ## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
 `systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.

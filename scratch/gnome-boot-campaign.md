@@ -87,7 +87,28 @@ direct-to-target so this is a pure data-path batching change; metadata journal p
 unchanged). Validate: extend writeback_amp to assert ops/page drops + e2fsck +
 concurrent-write stress, then boot. Risk: rootfs data-path — test thoroughly.
 
-Alternative/complementary: multi-inflight virtio-blk. Current engine uses a SINGLE
-bounce buffer + descriptor 0 per request (modern/engine.rs:107,127) = structural
-single-inflight. Full fix needs a bounce POOL + per-descriptor completion tracking
-via the used-ring id + per-waiter wake. Bigger rewrite; coalescing is the smaller win.
+B702 (#2921): landed — coalesce contiguous data writes into 128KB virtio ops
+(write_at_inner defers per-block writes → flush_pending_data_writes; extent mapped
+WRITTEN, data written before batch commit = data=ordered). writeback_amp 4.3→1.3
+ops/page; read-back verified; e2fsck clean; 235 tests pass.
+
+BOOT-VERIFIED (debug-taskdump, main+B702): hwdb fsync 50s → ~30s (in fsync at t=22,
+exited by t=42). IMPROVED but boot still does NOT reach gdm. Root now isolated
+DEFINITIVELY to **per-op virtio-blk I/O latency on SMALL scattered I/O** that can't
+coalesce: tmpfiles/userwork still crawl (userdb nss /etc/group reads, small-file
+reads), each blocking-read paying the single-inflight round-trip. hwdb's large
+sequential write coalesced; the many small reads did not.
+
+## THE FINAL LEVER — virtio-blk per-op latency / multi-inflight (driver)
+Every block op serializes through acquire_turn + one bounce buffer + descriptor 0
+(engine.rs:107,127,205). Under KVM each op pays the full host round-trip SERIALLY;
+Linux hides this with queue-depth 128+. Small scattered reads (nss, dyld, config)
+dominate sysinit and can't be coalesced, so they bottleneck at ~1-2ms/op.
+Two candidate fixes:
+ 1. VERIFY MSI completion IRQ actually fires (enum logged msi_fires=0; MSI-X table
+    entries masked). If completions rely on the 200k spin (IO_SPIN_BUDGET ≈ 1.3ms)
+    instead of a prompt IRQ wake, fixing MSI delivery makes EVERY op ~µs. CHEAP if
+    it's the bug — check msix-tbl mask + q-vector bind for the blk queue at runtime.
+ 2. Multi-inflight: bounce POOL + per-descriptor completion tracking (used-ring id)
+    + per-waiter wake, so many I/Os pipeline. Bigger rewrite.
+Do (1) first (one instrumented boot) — likely the real root and a small fix.
