@@ -47,6 +47,9 @@ debug-irq  = ["hal-x86_64/debug-irq"]
 # debug-trace lights up kmain/debug-trace via this chain (same
 # pattern as debug-irq).
 debug-trace = ["kmain/debug-trace"]
+# Spin-stall probe (`sync` debug-smp). Rides the kmain feature graph so xtask
+# `--features debug-smp` reaches sched+sync and names a livelocked lock's rank.
+debug-smp = ["kmain/debug-smp"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`). Rides the
 # kmain feature graph so xtask `--features debug-watchdog` reaches sched.
 debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]
