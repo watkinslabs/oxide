@@ -224,6 +224,22 @@ assert_eq!(c.flags() & D_NEGATIVE, 0);
 assert!(!c.is_negative());
 }
 
+// Regression for `mount::drop_stale_negative` (AF_UNIX bind / inode-op-direct
+// create bypassing namei's d_instantiate): a create driven straight off the
+// parent inode leaves an earlier failed-lookup NEGATIVE dentry cached, which
+// namei walk treats as definitive ENOENT. Dropping it must make d_lookup miss
+// so the next walk re-reads the parent and instantiates the new node — proving
+// the primitive the helper composes with `descend`.
+#[test]
+fn drop_negative_forces_relookup() {
+let r = root();
+let neg = d_add_negative(&r, "sock");
+assert!(neg.is_negative());
+assert!(d_lookup(&r, "sock").is_some(), "negative is cached and returned");
+    d_drop(&neg);
+assert!(d_lookup(&r, "sock").is_none(), "dropped negative no longer shadows the name");
+}
+
 // d_weak_revalidate (Linux `complete_walk` final-dentry hook): the presence
 // bit is stamped, the hook fires with the `LOOKUP_REVAL` flag threaded, and a
 // STALE weak result does NOT drop the dentry (unlike per-component

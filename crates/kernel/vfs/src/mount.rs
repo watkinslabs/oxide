@@ -47,6 +47,11 @@ mod detach;
 pub use detach::{mountpoint_dentry_of, unregister, unregister_top};
 pub(crate) use detach::detach_mounts_on;
 
+// Stale-negative-dentry invalidation for inode-op-direct create paths that
+// bypass namei's d_instantiate (AF_UNIX bind mknod_child, etc.).
+mod invalidate;
+pub use invalidate::drop_stale_negative;
+
 // mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /
 // MNT_INTERNAL / MNT_DOOMED / …, Linux `include/linux/mount.h`) distinct from
 // the MS_*-valued option mask, plus typed option-mask + atime-policy readback.
