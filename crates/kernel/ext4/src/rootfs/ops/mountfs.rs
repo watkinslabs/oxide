@@ -41,7 +41,14 @@ impl vfs::SuperOps for Ext4SuperOps {
         // whole-fs pass.
         #[cfg(feature = "ext4-frame-cache")]
         crate::flush_all_dirty().map_err(|_| vfs::VfsError::Eio)?;
-        self.st.mount.flush_pending_tx().map_err(|_| vfs::VfsError::Eio)?;
+        // Drain the running batched transaction (Linux `sync_fs` IS the
+        // per-superblock durability point). `flush_pending_tx` is a no-op —
+        // under cross-op batching the metadata sits in `MountState.shadow`
+        // until `commit_batch`, so syncfs(2)/freeze must commit it here or
+        // return success with metadata not yet on disk. This makes `sync_fs`
+        // authoritative for EVERY ext4 mount (incl. non-root `/home`), not
+        // just the root helper `commit_rootfs_journal`.
+        self.st.mount.commit_batch().map_err(|_| vfs::VfsError::Eio)?;
         self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
         Ok(())
     }
