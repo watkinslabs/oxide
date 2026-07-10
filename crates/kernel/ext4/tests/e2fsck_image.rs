@@ -391,3 +391,47 @@ fn htree_create_split_and_root_grow_stays_e2fsck_clean() {
         None        => eprintln!("e2fsck unavailable — skipped fsck"),
     }
 }
+
+#[test]
+fn punch_hole_zeros_range_and_stays_e2fsck_clean() {
+    // Lane 13: PUNCH_HOLE deallocates a middle range → holes (read zeros), keeps
+    // data outside, zeros partial-block edges, leaves size unchanged. Test a few
+    // patterns (whole-block interior, straddling edges, whole extent) then e2fsck.
+    let (disk, cap) = build_disk(MINI);
+    {
+        let m = ext4::Mount::open(disk.clone()).unwrap();
+        let bs = m.sb.block_size as usize;
+        let f = m.create_file(2, b"punchme.bin", 0o644, 0, 0).unwrap();
+        // Fill 10 blocks with a recognizable non-zero pattern.
+        let data: std::vec::Vec<u8> = (0..(bs * 10)).map(|i| ((i % 251) + 1) as u8).collect();
+        m.write_at(f, 0, &data).unwrap();
+
+        // Punch whole blocks [3,6): offset 3*bs, len 3*bs.
+        m.punch_hole_inode(f, (bs * 3) as u64, (bs * 3) as u64).unwrap();
+        let inode = m.read_inode(f).unwrap();
+        assert_eq!(inode.size, (bs * 10) as u64, "size unchanged by punch");
+        for lb in 3..6 {
+            assert!(m.read_file_block(&inode, lb).unwrap().iter().all(|&b| b == 0),
+                "punched block {lb} reads zeros");
+        }
+        for lb in [0u32, 2, 6, 9] {
+            assert!(m.read_file_block(&inode, lb).unwrap().iter().any(|&b| b != 0),
+                "unpunched block {lb} keeps its data");
+        }
+        // Punch a sub-block range straddling block 7's start and inside block 8:
+        // zero [7*bs + 100, 8*bs + 200). Partial edges zeroed, block 8 stays.
+        m.punch_hole_inode(f, (bs * 7 + 100) as u64, (bs + 100) as u64).unwrap();
+        let inode2 = m.read_inode(f).unwrap();
+        let b7 = m.read_file_block(&inode2, 7).unwrap();
+        assert!(b7[..100].iter().any(|&b| b != 0), "block 7 head kept");
+        assert!(b7[100..].iter().all(|&b| b == 0), "block 7 tail zeroed");
+        let b8 = m.read_file_block(&inode2, 8).unwrap();
+        assert!(b8[..200].iter().all(|&b| b == 0), "block 8 head zeroed");
+    }
+    let bytes = dump_disk(&disk, cap);
+    match e2fsck_clean(&bytes) {
+        Some(true)  => {}
+        Some(false) => panic!("e2fsck reported errors after punch_hole"),
+        None        => eprintln!("e2fsck unavailable — skipped fsck"),
+    }
+}

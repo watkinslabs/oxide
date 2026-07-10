@@ -24,7 +24,7 @@ TODO | CLAIMED <branch> | IN-REVIEW <pr> | DONE <pr>
 | 10 | Lazy unwritten extents (fallocate) | P1 | DONE | B692 |
 | 11 | Backup superblock/GDT mirroring | P1 | TODO | B698 |
 | 12 | POSIX ACL enforcement | P2 | DONE | B695 |
-| 13 | fallocate PUNCH_HOLE/COLLAPSE/INSERT range | P2 | TODO | B700 |
+| 13 | fallocate PUNCH_HOLE | P2 | DONE | B697 |
 | 14 | huge_file i_blocks units | P2 | DONE | B694 |
 
 ## Lane details (Linux-faithful spec per lane)
