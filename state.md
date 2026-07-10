@@ -37,7 +37,39 @@ CORRUPTED with the value 0x60.
   [UAF] fault-probe didn't catch it since the write isn't a freed-block read).
 - No obvious id↔ptr cast in mntns.rs/mount/*.rs (grepped `as *`/from_raw/transmute).
 
-## round2.md (parallel investigation) — CONFIRMS the diagnosis + strongest lead
+## ROUND 3 (this session) — diagnosis SHARPENED: it's a Dentry refcount imbalance, NOT a ns-id
+A temporary NAMESPACES integrity probe (walk-the-map between each CLONE_NEWNS
+sub-step in `apply_new_namespaces`; reverted) proved:
+- **All 16 NAMESPACES checks PASS (`ok`)** under the probe's layout — NAMESPACES is
+  NOT the primary victim; it's collateral. And only ~16 mount-ns exist by ~57s, so
+  **0x60/0x38 are NOT ns-id 96** — they're garbage/refcount values. The round2.md +
+  my earlier "ns-id-as-pointer" hypothesis is WRONG.
+- The fault MOVED (probe changed heap layout) to a **`#UD` in `vfs::dcache::alloc::
+  d_lookup_reval`**: `lock incq 0x8(%rdx); jg; ud2` with **rdx = a VALID live dentry
+  ptr** (ffff8000…) — so a LIVE dentry's refcount word (offset 8 = Arc weak / d_count)
+  is **over-decremented → negative**, and the next clone/downgrade aborts.
+- ⇒ ROOT = a **Dentry/Arc refcount IMBALANCE (over-drop)** on SHARED dentries in the
+  mount-namespace clone/dcache-churn path (snapshot_ns → copy_mnt_ns → clone_tree /
+  dcache). It corrupts a small field (a refcount, or a BTreeMap edge) with a small
+  value; WHICH object (NAMESPACES node vs dcache dentry) depends on heap layout.
+  [[mount-dentry-sharing-gotcha]] (shared dentries across mounts/ns).
+- **Every heap instrumentation perturbs it** (poison/quarantine → 32s stall; redzone
+  → 35s stall; integrity probe → moved the victim to dcache). So the ONLY
+  non-perturbing catch is a **GDB hardware watchpoint** on the victim dentry's
+  refcount word; code audit (round2.md + this round) hasn't pinned the over-drop.
+
+## NEXT (round 3) — catch the over-drop without perturbing layout
+1. **GDB watchpoint (non-perturbing):** boot to the fault ONCE, note the aborting
+   dentry ptr (rdx); reboot (deterministic), `watch *(rdx+8)` early, continue — the
+   trap names the code doing the extra decrement. (Only method that doesn't move it.)
+2. **Audit dentry get/put balance** in `clone_tree.rs` (clone_mnt/copy_tree/commit_tree/
+   release_clone), `detach.rs`, `reap_ns` — a shared dentry dropped once more than
+   grabbed (a Weak-vs-strong slip, a temporary double-dropped, or a skipped-clone
+   release that puts a dentry the commit never got). get/put_mountpoint via
+   `mnt_mp.take()` is double-put-safe (leaks, not underflows) — so the imbalance is a
+   raw Arc<Dentry> drop, not the mountpoint m_count.
+
+## round2.md (parallel investigation) — earlier lead (ns-id now DISPROVEN above)
 `round2.md` (repo root, read-only pass) independently confirms: external heap
 corruption of a NAMESPACES BTreeMap edge → 0x60 (≈ ns-id 96 ≈ live ns count).
 Its strongest code lead — the **mount-namespace lifecycle is SPLIT into two
