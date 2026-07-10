@@ -14,6 +14,19 @@ impl Mount {
         }
     }
 
+    /// An UNWRITTEN (fallocate-preallocated) extent of `len` blocks at `phys`.
+    /// On disk `ee_len = real_len + EXTENT_LEN_MAX` (Linux `ext4_ext_mark_unwritten`)
+    /// so reads serve zeros (`is_unwritten()`) until a write converts the range.
+    /// `len` must be 1..=EXTENT_LEN_MAX-1. # C: O(1)
+    pub(super) fn extent_for_unwritten(logical: u32, phys: u64, len: u16) -> Extent {
+        Extent {
+            block: logical,
+            len: len + EXTENT_LEN_MAX,
+            start_hi: (phys >> 32) as u16,
+            start_lo: (phys & 0xFFFF_FFFF) as u32,
+        }
+    }
+
     pub(super) fn idx_for_lba(block: u32, lba: u64) -> inode::ExtentIdx {
         inode::ExtentIdx {
             block,
@@ -24,7 +37,9 @@ impl Mount {
     }
 
     pub(super) fn extent_end(e: &Extent) -> u64 {
-        e.block as u64 + e.len as u64
+        // real_len(): for a written extent == len; for unwritten strips the
+        // EXTENT_LEN_MAX flag bit so the LOGICAL range is correct either way.
+        e.block as u64 + e.real_len() as u64
     }
 
     pub(super) fn extent_vec_contains(extents: &[Extent], logical: u32) -> bool {
@@ -44,9 +59,13 @@ impl Mount {
     }
 
     pub(super) fn can_merge(a: &Extent, b: &Extent) -> bool {
-        Self::extent_end(a) == b.block as u64
-            && a.start_lba() + a.len as u64 == b.start_lba()
-            && (a.len as u32 + b.len as u32) <= EXTENT_LEN_MAX as u32
+        // Only coalesce extents of the SAME writtenness (Linux never merges a
+        // written and an unwritten extent), physically + logically adjacent,
+        // whose combined REAL length still fits one extent record.
+        a.is_unwritten() == b.is_unwritten()
+            && Self::extent_end(a) == b.block as u64
+            && a.start_lba() + a.real_len() as u64 == b.start_lba()
+            && (a.real_len() + b.real_len()) <= EXTENT_LEN_MAX as u32
     }
 
     pub(super) fn insert_extent_record(extents: &mut Vec<Extent>, new_extent: Extent) -> Result<(), MountError> {
@@ -64,7 +83,11 @@ impl Mount {
         for e in extents.iter().copied() {
             if let Some(last) = merged.last_mut() {
                 if Self::can_merge(last, &e) {
-                    last.len = last.len.saturating_add(e.len);
+                    // Combine REAL lengths and re-apply the unwritten flag (both
+                    // are same-writtenness per can_merge) — never sum raw `len`,
+                    // which would double the EXTENT_LEN_MAX flag for unwritten.
+                    let combined = last.real_len() + e.real_len();
+                    last.len = if last.is_unwritten() { combined as u16 + EXTENT_LEN_MAX } else { combined as u16 };
                     continue;
                 }
             }

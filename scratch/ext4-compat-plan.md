@@ -21,7 +21,7 @@ TODO | CLAIMED <branch> | IN-REVIEW <pr> | DONE <pr>
 | 7 | htree creation (linear→indexed) | P1 | TODO | B694 |
 | 8 | htree dx checksum verify | P1 | TODO | B695 |
 | 9 | Block allocator run-length + goal/locality | P1 | TODO | B696 |
-| 10 | Lazy unwritten extents (fallocate + split) | P1 | TODO | B697 |
+| 10 | Lazy unwritten extents (fallocate) | P1 | DONE | B692 |
 | 11 | Backup superblock/GDT mirroring | P1 | TODO | B698 |
 | 12 | POSIX ACL enforcement in generic_permission | P2 | TODO | B699 |
 | 13 | fallocate PUNCH_HOLE/COLLAPSE/INSERT range | P2 | TODO | B700 |

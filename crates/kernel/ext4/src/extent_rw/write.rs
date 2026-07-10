@@ -39,12 +39,16 @@ impl Mount {
             let first_lb = first_lb64 as u32;
             let last_lb = last_lb64 as u32;
             let final_size = if keep_size { old_size } else { core::cmp::max(old_size, end) };
-            let zero_blk = alloc::vec![0u8; bs as usize];
 
+            // Linux fallocate: map the range as UNWRITTEN extents — allocate the
+            // blocks but do NOT zero them (reads serve zeros via the unwritten
+            // flag; a later write converts the touched subrange). This replaces
+            // the O(range) eager zero-write that made journald's multi-MB journal
+            // preallocation a per-block alloc+write storm.
             for lb in first_lb..=last_lb {
                 let inode = m.read_inode(ino)?;
                 let visible_size = core::cmp::max(inode.size, (lb as u64 + 1) * bs);
-                m.append_logical_block_inner(ino, lb, &zero_blk, visible_size)?;
+                m.map_unwritten_block_inner(ino, lb, visible_size)?;
             }
             m.set_inode_size(ino, final_size)?;
             Ok(())

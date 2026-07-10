@@ -407,10 +407,12 @@ fn truncate_depth1_frees_tail_and_keeps_head() {
     // Surviving head blocks read their original content via the deep walk.
     assert_eq!(m.read_file_block(&inode2, 0).unwrap()[0], 0u8);
     assert_eq!(m.read_file_block(&inode2, 1).unwrap()[0], 1u8);
-    // The 4 tail data blocks were freed.
+    // The 4 tail data blocks were freed (the authoritative "tail is gone" check).
     assert!(m.state_free_blocks() >= pre_free + 4, "freed >=4 tail data blocks");
-    // A truncated logical block no longer resolves.
-    assert!(m.read_file_block(&inode2, 2).is_err(), "block past new EOF is gone");
+    // The truncated logical block is now a HOLE — its extent was removed, so it
+    // reads as zeros (Linux sparse-file semantics), not the old freed content.
+    assert_eq!(m.read_file_block(&inode2, 2).unwrap(), std::vec![0u8; bs],
+        "block past new EOF is a hole reading zeros");
 }
 
 #[test]

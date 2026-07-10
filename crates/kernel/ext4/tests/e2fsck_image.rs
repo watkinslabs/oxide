@@ -195,3 +195,50 @@ fn htree_insert_lands_in_correct_leaf_and_stays_clean() {
         None        => eprintln!("e2fsck not available — skipped fsck assertion"),
     }
 }
+
+#[test]
+fn fallocate_unwritten_extents_then_write_is_e2fsck_clean() {
+    // Lane 10: fallocate now maps the range as UNWRITTEN extents (no eager
+    // zero-writes). Verify: reads serve zeros, a write CONVERTS the touched
+    // subrange to written (data visible, rest still zeros), and the on-disk
+    // extent tree (with unwritten flags + a converted split) is e2fsck-clean.
+    let (disk, cap) = build_disk(MINI);
+    let bs;
+    {
+        let m = ext4::Mount::open(disk.clone()).unwrap();
+        bs = m.sb.block_size as usize;
+        let f = m.create_file(2, b"journal.bin", 0o644, 0, 0).unwrap();
+        // Preallocate 8 blocks (grows size); no data written yet.
+        m.fallocate_inode(f, 0, (bs * 8) as u64, false).unwrap();
+        let inode = m.read_inode(f).unwrap();
+        assert_eq!(inode.size, (bs * 8) as u64);
+        // Every preallocated block reads as zeros (unwritten -> zero-fill).
+        for lb in 0..8 {
+            assert!(m.read_file_block(&inode, lb).unwrap().iter().all(|&b| b == 0),
+                "unwritten block {lb} reads zeros");
+        }
+        // Write real data into blocks 2..=4 (converts those unwritten -> written).
+        let payload: std::vec::Vec<u8> = (0..(bs as u32 * 3)).map(|i| ((i & 0x7F) | 0x80) as u8).collect();
+        m.write_at(f, (bs * 2) as u64, &payload).unwrap();
+        let inode2 = m.read_inode(f).unwrap();
+        // Written blocks show the data; still-unwritten blocks read zeros.
+        assert_eq!(m.read_file_block(&inode2, 2).unwrap(), payload[..bs], "converted block 2 has data");
+        assert_eq!(m.read_file_block(&inode2, 4).unwrap(), payload[bs*2..bs*3], "converted block 4 has data");
+        assert!(m.read_file_block(&inode2, 0).unwrap().iter().all(|&b| b == 0), "block 0 still unwritten -> zeros");
+        assert!(m.read_file_block(&inode2, 7).unwrap().iter().all(|&b| b == 0), "block 7 still unwritten -> zeros");
+    }
+    // Remount: the data survives and the metadata is Linux-valid.
+    {
+        let m2 = ext4::Mount::open(disk.clone()).unwrap();
+        let f = m2.lookup_path(b"/journal.bin").unwrap();
+        let inode = m2.read_inode(f).unwrap();
+        assert_eq!(m2.read_file_block(&inode, 3).unwrap()[0] & 0x80, 0x80, "converted data persisted");
+        assert!(m2.read_file_block(&inode, 0).unwrap().iter().all(|&b| b == 0), "unwritten persisted as zeros");
+    }
+    let bytes = dump_disk(&disk, cap);
+    match e2fsck_clean(&bytes) {
+        Some(true)  => {}
+        Some(false) => panic!("e2fsck reported errors after unwritten fallocate + write"),
+        None        => eprintln!("e2fsck not available — skipped fsck assertion"),
+    }
+}
