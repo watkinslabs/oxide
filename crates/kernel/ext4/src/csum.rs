@@ -221,6 +221,54 @@ pub fn dir_usable_len(sb: &Superblock, bs: usize) -> usize {
     if sb.has_metadata_csum() { bs - DIRENT_TAIL_SIZE } else { bs }
 }
 
+/// Stamp the `dx_tail` crc32c of an htree INDEX block (dx_root / dx_node) per
+/// Linux `ext4_dx_csum`. `count_offset` is the byte offset of the dx_countlimit
+/// (32 for a dx_root: dot+dotdot+dx_root_info; 8 for a dx_node: its fake dirent
+/// header). The 8-byte `dx_tail` sits at `count_offset + limit*8`; the checksum
+/// covers `[0, count_offset + count*8)` then the tail's 4-byte `dt_reserved` and
+/// 4 zero bytes standing in for `dt_checksum`. No-op without metadata_csum.
+/// # C: O(bs)
+pub fn stamp_dx_tail(sb: &Superblock, ino: u32, generation: u32, block: &mut [u8], count_offset: usize) {
+    if !sb.has_metadata_csum() { return; }
+    if count_offset + 4 > block.len() { return; }
+    let limit = u16::from_le_bytes([block[count_offset], block[count_offset + 1]]) as usize;
+    let count = u16::from_le_bytes([block[count_offset + 2], block[count_offset + 3]]) as usize;
+    let tail_off = count_offset + limit * 8;
+    let size = count_offset + count * 8;
+    if tail_off + 8 > block.len() || size > block.len() { return; }
+    let seed = inode_seed(sb, ino, generation);
+    let mut c = crc32c_update(seed, &block[..size]);
+    c = crc32c_update(c, &block[tail_off..tail_off + 4]); // dt_reserved
+    c = crc32c_update(c, &[0u8; 4]);                       // dummy dt_checksum
+    block[tail_off + 4..tail_off + 8].copy_from_slice(&c.to_le_bytes());
+}
+
+/// Verify a `dx_tail` crc32c (Linux `ext4_dx_csum_verify`). True (accept) when
+/// metadata_csum is off. # C: O(bs)
+pub fn verify_dx_tail(sb: &Superblock, ino: u32, generation: u32, block: &[u8], count_offset: usize) -> bool {
+    if !sb.has_metadata_csum() { return true; }
+    if count_offset + 4 > block.len() { return false; }
+    let limit = u16::from_le_bytes([block[count_offset], block[count_offset + 1]]) as usize;
+    let count = u16::from_le_bytes([block[count_offset + 2], block[count_offset + 3]]) as usize;
+    let tail_off = count_offset + limit * 8;
+    let size = count_offset + count * 8;
+    if tail_off + 8 > block.len() || size > block.len() { return false; }
+    let seed = inode_seed(sb, ino, generation);
+    let mut c = crc32c_update(seed, &block[..size]);
+    c = crc32c_update(c, &block[tail_off..tail_off + 4]);
+    c = crc32c_update(c, &[0u8; 4]);
+    let stored = u32::from_le_bytes([block[tail_off + 4], block[tail_off + 5], block[tail_off + 6], block[tail_off + 7]]);
+    stored == c
+}
+
+/// dx_entry `limit` for a FRESH index block: how many 8-byte dx_entries fit from
+/// `count_offset` to the block end, reserving 8 bytes for the `dx_tail` under
+/// metadata_csum (Linux `ext4_dir_block_dx_countlimit`). # C: O(1)
+pub fn dx_entry_limit(sb: &Superblock, bs: usize, count_offset: usize) -> u16 {
+    let tail = if sb.has_metadata_csum() { 8 } else { 0 };
+    ((bs - count_offset - tail) / 8) as u16
+}
+
 /// Max extent records that fit in an external extent block: the
 /// header (12) plus N*12 records, reserving a 4-byte tail under
 /// metadata_csum. `(bs - 12 - tail) / 12`.
