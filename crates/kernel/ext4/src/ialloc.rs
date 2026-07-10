@@ -98,6 +98,14 @@ impl Mount {
             bit
         };
         bitmap[final_bit >> 3] |= 1u8 << (final_bit & 7);
+        // Padding: bits ABOVE `inodes_per_group` (there is no inode for them) must
+        // be SET, per Linux/e2fsck (PR_5_INODE_BMAP_PADDING). Critical when
+        // materializing a previously-`EXT4_BG_INODE_UNINIT` group's bitmap — a
+        // zero-filled tail would be flagged. Set the partial byte's high bits +
+        // every following whole byte to 0xFF (idempotent for already-set images).
+        let ipg = self.sb.inodes_per_group as usize;
+        if ipg % 8 != 0 { bitmap[ipg >> 3] |= 0xFFu8 << (ipg % 8); }
+        for byte in bitmap[(ipg + 7) / 8..].iter_mut() { *byte = 0xFF; }
         let mut gd = gd_orig;
         gd.free_inodes_count = gd.free_inodes_count.saturating_sub(1);
         {
