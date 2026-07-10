@@ -88,6 +88,22 @@ impl Mount {
             Ok(s) => s,
             Err(_) => return self.apply_staged_to_target(&staged).map(|_| 0),
         };
+        // jbd2 checksum gate: we emit v1 (uncsummed) descriptor/commit blocks.
+        // A journal advertising CSUM_V2/V3 requires per-commit + per-tag crc32c;
+        // writing v1 blocks to it would fail replay verification (silent
+        // crash-recovery corruption). No ext4 filesystem we target uses it —
+        // e2fsprogs 1.47 does not enable jbd2 checksums even with metadata_csum,
+        // and every real image (rootfs + fixtures) reports "Journal features:
+        // (none)". Defensively fall back to DIRECT target writes (no journaling,
+        // no corruption) if we ever meet a csummed journal, rather than write
+        // blocks Linux would reject. REVOKE is likewise N/A: we checkpoint
+        // (s_start=0) after every commit, so only one transaction is ever
+        // in-flight and no older txn can resurrect a reused block on replay.
+        const JBD2_CSUM_ANY: u32 =
+            crate::jbd2::superblock::JBD2_INCOMPAT_CSUM_V2 | crate::jbd2::superblock::JBD2_INCOMPAT_CSUM_V3;
+        if jsb.feature_incompat & JBD2_CSUM_ANY != 0 {
+            return self.apply_staged_to_target(&staged).map(|_| 0);
+        }
         let bs = jsb.block_size as usize;
         let n = staged.len() as u32;
         if n + 2 >= jsb.maxlen { return Err(MountError::NoSpace); }
