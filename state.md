@@ -1,52 +1,51 @@
-# Handoff — 9/14 ext4 lanes + 2 boot blockers fixed; live-gnome blocker = tmpfiles 210s
+# Handoff — ext4 12/14 lanes done (full htree write path!); 2 boot blockers fixed
 
-Main = `cd20fadb`. ~16 PRs merged this session. Console/ext4/live-gnome share the
-sysinit critical path (console.md: tty stack is real; window blank only because
-sysinit stalls before getty). All three goals advance by clearing sysinit stalls.
+Main = `67acb0f1`. ~17 PRs merged this session. Focus: complete ext4 (hosted +
+e2fsck-gated, NO booting per user). console/live-gnome share the sysinit path.
 
-## ★★ Fixed + boot-verified
-1. **sysinit pivot_root deadlock (#2895)** — 3 mount bugs (bind source-peer-group;
-   overmount-on-ns-root invisible; umount2(".") stale cwd).
-2. **boot mkdir err=5 (#2902)** — ext4 concurrent-create allocator RACE → op_lock.
-Boot now: no pivot deadlock, no mkdir EIO; ext4 perf fixes HALVED the hwdb gap
-(72s→37s). Reaches deep into sysinit.
+## ★★ Fixed + boot-verified earlier this session
+1. **sysinit pivot_root deadlock (#2895)** — 3 mount bugs.
+2. **boot mkdir err=5 (#2902)** — ext4 concurrent-create allocator race → op_lock.
+   ext4 perf fixes halved the hwdb boot gap (72s→37s).
 
-## ext4 100% plan `scratch/ext4-compat-plan.md` — 9/14 lanes DONE (all e2fsck/unit-verified)
-L1 sync_fs→commit_batch (#2899) · L1b batch shadow-aware lookup (#2900) · L2 Drop
-commits batch (#2901) · L3 concurrent-create op_lock (#2902) · L10 lazy unwritten
-fallocate (#2905) · sparse writes leave holes / O(n²) fix (#2906) · L14 huge_file
-i_blocks (#2908) · L12 POSIX ACL enforcement (#2909).
+## ext4 100% plan `scratch/ext4-compat-plan.md` — 12 of 14 lanes DONE
+All e2fsck-clean (e2fsck present) or unit-verified:
+- L1 sync_fs→commit_batch (#2899) · L1b batch shadow-aware lookup (#2900)
+- L2 Drop commits batch (#2901) · L3 concurrent-create op_lock (#2902)
+- L10 lazy unwritten fallocate (#2905) · sparse writes leave holes (#2906)
+- L14 huge_file i_blocks (#2908) · L12 POSIX ACL enforcement (#2909)
+- **L6+7+8 FULL htree write path (#2911)** — leaf split, linear→indexed create,
+  root grow (1→2 level), node split, dx_tail checksums, + inode-bitmap padding
+  fix. Verified: 6000 creates through our code build a clean 2-level index
+  (mke2fs fresh image, `e2fsck -fn` clean); 360 creates split leaves on htree.img.
 
-## Remaining 5 ext4 lanes — LARGE / hard-to-verify (need dedicated focus, NOT a rush)
-- **4,5 jbd2 revoke + commit/tag checksums** — crash-recovery ONLY (we WAL + apply
-  to targets, so clean runs are correct; only a crash+replay exercises these).
-  Needs a CRASH-INJECTION harness to verify — can't gate on e2fsck of a clean image.
-- **6,7,8 htree leaf-split + creation + dx-csum** — coupled unit: split needs dx-block
-  csum for metadata_csum images or e2fsck rejects. Real "large-dir create" gap.
-- **9 allocator run-length** — traced: does NOT fix the hwdb 37s gap (that's 13.5MB
-  of DATA writes, already metadata-batched; cost is write-path/virtio, not alloc).
-- **13 fallocate PUNCH_HOLE/COLLAPSE/INSERT** — middle-range extent surgery (split a
-  spanning extent → +1 extent → node overflow); no bulk extent-rebuild primitive yet.
-- **11 backup SB/GDT** — NON-ISSUE: Linux keeps primary authoritative at runtime,
-  doesn't mirror counters; backups valid from mkfs (we never resize).
-
-## ★ live-gnome BLOCKER (non-ext4): `systemd-tmpfiles-setup-dev-early` 210s hang
-Boot gaps: 15.6→53.2 (37s hwdb.bin write) then **53.2→263.8 (210s) = tmpfiles-setup-
-dev-early** creating static /dev nodes, then timeout-killed at 210s → proceeds.
-NOT ext4 — devtmpfs/tmpfs mknod or a tmpfiles/varlink wait. THIS is the live-gnome
-blocker. NEXT: boot `features=debug-mnt`, find its vpid, read /proc/<pid>/status
-State + fd during 53-263s to see what it's stuck on (a mknod? a socket wait?).
+## Remaining 2-3 lanes — LARGE / need new machinery (honest scope)
+- **4, 5 jbd2 revoke + commit/tag checksums** — crash-recovery ONLY (we WAL +
+  apply to targets, so clean runs are correct). Verifying needs a CRASH-INJECTION
+  harness (mount, stage a txn, DON'T apply targets, remount+replay, assert). That
+  harness is the prerequisite — build it first.
+- **13 fallocate PUNCH_HOLE/COLLAPSE/INSERT** — multi-crate plumbing (sys_fallocate
+  in sched/falloc.rs → VFS `InodeOps::fallocate` trait → ext4/tmpfs impls) PLUS
+  middle-range extent surgery (split a spanning extent → +1 extent → possible
+  node overflow; model on truncate.rs's depth-0/depth>0 walk). Currently EOPNOTSUPP
+  (tools degrade gracefully). Do depth-0 (inline) first + e2fsck-test, then depth>0.
+- **9 allocator run-length** — now MARGINAL: `insert_extent_record` coalesces, and
+  alloc_block returns consecutive blocks for fresh regions, so extents are already
+  compact. Reservation-cache (amortize per-alloc RMW) is the only real gain.
+- **11 backup SB/GDT** — NON-ISSUE (Linux keeps primary authoritative at runtime).
 
 ## First command next session
-`cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ cd20fadb
-Recommended order for the GOAL (live-gnome): (1) trace + fix the tmpfiles-dev 210s
-hang (the actual blocker); then boot to getty/graphical. For ext4 100% completeness:
-the htree unit (6+7+8) is the biggest real gap; jbd2 (4+5) needs a crash-injection
-harness first; PUNCH_HOLE (13) needs an extent-rebuild primitive.
+`cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ 67acb0f1
+For ext4 100%: (1) build a crash-injection harness → jbd2 revoke+csum (4,5);
+(2) PUNCH_HOLE (13) — plumbing + depth-0 extent surgery, e2fsck-gated.
+For live-gnome (separate, NON-ext4): the `systemd-tmpfiles-setup-dev-early` 210s
+hang blocks the boot — trace what its vpid is stuck on (device-node/mknod/varlink),
+NOT ext4.
 
 ## Gotchas
-- NEVER `git add -A` (swept ext42.md + rustc-ice dumps; now gitignored). Stage explicit.
-- e2fsck (/usr/bin/e2fsck present) is THE gate for format-critical ext4 (e2fsck_image.rs).
-- Boot-verify on main; mount/ext4-only pushes use SKIP_SMOKE=1.
-- rustc ICE "unstable fingerprints" = transient compiler cache bug, retry.
-- aarch64: fixes arch-neutral; compile; arm boot untestable here (no packed image).
+- NEVER `git add -A` (swept ext42.md + rustc-ice dumps; gitignored). Stage explicit.
+- e2fsck (/usr/bin/e2fsck) is THE gate for format-critical ext4; e2fsck_image.rs
+  can mke2fs a fresh fixture at runtime (see htree_create_split test) to exercise
+  paths htree.img can't (limited free inodes).
+- User forbids booting for ext4 work — iterate hosted. [[ext4-work-no-booting]]
+- aarch64: fixes arch-neutral; compile; arm boot untestable here.
