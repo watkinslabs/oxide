@@ -76,6 +76,34 @@ pub struct KAlloc {
     inner: Spinlock<HoleList, KMalloc>,
     initialized: AtomicBool,
     grow_hook: AtomicU64,
+    /// Arch IRQ save-and-disable hook (`fn() -> u64`, returns the prior flags).
+    /// `0` = not installed → no-op (early boot runs IRQ-off already).
+    irq_save: AtomicU64,
+    /// Arch IRQ restore hook (`fn(u64)`). Paired with `irq_save`.
+    irq_restore: AtomicU64,
+}
+
+/// RAII: IRQs are disabled for the whole enclosing alloc/dealloc and restored
+/// on drop (every return path). The kernel heap is shared with IRQ-context
+/// allocators — the timer-ISR deferred-wake path pushes an `Arc<Task>` to a
+/// per-CPU `Vec` that can realloc → `KAlloc::alloc` inside a hard IRQ. Under the
+/// plain (non-IRQ) `Spinlock` that deadlocks (the ISR spins on the lock the
+/// interrupted mainline holds) or, in the grow window, re-enters and races the
+/// hole list. Disabling IRQs across the ENTIRE op (not just while the hole-list
+/// lock is held — the grow path drops it to call the PMM) closes both.
+struct IrqOff {
+    restore: u64,
+    flags: u64,
+}
+impl Drop for IrqOff {
+    fn drop(&mut self) {
+        if self.restore != 0 {
+            // SAFETY: `restore` was stored from a `fn(u64)` via set_irq_gate;
+            // `flags` is the value the paired save hook returned.
+            let f: fn(u64) = unsafe { core::mem::transmute(self.restore as usize) };
+            f(self.flags);
+        }
+    }
 }
 
 impl KAlloc {
@@ -87,7 +115,28 @@ impl KAlloc {
             inner: Spinlock::new(HoleList::new()),
             initialized: AtomicBool::new(false),
             grow_hook: AtomicU64::new(GROW_HOOK_NONE),
+            irq_save: AtomicU64::new(0),
+            irq_restore: AtomicU64::new(0),
         }
+    }
+
+    /// Install the arch IRQ save-disable / restore hooks so `alloc`/`dealloc`
+    /// run IRQ-atomic (see `IrqOff`). Called once at boot after IRQs exist.
+    /// # C: O(1)
+    pub fn set_irq_gate(&self, save: fn() -> u64, restore: fn(u64)) {
+        self.irq_save.store(save as usize as u64, Ordering::Release);
+        self.irq_restore.store(restore as usize as u64, Ordering::Release);
+    }
+
+    /// Disable IRQs for the caller's scope (RAII); no-op until `set_irq_gate`.
+    #[inline]
+    fn irq_off(&self) -> IrqOff {
+        let s = self.irq_save.load(Ordering::Acquire);
+        let r = self.irq_restore.load(Ordering::Acquire);
+        if s == 0 || r == 0 { return IrqOff { restore: 0, flags: 0 }; }
+        // SAFETY: `s` was stored from a `fn() -> u64` via set_irq_gate.
+        let save: fn() -> u64 = unsafe { core::mem::transmute(s as usize) };
+        IrqOff { restore: r, flags: save() }
     }
 
     /// Set up the allocator over `[start, start + size)`.
@@ -167,6 +216,8 @@ impl KAlloc {
 unsafe impl GlobalAlloc for KAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if !self.is_initialized() { return ptr::null_mut(); }
+        // IRQ-atomic across the WHOLE alloc (incl. the unlocked grow window).
+        let _irq = self.irq_off();
         let mut g = self.inner.lock();
         if let Some(p) = g.alloc(layout) {
             return p.as_ptr();
@@ -196,6 +247,9 @@ unsafe impl GlobalAlloc for KAlloc {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ptr.is_null() { return; }
+        // IRQ-atomic: dealloc mutates the same hole list an IRQ-context alloc
+        // touches; disable IRQs for the whole op (see `IrqOff`).
+        let _irq = self.irq_off();
         // SAFETY: caller-asserted that `ptr` was previously returned by
         // `alloc(layout)` and is no longer borrowed.
         let nn = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
