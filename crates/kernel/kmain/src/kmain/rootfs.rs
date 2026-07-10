@@ -11,6 +11,12 @@ pub unsafe fn init(info: &BootInfo) {
     unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
 
     unsafe {
+        // Serialize ext4 metadata transactions per-task: the reentrant txn gate
+        // keys ownership on the current task id so concurrent tasks/CPUs can't
+        // race the group bitmaps/GDT/counters (was corrupting the on-disk fs:
+        // group-bitmap csum mismatches + unattached inodes). Registered before
+        // the first mount so every ext4 op is serialized.
+        ext4::mount::set_ctx_id_hook(|| sched::current().map(|t| t.tid as u64).unwrap_or(0));
         let root_dev = block::registry::by_serial("oxide-root")
             .or_else(block::registry::first_device)
             .expect("root disk (virtio-blk serial=oxide-root) not found");

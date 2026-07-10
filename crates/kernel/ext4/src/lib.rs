@@ -14,7 +14,11 @@
 
 extern crate alloc;
 
-#[cfg(any(test, feature = "hosted"))]
+// Any non-kernel (host) build is for tests/tooling — pull std so the
+// transaction gate's per-thread `ctx_id` works under plain `cargo test`
+// (CI runs `cargo test --workspace` with no `hosted` feature). The real
+// kernel target stays `no_std`.
+#[cfg(not(target_os = "oxide-kernel"))]
 extern crate std;
 
 pub mod superblock;
