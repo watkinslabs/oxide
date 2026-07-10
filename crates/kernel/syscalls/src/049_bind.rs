@@ -111,7 +111,14 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
                         const S_IFSOCK: u16 = 0xC000;
                         let cred = crate::pathresolve::current_cred();
                         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
-                        let _ = pino.mknod_child(name, S_IFSOCK, 0, &ctx);
+                        if pino.mknod_child(name, S_IFSOCK, 0, &ctx).is_ok() {
+                            // mknod_child drives i_op->mknod straight off the parent
+                            // inode, bypassing namei's d_instantiate. Drop any cached
+                            // NEGATIVE dentry left by an earlier stat(path)==ENOENT so
+                            // the next lookup sees the new S_IFSOCK node instead of a
+                            // stale definitive-ENOENT negative.
+                            vfs::mount::drop_stale_negative(&p);
+                        }
                     }
                 }
             }
