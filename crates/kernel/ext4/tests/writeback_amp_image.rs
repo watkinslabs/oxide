@@ -80,14 +80,28 @@ fn large_file_writeback_is_not_per_page_commit() {
          pre-read for block-aligned full-block writes is dead I/O (should be ~0)",
         reads, NPAGES);
 
-    // Each per-page journal commit writes descriptor + data + commit + journal-SB
-    // (twice) + the target metadata: ~20 write-ops/page on this journaled image
-    // (measured baseline: 800 ops for 40 pages). Batching the whole writeback
-    // into ONE transaction commits once: ~8 ops/page (measured 332). Assert well
-    // under the per-page baseline — a regression to per-page commits (the sysinit
-    // stall) trips this. Also guards the O(n²) re-extend: that BLOWS UP writes.
-    assert!(writes < (NPAGES as u64) * 12,
-        "writeback issued {} write-ops for {} pages — per-page journal-commit amplification \
-         (batched ~8/page; per-page ~20/page; O(n²) re-extend far higher)",
+    // Journaled-image write-op history for this 40-page writeback:
+    //   per-page commit (old):  ~20/page (800)
+    //   one-txn batch (B679):   ~8/page  (332)
+    //   RMW-read skip (B701):   ~4/page  (172)
+    //   coalesced data writes:  ~1.3/page (52) — contiguous data blocks collapse
+    //     into ~one 128KB device request instead of 32 4KB writes.
+    // Assert < 2/page: catches a regression that loses coalescing (back to
+    // per-block ~4/page) OR per-page journal commits (~20/page) OR the O(n²)
+    // re-extend (far higher). The residual is the metadata journal commit.
+    assert!(writes < (NPAGES as u64) * 2,
+        "writeback issued {} write-ops for {} pages — lost data-write coalescing \
+         (coalesced ~1.3/page; per-block ~4/page; per-page-commit ~20/page)",
         writes, NPAGES);
+
+    // Correctness: the coalesced/deferred data writes must land the exact bytes.
+    // Re-open the inode fresh (bypass any cached frame) and read the whole file
+    // back through the mount, comparing to the pattern. A coalescing bug
+    // (mis-ordered runs, wrong physical block, dropped tail) corrupts this.
+    st.page_cache.invalidate(block::types::InodeId(ino as u64));
+    let mut got = alloc::vec![0u8; total];
+    let rf = st.wrap_file(ino).expect("re-wrap");
+    let n = rf.read(0, &mut got).expect("readback");
+    assert_eq!(n, total, "short readback: {} of {}", n, total);
+    assert!(got == pat, "coalesced writeback corrupted file data");
 }

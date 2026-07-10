@@ -289,7 +289,7 @@ impl Mount {
     pub(super) fn insert_inline_sorted(
         &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, ino_byte_off: u64,
         i_block: &mut [u8; I_BLOCK_LEN], hdr: inode::ExtentHeader,
-        new_size: u64, logical: u32, data: &[u8], unwritten: bool,
+        new_size: u64, logical: u32, data: &[u8], unwritten: bool, defer_data: bool,
     ) -> Result<u32, MountError> {
         let bs = self.sb.block_size as usize;
         let gen = Self::inode_generation(ino_bytes);
@@ -304,7 +304,10 @@ impl Mount {
             // Preallocated: no data write; reads serve zeros via is_unwritten().
             Self::extent_for_unwritten(logical, phys, 1)
         } else {
-            write_byte_range(&*self.dev, phys * bs as u64, data)?;
+            // defer_data: map the WRITTEN extent now, caller writes the block
+            // content later coalesced with adjacent blocks (phys IS the final
+            // location; written before the batch commit → data=ordered).
+            if !defer_data { write_byte_range(&*self.dev, phys * bs as u64, data)?; }
             Self::extent_for(logical, phys)
         };
         Self::insert_extent_record(&mut extents, new_extent)?;
