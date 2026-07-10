@@ -16,15 +16,24 @@ Main = `ba551767`. 2 fixes merged this session; live-gnome blocker DIAGNOSED (no
   write-ops/page; read-back verified; e2fsck clean; 235 tests pass. BOOT-VERIFIED:
   hwdb fsync 50s→~30s. Improved but boot still doesn't reach gdm.
 
-## FINAL BLOCKER (boot-isolated) — virtio-blk per-op I/O latency on SMALL reads
-B702 coalesced hwdb's large sequential write, but sysinit is now bottlenecked on
-MANY SMALL scattered reads (userdb nss /etc/group, small-file/dyld reads) that
-can't coalesce — each blocking read pays the single-inflight virtio round-trip
-(~1-2ms). tmpfiles/userwork still crawl. Fix is driver-level (gnome-boot-campaign.md
-"FINAL LEVER"): (1) FIRST verify the MSI completion IRQ actually fires at runtime
-(enum logged msi_fires=0; if completions rely on the 200k spin not a prompt IRQ
-wake, fixing MSI makes every op ~µs — cheap); (2) else multi-inflight virtio-blk
-(bounce pool + per-descriptor completion). Needs ONE instrumented boot to pin (1).
+## ★ MAJOR CORRECTION — I/O is NOT the blocker (measured 16µs/op)
+A BLKLAT probe (added to wait_for_completion, measured, reverted) proved virtio-blk
+I/O is **~16µs/op and never parks** (`ops=262144 parked=12 avg_us=15`). The
+per-op-latency / multi-inflight theory was WRONG. Two separate problems:
+- (A) I/O VOLUME: ~262k ops in the first ~11s (ext4 metadata amplification) —
+  B701/B702 reduce it.
+- (B) **THE 249s BLOCKER**: I/O STOPS at t≈16s, boot keeps stalling. tmpfiles's
+  ~249s is a phase-2 **AF_UNIX/varlink WAKE MISS** (15s cadence = a userspace varlink
+  timeout breaking a tmpfiles↔userwork mutual block). NOT I/O/CPU/tick.
+
+## NEXT SESSION — instrument the AF_UNIX varlink wake miss (the real blocker)
+Static analysis says every wake "should" fire (shared sock.poll_subs; ppoll has the
+20ms safety net; blocking-read wake is race-free) — only a LIVE trace catches it.
+Add a trace to read_unix_stream_blocking (park/wake + deadline), sys_accept, and the
+userdbd worker-spawn/SIGCHLD path, keyed to the /run/systemd/userdb sockets; one boot
+shows who parks, who should wake it, what fires at the 15s mark. Strongest candidate:
+the blocking-read reply wake to tmpfiles (deadline 0 = NO safety net) being dropped.
+Do NOT pursue virtio-blk multi-inflight — I/O is fast.
 
 ## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
 `systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.
