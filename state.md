@@ -34,19 +34,27 @@ BUILT a heap-poison diagnostic and used it to PROVE the crash is a use-after-fre
 - Cascade: `kmain` feature `debug-heappoison = ["kalloc/debug-heappoison"]`.
   Boot: `qemu_start features=debug-boot,debug-heappoison smp=2`.
 
-## NEXT — name the free-site (pick one; the FIRST is the sharp experiment)
-1. **Force the silent udevd UAF to FAULT so the probe names it.** Change the
-   poison of the leading 8B to a NON-CANONICAL POINTER (e.g. 0x00DE_AD00_DEAD_00DE)
-   instead of 0xEE. If the freed object's leading word is a deref'd POINTER
-   (vtable / next / data ptr — many kernel structs), udevd's read → #GP/#PF →
-   the GPR sweep prints [UAF] with the freed block's base+size. (0xEE only traps
-   the Arc-COUNT case via #UD, which udevd doesn't reach.) One boot, smp=2.
-2. **Audit udevd's kernel path for a freed-object read**: AF_NETLINK
-   kobject_uevent, sysfs/kernfs, devtmpfs/devfs dentry-inode lifecycle, inotify
-   on /dev. Prime: a dentry/inode/kobject freed while a uevent/netlink skb or a
-   devfs registry entry still references it. Related: [[mknod-bypasses-dcache-negative]],
-   [[mount-dentry-sharing-gotcha]], the "13 unreaped zombies" lead
-   [[qemu-vsock-cid-and-sigchld-reap]].
+## NEXT — the victim is a freed INODE/DENTRY read as DATA (no CPU fault to catch)
+Key deduction: 0xEEEE…EEEE is ALREADY non-canonical, so if the poisoned leading
+word were a kernel-deref'd POINTER, udevd's read would have #GP'd and the GPR
+sweep would have fired. It DIDN'T. ⇒ the poisoned bytes are returned to udevd as
+DATA (a stat field / sysfs attribute / readdir entry the kernel builds from a
+FREED inode/dentry), so there is no CPU fault — the [UAF] fault-probe cannot name
+it. So a non-canonical-poison boot is FUTILE; do NOT waste a boot on it.
+Do this instead (source audit, no boot):
+1. **Audit the devtmpfs/sysfs INODE+DENTRY lifecycle for a UAF.** udevd's
+   startup stats/reads /dev (devtmpfs/devfs) + /sys (kernfs/sysfs). Prime: an
+   `Arc<Inode>`/`Arc<Dentry>` freed while still linked in the dcache/icache or a
+   devfs registry, so a later stat/readdir/open reads its (freed) fields. The
+   poisoned bytes are the inode/dentry's leading 16B (refcount/ino/mode/ptr).
+   Strong prior leads: [[mknod-bypasses-dcache-negative]] (devfs bind/mknod skips
+   dcache), [[mount-dentry-sharing-gotcha]]. Look at devfs/devtmpfs node
+   create/remove vs icache/dcache eviction, and sysfs/kernfs dynamic-node drop.
+2. To NAME it deterministically, extend the tool to record a FREE-SITE tag per
+   quarantined block (store a small caller id, since frame-pointers are off pass
+   an explicit tag from the Drop sites of Inode/Dentry) and dump the tag for the
+   block whose bytes udevd read — OR add a targeted klog in Arc<Inode>/Arc<Dentry>
+   Drop that asserts the object is unlinked from every cache before free.
 - RULED OUT by code-read (refcount-correct): fdtable fork_clone/get/close/dup,
   epoll scan_once, zombies park/unpark, File Drop, runqueue swap_current.
 
