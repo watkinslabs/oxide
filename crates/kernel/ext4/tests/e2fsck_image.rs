@@ -242,3 +242,35 @@ fn fallocate_unwritten_extents_then_write_is_e2fsck_clean() {
         None        => eprintln!("e2fsck not available — skipped fsck assertion"),
     }
 }
+
+#[test]
+fn sparse_write_past_eof_leaves_a_hole_not_zeros() {
+    // A write landing far past EOF must leave the gap as a HOLE (Linux sparse
+    // semantics), allocating only the written block(s) — NOT zero-filling the
+    // whole span (the O(file-size) writeback stall the old code caused).
+    let (disk, cap) = build_disk(MINI);
+    {
+        let m = ext4::Mount::open(disk.clone()).unwrap();
+        let bs = m.sb.block_size as usize;
+        let f = m.create_file(2, b"sparse.bin", 0o644, 0, 0).unwrap();
+        let pre_free = m.state_free_blocks();
+        // Write one block of data at logical block 100 (offset 100*bs).
+        let payload = std::vec![0xA5u8; bs];
+        m.write_at(f, (bs * 100) as u64, &payload).unwrap();
+        let inode = m.read_inode(f).unwrap();
+        assert_eq!(inode.size, (bs * 101) as u64, "size reflects the far write");
+        // Only a FEW blocks were allocated (the written block + maybe an extent
+        // metadata block), NOT ~100 — proving the gap is a hole.
+        let used = pre_free - m.state_free_blocks();
+        assert!(used <= 3, "sparse write allocated {used} blocks (must be a hole, not ~100)");
+        // The gap reads as zeros; the written block reads the data.
+        assert!(m.read_file_block(&inode, 50).unwrap().iter().all(|&b| b == 0), "gap block 50 is a hole -> zeros");
+        assert_eq!(m.read_file_block(&inode, 100).unwrap(), payload, "written block 100 has data");
+    }
+    let bytes = dump_disk(&disk, cap);
+    match e2fsck_clean(&bytes) {
+        Some(true)  => {}
+        Some(false) => panic!("e2fsck reported errors on the sparse file"),
+        None        => eprintln!("e2fsck not available — skipped fsck assertion"),
+    }
+}
