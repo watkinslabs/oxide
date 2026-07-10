@@ -126,6 +126,24 @@ fn init_pmm_and_arch(info: &BootInfo) {
     #[cfg(target_arch = "x86_64")]
     if pmm.is_ok() { arch_irq::smp_x86::reserve_trampoline_page(); }
     if pmm.is_ok() { GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow); }
+    // Make the heap IRQ-atomic: IRQ-context allocators exist (the timer-ISR
+    // deferred wake pushes to a per-CPU Vec that can realloc), so alloc/dealloc
+    // must disable IRQs across the whole op — else the plain hole-list Spinlock
+    // deadlocks (ISR spins on the mainline-held lock) or re-enters in the grow
+    // window. Installed after IRQs are set up; safe (IRQs are still off now).
+    if pmm.is_ok() {
+        use sync::IrqGate;
+        #[cfg(target_arch = "x86_64")]
+        GLOBAL_ALLOC.set_irq_gate(
+            || unsafe { hal_x86_64::X86IrqGate::save_disable() },
+            |f| unsafe { hal_x86_64::X86IrqGate::restore(f) },
+        );
+        #[cfg(target_arch = "aarch64")]
+        GLOBAL_ALLOC.set_irq_gate(
+            || unsafe { hal_aarch64::ArmIrqGate::save_disable() },
+            |f| unsafe { hal_aarch64::ArmIrqGate::restore(f) },
+        );
+    }
     if pmm.is_ok() { pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info)); }
     debug_boot! {
         match &pmm {
