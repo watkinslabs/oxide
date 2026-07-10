@@ -133,7 +133,7 @@ item remains, gated on DTB-clock parsing.** Status column updated below.
 |---|---|---|---|
 | G1 | fbcon scanout present to the virtio-gpu window | `drv-virtio-gpu/src/post_init/scanout.rs`, `fbcon/src/kernel/runtime.rs` | **CLOSED (observed):** the window shows scrolling kernel log + updates live during userland (console2.md ground truth) → fbcon scans out. Blank *login* is G2, not a console bug. |
 | G2 | No `getty@tty1` / `serial-getty@ttyS0` reached because boot stalls at sysinit | boot blocker = systemd-userdb loop (`[[desktop-blocker-tmpfiles-userdbd]]`) | OPEN, but USERSPACE (not console): stock systemd `[SUCCESS=merge]` GetMemberships loop in `../images`; kernel af_unix path verified correct. |
-| G3 | TCSETS baud reprogram | x86 `serialtty/src/lib.rs` + `drv-uart-16550`; arm `drv-uart-pl011` | **x86 CLOSED:** `set_termios`→`set_baud(c_ospeed)`→16550 divisor reprogram (fixed 1.8432 MHz clock). **arm DEFERRED (valid):** pl011 IBRD/FBRD need `UARTCLK` from the DTB clock tree (not parsed in v1); qemu host chardev ignores the rate, so a divisor written without the real UARTCLK would be *wrong*, not merely absent — deferred to DTB-clock parsing, not stubbed lazily. |
+| G3 | TCSETS baud reprogram | x86 `serialtty/src/lib.rs` + `drv-uart-16550`; arm `drv-uart-pl011` | **x86 CLOSED:** `set_termios`→`set_baud(c_ospeed)`→16550 divisor reprogram (fixed 1.8432 MHz clock). **arm CLOSED (F698):** `dtb::pl011_clock_hz()` walks the `arm,pl011` node's `clocks` phandle → clock node `clock-frequency` (Linux `clk_get_rate`), boot publishes it to `hal_aarch64::pl011::uartclk_hz()`, and `pl011` `set_baud` computes IBRD/FBRD against the real DTB UARTCLK (24 MHz fallback). No longer an assumed constant. |
 | G4 | printk console set data-driven per `console=` token | `kmain/kmain/runtime.rs:49`, `scanout.rs:251`, `cmdline` `console_classes()` | **CLOSED:** serial byte sink gated on `console_classes().0`, fbcon aux sink on `console_classes().1`, both parsed from every `console=` token (Linux `register_console` per token). |
 | G5 | `VMIN`/`VTIME` blocking policy (all 4 cases + inter-byte timer) | `tty/src/core/tty.rs` `read_raw` (drives `park_commit_deadline` off `vtime()`) | **CLOSED:** full VMIN/VTIME lives in the tty core `read_raw`; the n_tty `ops.rs` fast path is VMIN-gated as designed (comment at `ops.rs:80`). |
 | G6 | kbd-sink doc comment | `tty/src/live.rs:29` | **CLOSED:** comment now correctly says foreground-VT `TtyStruct`, NOT serial `static_console`. |
@@ -192,7 +192,9 @@ G1 is closed by observation (fbcon scans out — the window shows live kernel lo
 G3(x86)/G4/G5/G6 are all implemented (see the updated §5 status column), and the
 full VT/KD ioctl handshake surface (VT_ACTIVATE/WAITACTIVE/SETMODE/RELDISP,
 KDSETMODE graphics handoff, VT_RESIZE→SIGWINCH, etc.) is real, not stubbed — a
-getty/login in the window is *kernel-ready*. The ONLY remaining console-layer
+getty/login in the window is *kernel-ready*. **UPDATE 2026-07-10 (F698): the pl011
+UARTCLK is now DTB-sourced — the console kernel stack has ZERO remaining Linux
+divergences.** The ONLY remaining console-layer
 divergence is **pl011/aarch64 TCSETS baud reprogram**, correctly deferred on DTB-
 clock (`UARTCLK`) parsing — not a lazy stub (writing a divisor without the real
 UARTCLK programs a *wrong* baud, and qemu's host chardev ignores the rate, so the
