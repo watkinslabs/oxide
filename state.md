@@ -1,66 +1,54 @@
-# Handoff — sysinit pivot_root deadlock BROKEN; boot advances 90s→573s
+# Handoff — sysinit deadlock + mkdir-EIO both FIXED; boot grinds, next = slowness
 
-Main = `66c1c7e7` (+ C107 ext42.md→scratch merged). Goal: console login → live-gnome.
-This session: 4 PRs merged (#2895 #2896 #2897 #2898).
+Main = `eeb9d7c3`. Goal: console login → live-gnome. ~11 PRs merged this session.
+Boot now: NO pivot deadlock, NO mkdir err=5; reaches 345s+ still progressing
+through per-service namespace setup (journald started). Not yet at login/graphical.
 
-## ★★ BREAKTHROUGH: the multi-session sysinit pivot_root deadlock is FIXED (B685/#2895)
-Every service using mount-namespacing (`ProtectSystem=` etc.) deadlocked sysinit at
-`pivot_root -EINVAL`. THREE Linux-correctness bugs, all fixed + boot-verified:
-1. **Bind inherited SOURCE peer group** (`165_mount.rs`): binding the shared open_tree
-   clone of `/` made the service rootfs SHARED → pivot EINVAL. Linux `do_loopback`
-   clones flag 0 (never a peer of source). Removed `join_peer_group(target, src_pg)`.
-2. **Overmount on ns root invisible** (`vfs mount/model.rs`): `mount_exact_at`/
-   `mount_at_path_exact` short-circuited `is_ns_root_dentry` → underlay root, ignoring a
-   stacked mount. After `pivot_root(.,.)` the old root is stacked on `/`; `umount2(.,
-   MNT_DETACH)` returned 0 → EINVAL. Now check for overmount first (Linux `lookup_mnt`).
-3. **`umount2(".")` used STALE cwd string** (`166_umount2.rs`): after pivot relocates the
-   mount the cwd string is stale. Resolve relative targets via live `cwd_vfs` dentry
-   (same fix chroot(2) already had).
-Boot proof: PIVOT-EINVAL gone, `umount2(.) rv=0`, journald/udev/sysctl/tmpfiles now
-START; boot reaches 573s (was hard-deadlock ~90s).
+## ★★ Two multi-session blockers FIXED this session
+1. **sysinit pivot_root deadlock (B685/#2895)** — 3 Linux-correctness mount bugs:
+   bind inherited source peer-group (`165_mount.rs`), overmount-on-ns-root invisible
+   to `mount_exact_at`/`mount_at_path_exact` (`vfs model.rs`), `umount2(".")` used the
+   stale cwd string (`166_umount2.rs`). pivot_root + `umount2(., MNT_DETACH)` now work.
+2. **boot `mkdir /var/log/journal/<id> err=5` + `/run/udev err=5` (B691/#2902)** — the
+   ext4 allocator RACE. `try_alloc_{inode,}_in_group` did the bitmap read→find→set with
+   NO lock, and the shared `MountState.shadow` lifecycle was unserialized → concurrent
+   creates double-allocated one inode → corruption → EIO. Fixed with a mount-wide
+   `op_lock` (Linux `ext4_lock_group`, class Ext4Alloc=59) held across the whole create
+   in create_dir/file/symlink/mknod. Boot-verified: err=5 GONE (was every boot).
 
-## Comprehensive FS/mount harness built (B686/#2896, B687/#2897) — the "does the FS work" test
-- `vfs/tests/mount_propagation_pivot.rs`: full systemd idiom end-to-end (make-rshared →
-  unshare → make-rslave → bind → pivot → umount2 MNT_DETACH) + submount-carry assertions.
-- `ext4/tests/fs_ops_stress_image.rs`: mkdir chains, dir-block growth, symlinks, files,
-  persist (mini-j.img, CI).
-- `ext4/tests/real_rootfs_mkdir_repro.rs` (#[ignore], env-gated `OXIDE_ROOTFS_IMG`):
-  opens the REAL boot rootfs and drives per-op + batched + 15.6k-op churn + the
-  VFS/framecache path (`mkdir_at`/`write_file`). Run:
-  `OXIDE_ROOTFS_IMG=/home/nd/oxide/images/output/live-gnome-x86_64-root.img cargo test
-   -p ext4 --test real_rootfs_mkdir_repro -- --ignored --nocapture`
-- B686 also fixed the swallowed-EIO: ext4 create ops now map real MountError
-  (DirFull/NoSpace→ENOSPC, Depth→ENOTSUP, genuine IO→EIO) via `vfs_error_from_mount`.
+## ext4 100% Linux-compat plan: `scratch/ext4-compat-plan.md` (14 lanes)
+DONE: Lane 1 batch-drain durability (sync_fs→commit_batch, B688/#2899), Lane 1b
+batch read-your-writes (shadow-aware dir lookup, B689/#2900), Lane 2 batch clean-drop
+(Drop commits, B690/#2901), Lane 3 concurrent-create race (B691/#2902).
+Hosted harnesses added: batch_syncfs_persists, batch_read_your_writes,
+batch_drop_persists, concurrent_alloc_image (8thr×40 creates, 0 double-alloc),
+fs_ops_stress_image, real_rootfs_mkdir_repro (env-gated real image), plus
+vfs mount_propagation_pivot (full switch-root idiom).
+TODO (ext42.md order): 4 jbd2 revoke+seq replay, 5 jbd2 checksums, 6 htree leaf split,
+7 htree creation, 8 htree dx csum, **9 block allocator run-length/goal (perf!)**,
+10 lazy unwritten extents (perf!), 11 backup SB/GDT, 12 POSIX ACL, 13 fallocate range
+ops, 14 huge_file i_blocks.
 
-## Remaining boot issue #1: `mkdir /var/log/journal/<id> err=5` + `/run/udev err=5`
-NARROWED to CONCURRENCY. EVERY single-threaded hosted layer SUCCEEDS on the real image
-(raw Mount, batched, 15.6k-op churn, VFS/framecache path). With the B686 errno fix the
-boot STILL shows err=5 (EIO) — so it's NOT htree DirFull (→ENOSPC now), NoSpace, dir-
-growth, submount-carry, or image state. It's a genuine Dir/BlockIo/Inode error → a
-multi-task race in `create_dir`'s bitmap/GDT/inode allocation (services create in
-different parent dirs concurrently; parent i_rwsem serializes same-dir but the GLOBAL
-allocator is shared). NEXT: (a) klog the MountError variant in-boot (needs ext4
-`debug-mount` feature wired into the kernel build), or (b) a hosted multi-thread
-concurrency stress test on `Arc<Mount>`. Likely non-fatal (journald falls back to
-volatile /run) — boot progressed past it.
-
-## Full ext4 roadmap: `scratch/ext42.md` (thorough audit, this session)
-P0 durability: **`SuperOps::sync_fs` calls the no-op `flush_pending_tx()` not
-`commit_batch()`** (`rootfs/ops/mountfs.rs:37`) → batched metadata on non-root ext4
-(`/home`) can be lost on syncfs. Small clear fix + remount test. Also: Drop commits
-clean-bit into the same undrained shadow (2.2). P1: htree leaf-split + htree-create
-absent (populated indexed dirs) ; jbd2 revoke/checksum absent (crash-only). See §7 fix
-order + §9 files.
+## Remaining boot issue: SLOWNESS (next frontier)
+Boot progresses (no deadlock/EIO) but grinds ~345s+ without reaching login. Strong
+suspect = ext4 perf (Lanes 9/10): one-block-at-a-time allocator + eager
+fallocate/zero-extension → high latency + journal volume under the boot's file-heavy
+workload. Also the `/run/credentials/* umount2 rv=-22` are likely benign. NEXT:
+profile which service/op dominates the 17s→89s→345s grind (boot `features=debug-mnt`,
+sample `[KERNIP]`; or hosted: time a create-heavy workload), then Lane 9/10.
 
 ## First command next session
-`cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ 66c1c7e7
-Then EITHER: fix the P0 batch-drain (`sync_fs`→`commit_batch`, ext42 §2.1) — small, clear;
-OR pin the boot mkdir-EIO variant: wire ext4 `debug-mount` into the kernel build, klog the
-MountError in `special.rs` mkdir, one boot; OR verify how far the (now-unblocked) boot
-reaches — boot `features=debug-mnt`, watch for graphical.target / login past 573s.
+`cd /home/nd/oxide/kernel && git log --oneline -3`  # main @ eeb9d7c3
+Then EITHER continue the ext4 plan (Lane 9 allocator run-length = biggest perf win;
+or Lane 4 jbd2 revoke for crash-safety); OR profile the boot slowness to confirm the
+allocator is the bottleneck before investing.
 
-## Notes
-- Boot-verify centrally on main; `make smoke` can't reach login yet → mount/ext4-only
-  pushes use `SKIP_SMOKE=1`.
+## Notes / gotchas
+- **STOP using `git add -A`** — it swept ext42.md, then rustc-ice-*.txt dumps into
+  commits twice. `rustc-ice-*.txt` now gitignored (C108). Stage explicit paths.
+- Transient rustc ICE "unstable fingerprints ... EvaluatedToOk" during incremental
+  builds is a compiler cache bug, not our code — retry/clean rebuild.
+- Boot-verify centrally on main; mount/ext4-only pushes use `SKIP_SMOKE=1`.
 - aarch64: all fixes arch-neutral; compile; arm boot untestable here (no packed image).
-- C107 branch used a below-`next` counter (107<108) — harmless, merged; index still @108.
+- Batch-mode concurrent serialization now via op_lock on creators; delete/rename
+  mutators are NOT yet op_lock-covered (create-vs-delete race is a small follow-up).
