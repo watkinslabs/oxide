@@ -65,13 +65,14 @@ impl Mount {
         let new_size = core::cmp::max(cur_size, end);
         let cur_blocks = (cur_size + bs - 1) / bs;
         let new_blocks = (new_size + bs - 1) / bs;
-        // Phase 1: zero-extend file to new_blocks worth of blocks.
-        let zero_blk = alloc::vec![0u8; bs_us];
-        // DIAG (debug-wakelat): a write landing far past EOF makes this loop run
-        // O(file-size) append_block calls (the O(n²) writeback stall). Log the
-        // zero-extend span + the growing file size; a span ≫ 1 = out-of-order
-        // writeback gap; new_size climbing past ~16MB for hwdb.bin (should be
-        // ~13.5MB) = an unbounded/circular trie. Rate-limited.
+        // NO eager zero-extend: the gap between the old EOF and the write offset
+        // is left as a HOLE (Linux sparse-file semantics — reads serve zeros via
+        // read_file_block). The old code appended a zero block for EVERY block in
+        // `cur_blocks..new_blocks`, so a write landing far past EOF (e.g.
+        // out-of-order page-cache writeback) allocated + zero-wrote the whole
+        // span — the O(file-size) writeback stall the `[WAEXT]` probe hunted.
+        let _ = (cur_blocks, new_blocks);
+        // DIAG (debug-wakelat): flag a write landing far past the current EOF.
         #[cfg(feature = "debug-wakelat")]
         {
             use core::sync::atomic::{AtomicU64, Ordering};
@@ -87,21 +88,14 @@ impl Mount {
                 klog::write_raw(b"]\n");
             }
         }
-        for _ in cur_blocks..new_blocks {
-            self.append_block(ino, &zero_blk)?;
-        }
-        // Phase 2: RMW each touched block.
+        // RMW / map each touched block; blocks in the gap are never mapped.
         let first_lb = (off / bs) as u32;
         let last_lb  = ((end - 1) / bs) as u32;
         let mut written = 0usize;
         for lb in first_lb..=last_lb {
-            // A block sitting in an UNWRITTEN extent (prebuilt-image fallocate,
-            // e.g. journald's system.journal) must be converted to a written
-            // extent first, or read_file_block/write_file_block below reject it
-            // with NotFound and the write is silently lost. No-op for written
-            // extents / holes. Re-read the inode after — the conversion staged
-            // the cleared unwritten flag into the journal shadow (read-your-
-            // writes), and phase-1 appends also mutated the extent tree.
+            // An UNWRITTEN (fallocate-preallocated) extent must be converted to a
+            // written extent before write_file_block (else it rejects with
+            // NotFound). No-op for a written extent or a hole.
             self.convert_unwritten_at(ino, lb)?;
             let inode2 = self.read_inode(ino)?;
             let blk_start_byte = (lb as u64) * bs;
@@ -111,20 +105,31 @@ impl Mount {
             let copy_end_in_blk = if end >= blk_end_byte { bs_us }
                                   else { (end - blk_start_byte) as usize };
             let copy_len = copy_end_in_blk - in_blk_off;
-            // A hole (no extent) reads as zeros (Linux sparse-file semantics);
-            // the RMW then writes through it. Any other error is real.
-            let mut blk = match self.read_file_block(&inode2, lb) {
-                Ok(b) => b,
-                Err(MountError::NotFound) => alloc::vec![0u8; bs_us],
-                Err(e) => return Err(e),
+            // Is this logical block already mapped to a real (written) block?
+            let mapped = self.resolve_pblock(&inode2, lb).is_ok();
+            // Base contents: the existing block if mapped, else zeros (a hole /
+            // partial-block write starts from zeros — Linux sparse semantics).
+            let mut blk = if mapped {
+                self.read_file_block(&inode2, lb)?
+            } else {
+                alloc::vec![0u8; bs_us]
             };
             if blk.len() < bs_us { blk.resize(bs_us, 0); }
             blk[in_blk_off..in_blk_off + copy_len]
                 .copy_from_slice(&data[written .. written + copy_len]);
-            self.write_file_block(&inode2, lb, &blk)?;
+            if mapped {
+                self.write_file_block(&inode2, lb, &blk)?;
+            } else {
+                // Allocate + map THIS logical block (leaving the gap holes),
+                // writing the assembled block data. `extent_vec_contains` guards
+                // a re-map, so this is safe if a prior iteration mapped it.
+                let vis = core::cmp::max(inode2.size, blk_end_byte);
+                let (mut ib, ioff) = self.read_inode_bytes(ino)?;
+                self.insert_logical_block_with_inode_bytes(ino, &mut ib, ioff, lb, &blk, vis, false)?;
+            }
             written += copy_len;
         }
-        // Phase 3: persist the (potentially partial-block) i_size.
+        // Persist the (potentially partial-block) i_size.
         self.set_inode_size(ino, new_size)?;
         Ok(())
     }
