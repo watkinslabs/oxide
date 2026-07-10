@@ -302,6 +302,25 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
                 klog::write_raw(b" r14=");          klog::write_hex_u64(g.r14);
                 klog::write_raw(b" r15=");          klog::write_hex_u64(g.r15);
                 klog::write_raw(b"\n");
+                // debug-heappoison: if any GPR points into a still-quarantined
+                // (freed+poisoned) block, this fault is a use-after-free. The
+                // block size names the victim type (ArcInner<File>/<Task>/dentry
+                // …). No-op (returns None) unless kalloc's poison feature is on.
+                let cands: [(&[u8], u64); 15] = [
+                    (b"rax", g.rax), (b"rbx", g.rbx), (b"rcx", g.rcx), (b"rdx", g.rdx),
+                    (b"rsi", g.rsi), (b"rdi", g.rdi), (b"rbp", g.rbp), (b"r8", g.r8),
+                    (b"r9", g.r9), (b"r10", g.r10), (b"r11", g.r11), (b"r12", g.r12),
+                    (b"r13", g.r13), (b"r14", g.r14), (b"r15", g.r15),
+                ];
+                for (name, v) in cands.iter() {
+                    if let Some((base, size)) = kalloc::uaf_lookup(*v) {
+                        klog::write_raw(b"[UAF] reg="); klog::write_raw(name);
+                        klog::write_raw(b" ptr="); klog::write_hex_u64(*v);
+                        klog::write_raw(b" IN FREED block base="); klog::write_hex_u64(base);
+                        klog::write_raw(b" size="); klog::write_dec_u64(size as u64);
+                        klog::write_raw(b"\n");
+                    }
+                }
             }
         }
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
