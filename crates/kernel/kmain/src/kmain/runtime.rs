@@ -22,6 +22,15 @@ pub unsafe fn init(info: &BootInfo) {
     init_runtime_subsystems();
     init_vt_and_drv_hooks();
     init_network_and_pci();
+    // PCI enumeration spliced virtio MMIO BAR/notify pages into the ACTIVE AS
+    // only; APs run on `kernel_master()` (captured pre-PCI) and would #PF if an
+    // MSI-X IRQ routed to an AP touched a virtio notify/config VA. Push those
+    // kernel-half PML4 entries into the master now that all BARs are mapped, so
+    // every AP's address space sees them before the scheduler dispatches work.
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: post-PCI, single-threaded boot path; copies only kernel-half PML4
+    // entries into the shared master (idempotent; rootfs init resyncs again).
+    unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
 }
 
 #[cfg(target_os = "oxide-kernel")]
