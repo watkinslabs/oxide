@@ -26,14 +26,19 @@ per-op-latency / multi-inflight theory was WRONG. Two separate problems:
   ~249s is a phase-2 **AF_UNIX/varlink WAKE MISS** (15s cadence = a userspace varlink
   timeout breaking a tmpfiles↔userwork mutual block). NOT I/O/CPU/tick.
 
-## NEXT SESSION — instrument the AF_UNIX varlink wake miss (the real blocker)
-Static analysis says every wake "should" fire (shared sock.poll_subs; ppoll has the
-20ms safety net; blocking-read wake is race-free) — only a LIVE trace catches it.
-Add a trace to read_unix_stream_blocking (park/wake + deadline), sys_accept, and the
-userdbd worker-spawn/SIGCHLD path, keyed to the /run/systemd/userdb sockets; one boot
-shows who parks, who should wake it, what fires at the 15s mark. Strongest candidate:
-the blocking-read reply wake to tmpfiles (deadline 0 = NO safety net) being dropped.
-Do NOT pursue virtio-blk multi-inflight — I/O is fast.
+## ★ CONFIRMED-USERSPACE — the 249s blocker is a systemd-userdb timeout, NOT kernel
+Measured this session (probes added, measured, reverted): virtio-blk I/O = ~16µs/op
+never parks (BLKLAT); userwork DOES ppoll-rescan every ~100ms (PPARK); LAPIC
+timer_reload before idle hlt = NO change (reverted). The Multiplexer accept cadence
+is EXACTLY 15.0s with a "3-fast-then-15s" shape ⇒ **3 systemd-userwork workers each
+block ~15s per query** (a backend they fan out to never replies → fixed varlink
+timeout). This matches the prior 2026-07-08 DEFINITIVE conclusion (userspace varlink
+GetMemberships/Multiplexer completion). Every kernel af_unix/epoll/timer/IO path is
+measured-correct — do NOT re-chase them.
+NEXT: trace the userwork worker's OWN outbound connects/reads during its 15s (which
+backend socket it blocks on + why no reply). Likely image/systemd config (a userdb
+backend .service that can't start / isn't present), not a kernel fix. See
+[[desktop-blocker-tmpfiles-userdbd]] + [[hwdb-blocker-ext4-writeback-commits]].
 
 ## THE remaining live-gnome blocker (goal 3) — full diagnosis in scratch/gnome-boot-campaign.md
 `systemd-tmpfiles-setup-dev-early` stalls ~249s → boot never reaches getty/gdm.
