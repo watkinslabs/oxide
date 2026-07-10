@@ -1,64 +1,67 @@
-# Handoff — Goal 3 blocker UNIFIED: one heap/UAF refcount-corruption bug (NOT an SMP race)
+# Handoff — Goal 3 blocker CONFIRMED a UAF in udevd's kernel path (heap-poison proved it)
 
-Main has B706+B703/B704/B705 + nss fix merged. Goals 1 (console) + 2 (ext4) done.
-**Goal 3 (visible gnome desktop): boot now runs the full D-Bus/logind/NetworkManager
-service stack up to ~62-65s, then dies in a refcount abort BEFORE gnome-shell/gdm.**
+Goals 1 (console) + 2 (ext4) done. Goal 3: boot runs the full dbus/logind/NM
+stack; dies ~55-65s in a refcount abort BEFORE gnome-shell/gdm. This session
+BUILT a heap-poison diagnostic and used it to PROVE the crash is a use-after-free
+(not an overflow, not an SMP race) living in udevd's device-enumeration path.
 
-## THE correction to the prior handoff (important)
-Prior state.md said "smp=1 doesn't crash → the epoll #UD is an SMP race." **WRONG.**
-This session proved smp=1 ALSO dies — a `[PANIC] alloc/src/sync.rs:3287` (the
-`assert!(n <= MAX_REFCOUNT)` inside **`Weak::upgrade`**) at ~65.3s. smp=2 dies at
-~55s with the epoll **`#UD`** (an `Arc<File>` strong-clone `lock incq; jle` abort).
-Same root cause, two victims, both SMP configs. NOT an SMP-only race.
+## What's proven now (evidence, not hypothesis)
+1. **Not an SMP race.** smp=1 PANICs `alloc/src/sync.rs:3287` (Weak::upgrade
+   overflow) ~65s; smp=2 #UDs on an Arc<File> strong-clone in epoll scan_once
+   ~55s. A count > isize::MAX ⇒ reading freed-and-reused memory ⇒ UAF.
+2. **It's a UAF in udevd's kernel path (CONFIRMED causally).** With
+   `debug-heappoison` on (poison the leading 16B of freed blocks 0xEE +
+   quarantine to delay reuse):
+   - NON-poison boot: `Started systemd-udevd.service` at 46.6s (udevd works).
+   - POISON boot (full-block AND 16B-head): udevd `Main process exited,
+     code=exited, status=1/FAILURE` on its FIRST start, restart-loops forever.
+   ⇒ udevd's kernel path READS a freed object's leading word (refcount/ptr at
+   off 0-16). Non-poison: that block is reused → garbage huge count → epoll #UD.
+   Poison: leading word = 0xEE → udevd gets bad data → exit 1. Same root UAF.
+3. Because udevd dies under poison, the fork/openat/epoll STORM never builds →
+   the original #UD is masked → the [UAF] fault-probe never fires (udevd exits
+   cleanly, no CPU fault). So the tool CONFIRMED the UAF but hasn't NAMED the
+   exact free-site yet.
 
-## Unified diagnosis (evidence-backed)
-- A count > `isize::MAX` (MAX_REFCOUNT) is NOT reachable by legit over-cloning; it
-  means the Arc/Weak inner pointer is reading a **freed-and-reused allocation** whose
-  bytes now read as a huge refcount word. => **heap corruption / use-after-free.**
-- Two DIFFERENT victim types (`Arc<File>` in epoll `scan_once`; a `Weak<_>` upgraded
-  during `openat` — SuperBlock/inode/dentry) => it's clobbered memory landing on
-  whatever refcount word, not one type's own refcount logic.
-- Correlated with **fork-child** churn: `[USERIP ... tid=42xx lastsc=257 fork-child]`
-  (257=openat) immediately precedes the abort; heavy fork+openat+epoll load (gnome
-  session setup) triggers it. Not seen on lighter `lite` image.
-- Strong prior-session correlation: [[qemu-vsock-cid-and-sigchld-reap]] flagged a
-  SIGCHLD/zombie-reap stall (~13 zombies unreaped, suspect signalfd commit 2257275).
-  Unreaped zombie `Arc<Task>`s + a reap-path refcount imbalance = this exact family.
+## The diagnostic tool (merged, off by default) — `debug-heappoison`
+- `crates/shared/kalloc/src/poison.rs`: poison leading 16B of freed blocks
+  <=4096B with 0xEE, hold in a 2048-entry quarantine ring (delay reuse), really
+  free only on eviction. `kalloc::uaf_lookup(addr)` → (base,size) if addr is in
+  a quarantined (freed) block.
+- `crates/arch/hal-x86_64/src/fault.rs`: on an unhandled fault, sweeps every GPR
+  through `uaf_lookup` and prints `[UAF] reg=.. ptr=.. IN FREED block base=..
+  size=..` — size names the victim type. (Only fires on a CPU fault.)
+- Cascade: `kmain` feature `debug-heappoison = ["kalloc/debug-heappoison"]`.
+  Boot: `qemu_start features=debug-boot,debug-heappoison smp=2`.
 
-## RULED OUT this session (read the code, refcount-correct)
-- `vfs/src/fdtable/ops.rs` `fork_clone` (slot.clone() bumps each Arc<File>; bitmaps
-  copied consistently), `get`, `close`, `dup*` — all balanced.
-- `fs/src/epoll.rs` `scan_once` — `fdt.get(e.fd)` clone is correct; f is a fresh Arc.
-- `sched/.../zombies.rs` `park_for_wait4`/`unpark_self_from_wait4` — increment_strong
-  + from_raw pairing is balanced (+1 into WAITERS, -1 on swap_remove).
-- `vfs/src/file/{lifetime,io}.rs` File Drop — no raw Arc juggling.
-
-## PRIME suspects (unread / needs tooling)
-1. Scheduler `Arc<Task>` round-trip: `sched/src/live/runqueue.rs` `Arc::into_raw(next)`
-   on EVERY ctx switch + `from_raw(prev)`; interaction with fork (new task) + zombie
-   reap + wait_list/futex `increment_strong_count`. Hottest path, touches every child.
-2. signalfd/SIGCHLD reap (commit 2257275) x zombie `Arc<Task>` lifetime.
-3. A plain buffer overrun somewhere writing past an alloc into an adjacent Arc header.
-
-## NEXT — get EVIDENCE, do NOT ship a speculative patch (UAF patch w/o repro = hack)
-Two viable tools (pick one; both avoid boot-per-hypothesis loops):
-- **Poisoning allocator (boot ONCE):** add a debug-feature to the kernel heap/slab to
-  fill freed blocks with 0xEE + quarantine (delay reuse) + record free-site backtrace.
-  A UAF read then deterministically reads 0xEEEE… (huge count) → same abort, but now
-  with the FREE site captured. Boot the gnome image once, read the free backtrace.
-- **loom model:** model runqueue switch + park_for_wait4 + reap + fork concurrency for
-  the Task-Arc into_raw/from_raw imbalance.
-Then fix the real lifecycle bug; hosted-verify; ONE boot to confirm gnome-shell/gdm.
+## NEXT — name the free-site (pick one; the FIRST is the sharp experiment)
+1. **Force the silent udevd UAF to FAULT so the probe names it.** Change the
+   poison of the leading 8B to a NON-CANONICAL POINTER (e.g. 0x00DE_AD00_DEAD_00DE)
+   instead of 0xEE. If the freed object's leading word is a deref'd POINTER
+   (vtable / next / data ptr — many kernel structs), udevd's read → #GP/#PF →
+   the GPR sweep prints [UAF] with the freed block's base+size. (0xEE only traps
+   the Arc-COUNT case via #UD, which udevd doesn't reach.) One boot, smp=2.
+2. **Audit udevd's kernel path for a freed-object read**: AF_NETLINK
+   kobject_uevent, sysfs/kernfs, devtmpfs/devfs dentry-inode lifecycle, inotify
+   on /dev. Prime: a dentry/inode/kobject freed while a uevent/netlink skb or a
+   devfs registry entry still references it. Related: [[mknod-bypasses-dcache-negative]],
+   [[mount-dentry-sharing-gotcha]], the "13 unreaped zombies" lead
+   [[qemu-vsock-cid-and-sigchld-reap]].
+- RULED OUT by code-read (refcount-correct): fdtable fork_clone/get/close/dup,
+  epoll scan_once, zombies park/unpark, File Drop, runqueue swap_current.
 
 ## First commands next session
 1. `cd /home/nd/oxide/kernel && git log --oneline -3`
-2. Repro (fresh, smp=1): `mcp__qemu__qemu_start arch=x86_64 features=debug-boot,debug-wakelat smp=1 mem=4G paused=false`
-   → run_until 'PANIC|FAULT' — fires ~65s (smp=1) / ~55s (smp=2). It IS the gnome image.
-3. Read `sched/src/live/runqueue.rs` (into_raw/from_raw) + add the poison-alloc feature.
+2. Experiment 1: edit `crates/shared/kalloc/src/poison.rs` POISON to a
+   non-canonical ptr for the first 8B, rebuild, `qemu_start
+   features=debug-boot,debug-heappoison smp=2`, run_until '\[UAF\]|FAULT|PANIC'.
+3. If it faults with [UAF] size=N → find the type with sizeof == N → audit its
+   free vs the udevd read that keeps a stale ref.
 
 ## Gotchas
-- gdb `qemu_interrupt` will NOT preempt the `cli;hlt` panic-halt (times out) — read the
-  crash from serial (PANIC file:line), not the backtrace.
-- run_until buffers hit the token cap; parse the saved tool-result file with python.
-- NEVER `git add -A`. No boot-per-hypothesis loops [[no-repeated-long-boots]].
+- gdb `qemu_interrupt` will NOT preempt a `cli;hlt` panic-halt (times out) — read
+  crashes from serial, not the backtrace.
+- run_until buffers exceed the token cap; parse the saved tool-result file w/ python.
+- No boot-per-hypothesis loops [[no-repeated-long-boots]] — 3 poison boots done;
+  the non-canonical variant is the ONE decisive next boot, then audit.
 - live-gnome→gnome image (2.8GB); backups ../images/out/*.premerge.bak.
