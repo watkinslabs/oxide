@@ -45,15 +45,29 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
                     net::sock::SockKind::UnixListener(l) => LW::Unix(l.clone()),
                     _                                     => LW::None,
                 };
-                let dl = deadline.unwrap_or(0);
+                // Safety-net re-scan bound (matches epoll_wait's 20 ms net):
+                // even if a connection-arrival wake is ever missed, the parked
+                // accept re-polls within RESCAN_NS instead of stalling until the
+                // next connect. The real timeout (SO_RCVTIMEO) is enforced by
+                // the top-of-loop deadline check; this only caps park latency.
+                const RESCAN_NS: u64 = 20_000_000;
+                let park_dl = {
+                    let rescan_at = now().saturating_add(RESCAN_NS);
+                    match deadline { Some(d) => core::cmp::min(d, rescan_at), None => rescan_at }
+                };
                 match lw {
                     LW::Tcp(l)  => {
-                        // SAFETY: process ctx (sys_accept TCP); deliver_tcp wakes on accept_q push; timer scanner wakes on deadline.
-                        unsafe { l.accept_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
+                        // SAFETY: process ctx (sys_accept TCP); deliver_tcp wakes on accept_q push; timer scanner wakes on deadline / safety-net rescan.
+                        unsafe { l.accept_waiters.park_with_deadline(park_dl); sched::live::schedule::schedule(); }
                     }
                     LW::Unix(l) => {
-                        // SAFETY: process ctx (sys_accept AF_UNIX); UnixRegistry::connect wakes accept_waiters after push.
-                        unsafe { l.accept_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
+                        // Race-free: arm on accept_waiters UNDER the accept_q lock
+                        // (re-checks emptiness there) so connect()'s push+wake_all
+                        // cannot be lost. Only schedule() if we actually parked;
+                        // a connection that arrived in the window skips the park
+                        // and the loop retries accept() immediately.
+                        // SAFETY: process ctx (sys_accept AF_UNIX); park armed under accept_q lock; connect wakes after push; timer scanner wakes on the safety-net deadline.
+                        if l.arm_accept_wait(park_dl) { unsafe { sched::live::schedule::schedule(); } }
                     }
                     LW::None    => {
                         // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules.
