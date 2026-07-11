@@ -14,8 +14,8 @@ pub fn sys_getrandom(args: &SyscallArgs) -> i64 {
     while written < len {
         let v = crate::hwrng::hw_random_u64().unwrap_or_else(::devfs::misc::lcg_next).to_le_bytes();
         let n = (len - written).min(8);
-        // SAFETY: validated [buf,buf+len) below USER_VA_END; CPL=0 writes via caller's AS.
-        unsafe { for i in 0..n { core::ptr::write_volatile((buf + written + i) as *mut u8, v[i as usize]); } }
+        // SAFETY: full [buf, buf + len) span was validated writable; byte stores are alignment-independent.
+        unsafe { for i in 0..n { core::ptr::write_unaligned((buf + written + i) as *mut u8, v[i as usize]); } }
         written += n;
     }
     written as i64
