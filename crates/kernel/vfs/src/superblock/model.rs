@@ -8,7 +8,19 @@ use sync::{RwLock, Spinlock};
 use crate::dentry::Dentry;
 use crate::fs::FileSystem;
 use crate::inode::InodeRef;
-use super::{FileSystemType, GenericSuperOps, StaticFsType, SuperBlock, SuperOps, MAX_LFS_FILESIZE, SB_ACTIVE, SB_BORN, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
+use super::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, MAX_LFS_FILESIZE, SB_ACTIVE, SB_BORN, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
+
+struct BackendFsType {
+    name:  String,
+    flags: crate::fs::FsFlags,
+}
+impl FileSystemType for BackendFsType {
+    fn name(&self) -> &str { &self.name }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> crate::types::KResult<Arc<SuperBlock>> {
+        Err(crate::types::VfsError::Einval)
+    }
+    fn fs_flags(&self) -> crate::fs::FsFlags { self.flags }
+}
 
 impl SuperBlock {
     /// Construct a superblock with no root yet. The backend then builds
@@ -44,10 +56,29 @@ impl SuperBlock {
         })
     }
 
-    /// `fill_super` for an old constructor-backed filesystem: snapshot the
-    /// Linux superblock fields, install `s_op`/`s_type`, stamp backend-private
-    /// inode state via `set_sb`, then drop the constructor object. The live
-    /// superblock does not retain a second backend authority path.
+    /// Finish `fill_super` after the backend selected explicit `s_type` and
+    /// `s_op`. The root dentry is derived from the supplied root inode; no
+    /// backend object is retained behind the live superblock.
+    /// # C: O(1)
+    pub fn from_ops(
+        s_type: Arc<dyn FileSystemType>,
+        s_op: Arc<dyn SuperOps>,
+        root_inode: Option<InodeRef>,
+        s_magic: u64,
+        s_dev: u64,
+        s_blocksize: u32,
+        s_id: String,
+        s_fs_info: Arc<dyn Any + Send + Sync>,
+    ) -> Arc<Self> {
+        let sb = Self::new(s_type, s_op, s_magic, s_dev, s_blocksize, s_id, s_fs_info);
+        if let Some(i) = root_inode { crate::dcache::d_make_root(i, &sb); }
+        sb
+    }
+
+    /// Compatibility shim for direct-register tests and boot call paths that
+    /// still hand VFS a constructor object. It snapshots explicit `s_type` and
+    /// `s_op` then drops `fs`; the live superblock has no backend authority
+    /// pointer. New filesystem types should call [`Self::from_ops`] directly.
     /// # C: O(1)
     pub fn for_backend(
         fs: Arc<dyn FileSystem>,
@@ -55,42 +86,17 @@ impl SuperBlock {
         s_dev: u64,
         s_id: String,
     ) -> Arc<Self> {
-        // `fill_super` installs the backend's own `super_operations` when it
-        // publishes one (ext4 → live on-disk block/inode accounting); else the
-        // generic adapter reporting `f_type`/`f_bsize` only.
-        let s_op: Arc<dyn SuperOps> = fs.super_ops()
-            .unwrap_or_else(|| Arc::new(GenericSuperOps {
+        let s_type: Arc<dyn FileSystemType> =
+            Arc::new(BackendFsType { name: String::from(fs.name()), flags: fs.fs_flags() });
+        let s_op: Arc<dyn SuperOps> = fs.super_ops().unwrap_or_else(|| {
+            Arc::new(SimpleSuperOps {
                 magic: fs.magic(),
                 block_size: fs.block_size(),
                 options: fs.show_options(),
-            }));
-        let s_type: Arc<dyn FileSystemType> =
-            Arc::new(StaticFsType { name: String::from(fs.name()), flags: fs.fs_flags() });
-        let s_magic = fs.magic();
-        let s_blocksize = fs.block_size();
-        let sb = Arc::new(Self {
-            s_op, s_type, s_magic, s_dev, s_blocksize,
-            s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
-            s_active: AtomicU32::new(1),
-            s_count: AtomicU32::new(1),
-            s_maxbytes: MAX_LFS_FILESIZE,
-            s_time_gran: AtomicU32::new(1),
-            s_time_min: AtomicI64::new(TIME64_MIN),
-            s_time_max: AtomicI64::new(TIME64_MAX),
-            s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
-            s_writers_count: AtomicU32::new(0),
-            s_id,
-            s_uuid: Spinlock::new(([0u8; 16], 0)),
-            s_root: RwLock::new(None),
-            s_fs_info: Spinlock::new(Arc::new(())),
-            icache: Spinlock::new(BTreeMap::new()),
-            s_wb: Spinlock::new(BTreeMap::new()),
+            })
         });
-        // `fill_super`: back-stamp the SB into the backend's per-mount state
-        // BEFORE building the root dentry, so the root inode's `i_sb()` (and
-        // every inode the backend builds afterwards) resolves to this SB.
+        let sb = Self::from_ops(s_type, s_op, root_inode, fs.magic(), s_dev, fs.block_size(), s_id, Arc::new(()));
         fs.set_sb(Arc::downgrade(&sb));
-        if let Some(i) = root_inode { crate::dcache::d_make_root(i, &sb); }
         sb
     }
 

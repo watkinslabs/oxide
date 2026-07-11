@@ -5,7 +5,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 
 use crate::inode::InodeRef;
-use crate::superblock::{FileSystemType, SuperBlock, SuperOps, next_anon_dev, sget};
+use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, next_anon_dev, sget};
 use crate::types::VfsError;
 
 use super::flags::FsFlags;
@@ -42,31 +42,55 @@ pub struct MountSpec {
 impl MountSpec {
     /// Realize a constructor object into a Linux mounted superblock before
     /// it crosses into the mount engine. # C: O(N_sb) for device-backed reuse.
-    pub fn from_filesystem(fs: Arc<dyn FileSystem>, bind_root: Option<InodeRef>,
-        strict: bool, s_id: String) -> Self {
+    pub fn from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn FileSystem>,
+        bind_root: Option<InodeRef>, strict: bool, s_id: String) -> Self {
         let root = bind_root.or_else(|| fs.root());
+        let s_op: Arc<dyn SuperOps> = fs.super_ops().unwrap_or_else(|| {
+            Arc::new(SimpleSuperOps {
+                magic: fs.magic(),
+                block_size: fs.block_size(),
+                options: fs.show_options(),
+            })
+        });
+        let s_magic = fs.magic();
+        let s_blocksize = fs.block_size();
         let sb = match fs.dev_id() {
-            Some(dev) => sget(dev, move || SuperBlock::for_backend(fs, root, dev, s_id)),
-            None => SuperBlock::for_backend(fs, root, next_anon_dev(), s_id),
+            Some(dev) => {
+                let fs_for_stamp = fs.clone();
+                sget(dev, move || {
+                    let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
+                    fs_for_stamp.set_sb(Arc::downgrade(&sb));
+                    sb
+                })
+            }
+            None => {
+                let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
+                fs.set_sb(Arc::downgrade(&sb));
+                sb
+            }
         };
         Self { sb, strict }
     }
 }
 
-pub type FsConstructor = dyn Fn(Option<&str>, &str, &str) -> KResult<MountSpec> + Send + Sync;
+pub type FsConstructor = dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str) -> KResult<MountSpec> + Send + Sync;
 
 pub struct FsType {
     pub(super) name:  String,
     pub(super) magic: u64,
     pub(super) flags: FsFlags,
+    self_ref:          Weak<FsType>,
     pub(super) ctor:  Box<FsConstructor>,
 }
 
 impl FsType {
     pub fn new(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>) -> Arc<Self> {
-        Arc::new(Self { name: name.to_string(), magic, flags, ctor })
+        Arc::new_cyclic(|self_ref| Self { name: name.to_string(), magic, flags, self_ref: self_ref.clone(), ctor })
     }
-    pub fn construct(&self, source: Option<&str>, target: &str, data: &str) -> KResult<MountSpec> { (self.ctor)(source, target, data) }
+    fn as_type(&self) -> Arc<dyn FileSystemType> {
+        self.self_ref.upgrade().expect("registered filesystem type self-ref") as Arc<dyn FileSystemType>
+    }
+    pub fn construct(&self, source: Option<&str>, target: &str, data: &str) -> KResult<MountSpec> { (self.ctor)(self.as_type(), source, target, data) }
     pub fn magic(&self) -> u64 { self.magic }
     pub fn fs_flags(&self) -> FsFlags { self.flags }
 }
@@ -74,7 +98,7 @@ impl FsType {
 impl FileSystemType for FsType {
     fn name(&self) -> &str { &self.name }
     fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
-        let spec = (self.ctor)(src, "", opts)?;
+        let spec = (self.ctor)(self.as_type(), src, "", opts)?;
         Ok(spec.sb)
     }
     fn fs_flags(&self) -> FsFlags { self.flags }

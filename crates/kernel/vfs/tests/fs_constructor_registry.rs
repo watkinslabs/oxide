@@ -33,9 +33,9 @@ fn register_get_construct_and_unknown_is_none() {
     assert!(get_fs_type("t040ctor").is_none(), "unregistered: get_fs_type None");
 
     register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|_s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
+        Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
             let fs: Arc<dyn FileSystem> = Arc::new(T040Fs);
-            Ok(MountSpec::from_filesystem(fs, None, true, String::from("t040ctor")))
+            Ok(MountSpec::from_filesystem(ty, fs, None, true, String::from("t040ctor")))
         }))).expect("register t040ctor");
 
     // get_fs_type returns the registered type (the D40 test contract).
@@ -54,7 +54,7 @@ fn register_get_construct_and_unknown_is_none() {
 
     // Duplicate name → EBUSY.
     assert!(register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|_s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
+        Box::new(|_, _s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
             Err(vfs::VfsError::Einval)
         }))).is_err(), "duplicate name rejected");
 

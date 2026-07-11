@@ -1,3 +1,13 @@
+struct DirectFsType {
+    name:  String,
+    flags: crate::fs::FsFlags,
+}
+impl FileSystemType for DirectFsType {
+    fn name(&self) -> &str { &self.name }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn fs_flags(&self) -> crate::fs::FsFlags { self.flags }
+}
+
 /// [D6] Materialise (or, for a device-backed fs, FIND-OR-SHARE via [`sget`]) the
 /// `SuperBlock` for a new mount. A backend that reports a stable backing-device
 /// id (`fs.dev_id()`, Linux's `get_tree_bdev` bdev key) SHARES one `SuperBlock`
@@ -8,9 +18,31 @@
 /// marker) keeps a fresh per-mount `get_anon_bdev` instance, never shared.
 /// # C: O(N_sb) on a dev-backed share, else O(1)
 fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String) -> Arc<SuperBlock> {
+    let s_type: Arc<dyn FileSystemType> =
+        Arc::new(DirectFsType { name: String::from(fs.name()), flags: fs.fs_flags() });
+    let s_op = fs.super_ops().unwrap_or_else(|| {
+        Arc::new(SimpleSuperOps {
+            magic: fs.magic(),
+            block_size: fs.block_size(),
+            options: fs.show_options(),
+        })
+    });
+    let s_magic = fs.magic();
+    let s_blocksize = fs.block_size();
     match fs.dev_id() {
-        Some(dev) => sget(dev, move || SuperBlock::for_backend(fs, root_inode, dev, s_id)),
-        None => SuperBlock::for_backend(fs, root_inode, next_anon_dev(), s_id),
+        Some(dev) => {
+            let fs_for_stamp = fs.clone();
+            sget(dev, move || {
+                let sb = SuperBlock::from_ops(s_type, s_op, root_inode, s_magic, dev, s_blocksize, s_id, Arc::new(()));
+                fs_for_stamp.set_sb(Arc::downgrade(&sb));
+                sb
+            })
+        }
+        None => {
+            let sb = SuperBlock::from_ops(s_type, s_op, root_inode, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
+            fs.set_sb(Arc::downgrade(&sb));
+            sb
+        }
     }
 }
 

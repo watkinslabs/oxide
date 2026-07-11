@@ -4,6 +4,12 @@ use core::sync::atomic::Ordering;
 
 use super::*;
 
+struct DevptsType;
+impl vfs::FileSystemType for DevptsType {
+    fn name(&self) -> &str { "devpts" }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> vfs::KResult<Arc<vfs::SuperBlock>> { Err(vfs::VfsError::Einval) }
+}
+
 pub fn smoke_test() {
     use hal::kassert;
 
@@ -58,8 +64,10 @@ fn devpts_fs_smoke() {
     kassert!(slave.file_type() == FileType::CharDev, "mirrored slave is chardev");
     kassert!(slave.fsid() == DEVPTS_FSID, "slave st_dev == DEVPTS_FSID");
 
-    let backend: Arc<dyn FileSystem> = fs.clone();
-    let sb = SuperBlock::for_backend(backend, fs.root(), DEVPTS_FSID, alloc::string::String::from("devpts"));
+    let s_op: Arc<dyn vfs::SuperOps> =
+        Arc::new(vfs::SimpleSuperOps { magic: DEVPTS_MAGIC, block_size: 4096, options: alloc::string::String::new() });
+    let sb = SuperBlock::from_ops(Arc::new(DevptsType), s_op, fs.root(), DEVPTS_MAGIC, DEVPTS_FSID, 4096, alloc::string::String::from("devpts"), Arc::new(()));
+    fs.set_sb(Arc::downgrade(&sb));
     kassert!(sb.s_magic == DEVPTS_MAGIC, "devpts sb s_magic");
     let rino = sb.s_root_inode().expect("devpts s_root inode");
     kassert!(rino.file_type() == FileType::Directory, "devpts s_root is dir");

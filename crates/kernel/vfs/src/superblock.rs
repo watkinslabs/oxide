@@ -3,7 +3,7 @@
 // Module manifest:
 // - `registry`: anon device allocation and global superblock registry.
 // - `flags`: Linux `SB_*`, freeze, max-size, and timestamp constants.
-// - `ops`: `SuperOps`, `FileSystemType`, statfs payload, and legacy fs adapters.
+// - `ops`: `SuperOps`, `FileSystemType`, and statfs payload.
 // - `model`: constructors and core superblock fields/accessors.
 // - `icache`: inode-cache, alias, nlink, dirty-state, and eviction helpers.
 // - `stat`: statfs and `/proc` display hook pass-throughs.
@@ -33,10 +33,9 @@ mod registry;
 mod stat;
 
 pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
-pub use ops::{FileSystemType, SbStatFs, SuperOps};
+pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
 pub use registry::{fs_supers, next_anon_dev, register_super, sget};
 pub(crate) use registry::alloc_anon_minor;
-pub(crate) use ops::{GenericSuperOps, StaticFsType};
 
 /// `struct super_block`. One per mounted fs instance (`16§2` inv 3).
 pub struct SuperBlock {
