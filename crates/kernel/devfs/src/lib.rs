@@ -230,13 +230,13 @@ mod fs_tests {
         // The exact ctor registered for "devtmpfs" in the syscalls crate.
         let ctor = Box::new(|_s: Option<&str>, _t: &str, _d: &str| {
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
-            Ok(MountSpec { fs, bind_root: None, strict: false })
+            Ok(MountSpec::from_filesystem(fs, None, false, alloc::string::String::from("devtmpfs")))
         });
         let ty = FsType::new("devtmpfs", 0x0102_1994, FsFlags::empty(), ctor);
         // The realized SuperBlock carries the DevfsFs backend + TMPFS_MAGIC.
         let sb = ty.mount(None, "").expect("devtmpfs realizes a SuperBlock");
         assert_eq!(sb.s_magic, 0x0102_1994, "devtmpfs SB stamps TMPFS_MAGIC");
-        assert_eq!(sb.fs().name(), "devfs", "SB backend is DevfsFs");
+        assert_eq!(sb.s_type.name(), "devfs", "SB type is DevfsFs");
     }
 
     /// Stage C (D27): `populate_defaults` now self-registers the mem char

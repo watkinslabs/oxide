@@ -5,7 +5,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 
 use crate::inode::InodeRef;
-use crate::superblock::{FileSystemType, SuperBlock, SuperOps};
+use crate::superblock::{FileSystemType, SuperBlock, SuperOps, next_anon_dev, sget};
 use crate::types::VfsError;
 
 use super::flags::FsFlags;
@@ -35,9 +35,22 @@ pub trait FileSystem: Send + Sync {
 }
 
 pub struct MountSpec {
-    pub fs:        Arc<dyn FileSystem>,
-    pub bind_root: Option<InodeRef>,
-    pub strict:    bool,
+    pub sb:     Arc<SuperBlock>,
+    pub strict: bool,
+}
+
+impl MountSpec {
+    /// Realize a constructor object into a Linux mounted superblock before
+    /// it crosses into the mount engine. # C: O(N_sb) for device-backed reuse.
+    pub fn from_filesystem(fs: Arc<dyn FileSystem>, bind_root: Option<InodeRef>,
+        strict: bool, s_id: String) -> Self {
+        let root = bind_root.or_else(|| fs.root());
+        let sb = match fs.dev_id() {
+            Some(dev) => sget(dev, move || SuperBlock::for_backend(fs, root, dev, s_id)),
+            None => SuperBlock::for_backend(fs, root, next_anon_dev(), s_id),
+        };
+        Self { sb, strict }
+    }
 }
 
 pub type FsConstructor = dyn Fn(Option<&str>, &str, &str) -> KResult<MountSpec> + Send + Sync;
@@ -62,8 +75,7 @@ impl FileSystemType for FsType {
     fn name(&self) -> &str { &self.name }
     fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
         let spec = (self.ctor)(src, "", opts)?;
-        let root = spec.bind_root.or_else(|| spec.fs.root());
-        Ok(SuperBlock::for_backend(spec.fs, root, crate::superblock::next_anon_dev(), self.name.clone()))
+        Ok(spec.sb)
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
 }
