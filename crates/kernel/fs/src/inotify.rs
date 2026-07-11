@@ -16,7 +16,7 @@ mod fan_tests;
 #[cfg(test)]
 mod tests;
 
-pub use dispatch::{fire_attrib, fire_delete_self, fire_modify_path, fire_move, fire_open_exec, install_write_hook};
+pub use dispatch::{fire_attrib, fire_delete_self, fire_modify, fire_move, fire_open_exec, install_write_hook};
 pub use group::{check_access_perm, check_open_exec_perm, check_open_perm, make_inotify_inode, perm_marks_present};
 pub use syscalls::{sys_fanotify_init, sys_fanotify_mark, sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch};
 pub use types::{

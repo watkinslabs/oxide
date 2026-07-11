@@ -1,9 +1,6 @@
-use alloc::string::String;
-use alloc::vec::Vec;
-
 use sync::{Spinlock, TaskList as TaskListClass};
 
-use crate::{tree::Tree, MOUNT};
+use crate::{inode::make_cg_file, tree::Tree};
 
 /// SIGKILL — raw number (the typed `Signum` lives in `sched`, which
 /// this leaf crate cannot depend on without a cycle). Delivered via
@@ -40,8 +37,8 @@ static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinl
 /// canonical tid → visible pid formatter for cgroup.procs reads.
 static PID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
 
-/// `cgroup.events` change-notification: `fn(events_file_path)`.
-static NOTIFY_HOOK: Spinlock<Option<fn(&str)>, TaskListClass> = Spinlock::new(None);
+/// `cgroup.events` change-notification: `fn(events_inode)`.
+static NOTIFY_HOOK: Spinlock<Option<fn(&vfs::InodeRef)>, TaskListClass> = Spinlock::new(None);
 
 /// Install the signal hook. Boot path.
 /// # C: O(1)
@@ -69,43 +66,37 @@ pub fn set_pid_display_hook(f: fn(u64) -> u64) { *PID_DISPLAY_HOOK.lock() = Some
 
 /// Install the `cgroup.events` inotify hook. Boot path.
 /// # C: O(1)
-pub fn set_notify_hook(f: fn(&str)) { *NOTIFY_HOOK.lock() = Some(f); }
+pub fn set_notify_hook(f: fn(&vfs::InodeRef)) { *NOTIFY_HOOK.lock() = Some(f); }
 
 /// Fire `cgroup.events` `IN_MODIFY` for `cgid` and every ancestor up to
 /// root. `populated` is a subtree aggregate, so a membership change in
 /// `cgid` can flip an ancestor's `populated` bit.
-/// # C: O(depth) + O(devfs+inotify) per node
+/// # C: O(depth) + O(inotify) per node
 pub(crate) fn notify_events_chain(cgid: u64) {
     let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
-    let paths: Vec<String> = {
+    let ids = {
         let t = TREE.lock();
-        let mut v = Vec::new();
+        let mut v = alloc::vec::Vec::new();
         let mut cur = Some(cgid);
         while let Some(id) = cur {
-            let mut p = fs_path(&t, id);
-            if !p.ends_with('/') { p.push('/'); }
-            p.push_str("cgroup.events");
-            v.push(p);
+            v.push(id);
             cur = t.node(id).and_then(|n| n.parent);
         }
         v
     };
-    for p in paths { hook(&p); }
+    for id in ids {
+        let inode = make_cg_file(id, "cgroup.events");
+        hook(&inode);
+    }
 }
 
 /// Fire `cgroup.events` `IN_MODIFY` for `cgid` only (the `frozen` field
 /// is per-node, not a subtree aggregate, so no ancestor walk).
-/// # C: O(devfs+inotify)
+/// # C: O(inotify)
 pub(crate) fn notify_events_self(cgid: u64) {
     let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
-    let path = {
-        let t = TREE.lock();
-        let mut p = fs_path(&t, cgid);
-        if !p.ends_with('/') { p.push('/'); }
-        p.push_str("cgroup.events");
-        p
-    };
-    hook(&path);
+    let inode = make_cg_file(cgid, "cgroup.events");
+    hook(&inode);
 }
 
 /// Translate a userspace-written pid (writer's ns) to the canonical
@@ -136,15 +127,4 @@ pub(crate) fn weight_hook() -> Option<fn(u64, u32)> {
 
 pub(crate) fn cpuset_hook() -> Option<fn(u64, u64)> {
     *CPUSET_HOOK.lock()
-}
-
-/// Full `cgroup.events` fs path of a cgroup node (`MOUNT` + hierarchy
-/// path): root → `MOUNT`, else `/sys/fs/cgroup/a/b`.
-/// # C: O(depth)
-fn fs_path(t: &Tree, cgid: u64) -> String {
-    let hp = t.path_of(cgid);
-    if hp == "/" { return String::from(MOUNT); }
-    let mut s = String::from(MOUNT);
-    s.push_str(&hp);
-    s
 }
