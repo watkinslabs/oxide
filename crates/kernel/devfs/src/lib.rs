@@ -30,7 +30,7 @@
 
 extern crate alloc;
 pub mod boot;
-pub mod tree;
+mod tree;
 
 use alloc::string::String;
 
@@ -99,7 +99,7 @@ pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
 /// (namei resolved any chroot/confined-root before reaching here, D18), so no
 /// string-prefix translation is applied.
 /// # C: O(depth)
-pub fn lookup(path: &str) -> Option<InodeRef> {
+fn lookup(path: &str) -> Option<InodeRef> {
     let cur_ns = current_mount_ns();
     if cur_ns != 0 {
         if let Some(i) = tree::lookup(cur_ns, path) { return Some(i); }

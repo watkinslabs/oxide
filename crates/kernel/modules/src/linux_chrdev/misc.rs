@@ -175,12 +175,13 @@ mod tests {
         assert_eq!(misc.mode, LINUX_MISC_DEFAULT_MODE);
         assert_eq!(misc.registered, LINUX_FIELD_SET);
         assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(mkdev(LINUX_MISC_MAJOR, misc.minor as u32))).is_some());
-        let node = devfs::lookup("/dev/oxide-misc-kpi").expect("misc_register publishes devtmpfs node");
+        let dev_root = devfs::instance().root().expect("devtmpfs root exists");
+        let node = dev_root.lookup("oxide-misc-kpi").expect("misc_register publishes devtmpfs node");
         assert_eq!(node.file_type(), vfs::FileType::CharDev);
         assert_eq!(node.rdev(), vfs::Devt::new(LINUX_MISC_MAJOR, misc.minor as u32).raw());
         assert_eq!(misc_deregister(&mut misc), LINUX_OK);
         assert_eq!(misc.registered, LINUX_FIELD_CLEAR);
         assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(mkdev(LINUX_MISC_MAJOR, misc.minor as u32))).is_none());
-        assert!(devfs::lookup("/dev/oxide-misc-kpi").is_none());
+        assert!(dev_root.lookup("oxide-misc-kpi").is_err());
     }
 }
