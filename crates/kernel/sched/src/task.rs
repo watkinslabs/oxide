@@ -80,6 +80,10 @@ pub struct Task {
     pub class_enc: AtomicU64,
 
     pub exit_status: AtomicI32,
+    /// Low-byte clone/fork exit signal (`task_struct::exit_signal`). Linux
+    /// wait selectors use this to distinguish normal SIGCHLD children from
+    /// clone children for `__WCLONE`/`__WALL`.
+    pub exit_signal: AtomicU8,
 
     /// Parent TID per `13§5` / `15§5`. Set by `sys_fork` when the
     /// child Task is constructed; `0` for tasks with no parent

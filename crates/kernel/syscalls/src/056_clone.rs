@@ -150,6 +150,7 @@ pub fn sys_clone_dispatch(
     // The vpid (vtid) to return to the parent — captured now, before the
     // `child` Arc may be dropped at the end. spawn stamped it.
     let child_vpid_ret = child.vtid.load(Ordering::Acquire);
+    child.exit_signal.store((flags & CSIGNAL) as u8, Ordering::Release);
 
     // CLONE_THREAD: the new task joins the caller's thread group.
     // Without it the child is its own process leader and tgid==tid.
@@ -167,9 +168,12 @@ pub fn sys_clone_dispatch(
         // in.
         child.vtgid.store(cur.vtgid.load(Ordering::Acquire), Ordering::Release);
     }
-    // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
-    // for `park_zombie` SIGCHLD delivery (P3-67).
-    child.parent_tid.store(cur.tid, Ordering::Release);
+    // Record parent_tid for wait ownership. CLONE_PARENT makes the child a
+    // sibling of the caller: its wait parent is the caller's parent.
+    let wait_parent_tid = if (flags & CLONE_PARENT) != 0 {
+        cur.parent_tid.load(Ordering::Acquire)
+    } else { cur.tid };
+    child.parent_tid.store(wait_parent_tid, Ordering::Release);
     // cgroup v2 (`26§4`): a forked process inherits the parent's cgroup
     // (Linux cgroup_post_fork); a new thread charges the process's cgroup
     // so pids.current counts it.
@@ -221,11 +225,13 @@ pub fn sys_clone_dispatch(
         child.ns_membership.fetch_or(new_ns_bits, Ordering::Release);
         crate::s272_unshare::apply_new_namespaces(&child, new_ns_bits);
     }
-    // Materialise an Arc<Task> for the parent by bumping its
-    // strong count (the runqueue's `current` AtomicPtr already
-    // holds one), then downgrade to Weak<Task>. Drops the bumped
-    // Arc immediately — Weak alone keeps the slot live.
-    if let Some(rq) = sched::live::global() {
+    // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
+    // inherits the caller's parent link; otherwise the caller becomes parent.
+    if (flags & CLONE_PARENT) != 0 {
+        // SAFETY: caller is current on this CPU; child not scheduled; clone
+        // just copies the existing parent Weak without mutating the caller.
+        unsafe { *child.parent_arc.get() = (*cur.parent_arc.get()).clone(); }
+    } else if let Some(rq) = sched::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
             // SAFETY: rq.current was installed via Arc::into_raw in `Runqueue::new` / `swap_current`; bumping the strong count is sound because the conceptual Arc held by current is alive while we run on it.
