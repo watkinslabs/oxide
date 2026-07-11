@@ -6,7 +6,7 @@ use vfs::{Dentry, InodeRef, KResult};
 use crate::{inode, is_mounted, state::TREE, tree, MOUNT};
 
 /// cgroup2 filesystem for the unified mount table (`16§7`). Mounted
-/// at `/sys/fs/cgroup`; `vfs::mount::lookup` routes paths here. cgroupfs
+/// at `/sys/fs/cgroup`; VFS namei routes paths here. cgroupfs
 /// OWNS its inodes: `lookup` strips the mount prefix, resolves the
 /// relative cgroup path through the hierarchy (`tree.rs`), and SYNTHESIZES
 /// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.

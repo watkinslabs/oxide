@@ -1,5 +1,5 @@
 //! Deep-path resolution regression guard (`docs/16§3`). Exercises the
-//! `walk_to_mount → resolve_mount → mount::lookup` chain — the owning-mount
+//! `walk_to_mount → resolve_abs` chain — the owning-mount
 //! identification walk used by rename/link/truncate/inotify/xattr/… — for a
 //! path of >=3 components resolving (a) wholly inside the ROOT filesystem and
 //! (b) across a mount into a WHOLE-PATH (procfs-style) filesystem.
@@ -9,10 +9,10 @@
 //! to the `root_mount_id` fallback and its per-component DESCENT + mount
 //! CROSSING were never driven. This test installs the real boot wiring (root
 //! dentry provider + dentry resolver sharing ONE canonical tree) so the walk
-//! descends, crosses at `/proc` by dentry identity, and the owning mount's
-//! `fs.lookup(absolute)` completes the deep resolution in ONE pass with no
-//! `resolve_mount` re-entry. Routing stays dentry/hash identity; the absolute
-//! path handed to `fs.lookup` is fs INPUT, not a mount-tree string decision.
+//! descends, crosses at `/proc` by dentry identity, and `resolve_abs` completes
+//! the deep resolution with no mount-wrapper re-entry. Routing stays
+//! dentry/hash identity; any absolute text is resolver input, not a mount-tree
+//! string decision.
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -127,12 +127,11 @@ fn setup() -> MutexGuard<'static, ()> {
 #[test]
 fn deep_path_into_root_fs_resolves_to_inode() {
     let _g = setup();
-    // resolve_mount must descend a→b→c and stop in the ROOT mount.
-    let (m, abs) = vfs::mount::resolve_mount("/a/b/c").expect("owning mount");
+    let id = vfs::namei::walk_to_mount("/a/b/c").expect("owning mount");
+    let m = vfs::mount::mount_by_id(id).expect("mount by id");
     assert_eq!(m.mount_point_str(), "/", "deep root path is owned by the / mount");
-    assert_eq!(abs, "/a/b/c", "fs receives the full absolute path (fs input)");
     // The mount's own lookup completes the deep resolution in one pass.
-    let i = vfs::mount::lookup("/a/b/c").expect("deep lookup in root fs");
+    let i = vfs::resolve_abs("/a/b/c").expect("deep lookup in root fs");
     assert_eq!(i.ino(), FILE_C, "resolved /a/b/c to its inode, not ENOENT");
 }
 
@@ -142,10 +141,10 @@ fn deep_path_into_mounted_fs_crosses_and_resolves() {
     // walk_to_mount crosses at /proc by DENTRY IDENTITY (the dentry register
     // marked), then per-component lookup (proc_root→1→stat) completes the path
     // — NO whole-path delegate; resolution is `d_lookup → i_op->lookup`.
-    let (m, abs) = vfs::mount::resolve_mount("/proc/1/stat").expect("owning mount");
+    let id = vfs::namei::walk_to_mount("/proc/1/stat").expect("owning mount");
+    let m = vfs::mount::mount_by_id(id).expect("mount by id");
     assert_eq!(m.mount_point_str(), "/proc", "deep proc path is owned by the /proc mount");
-    assert_eq!(abs, "/proc/1/stat");
-    let i = vfs::mount::lookup("/proc/1/stat").expect("per-component lookup across mount");
+    let i = vfs::resolve_abs("/proc/1/stat").expect("per-component lookup across mount");
     assert_eq!(i.ino(), PROC_STAT, "crossed /proc and resolved /proc/1/stat per-component");
 }
 
@@ -154,7 +153,8 @@ fn missing_deep_leaf_is_enoent_not_misrouted() {
     let _g = setup();
     // A genuinely-missing deep leaf still routes to the owning (root) mount,
     // whose fs.lookup misses → Enoent (the error stands, no silent success).
-    let (m, _) = vfs::mount::resolve_mount("/a/b/nope").expect("owning mount of missing leaf");
+    let id = vfs::namei::walk_to_mount("/a/b/nope").expect("owning mount of missing leaf");
+    let m = vfs::mount::mount_by_id(id).expect("mount by id");
     assert_eq!(m.mount_point_str(), "/", "missing leaf owned by deepest existing parent's mount");
-    assert!(vfs::mount::lookup("/a/b/nope").is_err(), "missing deep leaf is ENOENT");
+    assert!(vfs::resolve_abs("/a/b/nope").is_err(), "missing deep leaf is ENOENT");
 }
