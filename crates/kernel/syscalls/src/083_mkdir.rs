@@ -27,8 +27,6 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         }
     };
     let p = render_child_path(&parent, &name);
-    if let Err(rv) = crate::landlock::check_parent(&parent,
-        ::security::landlock::access::MAKE_DIR) { return rv; }
     // Linux do_mkdirat: `mode &= ~current_umask()` (D23).
     let umask = sched::live::current()
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
@@ -70,6 +68,8 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_rofs", raw, -(Errno::Erofs.as_i32() as i64)); }
         return -(Errno::Erofs.as_i32() as i64);
     }
+    if let Err(rv) = crate::landlock::check_parent(&parent,
+        ::security::landlock::access::MAKE_DIR) { return rv; }
     let cred = crate::pathresolve::current_cred();
     if let Err(e) = vfs::may_create(&parent.inode, &cred) {
         let rv = errno_from_vfs(e);
