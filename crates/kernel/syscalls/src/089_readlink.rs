@@ -24,12 +24,10 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
         Ok(s)   => s,
         Err(rv) => return rv,
     };
-    let raw: &str = path.as_str();
-    let resolved = crate::pathresolve::resolve_cwd(raw);
-    readlink_resolved_path(resolved.as_str(), buf_ptr, bufsize)
+    readlink_at_path(crate::pathresolve::AT_FDCWD, path.as_str(), buf_ptr, bufsize)
 }
 
-pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -> i64 {
+pub(crate) fn readlink_at_path(dirfd: i32, raw: &str, buf_ptr: u64, bufsize: u64) -> i64 {
     // DIAG (debug-syscall): the intermittent boot wedge shows a process looping
     // on readlink=-22 (EINVAL). Log the path every Nth call so the spun path is
     // symbolizable (which symlink the process wrongly sees as a non-symlink, or
@@ -41,19 +39,22 @@ pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -
         if N.fetch_add(1, Ordering::Relaxed) % 2000 == 0 {
             let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
             klog::write_raw(b"[RLTRACE] tid="); klog::write_dec_u64(tid as u64);
-            klog::write_raw(b" path="); klog::write_raw(path_s.as_bytes());
+            klog::write_raw(b" path="); klog::write_raw(raw.as_bytes());
             klog::write_raw(b"\n");
         }
     }
-    // proc-link family first (/proc/self/exe etc) — not backed by Inode::readlink.
-    // Otherwise resolve via the dentry walk with no_follow_final=true: Linux
-    // readlink follows INTERMEDIATE symlinks in the path but returns the FINAL
-    // component's link target itself (never follows it). EINVAL when the final
-    // isn't a symlink (Inode::readlink errors), ENOENT when it doesn't resolve.
-    let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) { t }
-        else if let Some(inode) = crate::pathresolve::resolve(path_s, true) {
-            match inode.get_link() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
-        } else { return -(Errno::Enoent.as_i32() as i64); };
+    // Linux readlink follows intermediate symlinks in the path but returns the
+    // final component's link target itself. Keep the resolved `struct path`
+    // intact; procfs magic links expose their live text through Inode::get_link.
+    let vp = match crate::pathresolve::resolve_at_path(dirfd, raw,
+        vfs::LookupFlags { no_follow_final: true, ..Default::default() }) {
+        Ok(p) => p,
+        Err(rv) => return rv,
+    };
+    let target: alloc::vec::Vec<u8> = match vp.inode.get_link() {
+        Ok(v) => v,
+        Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
     write_link_target(&target, buf_ptr, bufsize)
 }
 

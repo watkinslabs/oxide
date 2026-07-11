@@ -315,6 +315,12 @@ Fix shape:
 - Implement `readlink()` as `readlinkat(AT_FDCWD, path, ...)`.
 - Prefer `VfsPath` in `readlink_resolved_path()` if keeping it.
 
+Fix status:
+
+- Done: `readlink()` now routes through `readlink_at_path(AT_FDCWD, raw, ...)` and no longer uses `resolve_cwd()`.
+- Done: non-empty `readlinkat()` uses the same helper, so both paths resolve once through `resolve_at_path(dirfd, raw, no_follow_final)`.
+- Removed the inode-only `resolve(path_s, true)` second walk. The final inode's own `get_link()` supplies ordinary symlink and procfs magic-link readlink text.
+
 ### 6. `statfs()` validates by string then calls mount resolver by string
 
 File: `crates/kernel/syscalls/src/137_statfs.rs`
