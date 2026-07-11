@@ -92,6 +92,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
+        if let Some(global) = global_root() { *m.mnt_root.lock() = Some(global); }
         // [D51] Stamp the requested option bits before the mount goes live.
         if mnt_flags != 0 { m.flags.store(mnt_flags, Ordering::Release); }
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux

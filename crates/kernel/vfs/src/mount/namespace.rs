@@ -367,13 +367,15 @@ pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: 
     // Mirror under the TARGET's mounted ROOT, not its bare mountpoint dentry.
     let mut tgt_base = tgt.clone();
     let mut tgt_mnt = tgt_parent_hint.unwrap_or_else(|| containing_mount_id(ns, tgt));
+    let mut exclude_mnt = None;
     while let Some(m) = __lookup_mnt(tgt_mnt, &tgt_base) {
+        exclude_mnt = Some(m.mnt_id);
         match m.mnt_root() { Some(sr) => { tgt_base = sr; tgt_mnt = m.mnt_id; } None => break }
     }
     // Clone the source's submount SUBTREE (root EXCLUDED — already bound) as
     // private binds, then splice it under the destination base, falling back to
     // the bare `tgt` underlay when the mounted root cannot resolve a slot.
-    let nodes = copy_bind_subtree_from_arena(&src_m, src, ns, Some(tgt_mnt));
+    let nodes = copy_bind_subtree_from_arena(&src_m, src, ns, exclude_mnt);
     // `tgt_mnt` is the mount whose `mnt_root` is `tgt_base` — the explicit parent
     // of every top-level cloned submount, threaded so the parent-aware
     // `commit_tree` need not (ambiguously) re-derive it from the shared dentry.

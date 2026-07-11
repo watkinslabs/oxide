@@ -57,9 +57,21 @@ impl Nameidata {
         // true containing mount for the crossing to resolve. The seed `mnt_id` the
         // walk carries is the design linchpin — ns-correctness flows from
         // `cur_mnt_id` through the `(parent_mnt_id, dentry)` strict hash.
-        let root_base = crate::mount::containing_mount_id(ns, &root);
+        let (root, root_base) = match crate::mount::namespace_root_path(ns, &root) {
+            Some((mnt_id, dentry)) => (dentry, mnt_id),
+            None => {
+                let mnt_id = crate::mount::containing_mount_id(ns, &root);
+                (root, mnt_id)
+            }
+        };
         let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_base)?;
-        let start_base = crate::mount::containing_mount_id(ns, &start);
+        let (start, start_base) = match crate::mount::namespace_root_path(ns, &start) {
+            Some((mnt_id, dentry)) => (dentry, mnt_id),
+            None => {
+                let mnt_id = crate::mount::containing_mount_id(ns, &start);
+                (start, mnt_id)
+            }
+        };
         let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, start_base)?;
         // RESOLVE_IN_ROOT (openat2): the dirfd (START) becomes the resolution
         // root, so `to_root()` (absolute paths / absolute symlink restarts) and

@@ -120,13 +120,25 @@ pub(super) fn copy_tree(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, 
 /// Recursive-bind clone list from explicit mount-parent edges. # C: O(N×depth)
 pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ns: u64, exclude_id: Option<u64>) -> Vec<CloneNode> {
     let mut out: Vec<CloneNode> = Vec::new();
+    let base_rel = src.mnt_root()
+        .and_then(|root| plain_rel_under(base_mp, &root))
+        .unwrap_or_default();
     for m in mounts_in_ns(ns).into_iter() {
         if m.mnt_id == src.mnt_id || is_unbindable(&m) { continue; }
         if !mount_under(&m, src.mnt_id) { continue; }
         if exclude_id == Some(m.mnt_id) { continue; }
         if exclude_id.map(|ex| mount_under(&m, ex)).unwrap_or(false) { continue; }
         let Some(mp) = m.mountpoint() else { continue; };
-        let Some(rel) = plain_rel_under(&mp, base_mp) else { continue; };
+        let Some(full_rel) = bind_rel_under_mount(&m, src.mnt_id) else { continue; };
+        let rel = if base_rel.is_empty() {
+            full_rel
+        } else {
+            let prefix = alloc::format!("{}/", base_rel);
+            match full_rel.strip_prefix(prefix.as_str()) {
+                Some(s) if !s.is_empty() => String::from(s),
+                _ => continue,
+            }
+        };
         if rel.is_empty() { continue; }
         out.push(CloneNode { m: clone_mnt(&m, CloneType::Private, 0, src, ns), rel, mp: Some(mp) });
     }
@@ -144,6 +156,25 @@ fn mount_under(m: &Arc<Mount>, top: u64) -> bool {
         id = next;
     }
     false
+}
+
+fn bind_rel_under_mount(m: &Arc<Mount>, top: u64) -> Option<String> {
+    let mut comps: Vec<String> = Vec::new();
+    let mut cur = m.clone();
+    for _ in 0..64 {
+        let parent = cur.parent_id.load(Ordering::Acquire);
+        if parent == cur.mnt_id { return None; }
+        let mp = cur.mountpoint()?;
+        let parent_root = mount_by_id(parent)?.mnt_root()?;
+        let seg = plain_rel_under(&mp, &parent_root)?;
+        if seg.is_empty() { return None; }
+        comps.push(seg);
+        if parent == top { break; }
+        cur = mount_by_id(parent)?;
+    }
+    if cur.parent_id.load(Ordering::Acquire) != top { return None; }
+    comps.reverse();
+    Some(comps.join("/"))
 }
 
 fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u64,

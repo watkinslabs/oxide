@@ -31,7 +31,7 @@ fn guard() -> MutexGuard<'static, ()> {
 
 struct TDirOps;
 impl vfs::InodeOps for TDirOps {
-    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Ok(tdir(0xD00)) }
 }
 fn tdir(ino: u64) -> InodeRef {
     vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
@@ -131,6 +131,8 @@ fn bind_as_clone_roots_at_source_inode() {
 #[test]
 fn ms_rec_clones_submounts() {
     let _g = guard();
+    vfs::mount::set_current_ns_provider(|| 0x7130);
+    common::register("/", Arc::new(TestFs { root_ino: 0x0100 })).expect("root");
     common::register("/rsrc", Arc::new(TestFs { root_ino: 0x100 })).expect("src");
     common::register("/rsrc/sub", Arc::new(TestFs { root_ino: 0x200 })).expect("submount");
     let r = common::mount_root_at("/rsrc").expect("src root");
@@ -317,6 +319,8 @@ fn join_peer_group_shares_group() {
 fn propagate_mount_reaches_peers() {
     let _g = guard();
     use vfs::mount::Propagation;
+    vfs::mount::set_current_ns_provider(|| 0x7131);
+    common::register("/", Arc::new(TestFs { root_ino: 0xA000 })).expect("root");
     // /pp-a shared (peer group P); /pp-b joins P (a peer of /pp-a).
     common::register("/pp-a", Arc::new(TestFs { root_ino: 0xA })).expect("a");
     common::set_propagation("/pp-a", Propagation::Shared).expect("share a");

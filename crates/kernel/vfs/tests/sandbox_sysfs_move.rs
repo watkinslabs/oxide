@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeRef, KResult};
 
 mod common;
 
@@ -26,10 +26,10 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-/// Test directory inode: a bare mountpoint dir whose `lookup` misses (ENOENT).
+/// Test directory inode: child-capable so mkdtemp-style targets are real paths.
 struct TDirOps;
 impl InodeOps for TDirOps {
-    fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Ok(tdir(0x515)) }
 }
 fn tdir(ino: u64) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()

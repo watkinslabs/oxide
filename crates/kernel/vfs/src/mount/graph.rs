@@ -214,6 +214,19 @@ pub(super) fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 /// The global namespace-root dentry. # C: O(1)
 pub(super) fn global_root() -> Option<Arc<Dentry>> { crate::namei::root_dentry() }
 
+/// Normalize a bare namespace-root dentry into the current namespace root
+/// mount's real `(mnt_id, mnt_root)` pair. After `MS_MOVE(stage, "/")`, the
+/// global root dentry remains the caller-visible `/` anchor, but the namespace
+/// root mount may now be a bind whose `mnt_root` is a different dentry. A path
+/// walk seeded as `(new_root_mnt_id, old_global_root_dentry)` is split truth:
+/// the mount id and dentry name different objects. # C: O(log N)
+pub fn namespace_root_path(ns: u64, d: &Arc<Dentry>) -> Option<(u64, Arc<Dentry>)> {
+    if !is_ns_root_dentry(d) { return None; }
+    let mnt_id = root_mount_id(ns)?;
+    let root = root_dentry_for_mount_id(mnt_id)?;
+    Some((mnt_id, root))
+}
+
 // ---------------------------------------------------------------------------
 // (parent_mnt_id, mountpoint_dentry_ptr) -> mnt_id stack — Linux
 // `__lookup_mnt`. Top of stack = last attached (overmounts). The `ns` is NOT

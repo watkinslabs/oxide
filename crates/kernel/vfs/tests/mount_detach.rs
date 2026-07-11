@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::mount::Propagation;
-use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default_file_ops, mk_mode};
+use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, default_file_ops, mk_mode};
 
 mod common;
 
@@ -31,7 +31,7 @@ impl FileSystem for TFs {
 }
 struct TDirOps;
 impl InodeOps for TDirOps {
-    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Ok(make_tdir(0xD00)) }
 }
 fn make_tdir(ino: u64) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
