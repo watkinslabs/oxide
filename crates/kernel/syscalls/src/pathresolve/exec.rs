@@ -4,9 +4,13 @@ use super::lookup::resolve_path_raw;
 
 /// # C: O(components) + O(size/PAGE)
 pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
-    let s = core::str::from_utf8(path).ok()?;
-    let inode = resolve_path_raw(s, false).ok()?.inode;
+    let s = exec_lookup_path(path);
+    let inode = resolve_path_raw(&s, false).ok()?.inode;
     read_exec_inode(&inode)
+}
+
+fn exec_lookup_path(path: &[u8]) -> alloc::string::String {
+    vfs::path_from_bytes(path)
 }
 
 /// # C: O(size/PAGE)
