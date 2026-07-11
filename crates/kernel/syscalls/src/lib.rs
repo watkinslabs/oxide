@@ -15,6 +15,10 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio; pub mod pidfd;
 #[path = "090_chmod.rs"] pub mod s090_chmod; #[path = "091_fchmod.rs"] pub mod s091_fchmod; #[path = "268_fchmodat.rs"] pub mod s268_fchmodat; #[path = "092_chown.rs"] pub mod s092_chown; #[path = "093_fchown.rs"] pub mod s093_fchown; #[path = "260_fchownat.rs"] pub mod s260_fchownat;
 #[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr; #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get; #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
 #[path = "465_listxattrat.rs"] pub mod s465_listxattrat; #[path = "466_removexattrat.rs"] pub mod s466_removexattrat; #[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
+#[path = "188_setxattr.rs"] pub mod s188_setxattr; #[path = "189_lsetxattr.rs"] pub mod s189_lsetxattr; #[path = "190_fsetxattr.rs"] pub mod s190_fsetxattr;
+#[path = "191_getxattr.rs"] pub mod s191_getxattr; #[path = "192_lgetxattr.rs"] pub mod s192_lgetxattr; #[path = "193_fgetxattr.rs"] pub mod s193_fgetxattr;
+#[path = "194_listxattr.rs"] pub mod s194_listxattr; #[path = "195_llistxattr.rs"] pub mod s195_llistxattr; #[path = "196_flistxattr.rs"] pub mod s196_flistxattr;
+#[path = "197_removexattr.rs"] pub mod s197_removexattr; #[path = "198_lremovexattr.rs"] pub mod s198_lremovexattr; #[path = "199_fremovexattr.rs"] pub mod s199_fremovexattr;
 #[path = "468_file_getattr.rs"] pub mod s468_file_getattr; #[path = "469_file_setattr.rs"] pub mod s469_file_setattr; #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
 #[path = "335_uretprobe.rs"] pub mod s335_uretprobe; #[path = "453_map_shadow_stack.rs"] pub mod s453_map_shadow_stack;
 #[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam; #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr; #[path = "013_rt_sigaction.rs"] pub mod s013_rt_sigaction;
@@ -43,6 +47,7 @@ mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path 
 #[path = "424_pidfd_send_signal.rs"] pub mod s424_pidfd_send_signal; #[path = "434_pidfd_open.rs"] pub mod s434_pidfd_open; #[path = "438_pidfd_getfd.rs"] pub mod s438_pidfd_getfd;
 #[path = "444_landlock_create_ruleset.rs"] pub mod s444_landlock_create_ruleset; #[path = "445_landlock_add_rule.rs"] pub mod s445_landlock_add_rule; #[path = "446_landlock_restrict_self.rs"] pub mod s446_landlock_restrict_self;
 mod fs_access_common; #[path = "021_access.rs"] pub mod s021_access; #[path = "269_faccessat.rs"] pub mod s269_faccessat; #[path = "307_sendmmsg.rs"] pub mod s307_sendmmsg; #[path = "299_recvmmsg.rs"] pub mod s299_recvmmsg;
+mod xattr_common;
 #[path = "290_eventfd2.rs"] pub mod s290_eventfd2; #[path = "319_memfd_create.rs"] pub mod s319_memfd_create;
 mod affinity_common; #[path = "203_sched_setaffinity.rs"] pub mod s203_sched_setaffinity; #[path = "204_sched_getaffinity.rs"] pub mod s204_sched_getaffinity;
 mod execve_common; #[path = "059_execve/mod.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;

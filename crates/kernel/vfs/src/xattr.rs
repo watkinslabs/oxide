@@ -11,7 +11,7 @@
 //
 // Backends that own no xattr store (procfs/sysfs/devfs/…) leave the inode's
 // `i_xattrs` field `None`; their `i_op` xattr ops return [`XattrError::NotSup`]
-// so the caller can apply the legacy fallback / report `EOPNOTSUPP`.
+// so the caller reports `EOPNOTSUPP`.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
