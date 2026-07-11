@@ -15,7 +15,7 @@ pub fn smoke_test() {
     let mut path: alloc::string::String = alloc::string::String::with_capacity(16);
     path.push_str("/dev/pts/");
     push_dec(&mut path, n);
-    let slave = devfs::lookup(&path).expect("pts slave registered");
+    let slave = vfs::resolve_abs(&path).expect("pts slave registered");
     kassert!(slave.file_type() == FileType::CharDev, "pts slave is chardev");
 
     let n1 = master.write(0, b"keys\n").expect("master write");
