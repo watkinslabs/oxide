@@ -12,9 +12,6 @@ pub fn sys_rt_sigpending(args: &SyscallArgs) -> i64 {
     let set = args.a0;
     let sz  = args.a1;
     if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
-    if set == 0 || set >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
     if let Err(rv) = validate_user_buf_writable(set, 8, 8) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let p = cur.sigpending.load(Ordering::Acquire);

@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::validate_user_buf;
 
 /// `sys_rt_sigsuspend(mask, sz)` — slot 130.
 /// # C: O(yields until signal)
@@ -11,15 +12,14 @@ pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     let mask = args.a0;
     let sz   = args.a1;
     if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
-    if mask == 0 || mask >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf(mask, 8, 8) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
     };
-    // SAFETY: mask validated < USER_VA_END; CPL=0 reads through caller's AS.
+    // SAFETY: mask validated as a readable 8-byte user sigset_t.
     let m = unsafe { core::ptr::read_volatile(mask as *const u64) };
-    let new_mask = m & !(1u64 << 8) & !(1u64 << 18);
+    use sched::live::sigpend::Signum;
+    let new_mask = m & !(Signum::Sigkill.bit() | Signum::Sigstop.bit());
     let old_mask = cur.sigmask.swap(new_mask, Ordering::AcqRel);
     loop {
         let pending = cur.sigpending.load(Ordering::Acquire);
