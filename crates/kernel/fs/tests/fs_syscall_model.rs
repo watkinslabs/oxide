@@ -448,6 +448,7 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert_eq!((secret.uid(), secret.gid(), secret.perm()), (Some(1000), Some(1000), Some(0o600)));
     let other_proc = Proc::new(logind_ns, root.clone(), logind_root_mnt, other);
     assert!(matches!(other_proc.read_path("/run/user/1000/secret"), Err(VfsError::Eacces)));
+    assert!(matches!(other_proc.mkdirat(AT_FDCWD, "/run/user/1000/nope", 0o755), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.access("/run/user/1000/secret", true, false, false), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.truncate("/run/user/1000/secret", 0), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.chmod("/run/udev/data/c226:0", 0o600), Err(VfsError::Eperm)));

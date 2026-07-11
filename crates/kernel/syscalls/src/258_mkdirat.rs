@@ -79,8 +79,16 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
         trace_runtime_dir("mkdirat_rofs", raw, Some(&p), -(Errno::Erofs.as_i32() as i64));
         return -(Errno::Erofs.as_i32() as i64);
     }
-    // Thread the mount idmap + caller cred + umask for the new dir's owner.
     let cred = crate::pathresolve::current_cred();
+    if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+        let rv = errno_from_vfs(e);
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"mkdirat", &p, rv);
+        #[cfg(feature = "debug-mount")]
+        trace_runtime_dir("mkdirat_create_perm", raw, Some(&p), rv);
+        return rv;
+    }
+    // Thread the mount idmap + caller cred + umask for the new dir's owner.
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend mkdir (Linux
     // `filename_create` → `->mkdir`); dropped before the dcache update below.
