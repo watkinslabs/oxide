@@ -5,7 +5,7 @@
 //! `FsValue` carried only `Flag`/`String`, so a `SET_FD`/`SET_PATH`/`SET_BINARY`
 //! command had no typed representation and the value was dropped or coerced to a
 //! string. These prove each command maps to a distinct typed `FsValue`, that the
-//! typed accessors round-trip, and that a legacy backend rejects the value types
+//! typed accessors round-trip, and that a classic mount backend rejects the value types
 //! its comma-blob `->mount` cannot parse.
 
 use std::sync::Arc;
@@ -57,18 +57,18 @@ fn typed_accessors_round_trip_and_reject_wrong_type() {
 }
 
 #[test]
-fn legacy_backend_accepts_flag_and_string() {
+fn classic_mount_backend_accepts_flag_and_string() {
     let mut fc = ctx();
     vfs_parse_fs_param(&mut fc, &FsParameter::flag("noexec")).unwrap();
     vfs_parse_fs_param(&mut fc, &FsParameter::string("mode", "0755")).unwrap();
     assert_eq!(fc.params().len(), 2);
-    let opts = fc.legacy_options();
+    let opts = fc.classic_mount_options();
     assert!(opts.contains("noexec") && opts.contains("mode=0755"), "{opts}");
 }
 
 #[test]
-fn legacy_backend_rejects_fd_path_blob_value_types() {
-    // A legacy comma-blob `->mount` cannot parse an fd/path/binary value
+fn classic_mount_backend_rejects_fd_path_blob_value_types() {
+    // A classic mount comma-blob `->mount` cannot parse an fd/path/binary value
     // (Linux `legacy_parse_param` default → invalf → -EINVAL).
     for p in [
         FsParameter::fd("fd", 3),
@@ -78,7 +78,7 @@ fn legacy_backend_rejects_fd_path_blob_value_types() {
     ] {
         let mut fc = ctx();
         assert_eq!(vfs_parse_fs_param(&mut fc, &p).unwrap_err(), VfsError::Einval,
-            "legacy backend rejects {:?}", p.value);
+            "classic mount backend rejects {:?}", p.value);
         assert_eq!(fc.params().len(), 0, "rejected param not accumulated");
     }
 }

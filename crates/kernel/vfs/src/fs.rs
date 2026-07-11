@@ -13,7 +13,7 @@ pub use api::{FileSystem, FsConstructor, FsType, KResult, MountSpec};
 pub use flags::FsFlags;
 pub use fs_context::{
     FsContext, FsContextOps, FsContextPhase, FsContextPurpose, FsContextSecurity, FsParameter,
-    FsValue, LegacyFsContextOps, ParamResult, SB_FLAGS_USER_MASK, put_fs_context,
+    FsValue, ClassicMountFsContextOps, ParamResult, SB_FLAGS_USER_MASK, put_fs_context,
     reconfigure_super, vfs_get_tree, vfs_parse_fs_param, vfs_parse_fs_param_source,
     vfs_parse_fs_string,
 };

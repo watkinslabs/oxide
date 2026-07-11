@@ -11,7 +11,7 @@ use crate::superblock::{
     SB_NOEXEC, SB_NOSUID, SB_RDONLY, SB_SYNCHRONOUS,
 };
 
-use super::ops::{FsContextOps, FsContextSecurity, LegacyFsContextOps};
+use super::ops::{FsContextOps, FsContextSecurity, ClassicMountFsContextOps};
 use super::types::{FsContextPhase, FsContextPurpose, FsParameter, FsValue, KResult};
 
 pub const SB_FLAGS_USER_MASK: u64 = SB_RDONLY
@@ -70,7 +70,7 @@ impl FsContext {
 
     fn alloc(fs_type: Arc<dyn FileSystemType>, purpose: FsContextPurpose, phase: FsContextPhase, sb_flags: u64, sb_flags_mask: u64) -> Self {
         Self {
-            ops: Arc::new(LegacyFsContextOps),
+            ops: Arc::new(ClassicMountFsContextOps),
             fs_type, purpose, phase, sb_flags, sb_flags_mask,
             source: None, params: Vec::new(), root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None,
         }
@@ -93,7 +93,7 @@ impl FsContext {
     pub fn set_fs_private(&mut self, p: Arc<dyn Any + Send + Sync>) { self.fs_private = p; }
     pub fn fail(&mut self) { self.phase = FsContextPhase::Failed; }
 
-    pub fn legacy_options(&self) -> String {
+    pub fn classic_mount_options(&self) -> String {
         let mut s = String::new();
         for p in &self.params {
             if !s.is_empty() { s.push(','); }

@@ -202,7 +202,7 @@ pub trait FileSystemType: Send + Sync {
     fn fs_flags(&self) -> FsFlags { FsFlags::empty() }
     /// `file_system_type::init_fs_context` (Linux) — install a backend-specific
     /// `fs_context_operations` for the new mount API. `None` (the default) ⇒ the
-    /// legacy adapter ([`crate::fs::fs_context::LegacyFsContextOps`]) replays the
+    /// classic mount adapter ([`crate::fs::fs_context::ClassicMountFsContextOps`]) replays the
     /// accumulated options to [`FileSystemType::mount`] at `get_tree`. # C: O(1)
     fn init_fs_context(&self) -> Option<Arc<dyn FsContextOps>> { None }
 }

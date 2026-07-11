@@ -61,10 +61,10 @@ fn invalf_logs_and_returns_einval() {
 #[test]
 fn unknown_parameter_is_logged_through_invalf() {
     let mut fc = ctx();
-    // The legacy backend declines "frob"; the generic source handler rejects it
+    // The classic mount backend declines "frob"; the generic source handler rejects it
     // as an unknown parameter and logs the reason.
     let e = vfs_parse_fs_param(&mut fc, &FsParameter::flag("frob"));
-    // flag "frob" is actually consumed by the legacy backend (any non-source
+    // flag "frob" is actually consumed by the classic mount backend (any non-source
     // flag/string is accepted), so no error here:
     assert!(e.is_ok());
     // A path value, however, has no legacy form → logged invalf.

@@ -1,7 +1,7 @@
 //! `get_tree_*` superblock-sharing helpers (Linux `fs/super.c`). A backend's
 //! `get_tree` op calls `get_tree_nodev` (fresh SB per mount), `get_tree_single`
 //! (one SB for the whole fs_type), or `get_tree_keyed` (SB shared by a key)
-//! instead of hand-allocating. Fails-before: only the legacy `->mount` path
+//! instead of hand-allocating. Fails-before: only the classic `->mount` path
 //! existed; there was no `sget`-style sharing, so two mounts of a
 //! single-instance pseudo-fs each built a divergent SB. These prove nodev never
 //! shares, single collapses to one SB (fill_super runs once), keyed shares by
