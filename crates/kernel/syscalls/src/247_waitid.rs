@@ -76,7 +76,6 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         klog::write_raw(b"\n");
     }
     let mut local_wstat: i32 = 0;
-    let local_wstat_ptr = &mut local_wstat as *mut i32 as u64;
     // WNOWAIT (waitid-only): peek the zombie's status but leave it
     // waitable. systemd's SIGCHLD handler peeks with WEXITED|WNOHANG|
     // WNOWAIT to map a pid→unit, then reaps separately; if the peek
@@ -129,12 +128,10 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             }
         }
     } else {
-        let mut sa = *args;
-        sa.a0 = pid_for_wait4 as u64;
-        sa.a1 = local_wstat_ptr;
-        sa.a2 = options;
-        sa.a3 = 0;
-        crate::wait::sys_wait4(&sa)
+        crate::wait::wait4_with_status_sink(pid_for_wait4, options, |wstat| {
+            local_wstat = wstat;
+            Ok(())
+        })
     };
     if infop != 0 && infop < USER_VA_END {
         let (si_code, si_status): (i32, i32) = if rv > 0 {
