@@ -4,7 +4,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -25,8 +24,13 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     if vlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     let mut got: i64 = 0;
     for i in 0..vlen {
-        let entry = mmsg_ptr + i * 64;
-        if entry >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        let Some(entry) = mmsg_ptr.checked_add(i.saturating_mul(64)) else {
+            return -(Errno::Efault.as_i32() as i64);
+        };
+        let Some(len_ptr) = entry.checked_add(56) else {
+            return -(Errno::Efault.as_i32() as i64);
+        };
+        if let Err(rv) = crate::userbuf::validate_user_buf_writable(len_ptr, 4, 1) { return rv; }
         let mut sa = *args;
         sa.a0 = fd; sa.a1 = entry; sa.a2 = flags;
         let r = sys_recvmsg(&sa);
@@ -34,8 +38,8 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
             return if got > 0 { got } else { r };
         }
         if r == 0 { break; }
-        // SAFETY: entry < USER_VA_END; msg_len at +56 within the 64-byte mmsghdr.
-        unsafe { core::ptr::write_volatile((entry + 56) as *mut u32, r as u32); }
+        // SAFETY: msg_len was validated as the writable 4-byte user slot for this mmsghdr entry.
+        unsafe { core::ptr::write_unaligned(len_ptr as *mut u32, r as u32); }
         got += 1;
     }
     got
