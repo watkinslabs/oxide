@@ -64,6 +64,18 @@ fn mountinfo_root_field_falls_back_to_absolute_when_root_not_under_sb_root() {
 }
 
 #[test]
+fn mountinfo_root_field_rejects_lexical_prefix_sibling() {
+    common::install();
+    let sb_root = common::dentry("/foo");
+    let bind_root = common::dentry("/foobar");
+    assert_eq!(
+        vfs::mount::render_mount_root_field(Some(bind_root), Some(sb_root)).as_str(),
+        "/foobar",
+        "sibling /foobar is not beneath superblock root /foo and must not render as /bar",
+    );
+}
+
+#[test]
 fn mountinfo_options_and_source_are_vfs_owned() {
     common::install();
     common::register("/mnt/projection-options", Arc::new(ProjectionFs)).expect("mount projection fs");

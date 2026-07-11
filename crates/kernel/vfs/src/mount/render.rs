@@ -23,7 +23,7 @@ pub fn render_mount_root_field(root: Option<Arc<Dentry>>, sb_root: Option<Arc<De
         return String::from_utf8(rp).unwrap_or_else(|_| String::from("/"));
     };
     let sp = sr.absolute_path();
-    let rel = if rp.starts_with(sp.as_slice()) {
+    let rel = if r.is_subdir_of(&sr) && rp.starts_with(sp.as_slice()) {
         let strip = if sp.as_slice() == b"/" { 0 } else { sp.len() };
         &rp[strip..]
     } else {
