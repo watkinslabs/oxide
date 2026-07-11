@@ -1,5 +1,22 @@
 use super::*;
 
+#[test]
+fn inotify_init_flags_match_linux() {
+    assert_eq!(validate_inotify_init_flags(0), Ok(()));
+    assert_eq!(validate_inotify_init_flags(0o0_004_000), Ok(()));
+    assert_eq!(validate_inotify_init_flags(0o2_000_000), Ok(()));
+    assert_eq!(validate_inotify_init_flags(0o2_004_000), Ok(()));
+    assert_eq!(validate_inotify_init_flags(1), Err(syscall::errno::Errno::Einval));
+    assert_eq!(validate_inotify_init_flags(0x8000_0000), Err(syscall::errno::Errno::Einval));
+}
+
+#[test]
+fn legacy_inotify_init_ignores_a0() {
+    let args = syscall::SyscallArgs { a0: 1, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
+    assert_eq!(sys_inotify_init(&args), -(syscall::errno::Errno::Ebadf.as_i32() as i64));
+    assert_eq!(sys_inotify_init1(&args), -(syscall::errno::Errno::Einval.as_i32() as i64));
+}
+
 // An empty inotify fd is EAGAIN (would-block), never EOF(0), and
 // poll() reports not-readable — else an epoll-driven reader spins.
 #[test]

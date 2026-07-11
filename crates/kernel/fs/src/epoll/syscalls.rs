@@ -189,8 +189,8 @@ fn sys_epoll_wait_sigmask(args: &syscall::SyscallArgs, timeout_ns: Option<u64>, 
     };
     // SAFETY: sigmask_ptr validated as a readable 8-byte kernel_sigset_t.
     let new_mask = unsafe { core::ptr::read_unaligned(sigmask_ptr as *const u64) }
-        & !(sched::live::sigpend::Signum::Sigkill.bit()
-          | sched::live::sigpend::Signum::Sigstop.bit());
+        & !(sched::signum::Signum::Sigkill.bit()
+          | sched::signum::Signum::Sigstop.bit());
     let saved = cur.sigmask.swap(new_mask, Ordering::AcqRel);
     let rv = sys_epoll_wait_timeout(args, timeout_ns);
     cur.sigmask.store(saved, Ordering::Release);
@@ -265,5 +265,9 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
                 }
             }
         }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        0
     }
 }

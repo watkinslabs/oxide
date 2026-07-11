@@ -179,8 +179,8 @@ fn sys_signalfd_common(args: &syscall::SyscallArgs, flags: u64) -> i64 {
     }
     // SAFETY: mask_ptr validated readable for one sigset_t word.
     let mask = unsafe { core::ptr::read_unaligned(mask_ptr as *const u64) }
-        & !(sched::live::sigpend::Signum::Sigkill.bit()
-          | sched::live::sigpend::Signum::Sigstop.bit());
+        & !(sched::signum::Signum::Sigkill.bit()
+          | sched::signum::Signum::Sigstop.bit());
     #[cfg(feature = "debug-ssh")]
     {
         klog::write_raw(b"[INFO]  ssh-trace: signalfd4 in_fd=");
