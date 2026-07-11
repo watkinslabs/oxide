@@ -74,6 +74,9 @@ pub use expiry::{
 mod flags;
 pub use flags::*;
 
+mod render;
+pub use render::{mountinfo_root_field, render_mount_root_field};
+
 include!("mount/graph.rs");
 include!("mount/model.rs");
 include!("mount/attach.rs");

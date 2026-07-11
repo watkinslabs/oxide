@@ -748,16 +748,18 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
      - `sys_mount()` now resolves `target_raw` with `resolve_mount_target_raw()` directly from the live `cwd_vfs`/root `VfsPath`; `canonical_mount_path()` was removed, and procfd/magic-fd targets resolve to the opened file's `(mnt_id,dentry)` before rendering any display string.
      - `mount_fstype_at()` takes the walked parent mount id from `MountTarget`; fstype mounts no longer re-resolve the rendered target string for attach parent identity.
      - Hosted proof: `cargo test -p vfs --test mount_target_lookup -- --nocapture` proves `/proc/kallsyms` and `/stage/proc/kallsyms` can share the same leaf dentry while the resolver still returns the staged bind mount as parent identity.
-     - Verification: `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 4/4; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
-   - Still required:
-     - make mountinfo root/source rendering call a shared VFS helper and test it hosted.
+     - `vfs::mount::{mountinfo_root_field,render_mount_root_field}` now owns mountinfo field 4 rendering from mount identity; procfs no longer carries a private copy of the bind-root/subroot rendering logic.
+     - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` now includes whole-filesystem root, bind-subroot relative-to-superblock-root, and fallback absolute root cases.
+     - Verification: `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 7/7; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
    - Done next slice:
      - `vfs::mount::project_path_under_root()` now owns reader-root projection for procfs mount reports.
      - `/proc/self/mountinfo` and `/proc/mounts` share that projection, so a chroot/pivoted reader no longer sees global mountpoint strings in one file and projected strings in the other.
-     - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 4/4.
+     - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 7/7.
    - Delete the remaining legacy fake-SB bind helper path once all callers use `register_bind_clone_*`.
    - Keep rendered strings only as mountinfo payload, derived from the walked mount context.
-   - Make `/proc/self/mountinfo` render from the reader task's root/cwd/mount namespace view, not as a global list of stored absolute strings.
+   - Still required:
+     - make mountinfo source/optional-field rendering use the same VFS-owned model instead of procfs-local policy.
+     - make `/proc/self/mountinfo` render from the reader task's full mount namespace view, not as a global list of stored absolute strings filtered by projected absolute mountpoint text.
 
 8. Fix ext4 inode-cache coherence. **First slice tested**
 

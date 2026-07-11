@@ -37,31 +37,6 @@ fn build_mounts() -> Vec<u8> {
     s.into_bytes()
 }
 
-fn mount_root_field(m: &Arc<vfs::mount::Mount>) -> String {
-    let Some(r) = m.mnt_root() else { return String::from("/"); };
-    let rp = r.absolute_path();
-    let Some(sr) = m.sb().s_root() else {
-        return String::from_utf8(rp).unwrap_or_else(|_| String::from("/"));
-    };
-    let sp = sr.absolute_path();
-    let rel = if rp.starts_with(sp.as_slice()) {
-        let strip = if sp.as_slice() == b"/" { 0 } else { sp.len() };
-        &rp[strip..]
-    } else {
-        rp.as_slice()
-    };
-    match core::str::from_utf8(rel) {
-        Ok("") => String::from("/"),
-        Ok(s) if s.starts_with('/') => String::from(s),
-        Ok(s) => {
-            let mut out = String::from("/");
-            out.push_str(s);
-            out
-        }
-        Err(_) => String::from("/"),
-    }
-}
-
 fn current_root_prefix() -> Option<String> {
     let cur = sched::live::current()?;
     // SAFETY: task.root_vfs is single-mutator per task; read-only snapshot for procfs rendering.
@@ -113,7 +88,7 @@ fn build_mountinfo() -> Vec<u8> {
         } else {
             "rw"
         };
-        let root = mount_root_field(m);
+        let root = vfs::mount::mountinfo_root_field(m);
         let opt = match Propagation::from_u8(m.propagation.load(Ordering::Acquire)) {
             // Real peer-group id (`docs/16§6`), distinct from mnt_id.
             Propagation::Shared => format!(" shared:{}", pg),
