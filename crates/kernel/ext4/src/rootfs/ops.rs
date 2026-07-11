@@ -147,7 +147,11 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn create_at(self: &Arc<Self>, path: &[u8], mode_perm: u16) -> Option<vfs::InodeRef> {
         let (pino, name) = self.parent_inode(path)?;
-        let new_ino = self.mount.create_file(pino, name, mode_perm, 0, 0).ok()?;
+        let parent = self.wrap_any_ino(pino)?;
+        let ctx = vfs::CreateCtx::root();
+        let (uid, gid, mode) = vfs::prepare_create_owner_mode(ctx.idmap, &parent, mode_perm,
+            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
+        let new_ino = self.mount.create_file(pino, name, mode & 0o7777, uid, gid).ok()?;
         self.forget_created_ino(new_ino);
         self.wrap_file(new_ino)
     }
@@ -203,28 +207,39 @@ impl RootfsState {
     }
 
     /// # C: O(N parent entries)
-    pub fn symlink_at(&self, target: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
+    pub fn symlink_at(self: &Arc<Self>, target: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
         if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
-        let new_ino = self.mount.create_symlink(pino, name, target, 0, 0).map_err(namei_error_from_mount)?;
+        let parent = self.wrap_any_ino(pino).ok_or(vfs::VfsError::Eio)?;
+        let ctx = vfs::CreateCtx::root();
+        let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, &parent, ctx.cred);
+        let new_ino = self.mount.create_symlink(pino, name, target, uid, gid).map_err(namei_error_from_mount)?;
         self.forget_created_ino(new_ino);
         Ok(())
     }
 
     /// # C: O(N parent entries)
-    pub fn mknod_at(&self, path: &[u8], mode: u16, rdev: u32) -> Result<(), vfs::VfsError> {
+    pub fn mknod_at(self: &Arc<Self>, path: &[u8], mode: u16, rdev: u32) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
         if self.mount.lookup_path(path).is_ok() { return Err(vfs::VfsError::Eexist); }
-        let new_ino = self.mount.create_mknod(pino, name, mode, rdev, 0, 0).map_err(namei_error_from_mount)?;
+        let parent = self.wrap_any_ino(pino).ok_or(vfs::VfsError::Eio)?;
+        let ctx = vfs::CreateCtx::root();
+        let (uid, gid, mode) = vfs::prepare_create_owner_mode(ctx.idmap, &parent, mode,
+            mode, mode, ctx.cred, ctx.umask);
+        let new_ino = self.mount.create_mknod(pino, name, mode, rdev, uid, gid).map_err(namei_error_from_mount)?;
         self.forget_created_ino(new_ino);
         Ok(())
     }
 
     /// # C: O(N parent entries)
-    pub fn mkdir_at(&self, path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
+    pub fn mkdir_at(self: &Arc<Self>, path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
         if self.mount.lookup_path(path).is_ok() { return Err(vfs::VfsError::Eexist); }
-        let new_ino = self.mount.create_dir(pino, name, mode_perm, 0, 0).map_err(namei_error_from_mount)?;
+        let parent = self.wrap_any_ino(pino).ok_or(vfs::VfsError::Eio)?;
+        let ctx = vfs::CreateCtx::root();
+        let (uid, gid, mode) = vfs::prepare_create_owner_mode(ctx.idmap, &parent, mode_perm,
+            0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
+        let new_ino = self.mount.create_dir(pino, name, mode & 0o7777, uid, gid).map_err(namei_error_from_mount)?;
         self.forget_created_ino(new_ino);
         Ok(())
     }
