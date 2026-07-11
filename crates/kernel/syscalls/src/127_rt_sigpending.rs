@@ -12,10 +12,10 @@ pub fn sys_rt_sigpending(args: &SyscallArgs) -> i64 {
     let set = args.a0;
     let sz  = args.a1;
     if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf_writable(set, 8, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(set, 8, 1) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let p = cur.sigpending.load(Ordering::Acquire);
-    // SAFETY: set validated writable; CPL=0 writes through caller's AS.
-    unsafe { core::ptr::write_volatile(set as *mut u64, p); }
+    // SAFETY: set validated writable for one 8-byte sigset_t word.
+    unsafe { core::ptr::write_unaligned(set as *mut u64, p); }
     0
 }

@@ -18,15 +18,15 @@ pub fn kernel_clock_getres(args: &SyscallArgs) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     if tp == 0 { return 0; }
-    if let Err(rv) = validate_user_buf_writable(tp, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(tp, 16, 1) { return rv; }
     let nsec = match clk_id {
         CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => 1_000_000,
         _ => 1,
     };
-    // SAFETY: tp validated 16-byte range below USER_VA_END + 8-byte aligned; CPL=0 writes through caller's AS.
+    // SAFETY: tp validated writable for one 16-byte timespec result.
     unsafe {
-        core::ptr::write_volatile(tp as *mut u64, 0);
-        core::ptr::write_volatile((tp + 8) as *mut u64, nsec);
+        core::ptr::write_unaligned(tp as *mut u64, 0);
+        core::ptr::write_unaligned((tp + 8) as *mut u64, nsec);
     }
     0
 }
