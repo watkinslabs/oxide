@@ -17,6 +17,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 const TIMERFD_INO_BASE: Ino = 0x7300_0000;
 const TIMERFD_INO_MASK: Ino = 0x00FF_FFFF;
@@ -121,6 +122,9 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
     const TFD_NONBLOCK: u64 = 0o0_004_000;
     const TFD_CLOEXEC:  u64 = 0o2_000_000;
     let flags = args.a1;
+    if flags & !(TFD_NONBLOCK | TFD_CLOEXEC) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -154,6 +158,9 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     let flags = args.a1;
     let new = args.a2;
     let old = args.a3;
+    if flags & !TFD_TIMER_ABSTIME != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -167,48 +174,53 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     let inode = match timerfd_inode_of(&file) {
         Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
     };
+    if let Err(rv) = validate_user_buf(new, 32, 1) { return rv; }
+    if old != 0 {
+        if let Err(rv) = validate_user_buf_writable(old, 32, 1) { return rv; }
+    }
     let now = monotonic_ns();
-    if old != 0 && old < hal::USER_VA_END {
+    if old != 0 {
         let i = inode.interval_ns.load(Ordering::Acquire);
         let e = inode.expiry_ns.load(Ordering::Acquire);
         let remain = if e > now { e - now } else { 0 };
         let (i_s, i_n) = sched::clock::ns_to_timespec(i);
         let (r_s, r_n) = sched::clock::ns_to_timespec(remain);
-        // SAFETY: old validated; CPL=0 writes through caller's AS.
+        // SAFETY: old validated writable for one itimerspec object.
         unsafe {
-            core::ptr::write_volatile( old        as *mut u64, i_s);
-            core::ptr::write_volatile((old +  8)  as *mut u64, i_n);
-            core::ptr::write_volatile((old + 16)  as *mut u64, r_s);
-            core::ptr::write_volatile((old + 24)  as *mut u64, r_n);
+            core::ptr::write_unaligned( old        as *mut i64, i_s as i64);
+            core::ptr::write_unaligned((old +  8)  as *mut i64, i_n as i64);
+            core::ptr::write_unaligned((old + 16)  as *mut i64, r_s as i64);
+            core::ptr::write_unaligned((old + 24)  as *mut i64, r_n as i64);
         }
     }
-    if new != 0 && new < hal::USER_VA_END {
-        // SAFETY: new validated; CPL=0 reads through caller's AS.
-        let (is, ins, vs, vns) = unsafe {
-            let a = core::ptr::read_volatile( new        as *const u64);
-            let b = core::ptr::read_volatile((new +  8)  as *const u64);
-            let c = core::ptr::read_volatile((new + 16)  as *const u64);
-            let d = core::ptr::read_volatile((new + 24)  as *const u64);
-            (a, b, c, d)
-        };
-        let interval = is.saturating_mul(1_000_000_000).saturating_add(ins);
-        let value    = vs.saturating_mul(1_000_000_000).saturating_add(vns);
-        inode.interval_ns.store(interval, Ordering::Release);
-        // TFD_TIMER_ABSTIME (flags bit 0): it_value is an ABSOLUTE time against
-        // the timerfd's clock (our monotonic). Without honoring it, `now+value`
-        // pushes the expiry ~uptime into the future → it never fires. Go's
-        // runtime timers (newer Go) + systemd arm timerfds this way, so the
-        // bug livelocked every Go app (duf/glow/micro) in epoll_pwait. Relative
-        // mode (flags clear) keeps `now + value`.
-        let expiry = if value == 0 {
-            0
-        } else if (flags & TFD_TIMER_ABSTIME) != 0 {
-            value
-        } else {
-            now.saturating_add(value)
-        };
-        inode.expiry_ns.store(expiry, Ordering::Release);
+    // SAFETY: new validated readable for one itimerspec object.
+    let (is, ins, vs, vns) = unsafe {
+        let a = core::ptr::read_unaligned( new        as *const i64);
+        let b = core::ptr::read_unaligned((new +  8)  as *const i64);
+        let c = core::ptr::read_unaligned((new + 16)  as *const i64);
+        let d = core::ptr::read_unaligned((new + 24)  as *const i64);
+        (a, b, c, d)
+    };
+    if is < 0 || vs < 0 || !(0..1_000_000_000).contains(&ins) || !(0..1_000_000_000).contains(&vns) {
+        return -(Errno::Einval.as_i32() as i64);
     }
+    let interval = (is as u64).saturating_mul(1_000_000_000).saturating_add(ins as u64);
+    let value    = (vs as u64).saturating_mul(1_000_000_000).saturating_add(vns as u64);
+    inode.interval_ns.store(interval, Ordering::Release);
+    // TFD_TIMER_ABSTIME (flags bit 0): it_value is an ABSOLUTE time against
+    // the timerfd's clock (our monotonic). Without honoring it, `now+value`
+    // pushes the expiry ~uptime into the future → it never fires. Go's
+    // runtime timers (newer Go) + systemd arm timerfds this way, so the
+    // bug livelocked every Go app (duf/glow/micro) in epoll_pwait. Relative
+    // mode (flags clear) keeps `now + value`.
+    let expiry = if value == 0 {
+        0
+    } else if (flags & TFD_TIMER_ABSTIME) != 0 {
+        value
+    } else {
+        now.saturating_add(value)
+    };
+    inode.expiry_ns.store(expiry, Ordering::Release);
     0
 }
 
@@ -218,9 +230,7 @@ pub fn sys_timerfd_gettime(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd = args.a0 as i32;
     let value = args.a1;
-    if value == 0 || value >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf_writable(value, 32, 1) { return rv; }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -240,12 +250,12 @@ pub fn sys_timerfd_gettime(args: &syscall::SyscallArgs) -> i64 {
     let remain = if e > now { e - now } else { 0 };
     let (i_s, i_n) = sched::clock::ns_to_timespec(i);
     let (r_s, r_n) = sched::clock::ns_to_timespec(remain);
-    // SAFETY: value validated; CPL=0 writes through caller's AS.
+    // SAFETY: value validated writable for one itimerspec object.
     unsafe {
-        core::ptr::write_volatile( value        as *mut u64, i_s);
-        core::ptr::write_volatile((value +  8)  as *mut u64, i_n);
-        core::ptr::write_volatile((value + 16)  as *mut u64, r_s);
-        core::ptr::write_volatile((value + 24)  as *mut u64, r_n);
+        core::ptr::write_unaligned( value        as *mut i64, i_s as i64);
+        core::ptr::write_unaligned((value +  8)  as *mut i64, i_n as i64);
+        core::ptr::write_unaligned((value + 16)  as *mut i64, r_s as i64);
+        core::ptr::write_unaligned((value + 24)  as *mut i64, r_n as i64);
     }
     0
 }
