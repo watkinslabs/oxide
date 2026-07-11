@@ -11,6 +11,7 @@ use vmm::AddressSpace;
 use crate::ARCH_CTX_SIZE;
 
 use super::{ArchCtxBuf, ArchFpuBuf, Creds, PosixTimer, SaHandler, SchedClass, Task, TaskState};
+use crate::signum::Signum;
 
 impl Task {
     /// Process name for a task dump / procfs `comm`: the basename of the exec'd
@@ -86,6 +87,7 @@ impl Task {
             cpus_allowed: AtomicU64::new(u64::MAX),
             class_enc: AtomicU64::new(class.encode()),
             exit_status: AtomicI32::new(0),
+            exit_signal: AtomicU8::new(Signum::Sigchld as u8),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
             mm: UnsafeCell::new(mm),

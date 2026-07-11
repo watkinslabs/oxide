@@ -29,8 +29,12 @@ where
     F: FnMut(i32) -> Result<(), i64>,
     R: FnMut(WaitChildSnapshot) -> Result<(), i64>,
 {
-    let (parent_tid, parent_pgid) = match sched::live::current() {
-        Some(c) => (c.tid, c.pgid.load(core::sync::atomic::Ordering::Acquire)),
+    let (parent_tid, parent_tgid, parent_pgid) = match sched::live::current() {
+        Some(c) => (
+            c.tid,
+            c.tgid.load(core::sync::atomic::Ordering::Acquire),
+            c.pgid.load(core::sync::atomic::Ordering::Acquire),
+        ),
         None    => return -(Errno::Einval.as_i32() as i64),
     };
     let want_stop = (options & WUNTRACED)  != 0;
@@ -38,7 +42,7 @@ where
     loop {
         if want_stop || want_cont {
             if let Some((child, kind, sig)) = sched::live::registry::take_child_stop_event(
-                parent_tid, pid, parent_pgid, want_stop, want_cont)
+                parent_tid, parent_tgid, pid, parent_pgid, options, want_stop, want_cont)
             {
                 let wstat: i32 = if kind == 1 { ((sig as i32) << 8) | 0x7f } else { 0xffff };
                 if let Err(rv) = write_status(wstat) { return rv; }
@@ -46,7 +50,7 @@ where
                 return child.vpid as i64;
             }
         }
-        if let Some((child, code)) = sched::live::reap_one(parent_tid, pid, parent_pgid) {
+        if let Some((child, code)) = sched::live::reap_one(parent_tid, parent_tgid, pid, parent_pgid, options) {
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
             if let Err(rv) = write_status(wstat) { return rv; }
             if let Err(rv) = write_usage(child) { return rv; }
@@ -56,7 +60,7 @@ where
             // wait4 already reaped — the shell's handler then
             // calls waitpid(-1, WNOHANG) which returns -1/ECHILD
             // and corrupts the shell's $? to 255.
-            if !sched::live::has_zombies(parent_tid) {
+            if !sched::live::has_wait_zombies(parent_tid, parent_tgid, pid, parent_pgid, options) {
                 use core::sync::atomic::Ordering;
                 if let Some(cur) = sched::live::current() {
                     let bit = sched::live::sigpend::Signum::Sigchld.bit();
@@ -80,7 +84,7 @@ where
             }
             return child.vpid as i64;
         }
-        if !sched::live::registry::has_children(parent_tid) {
+        if !sched::live::registry::has_wait_children(parent_tid, parent_tgid, pid, parent_pgid, options) {
             #[cfg(feature = "debug-boot")]
             {
                 klog::write_raw(b"[wait4 ECHILD] parent="); klog::write_dec_u64(parent_tid as u64);
@@ -129,7 +133,7 @@ where
         // park_for_wait4 fires wake_wait4_parent while WAITERS is
         // empty — losing the wake. If the child has Zombied since,
         // unpark + return its status without going through schedule().
-        if let Some((child, code)) = sched::live::reap_one(parent_tid, pid, parent_pgid) {
+        if let Some((child, code)) = sched::live::reap_one(parent_tid, parent_tgid, pid, parent_pgid, options) {
             sched::live::unpark_self_from_wait4();
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
             if let Err(rv) = write_status(wstat) { return rv; }

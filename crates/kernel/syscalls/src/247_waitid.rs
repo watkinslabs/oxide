@@ -99,18 +99,22 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     // WNOWAIT: observe the matching event without consuming it. Linux checks
     // zombie/exited first, then stopped, then continued.
     let rv = if effective_options & WNOWAIT != 0 {
-        let (parent_tid, parent_pgid) = match sched::live::current() {
-            Some(c) => (c.tid, c.pgid.load(core::sync::atomic::Ordering::Acquire)),
-            None    => (0, 0),
+        let (parent_tid, parent_tgid, parent_pgid) = match sched::live::current() {
+            Some(c) => (
+                c.tid,
+                c.tgid.load(core::sync::atomic::Ordering::Acquire),
+                c.pgid.load(core::sync::atomic::Ordering::Acquire),
+            ),
+            None    => (0, 0, 0),
         };
         let want_exit = (effective_options & WEXITED) != 0;
         let want_stop = (effective_options & WSTOPPED) != 0;
         let want_cont = (effective_options & WCONTINUED) != 0;
         let event = if want_exit {
-            sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid)
+            sched::live::peek_one(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options)
                 .map(|(child, code)| (child, if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }))
         } else { None }
-        .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, pid_for_wait4, parent_pgid, want_stop, want_cont)
+        .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options, want_stop, want_cont)
             .map(|(child, kind, sig)| (child, if kind == 1 { ((sig as i32) << 8) | 0x7f } else { WSTAT_CONTINUED })));
         match event {
             Some((child, wstat)) => {
@@ -120,7 +124,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                 child.vpid as i64
             }
             None => {
-                if !sched::live::registry::has_children(parent_tid) {
+                if !sched::live::registry::has_wait_children(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options) {
                     -(syscall::errno::Errno::Echild.as_i32() as i64)
                 } else if effective_options & WNOHANG != 0 {
                     0
@@ -143,10 +147,10 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                     // SAFETY: process ctx; runqueue installed; preempt-off; park+reschedule per `13§8`.
                     unsafe { sched::live::park_for_wait4(); sched::live::schedule(); }
                     let event = if want_exit {
-                        sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid)
+                        sched::live::peek_one(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options)
                             .map(|(child, code)| (child, if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }))
                     } else { None }
-                    .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, pid_for_wait4, parent_pgid, want_stop, want_cont)
+                    .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options, want_stop, want_cont)
                         .map(|(child, kind, sig)| (child, if kind == 1 { ((sig as i32) << 8) | 0x7f } else { WSTAT_CONTINUED })));
                     match event {
                         Some((child, wstat)) => {
