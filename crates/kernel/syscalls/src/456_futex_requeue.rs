@@ -17,12 +17,9 @@ pub fn sys_futex_requeue(args: &SyscallArgs) -> i64 {
     let nr_wake    = args.a2 as i32;
     let nr_requeue = args.a3 as i32;
     if nr_wake < 0 || nr_requeue < 0 { return -(Errno::Einval.as_i32() as i64); }
-    if waiters == 0 || waiters.saturating_add(WAITV_SZ * 2) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: waiters[0..2] range-checked < USER_VA_END; the 2 futex_waitv are
-    // read from the caller's active AS; uaddr is at offset 8 within each entry.
-    // struct futex_waitv: val@0, uaddr@8, flags@16. FUTEX2_PRIVATE = 0x80.
+    if let Err(rv) = crate::userbuf::validate_user_buf(waiters, WAITV_SZ * 2, 1) { return rv; }
+    // SAFETY: waiters[0..2] was validated as a readable byte span; uaddr is at
+    // offset 8 within each entry. struct futex_waitv: val@0, uaddr@8, flags@16.
     let (src_uaddr, dst_uaddr, private) = unsafe {
         let p = waiters as *const u8;
         let src = core::ptr::read_unaligned(p.add(8) as *const u64);
