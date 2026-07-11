@@ -45,7 +45,7 @@ pub fn inet_from_inode(inode: &vfs::Inode) -> Option<&InetSocket> {
 /// listener carries its path on the `UnixListener`; a bound dgram queue
 /// carries it on the queue. Unbound/connected sockets return `None`.
 /// # C: O(1)
-pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::string::String> {
+pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::vec::Vec<u8>> {
     match &*sock.kind.lock() {
         SockKind::UnixListener(l) => Some(l.path.clone()),
         // Accepted server socket (end A) inherits the listener's path;
@@ -67,7 +67,7 @@ pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::string::String> {
 ///   `None` for an unnamed peer (a socketpair end, or the client seen from
 ///   an accepted server socket) — which Linux reports as the bare `AF_UNIX`
 ///   family (`addrlen == 2`). # C: O(path len)
-pub fn unix_peer_path(sock: &InetSocket) -> Option<Option<alloc::string::String>> {
+pub fn unix_peer_path(sock: &InetSocket) -> Option<Option<alloc::vec::Vec<u8>>> {
     match &*sock.kind.lock() {
         SockKind::Unix(pair, end) => Some(pair.peer_path(*end)),
         SockKind::UnixMsgPair(_, _) => Some(None),
