@@ -120,6 +120,23 @@ fn iop_link_child_hardlinks_and_bumps_nlink() {
 }
 
 #[test]
+fn rootfs_path_helpers_return_namei_errnos() {
+    let (m, _sb) = mount();
+    let st = m.state();
+
+    st.mkdir_at(b"/errdir", 0o755).expect("mkdir errdir");
+    assert!(matches!(st.mkdir_at(b"/errdir", 0o755), Err(vfs::VfsError::Eexist)));
+    assert!(matches!(st.symlink_at(b"x", b"/errdir"), Err(vfs::VfsError::Eexist)));
+    assert!(matches!(st.mknod_at(b"/errdir", vfs::S_IFIFO as u16 | 0o600, 0), Err(vfs::VfsError::Eexist)));
+    assert!(matches!(st.unlink_at(b"/errdir"), Err(vfs::VfsError::Eisdir)));
+
+    st.create_at(b"/errfile", 0o644).expect("create errfile");
+    assert!(matches!(st.rmdir_at(b"/errfile"), Err(vfs::VfsError::Enotdir)));
+    assert!(matches!(st.unlink_at(b"/missing"), Err(vfs::VfsError::Enoent)));
+    assert!(matches!(st.link_at(b"/errfile", b"/errdir"), Err(vfs::VfsError::Eexist)));
+}
+
+#[test]
 fn exchange_does_not_drop_either_nlink() {
     let (m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
