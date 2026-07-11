@@ -9,7 +9,7 @@ use crate::fsmount_common::*;
 fn trim_move_path(raw: &str) -> Result<&str, i64> {
     if raw.is_empty() { return Err(-(Errno::Enoent.as_i32() as i64)); }
     let trimmed = if raw.len() > 1 { raw.trim_end_matches('/') } else { raw };
-    if trimmed.is_empty() { Err(-(Errno::Enoent.as_i32() as i64)) } else { Ok(trimmed) }
+    if trimmed.is_empty() { Ok("/") } else { Ok(trimmed) }
 }
 
 fn resolve_move_target_at(dirfd: i32, raw: &str) -> Result<(vfs::MountTarget, alloc::string::String), i64> {
