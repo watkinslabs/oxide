@@ -321,14 +321,14 @@ impl Proc {
         let p = self.parent(AT_FDCWD, dst)?;
         let name = p.last_component.as_deref().ok_or(VfsError::Eexist)?;
         vfs::may_create(&p.inode, &self.cred)?;
-        p.inode.symlink_child(name, target,
-            &CreateCtx { idmap: &vfs::IDENTITY, cred: &self.cred, umask: self.umask })
+        p.inode.symlink_child(name, target, &CreateCtx { idmap: &vfs::IDENTITY, cred: &self.cred, umask: self.umask })
     }
     fn unlinkat(&self, path: &str) -> KResult<()> {
         self.enter();
         let p = self.parent(AT_FDCWD, path)?;
         let name = p.last_component.as_deref().unwrap();
         let victim = p.inode.lookup(name)?;
+        if vfs::path::requires_dir(path) { return Err(if victim.file_type() == FileType::Directory { VfsError::Eisdir } else { VfsError::Enotdir }); }
         vfs::namei::may_delete(&p.inode, &victim, false, &self.cred)?;
         p.inode.unlink_child(name)
     }
@@ -371,10 +371,7 @@ fn cred(uid: u32, gid: u32) -> Cred {
 }
 struct NameSink(Vec<String>);
 impl vfs::DirEmit for NameSink {
-    fn emit(&mut self, name: &str, _ino: u64, _d_type: FileType, _next_pos: u64) -> bool {
-        self.0.push(name.to_string());
-        true
-    }
+    fn emit(&mut self, name: &str, _ino: u64, _d_type: FileType, _next_pos: u64) -> bool { self.0.push(name.to_string()); true }
 }
 
 #[test]
@@ -420,8 +417,7 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert_eq!(logind.readlink("/run/udev/card0-db").expect("readlink symlink"), b"data/c226:0");
     assert!(matches!(udev.symlinkat(b"x", "/"), Err(VfsError::Eexist)));
     assert!(matches!(logind.readlink("/run/udev/data/c226:0"), Err(VfsError::Einval)));
-    let link_path = udev.lookup(AT_FDCWD, "/run/udev/card0-db",
-        LookupFlags { no_follow_final: true, follow: false, ..Default::default() }).expect("link path");
+    let link_path = udev.lookup(AT_FDCWD, "/run/udev/card0-db", LookupFlags { no_follow_final: true, follow: false, ..Default::default() }).expect("link path");
     let link_fd = udev.install(link_path, true, false);
     assert_eq!(udev.readlinkat_empty(link_fd).expect("empty symlink fd"), b"data/c226:0");
     assert!(matches!(udev.readlinkat_empty(fd), Err(VfsError::Enoent)));
@@ -468,8 +464,10 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     let owned = user_proc.openat(AT_FDCWD, "/run/sticky/owned", true, 0o666, true, true).expect("owned");
     user_proc.fchmod(owned, 0o600).expect("chmod owned");
     assert!(matches!(other_proc.unlinkat("/run/sticky/owned"), Err(VfsError::Eperm)));
+    assert!(matches!(user_proc.unlinkat("/run/sticky/owned/"), Err(VfsError::Enotdir)));
     user_proc.unlinkat("/run/sticky/owned").expect("owner unlink in sticky");
     udev.mkdirat(AT_FDCWD, "/run/sticky/empty", 0o755).expect("mkdir empty sticky child");
+    assert!(matches!(udev.unlinkat("/run/sticky/empty/"), Err(VfsError::Eisdir)));
     assert!(matches!(udev.unlinkat("/run/sticky/empty"), Err(VfsError::Eisdir)));
     udev.rmdir("/run/sticky/empty").expect("rmdir empty dir");
     assert!(matches!(udev.rmdir("/run/sticky/empty"), Err(VfsError::Enoent)));
