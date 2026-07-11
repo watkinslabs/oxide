@@ -13,6 +13,7 @@ use crate::inotify::types::{
 
 const IN_NONBLOCK: u32 = 0o0_004_000;
 const IN_CLOEXEC:  u32 = 0o2_000_000;
+const IN_INIT_KNOWN: u32 = IN_NONBLOCK | IN_CLOEXEC;
 
 pub(crate) const FAN_CLOEXEC:           u32 = 0x0000_0001;
 pub(crate) const FAN_NONBLOCK:          u32 = 0x0000_0002;
@@ -131,9 +132,23 @@ fn fd_to_inotify(fd: i32) -> Option<Arc<InotifyData>> {
 /// `sys_inotify_init(flags=0)` / `sys_inotify_init1(flags)`.
 /// Allocates a fresh InotifyData at the lowest free fd.
 /// # C: O(N_fds)
-pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_inotify_init(_args: &syscall::SyscallArgs) -> i64 {
+    sys_inotify_init_flags(0)
+}
+
+/// Validate `inotify_init1` flags per Linux `do_inotify_init`: only
+/// IN_CLOEXEC/O_CLOEXEC and IN_NONBLOCK/O_NONBLOCK are accepted.
+/// # C: O(1)
+pub(crate) fn validate_inotify_init_flags(flags: u32) -> Result<(), Errno> {
+    if flags & !IN_INIT_KNOWN != 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
+fn sys_inotify_init_flags(flags: u32) -> i64 {
     use vfs::{File, OpenFlags};
-    let flags = args.a0 as u32;
+    if let Err(e) = validate_inotify_init_flags(flags) {
+        return -(e.as_i32() as i64);
+    }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -153,6 +168,12 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
         }
         Err(e) => -(e as i64),
     }
+}
+
+/// `sys_inotify_init1(flags)`.
+/// # C: O(N_fds)
+pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
+    sys_inotify_init_flags(args.a0 as u32)
 }
 
 /// Validate a `fanotify_init` flag word the Linux way (`do_fanotify_init`):
