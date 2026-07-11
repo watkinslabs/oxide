@@ -12,9 +12,10 @@ struct UnixSockNode {
     addr: net::UnixAddr,
 }
 
-fn create_unix_sock_node(path: &str) -> Result<Option<UnixSockNode>, i64> {
+fn create_unix_sock_node_bytes(path: &[u8]) -> Result<Option<UnixSockNode>, i64> {
     if net::unix_path_is_abstract(path) { return Ok(None); }
-    let (parent, name) = crate::namei_common::resolve_create_parent_at(crate::pathresolve::AT_FDCWD, path)?;
+    let decoded = vfs::path_from_bytes(path);
+    let (parent, name) = crate::namei_common::resolve_create_parent_at(crate::pathresolve::AT_FDCWD, &decoded)?;
     if crate::namei_common::parent_mount_readonly(&parent) {
         return Err(-(Errno::Erofs.as_i32() as i64));
     }
@@ -30,7 +31,7 @@ fn create_unix_sock_node(path: &str) -> Result<Option<UnixSockNode>, i64> {
                 Ok(i) => i,
                 Err(e) => return Err(crate::namei_common::errno_from_vfs(e)),
             };
-            let addr = net::UnixAddr::from_inode(alloc::string::String::from(path), &inode);
+            let addr = net::UnixAddr::from_inode_bytes(path.to_vec(), &inode);
             vfs::file::iput(inode);
             crate::namei_common::drop_child_cache(&parent, &name);
             vfs::fire_dirent_create(&parent.inode, &name);
@@ -39,13 +40,6 @@ fn create_unix_sock_node(path: &str) -> Result<Option<UnixSockNode>, i64> {
         Err(vfs::VfsError::Eexist) => Err(-(Errno::Eaddrinuse.as_i32() as i64)),
         Err(e) => Err(crate::namei_common::errno_from_vfs(e)),
     }
-}
-
-fn create_unix_sock_node_bytes(path: &[u8]) -> Result<Option<UnixSockNode>, i64> {
-    if net::unix_path_is_abstract(path) { return Ok(None); }
-    let path = core::str::from_utf8(path)
-        .map_err(|_| -(Errno::Einval.as_i32() as i64))?;
-    create_unix_sock_node(path)
 }
 
 fn remove_unix_sock_node(n: &UnixSockNode) {

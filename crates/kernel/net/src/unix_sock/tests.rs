@@ -123,6 +123,25 @@ fn symlinked_pathname_connect_hits_same_inode_key() {
 }
 
 #[test]
+fn pathname_addr_preserves_non_utf8_display_bytes() {
+    let registry = UnixRegistry::new();
+    let ino: vfs::InodeRef = vfs::InodeBuilder::new(
+        0x5150,
+        vfs::mk_mode(vfs::FileType::Socket, 0o600),
+        vfs::default_inode_ops(),
+        vfs::default_file_ops(),
+    ).build();
+    let raw = b"/run/raw-\xff.sock".to_vec();
+    let addr = UnixAddr::from_inode_bytes(raw.clone(), &ino);
+
+    registry.bind_addr(addr.clone()).unwrap();
+
+    let pair = registry.connect_addr(&addr).expect("raw pathname socket address must connect");
+    assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some(&raw[..]));
+    assert!(matches!(addr.key, UnixAddrKey::Path { fsid, ino: got } if fsid == ino.fsid() && got == ino.ino() as u64));
+}
+
+#[test]
 fn round_trip() {
     let p = UnixPair::new();
     p.write(UnixEnd::A, b"hello");
