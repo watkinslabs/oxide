@@ -762,10 +762,14 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
      - `vfs::mount::project_path_under_root()` now owns reader-root projection for procfs mount reports.
      - `/proc/self/mountinfo` and `/proc/mounts` share that projection, so a chroot/pivoted reader no longer sees global mountpoint strings in one file and projected strings in the other.
      - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 7/7.
+   - Done next slice:
+     - `vfs::mount::{mountinfo_mount_options,mountinfo_optional_fields,mountinfo_source_field,mountinfo_super_options}` now owns mountinfo field 6, optional propagation fields, source, and super options.
+     - `procfs::mounts::build_mountinfo()` consumes those VFS render helpers instead of carrying private propagation/source/option policy.
+     - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 9/9, including VFS-owned source/options and optional-field propagation cases.
+     - Verification: `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
    - Delete the remaining legacy fake-SB bind helper path once all callers use `register_bind_clone_*`.
    - Keep rendered strings only as mountinfo payload, derived from the walked mount context.
    - Still required:
-     - make mountinfo source/optional-field rendering use the same VFS-owned model instead of procfs-local policy.
      - make `/proc/self/mountinfo` render from the reader task's full mount namespace view, not as a global list of stored absolute strings filtered by projected absolute mountpoint text.
 
 8. Fix ext4 inode-cache coherence. **First slice tested**

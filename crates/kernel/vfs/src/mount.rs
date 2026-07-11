@@ -75,7 +75,10 @@ mod flags;
 pub use flags::*;
 
 mod render;
-pub use render::{mountinfo_root_field, render_mount_root_field};
+pub use render::{
+    mountinfo_mount_options, mountinfo_optional_fields, mountinfo_root_field,
+    mountinfo_source_field, mountinfo_super_options, render_mount_root_field,
+};
 
 include!("mount/graph.rs");
 include!("mount/model.rs");

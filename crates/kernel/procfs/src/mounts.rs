@@ -66,8 +66,6 @@ fn current_root_prefix() -> Option<String> {
 /// unbindable mount, empty otherwise.
 /// # C: O(N_mounts) (parent_mnt_id reads the attach-time stored parent id)
 fn build_mountinfo() -> Vec<u8> {
-    use core::sync::atomic::Ordering;
-    use vfs::mount::Propagation;
     let mounts = vfs::mount::snapshot();
     let root_prefix = current_root_prefix();
     let mut s = String::new();
@@ -82,25 +80,14 @@ fn build_mountinfo() -> Vec<u8> {
         // parent mount), every other mount its real parent mnt_id.
         let parent = if m.is_root() || mp == "/" { 0 } else { vfs::mount::parent_mnt_id(&m) };
         let name = m.fs().name();
-        let pg = m.peer_group.load(Ordering::Acquire);
-        let rw = if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-            "ro"
-        } else {
-            "rw"
-        };
         let root = vfs::mount::mountinfo_root_field(m);
-        let opt = match Propagation::from_u8(m.propagation.load(Ordering::Acquire)) {
-            // Real peer-group id (`docs/16§6`), distinct from mnt_id.
-            Propagation::Shared => format!(" shared:{}", pg),
-            // A slave of peer group `pg` reports `master:<pg>`; with no
-            // group yet it renders as private.
-            Propagation::Slave if pg != 0 => format!(" master:{}", pg),
-            Propagation::Unbindable => " unbindable".into(),
-            Propagation::Slave | Propagation::Private => String::new(),
-        };
+        let opts = vfs::mount::mountinfo_mount_options(m);
+        let opt = vfs::mount::mountinfo_optional_fields(m);
+        let src = vfs::mount::mountinfo_source_field(m);
+        let sb_opts = vfs::mount::mountinfo_super_options(m);
         s.push_str(&format!(
-            "{} {} 0:{} {} {} {},relatime{} - {} {} {}\n",
-            id, parent, id, root, mp, rw, opt, name, name, rw,
+            "{} {} 0:{} {} {} {}{} - {} {} {}\n",
+            id, parent, id, root, mp, opts, opt, name, src, sb_opts,
         ));
     }
     s.into_bytes()
