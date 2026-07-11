@@ -147,6 +147,26 @@ fn rendered_path_for(parent_id: u64, d: &Arc<Dentry>) -> String {
     String::from_utf8(d_ap).unwrap_or_else(|_| String::from("/"))
 }
 
+/// Render a full `struct path` (`mnt_id`, dentry) for user-visible path text
+/// such as `getcwd`, using mount identity as authority. # C: O(depth)
+pub fn render_path_for_mount(mnt_id: u64, d: &Arc<Dentry>) -> String {
+    if mnt_id == MNT_ID_NONE { return abs_string(d); }
+    let d_ap = d.absolute_path();
+    let Some(m) = mount_by_id(mnt_id) else { return abs_string(d); };
+    let Some(root) = root_dentry_for_mount_id(mnt_id) else { return abs_string(d); };
+    let root_ap = root.absolute_path();
+    if !d_ap.starts_with(root_ap.as_slice()) { return abs_string(d); }
+    let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
+    let rel = core::str::from_utf8(&d_ap[strip..]).unwrap_or("");
+    let mut base = m.mount_point_str();
+    if base == "/" {
+        if rel.is_empty() { String::from("/") } else { String::from(rel) }
+    } else {
+        base.push_str(rel);
+        base
+    }
+}
+
 /// Materialise the dentry at `rel` beneath `base` by a dentry→dentry descent
 /// that CROSSES MOUNTS at each component exactly as namei does — the
 /// engine-internal resolver for SYNTHESIZED mount positions (propagation

@@ -114,3 +114,16 @@ fn at_relative_bind_result_drives_readonly_mount_decision() {
     assert_ne!(m.flags() & vfs::mount::MNT_RDONLY, 0,
         "the resolved VfsPath carries the readonly mount, not the canonical source");
 }
+
+#[test]
+fn bind_path_render_uses_file_mount_not_source_dentry_chain() {
+    let _g = SERIAL.lock().unwrap();
+    let (root, bind) = build();
+    let base = bind.mnt_root().expect("bind mnt_root");
+    let p = vfs::path_lookup_at_cred(base, bind.mnt_id, root.clone(), "x",
+        LookupFlags::default(), Cred::root()).expect("resolve x under bind");
+    assert_eq!(p.inode.ino(), 21, "relative `x` resolves the bind's file");
+    assert_eq!(p.mnt_id, bind.mnt_id, "path keeps the bind mount id");
+    assert_eq!(vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry), "/a/b/x",
+        "getcwd/fchdir display must render through the bind mount, not `/x`");
+}
