@@ -63,16 +63,19 @@ pub fn resolve_parent_at(dirfd: i32, raw: &str) -> Result<vfs::VfsPath, i64> {
     resolve_at_path(dirfd, raw, vfs::LookupFlags { parent: true, ..Default::default() })
 }
 
-fn at_path_empty(ptr: u64) -> bool {
-    if ptr == 0 { return true; }
-    if ptr >= USER_VA_END { return false; }
-    unsafe { devfs::read_user_cstr(ptr, 1) }.map_or(true, |b| b.is_empty())
+fn at_path_empty(ptr: u64) -> Result<bool, i64> {
+    if ptr == 0 || ptr >= USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    unsafe { devfs::read_user_cstr(ptr, 1) }
+        .map(|b| b.is_empty())
+        .ok_or(-(Errno::Efault.as_i32() as i64))
 }
 
 /// # C: O(components × dir-lookup)
 pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
-    if at_path_empty(path_ptr) {
+    if at_path_empty(path_ptr)? {
         if !flags.empty { return Err(-(Errno::Enoent.as_i32() as i64)); }
         if dirfd == AT_FDCWD {
             let cur = sched::live::current().ok_or(ebadf)?;
