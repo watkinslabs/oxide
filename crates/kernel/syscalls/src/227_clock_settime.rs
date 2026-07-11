@@ -19,11 +19,11 @@ pub fn kernel_clock_settime(args: &SyscallArgs) -> i64 {
     if !matches!(clk_id, CLOCK_REALTIME) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    if let Err(rv) = validate_user_buf(tp, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf(tp, 16, 1) { return rv; }
     // SAFETY: tp validated as readable 16-byte timespec storage.
     let (sec, nsec) = unsafe {
-        let s = core::ptr::read_volatile(tp as *const i64);
-        let n = core::ptr::read_volatile((tp + 8) as *const i64);
+        let s = core::ptr::read_unaligned(tp as *const i64);
+        let n = core::ptr::read_unaligned((tp + 8) as *const i64);
         (s, n)
     };
     if sec < 0 || nsec < 0 || nsec >= NS_PER_SEC as i64 {
