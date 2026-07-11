@@ -120,9 +120,6 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     };
     let ns = cur.mount_ns.load(core::sync::atomic::Ordering::Acquire);
 
-    trace_kallsyms_mount(b"raw-target", &target, "", flags, 0, 0, 0);
-    trace_kallsyms_mount(b"entry", &target, "", flags, 0, 0, 0);
-
     // MS_REMOUNT changes options on an EXISTING mount — it carries no
     // source, so it MUST be handled before MS_BIND (systemd remounts the
     // machine-id bind read-only with MS_RDONLY|MS_REMOUNT|MS_BIND; the
@@ -136,11 +133,10 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let vp = match crate::pathresolve::resolve_path_raw(&target_raw, false) {
             Ok(p) => p, Err(_) => return -(Errno::Einval.as_i32() as i64),
         };
-        trace_kallsyms_mount(b"remount", &target, "", flags, vp.mnt_id, 0, 0);
         return match vfs::mount::remount_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE) {
-            Ok(()) => { trace_kallsyms_mount(b"remount-ok", &target, "", flags, vp.mnt_id, 0, 0); 0 },
-            Err(vfs::VfsError::Einval) => { trace_kallsyms_mount(b"remount-einval", &target, "", flags, vp.mnt_id, 0, 0); -(Errno::Einval.as_i32() as i64) },
-            Err(_) => { trace_kallsyms_mount(b"remount-ebusy", &target, "", flags, vp.mnt_id, 0, 0); -(Errno::Ebusy.as_i32() as i64) },
+            Ok(()) => 0,
+            Err(vfs::VfsError::Einval) => -(Errno::Einval.as_i32() as i64),
+            Err(_) => -(Errno::Ebusy.as_i32() as i64),
         };
     }
 
@@ -151,8 +147,6 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let source_vp = match crate::pathresolve::resolve_path_raw(&source_raw, false) {
             Ok(p) => p, Err(_) => return -(Errno::Enoent.as_i32() as i64),
         };
-        let source = vfs::mount::render_path_for_mount(source_vp.mnt_id, &source_vp.dentry);
-        trace_kallsyms_mount(b"bind-in", &target, &source, flags, 0, 0, 0);
         // Bind-as-clone (docs/16§6): source is a normal resolved `struct path`
         // (crossing the final mount), target is a mount-target `struct path`
         // (not crossing the final mountpoint) with the walked parent mount id.
@@ -166,20 +160,15 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         if !vfs::mount::mount_by_id(target_parent_mnt).map(|m| vfs::mount::check_mnt(&m)).unwrap_or(false) {
             return -(Errno::Einval.as_i32() as i64);
         }
-        trace_kallsyms_mount(b"bind-resolved", &target, &source, flags,
-            source_mnt, target_parent_mnt, 0);
         // Linux `do_add_mount` keys the target on `(parent vfsmount, dentry)`.
         // The resolver already supplied that pair, so never re-derive placement
         // from the dentry's global parent chain.
         let bind_res = {
             let r = vfs::mount::register_bind_clone_under(target_parent_mnt, target_d.clone(), source_mnt, source_d.clone());
             let _ = vfs::mount::propagate_mount(&target_d);
-            trace_kallsyms_mount(b"bind-under", &target, &source, flags, source_mnt, target_parent_mnt, 0);
             r
         };
         if let Err(e) = bind_res {
-            trace_kallsyms_mount(b"bind-err", &target, &source, flags,
-                source_mnt, target_parent_mnt, e as u64);
             return crate::namei_common::errno_from_vfs(e);
         }
         // Linux `do_loopback` creates the bind via `clone_mnt(old, dentry, 0)`
@@ -251,7 +240,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // mount whose shared dentries make `parent_by_dentry` ambiguous, but the
         // final component must remain the mountpoint dentry rather than crossing
         // into an existing mount there (systemd PrivateDevices MS_MOVE to /dev).
-        let mr = vfs::mount::move_mount_by_id_to(src_vp.mnt_id, Some(target_mt.parent.mnt_id), &target_mt.mountpoint);
+        let mr = vfs::mount::move_mount_by_id_to_rendered(src_vp.mnt_id, Some(target_mt.parent.mnt_id), &target_mt.mountpoint, target.clone());
         return match mr {
             Ok(())                    => 0,
             Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
@@ -277,29 +266,3 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     };
     mount_fstype_at(&source, &fstype, &target, &target_mt.mountpoint, Some(target_mt.parent.mnt_id), &data)
 }
-
-#[cfg(feature = "debug-boot")]
-fn trace_kallsyms_mount(tag: &'static [u8], target: &str, source: &str, flags: u64, a: u64, b: u64, c: u64) {
-    if !target.contains("/proc/kallsyms") && !source.contains("/proc/kallsyms")
-        && !target.contains("/proc/sys/kernel/domainname") && !source.contains("/proc/sys/kernel/domainname") {
-        return;
-    }
-    klog::write_raw(b"[KALLSYMS-MOUNT] tag=");
-    klog::write_raw(tag);
-    klog::write_raw(b" flags=0x");
-    klog::write_hex_u64(flags);
-    klog::write_raw(b" a=");
-    klog::write_dec_u64(a);
-    klog::write_raw(b" b=");
-    klog::write_dec_u64(b);
-    klog::write_raw(b" c=");
-    klog::write_dec_u64(c);
-    klog::write_raw(b" target=");
-    klog::write_raw(target.as_bytes());
-    klog::write_raw(b" source=");
-    klog::write_raw(source.as_bytes());
-    klog::write_raw(b"\n");
-}
-
-#[cfg(not(feature = "debug-boot"))]
-fn trace_kallsyms_mount(_tag: &'static [u8], _target: &str, _source: &str, _flags: u64, _a: u64, _b: u64, _c: u64) {}

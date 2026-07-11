@@ -1,6 +1,6 @@
 # Path Split-Truth Audit
 
-Date: 2026-07-10
+Date: 2026-07-11
 Scope: syscall path resolution, VFS namei/mount tree, ext4 inode wrapping/cache, procfs fd links.
 
 ## Executive Finding
@@ -19,7 +19,30 @@ That second lookup can land on the wrong bind location, wrong namespace root, wr
 
 ## Current Status
 
-The ext4 stale-inode slice is fixed enough to move the boot forward:
+Current integrated state:
+
+- The ext4 stale-inode slice is fixed enough to move the boot past the old PrivateTmp `ENOTDIR`.
+- The bind/mount path-identity slices are fixed enough to move the boot past the old `/proc/kallsyms` namespace `EBUSY`.
+- `MS_MOVE(stage, "/")` now publishes the moved stage mount as the namespace root after descendant relocation; hosted runtime-directory and greeter harnesses prove `/run`, `/dev`, and `/sys` resolution crosses the moved staged root instead of the covered old root.
+- The current live blocker was localized to `systemd-journald.service` failing at `RUNTIME_DIRECTORY`:
+  - `Failed to set up special execution directory in /run: No such file or directory`
+  - `systemd-journald.service: Failed at step RUNTIME_DIRECTORY spawning /usr/lib/systemd/systemd-journald: No such file or directory`
+- `systemd-journald.service` has `RuntimeDirectory=systemd/journal`; upstream systemd creates it under `/run` through `setup_exec_directory()` (`mkdir_parents_label()` then `mkdir_label()`/chmod/chown/xattr-style setup).
+- New trace result: `/run/systemd/journal` is created before journald starts, and journald later sees `mkdirat(...)=EEXIST`; the failing `ENOENT` is not the directory create or a missing `/run` mount.
+- Root cause found: systemd v257 calls `is_idmapping_supported(target_dir)` after `chmod_and_chown()`. That helper opens the target directory, then runs `open_tree(dir_fd, "", AT_EMPTY_PATH|OPEN_TREE_CLONE|OPEN_TREE_CLOEXEC)`. `sys_open_tree()` ignored `AT_EMPTY_PATH`, read the empty string, then tried an ordinary empty path walk with `LOOKUP_EMPTY` off, returning `ENOENT`. systemd treats that as a fatal idmap-probe failure and reports it as the RuntimeDirectory setup error.
+- Fix in dirty tree: `sys_open_tree()` now resolves through `resolve_at_lookup()` with `LookupFlags.empty` set only when `AT_EMPTY_PATH` is present. `open_tree(fd, "", AT_EMPTY_PATH|OPEN_TREE_CLONE)` now operates on the fd's `(mnt_id,dentry)` path like Linux.
+- Hosted proof added: `empty_path_clone_uses_dirfd_mount` in `crates/kernel/vfs/tests/open_tree_recursive_clone.rs` proves the empty-path clone source is the fd's mounted proc/api mount, not `ENOENT` and not the namespace root.
+- Verification:
+  - `cargo test -p vfs --test open_tree_recursive_clone -- --nocapture`: 4/4 pass.
+  - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec --features debug-mount`: pass.
+- Diagnostic boots after the namespace-root fix disproved several candidates:
+  - no old `/run/udev` ext4-underlay `EIO`,
+  - no `mkdirat` backend failure trace,
+  - no `newfstatat`/`statx` `/run*` failure trace,
+  - `/` and `/run` ownership in both source and cached images is root/root, so the old image-root ownership hypothesis is not current.
+- Strongest new split-truth issue found and fixed in the dirty tree: legacy `setxattr/lsetxattr/getxattr/lgetxattr/listxattr/llistxattr/removexattr/lremovexattr` resolved paths inside `fs::xattr` by global strings, bypassing syscall `pathresolve`, current mount namespace root, `root_vfs`, `cwd_vfs`, and dirfd/mount identity. That is now removed; `fs::xattr` is inode-level work only, and all xattr path/fd resolution lives in `syscalls`.
+
+Earlier ext4 stale-inode result:
 
 - Forced inode-reuse regression passes: regular file -> unlink -> mkdir reusing the same ino returns a new directory wrapper, not the stale regular-file `Arc`.
 - `rename_overwrite_image` passes 6/6.
@@ -266,7 +289,14 @@ Fix status:
 
 - `perms_common::{resolve_path_inode,resolve_path_mnt}` are converted to `resolve_at_lookup()` directly and hosted-harnessed through bind-readonly path identity.
 - Fixed: `utime_common::resolve_target()` now uses `resolve_at_lookup()` for non-null paths.
-- Remaining: audit xattr callers separately; `resolve_xattr_at()` already uses `resolve_at_lookup()`.
+- Fixed: legacy path-taking xattr syscalls were moved out of `fs::xattr` and into syscall shims:
+  - `188_setxattr.rs` through `199_fremovexattr.rs` now route through `xattr_common`.
+  - `fs::xattr` exposes only inode-level work functions (`setxattr_on`, `getxattr_on`, `listxattr_on`, `removexattr_on`, plus `*xattrat_on` argument decoding).
+  - `fs::xattr::xattr_dispatch()` and its global-root string resolver are removed.
+  - `setxattr`, `lsetxattr`, `getxattr`, `lgetxattr`, `listxattr`, `llistxattr`, `removexattr`, and `lremovexattr` resolve through `resolve_xattr_at_mnt(AT_FDCWD, ...)`, preserving `cwd_vfs`, `root_vfs`, mount namespace root, follow/no-follow, and `mnt_id`.
+  - fd xattr operations resolve through the open `File` and preserve `file.mnt_id()`.
+  - write-side xattr operations (`set*`/`remove*`, including `*xattrat`) now run the same `check_rofs(mnt_id)` gate as other metadata writes.
+  - Deleted the stale `lxattr_tests.rs` resolver test because it proved the removed global-root resolver, not Linux behavior.
 
 ### 4. old `stat()`/`lstat()` still goes through cwd string first
 
@@ -651,9 +681,10 @@ Known proven bug:
 - `readlinkat`
 - `name_to_handle_at`
 - `mount_setattr`
-- xattrat helpers
+- xattr/xattrat helpers
 
 These use `resolve_at_lookup()` or `VfsPath` more directly, but need spot checks for follow/no-follow and AT_EMPTY_PATH details.
+xattr is no longer a split-truth site; remaining xattr risk is semantic edge coverage, not path authority.
 
 ### Green-ish: fd-native operations
 
@@ -844,19 +875,85 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
 - Meaning:
   - The exact modeled post-switch udev paths do cross tmpfs, not the ext4 underlay.
   - `openat-create /run/udev/queue`, `mkdirat /run/udev/data`, and temp symlinks under `/dev/char`/`/dev/block` succeed when the caller carries the moved root mount id.
-  - The older boot `EIO` class needs a missing live ingredient not captured here: likely a caller that still resolves from stale namespace/global root identity, or a different systemd setup step before `chroot(".")`.
-- Important split found:
-  - After `MS_MOVE(stage, "/")`, `root_mount_id(ns)` still names the old root, while the Linux-correct task root after `chroot(".")` is the moved `VfsPath` (`mnt_id = stage_id`, same root dentry).
-  - Existing `sys_chroot(".")` stores `root_vfs`, so post-chroot path resolution can be correct.
-  - Any remaining un-chrooted/global-root path that builds a root `VfsPath` from `root_mount_id(ns)` can still observe stale identity; audit for callers using `resolution_root_vfs()` with no current task or no `root_vfs` after mount-root MS_MOVE.
+  - The harness now asks `root_mount_id(ns)` after `MS_MOVE(stage, "/")` instead of hand-feeding `stage_id`, so it covers un-chrooted runtime-directory setup paths that build their root from namespace state.
+- Fixed:
+  - `vfs::mount::move_mount_m()` now publishes `stage_id` as `root_mount_id(ns)` when the destination is `/`, after descendant relocation completes.
+  - This matches the switch-root contract this tree uses for `MS_MOVE(stage, "/")`: the moved mount becomes the namespace root, and later absolute resolution from namespace state crosses `/run` and `/dev` under the moved tree instead of the covered old root.
+  - The root update is intentionally not in generic fresh-fs overmount registration; `cargo test -p vfs --test overmount_fs_root -- --nocapture` still proves fresh overmounts do not hijack namespace root.
+- Greeter harness correction:
+  - `greeter_sysfs_after_pivot.rs` was still using the legacy dentry-only helper (`register_bind` + `bind_submounts_rec`), so its MS_MOVE cases only passed while resolution accidentally saw the old root.
+  - The helper now models production `mount(MS_BIND|MS_REC)`: walked source `mnt_id`, walked target parent `mnt_id`, `register_bind_clone_under()`, and `bind_submounts_rec_at(Some(source_mnt), ..., Some(target_parent_mnt))`.
+  - Added assertions that `/sys` is cloned under the staged root before MS_MOVE, that `root_mount_id(ns)` becomes `stage_id`, and that the `/sys` crossing survives the move.
+- Evidence:
+  - `cargo test -p fs --test udev_runtime_mounts -- --nocapture` passed.
+  - `cargo test -p vfs --test greeter_sysfs_after_pivot -- --nocapture` passed: 5/5.
+  - `cargo test -p vfs --test mount_move_validation -- --nocapture` passed: 7/7.
 
-## Current Working-State Warning
+### Legacy xattr path-identity harness gap
 
-The tree is dirty with multiple prior changes and temporary traces. Before any final fix PR:
+- Fixed by inspection + kernel-target compile, but still needs a direct hosted behavior harness if practical.
+- Why no existing hosted syscall test caught it:
+  - `syscalls` is `target_os=oxide-kernel`.
+  - `fs::xattr` previously owned both user-pointer parsing and path resolution, so its hosted `lxattr_tests.rs` tested the wrong authority boundary.
+- Required harness shape:
+  - create two paths sharing dentries under different mount ids,
+  - set cwd/root to the bind or staged root identity,
+  - drive the legacy xattr shim or a test-exposed resolver with `setxattr`, `lsetxattr`, `getxattr`, `listxattr`, and `removexattr`,
+  - assert follow/no-follow on final symlink and assert write-side `EROFS` comes from the resolved mount id.
+- Current evidence:
+  - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec` passed.
+  - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec --features debug-mount` passed.
+  - `cargo test -p fs --test udev_runtime_mounts -- --nocapture` passed.
+  - `cargo test -p vfs --test greeter_sysfs_after_pivot -- --nocapture` passed: 5/5.
+  - `cargo run -p xtask -- kernel --arch x86_64` passed.
+  - `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
 
-- Decide whether to keep and complete `forget_created_ino()` or replace it with a cleaner ext4/VFS icache API.
-- Remove temporary traces in syscall and VFS namei files.
-- Re-run:
-  - `cargo test -p vfs --test mount_propagation_pivot -- --nocapture`
-  - targeted ext4 inode-reuse test once added
-  - live-gnome boot fail-fast for `systemd-resolved`, `status=226/NAMESPACE`, `Started gdm`, `Reached target graphical`
+## Current Live Result: userdbd namespace blocker cleared
+
+Root cause:
+
+- systemd's `ProtectHostname=` path uses classic `mount(2)` with `MS_MOVE` and `MS_BIND|MS_REC`, not only syscall 429 `move_mount(2)`.
+- The syscall resolver already knew the correct mount-aware target display for magic fd targets such as `/proc/self/fd/4`.
+- VFS `move_mount_m()` threw that away and recomputed the destination with bare `dentry.absolute_path()`.
+- For a bind-shared procfs target this split truth:
+  - actual target: `/run/systemd/mount-rootfs/proc`;
+  - bare dentry path: `/proc`.
+- The private procfs mount moved into the staged tree therefore rendered children as `/proc/sys/kernel/domainname`.
+- systemd was scanning `/proc/self/mountinfo` for `/run/systemd/mount-rootfs/proc/sys/kernel/domainname`, never saw the successful self-bind, retried 32 times, then returned `EBUSY`.
+
+Fix:
+
+- Added `vfs::mount::move_mount_by_id_to_rendered()`.
+- `move_mount_m()` now accepts the syscall resolver's mount-aware destination display and uses it for the moved root plus descendant display rebase.
+- `mount(2) MS_MOVE` and syscall 429 `move_mount(2)` both pass the already-resolved display string.
+- `mount_target_from_resolved_path()` remains the procfd attach identity helper; the missing piece was preserving the display through the move.
+
+Hosted proof:
+
+- `mount_proc_domainname_namespace.rs::ms_move_to_procfd_preserves_staged_target_render_path` reproduces the exact live sequence without boot:
+  - recursive bind `/` to `/run/systemd/mount-rootfs`;
+  - detach staged `/proc`;
+  - move a private procfs mount onto the staged procfd target;
+  - assert the moved procfs mount renders `/run/systemd/mount-rootfs/proc`, not `/proc`;
+  - run the systemd-style bind/remount convergence loop on `/run/systemd/mount-rootfs/proc/sys/kernel/domainname`.
+- `cargo test -p vfs --test mount_proc_domainname_namespace -- --nocapture` passed: 4/4.
+- `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed: 8/8.
+- `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec` passed.
+
+Live smoke:
+
+- Fresh artifact: `target/artifacts/x86_64/kernel.elf` exported at Jul 11 05:01.
+- `gnome-boot-after-msmove-rendered-target.log`:
+  - `Started systemd-userdbd.service - User Database Manager.`
+  - `Started gdm.service - GNOME Display Manager.`
+  - `Reached target graphical.target - Graphical Interface.`
+- Remaining non-graphical failures observed:
+  - `sshd.service` exits nonzero;
+  - NetworkManager logs `do-change-link[1]: internal failure 5`;
+  - SELinux attr probe `/proc/1/attr/current` still hits an `ENOTDIR` trace.
+
+Next gates:
+
+- Commit only the exact mount-display fix files and the updated hosted test; leave unrelated dirty work/logs alone.
+- Run a second GNOME smoke after commit if time permits, because earlier runtime blockers were intermittent.
+- Continue broad Linux correctness from the next observed failures, not by adding service-specific bypasses.

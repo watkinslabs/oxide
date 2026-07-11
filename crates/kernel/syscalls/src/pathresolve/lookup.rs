@@ -104,8 +104,8 @@ pub fn resolve_path_raw(raw: &str, no_follow_final: bool) -> Result<vfs::VfsPath
 pub fn resolve_mount_target_raw(raw: &str) -> Result<(vfs::MountTarget, String), vfs::VfsError> {
     let raw = trim_mount_raw(raw)?;
     if let Some(p) = procfd_path(raw) {
-        let target = vfs::MountTarget { parent: p.clone(), mountpoint: p.dentry.clone() };
         let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
+        let target = vfs::mount_target_from_resolved_path(p);
         return Ok((target, display));
     }
     let (start, root, _) = raw_lookup_base()?;

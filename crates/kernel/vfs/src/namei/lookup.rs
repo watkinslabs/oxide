@@ -118,3 +118,24 @@ pub fn mountpoint_lookup_at_root_cred(
     };
     Ok(MountTarget { parent, mountpoint })
 }
+
+/// Convert a resolved `struct path` (for magic fd links such as
+/// `/proc/self/fd/N`) into a mount attach target. If the fd path already points
+/// at a mount root, Linux stacks the new mount on that mount's original
+/// `(mnt_parent, mnt_mountpoint)`, not inside the mounted filesystem's root.
+/// # C: O(log N)
+pub fn mount_target_from_resolved_path(p: VfsPath) -> MountTarget {
+    if let Some(root) = crate::mount::root_dentry_for_mount_id(p.mnt_id) {
+        if Arc::ptr_eq(&root, &p.dentry) {
+            if let Some((mp, parent_id)) = crate::mount::mountpoint_of(p.mnt_id) {
+                if let Some(inode) = mp.inode() {
+                    return MountTarget {
+                        mountpoint: mp.clone(),
+                        parent: VfsPath { mnt_id: parent_id, dentry: mp, inode, last_component: None },
+                    };
+                }
+            }
+        }
+    }
+    MountTarget { mountpoint: p.dentry.clone(), parent: p }
+}
