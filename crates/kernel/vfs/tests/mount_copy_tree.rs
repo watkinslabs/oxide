@@ -71,6 +71,21 @@ fn copy_tree_recursive_bind() {
     assert!(mounted("/dst/a"), "direct submount cloned and committed");
 }
 
+#[test]
+fn recursive_bind_rejects_split_source_mount_and_dentry() {
+    let _g = guard(0xC07_07);
+    common::register("/", facfs(0x1)).expect("root");
+    common::register("/src", facfs(0xA)).expect("src");
+    common::register("/src/a", facfs(0xA1)).expect("a");
+    let src_mnt = common::mount_at_path_exact("/src").expect("source mount").mnt_id;
+    let other = common::dentry("/other");
+    let dst = common::dentry("/dst");
+
+    let n = vfs::mount::bind_submounts_rec_at(Some(src_mnt), &other, &dst, None);
+    assert_eq!(n, 0, "a source dentry outside the supplied source mount must not clone that mount subtree");
+    assert!(!mounted("/dst/a"), "missing base relation must not collapse to empty and clone /src/a at /dst/a");
+}
+
 // D31 same-dentry placement: a NESTED clone is positioned on the SAME source
 // mountpoint dentry (Linux `copy_tree`'s `q->mnt_mountpoint =
 // dget(p->mnt_mountpoint)`), reachable because the parent clone SHARES the source

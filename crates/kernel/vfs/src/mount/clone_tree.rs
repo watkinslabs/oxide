@@ -120,9 +120,9 @@ pub(super) fn copy_tree(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, 
 /// Recursive-bind clone list from explicit mount-parent edges. # C: O(N×depth)
 pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ns: u64, exclude_id: Option<u64>) -> Vec<CloneNode> {
     let mut out: Vec<CloneNode> = Vec::new();
-    let base_rel = src.mnt_root()
-        .and_then(|root| plain_rel_under(base_mp, &root))
-        .unwrap_or_default();
+    let Some(base_rel) = src.mnt_root().and_then(|root| plain_rel_under(base_mp, &root)) else {
+        return out;
+    };
     for m in mounts_in_ns(ns).into_iter() {
         if m.mnt_id == src.mnt_id || is_unbindable(&m) { continue; }
         if !mount_under(&m, src.mnt_id) { continue; }
@@ -183,7 +183,7 @@ fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u6
     if include_root {
         // The copy ROOT is positioned at the destination base (a DISTINCT fs),
         // never via the source dentry → `mp: None` (commit_tree uses `descend`).
-        let rel = src.mountpoint().and_then(|d| rel_under(&d, Some(base_mp))).unwrap_or_default();
+        let Some(rel) = src.mountpoint().and_then(|d| rel_under(&d, Some(base_mp))) else { return; };
         out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel, mp: None });
     }
     let children: Vec<Arc<Mount>> = mounts_in_ns(src.ns).into_iter()
