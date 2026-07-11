@@ -12,14 +12,14 @@ use crate::time_common::{NS_PER_SEC, realtime_ns};
 pub fn kernel_gettimeofday(args: &SyscallArgs) -> i64 {
     let tv = args.a0;
     if tv == 0 { return 0; }
-    if let Err(rv) = validate_user_buf_writable(tv, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(tv, 16, 1) { return rv; }
     let ns = realtime_ns();
     let sec  = ns / NS_PER_SEC;
     let usec = (ns % NS_PER_SEC) / 1000;
-    // SAFETY: tv validated 16-byte range below USER_VA_END + 8-byte aligned; CPL=0 writes through caller's AS.
+    // SAFETY: tv validated writable for the full 16-byte timeval.
     unsafe {
-        core::ptr::write_volatile(tv as *mut u64, sec);
-        core::ptr::write_volatile((tv + 8) as *mut u64, usec);
+        core::ptr::write_unaligned(tv as *mut u64, sec);
+        core::ptr::write_unaligned((tv + 8) as *mut u64, usec);
     }
     0
 }

@@ -14,7 +14,7 @@ pub fn sys_getitimer(args: &SyscallArgs) -> i64 {
     let which = args.a0;
     let curr = args.a1;
     if curr == 0 { return 0; }
-    if let Err(rv) = validate_user_buf_writable(curr, 32, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(curr, 32, 1) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let now = {
         #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
@@ -29,10 +29,10 @@ pub fn sys_getitimer(args: &SyscallArgs) -> i64 {
     let (r_s, r_us) = sched::clock::ns_to_timeval(remain);
     // SAFETY: curr validated writable; CPL=0 writes through caller's AS.
     unsafe {
-        core::ptr::write_volatile( curr       as *mut u64, i_s);
-        core::ptr::write_volatile((curr +  8) as *mut u64, i_us);
-        core::ptr::write_volatile((curr + 16) as *mut u64, r_s);
-        core::ptr::write_volatile((curr + 24) as *mut u64, r_us);
+        core::ptr::write_unaligned( curr       as *mut u64, i_s);
+        core::ptr::write_unaligned((curr +  8) as *mut u64, i_us);
+        core::ptr::write_unaligned((curr + 16) as *mut u64, r_s);
+        core::ptr::write_unaligned((curr + 24) as *mut u64, r_us);
     }
     0
 }

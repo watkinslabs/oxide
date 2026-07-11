@@ -15,11 +15,11 @@ use crate::time_common::{NS_PER_SEC, REALTIME_OFFSET_NS, monotonic_ns};
 pub fn kernel_settimeofday(args: &SyscallArgs) -> i64 {
     let tv = args.a0;
     if tv == 0 { return 0; }
-    if let Err(rv) = validate_user_buf(tv, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf(tv, 16, 1) { return rv; }
     // SAFETY: tv validated as readable 16-byte timeval storage.
     let (sec, usec) = unsafe {
-        let s = core::ptr::read_volatile(tv as *const i64);
-        let u = core::ptr::read_volatile((tv + 8) as *const i64);
+        let s = core::ptr::read_unaligned(tv as *const i64);
+        let u = core::ptr::read_unaligned((tv + 8) as *const i64);
         (s, u)
     };
     if sec < 0 || usec < 0 || usec >= 1_000_000 {
