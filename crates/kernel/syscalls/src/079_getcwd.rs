@@ -23,12 +23,12 @@ pub fn sys_getcwd(args: &SyscallArgs) -> i64 {
     let need = (cwd.len() + 1) as u64;
     if size < need { return -(Errno::Erange.as_i32() as i64); }
     if let Err(rv) = validate_user_buf_writable(buf, need, 1) { return rv; }
-    // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
+    // SAFETY: exact writable user byte range validated; cwd bytes are kernel-owned.
     unsafe {
         for (i, &b) in cwd.iter().enumerate() {
-            core::ptr::write_volatile((buf + i as u64) as *mut u8, b);
+            core::ptr::write_unaligned((buf + i as u64) as *mut u8, b);
         }
-        core::ptr::write_volatile((buf + cwd.len() as u64) as *mut u8, 0);
+        core::ptr::write_unaligned((buf + cwd.len() as u64) as *mut u8, 0);
     }
     need as i64
 }
