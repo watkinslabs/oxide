@@ -1,8 +1,8 @@
 //! P7b rename-overwrite nlink authority: a plain rename that OVERWRITES an
 //! existing destination must drop the replaced target's in-memory `st_nlink`
 //! (Linux `vfs_rename`), mirroring the unlink path's authority now that the
-//! dcache `d_unlink` no longer touches nlink. RENAME_EXCHANGE (the trait
-//! `exchange`) must NOT drop — both inodes survive.
+//! dcache `d_unlink` no longer touches nlink. RENAME_EXCHANGE must NOT drop —
+//! both inodes survive.
 //!
 //! Image: mini.img (root dir = inode 2, no journal). We create two regular
 //! files in the root, hold the cached `Arc` for the destination, rename the
@@ -46,8 +46,7 @@ fn rename_overwrite_drops_replaced_target_nlink() {
     let dst = root.create_child("rdst", 0o644, &CreateCtx::root()).expect("create rdst");
     assert_eq!(dst.nlink(), 1, "fresh dest starts with one link");
 
-    let fs: Arc<dyn FileSystem> = m.clone();
-    fs.rename("/rsrc", "/rdst").expect("rename overwrite");
+    m.state().rename_at(b"/rsrc", b"/rdst").expect("rename overwrite");
 
     // The replaced (cached) destination inode lost its link.
     assert_eq!(dst.nlink(), 0, "replaced destination in-memory nlink dropped to 0");
@@ -59,7 +58,7 @@ fn rename_overwrite_drops_replaced_target_nlink() {
 #[test]
 fn iop_rename_overwrite_drops_replaced_target_nlink() {
     // D9: the resolved-parent `i_op->rename` is byte-equivalent to the
-    // whole-path `FileSystem::rename` — same overwrite + nlink-drop semantics.
+    // backend rename path — same overwrite + nlink-drop semantics.
     let (m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
     let src = root.create_child("isrc", 0o644, &CreateCtx::root()).expect("create isrc");
@@ -127,12 +126,32 @@ fn exchange_does_not_drop_either_nlink() {
     let b = root.create_child("xb", 0o644, &CreateCtx::root()).expect("create xb");
     assert_eq!((a.nlink(), b.nlink()), (1, 1));
 
-    let fs: Arc<dyn FileSystem> = m.clone();
-    fs.exchange("/xa", "/xb").expect("exchange");
+    m.state().exchange_at(b"/xa", b"/xb").expect("exchange");
 
     // Neither inode lost a link: RENAME_EXCHANGE only swaps names.
     assert_eq!(a.nlink(), 1, "exchange survivor a keeps its link");
     assert_eq!(b.nlink(), 1, "exchange survivor b keeps its link");
     assert!(m.state().lookup_path(b"/xa").is_some(), "name xa still present");
     assert!(m.state().lookup_path(b"/xb").is_some(), "name xb still present");
+}
+
+#[test]
+fn iop_create_reused_ino_rebuilds_cached_type() {
+    // GNOME/systemd PrivateTmp churn creates and removes many short-lived ext4
+    // names. If ext4 reuses an inode number while a stale VFS inode is still
+    // cached, i_op->mkdir must evict that slot before wrapping the new on-disk
+    // directory. Otherwise namei sees the new private-tmp parent as a regular
+    // file and the next component returns ENOTDIR.
+    let (_m, sb) = mount();
+    let root = sb.s_root_inode().expect("root inode");
+    let stale_file = root.create_child("reuse", 0o644, &CreateCtx::root()).expect("create file");
+    let stale_ino = stale_file.ino();
+    assert_eq!(stale_file.file_type(), FileType::Regular);
+
+    root.unlink_child("reuse").expect("unlink file");
+    let new_dir = root.mkdir("reuse", 0o755, &CreateCtx::root()).expect("mkdir reused name");
+
+    assert_eq!(new_dir.ino(), stale_ino, "fixture reused the freed inode number");
+    assert_eq!(new_dir.file_type(), FileType::Directory, "reused inode was rebuilt from disk type");
+    assert!(!Arc::ptr_eq(&new_dir, &stale_file), "mkdir did not return stale regular-file Arc");
 }

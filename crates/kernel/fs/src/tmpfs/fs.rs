@@ -2,12 +2,11 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
 use sync::{Spinlock, Inode as InodeClass};
-use vfs::{CreateCtx, FileType, InodeRef, KResult, VfsError};
+use vfs::{CreateCtx, InodeRef, KResult};
 use vfs::superblock::SuperBlock;
 
 use super::accounting::TmpfsSb;
-use super::dir::{as_dir, dir_parent_of, dir_resolve, make_tmpfs_dir_inode};
-use super::file::make_tmpfs_file_inode;
+use super::dir::{as_dir, make_tmpfs_dir_inode};
 use super::limits::{PG, ROOT_INO};
 use super::uapi::TMPFS_MAGIC;
 
@@ -119,69 +118,6 @@ impl vfs::fs::FileSystem for TmpfsFs {
         if let Some(d) = as_dir(&self.root) { d.set_sb(sb); }
     }
 
-    /// `open(O_CREAT)`: return the existing inode or create a regular file in
-    /// the tree (lookup-or-create). `path` is mount-absolute. # C: O(components)
-    fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        let rel = path.trim_start_matches('/');
-        if let Some(i) = dir_resolve(&self.root, rel) { return Ok(i); }
-        let (p, name) = dir_parent_of(&self.root, rel).ok_or(VfsError::Enoent)?;
-        p.create_child(name, mode, &CreateCtx::root())
-    }
-
-    /// `O_TMPFILE`: a fresh in-memory inode with no directory entry — reclaimed
-    /// when its last fd closes (Linux shmem anonymous inode). It carries this
-    /// instance's SB so `fsid` is the mount's `s_dev`. # C: O(1)
-    fn create_anonymous(&self, _dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        // Blocks the anon inode writes count against this mount (freed on the
-        // file's Drop); it has no directory entry so it is not inode-charged.
-        Ok(make_tmpfs_file_inode(false, (mode & 0o7777) as u16, 0, 0, self.sb.lock().clone(), self.acct.clone()))
-    }
-
-    /// `unlink(2)` by whole path (atomic-rename idiom). # C: O(components)
-    fn unlink(&self, path: &str) -> vfs::fs::KResult<()> {
-        let (p, name) = dir_parent_of(&self.root, path.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
-        p.unlink_child(name)
-    }
-
-    /// Hardlink: add another name in the tree for `target`'s inode. # C: O(components)
-    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
-        let inode = dir_resolve(&self.root, target.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
-        self.link_inode(inode, link)
-    }
-
-    /// Materialize `inode` at `link` (linkat AT_EMPTY_PATH). # C: O(components)
-    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        let (p, name) = dir_parent_of(&self.root, link.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
-        let dir = as_dir(&p).ok_or(VfsError::Enotdir)?;
-        if dir.kids.lock().contains_key(name) { return Err(VfsError::Eexist); }
-        inode.inc_nlink(); // a new name for the same inode (Linux inc_nlink)
-        dir.insert(name, inode);
-        Ok(())
-    }
-
-    /// `rename(from, to)` — the editor/package-manager atomic-write idiom:
-    /// detach the source from its parent dir, attach it under the dest name.
-    /// # C: O(components)
-    fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        let (sp, sname) = dir_parent_of(&self.root, from.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
-        let (dp, dname) = dir_parent_of(&self.root, to.trim_start_matches('/')).ok_or(VfsError::Enoent)?;
-        let sdir = as_dir(&sp).ok_or(VfsError::Enotdir)?;
-        let ddir = as_dir(&dp).ok_or(VfsError::Enotdir)?;
-        let inode = sdir.remove(sname).ok_or(VfsError::Enoent)?;
-        // Replaced destination (plain rename = non-EXCHANGE; RENAME_EXCHANGE
-        // routes through `exchange`, which only renames into a vacated temp name
-        // and never overwrites a live target). The victim loses its link (Linux
-        // `vfs_rename`): drop its in-memory nlink — a directory target is cleared
-        // to 0 (loses both its `.` self-link and the parent's reference) — and
-        // reclaim its inode charge once no name remains. Mirrors `unlink`.
-        if let Some(victim) = ddir.remove(dname) {
-            if victim.file_type() == FileType::Directory { victim.set_nlink(0); }
-            else { victim.drop_nlink(); }
-            if victim.nlink() == 0 { ddir.acct.free_inode(); }
-        }
-        ddir.insert(dname, inode);
-        Ok(())
-    }
 }
 
 /// `super_operations` for a tmpfs mount: `statfs` reports live per-instance

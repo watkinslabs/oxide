@@ -151,7 +151,7 @@ mod rename_overwrite_tests {
         assert_eq!(dst.nlink(), 1);
         let free_before = fs.super_ops().unwrap().statfs().unwrap().f_ffree;
 
-        fs.rename("/src", "/dst").expect("rename overwrite");
+        root.rename_child("src", &root, "dst", 0, &CreateCtx::root()).expect("rename overwrite");
 
         // Replaced target lost its link; its inode charge was reclaimed.
         assert_eq!(dst.nlink(), 0, "replaced destination nlink dropped to 0");
@@ -163,8 +163,8 @@ mod rename_overwrite_tests {
         assert!(matches!(root.lookup("src"), Err(VfsError::Enoent)), "source name gone");
     }
 
-    // RENAME_EXCHANGE (FileSystem::exchange) swaps two existing paths; NEITHER
-    // inode loses its link (both survive with nlink unchanged).
+    // RENAME_EXCHANGE swaps two existing names through resolved parent inodes;
+    // NEITHER inode loses its link (both survive with nlink unchanged).
     #[test]
     fn exchange_does_not_drop_either_nlink() {
         let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
@@ -172,7 +172,7 @@ mod rename_overwrite_tests {
         let a = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
         let b = root.create_child("b", 0o644, &CreateCtx::root()).expect("create b");
 
-        fs.exchange("/a", "/b").expect("exchange");
+        root.rename_child("a", &root, "b", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()).expect("exchange");
 
         // Both inodes survive with their single link intact.
         assert_eq!(a.nlink(), 1, "exchange survivor a keeps its link");
@@ -184,7 +184,7 @@ mod rename_overwrite_tests {
 
     // D9: `i_op->rename` (resolved-parent path) — same-dir plain rename moves the
     // source inode onto the destination name, overwriting (and dropping the link
-    // of) an existing target, byte-equivalent to `FileSystem::rename`.
+    // of) an existing target.
     #[test]
     fn iop_rename_same_dir_overwrites() {
         let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
@@ -241,20 +241,15 @@ mod rename_overwrite_tests {
     }
 
     // D13: tmpfs is TARGET-INDEPENDENT — a non-root mount (`/run`) behaves
-    // identically to `/` for the i_op write ops, and the whole-path FileSystem
-    // fallbacks (mount-relative, leading-`/` stripped) address the same tree.
+    // identically to `/` for resolved-parent i_op write ops.
     #[test]
     fn nonroot_mount_realizes_identically() {
         let fs = TmpfsFs::with_limits(String::from("/run"), TmpfsSb::new(64, 16));
         let root = fs.root_inode();
         assert_eq!(root.ino(), ROOT_INO, "root ino is the fixed constant, not target-derived");
-        // i_op create + whole-path FileSystem fallbacks operate on the same tree.
         root.create_child("a", 0o644, &CreateCtx::root()).expect("iop create");
-        // FileSystem::create with a mount-relative path hits the SAME inode tree.
-        let viafs = fs.create("/a", 0o644).expect("fs create resolves existing");
-        assert!(Arc::ptr_eq(&viafs, &root.lookup("a").unwrap()), "fs path == i_op tree");
-        // FileSystem::link fallback (whole-path) links within the tree.
-        fs.link("/a", "/b").expect("fs link fallback");
+        let a = root.lookup("a").expect("a");
+        root.link_child(&a, "b", &CreateCtx::root()).expect("iop link");
         assert!(Arc::ptr_eq(&root.lookup("b").unwrap(), &root.lookup("a").unwrap()), "b is a hardlink of a");
     }
 
@@ -306,7 +301,6 @@ mod symlink_tests {
 #[cfg(test)]
 mod nlink_mode_tests {
     use super::*;
-    use vfs::fs::FileSystem;
 
     // D32: a fresh file starts at nlink=1; a hardlink raises it; unlink lowers
     // it (Linux tmpfs/simple_fs link accounting).
@@ -316,11 +310,11 @@ mod nlink_mode_tests {
         let root = fs.root_inode();
         let f = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
         assert_eq!(f.nlink(), 1);
-        fs.link_inode(f.clone(), "/b").expect("hardlink b");
+        root.link_child(&f, "b", &CreateCtx::root()).expect("hardlink b");
         assert_eq!(f.nlink(), 2);
-        fs.unlink("/b").expect("unlink b");
+        root.unlink_child("b").expect("unlink b");
         assert_eq!(f.nlink(), 1);
-        fs.unlink("/a").expect("unlink a");
+        root.unlink_child("a").expect("unlink a");
         assert_eq!(f.nlink(), 0);
     }
 
