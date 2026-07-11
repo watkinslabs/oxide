@@ -16,11 +16,6 @@ pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
     Some(g.get_or_insert(d).clone())
 }
 
-/// # C: O(1) un-chrooted; O(jail components) chrooted
-pub(super) fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
-    resolution_root_vfs().map(|(p, beneath)| (p.dentry, beneath))
-}
-
 /// Resolution root with its exact mount id. `root_vfs` is a full `struct path`
 /// equivalent; dropping its `mnt_id` and re-deriving from the dentry is wrong
 /// after bind/pivot clones that share one superblock root.

@@ -9,6 +9,57 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
+#[cfg(feature = "debug-udevdb")]
+fn is_udevdb_path_bytes(path: &[u8]) -> bool {
+    const DATA: &[u8] = b"/run/udev/data";
+    const TAGS: &[u8] = b"/run/udev/tags";
+    path.windows(DATA.len()).any(|w| w == DATA)
+        || path.windows(TAGS.len()).any(|w| w == TAGS)
+}
+
+#[cfg(feature = "debug-udevdb")]
+pub(crate) fn trace_udevdb_path(op: &'static [u8], path: &str, rv: i64) {
+    if !is_udevdb_path_bytes(path.as_bytes()) { return; }
+    klog::write_raw(b"[UDEVDB ");
+    klog::write_raw(op);
+    klog::write_raw(b" rv=");
+    if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+    else { klog::write_dec_u64(rv as u64); }
+    klog::write_raw(b" tid=");
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b"/");
+        klog::write_raw(c.name.as_bytes());
+    } else {
+        klog::write_raw(b"0");
+    }
+    klog::write_raw(b" path=");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"]\n");
+}
+
+#[cfg(feature = "debug-udevdb")]
+pub(crate) fn trace_udevdb_file(op: &'static [u8], file: &vfs::File, rv: i64) {
+    let path = vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry());
+    if !is_udevdb_path_bytes(path.as_bytes()) { return; }
+    klog::write_raw(b"[UDEVDB ");
+    klog::write_raw(op);
+    klog::write_raw(b" rv=");
+    if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+    else { klog::write_dec_u64(rv as u64); }
+    klog::write_raw(b" tid=");
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b"/");
+        klog::write_raw(c.name.as_bytes());
+    } else {
+        klog::write_raw(b"0");
+    }
+    klog::write_raw(b" path=");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"]\n");
+}
+
 /// debug-boot: trace the syscalls systemd-logind runs while classifying
 /// `/dev/dri/card0` for `TakeDevice`. mutter reports `Failed to open gpu ...
 /// ENODEV` when logind's `session_device_new` → `sd_device_new_from_devnum` /
@@ -61,20 +112,6 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
     vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
     Ok(path)
-}
-
-/// D26: every path leaves through the lexical normalizer — an absolute path is
-/// normalized (no raw-string passthrough), a relative path is joined to cwd then
-/// normalized. A normalization miss returns `None` (callers map to ENOENT, Linux
-/// for a path that cannot be normalized), never a silent raw unnormalized string;
-/// this keeps path resolution deterministic.
-/// # C: O(1)
-pub(crate) fn resolve(path_raw: &str) -> Option<String> {
-    if path_raw.starts_with('/') { return vfs::path::lexical_normalize(path_raw); }
-    let cur = sched::live::current()?;
-    // SAFETY: cwd slot single-mutator per `13§5`; current task is sole writer.
-    let cwd = unsafe { (*cur.cwd.get()).clone() };
-    vfs::path::resolve_against_cwd(&cwd, path_raw)
 }
 
 /// # C: O(1)
@@ -166,29 +203,6 @@ pub(crate) fn trace_run_vfs_error(op: &[u8], path: &str, e: vfs::VfsError) {
 }
 
 /// Resolve the PARENT directory of absolute `p` through the engine
-/// LOOKUP_PARENT walk (`pathresolve::resolve_parent_path`, Linux
-/// `filename_parentat`) and return `(parent_inode, leaf_name)` — THE resolver
-/// feeding every namespace mutation per `docs/16§3` (namei D16). The walk
-/// stops before the final component, returning the resolved parent dir inode +
-/// the leaf reported VERBATIM (so a not-yet-existing leaf is fine; the per-
-/// component child op on the parent then services the create/unlink/rename).
-/// Replaces the old `split_parent` (`rfind('/')`) string split + a separate
-/// full `resolve(parent)` walk; the leaf classification (`.`/`..`/root) is
-/// owned by the engine (`VfsPath::last_type`) but the callers still pre-reject
-/// the dot-forms on the RAW path (`rmdir_dot_errno`/`rename_component_busy`)
-/// before lexical normalization collapses them. The owning mount's inode
-/// services the op (ext4 dir → ext4 create/unlink; tmpfs → tmpfs; read-only
-/// pseudo-fs → Erofs), exactly as Linux `inode_operations`. A `/` (no leaf,
-/// `last_type == Root`) maps to EINVAL — the same error the old `split_parent`
-/// returned for a parent-less path. # C: O(N parent components)
-pub(crate) fn resolve_parent(p: &str) -> Result<(vfs::InodeRef, String), i64> {
-    let vp = crate::pathresolve::resolve_parent_path(p).map_err(errno_from_vfs)?;
-    match vp.last_component {
-        Some(name) => Ok((vp.inode, name)),
-        None       => Err(-(Errno::Einval.as_i32() as i64)),
-    }
-}
-
 /// Resolve a create target's parent through the real `*at` base, preserving the
 /// walked parent `(mnt,dentry)` as authority and returning only the final leaf
 /// name as text. Dot leaves name an already-existing object in Linux's create
@@ -370,18 +384,6 @@ pub(crate) fn unlink_unix_socket_addr(addr: &net::UnixAddr) -> bool {
 pub(crate) fn last_component(raw: &str) -> &str {
     let trimmed = raw.trim_end_matches('/');
     trimmed.rsplit('/').next().unwrap_or(trimmed)
-}
-
-/// Parent path string for fsnotify hooks after a successful mutation. Inputs
-/// here are resolved absolute paths; root children report parent `/`.
-/// # C: O(N)
-pub(crate) fn parent_path(abs: &str) -> &str {
-    let trimmed = abs.trim_end_matches('/');
-    match trimmed.rfind('/') {
-        Some(0) => "/",
-        Some(i) => &trimmed[..i],
-        _ => "/",
-    }
 }
 
 /// Linux `do_rmdirat`: a final component of `.` → EINVAL, `..` → ENOTEMPTY

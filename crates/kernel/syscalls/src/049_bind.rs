@@ -33,8 +33,7 @@ fn create_unix_sock_node(path: &str) -> Result<Option<UnixSockNode>, i64> {
             let addr = net::UnixAddr::from_inode(alloc::string::String::from(path), &inode);
             vfs::file::iput(inode);
             crate::namei_common::drop_child_cache(&parent, &name);
-            let pp = crate::namei_common::render_parent_path(&parent);
-            vfs::fire_dirent_create(&pp, &name);
+            vfs::fire_dirent_create(&parent.inode, &name);
             Ok(Some(UnixSockNode { parent, name, addr }))
         }
         Err(vfs::VfsError::Eexist) => Err(-(Errno::Eaddrinuse.as_i32() as i64)),
@@ -48,8 +47,7 @@ fn remove_unix_sock_node(n: &UnixSockNode) {
         n.parent.inode.unlink_child(&n.name)
     };
     crate::namei_common::drop_child_cache(&n.parent, &n.name);
-    let pp = crate::namei_common::render_parent_path(&n.parent);
-    vfs::fire_dirent_delete(&pp, &n.name);
+    vfs::fire_dirent_delete(&n.parent.inode, &n.name);
 }
 
 /// `bind(fd, addr, addrlen)` slot 49.

@@ -51,7 +51,15 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     };
     let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
         Ok(p)  => (p.inode, p.mnt_id),
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-mount")]
+            if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
+                if path.starts_with("/run") {
+                    crate::mount_common::mnt_log("newfstatat", &path, rv);
+                }
+            }
+            return rv;
+        }
     };
 
     // vfs_getattr → i_op->getattr: S_IF* mapping + overlay merge + idmap-out.

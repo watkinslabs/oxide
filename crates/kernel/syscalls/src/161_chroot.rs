@@ -25,55 +25,23 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     let s: &str = path.as_str();
     // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace — chroot into the
     // assembled sandbox root that pins cur_mnt_id 10/11 for the api-mount walks.
-    #[cfg(feature = "debug-mount")]
+    #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=");
         klog::write_raw(s.as_bytes());
         klog::write_raw(b"\n");
     }
-    // chroot(2) accepts a RELATIVE path (resolved against cwd) — Linux
-    // `set_fs_root` takes `user_path_at(AT_FDCWD, ...)`. systemd's
-    // `mount_switch_root` does `chroot(".")` after MS_MOVE-ing the assembled
-    // sandbox root onto `/` and `chdir`-ing into it; rejecting non-absolute
-    // paths failed that with EINVAL (step NAMESPACE status=226).
-    //
-    // A relative path MUST resolve against the cwd DENTRY via namei, NOT by
-    // re-resolving the cwd path STRING: the MS_MOVE/pivot that just ran
-    // relocated the sandbox root, so the cwd's recorded path string is stale
-    // and re-resolving it ENOENTs (the chroot then returns ENOENT, the same
-    // step-NAMESPACE failure). `resolve_path` walks from `cwd_vfs.dentry`,
-    // which travelled WITH the moved mount, landing on the live moved root.
-    // An absolute path keeps the legacy nested-chroot prefix concat (F95).
-    // # C: O(components)
-    let (new_root, root_obj) = if !s.starts_with('/') {
-        let p = match crate::pathresolve::resolve_path_result(s, false) {
-            Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-            Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
-            Err(e) => return crate::namei_common::errno_from_vfs(e),
-        };
-        let abs = alloc::string::String::from_utf8(p.dentry.absolute_path())
-            .unwrap_or_else(|_| alloc::string::String::from("/"));
-        (abs, p)
-    } else {
-        // SAFETY: task.root single-mutator per `13§5`; running task on this CPU is the sole writer (chroot only mutates the calling task's root).
-        let new_root = unsafe {
-            let cur_root = (*cur.root.get()).clone();
-            if cur_root == "/" {
-                alloc::string::String::from(s)
-            } else {
-                let mut out = cur_root;
-                if out.ends_with('/') { out.pop(); }
-                out.push_str(s);
-                out
-            }
-        };
-        let p = match crate::pathresolve::resolve_path_result(&new_root, false) {
-            Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-            Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
-            Err(e) => return crate::namei_common::errno_from_vfs(e),
-        };
-        (new_root, p)
+    // chroot(2) accepts absolute and relative paths. Both must resolve through
+    // the live `(root,cwd)` VFS identities; the stored string is display only.
+    let root_obj = match crate::pathresolve::resolve_path_raw(s, false) {
+        Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
+        Ok(p)  => {
+            trace_chroot_enotdir(s, s, p.mnt_id);
+            return -(Errno::Enotdir.as_i32() as i64);
+        }
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
+    let new_root = vfs::mount::render_path_for_mount(root_obj.mnt_id, &root_obj.dentry);
     // SAFETY: task.root/root_vfs single-mutator per `13§5`; the running task on this CPU is the sole writer (chroot only mutates the calling task's root).
     unsafe {
         *cur.root.get() = new_root;
@@ -81,3 +49,19 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     }
     0
 }
+
+#[cfg(feature = "debug-boot")]
+fn trace_chroot_enotdir(raw: &str, resolved: &str, mnt_id: u64) {
+    klog::write_raw(b"[ENOTDIR] op=chroot why=target-not-dir tid=");
+    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+    klog::write_raw(b" raw=");
+    klog::write_raw(raw.as_bytes());
+    klog::write_raw(b" resolved=");
+    klog::write_raw(resolved.as_bytes());
+    klog::write_raw(b" mnt=");
+    klog::write_dec_u64(mnt_id);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-boot"))]
+fn trace_chroot_enotdir(_raw: &str, _resolved: &str, _mnt_id: u64) {}

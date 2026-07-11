@@ -108,10 +108,11 @@ fn fdinfo_body(d: &ProcFdInfoInode) -> Vec<u8> {
     let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
         "pos:\t{}\n\
          flags:\t0{:o}\n\
-         mnt_id:\t0\n\
+         mnt_id:\t{}\n\
          ino:\t{}\n",
         file.pos(),
         file.flags().bits(),
+        file.mnt_id(),
         file.inode().ino(),
     ));
     // Linux appends each fd type's own `show_fdinfo` lines after the generic

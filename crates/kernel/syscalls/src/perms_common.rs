@@ -73,6 +73,12 @@ pub(crate) fn resolve_path_mnt(dirfd: i32, path_ptr: u64, follow: bool) -> Resul
 /// → EINVAL (Linux `setxattrat`/`getxattrat` reject `~(AT_SYMLINK_NOFOLLOW |
 /// AT_EMPTY_PATH)`). # C: O(N_path)
 pub(crate) fn resolve_xattr_at(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<InodeRef, i64> {
+    resolve_xattr_at_mnt(dirfd, path_ptr, at_flags).map(|p| p.0)
+}
+
+/// Resolve a `*xattrat`/legacy xattr target to `(inode, mnt_id)`, preserving
+/// mount identity for write-side EROFS checks. # C: O(N_path)
+pub(crate) fn resolve_xattr_at_mnt(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<(InodeRef, u64), i64> {
     if at_flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
@@ -85,7 +91,7 @@ pub(crate) fn resolve_xattr_at(dirfd: i32, path_ptr: u64, at_flags: u32) -> Resu
         follow,
         ..Default::default()
     };
-    crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf).map(|p| p.inode)
+    crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf).map(|p| (p.inode, p.mnt_id))
 }
 
 /// Resolve an open fd to its `Arc<File>` (carries `mnt_id` for EROFS). # C: O(1)

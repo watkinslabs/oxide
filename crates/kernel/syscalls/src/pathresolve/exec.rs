@@ -1,19 +1,11 @@
 #![cfg(target_os = "oxide-kernel")]
 
-use super::at::resolve_cwd;
-use super::lookup::resolve_path;
-use super::root::root_dentry;
+use super::lookup::resolve_path_raw;
 
 /// # C: O(components) + O(size/PAGE)
 pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
     let s = core::str::from_utf8(path).ok()?;
-    let abs = resolve_cwd(s);
-    if let Some((tid_opt, fd)) = vfs::path::dup_fd_target(&abs) {
-        let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
-        return read_exec_inode(file.inode());
-    }
-    if root_dentry().is_none() { return None; }
-    let inode = resolve_path(abs.as_str(), false)?.inode;
+    let inode = resolve_path_raw(s, false).ok()?.inode;
     read_exec_inode(&inode)
 }
 

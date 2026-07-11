@@ -7,6 +7,15 @@ use syscall::SyscallArgs;
 use crate::userbuf::validate_user_buf;
 use crate::statfs_common::{statfs_for_mount, write_statfs};
 
+#[cfg(feature = "debug-mount")]
+fn log_runtime_statfs(path_ptr: u64, rv: i64) {
+    if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
+        if path.starts_with("/run/systemd") || path.contains("systemd/journal") {
+            crate::mount_common::mnt_log("statfs", &path, rv);
+        }
+    }
+}
+
 /// `sys_statfs(path, buf)` — slot 137. Reports the `f_type` magic of
 /// the filesystem backing `path`.
 /// # C: O(N_mounts)
@@ -24,12 +33,20 @@ pub fn sys_statfs(args: &SyscallArgs) -> i64 {
     // mount's superblock. Do not stringify and re-resolve through cwd/root.
     let vp = match crate::pathresolve::resolve_at_lookup(crate::perms_common::AT_FDCWD, path_ptr, lf) {
         Ok(p) => p,
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-mount")]
+            log_runtime_statfs(path_ptr, rv);
+            return rv;
+        }
     };
     let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) else {
+        #[cfg(feature = "debug-mount")]
+        log_runtime_statfs(path_ptr, -(syscall::errno::Errno::Enoent.as_i32() as i64));
         return -(syscall::errno::Errno::Enoent.as_i32() as i64);
     };
     let st = statfs_for_mount(&m);
     write_statfs(buf, &st);
+    #[cfg(feature = "debug-mount")]
+    log_runtime_statfs(path_ptr, 0);
     0
 }

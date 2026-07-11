@@ -58,27 +58,12 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     let path_raw = match read_user_cstr_owned(target_ptr, 256) {
         Ok(p) => p, Err(rv) => return rv,
     };
-    // A RELATIVE target (systemd's post-pivot `umount2(".", MNT_DETACH)` switch-
-    // root cleanup) must resolve against the LIVE cwd dentry, not the recorded
-    // cwd path STRING: a pivot_root/MS_MOVE just relocated the mount, so the
-    // string is stale and re-resolving it lands on the wrong (nested) mount →
-    // spurious EINVAL that aborts the sandbox. Walk from `cwd_vfs.dentry` (which
-    // travelled WITH the moved mount) and take its absolute path — same stale-cwd
-    // fix as chroot(2), see 161_chroot.rs. Absolute targets keep string
-    // normalisation.
-    let path = if path_raw.starts_with('/') {
-        crate::pathresolve::resolve_cwd(&path_raw)
-    } else {
-        match crate::pathresolve::resolve_path_result(&path_raw, false) {
-            Ok(p) => alloc::string::String::from_utf8(p.dentry.absolute_path())
-                .unwrap_or_else(|_| crate::pathresolve::resolve_cwd(&path_raw)),
-            Err(_) => crate::pathresolve::resolve_cwd(&path_raw),
-        }
+    let no_follow = (flags & UMOUNT_NOFOLLOW) != 0;
+    let resolved = match crate::pathresolve::resolve_path_raw(&path_raw, no_follow) {
+        Ok(p) => p,
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
-    let trimmed: &str = match path.as_str() {
-        s if s.len() > 1 && s.ends_with('/') => &s[..s.len() - 1],
-        s => s,
-    };
+    let _display = vfs::mount::render_path_for_mount(resolved.mnt_id, &resolved.dentry);
     let ns = cur.mount_ns.load(Ordering::Acquire);
     const MNT_DETACH: u64 = 2;
     let lazy = (args.a1 & MNT_DETACH) != 0;
@@ -97,7 +82,7 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     //    namespace — so a private-ns service unmounting /dev/proc/sys for
     //    PrivateDevices=/ProtectKernelTunables= no longer fails the sandbox
     //    (was status=226/NAMESPACE).
-    if trimmed == "/" && !lazy {
+    if resolved.mnt_id == 0 && vfs::mount::mountpoint_of(resolved.mnt_id).is_none() && !lazy {
         return -(Errno::Einval.as_i32() as i64);
     }
     // Linux umount(2) detaches a mount; it NEVER destroys the filesystem's
@@ -119,14 +104,25 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // resolved final dentry is exactly the mounted fs root, translate the
     // VfsPath's mnt_id back to that mountpoint; otherwise it is not an exact
     // mount root and unregister_top() must fail with EINVAL.
-    let resolved = crate::pathresolve::resolve_path(trimmed, false);
-    let exact_mountpoint = resolved.as_ref().and_then(|p| {
-        let root = vfs::mount::root_dentry_for_mount_id(p.mnt_id)?;
-        if !Arc::ptr_eq(&p.dentry, &root) {
-            return None;
+    let exact_mountpoint = {
+        let root = vfs::mount::root_dentry_for_mount_id(resolved.mnt_id);
+        root.and_then(|root| {
+            if !Arc::ptr_eq(&resolved.dentry, &root) {
+                return None;
+            }
+            vfs::mount::mountpoint_of(resolved.mnt_id).map(|(mp, _)| mp)
+        })
+    };
+    let Some(target_d) = exact_mountpoint else {
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[umount EINVAL] ns="); klog::write_dec_u64(ns);
+            klog::write_raw(b" lazy="); klog::write_dec_u64(lazy as u64);
+            klog::write_raw(b" path="); klog::write_raw(_display.as_bytes());
+            klog::write_raw(b"\n");
         }
-        vfs::mount::mountpoint_of(p.mnt_id).map(|(mp, _)| mp)
-    });
+        return -(Errno::Einval.as_i32() as i64);
+    };
     // Exact-root umount of a synthetic pseudo-filesystem (procfs/sysfs/
     // devtmpfs/devfs) is a successful no-op in ANY mount namespace, not only
     // ns 0. The content is kernel-generated and a (re)mount re-exposes it, so
@@ -148,13 +144,9 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // gone from mountinfo → the loop terminates) but NEVER wipe the synthetic
     // backing (it regenerates on re-mount, exactly as Linux umount detaches a
     // mount without destroying fs data).
-    let is_pseudo = exact_mountpoint.is_some() && resolved.as_ref()
-        .and_then(|p| vfs::mount::mount_by_id(p.mnt_id))
+    let is_pseudo = vfs::mount::mount_by_id(resolved.mnt_id)
         .map(|m| matches!(m.fs().name(), "procfs" | "sysfs" | "devtmpfs" | "devfs"))
         .unwrap_or(false);
-    // `None` (target gone or not a mount root) ⇒ no TABLE mount, but the
-    // devfs-registry detach below may still match legacy devfs-owned paths.
-    let target_d = exact_mountpoint.or_else(|| crate::pathresolve::mount_dentry(trimmed));
     // A pseudo-fs mount (procfs/sysfs/devfs) detaches its WHOLE subtree, even
     // non-lazy. systemd tears down its per-service sandbox staging tree
     // (/run/systemd/mount-rootfs/{proc,sys,dev}) with non-lazy umount2 — in
@@ -166,32 +158,22 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // subtree vanish cleanly; a REAL (non-pseudo) mount keeps the Linux
     // EBUSY-on-children guard.
     let recursive = lazy || is_pseudo;
-    if !recursive && target_d.as_ref().map(|d| vfs::mount::has_child_mounts(d, ns)).unwrap_or(false) {
+    if !recursive && vfs::mount::has_child_mounts(&target_d, ns) {
         return -(Errno::Ebusy.as_i32() as i64);
     }
-    // Detach from BOTH the unified mount table (bind mounts + any
-    // TABLE-resident mount) and the legacy devfs registry for the paths devfs
-    // actually owns. Do not apply the devfs fallback to `/proc` or `/sys`:
-    // those are separate pseudo-filesystems now, and a non-mounted descendant
-    // such as `/proc/sys/fs/binfmt_misc` must report EINVAL. Returning success
-    // there makes systemd's automount cleanup spin on umount2 forever.
-    let removed_tab = target_d.as_ref().map(|d| vfs::mount::unregister_top(d, recursive)).unwrap_or(0);
-    // Registry wipe is ONLY for a real device-node fs at a devfs-owned path —
-    // NEVER for a pseudo-fs (deleting the synthetic /proc/sys/dev tree once
-    // permanently broke every later sandbox). The instance detach above already
-    // removed it from mountinfo.
-    let is_devfs_path = !is_pseudo && (trimmed == "/dev" || trimmed.starts_with("/dev/")
-        || trimmed == "/etc" || trimmed.starts_with("/etc/"));
-    let removed_reg = if is_devfs_path { devfs::unregister_subtree(ns, trimmed) } else { 0 };
+    // Detach from the unified mount table only. A non-mounted descendant such
+    // as `/proc/sys/fs/binfmt_misc` must report EINVAL; returning success there
+    // makes systemd's automount cleanup spin on umount2 forever.
+    let removed_tab = vfs::mount::unregister_top(&target_d, recursive);
     // A pseudo-fs umount that matched no removable mount instance is a
     // successful no-op (Linux detaches the initial /proc; a synthetic root with
     // no separate instance has nothing to remove) — never surface EINVAL there.
-    if removed_tab == 0 && removed_reg == 0 && !is_pseudo {
+    if removed_tab == 0 && !is_pseudo {
         #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[umount EINVAL] ns="); klog::write_dec_u64(ns);
             klog::write_raw(b" lazy="); klog::write_dec_u64(lazy as u64);
-            klog::write_raw(b" path="); klog::write_raw(trimmed.as_bytes());
+            klog::write_raw(b" path="); klog::write_raw(_display.as_bytes());
             klog::write_raw(b"\n");
         }
         return -(Errno::Einval.as_i32() as i64);

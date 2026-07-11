@@ -137,9 +137,8 @@ pub trait InodeOps: Send + Sync {
     /// supplies the mount idmap + caller cred + umask for owner/mode (exactly the
     /// create-family contract). The default is `Eopnotsupp` — the errno
     /// `do_tmpfile` reports for a filesystem without the op — so a backend
-    /// compiles unchanged until it overrides. Distinct from the legacy
-    /// path/string `FileSystem::create_anonymous`: this acts on the parent
-    /// dir-inode, takes the idmap, and stamps the caller owner.
+    /// compiles unchanged until it overrides. Acts on the parent dir-inode,
+    /// takes the idmap, and stamps the caller owner.
     /// # C: backend-dependent
     fn tmpfile(&self, _inode: &Inode, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
         Err(VfsError::Eopnotsupp)
