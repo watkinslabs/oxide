@@ -60,9 +60,9 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     };
 
     // vfs_getattr → i_op->getattr (default generic_fillattr): S_IF* mapping +
-    // inode_times overlay merge + idmap-out owner ids (identity ⇒ raw ids).
+    // native inode metadata + idmap-out owner ids (identity ⇒ raw ids).
     let idmap = vfs::mount::idmap_for(mnt_id);
-    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let st = vfs::vfs_getattr(&inode, &idmap);
     let mode = st.mode as u16;
     let rdev = st.rdev;
     let stx_uid = st.uid;

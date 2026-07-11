@@ -36,10 +36,10 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     };
     let inode = file.inode();
     // vfs_getattr → i_op->getattr (default generic_fillattr): S_IF* mapping +
-    // inode_times overlay merge + idmap-out owner ids, identical to the other
+    // native inode metadata + idmap-out owner ids, identical to the other
     // stat-family handlers. The fd carries the owning mount for the idmap.
     let idmap = vfs::mount::idmap_for(file.mnt_id());
-    let st = vfs::vfs_getattr(inode, &idmap, vfs::inode_times::get(inode));
+    let st = vfs::vfs_getattr(inode, &idmap);
     let mode: u32 = st.mode;
     let rdev = st.rdev as u64;
     let uid = st.uid;

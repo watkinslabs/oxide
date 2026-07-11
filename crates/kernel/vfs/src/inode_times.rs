@@ -1,36 +1,6 @@
 // Atime-update policy (relatime/noatime) + `current_time` granularity flooring
-// for the `utimensat`/stat family.
-//
-// D17: the legacy pointer-keyed `TIMES` overlay (a `BTreeMap` keyed by
-// `Arc::as_ptr`) is GONE — the concrete `struct Inode` now stores real
-// `i_atime`/`i_mtime`/`i_ctime`/`i_mode`/`i_uid`/`i_gid` fields, so `getattr`
-// reads them directly and the overlay store+merge is dead. The accessor shims
-// below (`get`/`set`/`set_mode`/`set_owner`) remain as no-ops only so the
-// cross-lane fallback call sites (syscalls `perms_common`, `fs::xattr`) still
-// compile; they take effect nowhere because the concrete inode's own
-// `set_perm`/`set_owner`/`set_times` always succeed. Removing those call sites
-// (and then these shims) is a cross-lane follow-up. The [`InodeTimes`] struct is
-// retained as the (now inert) `overlay` argument type of `getattr`.
-
-/// Per-inode metadata overlay (LEGACY, inert): timestamps + mode + owner. Once
-/// the fallback store for pseudo-fs inodes without native fields; the concrete
-/// `struct Inode` now always carries its own, so this is retained only as the
-/// `getattr`/`generic_fillattr` `overlay` parameter type and is never consulted.
-#[derive(Default, Copy, Clone)]
-pub struct InodeTimes {
-    pub atime_ns: u64,
-    pub mtime_ns: u64,
-    pub ctime_ns: u64,
-    /// Lower 12 bits = permission bits (rwxrwxrwx + suid/sgid/sticky);
-    /// 0 = "use default mode 0o600 from statx". Mode TYPE bits are
-    /// set by the inode's file_type and not touched here.
-    pub mode_bits: u16,
-    pub uid: u32,
-    pub gid: u32,
-    /// True once any of mode_bits/uid/gid was set explicitly. statx
-    /// reads from override only when this is true; otherwise default.
-    pub owner_set: bool,
-}
+// for the `utimensat`/stat family. The concrete `struct Inode` is the sole
+// owner of mode, uid, gid, and timestamps.
 
 use crate::mount::{MNT_NOATIME, MNT_NODIRATIME, MNT_RELATIME};
 use crate::superblock::{NSEC_PER_SEC, SB_NOATIME, SB_NODIRATIME, SB_RDONLY};
@@ -135,22 +105,3 @@ pub fn current_time(inode: &crate::inode::Inode, now_ns: u64) -> u64 {
 pub fn inode_set_ctime_current(inode: &crate::InodeRef, now_ns: u64) -> u64 {
     current_time(&**inode, now_ns)
 }
-
-// D17 LEGACY no-op shims. The concrete `struct Inode` owns mode/owner/times, so
-// these fallbacks take effect nowhere; they remain only so the cross-lane
-// callers (`syscalls::perms_common`, `fs::xattr`) that still reference the old
-// overlay continue to compile. Removing those call sites + these shims is a
-// cross-lane follow-up.
-
-/// Always `None` (the overlay store is gone). # C: O(1)
-pub fn get(_inode: &crate::InodeRef) -> Option<InodeTimes> { None }
-
-/// No-op (the overlay store is gone; the inode's own `set_times` records times).
-/// # C: O(1)
-pub fn set(_inode: &crate::InodeRef, _atime_ns: Option<u64>, _mtime_ns: Option<u64>, _now_ns: u64) {}
-
-/// No-op (the inode's own `set_perm` records the mode). # C: O(1)
-pub fn set_mode(_inode: &crate::InodeRef, _mode_bits: u16, _now_ns: u64) {}
-
-/// No-op (the inode's own `set_owner` records the owner ids). # C: O(1)
-pub fn set_owner(_inode: &crate::InodeRef, _uid: u32, _gid: u32, _now_ns: u64) {}

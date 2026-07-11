@@ -6,7 +6,6 @@ use alloc::vec::Vec;
 use crate::file_ops::DirContext;
 use crate::getattr::Kstat;
 use crate::idmap::Idmap;
-use crate::inode_times::InodeTimes;
 use crate::setattr::Iattr;
 use crate::types::KResult;
 use crate::{CreateCtx, namei};
@@ -79,7 +78,7 @@ impl Inode {
     /// `i_op->permission`. # C: O(ngroups)
     pub fn permission(&self, mask: u32, cred: &namei::Cred) -> KResult<()> { self.i_op.permission(self, mask, cred) }
     /// `i_op->getattr`. # C: O(1)
-    pub fn getattr(&self, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat { self.i_op.getattr(self, idmap, overlay) }
+    pub fn getattr(&self, idmap: &Idmap) -> Kstat { self.i_op.getattr(self, idmap) }
     /// `i_op->setattr`. # C: O(1)
     pub fn setattr(&self, idmap: &Idmap, ia: &Iattr) -> KResult<()> { self.i_op.setattr(self, idmap, ia) }
 

@@ -50,7 +50,7 @@ fn anon_inode() -> InodeRef {
 #[test]
 fn blksize_from_superblock_not_inode() {
     let s = sb(2048);
-    let st = vfs::generic_fillattr(&sb_inode(&s, 1), &IDENTITY, None);
+    let st = vfs::generic_fillattr(&sb_inode(&s, 1), &IDENTITY);
     assert_eq!(st.blksize, 2048, "st_blksize == s_blocksize, not the 4096 default");
     // st_blocks rounds a 1-byte file UP to one whole 2 KiB block = 4 sectors.
     assert_eq!(st.blocks, 2048 / 512, "one 2 KiB block in 512-byte sectors");
@@ -60,7 +60,7 @@ fn blksize_from_superblock_not_inode() {
 #[test]
 fn blksize_tracks_sb_value() {
     let s = sb(4096);
-    let st = vfs::generic_fillattr(&sb_inode(&s, 1), &IDENTITY, None);
+    let st = vfs::generic_fillattr(&sb_inode(&s, 1), &IDENTITY);
     assert_eq!(st.blksize, 4096);
     assert_eq!(st.blocks, 4096 / 512);
 }
@@ -69,6 +69,6 @@ fn blksize_tracks_sb_value() {
 // blksize() override no longer exists in the concrete-inode model).
 #[test]
 fn sbless_inode_falls_back_to_inode_blksize() {
-    let st = vfs::generic_fillattr(&anon_inode(), &IDENTITY, None);
+    let st = vfs::generic_fillattr(&anon_inode(), &IDENTITY);
     assert_eq!(st.blksize, 4096, "no i_sb() -> generic 4096 blksize() fallback");
 }

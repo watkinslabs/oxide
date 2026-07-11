@@ -208,7 +208,7 @@ impl Proc {
         let flags = if follow { LookupFlags::default() }
             else { LookupFlags { no_follow_final: true, follow: false, ..Default::default() } };
         let p = self.lookup(AT_FDCWD, path, flags)?;
-        Ok(vfs::vfs_getattr(&p.inode, &vfs::IDENTITY, None))
+        Ok(vfs::vfs_getattr(&p.inode, &vfs::IDENTITY))
     }
     fn access(&self, path: &str, read: bool, write: bool, exec: bool) -> KResult<()> {
         let p = self.lookup(AT_FDCWD, path, LookupFlags::default())?;

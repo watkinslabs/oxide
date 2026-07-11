@@ -20,7 +20,6 @@ use crate::idmap::Idmap;
 use crate::inode::{FileAttr, FiemapExtent, Inode, S_IMMUTABLE};
 use crate::inode::InodeRef;
 use crate::getattr::Kstat;
-use crate::inode_times::InodeTimes;
 use crate::namei::Cred;
 use crate::setattr::Iattr;
 use crate::types::{KResult, VfsError};
@@ -164,8 +163,8 @@ pub trait InodeOps: Send + Sync {
     /// `i_op->getattr` — assemble the stat/statx `Kstat`. Default
     /// `generic_fillattr` over the concrete inode fields + mount idmap.
     /// # C: O(1)
-    fn getattr(&self, inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
-        crate::getattr::generic_fillattr(inode, idmap, overlay)
+    fn getattr(&self, inode: &Inode, idmap: &Idmap) -> Kstat {
+        crate::getattr::generic_fillattr(inode, idmap)
     }
 
     /// `i_op->setattr` — apply a prepared `Iattr`. Default `simple_setattr`
