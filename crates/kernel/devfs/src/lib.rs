@@ -144,12 +144,11 @@ pub fn add_device_node(class: &str, name: &str, dev_t: Option<(u32, u32)>, facto
 /// `name` matches the `add_device_node` form. # C: O(depth)
 pub fn del_device_node(name: &str) {
     let path = if name.starts_with('/') { String::from(name) } else { alloc::format!("/dev/{}", name) };
-    if let Some(dentry) = vfs::resolve_path_dentry(&path) {
-        vfs::d_invalidate(&dentry);
-    }
     // Broadcast: devtmpfs is one shared instance, so hot-unplug removes the node
     // from every mount namespace's /dev, not just ns0.
-    tree::unregister_subtree_all(&path);
+    for inode in tree::unregister_subtree_all_inodes(&path) {
+        vfs::dcache::d_prune_aliases(&inode);
+    }
 }
 
 /// Detach the entry at `mount_point` (and its subtree) from `mount_ns`.
