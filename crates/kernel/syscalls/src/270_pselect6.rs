@@ -3,8 +3,9 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use hal::TimerOps;
 
-use crate::select::s023_select::sys_select;
+use crate::select::s023_select::sys_select_with_deadline;
 use crate::userbuf::validate_user_buf;
 
 /// `sys_pselect6(nfds, r, w, e, timeout, sigmask_pair)` — slot 270.
@@ -12,8 +13,7 @@ use crate::userbuf::validate_user_buf;
 /// Two ABI differences vs slot 23 `sys_select`:
 ///   1. `timeout` is `timespec { sec, nsec }` (nsec resolution) instead
 ///      of `timeval { sec, usec }`. Both are 16 bytes, same layout.
-///      Convert nsec → usec when staging the inner timeval on the
-///      kernel stack so sys_select's existing decoder still works.
+///      Convert it to a deadline before entering the shared select engine.
 ///   2. `args.a5` carries a pointer to a 16-byte pair
 ///      `{ sigmask_ptr: u64, sigmask_size: u64 }` Linux uses to
 ///      atomically swap the task's sigmask for the duration of the
@@ -36,38 +36,38 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
         klog::write_hex_u64(args.a5);
         klog::write_raw(b"\n");
     }
-    // 1) Convert timespec → timeval on the kernel stack.
-    let inner_timeout: u64;
-    let mut tv_buf: [u64; 2] = [0; 2];
-    if args.a4 == 0 {
-        inner_timeout = 0;
+    // 1) Convert timespec to the shared select deadline representation.
+    let deadline_ns = if args.a4 == 0 {
+        None
     } else {
-        if let Err(rv) = validate_user_buf(args.a4, 16, 8) { return rv; }
+        if let Err(rv) = validate_user_buf(args.a4, 16, 1) { return rv; }
         // SAFETY: args.a4 validated as a readable 16-byte user timespec.
         let (s, ns) = unsafe {
             (
-                core::ptr::read_volatile( args.a4        as *const i64),
-                core::ptr::read_volatile((args.a4 + 8)   as *const i64),
+                core::ptr::read_unaligned( args.a4        as *const i64),
+                core::ptr::read_unaligned((args.a4 + 8)   as *const i64),
             )
         };
         if s < 0 || ns < 0 || ns >= 1_000_000_000 {
             return -(Errno::Einval.as_i32() as i64);
         }
-        // sys_select expects timeval {sec, usec} → convert.
-        tv_buf[0] = s as u64;
-        tv_buf[1] = (ns / 1000) as u64;
-        inner_timeout = tv_buf.as_ptr() as u64;
-    }
+        let total_ns = (s as u64).saturating_mul(1_000_000_000).saturating_add(ns as u64);
+        #[cfg(target_arch = "x86_64")]
+        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        #[cfg(target_arch = "aarch64")]
+        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        Some(now.saturating_add(total_ns))
+    };
     // 2) Atomically install the caller's sigmask. The pair at a5 is
     //    `{ const sigset_t *ss; size_t ss_len; }`.
     let cur = sched::live::current();
     let saved_mask = if args.a5 != 0 {
-        if let Err(rv) = validate_user_buf(args.a5, 16, 8) { return rv; }
+        if let Err(rv) = validate_user_buf(args.a5, 16, 1) { return rv; }
         // SAFETY: args.a5 validated as a readable 16-byte user pair.
         let (ss_ptr, ss_len) = unsafe {
             (
-                core::ptr::read_volatile(args.a5 as *const u64),
-                core::ptr::read_volatile((args.a5 + 8) as *const u64),
+                core::ptr::read_unaligned(args.a5 as *const u64),
+                core::ptr::read_unaligned((args.a5 + 8) as *const u64),
             )
         };
         debug_ssh! {
@@ -79,9 +79,9 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
         }
         if ss_ptr != 0 {
             if ss_len != 8 { return -(Errno::Einval.as_i32() as i64); }
-            if let Err(rv) = validate_user_buf(ss_ptr, 8, 8) { return rv; }
+            if let Err(rv) = validate_user_buf(ss_ptr, 8, 1) { return rv; }
             // SAFETY: ss_ptr validated as a readable 8-byte user sigset_t.
-            let new_mask = unsafe { core::ptr::read_volatile(ss_ptr as *const u64) };
+            let new_mask = unsafe { core::ptr::read_unaligned(ss_ptr as *const u64) };
             // SIGKILL (9) and SIGSTOP (19) are non-blockable per signal(7).
             let new_mask = new_mask
                 & !(sched::live::sigpend::Signum::Sigkill.bit()
@@ -101,12 +101,12 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
     } else {
         None
     };
-    // 3) Forward to sys_select with the converted timeout.
+    // 3) Forward to the shared select engine with the converted timeout.
     let inner = SyscallArgs {
         a0: args.a0, a1: args.a1, a2: args.a2, a3: args.a3,
-        a4: inner_timeout, a5: 0,
+        a4: 0, a5: 0,
     };
-    let rv = sys_select(&inner);
+    let rv = sys_select_with_deadline(&inner, deadline_ns);
     // 4) Restore the saved sigmask if we swapped. Linux pselect6
     //    semantics: if a deliverable signal is pending at return,
     //    LEAVE the new mask installed so the syscall-tail signal
