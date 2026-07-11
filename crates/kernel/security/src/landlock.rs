@@ -5,7 +5,7 @@
 // a ruleset; an access is allowed only if EVERY ruleset in the
 // chain allows it.
 
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 extern crate alloc;
 
@@ -125,4 +125,28 @@ pub type Chain = Vec<Arc<Ruleset>>;
 /// # C: O(N_chain × N_rules)
 pub fn chain_permits(chain: &Chain, path: &str, op: u64) -> bool {
     chain.iter().all(|rs| rs.allows(path, op))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{access, chain_permits, Rule, Ruleset};
+
+    #[test]
+    fn absolute_prefix_allows_exact_and_descendant_paths() {
+        let rs = Ruleset::new(1, access::TRUNCATE);
+        rs.add(Rule { path_prefix: "/run/udev".into(), allowed: access::TRUNCATE });
+        let chain = alloc::vec![rs];
+        assert!(chain_permits(&chain, "/run/udev", access::TRUNCATE));
+        assert!(chain_permits(&chain, "/run/udev/data/c226:0", access::TRUNCATE));
+        assert!(!chain_permits(&chain, "/run/udev-other", access::TRUNCATE));
+        assert!(!chain_permits(&chain, "/run", access::TRUNCATE));
+    }
+
+    #[test]
+    fn basename_only_rule_does_not_match_absolute_checked_path() {
+        let rs = Ruleset::new(2, access::TRUNCATE);
+        rs.add(Rule { path_prefix: "udev".into(), allowed: access::TRUNCATE });
+        let chain = alloc::vec![rs];
+        assert!(!chain_permits(&chain, "/run/udev/data/c226:0", access::TRUNCATE));
+    }
 }
