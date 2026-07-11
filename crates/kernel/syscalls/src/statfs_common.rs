@@ -2,8 +2,7 @@
 //
 // `f_type`/`f_bsize`/usage derive from the resolved mounted-instance
 // SuperBlock, the Linux source of truth — NOT a hardcoded path-prefix magic
-// table. Every production mount carries a real `SuperBlock` (built by
-// `SuperBlock::for_backend` in the mount engine), so the `s_magic`/
+// table. Every production mount carries a real filled `SuperBlock`, so the `s_magic`/
 // `s_op::statfs` reported here is the instance's own identity.
 
 #![cfg(target_os = "oxide-kernel")]

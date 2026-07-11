@@ -43,7 +43,8 @@ pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
     let first = TREE.lock().mount_root();
     let fs = Arc::new(CgroupFs::new(mount_point));
     let root = inode::make_cg_dir(tree::ROOT);
-    match vfs::mount::register_bind(mp, fs, root) {
+    let ty = vfs::fs::get_fs_type("cgroup2").ok_or(vfs::VfsError::Enodev)?;
+    match vfs::mount::register_bind_typed(ty, mp, fs, root) {
         Ok(()) => Ok(()),
         Err(vfs::VfsError::Eexist) if !first => Ok(()),
         Err(e) => Err(e),

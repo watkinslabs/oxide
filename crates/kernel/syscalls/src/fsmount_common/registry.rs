@@ -66,7 +66,7 @@ const DEVTMPFS_MAGIC: u64 = 0x0102_1994;
 static FS_TYPES_REGISTERED: Spinlock<bool, LockClass> = Spinlock::new(false);
 
 /// # C: O(N) once.
-pub(crate) fn ensure_filesystems_registered() {
+pub fn ensure_filesystems_registered() {
     let mut done = FS_TYPES_REGISTERED.lock();
     if *done { return; }
     register_filesystems();

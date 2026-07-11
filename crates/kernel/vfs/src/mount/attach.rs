@@ -1,13 +1,3 @@
-struct DirectFsType {
-    name:  String,
-    flags: crate::fs::FsFlags,
-}
-impl FileSystemType for DirectFsType {
-    fn name(&self) -> &str { &self.name }
-    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
-    fn fs_flags(&self) -> crate::fs::FsFlags { self.flags }
-}
-
 /// [D6] Materialise (or, for a device-backed fs, FIND-OR-SHARE via [`sget`]) the
 /// `SuperBlock` for a new mount. A backend that reports a stable backing-device
 /// id (`fs.dev_id()`, Linux's `get_tree_bdev` bdev key) SHARES one `SuperBlock`
@@ -17,9 +7,8 @@ impl FileSystemType for DirectFsType {
 /// An anon/pseudo fs (no real device, `dev_id() == None` — tmpfs, procfs, a bind
 /// marker) keeps a fresh per-mount `get_anon_bdev` instance, never shared.
 /// # C: O(N_sb) on a dev-backed share, else O(1)
-fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String) -> Arc<SuperBlock> {
-    let s_type: Arc<dyn FileSystemType> =
-        Arc::new(DirectFsType { name: String::from(fs.name()), flags: fs.fs_flags() });
+fn build_sb(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>,
+    s_id: String) -> Arc<SuperBlock> {
     let s_op = fs.super_ops().unwrap_or_else(|| {
         Arc::new(SimpleSuperOps {
             magic: fs.magic(),
@@ -51,15 +40,15 @@ fn build_sb(fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>, s_id: String)
 /// namespace root mount. Acquires (or shares, via `build_sb`/`sget`) the
 /// `SuperBlock`, then grafts it through the shared [`graft_realized`] tail.
 /// # C: O(depth)
-fn attach(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Option<InodeRef>,
-    parent_hint: Option<u64>) -> KResult<()> {
+fn attach(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
+    root: Option<InodeRef>, parent_hint: Option<u64>) -> KResult<()> {
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let root_inode = root.clone().or_else(|| fs.root());
     // `s_id` (the SB label) mirrors Linux's device/source id; the legacy mount
     // engine used the rendered mountpoint path here, which is not consumed
     // anywhere — keep it for an exact byte match with the prior behaviour.
     let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
-    let sb = build_sb(fs, root_inode, s_id);
+    let sb = build_sb(s_type, fs, root_inode, s_id);
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
     graft_realized(mp, sb, 0, parent_hint)
@@ -168,17 +157,35 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
     Ok(())
 }
 
-/// Register a FileSystem on mountpoint dentry `mp` (Linux `do_new_mount`).
+/// Register a filesystem instance with an explicit registered type on mountpoint
+/// dentry `mp` (Linux `do_new_mount` after `get_fs_type`). # C: O(depth)
+pub fn register_typed(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
+    fs: Arc<dyn FileSystem>) -> KResult<()> {
+    attach(s_type, mp, fs, None, None)
+}
+
+/// As [`register_typed`] but with the walked destination PARENT mount id.
+/// # C: O(depth)
+pub fn register_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
+    fs: Arc<dyn FileSystem>, parent_hint: Option<u64>) -> KResult<()> {
+    attach(s_type, mp, fs, None, parent_hint)
+}
+
+/// Register a FileSystem on mountpoint dentry `mp` by looking up its registered
+/// Linux `file_system_type`. No ad hoc type is synthesized; missing registry
+/// entry is `ENODEV`. # C: O(depth + N_fs)
 /// # C: O(depth)
 pub fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> {
-    attach(mp, fs, None, None)
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    register_typed(ty, mp, fs)
 }
 
 /// As [`register`] but with the walked destination PARENT mount id (see
 /// [`attach_sb_with_flags_at`] — disambiguates a mountpoint sitting in a bind
 /// mount whose parent dentry is shared). # C: O(depth)
 pub fn register_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, parent_hint: Option<u64>) -> KResult<()> {
-    attach(mp, fs, None, parent_hint)
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    register_typed_at(ty, mp, fs, parent_hint)
 }
 
 /// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`). # C: O(depth)
@@ -186,13 +193,27 @@ pub fn register_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Ino
     register_bind_at(mp, fs, root, None)
 }
 
+/// Bind-as-clone with an explicit registered filesystem type. # C: O(depth)
+pub fn register_bind_typed(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
+    fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    register_bind_typed_at(s_type, mp, fs, root, None)
+}
+
+/// As [`register_bind_typed`] but with the walked destination PARENT mount id.
+/// # C: O(depth)
+pub fn register_bind_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
+    fs: Arc<dyn FileSystem>, root: InodeRef, parent_hint: Option<u64>) -> KResult<()> {
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
+    attach(s_type, mp, fs, Some(root), parent_hint)
+}
+
 /// As [`register_bind`] but with the walked destination PARENT mount id.
 /// # C: O(depth)
 pub fn register_bind_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef,
     parent_hint: Option<u64>) -> KResult<()> {
-    #[cfg(feature = "debug-mnt")]
-    mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
-    attach(mp, fs, Some(root), parent_hint)
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    register_bind_typed_at(ty, mp, fs, root, parent_hint)
 }
 
 /// Bind-as-clone from a resolved source `struct path`: preserve the SOURCE
@@ -203,11 +224,12 @@ pub fn register_bind_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: 
 pub fn register_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root_dentry: Arc<Dentry>,
     parent_hint: Option<u64>) -> KResult<()> {
     let root = root_dentry.inode().ok_or(VfsError::Enoent)?;
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
     let ns = current_ns();
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     mntns::count_mounts(ns, 1)?;
     let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
-    let sb = build_sb(fs, Some(root), s_id);
+    let sb = build_sb(ty, fs, Some(root), s_id);
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
@@ -281,7 +303,8 @@ pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     let ns = current_ns();
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
-    let sb = build_sb(fs, Some(root), rendered.clone());
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    let sb = build_sb(ty, fs, Some(root), rendered.clone());
     let root_dentry = sb.s_root().ok_or(VfsError::Enoent)?;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
@@ -294,7 +317,8 @@ pub fn register_bind_path_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: St
     let ns = current_ns();
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
-    let sb = build_sb(fs, Some(root), rendered.clone());
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    let sb = build_sb(ty, fs, Some(root), rendered.clone());
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
 

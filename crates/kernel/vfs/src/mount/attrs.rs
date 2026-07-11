@@ -133,8 +133,7 @@ pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
     if is_ns_root_dentry(d) { return None; }
     let m = mount_at_path_exact(d)?;
     // [D5] `mnt_root` (the mounted-fs root DENTRY) is the single source of
-    // truth: its inode IS the bind-root inode (`for_backend`→`d_make_root`
-    // stamps it as `s_root->d_inode`).
+    // truth: its inode IS the bind-root inode stamped as `s_root->d_inode`.
     m.mnt_root().and_then(|r| r.inode())
 }
 

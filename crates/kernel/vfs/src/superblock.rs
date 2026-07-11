@@ -102,7 +102,7 @@ pub struct SuperBlock {
     /// `s_uuid` (Linux `super_block.s_uuid`, a `uuid_t`) + `s_uuid_len` — the
     /// on-disk filesystem UUID a backend reads from its superblock at
     /// `fill_super` ([`SuperBlock::set_uuid`]). All-zero / `len == 0` ⇒ the fs
-    /// has no UUID (the `for_backend` default). Consumed by `name_to_handle_at`
+    /// has no UUID. Consumed by `name_to_handle_at`
     /// FID generation and the `STATX_ATTR`/`/proc` UUID display. Locked because
     /// it is set after construction (like `s_root`) without rebuilding the SB.
     s_uuid: Spinlock<([u8; 16], u8), SbClass>,
