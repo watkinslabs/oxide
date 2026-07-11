@@ -17,8 +17,9 @@ use crate::fsmount_common::*;
 pub fn sys_fsopen(args: &SyscallArgs) -> i64 {
     const FSOPEN_CLOEXEC: u64 = 1;
     if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
-    let fsname = match read_cstr(args.a0, 64) {
-        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
+    if args.a1 & !FSOPEN_CLOEXEC != 0 { return -(Errno::Einval.as_i32() as i64); }
+    let fsname = match read_cstr_req(args.a0, 64) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     if !fstype_ok(&fsname) { return -(Errno::Enodev.as_i32() as i64); }
     ensure_filesystems_registered();

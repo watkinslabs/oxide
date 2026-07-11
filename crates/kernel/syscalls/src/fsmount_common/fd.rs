@@ -13,6 +13,18 @@ pub(crate) fn read_cstr(p: u64, max: usize) -> Option<String> {
     core::str::from_utf8(b).ok().map(|s| s.to_string())
 }
 
+/// Read a required user C string. Bad pointers are `EFAULT`; invalid UTF-8 is
+/// `EINVAL`. # C: O(max)
+pub(crate) fn read_cstr_req(p: u64, max: usize) -> Result<String, i64> {
+    if p == 0 || p >= USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
+    // SAFETY: p in user range; bounded read via the shared helper.
+    let b = unsafe { devfs::read_user_cstr(p, max) }
+        .ok_or(-(Errno::Efault.as_i32() as i64))?;
+    core::str::from_utf8(b)
+        .map(|s| s.to_string())
+        .map_err(|_| -(Errno::Einval.as_i32() as i64))
+}
+
 /// # C: O(1)
 pub(crate) fn install_fd(inode: InodeRef, name: &str, cloexec: bool) -> i64 {
     let cur = match sched::live::current() {
