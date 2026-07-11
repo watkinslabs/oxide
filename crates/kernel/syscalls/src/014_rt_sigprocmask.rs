@@ -22,9 +22,9 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     };
     let prior = cur.sigmask.load(Ordering::Acquire);
     if set != 0 {
-        if let Err(rv) = validate_user_buf(set, 8, 8) { return rv; }
-        // SAFETY: set validated as a readable 8-byte user sigset_t.
-        let new_set = unsafe { core::ptr::read_volatile(set as *const u64) };
+        if let Err(rv) = validate_user_buf(set, 8, 1) { return rv; }
+        // SAFETY: set validated as a readable 8-byte user sigset_t byte range; Linux copyin accepts unaligned storage.
+        let new_set = unsafe { core::ptr::read_unaligned(set as *const u64) };
         let mut new_mask = match how {
             SIG_BLOCK   => prior | new_set,
             SIG_UNBLOCK => prior & !new_set,
@@ -39,9 +39,9 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
         cur.sigmask.store(new_mask, Ordering::Release);
     }
     if oldset != 0 {
-        if let Err(rv) = validate_user_buf_writable(oldset, 8, 8) { return rv; }
-        // SAFETY: oldset validated as writable 8-byte user sigset_t storage.
-        unsafe { core::ptr::write_volatile(oldset as *mut u64, prior); }
+        if let Err(rv) = validate_user_buf_writable(oldset, 8, 1) { return rv; }
+        // SAFETY: oldset validated as writable 8-byte user sigset_t byte range; Linux copyout accepts unaligned storage.
+        unsafe { core::ptr::write_unaligned(oldset as *mut u64, prior); }
     }
     debug_ssh! {
         let applied = cur.sigmask.load(Ordering::Acquire);
