@@ -75,26 +75,43 @@ pub(crate) fn at_path_empty(ptr: u64) -> Result<bool, i64> {
 }
 
 /// # C: O(components × dir-lookup)
-pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+fn resolve_empty_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
+    if dirfd == AT_FDCWD {
+        let cur = sched::live::current().ok_or(ebadf)?;
+        // SAFETY: cwd_vfs slot single-mutator per 13§5; current task sole writer.
+        if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } { return Ok(p); }
+        let dentry = root_dentry().ok_or(ebadf)?;
+        let inode = dentry.inode().ok_or(ebadf)?;
+        return Ok(vfs::VfsPath { mnt_id: 0, dentry, inode, last_component: None });
+    }
+    let cur = sched::live::current().ok_or(ebadf)?;
+    // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+    let f = fdt.get(dirfd).map_err(|_| ebadf)?;
+    Ok(vfs::VfsPath { mnt_id: f.mnt_id(), dentry: f.dentry().clone(), inode: f.inode().clone(), last_component: None })
+}
+
+/// # C: O(components × dir-lookup)
+pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
     if at_path_empty(path_ptr)? {
         if !flags.empty { return Err(-(Errno::Enoent.as_i32() as i64)); }
-        if dirfd == AT_FDCWD {
-            let cur = sched::live::current().ok_or(ebadf)?;
-            // SAFETY: cwd_vfs slot single-mutator per 13§5; current task sole writer.
-            if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } { return Ok(p); }
-            let dentry = root_dentry().ok_or(ebadf)?;
-            let inode = dentry.inode().ok_or(ebadf)?;
-            return Ok(vfs::VfsPath { mnt_id: 0, dentry, inode, last_component: None });
-        }
-        let cur = sched::live::current().ok_or(ebadf)?;
-        // SAFETY: running task on this CPU; sole reader of its fd_table slot.
-        let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
-        let f = fdt.get(dirfd).map_err(|_| ebadf)?;
-        return Ok(vfs::VfsPath { mnt_id: f.mnt_id(), dentry: f.dentry().clone(), inode: f.inode().clone(), last_component: None });
+        return resolve_empty_at(dirfd);
     }
     let raw = crate::namei_common::read_user_path(path_ptr)?;
     resolve_at_path(dirfd, &raw, flags)
+}
+
+/// Linux stat-family `getname_maybe_null`: NULL is allowed only when
+/// AT_EMPTY_PATH is set. Non-stat callers must keep using `resolve_at_lookup`
+/// so their NULL path remains EFAULT.
+/// # C: O(components × dir-lookup)
+pub fn resolve_at_lookup_maybe_null(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+    if path_ptr == 0 {
+        if !flags.empty { return Err(-(Errno::Efault.as_i32() as i64)); }
+        return resolve_empty_at(dirfd);
+    }
+    resolve_at_lookup(dirfd, path_ptr, flags)
 }
 
 #[cfg(feature = "debug-boot")]
