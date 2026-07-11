@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use vfs::file::open_dentry;
+use vfs::file::{open_dentry, open_dentry_at};
 use vfs::inode::Inode;
 use vfs::{FileOps, FileType, InodeBuilder, InodeRef, KResult, default_inode_ops, mk_mode};
 
@@ -78,6 +78,21 @@ fn opened_leaf_is_parented_basename() {
     assert_eq!(d.name(), "leaf", "leaf dentry name is the basename, not the whole path");
     let parent = vfs::resolve_path_dentry("/x/y").expect("parent resolves");
     assert!(vfs::d_lookup(&parent, "leaf").is_some(), "leaf is hashed under its real parent");
+}
+
+/// A create-open already holds the resolved parent `VfsPath`; attaching through
+/// that parent must not re-resolve a rendered global path.
+#[test]
+fn open_dentry_at_uses_supplied_parent() {
+    let _g = guard();
+    let ino: InodeRef = reg_file(0xC40);
+    let parent = vfs::resolve_path_dentry("/a/b").expect("parent /a/b resolves");
+
+    let d = open_dentry_at(&parent, "created", &ino);
+    assert_eq!(d.name(), "created", "leaf name is supplied basename");
+    let looked = vfs::d_lookup(&parent, "created").expect("leaf is hashed under supplied parent");
+    assert!(Arc::ptr_eq(&looked, &d), "lookup under supplied parent returns the opened dentry");
+    assert!(!looked.is_negative(), "created leaf is positive");
 }
 
 /// Opening the root path reuses the one canonical root dentry rather than
