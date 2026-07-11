@@ -85,7 +85,27 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_CLONE => {
             #[cfg(target_arch = "x86_64")] let (ctid, tls) = (args.a3, args.a4);
             #[cfg(target_arch = "aarch64")] let (ctid, tls) = (args.a4, args.a3);
-            crate::clone::sys_clone_dispatch(args, args.a0, args.a1, args.a2, ctid, tls)
+            let flags = args.a0;
+            if (flags & (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID))
+                == (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID) {
+                return Some(-(syscall::errno::Errno::Einval.as_i32() as i64));
+            }
+            if (flags & crate::clone::CLONE_PIDFD) != 0
+                && (args.a2 == 0 || args.a2.checked_add(4).map_or(true, |e| e > hal::USER_VA_END)) {
+                return Some(-(syscall::errno::Errno::Efault.as_i32() as i64));
+            }
+            let rv = crate::clone::sys_clone_dispatch(args, flags, args.a1, args.a2, ctid, tls);
+            if rv > 0 && (flags & crate::clone::CLONE_PIDFD) != 0 {
+                let mut sa = *args;
+                sa.a0 = rv as u64;
+                sa.a1 = 0;
+                let pidfd = crate::s434_pidfd_open::sys_pidfd_open(&sa);
+                if pidfd >= 0 {
+                    // SAFETY: a2+4 validated writable user range above; CPL=0 4-byte int write in caller AS.
+                    unsafe { core::ptr::write_volatile(args.a2 as *mut i32, pidfd as i32); }
+                }
+            }
+            rv
         }
         syscall::nrs::NR_EXECVE => crate::execve::sys_execve(args),
         syscall::nrs::NR_EXECVEAT => crate::execve::sys_execveat(args),
