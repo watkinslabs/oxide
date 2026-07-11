@@ -128,7 +128,7 @@ fn rendered_path_for(parent_id: u64, d: &Arc<Dentry>) -> String {
     if let Some(p) = mount_by_id(parent_id) {
         if let Some(proot) = root_dentry_for_mount_id(parent_id) {
             let root_ap = proot.absolute_path();
-            if d_ap.starts_with(root_ap.as_slice()) {
+            if d.is_subdir_of(&proot) && d_ap.starts_with(root_ap.as_slice()) {
                 // `/` root dentry renders as "/" (len 1); stripping it would eat the
                 // leading slash, so treat the fs root as a zero-length prefix.
                 let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
@@ -155,7 +155,7 @@ pub fn render_path_for_mount(mnt_id: u64, d: &Arc<Dentry>) -> String {
     let Some(m) = mount_by_id(mnt_id) else { return abs_string(d); };
     let Some(root) = root_dentry_for_mount_id(mnt_id) else { return abs_string(d); };
     let root_ap = root.absolute_path();
-    if !d_ap.starts_with(root_ap.as_slice()) { return abs_string(d); }
+    if !d.is_subdir_of(&root) || !d_ap.starts_with(root_ap.as_slice()) { return abs_string(d); }
     let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
     let rel = core::str::from_utf8(&d_ap[strip..]).unwrap_or("");
     let mut base = m.mount_point_str();
