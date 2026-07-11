@@ -9,9 +9,7 @@ use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
 /// procfs symlinks `/proc/self/{exe,cwd,root}` and per-pid
-/// `/proc/<tid>/{exe,cwd,root}`. `exe` reports argv[0] from the
-/// task's cmdline snapshot (`/init` when unset). All other paths
-/// return -EINVAL.
+/// `/proc/<tid>/{exe,cwd,root}`. All other paths return -EINVAL.
 /// # C: O(1) + O(N_tasks) for per-pid lookup
 pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
@@ -53,7 +51,7 @@ pub(crate) fn readlink_at_path(dirfd: i32, raw: &str, buf_ptr: u64, bufsize: u64
     };
     let target: alloc::vec::Vec<u8> = match vp.inode.get_link() {
         Ok(v) => v,
-        Err(_) => return -(Errno::Einval.as_i32() as i64),
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     write_link_target(&target, buf_ptr, bufsize)
 }
