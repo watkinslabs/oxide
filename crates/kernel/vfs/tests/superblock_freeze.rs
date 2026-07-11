@@ -9,6 +9,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::{
     next_anon_dev, SB_FREEZE_COMPLETE, SB_UNFROZEN,
@@ -52,7 +54,7 @@ fn build(fail_freeze: bool) -> (Arc<SuperBlock>, Arc<CountingOps>) {
     });
     let fs = Arc::new(FreezeFs { ops: ops.clone() });
     // No root inode → skip d_make_root; we exercise the SB freeze API directly.
-    let sb = SuperBlock::for_backend(fs, None, next_anon_dev(), String::from("freezefs"));
+    let sb = common::realize_sb(fs, None, next_anon_dev(), String::from("freezefs"));
     (sb, ops)
 }
 

@@ -10,6 +10,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod common;
+
 use vfs::dcache::{dget, dput, shrink_dcache_sb};
 use vfs::fs::FileSystem;
 use vfs::inode::InodeRef;
@@ -38,7 +40,7 @@ impl FileSystem for Fs {
 }
 
 fn sb() -> Arc<SuperBlock> {
-    SuperBlock::for_backend(Arc::new(Fs), None, next_anon_dev(), String::from("shrinksb"))
+    common::realize_sb(Arc::new(Fs), None, next_anon_dev(), String::from("shrinksb"))
 }
 
 // These tests share the process-global dcache LRU list; serialize so concurrent

@@ -5,13 +5,14 @@
 //! fresh per-mount anon SB, never a mis-keyed share.
 
 extern crate alloc;
+mod common;
 use alloc::string::String;
 use alloc::sync::Arc;
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::superblock::{sget, SuperBlock};
+use vfs::superblock::sget;
 
 const MINI: &[u8] = include_bytes!("mini.img");
 const BLOCK_SIZE: u32 = 512;
@@ -49,9 +50,9 @@ fn same_dev_two_mounts_share_superblock_via_sget() {
 
     // Mirror build_sb: sget keyed on dev_id → the second build is NOT run.
     let sa = sget(a.dev_id().unwrap(),
-        || SuperBlock::for_backend(a.clone(), a.root(), a.dev_id().unwrap(), String::from("ext4")));
+        || common::realize_sb(a.clone(), a.root(), a.dev_id().unwrap(), String::from("ext4")));
     let sb = sget(b.dev_id().unwrap(),
-        || SuperBlock::for_backend(b.clone(), b.root(), b.dev_id().unwrap(), String::from("ext4")));
+        || common::realize_sb(b.clone(), b.root(), b.dev_id().unwrap(), String::from("ext4")));
     assert!(Arc::ptr_eq(&sa, &sb), "same dev_t → one shared SuperBlock (sget hit)");
     assert_eq!(sa.s_dev, dev_t, "shared SB carries the real dev_t as s_dev");
     assert!(sa.s_active() >= 2, "each sget reference holds one s_active");

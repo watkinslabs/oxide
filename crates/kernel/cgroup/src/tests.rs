@@ -8,14 +8,18 @@ use alloc::string::ToString;
 fn s(v: &[u8]) -> &str { core::str::from_utf8(v).unwrap() }
 
 /// Converted fs_context path (D13/D14): `realize_tree` materialises the unified
-/// hierarchy's `(CgroupFs, root CgDir)`; `SuperBlock::for_backend` wraps it
-/// exactly as `FsType::mount`/`vfs_get_tree` does at `fsconfig(CMD_CREATE)`.
+/// hierarchy's `(CgroupFs, root CgDir)`; the test realizes the same explicit
+/// `s_type`/`s_op`/`s_root` shape as `FsType::mount`/`vfs_get_tree` does at
+/// `fsconfig(CMD_CREATE)`.
 /// Pin the cgroup2 identity (magic + root CgDir ino + fsid) the SB realizes,
 /// and that it is TARGET-INDEPENDENT (a second realize yields the same identity
 /// — the singleton tree carries no mount-target state).
 #[test]
 fn realize_tree_builds_target_independent_cgroup2_sb() {
-    use vfs::superblock::{next_anon_dev, SuperBlock};
+    use alloc::sync::Arc;
+    use vfs::fs::{FileSystem, FsFlags, FsType};
+    use vfs::{SimpleSuperOps, SuperBlock, SuperOps};
+    use vfs::superblock::next_anon_dev;
     const CGROUP2_MAGIC: u64 = 0x6367_7270;
     const ROOT_CGDIR_INO: u64 = 0x6000_0000 + 1; // DIR_INO_BASE + tree::ROOT
 
@@ -25,7 +29,16 @@ fn realize_tree_builds_target_independent_cgroup2_sb() {
     assert_eq!(root.fsid(), CGROUP2_MAGIC, "root CgDir fsid == CGROUP2_FSID");
     assert!(crate::is_mounted(), "realize_tree marks the singleton hierarchy mounted");
 
-    let sb = SuperBlock::for_backend(fs, Some(root), next_anon_dev(), "cgroup2".to_string());
+    let fs_for_sb: Arc<dyn FileSystem> = fs;
+    let s_op: Arc<dyn SuperOps> = Arc::new(SimpleSuperOps {
+        magic: fs_for_sb.magic(),
+        block_size: fs_for_sb.block_size(),
+        options: fs_for_sb.show_options(),
+    });
+    let ty: Arc<dyn vfs::FileSystemType> =
+        FsType::new("cgroup2", CGROUP2_MAGIC, FsFlags::empty(), alloc::boxed::Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
+    let sb = SuperBlock::from_ops(ty, s_op, Some(root), CGROUP2_MAGIC, next_anon_dev(), fs_for_sb.block_size(), "cgroup2".to_string(), Arc::new(()));
+    fs_for_sb.set_sb(Arc::downgrade(&sb));
     assert_eq!(sb.s_magic, CGROUP2_MAGIC, "SB s_magic == CGROUP2_SUPER_MAGIC");
     let sroot = sb.s_root_inode().expect("SB has a root inode (d_make_root)");
     assert_eq!(sroot.ino(), ROOT_CGDIR_INO, "SB root inode = root CgDir");

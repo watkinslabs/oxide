@@ -10,13 +10,15 @@
 //! dentry identity by (parent,name) — exactly what the dentry-identity
 //! engine needs to be exercised in `cargo test`.
 
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use vfs::fs::FileSystem;
 use vfs::inode::{Inode, InodeBuilder};
 use vfs::mount::Propagation;
-use vfs::{default_file_ops, mk_mode, Dentry, FileType, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, mk_mode, Dentry, FileType, InodeOps, InodeRef, KResult, SimpleSuperOps, SuperBlock, SuperOps, VfsError};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x1000);
 
@@ -80,6 +82,24 @@ fn mount_target(p: &str) -> vfs::MountTarget {
 /// against this fixture tree. Idempotent (last wins).
 pub fn install() {
     vfs::set_root_dentry_provider(root_provider);
+}
+
+/// Build a test superblock through the same Linux-shaped fields the mount
+/// engine installs: `s_type`, `s_op`, `s_root`, and `s_fs_info`.
+pub fn realize_sb(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, dev: u64, s_id: String) -> Arc<SuperBlock> {
+    let root = root.or_else(|| fs.root());
+    let s_op: Arc<dyn SuperOps> = fs.super_ops().unwrap_or_else(|| {
+        Arc::new(SimpleSuperOps {
+            magic: fs.magic(),
+            block_size: fs.block_size(),
+            options: fs.show_options(),
+        })
+    });
+    let ty: Arc<dyn vfs::FileSystemType> =
+        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
+    let sb = SuperBlock::from_ops(ty, s_op, root, fs.magic(), dev, fs.block_size(), s_id, Arc::new(()));
+    fs.set_sb(Arc::downgrade(&sb));
+    sb
 }
 
 // --- thin string→dentry test wrappers over the dentry-form mount API. These

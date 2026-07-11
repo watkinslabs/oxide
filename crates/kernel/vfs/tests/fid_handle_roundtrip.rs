@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::inode::InodeBuilder;
 use vfs::superblock::next_anon_dev;
@@ -23,7 +25,7 @@ fn make_ramfile(ino: u64) -> InodeRef {
 }
 
 fn sb() -> Arc<SuperBlock> {
-    SuperBlock::for_backend(Arc::new(FidFs), None, next_anon_dev(), String::from("fidfs"))
+    common::realize_sb(Arc::new(FidFs), None, next_anon_dev(), String::from("fidfs"))
 }
 
 // The 8-byte inode FID codec shared by slots 303/304.

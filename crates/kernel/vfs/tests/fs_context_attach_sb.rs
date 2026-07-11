@@ -49,7 +49,7 @@ impl FileSystemType for Ty {
     fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
         let fs: Arc<dyn FileSystem> = Arc::new(PseudoBe { root_ino: self.root_ino });
         let root = fs.root();
-        Ok(SuperBlock::for_backend(fs, root, next_anon_dev(), self.nm.to_string()))
+        Ok(common::realize_sb(fs, root, next_anon_dev(), self.nm.to_string()))
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
 }

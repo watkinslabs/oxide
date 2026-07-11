@@ -12,6 +12,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod common;
+
 use vfs::fs::fs_context::{
     put_fs_context, vfs_get_tree, vfs_parse_fs_string, FsContext,
     FsContextSecurity, FsParameter, KResult as FcResult, ParamResult,
@@ -35,7 +37,7 @@ struct Ty;
 impl FileSystemType for Ty {
     fn name(&self) -> &str { "lsmtfs" }
     fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "lsmtfs".to_string()))
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "lsmtfs".to_string()))
     }
 }
 

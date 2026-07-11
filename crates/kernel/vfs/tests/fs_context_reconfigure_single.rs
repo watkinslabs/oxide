@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::fs_context::{vfs_get_tree, FsContext, FsParameter};
 use vfs::fs::{reconfigure_single, FileSystem};
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
@@ -30,7 +32,7 @@ struct Ty;
 impl FileSystemType for Ty {
     fn name(&self) -> &str { "rsfs" }
     fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "rsfs".to_string()))
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "rsfs".to_string()))
     }
 }
 

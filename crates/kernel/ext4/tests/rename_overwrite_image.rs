@@ -9,6 +9,7 @@
 //! source over it, and assert the replaced inode's nlink dropped to 0.
 
 extern crate alloc;
+mod common;
 use alloc::string::String;
 use alloc::sync::Arc;
 
@@ -34,7 +35,7 @@ fn mount() -> (Arc<ext4::rootfs::Ext4Mount>, Arc<SuperBlock>) {
     let m = ext4::rootfs::Ext4Mount::open(disk()).expect("Ext4Mount::open");
     let fs: Arc<dyn FileSystem> = m.clone();
     let root = fs.root();
-    let sb = SuperBlock::for_backend(fs, root, 0xE471_0001, String::from("ext4"));
+    let sb = common::realize_sb(fs, root, 0xE471_0001, String::from("ext4"));
     (m, sb)
 }
 

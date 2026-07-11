@@ -14,7 +14,6 @@ use block::stats::StatsDev;
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::SuperBlock;
 
 const IMAGE: &[u8] = include_bytes!("mini-j.img");
 const SECTOR: u32 = 512;
@@ -39,7 +38,7 @@ fn large_file_writeback_is_not_per_page_commit() {
     let m = ext4::rootfs::Ext4Mount::open(dev).unwrap();
     let fs: Arc<dyn FileSystem> = m.clone();
     let root_ino_arc = fs.root();
-    let _sb = SuperBlock::for_backend(fs.clone(), root_ino_arc, 0x1234_5678, String::from("ext4"));
+    let _sb = common::realize_sb(fs.clone(), root_ino_arc, 0x1234_5678, String::from("ext4"));
     let st = m.state();
 
     // A file big enough that per-page commits would dominate (128 pages = 512KB).
