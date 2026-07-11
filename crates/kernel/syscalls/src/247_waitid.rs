@@ -6,7 +6,10 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::wait::{waitid_options_valid, P_ALL, P_PGID, P_PID, P_PIDFD, WEXITED, WNOHANG, WNOWAIT};
+use syscall::wait::{
+    waitid_code_status_from_wstat, waitid_options_valid, P_ALL, P_PGID, P_PID, P_PIDFD,
+    WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTAT_CONTINUED, WSTOPPED,
+};
 
 const SIGINFO_BYTES: u64 = 128;
 const SIGINFO_OFF_SIGNO:  u64 = 0;
@@ -87,21 +90,25 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     }
     let mut local_wstat: i32 = 0;
     let mut local_uid: u32 = 0;
-    // WNOWAIT (waitid-only): peek the zombie's status but leave it
-    // waitable. systemd's SIGCHLD handler peeks with WEXITED|WNOHANG|
-    // WNOWAIT to map a pid→unit, then reaps separately; if the peek
-    // reaped, that second wait returns ECHILD ("Failed to dequeue
-    // child") and systemd mis-supervises the service (the console-getty
-    // restart loop). Delegating to wait4 here would reap — so handle
-    // WNOWAIT without touching the zombie queue.
+    // WNOWAIT: observe the matching event without consuming it. Linux checks
+    // zombie/exited first, then stopped, then continued.
     let rv = if options & WNOWAIT != 0 {
         let (parent_tid, parent_pgid) = match sched::live::current() {
             Some(c) => (c.tid, c.pgid.load(core::sync::atomic::Ordering::Acquire)),
             None    => (0, 0),
         };
-        match sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid) {
-            Some((child, code)) => {
-                local_wstat = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
+        let want_exit = (options & WEXITED) != 0;
+        let want_stop = (options & WSTOPPED) != 0;
+        let want_cont = (options & WCONTINUED) != 0;
+        let event = if want_exit {
+            sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid)
+                .map(|(child, code)| (child, if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }))
+        } else { None }
+        .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, pid_for_wait4, parent_pgid, want_stop, want_cont)
+            .map(|(child, kind, sig)| (child, if kind == 1 { ((sig as i32) << 8) | 0x7f } else { WSTAT_CONTINUED })));
+        match event {
+            Some((child, wstat)) => {
+                local_wstat = wstat;
                 local_uid = child.uid;
                 if let Err(e) = crate::wait::write_rusage(rusage, child) { return e; }
                 child.vpid as i64
@@ -113,8 +120,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                     0
                 } else {
                     // Blocking WNOWAIT without WNOHANG: park until a child
-                    // exits, then re-peek. systemd always pairs WNOHANG,
-                    // so this path is rare but POSIX-correct.
+                    // exits/stops/continues, then re-peek.
                     // Interruptible like sys_wait4: a deliverable signal —
                     // and ALWAYS unblockable SIGKILL/SIGSTOP — aborts with
                     // -EINTR so the dispatch tail can terminate a SIGKILL'd
@@ -130,9 +136,15 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                     }
                     // SAFETY: process ctx; runqueue installed; preempt-off; park+reschedule per `13§8`.
                     unsafe { sched::live::park_for_wait4(); sched::live::schedule(); }
-                    match sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid) {
-                        Some((child, code)) => {
-                            local_wstat = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
+                    let event = if want_exit {
+                        sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid)
+                            .map(|(child, code)| (child, if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }))
+                    } else { None }
+                    .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, pid_for_wait4, parent_pgid, want_stop, want_cont)
+                        .map(|(child, kind, sig)| (child, if kind == 1 { ((sig as i32) << 8) | 0x7f } else { WSTAT_CONTINUED })));
+                    match event {
+                        Some((child, wstat)) => {
+                            local_wstat = wstat;
                             local_uid = child.uid;
                             if let Err(e) = crate::wait::write_rusage(rusage, child) { return e; }
                             child.vpid as i64
@@ -155,13 +167,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     if infop != 0 {
         if let Err(e) = crate::userbuf::validate_user_buf_writable(infop, SIGINFO_BYTES, 1) { return e; }
         let (si_code, si_status): (i32, i32) = if rv > 0 {
-            if (local_wstat & 0x7f) == 0 {
-                (1, (local_wstat >> 8) & 0xff)            // CLD_EXITED
-            } else if (local_wstat & 0xff) == 0x7f {
-                (5, (local_wstat >> 8) & 0xff)            // CLD_STOPPED
-            } else {
-                (2, local_wstat & 0x7f)                   // CLD_KILLED
-            }
+            waitid_code_status_from_wstat(local_wstat)
         } else { (0, 0) };
         // SAFETY: full siginfo byte range validated writable; Linux copyout accepts this fixed layout.
         unsafe {
