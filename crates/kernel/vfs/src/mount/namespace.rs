@@ -193,9 +193,9 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>,
 
 /// Last-umount teardown (Linux `mntput` → `deactivate_super`): drop THIS
 /// mount's active reference on `sb` via the [`SuperBlock`] `s_active` refcount
-/// (D6). Each live mount holds exactly one active ref — `for_backend` seeds the
-/// first (`s_active == 1`) and every SB-sharing clone (`copy_mnt_ns`, the Linux
-/// `clone_mnt` path) grabs one via [`SuperBlock::grab_active`] — so the LAST
+/// (D6). Each live mount holds exactly one active ref: fill-super construction
+/// seeds the first (`s_active == 1`), and every SB-sharing clone (`copy_mnt_ns`,
+/// the Linux `clone_mnt` path) grabs one via [`SuperBlock::grab_active`] — so the LAST
 /// drop (1 → 0) runs `generic_shutdown_super` (sync_filesystem + `put_super`)
 /// exactly once, and a still-mounted sibling/ns-clone keeps the shared instance
 /// alive. Replaces the old O(N) `Arc::ptr_eq` mount-table scan, which could not

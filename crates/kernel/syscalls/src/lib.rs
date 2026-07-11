@@ -64,6 +64,7 @@ mod execve_common; #[path = "059_execve/mod.rs"] pub mod s059_execve; #[path = "
 #[path = "314_sched_setattr.rs"] pub mod s314_sched_setattr;
 mod signal_common;
 mod fsmount_common;
+pub use fsmount_common::ensure_filesystems_registered as ensure_mount_filesystems_registered;
 mod net_common;
 mod namei_common;
 mod time_common;

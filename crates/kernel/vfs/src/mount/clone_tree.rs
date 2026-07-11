@@ -479,7 +479,8 @@ pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, d
 pub fn attach_recursive_mnt(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
                             root: Option<InodeRef>) -> KResult<usize> {
     let at = mp.clone();
-    attach(mp, fs, root, None)?;
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    attach(ty, mp, fs, root, None)?;
     Ok(match at { Some(d) => propagation::propagate_mount(&d), None => 0 })
 }
 

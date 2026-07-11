@@ -55,10 +55,8 @@ pub fn register_super(sb: &Arc<SuperBlock>) {
 /// active ([`SuperBlock::grab_active`]), SHARE it: bump `s_count` and return it
 /// (the caller owns one extra active ref to pair with `deactivate_super` at
 /// umount). Otherwise `build()` a fresh instance, register it, and return it.
-/// This is the dedup the mount table's `next_anon_dev`-per-mount path lacks;
-/// wiring `register`/`register_bind` (mount.rs, another lane) to call `sget`
-/// instead of always `for_backend(next_anon_dev())` is the cross-lane
-/// follow-up. # C: O(N_sb)
+/// This is the dedup used by the mount table's device-backed fill-super path;
+/// anonymous/pseudo filesystems still receive a fresh anon device. # C: O(N_sb)
 pub fn sget(dev: u64, build: impl FnOnce() -> Arc<SuperBlock>) -> Arc<SuperBlock> {
     {
         let g = FS_SUPERS.lock();
