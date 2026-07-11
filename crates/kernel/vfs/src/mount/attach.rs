@@ -1,57 +1,28 @@
-/// [D6] Materialise (or, for a device-backed fs, FIND-OR-SHARE via [`sget`]) the
-/// `SuperBlock` for a new mount. A backend that reports a stable backing-device
-/// id (`fs.dev_id()`, Linux's `get_tree_bdev` bdev key) SHARES one `SuperBlock`
-/// across every mount of that device: `sget` returns the live instance with one
-/// extra `s_active` instead of allocating a duplicate, so two mounts of the same
-/// disk agree on `s_dev`, inode cache and writeback (Linux's `s_active` sharing).
-/// An anon/pseudo fs (no real device, `dev_id() == None` — tmpfs, procfs, a bind
-/// marker) keeps a fresh per-mount `get_anon_bdev` instance, never shared.
-/// # C: O(N_sb) on a dev-backed share, else O(1)
-fn build_sb(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn FileSystem>, root_inode: Option<InodeRef>,
-    s_id: String) -> Arc<SuperBlock> {
-    let s_op = fs.super_ops().unwrap_or_else(|| {
-        Arc::new(SimpleSuperOps {
-            magic: fs.magic(),
-            block_size: fs.block_size(),
-            options: fs.show_options(),
-        })
-    });
-    let s_magic = fs.magic();
-    let s_blocksize = fs.block_size();
-    match fs.dev_id() {
-        Some(dev) => {
-            let fs_for_stamp = fs.clone();
-            sget(dev, move || {
-                let sb = SuperBlock::from_ops(s_type, s_op, root_inode, s_magic, dev, s_blocksize, s_id, Arc::new(()));
-                fs_for_stamp.set_sb(Arc::downgrade(&sb));
-                sb
-            })
-        }
-        None => {
-            let sb = SuperBlock::from_ops(s_type, s_op, root_inode, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
-            fs.set_sb(Arc::downgrade(&sb));
-            sb
-        }
-    }
-}
-
 /// Build a `Mount` and attach it on the caller-supplied mountpoint dentry
 /// `mp` (Linux `mnt_set_mountpoint`/`commit_tree`). `mp == None` ⇒ the
-/// namespace root mount. Acquires (or shares, via `build_sb`/`sget`) the
-/// `SuperBlock`, then grafts it through the shared [`graft_realized`] tail.
+/// namespace root mount. The caller supplies a realized `MountSpec` from
+/// `file_system_type->mount`/`fill_super`; this namespace layer never derives
+/// SB authority from a backend object. # C: O(depth)
+fn attach_spec(mp: Option<Arc<Dentry>>, spec: MountSpec, parent_hint: Option<u64>) -> KResult<()> {
+    let MountSpec { sb, strict: _ } = spec;
+    #[cfg(feature = "debug-mnt")]
+    mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
+    graft_realized(mp, sb, 0, parent_hint)
+}
+
+/// Compatibility constructor boundary: consume a backend object into a realized
+/// SB before namespace grafting. This is the only old-`FileSystem` adapter in
+/// the mount layer; `graft_realized` and namespace state never retain it.
 /// # C: O(depth)
 fn attach(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
     root: Option<InodeRef>, parent_hint: Option<u64>) -> KResult<()> {
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
-    let root_inode = root.clone().or_else(|| fs.root());
     // `s_id` (the SB label) mirrors Linux's device/source id; the legacy mount
     // engine used the rendered mountpoint path here, which is not consumed
     // anywhere — keep it for an exact byte match with the prior behaviour.
     let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
-    let sb = build_sb(s_type, fs, root_inode, s_id);
-    #[cfg(feature = "debug-mnt")]
-    mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, 0, parent_hint)
+    let spec = MountSpec::from_filesystem(s_type, fs, root, false, s_id);
+    attach_spec(mp, spec, parent_hint)
 }
 
 /// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
@@ -229,7 +200,8 @@ pub fn register_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, r
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     mntns::count_mounts(ns, 1)?;
     let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
-    let sb = build_sb(ty, fs, Some(root), s_id);
+    let spec = MountSpec::from_filesystem(ty, fs, Some(root), false, s_id);
+    let sb = spec.sb;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
@@ -304,7 +276,8 @@ pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let sb = build_sb(ty, fs, Some(root), rendered.clone());
+    let spec = MountSpec::from_filesystem(ty, fs, Some(root), false, rendered.clone());
+    let sb = spec.sb;
     let root_dentry = sb.s_root().ok_or(VfsError::Enoent)?;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
@@ -318,7 +291,8 @@ pub fn register_bind_path_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: St
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let sb = build_sb(ty, fs, Some(root), rendered.clone());
+    let spec = MountSpec::from_filesystem(ty, fs, Some(root), false, rendered.clone());
+    let sb = spec.sb;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
 
