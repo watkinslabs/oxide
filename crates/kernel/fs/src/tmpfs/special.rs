@@ -28,8 +28,8 @@ pub(super) fn make_tmpfs_sock_inode(uid: u32, gid: u32, sb: Weak<SuperBlock>) ->
 }
 
 /// Special tmpfs inode created by mknod(2), mainly FIFO nodes under /run. The
-/// mode (`ft` + `perm`) + device number are stamped into the inode — discarding
-/// them made systemd's fifo_address_create reject the dm-event FIFO. # C: O(1)
+/// mode (`ft` + `perm`) is stamped into the inode; `rdev` is meaningful only
+/// for device nodes. # C: O(1)
 pub(super) fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = next_ino();
     let sb2 = sb.clone();

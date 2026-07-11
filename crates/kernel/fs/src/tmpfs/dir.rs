@@ -204,7 +204,7 @@ impl InodeOps for TmpfsDirOps {
         let perm = (ctx.apply_umask(mode as u32) & 0o7777) as u16;
         let (uid, gid) = (ctx.fsuid(), ctx.fsgid());
         let child: InodeRef = match mode & S_IFMT {
-            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, rdev, uid, gid, sb),
+            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, 0, uid, gid, sb),
             S_IFSOCK => make_tmpfs_sock_inode(uid, gid, sb),
             S_IFCHR  => make_device_node_inode(
                 next_ino(), FileType::CharDev,

@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use vfs::{CreateCtx, VfsError};
+use vfs::{CreateCtx, Devt, S_IFIFO, VfsError};
 use vfs::fs::{FileSystem, FsFlags, FsType, superblock_from_filesystem};
 use vfs::superblock::SuperBlock;
 
@@ -63,4 +63,14 @@ fn distinct_children_distinct_icache_slots() {
     assert_ne!(a.ino(), b.ino());
     assert!(Arc::ptr_eq(&a, &sb.ilookup(a.ino()).unwrap()));
     assert!(Arc::ptr_eq(&b, &sb.ilookup(b.ino()).unwrap()));
+}
+
+#[test]
+fn fifo_mknod_ignores_user_rdev() {
+    let sb = live_sb();
+    let root = sb.s_root_inode().expect("root inode");
+    root.mknod_child("fifo", (S_IFIFO | 0o644) as u16, Devt::new(9, 9).raw(), &CreateCtx::root())
+        .expect("mknod fifo");
+    let fifo = root.lookup("fifo").expect("lookup fifo");
+    assert_eq!(fifo.rdev(), 0, "Linux ignores dev for S_IFIFO mknod");
 }
