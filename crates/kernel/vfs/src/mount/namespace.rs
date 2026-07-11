@@ -101,7 +101,14 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     }
     let old_dst = match rel_under_seeded(&po_d, po_mnt, nr_mp.as_ref()) {
         Some(r) if !r.is_empty() => r,
-        _ if nr_mp.is_none() => rel_under_seeded(&po_d, po_mnt, None).unwrap_or_default(),
+        _ if nr_mp.is_none() => match rel_under_seeded(&po_d, po_mnt, None) {
+            Some(r) => r,
+            None => {
+                #[cfg(feature = "debug-mnt")]
+                klog::write_raw(b"[PIVOT-EINVAL] put_old has no root-relative path\n");
+                return Err(VfsError::Einval);
+            }
+        },
         _ => {
             #[cfg(feature = "debug-mnt")]
             klog::write_raw(b"[PIVOT-EINVAL] put_old not under new_root (non-stacking)\n");
@@ -493,6 +500,27 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, de
     let old_parent = from_m.parent_id.load(Ordering::Acquire);
     let snap: Vec<Arc<Mount>> = subtree_ids(ns, from_id).iter()
         .filter_map(|id| mount_by_id(*id)).collect();
+    let mut descendant_plan: Vec<(Arc<Mount>, Arc<Dentry>, String, Option<String>)> = Vec::new();
+    for m in snap.iter() {
+        if m.mnt_id == from_id { continue; }
+        let Some(child_mp) = m.mountpoint() else { continue; };
+        let disp_seed = m.parent_id.load(Ordering::Acquire);
+        let old_child = m.mount_point_str();
+        let disp_rel = if old_child == old_abs {
+            Some(String::new())
+        } else if let Some(rest) = old_child.strip_prefix(old_abs.as_str()) {
+            if rest.starts_with('/') { Some(String::from(rest)) }
+            else { rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()) }
+        } else {
+            rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref())
+        };
+        let Some(disp_rel) = disp_rel else { return Err(VfsError::Einval); };
+        let new_rendered = if disp_rel.is_empty() { to_abs.clone() }
+                           else if to_abs == "/" { disp_rel.clone() }
+                           else { alloc::format!("{}{}", to_abs, disp_rel) };
+        let underlay_rel = old_mp.as_ref().and_then(|omp| plain_rel_under(&child_mp, omp));
+        descendant_plan.push((m.clone(), child_mp, new_rendered, underlay_rel));
+    }
 
     // --- 1) Re-seat the moved ROOT mount (the only attachment that changes). ---
     let new_root_d = if to_root { None } else { Some(to.clone()) };
@@ -527,22 +555,8 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, de
     //        keep IN-FS children in place (dentry/crossing/parent untouched).
     //        Both get their rendered (display) path re-based onto `to`. ---
     let to_base = new_root_d.clone().or_else(global_root);
-    for m in snap.iter() {
-        if m.mnt_id == from_id { continue; }
-        let Some(child_mp) = m.mountpoint() else { continue; };
-        let disp_seed = m.parent_id.load(Ordering::Acquire);
-        let old_child = m.mount_point_str();
-        let disp_rel = if old_child == old_abs {
-            String::new()
-        } else if let Some(rest) = old_child.strip_prefix(old_abs.as_str()) {
-            if rest.starts_with('/') { String::from(rest) } else { rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()).unwrap_or_default() }
-        } else {
-            rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()).unwrap_or_default()
-        };
-        let new_rendered = if disp_rel.is_empty() { to_abs.clone() }
-                           else if to_abs == "/" { disp_rel.clone() }
-                           else { alloc::format!("{}{}", to_abs, disp_rel) };
-        match old_mp.as_ref().and_then(|omp| plain_rel_under(&child_mp, omp)) {
+    for (m, child_mp, new_rendered, underlay_rel) in descendant_plan.iter() {
+        match underlay_rel {
             Some(rel) => {
                 // UNDERLAY child: relocate its mountpoint dentry to the mirrored
                 // underlay position beneath `to`, by an underlay descent (NOT
@@ -552,11 +566,11 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, de
                 let m_parent = m.parent_id.load(Ordering::Acquire);
                 {
                     let _w = MOUNT_WRITE.lock();
-                    hash_remove(m_parent, dptr(&child_mp), m.mnt_id);
+                    hash_remove(m_parent, dptr(child_mp), m.mnt_id);
                 }
                 let new_d = to_base.as_ref().and_then(|b| descend(b, rel.trim_start_matches('/')));
                 let _w = MOUNT_WRITE.lock();
-                set_mountpoint_dentry(m, new_d.clone(), new_rendered);
+                set_mountpoint_dentry(m, new_d.clone(), new_rendered.clone());
                 unlink_from_parent(m);
                 if let Some(d) = &new_d {
                     let np = parent_by_dentry(ns, d);
@@ -571,7 +585,7 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, de
             None => {
                 // IN-FS child: its mountpoint dentry is inside a moved fs and
                 // travels unchanged — only the rendered path follows the move.
-                *m.rendered_path.lock() = new_rendered;
+                *m.rendered_path.lock() = new_rendered.clone();
             }
         }
     }
