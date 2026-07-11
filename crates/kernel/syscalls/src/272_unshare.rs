@@ -3,13 +3,26 @@
 
 use syscall::SyscallArgs;
 
+const CLONE_NEWTIME:  u64 = 0x00000080;
+const CLONE_VM:       u64 = 0x00000100;
+const CLONE_FS:       u64 = 0x00000200;
+const CLONE_FILES:    u64 = 0x00000400;
+const CLONE_SIGHAND:  u64 = 0x00000800;
+const CLONE_THREAD:   u64 = 0x00010000;
 const CLONE_NEWNS:    u64 = 0x00020000;
+const CLONE_SYSVSEM:  u64 = 0x00040000;
+const UNSHARE_EMPTY_MNTNS: u64 = 0x00100000;
 const CLONE_NEWCGROUP:u64 = 0x02000000;
 const CLONE_NEWUTS:   u64 = 0x04000000;
 const CLONE_NEWIPC:   u64 = 0x08000000;
 const CLONE_NEWUSER:  u64 = 0x10000000;
 const CLONE_NEWPID:   u64 = 0x20000000;
 const CLONE_NEWNET:   u64 = 0x40000000;
+
+const CLONE_NS_ALL: u64 = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC
+    | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWTIME;
+const UNSHARE_ALLOWED: u64 = CLONE_THREAD | CLONE_FS | CLONE_SIGHAND | CLONE_VM
+    | CLONE_FILES | CLONE_SYSVSEM | CLONE_NS_ALL | UNSHARE_EMPTY_MNTNS;
 
 #[inline]
 fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
@@ -46,8 +59,21 @@ pub(crate) fn ns_bits_from_flags(flags: u64) -> u64 {
 /// the named namespaces (Linux `ksys_unshare`). # C: O(1)
 pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let mut flags = args.a0;
+    if (flags & CLONE_NEWUSER) != 0 { flags |= CLONE_THREAD | CLONE_FS; }
+    if (flags & CLONE_VM) != 0 { flags |= CLONE_SIGHAND; }
+    if (flags & CLONE_SIGHAND) != 0 { flags |= CLONE_THREAD; }
+    if (flags & UNSHARE_EMPTY_MNTNS) != 0 { flags |= CLONE_NEWNS; }
+    if (flags & CLONE_NEWNS) != 0 { flags |= CLONE_FS; }
+    if (flags & !UNSHARE_ALLOWED) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if (flags & CLONE_NEWTIME) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
-    let bits = ns_bits_from_flags(args.a0);
+    let bits = ns_bits_from_flags(flags);
     if bits == 0 { return 0; }
     cur.ns_membership.fetch_or(bits, Ordering::Release);
     apply_new_namespaces(cur, bits);
