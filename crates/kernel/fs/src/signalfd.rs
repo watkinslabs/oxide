@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
+use crate::userbuf::validate_user_buf;
 
 const SIGNALFD_INO_BASE: Ino = 0x7200_0000;
 /// Linux `signalfd_siginfo` size — 128 bytes per `signalfd(2)`.
@@ -151,11 +152,15 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
     let mask_ptr  = args.a1;
     let mask_size = args.a2;
     if mask_size != 8 { return -(Errno::Einval.as_i32() as i64); }
-    if mask_ptr == 0 || mask_ptr >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
+    if let Err(rv) = validate_user_buf(mask_ptr, 8, 1) { return rv; }
+    const SFD_NONBLOCK: u64 = 0o0_004_000;
+    const SFD_CLOEXEC:  u64 = 0o2_000_000;
+    let flags = args.a3;
+    if flags & !(SFD_NONBLOCK | SFD_CLOEXEC) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: mask_ptr validated; CPL=0 reads through caller's AS.
-    let mask = unsafe { core::ptr::read_volatile(mask_ptr as *const u64) };
+    // SAFETY: mask_ptr validated readable for one sigset_t word.
+    let mask = unsafe { core::ptr::read_unaligned(mask_ptr as *const u64) };
     #[cfg(feature = "debug-ssh")]
     {
         klog::write_raw(b"[INFO]  ssh-trace: signalfd4 in_fd=");
@@ -180,9 +185,6 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
             None => return -(Errno::Einval.as_i32() as i64),
         }
     }
-    const SFD_NONBLOCK: u64 = 0o0_004_000;
-    const SFD_CLOEXEC:  u64 = 0o2_000_000;
-    let flags = args.a3;
     let inode = make_signalfd_inode(mask);
     let dentry = vfs::dcache::d_alloc_pseudo("[signalfd]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
