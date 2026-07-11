@@ -89,6 +89,17 @@ fn dup3_newfd_out_of_range_is_ebadf() {
     assert_eq!(t.dup3(old, -2, OpenFlags::empty()), Err(VfsError::Ebadf));
 }
 
+/// `new_fd >= RLIMIT_NOFILE` is EBADF even when the fd-table hard
+/// ceiling is much higher.
+#[test]
+fn dup3_newfd_at_soft_limit_is_ebadf() {
+    let t = FdTable::new();
+    let old = t.alloc(mk_file()).unwrap();
+    assert_eq!(t.dup3_limit(old, 4, OpenFlags::empty(), 4), Err(VfsError::Ebadf));
+    assert_eq!(t.dup3_limit(old, 3, OpenFlags::O_CLOEXEC, 4), Ok(3));
+    assert_eq!(t.cloexec(3), Ok(true));
+}
+
 /// Bad (non-equal) `old_fd` → EBADF, surfaced after the range checks.
 #[test]
 fn dup3_bad_oldfd_is_ebadf() {
