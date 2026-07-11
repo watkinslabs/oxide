@@ -1,6 +1,6 @@
-// `sys_chroot(path)` — slot 161 (F95). Per-task root prefix that
-// devfs::lookup applies to absolute paths. Inherited by fork; cleared
-// only via explicit chroot. Requires CAP_SYS_CHROOT.
+// `sys_chroot(path)` — slot 161 (F95). Per-task VFS root for absolute path
+// walks. Inherited by fork; cleared only via explicit chroot. Requires
+// CAP_SYS_CHROOT.
 
 #![cfg(target_os = "oxide-kernel")]
 
