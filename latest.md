@@ -416,7 +416,9 @@ Fix status:
 - Done: `mkdir`/`mkdirat` create through `parent.inode`, check target existence relative to the exact parent, check read-only through `parent.mnt_id`, and drop child cache by object parent.
 - Done: `mknod`/`mknodat` share the same parent-preserving path; `mknodat` no longer pre-resolves its dirfd-relative path into a global string.
 - Done: `symlink`/`symlinkat` now create via the exact `newdirfd` parent identity; the target string remains stored verbatim, matching Linux.
-- Remaining: `link/linkat`, `unlink/unlinkat/rmdir`, and `rename/renameat/renameat2` still use the old string-parent helper pattern and need the same treatment.
+- Done: `unlink`/`unlinkat` now use `resolve_unlink_parent_at()`, mutate `parent.inode`, capture the victim via `child_dentry(parent, leaf)`, check read-only through `parent.mnt_id`, and drop fallback cache by object parent. Rendered path text remains only for Landlock, AF_UNIX pathname registry-key compatibility, and fsnotify display; the AF_UNIX helper no longer calls path-based `d_delete_path()`.
+- Done: `rmdir` and `unlinkat(..., AT_REMOVEDIR)` now share `do_rmdir_at(dirfd, raw)`, preserve the walked parent identity, invalidate/unlink the captured victim dentry, and return Linux dot/root errors (`rmdir(".")` `EINVAL`, `rmdir("..")` `ENOTEMPTY`, `rmdir("/")` `EBUSY`; plain `unlink` dot/root forms `EISDIR`).
+- Remaining: `link/linkat` and `rename/renameat/renameat2` still use the old string-parent helper pattern and need the same treatment.
 
 ## Mount Subsystem Split-Truth Sites
 
@@ -718,8 +720,8 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
    - Done: `mkdir/mkdirat`
    - Done: `mknod/mknodat`
    - Done: `symlink/symlinkat`
+   - Done: `unlink/unlinkat/rmdir`
    - `link/linkat`
-   - `unlink/unlinkat/rmdir`
    - `rename/renameat/renameat2`
 
 7. Convert mount syscalls. **This is the current integration blocker.**

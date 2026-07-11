@@ -5,6 +5,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
@@ -218,6 +219,36 @@ pub(crate) fn resolve_create_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::Vf
     }
 }
 
+/// Resolve an unlink target's parent without collapsing the authority back into
+/// a string. Dot/root targets are directories to Linux unlink(2), so reject them
+/// before backend `unlink("."/"..")` can manufacture filesystem-specific ENOENT.
+/// # C: O(N parent components)
+pub(crate) fn resolve_unlink_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Eisdir.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
+            Err(-(Errno::Eisdir.as_i32() as i64)),
+    }
+}
+
+/// Resolve an rmdir target's parent. The raw `.`/`..` split is handled by
+/// `rmdir_dot_errno`; removing the root is Linux EBUSY. # C: O(N parent components)
+pub(crate) fn resolve_rmdir_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Ebusy.as_i32() as i64)),
+        },
+        vfs::LastType::Root => Err(-(Errno::Ebusy.as_i32() as i64)),
+        vfs::LastType::Dot | vfs::LastType::Dotdot => Err(-(Errno::Einval.as_i32() as i64)),
+    }
+}
+
 /// Render a resolved parent path for hooks/diagnostics. Display only; never
 /// feed the result back into authority decisions. # C: O(depth)
 pub(crate) fn render_parent_path(parent: &vfs::VfsPath) -> String {
@@ -250,6 +281,20 @@ pub(crate) fn child_exists(parent: &vfs::VfsPath, leaf: &str) -> Result<bool, i6
     }
 }
 
+/// Capture the positive child dentry under an already-resolved parent, without
+/// rendering/re-walking the full path. Used before unlink/rmdir so the VFS tail
+/// can update the exact alias the backend removed. # C: O(1) expected + fs lookup
+pub(crate) fn child_dentry(parent: &vfs::VfsPath, leaf: &str) -> Option<Arc<vfs::Dentry>> {
+    match vfs::d_lookup(&parent.dentry, leaf) {
+        Some(d) if d.inode().is_some() => Some(d),
+        Some(_) => None,
+        None => match parent.inode.lookup(leaf) {
+            Ok(i) => Some(vfs::d_add(&parent.dentry, leaf, i)),
+            Err(_) => None,
+        },
+    }
+}
+
 /// Read-only check by the already-resolved owning mount. # C: O(log N)
 pub(crate) fn parent_mount_readonly(parent: &vfs::VfsPath) -> bool {
     vfs::mount::mount_by_id(parent.mnt_id)
@@ -265,7 +310,8 @@ pub(crate) fn drop_child_cache(parent: &vfs::VfsPath, leaf: &str) {
 /// Linux pathname AF_UNIX sockets are removed from the filesystem namespace by
 /// unlink(2). Existing socket objects stay alive, but a later bind to the same
 /// pathname must be allowed. Our socket registry is separate from tmpfs, so
-/// unlink has to drop the registry key as well as the socket inode.
+/// unlink has to drop the registry key as well as the socket inode. The caller
+/// owns dcache invalidation through its already-resolved parent identity.
 /// # C: O(log N)
 pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
     if net::unix_path_is_abstract(p) || !net::sock::UNIX_REGISTRY.is_bound(p) {
@@ -273,7 +319,6 @@ pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
     }
     net::sock::UNIX_REGISTRY.unbind(p);
     net::sock::UNIX_REGISTRY.dgram_unbind(p);
-    crate::pathresolve::d_delete_path(p);
     true
 }
 
