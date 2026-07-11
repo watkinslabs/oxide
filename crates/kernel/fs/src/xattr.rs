@@ -59,9 +59,14 @@ fn inode_owner(inode: &InodeRef) -> u32 {
     inode.uid().unwrap_or(0)
 }
 
-/// Validate xattr name length (Linux ERANGE past XATTR_NAME_MAX).
+fn xattr_name_bytes(name: &str) -> Vec<u8> {
+    vfs::path_into_bytes(name)
+}
+
+/// Validate xattr name length on raw Linux name bytes.
 fn check_name_len(name: &str) -> Result<(), i64> {
-    if name.is_empty() || name.len() > XATTR_NAME_MAX {
+    let len = xattr_name_bytes(name).len();
+    if len == 0 || len > XATTR_NAME_MAX {
         return Err(-(Errno::Erange.as_i32() as i64));
     }
     Ok(())
@@ -113,15 +118,15 @@ fn read_hidden(name: &str) -> bool {
     false
 }
 
-fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
+fn read_user_xattr_name(p: u64, max: usize) -> Result<String, i64> {
     if p == 0 || p >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
     // SAFETY: p validated < USER_VA_END; bounded read via existing helper.
     let bytes = unsafe { devfs::read_user_cstr(p, max) };
-    let s = bytes.and_then(|b| core::str::from_utf8(b).ok())
-        .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    Ok(String::from(s))
+    let name = vfs::path_from_bytes(bytes.ok_or(-(Errno::Einval.as_i32() as i64))?);
+    check_name_len(&name)?;
+    Ok(name)
 }
 
 fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
@@ -196,14 +201,21 @@ fn do_list(inode: &InodeRef, buf_p: u64, buflen: usize) -> i64 {
         Err(XattrError::NotSup) => return -(EOPNOTSUPP as i64),
         Err(XattrError::NotFound) | Err(XattrError::Exists) => return -(EOPNOTSUPP as i64),
     };
-    let mut total = 0usize;
-    for n in &names { total += n.len() + 1; }
+    let payload = xattr_list_payload(&names);
+    let total = payload.len();
     if buflen == 0 { return total as i64; }
     if buflen < total { return -(Errno::Erange.as_i32() as i64); }
-    let mut tmp = Vec::with_capacity(total);
-    for n in &names { tmp.extend_from_slice(n.as_bytes()); tmp.push(0); }
-    if let Err(rv) = write_user_bytes(buf_p, &tmp) { return rv; }
+    if let Err(rv) = write_user_bytes(buf_p, &payload) { return rv; }
     total as i64
+}
+
+fn xattr_list_payload(names: &[String]) -> Vec<u8> {
+    let mut tmp = Vec::new();
+    for n in names {
+        tmp.extend_from_slice(&xattr_name_bytes(n));
+        tmp.push(0);
+    }
+    tmp
 }
 
 fn do_remove(inode: &InodeRef, name: &str) -> i64 {
@@ -239,7 +251,7 @@ pub fn query_into(inode: &InodeRef, name: &str, buf: &mut [u8]) -> bool {
 /// setxattr work — read name + value, set on `inode`.
 /// # C: O(N_xattrs)
 pub fn setxattr_on(inode: &InodeRef, name_ptr: u64, value_ptr: u64, size: usize, flags: u32) -> i64 {
-    let name  = match read_user_cstr_owned(name_ptr, 256) { Ok(s) => s, Err(rv) => return rv };
+    let name  = match read_user_xattr_name(name_ptr, XATTR_NAME_MAX + 1) { Ok(s) => s, Err(rv) => return rv };
     let value = match read_user_bytes(value_ptr, size) { Ok(v) => v, Err(rv) => return rv };
     do_set(inode, name, value, flags)
 }
@@ -247,7 +259,7 @@ pub fn setxattr_on(inode: &InodeRef, name_ptr: u64, value_ptr: u64, size: usize,
 /// getxattr work — read xattr value into `buf_ptr`.
 /// # C: O(N_xattrs)
 pub fn getxattr_on(inode: &InodeRef, name_ptr: u64, buf_ptr: u64, size: usize) -> i64 {
-    let name = match read_user_cstr_owned(name_ptr, 256) { Ok(s) => s, Err(rv) => return rv };
+    let name = match read_user_xattr_name(name_ptr, XATTR_NAME_MAX + 1) { Ok(s) => s, Err(rv) => return rv };
     do_get(inode, &name, buf_ptr, size)
 }
 
@@ -260,7 +272,7 @@ pub fn listxattr_on(inode: &InodeRef, buf_ptr: u64, size: usize) -> i64 {
 /// removexattr work — read name, remove from `inode`.
 /// # C: O(N_xattrs)
 pub fn removexattr_on(inode: &InodeRef, name_ptr: u64) -> i64 {
-    let name = match read_user_cstr_owned(name_ptr, 256) { Ok(s) => s, Err(rv) => return rv };
+    let name = match read_user_xattr_name(name_ptr, XATTR_NAME_MAX + 1) { Ok(s) => s, Err(rv) => return rv };
     do_remove(inode, &name)
 }
 
@@ -339,5 +351,30 @@ mod tests {
         assert_eq!(query_len(&i, "user.a"), 3);
         assert_eq!(do_remove(&i, "user.a"), 0);
         assert_eq!(do_get(&i, "user.a", 0, 0), -(ENODATA as i64));
+    }
+
+    #[test]
+    fn raw_byte_xattr_names_round_trip_through_store() {
+        let i = inode(true);
+        let name = vfs::path_from_bytes(b"user.raw-\xff");
+        assert_eq!(do_set(&i, name.clone(), alloc::vec![9, 8], 0), 0);
+        assert_eq!(do_get(&i, &name, 0, 0), 2);
+        assert_eq!(query_len(&i, &name), 2);
+        assert_eq!(do_remove(&i, &name), 0);
+        assert_eq!(do_get(&i, &name, 0, 0), -(ENODATA as i64));
+    }
+
+    #[test]
+    fn list_payload_outputs_raw_xattr_name_bytes() {
+        let name = vfs::path_from_bytes(b"user.raw-\xff");
+        let payload = xattr_list_payload(&alloc::vec![name]);
+        assert_eq!(payload, b"user.raw-\xff\0");
+    }
+
+    #[test]
+    fn xattr_name_limit_counts_raw_bytes() {
+        let raw = alloc::vec![b'a'; XATTR_NAME_MAX + 1];
+        let name = vfs::path_from_bytes(&raw);
+        assert_eq!(check_name_len(&name), Err(-(Errno::Erange.as_i32() as i64)));
     }
 }
