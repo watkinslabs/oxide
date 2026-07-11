@@ -93,3 +93,23 @@ fn mountinfo_optional_fields_follow_mount_propagation() {
         .expect("unbindable mount");
     assert_eq!(vfs::mount::mountinfo_optional_fields(&unbindable), " unbindable");
 }
+
+#[test]
+fn render_path_for_mount_rejects_lexical_prefix_sibling() {
+    common::install();
+    let foo = common::dentry("/foo");
+    let mnt = common::dentry("/mnt");
+    let foobar = common::dentry("/foobar");
+    vfs::mount::register_bind_path_at(
+        Some(mnt.clone()),
+        Arc::new(ProjectionFs),
+        foo,
+        None,
+    ).expect("bind /foo on /mnt");
+    let m = common::mount_at_path_exact("/mnt").expect("bind mount");
+    assert_eq!(
+        vfs::mount::render_path_for_mount(m.mnt_id, &foobar),
+        "/foobar",
+        "sibling /foobar is not beneath bind root /foo and must not render as /mntbar",
+    );
+}
