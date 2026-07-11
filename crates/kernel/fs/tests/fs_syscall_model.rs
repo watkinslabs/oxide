@@ -106,7 +106,7 @@ fn lookup_at(start: &Arc<Dentry>, start_mnt: u64, root: &Arc<Dentry>, root_mnt: 
         .expect(path)
 }
 fn fs_name_for(mnt_id: u64) -> String {
-    vfs::mount::mount_by_id(mnt_id).expect("mount id").sb.fs().name().to_string()
+    vfs::mount::mount_by_id(mnt_id).expect("mount id").sb.s_type.name().to_string()
 }
 
 fn switch_prepared_host_root(root: Arc<Dentry>, host: u64, sandbox: u64) -> u64 {
