@@ -166,9 +166,7 @@ pub(super) fn mount_exact_at(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
         if let Some(over) = hash_top(rootid, dptr(d)) { return mount_by_id(over); }
         return mount_by_id(rootid);
     }
-    let parent = parent_by_dentry(ns, d);
-    let id = hash_top(parent, dptr(d))?;
-    mount_by_id(id)
+    top_mount_on(ns, d).and_then(mount_by_id)
 }
 
 /// True iff a mount is attached exactly at mountpoint dentry `d` in `ns`.

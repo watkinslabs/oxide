@@ -162,6 +162,71 @@ pub fn register_bind_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: 
     attach(mp, fs, Some(root), parent_hint)
 }
 
+/// Bind-as-clone from a resolved source `struct path`: preserve the SOURCE
+/// dentry as `mnt_root`, not just its inode. Linux bind mounts carry a full
+/// `(vfsmount,dentry)` root; rebuilding from the inode mints an alias root
+/// dentry, so recursive submount hash keys diverge from later namei walks.
+/// # C: O(depth)
+pub fn register_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root_dentry: Arc<Dentry>,
+    parent_hint: Option<u64>) -> KResult<()> {
+    let root = root_dentry.inode().ok_or(VfsError::Enoent)?;
+    let ns = current_ns();
+    let mp = mp.filter(|d| !is_ns_root_dentry(d));
+    mntns::count_mounts(ns, 1)?;
+    let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
+    let sb = build_sb(fs, Some(root), s_id);
+    let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
+    let Some(d) = mp else {
+        let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
+        *m.mnt_root.lock() = Some(root_dentry);
+        m.set_internal_flag(MNT_INTERNAL);
+        {
+            let _w = MOUNT_WRITE.lock();
+            mntns::ns_set_root(ns, mnt_id);
+            MOUNTS.lock().insert(mnt_id, m);
+        }
+        mntns::commit_mounts(ns, 1);
+        mntns::bump_gen(ns);
+        return Ok(());
+    };
+    let parent_id = parent_hint.unwrap_or_else(|| parent_by_dentry(ns, &d));
+    let rendered = rendered_path_for(parent_id, &d);
+    graft_bind_realized(d, sb, root_dentry, parent_id, rendered)
+}
+
+/// Linux bind clone from a resolved source `struct path`: the new mount shares
+/// the SOURCE mount's `mnt_sb` and uses `root_dentry` as its per-mount
+/// `mnt_root`. No synthetic bind filesystem or fresh superblock is created.
+/// # C: O(depth)
+pub fn register_bind_clone_at(mp: Option<Arc<Dentry>>, source_mnt_id: u64,
+    root_dentry: Arc<Dentry>, parent_hint: Option<u64>) -> KResult<()> {
+    let src = mount_by_id(source_mnt_id).ok_or(VfsError::Einval)?;
+    if !check_mnt(&src) { return Err(VfsError::Einval); }
+    let ns = current_ns();
+    mntns::count_mounts(ns, 1)?;
+    let grabbed = src.sb.grab_active();
+    hal::kassert!(grabbed, "register_bind_clone_at: live source SB must grab active ref");
+    let mp = mp.filter(|d| !is_ns_root_dentry(d));
+    let sb = src.sb.clone();
+    let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
+    let Some(d) = mp else {
+        let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
+        *m.mnt_root.lock() = Some(root_dentry);
+        m.set_internal_flag(MNT_INTERNAL);
+        {
+            let _w = MOUNT_WRITE.lock();
+            mntns::ns_set_root(ns, mnt_id);
+            MOUNTS.lock().insert(mnt_id, m);
+        }
+        mntns::commit_mounts(ns, 1);
+        mntns::bump_gen(ns);
+        return Ok(());
+    };
+    let parent_id = parent_hint.unwrap_or_else(|| parent_by_dentry(ns, &d));
+    let rendered = rendered_path_for(parent_id, &d);
+    graft_bind_realized(d, sb, root_dentry, parent_id, rendered)
+}
+
 /// Bind attach with an EXPLICIT parent mount id + rendered path — Linux
 /// `do_add_mount` keys the target on the caller's `struct path` (`vfsmount` +
 /// `dentry`), NOT the dentry alone. Required when the mountpoint dentry `mp_d` is
@@ -174,13 +239,48 @@ pub fn register_bind_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: 
 /// (status 226). Passing the RESOLVED target mount (`resolve_path(target).mnt_id`)
 /// as the parent puts the bind at the right `(parent_id, dentry)` hash slot and
 /// renders the correct path. # C: O(1)
-pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, rendered: String,
+pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
     let ns = current_ns();
     mntns::count_mounts(ns, 1)?;
+    let rendered = rendered_path_for(parent_id, &mp_d);
     let sb = build_sb(fs, Some(root), rendered.clone());
+    let root_dentry = sb.s_root().ok_or(VfsError::Enoent)?;
+    graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
+}
+
+/// As [`register_bind_under`] but preserves the bind source dentry as `mnt_root`.
+/// # C: O(1)
+pub fn register_bind_path_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
+    fs: Arc<dyn FileSystem>, root_dentry: Arc<Dentry>) -> KResult<()> {
+    let root = root_dentry.inode().ok_or(VfsError::Enoent)?;
+    let ns = current_ns();
+    mntns::count_mounts(ns, 1)?;
+    let rendered = rendered_path_for(parent_id, &mp_d);
+    let sb = build_sb(fs, Some(root), rendered.clone());
+    graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
+}
+
+/// As [`register_bind_clone_at`] but the caller supplies the walked destination
+/// parent mount id explicitly. # C: O(1)
+pub fn register_bind_clone_under(parent_id: u64, mp_d: Arc<Dentry>,
+    source_mnt_id: u64, root_dentry: Arc<Dentry>) -> KResult<()> {
+    let src = mount_by_id(source_mnt_id).ok_or(VfsError::Einval)?;
+    if !check_mnt(&src) { return Err(VfsError::Einval); }
+    let ns = current_ns();
+    mntns::count_mounts(ns, 1)?;
+    let grabbed = src.sb.grab_active();
+    hal::kassert!(grabbed, "register_bind_clone_under: live source SB must grab active ref");
+    let rendered = rendered_path_for(parent_id, &mp_d);
+    graft_bind_realized(mp_d, src.sb.clone(), root_dentry, parent_id, rendered)
+}
+
+fn graft_bind_realized(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_dentry: Arc<Dentry>,
+    parent_id: u64, rendered: String) -> KResult<()> {
+    let ns = current_ns();
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let m = new_mount(sb, rendered, Some(mp_d.clone()), parent_id, mnt_id, ns);
+    *m.mnt_root.lock() = Some(root_dentry);
     {
         let _w = MOUNT_WRITE.lock();
         *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));

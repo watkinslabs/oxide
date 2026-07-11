@@ -66,6 +66,22 @@ pub fn path_lookup_at_cred(
 ) -> KResult<VfsPath> {
     let ns = crate::mount::current_ns();
     let root_mnt_id = crate::mount::containing_mount_id(ns, &root);
+    path_lookup_at_root_cred(start, start_mnt_id, root, root_mnt_id, path, flags, cred)
+}
+
+/// As [`path_lookup_at_cred`] but both start and resolution-root carry exact
+/// mount ids. Used when callers hold full `struct path` equivalents; re-deriving
+/// either id from a bare dentry is ambiguous for bind/pivot clones sharing one
+/// superblock root. # C: O(components × dir-lookup) + O(symlinks)
+pub fn path_lookup_at_root_cred(
+    start: Arc<Dentry>,
+    start_mnt_id: u64,
+    root: Arc<Dentry>,
+    root_mnt_id: u64,
+    path: &str,
+    flags: LookupFlags,
+    cred: Cred,
+) -> KResult<VfsPath> {
     let mut nd = Nameidata::new_at(start, start_mnt_id, root, root_mnt_id, flags, cred)?;
     nd.walk(path)
 }

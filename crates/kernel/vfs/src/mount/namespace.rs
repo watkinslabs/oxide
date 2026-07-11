@@ -175,6 +175,7 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>,
         for m in mounts.iter() {
             if let Some((_, p, d)) = dents.iter().find(|(id, _, _)| *id == m.mnt_id) {
                 let is_root = Some(m.mnt_id) == new_root_id;
+                if !preserve.contains(&m.mnt_id) { m.parent_id.store(0, Ordering::Release); }
                 set_mountpoint_dentry(m, if is_root { None } else { d.clone() }, p.clone());
             }
         }
@@ -320,23 +321,41 @@ pub(crate) fn reap_ns(ns: u64) {
 /// degenerate dest whose mounted root cannot resolve the slot, so a plain-dir
 /// recursive bind still mirrors (the NAMESPACE-226 procfs-clone case). # C: O(N×depth)
 pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
+    bind_submounts_rec_at(None, src, tgt, None)
+}
+
+/// As [`bind_submounts_rec`] but the caller supplies the target's containing
+/// mount id from the original path walk. Required when `tgt`'s dentry is shared
+/// across bind locations and `containing_mount_id` would guess the wrong parent.
+/// # C: O(N×depth)
+pub fn bind_submounts_rec_under(src: &Arc<Dentry>, tgt: &Arc<Dentry>, tgt_parent_hint: Option<u64>) -> usize {
+    bind_submounts_rec_at(None, src, tgt, tgt_parent_hint)
+}
+
+/// As [`bind_submounts_rec_under`] but the caller also supplies the source mount
+/// id from the source path walk. Required once bind roots preserve their source
+/// dentry: a later dentry-only exact lookup can confuse the source root with the
+/// just-created bind whose `mnt_root` is the same dentry. # C: O(N×depth)
+pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: &Arc<Dentry>,
+    tgt_parent_hint: Option<u64>) -> usize {
     let ns = current_ns();
-    let Some(src_m) = mount_exact_at(ns, src) else { return 0; };
+    let src_m = src_mnt_hint.and_then(mount_by_id)
+        .or_else(|| global_root().filter(|r| Arc::ptr_eq(r, src))
+            .and_then(|_| root_mount_id(ns)).and_then(mount_by_id))
+        .or_else(|| mount_exact_at(ns, src));
+    let Some(src_m) = src_m else { return 0; };
     // Unbindable source root is not cloned (Linux `IS_MNT_UNBINDABLE`, D15).
     if is_unbindable(&src_m) { return 0; }
-    // Base mountpoint to capture relative positions against: the source root's
-    // own mountpoint, or the global root for the namespace-root source.
-    let Some(base_mp) = src_m.mountpoint().or_else(global_root) else { return 0; };
     // Mirror under the TARGET's mounted ROOT, not its bare mountpoint dentry.
     let mut tgt_base = tgt.clone();
-    let mut tgt_mnt = containing_mount_id(ns, tgt);
+    let mut tgt_mnt = tgt_parent_hint.unwrap_or_else(|| containing_mount_id(ns, tgt));
     while let Some(m) = __lookup_mnt(tgt_mnt, &tgt_base) {
         match m.mnt_root() { Some(sr) => { tgt_base = sr; tgt_mnt = m.mnt_id; } None => break }
     }
     // Clone the source's submount SUBTREE (root EXCLUDED — already bound) as
     // private binds, then splice it under the destination base, falling back to
     // the bare `tgt` underlay when the mounted root cannot resolve a slot.
-    let nodes = copy_tree(&src_m, &base_mp, CloneType::Private, 0, &src_m, ns, false, Some(tgt));
+    let nodes = copy_bind_subtree_from_arena(&src_m, ns, Some(tgt_mnt));
     // `tgt_mnt` is the mount whose `mnt_root` is `tgt_base` — the explicit parent
     // of every top-level cloned submount, threaded so the parent-aware
     // `commit_tree` need not (ambiguously) re-derive it from the shared dentry.
@@ -436,7 +455,7 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
             anc = if p == a { None } else { Some(p) };
         }
     }
-    if !to_root && top_mount_on(ns, to).is_some() { return Err(VfsError::Ebusy); }
+    if !to_root && dest_pid.and_then(|p| __lookup_mnt(p, to)).is_some() { return Err(VfsError::Ebusy); }
     let to_abs = if to_root { String::from("/") } else { abs_string(to) };
     let old_mp = from_m.mountpoint();
     let old_parent = from_m.parent_id.load(Ordering::Acquire);
@@ -479,7 +498,8 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
     for m in snap.iter() {
         if m.mnt_id == from_id { continue; }
         let Some(child_mp) = m.mountpoint() else { continue; };
-        let disp_rel = rel_under(&child_mp, old_mp.as_ref()).unwrap_or_default();
+        let disp_seed = m.parent_id.load(Ordering::Acquire);
+        let disp_rel = rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()).unwrap_or_default();
         let new_rendered = if disp_rel.is_empty() { to_abs.clone() }
                            else { alloc::format!("{}{}", to_abs, disp_rel) };
         match old_mp.as_ref().and_then(|omp| plain_rel_under(&child_mp, omp)) {

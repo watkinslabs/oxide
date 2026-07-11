@@ -444,8 +444,7 @@ fn rebuild_ns_index(ns: u64) {
                 // `mnt_parent` (Linux never re-derives it). When they do NOT share
                 // an `s_root`, the parent genuinely moved (a pivot relocation) and
                 // the freshly derived one wins.
-                let parent = if recorded != 0 && recorded != m.mnt_id
-                    && same_sb_root(recorded, derived) { recorded } else { derived };
+                let parent = if recorded != 0 && recorded != m.mnt_id { recorded } else { derived };
                 m.parent_id.store(parent, Ordering::Release);
                 if let Some(p) = mount_by_id(parent) {
                     *m.mnt_parent.lock() = Arc::downgrade(&p);
@@ -454,19 +453,5 @@ fn rebuild_ns_index(ns: u64) {
                 hash_insert(parent, dptr(&d), m.mnt_id);
             }
         }
-    }
-}
-
-/// True iff mounts `a` and `b` resolve to the SAME superblock root dentry (or are
-/// the same mount) — the signature of an SB-sharing clone pair that a bare
-/// dentry-ptr scan cannot disambiguate. # C: O(log N)
-fn same_sb_root(a: u64, b: u64) -> bool {
-    if a == b { return true; }
-    match (mount_by_id(a), mount_by_id(b)) {
-        (Some(ma), Some(mb)) => match (ma.sb.s_root(), mb.sb.s_root()) {
-            (Some(ra), Some(rb)) => dptr(&ra) == dptr(&rb),
-            _ => false,
-        },
-        _ => false,
     }
 }
