@@ -27,6 +27,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vfs::InodeRef;
 use vfs::xattr::XattrError;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 const ENODATA: i32 = 61;
 const EEXIST:  i32 = 17;
@@ -119,10 +120,8 @@ fn read_hidden(name: &str) -> bool {
 }
 
 fn read_user_xattr_name(p: u64, max: usize) -> Result<String, i64> {
-    if p == 0 || p >= hal::USER_VA_END {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: p validated < USER_VA_END; bounded read via existing helper.
+    validate_user_buf(p, 1, 1)?;
+    // SAFETY: the first byte is user-buffer validated; read_user_cstr bounds the remaining C-string scan.
     let bytes = unsafe { devfs::read_user_cstr(p, max) };
     let name = vfs::path_from_bytes(bytes.ok_or(-(Errno::Einval.as_i32() as i64))?);
     check_name_len(&name)?;
@@ -131,15 +130,12 @@ fn read_user_xattr_name(p: u64, max: usize) -> Result<String, i64> {
 
 fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
     if len == 0 { return Ok(Vec::new()); }
-    if p == 0 || p >= hal::USER_VA_END
-        || p.checked_add(len as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
+    validate_user_buf(p, len as u64, 1)?;
     let mut out = alloc::vec![0u8; len];
-    // SAFETY: p+len validated < USER_VA_END; CPL=0 byte reads through caller's AS into kernel-owned buffer.
+    // SAFETY: exact user byte range validated; destination is a kernel-owned Vec.
     unsafe {
         for i in 0..len {
-            out[i] = core::ptr::read_volatile((p + i as u64) as *const u8);
+            out[i] = core::ptr::read_unaligned((p + i as u64) as *const u8);
         }
     }
     Ok(out)
@@ -147,14 +143,11 @@ fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
 
 fn write_user_bytes(p: u64, src: &[u8]) -> Result<(), i64> {
     if src.is_empty() { return Ok(()); }
-    if p == 0 || p >= hal::USER_VA_END
-        || p.checked_add(src.len() as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: p+src.len() validated < USER_VA_END; CPL=0 byte writes through caller's AS, src is kernel-owned.
+    validate_user_buf_writable(p, src.len() as u64, 1)?;
+    // SAFETY: exact writable user byte range validated; source is a kernel-owned slice.
     unsafe {
         for i in 0..src.len() {
-            core::ptr::write_volatile((p + i as u64) as *mut u8, src[i]);
+            core::ptr::write_unaligned((p + i as u64) as *mut u8, src[i]);
         }
     }
     Ok(())
