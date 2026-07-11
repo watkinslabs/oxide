@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
-use vfs::{Ino, Inode, InodeRef};
+use vfs::{Ino, InodeRef};
 
 pub(crate) const INOTIFY_INO_BASE: Ino = 0x7100_0000;
 
@@ -149,8 +149,9 @@ pub struct InotifyData {
 }
 
 pub(crate) fn inode_key(inode: &InodeRef) -> usize {
-    let raw: *const Inode = Arc::as_ptr(inode);
-    raw as *const u8 as usize
+    let fsid = inode.fsid();
+    let ino = inode.ino();
+    (fsid ^ ino.rotate_left(32)) as usize
 }
 
 // `AtomicU32` import keeps the Spinlock lock-class warning at bay; nothing

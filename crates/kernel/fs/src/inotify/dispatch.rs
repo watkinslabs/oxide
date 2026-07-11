@@ -66,16 +66,11 @@ pub(crate) fn fire_self(inode: &InodeRef, mask_bit: u32) { dispatch(inode, mask_
 /// A dir-entry event reported on watched directory `parent`. # C: as dispatch
 pub(crate) fn fire_child(parent: &InodeRef, mask_bit: u32, cookie: u32) { dispatch(parent, mask_bit, false, cookie); }
 
-/// Fire `IN_MODIFY` on the inode currently registered at `path`.
-/// Leaf crates (cgroup) that mutate a synthetic file's content without
-/// going through the VFS write path use this to emit the
-/// change-notification Linux's `cgroup_file_notify` provides.
-/// # C: O(N_inotify * N_watches) + O(path components)
-pub fn fire_modify_path(path: &str) {
-    if let Ok(inode) = vfs::resolve_abs(path) {
-        fire_self(&inode, IN_MODIFY);
-    }
-}
+/// Fire `IN_MODIFY` on an already-identified inode. Leaf crates (cgroup) that
+/// mutate synthetic file content without going through the VFS write path use
+/// this to emit Linux's `cgroup_file_notify` without re-walking a path string.
+/// # C: O(N_groups * N_watches)
+pub fn fire_modify(inode: &InodeRef) { fire_self(inode, IN_MODIFY); }
 
 /// FAN_ATTRIB / IN_ATTRIB — metadata change (chmod/chown/utimes/link-count).
 /// Wired from the chmod/chown syscall handlers (Linux `fsnotify_change`).
@@ -125,16 +120,12 @@ pub fn install_write_hook() {
     vfs::set_dirent_delete_hook(vfs_dirent_delete);
 }
 
-fn vfs_dirent_create(parent: &str, _leaf: &str) {
-    if let Ok(parent_inode) = vfs::mount::lookup(parent) {
-        fire_child(&parent_inode, IN_CREATE, 0);
-        vfs::file::dnotify_emit(&parent_inode, vfs::file::DN_CREATE);
-    }
+fn vfs_dirent_create(parent: &InodeRef, _leaf: &str) {
+    fire_child(parent, IN_CREATE, 0);
+    vfs::file::dnotify_emit(parent, vfs::file::DN_CREATE);
 }
 
-fn vfs_dirent_delete(parent: &str, _leaf: &str) {
-    if let Ok(parent_inode) = vfs::mount::lookup(parent) {
-        fire_child(&parent_inode, IN_DELETE, 0);
-        vfs::file::dnotify_emit(&parent_inode, vfs::file::DN_DELETE);
-    }
+fn vfs_dirent_delete(parent: &InodeRef, _leaf: &str) {
+    fire_child(parent, IN_DELETE, 0);
+    vfs::file::dnotify_emit(parent, vfs::file::DN_DELETE);
 }
