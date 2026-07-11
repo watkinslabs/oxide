@@ -25,7 +25,7 @@ use crate::dentry::Dentry;
 use crate::fs::{FileSystem, KResult};
 use crate::inode::InodeRef;
 use crate::mntns::{self, get_mountpoint, put_mountpoint, Mountpoint};
-use crate::superblock::{next_anon_dev, sget, SuperBlock};
+use crate::superblock::{next_anon_dev, sget, FileSystemType, SimpleSuperOps, SuperBlock};
 use crate::types::VfsError;
 
 // Re-export the namespace / notify / hook surface so callers keep using

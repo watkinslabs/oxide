@@ -7,37 +7,21 @@ use crate::file_ops::FileOps;
 use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING};
 use crate::inode_ops::InodeOps;
 use crate::types::{Ino, KResult};
-use crate::types::VfsError;
 use super::SuperBlock;
 
-/// Generic `super_operations` for a backend that has not installed richer
-/// per-filesystem ops. It snapshots fill-super metadata; it does not retain a
-/// second backend object behind the mounted superblock.
-pub(crate) struct GenericSuperOps {
-    pub(crate) magic:      u64,
-    pub(crate) block_size: u32,
-    pub(crate) options:    String,
+/// Simple `super_operations` for pseudo/in-core filesystems whose statfs state
+/// is fixed at fill-super time. This is an explicit `s_op`, not a fallback from
+/// a mounted backend object.
+pub struct SimpleSuperOps {
+    pub magic:      u64,
+    pub block_size: u32,
+    pub options:    String,
 }
-impl SuperOps for GenericSuperOps {
+impl SuperOps for SimpleSuperOps {
     fn statfs(&self) -> KResult<SbStatFs> {
         Ok(SbStatFs { f_type: self.magic, f_bsize: self.block_size, ..Default::default() })
     }
     fn show_options(&self) -> String { self.options.clone() }
-}
-
-/// Mounted-superblock `file_system_type` metadata for old constructor-backed
-/// filesystems. It snapshots the Linux type identity; remount creation must go
-/// through the global filesystem registry, not this already-mounted instance.
-pub(crate) struct StaticFsType {
-    pub(crate) name:  String,
-    pub(crate) flags: FsFlags,
-}
-impl FileSystemType for StaticFsType {
-    fn name(&self) -> &str { &self.name }
-    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
-        Err(VfsError::Einval)
-    }
-    fn fs_flags(&self) -> FsFlags { self.flags }
 }
 
 /// `statfs(2)` payload a superblock reports (Linux `struct kstatfs`
