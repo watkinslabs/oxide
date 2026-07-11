@@ -746,6 +746,10 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
      - replace `target = resolve_cwd(target_raw)`/`canonical_mount_path()` authority with one `VfsPath` walk.
      - replace source `mount_dentry(&source)` + `resolve_path(&source)` double walk with one source `VfsPath`.
      - make mountinfo root/source rendering call a shared VFS helper and test it hosted.
+   - Done next slice:
+     - `vfs::mount::project_path_under_root()` now owns reader-root projection for procfs mount reports.
+     - `/proc/self/mountinfo` and `/proc/mounts` share that projection, so a chroot/pivoted reader no longer sees global mountpoint strings in one file and projected strings in the other.
+     - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 4/4.
    - Thread the target parent mount id into every remaining legacy bind helper unconditionally when it is known, then delete the legacy fake-SB path once all callers use `register_bind_clone_*`.
    - Keep rendered strings only as mountinfo payload, derived from the walked mount context.
    - Make `canonical_mount_path()` non-authoritative or remove it from the mount attach path. Procfd/magic-link jumps should resolve to a `VfsPath`, not to a display string.
