@@ -20,6 +20,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio; pub mod pidfd;
 #[path = "194_listxattr.rs"] pub mod s194_listxattr; #[path = "195_llistxattr.rs"] pub mod s195_llistxattr; #[path = "196_flistxattr.rs"] pub mod s196_flistxattr;
 #[path = "197_removexattr.rs"] pub mod s197_removexattr; #[path = "198_lremovexattr.rs"] pub mod s198_lremovexattr; #[path = "199_fremovexattr.rs"] pub mod s199_fremovexattr;
 #[path = "468_file_getattr.rs"] pub mod s468_file_getattr; #[path = "469_file_setattr.rs"] pub mod s469_file_setattr; #[path = "470_listns.rs"] pub mod s470_listns; #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
+#[path = "451_cachestat.rs"] pub mod s451_cachestat;
 #[path = "335_uretprobe.rs"] pub mod s335_uretprobe; #[path = "336_uprobe.rs"] pub mod s336_uprobe; #[path = "453_map_shadow_stack.rs"] pub mod s453_map_shadow_stack;
 #[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam; #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr; #[path = "013_rt_sigaction.rs"] pub mod s013_rt_sigaction;
 #[path = "014_rt_sigprocmask.rs"] pub mod s014_rt_sigprocmask; #[path = "062_kill.rs"] pub mod s062_kill; #[path = "127_rt_sigpending.rs"] pub mod s127_rt_sigpending;
