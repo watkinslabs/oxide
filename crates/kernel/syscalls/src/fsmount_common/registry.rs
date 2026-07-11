@@ -74,12 +74,12 @@ pub fn ensure_filesystems_registered() {
 }
 
 fn register_filesystems() {
-    use vfs::fs::{FsFlags, FsType, MountSpec, register_fs};
-    type R = vfs::fs::KResult<MountSpec>;
+    use vfs::fs::{superblock_from_filesystem, FsFlags, FsType, register_fs};
+    type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
 
     fn mounted(ty: Arc<dyn vfs::FileSystemType>, fs: Arc<dyn vfs::fs::FileSystem>, root: Option<vfs::InodeRef>,
-        strict: bool, s_id: &str) -> MountSpec {
-        MountSpec::from_filesystem(ty, fs, root, strict, s_id.to_string())
+        s_id: &str) -> Arc<vfs::SuperBlock> {
+        superblock_from_filesystem(ty, fs, root, s_id.to_string())
     }
 
     fn tmpfs_ctor(ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, target: &str, d: &str) -> R {
@@ -91,7 +91,7 @@ fn register_filesystems() {
         let tfs = ::fs::tmpfs::TmpfsFs::from_mount_data(target.to_string(), d);
         let root = tfs.root_inode();
         let fs: Arc<dyn vfs::fs::FileSystem> = tfs;
-        Ok(mounted(ty, fs, Some(root), false, target))
+        Ok(mounted(ty, fs, Some(root), target))
     }
     let _ = register_fs(FsType::new("tmpfs", 0, FsFlags::empty(), Box::new(tmpfs_ctor)));
     let _ = register_fs(FsType::new("ramfs", 0, FsFlags::empty(), Box::new(tmpfs_ctor)));
@@ -99,24 +99,24 @@ fn register_filesystems() {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let (dev, dev_t) = resolve_ext4_source(source).ok_or(vfs::VfsError::Enoent)?;
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
-        Ok(mounted(ty, fs, None, true, source))
+        Ok(mounted(ty, fs, None, source))
     })));
     let _ = register_fs(FsType::new("proc", 0, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
-        Ok(mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs), None, false, "proc"))
+        Ok(mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs), None, "proc"))
     })));
     let _ = register_fs(FsType::new("sysfs", 0, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
-        Ok(mounted(ty, Arc::new(sysfs::SysfsFs), None, false, "sysfs"))
+        Ok(mounted(ty, Arc::new(sysfs::SysfsFs), None, "sysfs"))
     })));
     let _ = register_fs(FsType::new("debugfs", 0, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
-        Ok(mounted(ty, Arc::new(tracefs::fs_impl::DebugfsFs), None, false, "debugfs"))
+        Ok(mounted(ty, Arc::new(tracefs::fs_impl::DebugfsFs), None, "debugfs"))
     })));
     let _ = register_fs(FsType::new("tracefs", 0, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
-        Ok(mounted(ty, Arc::new(tracefs::fs_impl::TracefsFs), None, false, "tracefs"))
+        Ok(mounted(ty, Arc::new(tracefs::fs_impl::TracefsFs), None, "tracefs"))
     })));
     macro_rules! pseudo { ($name:literal, $magic:expr) => {
         let _ = register_fs(FsType::new($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
             let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new($name, $magic);
-            Ok(mounted(ty, fs, None, true, $name))
+            Ok(mounted(ty, fs, None, $name))
         })));
     }; }
     pseudo!("securityfs", SECURITYFS_MAGIC);
@@ -124,33 +124,33 @@ fn register_filesystems() {
     pseudo!("pstore", PSTOREFS_MAGIC);
     pseudo!("bpf", BPF_FS_MAGIC);
     let _ = register_fs(FsType::new("configfs", 0, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
-        Ok(mounted(ty, Arc::new(tracefs::fs_impl::ConfigfsFs), None, false, "configfs"))
+        Ok(mounted(ty, Arc::new(tracefs::fs_impl::ConfigfsFs), None, "configfs"))
     })));
     pseudo!("fusectl", FUSE_CTL_MAGIC);
     pseudo!("mqueue", MQUEUE_MAGIC);
     pseudo!("hugetlbfs", HUGETLBFS_MAGIC);
     let _ = register_fs(FsType::new("autofs", 0, FsFlags::empty(), Box::new(|ty, _, _, data: &str| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::autofs::AutofsFs::new(data)?;
-        Ok(mounted(ty, fs, None, true, "autofs"))
+        Ok(mounted(ty, fs, None, "autofs"))
     })));
     let _ = register_fs(FsType::new("binfmt_misc", 0, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
-        Ok(mounted(ty, fs, None, true, "binfmt_misc"))
+        Ok(mounted(ty, fs, None, "binfmt_misc"))
     })));
     let _ = register_fs(FsType::new("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _s: Option<&str>, _t: &str, data: &str| -> R {
         let (fs, root) = ::fs::fuse::mount_from_data(data)?;
-        Ok(mounted(ty, fs, Some(root), true, "fuse"))
+        Ok(mounted(ty, fs, Some(root), "fuse"))
     })));
     let _ = register_fs(FsType::new("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = devpts::devpts_fs();
-        Ok(mounted(ty, fs, None, false, "devpts"))
+        Ok(mounted(ty, fs, None, "devpts"))
     })));
     let _ = register_fs(FsType::new("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(devfs::DevfsFs);
-        Ok(mounted(ty, fs, None, false, "devtmpfs"))
+        Ok(mounted(ty, fs, None, "devtmpfs"))
     })));
     let _ = register_fs(FsType::new("cgroup2", CGROUP2_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
         let (fs, root) = cgroup::realize_tree();
-        Ok(mounted(ty, fs, Some(root), false, "cgroup2"))
+        Ok(mounted(ty, fs, Some(root), "cgroup2"))
     })));
 }

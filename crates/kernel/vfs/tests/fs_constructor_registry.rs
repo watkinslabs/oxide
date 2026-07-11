@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use vfs::fs::{get_fs, get_fs_type, register_fs, unregister_fs, FileSystem, FsFlags, FsType, MountSpec};
+use vfs::fs::{get_fs, get_fs_type, register_fs, superblock_from_filesystem, unregister_fs, FileSystem, FsFlags, FsType};
 use vfs::{InodeBuilder, InodeRef, FileType, default_file_ops, default_inode_ops, mk_mode};
 
 const T_MAGIC: u64 = 0x7430_3431; // arbitrary, unique to this test
@@ -33,9 +33,9 @@ fn register_get_construct_and_unknown_is_none() {
     assert!(get_fs_type("t040ctor").is_none(), "unregistered: get_fs_type None");
 
     register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
+        Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<Arc<vfs::SuperBlock>> {
             let fs: Arc<dyn FileSystem> = Arc::new(T040Fs);
-            Ok(MountSpec::from_filesystem(ty, fs, None, true, String::from("t040ctor")))
+            Ok(superblock_from_filesystem(ty, fs, None, String::from("t040ctor")))
         }))).expect("register t040ctor");
 
     // get_fs_type returns the registered type (the D40 test contract).
@@ -47,14 +47,13 @@ fn register_get_construct_and_unknown_is_none() {
     // get_fs yields the constructor; running it builds the mounted superblock.
     let cons = get_fs("t040ctor").expect("get_fs resolves the constructor entry");
     assert_eq!(cons.magic(), T_MAGIC);
-    let spec = cons.construct(Some("none"), "/mnt", "").expect("constructor builds a MountSpec");
-    assert_eq!(spec.sb.s_type.name(), "t040ctor");
-    assert_eq!(spec.sb.s_magic, T_MAGIC);
-    assert!(spec.strict);
+    let sb = cons.construct(Some("none"), "/mnt", "").expect("constructor builds a SuperBlock");
+    assert_eq!(sb.s_type.name(), "t040ctor");
+    assert_eq!(sb.s_magic, T_MAGIC);
 
     // Duplicate name → EBUSY.
     assert!(register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|_, _s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
+        Box::new(|_, _s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<Arc<vfs::SuperBlock>> {
             Err(vfs::VfsError::Einval)
         }))).is_err(), "duplicate name rejected");
 

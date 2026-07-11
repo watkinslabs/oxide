@@ -1,28 +1,10 @@
-/// Build a `Mount` and attach it on the caller-supplied mountpoint dentry
-/// `mp` (Linux `mnt_set_mountpoint`/`commit_tree`). `mp == None` ⇒ the
-/// namespace root mount. The caller supplies a realized `MountSpec` from
-/// `file_system_type->mount`/`fill_super`; this namespace layer never derives
-/// SB authority from a backend object. # C: O(depth)
-fn attach_spec(mp: Option<Arc<Dentry>>, spec: MountSpec, parent_hint: Option<u64>) -> KResult<()> {
-    let MountSpec { sb, strict: _ } = spec;
-    #[cfg(feature = "debug-mnt")]
-    mntcreate_log("attach", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, 0, parent_hint)
-}
-
-/// Compatibility constructor boundary: consume a backend object into a realized
-/// SB before namespace grafting. This is the only old-`FileSystem` adapter in
-/// the mount layer; `graft_realized` and namespace state never retain it.
-/// # C: O(depth)
-fn attach(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
-    root: Option<InodeRef>, parent_hint: Option<u64>) -> KResult<()> {
-    let mp = mp.filter(|d| !is_ns_root_dentry(d));
-    // `s_id` (the SB label) mirrors Linux's device/source id; the legacy mount
-    // engine used the rendered mountpoint path here, which is not consumed
-    // anywhere — keep it for an exact byte match with the prior behaviour.
-    let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
-    let spec = MountSpec::from_filesystem(s_type, fs, root, false, s_id);
-    attach_spec(mp, spec, parent_hint)
+/// Compatibility fill-super boundary for filesystems not yet converted to a
+/// native `FileSystemType::mount` implementation. It returns a realized SB and
+/// never crosses into namespace state with the backend object. # C: O(depth)
+fn realize_compat_sb(s_type: Arc<dyn FileSystemType>, mp: Option<&Arc<Dentry>>,
+    fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> Arc<SuperBlock> {
+    let s_id = match mp { Some(d) => abs_string(d), None => String::from("/") };
+    superblock_from_filesystem(s_type, fs, root, s_id)
 }
 
 /// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
@@ -132,14 +114,16 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
 /// dentry `mp` (Linux `do_new_mount` after `get_fs_type`). # C: O(depth)
 pub fn register_typed(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
     fs: Arc<dyn FileSystem>) -> KResult<()> {
-    attach(s_type, mp, fs, None, None)
+    register_typed_at(s_type, mp, fs, None)
 }
 
 /// As [`register_typed`] but with the walked destination PARENT mount id.
 /// # C: O(depth)
 pub fn register_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
     fs: Arc<dyn FileSystem>, parent_hint: Option<u64>) -> KResult<()> {
-    attach(s_type, mp, fs, None, parent_hint)
+    let mp = mp.filter(|d| !is_ns_root_dentry(d));
+    let sb = realize_compat_sb(s_type, mp.as_ref(), fs, None);
+    graft_realized(mp, sb, 0, parent_hint)
 }
 
 /// Register a FileSystem on mountpoint dentry `mp` by looking up its registered
@@ -176,7 +160,9 @@ pub fn register_bind_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<De
     fs: Arc<dyn FileSystem>, root: InodeRef, parent_hint: Option<u64>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
-    attach(s_type, mp, fs, Some(root), parent_hint)
+    let mp = mp.filter(|d| !is_ns_root_dentry(d));
+    let sb = realize_compat_sb(s_type, mp.as_ref(), fs, Some(root));
+    graft_realized(mp, sb, 0, parent_hint)
 }
 
 /// As [`register_bind`] but with the walked destination PARENT mount id.
@@ -199,9 +185,7 @@ pub fn register_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, r
     let ns = current_ns();
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     mntns::count_mounts(ns, 1)?;
-    let s_id = match &mp { Some(d) => abs_string(d), None => String::from("/") };
-    let spec = MountSpec::from_filesystem(ty, fs, Some(root), false, s_id);
-    let sb = spec.sb;
+    let sb = realize_compat_sb(ty, mp.as_ref(), fs, Some(root));
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
@@ -276,8 +260,7 @@ pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let spec = MountSpec::from_filesystem(ty, fs, Some(root), false, rendered.clone());
-    let sb = spec.sb;
+    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone());
     let root_dentry = sb.s_root().ok_or(VfsError::Enoent)?;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
@@ -291,8 +274,7 @@ pub fn register_bind_path_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: St
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let spec = MountSpec::from_filesystem(ty, fs, Some(root), false, rendered.clone());
-    let sb = spec.sb;
+    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone());
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
 
