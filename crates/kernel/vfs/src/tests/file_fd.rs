@@ -350,6 +350,18 @@ fn install_open_o_cloexec_sets_fd_flag_not_file_flag() {
 }
 
 #[test]
+fn install_open_o_tmpfile_does_not_require_directory_inode() {
+    let t = FdTable::new();
+    let i: InodeRef = MemFile::new(3);
+    let d = Dentry::new_root(Arc::clone(&i));
+    let fd = crate::file::install_open_at(&t, Arc::clone(&i), d,
+        OpenFlags::O_RDWR | OpenFlags::O_TMPFILE, 0, crate::namei::Cred::root(), usize::MAX, None).unwrap();
+    let flags = t.get(fd).unwrap().flags();
+    assert!(flags.contains(OpenFlags::O_TMPFILE));
+    assert!(flags.contains(OpenFlags::O_DIRECTORY));
+}
+
+#[test]
 fn fdtable_bitmap_alloc_min_skips_full_words() {
     let t = FdTable::new();
     let mut fds = alloc::vec::Vec::new();

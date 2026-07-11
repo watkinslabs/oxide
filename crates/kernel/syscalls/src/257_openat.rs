@@ -3,10 +3,10 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::{File, OpenFlags};
+use vfs::OpenFlags;
 
 use crate::open_common::{enforce_open_perm, break_lease_for_open, O_CREAT, O_EXCL, O_TRUNC,
-    O_DIRECTORY, O_NOFOLLOW, O_TMPFILE, O_PATH};
+    O_NOFOLLOW, O_TMPFILE, O_PATH};
 
 const DEV_TTY_MAJOR: u32 = 5;
 const DEV_TTY_ALIAS_MINOR: u32 = 0;
@@ -303,22 +303,6 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // O_CREAT cache flush/fsnotify is done in the create branch from the exact
     // resolved parent VfsPath. Re-walking display text here would collapse bind or
     // chroot identity back into display text.
-    // O_TMPFILE = __O_TMPFILE | O_DIRECTORY, so skip the dir check for it.
-    if (flags & O_DIRECTORY) != 0 && (flags & O_TMPFILE) == 0
-        && !matches!(inode.file_type(), vfs::FileType::Directory)
-    {
-        #[cfg(feature = "debug-boot")]
-        {
-            klog::write_raw(b"[ENOTDIR] op=openat why=o_directory-target tid=");
-            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
-            klog::write_raw(b" flags=");
-            klog::write_hex_u64(flags as u64);
-            klog::write_raw(b" path=");
-            klog::write_raw(path_str.as_bytes());
-            klog::write_raw(b"\n");
-        }
-        return -(Errno::Enotdir.as_i32() as i64);
-    }
     // Linux `do_dentry_open`: an O_PATH (FMODE_PATH) descriptor is a pure
     // fd-reference — it NEVER calls `f_op->open`, so the device driver's open is
     // skipped. Our `on_open` IS that driver hook (char/block `->open`), so gating
@@ -352,7 +336,6 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // fanotify FAN_OPEN_PERM (fast no-op without perm marks; deny → EACCES).
     if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
     if let Err(rv) = ::security::bpf_lsm::file_open(&inode) { return rv; }
-    if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     // D23: controlling-terminal acquisition on open (Linux `tty_open`). A
     // session leader opening a console/serial/VT tty WITHOUT O_NOCTTY, when
     // the tty is unclaimed, makes it the session's controlling terminal.
@@ -364,7 +347,6 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let oflags = OpenFlags::from_bits_truncate(flags) - OpenFlags::O_CLOEXEC;
     // fifo(7): opening a named-pipe (S_IFIFO) inode binds the shared pipe ring
     // to the inode and runs the reader/writer rendezvous (Linux
     // `def_fifo_fops.open = fifo_open`), then this open's data path dispatches
@@ -390,23 +372,16 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // logged — the same path resolving to different inos across calls = lookup race.
     #[cfg(feature = "debug-atexit")]
     let probe_ino = if path_str.contains(".so") { Some(inode.ino()) } else { None };
-    let file = match fifo_fop {
-        Some(fop) => File::new_at_fop(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred(), fop),
-        None      => File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred()),
-    };
-    if (flags & O_PATH) == 0 {
-        if let Err(e) = file.open_hook() { return -(e as i64); }
-    }
-    if let Some(i) = created_ref { vfs::file::iput(i); }
+    let oflags = OpenFlags::from_bits_truncate(flags);
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
     // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
     // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
     let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;
-    match fdt.alloc_limit(file, nofile) {
+    match vfs::file::install_open_at(&fdt, inode, dentry, oflags, mnt_id,
+        crate::pathresolve::current_cred(), nofile, fifo_fop)
+    {
         Ok(fd)  => {
-            if (flags & OpenFlags::O_CLOEXEC.bits()) != 0 {
-                if let Err(e) = fdt.set_cloexec(fd, true) { return -(e as i64); }
-            }
+            if let Some(i) = created_ref { vfs::file::iput(i); }
             #[cfg(feature = "debug-atexit")]
             if let Some(pino) = probe_ino {
                 let tail = if path_str.len() > 28 { &path_str[path_str.len() - 28..] } else { path_str };
@@ -422,7 +397,10 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
             }
             fd as i64
         }
-        Err(e)  => -(e as i64),
+        Err(e)  => {
+            if let Some(i) = created_ref { vfs::file::iput(i); }
+            -(e as i64)
+        }
     }
 }
 
