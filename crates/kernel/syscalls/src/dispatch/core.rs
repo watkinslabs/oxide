@@ -70,6 +70,21 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
                 cur.sigpending.fetch_or(Signum::Sigalrm.bit(), Ordering::Release);
             }
         }
+        let u = cur.utime_ns.load(Ordering::Acquire);
+        let s = cur.stime_ns.load(Ordering::Acquire);
+        let vdl = cur.itimer_virtual_ns.load(Ordering::Acquire);
+        if vdl != 0 && u >= vdl {
+            let interval = cur.itimer_virtual_interval_ns.load(Ordering::Acquire);
+            cur.itimer_virtual_ns.store(if interval != 0 { u.saturating_add(interval) } else { 0 }, Ordering::Release);
+            cur.sigpending.fetch_or(Signum::Sigvtalrm.bit(), Ordering::Release);
+        }
+        let pdl = cur.itimer_prof_ns.load(Ordering::Acquire);
+        let cpu = u.saturating_add(s);
+        if pdl != 0 && cpu >= pdl {
+            let interval = cur.itimer_prof_interval_ns.load(Ordering::Acquire);
+            cur.itimer_prof_ns.store(if interval != 0 { cpu.saturating_add(interval) } else { 0 }, Ordering::Release);
+            cur.sigpending.fetch_or(Signum::Sigprof.bit(), Ordering::Release);
+        }
     }
     if sched::preempt::preempt_count() == 0 && sched::preempt::take_need_resched() {
         unsafe { sched::live::schedule(); }

@@ -271,6 +271,16 @@ pub struct Task {
     /// fires, dispatch tail re-arms `alarm_ns = now + interval` if
     /// non-zero. setitimer(0) sets; getitimer(0) reads.
     pub alarm_interval_ns: AtomicU64,
+    /// ITIMER_VIRTUAL absolute user-CPU deadline in `utime_ns`.
+    /// `0` = disarmed. Expiry posts SIGVTALRM.
+    pub itimer_virtual_ns: AtomicU64,
+    /// ITIMER_VIRTUAL period in user-CPU ns. `0` = one-shot.
+    pub itimer_virtual_interval_ns: AtomicU64,
+    /// ITIMER_PROF absolute CPU deadline in `utime_ns + stime_ns`.
+    /// `0` = disarmed. Expiry posts SIGPROF.
+    pub itimer_prof_ns: AtomicU64,
+    /// ITIMER_PROF period in combined CPU ns. `0` = one-shot.
+    pub itimer_prof_interval_ns: AtomicU64,
 
     /// Per-task umask per POSIX umask(2). Default 0o022. Fork
     /// inherits. AND-NOT with mode in sys_open/openat(O_CREAT).
