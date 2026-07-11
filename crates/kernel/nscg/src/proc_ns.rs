@@ -257,7 +257,7 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: u64, cap: u32) -> bool {
 pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    if nstype != 0 && (nstype & ns.kind.clone_bit()) == 0 {
+    if nstype != 0 && nstype != ns.kind.clone_bit() {
         return -(Errno::Einval.as_i32() as i64);
     }
     match ns.kind {
