@@ -14,13 +14,13 @@ fn net_dev_body() -> alloc::vec::Vec<u8> {
     let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
     let stack = net::sock::stack();
     let snap = stack.ifaces.snapshot();
-    for (id, name, mtu) in snap {
-        let stats = stack.ifaces.lookup(id).map(|d| d.stats()).unwrap_or_default();
+    for iface in snap {
+        let stats = iface.stats;
         let _ = writeln!(s, "{:>6}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0  # mtu={}",
-            name,
+            iface.name,
             stats.rx_bytes, stats.rx_packets, stats.rx_errors, stats.rx_dropped,
             stats.tx_bytes, stats.tx_packets, stats.tx_errors, stats.tx_dropped,
-            mtu);
+            iface.mtu);
     }
     s.into_bytes()
 }
@@ -193,9 +193,9 @@ fn net_route_body() -> alloc::vec::Vec<u8> {
         "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
     );
     let stack = net::sock::stack();
+    let ifaces = stack.ifaces.snapshot();
     for re in stack.routes.snapshot() {
-        let dev = stack.ifaces.lookup(re.iface);
-        let iface_name = dev.as_ref().map(|d| d.name()).unwrap_or("lo");
+        let Some(iface) = ifaces.iter().find(|i| i.id == re.iface) else { continue };
         // Linux text encodes addrs in network-byte-order hex (LE
         // from the on-the-wire perspective).
         let dst_be = re.dst.as_u32().to_le();
@@ -203,7 +203,7 @@ fn net_route_body() -> alloc::vec::Vec<u8> {
                    else { !0u32 << (32 - re.prefix_len) };
         let _ = writeln!(s,
             "{}\t{:08X}\t{:08X}\t0001\t0\t0\t0\t{:08X}\t0\t0\t0",
-            iface_name, dst_be, 0u32, mask.to_le(),
+            iface.name, dst_be, 0u32, mask.to_le(),
         );
     }
     s.into_bytes()
