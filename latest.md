@@ -996,4 +996,4 @@ Hosted proof:
 
 Live smoke: `gnome-boot-after-msmove-rendered-target.log` reached `Started gdm.service` and `graphical.target`; remaining non-graphical observations were `sshd.service` nonzero, NetworkManager `internal failure 5`, and SELinux `/proc/1/attr/current` ENOTDIR.
 
-Next gate: continue broad Linux correctness from the next observed failures, not by adding service-specific bypasses.
+Next gate: PTMX/TTY open now routes by resolved char-device identity, netns ioctl uses a detached dentry, and `open_dentry(path,...)` is deleted; `cargo test -p vfs --tests -- --nocapture` still fails the pre-existing `executor_msmove_root_then_resolve_binary_and_lib` case.

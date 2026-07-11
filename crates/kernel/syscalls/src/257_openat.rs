@@ -1,13 +1,18 @@
 // 257 openat — one syscall, one file (docs/53 §0).
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
 use crate::open_common::{enforce_open_perm, break_lease_for_open, O_CREAT, O_EXCL, O_TRUNC,
     O_DIRECTORY, O_NOFOLLOW, O_TMPFILE, O_PATH};
+
+const DEV_TTY_MAJOR: u32 = 5;
+const DEV_TTY_ALIAS_MINOR: u32 = 0;
+const DEV_PTMX_MINOR: u32 = 2;
+const DEV_TTY_RDEV: u32 = vfs::new_encode_dev(vfs::mkdev(DEV_TTY_MAJOR, DEV_TTY_ALIAS_MINOR));
+const DEV_PTMX_RDEV: u32 = vfs::new_encode_dev(vfs::mkdev(DEV_TTY_MAJOR, DEV_PTMX_MINOR));
 
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257. No openat2 RESOLVE_*
 /// modifiers (default `LookupFlags`). # C: O(N_path)
@@ -66,6 +71,10 @@ pub fn sys_openat2(args: &SyscallArgs, resolve: u64) -> i64 {
 /// collapse-to-ENOENT). # C: O(1)
 fn extra_active(x: &vfs::LookupFlags) -> bool {
     x.no_xdev || x.no_magiclinks || x.no_symlinks || x.beneath_exdev || x.in_root || x.cached
+}
+
+fn is_chr_rdev(inode: &vfs::InodeRef, rdev: u32) -> bool {
+    inode.file_type() == vfs::FileType::CharDev && inode.rdev() == rdev
 }
 
 /// openat / openat2 shared core. `extra` carries the openat2 RESOLVE_* bits
@@ -152,7 +161,7 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     };
     // O_TMPFILE short-circuits to anonymous inode creation. Each branch
     // also yields the `mnt_id` the file is opened through (Linux
-    // `f_path.mnt`): the resolved mount for FS paths, 0 for anon devices.
+    // `f_path.mnt`): the resolved mount for FS paths, 0 only for anon fds.
     let (inode, mnt_id, dentry, created, _path_display) = if (flags & O_TMPFILE) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -181,26 +190,6 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
             }
             Err(e) => return crate::namei_common::errno_from_vfs(e),
         }
-    } else if args.a0 as i32 == crate::pathresolve::AT_FDCWD && s == "/dev/ptmx" {
-        if extra.no_magiclinks { return -(Errno::Eloop.as_i32() as i64); }
-        if let Err(rv) = crate::landlock::check(s, landlock_op) { return rv; }
-        let (master, _n) = devpts::allocate_pair();
-        let d = vfs::file::open_dentry(s, &master);
-        (master, 0, d, false, String::from(s))
-    } else if args.a0 as i32 == crate::pathresolve::AT_FDCWD && s == "/dev/tty" {
-        // F200: caller's controlling terminal; ENXIO when none.
-        if let Err(rv) = crate::landlock::check(s, landlock_op) { return rv; }
-        match sched::live::current() {
-            // SAFETY: single-mutator per `13§5` — current task on this CPU.
-            Some(t) => match unsafe { (*t.ctty.get()).clone() } {
-                Some(i) => {
-                    let d = vfs::file::open_dentry(s, &i);
-                    (i, 0, d, false, String::from(s))
-                }
-                None    => return -(Errno::Enxio.as_i32() as i64),
-            },
-            None => return -(Errno::Enxio.as_i32() as i64),
-        }
     } else if let Some(vp) = lookup_resolved {
         // O_CREAT|O_EXCL: an existing final component is a hard error (Linux
         // `do_last`/`lookup_open`: `if (open_flag & O_EXCL) → -EEXIST`).
@@ -210,19 +199,38 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         }
         let display = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
         if let Err(rv) = crate::landlock::check(&display, landlock_op) { return rv; }
-        #[cfg(feature = "debug-cgroup")]
-        if display.starts_with("/proc/") && display.ends_with("/cgroup") {
-            klog::write_raw(b"[OPENCG ");
-            klog::write_raw(display.as_bytes());
-            klog::write_raw(b" EXISTS by=");
-            if let Some(c) = sched::live::current() {
-                klog::write_dec_u64(c.tid as u64);
-                klog::write_raw(b"/");
-                klog::write_raw(c.name.as_bytes());
+        // `/dev/ptmx` and `/dev/tty` are device identities, not string paths:
+        // bind mounts, chroot, and `openat(devfd,"ptmx")` must route the same
+        // as `/dev/ptmx`. O_PATH remains a pure path fd and never runs the
+        // device-open side effect (PTY allocation / controlling-tty lookup).
+        if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_PTMX_RDEV) {
+            let (master, _n) = devpts::allocate_pair();
+            (master, vp.mnt_id, vp.dentry, false, display)
+        } else if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_TTY_RDEV) {
+            // F200: caller's controlling terminal; ENXIO when none.
+            match sched::live::current() {
+                // SAFETY: single-mutator per `13§5` — current task on this CPU.
+                Some(t) => match unsafe { (*t.ctty.get()).clone() } {
+                    Some(i) => (i, vp.mnt_id, vp.dentry, false, display),
+                    None    => return -(Errno::Enxio.as_i32() as i64),
+                },
+                None => return -(Errno::Enxio.as_i32() as i64),
             }
-            klog::write_raw(b"]\n");
+        } else {
+            #[cfg(feature = "debug-cgroup")]
+            if display.starts_with("/proc/") && display.ends_with("/cgroup") {
+                klog::write_raw(b"[OPENCG ");
+                klog::write_raw(display.as_bytes());
+                klog::write_raw(b" EXISTS by=");
+                if let Some(c) = sched::live::current() {
+                    klog::write_dec_u64(c.tid as u64);
+                    klog::write_raw(b"/");
+                    klog::write_raw(c.name.as_bytes());
+                }
+                klog::write_raw(b"]\n");
+            }
+            (vp.inode, vp.mnt_id, vp.dentry, false, display)
         }
-        (vp.inode, vp.mnt_id, vp.dentry, false, display)
     } else if (flags & O_CREAT) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -371,7 +379,7 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
             }
         } else { None };
     // D3/D37: a freshly CREATED inode (incl. O_TMPFILE) carries the build/born
-    // `i_count` reference. `open_dentry` bound it to a dentry (`d_add` grab) and
+    // `i_count` reference. The resolved dentry binding holds the dcache ref and
     // `File::new_at` takes the open file's `igrab`; release the born ref once the
     // File's hold is in place (Linux `do_last`/`d_instantiate` consumes the iget
     // ref). Cloned (pointer-only) BEFORE the move into `File::new_at`; iput AFTER
