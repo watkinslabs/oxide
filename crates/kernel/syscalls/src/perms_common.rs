@@ -45,6 +45,15 @@ pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Res
 /// ownership/mode; without it the empty path resolved to EINVAL. Mirrors
 /// `newfstatat`'s AT_EMPTY_PATH handling.
 pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
+pub(crate) const AT_CHMOD_CHOWN_VALID: u32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
+
+/// Validate chmod/chown `*at` flags before lookup or mutation. # C: O(1)
+pub(crate) fn validate_chmod_chown_flags(flags: u32) -> Result<(), i64> {
+    if flags & !AT_CHMOD_CHOWN_VALID != 0 {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    Ok(())
+}
 
 // ===========================================================================
 // D4: chmod/chown ownership + EROFS enforcement. The DAC *decisions* live in
@@ -106,6 +115,7 @@ pub(crate) fn resolve_fd_file(fd: i32) -> Result<Arc<File>, i64> {
 pub(crate) fn resolve_at_target_mnt(dirfd: i32, path_ptr: u64, flags: u32, follow: bool)
     -> Result<(InodeRef, u64), i64>
 {
+    validate_chmod_chown_flags(flags)?;
     // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty path
     // operates on the dirfd, ENOENT without it); FOLLOW unless AT_SYMLINK_NOFOLLOW.
     let lf = vfs::LookupFlags {
