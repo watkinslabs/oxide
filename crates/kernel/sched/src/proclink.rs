@@ -5,30 +5,40 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use vfs::{KResult, VfsError};
 
 /// Resolve a `/proc/<pid>/<leaf>` symlink to its readlink target bytes.
 /// # C: O(N_path)
-pub fn resolve_proc_link(path: &str) -> Option<Vec<u8>> {
-    let rest = path.strip_prefix("/proc/")?;
+pub fn resolve_proc_link(path: &str) -> KResult<Vec<u8>> {
+    let rest = path.strip_prefix("/proc/").ok_or(VfsError::Enoent)?;
     let mut parts = rest.splitn(2, '/');
-    let head = parts.next()?;
-    let leaf = parts.next()?;
+    let head = parts.next().ok_or(VfsError::Enoent)?;
+    let leaf = parts.next().ok_or(VfsError::Enoent)?;
     let tid_opt: Option<u32> = if head == "self" { None } else { head.parse().ok() };
-    if head != "self" && tid_opt.is_none() { return None; }
+    if head != "self" && tid_opt.is_none() { return Err(VfsError::Enoent); }
     if let Some(tid) = tid_opt {
-        if crate::live::registry::lookup(tid).is_none() { return None; }
+        if crate::live::registry::lookup(tid).is_none() { return Err(VfsError::Enoent); }
     }
     match leaf {
-        "exe"  => Some(task_exe_path(tid_opt)),
-        "cwd"  => Some(task_cwd_path(tid_opt)),
-        "root" => Some(task_root_path(tid_opt)),
+        "exe"  => task_exe_path(tid_opt),
+        "cwd"  => task_cwd_path(tid_opt),
+        "root" => task_root_path(tid_opt),
         l if l.starts_with("fd/") => task_fd_path(tid_opt, &l[3..]),
         l if l.starts_with("ns/") => task_ns_link(tid_opt, &l[3..]),
-        _      => None,
+        _      => Err(VfsError::Enoent),
     }
 }
 
-fn task_exe_path(tid_opt: Option<u32>) -> Vec<u8> {
+fn task_for_proc_link(tid_opt: Option<u32>) -> KResult<alloc::sync::Arc<crate::Task>> {
+    match tid_opt {
+        Some(tid) => crate::live::registry::lookup(tid).ok_or(VfsError::Enoent),
+        None      => crate::live::current()
+            .and_then(|c| crate::live::registry::lookup(c.tid))
+            .ok_or(VfsError::Enoent),
+    }
+}
+
+fn task_exe_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
     let task = match tid_opt {
         Some(tid) => crate::live::registry::lookup(tid),
         None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
@@ -42,55 +52,34 @@ fn task_exe_path(tid_opt: Option<u32>) -> Vec<u8> {
         // current-task snapshot.
         if let Some(mm) = unsafe { t.mm_ref() } {
             if let Some(s) = mm.exe_path() {
-                if !s.is_empty() { return s.into_bytes(); }
+                if !s.is_empty() { return Ok(s.into_bytes()); }
             }
         }
         // SAFETY: exe_path single-mutator per `13§5`; snapshot.
         if let Some(s) = unsafe { (*t.exe_path.get()).clone() } {
-            if !s.is_empty() { return s.into_bytes(); }
-        }
-        // SAFETY: cmdline single-mutator per `13§5`.
-        if let Some(s) = unsafe { (*t.cmdline.get()).clone() } {
-            let bytes = s.as_bytes();
-            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            if end > 0 { return bytes[..end].to_vec(); }
+            if !s.is_empty() { return Ok(s.into_bytes()); }
         }
     }
-    b"/init".to_vec()
+    Err(VfsError::Enoent)
 }
 
-fn task_cwd_path(tid_opt: Option<u32>) -> Vec<u8> {
-    let task = match tid_opt {
-        Some(tid) => crate::live::registry::lookup(tid),
-        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
-    };
-    if let Some(t) = task {
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let s = unsafe { (*t.cwd.get()).clone() };
-        if !s.is_empty() { return s.into_bytes(); }
-    }
-    b"/".to_vec()
+fn task_cwd_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
+    let task = task_for_proc_link(tid_opt)?;
+    // SAFETY: cwd slot single-mutator per `13§5`.
+    let s = unsafe { (*task.cwd.get()).clone() };
+    if !s.is_empty() { Ok(s.into_bytes()) } else { Err(VfsError::Enoent) }
 }
 
-fn task_root_path(tid_opt: Option<u32>) -> Vec<u8> {
-    let task = match tid_opt {
-        Some(tid) => crate::live::registry::lookup(tid),
-        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
-    };
-    if let Some(t) = task {
-        // SAFETY: task.root single-mutator per `13§5`.
-        let s = unsafe { (*t.root.get()).clone() };
-        if !s.is_empty() { return s.into_bytes(); }
-    }
-    b"/".to_vec()
+fn task_root_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
+    let task = task_for_proc_link(tid_opt)?;
+    // SAFETY: task.root single-mutator per `13§5`.
+    let s = unsafe { (*task.root.get()).clone() };
+    if !s.is_empty() { Ok(s.into_bytes()) } else { Err(VfsError::Enoent) }
 }
 
-fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
+fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> KResult<Vec<u8>> {
     use core::sync::atomic::Ordering;
-    let task = match tid_opt {
-        Some(tid) => crate::live::registry::lookup(tid)?,
-        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid))?,
-    };
+    let task = task_for_proc_link(tid_opt)?;
     let id = match leaf {
         "ipc"    => task.ipc_ns.load(Ordering::Acquire),
         "uts"    => task.uts_ns.load(Ordering::Acquire),
@@ -99,7 +88,7 @@ fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
         "user"   => task.user_ns.load(Ordering::Acquire),
         "cgroup" => task.cgroup_ns.load(Ordering::Acquire),
         "mnt"    => task.mount_ns.load(Ordering::Acquire),
-        _ => return None,
+        _ => return Err(VfsError::Enoent),
     };
     let kind = if leaf == "pid_for_children" { "pid" } else { leaf };
     let mut out = Vec::with_capacity(kind.len() + 8);
@@ -116,19 +105,16 @@ fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
     }
     out.extend_from_slice(&buf[i..]);
     out.push(b']');
-    Some(out)
+    Ok(out)
 }
 
-fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> Option<Vec<u8>> {
-    let fd: i32 = fd_str.parse().ok()?;
-    let task = match tid_opt {
-        Some(tid) => crate::live::registry::lookup(tid)?,
-        None      => crate::live::registry::lookup(crate::live::current()?.tid)?,
-    };
+fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> KResult<Vec<u8>> {
+    let fd: i32 = fd_str.parse().map_err(|_| VfsError::Enoent)?;
+    let task = task_for_proc_link(tid_opt)?;
     // SAFETY: fd_table slot single-mutator per `13§5`.
-    let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };
-    let file = fdt.get(fd).ok()?;
-    Some(vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry()).into_bytes())
+    let fdt = unsafe { (*task.fd_table.get()).as_ref().ok_or(VfsError::Enoent)?.clone() };
+    let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
+    Ok(vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry()).into_bytes())
 }
 
 /// Return the open `File` behind `/proc/<pid|self>/fd/<n>` so open(2)
