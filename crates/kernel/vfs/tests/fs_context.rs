@@ -8,6 +8,8 @@
 
 use std::sync::{Arc, Mutex};
 
+mod common;
+
 use vfs::fs::fs_context::{
     reconfigure_super, vfs_get_tree, vfs_parse_fs_param, vfs_parse_fs_string, FsContext,
     FsContextOps, FsContextPhase, FsContextPurpose, FsParameter, KResult as FcResult, ParamResult,
@@ -39,7 +41,7 @@ impl FileSystemType for TFsType {
     fn name(&self) -> &str { "tfs" }
     fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
         self.seen.lock().unwrap().push((src.map(str::to_string), opts.to_string()));
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
     }
 }
 
@@ -189,7 +191,7 @@ impl FsContextOps for CustomOps {
     }
     fn get_tree(&self, _fc: &mut FsContext) -> FcResult<Arc<SuperBlock>> {
         self.seen.lock().unwrap().push((Some("custom".to_string()), String::new()));
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
     }
     fn reconfigure(&self, _fc: &mut FsContext) -> FcResult<()> {
         *self.reconfigured.lock().unwrap() = true;

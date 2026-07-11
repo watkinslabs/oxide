@@ -10,6 +10,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::{next_anon_dev, SB_RDONLY};
 use vfs::{SbStatFs, SuperBlock, SuperOps, VfsError};
@@ -47,7 +49,7 @@ fn build(fail: bool) -> (Arc<SuperBlock>, Arc<RemountOps>) {
         last_flags: AtomicU64::new(0), fail,
     });
     let fs = Arc::new(RemountFs { ops: ops.clone() });
-    let sb = SuperBlock::for_backend(fs, None, next_anon_dev(), String::from("remountfs"));
+    let sb = common::realize_sb(fs, None, next_anon_dev(), String::from("remountfs"));
     (sb, ops)
 }
 
@@ -112,7 +114,7 @@ fn default_super_ops_remount_is_noop_ok() {
     // default remount_fs is a no-op Ok — a pseudo-fs flag-only remount succeeds.
     struct Plain;
     impl FileSystem for Plain { fn name(&self) -> &str { "plain" } }
-    let sb = SuperBlock::for_backend(Arc::new(Plain), None, next_anon_dev(), String::from("plain"));
+    let sb = common::realize_sb(Arc::new(Plain), None, next_anon_dev(), String::from("plain"));
     sb.reconfigure_super(SB_RDONLY, 0).expect("default remount_fs is a no-op Ok");
     assert!(sb.is_readonly());
 }

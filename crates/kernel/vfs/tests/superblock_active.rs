@@ -1,5 +1,5 @@
 //! superblock-D6 (s_active refcount): a `SuperBlock` carries the Linux
-//! `super_block.s_active` active-reference count. A fresh `for_backend`/`new`
+//! `super_block.s_active` active-reference count. A fresh `from_ops`/`new`
 //! SB starts at 1; `grab_active` (`atomic_inc_not_zero`) takes an extra ref
 //! IFF still live; `deactivate_super` (`atomic_dec_and_test`) drops one and the
 //! LAST drop (1→0) runs `generic_shutdown_super` (sync_filesystem + put_super)
@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+mod common;
 
 use vfs::fs::FileSystem;
 use vfs::superblock::next_anon_dev;
@@ -35,7 +37,7 @@ impl FileSystem for ActiveFs {
 fn build() -> (Arc<SuperBlock>, Arc<TeardownOps>) {
     let ops = Arc::new(TeardownOps { puts: AtomicU32::new(0), syncs: AtomicU32::new(0) });
     let fs = Arc::new(ActiveFs { ops: ops.clone() });
-    let sb = SuperBlock::for_backend(fs, None, next_anon_dev(), String::from("activefs"));
+    let sb = common::realize_sb(fs, None, next_anon_dev(), String::from("activefs"));
     (sb, ops)
 }
 

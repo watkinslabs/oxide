@@ -16,7 +16,6 @@ use alloc::sync::Arc;
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::SuperBlock;
 
 const IMAGE: &[u8] = include_bytes!("mini.img");
 const SECTOR: u32 = 512;
@@ -39,7 +38,7 @@ fn two_mappers_share_one_inode_page_cache() {
     // Back-stamp a SuperBlock so `wrap_file` shares one inode (iget).
     let fs: Arc<dyn FileSystem> = m.clone();
     let root = fs.root();
-    let _sb = SuperBlock::for_backend(fs.clone(), root, 0x1234_5678, String::from("ext4"));
+    let _sb = common::realize_sb(fs.clone(), root, 0x1234_5678, String::from("ext4"));
 
     let ino = m.state().lookup_path(b"/hello.txt").expect("hello.txt");
 

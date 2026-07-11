@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::inode::InodeBuilder;
 use vfs::inode_times::{current_time, inode_set_ctime_current};
@@ -19,7 +21,7 @@ impl FileSystem for TFs {
 }
 
 fn sb_with_gran(gran: u32) -> Arc<SuperBlock> {
-    let sb = SuperBlock::for_backend(Arc::new(TFs), None, 0x77, String::from("tfs"));
+    let sb = common::realize_sb(Arc::new(TFs), None, 0x77, String::from("tfs"));
     sb.set_time_gran(gran);
     sb
 }

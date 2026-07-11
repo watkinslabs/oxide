@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::{NSEC_PER_SEC, TIME64_MAX, TIME64_MIN};
 use vfs::SuperBlock;
@@ -19,7 +21,7 @@ impl FileSystem for TFs {
 }
 
 fn sb() -> Arc<SuperBlock> {
-    SuperBlock::for_backend(Arc::new(TFs), None, 0x55, String::from("tfs"))
+    common::realize_sb(Arc::new(TFs), None, 0x55, String::from("tfs"))
 }
 
 #[test]

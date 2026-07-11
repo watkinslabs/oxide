@@ -68,7 +68,7 @@ fn dir_fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(DirFs { root_ino: ino }) }
 fn realized_sb(ino: u64) -> Arc<SuperBlock> {
     let f = fs(ino);
     let root = f.root();
-    SuperBlock::for_backend(f, root, next_anon_dev(), String::from("rwfs_attr"))
+    common::realize_sb(f, root, next_anon_dev(), String::from("rwfs_attr"))
 }
 
 /// A write-open `File` threaded with `mnt_id`, as the open syscall does.

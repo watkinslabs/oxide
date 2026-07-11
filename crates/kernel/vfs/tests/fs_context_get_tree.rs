@@ -13,6 +13,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::{get_tree_keyed, get_tree_nodev, get_tree_single, FileSystem};
 use vfs::fs::fs_context::FsContext;
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
@@ -42,7 +44,7 @@ fn filler(nm: &'static str, calls: Arc<AtomicU32>)
     move |_fc| {
         calls.fetch_add(1, Ordering::SeqCst);
         let fs: Arc<dyn FileSystem> = Arc::new(TFs { nm });
-        Ok(SuperBlock::for_backend(fs.clone(), TFs { nm }.root(), next_anon_dev(), nm.to_string()))
+        Ok(common::realize_sb(fs.clone(), TFs { nm }.root(), next_anon_dev(), nm.to_string()))
     }
 }
 

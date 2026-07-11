@@ -20,7 +20,7 @@ pub struct RootfsState {
     pub mount: Arc<Mount>,
     /// `i_sb` backref (Linux `inode->i_sb` / `s_fs_info ↔ sb`). Back-stamped
     /// by `FileSystem::set_sb` once the VFS `SuperBlock` is built (a transient
-    /// empty `Weak` exists only between `fs.root()` and `for_backend`'s
+    /// empty `Weak` exists only between `fs.root()` and fill-super's
     /// `set_sb`). Every `Ext4*Inode::i_sb()` upgrades this, so `fsid()`
     /// derives from the per-instance `sb.s_dev` (Linux `st_dev`), not a
     /// hardcoded constant. PER MOUNT.

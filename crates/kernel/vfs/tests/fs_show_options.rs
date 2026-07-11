@@ -8,10 +8,12 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::next_anon_dev;
 use vfs::{
-    FileType, InodeBuilder, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps,
+    FileType, InodeBuilder, InodeRef, KResult, SbStatFs, SuperOps,
     default_file_ops, default_inode_ops, mk_mode,
 };
 
@@ -45,7 +47,7 @@ fn default_show_options_is_empty() {
 
 #[test]
 fn backend_show_options_survives_fill_super() {
-    let sb = SuperBlock::for_backend(
+    let sb = common::realize_sb(
         Arc::new(TmpFs), None, next_anon_dev(), String::from("tmpfs"));
     assert_eq!(sb.show_options(), ",size=10240k,nr_inodes=2560,mode=755",
         "constructor-era show_options is snapshotted into s_op, not a mounts-line formatter");
@@ -74,7 +76,7 @@ impl FileSystem for SbRichFs {
 
 #[test]
 fn superblock_routes_options_through_s_op() {
-    let sb = SuperBlock::for_backend(
+    let sb = common::realize_sb(
         Arc::new(SbRichFs), None, next_anon_dev(), String::from("sbrichfs"));
     assert_eq!(sb.show_options(), ",size=20480k,mode=1777",
         "s_op->show_options tail wins; mounted SB has no backend-line fallback");
