@@ -24,18 +24,18 @@ pub fn sys_getcpu(args: &SyscallArgs) -> i64 {
     let node = args.a1;
     let current = current_cpu_id();
     if cpu != 0 {
-        if let Err(rv) = crate::userbuf::validate_user_buf(cpu, 4, 4) {
+        if let Err(rv) = crate::userbuf::validate_user_buf_writable(cpu, 4, 1) {
             return rv;
         }
-        // SAFETY: user buffer validated writable for a u32.
-        unsafe { core::ptr::write_volatile(cpu as *mut u32, current); }
+        // SAFETY: user buffer validated writable for four bytes; Linux copyout accepts unaligned storage.
+        unsafe { core::ptr::write_unaligned(cpu as *mut u32, current); }
     }
     if node != 0 {
-        if let Err(rv) = crate::userbuf::validate_user_buf(node, 4, 4) {
+        if let Err(rv) = crate::userbuf::validate_user_buf_writable(node, 4, 1) {
             return rv;
         }
-        // SAFETY: user buffer validated writable for a u32.
-        unsafe { core::ptr::write_volatile(node as *mut u32, 0); }
+        // SAFETY: user buffer validated writable for four bytes; Linux copyout accepts unaligned storage.
+        unsafe { core::ptr::write_unaligned(node as *mut u32, 0); }
     }
     0
 }
