@@ -105,7 +105,8 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let envc = envp_vec.len();
     if ::fs::inotify::perm_marks_present() {
         if let Ok(p) = core::str::from_utf8(&path_owned) {
-            if let Some(inode) = crate::pathresolve::resolve(p, true) {
+            if let Ok(vp) = crate::pathresolve::resolve_path_raw(p, true) {
+                let inode = vp.inode;
                 if !::fs::inotify::check_open_exec_perm(&inode) {
                     return -(Errno::Eacces.as_i32() as i64);
                 }
@@ -211,9 +212,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     regain_root_caps_at_execve(cur);
     if let Some(p) = exec_path_for_caps {
-        if let Some(inode) = crate::pathresolve::resolve(&p, true) {
-            apply_file_caps_at_execve(&inode, cur);
-            ::fs::inotify::fire_open_exec(&inode);
+        if let Ok(vp) = crate::pathresolve::resolve_path_raw(&p, true) {
+            apply_file_caps_at_execve(&vp.inode, cur);
+            ::fs::inotify::fire_open_exec(&vp.inode);
         }
     }
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
