@@ -134,9 +134,8 @@ pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
     let m = mount_at_path_exact(d)?;
     // [D5] `mnt_root` (the mounted-fs root DENTRY) is the single source of
     // truth: its inode IS the bind-root inode (`for_backend`→`d_make_root`
-    // stamps it as `s_root->d_inode`), so derive instead of reading the legacy
-    // `root` inode copy. `fs().root()` covers an `s_root`-less SB.
-    m.mnt_root().and_then(|r| r.inode()).or_else(|| m.fs().root())
+    // stamps it as `s_root->d_inode`).
+    m.mnt_root().and_then(|r| r.inode())
 }
 
 /// Root inode of a concrete mount id (the path walk's crossing primitive).
@@ -144,7 +143,7 @@ pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
 pub fn root_for_mount_id(mnt_id: u64) -> Option<InodeRef> {
     let m = mount_by_id(mnt_id)?;
     // [D5] derive from `mnt_root` (see `mount_root_at`).
-    m.mnt_root().and_then(|r| r.inode()).or_else(|| m.fs().root())
+    m.mnt_root().and_then(|r| r.inode())
 }
 
 /// The mounted fs's ROOT DENTRY for `mnt_id` (Linux `mnt->mnt_root`). The

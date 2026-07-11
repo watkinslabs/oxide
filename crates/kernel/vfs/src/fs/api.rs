@@ -32,21 +32,6 @@ pub trait FileSystem: Send + Sync {
     fn root(&self) -> Option<InodeRef> { None }
     fn set_sb(&self, _sb: Weak<SuperBlock>) {}
     fn show_options(&self) -> String { String::new() }
-    fn mounts_line(&self, mount_point: &str, sb: Option<&SuperBlock>) -> String {
-        let mut s = String::new();
-        s.push_str(self.name());
-        s.push(' ');
-        s.push_str(mount_point);
-        s.push(' ');
-        s.push_str(self.name());
-        s.push_str(" rw,relatime");
-        match sb {
-            Some(sb) => s.push_str(&sb.show_options()),
-            None => s.push_str(&self.show_options()),
-        }
-        s.push_str(" 0 0\n");
-        s
-    }
 }
 
 pub struct MountSpec {

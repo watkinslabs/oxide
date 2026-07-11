@@ -3,9 +3,8 @@
 //! generic per-mount flags (`rw,relatime`) for `/proc/mounts`; this hook APPENDS
 //! the backend's own options (tmpfs `size=`/`mode=`, ext4 `data=`, cgroup2
 //! controller list). Each option carries its own leading comma, concatenated
-//! directly after the generic flags. The default `mounts_line` composes the two
-//! so a backend overrides `show_options` ONLY — never the whole `<src> <mnt>
-//! <fstype> … 0 0` framing.
+//! directly after the generic flags; `/proc/mounts` owns the generic line
+//! framing from mount + superblock state, not a backend string hook.
 
 use std::sync::Arc;
 
@@ -45,31 +44,11 @@ fn default_show_options_is_empty() {
 }
 
 #[test]
-fn mounts_line_with_no_options_is_generic_flags_only() {
-    // Byte-identical to the pre-hook default — no regression for plain backends.
-    // No SB in hand ⇒ the FileSystem-level fallback (default `""`).
-    assert_eq!(PlainFs.mounts_line("/", None), "ext4 / ext4 rw,relatime 0 0\n");
-}
-
-#[test]
-fn mounts_line_appends_show_options_after_generic_flags() {
-    // The fs-specific options concatenate directly after `rw,relatime`, before
-    // the ` 0 0` dump/pass fields — exactly where Linux's show_options emits.
-    // Fallback path (no SB): the FileSystem-level `show_options`.
-    assert_eq!(
-        TmpFs.mounts_line("/run", None),
-        "tmpfs /run tmpfs rw,relatime,size=10240k,nr_inodes=2560,mode=755 0 0\n",
-    );
-}
-
-#[test]
-fn options_sit_before_dump_pass_fields() {
-    // Guard the framing: the trailing ` 0 0\n` must survive the appended tail,
-    // and the procfs ro-swap anchor ` rw,` must still be present & first.
-    let line = TmpFs.mounts_line("/dev/shm", None);
-    assert!(line.ends_with(" 0 0\n"), "dump/pass fields preserved after options");
-    assert_eq!(line.find(" rw,"), Some(line.find(" tmpfs ").unwrap() + " tmpfs".len()),
-        "leading ` rw,` ro-swap anchor stays first in the opts field");
+fn backend_show_options_survives_fill_super() {
+    let sb = SuperBlock::for_backend(
+        Arc::new(TmpFs), None, next_anon_dev(), String::from("tmpfs"));
+    assert_eq!(sb.show_options(), ",size=10240k,nr_inodes=2560,mode=755",
+        "constructor-era show_options is snapshotted into s_op, not a mounts-line formatter");
 }
 
 /// D39/D3 consumer wiring: a backend whose `s_op->show_options` (SuperOps) is
@@ -94,18 +73,9 @@ impl FileSystem for SbRichFs {
 }
 
 #[test]
-fn mounts_line_routes_options_through_superblock_s_op() {
+fn superblock_routes_options_through_s_op() {
     let sb = SuperBlock::for_backend(
         Arc::new(SbRichFs), None, next_anon_dev(), String::from("sbrichfs"));
-    // With the SB threaded in, the s_op->show_options tail wins — not the
-    // FileSystem-level `,WRONG-fs-level`.
-    assert_eq!(
-        sb.fs().mounts_line("/mnt", Some(&sb)),
-        "sbrichfs /mnt sbrichfs rw,relatime,size=20480k,mode=1777 0 0\n",
-    );
-    // Sanity: the fallback path (no SB) would have rendered the fs-level tail.
-    assert_eq!(
-        sb.fs().mounts_line("/mnt", None),
-        "sbrichfs /mnt sbrichfs rw,relatime,WRONG-fs-level 0 0\n",
-    );
+    assert_eq!(sb.show_options(), ",size=20480k,mode=1777",
+        "s_op->show_options tail wins; mounted SB has no backend-line fallback");
 }

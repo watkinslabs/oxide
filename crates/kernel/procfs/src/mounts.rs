@@ -67,7 +67,7 @@ fn release_snapshot(id: u64) {
 
 /// `/proc/mounts` + `/proc/<pid>/mounts` — fstab-style lines, one per
 /// live mount: `<src> <mountpoint> <fstype> <opts> 0 0`. Built from
-/// each FileSystem's `mounts_line`.
+/// each mount's `vfsmount` + `super_block` state.
 /// # C: O(N_mounts)
 fn task_mount_ns(tid_opt: Option<u32>) -> u64 {
     match tid_opt {
@@ -88,13 +88,17 @@ fn build_mounts(tid_opt: Option<u32>) -> Vec<u8> {
             Some(p) => p,
             None => continue,
         };
-        let mut line = m.fs().mounts_line(&mp, Some(&**m.sb()));
-        if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-            if let Some(idx) = line.find(" rw,") {
-                line.replace_range(idx..idx + 4, " ro,");
-            }
-        }
-        s.push_str(&line);
+        let rw = if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 { "ro" } else { "rw" };
+        s.push_str(&vfs::mount::mountinfo_source_field(&m));
+        s.push(' ');
+        s.push_str(&mp);
+        s.push(' ');
+        s.push_str(m.sb().s_type.name());
+        s.push(' ');
+        s.push_str(rw);
+        s.push_str(",relatime");
+        s.push_str(&m.sb().show_options());
+        s.push_str(" 0 0\n");
     }
     s.into_bytes()
 }
@@ -140,7 +144,7 @@ fn build_mountinfo(tid_opt: Option<u32>) -> Vec<u8> {
         // scan. Root mounts render parent 0 (Linux mountinfo: the root has no
         // parent mount), every other mount its real parent mnt_id.
         let parent = if m.is_root() || mp == "/" { 0 } else { vfs::mount::parent_mnt_id(&m) };
-        let name = m.fs().name();
+        let name = m.sb().s_type.name();
         let root = vfs::mount::mountinfo_root_field(m);
         let opts = vfs::mount::mountinfo_mount_options(m);
         let opt = vfs::mount::mountinfo_optional_fields(m);

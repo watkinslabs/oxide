@@ -56,8 +56,7 @@ fn mount_carries_real_superblock() {
         "s_root dentry covers the fs root inode");
     assert_eq!(sb.s_magic, fs.magic(), "s_magic == backend magic");
     assert_ne!(sb.s_dev, 0, "per-instance s_dev allocated (get_anon_bdev)");
-    // The SB reaches the backend (Linux mnt_sb->s_fs).
-    assert_eq!(m.fs().magic(), fs.magic(), "mount reaches backend via sb.fs()");
+    assert_eq!(m.sb().s_type.name(), "testfs", "mount reaches filesystem type through mnt_sb");
 }
 
 /// T-statfs-real: statfs reports the mount's own SB magic, not a guess.

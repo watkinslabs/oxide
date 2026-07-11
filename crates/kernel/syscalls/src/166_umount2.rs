@@ -146,7 +146,7 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // backing (it regenerates on re-mount, exactly as Linux umount detaches a
     // mount without destroying fs data).
     let is_pseudo = vfs::mount::mount_by_id(resolved.mnt_id)
-        .map(|m| matches!(m.fs().name(), "procfs" | "sysfs" | "devtmpfs" | "devfs"))
+        .map(|m| matches!(m.sb().s_type.name(), "procfs" | "sysfs" | "devtmpfs" | "devfs"))
         .unwrap_or(false);
     // A pseudo-fs mount (procfs/sysfs/devfs) detaches its WHOLE subtree, even
     // non-lazy. systemd tears down its per-service sandbox staging tree

@@ -40,6 +40,6 @@ pub fn sys_fspick(args: &SyscallArgs) -> i64 {
     };
     let sb_flags = sb.s_flags();
     let fc = vfs::fs::FsContext::for_reconfigure(sb, root, sb_flags, vfs::fs::SB_FLAGS_USER_MASK);
-    let inode: InodeRef = FsContextInode::new_reconfigure(mnt.fs().name().to_string(), fc);
+    let inode: InodeRef = FsContextInode::new_reconfigure(mnt.sb().s_type.name().to_string(), fc);
     install_fd(inode, "[fscontext]", (args.a2 & FSPICK_CLOEXEC) != 0)
 }

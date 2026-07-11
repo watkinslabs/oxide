@@ -8,7 +8,7 @@ use sync::{RwLock, Spinlock};
 use crate::dentry::Dentry;
 use crate::fs::FileSystem;
 use crate::inode::InodeRef;
-use super::{FileSystemType, FsBackedSuperOps, FsBackedType, NullFs, SuperBlock, SuperOps, MAX_LFS_FILESIZE, SB_ACTIVE, SB_BORN, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
+use super::{FileSystemType, GenericSuperOps, StaticFsType, SuperBlock, SuperOps, MAX_LFS_FILESIZE, SB_ACTIVE, SB_BORN, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
 
 impl SuperBlock {
     /// Construct a superblock with no root yet. The backend then builds
@@ -39,17 +39,15 @@ impl SuperBlock {
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info: Spinlock::new(s_fs_info),
-            s_fs: Arc::new(NullFs),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
         })
     }
 
-    /// `fill_super` for a legacy `Arc<dyn FileSystem>` backend: build a fresh
-    /// superblock whose `s_op`/`s_type` adapt the backend, `s_magic` is
-    /// `fs.magic()`, `s_dev` is the per-instance anon dev, and whose `s_root`
-    /// dentry is installed over `root_inode` (the bind/whole-fs root). Every
-    /// production mount is allocated here (Linux `mount_bdev`/`mount_nodev`).
+    /// `fill_super` for an old constructor-backed filesystem: snapshot the
+    /// Linux superblock fields, install `s_op`/`s_type`, stamp backend-private
+    /// inode state via `set_sb`, then drop the constructor object. The live
+    /// superblock does not retain a second backend authority path.
     /// # C: O(1)
     pub fn for_backend(
         fs: Arc<dyn FileSystem>,
@@ -61,8 +59,13 @@ impl SuperBlock {
         // publishes one (ext4 → live on-disk block/inode accounting); else the
         // generic adapter reporting `f_type`/`f_bsize` only.
         let s_op: Arc<dyn SuperOps> = fs.super_ops()
-            .unwrap_or_else(|| Arc::new(FsBackedSuperOps { fs: fs.clone() }));
-        let s_type: Arc<dyn FileSystemType> = Arc::new(FsBackedType { fs: fs.clone() });
+            .unwrap_or_else(|| Arc::new(GenericSuperOps {
+                magic: fs.magic(),
+                block_size: fs.block_size(),
+                options: fs.show_options(),
+            }));
+        let s_type: Arc<dyn FileSystemType> =
+            Arc::new(StaticFsType { name: String::from(fs.name()), flags: fs.fs_flags() });
         let s_magic = fs.magic();
         let s_blocksize = fs.block_size();
         let sb = Arc::new(Self {
@@ -80,20 +83,16 @@ impl SuperBlock {
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info: Spinlock::new(Arc::new(())),
-            s_fs: fs,
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
         });
         // `fill_super`: back-stamp the SB into the backend's per-mount state
         // BEFORE building the root dentry, so the root inode's `i_sb()` (and
         // every inode the backend builds afterwards) resolves to this SB.
-        sb.s_fs.set_sb(Arc::downgrade(&sb));
+        fs.set_sb(Arc::downgrade(&sb));
         if let Some(i) = root_inode { crate::dcache::d_make_root(i, &sb); }
         sb
     }
-
-    /// The backend (Linux: the SB's write/inode-op carrier). # C: O(1)
-    pub fn fs(&self) -> &Arc<dyn FileSystem> { &self.s_fs }
 
     /// The root dentry of this instance (Linux `sb->s_root`). # C: O(1)
     pub fn s_root(&self) -> Option<Arc<Dentry>> { self.s_root.read().clone() }

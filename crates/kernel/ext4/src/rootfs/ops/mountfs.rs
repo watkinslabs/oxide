@@ -5,7 +5,7 @@ use super::RootfsState;
 /// `super_operations` for an ext4 mount (Linux `ext4_statfs`): live on-disk
 /// block/inode accounting read from the per-mount `RootfsState`. Installed as
 /// the SB's `s_op` by `FileSystem::super_ops`, replacing the generic
-/// `FsBackedSuperOps` (which reported only `f_type`/`f_bsize`).
+/// generic fill-super statfs snapshot (which reported only `f_type`/`f_bsize`).
 pub struct Ext4SuperOps {
     st: Arc<RootfsState>,
 }

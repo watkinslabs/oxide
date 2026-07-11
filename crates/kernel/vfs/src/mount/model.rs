@@ -124,9 +124,6 @@ impl Mount {
     /// The mounted-instance superblock (Linux `mnt_sb`). # C: O(1)
     pub fn sb(&self) -> &Arc<SuperBlock> { &self.sb }
 
-    /// The backend behind this mount's superblock. # C: O(1)
-    pub fn fs(&self) -> &Arc<dyn FileSystem> { self.sb.fs() }
-
     /// Active writer count (Linux `mnt_writers`). # C: O(1)
     pub fn writers(&self) -> i32 { self.mnt_writers.load(Ordering::Acquire) }
 

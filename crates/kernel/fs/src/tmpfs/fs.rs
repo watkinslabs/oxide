@@ -122,7 +122,8 @@ impl vfs::fs::FileSystem for TmpfsFs {
 
 /// `super_operations` for a tmpfs mount: `statfs` reports live per-instance
 /// block/inode accounting (Linux `shmem_statfs`), replacing the generic
-/// `FsBackedSuperOps` that reported only `f_type`/`f_bsize` (D33/D6). # C: O(1)
+/// fill-super statfs snapshot that reports only `f_type`/`f_bsize` (D33/D6).
+/// # C: O(1)
 pub struct TmpfsSuperOps { acct: Arc<TmpfsSb> }
 impl vfs::SuperOps for TmpfsSuperOps {
     /// # C: O(1)

@@ -20,7 +20,6 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
-use crate::fs::FileSystem;
 use crate::inode::{Inode, InodeRef};
 use crate::types::Ino;
 
@@ -37,7 +36,7 @@ pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, 
 pub use ops::{FileSystemType, SbStatFs, SuperOps};
 pub use registry::{fs_supers, next_anon_dev, register_super, sget};
 pub(crate) use registry::alloc_anon_minor;
-pub(crate) use ops::{FsBackedSuperOps, FsBackedType, NullFs};
+pub(crate) use ops::{GenericSuperOps, StaticFsType};
 
 /// `struct super_block`. One per mounted fs instance (`16§2` inv 3).
 pub struct SuperBlock {
@@ -118,11 +117,6 @@ pub struct SuperBlock {
     /// because Linux sets it AFTER `alloc_super` (post-construction), so the slot
     /// is replaceable without rebuilding the SB. # consumers: per-fs state.
     s_fs_info: Spinlock<Arc<dyn Any + Send + Sync>, SbClass>,
-    /// The legacy `Arc<dyn FileSystem>` backend carrying the write/inode ops
-    /// (`create`/`unlink`/`link`/`rename`/`root`/`mounts_line`) that
-    /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
-    /// backend through `sb.fs()`. `NullFs` for an `s_fs`-less test SB.
-    s_fs: Arc<dyn FileSystem>,
     /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`. Each
     /// [`IcacheEntry`] is a `Weak<Inode>` + the inode's `i_dentry` ALIAS list;
     /// the lifecycle state (`i_state`/`i_count`/`__i_nlink`) lives on the
