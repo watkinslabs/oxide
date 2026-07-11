@@ -375,7 +375,7 @@ pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: 
 /// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let from_m = mount_exact_at(current_ns(), from).ok_or(VfsError::Einval)?;
-    move_mount_m(from_m, to, None)
+    move_mount_m(from_m, to, None, None)
 }
 
 /// As [`move_mount`] but identifies the SOURCE mount by the `mnt_id` the path
@@ -402,14 +402,25 @@ pub fn move_mount_by_id_to(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry
     // [D32] Uniform cross-ns guard: `mount_by_id` is the ns-AGNOSTIC arena
     // lookup, so a by-id handle MUST pass `check_mnt` before any mutation.
     if !check_mnt(&from_m) { return Err(VfsError::Einval); }
-    move_mount_m(from_m, to, to_mnt_id)
+    move_mount_m(from_m, to, to_mnt_id, None)
+}
+
+/// As [`move_mount_by_id_to`] but preserves the caller's mount-aware target
+/// display path. Syscall target resolution owns this string because magic
+/// links such as `/proc/self/fd/N` can name a bind-shared mountpoint whose bare
+/// dentry path is the source location, not the reached mount-tree location.
+/// # C: O(N × depth)
+pub fn move_mount_by_id_to_rendered(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry>, rendered: String) -> KResult<()> {
+    let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
+    if !check_mnt(&from_m) { return Err(VfsError::Einval); }
+    move_mount_m(from_m, to, to_mnt_id, Some(rendered))
 }
 
 /// Shared MS_MOVE body for both [`move_mount`] variants. `dest_hint` is the
 /// destination parent mount id when known from the walk (see
 /// [`move_mount_by_id_to`]); `None` falls back to `parent_by_dentry(to)`.
 /// # C: O(N × depth)
-fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) -> KResult<()> {
+fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, dest_rendered: Option<String>) -> KResult<()> {
     let ns = current_ns();
     let from_id = from_m.mnt_id;
     let to_root = is_ns_root_dentry(to);
@@ -456,7 +467,8 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
         }
     }
     if !to_root && dest_pid.and_then(|p| __lookup_mnt(p, to)).is_some() { return Err(VfsError::Ebusy); }
-    let to_abs = if to_root { String::from("/") } else { abs_string(to) };
+    let to_abs = if to_root { String::from("/") } else { dest_rendered.unwrap_or_else(|| abs_string(to)) };
+    let old_abs = from_m.mount_point_str();
     let old_mp = from_m.mountpoint();
     let old_parent = from_m.parent_id.load(Ordering::Acquire);
     let snap: Vec<Arc<Mount>> = subtree_ids(ns, from_id).iter()
@@ -499,8 +511,16 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
         if m.mnt_id == from_id { continue; }
         let Some(child_mp) = m.mountpoint() else { continue; };
         let disp_seed = m.parent_id.load(Ordering::Acquire);
-        let disp_rel = rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()).unwrap_or_default();
+        let old_child = m.mount_point_str();
+        let disp_rel = if old_child == old_abs {
+            String::new()
+        } else if let Some(rest) = old_child.strip_prefix(old_abs.as_str()) {
+            if rest.starts_with('/') { String::from(rest) } else { rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()).unwrap_or_default() }
+        } else {
+            rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()).unwrap_or_default()
+        };
         let new_rendered = if disp_rel.is_empty() { to_abs.clone() }
+                           else if to_abs == "/" { disp_rel.clone() }
                            else { alloc::format!("{}{}", to_abs, disp_rel) };
         match old_mp.as_ref().and_then(|omp| plain_rel_under(&child_mp, omp)) {
             Some(rel) => {
@@ -535,6 +555,7 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
             }
         }
     }
+    if to_root { mntns::ns_set_root(ns, from_id); }
     mntns::bump_gen(ns);
     Ok(())
 }

@@ -26,8 +26,8 @@ fn procfd_path(raw: &str) -> Option<vfs::VfsPath> {
 fn resolve_move_target_at(dirfd: i32, raw: &str) -> Result<(vfs::MountTarget, alloc::string::String), i64> {
     let raw = trim_move_path(raw)?;
     if let Some(p) = procfd_path(raw) {
-        let target = vfs::MountTarget { parent: p.clone(), mountpoint: p.dentry.clone() };
         let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
+        let target = vfs::mount_target_from_resolved_path(p);
         return Ok((target, display));
     }
     if raw == "/" {
@@ -157,7 +157,7 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     };
     // Destination mount id from the walk: disambiguates a `to` sitting in a bind
     // mount (shared dentries defeat `parent_by_dentry`). Falls back to `target_d`.
-    match vfs::mount::move_mount_by_id_to(from_vp.mnt_id, Some(target_mnt), &target_d) {
+    match vfs::mount::move_mount_by_id_to_rendered(from_vp.mnt_id, Some(target_mnt), &target_d, target) {
         Ok(())                    => 0,
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),

@@ -149,7 +149,8 @@ pub fn lookup_fd_path(path: &str) -> Option<InodeRef> {
         Some(n_str) => {
             let fd: i32 = n_str.parse().ok()?;
             let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
-            Some(fd_link_for_path(&file.dentry().absolute_path(), tid_opt, fd))
+            let path = vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry());
+            Some(fd_link_for_path(path.as_bytes(), tid_opt, fd))
         }
     }
 }
