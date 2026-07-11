@@ -34,7 +34,7 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     // Unknown flag bits → EINVAL (Linux vfs_fstatat).
     if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
     // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
-    // operates on the dirfd, NULL still EFAULTs); a normal stat FOLLOWS the
+    // or NULL operates on the dirfd); a normal stat FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. The engine
     // preserves ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG (X1/X2/X4/X5).
     let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
@@ -44,7 +44,7 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         follow: !nofollow,
         ..Default::default()
     };
-    let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+    let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup_maybe_null(dirfd, path_ptr, lf) {
         Ok(p)  => (p.inode, p.mnt_id),
         Err(rv) => {
             #[cfg(feature = "debug-mount")]

@@ -31,14 +31,13 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let buf       = args.a4;
     // Unknown flag bits / reserved mask bit → EINVAL (Linux do_statx).
     if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     if mask & STATX_RESERVED != 0 { return -(Errno::Einval.as_i32() as i64); }
-    // X3: kernel writes into buf in CPL=0 — require it user-writable. Linux
-    // copy_to_user accepts unaligned user statx buffers, so only validate the
-    // byte range here.
-    if let Err(rv) = validate_user_buf_writable(buf, 256, 1) { return rv; }
 
     // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
-    // operates on the dirfd, NULL still EFAULTs); a normal statx FOLLOWS the
+    // or NULL operates on the dirfd); a normal statx FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. aarch64
     // musl routes stat()/lstat() here. ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG
     // preserved by the engine (X1/X2/X4/X5).
@@ -49,7 +48,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         follow: !nofollow,
         ..Default::default()
     };
-    let (inode, mnt_id, is_mount_root) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+    let (inode, mnt_id, is_mount_root) = match crate::pathresolve::resolve_at_lookup_maybe_null(dirfd, path_ptr, lf) {
         Ok(p)  => {
             let is_mount_root = vfs::mount::root_dentry_for_mount_id(p.mnt_id)
                 .map(|root| alloc::sync::Arc::ptr_eq(&root, &p.dentry))
@@ -70,6 +69,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let dev = crate::namei_common::fsid_to_dev(st.fsid);
     let stx_attributes = st.attributes | if is_mount_root { STATX_ATTR_MOUNT_ROOT } else { 0 };
     let stx_attributes_mask = st.attributes_mask | STATX_ATTR_MOUNT_ROOT;
+    // Linux vfs_statx runs before cp_statx faults the output buffer.
+    if let Err(rv) = validate_user_buf_writable(buf, 256, 1) { return rv; }
     // statx layout per linux/stat.h. Zero everything then fill the fields we have.
     // SAFETY: buf validated 256-byte writable range below USER_VA_END;
     // unaligned stores match Linux copy_to_user semantics.
