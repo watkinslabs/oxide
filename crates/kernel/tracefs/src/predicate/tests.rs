@@ -7,7 +7,7 @@ const SCHED: &[u8] = b"name: sched_switch\nID: 1\nformat:\n\
 \tfield:char next_comm[16];\toffset:28;\tsize:16;\tsigned:0;\n\
 \tfield:pid_t next_pid;\toffset:44;\tsize:4;\tsigned:1;\n";
 
-fn fields() -> Vec<Field> { parse_fields(SCHED) }
+fn fields() -> Vec<Field> { parse_fields(SCHED).unwrap() }
 
 #[test]
 fn parses_field_table_types() {
@@ -19,6 +19,14 @@ fn parses_field_table_types() {
     assert_eq!(comm.size, 16);
     let cp = f.iter().find(|x| x.name == "common_pid").unwrap();
     assert!(!cp.is_string);
+}
+
+#[test]
+fn invalid_format_bytes_are_rejected() {
+    assert!(matches!(
+        parse_fields(b"\tfield:int bad\xff;\toffset:0;\tsize:4;\tsigned:1;\n"),
+        Err(ParseError::BadFormat)
+    ));
 }
 
 fn rec<'a>(items: &'a [(&'a str, FieldVal<'a>)]) -> EventRecord<'a> { EventRecord::new(items) }
@@ -91,6 +99,7 @@ fn invalid_expressions_rejected() {
     assert_eq!(compile(b"(prev_pid == 1", &f), Err(ParseError::Syntax));
     assert_eq!(compile(b"prev_pid == 1 prev_pid == 2", &f), Err(ParseError::Trailing));
     assert_eq!(compile(b"", &f), Err(ParseError::Empty));
+    assert_eq!(compile(b"prev_pid == \xff", &f), Err(ParseError::Syntax));
 }
 
 #[test]
@@ -109,6 +118,17 @@ fn slot_keeps_prior_on_invalid() {
     slot.set(b"0\n").unwrap();
     assert!(!slot.has_filter());
     assert!(slot.passes(&rec(&[("prev_pid", FieldVal::Int(6))])));
+}
+
+#[test]
+fn slot_rejects_invalid_format_without_clearing_prior() {
+    static BAD_FMT: &[u8] = b"\tfield:int common_pid;\toffset:0;\tsize:4;\tsigned:1;\xff\n";
+    let slot = FilterSlot::new(BAD_FMT);
+    assert_eq!(slot.set(b"common_pid == 1\n"), Err(ParseError::BadFormat));
+    assert!(!slot.has_filter());
+    let mut buf = [0u8; 16];
+    let n = slot.read_into(0, &mut buf);
+    assert_eq!(&buf[..n], b"none\n");
 }
 
 #[test]
