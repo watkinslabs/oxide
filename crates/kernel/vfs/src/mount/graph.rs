@@ -167,6 +167,17 @@ pub fn render_path_for_mount(mnt_id: u64, d: &Arc<Dentry>) -> String {
     }
 }
 
+/// Project an absolute mount path into a reader's root view. `None` means the
+/// reader root is `/`; paths outside a confined root are hidden. # C: O(path len)
+pub fn project_path_under_root(path: &str, root: Option<&str>) -> Option<String> {
+    let Some(root) = root else { return Some(String::from(path)); };
+    if path == root { return Some(String::from("/")); }
+    if let Some(rest) = path.strip_prefix(root) {
+        if rest.starts_with('/') { return Some(String::from(rest)); }
+    }
+    None
+}
+
 /// Materialise the dentry at `rel` beneath `base` by a dentry→dentry descent
 /// that CROSSES MOUNTS at each component exactly as namei does — the
 /// engine-internal resolver for SYNTHESIZED mount positions (propagation

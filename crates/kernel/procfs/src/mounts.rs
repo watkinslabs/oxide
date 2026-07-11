@@ -20,8 +20,13 @@ use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, In
 fn build_mounts() -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut s = String::new();
+    let root_prefix = current_root_prefix();
     for m in vfs::mount::snapshot() {
-        let mut line = m.fs().mounts_line(&m.mount_point_str(), Some(&**m.sb()));
+        let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix.as_deref()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let mut line = m.fs().mounts_line(&mp, Some(&**m.sb()));
         if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             if let Some(idx) = line.find(" rw,") {
                 line.replace_range(idx..idx + 4, " ro,");
@@ -76,15 +81,6 @@ fn current_root_prefix() -> Option<String> {
     if prefix == "/" { None } else { Some(prefix) }
 }
 
-fn project_mountpoint(mp: &str, root_prefix: Option<&str>) -> Option<String> {
-    let Some(root) = root_prefix else { return Some(String::from(mp)); };
-    if mp == root { return Some(String::from("/")); }
-    if let Some(rest) = mp.strip_prefix(root) {
-        if rest.starts_with('/') { return Some(String::from(rest)); }
-    }
-    None
-}
-
 /// `/proc/<pid>/mountinfo` — the richer mountinfo(5) format:
 /// `<id> <parent> <maj>:<min> <root> <mp> <opts> [<optional>] - <fstype> <src> <super>`.
 /// `id` is the mount's persistent `mnt_id`; `parent` is the real
@@ -101,7 +97,7 @@ fn build_mountinfo() -> Vec<u8> {
     let root_prefix = current_root_prefix();
     let mut s = String::new();
     for m in mounts.iter() {
-        let mp = match project_mountpoint(&m.mount_point_str(), root_prefix.as_deref()) {
+        let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix.as_deref()) {
             Some(p) => p,
             None => continue,
         };
