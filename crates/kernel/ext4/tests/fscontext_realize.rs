@@ -49,7 +49,7 @@ fn register_ext4_like(fstype: &str) {
             let dev = block::by_name(name).map(|d| d.dev.clone()).ok_or(vfs::VfsError::Enoent)?;
             let fs: Arc<dyn vfs::fs::FileSystem> =
                 ext4::rootfs::Ext4Mount::open(dev).map_err(|_| vfs::VfsError::Einval)?;
-            Ok(MountSpec { fs, bind_root: None, strict: true })
+            Ok(MountSpec::from_filesystem(fs, None, true, source.to_string()))
         }),
     ));
 }

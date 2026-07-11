@@ -35,7 +35,7 @@ fn register_get_construct_and_unknown_is_none() {
     register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
         Box::new(|_s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
             let fs: Arc<dyn FileSystem> = Arc::new(T040Fs);
-            Ok(MountSpec { fs, bind_root: None, strict: true })
+            Ok(MountSpec::from_filesystem(fs, None, true, String::from("t040ctor")))
         }))).expect("register t040ctor");
 
     // get_fs_type returns the registered type (the D40 test contract).
@@ -44,13 +44,13 @@ fn register_get_construct_and_unknown_is_none() {
     // `name.subtype` resolves on the base name (Linux __get_fs_type split).
     assert!(get_fs_type("t040ctor.foo").is_some(), "subtype resolves on base name");
 
-    // get_fs yields the constructor; running it builds the backend object.
+    // get_fs yields the constructor; running it builds the mounted superblock.
     let cons = get_fs("t040ctor").expect("get_fs resolves the constructor entry");
     assert_eq!(cons.magic(), T_MAGIC);
     let spec = cons.construct(Some("none"), "/mnt", "").expect("constructor builds a MountSpec");
-    assert_eq!(spec.fs.name(), "t040ctor");
-    assert_eq!(spec.fs.magic(), T_MAGIC);
-    assert!(spec.bind_root.is_none() && spec.strict);
+    assert_eq!(spec.sb.s_type.name(), "t040ctor");
+    assert_eq!(spec.sb.s_magic, T_MAGIC);
+    assert!(spec.strict);
 
     // Duplicate name → EBUSY.
     assert!(register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
