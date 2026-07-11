@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::string::String;
 use core::sync::atomic::Ordering;
 
 use syscall::errno::Errno;
@@ -72,27 +73,40 @@ fn current_cred() -> vfs::Cred {
     }
 }
 
-fn global_root_path() -> Option<vfs::VfsPath> {
-    let dentry = vfs::namei::root_dentry()?;
-    let inode = dentry.inode()?;
-    let ns = vfs::mount::current_ns();
-    let mnt_id = vfs::mount::root_mount_id(ns).unwrap_or(vfs::mount::MNT_ID_NONE);
-    Some(vfs::VfsPath { mnt_id, dentry, inode, last_component: None })
-}
-
-fn current_start_root() -> Option<(vfs::VfsPath, vfs::VfsPath)> {
-    let fallback = global_root_path()?;
+fn current_start_root() -> Result<(vfs::VfsPath, vfs::VfsPath), i64> {
     let Some(cur) = sched::current() else {
-        return Some((fallback.clone(), fallback));
+        return Err(-(Errno::Ebadf.as_i32() as i64));
     };
     // SAFETY: current task path slots follow the single-mutator task rule.
-    let root = unsafe { (*cur.root_vfs.get()).clone() }.unwrap_or_else(|| fallback.clone());
+    let root = unsafe { (*cur.root_vfs.get()).clone() }
+        .ok_or(-(Errno::Eio.as_i32() as i64))?;
     // SAFETY: current task path slots follow the single-mutator task rule.
-    let start = unsafe { (*cur.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone());
-    Some((start, root))
+    let start = unsafe { (*cur.cwd_vfs.get()).clone() }
+        .ok_or(-(Errno::Eio.as_i32() as i64))?;
+    Ok((start, root))
 }
 
-fn resolve_watch_path(raw: &str, no_follow_final: bool) -> Option<InodeRef> {
+fn decode_watch_path_bytes(bytes: &[u8]) -> Result<String, i64> {
+    if bytes.is_empty() {
+        return Err(-(Errno::Enoent.as_i32() as i64));
+    }
+    let path = vfs::path_from_bytes(bytes);
+    vfs::path::check_path_len(&path)
+        .map_err(|e| -(e as i64))?;
+    Ok(path)
+}
+
+fn read_watch_path(path_p: u64) -> Result<String, i64> {
+    if path_p == 0 || path_p >= hal::USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    // SAFETY: path_p in user range; bounded read through the current address space.
+    let bytes = unsafe { devfs::read_user_cstr(path_p, vfs::path::PATH_MAX) }
+        .ok_or(-(Errno::Efault.as_i32() as i64))?;
+    decode_watch_path_bytes(bytes)
+}
+
+fn resolve_watch_path(raw: &str, no_follow_final: bool) -> Result<InodeRef, i64> {
     let (start, root) = current_start_root()?;
     let flags = vfs::LookupFlags { no_follow_final, ..Default::default() };
     vfs::path_lookup_at_root_cred(
@@ -103,7 +117,7 @@ fn resolve_watch_path(raw: &str, no_follow_final: bool) -> Option<InodeRef> {
         raw,
         flags,
         current_cred(),
-    ).ok().map(|p| p.inode)
+    ).map(|p| p.inode).map_err(|e| -(e as i64))
 }
 
 fn fd_to_inotify(fd: i32) -> Option<Arc<InotifyData>> {
@@ -195,20 +209,13 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let inotify = match fd_to_inotify(fd) {
         Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
     };
-    if path_p == 0 || path_p >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: path_p in user range; bounded read via existing helper.
-    let bytes = unsafe { devfs::read_user_cstr(path_p, 256) };
-    let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let inode = match resolve_watch_path(s, false) {
-        Some(i) => i,
-        None => {
+    let s = match read_watch_path(path_p) { Ok(s) => s, Err(rv) => return rv };
+    let inode = match resolve_watch_path(&s, false) {
+        Ok(i) => i,
+        Err(rv) => {
             #[cfg(feature = "debug-boot")]
             { klog::write_raw(b"[INOTIFY-ENOENT path="); klog::write_raw(s.as_bytes()); klog::write_raw(b"]\n"); }
-            return -(Errno::Enoent.as_i32() as i64);
+            return rv;
         }
     };
     let key = inode_key(&inode);
@@ -313,20 +320,13 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     }
     let bits = mask & FAN_ALL_EVENT_BITS;
     if bits == 0 { return -(Errno::Einval.as_i32() as i64); }
-    if path_p == 0 || path_p >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: path_p in user range; bounded read via existing helper.
-    let s = match unsafe { devfs::read_user_cstr(path_p, 256) }
-        .and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let inode = match resolve_watch_path(s, flags & FAN_MARK_DONT_FOLLOW != 0) {
-        Some(i) => i,
-        None => {
+    let s = match read_watch_path(path_p) { Ok(s) => s, Err(rv) => return rv };
+    let inode = match resolve_watch_path(&s, flags & FAN_MARK_DONT_FOLLOW != 0) {
+        Ok(i) => i,
+        Err(rv) => {
             #[cfg(feature = "debug-boot")]
             { klog::write_raw(b"[INOTIFY-ENOENT path="); klog::write_raw(s.as_bytes()); klog::write_raw(b"]\n"); }
-            return -(Errno::Enoent.as_i32() as i64);
+            return rv;
         }
     };
     if flags & FAN_MARK_ONLYDIR != 0 && inode.file_type() != FileType::Directory {
@@ -334,4 +334,26 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     }
     let (key, fsid) = (inode_key(&inode), inode.fsid());
     apply_mark(&inotify, scope, key, fsid, bits, flags & FAN_MARK_ADD != 0, ignored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_path_decode_preserves_non_utf8_bytes() {
+        let s = decode_watch_path_bytes(b"/tmp/raw-\xff").unwrap();
+        assert_eq!(vfs::path_into_bytes(&s), b"/tmp/raw-\xff");
+    }
+
+    #[test]
+    fn watch_path_decode_rejects_empty_with_enoent() {
+        assert_eq!(decode_watch_path_bytes(b""), Err(-(Errno::Enoent.as_i32() as i64)));
+    }
+
+    #[test]
+    fn watch_path_decode_rejects_pathmax_bytes() {
+        let long = alloc::vec![b'a'; vfs::path::PATH_MAX];
+        assert_eq!(decode_watch_path_bytes(&long), Err(-(Errno::Enametoolong.as_i32() as i64)));
+    }
 }
