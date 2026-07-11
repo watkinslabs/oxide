@@ -309,11 +309,12 @@ impl Proc {
     }
     fn linkat(&self, src: &str, dst: &str) -> KResult<()> {
         self.enter();
-        let s = self.lookup(AT_FDCWD, src, LookupFlags::default())?;
+        let s = self.lookup(AT_FDCWD, src, LookupFlags { no_follow_final: true, follow: false, ..Default::default() })?;
         let p = self.parent(AT_FDCWD, dst)?;
+        let name = p.last_component.as_deref().ok_or(VfsError::Eexist)?;
         vfs::may_create(&p.inode, &self.cred)?;
-        p.inode.link_child(&s.inode, p.last_component.as_deref().unwrap(),
-            &CreateCtx { idmap: &vfs::IDENTITY, cred: &self.cred, umask: self.umask })
+        if s.mnt_id != p.mnt_id { return Err(VfsError::Exdev); }
+        p.inode.link_child(&s.inode, name, &CreateCtx { idmap: &vfs::IDENTITY, cred: &self.cred, umask: self.umask })
     }
     fn symlinkat(&self, target: &[u8], dst: &str) -> KResult<()> {
         self.enter();
@@ -402,6 +403,12 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     udev.renameat(AT_FDCWD, "/run/udev/data/.#c226:0tmp", AT_FDCWD, "/run/udev/data/c226:0").expect("rename db");
     udev.linkat("/run/udev/data/c226:0", "/run/udev/data/by-card0").expect("link db");
     udev.symlinkat(b"data/c226:0", "/run/udev/card0-db").expect("symlink db");
+    assert!(matches!(udev.linkat("/run/udev/data/c226:0", "/"), Err(VfsError::Eexist)));
+    udev.mkdirat(AT_FDCWD, "/run/udev/binddata", 0o755).expect("mkdir binddata");
+    let data_path = udev.lookup(AT_FDCWD, "/run/udev/data", LookupFlags::default()).expect("data path");
+    let bind_mp = udev.lookup(AT_FDCWD, "/run/udev/binddata", LookupFlags::default()).expect("binddata path");
+    vfs::mount::register_bind_clone_at(Some(bind_mp.dentry.clone()), data_path.mnt_id, data_path.dentry.clone(), Some(bind_mp.mnt_id)).expect("bind clone data");
+    assert!(matches!(udev.linkat("/run/udev/data/c226:0", "/run/udev/binddata/cross"), Err(VfsError::Exdev)));
     udev.openat(AT_FDCWD, "/run/udev/tags/master-of-seat/c226:0", true, 0o444, true, true).expect("tag");
 
     let db = udev.lookup(AT_FDCWD, "/run/udev/data/c226:0", LookupFlags::default()).expect("db");
