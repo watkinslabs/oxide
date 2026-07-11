@@ -47,15 +47,17 @@ impl InodeOps for ModuleDirOps {
             "initstate"  => Ok(attr(initstate_body(&d.snap))),
             "refcnt"     => Ok(attr(line_usize(d.snap.refcnt))),
             "taint"      => Ok(attr(line_u64_hex(d.snap.taints))),
-            "license"    => Ok(attr(line_opt(d.snap.license.as_deref()))),
-            "vermagic"   => Ok(attr(line_opt(d.snap.vermagic.as_deref()))),
+            "license"    => Ok(attr(line_str(d.snap.license.as_deref().ok_or(VfsError::Enoent)?))),
+            "vermagic"   => Ok(attr(line_str(d.snap.vermagic.as_deref().ok_or(VfsError::Enoent)?))),
             _ => Err(VfsError::Enoent),
         }
     }
 }
 impl FileOps for ModuleDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        for (idx, (name, ft)) in MODULE_ENTRIES.iter().enumerate().skip(ctx.pos as usize) {
+        let d = inode.private::<ModuleDirData>().ok_or(VfsError::Einval)?;
+        let entries = module_entries(&d.snap);
+        for (idx, (name, ft)) in entries.iter().enumerate().skip(ctx.pos as usize) {
             let next = idx as u64 + 1;
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, *ft, next) { return Ok(()); }
@@ -64,14 +66,20 @@ impl FileOps for ModuleDirOps {
     }
 }
 
-const MODULE_ENTRIES: [(&str, FileType); 6] = [
-    ("initstate",  FileType::Regular),
-    ("refcnt",     FileType::Regular),
-    ("taint",      FileType::Regular),
-    ("license",    FileType::Regular),
-    ("vermagic",   FileType::Regular),
-    ("parameters", FileType::Directory),
-];
+fn module_entries(s: &ModuleSnapshot) -> Vec<(&'static str, FileType)> {
+    let mut out = Vec::new();
+    for e in [
+        ("initstate",  FileType::Regular),
+        ("refcnt",     FileType::Regular),
+        ("taint",      FileType::Regular),
+    ] {
+        out.push(e);
+    }
+    if s.license.is_some() { out.push(("license", FileType::Regular)); }
+    if s.vermagic.is_some() { out.push(("vermagic", FileType::Regular)); }
+    out.push(("parameters", FileType::Directory));
+    out
+}
 
 struct ParamDirData { snap: ModuleSnapshot }
 struct ParamDirOps;
@@ -139,10 +147,6 @@ fn initstate_body(s: &ModuleSnapshot) -> Vec<u8> {
     line_str(s.state.as_str())
 }
 
-fn line_opt(v: Option<&str>) -> Vec<u8> {
-    line_str(v.unwrap_or(""))
-}
-
 fn line_str(v: &str) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(v.as_bytes());
@@ -166,9 +170,11 @@ fn line_u64_hex(v: u64) -> Vec<u8> {
 
 fn param_body(p: &ModuleParam) -> Vec<u8> {
     let mut out = String::new();
-    out.push_str("type=");
-    out.push_str(p.ty.as_deref().unwrap_or(""));
-    out.push('\n');
+    if let Some(ty) = p.ty.as_deref() {
+        out.push_str("type=");
+        out.push_str(ty);
+        out.push('\n');
+    }
     out.push_str("description=");
     out.push_str(&p.desc);
     out.push('\n');
@@ -185,4 +191,50 @@ fn push_dec(out: &mut String, mut n: usize) {
         if n == 0 { break; }
     }
     for b in &buf[i..] { out.push(*b as char); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use modules::registry::ModuleState;
+
+    fn snap() -> ModuleSnapshot {
+        ModuleSnapshot {
+            name: String::from("empty"),
+            license: None,
+            vermagic: None,
+            params: Vec::new(),
+            size: 0,
+            refcnt: 0,
+            taints: 0,
+            state: ModuleState::Live,
+            sections: 0,
+            symbols: 0,
+        }
+    }
+
+    #[test]
+    fn optional_module_attrs_are_absent_when_metadata_missing() {
+        let dir = make_module_dir(snap());
+        assert_eq!(dir.lookup("license").map(|_| ()), Err(VfsError::Enoent));
+        assert_eq!(dir.lookup("vermagic").map(|_| ()), Err(VfsError::Enoent));
+        assert_eq!(module_entries(&snap()).iter().any(|(name, _)| *name == "license"), false);
+        assert_eq!(module_entries(&snap()).iter().any(|(name, _)| *name == "vermagic"), false);
+    }
+
+    #[test]
+    fn param_body_omits_missing_type() {
+        let p = ModuleParam { name: String::from("debug"), desc: String::from("enable logs"), ty: None };
+        assert_eq!(param_body(&p), b"description=enable logs\n".to_vec());
+    }
+
+    #[test]
+    fn param_body_keeps_present_type() {
+        let p = ModuleParam {
+            name: String::from("debug"),
+            desc: String::from("enable logs"),
+            ty: Some(String::from("int")),
+        };
+        assert_eq!(param_body(&p), b"type=int\ndescription=enable logs\n".to_vec());
+    }
 }
