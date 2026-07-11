@@ -273,6 +273,27 @@ pub fn try_wake_stopped(task: &Task) -> bool {
     true
 }
 
+#[derive(Copy, Clone)]
+pub struct WaitChildSnapshot {
+    pub vpid:     u32,
+    pub uid:      u32,
+    pub utime_ns: u64,
+    pub stime_ns: u64,
+}
+
+impl WaitChildSnapshot {
+    /// # C: O(1)
+    pub fn from_task(t: &Task) -> Self {
+        use core::sync::atomic::Ordering;
+        Self {
+            vpid:     t.vtgid.load(Ordering::Acquire),
+            uid:      t.creds.ruid.load(Ordering::Acquire),
+            utime_ns: t.utime_ns.load(Ordering::Acquire),
+            stime_ns: t.stime_ns.load(Ordering::Acquire),
+        }
+    }
+}
+
 /// wait4(2) child-selection predicate per `docs/15§5` — the single source
 /// of truth shared by the zombie-reap path (`live::zombies::reap_one`/
 /// `peek_one`) and the stop/cont path (`take_child_stop_event`). The four
@@ -312,7 +333,7 @@ pub fn take_child_stop_event(
     parent_pgid: u32,
     want_stop: bool,
     want_cont: bool,
-) -> Option<(u32, u8, u32)> {
+) -> Option<(WaitChildSnapshot, u8, u32)> {
     use core::sync::atomic::Ordering;
     let g = REG.lock();
     for (_, w) in g.iter() {
@@ -326,10 +347,10 @@ pub fn take_child_stop_event(
         }
         if want_stop && t.stop_pending.swap(false, Ordering::AcqRel) {
             let sig = t.stop_signal.load(Ordering::Acquire);
-            return Some((cvpid, 1, sig as u32));
+            return Some((WaitChildSnapshot::from_task(&t), 1, sig as u32));
         }
         if want_cont && t.cont_pending.swap(false, Ordering::AcqRel) {
-            return Some((cvpid, 2, 0));
+            return Some((WaitChildSnapshot::from_task(&t), 2, 0));
         }
     }
     None

@@ -321,7 +321,7 @@ pub fn has_zombies(parent: u32) -> bool {
     ZOMBIES.lock().iter().any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
 }
 
-use crate::registry::wait_pid_matches;
+use crate::registry::{wait_pid_matches, WaitChildSnapshot};
 
 /// Peek one Zombie child matching the `wait4` filter WITHOUT removing
 /// it — the `waitid(2)` `WNOWAIT` contract (leave the child in a
@@ -330,19 +330,17 @@ use crate::registry::wait_pid_matches;
 /// pid belongs to, then reaps separately; if the peek reaped, that
 /// second wait would get ECHILD and systemd mis-supervises the service.
 /// # C: O(N_zombies)
-pub fn peek_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
+pub fn peek_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(WaitChildSnapshot, i32)> {
     use core::sync::atomic::Ordering;
     let q = ZOMBIES.lock();
     let t = q.iter().find(|t| wait_pid_matches(
         t.parent_tid.load(Ordering::Acquire), t.vtgid.load(Ordering::Acquire),
         t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid))?;
-    // Return the child's vpid (vtgid) — what waitid reports as its return +
-    // siginfo si_pid — NOT the internal tid. Mirrors reap_one.
-    Some((t.vtgid.load(Ordering::Acquire), t.exit_status.load(Ordering::Acquire)))
+    Some((WaitChildSnapshot::from_task(t), t.exit_status.load(Ordering::Acquire)))
 }
 
 /// # C: O(N_zombies)
-pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
+pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(WaitChildSnapshot, i32)> {
     use core::sync::atomic::Ordering;
     let mut q = ZOMBIES.lock();
     #[cfg(feature = "debug-ssh")]
@@ -374,7 +372,7 @@ pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
     // Return the child's vpid (vtgid) — the PID userspace waited on — NOT the
     // opaque internal tid. Single pid identity (Linux): waitpid returns the
     // same value fork() returned.
-    let vpid = t.vtgid.load(Ordering::Acquire);
+    let child = WaitChildSnapshot::from_task(&t);
     let code = t.exit_status.load(Ordering::Acquire);
     // Linux release_task: a reaped process leaves /proc immediately, even if a
     // pidfd still pins the task_struct. Mark it so procfs enumeration drops it —
@@ -382,7 +380,7 @@ pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
     // ps/htop (the strong Arc keeps the registry Weak alive).
     t.reaped.store(true, Ordering::Release);
     drop(t);  // strong-ref released; Task freed if no other holders
-    Some((vpid, code))
+    Some((child, code))
 }
 
 /// B14: reap zombies whose parent is gone — Linux subreaper path.

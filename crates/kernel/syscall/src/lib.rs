@@ -22,6 +22,7 @@ pub mod errno;
 pub mod nrs;
 pub mod tracepoint;
 pub mod userptr;
+pub mod wait;
 
 pub use args::SyscallArgs;
 pub use errno::{Errno, KResult};
@@ -71,4 +72,3 @@ mod stub_tests {
 
 
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod arm_abi;
-
