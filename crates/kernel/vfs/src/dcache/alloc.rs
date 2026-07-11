@@ -61,6 +61,17 @@ pub fn d_lookup(parent: &Arc<Dentry>, name: &str) -> Option<Arc<Dentry>> {
     d_lookup_reval(parent, name, false)
 }
 
+/// Drop one cached child under an already-resolved parent dentry. This is the
+/// object-identity twin of syscall `d_drop_path`: callers that already hold the
+/// Linux parent path must not render a string and re-walk through a possibly
+/// different bind/root namespace. # C: O(1) expected
+pub fn d_drop_child(parent: &Arc<Dentry>, name: &str) {
+    match parent.cached_child(name).or_else(|| d_lookup(parent, name)) {
+        Some(child) => d_drop(&child),
+        None => parent.forget_child(name),
+    }
+}
+
 /// `d_lookup` with the Linux `LOOKUP_REVAL` flag threaded to the
 /// `d_op->d_revalidate` hook, so a forced-revalidation walk (`reval == true`,
 /// the ESTALE retry) re-checks a cached dentry against its backing store

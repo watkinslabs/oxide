@@ -201,6 +201,67 @@ pub(crate) fn path_exists(p: &str) -> bool {
     crate::pathresolve::resolve(p, true).is_some()
 }
 
+/// Resolve a create target's parent through the real `*at` base, preserving the
+/// walked parent `(mnt,dentry)` as authority and returning only the final leaf
+/// name as text. Dot leaves name an already-existing object in Linux's create
+/// family; root keeps the legacy EINVAL behavior this tree already exposed.
+/// # C: O(N parent components)
+pub(crate) fn resolve_create_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Einval.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot => Err(-(Errno::Eexist.as_i32() as i64)),
+        vfs::LastType::Root => Err(-(Errno::Einval.as_i32() as i64)),
+    }
+}
+
+/// Render a resolved parent path for hooks/diagnostics. Display only; never
+/// feed the result back into authority decisions. # C: O(depth)
+pub(crate) fn render_parent_path(parent: &vfs::VfsPath) -> String {
+    vfs::mount::render_path_for_mount(parent.mnt_id, &parent.dentry)
+}
+
+/// Render `parent/leaf` for Landlock/logging from exact parent identity.
+/// Display only; authority remains `parent`. # C: O(depth + leaf)
+pub(crate) fn render_child_path(parent: &vfs::VfsPath, leaf: &str) -> String {
+    let mut p = render_parent_path(parent);
+    if p == "/" {
+        p.push_str(leaf);
+    } else {
+        p.push('/');
+        p.push_str(leaf);
+    }
+    p
+}
+
+/// True if `leaf` exists below the exact parent dentry. This replaces whole-path
+/// string re-walks for create EEXIST ordering. # C: O(1) expected + fs lookup
+pub(crate) fn child_exists(parent: &vfs::VfsPath, leaf: &str) -> Result<bool, i64> {
+    if let Some(d) = vfs::d_lookup(&parent.dentry, leaf) {
+        return Ok(d.inode().is_some());
+    }
+    match parent.inode.lookup(leaf) {
+        Ok(_) => Ok(true),
+        Err(vfs::VfsError::Enoent) => Ok(false),
+        Err(e) => Err(errno_from_vfs(e)),
+    }
+}
+
+/// Read-only check by the already-resolved owning mount. # C: O(log N)
+pub(crate) fn parent_mount_readonly(parent: &vfs::VfsPath) -> bool {
+    vfs::mount::mount_by_id(parent.mnt_id)
+        .map(|m| (m.flags() & vfs::mount::MNT_RDONLY) != 0)
+        .unwrap_or(false)
+}
+
+/// Drop stale child cache by object parent, not rendered pathname. # C: O(1)
+pub(crate) fn drop_child_cache(parent: &vfs::VfsPath, leaf: &str) {
+    vfs::d_drop_child(&parent.dentry, leaf);
+}
+
 /// Linux pathname AF_UNIX sockets are removed from the filesystem namespace by
 /// unlink(2). Existing socket objects stay alive, but a later bind to the same
 /// pathname must be allowed. Our socket registry is separate from tmpfs, so

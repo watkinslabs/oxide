@@ -409,6 +409,14 @@ Fix shape:
 - Existence check should be `d_lookup`/lookup relative to that exact parent.
 - Notify can render separately, but not drive authority.
 
+Fix status:
+
+- Done: `vfs::d_drop_child(parent, leaf)` provides object-parent dcache eviction, with hosted coverage in `dcache_drop_unhash::d_drop_child_unhashes_from_object_parent`.
+- Done: `namei_common::resolve_create_parent_at()` preserves the `*at` parent `(mnt_id,dentry,inode)` and leaf identity for create-family syscalls; rendered strings are now produced only for Landlock/logging/fsnotify.
+- Done: `mkdir`/`mkdirat` create through `parent.inode`, check target existence relative to the exact parent, check read-only through `parent.mnt_id`, and drop child cache by object parent.
+- Done: `mknod`/`mknodat` share the same parent-preserving path; `mknodat` no longer pre-resolves its dirfd-relative path into a global string.
+- Remaining: `link/linkat`, `symlink/symlinkat`, `unlink/unlinkat/rmdir`, and `rename/renameat/renameat2` still use the old string-parent helper pattern and need the same treatment.
+
 ## Mount Subsystem Split-Truth Sites
 
 ### 9. `sys_mount()` mixes target/source strings, dentries, and parent mount hints
@@ -705,9 +713,9 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
 
 6. Convert create/delete/rename.
 
-   - `open/openat O_CREAT`
-   - `mkdir/mkdirat`
-   - `mknod/mknodat`
+   - Done: `open/openat O_CREAT`
+   - Done: `mkdir/mkdirat`
+   - Done: `mknod/mknodat`
    - `symlink/symlinkat`
    - `link/linkat`
    - `unlink/unlinkat/rmdir`
