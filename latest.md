@@ -286,6 +286,12 @@ Fix shape:
 
 - Route legacy `stat/lstat` through `resolve_at_lookup(AT_FDCWD, path_ptr, flags)` so cwd_vfs/mnt_id is preserved.
 
+Fix status:
+
+- Done: `stat_impl()` now resolves directly through `resolve_at_lookup(AT_FDCWD, path_ptr, LookupFlags { follow/no_follow_final })`.
+- Removed the `resolve_cwd()` string render plus `resolve_path_result()` second walk from legacy `stat()`/`lstat()`.
+- The owning `mnt_id` returned by namei remains authoritative for idmap-out metadata, matching the existing `newfstatat()`/`statx()` path.
+
 ### 5. `readlink()` legacy path uses string cwd and inode-only resolver
 
 Files:
