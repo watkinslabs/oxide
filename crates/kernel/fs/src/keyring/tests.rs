@@ -80,6 +80,20 @@ fn add_key_links_into_session_keyring() {
     assert!(members.contains(&k), "added key linked into the session keyring: {members:?}");
 }
 
+// Key descriptions are user C strings, not UTF-8 text. Preserve raw byte
+// identity through the same reversible path codec used at the syscall boundary.
+#[test]
+fn non_utf8_description_keeps_exact_identity() {
+    let t = ids(1011, 1011);
+    let desc = key_string_from_bytes(b"raw-\xff");
+    let lossy = String::from("raw-\u{fffd}");
+    assert_ne!(desc, lossy, "invalid byte must not collapse to replacement char");
+    let serial = add_key_core(t, "user", &desc, alloc::vec![9], 0) as i32;
+    let g = STORE.lock();
+    let k = g.keys.get(&serial).expect("added key exists");
+    assert_eq!(k.description, desc);
+}
+
 // A forked child shares the parent's session keyring (Linux copy_creds).
 #[test]
 fn fork_inherits_session_keyring() {
