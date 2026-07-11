@@ -32,6 +32,12 @@ const SIG_SIGCHLD: u32 = 17;
 /// SIGCHLD's `sigset_t` bit (bit `signo-1`), for masking against the fd's mask.
 const SIGCHLD_MASK_BIT: u64 = 1 << (SIG_SIGCHLD - 1);
 
+#[cfg(target_os = "oxide-kernel")]
+fn task_has_zombies(tid: u32) -> bool { sched::live::has_zombies(tid) }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn task_has_zombies(_tid: u32) -> bool { false }
+
 /// Per-inode signalfd state (Linux `i_private`): the signal mask read drains.
 pub struct SignalfdData {
     pub mask: AtomicU64,
@@ -62,7 +68,7 @@ impl FileOps for SignalfdFileOps {
         // synthesised SIGCHLD carries ssi_signo only; systemd reaps via waitid,
         // not the ssi_pid). Without this the fd goes EAGAIN with children still
         // unreaped and the boot wedges.
-        if deliver == 0 && mask & SIGCHLD_MASK_BIT != 0 && sched::live::has_zombies(cur.tid) {
+        if deliver == 0 && mask & SIGCHLD_MASK_BIT != 0 && task_has_zombies(cur.tid) {
             deliver = SIGCHLD_MASK_BIT;
         }
         // Empty signalfd: Linux returns EAGAIN (nonblocking) rather than a
@@ -128,7 +134,7 @@ impl FileOps for SignalfdFileOps {
         // the zombie list so the fd stays ready until EVERY child is reaped.
         if mask & SIGCHLD_MASK_BIT != 0 {
             if let Some(ref c) = cur {
-                if sched::live::has_zombies(c.tid) { deliver |= SIGCHLD_MASK_BIT; }
+                if task_has_zombies(c.tid) { deliver |= SIGCHLD_MASK_BIT; }
             }
         }
         if deliver != 0 { vfs::POLL_IN } else { 0 }
