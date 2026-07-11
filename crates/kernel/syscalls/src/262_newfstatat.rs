@@ -33,11 +33,6 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
 
     // Unknown flag bits → EINVAL (Linux vfs_fstatat).
     if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
-    // X3: kernel writes into buf in CPL=0 — require it user-writable. Linux
-    // copy_to_user does not require the caller's struct stat pointer to be
-    // naturally aligned, so only validate the byte range.
-    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
-
     // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
     // operates on the dirfd, NULL still EFAULTs); a normal stat FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. The engine
@@ -78,6 +73,9 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     let at = st.atime_ns;
     let mt = st.mtime_ns;
     let ct = st.ctime_ns;
+
+    // Linux vfs_fstatat runs before cp_new_stat faults the output buffer.
+    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
 
     // SAFETY: buf validated STAT_BYTES writable below USER_VA_END; unaligned
     // stores match Linux copy_to_user semantics for user-provided buffers.

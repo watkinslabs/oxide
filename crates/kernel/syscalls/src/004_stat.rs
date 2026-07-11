@@ -21,9 +21,6 @@ pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
     #[cfg(target_arch = "aarch64")]
     const STAT_BYTES: u64 = 128;
 
-    // X3: the kernel writes into this buffer in CPL=0 — validate it is
-    // user-writable, else a buffer pointing at .rodata #PFs the kernel.
-    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
     // X2/X4/X5: PATH_MAX read; EFAULT(bad ptr) / ENOENT(empty) / ENAMETOOLONG.
     // THE resolver: one namei walk from AT_FDCWD. This preserves `cwd_vfs`
     // mount identity across fchdir/chroot/bind/pivot state instead of
@@ -54,6 +51,8 @@ pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
     let nlink = st.nlink;
     let blksize = st.blksize;
     let (at, mt, ct) = (st.atime_ns, st.mtime_ns, st.ctime_ns);
+    // Linux resolves/getattrs first, then cp_new_stat faults the output buffer.
+    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
     // SAFETY: buf validated STAT_BYTES writable below USER_VA_END; unaligned
     // stores match Linux copy_to_user semantics for user-provided buffers.
     unsafe {

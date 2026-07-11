@@ -20,7 +20,6 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     const STAT_BYTES: u64 = 144;
     #[cfg(target_arch = "aarch64")]
     const STAT_BYTES: u64 = 128;
-    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
@@ -67,6 +66,8 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     let at = st.atime_ns;
     let mt = st.mtime_ns;
     let ct = st.ctime_ns;
+    // Linux vfs_fstat runs before cp_new_stat faults the output buffer.
+    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
     // SAFETY: buf validated STAT_BYTES below USER_VA_END; unaligned stores
     // match Linux copy_to_user semantics for user-provided buffers.
     unsafe {
