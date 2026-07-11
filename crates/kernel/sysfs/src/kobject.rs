@@ -41,7 +41,7 @@ impl AttrGroup {
 /// current value of `attr`; `store` consumes a write (default: read-only).
 pub trait SysfsOps: Send + Sync {
     /// Render attribute `attr`'s current bytes (Linux `sysfs_ops->show`).
-    fn show(&self, attr: &str) -> Option<Vec<u8>>;
+    fn show(&self, attr: &str) -> KResult<Vec<u8>>;
     /// Consume a write to attribute `attr` (Linux `sysfs_ops->store`).
     /// # C: O(n)
     fn store(&self, _attr: &str, _buf: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
@@ -60,7 +60,7 @@ struct AttrFileOps;
 impl FileOps for AttrFileOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<AttrFileData>().ok_or(VfsError::Einval)?;
-        let body = d.ops.show(d.name).unwrap_or_default();
+        let body = d.ops.show(d.name)?;
         Ok(super::read_window(&body, off, buf))
     }
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
@@ -75,4 +75,36 @@ pub fn make_attr_inode(attr: &Attribute, ops: Arc<dyn SysfsOps>, ino: Ino) -> In
     InodeBuilder::new(ino, mk_mode(FileType::Regular, attr.mode), default_inode_ops(), Arc::new(AttrFileOps))
         .private(Arc::new(AttrFileData { ops, name: attr.name }))
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FailingOps;
+    impl SysfsOps for FailingOps {
+        fn show(&self, _attr: &str) -> KResult<Vec<u8>> { Err(VfsError::Enodev) }
+    }
+
+    struct StaticOps;
+    impl SysfsOps for StaticOps {
+        fn show(&self, _attr: &str) -> KResult<Vec<u8>> { Ok(b"ok\n".to_vec()) }
+    }
+
+    #[test]
+    fn attr_read_propagates_show_error() {
+        let attr = Attribute { name: "dead", mode: 0o444 };
+        let inode = make_attr_inode(&attr, Arc::new(FailingOps), 0x5510);
+        let mut buf = [0u8; 8];
+        assert_eq!(inode.read(0, &mut buf), Err(VfsError::Enodev));
+    }
+
+    #[test]
+    fn attr_read_still_windows_success_body() {
+        let attr = Attribute { name: "live", mode: 0o444 };
+        let inode = make_attr_inode(&attr, Arc::new(StaticOps), 0x5511);
+        let mut buf = [0u8; 8];
+        let n = inode.read(1, &mut buf).expect("read attr");
+        assert_eq!(&buf[..n], b"k\n");
+    }
 }

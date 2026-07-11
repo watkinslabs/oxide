@@ -306,15 +306,15 @@ static NET_IFACE_GROUP: AttrGroup = AttrGroup { attrs: NET_IFACE_ATTRS };
 /// `uevent` env or a `net_device` field via `iface_body`); `store` consumes a
 /// `udevadm trigger` write to `uevent` by re-emitting the kobject uevent.
 impl SysfsOps for NetIfaceData {
-    fn show(&self, attr: &str) -> Option<Vec<u8>> {
+    fn show(&self, attr: &str) -> KResult<Vec<u8>> {
         if attr == "uevent" {
             let mut body: Vec<u8> = Vec::new();
             let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
                 format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", self.name,
                     lookup_net_ifindex(&self.name)));
-            return Some(body);
+            return Ok(body);
         }
-        iface_body(self, attr)
+        iface_body(self, attr).ok_or(VfsError::Enoent)
     }
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
         if attr == "uevent" {
