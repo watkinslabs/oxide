@@ -31,10 +31,10 @@ impl InodeOps for Ext4StatInodeOps {
         d.st.wrap_any_ino(child).ok_or(VfsError::Enoent)
     }
 
-    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
+    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap)
         -> vfs::getattr::Kstat
     {
-        let mut k = vfs::getattr::generic_fillattr(inode, idmap, overlay);
+        let mut k = vfs::getattr::generic_fillattr(inode, idmap);
         if let Some(d) = inode.private::<Ext4StatData>() {
             if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
         }

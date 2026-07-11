@@ -35,7 +35,7 @@ fn st_blocks(bs: u32, size: u64) -> u64 {
     let s = sb(bs);
     let f = InodeBuilder::new(7, mk_mode(FileType::Regular, 0), default_inode_ops(), default_file_ops())
         .sb(Arc::downgrade(&s)).size(size).build();
-    vfs::generic_fillattr(&f, &IDENTITY, None).blocks
+    vfs::generic_fillattr(&f, &IDENTITY).blocks
 }
 
 #[test]

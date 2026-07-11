@@ -40,9 +40,9 @@ pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
     };
     let inode = vp.inode;
     // vfs_getattr → i_op->getattr (default generic_fillattr): one place for
-    // the S_IF* mapping + inode_times overlay merge + idmap-out owner ids.
+    // the S_IF* mapping + native inode metadata + idmap-out owner ids.
     let idmap = vfs::mount::idmap_for(vp.mnt_id);
-    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let st = vfs::vfs_getattr(&inode, &idmap);
     let mode = st.mode;
     let rdev = st.rdev as u64;
     let uid  = st.uid;

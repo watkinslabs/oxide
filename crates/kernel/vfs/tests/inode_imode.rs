@@ -63,7 +63,7 @@ fn none_perm_matches_getattr_default() {
     // Linux default perm — `i_mode()` and `generic_fillattr` read the same field.
     use vfs::IDENTITY;
     let l = tlnk();
-    let st = vfs::generic_fillattr(&l, &IDENTITY, None);
+    let st = vfs::generic_fillattr(&l, &IDENTITY);
     assert_eq!(st.mode, u32::from(l.i_mode()),
         "Kstat.mode (no overlay) == i_mode() for the inode");
 }

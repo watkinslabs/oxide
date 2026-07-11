@@ -62,9 +62,9 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         }
     };
 
-    // vfs_getattr → i_op->getattr: S_IF* mapping + overlay merge + idmap-out.
+    // vfs_getattr → i_op->getattr: S_IF* mapping + native metadata + idmap-out.
     let idmap = vfs::mount::idmap_for(mnt_id);
-    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let st = vfs::vfs_getattr(&inode, &idmap);
     let mode = st.mode;
     let rdev = st.rdev as u64;
     let uid  = st.uid;

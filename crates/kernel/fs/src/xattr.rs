@@ -54,12 +54,9 @@ fn cred_snapshot() -> (u32, bool /*sys_admin*/, bool /*setfcap*/, bool /*fowner*
     }
 }
 
-/// Owning uid of `inode` (per-FS first, then the inode_times overlay, then 0).
+/// Owning uid of `inode`.
 fn inode_owner(inode: &InodeRef) -> u32 {
-    if let Some(u) = inode.uid() { return u; }
-    vfs::inode_times::get(inode)
-        .map(|o| if o.owner_set { o.uid } else { 0 })
-        .unwrap_or(0)
+    inode.uid().unwrap_or(0)
 }
 
 /// Validate xattr name length (Linux ERANGE past XATTR_NAME_MAX).
