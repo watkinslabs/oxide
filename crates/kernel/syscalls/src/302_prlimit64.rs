@@ -26,21 +26,21 @@ pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
     let task = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
 
     if old_ptr != 0 {
-        if let Err(rv) = validate_user_buf_writable(old_ptr, 16, 8) { return rv; }
+        if let Err(rv) = validate_user_buf_writable(old_ptr, 16, 1) { return rv; }
         // SAFETY: same single-mutator invariant as getrlimit.
         let (rcur, rmax) = unsafe { (*task.rlimits.get())[resource] };
-        // SAFETY: old_ptr validated writable; CPL=0 writes through caller's AS.
+        // SAFETY: old_ptr validated writable for the 16-byte rlimit result.
         unsafe {
-            core::ptr::write_volatile( old_ptr       as *mut u64, rcur);
-            core::ptr::write_volatile((old_ptr + 8)  as *mut u64, rmax);
+            core::ptr::write_unaligned( old_ptr       as *mut u64, rcur);
+            core::ptr::write_unaligned((old_ptr + 8)  as *mut u64, rmax);
         }
     }
     if new_ptr != 0 {
-        if let Err(rv) = validate_user_buf(new_ptr, 16, 8) { return rv; }
-        // SAFETY: new_ptr validated readable; CPL=0 reads through caller's AS.
+        if let Err(rv) = validate_user_buf(new_ptr, 16, 1) { return rv; }
+        // SAFETY: new_ptr validated readable for the 16-byte rlimit input.
         let (nc, nm) = unsafe {
-            let c = core::ptr::read_volatile( new_ptr       as *const u64);
-            let m = core::ptr::read_volatile((new_ptr + 8)  as *const u64);
+            let c = core::ptr::read_unaligned( new_ptr       as *const u64);
+            let m = core::ptr::read_unaligned((new_ptr + 8)  as *const u64);
             (c, m)
         };
         let pair = match sched::rlimit::clamp_pair(nc, nm) {
