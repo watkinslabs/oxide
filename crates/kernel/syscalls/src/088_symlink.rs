@@ -27,8 +27,6 @@ pub(crate) fn symlink_impl(dirfd: i32, target: String, link: String) -> i64 {
         Ok(x) => x, Err(rv) => return rv,
     };
     let l = render_child_path(&parent, &name);
-    if let Err(rv) = crate::landlock::check_parent(&parent,
-        ::security::landlock::access::MAKE_SYM) { return rv; }
     match child_exists(&parent, &name) {
         Ok(true) => return -(Errno::Eexist.as_i32() as i64),
         Ok(false) => {}
@@ -37,9 +35,14 @@ pub(crate) fn symlink_impl(dirfd: i32, target: String, link: String) -> i64 {
     if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);
     }
+    if let Err(rv) = crate::landlock::check_parent(&parent,
+        ::security::landlock::access::MAKE_SYM) { return rv; }
     // Thread the mount idmap + caller cred so the new symlink gets the right
     // owner (symlinks carry no umask). Linux `->symlink(struct mnt_idmap *, ...)`.
     let cred = crate::pathresolve::current_cred();
+    if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+        return errno_from_vfs(e);
+    }
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend symlink (Linux
     // `filename_create` → `->symlink`); dropped before the dcache update below.

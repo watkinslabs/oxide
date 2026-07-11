@@ -248,6 +248,7 @@ impl Proc {
     }
     fn mknodat(&self, path: &str, mode: u16, rdev: u32) -> KResult<()> {
         self.enter();
+        let t = mode & vfs::S_IFMT as u16; if t == vfs::S_IFDIR as u16 { return Err(VfsError::Eperm); }
         let p = self.parent(AT_FDCWD, path)?;
         vfs::may_create(&p.inode, &self.cred)?;
         p.inode.mknod_child(p.last_component.as_deref().unwrap(), mode, rdev,
@@ -365,10 +366,8 @@ impl Proc {
     }
 }
 
-fn cred(uid: u32, gid: u32) -> Cred {
-    Cred { uid, gid, cap_dac_override: false, cap_dac_read_search: false,
-        cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS] }
-}
+fn cred(uid: u32, gid: u32) -> Cred { Cred { uid, gid, cap_dac_override: false, cap_dac_read_search: false,
+    cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS] } }
 struct NameSink(Vec<String>);
 impl vfs::DirEmit for NameSink {
     fn emit(&mut self, name: &str, _ino: u64, _d_type: FileType, _next_pos: u64) -> bool { self.0.push(name.to_string()); true }
@@ -435,8 +434,7 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert!(matches!(logind.unlinkat("/run/udev/data"), Err(VfsError::Eisdir)));
     assert!(matches!(logind.rmdir("/run/udev/data"), Err(VfsError::Enotempty)));
 
-    let user = cred(1000, 1000);
-    let other = cred(1001, 1001);
+    let user = cred(1000, 1000); let other = cred(1001, 1001);
     let mut user_proc = Proc::new(udev_ns, root.clone(), udev_root_mnt, user);
     user_proc.umask = 0o077;
     udev.mkdirat(AT_FDCWD, "/run/user", 0o755).expect("mkdir /run/user");
@@ -449,6 +447,8 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     let other_proc = Proc::new(logind_ns, root.clone(), logind_root_mnt, other);
     assert!(matches!(other_proc.read_path("/run/user/1000/secret"), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.mkdirat(AT_FDCWD, "/run/user/1000/nope", 0o755), Err(VfsError::Eacces)));
+    assert!(matches!(other_proc.symlinkat(b"x", "/run/user/1000/nope-sym"), Err(VfsError::Eacces)));
+    assert!(matches!(other_proc.mknodat("/run/user/1000/nope-node", vfs::S_IFIFO as u16 | 0o600, 0), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.access("/run/user/1000/secret", true, false, false), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.truncate("/run/user/1000/secret", 0), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.chmod("/run/udev/data/c226:0", 0o600), Err(VfsError::Eperm)));
@@ -474,6 +474,7 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert!(matches!(udev.rmdir("/run/sticky/empty"), Err(VfsError::Enoent)));
 
     udev.mknodat("/run/devnull", vfs::S_IFCHR as u16 | 0o600, vfs::Devt::new(1, 3).raw()).expect("mknod char");
+    assert!(matches!(udev.mknodat("/run/dirnode", vfs::S_IFDIR as u16 | 0o700, 0), Err(VfsError::Eperm)));
     let devnull = udev.stat("/run/devnull", false).expect("stat mknod");
     assert_eq!(devnull.mode & vfs::S_IFMT, vfs::S_IFCHR);
 
