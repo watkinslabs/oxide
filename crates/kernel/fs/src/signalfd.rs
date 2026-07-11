@@ -61,6 +61,43 @@ impl FileOps for SignalfdFileOps {
         let d = match inode.private::<SignalfdData>() { Some(d) => d, None => return Err(VfsError::Einval) };
         let mask = d.mask.load(Ordering::Acquire);
         let cur = match sched::current() { Some(c) => c, None => return Ok(0) };
+        let mut total = 0;
+        while total + SIGINFO_SIZE <= buf.len() {
+            match read_one_signal(&cur, mask, &mut buf[total..total + SIGINFO_SIZE]) {
+                Ok(()) => total += SIGINFO_SIZE,
+                Err(VfsError::Eagain) if total != 0 => break,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(total)
+    }
+    /// POLLIN only when a signal in this fd's mask is pending for the
+    /// current task. The default Inode::poll (always-ready) made epoll
+    /// spin: systemd's sd-event registers a signalfd, so an always-ready
+    /// poll busy-looped epoll_pwait forever and PID1 never ran services.
+    /// # C: O(1)
+    fn poll(&self, inode: &Inode) -> u32 {
+        let mask = match inode.private::<SignalfdData>() { Some(d) => d.mask.load(Ordering::Acquire), None => return 0 };
+        let cur = sched::current();
+        let pending = cur.as_ref().map_or(0, |c| c.sigpending.load(Ordering::Acquire));
+        let mut deliver = pending & mask;
+        // Linux: SIGCHLD is pending while the task has an unwaited exited child.
+        // The collapsed SIGCHLD bit can be cleared (a signalfd read draining
+        // `child_sigq`, or a wait4) while a zombie is still queued but not yet
+        // reaped — which would strand systemd in epoll_wait with the fd never
+        // reported readable, so its early fork-children pile up unreaped and the
+        // boot wedges before graphical.target. Re-derive SIGCHLD readiness from
+        // the zombie list so the fd stays ready until EVERY child is reaped.
+        if mask & SIGCHLD_MASK_BIT != 0 {
+            if let Some(ref c) = cur {
+                if task_has_zombies(c.tid) { deliver |= SIGCHLD_MASK_BIT; }
+            }
+        }
+        if deliver != 0 { vfs::POLL_IN } else { 0 }
+    }
+}
+
+fn read_one_signal(cur: &sched::Task, mask: u64, out: &mut [u8]) -> KResult<()> {
         let pending = cur.sigpending.load(Ordering::Acquire);
         let mut deliver = pending & mask;
         // Match `poll`: SIGCHLD stays deliverable while an unwaited zombie
@@ -100,52 +137,34 @@ impl FileOps for SignalfdFileOps {
         // Fill the 128-byte signalfd_siginfo: ssi_signo always; the queued
         // record supplies ssi_code/pid/uid and either ssi_status (SIGCHLD) or
         // ssi_int/ssi_ptr (an RT sigqueue value).
-        for b in &mut buf[..SIGINFO_SIZE] { *b = 0; }
-        buf[SSI_SIGNO..SSI_SIGNO + 4].copy_from_slice(&sig.to_le_bytes());
+        for b in &mut out[..SIGINFO_SIZE] { *b = 0; }
+        out[SSI_SIGNO..SSI_SIGNO + 4].copy_from_slice(&sig.to_le_bytes());
         if let Some(rec) = popped {
-            buf[SSI_CODE..SSI_CODE + 4].copy_from_slice(&rec.code.to_le_bytes());
-            buf[SSI_PID..SSI_PID + 4].copy_from_slice(&rec.pid.to_le_bytes());
-            buf[SSI_UID..SSI_UID + 4].copy_from_slice(&rec.uid.to_le_bytes());
+            out[SSI_CODE..SSI_CODE + 4].copy_from_slice(&rec.code.to_le_bytes());
+            out[SSI_PID..SSI_PID + 4].copy_from_slice(&rec.pid.to_le_bytes());
+            out[SSI_UID..SSI_UID + 4].copy_from_slice(&rec.uid.to_le_bytes());
             if sig == SIG_SIGCHLD {
-                buf[SSI_STATUS..SSI_STATUS + 4].copy_from_slice(&(rec.value as i32).to_le_bytes());
+                out[SSI_STATUS..SSI_STATUS + 4].copy_from_slice(&(rec.value as i32).to_le_bytes());
             } else {
-                buf[SSI_INT..SSI_INT + 4].copy_from_slice(&(rec.value as u32).to_le_bytes());
-                buf[SSI_PTR..SSI_PTR + 8].copy_from_slice(&rec.value.to_le_bytes());
+                out[SSI_INT..SSI_INT + 4].copy_from_slice(&(rec.value as u32).to_le_bytes());
+                out[SSI_PTR..SSI_PTR + 8].copy_from_slice(&rec.value.to_le_bytes());
             }
         }
-        Ok(SIGINFO_SIZE)
-    }
-    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
-    /// POLLIN only when a signal in this fd's mask is pending for the
-    /// current task. The default Inode::poll (always-ready) made epoll
-    /// spin: systemd's sd-event registers a signalfd, so an always-ready
-    /// poll busy-looped epoll_pwait forever and PID1 never ran services.
-    /// # C: O(1)
-    fn poll(&self, inode: &Inode) -> u32 {
-        let mask = match inode.private::<SignalfdData>() { Some(d) => d.mask.load(Ordering::Acquire), None => return 0 };
-        let cur = sched::current();
-        let pending = cur.as_ref().map_or(0, |c| c.sigpending.load(Ordering::Acquire));
-        let mut deliver = pending & mask;
-        // Linux: SIGCHLD is pending while the task has an unwaited exited child.
-        // The collapsed SIGCHLD bit can be cleared (a signalfd read draining
-        // `child_sigq`, or a wait4) while a zombie is still queued but not yet
-        // reaped — which would strand systemd in epoll_wait with the fd never
-        // reported readable, so its early fork-children pile up unreaped and the
-        // boot wedges before graphical.target. Re-derive SIGCHLD readiness from
-        // the zombie list so the fd stays ready until EVERY child is reaped.
-        if mask & SIGCHLD_MASK_BIT != 0 {
-            if let Some(ref c) = cur {
-                if task_has_zombies(c.tid) { deliver |= SIGCHLD_MASK_BIT; }
-            }
-        }
-        if deliver != 0 { vfs::POLL_IN } else { 0 }
-    }
+        Ok(())
 }
 
 /// `sys_signalfd(fd, mask, mask_size)` / `sys_signalfd4(fd, mask, sz, flags)`.
 /// fd == -1 → allocate new fd; fd >= 0 → update existing inode's mask.
 /// # C: O(N_fds) for new; O(1) update
+pub fn sys_signalfd(args: &syscall::SyscallArgs) -> i64 {
+    sys_signalfd_common(args, 0)
+}
+
 pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
+    sys_signalfd_common(args, args.a3)
+}
+
+fn sys_signalfd_common(args: &syscall::SyscallArgs, flags: u64) -> i64 {
     use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
     let in_fd     = args.a0 as i32;
@@ -155,12 +174,13 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
     if let Err(rv) = validate_user_buf(mask_ptr, 8, 1) { return rv; }
     const SFD_NONBLOCK: u64 = 0o0_004_000;
     const SFD_CLOEXEC:  u64 = 0o2_000_000;
-    let flags = args.a3;
     if flags & !(SFD_NONBLOCK | SFD_CLOEXEC) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
     // SAFETY: mask_ptr validated readable for one sigset_t word.
-    let mask = unsafe { core::ptr::read_unaligned(mask_ptr as *const u64) };
+    let mask = unsafe { core::ptr::read_unaligned(mask_ptr as *const u64) }
+        & !(sched::live::sigpend::Signum::Sigkill.bit()
+          | sched::live::sigpend::Signum::Sigstop.bit());
     #[cfg(feature = "debug-ssh")]
     {
         klog::write_raw(b"[INFO]  ssh-trace: signalfd4 in_fd=");
@@ -187,7 +207,7 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
     }
     let inode = make_signalfd_inode(mask);
     let dentry = vfs::dcache::d_alloc_pseudo("[signalfd]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
-    let mut fl = OpenFlags::O_RDONLY;
+    let mut fl = OpenFlags::O_RDWR;
     if (flags & SFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
     match fdt.alloc_limit(file, cur.nofile_soft()) {
