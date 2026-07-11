@@ -5,9 +5,11 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::OpenFlags;
 
-use crate::open_common::{enforce_open_perm, break_lease_for_open, O_CREAT, O_EXCL, O_TRUNC,
-    O_NOFOLLOW, O_TMPFILE, O_PATH};
+use crate::open_common::{enforce_open_perm, break_lease_for_open, normalize_open_flags, O_CREAT, O_EXCL, O_TRUNC,
+    O_DIRECTORY, O_EMPTYPATH, O_NOFOLLOW, OPENAT2_REGULAR, O_TMPFILE, O_PATH};
 
+const OPEN_HOW_SIZE_VER0: u64 = 24;
+const PAGE_SIZE: u64 = 4096;
 const DEV_TTY_MAJOR: u32 = 5;
 const DEV_TTY_ALIAS_MINOR: u32 = 0;
 const DEV_PTMX_MINOR: u32 = 2;
@@ -17,7 +19,7 @@ const DEV_PTMX_RDEV: u32 = vfs::new_encode_dev(vfs::mkdev(DEV_TTY_MAJOR, DEV_PTM
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257. No openat2 RESOLVE_*
 /// modifiers (default `LookupFlags`). # C: O(N_path)
 pub fn sys_openat(args: &SyscallArgs) -> i64 {
-    let rv = open_core(args, vfs::LookupFlags::default());
+    let rv = open_core(args, vfs::LookupFlags::default(), false);
     #[cfg(feature = "debug-udevdb")]
     if let Ok(p) = crate::namei_common::read_user_path(args.a1) {
         crate::namei_common::trace_udevdb_path(b"openat", p.as_str(), rv);
@@ -39,31 +41,92 @@ const RESOLVE_CACHED:        u64 = 0x20;
 const RESOLVE_VALID: u64 = RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS
     | RESOLVE_BENEATH | RESOLVE_IN_ROOT | RESOLVE_CACHED;
 
-/// `sys_openat2(dirfd, path, flags, mode)` with the `open_how.resolve` field
-/// already extracted by the dispatcher. Validates `resolve` (unknown bits →
-/// EINVAL, BENEATH+IN_ROOT mutually exclusive — Linux `build_open_flags`) and
-/// maps it onto `LookupFlags` consumed by the resolver. # C: O(N_path)
-pub fn sys_openat2(args: &SyscallArgs, resolve: u64) -> i64 {
-    if resolve & !RESOLVE_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
+/// `sys_openat2(dirfd, path, how, size)`. Copies `struct open_how` with Linux
+/// size/tail rules, validates `resolve`, and maps it onto `LookupFlags`
+/// consumed by the resolver. # C: O(N_path + how_size)
+pub fn sys_openat2(args: &SyscallArgs) -> i64 {
+    let how = match copy_open_how(args.a2, args.a3) {
+        Ok(h) => h, Err(rv) => return rv,
+    };
+    if how.resolve & !RESOLVE_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
     // Linux rejects RESOLVE_BENEATH together with RESOLVE_IN_ROOT.
-    if (resolve & RESOLVE_BENEATH != 0) && (resolve & RESOLVE_IN_ROOT != 0) {
+    if (how.resolve & RESOLVE_BENEATH != 0) && (how.resolve & RESOLVE_IN_ROOT != 0) {
         return -(Errno::Einval.as_i32() as i64);
     }
+    let mut sa = *args;
+    sa.a2 = how.flags;
+    sa.a3 = how.mode;
     let extra = vfs::LookupFlags {
-        no_xdev:       resolve & RESOLVE_NO_XDEV != 0,
-        no_magiclinks: resolve & RESOLVE_NO_MAGICLINKS != 0,
-        no_symlinks:   resolve & RESOLVE_NO_SYMLINKS != 0,
-        beneath_exdev: resolve & RESOLVE_BENEATH != 0,
-        in_root:       resolve & RESOLVE_IN_ROOT != 0,
-        cached:        resolve & RESOLVE_CACHED != 0,
+        no_xdev:       how.resolve & RESOLVE_NO_XDEV != 0,
+        no_magiclinks: how.resolve & RESOLVE_NO_MAGICLINKS != 0,
+        no_symlinks:   how.resolve & RESOLVE_NO_SYMLINKS != 0,
+        beneath_exdev: how.resolve & RESOLVE_BENEATH != 0,
+        in_root:       how.resolve & RESOLVE_IN_ROOT != 0,
+        cached:        how.resolve & RESOLVE_CACHED != 0,
         ..Default::default()
     };
-    let rv = open_core(args, extra);
+    let rv = open_core(&sa, extra, true);
     #[cfg(feature = "debug-udevdb")]
     if let Ok(p) = crate::namei_common::read_user_path(args.a1) {
         crate::namei_common::trace_udevdb_path(b"openat2", p.as_str(), rv);
     }
     rv
+}
+
+struct OpenHow {
+    flags:   u64,
+    mode:    u64,
+    resolve: u64,
+}
+
+fn copy_open_how(ptr: u64, size: u64) -> Result<OpenHow, i64> {
+    if size < OPEN_HOW_SIZE_VER0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    if size > PAGE_SIZE { return Err(-(Errno::E2big.as_i32() as i64)); }
+    validate_user_readable(ptr, size)?;
+    // SAFETY: openat2 how span was validated readable for at least 24 bytes; unaligned loads match copy_from_user.
+    let flags = unsafe { core::ptr::read_unaligned(ptr as *const u64) };
+    // SAFETY: openat2 how span was validated readable for at least 24 bytes; unaligned loads match copy_from_user.
+    let mode = unsafe { core::ptr::read_unaligned((ptr + 8) as *const u64) };
+    // SAFETY: openat2 how span was validated readable for at least 24 bytes; unaligned loads match copy_from_user.
+    let resolve = unsafe { core::ptr::read_unaligned((ptr + 16) as *const u64) };
+    if size > OPEN_HOW_SIZE_VER0 {
+        let mut p = ptr + OPEN_HOW_SIZE_VER0;
+        while p < ptr + size {
+            // SAFETY: extension tail byte lies inside the validated readable open_how span.
+            if unsafe { core::ptr::read_volatile(p as *const u8) } != 0 {
+                return Err(-(Errno::E2big.as_i32() as i64));
+            }
+            p += 1;
+        }
+    }
+    Ok(OpenHow { flags, mode, resolve })
+}
+
+fn validate_user_readable(ptr: u64, len: u64) -> Result<(), i64> {
+    use hal::{UserVirtAddr, PAGE_SIZE_BYTES, USER_VA_END};
+    use vmm::VmaProt;
+    if ptr == 0 { return Err(-(Errno::Efault.as_i32() as i64)); }
+    let end = ptr.checked_add(len).ok_or(-(Errno::Efault.as_i32() as i64))?;
+    if end > USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
+    if len == 0 { return Ok(()); }
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return Err(-(Errno::Efault.as_i32() as i64)),
+    };
+    // SAFETY: current task owns its mm slot during syscall argument copying.
+    let mm = match unsafe { cur.mm_ref() } {
+        Some(m) => m.clone(), None => return Err(-(Errno::Efault.as_i32() as i64)),
+    };
+    let mut va = ptr & !(PAGE_SIZE_BYTES - 1);
+    let last = (end - 1) & !(PAGE_SIZE_BYTES - 1);
+    loop {
+        let uva = UserVirtAddr::new(va).ok_or(-(Errno::Efault.as_i32() as i64))?;
+        match mm.find_vma(uva) {
+            Some(v) if v.prot.contains(VmaProt::READ) => {}
+            _ => return Err(-(Errno::Efault.as_i32() as i64)),
+        }
+        if va == last { return Ok(()); }
+        va = va.checked_add(PAGE_SIZE_BYTES).ok_or(-(Errno::Efault.as_i32() as i64))?;
+    }
 }
 
 /// True when any openat2 RESOLVE_* modifier is set (so the resolve path takes
@@ -79,12 +142,22 @@ fn is_chr_rdev(inode: &vfs::InodeRef, rdev: u32) -> bool {
 
 /// openat / openat2 shared core. `extra` carries the openat2 RESOLVE_* bits
 /// (empty for plain openat). # C: O(N_path)
-fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
+fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 {
     let path_ptr = args.a1;
-    let flags    = args.a2 as u32;
-    let mode     = args.a3 as u32;
+    let (flags, mode) = match normalize_open_flags(args.a2, args.a3, openat2) {
+        Ok(x) => x, Err(rv) => return rv,
+    };
+    let empty_path = (flags as u64 & O_EMPTYPATH) != 0;
+    let regular_only = openat2 && (args.a2 & OPENAT2_REGULAR) != 0;
+    if extra.cached && (flags & (O_TRUNC | O_CREAT | O_TMPFILE)) != 0 {
+        return -(Errno::Eagain.as_i32() as i64);
+    }
     // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
-    let path = match crate::namei_common::read_user_path(path_ptr) {
+    let path = match if empty_path {
+        crate::mount_common::read_user_path_allow_empty(path_ptr)
+    } else {
+        crate::namei_common::read_user_path(path_ptr)
+    } {
         Ok(p)   => p,
         Err(rv) => return rv,
     };
@@ -138,6 +211,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     let lookup_resolved: Option<vfs::VfsPath> = if extra_active(&extra) {
         let mut lookup = extra;
         lookup.no_follow_final = nofollow;
+        lookup.directory = (flags & O_DIRECTORY) != 0;
+        lookup.empty = empty_path;
         let r: Result<vfs::VfsPath, i64> = if extra.beneath_exdev || extra.in_root {
             crate::pathresolve::resolve_confined(args.a0 as i32, s, lookup)
         } else {
@@ -153,6 +228,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     } else {
         let mut lookup = vfs::LookupFlags::default();
         lookup.no_follow_final = nofollow;
+        lookup.directory = (flags & O_DIRECTORY) != 0;
+        lookup.empty = empty_path;
         match crate::pathresolve::resolve_at_path(args.a0 as i32, s, lookup) {
             Ok(p) => Some(p),
             Err(rv) if rv == -(Errno::Enoent.as_i32() as i64) => None,
@@ -196,6 +273,9 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         // O_TMPFILE short-circuited above, so this is the ordinary-open path.
         if (flags & O_CREAT) != 0 && (flags & O_EXCL) != 0 {
             return -(Errno::Eexist.as_i32() as i64);
+        }
+        if regular_only && vp.inode.file_type() != vfs::FileType::Regular {
+            return -(Errno::Eftype.as_i32() as i64);
         }
         if let Err(rv) = crate::landlock::check(&vp, landlock_op) { return rv; }
         let display = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
