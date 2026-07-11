@@ -137,6 +137,13 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
     sys_epoll_wait_timeout(args, timeout_ns)
 }
 
+/// `sys_epoll_pwait(epfd, events*, maxevents, timeout_ms, sigmask, sigsetsize)`.
+pub fn sys_epoll_pwait(args: &syscall::SyscallArgs) -> i64 {
+    let timeout = args.a3 as i32;
+    let timeout_ns = if timeout < 0 { None } else { Some((timeout as u64).saturating_mul(1_000_000)) };
+    sys_epoll_wait_sigmask(args, timeout_ns, args.a4, args.a5)
+}
+
 /// `sys_epoll_pwait2(epfd, events*, maxevents, timeout*, sigmask, sigsetsize)`.
 pub fn sys_epoll_pwait2(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
@@ -156,7 +163,26 @@ pub fn sys_epoll_pwait2(args: &syscall::SyscallArgs) -> i64 {
         }
         Some((sec as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64))
     };
-    sys_epoll_wait_timeout(args, timeout_ns)
+    sys_epoll_wait_sigmask(args, timeout_ns, args.a4, args.a5)
+}
+
+fn sys_epoll_wait_sigmask(args: &syscall::SyscallArgs, timeout_ns: Option<u64>, sigmask_ptr: u64, sigsetsize: u64) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    if sigmask_ptr == 0 { return sys_epoll_wait_timeout(args, timeout_ns); }
+    if sigsetsize != 8 { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf(sigmask_ptr, 8, 1) { return rv; }
+    let cur = match sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: sigmask_ptr validated as a readable 8-byte kernel_sigset_t.
+    let new_mask = unsafe { core::ptr::read_unaligned(sigmask_ptr as *const u64) }
+        & !(sched::live::sigpend::Signum::Sigkill.bit()
+          | sched::live::sigpend::Signum::Sigstop.bit());
+    let saved = cur.sigmask.swap(new_mask, Ordering::AcqRel);
+    let rv = sys_epoll_wait_timeout(args, timeout_ns);
+    cur.sigmask.store(saved, Ordering::Release);
+    rv
 }
 
 fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) -> i64 {
@@ -228,6 +254,4 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
             }
         }
     }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { 0 }
 }
