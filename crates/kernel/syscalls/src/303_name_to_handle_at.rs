@@ -15,7 +15,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
@@ -100,14 +99,11 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((handle_ptr + HANDLE_HDR as u64 + i as u64) as *mut u8, *b);
         }
     }
-    if mnt_id_ptr != 0 && mnt_id_ptr < USER_VA_END {
-        if validate_user_buf_writable(mnt_id_ptr, 4, 1).is_ok() {
-            // Linux returns the mount table id here, not st_dev/fsid. systemd
-            // compares this with mountinfo and asserts it is non-negative.
-            // SAFETY: mnt_id_ptr validated writable for 4 bytes; single aligned i32 write of the mount id.
-            unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, mount_id); }
-        }
-    }
+    if let Err(rv) = validate_user_buf_writable(mnt_id_ptr, 4, 1) { return rv; }
+    // Linux returns the mount table id here, not st_dev/fsid. systemd compares
+    // this with mountinfo and asserts it is non-negative.
+    // SAFETY: mnt_id_ptr validated writable for 4 bytes; single aligned i32 write of the mount id.
+    unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, mount_id); }
     #[cfg(feature = "debug-mount")]
     log_runtime_handle("name_to_handle", dirfd, path_ptr, 0);
     0
