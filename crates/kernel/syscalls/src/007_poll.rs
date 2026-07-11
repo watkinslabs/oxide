@@ -129,6 +129,8 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
                     let mask = file.poll() as i16;
                     revents = mask & (events | POLL_ALWAYS);
                 }
+            } else if fd >= 0 {
+                revents = POLLNVAL;
             }
             // SAFETY: revents at p+6 lies inside the validated writable range.
             unsafe { core::ptr::write_unaligned((p + 6) as *mut i16, revents); }
