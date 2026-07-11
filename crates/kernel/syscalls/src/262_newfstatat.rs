@@ -38,8 +38,8 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     // naturally aligned, so only validate the byte range.
     if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
 
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
-    // path operates on the dirfd, ENOENT without it); a normal stat FOLLOWS the
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
+    // operates on the dirfd, NULL still EFAULTs); a normal stat FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. The engine
     // preserves ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG (X1/X2/X4/X5).
     let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;

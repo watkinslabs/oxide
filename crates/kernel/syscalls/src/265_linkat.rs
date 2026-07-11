@@ -8,7 +8,8 @@ use crate::namei_common::read_user_path;
 
 /// `linkat(odir, target, ndir, link, flags)` slot 265. Supports
 /// `AT_EMPTY_PATH` (flag bit 0x1000): when set and `target` is the
-/// empty string, the source is the fd in `odir`, not a path. Supports
+/// empty string, the source is the fd in `odir`, not a path; non-empty
+/// `target` still takes the normal path lookup. Supports
 /// `AT_SYMLINK_FOLLOW` (0x400): the source path is dereferenced before
 /// hard-linking, including Linux magic fd links such as `/proc/self/fd/N`.
 /// This is how O_TMPFILE inodes get a name after creation when userspace
@@ -32,16 +33,15 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         Ok(s) => s, Err(rv) => return rv,
     };
 
-    if (flags & AT_EMPTY_PATH) != 0 {
-        // target must be empty (NULL ptr or "").
-        let target_empty = if target_p == 0 {
-            true
-        } else {
-            // SAFETY: target_p in user range (we don't deref past 256B); user page mapped under caller's AS on the syscall path; bounded read.
-            let bytes = unsafe { devfs::read_user_cstr(target_p, 256) };
-            matches!(bytes, Some(b) if b.is_empty())
-        };
-        if !target_empty { return -(Errno::Einval.as_i32() as i64); }
+    let target_empty = if (flags & AT_EMPTY_PATH) != 0 {
+        match crate::pathresolve::at_path_empty(target_p) {
+            Ok(v) => v,
+            Err(rv) => return rv,
+        }
+    } else {
+        false
+    };
+    if target_empty {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };

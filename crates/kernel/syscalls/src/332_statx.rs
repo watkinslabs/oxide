@@ -37,8 +37,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     // byte range here.
     if let Err(rv) = validate_user_buf_writable(buf, 256, 1) { return rv; }
 
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
-    // path operates on the dirfd, ENOENT without it); a normal statx FOLLOWS the
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
+    // operates on the dirfd, NULL still EFAULTs); a normal statx FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. aarch64
     // musl routes stat()/lstat() here. ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG
     // preserved by the engine (X1/X2/X4/X5).

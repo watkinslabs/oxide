@@ -37,8 +37,8 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
     const VALID_FLAGS: u32 = AT_EACCESS | AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
     if flags & !VALID_FLAGS != 0 { return -(Errno::Einval.as_i32() as i64); }
     let no_follow = flags & AT_SYMLINK_NOFOLLOW != 0;
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
-    // path operates on the dirfd, ENOENT without it); faccessat FOLLOWS the
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
+    // operates on the dirfd, NULL still EFAULTs); faccessat FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW) unless AT_SYMLINK_NOFOLLOW.
     let lf = vfs::LookupFlags {
         empty: (flags & AT_EMPTY_PATH) != 0,
