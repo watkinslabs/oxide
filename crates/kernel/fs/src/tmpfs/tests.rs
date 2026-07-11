@@ -258,18 +258,23 @@ mod rename_overwrite_tests {
         assert!(Arc::ptr_eq(&root.lookup("b").unwrap(), &root.lookup("a").unwrap()), "b is a hardlink of a");
     }
 
-    // D9: `i_op->rename` rejects EXCHANGE/WHITEOUT (those keep the FileSystem
-    // path); the inode-op handles only the plain rename.
+    // D9: `i_op->rename` handles EXCHANGE/WHITEOUT by resolved parent inodes;
+    // the syscall path must not rewalk filesystem strings for these variants.
     #[test]
-    fn iop_rename_rejects_exchange_whiteout() {
+    fn iop_rename_handles_exchange_whiteout() {
         let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
         root.create_child("x", 0o644, &CreateCtx::root()).expect("x");
-        assert!(matches!(
-            root.rename_child("x", &root, "y", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()),
-            Err(VfsError::Einval)));
-        assert!(matches!(
-            root.rename_child("x", &root, "y", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()),
-            Err(VfsError::Einval)));
+        root.create_child("y", 0o644, &CreateCtx::root()).expect("y");
+        let x = root.lookup("x").expect("x lookup");
+        let y = root.lookup("y").expect("y lookup");
+
+        root.rename_child("x", &root, "y", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()).expect("exchange");
+        assert!(Arc::ptr_eq(&root.lookup("x").unwrap(), &y), "x now names old y");
+        assert!(Arc::ptr_eq(&root.lookup("y").unwrap(), &x), "y now names old x");
+
+        root.rename_child("y", &root, "z", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()).expect("whiteout");
+        assert!(Arc::ptr_eq(&root.lookup("z").unwrap(), &x), "z now names moved source");
+        assert_eq!(root.lookup("y").unwrap().file_type(), FileType::CharDev, "source became whiteout");
     }
 }
 

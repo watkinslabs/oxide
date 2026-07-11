@@ -15,7 +15,7 @@ use alloc::sync::Arc;
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::{CreateCtx, SuperBlock};
+use vfs::{CreateCtx, FileType, SuperBlock};
 
 const MINI: &[u8] = include_bytes!("mini.img");
 const BLOCK_SIZE: u32 = 512;
@@ -75,16 +75,21 @@ fn iop_rename_overwrite_drops_replaced_target_nlink() {
 }
 
 #[test]
-fn iop_rename_rejects_exchange_whiteout() {
+fn iop_rename_handles_exchange_whiteout() {
     let (_m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
     root.create_child("ix", 0o644, &CreateCtx::root()).expect("create ix");
-    assert!(matches!(
-        root.rename_child("ix", &root, "iy", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()),
-        Err(vfs::VfsError::Einval)));
-    assert!(matches!(
-        root.rename_child("ix", &root, "iy", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()),
-        Err(vfs::VfsError::Einval)));
+    root.create_child("iy", 0o644, &CreateCtx::root()).expect("create iy");
+    let ix = root.lookup("ix").expect("ix lookup");
+    let iy = root.lookup("iy").expect("iy lookup");
+
+    root.rename_child("ix", &root, "iy", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()).expect("exchange");
+    assert_eq!(root.lookup("ix").unwrap().ino(), iy.ino(), "ix now names old iy");
+    assert_eq!(root.lookup("iy").unwrap().ino(), ix.ino(), "iy now names old ix");
+
+    root.rename_child("iy", &root, "iz", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()).expect("whiteout");
+    assert_eq!(root.lookup("iz").unwrap().ino(), ix.ino(), "iz now names moved source");
+    assert_eq!(root.lookup("iy").unwrap().file_type(), FileType::CharDev, "source became whiteout");
 }
 
 #[test]

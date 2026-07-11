@@ -16,7 +16,7 @@ pub use mountfs::{Ext4Mount, Ext4SuperOps};
 /// `ext4_type_by_mode` / `fs/ext4/dir.c`). Used by the atomic
 /// exchange/whiteout dirent rewrites so a swapped char/block/fifo/sock
 /// entry keeps its correct `d_type`, not a blanket `DT_REG`. # C: O(1)
-fn dirent_dt(i: &crate::Inode) -> u8 {
+pub(crate) fn dirent_dt(i: &crate::Inode) -> u8 {
     match i.mode & crate::inode::S_IFMT {
         crate::inode::S_IFDIR  => crate::dir::DT_DIR,
         crate::inode::S_IFLNK  => crate::dir::DT_LNK,

@@ -241,28 +241,42 @@ impl InodeOps for TmpfsDirOps {
         Ok(())
     }
 
-    /// `i_op->rename` (Linux `shmem_rename2` reached via `vfs_rename`): the
-    /// resolved-parent variant of `TmpfsFs::rename` — detach the source from
-    /// this dir, drop any overwritten dest's link, attach the source under the
-    /// new name in `new_dir`. Only the plain rename routes here;
-    /// `RENAME_EXCHANGE`/`RENAME_WHITEOUT` stay on the `FileSystem` path and are
-    /// rejected defensively. # C: O(log N)
+    /// `i_op->rename` (Linux `shmem_rename2` reached via `vfs_rename`): mutate
+    /// resolved parent directories directly for plain rename, `RENAME_EXCHANGE`,
+    /// and `RENAME_WHITEOUT`; no whole-path string rewalk. # C: O(log N)
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &CreateCtx)
         -> KResult<()>
     {
-        if flags & (vfs::namei::RENAME_EXCHANGE | vfs::namei::RENAME_WHITEOUT) != 0 {
-            return Err(VfsError::Einval);
-        }
         let sdir = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let ddir = new_dir.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
+        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
+            if core::ptr::eq(sdir, ddir) {
+                let mut g = sdir.kids.lock();
+                if old_name == new_name { return if g.contains_key(old_name) { Ok(()) } else { Err(VfsError::Enoent) }; }
+                let a = g.get(old_name).cloned().ok_or(VfsError::Enoent)?;
+                let b = g.get(new_name).cloned().ok_or(VfsError::Enoent)?;
+                g.insert(old_name.into(), b);
+                g.insert(new_name.into(), a);
+                return Ok(());
+            }
+            let mut sg = sdir.kids.lock();
+            let mut dg = ddir.kids.lock();
+            let a = sg.get(old_name).cloned().ok_or(VfsError::Enoent)?;
+            let b = dg.get(new_name).cloned().ok_or(VfsError::Enoent)?;
+            sg.insert(old_name.into(), b);
+            dg.insert(new_name.into(), a);
+            return Ok(());
+        }
         let moved = sdir.remove(old_name).ok_or(VfsError::Enoent)?;
-        // Replaced destination loses its link (Linux `vfs_rename`): a directory
-        // target is cleared to 0, else drop one link; reclaim the inode charge
-        // once no name remains. Mirrors `TmpfsFs::rename`.
         if let Some(victim) = ddir.remove(new_name) {
             if victim.file_type() == FileType::Directory { victim.set_nlink(0); }
             else { victim.drop_nlink(); }
             if victim.nlink() == 0 { ddir.acct.free_inode(); }
+        }
+        if flags & vfs::namei::RENAME_WHITEOUT != 0 {
+            let sb = sdir.sb_weak();
+            let wo = make_device_node_inode(next_ino(), FileType::CharDev, Devt::from_raw(0), 0, sb);
+            sdir.insert(old_name, wo);
         }
         ddir.insert(new_name, moved);
         Ok(())
