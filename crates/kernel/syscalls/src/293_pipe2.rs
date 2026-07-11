@@ -10,8 +10,13 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     use vfs::{File, OpenFlags};
     let pipefd = args.a0;
     let flags  = args.a1 as u32;
-    const O_NONBLOCK: u32 = 0o4000;
-    const O_CLOEXEC:  u32 = 0o2000000;
+    const O_NONBLOCK: u32 = OpenFlags::O_NONBLOCK.bits();
+    const O_DIRECT:   u32 = OpenFlags::O_DIRECT.bits();
+    const O_CLOEXEC:  u32 = OpenFlags::O_CLOEXEC.bits();
+    const O_NOTIFICATION_PIPE: u32 = OpenFlags::O_EXCL.bits();
+    const VALID_FLAGS: u32 = O_CLOEXEC | O_NONBLOCK | O_DIRECT | O_NOTIFICATION_PIPE;
+    if flags & !VALID_FLAGS != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if flags & O_NOTIFICATION_PIPE != 0 { return -(Errno::Enopkg.as_i32() as i64); }
     if let Err(rv) = validate_user_buf_writable(pipefd, 8, 4) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
@@ -37,6 +42,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     let mut r_oflags = OpenFlags::O_RDONLY;
     let mut w_oflags = OpenFlags::O_WRONLY;
     if (flags & O_NONBLOCK) != 0 { r_oflags |= OpenFlags::O_NONBLOCK; w_oflags |= OpenFlags::O_NONBLOCK; }
+    if (flags & O_DIRECT) != 0 { w_oflags |= OpenFlags::O_DIRECT; }
     let r_file = File::new(inode.clone(), dentry.clone(), r_oflags);
     let w_file = File::new(inode, dentry, w_oflags);
     let r_fd = match fdt.alloc_limit(r_file, cur.nofile_soft())  { Ok(f) => f, Err(e) => return -(e as i64) };
