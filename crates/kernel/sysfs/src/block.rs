@@ -95,9 +95,9 @@ static DEVICE_GROUP: AttrGroup = AttrGroup { attrs: DEVICE_ATTR_LIST };
 /// attribute fresh from the live `block::registry`. # C: O(1)
 struct DiskKobj { name: String }
 impl SysfsOps for DiskKobj {
-    fn show(&self, attr: &str) -> Option<Vec<u8>> {
-        let disk = block::registry::by_name(&self.name)?;
-        disk_attr(&disk, attr)
+    fn show(&self, attr: &str) -> KResult<Vec<u8>> {
+        let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enodev)?;
+        disk_attr(&disk, attr).ok_or(VfsError::Enoent)
     }
 
     /// Writing "add"/"change"/"remove" to `uevent` re-emits the disk's uevent
@@ -128,21 +128,21 @@ impl SysfsOps for DiskKobj {
 /// disk's block size. # C: O(1)
 struct QueueKobj { name: String }
 impl SysfsOps for QueueKobj {
-    fn show(&self, attr: &str) -> Option<Vec<u8>> {
-        QUEUE_GROUP.find(attr)?;
-        let disk = block::registry::by_name(&self.name)?;
-        Some(alloc::format!("{}\n", disk.dev.block_size()).into_bytes())
+    fn show(&self, attr: &str) -> KResult<Vec<u8>> {
+        QUEUE_GROUP.find(attr).ok_or(VfsError::Enoent)?;
+        let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enodev)?;
+        Ok(alloc::format!("{}\n", disk.dev.block_size()).into_bytes())
     }
 }
 
 /// `sysfs_ops` for `/sys/block/<dev>/device`. # C: O(1)
 struct DeviceKobj { name: String }
 impl SysfsOps for DeviceKobj {
-    fn show(&self, attr: &str) -> Option<Vec<u8>> {
-        DEVICE_GROUP.find(attr)?;
-        let disk = block::registry::by_name(&self.name)?;
-        let serial = disk.serial.as_ref()?;
-        Some(alloc::format!("{}\n", serial).into_bytes())
+    fn show(&self, attr: &str) -> KResult<Vec<u8>> {
+        DEVICE_GROUP.find(attr).ok_or(VfsError::Enoent)?;
+        let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enodev)?;
+        let serial = disk.serial.as_ref().ok_or(VfsError::Enoent)?;
+        Ok(alloc::format!("{}\n", serial).into_bytes())
     }
 }
 

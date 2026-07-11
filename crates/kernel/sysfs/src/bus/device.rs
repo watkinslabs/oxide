@@ -169,9 +169,9 @@ fn dev_group(bus: &str) -> &'static AttrGroup {
 /// each attribute fresh from the live `drv` registry. # C: O(1)
 struct DeviceKobj { addr: String, bus: &'static str }
 impl SysfsOps for DeviceKobj {
-    fn show(&self, attr: &str) -> Option<Vec<u8>> {
-        let dev = find_dev(self.bus, &self.addr)?;
-        dev_attr(&dev, attr)
+    fn show(&self, attr: &str) -> KResult<Vec<u8>> {
+        let dev = find_dev(self.bus, &self.addr).ok_or(VfsError::Enodev)?;
+        dev_attr(&dev, attr).ok_or(VfsError::Enoent)
     }
 
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
