@@ -18,19 +18,28 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolved = crate::pathresolve::resolve_cwd(raw);
-    let s = resolved.as_str();
     // chdir(2) follows symlinks to a directory — resolve via the
-    // path-walk and require a directory. A resolved non-directory final
+    // raw path-walk and require a directory. A resolved non-directory final
     // target is ENOTDIR (not ENOENT); other walk errors are preserved.
-    let path_obj = match crate::pathresolve::resolve_path_result(s, false) {
+    let path_obj = match crate::pathresolve::resolve_path_raw(raw, false) {
         Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-        Ok(_)  => return -(Errno::Enotdir.as_i32() as i64),
+        Ok(_p) => {
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[ENOTDIR] op=chdir why=target-not-dir tid=");
+                klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                klog::write_raw(b" raw=");
+                klog::write_raw(raw.as_bytes());
+                klog::write_raw(b"\n");
+            }
+            return -(Errno::Enotdir.as_i32() as i64);
+        }
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
+    let rendered = vfs::mount::render_path_for_mount(path_obj.mnt_id, &path_obj.dentry);
     // SAFETY: single-mutator per `13§5`; current task is sole writer.
     unsafe {
-        *cur.cwd.get() = alloc::string::String::from(s);
+        *cur.cwd.get() = rendered;
         *cur.cwd_vfs.get() = Some(path_obj);
     }
     0

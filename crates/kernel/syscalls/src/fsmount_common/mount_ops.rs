@@ -27,16 +27,6 @@ fn graft_mount(spec: vfs::fs::MountSpec, target_d: &Arc<Dentry>, parent_hint: Op
     }
 }
 
-/// # C: O(N_mounts + optional block-registry lookup)
-pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>) -> i64 {
-    mount_fstype_with_data(source, fstype, target, target_d, "")
-}
-
-pub(crate) fn mount_fstype_with_data(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>, data: &str) -> i64 {
-    let phint = crate::pathresolve::resolve_path(target, false).map(|p| p.mnt_id);
-    mount_fstype_at(source, fstype, target, target_d, phint, data)
-}
-
 pub(crate) fn mount_fstype_at(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>, parent_hint: Option<u64>, data: &str) -> i64 {
     ensure_filesystems_registered();
     if let Some(ty) = vfs::fs::get_fs(fstype) {

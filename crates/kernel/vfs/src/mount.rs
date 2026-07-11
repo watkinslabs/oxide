@@ -7,7 +7,7 @@
 //! - `attach`: superblock materialization plus root/submount registration.
 //! - `clone_tree`: open_tree/bind clone construction and recursive graft commit.
 //! - `namespace`: pivot/copy/reap/bind/move namespace-tree mutations.
-//! - `attrs`: remount, mount_setattr, write pins, and path query helpers.
+//! - `attrs`: remount, mount_setattr, write pins, and inode lookup helpers.
 //! - `propagation`: peer/slave propagation fan-out.
 //! - `detach`: umount/detach tear-down.
 //! - `mnt_flags`: internal lifecycle flags and mount_setattr translation.
@@ -32,7 +32,7 @@ use crate::types::VfsError;
 // `vfs::mount::*` (provider install, generation poll, chroot hook, reap).
 pub use crate::mntns::{
     chroot_fs_refs, current_ns, mnt_ns_enter, mnt_ns_exit, mount_generation,
-    mountinfo_poll_mask, set_chroot_refs_hook, set_current_ns_provider,
+    mountinfo_poll_mask, mountinfo_poll_mask_ns, set_chroot_refs_hook, set_current_ns_provider,
     ChrootRefsHook, MntNamespace, Mountpoint as MountpointObj, NsProvider,
 };
 
@@ -46,11 +46,6 @@ pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propa
 mod detach;
 pub use detach::{mountpoint_dentry_of, unregister, unregister_top};
 pub(crate) use detach::detach_mounts_on;
-
-// Stale-negative-dentry invalidation for inode-op-direct create paths that
-// bypass namei's d_instantiate (AF_UNIX bind mknod_child, etc.).
-mod invalidate;
-pub use invalidate::drop_stale_negative;
 
 // mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /
 // MNT_INTERNAL / MNT_DOOMED / …, Linux `include/linux/mount.h`) distinct from

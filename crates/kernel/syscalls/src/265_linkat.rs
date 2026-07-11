@@ -57,29 +57,18 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     }
 
     // Classic path→path linkat. With AT_SYMLINK_FOLLOW, Linux links the
-    // resolved source inode instead of the symlink dentry itself. `/proc/*/fd`
-    // entries are magic links to open file descriptions; route them through
-    // the fd table so an O_TMPFILE fd can be materialized in its own mount.
+    // resolved source inode instead of the symlink dentry itself.
     // D1/D2: PATH_MAX errno contract (non-AT_EMPTY_PATH path source).
     let target = match read_user_path(target_p) {
         Ok(s) => s, Err(rv) => return rv,
     };
     if (flags & AT_SYMLINK_FOLLOW) != 0 {
-        let t_render = crate::pathresolve::resolve_at_result(odir_fd, &target).ok();
-        let source_inode = if let Some((tid_opt, fd)) = t_render.as_deref()
-            .and_then(crate::open_common::parse_proc_fd) {
-            match sched::proclink::proc_fd_file(tid_opt, fd) {
-                Some(f) => f.inode().clone(),
-                None => return -(Errno::Ebadf.as_i32() as i64),
-            }
-        } else {
-            // AT_SYMLINK_FOLLOW: explicitly FOLLOW the trailing symlink
-            // (LOOKUP_FOLLOW) so the resolved target inode is linked.
-            let lf = vfs::LookupFlags { follow: true, ..Default::default() };
-            match crate::pathresolve::resolve_at_path(odir_fd, &target, lf) {
-                Ok(p) => p.inode,
-                Err(rv) => return rv,
-            }
+        // AT_SYMLINK_FOLLOW: explicitly FOLLOW the trailing symlink
+        // (LOOKUP_FOLLOW) so the resolved target inode is linked.
+        let lf = vfs::LookupFlags { follow: true, ..Default::default() };
+        let source_inode = match crate::pathresolve::resolve_at_path(odir_fd, &target, lf) {
+            Ok(p) => p.inode,
+            Err(rv) => return rv,
         };
         return crate::s086_link::link_inode_at(source_inode, args.a2 as i32, &link);
     }

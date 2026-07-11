@@ -224,12 +224,10 @@ assert_eq!(c.flags() & D_NEGATIVE, 0);
 assert!(!c.is_negative());
 }
 
-// Regression for `mount::drop_stale_negative` (AF_UNIX bind / inode-op-direct
-// create bypassing namei's d_instantiate): a create driven straight off the
-// parent inode leaves an earlier failed-lookup NEGATIVE dentry cached, which
-// namei walk treats as definitive ENOENT. Dropping it must make d_lookup miss
-// so the next walk re-reads the parent and instantiates the new node — proving
-// the primitive the helper composes with `descend`.
+// Regression for object-parent invalidation after inode-op-direct create paths
+// (AF_UNIX bind mknod_child, etc.): an earlier failed lookup may leave a
+// NEGATIVE child cached under the exact parent. Dropping that child must make
+// d_lookup miss so the next walk re-reads the parent and instantiates the node.
 #[test]
 fn drop_negative_forces_relookup() {
 let r = root();

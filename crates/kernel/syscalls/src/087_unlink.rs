@@ -5,20 +5,8 @@
 use syscall::SyscallArgs;
 use crate::namei_common::{
     child_dentry, drop_child_cache, errno_from_vfs, parent_mount_readonly, read_user_path,
-    render_child_path, render_parent_path, resolve_unlink_parent_at, unlink_unix_socket_addr,
+    render_child_path, resolve_unlink_parent_at, unlink_unix_socket_addr,
 };
-
-/// D30: capture the victim leaf dentry for `abs` BEFORE the backend removes the
-/// name, so the post-removal `dcache::d_unlink` (which `drop_link`s the inode and
-/// retires it on the last name) has a positive dentry to drive. Resolved
-/// NO-FOLLOW on the final component — unlink/rmdir act on the symlink itself, not
-/// its target. `None` when the name doesn't resolve (already-gone / special
-/// cases); callers fall back to the path-based dcache invalidation. Shared by
-/// `sys_unlink`, `sys_unlinkat`, `do_rmdir`, and `rename_impl`'s overwrite path.
-/// # C: O(components)
-pub(crate) fn victim_dentry(abs: &str) -> Option<alloc::sync::Arc<vfs::Dentry>> {
-    crate::pathresolve::resolve_path_result(abs, true).ok().map(|vp| vp.dentry)
-}
 
 /// `unlink(path)` slot 87.
 /// # C: O(N parent entries)
@@ -32,13 +20,24 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
 
 pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
     let (parent, name) = match resolve_unlink_parent_at(dirfd, raw) {
-        Ok(x) => x, Err(rv) => return rv,
+        Ok(x) => x, Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"unlink", raw, rv);
+            return rv;
+        }
     };
     let p = render_child_path(&parent, &name);
     if let Err(rv) = crate::landlock::check(&p,
-        ::security::landlock::access::REMOVE_FILE) { return rv; }
+        ::security::landlock::access::REMOVE_FILE) {
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
+        return rv;
+    }
     if parent_mount_readonly(&parent) {
-        return -(syscall::errno::Errno::Erofs.as_i32() as i64);
+        let rv = -(syscall::errno::Errno::Erofs.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
+        return rv;
     }
     // D30: grab the victim dentry before the backend drops the name (it would no
     // longer resolve afterwards) so `d_unlink` can drive the nlink↔alias coupling.
@@ -53,7 +52,7 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend unlink (Linux
     // `do_unlinkat` locks the parent); dropped before the dcache delete below.
     let r = { let _g = parent.inode.inode_lock(); parent.inode.unlink_child(&name) };
-    match r {
+    let rv = match r {
         // D30: backend `i_op->unlink` ran first; now `d_unlink` reflects it —
         // `drop_link`s the inode (mirrors the backend's link drop in the in-memory
         // inode), tears this name's dentry down, and on the LAST name prunes the
@@ -71,10 +70,12 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
                 }
                 None    => drop_child_cache(&parent, &name),
             }
-            let pp = render_parent_path(&parent);
-            vfs::fire_dirent_delete(&pp, &name);
+            vfs::fire_dirent_delete(&parent.inode, &name);
             0
         }
         Err(e)  => errno_from_vfs(e),
-    }
+    };
+    #[cfg(feature = "debug-udevdb")]
+    crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
+    rv
 }

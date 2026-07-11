@@ -7,21 +7,83 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::format;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicU64;
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult};
+use core::sync::atomic::{AtomicU64, Ordering};
+use sync::{MountTable as MountSnapClass, Spinlock};
+use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+
+struct OpenMountSnapshot {
+    tid_opt: Option<u32>,
+    ns: u64,
+    last_seen: u64,
+    data: Vec<u8>,
+}
+
+static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
+static SNAPSHOTS: Spinlock<BTreeMap<u64, OpenMountSnapshot>, MountSnapClass> = Spinlock::new(BTreeMap::new());
+
+fn alloc_snapshot(tid_opt: Option<u32>, data: Vec<u8>) -> u64 {
+    let id = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
+    SNAPSHOTS.lock().insert(id, OpenMountSnapshot {
+        tid_opt,
+        ns: task_mount_ns(tid_opt),
+        last_seen: vfs::mntns::ns_seq(task_mount_ns(tid_opt)),
+        data,
+    });
+    id
+}
+
+fn refresh_snapshot(id: u64, data: Vec<u8>) {
+    let mut snaps = SNAPSHOTS.lock();
+    if let Some(s) = snaps.get_mut(&id) {
+        s.ns = task_mount_ns(s.tid_opt);
+        s.last_seen = vfs::mntns::ns_seq(s.ns);
+        s.data = data;
+    }
+}
+
+fn read_snapshot(id: u64, off: u64, buf: &mut [u8]) -> Option<usize> {
+    let snaps = SNAPSHOTS.lock();
+    snaps.get(&id).map(|s| read_body(&s.data, off, buf))
+}
+
+fn poll_snapshot(id: u64) -> Option<u32> {
+    let mut snaps = SNAPSHOTS.lock();
+    let s = snaps.get_mut(&id)?;
+    let ns = task_mount_ns(s.tid_opt);
+    let cur = vfs::mntns::ns_seq(ns);
+    let changed = cur != s.last_seen || ns != s.ns;
+    s.ns = ns;
+    s.last_seen = cur;
+    Some(if changed { vfs::POLL_IN | vfs::POLL_PRI | vfs::POLL_ERR } else { vfs::POLL_IN })
+}
+
+fn release_snapshot(id: u64) {
+    if id != 0 { SNAPSHOTS.lock().remove(&id); }
+}
 
 /// `/proc/mounts` + `/proc/<pid>/mounts` — fstab-style lines, one per
 /// live mount: `<src> <mountpoint> <fstype> <opts> 0 0`. Built from
 /// each FileSystem's `mounts_line`.
 /// # C: O(N_mounts)
-fn build_mounts() -> Vec<u8> {
+fn task_mount_ns(tid_opt: Option<u32>) -> u64 {
+    match tid_opt {
+        None => sched::live::current()
+            .map(|t| t.mount_ns.load(core::sync::atomic::Ordering::Acquire)),
+        Some(tid) => sched::live::registry::lookup(tid)
+            .map(|t| t.mount_ns.load(core::sync::atomic::Ordering::Acquire)),
+    }
+        .unwrap_or(0)
+}
+
+fn build_mounts(tid_opt: Option<u32>) -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut s = String::new();
-    let root_prefix = current_root_prefix();
-    for m in vfs::mount::snapshot() {
+    let root_prefix = current_root_prefix(tid_opt);
+    for m in vfs::mount::snapshot_ns_view(task_mount_ns(tid_opt)) {
         let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix.as_deref()) {
             Some(p) => p,
             None => continue,
@@ -37,23 +99,22 @@ fn build_mounts() -> Vec<u8> {
     s.into_bytes()
 }
 
-fn current_root_prefix() -> Option<String> {
-    let cur = sched::live::current()?;
+fn root_prefix_for_task(cur: &sched::Task) -> Option<String> {
+    // SAFETY: task.root is single-mutator per task; read-only snapshot for procfs rendering.
+    let root_s = unsafe { (*cur.root.get()).clone() };
+    if root_s == "/" { return None; }
     // SAFETY: task.root_vfs is single-mutator per task; read-only snapshot for procfs rendering.
     let rv = unsafe { (*cur.root_vfs.get()).clone() }?;
-    let m = vfs::mount::mount_by_id(rv.mnt_id)?;
-    let mut prefix = m.mount_point_str();
-    if let Some(root) = vfs::mount::root_dentry_for_mount_id(rv.mnt_id) {
-        let rp = rv.dentry.absolute_path();
-        let bp = root.absolute_path();
-        if rp.starts_with(bp.as_slice()) {
-            let strip = if bp.as_slice() == b"/" { 0 } else { bp.len() };
-            let suffix = core::str::from_utf8(&rp[strip..]).unwrap_or("");
-            if prefix != "/" { prefix.push_str(suffix); }
-            else if !suffix.is_empty() { prefix = String::from(suffix); }
-        }
-    }
+    let prefix = vfs::mount::render_path_for_mount(rv.mnt_id, &rv.dentry);
     if prefix == "/" { None } else { Some(prefix) }
+}
+
+fn current_root_prefix(tid_opt: Option<u32>) -> Option<String> {
+    match tid_opt {
+        None => sched::live::current().and_then(root_prefix_for_task),
+        Some(tid) => sched::live::registry::lookup(tid)
+            .and_then(|t| root_prefix_for_task(t.as_ref())),
+    }
 }
 
 /// `/proc/<pid>/mountinfo` — the richer mountinfo(5) format:
@@ -65,9 +126,9 @@ fn current_root_prefix() -> Option<String> {
 /// peer group until propagation events land), `unbindable` for an
 /// unbindable mount, empty otherwise.
 /// # C: O(N_mounts) (parent_mnt_id reads the attach-time stored parent id)
-fn build_mountinfo() -> Vec<u8> {
-    let mounts = vfs::mount::snapshot();
-    let root_prefix = current_root_prefix();
+fn build_mountinfo(tid_opt: Option<u32>) -> Vec<u8> {
+    let mounts = vfs::mount::snapshot_ns_view(task_mount_ns(tid_opt));
+    let root_prefix = current_root_prefix(tid_opt);
     let mut s = String::new();
     for m in mounts.iter() {
         let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix.as_deref()) {
@@ -105,42 +166,80 @@ fn read_body(data: &[u8], off: u64, buf: &mut [u8]) -> usize {
 /// `i_fop` for `/proc/mounts` — renders the live mount table on each read.
 struct MountsFileOps;
 impl FileOps for MountsFileOps {
-    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        Ok(read_body(&build_mounts(), off, buf))
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        let d = file.inode().private::<ProcMountsData>().ok_or(VfsError::Einval)?;
+        file.set_private_data(alloc_snapshot(d.tid_opt, build_mounts(d.tid_opt)));
+        Ok(())
+    }
+    fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let inode = file.inode();
+        let d = inode.private::<ProcMountsData>().ok_or(VfsError::Einval)?;
+        let id = file.private_data();
+        if id == 0 { return Ok(read_body(&build_mounts(d.tid_opt), off, buf)); }
+        if off == 0 { refresh_snapshot(id, build_mounts(d.tid_opt)); }
+        Ok(read_snapshot(id, off, buf).unwrap_or_else(|| read_body(&build_mounts(d.tid_opt), off, buf)))
+    }
+    fn on_release_file(&self, file: &File) {
+        release_snapshot(file.private_data());
     }
 }
 
+pub struct ProcMountsData { tid_opt: Option<u32> }
+
 /// `/proc/mounts` and `/proc/<pid>/mounts`. # C: O(1)
-pub fn make_proc_mounts() -> InodeRef {
+pub fn make_proc_mounts(tid_opt: Option<u32>) -> InodeRef {
     InodeBuilder::new(0x3000_0D01, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(MountsFileOps))
+        .private(Arc::new(ProcMountsData { tid_opt }))
         .build()
 }
 
 /// `i_private` for `/proc/<pid>/mountinfo`: `last_seen` holds the reader's
 /// last-observed mount generation so `poll` returns POLLPRI when the mount
 /// table changed (libmount's mount-change wakeup, `19§4`).
-pub struct MountinfoData { last_seen: AtomicU64 }
+pub struct MountinfoData {
+    tid_opt: Option<u32>,
+    last_seen: AtomicU64,
+}
 
 /// `i_fop` for `/proc/<pid>/mountinfo` — renders the richer mountinfo(5)
 /// format and reports mount-change readiness via `poll`.
 struct MountinfoFileOps;
 impl FileOps for MountinfoFileOps {
-    fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        Ok(read_body(&build_mountinfo(), off, buf))
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        let d = file.inode().private::<MountinfoData>().ok_or(VfsError::Einval)?;
+        file.set_private_data(alloc_snapshot(d.tid_opt, build_mountinfo(d.tid_opt)));
+        Ok(())
+    }
+    fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let inode = file.inode();
+        let d = inode.private::<MountinfoData>().ok_or(VfsError::Einval)?;
+        let id = file.private_data();
+        if id == 0 { return Ok(read_body(&build_mountinfo(d.tid_opt), off, buf)); }
+        if off == 0 { refresh_snapshot(id, build_mountinfo(d.tid_opt)); }
+        Ok(read_snapshot(id, off, buf).unwrap_or_else(|| read_body(&build_mountinfo(d.tid_opt), off, buf)))
     }
     /// POLLPRI|POLLERR when the mount generation advanced since the last poll
     /// (always POLLIN — mountinfo is always readable). # C: O(1)
     fn poll(&self, inode: &Inode) -> u32 {
         match inode.private::<MountinfoData>() {
-            Some(d) => vfs::mount::mountinfo_poll_mask(&d.last_seen),
+            Some(d) => vfs::mount::mountinfo_poll_mask_ns(task_mount_ns(d.tid_opt), &d.last_seen),
             None => vfs::POLL_IN,
         }
+    }
+    fn poll_open_file(&self, file: &File) -> u32 {
+        poll_snapshot(file.private_data()).unwrap_or_else(|| self.poll(file.inode()))
+    }
+    fn on_release_file(&self, file: &File) {
+        release_snapshot(file.private_data());
     }
 }
 
 /// `/proc/self/mountinfo` and `/proc/<pid>/mountinfo`. # C: O(1)
-pub fn make_proc_mountinfo() -> InodeRef {
+pub fn make_proc_mountinfo(tid_opt: Option<u32>) -> InodeRef {
     InodeBuilder::new(0x3000_0D02, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(MountinfoFileOps))
-        .private(Arc::new(MountinfoData { last_seen: AtomicU64::new(vfs::mount::mount_generation()) }))
+        .private(Arc::new(MountinfoData {
+            tid_opt,
+            last_seen: AtomicU64::new(vfs::mntns::ns_seq(task_mount_ns(tid_opt))),
+        }))
         .build()
 }

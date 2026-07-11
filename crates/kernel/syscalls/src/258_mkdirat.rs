@@ -6,8 +6,19 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
     read_user_path, errno_from_vfs, strip_trailing_slash, resolve_create_parent_at,
-    render_child_path, render_parent_path, child_exists, parent_mount_readonly, drop_child_cache,
+    render_child_path, child_exists, parent_mount_readonly, drop_child_cache,
 };
+
+#[cfg(feature = "debug-mount")]
+fn trace_runtime_dir(op: &'static str, raw: &str, rendered: Option<&str>, rv: i64) {
+    if raw.contains("systemd/journal")
+        || raw == "/run/systemd"
+        || raw.starts_with("/run/systemd/")
+        || rendered.is_some_and(|p| p.starts_with("/run/systemd"))
+    {
+        crate::mount_common::mnt_log(op, rendered.unwrap_or(raw), rv);
+    }
+}
 
 /// `mkdirat(dirfd, path, mode)` slot 258. Ignores dirfd (paths
 /// resolved absolute or cwd-relative).
@@ -20,7 +31,13 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     let raw = strip_trailing_slash(&raw);
     let (parent, name) = match resolve_create_parent_at(args.a0 as i32, raw) {
         Ok(x) => x,
-        Err(rv) => { crate::mount_common::mnt_log("mkdirat_noparent", raw, rv); return rv; }
+        Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdirat", raw, rv);
+            #[cfg(feature = "debug-mount")]
+            trace_runtime_dir("mkdirat_noparent", raw, None, rv);
+            return rv;
+        }
     };
     let p = render_child_path(&parent, &name);
     if let Err(rv) = crate::landlock::check(&p,
@@ -32,14 +49,34 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     // D57: parent walk (ENOTDIR) → EEXIST → EROFS, matching Linux ordering
     // (see 083_mkdir for the rationale + the systemd cg_create constraint).
     if !matches!(parent.inode.file_type(), vfs::FileType::Directory) {
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"mkdirat", &p, -(Errno::Enotdir.as_i32() as i64));
+        #[cfg(feature = "debug-mount")]
+        trace_runtime_dir("mkdirat_enotdir", raw, Some(&p), -(Errno::Enotdir.as_i32() as i64));
         return -(Errno::Enotdir.as_i32() as i64);
     }
     match child_exists(&parent, &name) {
-        Ok(true) => return -(Errno::Eexist.as_i32() as i64),
+        Ok(true) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdirat", &p, -(Errno::Eexist.as_i32() as i64));
+            #[cfg(feature = "debug-mount")]
+            trace_runtime_dir("mkdirat_eexist", raw, Some(&p), -(Errno::Eexist.as_i32() as i64));
+            return -(Errno::Eexist.as_i32() as i64);
+        }
         Ok(false) => {}
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdirat", &p, rv);
+            #[cfg(feature = "debug-mount")]
+            trace_runtime_dir("mkdirat_exists", raw, Some(&p), rv);
+            return rv;
+        }
     }
     if parent_mount_readonly(&parent) {
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"mkdirat", &p, -(Errno::Erofs.as_i32() as i64));
+        #[cfg(feature = "debug-mount")]
+        trace_runtime_dir("mkdirat_rofs", raw, Some(&p), -(Errno::Erofs.as_i32() as i64));
         return -(Errno::Erofs.as_i32() as i64);
     }
     // Thread the mount idmap + caller cred + umask for the new dir's owner.
@@ -50,15 +87,21 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     let r = { let _g = parent.inode.inode_lock(); parent.inode.mkdir(&name, mode, &ctx) };
     match r {
         Ok(_) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdirat", &p, 0);
+            #[cfg(feature = "debug-mount")]
+            trace_runtime_dir("mkdirat", raw, Some(&p), 0);
             drop_child_cache(&parent, &name);
-            let pp = render_parent_path(&parent);
-            vfs::fire_dirent_create(&pp, &name);
+            vfs::fire_dirent_create(&parent.inode, &name);
             0
         }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdirat", &p, e);
             let rv = errno_from_vfs(e);
-            crate::mount_common::mnt_log("mkdirat", &p, rv);
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdirat", &p, rv);
+            #[cfg(feature = "debug-mount")]
+            trace_runtime_dir("mkdirat", raw, Some(&p), rv);
             rv
         }
     }

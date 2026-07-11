@@ -117,7 +117,27 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) {
         devfs::snapshot_ns(parent_ns, new_id);
         // U2-b: copy the unified mount table's entries too, so the new ns
         // starts with a full private copy of the parent tree then diverges.
-        vfs::mount::snapshot_ns(parent_ns, new_id);
+        let mount_map = vfs::mount::snapshot_ns_map(parent_ns, new_id);
+        remap_task_fs_paths(task, &mount_map);
         task.mount_ns.store(new_id, Ordering::Release);
+    }
+}
+
+fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {
+    fn mapped(id: u64, mount_map: &[(u64, u64)]) -> Option<u64> {
+        mount_map.iter().find_map(|(old, new)| if *old == id { Some(*new) } else { None })
+    }
+    fn remap_one(p: &mut Option<vfs::VfsPath>, mount_map: &[(u64, u64)]) {
+        if let Some(vp) = p.as_mut() {
+            if let Some(new_id) = mapped(vp.mnt_id, mount_map) {
+                vp.mnt_id = new_id;
+            }
+        }
+    }
+    // SAFETY: apply_new_namespaces mutates only `task` while creating its new
+    // namespace, before control returns to that task/child.
+    unsafe {
+        remap_one(&mut *task.cwd_vfs.get(), mount_map);
+        remap_one(&mut *task.root_vfs.get(), mount_map);
     }
 }

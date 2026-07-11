@@ -1,13 +1,37 @@
 # Latest
 
-Archived prior ledger: `latest-2.md`.
+Archive: `latest 2.md` holds the prior ledger through the xattr split-truth cleanup.
 
-Active slice: open/install correctness. `openat` still inlines fd installation after path resolution instead of using the shared `vfs::file::install_open_at` helper; this keeps the O_CLOEXEC, file-open hook, fd allocation, and created-inode reference-drop contract split between syscall code and VFS. Landlock rule-prefix fix is committed as `6cdb13dc`.
+Active slice: filesystem syscall path identity. Goal is to remove lexical/string fallback authority from VFS-facing syscalls and make every path mutation operate on the resolved Linux `struct path` equivalent: `(mount id, dentry, inode)`.
 
-Open/install slice complete: `openat` now routes final file construction, file open hook, fd allocation, and FD_CLOEXEC handling through `vfs::file::install_open_at`; stale string-path open helpers are gone from `open_common`; the helper now treats `O_TMPFILE` as exempt from the embedded `O_DIRECTORY` target check. Evidence: `cargo test -p vfs --lib -- --nocapture` passed 97/97; `cargo check -p kmain` passed for x86_64+aarch64 kernel targets.
+Current diagnosis:
+- Old `*at` helpers rendered dirfd/cwd/root to strings, normalized text, then re-walked from the global root on misses. That creates split truth after bind mounts, `MS_MOVE`, `pivot_root`, `chroot`, `open_tree`, and private mount namespace cloning.
+- Parent-mutating syscalls (`mkdir*`, `unlink*`, `rmdir`, `rename`, `link*`, `symlink*`, `mknod*`, AF_UNIX `bind`) must resolve the parent once and mutate that parent inode/dentry directly. Whole-path cache invalidation and parent-string fsnotify hooks are wrong because multiple mounts can expose the same rendered string or the same dentry at different mount identities.
+- Mount syscalls must preserve the walked mount id. `open_tree(AT_EMPTY_PATH)`, procfd targets, `move_mount`, `fspick`, `mount_setattr`, `umount2`, `pivot_root`, and `chroot(".")` all need live `VfsPath` inputs, not display strings.
+- Mount namespace copy must remap task `cwd_vfs`/`root_vfs` mount ids from parent namespace mounts to cloned child namespace mounts. Keeping old ids after `CLONE_NEWNS` is stale-path identity.
+- Inotify/fanotify watch setup and dirent hooks must key by inode/parent inode instead of re-resolving rendered parent paths.
+- `/proc/<pid>/mounts`, `/proc/<pid>/mountinfo`, and `fdinfo mnt_id` must report the target task/open file mount namespace identity; hard-coded global mount views make userspace see the wrong namespace.
 
-Chmod AF_UNIX bypass removed: `bind(AF_UNIX)` already creates a real `S_IFSOCK` inode, so chmod now resolves the path and runs the normal chmod permission/EROFS/setattr path instead of returning success from the Unix registry. Evidence: `cargo check -p syscalls` passed for x86_64 kernel target; `cargo check -p kmain` passed for x86_64+aarch64 kernel targets.
+Harness coverage added/used:
+- `crates/kernel/fs/tests/fs_syscall_model.rs`: hosted model over mounted ext4-like roots plus tmpfs/dev/proc/sys shapes, covering open/create, mkdir, rename, hardlink, symlink follow/nofollow, xattr follow/nofollow/dirfd, permissions, ownership, sticky directories, chmod/chown, mknod, cwd/fchdir, readonly xattr behavior, and logind-style cross-namespace visibility.
+- `crates/kernel/vfs/tests/open_tree_recursive_clone.rs`: detached clone, recursive clone, hash-only clone, empty-path dirfd clone, and staged bind clone parent-mount behavior.
+- `crates/kernel/vfs/tests/greeter_sysfs_after_pivot.rs`: sysfs visibility after pivot/root movement and shared propagation.
+- `crates/kernel/vfs/tests/mount_propagation_pivot.rs`: namespace copy/remap and staged root/pivot mount behavior.
 
-Devpts smoke no longer depends on global absolute `vfs::resolve_abs`; slave validation uses the devpts filesystem root that `allocate_pair` already mirrors into. Evidence: `cargo check -p devpts` passed for x86_64 kernel target; `cargo check -p kmain` passed for x86_64+aarch64 kernel targets.
+Verification so far:
+- `cargo test -p fs --test fs_syscall_model -- --nocapture` passed.
+- `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 10/10.
+- `cargo test -p vfs --test open_tree_recursive_clone -- --nocapture` passed 4/4.
+- `cargo test -p vfs --test greeter_sysfs_after_pivot -- --nocapture` passed 5/5.
+- `cargo test -p vfs --lib -- --nocapture` passed 97/97.
+- `cargo check -p syscalls` passed for x86_64 kernel target.
+- `cargo check -p kmain` passed for x86_64 and aarch64 kernel targets.
 
-Xattr split-truth removal complete: legacy slots 188-199 are normal syscall shims routed through `syscalls::xattr_common`, path/fd/mount-id resolution now lives in the syscall crate, and `fs::xattr` only accepts already-resolved inodes plus user xattr buffers. The old global `(fsid, ino) -> xattr map` fallback is deleted; filesystems without `SimpleXattrs` now return `EOPNOTSUPP` instead of silently storing attributes outside the owning inode/filesystem. `getxattr` still maps missing names to `ENODATA`; unsupported backends are no longer collapsed into absence. Regression coverage added for unsupported-backend `EOPNOTSUPP` and fs-owned xattr round-trip. Evidence: `cargo test -p fs --lib xattr -- --nocapture` passed 5/5 xattr tests; `cargo check -p fs`, `cargo check -p vfs`, `cargo check -p syscalls`, and `cargo check -p kmain` passed for x86_64 kernel target; `cargo check -p kmain` passed for aarch64 kernel target.
+Commit plan:
+- Stage only the coherent path-identity slice: syscall pathresolve/namei/mount callers, VFS mount/namei/file-hook support, inotify watch resolution, proc mount/fdinfo namespace reporting, the hosted filesystem syscall model, and this ledger rotation.
+- Exclude unrelated dirty work: ext4 internals, allocator poison/canary diagnostics, boot Cargo changes, netlink tests, MM debug, and generated boot logs.
+- Commit as `fix(path): resolve filesystem syscalls by vfs identity` after staged diff/check pass.
+
+Known remaining cleanup after this slice:
+- Audit any remaining boot/rootfs-only `resolve_abs` or string-rendered setup helpers and either prove they are initialization-only or move them to identity-based helpers.
+- Continue syscall surface modeling beyond the current filesystem harness until non-happy-path Linux semantics are covered across tmpfs/devfs/procfs/sysfs/ext4-backed operations.

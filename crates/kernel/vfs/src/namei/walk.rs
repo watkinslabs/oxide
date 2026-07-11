@@ -217,8 +217,8 @@ impl Nameidata {
                     }
                     Err(VfsError::Enoent) => {
                         // D5/D6 negative-on-miss, gated for safety (see
-                        // `neg_cache_ok`): the create syscalls flush this leaf
-                        // negative via `pathresolve::d_drop_path`, so a
+                        // `neg_cache_ok`): create syscalls flush this leaf
+                        // negative by resolved parent dentry/name, so a
                         // subsequently-created file is never masked.
                         if neg_cache_ok(&self.cur_inode) {
                             crate::dcache::d_add_negative(&self.cur_dentry, comp);

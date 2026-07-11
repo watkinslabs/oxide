@@ -212,6 +212,9 @@ pub fn register_bind_clone_at(mp: Option<Arc<Dentry>>, source_mnt_id: u64,
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
         *m.mnt_root.lock() = Some(root_dentry);
+        m.flags.store(src.flags.load(Ordering::Acquire), Ordering::Release);
+        m.mnt_internal_flags.store(
+            src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED, Ordering::Release);
         m.set_internal_flag(MNT_INTERNAL);
         {
             let _w = MOUNT_WRITE.lock();
@@ -224,7 +227,8 @@ pub fn register_bind_clone_at(mp: Option<Arc<Dentry>>, source_mnt_id: u64,
     };
     let parent_id = parent_hint.unwrap_or_else(|| parent_by_dentry(ns, &d));
     let rendered = rendered_path_for(parent_id, &d);
-    graft_bind_realized(d, sb, root_dentry, parent_id, rendered)
+    graft_bind_realized_with_flags(d, sb, root_dentry, parent_id, rendered,
+        src.flags.load(Ordering::Acquire), src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED)
 }
 
 /// Bind attach with an EXPLICIT parent mount id + rendered path — Linux
@@ -272,15 +276,23 @@ pub fn register_bind_clone_under(parent_id: u64, mp_d: Arc<Dentry>,
     let grabbed = src.sb.grab_active();
     hal::kassert!(grabbed, "register_bind_clone_under: live source SB must grab active ref");
     let rendered = rendered_path_for(parent_id, &mp_d);
-    graft_bind_realized(mp_d, src.sb.clone(), root_dentry, parent_id, rendered)
+    graft_bind_realized_with_flags(mp_d, src.sb.clone(), root_dentry, parent_id, rendered,
+        src.flags.load(Ordering::Acquire), src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED)
 }
 
 fn graft_bind_realized(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_dentry: Arc<Dentry>,
     parent_id: u64, rendered: String) -> KResult<()> {
+    graft_bind_realized_with_flags(mp_d, sb, root_dentry, parent_id, rendered, 0, 0)
+}
+
+fn graft_bind_realized_with_flags(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_dentry: Arc<Dentry>,
+    parent_id: u64, rendered: String, mnt_flags: u64, internal_flags: u32) -> KResult<()> {
     let ns = current_ns();
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let m = new_mount(sb, rendered, Some(mp_d.clone()), parent_id, mnt_id, ns);
     *m.mnt_root.lock() = Some(root_dentry);
+    m.flags.store(mnt_flags & MNT_OPTION_MASK, Ordering::Release);
+    m.mnt_internal_flags.store(internal_flags & MNT_LOCKED, Ordering::Release);
     {
         let _w = MOUNT_WRITE.lock();
         *m.mnt_mp.lock() = Some(get_mountpoint(&mp_d));

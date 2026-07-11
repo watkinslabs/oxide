@@ -34,7 +34,7 @@ fn source_disk_name(source: &str) -> &str {
 
 fn resolve_ext4_source(source: &str) -> Option<(Arc<dyn block::BlockDevice>, Option<u64>)> {
     if source.starts_with('/') {
-        if let Some(vp) = crate::pathresolve::resolve_path(source, false) {
+        if let Ok(vp) = crate::pathresolve::resolve_path_raw(source, false) {
             if vp.inode.file_type() == FileType::BlockDev {
                 let rdev = vp.inode.rdev();
                 if let Some(d) = block::registry::by_dev(rdev) {

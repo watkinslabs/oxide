@@ -16,6 +16,10 @@ const STATX_RESERVED: u32 = 0x8000_0000;
 /// `STATX_MNT_ID` (linux/stat.h): stx_mnt_id is valid. Linux `vfs_statx` fills
 /// the mount id and sets this bit unconditionally (since 5.8).
 const STATX_MNT_ID: u32 = 0x0000_1000;
+/// `STATX_ATTR_MOUNT_ROOT`: returned in `stx_attributes` when the resolved
+/// path is the root of its mount (`path.mnt->mnt_root`). systemd uses this for
+/// `path_is_mount_point()` on file bind mounts.
+const STATX_ATTR_MOUNT_ROOT: u64 = 0x0000_2000;
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
 /// # C: O(1)
@@ -45,8 +49,13 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         follow: !nofollow,
         ..Default::default()
     };
-    let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
-        Ok(p)  => (p.inode, p.mnt_id),
+    let (inode, mnt_id, is_mount_root) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+        Ok(p)  => {
+            let is_mount_root = vfs::mount::root_dentry_for_mount_id(p.mnt_id)
+                .map(|root| alloc::sync::Arc::ptr_eq(&root, &p.dentry))
+                .unwrap_or(false);
+            (p.inode, p.mnt_id, is_mount_root)
+        }
         Err(rv) => return rv,
     };
 
@@ -59,6 +68,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let stx_uid = st.uid;
     let stx_gid = st.gid;
     let dev = crate::namei_common::fsid_to_dev(st.fsid);
+    let stx_attributes = st.attributes | if is_mount_root { STATX_ATTR_MOUNT_ROOT } else { 0 };
+    let stx_attributes_mask = st.attributes_mask | STATX_ATTR_MOUNT_ROOT;
     // statx layout per linux/stat.h. Zero everything then fill the fields we have.
     // SAFETY: buf validated 256-byte writable range below USER_VA_END;
     // unaligned stores match Linux copy_to_user semantics.
@@ -75,7 +86,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         // unconditionally (independent of the request mask).
         core::ptr::write_unaligned(buf as *mut u32, st.result_mask | STATX_MNT_ID);                   // stx_mask
         core::ptr::write_unaligned((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
-        core::ptr::write_unaligned((buf +   8)     as *mut u64, st.attributes);                       // stx_attributes
+        core::ptr::write_unaligned((buf +   8)     as *mut u64, stx_attributes);                       // stx_attributes
         core::ptr::write_unaligned((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
         core::ptr::write_unaligned((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
         core::ptr::write_unaligned((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
@@ -83,7 +94,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         core::ptr::write_unaligned((buf +  32)     as *mut u64, st.ino);                              // stx_ino
         core::ptr::write_unaligned((buf +  40)     as *mut u64, st.size);                             // stx_size
         core::ptr::write_unaligned((buf +  48)     as *mut u64, st.blocks);                           // stx_blocks (512-byte units)
-        core::ptr::write_unaligned((buf +  56)     as *mut u64, st.attributes_mask);                  // stx_attributes_mask
+        core::ptr::write_unaligned((buf +  56)     as *mut u64, stx_attributes_mask);                  // stx_attributes_mask
         // Timestamp slots: each 16 B = (i64 sec, i32 nsec, i32 reserved).
         // Linux statx layout (stx_attributes_mask@56 precedes them): atime@64,
         // btime@80, ctime@96, mtime@112. The +8-shifted offsets used before

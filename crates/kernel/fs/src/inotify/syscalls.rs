@@ -46,17 +46,64 @@ pub(crate) const FAN_MARK_KNOWN: u32 = FAN_MARK_ADD | FAN_MARK_REMOVE | FAN_MARK
     | FAN_MARK_IGNORED_SURV_MODIFY | FAN_MARK_FLUSH | FAN_MARK_FILESYSTEM
     | FAN_MARK_EVICTABLE | FAN_MARK_IGNORE;
 
-fn resolve_watch_path(raw: &str) -> Option<InodeRef> {
-    let resolved = if raw.starts_with('/') {
-        vfs::path::lexical_normalize(raw)?
-    } else if let Some(cur) = sched::current() {
-        // SAFETY: current task is the sole writer of its cwd slot on this CPU.
-        let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw)?
-    } else {
-        raw.into()
+fn current_cred() -> vfs::Cred {
+    let Some(c) = sched::current() else { return vfs::Cred::root(); };
+    let eff = c.creds.cap_effective.load(Ordering::Acquire);
+    let uid = c.creds.fsuid.load(Ordering::Acquire);
+    let gid = c.creds.fsgid.load(Ordering::Acquire);
+    let ng = (c.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
+    let mut groups = [0u32; vfs::CRED_NGROUPS];
+    // SAFETY: groups slot follows the task single-mutator credential rule.
+    unsafe {
+        let g = &*c.creds.groups.get();
+        groups[..ng].copy_from_slice(&g[..ng]);
+    }
+    let has = |cap: u32| eff & (1u64 << cap) != 0;
+    vfs::Cred {
+        uid,
+        gid,
+        cap_dac_override: has(sched::cap::DAC_OVERRIDE),
+        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
+        cap_fowner: has(sched::cap::FOWNER),
+        cap_chown: has(sched::cap::CHOWN),
+        cap_fsetid: has(sched::cap::FSETID),
+        ngroups: ng as u32,
+        groups,
+    }
+}
+
+fn global_root_path() -> Option<vfs::VfsPath> {
+    let dentry = vfs::namei::root_dentry()?;
+    let inode = dentry.inode()?;
+    let ns = vfs::mount::current_ns();
+    let mnt_id = vfs::mount::root_mount_id(ns).unwrap_or(vfs::mount::MNT_ID_NONE);
+    Some(vfs::VfsPath { mnt_id, dentry, inode, last_component: None })
+}
+
+fn current_start_root() -> Option<(vfs::VfsPath, vfs::VfsPath)> {
+    let fallback = global_root_path()?;
+    let Some(cur) = sched::current() else {
+        return Some((fallback.clone(), fallback));
     };
-    vfs::mount::lookup(&resolved).ok()
+    // SAFETY: current task path slots follow the single-mutator task rule.
+    let root = unsafe { (*cur.root_vfs.get()).clone() }.unwrap_or_else(|| fallback.clone());
+    // SAFETY: current task path slots follow the single-mutator task rule.
+    let start = unsafe { (*cur.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone());
+    Some((start, root))
+}
+
+fn resolve_watch_path(raw: &str, no_follow_final: bool) -> Option<InodeRef> {
+    let (start, root) = current_start_root()?;
+    let flags = vfs::LookupFlags { no_follow_final, ..Default::default() };
+    vfs::path_lookup_at_root_cred(
+        start.dentry,
+        start.mnt_id,
+        root.dentry,
+        root.mnt_id,
+        raw,
+        flags,
+        current_cred(),
+    ).ok().map(|p| p.inode)
 }
 
 fn fd_to_inotify(fd: i32) -> Option<Arc<InotifyData>> {
@@ -138,8 +185,8 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_inotify_add_watch(fd, pathname, mask)`. Resolves `pathname`
-/// via devfs, records a Watch on the fd's InotifyData, returns the wd.
+/// `sys_inotify_add_watch(fd, pathname, mask)`. Resolves `pathname` through
+/// the task VFS root/cwd, records a Watch on the fd's InotifyData, returns wd.
 /// # C: O(N_path)
 pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
@@ -156,7 +203,7 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let inode = match resolve_watch_path(s) {
+    let inode = match resolve_watch_path(s, false) {
         Some(i) => i,
         None => {
             #[cfg(feature = "debug-boot")]
@@ -274,7 +321,7 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         .and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let inode = match resolve_watch_path(s) {
+    let inode = match resolve_watch_path(s, flags & FAN_MARK_DONT_FOLLOW != 0) {
         Some(i) => i,
         None => {
             #[cfg(feature = "debug-boot")]

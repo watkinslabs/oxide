@@ -22,9 +22,11 @@ pub fn sys_fspick(args: &SyscallArgs) -> i64 {
     let path = match read_cstr(args.a1, 256) {
         Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
     };
-    let abs = crate::pathresolve::resolve_cwd(&path);
-    let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
-    let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
+    let picked = match crate::pathresolve::resolve_path_raw(&path, false) {
+        Ok(p) => p,
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
+    };
+    let mnt = match vfs::mount::mount_by_id(picked.mnt_id) {
         Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
     };
     // Bind a FOR_RECONFIGURE context to the picked mount's live SB + root dentry.

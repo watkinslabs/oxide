@@ -30,6 +30,12 @@ fn same_parent(a: &vfs::VfsPath, b: &vfs::VfsPath) -> bool {
     alloc::sync::Arc::ptr_eq(&a.dentry, &b.dentry)
 }
 
+#[cfg(feature = "debug-udevdb")]
+fn trace_rename_udevdb(from: &str, to: &str, rv: i64) {
+    crate::namei_common::trace_udevdb_path(b"rename-from", from, rv);
+    crate::namei_common::trace_udevdb_path(b"rename-to", to, rv);
+}
+
 /// # C: O(1)
 pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr: u64, flags: u32) -> i64 {
     // renameat2 flag validation (Linux do_renameat2):
@@ -55,36 +61,71 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     // before resolution normalises the dots away.
     if crate::namei_common::rename_component_busy(&from_raw)
         || crate::namei_common::rename_component_busy(&to_raw) {
-        return -(Errno::Ebusy.as_i32() as i64);
+        let rv = -(Errno::Ebusy.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, rv);
+        return rv;
     }
     let (old_parent, old_name) = match resolve_rename_parent_at(from_dirfd, &from_raw) {
-        Ok(x) => x, Err(rv) => return rv,
+        Ok(x) => x, Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
     };
     let (new_parent, new_name) = match resolve_rename_parent_at(to_dirfd, &to_raw) {
-        Ok(x) => x, Err(rv) => return rv,
+        Ok(x) => x, Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
     };
     if !same_mount(&old_parent, &new_parent) {
-        return -(Errno::Exdev.as_i32() as i64);
+        let rv = -(Errno::Exdev.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, rv);
+        return rv;
     }
     if parent_mount_readonly(&old_parent) || parent_mount_readonly(&new_parent) {
-        return -(Errno::Erofs.as_i32() as i64);
+        let rv = -(Errno::Erofs.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, rv);
+        return rv;
     }
     let old_victim = match child_inode(&old_parent, &old_name) {
         Ok(Some(i)) => i,
-        Ok(None) => return -(Errno::Enoent.as_i32() as i64),
-        Err(rv) => return rv,
+        Ok(None) => {
+            let rv = -(Errno::Enoent.as_i32() as i64);
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
+        Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
     };
     let new_target = match child_inode(&new_parent, &new_name) {
         Ok(i) => i,
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
     };
     if flags == 0 && same_parent(&old_parent, &new_parent) && old_name == new_name {
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, 0);
         return 0;
     }
     if let Some(src_d) = child_dentry(&old_parent, &old_name) {
         if matches!(old_victim.file_type(), vfs::FileType::Directory)
             && new_parent.dentry.is_subdir_of(&src_d) {
-            return -(Errno::Einval.as_i32() as i64);
+            let rv = -(Errno::Einval.as_i32() as i64);
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
         }
     }
     // Landlock: from-side needs REMOVE_FILE | REMOVE_DIR | REFER;
@@ -94,12 +135,23 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
            | ::security::landlock::access::REFER;
     let f_disp = render_child_path(&old_parent, &old_name);
     let t_disp = render_child_path(&new_parent, &new_name);
-    if let Err(rv) = crate::landlock::check(&f_disp, la) { return rv; }
-    if let Err(rv) = crate::landlock::check(&t_disp, la) { return rv; }
+    if let Err(rv) = crate::landlock::check(&f_disp, la) {
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&f_disp, &t_disp, rv);
+        return rv;
+    }
+    if let Err(rv) = crate::landlock::check(&t_disp, la) {
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&f_disp, &t_disp, rv);
+        return rv;
+    }
     if let Err(e) = vfs::namei::may_rename(&old_parent.inode, &old_victim, &new_parent.inode,
         new_target.as_ref(), flags, same_parent(&old_parent, &new_parent),
         &crate::pathresolve::current_cred()) {
-        return errno_from_vfs(e);
+        let rv = errno_from_vfs(e);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&f_disp, &t_disp, rv);
+        return rv;
     }
     // D29: hold BOTH parent dirs' `i_rwsem` via `lock_rename` (Linux
     // `vfs_rename` → `lock_rename`) across the backend rename. `lock_rename`
@@ -114,7 +166,7 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
         let _rg = vfs::lock_rename(&old_parent.inode, &new_parent.inode);
         old_parent.inode.rename_child(&old_name, &new_parent.inode, &new_name, flags, &vfs::CreateCtx::root())
     };
-    match r {
+    let rv = match r {
         Ok(())  => {
             if flags & RENAME_EXCHANGE != 0 {
                 drop_child_cache(&old_parent, &old_name);
@@ -130,5 +182,8 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
             0
         }
         Err(e)  => errno_from_vfs(e),
-    }
+    };
+    #[cfg(feature = "debug-udevdb")]
+    trace_rename_udevdb(&f_disp, &t_disp, rv);
+    rv
 }

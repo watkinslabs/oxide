@@ -240,8 +240,18 @@ fn unlink_from_parent(m: &Arc<Mount>) {
 /// later mount in the child does NOT propagate back into the parent ns. The
 /// new ns is created. # C: O(N_mounts × depth)
 pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
+    let _ = copy_mnt_ns_map(from_ns, to_ns);
+}
+
+/// As [`copy_mnt_ns`], returning the old→new mount id mapping so the caller can
+/// translate any live `struct path` references it owns into the copied tree.
+/// Linux `copy_mnt_ns` updates `fs_struct` root/pwd this way; otherwise the task
+/// enters `to_ns` while its cwd/root still name mounts from `from_ns`.
+/// # C: O(N_mounts × depth)
+pub fn copy_mnt_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
     let src = mounts_in_ns(from_ns);
     mntns::ns_get_or_create(to_ns);
+    let mut map = Vec::new();
     // [D28a] serialize the whole ns clone (the per-clone MOUNTS inserts +
     // NAMESPACES root + the `rebuild_ns_index` link/hash wiring) as one writer
     // region. No `descend` / `put_super` runs here, so no sleep under the lock;
@@ -270,6 +280,7 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
         // leaves it UNLINKED); `rebuild_ns_index` reparents from it below. The
         // rendered path string is already set by `clone_mnt` (`mount_point_str`).
         *clone.mountpoint.lock() = m.mountpoint();
+        map.push((m.mnt_id, clone.mnt_id));
         // [D25] the clone of the SOURCE ns-root mount becomes the new ns root,
         // identified by the source's self-parent `is_root()` (the clone's own
         // self-parent is stamped later by `rebuild_ns_index`'s `None` arm).
@@ -283,10 +294,17 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
     mntns::commit_mounts(to_ns, src.len() as u64);
     rebuild_ns_index(to_ns);
     mntns::bump_gen(to_ns);
+    map
 }
 
 /// Back-compat alias for the unshare(CLONE_NEWNS) call site. # C: O(N×depth)
 pub fn snapshot_ns(from_ns: u64, to_ns: u64) { copy_mnt_ns(from_ns, to_ns); }
+
+/// Snapshot alias that also exposes the old→new mount id map for callers that
+/// hold live `struct path` objects. # C: O(N×depth)
+pub fn snapshot_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
+    copy_mnt_ns_map(from_ns, to_ns)
+}
 
 /// Reap every mount belonging to `ns` (Linux `free_mnt_ns` at last task
 /// exit). Drops the per-ns crossings, the hash, the `struct mountpoint`

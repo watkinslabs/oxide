@@ -88,8 +88,15 @@ impl Nameidata {
         root: Arc<Dentry>, root_mnt_id: u64,
         flags: LookupFlags, cred: Cred,
     ) -> KResult<Self> {
-        let (mut root_dentry, _ri, mut root_mnt_id) = follow_mount_down(root, root_mnt_id)?;
-        let (cur_dentry, cur_inode, cur_mnt_id) = follow_mount_down(start, start_mnt_id)?;
+        // The caller supplied full `struct path` identities. They are already
+        // post-crossing positions; following mounts again can cross into a
+        // different stack layered on the same dentry (pivot_root(stage,stage)
+        // leaves old-root mounted under the new `/`).
+        let mut root_dentry = root;
+        let mut root_mnt_id = root_mnt_id;
+        let cur_dentry = start;
+        let cur_inode = cur_dentry.inode().ok_or(VfsError::Enoent)?;
+        let cur_mnt_id = start_mnt_id;
         // RESOLVE_IN_ROOT / RESOLVE_BENEATH: the dirfd (START) IS the resolution
         // root (same override as `new`).
         if flags.in_root || flags.beneath_exdev { root_dentry = cur_dentry.clone(); root_mnt_id = cur_mnt_id; }

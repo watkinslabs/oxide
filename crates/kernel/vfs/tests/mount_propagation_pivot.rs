@@ -61,7 +61,8 @@ fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
 fn setup_host(host: u64) -> Arc<Dentry> {
     set_ns(host);
     let root_inode = dir(2, &[("run", dir(0x13, &[])), ("etc", dir(0x14, &[])),
-        ("proc", dir(0x15, &[])), ("sys", dir(0x16, &[])), ("dev", dir(0x17, &[]))]);
+        ("proc", dir(0x15, &[])), ("sys", dir(0x16, &[])), ("dev", dir(0x17, &[])),
+        ("var", dir(0x18, &[("tmp", dir(0x19, &[]))]))]);
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     let _ = HOST_ROOT_INODE.set(root_inode.clone());
     vfs::set_root_dentry_provider(root_provider);
@@ -120,6 +121,30 @@ fn open_tree_clone_of_shared_mount_is_private() {
     let top = &clone[0].m;
     assert_ne!(top.propagation.load(Ordering::Acquire), Propagation::Shared as u8,
         "open_tree(OPEN_TREE_CLONE) of a SHARED mount must yield a PRIVATE clone");
+}
+
+#[test]
+fn copy_mnt_ns_reports_old_to_new_mount_ids_for_fs_path_remap() {
+    let _g = guard();
+    let host: u64 = 0x5150_2500;
+    let sandbox: u64 = 0x5150_2501;
+    vfs::mount::set_current_ns_provider(cur_ns);
+    let root = setup_host(host);
+    let old_root_id = vfs::mount::root_mount_id(host).expect("host root id");
+    let run_d = vfs::d_lookup(&root, "run").expect("/run mountpoint dentry");
+    let old_run_id = vfs::mount::mount_at_path_exact(&run_d).expect("/run mount").mnt_id;
+
+    let map = vfs::mount::snapshot_ns_map(host, sandbox);
+    let mapped = |old| map.iter().find_map(|(o, n)| if *o == old { Some(*n) } else { None });
+    let new_root_id = mapped(old_root_id).expect("root mount id remapped");
+    let new_run_id = mapped(old_run_id).expect("/run mount id remapped");
+
+    assert_ne!(new_root_id, old_root_id, "namespace copy must mint a new root mount id");
+    assert_ne!(new_run_id, old_run_id, "namespace copy must mint a new /run mount id");
+    assert_eq!(vfs::mount::root_mount_id(sandbox), Some(new_root_id));
+    let new_run = vfs::mount::mount_by_id(new_run_id).expect("new /run mount exists");
+    assert_eq!(new_run.ns, sandbox);
+    assert_eq!(new_run.mount_point_str(), "/run");
 }
 
 /// The `mount(MS_BIND, source, target)` syscall must NOT make the new mount a
@@ -257,6 +282,37 @@ fn full_service_setup_pivot_and_switch_root_detach() {
         LookupFlags::default(), vfs::Cred::root())
         .expect("post-pivot /run must resolve through tmpfs, not ext4 underlay");
     assert_ne!(run_dir.inode.ino(), 0x13, "/run fell back to ext4 underlay");
+}
+
+#[test]
+fn staged_root_exposes_plain_ext4_var_tmp_before_pivot() {
+    let _g = guard();
+    let host: u64 = 0x5150_4100;
+    let sandbox: u64 = 0x5150_4101;
+    vfs::mount::set_current_ns_provider(cur_ns);
+    let root = setup_host(host);
+    vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
+    vfs::mount::copy_mnt_ns(host, sandbox);
+    set_ns(sandbox);
+    vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
+
+    let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
+        LookupFlags::default()).expect("stage");
+    let hri = HOST_ROOT_INODE.get().unwrap().clone();
+    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri }),
+        root.clone(), None).expect("bind /");
+    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
+    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
+
+    let var_tmp = vfs::path_lookup_at_root_cred(
+        root.clone(), source_root, root.clone(), source_root,
+        "/run/systemd/mount-rootfs/var/tmp", LookupFlags::default(), vfs::Cred::root())
+        .expect("systemd destination /run/systemd/mount-rootfs/var/tmp must resolve through staged /");
+    assert_eq!(var_tmp.inode.ino(), 0x19, "staged root must expose the source rootfs /var/tmp dentry");
+    assert_eq!(vfs::mount::render_path_for_mount(var_tmp.mnt_id, &var_tmp.dentry),
+        "/run/systemd/mount-rootfs/var/tmp",
+        "rendered identity for plain rootfs children must stay under the staged root");
 }
 
 #[test]
@@ -422,6 +478,8 @@ fn bind_clone_shares_source_superblock_and_staged_identity() {
         "bind clone parent must be the walked staged proc mount");
     assert_eq!(b.mount_point_str(), "/run/systemd/mount-rootfs/proc/sys/kernel/domainname",
         "mountinfo-visible path must be the staged prefix");
+    assert_eq!(vfs::mount::mountinfo_root_field(&b), "/sys/kernel/domainname",
+        "bind mountinfo root must be the source path relative to the source superblock root");
     assert!(Arc::ptr_eq(b.sb(), src_m.sb()),
         "Linux bind clone shares the source superblock; no synthetic bind SB");
     assert_eq!(b.fs().name(), "procfs",

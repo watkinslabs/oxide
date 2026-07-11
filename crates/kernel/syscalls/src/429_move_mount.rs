@@ -12,20 +12,9 @@ fn trim_move_path(raw: &str) -> Result<&str, i64> {
     if trimmed.is_empty() { Err(-(Errno::Enoent.as_i32() as i64)) } else { Ok(trimmed) }
 }
 
-fn procfd_path(raw: &str) -> Option<vfs::VfsPath> {
-    let (tid_opt, fd) = vfs::path::dup_fd_target(raw)?;
-    let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
-    Some(vfs::VfsPath {
-        mnt_id: file.mnt_id(),
-        dentry: file.dentry().clone(),
-        inode: file.inode().clone(),
-        last_component: None,
-    })
-}
-
 fn resolve_move_target_at(dirfd: i32, raw: &str) -> Result<(vfs::MountTarget, alloc::string::String), i64> {
     let raw = trim_move_path(raw)?;
-    if let Some(p) = procfd_path(raw) {
+    if let Some(p) = crate::pathresolve::procfd_path(raw) {
         let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
         let target = vfs::mount_target_from_resolved_path(p);
         return Ok((target, display));

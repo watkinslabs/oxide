@@ -6,7 +6,7 @@
 use syscall::SyscallArgs;
 use crate::namei_common::{
     child_dentry, drop_child_cache, errno_from_vfs, parent_mount_readonly, read_user_path,
-    render_child_path, render_parent_path, resolve_rmdir_parent_at,
+    render_child_path, resolve_rmdir_parent_at,
 };
 
 /// Single rmdir core — both `rmdir(2)` (slot 84, x86 legacy) and
@@ -46,8 +46,7 @@ pub(crate) fn do_rmdir_at(dirfd: i32, raw: &str) -> i64 {
                 Some(d) => { vfs::d_invalidate(&d); vfs::dcache::d_unlink(&d); }
                 None    => drop_child_cache(&parent, &name),
             }
-            let pp = render_parent_path(&parent);
-            vfs::fire_dirent_delete(&pp, &name);
+            vfs::fire_dirent_delete(&parent.inode, &name);
             0
         }
         Err(e)  => errno_from_vfs(e),

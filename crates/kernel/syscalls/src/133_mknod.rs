@@ -8,7 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
     read_user_path, errno_from_vfs, resolve_create_parent_at, render_child_path,
-    render_parent_path, parent_mount_readonly, drop_child_cache,
+    parent_mount_readonly, drop_child_cache,
 };
 
 /// `mknod(path, mode, dev)` slot 133.
@@ -78,8 +78,7 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);
-            let pp = render_parent_path(&parent);
-            vfs::fire_dirent_create(&pp, &name);
+            vfs::fire_dirent_create(&parent.inode, &name);
             0
         }
         Err(e)  => {
