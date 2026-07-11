@@ -386,11 +386,9 @@ pub struct Task {
     /// updates atomically when arg != 0xFFFFFFFF.
     pub personality: AtomicU32,
 
-    /// `chroot(2)` root path. Default "/" — every absolute path
-    /// resolves directly. After chroot, devfs::lookup prepends this
-    /// path so the task sees a subtree as "/". Single-mutator per
-    /// `13§5`. Inherited by fork/clone (children share parent's
-    /// chroot view); cleared on execve only via explicit chroot.
+    /// Legacy `chroot(2)` root text. Default "/" — retained only for old
+    /// diagnostics; live absolute path walks use `root_vfs` below. Single-mutator
+    /// per `13§5`. Inherited by fork/clone; cleared only via explicit chroot.
     pub root: UnsafeCell<alloc::string::String>,
     /// Per-task resolution root as a VFS path object (`fs_struct::root`).
     /// Absolute path walks should start here after chroot instead of treating
