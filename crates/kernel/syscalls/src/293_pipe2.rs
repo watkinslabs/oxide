@@ -3,7 +3,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
+use crate::userbuf::validate_user_buf_writable;
 
 /// # C: O(1)
 pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
@@ -12,9 +12,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     let flags  = args.a1 as u32;
     const O_NONBLOCK: u32 = 0o4000;
     const O_CLOEXEC:  u32 = 0o2000000;
-    if pipefd == 0 || pipefd >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf_writable(pipefd, 8, 4) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
@@ -50,7 +48,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
         let _ = fdt.set_cloexec(r_fd, true);
         let _ = fdt.set_cloexec(w_fd, true);
     }
-    // SAFETY: pipefd validated < USER_VA_END; user page mapped per active CR3 = caller's AS.
+    // SAFETY: pipefd validated writable for the full int[2] output array.
     unsafe {
         core::ptr::write_volatile(pipefd as *mut i32,         r_fd);
         core::ptr::write_volatile((pipefd + 4) as *mut i32,   w_fd);
