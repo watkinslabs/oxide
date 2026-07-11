@@ -237,6 +237,12 @@ Fix shape:
 - Set `cwd_vfs = VfsPath { mnt_id: file.mnt_id(), dentry: file.dentry().clone(), inode: file.inode().clone(), last_component: None }`.
 - Set `cwd` string only as rendered display state, ideally via mount-aware rendering; do not use it as authority.
 
+Fix status:
+
+- Done: `sys_fchdir()` now stores the fd's own `f_path` into `cwd_vfs` and never re-resolves `file.dentry().absolute_path()`.
+- Added `vfs::mount::render_path_for_mount()` so `cwd` display text is derived from the fd's mount identity, not the source dentry chain.
+- Hosted proof: `bind_path_render_uses_file_mount_not_source_dentry_chain` resolves a child through a bind and asserts it renders as `/a/b/x`, not `/x`.
+
 ### 3. chmod/chown/xattr/utime helpers use string re-resolution
 
 Files:
