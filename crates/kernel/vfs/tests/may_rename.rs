@@ -9,16 +9,21 @@ use vfs::namei::{
     may_rename, rename_flags_check, RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT,
 };
 use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, CRED_NGROUPS, default_file_ops, default_inode_ops, mk_mode};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_INO: AtomicU64 = AtomicU64::new(10);
+
+fn next_ino() -> u64 { NEXT_INO.fetch_add(1, Ordering::Relaxed) }
 
 /// Regular file with explicit perm/uid + VFS `i_flags`.
 fn pfile(perm: u16, uid: u32, flags: u32) -> InodeRef {
-    InodeBuilder::new(1, mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
+    InodeBuilder::new(next_ino(), mk_mode(FileType::Regular, perm), default_inode_ops(), default_file_ops())
         .owner(uid, 0).i_flags(flags).build()
 }
 
 /// Directory with explicit perm/uid + VFS `i_flags`.
 fn pdir(perm: u16, uid: u32, flags: u32) -> InodeRef {
-    InodeBuilder::new(2, mk_mode(FileType::Directory, perm), default_inode_ops(), default_file_ops())
+    InodeBuilder::new(next_ino(), mk_mode(FileType::Directory, perm), default_inode_ops(), default_file_ops())
         .owner(uid, 0).i_flags(flags).build()
 }
 
@@ -99,6 +104,20 @@ fn exchange_target_absent_enoent() {
     assert_eq!(
         may_rename(&od, &src, &nd, None, RENAME_EXCHANGE, true, &user(1000)).err(),
         Some(VfsError::Enoent),
+    );
+}
+
+#[test]
+fn same_inode_target_noop_but_noreplace_still_eexist() {
+    let od = pdir(0o777, 1000, 0);
+    let src = pfile(0o644, 1000, 0);
+    let nd = pdir(0o777, 1000, 0);
+    let same = src.clone();
+    assert!(may_rename(&od, &src, &nd, Some(&same), 0, true, &user(1000)).is_ok());
+    assert!(may_rename(&od, &src, &nd, Some(&same), RENAME_EXCHANGE, true, &user(1000)).is_ok());
+    assert_eq!(
+        may_rename(&od, &src, &nd, Some(&same), RENAME_NOREPLACE, true, &user(1000)).err(),
+        Some(VfsError::Eexist),
     );
 }
 

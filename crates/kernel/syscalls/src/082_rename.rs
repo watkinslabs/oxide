@@ -114,6 +114,15 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
             return rv;
         }
     };
+    if flags & RENAME_NOREPLACE == 0 {
+        if let Some(t) = new_target.as_ref() {
+            if alloc::sync::Arc::ptr_eq(&old_victim, t) {
+                #[cfg(feature = "debug-udevdb")]
+                trace_rename_udevdb(&from_raw, &to_raw, 0);
+                return 0;
+            }
+        }
+    }
     if flags == 0 && same_parent(&old_parent, &new_parent) && old_name == new_name {
         #[cfg(feature = "debug-udevdb")]
         trace_rename_udevdb(&from_raw, &to_raw, 0);
