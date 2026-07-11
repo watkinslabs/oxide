@@ -61,7 +61,7 @@ fn lookup_parent(root: Arc<Dentry>, root_mnt: u64, path: &str) -> vfs::VfsPath {
 }
 
 fn fs_name_for(mnt_id: u64) -> String {
-    vfs::mount::mount_by_id(mnt_id).expect("mount id").sb.fs().name().to_string()
+    vfs::mount::mount_by_id(mnt_id).expect("mount id").sb.s_type.name().to_string()
 }
 
 fn setup_host(host: u64) -> (Arc<Dentry>, Arc<TmpfsFs>, Arc<TmpfsFs>) {
