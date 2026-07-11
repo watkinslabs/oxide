@@ -50,7 +50,7 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
     // an open_tree-cloned subtree is spliced under the sandbox root (10/11).
     #[cfg(feature = "debug-mount")]
     {
-        if let (Ok(from), Ok(to)) = (read_cstr(args.a1, 256), read_cstr(args.a3, 256)) {
+        if let (Ok(from), Ok(to)) = (read_path_allow_empty(args.a1), read_path_allow_empty(args.a3)) {
             klog::write_raw(b"[MNTCREATE] syscall=move_mount flags=0x");
             klog::write_hex_u64(args.a4);
             klog::write_raw(b" recursive=false source="); klog::write_raw(from.as_bytes());
@@ -61,7 +61,7 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
     let rv = sys_move_mount_impl(args);
     #[cfg(feature = "debug-mount")]
     {
-        if let (Ok(to), Ok(from)) = (read_cstr(args.a3, 256), read_cstr(args.a1, 256)) {
+        if let (Ok(to), Ok(from)) = (read_path_allow_empty(args.a3), read_path_allow_empty(args.a1)) {
             let mut tag = alloc::string::String::from(to.as_str());
             tag.push_str(" from="); tag.push_str(&from);
             crate::mount_common::mnt_log("move_mount", &tag, rv);
@@ -73,10 +73,10 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
 fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
     let from_fd = args.a0 as i32;
-    let from_path = match read_cstr_req(args.a1, 256) {
+    let from_path = match read_path_allow_empty(args.a1) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let to_path = match read_cstr_req(args.a3, 256) {
+    let to_path = match read_path_allow_empty(args.a3) {
         Ok(s) => s, Err(rv) => return rv,
     };
     let (target_mt, target) = match resolve_move_target_at(args.a2 as i32, &to_path) {

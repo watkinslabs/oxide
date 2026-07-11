@@ -17,9 +17,6 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
     const OPEN_TREE_CLOEXEC: u64 = 0o2_000_000;     // O_CLOEXEC
     const AT_RECURSIVE:      u64 = 0x8000;          // clone the whole subtree
     const AT_EMPTY_PATH:     u64 = 0x1000;
-    let _path = match read_cstr(args.a1, 256) {
-        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
-    };
     let vp = match crate::pathresolve::resolve_at_lookup(args.a0 as i32, args.a1, vfs::LookupFlags {
         empty: (args.a2 & AT_EMPTY_PATH) != 0,
         ..Default::default()

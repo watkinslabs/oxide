@@ -43,7 +43,12 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
             Err(rv) => return rv,
         };
         let value = if cmd == FSCONFIG_SET_FLAG { alloc::string::String::new() }
-            else {
+            else if cmd == FSCONFIG_SET_PATH || cmd == FSCONFIG_SET_PATH_EMPTY {
+                match read_path_allow_empty(args.a3) {
+                    Ok(v) => v,
+                    Err(rv) => return rv,
+                }
+            } else {
                 match read_cstr_req(args.a3, 256) {
                     Ok(v) => v,
                     Err(rv) => return rv,
