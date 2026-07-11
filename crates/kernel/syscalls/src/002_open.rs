@@ -69,51 +69,45 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
         // S_ISUID/S_ISGID/S_ISVTX bits survive the create; umask clears only the
         // rwx bits it carries (D8).
         let final_mode = mode & 0o7777 & !umask;
-        match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, _rel)) => {
-                // EROFS before create on a read-only mount (Linux `mnt_want_write`).
-                if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-                    return -(Errno::Erofs.as_i32() as i64);
-                }
-                // ext4 D9: create on the RESOLVED PARENT dir inode + leaf name
-                // (Linux `filename_create` → `i_op->create`), instead of the
-                // whole-path `FileSystem::create` re-splitting the path string.
-                // Same op `mknod(S_IFREG)` drives; `final_mode` is already
-                // umasked and `apply_umask` is idempotent. Owner is the caller's
-                // fsuid/fsgid (Linux `inode_init_owner`), not a hardcoded 0,0.
-                let (pino, name) = match crate::namei_common::resolve_parent(path_str) {
-                    Ok(x) => x, Err(rv) => return rv,
-                };
-                let cred = crate::pathresolve::current_cred();
-                let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
-                // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create
-                // (Linux `filename_create`); dropped before the dcache update.
-                let r = { let _g = pino.inode_lock(); pino.create_child(&name, final_mode, &ctx) };
-                match r {
-                    Ok(i) => (i, mnt.mnt_id, true),
-                    Err(e) => {
-                        crate::namei_common::trace_run_vfs_error(b"open-create", path_str, e);
-                        // D7: surface the real VfsError→errno (EACCES/EROFS/
-                        // ENOSPC/ENOTDIR/…) instead of collapsing to ENOENT.
-                        return crate::namei_common::errno_from_vfs(e);
-                    }
-                }
+        let (parent, name) = match crate::namei_common::resolve_create_parent_at(crate::pathresolve::AT_FDCWD, path_str) {
+            Ok(x) => x, Err(rv) => return rv,
+        };
+        let Some(mnt) = vfs::mount::mount_by_id(parent.mnt_id) else { return -(Errno::Enoent.as_i32() as i64); };
+        // EROFS before create on a read-only mount (Linux `mnt_want_write`).
+        if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            return -(Errno::Erofs.as_i32() as i64);
+        }
+        // ext4 D9: create on the RESOLVED PARENT dir inode + leaf name
+        // (Linux `filename_create` → `i_op->create`), instead of the
+        // whole-path `FileSystem::create` re-splitting the path string.
+        // Same op `mknod(S_IFREG)` drives; `final_mode` is already
+        // umasked and `apply_umask` is idempotent. Owner is the caller's
+        // fsuid/fsgid (Linux `inode_init_owner`), not a hardcoded 0,0.
+        let cred = crate::pathresolve::current_cred();
+        let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
+        // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create
+        // (Linux `filename_create`); dropped before the dcache update.
+        let r = { let _g = parent.inode.inode_lock(); parent.inode.create_child(&name, final_mode, &ctx) };
+        match r {
+            Ok(i) => {
+                crate::namei_common::drop_child_cache(&parent, &name);
+                let pp = crate::namei_common::render_parent_path(&parent);
+                vfs::fire_dirent_create(&pp, &name);
+                (i, mnt.mnt_id, true)
             }
-            None => return -(Errno::Enoent.as_i32() as i64),
+            Err(e) => {
+                crate::namei_common::trace_run_vfs_error(b"open-create", path_str, e);
+                // D7: surface the real VfsError→errno (EACCES/EROFS/
+                // ENOSPC/ENOTDIR/…) instead of collapsing to ENOENT.
+                return crate::namei_common::errno_from_vfs(e);
+            }
         }
     } else {
         return -(Errno::Enoent.as_i32() as i64);
     };
-    // O_CREAT flush: drop the leaf negative planted by the failed existence
-    // resolve above so `install_open`'s path-walk re-resolves to the NEW inode
-    // rather than the stale negative (Linux instantiates the create's own leaf).
-    if created {
-        crate::pathresolve::d_drop_path(path_str);
-        vfs::fire_dirent_create(
-            crate::namei_common::parent_path(path_str),
-            crate::namei_common::last_component(path_str),
-        );
-    }
+    // O_CREAT cache flush/fsnotify is done in the create branch from the exact
+    // resolved parent VfsPath. Re-walking `path_str` here would collapse bind or
+    // chroot identity back into display text.
     // D6: O_DIRECTORY on a non-directory final → ENOTDIR (Linux `do_open`
     // `if ((open_flag & O_DIRECTORY) && !S_ISDIR) → -ENOTDIR`).
     if (flags & O_DIRECTORY) != 0 && !matches!(inode.file_type(), vfs::FileType::Directory) {

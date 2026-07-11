@@ -724,6 +724,9 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
 6. Convert create/delete/rename.
 
    - Done: `open/openat O_CREAT`
+     - `open(2)` no longer asks `vfs::mount::resolve_mount(path_str)` before create; it resolves the create parent through `resolve_create_parent_at(AT_FDCWD, path_str)` and uses that parent `VfsPath.mnt_id` as authority.
+     - `openat(O_CREAT)` and `open(O_CREAT)` now drop stale child cache and fire create notifications from the exact resolved parent `VfsPath`; they no longer re-walk rendered `path_str` through `d_drop_path()` / `parent_path()` / `last_component()` after the backend create.
+     - Verification for this slice: `cargo run -p xtask -- kernel --arch x86_64`, `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64`, `cargo test -p vfs --test greeter_sysfs_after_pivot -- --nocapture`, and `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed.
    - Done: `mkdir/mkdirat`
    - Done: `mknod/mknodat`
    - Done: `symlink/symlinkat`
