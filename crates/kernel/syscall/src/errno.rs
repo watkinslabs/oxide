@@ -65,6 +65,7 @@ pub enum Errno {
     Econnrefused      = 111,
     Econnreset        = 104,
     Estale            = 116,
+    Ecanceled         = 125,
     Eftype            = 134,
 }
 

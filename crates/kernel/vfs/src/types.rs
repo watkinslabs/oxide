@@ -192,6 +192,8 @@ pub enum VfsError {
     Enametoolong = 36,
     /// ENOTCONN — read/write on a stream socket with no connection.
     Enotconn = 107,
+    /// ECANCELED — timerfd read after TFD_TIMER_CANCEL_ON_SET clock change.
+    Ecanceled = 125,
 }
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
