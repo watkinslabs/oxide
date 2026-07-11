@@ -31,7 +31,7 @@ impl FileSystem for TFs {
 }
 struct TDirOps;
 impl vfs::InodeOps for TDirOps {
-    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Ok(tdir(0xC00)) }
 }
 fn tdir(ino: u64) -> InodeRef {
     vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),

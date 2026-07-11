@@ -219,6 +219,14 @@ pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     mount_by_id(id)
 }
 
+/// The mount rooted exactly at `(parent_mnt_id, d)` in the caller's namespace.
+/// This is the non-lossy form for callers that already resolved a Linux
+/// `struct path` mount target; a bare dentry is ambiguous across bind clones
+/// that share dentries. # C: O(log N)
+pub fn mount_at_path_exact_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
+    __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == current_ns())
+}
+
 /// Root mount id for namespace `ns` (Linux `mnt_ns->root`). # C: O(log N)
 pub fn root_mount_id(ns: u64) -> Option<u64> { mntns::ns_root_id(ns) }
 

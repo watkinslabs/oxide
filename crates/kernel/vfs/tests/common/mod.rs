@@ -46,7 +46,7 @@ fn root_provider() -> Option<Arc<Dentry>> { Some(root()) }
 /// Canonical dentry for absolute `path`, built by descending from the root
 /// via the dcache (`d_lookup → i_op->lookup → d_add`) — the SAME per-
 /// component walk the engine's `descend` uses, so identity is shared.
-pub fn dentry(path: &str) -> Arc<Dentry> {
+fn raw_dentry(path: &str) -> Arc<Dentry> {
     let mut cur = root();
     for comp in path.split('/').filter(|c| !c.is_empty()) {
         cur = match vfs::d_lookup(&cur, comp) {
@@ -60,10 +60,20 @@ pub fn dentry(path: &str) -> Arc<Dentry> {
     cur
 }
 
-/// `None` for the root path "/", else `Some(dentry(p))` — the
-/// `Option<Arc<Dentry>>` an attach/register caller hands the engine.
-fn opt(p: &str) -> Option<Arc<Dentry>> {
-    if p == "/" { None } else { Some(dentry(p)) }
+pub fn dentry(path: &str) -> Arc<Dentry> {
+    if path == "/" { return root(); }
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_some() {
+        return mount_target(path).mountpoint;
+    }
+    raw_dentry(path)
+}
+
+fn mount_target(p: &str) -> vfs::MountTarget {
+    let r = root();
+    let ns = vfs::mount::current_ns();
+    let root_mnt = vfs::mount::root_mount_id(ns).expect("root mount exists");
+    vfs::mountpoint_lookup_at_root_cred(r.clone(), root_mnt, r, root_mnt, p, vfs::Cred::root())
+        .expect("mount target resolves")
 }
 
 /// Install the root-dentry provider so the engine's internal walks resolve
@@ -79,17 +89,30 @@ pub fn install() {
 
 #[allow(dead_code)]
 pub fn register(p: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
-    vfs::mount::register(opt(p), fs)
+    if p == "/" { return vfs::mount::register(None, fs); }
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::register(Some(raw_dentry(p)), fs);
+    }
+    let target = mount_target(p);
+    vfs::mount::register_at(Some(target.mountpoint), fs, Some(target.parent.mnt_id))
 }
 #[allow(dead_code)]
 pub fn register_bind(p: &str, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
-    vfs::mount::register_bind(opt(p), fs, root)
+    if p == "/" { return vfs::mount::register_bind(None, fs, root); }
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::register_bind(Some(raw_dentry(p)), fs, root);
+    }
+    let target = mount_target(p);
+    vfs::mount::register_bind_at(Some(target.mountpoint), fs, root, Some(target.parent.mnt_id))
 }
 #[allow(dead_code)]
 pub fn unregister(p: &str) -> usize { vfs::mount::unregister(&dentry(p)) }
 #[allow(dead_code)]
 pub fn move_mount(from: &str, to: &str) -> KResult<()> {
-    vfs::mount::move_mount(&dentry(from), &dentry(to))
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::move_mount(&raw_dentry(from), &raw_dentry(to));
+    }
+    vfs::mount::move_mount(&mount_target(from).mountpoint, &mount_target(to).mountpoint)
 }
 #[allow(dead_code)]
 pub fn pivot_root(nr: &str, po: &str) -> KResult<()> {
@@ -97,25 +120,73 @@ pub fn pivot_root(nr: &str, po: &str) -> KResult<()> {
 }
 #[allow(dead_code)]
 pub fn bind_submounts_rec(src: &str, tgt: &str) -> usize {
-    vfs::mount::bind_submounts_rec(&dentry(src), &dentry(tgt))
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::bind_submounts_rec(&raw_dentry(src), &raw_dentry(tgt));
+    }
+    let r = root();
+    let source = vfs::path_lookup_path(r.clone(), r, src, vfs::LookupFlags::default())
+        .expect("recursive bind source resolves");
+    let target = mount_target(tgt);
+    let target_d = target.mountpoint.clone();
+    let target_parent = target.parent.mnt_id;
+    if vfs::mount::mount_at_path_exact(&target_d).is_none() {
+        vfs::mount::register_bind_clone_under(target_parent, target_d.clone(), source.mnt_id, source.dentry.clone())
+            .expect("recursive bind top clone");
+    }
+    vfs::mount::bind_submounts_rec_at(Some(source.mnt_id), &source.dentry, &target_d, Some(target_parent))
 }
 #[allow(dead_code)]
 pub fn set_propagation(p: &str, kind: Propagation) -> KResult<()> {
-    vfs::mount::set_propagation(&dentry(p), kind)
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::set_propagation(&raw_dentry(p), kind);
+    }
+    vfs::mount::set_propagation(&mount_target(p).mountpoint, kind)
 }
 #[allow(dead_code)]
-pub fn peer_group_of(p: &str) -> u64 { vfs::mount::peer_group_of(&dentry(p)) }
+pub fn peer_group_of(p: &str) -> u64 {
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::peer_group_of(&raw_dentry(p));
+    }
+    vfs::mount::peer_group_of(&mount_target(p).mountpoint)
+}
 #[allow(dead_code)]
-pub fn join_peer_group(p: &str, pg: u64) { vfs::mount::join_peer_group(&dentry(p), pg) }
+pub fn join_peer_group(p: &str, pg: u64) {
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::join_peer_group(&raw_dentry(p), pg);
+    }
+    vfs::mount::join_peer_group(&mount_target(p).mountpoint, pg)
+}
 #[allow(dead_code)]
-pub fn propagate_mount(p: &str) -> usize { vfs::mount::propagate_mount(&dentry(p)) }
+pub fn propagate_mount(p: &str) -> usize {
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::propagate_mount(&raw_dentry(p));
+    }
+    vfs::mount::propagate_mount(&mount_target(p).mountpoint)
+}
 #[allow(dead_code)]
-pub fn is_mount_in_ns(p: &str, ns: u64) -> bool { vfs::mount::is_mount_in_ns(&dentry(p), ns) }
+pub fn is_mount_in_ns(p: &str, ns: u64) -> bool {
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::is_mount_in_ns(&raw_dentry(p), ns);
+    }
+    vfs::mount::is_mount_in_ns(&mount_target(p).mountpoint, ns)
+}
 #[allow(dead_code)]
-pub fn mount_root_at(p: &str) -> Option<InodeRef> { vfs::mount::mount_root_at(&dentry(p)) }
+pub fn mount_root_at(p: &str) -> Option<InodeRef> {
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::mount_root_at(&raw_dentry(p));
+    }
+    mount_at_path_exact(p).and_then(|m| m.mnt_root()).and_then(|d| d.inode())
+}
 #[allow(dead_code)]
 pub fn mount_at_path_exact(p: &str) -> Option<Arc<vfs::mount::Mount>> {
-    vfs::mount::mount_at_path_exact(&dentry(p))
+    if p == "/" {
+        return vfs::mount::root_mount_id(vfs::mount::current_ns()).and_then(vfs::mount::mount_by_id);
+    }
+    if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
+        return vfs::mount::mount_at_path_exact(&raw_dentry(p));
+    }
+    let target = mount_target(p);
+    vfs::mount::mount_at_path_exact_under(target.parent.mnt_id, &target.mountpoint)
 }
 
 // Silence unused-import warnings in test binaries that pull in `common` but

@@ -87,7 +87,7 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     // position under each propagation target (peers/targets live at DISTINCT
     // dentries, so the Linux same-mountpoint-dentry shortcut does not apply in
     // this engine; `descend` re-materialises the slot per target).
-    let rel = match rel_under(&new_mp, parent.mountpoint().as_ref()) {
+    let rel = match parent.mnt_root().and_then(|r| plain_rel_under(&new_mp, &r)) {
         Some(r) if !r.is_empty() => r, _ => return 0,
     };
     // CL_MAKE_SHARED over the source: it and its peer copies form a NEW group.
@@ -104,7 +104,7 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     let mut n = 0;
     for peer in targets {
         if peer.ns != ns { continue; }
-        let base = match peer.mountpoint().or_else(global_root) { Some(b) => b, None => continue };
+        let base = match peer.mnt_root().or_else(|| peer.mountpoint()).or_else(global_root) { Some(b) => b, None => continue };
         let Some(dst) = descend(&base, &rel) else { continue; };
         // A copy landing on a PEER of the parent group is itself shared in the
         // new group (CL_MAKE_SHARED); a copy on a SLAVE becomes a slave of the
@@ -115,9 +115,10 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
         // Clone the source subtree (freshly-created `newm` is childless at this
         // point, so this is one node) and splice it at `dst` under the target.
         let nodes = copy_tree(&newm, &new_mp, ty, grp, &newm, ns, true, None);
-        // The peer copy's root lands at `dst` under this `peer` mount; `0` lets
-        // `commit_tree` derive the (unambiguous, distinct-dentry) parent itself.
-        n += commit_tree(nodes, &dst, 0, None, ns);
+        // The peer copy's root lands at `dst` under this `peer` mount; pass the
+        // exact parent id because bind-shared roots make dentry-only derivation
+        // ambiguous.
+        n += commit_tree(nodes, &dst, peer.mnt_id, None, ns);
     }
     n
 }
