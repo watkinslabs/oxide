@@ -23,6 +23,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 // keyctl(2) special keyring ids (uapi/linux/keyctl.h). A negative serial
 // passed to any op resolves (lazily creating) to the caller's real keyring.
@@ -149,7 +150,7 @@ fn read_user_key_cstr(p: u64, max: usize) -> Result<Vec<u8>, i64> {
     if p == 0 { return Err(err(Errno::Efault)); }
     match syscall::scan_user_cstr(p, max as u64, |va| {
         // SAFETY: scan_user_cstr validates each user VA before this byte read.
-        unsafe { core::ptr::read_volatile(va as *const u8) }
+        unsafe { core::ptr::read_unaligned(va as *const u8) }
     }) {
         Ok(b) => Ok(b),
         Err(Errno::Enametoolong) => Err(err(Errno::Einval)),
@@ -171,14 +172,20 @@ fn read_user_key_desc(p: u64) -> Result<String, i64> {
 
 fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
     if len == 0 { return Ok(Vec::new()); }
-    if p == 0 || p >= hal::USER_VA_END
-        || p.checked_add(len as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
+    validate_user_buf(p, len as u64, 1)?;
     let mut out = alloc::vec![0u8; len];
-    // SAFETY: p+len validated < USER_VA_END; CPL=0 byte reads through caller's AS into kernel buffer.
-    unsafe { for i in 0..len { out[i] = core::ptr::read_volatile((p + i as u64) as *const u8); } }
+    // SAFETY: exact user byte range validated; destination is a kernel-owned Vec.
+    unsafe { for i in 0..len { out[i] = core::ptr::read_unaligned((p + i as u64) as *const u8); } }
     Ok(out)
+}
+
+fn write_user_prefix(p: u64, src: &[u8], limit: usize) -> Result<(), i64> {
+    let n = core::cmp::min(limit, src.len());
+    if n == 0 { return Ok(()); }
+    validate_user_buf_writable(p, n as u64, 1)?;
+    // SAFETY: copied byte prefix is writable-user validated; source is kernel-owned.
+    unsafe { for i in 0..n { core::ptr::write_unaligned((p + i as u64) as *mut u8, src[i]); } }
+    Ok(())
 }
 
 /// Current task identity for keyctl special-keyring resolution. Falls back to
@@ -408,13 +415,7 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             } else { k.payload.clone() };
             let want = bytes.len();
             if buf_p == 0 || buflen == 0 { return want as i64; }
-            if buf_p >= hal::USER_VA_END
-                || buf_p.checked_add(buflen as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-                return -(Errno::Efault.as_i32() as i64);
-            }
-            let n = core::cmp::min(buflen, want);
-            // SAFETY: buf_p+n validated < USER_VA_END; CPL=0 writes of kernel-owned bytes into caller's AS.
-            unsafe { for i in 0..n { core::ptr::write_volatile((buf_p + i as u64) as *mut u8, bytes[i]); } }
+            if let Err(rv) = write_user_prefix(buf_p, &bytes, buflen) { return rv; }
             want as i64
         }
         KEYCTL_DESCRIBE => {
@@ -425,14 +426,8 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             s.push('\0');
             let want = s.len();
             if buf_p == 0 || buflen == 0 { return want as i64; }
-            if buf_p >= hal::USER_VA_END
-                || buf_p.checked_add(buflen as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-                return -(Errno::Efault.as_i32() as i64);
-            }
-            let n = core::cmp::min(buflen, want);
             let bytes = s.as_bytes();
-            // SAFETY: buf_p+n validated < USER_VA_END; CPL=0 writes of kernel-owned bytes into caller's AS.
-            unsafe { for i in 0..n { core::ptr::write_volatile((buf_p + i as u64) as *mut u8, bytes[i]); } }
+            if let Err(rv) = write_user_prefix(buf_p, bytes, buflen) { return rv; }
             want as i64
         }
         KEYCTL_SEARCH => {
