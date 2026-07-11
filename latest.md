@@ -831,6 +831,25 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
 - remount bind read-only.
 - check mountinfo rendered path and `resolve_path_flags()` `mnt_id`.
 
+### Udev runtime mount harness
+
+- Added hosted harness: `crates/kernel/fs/tests/udev_runtime_mounts.rs`.
+- Fixture uses real `TmpfsFs` for `/run` and `/dev`, plus an ext4-like underlay whose `create`/`mkdir`/`symlink` return `EIO`.
+- Modeled sequence:
+  - host `/` with mounted `/run` and `/dev`;
+  - create `/run/systemd/mount-rootfs`, `/run/udev`, `/dev/char`, `/dev/block` through real tmpfs inode ops;
+  - `copy_mnt_ns`, make-rslave, bind-clone `/` onto stage, recursive-bind submounts, `MS_MOVE(stage, "/")`;
+  - resolve from the moved root `VfsPath` (`root` dentry + `stage_id`) and attempt udev-style creates.
+- Result: `cargo test -p fs --test udev_runtime_mounts -- --nocapture` passed.
+- Meaning:
+  - The exact modeled post-switch udev paths do cross tmpfs, not the ext4 underlay.
+  - `openat-create /run/udev/queue`, `mkdirat /run/udev/data`, and temp symlinks under `/dev/char`/`/dev/block` succeed when the caller carries the moved root mount id.
+  - The older boot `EIO` class needs a missing live ingredient not captured here: likely a caller that still resolves from stale namespace/global root identity, or a different systemd setup step before `chroot(".")`.
+- Important split found:
+  - After `MS_MOVE(stage, "/")`, `root_mount_id(ns)` still names the old root, while the Linux-correct task root after `chroot(".")` is the moved `VfsPath` (`mnt_id = stage_id`, same root dentry).
+  - Existing `sys_chroot(".")` stores `root_vfs`, so post-chroot path resolution can be correct.
+  - Any remaining un-chrooted/global-root path that builds a root `VfsPath` from `root_mount_id(ns)` can still observe stale identity; audit for callers using `resolution_root_vfs()` with no current task or no `root_vfs` after mount-root MS_MOVE.
+
 ## Current Working-State Warning
 
 The tree is dirty with multiple prior changes and temporary traces. Before any final fix PR:
