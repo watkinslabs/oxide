@@ -26,6 +26,7 @@ pub fn install_open_at(
     fop_override: Option<alloc::sync::Arc<dyn crate::file_ops::FileOps>>,
 ) -> Result<i32, VfsError> {
     if flags.contains(OpenFlags::O_DIRECTORY)
+        && !flags.contains(OpenFlags::O_TMPFILE)
         && !matches!(inode.file_type(), crate::types::FileType::Directory)
     {
         return Err(VfsError::Enotdir);
