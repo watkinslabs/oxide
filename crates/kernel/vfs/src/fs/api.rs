@@ -55,7 +55,7 @@ pub struct MountSpec {
     pub strict:    bool,
 }
 
-pub type FsConstructor = dyn Fn(&str, &str, &str) -> KResult<MountSpec> + Send + Sync;
+pub type FsConstructor = dyn Fn(Option<&str>, &str, &str) -> KResult<MountSpec> + Send + Sync;
 
 pub struct FsType {
     pub(super) name:  String,
@@ -68,14 +68,14 @@ impl FsType {
     pub fn new(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>) -> Arc<Self> {
         Arc::new(Self { name: name.to_string(), magic, flags, ctor })
     }
-    pub fn construct(&self, source: &str, target: &str, data: &str) -> KResult<MountSpec> { (self.ctor)(source, target, data) }
+    pub fn construct(&self, source: Option<&str>, target: &str, data: &str) -> KResult<MountSpec> { (self.ctor)(source, target, data) }
     pub fn magic(&self) -> u64 { self.magic }
     pub fn fs_flags(&self) -> FsFlags { self.flags }
 }
 
 impl FileSystemType for FsType {
     fn name(&self) -> &str { &self.name }
-    fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>> {
+    fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
         let spec = (self.ctor)(src, "", opts)?;
         let root = spec.bind_root.or_else(|| spec.fs.root());
         Ok(SuperBlock::for_backend(spec.fs, root, crate::superblock::next_anon_dev(), self.name.clone()))

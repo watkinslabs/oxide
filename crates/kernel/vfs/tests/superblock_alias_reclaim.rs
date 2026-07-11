@@ -20,7 +20,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeOps, Inod
 struct RamFsType;
 impl FileSystemType for RamFsType {
     fn name(&self) -> &str { "aliasfs" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 
 struct RamFsOps;

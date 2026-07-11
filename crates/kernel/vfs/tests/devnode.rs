@@ -11,7 +11,7 @@ use vfs::{BlockDevOps, CharDevOps, Devt, FileType, KResult, VfsError, device_ino
 struct NullType;
 impl FileSystemType for NullType {
     fn name(&self) -> &str { "t" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
 }
 struct NullOps;
 impl SuperOps for NullOps {

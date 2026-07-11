@@ -32,7 +32,7 @@ impl FileSystem for TFs {
 struct Ty { nm: &'static str }
 impl FileSystemType for Ty {
     fn name(&self) -> &str { self.nm }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 
 /// A fill_super closure factory: builds a real SB over a fresh root and counts

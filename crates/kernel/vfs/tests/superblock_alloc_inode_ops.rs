@@ -12,7 +12,7 @@ use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, KResult, VfsEr
 struct TType;
 impl FileSystemType for TType {
     fn name(&self) -> &str { "tallocfs" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 struct TOps;
 impl SuperOps for TOps {

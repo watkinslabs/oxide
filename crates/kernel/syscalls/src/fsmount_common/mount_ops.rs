@@ -27,7 +27,7 @@ fn graft_mount(spec: vfs::fs::MountSpec, target_d: &Arc<Dentry>, parent_hint: Op
     }
 }
 
-pub(crate) fn mount_fstype_at(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>, parent_hint: Option<u64>, data: &str) -> i64 {
+pub(crate) fn mount_fstype_at(source: Option<&str>, fstype: &str, target: &str, target_d: &Arc<Dentry>, parent_hint: Option<u64>, data: &str) -> i64 {
     ensure_filesystems_registered();
     if let Some(ty) = vfs::fs::get_fs(fstype) {
         let spec = match ty.construct(source, target, data) {

@@ -79,6 +79,6 @@ pub(crate) fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
 
 /// Read an optional user C string. `NULL` means absent; any non-null bad pointer
 /// remains `EFAULT`. # C: O(max)
-pub(crate) fn read_optional_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
-    if p == 0 { Ok(String::new()) } else { read_user_cstr_owned(p, max) }
+pub(crate) fn read_optional_user_cstr_owned(p: u64, max: usize) -> Result<Option<String>, i64> {
+    if p == 0 { Ok(None) } else { read_user_cstr_owned(p, max).map(Some) }
 }

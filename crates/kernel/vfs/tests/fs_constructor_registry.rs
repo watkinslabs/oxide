@@ -33,7 +33,7 @@ fn register_get_construct_and_unknown_is_none() {
     assert!(get_fs_type("t040ctor").is_none(), "unregistered: get_fs_type None");
 
     register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|_s: &str, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
+        Box::new(|_s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
             let fs: Arc<dyn FileSystem> = Arc::new(T040Fs);
             Ok(MountSpec { fs, bind_root: None, strict: true })
         }))).expect("register t040ctor");
@@ -47,14 +47,14 @@ fn register_get_construct_and_unknown_is_none() {
     // get_fs yields the constructor; running it builds the backend object.
     let cons = get_fs("t040ctor").expect("get_fs resolves the constructor entry");
     assert_eq!(cons.magic(), T_MAGIC);
-    let spec = cons.construct("none", "/mnt", "").expect("constructor builds a MountSpec");
+    let spec = cons.construct(Some("none"), "/mnt", "").expect("constructor builds a MountSpec");
     assert_eq!(spec.fs.name(), "t040ctor");
     assert_eq!(spec.fs.magic(), T_MAGIC);
     assert!(spec.bind_root.is_none() && spec.strict);
 
     // Duplicate name → EBUSY.
     assert!(register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|_s: &str, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
+        Box::new(|_s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<MountSpec> {
             Err(vfs::VfsError::Einval)
         }))).is_err(), "duplicate name rejected");
 

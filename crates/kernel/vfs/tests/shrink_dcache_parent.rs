@@ -15,7 +15,7 @@ use vfs::{d_add, d_lookup, dget, dput, Dentry, FileType, InodeRef, KResult};
 struct RamFsType;
 impl FileSystemType for RamFsType {
     fn name(&self) -> &str { "ramfs" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { Ok(mount_ramfs(0x51)) }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { Ok(mount_ramfs(0x51)) }
 }
 struct RamFsOps;
 impl SuperOps for RamFsOps {
