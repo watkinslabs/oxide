@@ -23,7 +23,7 @@ pub fn sys_dup3(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    match fdt.dup3(oldfd, newfd, flags) {
+    match fdt.dup3_limit(oldfd, newfd, flags, cur.nofile_soft()) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }

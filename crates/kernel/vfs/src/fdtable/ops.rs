@@ -82,20 +82,35 @@ impl FdTable {
         Ok(())
     }
     pub fn dup(&self, fd: i32) -> KResult<i32> {
+        self.dup_limit(fd, FD_TABLE_MAX)
+    }
+    pub fn dup_limit(&self, fd: i32, limit: usize) -> KResult<i32> {
         let f = self.get(fd)?;
         crate::file::fire_clone_hook(&f);
-        self.alloc(f)
+        self.alloc_limit(f, limit)
     }
     pub fn dup_min(&self, fd: i32, min: i32) -> KResult<i32> {
+        self.dup_min_limit(fd, min, FD_TABLE_MAX)
+    }
+    pub fn dup_min_limit(&self, fd: i32, min: i32, limit: usize) -> KResult<i32> {
         let f = self.get(fd)?;
-        if min < 0 || min as usize >= FD_TABLE_MAX { return Err(VfsError::Einval); }
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        if min < 0 || min as usize >= max { return Err(VfsError::Einval); }
         crate::file::fire_clone_hook(&f);
-        self.inner.lock().alloc_fd_min(f, min as usize)
+        self.inner.lock().alloc_fd_below(f, min as usize, max)
     }
     pub fn dup2(&self, old_fd: i32, new_fd: i32) -> KResult<i32> {
+        self.dup2_limit(old_fd, new_fd, FD_TABLE_MAX)
+    }
+    pub fn dup2_limit(&self, old_fd: i32, new_fd: i32, limit: usize) -> KResult<i32> {
         if old_fd < 0 || new_fd < 0 || (new_fd as usize) >= FD_TABLE_MAX { return Err(VfsError::Ebadf); }
+        if old_fd == new_fd {
+            self.get(old_fd)?;
+            return Ok(new_fd);
+        }
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        if (new_fd as usize) >= max { return Err(VfsError::Ebadf); }
         let f = self.get(old_fd)?;
-        if old_fd == new_fd { return Ok(new_fd); }
         crate::file::fire_clone_hook(&f);
         let nf = new_fd as usize;
         let replaced = {
@@ -111,9 +126,14 @@ impl FdTable {
         Ok(new_fd)
     }
     pub fn dup3(&self, old_fd: i32, new_fd: i32, flags: OpenFlags) -> KResult<i32> {
+        self.dup3_limit(old_fd, new_fd, flags, FD_TABLE_MAX)
+    }
+    pub fn dup3_limit(&self, old_fd: i32, new_fd: i32, flags: OpenFlags, limit: usize) -> KResult<i32> {
         if flags.bits() & !OpenFlags::O_CLOEXEC.bits() != 0 { return Err(VfsError::Einval); }
         if old_fd == new_fd { return Err(VfsError::Einval); }
         if new_fd < 0 || (new_fd as usize) >= FD_TABLE_MAX { return Err(VfsError::Ebadf); }
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        if (new_fd as usize) >= max { return Err(VfsError::Ebadf); }
         let f = self.get(old_fd)?;
         crate::file::fire_clone_hook(&f);
         let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
