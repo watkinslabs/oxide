@@ -244,7 +244,7 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
-        // S_IALLUGO (0o7777): preserve suid/sgid/sticky on O_TMPFILE create (D8).
+        // S_IALLUGO (0o7777): pass requested suid/sgid/sticky to VFS prepare.
         let req_mode = mode & 0o7777;
         // O_TMPFILE creates the anonymous inode on the filesystem that
         // actually backs the target directory — tmpfs for /run|/tmp|/dev/shm,
@@ -317,8 +317,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
-        // S_IALLUGO (0o7777): preserve suid/sgid/sticky on O_CREAT (D8).
-        let final_mode = mode & 0o7777 & !umask;
+        // S_IALLUGO (0o7777): pass requested suid/sgid/sticky to VFS prepare.
+        let final_mode = mode & 0o7777;
         let parent = match crate::pathresolve::resolve_parent_at(args.a0 as i32, s) {
             Ok(x) => x, Err(rv) => return rv,
         };

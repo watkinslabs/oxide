@@ -1,7 +1,8 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use crate::idmap::Idmap;
 use crate::namei::{Cred, S_ISGID, S_IXGRP};
-use crate::types::{FileType, KResult, Umode, VfsError};
+use crate::types::{FileType, KResult, S_IFMT, S_IFDIR, S_IFLNK, Umode, VfsError};
 
 use super::flags::{
     I_VERSION_INCREMENT, I_VERSION_QUERIED, I_VERSION_QUERIED_SHIFT, S_APPEND, S_ATIME, S_CTIME,
@@ -92,6 +93,50 @@ pub fn inode_init_owner(dir: &Inode, mode: Umode, cred: &Cred) -> (u32, u32, Umo
         cred.gid
     };
     (uid, gid, m)
+}
+
+/// `inode_init_owner` with mount-idmapped caller ids. # C: O(extents)
+pub fn inode_init_owner_idmap(idmap: &Idmap, dir: &Inode, mode: Umode, cred: &Cred) -> (u32, u32, Umode) {
+    let uid = idmap.map_in_uid(cred.uid);
+    let mut m = mode;
+    let gid = if dir.i_mode() & S_ISGID != 0 {
+        let dgid = dir.gid().unwrap_or(0);
+        if m & S_IFMT == S_IFDIR {
+            m |= S_ISGID;
+        } else if m & (S_ISGID | S_IXGRP) == S_ISGID | S_IXGRP {
+            let vfsgid = idmap.map_out_gid(dgid);
+            if !cred.in_group(vfsgid) && !cred.cap_fsetid { m &= !S_ISGID; }
+        }
+        dgid
+    } else {
+        idmap.map_in_gid(cred.gid)
+    };
+    (uid, gid, m)
+}
+
+fn mode_strip_sgid_create(idmap: &Idmap, dir: &Inode, mode: Umode, cred: &Cred) -> Umode {
+    if (mode & (S_ISGID | S_IXGRP)) != (S_ISGID | S_IXGRP) { return mode; }
+    if mode & S_IFMT == S_IFDIR || dir.i_mode() & S_ISGID == 0 { return mode; }
+    let dgid = dir.gid().unwrap_or(0);
+    let vfsgid = idmap.map_out_gid(dgid);
+    if cred.in_group(vfsgid) || cred.cap_fsetid { mode } else { mode & !S_ISGID }
+}
+
+/// Linux `vfs_prepare_mode` plus `inode_init_owner`. # C: O(extents)
+pub fn prepare_create_owner_mode(idmap: &Idmap, dir: &Inode, mode: Umode, mask_perms: Umode,
+    ftype: Umode, cred: &Cred, umask: Umode) -> (u32, u32, Umode)
+{
+    let mut m = mode_strip_sgid_create(idmap, dir, mode, cred);
+    m &= !umask;
+    m &= mask_perms & !S_IFMT;
+    m |= ftype & S_IFMT;
+    inode_init_owner_idmap(idmap, dir, m, cred)
+}
+
+/// Owner ids for a newly created symlink. # C: O(extents)
+pub fn prepare_symlink_owner(idmap: &Idmap, dir: &Inode, cred: &Cred) -> (u32, u32) {
+    let (uid, gid, _mode) = inode_init_owner_idmap(idmap, dir, S_IFLNK | 0o777, cred);
+    (uid, gid)
 }
 
 pub(crate) fn no_data_op_errno(ft: FileType) -> VfsError {

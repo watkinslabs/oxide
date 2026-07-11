@@ -66,10 +66,8 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
             .map(|c| c.has_cap(sched::cap::MKNOD)).unwrap_or(false);
         if !has { return -(Errno::Eperm.as_i32() as i64); }
     }
-    // Linux do_mknodat: `mode &= ~current_umask()` on the permission bits (D23).
     let umask = sched::live::current()
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0) as u16;
-    let perm = (mode & 0x0FFF) & !umask;
     // Thread the mount idmap + caller cred + umask so the new node gets the
     // right owner (Linux `->mknod`/`->create(struct mnt_idmap *, ...)`).
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask };
@@ -80,9 +78,9 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
         let _g = parent.inode.inode_lock();
         if real_ftype == S_IFREG {
             // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
-            parent.inode.create_child(&name, perm as u32, &ctx).map(|_| ())
+            parent.inode.create_child(&name, (mode & 0x0FFF) as u32, &ctx).map(|_| ())
         } else {
-            parent.inode.mknod_child(&name, (real_ftype | perm) as u16, node_dev, &ctx)
+            parent.inode.mknod_child(&name, (real_ftype | (mode & 0x0FFF)) as u16, node_dev, &ctx)
         }
     };
     match r {

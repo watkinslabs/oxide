@@ -25,8 +25,10 @@ pub use flags::{
 };
 pub use helpers::{
     generic_update_time, get_next_ino, inode_inc_iversion, inode_init_owner,
-    inode_maybe_inc_iversion, inode_owner_or_capable, inode_peek_iversion_raw,
-    inode_query_iversion, inode_set_iversion_raw, is_append, is_immutable, is_noatime, is_sync,
+    inode_init_owner_idmap, inode_maybe_inc_iversion, inode_owner_or_capable,
+    inode_peek_iversion_raw, inode_query_iversion, inode_set_iversion_raw,
+    is_append, is_immutable, is_noatime, is_sync, prepare_create_owner_mode,
+    prepare_symlink_owner,
 };
 pub(crate) use helpers::no_data_op_errno;
 pub use locking::{RenameLockGuard, inode_unlock, lock_rename, unlock_rename};

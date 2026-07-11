@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use vfs::{CreateCtx, Devt, S_IFIFO, VfsError};
+use vfs::{CreateCtx, Cred, Devt, S_IFIFO, S_IFSOCK, VfsError, CRED_NGROUPS};
 use vfs::fs::{FileSystem, FsFlags, FsType, superblock_from_filesystem};
 use vfs::superblock::SuperBlock;
 
@@ -73,4 +73,61 @@ fn fifo_mknod_ignores_user_rdev() {
         .expect("mknod fifo");
     let fifo = root.lookup("fifo").expect("lookup fifo");
     assert_eq!(fifo.rdev(), 0, "Linux ignores dev for S_IFIFO mknod");
+}
+
+fn user(uid: u32, gid: u32) -> Cred {
+    Cred {
+        uid, gid,
+        cap_dac_override: false, cap_dac_read_search: false,
+        cap_fowner: false, cap_chown: false, cap_fsetid: false,
+        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+    }
+}
+
+#[test]
+fn create_under_sgid_dir_uses_linux_owner_and_mode_prepare() {
+    let sb = live_sb();
+    let root = sb.s_root_inode().expect("root inode");
+    root.set_owner(0, 5000).expect("root owner");
+    root.set_perm(0o2755).expect("root sgid");
+    let cred = user(1000, 2000);
+    let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0o022 };
+
+    let dir = root.mkdir("dir", 0o777, &ctx).expect("mkdir");
+    assert_eq!(dir.uid(), Some(1000));
+    assert_eq!(dir.gid(), Some(5000));
+    assert_eq!(dir.perm(), Some(0o2755), "child dir inherits SGID and applies umask once");
+
+    let file = root.create_child("file", 0o2775, &ctx).expect("create");
+    assert_eq!(file.uid(), Some(1000));
+    assert_eq!(file.gid(), Some(5000));
+    assert_eq!(file.perm(), Some(0o755), "non-member cannot create group-exec SGID file");
+}
+
+#[test]
+fn symlink_under_sgid_dir_inherits_parent_group() {
+    let sb = live_sb();
+    let root = sb.s_root_inode().expect("root inode");
+    root.set_owner(0, 5000).expect("root owner");
+    root.set_perm(0o2755).expect("root sgid");
+    let cred = user(1000, 2000);
+    let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0o077 };
+
+    root.symlink_child("ln", b"target", &ctx).expect("symlink");
+    let link = root.lookup("ln").expect("lookup link");
+    assert_eq!(link.uid(), Some(1000));
+    assert_eq!(link.gid(), Some(5000));
+    assert_eq!(link.perm(), Some(0o777), "symlink mode ignores umask");
+}
+
+#[test]
+fn socket_mknod_preserves_requested_mode() {
+    let sb = live_sb();
+    let root = sb.s_root_inode().expect("root inode");
+    let cred = user(1000, 1000);
+    let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0o022 };
+
+    root.mknod_child("sock", (S_IFSOCK | 0o666) as u16, 0, &ctx).expect("mknod sock");
+    let sock = root.lookup("sock").expect("lookup sock");
+    assert_eq!(sock.perm(), Some(0o644), "S_IFSOCK mknod uses prepared mode, not hard-coded 0755");
 }

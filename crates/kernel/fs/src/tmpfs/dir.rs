@@ -97,11 +97,9 @@ impl InodeOps for TmpfsDirOps {
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let ino = next_ino();
-        // Owner = caller fsuid/fsgid mapped down through the mount idmap; perm =
-        // requested mode with umask cleared (Linux `shmem_mkdir` → `shmem_get_inode`
-        // → `inode_init_owner`). Closes fsimpls D35 (was always uid/gid=0).
-        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
-        let d = make_tmpfs_dir_inode(ino, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
+        let d = make_tmpfs_dir_inode(ino, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), d.clone());
         inode.inc_nlink(); // child's ".." adds a link to this parent dir
         Ok(d)
@@ -137,9 +135,9 @@ impl InodeOps for TmpfsDirOps {
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
-        // Owner from caller cred (idmap-mapped), perm with umask cleared. # D35
-        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
-        let child = make_tmpfs_file_inode(false, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
+        let child = make_tmpfs_file_inode(false, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), child.clone());
         Ok(child)
     }
@@ -152,8 +150,9 @@ impl InodeOps for TmpfsDirOps {
     /// cleared. Like `create_anonymous` it is not inode-charged (no name). # C: O(1)
     fn tmpfile(&self, inode: &Inode, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
-        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
-        let child = make_tmpfs_file_inode(false, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
+        let child = make_tmpfs_file_inode(false, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
         child.set_nlink(0); // O_TMPFILE: unlinked until linkat gives it a name
         Ok(child)
     }
@@ -186,8 +185,8 @@ impl InodeOps for TmpfsDirOps {
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
-        // Symlinks carry no umask (always 0777) but DO take the caller owner. # D35
-        g.insert(name.into(), make_tmpfs_symlink_inode(target, ctx.fsuid(), ctx.fsgid(), dd.sb_weak()));
+        let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
+        g.insert(name.into(), make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak()));
         Ok(())
     }
 
@@ -201,11 +200,12 @@ impl InodeOps for TmpfsDirOps {
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let sb = dd.sb_weak();
-        let perm = (ctx.apply_umask(mode as u32) & 0o7777) as u16;
-        let (uid, gid) = (ctx.fsuid(), ctx.fsgid());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
+            mode, mode, ctx.cred, ctx.umask);
+        let perm = m & 0o7777;
         let child: InodeRef = match mode & S_IFMT {
             S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, 0, uid, gid, sb),
-            S_IFSOCK => make_tmpfs_sock_inode(uid, gid, sb),
+            S_IFSOCK => make_tmpfs_sock_inode(perm, uid, gid, sb),
             S_IFCHR  => make_device_node_inode(
                 next_ino(), FileType::CharDev,
                 Devt::from_raw(rdev), perm, sb),

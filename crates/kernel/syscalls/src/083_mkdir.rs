@@ -27,10 +27,9 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         }
     };
     let p = render_child_path(&parent, &name);
-    // Linux do_mkdirat: `mode &= ~current_umask()` (D23).
     let umask = sched::live::current()
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
-    let mode = (args.a1 as u32) & 0o7777 & !umask;
+    let mode = (args.a1 as u32) & 0o7777;
     // D57: walk the parent FIRST so a non-directory path component surfaces
     // ENOTDIR (Linux filename_create), then EEXIST (target present) BEFORE
     // EROFS — Linux returns EEXIST before mnt_want_write, and systemd's

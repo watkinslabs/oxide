@@ -35,7 +35,8 @@ static ROOT_CRED: Cred = Cred::root();
 /// A backend that materialises a new inode stamps its owner from
 /// [`fsuid`](Self::fsuid)/[`fsgid`](Self::fsgid) (the caller ids mapped DOWN
 /// through the mount idmap, Linux `mapped_fsuid`/`mapped_fsgid`) and its perm
-/// bits from [`apply_umask`](Self::apply_umask). # C: O(1)
+/// bits from `prepare_create_owner_mode`, which applies Linux
+/// `vfs_prepare_mode` + `inode_init_owner` once. # C: O(1)
 pub struct CreateCtx<'a> {
     /// Per-mount id map (Linux `mnt_idmap`); identity for a non-idmapped mount.
     pub idmap: &'a crate::idmap::Idmap,
@@ -57,7 +58,9 @@ impl CreateCtx<'_> {
     pub fn fsuid(&self) -> u32 { self.idmap.map_in_uid(self.cred.uid) }
     /// fs `i_gid` for a new inode: caller fsgid mapped DOWN. # C: O(extents)
     pub fn fsgid(&self) -> u32 { self.idmap.map_in_gid(self.cred.gid) }
-    /// Requested perm bits with the umask cleared (Linux `mode & ~umask`).
+    /// Requested perm bits with the umask cleared. Prefer
+    /// `prepare_create_owner_mode` for new inode creation so SGID inheritance
+    /// and allowed-mode masks are handled with the umask.
     /// # C: O(1)
     pub fn apply_umask(&self, mode: u32) -> u32 { mode & !(self.umask as u32) }
 }

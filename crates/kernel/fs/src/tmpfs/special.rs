@@ -13,11 +13,11 @@ impl FileOps for TmpfsErrFileOps {
 /// F152: socket-type tmpfs inode. bind(AF_UNIX, path) materialises one of
 /// these at `path` so stat() returns S_IFSOCK + chmod() flows through normal
 /// VFS. All I/O errors — datagram queueing lives in `net`. # C: O(1)
-pub(super) fn make_tmpfs_sock_inode(uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
+pub(super) fn make_tmpfs_sock_inode(perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
     let ino = next_ino();
     let sb2 = sb.clone();
     iget_or_build(&sb, ino, move || {
-        let mut b = InodeBuilder::new(ino, mk_mode(FileType::Socket, 0o755),
+        let mut b = InodeBuilder::new(ino, mk_mode(FileType::Socket, perm),
             default_inode_ops(), Arc::new(TmpfsErrFileOps))
             .owner(uid, gid)
             .xattrs(vfs::SimpleXattrs::new())
