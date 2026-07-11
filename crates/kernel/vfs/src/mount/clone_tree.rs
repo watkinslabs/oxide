@@ -118,8 +118,7 @@ pub(super) fn copy_tree(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, 
 }
 
 /// Recursive-bind clone list from explicit mount-parent edges. # C: O(N×depth)
-pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, ns: u64, exclude_id: Option<u64>) -> Vec<CloneNode> {
-    let base = src.mount_point_str();
+pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ns: u64, exclude_id: Option<u64>) -> Vec<CloneNode> {
     let mut out: Vec<CloneNode> = Vec::new();
     for m in mounts_in_ns(ns).into_iter() {
         if m.mnt_id == src.mnt_id || is_unbindable(&m) { continue; }
@@ -127,14 +126,8 @@ pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, ns: u64, exclude_id
         if exclude_id == Some(m.mnt_id) { continue; }
         if exclude_id.map(|ex| mount_under(&m, ex)).unwrap_or(false) { continue; }
         let Some(mp) = m.mountpoint() else { continue; };
-        let path = m.mount_point_str();
-        let rel = if base == "/" {
-            if path == "/" { continue; } else { path }
-        } else if path.starts_with(base.as_str()) {
-            let r = &path[base.len()..];
-            if r.is_empty() { continue; }
-            String::from(r)
-        } else { continue; };
+        let Some(rel) = plain_rel_under(&mp, base_mp) else { continue; };
+        if rel.is_empty() { continue; }
         out.push(CloneNode { m: clone_mnt(&m, CloneType::Private, 0, src, ns), rel, mp: Some(mp) });
     }
     out.sort_by_key(|n| n.rel.len());

@@ -158,6 +158,29 @@ fn ms_rec_from_root_clones_absolute_submounts() {
     assert_eq!(cgroup.ino(), 0x300);
 }
 
+#[test]
+fn ms_rec_from_subdir_clones_only_submounts_below_source_dentry() {
+    let _g = guard();
+    const NS: u64 = 0x7132;
+    vfs::mount::set_current_ns_provider(|| NS);
+    common::register("/", Arc::new(TestFs { root_ino: 0x7100 })).expect("root");
+    let src_d = common::dentry("/rsub-src");
+    let tgt_d = common::dentry("/rsub-tgt");
+    common::register("/rsub-src/sub", Arc::new(TestFs { root_ino: 0x7200 })).expect("inside");
+    common::register("/rsub-outside", Arc::new(TestFs { root_ino: 0x7300 })).expect("outside");
+    let source_mnt = vfs::mount::root_mount_id(NS).expect("source root id");
+    let target_parent = vfs::mount::containing_mount_id(NS, &tgt_d);
+    vfs::mount::register_bind_clone_under(target_parent, tgt_d.clone(), source_mnt, src_d.clone()).expect("top bind");
+    let n = vfs::mount::bind_submounts_rec_at(Some(source_mnt), &src_d, &tgt_d, Some(target_parent));
+    assert_eq!(n, 1, "recursive bind clones only submounts under the source dentry");
+    let snap = vfs::mount::snapshot_all();
+    let sub = snap.iter().find(|m| m.ns == NS && m.mount_point_str() == "/rsub-tgt/sub")
+        .expect("inside submount cloned");
+    assert_eq!(sub.mnt_root().and_then(|d| d.inode()).map(|i| i.ino()), Some(0x7200));
+    assert!(snap.iter().all(|m| m.ns != NS || m.mount_point_str() != "/rsub-tgt/rsub-outside"),
+        "outside sibling mount must not be cloned under the target");
+}
+
 // K2V V7-d: propagation peer-group ids.
 #[test]
 fn ms_shared_assigns_distinct_peer_groups() {
