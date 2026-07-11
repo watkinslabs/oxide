@@ -3,10 +3,9 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
-use crate::statfs_common::{statfs_for_path, write_statfs};
+use crate::statfs_common::{statfs_for_mount, write_statfs};
 
 /// `sys_statfs(path, buf)` — slot 137. Reports the `f_type` magic of
 /// the filesystem backing `path`.
@@ -15,23 +14,22 @@ pub fn sys_statfs(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf      = args.a1;
     if let Err(rv) = validate_user_buf(buf, 120, 8) { return rv; }
-    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
-    let raw_owned = match crate::namei_common::read_user_path(path_ptr) {
-        Ok(s)   => s,
+    let lf = vfs::LookupFlags {
+        no_follow_final: false,
+        follow: true,
+        ..Default::default()
+    };
+    // Linux statfs() is `user_path_at(LOOKUP_FOLLOW)` then `vfs_statfs(&path)`:
+    // resolve once to the authoritative `(vfsmount,dentry)` and report that
+    // mount's superblock. Do not stringify and re-resolve through cwd/root.
+    let vp = match crate::pathresolve::resolve_at_lookup(crate::perms_common::AT_FDCWD, path_ptr, lf) {
+        Ok(p) => p,
         Err(rv) => return rv,
     };
-    let raw: &str = raw_owned.as_str();
-    // Linux statfs() is `user_path_at(LOOKUP_FOLLOW)` then `vfs_statfs`: the path
-    // must exist (else ENOENT) and a relative path resolves against cwd. The old
-    // code fed the raw string straight to `resolve_mount`, which falls back to
-    // the root mount for ANY string — so a nonexistent path wrongly succeeded.
-    let abspath = match crate::pathresolve::resolve_at_result(crate::perms_common::AT_FDCWD, raw) {
-        Ok(p) => p, Err(rv) => return rv,
+    let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) else {
+        return -(syscall::errno::Errno::Enoent.as_i32() as i64);
     };
-    if crate::pathresolve::resolve(abspath.as_str(), false).is_none() {
-        return -(Errno::Enoent.as_i32() as i64);
-    }
-    let st = statfs_for_path(abspath.as_str());
+    let st = statfs_for_mount(&m);
     write_statfs(buf, &st);
     0
 }

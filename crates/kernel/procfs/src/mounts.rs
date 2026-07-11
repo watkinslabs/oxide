@@ -11,7 +11,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU64;
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult};
+use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult};
 
 /// `/proc/mounts` + `/proc/<pid>/mounts` — fstab-style lines, one per
 /// live mount: `<src> <mountpoint> <fstype> <opts> 0 0`. Built from
@@ -32,6 +32,59 @@ fn build_mounts() -> Vec<u8> {
     s.into_bytes()
 }
 
+fn mount_root_field(m: &Arc<vfs::mount::Mount>) -> String {
+    let Some(r) = m.mnt_root() else { return String::from("/"); };
+    let rp = r.absolute_path();
+    let Some(sr) = m.sb().s_root() else {
+        return String::from_utf8(rp).unwrap_or_else(|_| String::from("/"));
+    };
+    let sp = sr.absolute_path();
+    let rel = if rp.starts_with(sp.as_slice()) {
+        let strip = if sp.as_slice() == b"/" { 0 } else { sp.len() };
+        &rp[strip..]
+    } else {
+        rp.as_slice()
+    };
+    match core::str::from_utf8(rel) {
+        Ok("") => String::from("/"),
+        Ok(s) if s.starts_with('/') => String::from(s),
+        Ok(s) => {
+            let mut out = String::from("/");
+            out.push_str(s);
+            out
+        }
+        Err(_) => String::from("/"),
+    }
+}
+
+fn current_root_prefix() -> Option<String> {
+    let cur = sched::live::current()?;
+    // SAFETY: task.root_vfs is single-mutator per task; read-only snapshot for procfs rendering.
+    let rv = unsafe { (*cur.root_vfs.get()).clone() }?;
+    let m = vfs::mount::mount_by_id(rv.mnt_id)?;
+    let mut prefix = m.mount_point_str();
+    if let Some(root) = vfs::mount::root_dentry_for_mount_id(rv.mnt_id) {
+        let rp = rv.dentry.absolute_path();
+        let bp = root.absolute_path();
+        if rp.starts_with(bp.as_slice()) {
+            let strip = if bp.as_slice() == b"/" { 0 } else { bp.len() };
+            let suffix = core::str::from_utf8(&rp[strip..]).unwrap_or("");
+            if prefix != "/" { prefix.push_str(suffix); }
+            else if !suffix.is_empty() { prefix = String::from(suffix); }
+        }
+    }
+    if prefix == "/" { None } else { Some(prefix) }
+}
+
+fn project_mountpoint(mp: &str, root_prefix: Option<&str>) -> Option<String> {
+    let Some(root) = root_prefix else { return Some(String::from(mp)); };
+    if mp == root { return Some(String::from("/")); }
+    if let Some(rest) = mp.strip_prefix(root) {
+        if rest.starts_with('/') { return Some(String::from(rest)); }
+    }
+    None
+}
+
 /// `/proc/<pid>/mountinfo` — the richer mountinfo(5) format:
 /// `<id> <parent> <maj>:<min> <root> <mp> <opts> [<optional>] - <fstype> <src> <super>`.
 /// `id` is the mount's persistent `mnt_id`; `parent` is the real
@@ -45,13 +98,18 @@ fn build_mountinfo() -> Vec<u8> {
     use core::sync::atomic::Ordering;
     use vfs::mount::Propagation;
     let mounts = vfs::mount::snapshot();
+    let root_prefix = current_root_prefix();
     let mut s = String::new();
     for m in mounts.iter() {
+        let mp = match project_mountpoint(&m.mount_point_str(), root_prefix.as_deref()) {
+            Some(p) => p,
+            None => continue,
+        };
         let id = m.mnt_id;
         // Parent from mount-object identity (`parent_id`), not a string-prefix
         // scan. Root mounts render parent 0 (Linux mountinfo: the root has no
         // parent mount), every other mount its real parent mnt_id.
-        let parent = if m.is_root() { 0 } else { vfs::mount::parent_mnt_id(&m) };
+        let parent = if m.is_root() || mp == "/" { 0 } else { vfs::mount::parent_mnt_id(&m) };
         let name = m.fs().name();
         let pg = m.peer_group.load(Ordering::Acquire);
         let rw = if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
@@ -59,6 +117,7 @@ fn build_mountinfo() -> Vec<u8> {
         } else {
             "rw"
         };
+        let root = mount_root_field(m);
         let opt = match Propagation::from_u8(m.propagation.load(Ordering::Acquire)) {
             // Real peer-group id (`docs/16§6`), distinct from mnt_id.
             Propagation::Shared => format!(" shared:{}", pg),
@@ -69,8 +128,8 @@ fn build_mountinfo() -> Vec<u8> {
             Propagation::Slave | Propagation::Private => String::new(),
         };
         s.push_str(&format!(
-            "{} {} 0:{} / {} {},relatime{} - {} {} {}\n",
-            id, parent, id, m.mount_point_str(), rw, opt, name, name, rw,
+            "{} {} 0:{} {} {} {},relatime{} - {} {} {}\n",
+            id, parent, id, root, mp, rw, opt, name, name, rw,
         ));
     }
     s.into_bytes()

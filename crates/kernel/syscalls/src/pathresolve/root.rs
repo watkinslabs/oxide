@@ -18,16 +18,33 @@ pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
 
 /// # C: O(1) un-chrooted; O(jail components) chrooted
 pub(super) fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
+    resolution_root_vfs().map(|(p, beneath)| (p.dentry, beneath))
+}
+
+/// Resolution root with its exact mount id. `root_vfs` is a full `struct path`
+/// equivalent; dropping its `mnt_id` and re-deriving from the dentry is wrong
+/// after bind/pivot clones that share one superblock root.
+pub(super) fn resolution_root_vfs() -> Option<(vfs::VfsPath, bool)> {
     let global = root_dentry()?;
-    let Some(cur) = sched::live::current() else { return Some((global, false)); };
+    let Some(cur) = sched::live::current() else {
+        let ns = vfs::mount::current_ns();
+        let mnt_id = vfs::mount::root_mount_id(ns).unwrap_or(vfs::mount::MNT_ID_NONE);
+        let inode = global.inode()?;
+        return Some((vfs::VfsPath { mnt_id, dentry: global, inode, last_component: None }, false));
+    };
     // SAFETY: task.root_vfs single-mutator per 13§5; the running task on this CPU is the sole writer.
     if let Some(p) = unsafe { (*cur.root_vfs.get()).clone() } {
-        return Some((p.dentry, true));
+        return Some((p, true));
     }
     // SAFETY: task.root single-mutator per 13§5; the running task on this CPU is the sole writer.
     let rp = unsafe { (*cur.root.get()).clone() };
-    if rp == "/" { return Some((global, false)); }
+    if rp == "/" {
+        let ns = vfs::mount::current_ns();
+        let mnt_id = vfs::mount::root_mount_id(ns).unwrap_or(vfs::mount::MNT_ID_NONE);
+        let inode = global.inode()?;
+        return Some((vfs::VfsPath { mnt_id, dentry: global, inode, last_component: None }, false));
+    }
     let f = vfs::LookupFlags::default();
-    let (_i, d) = vfs::path_lookup(global.clone(), global, &rp, f).ok()?;
-    Some((d, true))
+    let p = vfs::path_lookup_path(global.clone(), global, &rp, f).ok()?;
+    Some((p, true))
 }
