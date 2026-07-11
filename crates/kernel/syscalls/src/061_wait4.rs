@@ -5,7 +5,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 const WNOHANG:    u64 = 1;
 const WUNTRACED:  u64 = 2;
@@ -31,13 +30,13 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
                 parent_tid, pid, parent_pgid, want_stop, want_cont)
             {
                 let wstat: i32 = if kind == 1 { ((sig as i32) << 8) | 0x7f } else { 0xffff };
-                write_wstatus(wstatus, wstat);
+                if let Err(rv) = write_wstatus(wstatus, wstat) { return rv; }
                 return tid as i64;
             }
         }
         if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid, parent_pgid) {
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
-            write_wstatus(wstatus, wstat);
+            if let Err(rv) = write_wstatus(wstatus, wstat) { return rv; }
             // F237: if no more zombies for this parent, clear the
             // SIGCHLD pending bit. Without this, the bit stays set
             // and signal_dispatch fires a SIGCHLD handler AFTER
@@ -120,7 +119,7 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
         if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid, parent_pgid) {
             sched::live::unpark_self_from_wait4();
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
-            write_wstatus(wstatus, wstat);
+            if let Err(rv) = write_wstatus(wstatus, wstat) { return rv; }
             return tid as i64;
         }
         // SAFETY: process ctx; runqueue installed; preempt-off.
@@ -129,9 +128,10 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
 }
 
 #[inline]
-fn write_wstatus(ptr: u64, val: i32) {
-    if ptr != 0 && ptr < USER_VA_END {
-        // SAFETY: ptr validated < USER_VA_END; user page mapped per `13§5`; CPL=0 write.
-        unsafe { core::ptr::write_volatile(ptr as *mut i32, val); }
-    }
+fn write_wstatus(ptr: u64, val: i32) -> Result<(), i64> {
+    if ptr == 0 { return Ok(()); }
+    crate::userbuf::validate_user_buf_writable(ptr, 4, 4)?;
+    // SAFETY: ptr validated writable for 4 bytes in the caller's address space; aligned wait status store.
+    unsafe { core::ptr::write_volatile(ptr as *mut i32, val); }
+    Ok(())
 }
