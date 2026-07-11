@@ -21,13 +21,11 @@ pub fn sys_utime(args: &SyscallArgs) -> i64 {
     if times_ptr == 0 {
         ia.atime_ns = now; ia.mtime_ns = now;
     } else {
-        if times_ptr.checked_add(16).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        // SAFETY: times_ptr+16 validated < USER_VA_END; CPL=0 reads two i64 fields (utimbuf) through caller's AS.
+        if let Err(rv) = crate::userbuf::validate_user_buf(times_ptr, 16, 1) { return rv; }
+        // SAFETY: full utimbuf byte range validated readable; Linux copyin accepts unaligned storage.
         let (asec, msec) = unsafe {
-            (core::ptr::read_volatile( times_ptr       as *const i64),
-             core::ptr::read_volatile((times_ptr + 8)  as *const i64))
+            (core::ptr::read_unaligned( times_ptr       as *const i64),
+             core::ptr::read_unaligned((times_ptr + 8)  as *const i64))
         };
         if asec < 0 || msec < 0 {
             return -(Errno::Einval.as_i32() as i64);
