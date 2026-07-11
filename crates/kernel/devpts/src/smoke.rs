@@ -12,10 +12,9 @@ pub fn smoke_test() {
     kassert!((ino & 0xFFFF_8000) == 0x6000_0000, "master ino marker");
     kassert!((ino & 0x7FFF) as u32 == n, "master ino encodes pts_num");
 
-    let mut path: alloc::string::String = alloc::string::String::with_capacity(16);
-    path.push_str("/dev/pts/");
-    push_dec(&mut path, n);
-    let slave = vfs::resolve_abs(&path).expect("pts slave registered");
+    let mut name: alloc::string::String = alloc::string::String::with_capacity(8);
+    push_dec(&mut name, n);
+    let slave = devpts_fs().root_dir().lookup_path(&name).expect("pts slave registered");
     kassert!(slave.file_type() == FileType::CharDev, "pts slave is chardev");
 
     let n1 = master.write(0, b"keys\n").expect("master write");
