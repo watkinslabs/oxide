@@ -501,7 +501,7 @@ Files:
 
 Risk:
 
-- `move_mount()` uses `resolve_at_result()` for `to_path` and `from_path`, then re-resolves strings.
+- Fixed: `move_mount()` no longer uses `resolve_at_result()` for `to_path` or `from_path`, then re-resolves strings.
 - Fixed: `open_tree()` no longer uses `resolve_at_result()` then `vfs::mount::resolve_mount(&abs)`.
 
 Impact:
@@ -510,14 +510,16 @@ Impact:
 
 Current mitigation:
 
-- `move_mount()` uses `target_vp.mnt_id` as a destination hint in some branches.
+- `move_mount()` now builds a mount target from the walked `to_dirfd/to_path` parent `VfsPath` and final mountpoint dentry; detached-tree commit, realized fsmount attach, legacy materialization, and existing mount relocation all use that walked parent `mnt_id`.
+- `move_mount()` now resolves `from_dirfd/from_path` once through `resolve_at_path()` and uses the resulting `VfsPath.mnt_id` as the source mount id.
 - `open_tree()` now resolves once through `resolve_at_path()`, clones the source mount from `VfsPath.mnt_id`, and returns the walked inode for the non-clone fd path.
 - Hosted proof: `cargo test -p vfs --test namei_at_bind -- --nocapture` includes `open_tree_clone_source_uses_walked_mount_id`, proving a dirfd-relative bind path keeps the bind `mnt_id` for clone-source selection.
-- Verification: `cargo test -p vfs --test namei_at_bind -- --nocapture` passed 5/5; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
+- Hosted proof: `cargo test -p vfs --test open_tree_recursive_clone -- --nocapture` covers detached clone commit under a bind-stage using the walked parent mount; `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` covers private-devices `MS_MOVE` to the staged root.
+- Verification: `cargo test -p vfs --test namei_at_bind -- --nocapture` passed 5/5; `cargo test -p vfs --test open_tree_recursive_clone -- --nocapture` passed 3/3; `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
 
 Still needed:
 
-- Make `move_mount()` use one authoritative path walk for each argument.
+- Remove/convert remaining legacy rendered-string mount helpers once no caller needs them as authority.
 
 ### 13. `mount_setattr()` is comparatively correct
 
@@ -754,7 +756,8 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
      - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` now includes whole-filesystem root, bind-subroot relative-to-superblock-root, and fallback absolute root cases.
      - `open_tree()` now uses the walked `VfsPath.mnt_id` as source mount identity and no longer re-resolves a rendered path through `resolve_mount()`.
      - Hosted proof: `cargo test -p vfs --test namei_at_bind -- --nocapture` includes `open_tree_clone_source_uses_walked_mount_id`.
-     - Verification: `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 7/7; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
+     - `move_mount()` now resolves `to_dirfd/to_path` into one walked mount target and `from_dirfd/from_path` into one walked source `VfsPath`; it no longer re-resolves rendered strings for destination parent or source mount identity.
+     - Verification: `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 7/7; `cargo test -p vfs --test open_tree_recursive_clone -- --nocapture` passed 3/3; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
    - Done next slice:
      - `vfs::mount::project_path_under_root()` now owns reader-root projection for procfs mount reports.
      - `/proc/self/mountinfo` and `/proc/mounts` share that projection, so a chroot/pivoted reader no longer sees global mountpoint strings in one file and projected strings in the other.
