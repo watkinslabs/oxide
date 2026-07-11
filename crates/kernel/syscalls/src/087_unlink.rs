@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use syscall::errno::Errno;
 use crate::namei_common::{
     child_dentry, drop_child_cache, errno_from_vfs, parent_mount_readonly, read_user_path,
     render_child_path, resolve_unlink_parent_at, unlink_unix_socket_addr,
@@ -48,10 +49,31 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
         return rv;
     }
     if parent_mount_readonly(&parent) {
-        let rv = -(syscall::errno::Errno::Erofs.as_i32() as i64);
+        let rv = -(Errno::Erofs.as_i32() as i64);
         #[cfg(feature = "debug-udevdb")]
         crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
         return rv;
+    }
+    if let Some(d) = victim.as_ref() {
+        if let Some(inode) = d.inode() {
+            if vfs::path::requires_dir(raw) {
+                let rv = if matches!(inode.file_type(), vfs::FileType::Directory) {
+                    -(Errno::Eisdir.as_i32() as i64)
+                } else {
+                    -(Errno::Enotdir.as_i32() as i64)
+                };
+                #[cfg(feature = "debug-udevdb")]
+                crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
+                return rv;
+            }
+            let cred = crate::pathresolve::current_cred();
+            if let Err(e) = vfs::namei::may_delete(&parent.inode, &inode, false, &cred) {
+                let rv = errno_from_vfs(e);
+                #[cfg(feature = "debug-udevdb")]
+                crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
+                return rv;
+            }
+        }
     }
     let unix_addr = victim.as_ref()
         .and_then(|d| d.inode())
