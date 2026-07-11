@@ -10,9 +10,9 @@
 //! `Weak::upgrade` and reports a clean MISS (never a use-after-free). Locks that
 //! a freed dentry is not resurrected from the bucket.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
-use vfs::dcache::d_drop;
+use vfs::dcache::{d_drop, d_drop_child};
 use vfs::{d_add, d_lookup, Dentry, FileType, InodeRef};
 
 fn dir(ino: u64) -> InodeRef {
@@ -36,6 +36,21 @@ fn d_drop_unhashes_and_forgets() {
     assert!(!c.is_hashed(), "d_drop clears D_HASHED");
     assert!(d_lookup(&r, "victim").is_none(), "global table no longer resurrects it");
     assert!(r.cached_child("victim").is_none(), "forgotten from parent d_subdirs");
+}
+
+#[test]
+fn d_drop_child_unhashes_from_object_parent() {
+    let _g = guard();
+    let r = Dentry::new_root(dir(4));
+    let c = d_add(&r, "object", dir(43));
+    assert!(c.is_hashed());
+    assert!(d_lookup(&r, "object").is_some());
+
+    d_drop_child(&r, "object");
+
+    assert!(!c.is_hashed(), "object child drop clears D_HASHED");
+    assert!(d_lookup(&r, "object").is_none(), "global table no longer hits");
+    assert!(r.cached_child("object").is_none(), "parent index no longer hits");
 }
 
 #[test]

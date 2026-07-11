@@ -6,7 +6,10 @@
 use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{
+    read_user_path, errno_from_vfs, resolve_create_parent_at, render_child_path,
+    render_parent_path, parent_mount_readonly, drop_child_cache,
+};
 
 /// `mknod(path, mode, dev)` slot 133.
 /// # C: O(N parent entries)
@@ -15,14 +18,15 @@ pub fn sys_mknod(args: &SyscallArgs) -> i64 {
     let raw = match read_user_path(args.a0) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    mknod_impl(raw, args.a1 as u16, args.a2 as u32)
+    mknod_impl(crate::pathresolve::AT_FDCWD, raw, args.a1 as u16, args.a2 as u32)
 }
 
 /// # C: O(N parent entries)
-pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
-    let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
-        Ok(p) => p, Err(rv) => return rv,
+pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
+    let (parent, name) = match resolve_create_parent_at(dirfd, &raw) {
+        Ok(x) => x, Err(rv) => return rv,
     };
+    let p = render_child_path(&parent, &name);
     // Map mode's type bits to the Landlock access needed.
     const S_IFMT:  u16 = 0xF000;
     const S_IFREG: u16 = 0x8000;
@@ -49,14 +53,13 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
             .map(|c| c.has_cap(sched::cap::MKNOD)).unwrap_or(false);
         if !has { return -(Errno::Eperm.as_i32() as i64); }
     }
-    if vfs::mount::is_readonly_path(&p) {
+    if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);
     }
     // Linux do_mknodat: `mode &= ~current_umask()` on the permission bits (D23).
     let umask = sched::live::current()
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0) as u16;
     let perm = (mode & 0x0FFF) & !umask;
-    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     // Thread the mount idmap + caller cred + umask so the new node gets the
     // right owner (Linux `->mknod`/`->create(struct mnt_idmap *, ...)`).
     let cred = crate::pathresolve::current_cred();
@@ -64,18 +67,19 @@ pub(crate) fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create/mknod (Linux
     // `filename_create` → `->create`/`->mknod`); dropped before the dcache update.
     let r = {
-        let _g = pino.inode_lock();
+        let _g = parent.inode.inode_lock();
         if real_ftype == S_IFREG {
             // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
-            pino.create_child(&name, perm as u32, &ctx).map(|_| ())
+            parent.inode.create_child(&name, perm as u32, &ctx).map(|_| ())
         } else {
-            pino.mknod_child(&name, (real_ftype | perm) as u16, dev, &ctx)
+            parent.inode.mknod_child(&name, (real_ftype | perm) as u16, dev, &ctx)
         }
     };
     match r {
         Ok(())  => {
-            crate::pathresolve::d_drop_path(&p);
-            vfs::fire_dirent_create(crate::namei_common::parent_path(&p), &name);
+            drop_child_cache(&parent, &name);
+            let pp = render_parent_path(&parent);
+            vfs::fire_dirent_create(&pp, &name);
             0
         }
         Err(e)  => {
