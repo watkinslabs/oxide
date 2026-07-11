@@ -70,9 +70,15 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_rofs", raw, -(Errno::Erofs.as_i32() as i64)); }
         return -(Errno::Erofs.as_i32() as i64);
     }
+    let cred = crate::pathresolve::current_cred();
+    if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+        let rv = errno_from_vfs(e);
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
+        return rv;
+    }
     // Thread the mount idmap + caller cred + umask so the new dir gets the right
     // owner (Linux `->mkdir(struct mnt_idmap *, ...)`).
-    let cred = crate::pathresolve::current_cred();
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
     // D29: hold the parent dir's `i_rwsem` EXCLUSIVE across the backend mkdir
     // (Linux `filename_create` → `->mkdir`). Scope is just the op; the rank-40
