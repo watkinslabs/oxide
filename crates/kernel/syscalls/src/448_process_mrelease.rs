@@ -45,6 +45,10 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     if !crate::signal::sig_perm_check(cur, &target, NO_SIG) {
         return errno(Errno::Eperm);
     }
+    let mm = match unsafe { target.mm_ref() }.cloned() {
+        Some(mm) => mm,
+        None => return errno(Errno::Esrch),
+    };
 
     // Reap the target's ANONYMOUS pages in place (Linux `process_mrelease`
     // → OOM-reaper `__oom_reap_task_mm`): unmap + free every anon VMA's
@@ -57,20 +61,18 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     // previous CR3, so a dying USER task could return to user mode against
     // the WRONG address space before it exits. In-place anon reap avoids
     // that entirely. File-backed pages are skipped (reclaimable from
-    // backing store, like Linux). If the mm is already gone (reaped
-    // Zombie), there is nothing to release — return 0.
+    // backing store, like Linux). If the mm is already gone, Linux
+    // `find_lock_task_mm` returns NULL and process_mrelease returns ESRCH.
     // SAFETY: oxide is UP (`smp cpus=0`) and the target is EXITING, so it is
     // not executing on any CPU; the foreign root the evictor walks is stable
     // for this call (target pinned via the pidfd's Arc<Task>, mm cloned).
-    if let Some(mm) = unsafe { target.mm_ref() }.cloned() {
-        let root = mm.root_pa();
-        let guard = mm.vmas_for_test();
-        for vma in guard.iter() {
-            if matches!(vma.backing, vmm::VmaBacking::Anonymous) {
-                let start = vma.start.as_u64();
-                let len = vma.end.as_u64().saturating_sub(start);
-                if len != 0 { pmm::user_as::evict_foreign_pages_in_range(root, start, len); }
-            }
+    let root = mm.root_pa();
+    let guard = mm.vmas_for_test();
+    for vma in guard.iter() {
+        if matches!(vma.backing, vmm::VmaBacking::Anonymous) {
+            let start = vma.start.as_u64();
+            let len = vma.end.as_u64().saturating_sub(start);
+            if len != 0 { pmm::user_as::evict_foreign_pages_in_range(root, start, len); }
         }
     }
     0

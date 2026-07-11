@@ -33,6 +33,12 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let target = match crate::pidfd::task_from_inode(&pidfd_file.inode()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
     };
+    if !pidfd_getfd_access(&cur, &target) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
+    if target.state() == sched::task::TaskState::Zombie {
+        return -(Errno::Esrch.as_i32() as i64);
+    }
     // SAFETY: target task may be running on another CPU but fd_table
     // pointer is set once at spawn (or via replace_fd_table at execve);
     // Arc<FdTable> Acquire snapshot is safe under per-task UP invariant.
@@ -43,7 +49,31 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     match cur_fdt.alloc_limit(cloned, cur.nofile_soft()) {
-        Ok(fd) => fd as i64,
+        Ok(fd) => {
+            let _ = cur_fdt.set_cloexec(fd, true);
+            fd as i64
+        }
         Err(e) => -(e as i64),
     }
+}
+
+/// Linux `pidfd_getfd` gates on `ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS)`.
+/// This is the non-LSM core: same thread-group, real uid/gid matching the
+/// target's real/effective/saved ids, or `CAP_SYS_PTRACE` in the target userns.
+/// # C: O(userns-depth)
+fn pidfd_getfd_access(cur: &sched::Task, target: &sched::Task) -> bool {
+    use core::sync::atomic::Ordering;
+    if cur.vtgid.load(Ordering::Acquire) == target.vtgid.load(Ordering::Acquire) { return true; }
+    let cruid = cur.creds.ruid.load(Ordering::Acquire);
+    let crgid = cur.creds.rgid.load(Ordering::Acquire);
+    let tcred = &target.creds;
+    let uid_ok = cruid == tcred.euid.load(Ordering::Acquire)
+        && cruid == tcred.suid.load(Ordering::Acquire)
+        && cruid == tcred.ruid.load(Ordering::Acquire);
+    let gid_ok = crgid == tcred.egid.load(Ordering::Acquire)
+        && crgid == tcred.sgid.load(Ordering::Acquire)
+        && crgid == tcred.rgid.load(Ordering::Acquire);
+    if uid_ok && gid_ok { return true; }
+    let target_ns = target.user_ns.load(Ordering::Acquire);
+    nscg::proc_ns::has_cap_for(cur, target_ns, sched::cap::SYS_PTRACE)
 }
