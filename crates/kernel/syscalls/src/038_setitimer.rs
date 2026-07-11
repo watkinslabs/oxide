@@ -21,7 +21,7 @@ pub fn sys_setitimer(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     };
     if old != 0 {
-        if let Err(rv) = validate_user_buf_writable(old, 32, 8) { return rv; }
+        if let Err(rv) = validate_user_buf_writable(old, 32, 1) { return rv; }
         // Render the previous interval + remaining time into user `old`.
         let prev_int = cur.alarm_interval_ns.load(Ordering::Acquire);
         let prev_dl  = cur.alarm_ns.load(Ordering::Acquire);
@@ -30,20 +30,20 @@ pub fn sys_setitimer(args: &SyscallArgs) -> i64 {
         let (r_s, r_us) = sched::clock::ns_to_timeval(remain);
         // SAFETY: old validated writable; CPL=0 writes through caller's AS.
         unsafe {
-            core::ptr::write_volatile( old        as *mut u64, i_s);
-            core::ptr::write_volatile((old +  8)  as *mut u64, i_us);
-            core::ptr::write_volatile((old + 16)  as *mut u64, r_s);
-            core::ptr::write_volatile((old + 24)  as *mut u64, r_us);
+            core::ptr::write_unaligned( old        as *mut u64, i_s);
+            core::ptr::write_unaligned((old +  8)  as *mut u64, i_us);
+            core::ptr::write_unaligned((old + 16)  as *mut u64, r_s);
+            core::ptr::write_unaligned((old + 24)  as *mut u64, r_us);
         }
     }
     if new != 0 {
-        if let Err(rv) = validate_user_buf(new, 32, 8) { return rv; }
+        if let Err(rv) = validate_user_buf(new, 32, 1) { return rv; }
         // SAFETY: new validated readable; CPL=0 reads through caller's AS.
         let (i_s, i_us, v_s, v_us) = unsafe {
-            let a = core::ptr::read_volatile( new        as *const u64);
-            let b = core::ptr::read_volatile((new +  8)  as *const u64);
-            let c = core::ptr::read_volatile((new + 16)  as *const u64);
-            let d = core::ptr::read_volatile((new + 24)  as *const u64);
+            let a = core::ptr::read_unaligned( new        as *const u64);
+            let b = core::ptr::read_unaligned((new +  8)  as *const u64);
+            let c = core::ptr::read_unaligned((new + 16)  as *const u64);
+            let d = core::ptr::read_unaligned((new + 24)  as *const u64);
             (a, b, c, d)
         };
         let interval_ns = i_s.saturating_mul(1_000_000_000).saturating_add(i_us.saturating_mul(1000));
