@@ -3,9 +3,9 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 use crate::poll::s007_poll::sys_poll;
+use crate::userbuf::validate_user_buf;
 
 /// `sys_ppoll(fds, nfds, ts, sigmask, sigsz)` — slot 271. Timeout
 /// from timespec (16 B { sec, nsec }); sigmask honored as a
@@ -19,15 +19,16 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
     // NULL timespec = block forever (poll timeout = -1). {0,0} = single-pass.
     let timeout_arg: u64 = if ts_ptr == 0 {
         (-1i32) as u32 as u64
-    } else if ts_ptr >= USER_VA_END {
-        0
     } else {
-        // SAFETY: ts_ptr validated < USER_VA_END; struct timespec is 16 B; CPL=0 reads.
+        if let Err(rv) = validate_user_buf(ts_ptr, 16, 8) { return rv; }
+        // SAFETY: ts_ptr validated as a readable 16-byte user timespec.
         unsafe {
             let s = core::ptr::read_volatile(ts_ptr as *const i64);
             let n = core::ptr::read_volatile((ts_ptr + 8) as *const i64);
-            if s < 0 || n < 0 { 0 }
-            else { (s as u64) * 1000 + (n as u64) / 1_000_000 }
+            if s < 0 || n < 0 || n >= 1_000_000_000 {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            (s as u64).saturating_mul(1000).saturating_add((n as u64) / 1_000_000)
         }
     };
     // B17 (T11 close): honor the ppoll sigmask. The whole point of
@@ -39,15 +40,21 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
     // sockets leak in CLOSE_WAIT.
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     let saved_mask = cur.sigmask.load(Ordering::Acquire);
-    if sigmask_ptr != 0 && sigmask_ptr < USER_VA_END && sigsz == 8 {
-        // SAFETY: ptr validated < USER_VA_END; sigset_t = 8 B on Linux x86_64/aarch64.
+    let swapped = if sigmask_ptr != 0 {
+        if sigsz != 8 { return -(Errno::Einval.as_i32() as i64); }
+        if let Err(rv) = validate_user_buf(sigmask_ptr, 8, 8) { return rv; }
+        // SAFETY: sigmask_ptr validated as a readable 8-byte user sigset_t.
         let new_mask = unsafe { core::ptr::read_volatile(sigmask_ptr as *const u64) };
+        let new_mask = new_mask
+            & !(sched::live::sigpend::Signum::Sigkill.bit()
+              | sched::live::sigpend::Signum::Sigstop.bit());
         cur.sigmask.store(new_mask, Ordering::Release);
-    }
+        true
+    } else { false };
     let inner = SyscallArgs { a0: args.a0, a1: args.a1, a2: timeout_arg, a3: 0, a4: 0, a5: 0 };
     let rv = sys_poll(&inner);
     // Restore the caller's original sigmask (Linux ppoll semantic).
-    if sigmask_ptr != 0 && sigmask_ptr < USER_VA_END && sigsz == 8 {
+    if swapped {
         cur.sigmask.store(saved_mask, Ordering::Release);
     }
     rv

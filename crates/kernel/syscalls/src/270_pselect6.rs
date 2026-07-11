@@ -2,9 +2,10 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use hal::USER_VA_END;
+use syscall::errno::Errno;
 
 use crate::select::s023_select::sys_select;
+use crate::userbuf::validate_user_buf;
 
 /// `sys_pselect6(nfds, r, w, e, timeout, sigmask_pair)` — slot 270.
 ///
@@ -38,28 +39,37 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
     // 1) Convert timespec → timeval on the kernel stack.
     let inner_timeout: u64;
     let mut tv_buf: [u64; 2] = [0; 2];
-    if args.a4 == 0 || args.a4 >= USER_VA_END {
+    if args.a4 == 0 {
         inner_timeout = 0;
     } else {
-        // SAFETY: args.a4 validated < USER_VA_END; user pages mapped via active TTBR0/CR3; CPL=0 reads.
+        if let Err(rv) = validate_user_buf(args.a4, 16, 8) { return rv; }
+        // SAFETY: args.a4 validated as a readable 16-byte user timespec.
         let (s, ns) = unsafe {
             (
                 core::ptr::read_volatile( args.a4        as *const i64),
                 core::ptr::read_volatile((args.a4 + 8)   as *const i64),
             )
         };
+        if s < 0 || ns < 0 || ns >= 1_000_000_000 {
+            return -(Errno::Einval.as_i32() as i64);
+        }
         // sys_select expects timeval {sec, usec} → convert.
         tv_buf[0] = s as u64;
         tv_buf[1] = (ns / 1000) as u64;
         inner_timeout = tv_buf.as_ptr() as u64;
     }
     // 2) Atomically install the caller's sigmask. The pair at a5 is
-    //    `{ const sigset_t *ss; size_t ss_len; }`. Linux ignores
-    //    ss_len for compatibility once it's read; we do the same.
+    //    `{ const sigset_t *ss; size_t ss_len; }`.
     let cur = sched::live::current();
-    let saved_mask = if args.a5 != 0 && args.a5 < USER_VA_END {
-        // SAFETY: a5 validated < USER_VA_END; 16-byte pair (ptr+len); 8-aligned per ABI.
-        let ss_ptr = unsafe { core::ptr::read_volatile(args.a5 as *const u64) };
+    let saved_mask = if args.a5 != 0 {
+        if let Err(rv) = validate_user_buf(args.a5, 16, 8) { return rv; }
+        // SAFETY: args.a5 validated as a readable 16-byte user pair.
+        let (ss_ptr, ss_len) = unsafe {
+            (
+                core::ptr::read_volatile(args.a5 as *const u64),
+                core::ptr::read_volatile((args.a5 + 8) as *const u64),
+            )
+        };
         debug_ssh! {
             klog::write_raw(b"[INFO]  ssh-trace: pselect6 a5_pair=");
             klog::write_hex_u64(args.a5);
@@ -67,11 +77,15 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
             klog::write_hex_u64(ss_ptr);
             klog::write_raw(b"\n");
         }
-        if ss_ptr != 0 && ss_ptr < USER_VA_END {
-            // SAFETY: ss_ptr validated < USER_VA_END; 8-byte sigset_t per Linux ABI.
+        if ss_ptr != 0 {
+            if ss_len != 8 { return -(Errno::Einval.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf(ss_ptr, 8, 8) { return rv; }
+            // SAFETY: ss_ptr validated as a readable 8-byte user sigset_t.
             let new_mask = unsafe { core::ptr::read_volatile(ss_ptr as *const u64) };
             // SIGKILL (9) and SIGSTOP (19) are non-blockable per signal(7).
-            let new_mask = new_mask & !(1u64 << 8) & !(1u64 << 18);
+            let new_mask = new_mask
+                & !(sched::live::sigpend::Signum::Sigkill.bit()
+                  | sched::live::sigpend::Signum::Sigstop.bit());
             let r = cur.as_ref().map(|c| c.sigmask.swap(new_mask, Ordering::AcqRel));
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: pselect6 swap_mask new=");
