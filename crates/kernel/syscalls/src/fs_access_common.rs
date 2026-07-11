@@ -54,14 +54,12 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
             return rv;
         }
     };
-    // W_OK on a read-only mount → EROFS (Linux access(2)).
-    if mode & W_OK != 0 && vp.mnt_id != 0 {
-        use core::sync::atomic::Ordering;
+    if mode & X_OK != 0 && matches!(vp.inode.file_type(), vfs::FileType::Regular) {
         if let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) {
-            if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            if m.is_noexec() {
                 #[cfg(feature = "debug-mount")]
-                log_runtime_access("access_rofs", dirfd, path_ptr, -(Errno::Erofs.as_i32() as i64));
-                return -(Errno::Erofs.as_i32() as i64);
+                log_runtime_access("access_noexec", dirfd, path_ptr, -(Errno::Eacces.as_i32() as i64));
+                return -(Errno::Eacces.as_i32() as i64);
             }
         }
     }
@@ -82,6 +80,15 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
     };
     match vfs::inode_permission(&vp.inode, mask, &cred) {
         Ok(())  => {
+            if mode & W_OK != 0 && !access_special_file(vp.inode.file_type()) {
+                if let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) {
+                    if m.is_readonly() {
+                        #[cfg(feature = "debug-mount")]
+                        log_runtime_access("access_rofs", dirfd, path_ptr, -(Errno::Erofs.as_i32() as i64));
+                        return -(Errno::Erofs.as_i32() as i64);
+                    }
+                }
+            }
             #[cfg(feature = "debug-mount")]
             log_runtime_access("access", dirfd, path_ptr, 0);
             0
@@ -93,4 +100,11 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
             rv
         }
     }
+}
+
+/// Linux `special_file`: char/block/fifo/socket skip the post-permission EROFS
+/// rewrite in `faccessat*`.
+/// # C: O(1)
+fn access_special_file(ft: vfs::FileType) -> bool {
+    matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev | vfs::FileType::Fifo | vfs::FileType::Socket)
 }
