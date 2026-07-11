@@ -2,13 +2,15 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::sync::Arc;
+
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 /// `sys_close_range(first, last, flags)` — slot 436. Closes the
 /// inclusive fd range [first, last]. CLOSE_RANGE_CLOEXEC (bit 2)
 /// marks fds cloexec instead of closing. CLOSE_RANGE_UNSHARE (bit 1)
-/// is accepted as a no-op (single-process v1 has nothing to unshare).
+/// first installs a private fd table when the table is shared.
 /// # C: O(open fds)
 pub fn sys_close_range(args: &SyscallArgs) -> i64 {
     let first = args.a0 as u32;
@@ -28,6 +30,12 @@ pub fn sys_close_range(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let cloexec_only = (flags & CLOSE_RANGE_CLOEXEC) != 0;
+    if (flags & CLOSE_RANGE_UNSHARE) != 0 && Arc::strong_count(&fdt) > 2 {
+        let new_fdt = Arc::new(fdt.fork_clone_close_range(first, last, cloexec_only));
+        // SAFETY: current task is the caller; replacing its fd table does not mutate other tasks still sharing the old Arc.
+        unsafe { cur.replace_fd_table(Some(new_fdt)); }
+        return 0;
+    }
     fdt.close_range(first, last, cloexec_only);
     0
 }

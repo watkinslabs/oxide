@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::file::File;
 use crate::types::{KResult, OpenFlags, VfsError};
 
-use super::model::{FD_TABLE_MAX, FdTable, FdTableInner, WORD_BITS, sane_fdtable_words, word_idx};
+use super::model::{FD_TABLE_MAX, FdTable, FdTableInner, WORD_BITS, bit_mask, sane_fdtable_words, word_idx};
 
 impl FdTable {
     pub fn count(&self) -> usize {
@@ -157,6 +157,27 @@ impl FdTable {
             open_fds: g.open_fds[..words].to_vec(),
             cloexec: g.cloexec[..words].to_vec(),
         }) }
+    }
+    pub fn fork_clone_close_range(&self, first: u32, last: u32, cloexec_only: bool) -> Self {
+        let g = self.inner.lock();
+        let words = sane_fdtable_words(&g.open_fds);
+        let nfiles = words * WORD_BITS;
+        let mut files: Vec<Option<Arc<File>>> = Vec::with_capacity(nfiles);
+        let mut open_fds = g.open_fds[..words].to_vec();
+        let mut cloexec = g.cloexec[..words].to_vec();
+        for fd in 0..nfiles {
+            let in_range = (fd as u64) >= first as u64 && (fd as u64) <= last as u64;
+            if in_range && !cloexec_only {
+                files.push(None);
+                open_fds[word_idx(fd)] &= !bit_mask(fd);
+                cloexec[word_idx(fd)] &= !bit_mask(fd);
+                continue;
+            }
+            if let Some(f) = g.files.get(fd).and_then(|s| s.as_ref()) { crate::file::fire_clone_hook(f); }
+            files.push(g.files.get(fd).cloned().unwrap_or(None));
+            if in_range && cloexec_only { cloexec[word_idx(fd)] |= bit_mask(fd); }
+        }
+        Self { inner: sync::Spinlock::new(FdTableInner { files, open_fds, cloexec }) }
     }
     pub fn close_on_exec(&self) {
         let removed = {
