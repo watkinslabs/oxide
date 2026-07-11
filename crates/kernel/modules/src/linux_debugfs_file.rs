@@ -154,8 +154,8 @@ pub(crate) fn debug_file_inode(
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use vfs::{FdTable, OpenFlags};
-    use vfs::file::install_open;
+    use vfs::{Dentry, FdTable, OpenFlags};
+    use vfs::file::install_open_at;
     use vfs::namei::Cred;
 
     use crate::linux_debugfs::{debugfs_create_file, debugfs_remove};
@@ -218,7 +218,8 @@ mod tests {
         assert!(!d.is_null());
         let inode = tracefs::debug_root().lookup_path("debugfs_active_file").expect("debugfs active file");
         let fdt = FdTable::new();
-        let fd = install_open(&fdt, inode, "/debugfs_active_file", OpenFlags::O_RDONLY, 0, Cred::root(), 1024, None)
+        let dentry = Dentry::new_root(inode.clone());
+        let fd = install_open_at(&fdt, inode, dentry, OpenFlags::O_RDONLY, 0, Cred::root(), 1024, None)
             .expect("open debugfs file");
         {
             let file = fdt.get(fd).expect("fd file");

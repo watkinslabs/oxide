@@ -40,7 +40,7 @@ pub use hooks::{fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clo
 pub use lease::{dnotify_emit, dnotify_register, dnotify_registered, dnotify_unregister, lease_break_signal, lease_conflict, lease_force_break, lease_register, lease_registered, lease_unregister, DN_ACCESS, DN_ATTRIB, DN_CREATE, DN_DELETE, DN_MODIFY, DN_RENAME, LEASE_BREAK_NS};
 pub use lifetime::{fput, get_file, iput};
 pub use mode::{Fmode, SeekFrom};
-pub use open::{install_open, open_dentry, open_dentry_at};
+pub use open::{install_open_at, open_dentry, open_dentry_at};
 pub use readahead::FileRaState;
 
 pub(super) use async_notify::SIGIO_HOOK;

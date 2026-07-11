@@ -6,7 +6,7 @@ use crate::types::{OpenFlags, VfsError};
 
 use super::File;
 
-/// Create a `File` from an inode + path, install into the supplied
+/// Create a `File` from an inode + resolved dentry, install into the supplied
 /// `FdTable`. Per `docs/53§3` work fn. Handles the common
 /// post-lookup sequence: O_DIRECTORY check, O_TRUNC, Dentry wrap,
 /// File construction, fd allocation.
@@ -15,10 +15,10 @@ use super::File;
 /// (Linux `f_op->open` swapping the vtable) — the named-FIFO path passes the
 /// `pipefifo_fops` returned by `fifo_open`; `None` snapshots `inode->i_fop`.
 /// # C: O(1) + fd_table alloc
-pub fn install_open(
+pub fn install_open_at(
     fdt: &crate::fdtable::FdTable,
     inode: InodeRef,
-    path: &str,
+    dentry: alloc::sync::Arc<crate::dentry::Dentry>,
     flags: OpenFlags,
     mnt_id: u64,
     cred: Cred,
@@ -31,14 +31,17 @@ pub fn install_open(
         return Err(VfsError::Enotdir);
     }
     if flags.contains(OpenFlags::O_TRUNC) {
-        if crate::mount::is_readonly_path(path) {
-            return Err(VfsError::Erofs);
+        if mnt_id != 0 {
+            if let Some(m) = crate::mount::mount_by_id(mnt_id) {
+                if (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly() {
+                    return Err(VfsError::Erofs);
+                }
+            }
         }
         let _ = inode.truncate(0);
     }
     let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
     let file_flags = flags - OpenFlags::O_CLOEXEC;
-    let dentry = open_dentry(path, &inode);
     let file = match fop_override {
         Some(fop) => File::new_at_fop(inode, dentry, file_flags, mnt_id, cred, fop),
         None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),

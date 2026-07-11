@@ -26,7 +26,7 @@ impl File {
     /// Full `f_path`-carrying constructor (Linux `struct file` with
     /// `f_path = {mnt, dentry}`): records the `mnt_id` the file was
     /// opened through plus the opener's credentials. The real-FS open
-    /// paths (`openat`/`open`/`install_open`) call this with the
+    /// paths (`openat`/`open`/`install_open_at`) call this with the
     /// resolved `VfsPath.mnt_id`.
     /// # C: O(1)
     pub fn new_at(

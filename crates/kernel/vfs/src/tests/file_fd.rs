@@ -341,7 +341,8 @@ fn fdtable_close_range_closes_span() {
 fn install_open_o_cloexec_sets_fd_flag_not_file_flag() {
     let t = FdTable::new();
     let i: InodeRef = MemFile::new(2);
-    let fd = crate::file::install_open(&t, Arc::clone(&i), "/tmp/created",
+    let d = Dentry::new_root(Arc::clone(&i));
+    let fd = crate::file::install_open_at(&t, Arc::clone(&i), d,
         OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC, 0, crate::namei::Cred::root(), usize::MAX, None).unwrap();
     assert!(t.cloexec(fd).unwrap());
     assert!(!t.get(fd).unwrap().flags().contains(OpenFlags::O_CLOEXEC));
