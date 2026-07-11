@@ -373,7 +373,7 @@ pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: 
     // Clone the source's submount SUBTREE (root EXCLUDED — already bound) as
     // private binds, then splice it under the destination base, falling back to
     // the bare `tgt` underlay when the mounted root cannot resolve a slot.
-    let nodes = copy_bind_subtree_from_arena(&src_m, ns, Some(tgt_mnt));
+    let nodes = copy_bind_subtree_from_arena(&src_m, src, ns, Some(tgt_mnt));
     // `tgt_mnt` is the mount whose `mnt_root` is `tgt_base` — the explicit parent
     // of every top-level cloned submount, threaded so the parent-aware
     // `commit_tree` need not (ambiguously) re-derive it from the shared dentry.
