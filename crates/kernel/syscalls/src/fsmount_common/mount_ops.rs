@@ -33,14 +33,18 @@ pub(crate) fn mount_fstype(source: &str, fstype: &str, target: &str, target_d: &
 }
 
 pub(crate) fn mount_fstype_with_data(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>, data: &str) -> i64 {
+    let phint = crate::pathresolve::resolve_path(target, false).map(|p| p.mnt_id);
+    mount_fstype_at(source, fstype, target, target_d, phint, data)
+}
+
+pub(crate) fn mount_fstype_at(source: &str, fstype: &str, target: &str, target_d: &Arc<Dentry>, parent_hint: Option<u64>, data: &str) -> i64 {
     ensure_filesystems_registered();
     if let Some(ty) = vfs::fs::get_fs(fstype) {
         let spec = match ty.construct(source, target, data) {
             Ok(s) => s,
             Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
-        let phint = crate::pathresolve::resolve_path(target, false).map(|p| p.mnt_id);
-        return graft_mount(spec, target_d, phint);
+        return graft_mount(spec, target_d, parent_hint);
     }
     match fstype {
         "devpts" | "cgroup" => 0,
