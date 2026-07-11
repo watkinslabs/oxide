@@ -27,7 +27,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         }
     };
     let p = render_child_path(&parent, &name);
-    if let Err(rv) = crate::landlock::check(&p,
+    if let Err(rv) = crate::landlock::check_parent(&parent,
         ::security::landlock::access::MAKE_DIR) { return rv; }
     // Linux do_mkdirat: `mode &= ~current_umask()` (D23).
     let umask = sched::live::current()

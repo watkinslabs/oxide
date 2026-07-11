@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
     drop_child_cache, errno_from_vfs, parent_mount_readonly, read_user_path,
-    render_child_path, resolve_link_parent_at,
+    resolve_link_parent_at,
 };
 
 fn same_superblock(a: &vfs::InodeRef, b: &vfs::InodeRef) -> bool {
@@ -20,8 +20,7 @@ pub(crate) fn link_inode_at(src: vfs::InodeRef, dirfd: i32, raw_link: &str) -> i
     let (parent, name) = match resolve_link_parent_at(dirfd, raw_link) {
         Ok(x) => x, Err(rv) => return rv,
     };
-    let p = render_child_path(&parent, &name);
-    if let Err(rv) = crate::landlock::check(&p,
+    if let Err(rv) = crate::landlock::check_parent(&parent,
         ::security::landlock::access::MAKE_REG) { return rv; }
     if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);

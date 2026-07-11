@@ -133,16 +133,31 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     let la = ::security::landlock::access::REMOVE_FILE
            | ::security::landlock::access::MAKE_REG
            | ::security::landlock::access::REFER;
-    let f_disp = render_child_path(&old_parent, &old_name);
-    let t_disp = render_child_path(&new_parent, &new_name);
-    if let Err(rv) = crate::landlock::check(&f_disp, la) {
+    let _f_disp = render_child_path(&old_parent, &old_name);
+    let _t_disp = render_child_path(&new_parent, &new_name);
+    let old_check = vfs::VfsPath {
+        mnt_id: old_parent.mnt_id,
+        dentry: vfs::file::open_dentry_at(&old_parent.dentry, &old_name, &old_victim),
+        inode: old_victim.clone(),
+        last_component: None,
+    };
+    if let Err(rv) = crate::landlock::check(&old_check, la) {
         #[cfg(feature = "debug-udevdb")]
-        trace_rename_udevdb(&f_disp, &t_disp, rv);
+        trace_rename_udevdb(&_f_disp, &_t_disp, rv);
         return rv;
     }
-    if let Err(rv) = crate::landlock::check(&t_disp, la) {
+    let new_check = match new_target.as_ref() {
+        Some(i) => vfs::VfsPath {
+            mnt_id: new_parent.mnt_id,
+            dentry: vfs::file::open_dentry_at(&new_parent.dentry, &new_name, i),
+            inode: i.clone(),
+            last_component: None,
+        },
+        None => new_parent.clone(),
+    };
+    if let Err(rv) = crate::landlock::check(&new_check, la) {
         #[cfg(feature = "debug-udevdb")]
-        trace_rename_udevdb(&f_disp, &t_disp, rv);
+        trace_rename_udevdb(&_f_disp, &_t_disp, rv);
         return rv;
     }
     if let Err(e) = vfs::namei::may_rename(&old_parent.inode, &old_victim, &new_parent.inode,
@@ -150,7 +165,7 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
         &crate::pathresolve::current_cred()) {
         let rv = errno_from_vfs(e);
         #[cfg(feature = "debug-udevdb")]
-        trace_rename_udevdb(&f_disp, &t_disp, rv);
+        trace_rename_udevdb(&_f_disp, &_t_disp, rv);
         return rv;
     }
     // D29: hold BOTH parent dirs' `i_rwsem` via `lock_rename` (Linux
@@ -184,6 +199,6 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
         Err(e)  => errno_from_vfs(e),
     };
     #[cfg(feature = "debug-udevdb")]
-    trace_rename_udevdb(&f_disp, &t_disp, rv);
+    trace_rename_udevdb(&_f_disp, &_t_disp, rv);
     rv
 }
