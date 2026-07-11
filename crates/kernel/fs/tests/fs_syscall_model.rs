@@ -122,7 +122,7 @@ fn switch_prepared_host_root(root: Arc<Dentry>, host: u64, sandbox: u64) -> u64 
 }
 
 #[derive(Clone)]
-struct Fd { p: VfsPath, readable: bool, writable: bool }
+struct Fd { p: VfsPath, _readable: bool, writable: bool }
 struct Proc {
     ns: u64,
     root: Arc<Dentry>,
@@ -156,7 +156,7 @@ impl Proc {
     }
     fn install(&mut self, p: VfsPath, readable: bool, writable: bool) -> i32 {
         let fd = self.fds.len() as i32;
-        self.fds.push(Some(Fd { p, readable, writable }));
+        self.fds.push(Some(Fd { p, _readable: readable, writable }));
         fd
     }
     fn openat(&mut self, dirfd: i32, path: &str, create: bool, mode: u32, readable: bool, writable: bool) -> KResult<i32> {

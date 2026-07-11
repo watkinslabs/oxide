@@ -27,7 +27,7 @@ pub(crate) fn symlink_impl(dirfd: i32, target: String, link: String) -> i64 {
         Ok(x) => x, Err(rv) => return rv,
     };
     let l = render_child_path(&parent, &name);
-    if let Err(rv) = crate::landlock::check(&l,
+    if let Err(rv) = crate::landlock::check_parent(&parent,
         ::security::landlock::access::MAKE_SYM) { return rv; }
     match child_exists(&parent, &name) {
         Ok(true) => return -(Errno::Eexist.as_i32() as i64),

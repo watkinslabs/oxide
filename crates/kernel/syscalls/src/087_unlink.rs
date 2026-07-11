@@ -27,8 +27,22 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
         }
     };
     let p = render_child_path(&parent, &name);
-    if let Err(rv) = crate::landlock::check(&p,
-        ::security::landlock::access::REMOVE_FILE) {
+    // D30: grab the victim dentry before the backend drops the name (it would no
+    // longer resolve afterwards) so Landlock and `d_unlink` both use the exact
+    // object under the already-resolved parent.
+    let victim = child_dentry(&parent, &name);
+    let landlock_target = victim.as_ref()
+        .and_then(|d| d.inode().map(|inode| vfs::VfsPath {
+            mnt_id: parent.mnt_id,
+            dentry: d.clone(),
+            inode,
+            last_component: None,
+        }));
+    let landlock_result = match landlock_target.as_ref() {
+        Some(vp) => crate::landlock::check(vp, ::security::landlock::access::REMOVE_FILE),
+        None => crate::landlock::check_parent(&parent, ::security::landlock::access::REMOVE_FILE),
+    };
+    if let Err(rv) = landlock_result {
         #[cfg(feature = "debug-udevdb")]
         crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
         return rv;
@@ -39,9 +53,6 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
         crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
         return rv;
     }
-    // D30: grab the victim dentry before the backend drops the name (it would no
-    // longer resolve afterwards) so `d_unlink` can drive the nlink↔alias coupling.
-    let victim = child_dentry(&parent, &name);
     let unix_addr = victim.as_ref()
         .and_then(|d| d.inode())
         .and_then(|i| if i.file_type() == vfs::FileType::Socket {

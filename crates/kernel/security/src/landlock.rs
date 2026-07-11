@@ -9,11 +9,11 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
+use vfs::{Dentry, VfsPath};
 
 /// Linux LANDLOCK_ACCESS_FS_* bit-set.
 pub mod access {
@@ -34,13 +34,14 @@ pub mod access {
     pub const TRUNCATE:          u64 = 1 << 14;
 }
 
-/// One path-prefix rule within a ruleset.
-#[derive(Clone, Debug)]
+/// One path-beneath rule within a ruleset.
+#[derive(Clone)]
 pub struct Rule {
-    /// Absolute path the rule applies to (matches if the target
-    /// path starts with this prefix). Trailing slash optional.
-    pub path_prefix: String,
-    /// Allowed access bits at and below `path_prefix`.
+    /// Mount identity captured from the rule's parent fd.
+    pub mnt_id: u64,
+    /// Dentry captured from the rule's parent fd.
+    pub dentry: Arc<Dentry>,
+    /// Allowed access bits at and below the captured path.
     pub allowed: u64,
 }
 
@@ -71,12 +72,12 @@ impl Ruleset {
     /// ruleset access kinds pass (Linux semantic: only the
     /// declared `handled` set is filtered).
     /// # C: O(N_rules) per call
-    pub fn allows(&self, path: &str, op: u64) -> bool {
+    pub fn allows(&self, path: &VfsPath, op: u64) -> bool {
         if (op & self.handled) == 0 { return true; }
         let must_match = op & self.handled;
         let mut accumulated: u64 = 0;
         for r in self.rules.lock().iter() {
-            if path_matches(path, &r.path_prefix) {
+            if path_matches(path, r.mnt_id, &r.dentry) {
                 accumulated |= r.allowed & must_match;
             }
         }
@@ -84,14 +85,11 @@ impl Ruleset {
     }
 }
 
-/// Path-prefix match. `prefix` matches `path` iff `prefix == path`
-/// or `path` starts with `prefix` followed by `/`.
-fn path_matches(path: &str, prefix: &str) -> bool {
-    if prefix == path { return true; }
-    if prefix == "/" { return true; }
-    let p = prefix.trim_end_matches('/');
-    if path.len() <= p.len() { return false; }
-    path.starts_with(p) && path.as_bytes()[p.len()] == b'/'
+/// Path-beneath match by live VFS identity. The rule's captured fd only applies
+/// inside the same mount and at or below the captured dentry.
+fn path_matches(path: &VfsPath, rule_mnt_id: u64, rule_dentry: &Arc<Dentry>) -> bool {
+    path.mnt_id == rule_mnt_id
+        && (Arc::ptr_eq(&path.dentry, rule_dentry) || path.dentry.is_subdir_of(rule_dentry))
 }
 
 /// Global ruleset registry. landlock_create_ruleset allocates an
@@ -123,30 +121,50 @@ pub type Chain = Vec<Arc<Ruleset>>;
 /// Check `(path, op)` against a chain. Returns Ok(()) when every
 /// ruleset permits; Err(()) on first denial.
 /// # C: O(N_chain × N_rules)
-pub fn chain_permits(chain: &Chain, path: &str, op: u64) -> bool {
+pub fn chain_permits(chain: &Chain, path: &VfsPath, op: u64) -> bool {
     chain.iter().all(|rs| rs.allows(path, op))
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use super::{access, chain_permits, Rule, Ruleset};
+    use vfs::{default_file_ops, default_inode_ops, mk_mode, Dentry, FileType, InodeBuilder, VfsPath};
 
-    #[test]
-    fn absolute_prefix_allows_exact_and_descendant_paths() {
-        let rs = Ruleset::new(1, access::TRUNCATE);
-        rs.add(Rule { path_prefix: "/run/udev".into(), allowed: access::TRUNCATE });
-        let chain = alloc::vec![rs];
-        assert!(chain_permits(&chain, "/run/udev", access::TRUNCATE));
-        assert!(chain_permits(&chain, "/run/udev/data/c226:0", access::TRUNCATE));
-        assert!(!chain_permits(&chain, "/run/udev-other", access::TRUNCATE));
-        assert!(!chain_permits(&chain, "/run", access::TRUNCATE));
+    fn dir(ino: u64) -> vfs::InodeRef {
+        InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), default_inode_ops(), default_file_ops()).build()
+    }
+
+    fn child(parent: &Arc<Dentry>, name: &str, ino: u64) -> Arc<Dentry> {
+        vfs::d_add(parent, name, dir(ino))
+    }
+
+    fn path(mnt_id: u64, dentry: Arc<Dentry>) -> VfsPath {
+        let inode = dentry.inode().expect("test dentry inode");
+        VfsPath { mnt_id, dentry, inode, last_component: None }
     }
 
     #[test]
-    fn basename_only_rule_does_not_match_absolute_checked_path() {
-        let rs = Ruleset::new(2, access::TRUNCATE);
-        rs.add(Rule { path_prefix: "udev".into(), allowed: access::TRUNCATE });
+    fn rule_allows_exact_and_descendant_dentries_on_same_mount() {
+        let root = Dentry::new_root(dir(1));
+        let run = child(&root, "run", 2);
+        let udev = child(&run, "udev", 3);
+        let data = child(&udev, "data", 4);
+        let rs = Ruleset::new(1, access::TRUNCATE);
+        rs.add(Rule { mnt_id: 7, dentry: udev.clone(), allowed: access::TRUNCATE });
         let chain = alloc::vec![rs];
-        assert!(!chain_permits(&chain, "/run/udev/data/c226:0", access::TRUNCATE));
+        assert!(chain_permits(&chain, &path(7, udev), access::TRUNCATE));
+        assert!(chain_permits(&chain, &path(7, data), access::TRUNCATE));
+        assert!(!chain_permits(&chain, &path(7, run), access::TRUNCATE));
+    }
+
+    #[test]
+    fn same_dentry_on_different_mount_does_not_match() {
+        let root = Dentry::new_root(dir(10));
+        let udev = child(&root, "udev", 11);
+        let rs = Ruleset::new(2, access::TRUNCATE);
+        rs.add(Rule { mnt_id: 8, dentry: udev.clone(), allowed: access::TRUNCATE });
+        let chain = alloc::vec![rs];
+        assert!(!chain_permits(&chain, &path(9, udev), access::TRUNCATE));
     }
 }

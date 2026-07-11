@@ -179,8 +179,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
+        if let Err(rv) = crate::landlock::check(&dir, landlock_op) { return rv; }
         let display = vfs::mount::render_path_for_mount(dir.mnt_id, &dir.dentry);
-        if let Err(rv) = crate::landlock::check(&display, landlock_op) { return rv; }
         let cred = crate::pathresolve::current_cred();
         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
         match dir.inode.tmpfile(req_mode, &ctx) {
@@ -197,8 +197,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         if (flags & O_CREAT) != 0 && (flags & O_EXCL) != 0 {
             return -(Errno::Eexist.as_i32() as i64);
         }
+        if let Err(rv) = crate::landlock::check(&vp, landlock_op) { return rv; }
         let display = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
-        if let Err(rv) = crate::landlock::check(&display, landlock_op) { return rv; }
         // `/dev/ptmx` and `/dev/tty` are device identities, not string paths:
         // bind mounts, chroot, and `openat(devfd,"ptmx")` must route the same
         // as `/dev/ptmx`. O_PATH remains a pure path fd and never runs the
@@ -249,8 +249,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
+        if let Err(rv) = crate::landlock::check_parent(&parent, landlock_op) { return rv; }
         let create_path = crate::namei_common::render_child_path(&parent, &name);
-        if let Err(rv) = crate::landlock::check(&create_path, landlock_op) { return rv; }
         // ext4 D9: create on the RESOLVED PARENT dir inode + leaf name
         // (Linux `filename_create` → `i_op->create`), instead of the
         // old whole-path backend create re-splitting the path string.

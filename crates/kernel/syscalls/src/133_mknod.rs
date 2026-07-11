@@ -45,7 +45,7 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
         S_IFSOCK => ::security::landlock::access::MAKE_SOCK,
         _        => return -(Errno::Einval.as_i32() as i64),
     };
-    if let Err(rv) = crate::landlock::check(&p, la) { return rv; }
+    if let Err(rv) = crate::landlock::check_parent(&parent, la) { return rv; }
     // Linux may_mknod / vfs_mknod: device nodes require CAP_MKNOD; FIFO,
     // socket and regular files do not (D24).
     if matches!(real_ftype, S_IFCHR | S_IFBLK) {

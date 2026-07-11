@@ -43,12 +43,15 @@ pub fn sys_landlock_add_rule(args: &SyscallArgs) -> i64 {
     let ruleset = match ll::lookup(rs_inode.ruleset_id) {
         Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
     };
-    // Resolve parent_fd → mounted path prefix. Storing only dentry.name() turns
-    // `/run/udev` into `udev`, which cannot match checked absolute paths.
+    // Resolve parent_fd → live mounted path identity. Landlock rules are tied
+    // to the opened object, not the object's current rendered pathname.
     let parent_file = match fdt.get(parent_fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let path = vfs::mount::render_path_for_mount(parent_file.mnt_id(), parent_file.dentry());
-    ruleset.add(Rule { path_prefix: path, allowed });
+    ruleset.add(Rule {
+        mnt_id: parent_file.mnt_id(),
+        dentry: parent_file.dentry().clone(),
+        allowed,
+    });
     0
 }

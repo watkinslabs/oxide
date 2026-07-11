@@ -22,8 +22,7 @@ pub fn sys_truncate(args: &SyscallArgs) -> i64 {
         Ok(p)  => p,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
-    let rendered = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
-    if let Err(rv) = crate::landlock::check(&rendered,
+    if let Err(rv) = crate::landlock::check(&vp,
         ::security::landlock::access::TRUNCATE) { return rv; }
     // EISDIR on a directory (Linux do_sys_truncate); the size/MAY_WRITE/EROFS
     // path then converges on notify_change (ATTR_SIZE).
