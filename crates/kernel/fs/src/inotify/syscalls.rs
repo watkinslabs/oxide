@@ -7,7 +7,9 @@ use vfs::{FileType, InodeRef};
 
 use crate::inotify::group::make_inotify_inode;
 use crate::inotify::types::{
-    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ALL_EVENT_BITS, IN_ALL_EVENTS,
+    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ACCESS, FAN_ALL_EVENT_BITS,
+    FAN_CLOSE, FAN_FS_ERROR, FAN_MNT_EVENTS, FAN_MODIFY, FAN_ONDIR, FAN_OPEN,
+    FAN_OPEN_EXEC, FAN_PRE_ACCESS, FAN_Q_OVERFLOW, FAN_RENAME, IN_ALL_EVENTS,
     MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
 
@@ -35,15 +37,25 @@ pub(crate) const FAN_CLASS_PRE_CONTENT: u32 = 0x0000_0008;
 const FAN_ALL_CLASS_BITS:    u32 = FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT;
 const FAN_UNLIMITED_QUEUE:   u32 = 0x0000_0010;
 const FAN_UNLIMITED_MARKS:   u32 = 0x0000_0020;
-const FAN_ENABLE_AUDIT:      u32 = 0x0000_0040;
+pub(crate) const FAN_ENABLE_AUDIT:      u32 = 0x0000_0040;
 const FAN_REPORT_PIDFD:      u32 = 0x0000_0080;
 const FAN_REPORT_TID:        u32 = 0x0000_0100;
-const FAN_REPORT_FID:        u32 = 0x0000_0200;
+pub(crate) const FAN_REPORT_FID:        u32 = 0x0000_0200;
 pub(crate) const FAN_REPORT_DIR_FID:    u32 = 0x0000_0400;
 pub(crate) const FAN_REPORT_NAME:       u32 = 0x0000_0800;
+pub(crate) const FAN_REPORT_TARGET_FID: u32 = 0x0000_1000;
+pub(crate) const FAN_REPORT_FD_ERROR:   u32 = 0x0000_2000;
+pub(crate) const FAN_REPORT_MNT:        u32 = 0x0000_4000;
+const FANOTIFY_FID_BITS: u32 = FAN_REPORT_FID | FAN_REPORT_DIR_FID
+    | FAN_REPORT_NAME | FAN_REPORT_TARGET_FID;
+const FANOTIFY_ADMIN_INIT_FLAGS: u32 = FAN_ALL_CLASS_BITS | FAN_REPORT_TID
+    | FAN_REPORT_PIDFD | FAN_REPORT_FD_ERROR | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS;
 const FAN_INIT_KNOWN: u32 = FAN_CLOEXEC | FAN_NONBLOCK | FAN_ALL_CLASS_BITS
     | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS | FAN_ENABLE_AUDIT | FAN_REPORT_PIDFD
-    | FAN_REPORT_TID | FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_NAME;
+    | FAN_REPORT_TID | FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_NAME
+    | FAN_REPORT_TARGET_FID | FAN_REPORT_FD_ERROR | FAN_REPORT_MNT;
+const FANOTIFY_INIT_ALL_EVENT_F_BITS: u32 = 0o3 | 0o2000 | 0o4000 | 0o10000
+    | 0o4010000 | 0o2000000 | 0o100000 | 0o1000000;
 
 pub(crate) const FAN_MARK_ADD:                 u32 = 0x0000_0001;
 pub(crate) const FAN_MARK_REMOVE:              u32 = 0x0000_0002;
@@ -56,10 +68,19 @@ pub(crate) const FAN_MARK_FLUSH:               u32 = 0x0000_0080;
 pub(crate) const FAN_MARK_FILESYSTEM:          u32 = 0x0000_0100;
 pub(crate) const FAN_MARK_EVICTABLE:           u32 = 0x0000_0200;
 pub(crate) const FAN_MARK_IGNORE:              u32 = 0x0000_0400;
+pub(crate) const FAN_MARK_MNTNS:               u32 = 0x0000_0110;
 pub(crate) const FAN_MARK_KNOWN: u32 = FAN_MARK_ADD | FAN_MARK_REMOVE | FAN_MARK_DONT_FOLLOW
     | FAN_MARK_ONLYDIR | FAN_MARK_MOUNT | FAN_MARK_IGNORED_MASK
     | FAN_MARK_IGNORED_SURV_MODIFY | FAN_MARK_FLUSH | FAN_MARK_FILESYSTEM
     | FAN_MARK_EVICTABLE | FAN_MARK_IGNORE;
+const FANOTIFY_MARK_TYPE_BITS: u32 = FAN_MARK_MOUNT | FAN_MARK_FILESYSTEM;
+const FANOTIFY_MARK_CMD_BITS: u32 = FAN_MARK_ADD | FAN_MARK_REMOVE | FAN_MARK_FLUSH;
+const FANOTIFY_MARK_IGNORE_BITS: u32 = FAN_MARK_IGNORED_MASK | FAN_MARK_IGNORE;
+const FANOTIFY_EVENT_FLAGS: u32 = FAN_EVENT_ON_CHILD | FAN_ONDIR;
+const FAN_EVENT_ON_CHILD: u32 = 0x0800_0000;
+const FANOTIFY_EVENTS: u32 = FAN_ALL_EVENT_BITS & !(PERM_BITS | FANOTIFY_EVENT_FLAGS | FAN_Q_OVERFLOW);
+const FANOTIFY_FD_EVENTS: u32 = FAN_ACCESS | FAN_MODIFY | FAN_CLOSE | FAN_OPEN
+    | FAN_OPEN_EXEC | PERM_BITS;
 
 fn current_cred() -> vfs::Cred {
     let Some(c) = sched::current() else { return vfs::Cred::root(); };
@@ -194,17 +215,54 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     sys_inotify_init_flags(args.a0 as u32)
 }
 
-/// Validate a `fanotify_init` flag word the Linux way (`do_fanotify_init`):
-/// reject unknown bits, an impossible class (`0xc`), and FAN_REPORT_NAME
-/// without FAN_REPORT_DIR_FID. Returns the errno (>0) or 0 if valid.
+fn current_has_cap(cap: u32) -> bool {
+    sched::current().map(|c| c.has_cap(cap)).unwrap_or(false)
+}
+
+/// Validate `fanotify_init` inputs per Linux `fanotify_init`: userspace init
+/// flags, event-fd flags, class/FID/report-mode dependencies, and capability
+/// gates. Returns the errno (>0) or 0 if valid.
 /// # C: O(1)
-pub(crate) fn validate_fanotify_init(flags: u32) -> i32 {
+pub(crate) fn validate_fanotify_init_args(
+    flags: u32,
+    event_f_flags: u32,
+    has_sys_admin: bool,
+    has_audit_write: bool,
+) -> i32 {
+    let fid_mode = flags & FANOTIFY_FID_BITS;
+    let class = flags & FAN_ALL_CLASS_BITS;
+    if ((flags & FANOTIFY_ADMIN_INIT_FLAGS) != 0
+        || (flags & (FANOTIFY_FID_BITS | FAN_REPORT_MNT)) == 0)
+        && !has_sys_admin {
+        return Errno::Eperm.as_i32();
+    }
     if flags & !FAN_INIT_KNOWN != 0 { return Errno::Einval.as_i32(); }
-    if flags & FAN_ALL_CLASS_BITS == FAN_ALL_CLASS_BITS { return Errno::Einval.as_i32(); }
-    if flags & FAN_REPORT_NAME != 0 && flags & FAN_REPORT_DIR_FID == 0 {
+    if class == FAN_ALL_CLASS_BITS { return Errno::Einval.as_i32(); }
+    if (flags & FAN_REPORT_MNT) != 0 {
+        if class != 0 { return Errno::Einval.as_i32(); }
+        if flags & (FANOTIFY_FID_BITS | FAN_REPORT_FD_ERROR) != 0 {
+            return Errno::Einval.as_i32();
+        }
+    }
+    if event_f_flags & !FANOTIFY_INIT_ALL_EVENT_F_BITS != 0 { return Errno::Einval.as_i32(); }
+    if event_f_flags & 0o3 == 0o3 { return Errno::Einval.as_i32(); }
+    if fid_mode != 0 && class != 0 { return Errno::Einval.as_i32(); }
+    if (fid_mode & FAN_REPORT_NAME) != 0 && (fid_mode & FAN_REPORT_DIR_FID) == 0 {
         return Errno::Einval.as_i32();
     }
+    if (fid_mode & FAN_REPORT_TARGET_FID) != 0
+        && ((fid_mode & FAN_REPORT_NAME) == 0 || (fid_mode & FAN_REPORT_FID) == 0) {
+        return Errno::Einval.as_i32();
+    }
+    if (flags & FAN_ENABLE_AUDIT) != 0 && !has_audit_write { return Errno::Eperm.as_i32(); }
     0
+}
+
+/// Legacy helper retained for hosted tests that only exercise the flag word.
+/// # C: O(1)
+#[cfg(test)]
+pub(crate) fn validate_fanotify_init(flags: u32) -> i32 {
+    validate_fanotify_init_args(flags, 0, true, true)
 }
 
 /// `sys_fanotify_init(flags, event_f_flags)`. Allocates a fanotify GROUP fd
@@ -215,7 +273,13 @@ pub(crate) fn validate_fanotify_init(flags: u32) -> i32 {
 pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     use vfs::{File, OpenFlags};
     let flags = args.a0 as u32;
-    let e = validate_fanotify_init(flags);
+    let event_f_flags = args.a1 as u32;
+    let e = validate_fanotify_init_args(
+        flags,
+        event_f_flags,
+        current_has_cap(sched::cap::SYS_ADMIN),
+        current_has_cap(sched::cap::AUDIT_WRITE),
+    );
     if e != 0 { return -(e as i64); }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -337,10 +401,78 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
 }
 
 /// Scope selected by a `fanotify_mark` flag word (default = inode). # C: O(1)
-fn mark_scope(flags: u32) -> MarkScope {
-    if flags & FAN_MARK_FILESYSTEM != 0 { MarkScope::Filesystem }
-    else if flags & FAN_MARK_MOUNT != 0 { MarkScope::Mount }
-    else { MarkScope::Inode }
+fn mark_scope(flags: u32) -> Result<MarkScope, Errno> {
+    match flags & FANOTIFY_MARK_TYPE_BITS {
+        0 => Ok(MarkScope::Inode),
+        FAN_MARK_MOUNT => Ok(MarkScope::Mount),
+        FAN_MARK_FILESYSTEM => Ok(MarkScope::Filesystem),
+        FAN_MARK_MNTNS => Ok(MarkScope::MountNamespace),
+        _ => Err(Errno::Einval),
+    }
+}
+
+/// Linux `do_fanotify_mark` validation before fd lookup.
+/// # C: O(1)
+pub(crate) fn validate_fanotify_mark_prefd(flags: u32, mask: u64) -> Result<(), Errno> {
+    if mask >> 32 != 0 { return Err(Errno::Einval); }
+    if flags & !FAN_MARK_KNOWN != 0 { return Err(Errno::Einval); }
+    let _ = mark_scope(flags)?;
+    let op = flags & FANOTIFY_MARK_CMD_BITS;
+    match op {
+        FAN_MARK_ADD | FAN_MARK_REMOVE => {
+            if mask == 0 { return Err(Errno::Einval); }
+        }
+        FAN_MARK_FLUSH => {
+            if flags & !(FANOTIFY_MARK_TYPE_BITS | FAN_MARK_FLUSH) != 0 {
+                return Err(Errno::Einval);
+            }
+        }
+        _ => return Err(Errno::Einval),
+    }
+    let valid_mask = FANOTIFY_EVENTS | FANOTIFY_EVENT_FLAGS | PERM_BITS;
+    if (mask as u32) & !valid_mask != 0 { return Err(Errno::Einval); }
+    if flags & FANOTIFY_MARK_IGNORE_BITS == FANOTIFY_MARK_IGNORE_BITS {
+        return Err(Errno::Einval);
+    }
+    Ok(())
+}
+
+/// Linux `do_fanotify_mark` validation after fd lookup, once group flags and
+/// class are known.
+/// # C: O(1)
+pub(crate) fn validate_fanotify_mark_group(
+    group: &InotifyData,
+    scope: MarkScope,
+    mask: u32,
+    flags: u32,
+) -> Result<(), Errno> {
+    if !group.is_fanotify() { return Err(Errno::Einval); }
+    if group.flags & FAN_REPORT_MNT != 0 {
+        if mask & !FAN_MNT_EVENTS != 0 { return Err(Errno::Einval); }
+        if scope != MarkScope::MountNamespace { return Err(Errno::Einval); }
+    } else {
+        if mask & FAN_MNT_EVENTS != 0 { return Err(Errno::Einval); }
+        if scope == MarkScope::MountNamespace { return Err(Errno::Einval); }
+    }
+    let class = group.flags & FAN_ALL_CLASS_BITS;
+    if mask & PERM_BITS != 0 && class == 0 { return Err(Errno::Einval); }
+    if mask & FAN_PRE_ACCESS != 0 && class == FAN_CLASS_CONTENT { return Err(Errno::Einval); }
+    if mask & FAN_FS_ERROR != 0 && scope != MarkScope::Filesystem { return Err(Errno::Einval); }
+    if flags & FAN_MARK_EVICTABLE != 0 && scope != MarkScope::Inode {
+        return Err(Errno::Einval);
+    }
+    let fid_mode = group.flags & FANOTIFY_FID_BITS;
+    if mask & !(FANOTIFY_FD_EVENTS | FAN_MNT_EVENTS | FANOTIFY_EVENT_FLAGS) != 0
+        && (fid_mode == 0 || scope == MarkScope::Mount) {
+        return Err(Errno::Einval);
+    }
+    if mask & FAN_RENAME != 0 && fid_mode & FAN_REPORT_NAME == 0 {
+        return Err(Errno::Einval);
+    }
+    if mask & FAN_PRE_ACCESS != 0 && mask & FAN_ONDIR != 0 {
+        return Err(Errno::Einval);
+    }
+    Ok(())
 }
 
 /// Apply a parsed ADD/REMOVE mark to a group. `add`: ADD vs REMOVE; `ignored`:
@@ -380,19 +512,23 @@ pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usiz
 pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let flags = args.a1 as u32;
-    let mask = args.a2 as u32;
+    let mask64 = args.a2;
     let _dirfd = args.a3 as i32;
     let path_p = args.a4;
-    if flags & !FAN_MARK_KNOWN != 0 { return -(Errno::Einval.as_i32() as i64); }
-    let op = flags & (FAN_MARK_ADD | FAN_MARK_REMOVE | FAN_MARK_FLUSH);
-    if op.count_ones() != 1 { return -(Errno::Einval.as_i32() as i64); }
-    if flags & FAN_MARK_MOUNT != 0 && flags & FAN_MARK_FILESYSTEM != 0 {
-        return -(Errno::Einval.as_i32() as i64);
+    if let Err(e) = validate_fanotify_mark_prefd(flags, mask64) {
+        return -(e.as_i32() as i64);
     }
+    let mask = mask64 as u32;
     let inotify = match fd_to_inotify(fd) {
         Ok(a) => a, Err(e) => return -(e.as_i32() as i64),
     };
-    let scope = mark_scope(flags);
+    let scope = match mark_scope(flags) {
+        Ok(s) => s,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    if let Err(e) = validate_fanotify_mark_group(&inotify, scope, mask, flags) {
+        return -(e.as_i32() as i64);
+    }
     let ignored = flags & (FAN_MARK_IGNORED_MASK | FAN_MARK_IGNORE) != 0;
     if flags & FAN_MARK_FLUSH != 0 {
         let mut g = inotify.watches.lock();
