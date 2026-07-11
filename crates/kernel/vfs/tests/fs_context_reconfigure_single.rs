@@ -63,8 +63,8 @@ fn string_param_is_accepted_and_committed() {
 #[test]
 fn rejected_param_fails_and_does_not_commit() {
     let sb = live_sb();
-    // An fd value has no string form a legacy comma-blob ->mount can carry, so the
-    // legacy parse_param rejects it (EINVAL). The helper surfaces that and never
+    // An fd value has no string form a classic mount comma-blob ->mount can carry, so the
+    // classic mount parse_param rejects it (EINVAL). The helper surfaces that and never
     // reaches reconfigure_super, leaving the requested SB_RDONLY UNAPPLIED.
     let r = reconfigure_single(sb.clone(), SB_RDONLY, &[FsParameter::fd("loop", 3)]);
     assert_eq!(r.unwrap_err(), VfsError::Einval);

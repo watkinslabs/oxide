@@ -2,7 +2,7 @@
 //! backend `parse_param` runs, [`vfs_parse_fs_param`] maps a bare FLAG whose key
 //! is a common superblock-flag keyword (`ro`/`rw`/`sync`/`async`/`dirsync`/
 //! `mand`/`nomand`/`lazytime`/`nolazytime`) onto `fc.sb_flags` and consumes it.
-//! Fails-before: `fsconfig(SET_FLAG, "ro")` fell through to the legacy comma-blob
+//! Fails-before: `fsconfig(SET_FLAG, "ro")` fell through to the classic mount comma-blob
 //! params and NEVER reached `fc.sb_flags`, so `SB_RDONLY` was lost. The per-mount
 //! opts (`nosuid`/`nodev`/`noexec`/`noatime`/`relatime`) are MNT_*/MOUNT_ATTR_*,
 //! NOT sb flags, and must still fall through to the backend.
@@ -56,10 +56,10 @@ fn sync_async_lazytime_round_trip() {
 #[test]
 fn nosuid_is_not_consumed_as_sb_flag() {
     // Per-mount MNT_* opt — must NOT be treated as a sb flag; it falls through to
-    // the legacy backend's comma blob instead.
+    // the classic mount backend's comma blob instead.
     let mut fc = ctx();
     vfs_parse_fs_param(&mut fc, &FsParameter::flag("nosuid")).unwrap();
     assert_eq!(fc.sb_flags(), 0, "nosuid must not touch sb_flags");
     assert_eq!(fc.params().len(), 1, "nosuid falls through to legacy params");
-    assert!(fc.legacy_options().contains("nosuid"));
+    assert!(fc.classic_mount_options().contains("nosuid"));
 }

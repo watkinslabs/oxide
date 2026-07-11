@@ -66,7 +66,7 @@ fn params_accumulate_not_dropped() {
     vfs_parse_fs_param(&mut fc, &FsParameter::flag("noexec")).unwrap();
     // Both options were retained (Linux never silently drops fsconfig params).
     assert_eq!(fc.params().len(), 2, "params accumulated, not discarded");
-    let opts = fc.legacy_options();
+    let opts = fc.classic_mount_options();
     assert!(opts.contains("size=64m"), "string param rendered key=value: {opts}");
     assert!(opts.contains("noexec"), "flag param rendered key-only: {opts}");
 }
@@ -95,7 +95,7 @@ fn get_tree_materialises_sb_and_pins_root() {
     let root = fc.root().expect("get_tree pinned fc->root");
     let sb = fc.sb().expect("get_tree set fc->sb");
     assert!(Arc::ptr_eq(root, &sb.s_root().unwrap()), "fc->root == fc->sb->s_root");
-    // The legacy get_tree threaded source + the comma-joined opts to ->mount.
+    // The classic-mount get_tree threaded source + the comma-joined opts to ->mount.
     let calls = seen.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0.as_deref(), Some("dev"));
