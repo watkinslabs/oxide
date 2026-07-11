@@ -502,7 +502,7 @@ Files:
 Risk:
 
 - `move_mount()` uses `resolve_at_result()` for `to_path` and `from_path`, then re-resolves strings.
-- `open_tree()` uses `resolve_at_result()` then `vfs::mount::resolve_mount(&abs)`.
+- Fixed: `open_tree()` no longer uses `resolve_at_result()` then `vfs::mount::resolve_mount(&abs)`.
 
 Impact:
 
@@ -511,10 +511,12 @@ Impact:
 Current mitigation:
 
 - `move_mount()` uses `target_vp.mnt_id` as a destination hint in some branches.
+- `open_tree()` now resolves once through `resolve_at_path()`, clones the source mount from `VfsPath.mnt_id`, and returns the walked inode for the non-clone fd path.
+- Hosted proof: `cargo test -p vfs --test namei_at_bind -- --nocapture` includes `open_tree_clone_source_uses_walked_mount_id`, proving a dirfd-relative bind path keeps the bind `mnt_id` for clone-source selection.
+- Verification: `cargo test -p vfs --test namei_at_bind -- --nocapture` passed 5/5; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
 
 Still needed:
 
-- Make `open_tree()` source resolution return the exact mount id from `VfsPath`, not a string-based `resolve_mount()`.
 - Make `move_mount()` use one authoritative path walk for each argument.
 
 ### 13. `mount_setattr()` is comparatively correct
@@ -750,6 +752,8 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
      - Hosted proof: `cargo test -p vfs --test mount_target_lookup -- --nocapture` proves `/proc/kallsyms` and `/stage/proc/kallsyms` can share the same leaf dentry while the resolver still returns the staged bind mount as parent identity.
      - `vfs::mount::{mountinfo_root_field,render_mount_root_field}` now owns mountinfo field 4 rendering from mount identity; procfs no longer carries a private copy of the bind-root/subroot rendering logic.
      - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` now includes whole-filesystem root, bind-subroot relative-to-superblock-root, and fallback absolute root cases.
+     - `open_tree()` now uses the walked `VfsPath.mnt_id` as source mount identity and no longer re-resolves a rendered path through `resolve_mount()`.
+     - Hosted proof: `cargo test -p vfs --test namei_at_bind -- --nocapture` includes `open_tree_clone_source_uses_walked_mount_id`.
      - Verification: `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 7/7; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
    - Done next slice:
      - `vfs::mount::project_path_under_root()` now owns reader-root projection for procfs mount reports.
