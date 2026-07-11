@@ -160,12 +160,16 @@ fn readdir_stream(conn: &super::conn::FuseConn, nodeid: u64, fh: u64, ctx: &mut 
     let reply = conn.call(proto::FUSE_READDIR, nodeid, &body)?;
     let ents = proto::decode_dirent_stream(&reply).ok_or(VfsError::Eio)?;
     for e in ents {
-        let name = match core::str::from_utf8(&e.name) { Ok(s) => s, Err(_) => continue };
+        let name = fuse_dirent_name(&e.name);
         let ft = FileType::from_ifmt((e.d_type << 12) as u16);
         // The daemon's `off` is the resume cookie for the NEXT entry (Linux).
-        if !ctx.emit(name, e.ino, ft, e.off) { break; }
+        if !ctx.emit(&name, e.ino, ft, e.off) { break; }
     }
     Ok(())
+}
+
+fn fuse_dirent_name(name: &[u8]) -> alloc::string::String {
+    vfs::path_from_bytes(name)
 }
 
 /// Encode a `struct fuse_release_in` (`fh,flags,release_flags,lock_owner`).
@@ -183,4 +187,16 @@ fn encode_flush(out: &mut Vec<u8>, fh: u64) {
     proto::put_u32(out, 0); // unused
     proto::put_u32(out, 0); // padding
     proto::put_u64(out, 0); // lock_owner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fuse_dirent_name;
+
+    #[test]
+    fn fuse_dirent_name_preserves_non_utf8_bytes() {
+        let raw = b"raw-\xff-entry";
+        let name = fuse_dirent_name(raw);
+        assert_eq!(vfs::path_into_bytes(&name), raw);
+    }
 }
