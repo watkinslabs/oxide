@@ -18,7 +18,7 @@ use vfs::{KResult, VfsError};
 struct Ty;
 impl FileSystemType for Ty {
     fn name(&self) -> &str { "logfs" }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 fn ctx() -> FsContext { FsContext::for_mount(Arc::new(Ty), 0) }
 

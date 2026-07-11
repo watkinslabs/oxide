@@ -21,7 +21,7 @@ use vfs::{
 struct TType;
 impl FileSystemType for TType {
     fn name(&self) -> &str { "tstatefs" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 struct TOps;
 impl SuperOps for TOps {

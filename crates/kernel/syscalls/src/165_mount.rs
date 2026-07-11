@@ -271,5 +271,5 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     } else {
         String::new()
     };
-    mount_fstype_at(&source, &fstype, &target, &target_mt.mountpoint, Some(target_mt.parent.mnt_id), &data)
+    mount_fstype_at(source.as_deref(), &fstype, &target, &target_mt.mountpoint, Some(target_mt.parent.mnt_id), &data)
 }

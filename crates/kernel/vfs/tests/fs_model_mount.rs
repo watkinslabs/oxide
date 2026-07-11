@@ -21,7 +21,7 @@ struct RamType;
 impl FileSystemType for RamType {
     fn name(&self) -> &str { "t250ram" }
     // `mount` IS fill_super: a fresh SuperBlock with its own anon s_dev.
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
         let dev = next_anon_dev();
         let sb = SuperBlock::new(
             Arc::new(RamType), Arc::new(RamOps), RAM_MAGIC, dev, 4096, "t250ram".into(), Arc::new(()),
@@ -64,8 +64,8 @@ fn registry_mount_is_fill_super_distinct_sb_per_mount() {
     let ty = get_fs_type("t250ram").expect("type resolves by name");
 
     // Two mounts of the SAME type → two distinct superblocks (D1).
-    let sb1 = ty.mount("none", "").expect("mount 1 = fill_super");
-    let sb2 = ty.mount("none", "").expect("mount 2 = fill_super");
+    let sb1 = ty.mount(Some("none"), "").expect("mount 1 = fill_super");
+    let sb2 = ty.mount(Some("none"), "").expect("mount 2 = fill_super");
     assert!(!Arc::ptr_eq(&sb1, &sb2), "each mount allocates a fresh SuperBlock");
     assert_ne!(sb1.s_dev, sb2.s_dev, "each mount gets a distinct anon s_dev");
 

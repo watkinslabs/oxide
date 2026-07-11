@@ -46,7 +46,7 @@ impl FileSystem for PseudoBe {
 struct Ty { nm: &'static str, root_ino: u64, flags: FsFlags }
 impl FileSystemType for Ty {
     fn name(&self) -> &str { self.nm }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
         let fs: Arc<dyn FileSystem> = Arc::new(PseudoBe { root_ino: self.root_ino });
         let root = fs.root();
         Ok(SuperBlock::for_backend(fs, root, next_anon_dev(), self.nm.to_string()))

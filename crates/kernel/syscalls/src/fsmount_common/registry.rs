@@ -77,7 +77,7 @@ fn register_filesystems() {
     use vfs::fs::{FsFlags, FsType, MountSpec, register_fs};
     type R = vfs::fs::KResult<MountSpec>;
 
-    fn tmpfs_ctor(_s: &str, target: &str, d: &str) -> R {
+    fn tmpfs_ctor(_s: Option<&str>, target: &str, d: &str) -> R {
         // Honour the `-o mode=/uid=/gid=/size=/nr_inodes=` option string: the
         // per-user runtime dir (systemd-user-runtime-dir) mounts /run/user/UID
         // mode 0700 owned by UID:UID, and pam_systemd/`systemd --user` reject a
@@ -90,7 +90,8 @@ fn register_filesystems() {
     }
     let _ = register_fs(FsType::new("tmpfs", 0, FsFlags::empty(), Box::new(tmpfs_ctor)));
     let _ = register_fs(FsType::new("ramfs", 0, FsFlags::empty(), Box::new(tmpfs_ctor)));
-    let _ = register_fs(FsType::new("ext4", EXT4_MAGIC, FsFlags::FS_REQUIRES_DEV, Box::new(|source: &str, _t: &str, _d: &str| -> R {
+    let _ = register_fs(FsType::new("ext4", EXT4_MAGIC, FsFlags::FS_REQUIRES_DEV, Box::new(|source: Option<&str>, _t: &str, _d: &str| -> R {
+        let source = source.ok_or(vfs::VfsError::Enoent)?;
         let (dev, dev_t) = resolve_ext4_source(source).ok_or(vfs::VfsError::Enoent)?;
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
         Ok(MountSpec { fs, bind_root: None, strict: true })
@@ -131,7 +132,7 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
         Ok(MountSpec { fs, bind_root: None, strict: true })
     })));
-    let _ = register_fs(FsType::new("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|_s: &str, _t: &str, data: &str| -> R {
+    let _ = register_fs(FsType::new("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|_s: Option<&str>, _t: &str, data: &str| -> R {
         let (fs, root) = ::fs::fuse::mount_from_data(data)?;
         Ok(MountSpec { fs, bind_root: Some(root), strict: true })
     })));

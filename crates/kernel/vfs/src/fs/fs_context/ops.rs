@@ -34,8 +34,7 @@ impl FsContextOps for LegacyFsContextOps {
 
     fn get_tree(&self, fc: &mut FsContext) -> KResult<Arc<SuperBlock>> {
         let opts = fc.legacy_options();
-        let src = fc.source().unwrap_or("");
-        let sb = fc.fs_type.mount(src, &opts)?;
+        let sb = fc.fs_type.mount(fc.source(), &opts)?;
         apply_sb_flags(&sb, fc.sb_flags, fc.sb_flags_mask);
         Ok(sb)
     }

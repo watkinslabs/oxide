@@ -33,17 +33,17 @@ impl FileSystem for TFs {
 /// received so the test can assert the context threaded them through, then
 /// builds a real superblock with a root dentry.
 struct TFsType {
-    seen: Arc<Mutex<Vec<(String, String)>>>,
+    seen: Arc<Mutex<Vec<(Option<String>, String)>>>,
 }
 impl FileSystemType for TFsType {
     fn name(&self) -> &str { "tfs" }
-    fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>> {
-        self.seen.lock().unwrap().push((src.to_string(), opts.to_string()));
+    fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
+        self.seen.lock().unwrap().push((src.map(str::to_string), opts.to_string()));
         Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
     }
 }
 
-fn new_type() -> (Arc<TFsType>, Arc<Mutex<Vec<(String, String)>>>) {
+fn new_type() -> (Arc<TFsType>, Arc<Mutex<Vec<(Option<String>, String)>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     (Arc::new(TFsType { seen: seen.clone() }), seen)
 }
@@ -98,8 +98,18 @@ fn get_tree_materialises_sb_and_pins_root() {
     // The legacy get_tree threaded source + the comma-joined opts to ->mount.
     let calls = seen.lock().unwrap();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "dev");
+    assert_eq!(calls[0].0.as_deref(), Some("dev"));
     assert!(calls[0].1.contains("size=8m"), "opts blob: {}", calls[0].1);
+}
+
+#[test]
+fn get_tree_preserves_absent_source_as_none() {
+    let (ty, seen) = new_type();
+    let mut fc = FsContext::for_mount(ty, 0);
+    vfs_get_tree(&mut fc).unwrap();
+    let calls = seen.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, None);
 }
 
 #[test]
@@ -167,7 +177,7 @@ fn reconfigure_on_mount_context_is_einval() {
 struct CustomOps {
     saw_foo: Arc<Mutex<bool>>,
     reconfigured: Arc<Mutex<bool>>,
-    seen: Arc<Mutex<Vec<(String, String)>>>,
+    seen: Arc<Mutex<Vec<(Option<String>, String)>>>,
 }
 impl FsContextOps for CustomOps {
     fn parse_param(&self, _fc: &mut FsContext, param: &FsParameter) -> FcResult<ParamResult> {
@@ -178,7 +188,7 @@ impl FsContextOps for CustomOps {
         Ok(ParamResult::Declined)
     }
     fn get_tree(&self, _fc: &mut FsContext) -> FcResult<Arc<SuperBlock>> {
-        self.seen.lock().unwrap().push(("custom".to_string(), String::new()));
+        self.seen.lock().unwrap().push((Some("custom".to_string()), String::new()));
         Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
     }
     fn reconfigure(&self, _fc: &mut FsContext) -> FcResult<()> {

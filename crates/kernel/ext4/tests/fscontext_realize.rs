@@ -43,7 +43,8 @@ fn register_ext4_like(fstype: &str) {
         fstype,
         ext4::EXT4_SUPER_MAGIC as u64,
         FsFlags::FS_REQUIRES_DEV,
-        alloc::boxed::Box::new(move |source: &str, _t: &str, _d: &str| -> R {
+        alloc::boxed::Box::new(move |source: Option<&str>, _t: &str, _d: &str| -> R {
+            let source = source.ok_or(vfs::VfsError::Enoent)?;
             let name = source.rsplit('/').next().unwrap_or(source);
             let dev = block::by_name(name).map(|d| d.dev.clone()).ok_or(vfs::VfsError::Enoent)?;
             let fs: Arc<dyn vfs::fs::FileSystem> =
@@ -61,7 +62,7 @@ fn converted_realize_matches_legacy_and_gates_source() {
     let ty = get_fs_type("ext4cvt").expect("ext4cvt registered");
 
     // LEGACY graft: FsType::mount(source) directly.
-    let legacy_sb = ty.mount("cvtdisk", "").expect("legacy mount");
+    let legacy_sb = ty.mount(Some("cvtdisk"), "").expect("legacy mount");
     let legacy_root = legacy_sb.s_root().expect("legacy root dentry");
     assert_eq!(legacy_sb.s_magic, ext4::EXT4_SUPER_MAGIC as u64, "legacy s_magic");
     assert!(

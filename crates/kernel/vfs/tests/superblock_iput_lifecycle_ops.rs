@@ -18,7 +18,7 @@ use vfs::{
 struct TType;
 impl FileSystemType for TType {
     fn name(&self) -> &str { "tlcfs" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 
 /// Default `SuperOps` (statfs only) → default drop/write/evict_inode behaviour.

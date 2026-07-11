@@ -34,7 +34,7 @@ impl FileSystem for TFs {
 struct Ty;
 impl FileSystemType for Ty {
     fn name(&self) -> &str { "lsmtfs" }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
         Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "lsmtfs".to_string()))
     }
 }

@@ -35,7 +35,7 @@ impl SuperOps for FsBackedSuperOps {
 pub(crate) struct FsBackedType { pub(crate) fs: Arc<dyn FileSystem> }
 impl FileSystemType for FsBackedType {
     fn name(&self) -> &str { self.fs.name() }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
         Ok(SuperBlock::for_backend(self.fs.clone(), self.fs.root(),
             next_anon_dev(), String::from(self.fs.name())))
     }
@@ -193,7 +193,7 @@ pub trait FileSystemType: Send + Sync {
     /// FS-type name: `"ext4"`, `"tmpfs"`. # C: O(1)
     fn name(&self) -> &str;
     /// Build a superblock instance (`fill_super`). # C: FS-dependent
-    fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>>;
+    fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>>;
     /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`) — the
     /// type-level classification the new-mount-API `vfs_get_tree` consults for
     /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /
