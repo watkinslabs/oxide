@@ -130,8 +130,8 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
 #[inline]
 fn write_wstatus(ptr: u64, val: i32) -> Result<(), i64> {
     if ptr == 0 { return Ok(()); }
-    crate::userbuf::validate_user_buf_writable(ptr, 4, 4)?;
-    // SAFETY: ptr validated writable for 4 bytes in the caller's address space; aligned wait status store.
-    unsafe { core::ptr::write_volatile(ptr as *mut i32, val); }
+    crate::userbuf::validate_user_buf_writable(ptr, 4, 1)?;
+    // SAFETY: exact writable user byte range validated; Linux copyout accepts unaligned int storage.
+    unsafe { core::ptr::write_unaligned(ptr as *mut i32, val); }
     Ok(())
 }
