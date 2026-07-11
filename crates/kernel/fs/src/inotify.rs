@@ -30,7 +30,8 @@ pub(crate) use dispatch::{fire_child, fire_self};
 #[cfg(test)]
 pub(crate) use group::InotifyFileOps;
 #[cfg(test)]
-pub(crate) use syscalls::{apply_mark, validate_fanotify_init, validate_inotify_init_flags, FAN_CLASS_CONTENT,
+pub(crate) use syscalls::{add_or_update_watch, apply_mark, validate_fanotify_init, validate_inotify_init_flags,
+    validate_inotify_watch_mask_after_fd, validate_inotify_watch_mask_bits, FAN_CLASS_CONTENT,
     FAN_CLASS_PRE_CONTENT, FAN_CLOEXEC, FAN_NONBLOCK, FAN_REPORT_DIR_FID, FAN_REPORT_NAME};
 #[cfg(test)]
 pub(crate) use types::{inode_key, Event, MarkScope, PermEvent, FAN_ACCESS, FAN_ALLOW, FAN_ATTRIB, FAN_CLOSE_WRITE,

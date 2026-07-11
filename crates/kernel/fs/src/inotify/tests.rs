@@ -17,6 +17,47 @@ fn legacy_inotify_init_ignores_a0() {
     assert_eq!(sys_inotify_init1(&args), -(syscall::errno::Errno::Einval.as_i32() as i64));
 }
 
+#[test]
+fn inotify_add_watch_mask_validation_matches_linux_ordering_units() {
+    assert_eq!(validate_inotify_watch_mask_bits(IN_MODIFY), Ok(()));
+    assert_eq!(validate_inotify_watch_mask_bits(0), Err(syscall::errno::Errno::Einval));
+    assert_eq!(validate_inotify_watch_mask_bits(0x0080_0000), Err(syscall::errno::Errno::Einval));
+    assert_eq!(validate_inotify_watch_mask_bits(0x0100_0000), Ok(()));
+
+    assert_eq!(validate_inotify_watch_mask_after_fd(IN_MODIFY), Ok(()));
+    assert_eq!(
+        validate_inotify_watch_mask_after_fd(0x1000_0000 | 0x2000_0000),
+        Err(syscall::errno::Errno::Einval),
+    );
+}
+
+#[test]
+fn inotify_add_watch_create_replace_and_add_semantics() {
+    let g = InotifyData::new(0);
+    let key = 0xabcdusize;
+    let wd = add_or_update_watch(&g, key, 0x44, IN_MODIFY).unwrap();
+    assert_eq!(wd, 1);
+    assert_eq!(g.watches.lock()[0].mask, IN_MODIFY);
+
+    let same = add_or_update_watch(&g, key, 0x44, IN_OPEN).unwrap();
+    assert_eq!(same, wd);
+    assert_eq!(g.watches.lock()[0].mask, IN_OPEN);
+
+    let same = add_or_update_watch(&g, key, 0x44, IN_MODIFY | 0x2000_0000).unwrap();
+    assert_eq!(same, wd);
+    assert_eq!(g.watches.lock()[0].mask, IN_OPEN | IN_MODIFY);
+
+    assert_eq!(
+        add_or_update_watch(&g, key, 0x44, IN_ATTRIB | 0x1000_0000),
+        Err(syscall::errno::Errno::Eexist),
+    );
+    assert_eq!(g.watches.lock()[0].mask, IN_OPEN | IN_MODIFY);
+
+    let flags_only = add_or_update_watch(&g, 0xbeefusize, 0x44, 0x0100_0000).unwrap();
+    assert_eq!(flags_only, 2);
+    assert_eq!(g.watches.lock()[1].mask, 0);
+}
+
 // An empty inotify fd is EAGAIN (would-block), never EOF(0), and
 // poll() reports not-readable — else an epoll-driven reader spins.
 #[test]
