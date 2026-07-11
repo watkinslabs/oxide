@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use vfs::fs::FileSystem;
 use vfs::{Dentry, InodeRef, KResult};
 
-use crate::{inode, is_mounted, state::TREE, tree, MOUNT};
+use crate::{inode, is_mounted, state::TREE, tree};
 
 /// cgroup2 filesystem for the unified mount table (`16§7`). Mounted
 /// at `/sys/fs/cgroup`; VFS namei routes paths here. cgroupfs
@@ -41,13 +41,6 @@ impl FileSystem for CgroupFs {
         s.push_str(" cgroup2 rw,nosuid,nodev,noexec,relatime 0 0\n");
         s
     }
-}
-
-/// Mount the unified hierarchy at the canonical boot location.
-/// # C: O(path components)
-pub fn mount_root() -> bool {
-    let mp = vfs::resolve_path_dentry(MOUNT);
-    mount_at(MOUNT, mp).is_ok()
 }
 
 /// Mount the shared unified cgroup2 hierarchy on the caller-walked mountpoint.

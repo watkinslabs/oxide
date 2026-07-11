@@ -37,7 +37,7 @@ pub unsafe fn init(info: &BootInfo) {
         boot_register("/dev",  Arc::new(::devfs::DevfsFs));
         boot_register("/proc", Arc::new(procfs::fs_impl::ProcfsFs));
         boot_register("/sys",  Arc::new(crate::sysfs::SysfsFs));
-        cgroup::mount_root();
+        boot_register_cgroup();
         let tmp = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/tmp"));
         let tmp_root = tmp.root_inode();
         boot_register_bind("/tmp", tmp, tmp_root);
@@ -179,5 +179,14 @@ fn boot_register(path: &str, fs: Arc<dyn vfs::fs::FileSystem>) {
 fn boot_register_bind(path: &str, fs: Arc<dyn vfs::fs::FileSystem>, root: vfs::InodeRef) {
     if let Some(d) = vfs::resolve_path_dentry(path) {
         let _ = vfs::mount::register_bind(Some(d), fs, root);
+    }
+}
+
+/// Boot cgroup2 registration: rootfs owns the early static mountpoint walk;
+/// cgroupfs receives the already-resolved `/sys/fs/cgroup` dentry. # C: O(path components)
+#[cfg(target_os = "oxide-kernel")]
+fn boot_register_cgroup() {
+    if let Some(d) = vfs::resolve_path_dentry(cgroup::MOUNT) {
+        let _ = cgroup::mount_at(cgroup::MOUNT, Some(d));
     }
 }
