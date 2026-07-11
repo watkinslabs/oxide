@@ -51,17 +51,6 @@ fn resolve_ext4_source(source: &str) -> Option<(Arc<dyn block::BlockDevice>, Opt
     block::registry::by_serial(name).map(|dev| (dev, None))
 }
 
-/// # C: O(1)
-pub(crate) fn fstype_converted(t: &str) -> bool {
-    matches!(t,
-        "proc" | "sysfs" | "debugfs" | "tracefs" | "ext4"
-        | "devtmpfs"
-        | "securityfs" | "efivarfs" | "pstore" | "bpf"
-        | "configfs" | "fusectl" | "mqueue" | "hugetlbfs"
-        | "tmpfs" | "ramfs"
-        | "cgroup2")
-}
-
 const SECURITYFS_MAGIC: u64 = 0x7363_6673;
 const EFIVARFS_MAGIC: u64 = 0xde5e_81e4;
 const PSTOREFS_MAGIC: u64 = 0x6165_676C;

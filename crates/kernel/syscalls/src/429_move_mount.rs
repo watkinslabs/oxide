@@ -111,14 +111,12 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
                 let _ = vfs::mount::register_bind_at(Some(target_d.clone()), fs.clone(), root.clone(), Some(target_mnt));
                 return 0;
             }
-            // CONVERTED: graft the already-realized SB (Linux do_move_mount over a
+            // Graft the already-realized SB (Linux do_move_mount over a
             // fsmount object), then deliver mount propagation to the destination
-            // peer group — the same `register*`+`propagate_mount` outcome the
-            // `mount_fstype` fallback produces. [D51] The `fsmount(2)` MOUNT_ATTR_*
-            // request stored on the object (`mnt_attrs`) is mapped into the MNT_*
-            // option space and stamped on the new mount BEFORE it goes live, so a
-            // following `propagate_mount` peer-copy inherits it (clone_mnt copies
-            // src.flags); the prior path dropped these bits.
+            // peer group. [D51] The `fsmount(2)` MOUNT_ATTR_* request stored on
+            // the object (`mnt_attrs`) is mapped into the MNT_* option space and
+            // stamped on the new mount BEFORE it goes live, so a following
+            // `propagate_mount` peer-copy inherits it (clone_mnt copies src.flags).
             if let Some((sb, _root)) = mo.realized.as_ref() {
                 let mnt_flags = vfs::mount::mount_attr_to_mnt(
                     mo.mnt_attrs.load(core::sync::atomic::Ordering::Acquire));
@@ -133,8 +131,7 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
                     Err(e) => crate::namei_common::errno_from_vfs(e),
                 };
             }
-            // LEGACY: materialise-by-fstype at attach (byte-identical fallback).
-            return mount_fstype_at(&mo.source, &mo.fstype, &target, &target_d, Some(target_mnt), "");
+            return -(Errno::Einval.as_i32() as i64);
         }
         return -(Errno::Einval.as_i32() as i64);
     }

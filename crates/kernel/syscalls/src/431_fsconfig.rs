@@ -10,8 +10,9 @@ use crate::fsmount_common::*;
 /// into the `fs_context` per the Linux command set. SET_FLAG/SET_STRING/
 /// SET_PATH/SET_PATH_EMPTY/SET_BINARY store the key/value; `source` is mirrored
 /// into the context source. SET_FD → EINVAL (no fd-valued options supported).
-/// CMD_CREATE/CMD_RECONFIGURE/CMD_CREATE_EXCL are accepted (materialisation is
-/// deferred to fsmount). An unknown command is EINVAL (Linux `vfs_fsconfig_locked`).
+/// CMD_CREATE/CMD_CREATE_EXCL realize the tree; CMD_RECONFIGURE applies parsed
+/// changes to an fspick context. An unknown command is EINVAL (Linux
+/// `vfs_fsconfig_locked`).
 /// # C: O(1)
 pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
     const FSCONFIG_SET_FLAG:       u64 = 0;
@@ -75,27 +76,7 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
         }
     }
 
-    // LEGACY string-bag path (unconverted fstypes → materialised by
-    // `mount_fstype` at `move_mount`): byte-identical to the prior behaviour.
-    match cmd {
-        // We support no fd-valued mount options. A converted fs returns EINVAL
-        // (not EOPNOTSUPP) for an unknown SET_FD key; systemd's
-        // mount_option_supported() probes with a bogus SET_FD option and treats
-        // EINVAL as "new mount API works, option absent" → proceeds cleanly.
-        FSCONFIG_SET_FD => -(Errno::Einval.as_i32() as i64),
-        // Action commands: no key/value; materialisation happens at fsmount.
-        FSCONFIG_CMD_CREATE | FSCONFIG_CMD_RECONFIGURE | FSCONFIG_CMD_CREATE_EXCL => 0,
-        FSCONFIG_SET_FLAG | FSCONFIG_SET_STRING | FSCONFIG_SET_BINARY
-        | FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY => {
-            // key/value were read above (SET_FLAG has an empty value). `source`
-            // is mirrored into the context source for `mount_fstype`.
-            if key == "source" { *ctx.source.lock() = value.clone(); }
-            ctx.options.lock().push((key, value));
-            0
-        }
-        // Unknown command → EINVAL (Linux vfs_fsconfig_locked default).
-        _ => -(Errno::Einval.as_i32() as i64),
-    }
+    -(Errno::Einval.as_i32() as i64)
 }
 
 /// Feed one parameter to the context (`vfs_parse_fs_param`), mapping the VFS
