@@ -8,12 +8,24 @@ use super::{
 use super::scan::{scan_once, validate_events_out};
 use crate::userbuf::validate_user_buf;
 
-/// `sys_epoll_create(size)` / `sys_epoll_create1(flags)`. # C: O(N_fds)
+/// `sys_epoll_create(size)`. # C: O(N_fds)
+pub fn sys_epoll_create(args: &syscall::SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let size = args.a0 as i32;
+    if size <= 0 { return -(Errno::Einval.as_i32() as i64); }
+    sys_epoll_create_common(0)
+}
+
+/// `sys_epoll_create1(flags)`. # C: O(N_fds)
 pub fn sys_epoll_create1(args: &syscall::SyscallArgs) -> i64 {
+    sys_epoll_create_common(args.a0)
+}
+
+fn sys_epoll_create_common(flags: u64) -> i64 {
     use syscall::errno::Errno;
     use vfs::{File, OpenFlags};
-    const EPOLL_CLOEXEC: u64 = 0o2_000_000;
-    let flags = args.a0;
+    const EPOLL_CLOEXEC: u64 = OpenFlags::O_CLOEXEC.bits() as u64;
+    if flags & !EPOLL_CLOEXEC != 0 { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -23,7 +35,7 @@ pub fn sys_epoll_create1(args: &syscall::SyscallArgs) -> i64 {
     };
     let inode = make_epoll_inode();
     let dentry = vfs::dcache::d_alloc_pseudo("[eventpoll]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
-    let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
+    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & EPOLL_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
