@@ -60,10 +60,10 @@ pub(crate) fn readlink_at_path(dirfd: i32, raw: &str, buf_ptr: u64, bufsize: u64
 /// returning the byte count — shared by `readlink`/`readlinkat`. # C: O(n)
 pub(crate) fn write_link_target(target: &[u8], buf_ptr: u64, bufsize: u64) -> i64 {
     let n = (target.len() as u64).min(bufsize) as usize;
-    // SAFETY: buf range validated < USER_VA_END by the caller; CPL=0 writes through caller's AS.
+    // SAFETY: caller validated the writable byte range; Linux readlink copyout accepts unaligned storage.
     unsafe {
         for i in 0..n {
-            core::ptr::write_volatile((buf_ptr + i as u64) as *mut u8, target[i]);
+            core::ptr::write_unaligned((buf_ptr + i as u64) as *mut u8, target[i]);
         }
     }
     n as i64
