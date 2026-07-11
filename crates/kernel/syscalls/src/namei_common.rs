@@ -205,8 +205,8 @@ pub(crate) fn trace_run_vfs_error(op: &[u8], path: &str, e: vfs::VfsError) {
 /// Resolve the PARENT directory of absolute `p` through the engine
 /// Resolve a create target's parent through the real `*at` base, preserving the
 /// walked parent `(mnt,dentry)` as authority and returning only the final leaf
-/// name as text. Dot leaves name an already-existing object in Linux's create
-/// family; root keeps the legacy EINVAL behavior this tree already exposed.
+/// name as text. Non-normal leaves name an already-existing object in Linux's
+/// create family (`filename_create` seeds `-EEXIST` before `LAST_NORM` check).
 /// # C: O(N parent components)
 pub(crate) fn resolve_create_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
     let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
@@ -216,7 +216,7 @@ pub(crate) fn resolve_create_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::Vf
             None => Err(-(Errno::Einval.as_i32() as i64)),
         },
         vfs::LastType::Dot | vfs::LastType::Dotdot => Err(-(Errno::Eexist.as_i32() as i64)),
-        vfs::LastType::Root => Err(-(Errno::Einval.as_i32() as i64)),
+        vfs::LastType::Root => Err(-(Errno::Eexist.as_i32() as i64)),
     }
 }
 

@@ -318,8 +318,9 @@ impl Proc {
     fn symlinkat(&self, target: &[u8], dst: &str) -> KResult<()> {
         self.enter();
         let p = self.parent(AT_FDCWD, dst)?;
+        let name = p.last_component.as_deref().ok_or(VfsError::Eexist)?;
         vfs::may_create(&p.inode, &self.cred)?;
-        p.inode.symlink_child(p.last_component.as_deref().unwrap(), target,
+        p.inode.symlink_child(name, target,
             &CreateCtx { idmap: &vfs::IDENTITY, cred: &self.cred, umask: self.umask })
     }
     fn unlinkat(&self, path: &str) -> KResult<()> {
@@ -410,6 +411,7 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert_eq!(logind.read_path("/run/udev/data/by-card0").expect("logind reads hardlink"), body);
     assert_eq!(logind.read_path("/run/udev/card0-db").expect("logind reads symlink"), body);
     assert_eq!(logind.readlink("/run/udev/card0-db").expect("readlink symlink"), b"data/c226:0");
+    assert!(matches!(udev.symlinkat(b"x", "/"), Err(VfsError::Eexist)));
     assert!(matches!(logind.readlink("/run/udev/data/c226:0"), Err(VfsError::Einval)));
     let link_path = udev.lookup(AT_FDCWD, "/run/udev/card0-db",
         LookupFlags { no_follow_final: true, follow: false, ..Default::default() }).expect("link path");
