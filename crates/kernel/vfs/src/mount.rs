@@ -22,7 +22,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, 
 use sync::{MountTable as MountClass, MountWrite as MountWriteClass, Spinlock};
 
 use crate::dentry::Dentry;
-use crate::fs::{FileSystem, KResult, MountSpec};
+use crate::fs::{superblock_from_filesystem, FileSystem, KResult};
 use crate::inode::InodeRef;
 use crate::mntns::{self, get_mountpoint, put_mountpoint, Mountpoint};
 use crate::superblock::{FileSystemType, SuperBlock};

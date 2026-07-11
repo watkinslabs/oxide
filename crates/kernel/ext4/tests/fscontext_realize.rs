@@ -15,7 +15,7 @@ use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::{
     get_fs_type, register_fs, vfs_get_tree, vfs_parse_fs_string, FsContext, FsFlags, FsType,
-    MountSpec,
+    superblock_from_filesystem,
 };
 
 const IMAGE: &[u8] = include_bytes!("mini.img");
@@ -38,7 +38,7 @@ fn build_disk() -> Arc<dyn BlockDevice> {
 /// disk found by `source` name in the block registry — the production
 /// fsmount ctor with the registry lookup specialised to `by_name` for the test.
 fn register_ext4_like(fstype: &str) {
-    type R = vfs::fs::KResult<MountSpec>;
+    type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
     let _ = register_fs(FsType::new(
         fstype,
         ext4::EXT4_SUPER_MAGIC as u64,
@@ -49,7 +49,7 @@ fn register_ext4_like(fstype: &str) {
             let dev = block::by_name(name).map(|d| d.dev.clone()).ok_or(vfs::VfsError::Enoent)?;
             let fs: Arc<dyn vfs::fs::FileSystem> =
                 ext4::rootfs::Ext4Mount::open(dev).map_err(|_| vfs::VfsError::Einval)?;
-            Ok(MountSpec::from_filesystem(ty, fs, None, true, source.to_string()))
+            Ok(superblock_from_filesystem(ty, fs, None, source.to_string()))
         }),
     ));
 }
