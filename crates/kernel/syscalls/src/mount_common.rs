@@ -10,6 +10,7 @@ use syscall::errno::Errno;
 
 fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
+fn enoent() -> i64 { -(Errno::Enoent.as_i32() as i64) }
 
 /// `debug-mount`: log a mount-family syscall outcome (op label + path + rv) so
 /// 226/NAMESPACE sandbox failures show the exact failing op + errno. Mount ops
@@ -77,8 +78,54 @@ pub(crate) fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
     String::from_utf8(out).map_err(|_| einval())
 }
 
-/// Read an optional user C string. `NULL` means absent; any non-null bad pointer
-/// remains `EFAULT`. # C: O(max)
-pub(crate) fn read_optional_user_cstr_owned(p: u64, max: usize) -> Result<Option<String>, i64> {
-    if p == 0 { Ok(None) } else { read_user_cstr_owned(p, max).map(Some) }
+/// Read a user pathname. Linux pathnames are byte strings, not UTF-8 text; the
+/// VFS path codec preserves invalid UTF-8 bytes reversibly. # C: O(PATH_MAX)
+pub(crate) fn read_user_path_allow_empty(p: u64) -> Result<String, i64> {
+    let b = read_user_cstr_bytes(p, vfs::path::PATH_MAX)?;
+    let path = vfs::path_from_bytes(&b);
+    if !path.is_empty() {
+        vfs::path::check_path_len(&path).map_err(crate::namei_common::errno_from_vfs)?;
+    }
+    Ok(path)
+}
+
+/// Read a required pathname. Empty string is a valid C string but not a valid
+/// mount-family path operand. # C: O(PATH_MAX)
+pub(crate) fn read_user_path_required(p: u64) -> Result<String, i64> {
+    let path = read_user_path_allow_empty(p)?;
+    if path.is_empty() { Err(enoent()) } else { Ok(path) }
+}
+
+/// Read an optional user pathname; NULL is absence, non-NULL bad pointers still
+/// return `EFAULT`. # C: O(PATH_MAX)
+pub(crate) fn read_optional_user_path(p: u64) -> Result<Option<String>, i64> {
+    if p == 0 { Ok(None) } else { read_user_path_allow_empty(p).map(Some) }
+}
+
+fn read_user_cstr_bytes(p: u64, max: usize) -> Result<Vec<u8>, i64> {
+    if p == 0 || p >= hal::USER_VA_END { return Err(efault()); }
+    let cur = sched::live::current().ok_or_else(efault)?;
+    // SAFETY: syscall context; the running task owns this mm slot.
+    let mm = unsafe { cur.mm_ref() }.ok_or_else(efault)?;
+    let mut out = Vec::with_capacity(max.min(256));
+    let mut checked_page = u64::MAX;
+    for i in 0..max {
+        let addr = p.checked_add(i as u64).ok_or_else(efault)?;
+        if addr >= hal::USER_VA_END { return Err(efault()); }
+        let page = addr & !0xfff;
+        if page != checked_page {
+            let uva = hal::UserVirtAddr::new(page).ok_or_else(efault)?;
+            match mm.find_vma(uva) {
+                Some(vma) if vma.prot.contains(vmm::VmaProt::READ) => {}
+                _ => return Err(efault()),
+            }
+            checked_page = page;
+        }
+        // SAFETY: addr is below USER_VA_END and its containing VMA permits read.
+        // Not-present pages are demand-faulted by the active user address space.
+        let b = unsafe { core::ptr::read_volatile(addr as *const u8) };
+        if b == 0 { return Ok(out); }
+        out.push(b);
+    }
+    Err(crate::namei_common::errno_from_vfs(vfs::VfsError::Enametoolong))
 }

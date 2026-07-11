@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::mount_common::read_user_cstr_owned;
+use crate::mount_common::read_user_path_required;
 
 /// `sys_umount2(target, flags)` — slot 166.
 ///
@@ -27,7 +27,7 @@ pub fn sys_umount2(args: &SyscallArgs) -> i64 {
     let rv = sys_umount2_impl(args);
     #[cfg(feature = "debug-mount")]
     {
-        if let Ok(tgt) = read_user_cstr_owned(args.a0, 256) {
+        if let Ok(tgt) = read_user_path_required(args.a0) {
             crate::mount_common::mnt_log("umount2", &tgt, rv);
         }
     }
@@ -56,7 +56,7 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         return -(Errno::Eperm.as_i32() as i64);
     }
     let target_ptr = args.a0;
-    let path_raw = match read_user_cstr_owned(target_ptr, 256) {
+    let path_raw = match read_user_path_required(target_ptr) {
         Ok(p) => p, Err(rv) => return rv,
     };
     let no_follow = (flags & UMOUNT_NOFOLLOW) != 0;
