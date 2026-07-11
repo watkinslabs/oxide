@@ -39,7 +39,7 @@ pub mod tty;
 #[cfg(test)]
 mod net_tests;
 
-pub use root::{register, register_dir, sys_root, SYSFS_FSID};
+pub use root::{drop_cached, register, register_dir, sys_root, SYSFS_FSID};
 
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
@@ -93,9 +93,7 @@ fn lookup_net_ifindex(_name: &str) -> u32 {
 fn invalidate_netdev_paths(name: &str) {
     for path in ["/sys/class/net/", "/sys/devices/virtual/net/"] {
         let full = alloc::format!("{}{}", path, name);
-        if let Some(dentry) = vfs::resolve_path_dentry(&full) {
-            vfs::d_invalidate(&dentry);
-        }
+        drop_cached(&full);
     }
 }
 
@@ -492,6 +490,7 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// `PseudoDir::lookup` + the dynamic `SysClassNetOps::lookup`.
     /// # C: O(1)
     fn root(&self) -> Option<InodeRef> { sys_root().lookup_path("") }
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) { sys_root().set_sb(sb); }
 }
 
 /// Singleton accessor for the mount table.

@@ -361,9 +361,7 @@ fn make_sys_class_block_inode() -> InodeRef {
 fn invalidate_block_paths(name: &str) {
     for path in ["/sys/block/", "/sys/devices/virtual/block/", "/sys/class/block/"] {
         let full = alloc::format!("{}{}", path, name);
-        if let Some(dentry) = vfs::resolve_path_dentry(&full) {
-            vfs::d_invalidate(&dentry);
-        }
+        crate::drop_cached(&full);
     }
 }
 

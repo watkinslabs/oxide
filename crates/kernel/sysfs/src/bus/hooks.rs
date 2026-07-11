@@ -48,16 +48,7 @@ pub fn remove_device_cb(dev: &drv::Device) {
 
 fn invalidate_path(path: &str) {
     let full = alloc::format!("/sys{}", path);
-    if let Some(dentry) = vfs::resolve_path_dentry(&full) {
-        vfs::d_invalidate(&dentry);
-    }
-    let Some((parent, name)) = full.rsplit_once('/') else { return; };
-    let parent = if parent.is_empty() { "/" } else { parent };
-    if let Some(parent_dentry) = vfs::resolve_path_dentry(parent) {
-        if let Some(dentry) = vfs::d_lookup(&parent_dentry, name) {
-            vfs::d_invalidate(&dentry);
-        }
-    }
+    crate::drop_cached(&full);
 }
 
 fn invalidate_model_paths(dev: &drv::Device, devpath: &str) {
