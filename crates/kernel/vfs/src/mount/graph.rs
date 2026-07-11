@@ -106,7 +106,8 @@ fn cross_up(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Dentry>> {
 /// Absolute path rendered from a dentry's parent chain (Linux `d_path`) — the
 /// WRITE-ONLY rendered path. # C: O(depth)
 fn abs_string(d: &Arc<Dentry>) -> String {
-    String::from_utf8(d.absolute_path()).unwrap_or_else(|_| String::from("/"))
+    let p = d.absolute_path();
+    crate::path::path_from_bytes(&p)
 }
 
 /// MOUNT-AWARE rendered path for a mount attached at dentry `d` under `parent_id`
@@ -132,19 +133,19 @@ fn rendered_path_for(parent_id: u64, d: &Arc<Dentry>) -> String {
                 // `/` root dentry renders as "/" (len 1); stripping it would eat the
                 // leading slash, so treat the fs root as a zero-length prefix.
                 let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
-                let rel = core::str::from_utf8(&d_ap[strip..]).unwrap_or("");
+                let rel = crate::path::path_from_bytes(&d_ap[strip..]);
                 let prp = p.mount_point_str();
                 return if prp == "/" {
                     if rel.is_empty() { String::from("/") } else { String::from(rel) }
                 } else {
                     let mut s = prp;
-                    s.push_str(rel);      // rel starts with '/' (or is empty ⇒ stacked at prp)
+                    s.push_str(&rel);      // rel starts with '/' (or is empty ⇒ stacked at prp)
                     s
                 };
             }
         }
     }
-    String::from_utf8(d_ap).unwrap_or_else(|_| String::from("/"))
+    crate::path::path_from_bytes(&d_ap)
 }
 
 /// Render a full `struct path` (`mnt_id`, dentry) for user-visible path text
@@ -157,12 +158,12 @@ pub fn render_path_for_mount(mnt_id: u64, d: &Arc<Dentry>) -> String {
     let root_ap = root.absolute_path();
     if !d.is_subdir_of(&root) || !d_ap.starts_with(root_ap.as_slice()) { return abs_string(d); }
     let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
-    let rel = core::str::from_utf8(&d_ap[strip..]).unwrap_or("");
+    let rel = crate::path::path_from_bytes(&d_ap[strip..]);
     let mut base = m.mount_point_str();
     if base == "/" {
         if rel.is_empty() { String::from("/") } else { String::from(rel) }
     } else {
-        base.push_str(rel);
+        base.push_str(&rel);
         base
     }
 }

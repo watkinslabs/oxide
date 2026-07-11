@@ -20,7 +20,7 @@ pub fn render_mount_root_field(root: Option<Arc<Dentry>>, sb_root: Option<Arc<De
     let Some(r) = root else { return String::from("/"); };
     let rp = r.absolute_path();
     let Some(sr) = sb_root else {
-        return String::from_utf8(rp).unwrap_or_else(|_| String::from("/"));
+        return crate::path::path_from_bytes(&rp);
     };
     let sp = sr.absolute_path();
     let rel = if r.is_subdir_of(&sr) && rp.starts_with(sp.as_slice()) {
@@ -37,7 +37,16 @@ pub fn render_mount_root_field(root: Option<Arc<Dentry>>, sb_root: Option<Arc<De
             out.push_str(s);
             out
         }
-        Err(_) => String::from("/"),
+        Err(_) => {
+            let s = crate::path::path_from_bytes(rel);
+            if s.is_empty() { String::from("/") }
+            else if s.starts_with('/') { s }
+            else {
+                let mut out = String::from("/");
+                out.push_str(&s);
+                out
+            }
+        }
     }
 }
 

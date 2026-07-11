@@ -76,6 +76,19 @@ fn mountinfo_root_field_rejects_lexical_prefix_sibling() {
 }
 
 #[test]
+fn mountinfo_root_field_preserves_raw_byte_subroot() {
+    common::install();
+    let raw = vfs::path_from_bytes(b"raw-\xff");
+    let sb_root = common::dentry("/proc");
+    let bind_root = common::dentry(&format!("/proc/{raw}"));
+    assert_eq!(
+        vfs::mount::render_mount_root_field(Some(bind_root), Some(sb_root)),
+        format!("/{raw}"),
+        "mountinfo root must not replace a raw-byte bind root with /",
+    );
+}
+
+#[test]
 fn mountinfo_options_and_source_are_vfs_owned() {
     common::install();
     common::register("/mnt/projection-options", Arc::new(ProjectionFs)).expect("mount projection fs");
@@ -123,5 +136,26 @@ fn render_path_for_mount_rejects_lexical_prefix_sibling() {
         vfs::mount::render_path_for_mount(m.mnt_id, &foobar),
         "/foobar",
         "sibling /foobar is not beneath bind root /foo and must not render as /mntbar",
+    );
+}
+
+#[test]
+fn render_path_for_mount_preserves_raw_byte_suffix() {
+    common::install();
+    let raw = vfs::path_from_bytes(b"raw-\xff");
+    let root = common::dentry("/foo");
+    let mnt = common::dentry("/mnt");
+    let raw_child = common::dentry(&format!("/foo/{raw}"));
+    vfs::mount::register_bind_path_at(
+        Some(mnt.clone()),
+        Arc::new(ProjectionFs),
+        root,
+        None,
+    ).expect("bind /foo on /mnt");
+    let m = common::mount_at_path_exact("/mnt").expect("bind mount");
+    assert_eq!(
+        vfs::mount::render_path_for_mount(m.mnt_id, &raw_child),
+        format!("/mnt/{raw}"),
+        "rendered mount path must keep raw-byte suffix identity",
     );
 }
