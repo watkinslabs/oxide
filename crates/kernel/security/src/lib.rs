@@ -19,7 +19,7 @@ pub mod bpf;
 pub mod bpf_lsm;
 pub mod bpf_verify;
 pub mod bpf_interp;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod landlock;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
