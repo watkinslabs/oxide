@@ -261,15 +261,16 @@ mod nlink_mode_tests {
         assert_eq!(root.nlink(), 2);
     }
 
-    // D35: mkdir/create honour the caller-supplied permission bits instead of
-    // a hardcoded 0o755/0o644.
+    // D35: mkdir/create honour Linux-prepared permission bits instead of a
+    // hardcoded 0o755/0o644; mkdir masks caller-supplied SGID unless inherited
+    // from an SGID parent.
     #[test]
     fn create_and_mkdir_honour_mode() {
         let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
         let f = root.create_child("f", 0o600, &CreateCtx::root()).expect("create f");
         assert_eq!(f.perm(), Some(0o600));
         let d = root.mkdir("d", 0o2750, &CreateCtx::root()).expect("mkdir d");
-        assert_eq!(d.perm(), Some(0o2750));
+        assert_eq!(d.perm(), Some(0o750));
     }
 
     // D35 (idmap lane): a new tmpfs inode takes its owner from the caller cred
