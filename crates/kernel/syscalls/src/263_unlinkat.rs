@@ -4,7 +4,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent, unlink_unix_socket_path};
+use crate::namei_common::read_user_path;
 
 const AT_REMOVEDIR: u32 = 0x200;
 
@@ -24,48 +24,12 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     if (flags & AT_REMOVEDIR) != 0 {
         if let Some(rv) = crate::namei_common::rmdir_dot_errno(&raw) { return rv; }
     }
-    // BUG D follow-up: resolve against the real dirfd (a0).
-    let p = match crate::pathresolve::resolve_at_result(args.a0 as i32, &raw) {
-        Ok(rp) => rp, Err(rv) => return rv,
-    };
-    let op = if (flags & AT_REMOVEDIR) != 0 {
-        ::security::landlock::access::REMOVE_DIR
-    } else {
-        ::security::landlock::access::REMOVE_FILE
-    };
-    if let Err(rv) = crate::landlock::check(&p, op) { return rv; }
     // AT_REMOVEDIR is rmdir — delegate to the shared core so the
     // legacy rmdir(2) and the *at form (the only one aarch64 has)
     // stay identical. Without this, cgroup/pseudo-fs rmdir worked on
     // x86 (via sys_rmdir) but returned EROFS on arm.
     if (flags & AT_REMOVEDIR) != 0 {
-        return crate::s084_rmdir::do_rmdir(&p);
+        return crate::s084_rmdir::do_rmdir_at(args.a0 as i32, &raw);
     }
-    if vfs::mount::is_readonly_path(&p) {
-        return -(Errno::Erofs.as_i32() as i64);
-    }
-    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
-    // D30: capture the victim dentry before the backend removes the name.
-    let victim = crate::s087_unlink::victim_dentry(&p);
-    // D29: parent dir `i_rwsem` EXCLUSIVE across the backend unlink (Linux
-    // `do_unlinkat` locks the parent); dropped before the dcache delete below.
-    let r = { let _g = pino.inode_lock(); pino.unlink_child(&name) };
-    match r {
-        // D30: backend unlink ran first; `d_unlink` then drives drop_link + the
-        // last-alias retirement (Linux `vfs_unlink` tail). See sys_unlink.
-        Ok(())  => {
-            unlink_unix_socket_path(&p);
-            match victim {
-                Some(d) => {
-                    if let Some(ino) = d.inode() { ::fs::inotify::fire_delete_self(&ino); }
-                    vfs::dcache::d_unlink(&d);
-                }
-                None    => crate::pathresolve::d_delete_path(&p),
-            }
-            vfs::fire_dirent_delete(crate::namei_common::parent_path(&p), &name);
-            0
-        }
-        Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => 0,
-        Err(e)  => errno_from_vfs(e),
-    }
+    crate::s087_unlink::unlink_at(args.a0 as i32, &raw)
 }
