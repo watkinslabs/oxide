@@ -480,7 +480,10 @@ pub fn attach_recursive_mnt(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
                             root: Option<InodeRef>) -> KResult<usize> {
     let at = mp.clone();
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    attach(ty, mp, fs, root, None)?;
+    match root {
+        Some(r) => register_bind_typed(ty, mp, fs, r)?,
+        None => register_typed(ty, mp, fs)?,
+    }
     Ok(match at { Some(d) => propagation::propagate_mount(&d), None => 0 })
 }
 
