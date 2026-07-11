@@ -32,6 +32,7 @@ pub(crate) fn link_inode_at(src: vfs::InodeRef, src_mnt_id: u64, dirfd: i32, raw
     let r = { let _g = parent.inode.inode_lock(); parent.inode.link_child(&src, &name, &ctx) };
     match r {
         Ok(())  => {
+            src.set_state(0, vfs::I_LINKABLE);
             drop_child_cache(&parent, &name);
             vfs::fire_dirent_create(&parent.inode, &name);
             0

@@ -262,6 +262,7 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
         match dir.inode.tmpfile(req_mode, &ctx) {
             Ok(i)  => {
+                i.set_state(vfs::I_LINKABLE, 0);
                 let d = dir.dentry;
                 (i, mnt.mnt_id, d, true, display)
             }
