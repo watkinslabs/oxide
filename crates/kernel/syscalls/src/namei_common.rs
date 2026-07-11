@@ -219,6 +219,21 @@ pub(crate) fn resolve_create_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::Vf
     }
 }
 
+/// Resolve a hardlink destination parent. Existing directory/root/dot targets
+/// are EEXIST for Linux link(2), not the create-family legacy EINVAL-on-root.
+/// # C: O(N parent components)
+pub(crate) fn resolve_link_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Eexist.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
+            Err(-(Errno::Eexist.as_i32() as i64)),
+    }
+}
+
 /// Resolve an unlink target's parent without collapsing the authority back into
 /// a string. Dot/root targets are directories to Linux unlink(2), so reject them
 /// before backend `unlink("."/"..")` can manufacture filesystem-specific ENOENT.
