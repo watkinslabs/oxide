@@ -61,6 +61,16 @@ impl PseudoEntry {
             PseudoEntry::Leaf(i) => i.ino(),
         }
     }
+
+    fn collect_inodes(&self, out: &mut Vec<InodeRef>) {
+        match self {
+            PseudoEntry::Leaf(i) => out.push(Arc::clone(i)),
+            PseudoEntry::Dir(d) => {
+                for child in d.children.lock().values() { child.collect_inodes(out); }
+                out.push(d.as_inode());
+            }
+        }
+    }
 }
 
 pub struct PseudoDir {
@@ -246,10 +256,10 @@ impl PseudoDir {
         None
     }
 
-    pub fn remove_subtree(self: &Arc<PseudoDir>, path: &str) -> usize {
+    fn remove_entry(self: &Arc<PseudoDir>, path: &str) -> Option<PseudoEntry> {
         let comps = components(path);
         if comps.is_empty() {
-            return 0;
+            return None;
         }
         let mut dir = Arc::clone(self);
         for c in &comps[..comps.len() - 1] {
@@ -257,17 +267,24 @@ impl PseudoDir {
                 let g = dir.children.lock();
                 match g.get(*c) {
                     Some(PseudoEntry::Dir(d)) => Arc::clone(d),
-                    _ => return 0,
+                    _ => return None,
                 }
             };
             dir = next;
         }
         let leaf = comps[comps.len() - 1];
-        if dir.children.lock().remove(leaf).is_some() {
-            1
-        } else {
-            0
-        }
+        let removed = dir.children.lock().remove(leaf);
+        removed
+    }
+
+    pub fn remove_subtree(self: &Arc<PseudoDir>, path: &str) -> usize {
+        if self.remove_entry(path).is_some() { 1 } else { 0 }
+    }
+
+    pub fn remove_subtree_inodes(self: &Arc<PseudoDir>, path: &str) -> Vec<InodeRef> {
+        let mut out = Vec::new();
+        if let Some(entry) = self.remove_entry(path) { entry.collect_inodes(&mut out); }
+        out
     }
 
     /// Independent copy of a device-node leaf inode for a fresh mount namespace:

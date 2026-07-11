@@ -108,19 +108,18 @@ pub fn unregister_subtree(ns: u64, mount_point: &str) -> usize {
     root.remove_subtree(mount_point)
 }
 
-/// Remove the entry at `path` (and its subtree) from EVERY namespace root.
-/// Device hot-unplug (`device_del` → `del_device_node`) removes the node from
-/// the single shared devtmpfs instance, so it must vanish from all namespaces —
-/// unlike per-ns `unregister_subtree` (umount2), which detaches ONE ns's mount.
-/// Returns the summed count removed. # C: O(ns·depth)
-pub fn unregister_subtree_all(path: &str) -> usize {
+/// Remove the entry at `path` from EVERY namespace root and return every inode
+/// detached from those trees. Device hot-unplug callers use this to invalidate
+/// dcache aliases by inode identity, without re-resolving a rendered path.
+/// # C: O(ns·subtree)
+pub fn unregister_subtree_all_inodes(path: &str) -> Vec<InodeRef> {
     let roots: Vec<Arc<PseudoDir>> = {
         let g = ROOTS.lock();
         g.values().map(Arc::clone).collect()
     };
-    let mut n = 0;
-    for r in roots { n += r.remove_subtree(path); }
-    n
+    let mut out = Vec::new();
+    for r in roots { out.extend(r.remove_subtree_inodes(path)); }
+    out
 }
 
 /// Deep-clone the `src_ns` tree (dirs recursively cloned, leaf Arcs shared)
@@ -175,17 +174,31 @@ mod ns_visibility_tests {
         assert!(lookup(0, "/dev/s1b_card0").is_some(), "still present in ns0");
     }
 
-    /// Device hot-unplug (`del_device_node` → `unregister_subtree_all`) removes
-    /// the node from EVERY namespace, unlike per-ns umount.
+    /// Device hot-unplug (`del_device_node` → `unregister_subtree_all_inodes`)
+    /// removes the node from EVERY namespace, unlike per-ns umount.
     #[test]
     fn hotunplug_removes_from_all_ns() {
         let a = 0x5_1b3_0000u64;
         register(0, "/dev/s1b_hot0", crate::misc::make_null_inode());
         snapshot_ns(0, a);
         assert!(lookup(a, "/dev/s1b_hot0").is_some());
-        let removed = unregister_subtree_all("/dev/s1b_hot0");
-        assert!(removed >= 2, "removed from at least ns0 + ns a, got {}", removed);
+        let removed = unregister_subtree_all_inodes("/dev/s1b_hot0");
+        assert!(removed.len() >= 2, "removed from at least ns0 + ns a, got {}", removed.len());
         assert!(lookup(0, "/dev/s1b_hot0").is_none(), "gone in ns0");
         assert!(lookup(a, "/dev/s1b_hot0").is_none(), "gone in ns a");
+    }
+
+    #[test]
+    fn hotunplug_returns_removed_inode_identities() {
+        let a = 0x5_1b4_0000u64;
+        let inode = crate::misc::make_null_inode();
+        let ino = inode.ino();
+        register(0, "/dev/s1b_inode_hot0", inode);
+        snapshot_ns(0, a);
+        let removed = unregister_subtree_all_inodes("/dev/s1b_inode_hot0");
+        assert!(removed.len() >= 2, "removed from ns0 + child ns, got {}", removed.len());
+        assert!(removed.iter().all(|i| i.ino() == ino), "hot-unplug surfaces removed inode identities");
+        assert!(lookup(0, "/dev/s1b_inode_hot0").is_none(), "gone in ns0");
+        assert!(lookup(a, "/dev/s1b_inode_hot0").is_none(), "gone in ns a");
     }
 }
