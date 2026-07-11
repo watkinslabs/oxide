@@ -980,6 +980,7 @@ Hosted proof:
 - Deleted `FileSystem::{create,unlink,link,link_inode,rename,lookup_path,exchange,whiteout}` from the VFS trait.
 - Deleted tmpfs/ext4 implementations and tmpfs dead path-walk helpers that existed only for those hooks.
 - Syscall authority remains resolved-parent/inode based: open/create/tmpfile/link/unlink/rename/mknod/symlink route through namei + `InodeOps`, not backend-global string re-splits.
+- Deleted reusable `install_open(path, ...)`; `install_open_at(inode,dentry,...)` now requires an already-resolved dentry and cannot re-walk rendered text. `O_TRUNC` read-only policy keys off `mnt_id` mount state when a real mount exists.
 - Ext4 backend byte-path helpers remain only inside ext4 hosted image tests and `RootfsState` internals; they are not VFS/syscall authority.
 - AF_UNIX bind no longer stores path text for later dcache invalidation; O_TMPFILE now calls the resolved directory inode's `tmpfile` op.
 - Evidence:
@@ -988,6 +989,8 @@ Hosted proof:
   - `cargo test -p fs --test fs_syscall_model -- --nocapture` passed: 1/1.
   - `cargo test -p ext4 --test rename_overwrite_image -- --nocapture` passed: 6/6.
   - `cargo test -p ext4 --test two_mounts root_inode_routes_per_instance -- --nocapture` passed: 1/1.
+  - `cargo test -p vfs --lib install_open_o_cloexec_sets_fd_flag_not_file_flag -- --nocapture` passed.
+  - `cargo test -p modules --lib -- --nocapture` passed: 178/178.
   - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec --message-format=short` passed.
   - `cargo check -p syscalls --target targets/aarch64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec --message-format=short` passed.
 

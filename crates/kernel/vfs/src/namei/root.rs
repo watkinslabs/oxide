@@ -18,7 +18,7 @@ pub fn resolve_abs(path: &str) -> KResult<InodeRef> {
 }
 
 /// Resolve absolute `path` to its canonical DENTRY (parent chain intact) by
-/// the per-component walk from the global root. Used by `install_open` to
+/// the per-component walk from the global root. Used by open-path tests to
 /// obtain the real parent dentry for an opened file. `None` if the root dentry
 /// isn't built yet (early boot) or the path doesn't resolve. # C: O(components)
 pub fn resolve_path_dentry(path: &str) -> Option<Arc<Dentry>> {

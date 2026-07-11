@@ -1,5 +1,5 @@
 //! file-D10: `open_dentry` (the `f->f_path.dentry` builder used by
-//! `install_open`) must hand the fd the CANONICAL, HASHED dcache node for the
+//! `install_open_at`) must hand the fd the CANONICAL, HASHED dcache node for the
 //! opened path — the exact `(parent,name)` object already in the global
 //! `dentry_hashtable` — NOT a fresh, unhashed `Dentry::new_child` Arc fabricated
 //! per open. Two opens of the same path therefore share ONE dentry object, and
