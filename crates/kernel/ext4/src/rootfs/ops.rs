@@ -28,6 +28,19 @@ pub(crate) fn dirent_dt(i: &crate::Inode) -> u8 {
     }
 }
 
+fn namei_error_from_mount(e: crate::MountError) -> vfs::VfsError {
+    match e {
+        crate::MountError::NotFound | crate::MountError::Dir(crate::dir::DirError::NotFound) => vfs::VfsError::Enoent,
+        crate::MountError::NotDir => vfs::VfsError::Enotdir,
+        crate::MountError::NoSpace | crate::MountError::DirFull
+            | crate::MountError::Dir(crate::dir::DirError::Full) => vfs::VfsError::Enospc,
+        crate::MountError::Inode(crate::InodeError::BadLen)
+            | crate::MountError::Dir(crate::dir::DirError::BadNameLen)
+            | crate::MountError::UnsupportedFeature => vfs::VfsError::Einval,
+        _ => vfs::VfsError::Eio,
+    }
+}
+
 impl RootfsState {
     /// A freshly allocated ext4 inode number may have a stale VFS inode-cache
     /// slot from a prior unlinked object with the same ino. Drop it before
@@ -164,6 +177,7 @@ impl RootfsState {
         if inode.is_dir() { return Err(vfs::VfsError::Eperm); }
         let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
         let (parent_ino, name_owned) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
+        if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
         self.mount.run_journaled(|m| {
             m.dir_link(parent_ino, &name, ino, ftype)?;
@@ -172,7 +186,7 @@ impl RootfsState {
             // (Linux `ext4_orphan_del` in `ext4_link`/`ext4_tmpfile` linkat).
             m.orphan_del(ino)?;
             Ok(())
-        }).map_err(|_| vfs::VfsError::Eio)?;
+        }).map_err(namei_error_from_mount)?;
         self.orphan_remove(ino);
         Ok(())
     }
@@ -181,7 +195,9 @@ impl RootfsState {
     pub fn unlink_at(&self, path: &[u8]) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
         let target = self.mount.lookup_path(path).map_err(|_| vfs::VfsError::Enoent)?;
-        self.mount.unlink(pino, name).map_err(|_| vfs::VfsError::Eio)?;
+        let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
+        if inode.is_dir() { return Err(vfs::VfsError::Eisdir); }
+        self.mount.unlink(pino, name).map_err(namei_error_from_mount)?;
         self.page_cache.invalidate(InodeId(target as u64));
         Ok(())
     }
@@ -189,7 +205,8 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn symlink_at(&self, target: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
-        let new_ino = self.mount.create_symlink(pino, name, target, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
+        if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
+        let new_ino = self.mount.create_symlink(pino, name, target, 0, 0).map_err(namei_error_from_mount)?;
         self.forget_created_ino(new_ino);
         Ok(())
     }
@@ -197,7 +214,8 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn mknod_at(&self, path: &[u8], mode: u16, rdev: u32) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        let new_ino = self.mount.create_mknod(pino, name, mode, rdev, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
+        if self.mount.lookup_path(path).is_ok() { return Err(vfs::VfsError::Eexist); }
+        let new_ino = self.mount.create_mknod(pino, name, mode, rdev, 0, 0).map_err(namei_error_from_mount)?;
         self.forget_created_ino(new_ino);
         Ok(())
     }
@@ -205,7 +223,8 @@ impl RootfsState {
     /// # C: O(N parent entries)
     pub fn mkdir_at(&self, path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        let new_ino = self.mount.create_dir(pino, name, mode_perm, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
+        if self.mount.lookup_path(path).is_ok() { return Err(vfs::VfsError::Eexist); }
+        let new_ino = self.mount.create_dir(pino, name, mode_perm, 0, 0).map_err(namei_error_from_mount)?;
         self.forget_created_ino(new_ino);
         Ok(())
     }
@@ -216,7 +235,7 @@ impl RootfsState {
         let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
         if !inode.is_dir() { return Err(vfs::VfsError::Enotdir); }
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        self.mount.rmdir(pino, name).map_err(|_| vfs::VfsError::Eio)?;
+        self.mount.rmdir(pino, name).map_err(namei_error_from_mount)?;
         Ok(())
     }
 
@@ -227,13 +246,14 @@ impl RootfsState {
         let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
         if inode.is_dir() { return Err(vfs::VfsError::Eperm); }
         let (parent_ino, name_owned) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
+        if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
         let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
         self.mount.run_journaled(|m| {
             m.dir_link(parent_ino, &name, target, ftype)?;
             m.adjust_nlink(target, 1)?;
             Ok(())
-        }).map_err(|_| vfs::VfsError::Eio)
+        }).map_err(namei_error_from_mount)
     }
 
     /// # C: O(1)
