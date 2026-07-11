@@ -742,15 +742,19 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
    - Done so far:
      - real `MS_BIND` clones now share source SB through `register_bind_clone_*`.
      - staged-proc bind identity + SB sharing is hosted-harnessed.
+     - VFS now has `MountTarget { parent: VfsPath, mountpoint: Arc<Dentry> }` plus `mountpoint_lookup_at_root_cred()`, so target attach identity is a single walked `(parent_mnt_id, dentry)` result.
+     - `sys_mount(MS_BIND)` now resolves source once as `VfsPath` and target once as `MountTarget`; it no longer does `mount_dentry(source)` + `resolve_path(source)` double walks or chooses bind placement from `target_d.absolute_path()`.
+     - `sys_mount(MS_MOVE)`, propagation retunes, and new-fstype mounts now use the same mount-target resolver for the destination dentry instead of splitting final-dentry and parent-mount resolution.
+     - Hosted proof: `cargo test -p vfs --test mount_target_lookup -- --nocapture` proves `/proc/kallsyms` and `/stage/proc/kallsyms` can share the same leaf dentry while the resolver still returns the staged bind mount as parent identity.
+     - Verification: `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 4/4; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
    - Still required:
      - replace `target = resolve_cwd(target_raw)`/`canonical_mount_path()` authority with one `VfsPath` walk.
-     - replace source `mount_dentry(&source)` + `resolve_path(&source)` double walk with one source `VfsPath`.
      - make mountinfo root/source rendering call a shared VFS helper and test it hosted.
    - Done next slice:
      - `vfs::mount::project_path_under_root()` now owns reader-root projection for procfs mount reports.
      - `/proc/self/mountinfo` and `/proc/mounts` share that projection, so a chroot/pivoted reader no longer sees global mountpoint strings in one file and projected strings in the other.
      - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 4/4.
-   - Thread the target parent mount id into every remaining legacy bind helper unconditionally when it is known, then delete the legacy fake-SB path once all callers use `register_bind_clone_*`.
+   - Delete the remaining legacy fake-SB bind helper path once all callers use `register_bind_clone_*`.
    - Keep rendered strings only as mountinfo payload, derived from the walked mount context.
    - Make `canonical_mount_path()` non-authoritative or remove it from the mount attach path. Procfd/magic-link jumps should resolve to a `VfsPath`, not to a display string.
    - Make `/proc/self/mountinfo` render from the reader task's root/cwd/mount namespace view, not as a global list of stored absolute strings.

@@ -79,6 +79,31 @@ pub fn resolve_parent_path(abs: &str) -> Result<vfs::VfsPath, vfs::VfsError> {
     resolve_path_flags(abs, vfs::LookupFlags { parent: true, ..Default::default() })
 }
 
+/// Resolve a mount syscall target as Linux `struct path`: final mountpoint
+/// dentry plus the walked parent mount identity, without crossing the final
+/// mountpoint. # C: O(components × dir-lookup)
+pub fn resolve_mount_target(abs: &str) -> Result<vfs::MountTarget, vfs::VfsError> {
+    let (root, _) = resolution_root_vfs().ok_or(vfs::VfsError::Enoent)?;
+    let Some(cur) = sched::live::current() else {
+        return vfs::mountpoint_lookup_at_root_cred(
+            root.dentry.clone(), root.mnt_id, root.dentry, root.mnt_id, abs, vfs::Cred::root());
+    };
+    // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
+    let start = unsafe { (*cur.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone());
+    let start_mnt = start.mnt_id;
+    let root_mnt = root.mnt_id;
+    let cred = current_cred();
+    let res = vfs::mountpoint_lookup_at_root_cred(
+        start.dentry, start_mnt, root.dentry, root_mnt, abs, cred);
+    match res {
+        Err(vfs::VfsError::Enotdir) => {
+            trace_lookup_enotdir(abs, start_mnt, root_mnt);
+            Err(vfs::VfsError::Enotdir)
+        }
+        other => other,
+    }
+}
+
 /// Resolve `abs` to the dentry a mount operation targets, without crossing a
 /// mount attached at the final component. Intermediate components still use the
 /// normal mount-aware walk and the caller's current root.

@@ -3,9 +3,9 @@ use alloc::sync::Arc;
 
 use crate::dentry::Dentry;
 use crate::inode::InodeRef;
-use crate::types::KResult;
+use crate::types::{KResult, VfsError};
 
-use super::{Cred, LookupFlags, Nameidata, VfsPath};
+use super::{Cred, LastType, LookupFlags, MountTarget, Nameidata, VfsPath};
 
 /// Resolve `path` from `start` with `root`, returning `(inode, dentry)`.
 /// Compatibility wrapper over `path_lookup_path`; default-allow cred.
@@ -84,4 +84,37 @@ pub fn path_lookup_at_root_cred(
 ) -> KResult<VfsPath> {
     let mut nd = Nameidata::new_at(start, start_mnt_id, root, root_mnt_id, flags, cred)?;
     nd.walk(path)
+}
+
+/// Resolve a mount syscall target without crossing a mount attached at the
+/// final component. Intermediate components use normal mount-aware lookup, so
+/// the returned parent carries the exact `vfsmount` identity for attach.
+/// # C: O(components × dir-lookup) + O(symlinks)
+pub fn mountpoint_lookup_at_root_cred(
+    start: Arc<Dentry>,
+    start_mnt_id: u64,
+    root: Arc<Dentry>,
+    root_mnt_id: u64,
+    path: &str,
+    cred: Cred,
+) -> KResult<MountTarget> {
+    if path == "/" {
+        let p = path_lookup_at_root_cred(
+            start, start_mnt_id, root, root_mnt_id, path, LookupFlags::default(), cred)?;
+        return Ok(MountTarget { mountpoint: p.dentry.clone(), parent: p });
+    }
+    let parent = path_lookup_at_root_cred(
+        start, start_mnt_id, root, root_mnt_id, path,
+        LookupFlags { parent: true, ..Default::default() }, cred)?;
+    if parent.last_type() != LastType::Norm { return Err(VfsError::Einval); }
+    let name = parent.last_component.as_deref().ok_or(VfsError::Einval)?;
+    let pi = parent.dentry.inode().ok_or(VfsError::Enoent)?;
+    let mountpoint = match crate::d_lookup(&parent.dentry, name) {
+        Some(d) if !d.is_negative() => d,
+        _ => {
+            let ci = pi.lookup(name)?;
+            crate::d_add(&parent.dentry, name, ci)
+        }
+    };
+    Ok(MountTarget { parent, mountpoint })
 }
