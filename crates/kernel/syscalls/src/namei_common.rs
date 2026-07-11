@@ -209,6 +209,7 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp as i32,
         vfs::VfsError::Enametoolong => Errno::Enametoolong as i32,
         vfs::VfsError::Enotconn => Errno::Enotconn as i32,
+        vfs::VfsError::Ecanceled => Errno::Ecanceled as i32,
     } as i64)
 }
 

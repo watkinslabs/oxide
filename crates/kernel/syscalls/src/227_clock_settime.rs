@@ -31,5 +31,6 @@ pub fn kernel_clock_settime(args: &SyscallArgs) -> i64 {
     }
     let target = (sec as u64).saturating_mul(NS_PER_SEC).saturating_add(nsec as u64);
     REALTIME_OFFSET_NS.store(sched::clock::settimeofday_offset(monotonic_ns(), target), Ordering::Release);
+    sched::clock::note_realtime_change();
     0
 }

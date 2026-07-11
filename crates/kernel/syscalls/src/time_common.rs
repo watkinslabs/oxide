@@ -26,6 +26,8 @@ pub(crate) const CLOCK_MONOTONIC_RAW:      u64 = 4;
 pub(crate) const CLOCK_REALTIME_COARSE:    u64 = 5;
 pub(crate) const CLOCK_MONOTONIC_COARSE:   u64 = 6;
 pub(crate) const CLOCK_BOOTTIME:           u64 = 7;
+pub(crate) const CLOCK_REALTIME_ALARM:     u64 = 8;
+pub(crate) const CLOCK_BOOTTIME_ALARM:     u64 = 9;
 
 /// Wall-clock offset (ns since UNIX epoch) added to monotonic_ns
 /// when callers ask for CLOCK_REALTIME. Starts at 0 (v1 has no RTC);
@@ -87,5 +89,6 @@ pub(crate) fn ns_for_clock(clk_id: u64) -> u64 {
 pub(crate) fn clock_id_known(clk_id: u64) -> bool {
     matches!(clk_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
         | CLOCK_THREAD_CPUTIME_ID | CLOCK_MONOTONIC_RAW
-        | CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME)
+        | CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME
+        | CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
 }
