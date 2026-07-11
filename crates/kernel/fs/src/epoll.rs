@@ -21,7 +21,7 @@ use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 mod scan;
 #[path = "epoll/syscalls.rs"]
 mod syscalls;
-pub use syscalls::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait2, sys_epoll_wait};
+pub use syscalls::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2, sys_epoll_wait};
 
 // Park / wake plumbing lives in `sched::live` so net/IPC layers
 // (which don't depend on `fs`) can trigger epoll wakeups without a
