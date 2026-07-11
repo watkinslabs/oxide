@@ -323,4 +323,23 @@ mod ns_link_tests {
         assert_ne!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Net, 6), "distinct id -> distinct");
         assert_ne!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Uts, 5), "distinct kind -> distinct");
     }
+
+    #[test]
+    fn setns_rejects_nonexact_type_mask_for_namespace_fd() {
+        use core::sync::atomic::Ordering;
+        let t = sched::Task::new(77, "t", sched::SchedClass::Normal { weight: 1024 });
+        let ns = NsInode { kind: NsKind::Uts, id: 9 };
+        let mixed = CLONE_NEWUTS | CLONE_NEWNET;
+        assert_eq!(setns_apply(&ns, mixed, &t), -(syscall::errno::Errno::Einval.as_i32() as i64));
+        assert_eq!(t.uts_ns.load(Ordering::Acquire), 0);
+        assert_eq!(setns_apply(&ns, CLONE_NEWUTS, &t), 0);
+        assert_eq!(t.uts_ns.load(Ordering::Acquire), 9);
+    }
+
+    #[test]
+    fn namespace_global_ids_do_not_collide_across_kinds() {
+        assert_eq!(ns_global_id(NsKind::User, 0), 3);
+        assert_eq!(ns_global_id(NsKind::Mnt, 0), 8);
+        assert_ne!(ns_global_id(NsKind::User, 4), ns_global_id(NsKind::Mnt, 4));
+    }
 }
