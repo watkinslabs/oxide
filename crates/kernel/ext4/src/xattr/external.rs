@@ -7,7 +7,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::{BLOCK_HDR_LEN, ENTRY_HDR_LEN, EXT4_XATTR_MAGIC, split_name,
+use super::{BLOCK_HDR_LEN, ENTRY_HDR_LEN, EXT4_XATTR_MAGIC, split_name, xattr_suffix_bytes,
             xattr_entry_len, xattr_value_size};
 
 /// `ext4_xattr_hash_entry`: name-then-value rolling hash for `e_hash`. Value is
@@ -57,14 +57,18 @@ fn block_hash(entry_hashes: &[u32]) -> u32 {
 /// separately (needs the block address). # C: O(N log N)
 pub fn encode_block(entries: &[(String, Vec<u8>)], bs: usize) -> Result<Vec<u8>, ()> {
     if bs < BLOCK_HDR_LEN + 4 { return Err(()); }
-    let mut sorted: Vec<(u8, &str, &[u8])> = Vec::with_capacity(entries.len());
+    let mut sorted: Vec<(u8, Vec<u8>, &[u8])> = Vec::with_capacity(entries.len());
     for (full, val) in entries {
-        if let Some((idx, suffix)) = split_name(full) { sorted.push((idx, suffix, val.as_slice())); }
+        if let Some((idx, suffix)) = split_name(full) {
+            let name = xattr_suffix_bytes(suffix);
+            if name.len() > u8::MAX as usize { return Err(()); }
+            sorted.push((idx, name, val.as_slice()));
+        }
     }
     if sorted.is_empty() { return Err(()); }
     sorted.sort_by(|a, b| a.0.cmp(&b.0)
         .then(a.1.len().cmp(&b.1.len()))
-        .then(a.1.as_bytes().cmp(b.1.as_bytes())));
+        .then(a.1.cmp(&b.1)));
 
     let mut blk = alloc::vec![0u8; bs];
     blk[0..4].copy_from_slice(&EXT4_XATTR_MAGIC.to_le_bytes());
@@ -74,7 +78,7 @@ pub fn encode_block(entries: &[(String, Vec<u8>)], bs: usize) -> Result<Vec<u8>,
     let mut value_end = bs;
     let mut e_hashes: Vec<u32> = Vec::with_capacity(sorted.len());
     for (idx, suffix, val) in &sorted {
-        let name_bytes = suffix.as_bytes();
+        let name_bytes = suffix.as_slice();
         let name_len = name_bytes.len();
         let elen = xattr_entry_len(name_len);
         let vsize = xattr_value_size(val.len());
