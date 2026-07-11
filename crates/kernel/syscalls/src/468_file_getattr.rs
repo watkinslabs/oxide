@@ -15,10 +15,8 @@ pub fn sys_file_getattr(args: &SyscallArgs) -> i64 {
     let ubuf = args.a2;
     let usz  = args.a3 as usize;
     if usz < FILE_ATTR_SIZE { return -(Errno::Einval.as_i32() as i64); }
-    if ubuf == 0 || ubuf.saturating_add(FILE_ATTR_SIZE as u64) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ubuf range-checked < USER_VA_END; zero a 24-byte struct in user AS.
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(ubuf, FILE_ATTR_SIZE as u64, 1) { return rv; }
+    // SAFETY: full file_attr byte range validated writable; byte zeroing is alignment-independent.
     unsafe { core::ptr::write_bytes(ubuf as *mut u8, 0, FILE_ATTR_SIZE); }
     0
 }

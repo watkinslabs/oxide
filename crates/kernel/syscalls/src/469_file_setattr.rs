@@ -14,10 +14,8 @@ pub fn sys_file_setattr(args: &SyscallArgs) -> i64 {
     let ubuf = args.a2;
     let usz  = args.a3 as usize;
     if usz < FILE_ATTR_SIZE { return -(Errno::Einval.as_i32() as i64); }
-    if ubuf == 0 || ubuf.saturating_add(FILE_ATTR_SIZE as u64) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ubuf range-checked < USER_VA_END; read the 24-byte struct from user AS.
+    if let Err(rv) = crate::userbuf::validate_user_buf(ubuf, FILE_ATTR_SIZE as u64, 1) { return rv; }
+    // SAFETY: full file_attr byte range validated readable; Linux copyin accepts unaligned storage.
     let (xflags, extsize, projid, cowextsize) = unsafe {
         (core::ptr::read_unaligned(ubuf as *const u64),
          core::ptr::read_unaligned((ubuf + 8)  as *const u32),
