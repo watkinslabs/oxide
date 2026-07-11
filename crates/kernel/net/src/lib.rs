@@ -37,7 +37,7 @@ pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
 
 pub mod unix_sock;
 pub use unix_sock::{
-    UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
+    UnixAddr, UnixAddrKey, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
     unix_path_display, unix_path_is_abstract,
 };
 pub mod net_ns;

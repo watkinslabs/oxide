@@ -337,18 +337,30 @@ pub(crate) fn drop_child_cache(parent: &vfs::VfsPath, leaf: &str) {
     vfs::d_drop_child(&parent.dentry, leaf);
 }
 
-/// Linux pathname AF_UNIX sockets are removed from the filesystem namespace by
-/// unlink(2). Existing socket objects stay alive, but a later bind to the same
-/// pathname must be allowed. Our socket registry is separate from tmpfs, so
-/// unlink has to drop the registry key as well as the socket inode. The caller
-/// owns dcache invalidation through its already-resolved parent identity.
-/// # C: O(log N)
-pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
-    if net::unix_path_is_abstract(p) || !net::sock::UNIX_REGISTRY.is_bound(p) {
+/// Resolve a user AF_UNIX sockaddr path to the kernel rendezvous key. Abstract
+/// addresses stay byte-name keyed in the caller's netns; pathname addresses use
+/// the caller's VFS root/cwd and follow the final symlink to the socket inode.
+/// # C: O(path components)
+pub(crate) fn resolve_unix_addr(path: String) -> Result<net::UnixAddr, i64> {
+    if net::unix_path_is_abstract(&path) {
+        return Ok(net::UnixAddr::from_sockaddr_path(path));
+    }
+    let p = crate::pathresolve::resolve_path_raw(&path, false)
+        .map_err(errno_from_vfs)?;
+    if p.inode.file_type() != vfs::FileType::Socket {
+        return Err(-(Errno::Econnrefused.as_i32() as i64));
+    }
+    Ok(net::UnixAddr::from_inode(path, &p.inode))
+}
+
+/// Drop a pathname AF_UNIX registry binding after VFS unlink removed the socket
+/// inode. Existing connected socket objects stay alive. # C: O(log N)
+pub(crate) fn unlink_unix_socket_addr(addr: &net::UnixAddr) -> bool {
+    if !addr.is_pathname() || !net::sock::UNIX_REGISTRY.is_bound_addr(addr) {
         return false;
     }
-    net::sock::UNIX_REGISTRY.unbind(p);
-    net::sock::UNIX_REGISTRY.dgram_unbind(p);
+    net::sock::UNIX_REGISTRY.unbind_addr(addr);
+    net::sock::UNIX_REGISTRY.dgram_unbind_addr(addr);
     true
 }
 
