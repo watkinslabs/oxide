@@ -99,6 +99,24 @@ fn walk_final_magic_link_lands_on_target() {
     assert_eq!(i.ino(), 0x20, "final magic link followed → jump target dir inode");
 }
 
+// `/proc/<pid>/root`/`cwd` class bug: the readlink text can be a valid path in
+// the READER namespace while the magic link's live target is a different object.
+// Following the link must use the jump identity, not splice the text.
+#[test]
+fn magic_link_text_can_name_existing_wrong_object() {
+    let live_leaf = file(0xA1);
+    let live_dir = dir(0xA0, &[("leaf", live_leaf)]);
+    let live_dentry = Dentry::new_root(live_dir.clone());
+    let text_leaf = file(0xB1);
+    let text_dir = dir(0xB0, &[("leaf", text_leaf)]);
+    let m = magic(0xC0, live_dentry, live_dir, "/textroot");
+    let root = Dentry::new_root(dir(2, &[("magic", m), ("textroot", text_dir)]));
+    let (i, _) = look(&root, "/magic/leaf").expect("magic jump resolves live leaf");
+    assert_eq!(i.ino(), 0xA1, "magic follow used live jump target, not readlink text");
+    let (wrong, _) = look(&root, "/textroot/leaf").expect("text path is valid but wrong");
+    assert_eq!(wrong.ino(), 0xB1);
+}
+
 // readlink(2)'s bytes accessor returns the link TEXT — the jump target is NOT
 // stringified into a path.
 #[test]

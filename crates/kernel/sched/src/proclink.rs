@@ -5,29 +5,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use vfs::{KResult, VfsError};
-
-/// Resolve a `/proc/<pid>/<leaf>` symlink to its readlink target bytes.
-/// # C: O(N_path)
-pub fn resolve_proc_link(path: &str) -> KResult<Vec<u8>> {
-    let rest = path.strip_prefix("/proc/").ok_or(VfsError::Enoent)?;
-    let mut parts = rest.splitn(2, '/');
-    let head = parts.next().ok_or(VfsError::Enoent)?;
-    let leaf = parts.next().ok_or(VfsError::Enoent)?;
-    let tid_opt: Option<u32> = if head == "self" { None } else { head.parse().ok() };
-    if head != "self" && tid_opt.is_none() { return Err(VfsError::Enoent); }
-    if let Some(tid) = tid_opt {
-        if crate::live::registry::lookup(tid).is_none() { return Err(VfsError::Enoent); }
-    }
-    match leaf {
-        "exe"  => task_exe_path(tid_opt),
-        "cwd"  => task_cwd_path(tid_opt),
-        "root" => task_root_path(tid_opt),
-        l if l.starts_with("fd/") => task_fd_path(tid_opt, &l[3..]),
-        l if l.starts_with("ns/") => task_ns_link(tid_opt, &l[3..]),
-        _      => Err(VfsError::Enoent),
-    }
-}
+use vfs::{KResult, VfsError, VfsPath};
 
 fn task_for_proc_link(tid_opt: Option<u32>) -> KResult<alloc::sync::Arc<crate::Task>> {
     match tid_opt {
@@ -38,7 +16,9 @@ fn task_for_proc_link(tid_opt: Option<u32>) -> KResult<alloc::sync::Arc<crate::T
     }
 }
 
-fn task_exe_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
+/// Return `/proc/<pid>/exe` readlink bytes from the task's exec image state.
+/// # C: O(1)
+pub fn task_exe_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
     let task = match tid_opt {
         Some(tid) => crate::live::registry::lookup(tid),
         None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
@@ -63,58 +43,34 @@ fn task_exe_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
     Err(VfsError::Enoent)
 }
 
-fn task_cwd_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
-    let task = task_for_proc_link(tid_opt)?;
-    // SAFETY: cwd slot single-mutator per `13§5`.
-    let s = unsafe { (*task.cwd.get()).clone() };
-    if !s.is_empty() { Ok(s.into_bytes()) } else { Err(VfsError::Enoent) }
+/// Return `/proc/<pid>/cwd` readlink bytes from the target task's live path.
+/// # C: O(1)
+pub fn task_cwd_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
+    let p = task_cwd_vfs(tid_opt)?;
+    Ok(vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry).into_bytes())
 }
 
-fn task_root_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
-    let task = task_for_proc_link(tid_opt)?;
-    // SAFETY: task.root single-mutator per `13§5`.
-    let s = unsafe { (*task.root.get()).clone() };
-    if !s.is_empty() { Ok(s.into_bytes()) } else { Err(VfsError::Enoent) }
+/// Return `/proc/<pid>/root` readlink bytes from the target task's live path.
+/// # C: O(1)
+pub fn task_root_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
+    let p = task_root_vfs(tid_opt)?;
+    Ok(vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry).into_bytes())
 }
 
-fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> KResult<Vec<u8>> {
-    use core::sync::atomic::Ordering;
+/// Return `/proc/<pid>/cwd` as the target task's live `struct path`.
+/// # C: O(1)
+pub fn task_cwd_vfs(tid_opt: Option<u32>) -> KResult<VfsPath> {
     let task = task_for_proc_link(tid_opt)?;
-    let id = match leaf {
-        "ipc"    => task.ipc_ns.load(Ordering::Acquire),
-        "uts"    => task.uts_ns.load(Ordering::Acquire),
-        "pid" | "pid_for_children" => task.pid_ns.load(Ordering::Acquire),
-        "net"    => task.net_ns.load(Ordering::Acquire),
-        "user"   => task.user_ns.load(Ordering::Acquire),
-        "cgroup" => task.cgroup_ns.load(Ordering::Acquire),
-        "mnt"    => task.mount_ns.load(Ordering::Acquire),
-        _ => return Err(VfsError::Enoent),
-    };
-    let kind = if leaf == "pid_for_children" { "pid" } else { leaf };
-    let mut out = Vec::with_capacity(kind.len() + 8);
-    out.extend_from_slice(kind.as_bytes());
-    out.extend_from_slice(b":[");
-    let mut buf = [0u8; 20];
-    let mut i = buf.len();
-    let mut n = id;
-    if n == 0 { i -= 1; buf[i] = b'0'; }
-    while n > 0 {
-        i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
-    out.extend_from_slice(&buf[i..]);
-    out.push(b']');
-    Ok(out)
+    // SAFETY: cwd_vfs slot single-mutator per `13§5`; procfs takes a snapshot.
+    unsafe { (*task.cwd_vfs.get()).clone() }.ok_or(VfsError::Enoent)
 }
 
-fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> KResult<Vec<u8>> {
-    let fd: i32 = fd_str.parse().map_err(|_| VfsError::Enoent)?;
+/// Return `/proc/<pid>/root` as the target task's live `struct path`.
+/// # C: O(1)
+pub fn task_root_vfs(tid_opt: Option<u32>) -> KResult<VfsPath> {
     let task = task_for_proc_link(tid_opt)?;
-    // SAFETY: fd_table slot single-mutator per `13§5`.
-    let fdt = unsafe { (*task.fd_table.get()).as_ref().ok_or(VfsError::Enoent)?.clone() };
-    let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
-    Ok(vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry()).into_bytes())
+    // SAFETY: root_vfs slot single-mutator per `13§5`; procfs takes a snapshot.
+    unsafe { (*task.root_vfs.get()).clone() }.ok_or(VfsError::Enoent)
 }
 
 /// Return the open `File` behind `/proc/<pid|self>/fd/<n>` so open(2)

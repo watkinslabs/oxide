@@ -1,34 +1,37 @@
 // procfs symlink inodes: /proc/self/{exe,cwd,root} + per-fd
-// symlinks. Each delegates to `sched::proclink::resolve_proc_link`
-// at readlink time so the target reflects live task state.
+// symlinks. Each reads the target task's live proc-link state.
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use vfs::{default_file_ops, mk_mode, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, LinkTarget, VfsError, VfsPath};
 
+#[derive(Clone, Copy)]
+pub enum ProcSpecialLink {
+    Exe,
+    Cwd,
+    Root,
+}
+
 /// `i_private` for a procfs magic symlink (KEYSTONE struct-`Inode`). Either a
-/// fixed `target`, or a `/proc` path re-resolved live at `readlink` time
-/// (`exe`/`cwd`/`root`).
+/// fixed `target`, a proc special target (`exe`/`cwd`/`root`), or an fd link.
 pub struct ProcLinkData {
-    /// `Some(path)` ⇒ resolve `sched::proclink::resolve_proc_link(path)` live;
-    /// `None` ⇒ the link is the fixed `target`.
-    pub resolve: Option<String>,
+    pub special: Option<(Option<u32>, ProcSpecialLink)>,
     pub target: Vec<u8>,
     /// `Some((tid_opt, fd))` ⇒ this is a `/proc/<pid>/fd/<n>` MAGIC link: a walk
     /// THROUGH it does `nd_jump_link` to the open file's `(mnt,dentry,inode)`,
     /// re-resolved live at follow time (Linux `proc_fd_link` `get_link`).
     /// `readlink(2)` returns freshly rendered text for the same live open file.
-    /// `None` for `exe`/`cwd`/`root` (resolved as ordinary path symlinks).
+    /// `None` for `exe`/`cwd`/`root`.
     pub jump_fd: Option<(Option<u32>, i32)>,
 }
 
 /// `i_op` for a procfs symlink — `readlink` reads the link TEXT from
-/// `ProcLinkData`; `get_link` returns a `Jump` for fd magic links (resolved in
-/// the walk via `nd_jump_link`) or falls through to the `Path` text otherwise.
+/// `ProcLinkData`; `get_link` returns a `Jump` for fd/cwd/root magic links
+/// (resolved in the walk via `nd_jump_link`) or falls through to the `Path`
+/// text otherwise.
 struct ProcLinkOps;
 impl InodeOps for ProcLinkOps {
     fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
@@ -37,17 +40,18 @@ impl InodeOps for ProcLinkOps {
             let file = sched::proclink::proc_fd_file(tid_opt, fd).ok_or(VfsError::Enoent)?;
             return Ok(vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry()).into_bytes());
         }
-        match &d.resolve {
+        match d.special {
             None => Ok(d.target.clone()),
-            Some(p) => sched::proclink::resolve_proc_link(p),
+            Some((tid_opt, ProcSpecialLink::Exe)) => sched::proclink::task_exe_path(tid_opt),
+            Some((tid_opt, ProcSpecialLink::Cwd)) => sched::proclink::task_cwd_path(tid_opt),
+            Some((tid_opt, ProcSpecialLink::Root)) => sched::proclink::task_root_path(tid_opt),
         }
     }
 
-    /// `/proc/<pid>/fd/<n>`: a walk through it JUMPS to the open file's resolved
-    /// `(mnt,dentry,inode)` (Linux `nd_jump_link`), re-fetched live so the jump
-    /// tracks the current fd table. If the fd is gone, return `ENOENT`; do not
-    /// reopen stale pathname text. All non-fd links (`exe`/`cwd`/`root`) take
-    /// the default `Path` body. # C: O(1)
+    /// `/proc/<pid>/{fd/<n>,cwd,root}`: a walk through it JUMPS to the target
+    /// object's resolved `(mnt,dentry,inode)` (Linux `nd_jump_link`). If the
+    /// live target is gone, return `ENOENT`; do not reopen stale pathname text.
+    /// # C: O(1)
     fn get_link(&self, inode: &Inode) -> KResult<LinkTarget> {
         if let Some(d) = inode.private::<ProcLinkData>() {
             if let Some((tid_opt, fd)) = d.jump_fd {
@@ -60,6 +64,15 @@ impl InodeOps for ProcLinkOps {
                     }));
                 }
                 return Err(VfsError::Enoent);
+            }
+            match d.special {
+                Some((tid_opt, ProcSpecialLink::Cwd)) => {
+                    return Ok(LinkTarget::Jump(sched::proclink::task_cwd_vfs(tid_opt)?));
+                }
+                Some((tid_opt, ProcSpecialLink::Root)) => {
+                    return Ok(LinkTarget::Jump(sched::proclink::task_root_vfs(tid_opt)?));
+                }
+                _ => {}
             }
         }
         Ok(LinkTarget::Path(self.readlink(inode)?))
@@ -79,7 +92,7 @@ fn make_proc_link(ino: Ino, size: u64, data: ProcLinkData) -> InodeRef {
 /// (the path the kernel saw at execve). # C: O(1)
 pub fn make_proc_self_exe() -> InodeRef {
     make_proc_link(0x3000_1700, 0, ProcLinkData {
-        resolve: Some(String::from("/proc/self/exe")), target: Vec::new(),
+        special: Some((None, ProcSpecialLink::Exe)), target: Vec::new(),
         jump_fd: None,
     })
 }
@@ -87,7 +100,7 @@ pub fn make_proc_self_exe() -> InodeRef {
 /// `/proc/self/cwd` symlink. # C: O(1)
 pub fn make_proc_self_cwd() -> InodeRef {
     make_proc_link(0x3000_1701, 0, ProcLinkData {
-        resolve: Some(String::from("/proc/self/cwd")), target: Vec::new(),
+        special: Some((None, ProcSpecialLink::Cwd)), target: Vec::new(),
         jump_fd: None,
     })
 }
@@ -95,28 +108,39 @@ pub fn make_proc_self_cwd() -> InodeRef {
 /// `/proc/self/root` symlink. # C: O(1)
 pub fn make_proc_self_root() -> InodeRef {
     make_proc_link(0x3000_1702, 0, ProcLinkData {
-        resolve: Some(String::from("/proc/self/root")), target: Vec::new(),
+        special: Some((None, ProcSpecialLink::Root)), target: Vec::new(),
         jump_fd: None,
     })
 }
 
 /// Per-pid `/proc/<tid>/{exe,cwd,root}` magic symlink. Distinct from the
-/// `/proc/self/*` constructors above (which hardcode "self"): resolves for an
-/// explicit kernel tid so `/proc/1/root` etc. follow to the real target inode.
-/// MUST be a Symlink, not a regular file — systemd's `running_in_chroot()`
-/// does `inode_same("/proc/1/root", "/")`, which `openat(O_PATH)`-follows the
-/// link and compares the target inode against `/`. A regular-file placeholder
-/// resolves to a procfs inode (never matching `/`), so systemd wrongly
-/// concludes it is chrooted and freezes PID1. # C: O(1)
-pub fn make_proc_pid_link(tid: u32, leaf: &'static str) -> InodeRef {
-    use core::fmt::Write as _;
-    let tag: u64 = match leaf { "exe" => 0x18, "cwd" => 0x19, _ => 0x1A };
-    let mut p = String::new();
-    let _ = write!(p, "/proc/{}/{}", tid, leaf);
+/// `/proc/self/*` constructors above (which resolve for the caller): resolves
+/// for an explicit kernel tid so `/proc/1/root` etc. follow to the real target
+/// inode. MUST be a Symlink, not a regular file — systemd's
+/// `running_in_chroot()` does `inode_same("/proc/1/root", "/")`, which
+/// `openat(O_PATH)`-follows the link and compares the target inode against `/`.
+/// A regular-file placeholder resolves to a procfs inode (never matching `/`),
+/// so systemd wrongly concludes it is chrooted and freezes PID1. # C: O(1)
+fn make_proc_pid_special(tid: u32, tag: u64, special: ProcSpecialLink) -> InodeRef {
     make_proc_link(crate::live::pid_ino(tag, tid), 0, ProcLinkData {
-        resolve: Some(p), target: Vec::new(),
+        special: Some((Some(tid), special)), target: Vec::new(),
         jump_fd: None,
     })
+}
+
+/// `/proc/<tid>/exe` magic symlink. # C: O(1)
+pub fn make_proc_pid_exe(tid: u32) -> InodeRef {
+    make_proc_pid_special(tid, 0x18, ProcSpecialLink::Exe)
+}
+
+/// `/proc/<tid>/cwd` magic symlink. # C: O(1)
+pub fn make_proc_pid_cwd(tid: u32) -> InodeRef {
+    make_proc_pid_special(tid, 0x19, ProcSpecialLink::Cwd)
+}
+
+/// `/proc/<tid>/root` magic symlink. # C: O(1)
+pub fn make_proc_pid_root(tid: u32) -> InodeRef {
+    make_proc_pid_special(tid, 0x1A, ProcSpecialLink::Root)
 }
 
 /// Build a per-fd MAGIC symlink inode for `/proc/<tid_opt>/fd/<fd>`. `readlink`
@@ -127,7 +151,7 @@ pub fn make_proc_pid_link(tid: u32, leaf: &'static str) -> InodeRef {
 /// stable distinguisher so getdents reflects the fd. # C: O(target_len)
 pub fn fd_link_for_path(path: &[u8], tid_opt: Option<u32>, fd: i32) -> InodeRef {
     make_proc_link(crate::live::pid_ino(0x16, fd as u32), path.len() as u64, ProcLinkData {
-        resolve: None, target: path.to_vec(),
+        special: None, target: path.to_vec(),
         jump_fd: Some((tid_opt, fd)),
     })
 }
