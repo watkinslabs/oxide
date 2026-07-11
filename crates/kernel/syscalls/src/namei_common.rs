@@ -359,9 +359,8 @@ pub(crate) fn resolve_unix_addr(path: alloc::vec::Vec<u8>) -> Result<net::UnixAd
     if net::unix_path_is_abstract(&path) {
         return Ok(net::UnixAddr::from_sockaddr_path(path));
     }
-    let path_str = core::str::from_utf8(&path)
-        .map_err(|_| -(Errno::Einval.as_i32() as i64))?;
-    let p = crate::pathresolve::resolve_path_raw(path_str, false)
+    let decoded = vfs::path_from_bytes(&path);
+    let p = crate::pathresolve::resolve_path_raw(&decoded, false)
         .map_err(errno_from_vfs)?;
     if p.inode.file_type() != vfs::FileType::Socket {
         return Err(-(Errno::Econnrefused.as_i32() as i64));
