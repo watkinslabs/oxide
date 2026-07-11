@@ -415,7 +415,8 @@ Fix status:
 - Done: `namei_common::resolve_create_parent_at()` preserves the `*at` parent `(mnt_id,dentry,inode)` and leaf identity for create-family syscalls; rendered strings are now produced only for Landlock/logging/fsnotify.
 - Done: `mkdir`/`mkdirat` create through `parent.inode`, check target existence relative to the exact parent, check read-only through `parent.mnt_id`, and drop child cache by object parent.
 - Done: `mknod`/`mknodat` share the same parent-preserving path; `mknodat` no longer pre-resolves its dirfd-relative path into a global string.
-- Remaining: `link/linkat`, `symlink/symlinkat`, `unlink/unlinkat/rmdir`, and `rename/renameat/renameat2` still use the old string-parent helper pattern and need the same treatment.
+- Done: `symlink`/`symlinkat` now create via the exact `newdirfd` parent identity; the target string remains stored verbatim, matching Linux.
+- Remaining: `link/linkat`, `unlink/unlinkat/rmdir`, and `rename/renameat/renameat2` still use the old string-parent helper pattern and need the same treatment.
 
 ## Mount Subsystem Split-Truth Sites
 
@@ -716,7 +717,7 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
    - Done: `open/openat O_CREAT`
    - Done: `mkdir/mkdirat`
    - Done: `mknod/mknodat`
-   - `symlink/symlinkat`
+   - Done: `symlink/symlinkat`
    - `link/linkat`
    - `unlink/unlinkat/rmdir`
    - `rename/renameat/renameat2`
