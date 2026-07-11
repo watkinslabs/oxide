@@ -10,6 +10,7 @@ use syscall::errno::Errno;
 #[cfg(target_os = "oxide-kernel")]
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 use super::{as_uffd, RegisteredRange, UfData, UFFD_API_FEATURE_SET};
 
 /// 4 KiB page granule for the COPY/ZEROPAGE install loop.
@@ -44,14 +45,17 @@ struct UffdioRange { start: u64, len: u64 }
 
 /// `struct uffdio_register` — 32 bytes.
 #[repr(C)]
+#[derive(Copy, Clone)]
 struct UffdioRegister { range: UffdioRange, mode: u64, ioctls: u64 }
 
 /// `struct uffdio_copy` — 40 bytes.
 #[repr(C)]
+#[derive(Copy, Clone)]
 struct UffdioCopy { dst: u64, src: u64, len: u64, mode: u64, copy: u64 }
 
 /// `struct uffdio_zeropage` — 32 bytes.
 #[repr(C)]
+#[derive(Copy, Clone)]
 struct UffdioZeropage { range: UffdioRange, mode: u64, zeropage: u64 }
 
 /// The current task's mm (faulting AS == monitor's mm in the common
@@ -143,27 +147,25 @@ use hal_aarch64::mmu_ops::ArmMmu as ArchMmu;
 /// # C: O(K) for COPY/ZEROPAGE (K = pages), O(1) otherwise
 pub fn handle_uffd_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> i64 {
     let ufd = match as_uffd(inode) { Some(u) => u, None => return -(Errno::Enotty.as_i32() as i64) };
-    if arg == 0 || arg >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
     match req {
         UFFDIO_API        => ioc_api(&ufd, arg),
         UFFDIO_REGISTER   => ioc_register(&ufd, arg),
         UFFDIO_UNREGISTER => ioc_unregister(&ufd, arg),
         UFFDIO_COPY       => ioc_copy(&ufd, arg),
         UFFDIO_ZEROPAGE   => ioc_zeropage(&ufd, arg),
-        UFFDIO_WAKE       => { ufd.wake_faulters(); 0 }
+        UFFDIO_WAKE       => ioc_wake(&ufd, arg),
         _ => -(Errno::Enotty.as_i32() as i64),
     }
 }
 
 /// UFFDIO_API: negotiate features (we advertise none).
 fn ioc_api(ufd: &UfData, arg: u64) -> i64 {
-    // SAFETY: arg validated < USER_VA_END; UffdioApi is 16 bytes; CPL=0 read through the caller's active AS.
-    let mut api: UffdioApi = unsafe { core::ptr::read_volatile(arg as *const UffdioApi) };
+    if let Err(rv) = validate_user_buf_writable(arg, 16, 1) { return rv; }
+    // SAFETY: arg validated writable for the full uffdio_api object.
+    let mut api: UffdioApi = unsafe { core::ptr::read_unaligned(arg as *const UffdioApi) };
     api.features = UFFD_API_FEATURE_SET;
-    // SAFETY: same 16-byte range; CPL=0 write-back of the negotiated fields.
-    unsafe { core::ptr::write_volatile(arg as *mut UffdioApi, api); }
+    // SAFETY: same validated uffdio_api object receives negotiated fields.
+    unsafe { core::ptr::write_unaligned(arg as *mut UffdioApi, api); }
     ufd.state.lock().api_set = true;
     0
 }
@@ -171,11 +173,12 @@ fn ioc_api(ufd: &UfData, arg: u64) -> i64 {
 /// UFFDIO_REGISTER: record the range + (for MISSING) install the mm-vmm
 /// uffd fault hook over it. WP is recorded only (intercept not wired).
 fn ioc_register(ufd: &Arc<UfData>, arg: u64) -> i64 {
-    // SAFETY: arg validated < USER_VA_END; UffdioRegister is 32 bytes; CPL=0 read.
-    let mut reg: UffdioRegister = unsafe { core::ptr::read_volatile(arg as *const UffdioRegister) };
+    if let Err(rv) = validate_user_buf_writable(arg, 32, 1) { return rv; }
+    // SAFETY: arg validated writable for the full uffdio_register object.
+    let mut reg: UffdioRegister = unsafe { core::ptr::read_unaligned(arg as *const UffdioRegister) };
     let start = reg.range.start;
-    let end   = start.saturating_add(reg.range.len);
-    if start == 0 || end <= start || end >= hal::USER_VA_END
+    let end   = match start.checked_add(reg.range.len) { Some(e) => e, None => return -(Errno::Einval.as_i32() as i64) };
+    if start == 0 || end <= start || validate_user_buf(start, reg.range.len, 1).is_err()
        || (start & (PAGE - 1)) != 0 || (reg.range.len & (PAGE - 1)) != 0
        || (reg.mode & (UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP)) == 0 {
         return -(Errno::Einval.as_i32() as i64);
@@ -192,56 +195,68 @@ fn ioc_register(ufd: &Arc<UfData>, arg: u64) -> i64 {
         }
     }
     reg.ioctls = UFFD_API_RANGE_IOCTLS;
-    // SAFETY: arg+24 is the `ioctls` field within the 32-byte struct; aligned u64 write-back.
-    unsafe { core::ptr::write_volatile((arg + 24) as *mut u64, reg.ioctls); }
+    // SAFETY: arg+24 is inside the validated uffdio_register object.
+    unsafe { core::ptr::write_unaligned((arg + 24) as *mut u64, reg.ioctls); }
     0
 }
 
 /// UFFDIO_UNREGISTER: drop the range record + clear the mm-vmm hook.
 fn ioc_unregister(ufd: &UfData, arg: u64) -> i64 {
-    // SAFETY: arg validated < USER_VA_END; UffdioRange is 16 bytes; CPL=0 read.
-    let r: UffdioRange = unsafe { core::ptr::read_volatile(arg as *const UffdioRange) };
-    let end = r.start.saturating_add(r.len);
+    if let Err(rv) = validate_user_buf(arg, 16, 1) { return rv; }
+    // SAFETY: arg validated readable for the full uffdio_range object.
+    let r: UffdioRange = unsafe { core::ptr::read_unaligned(arg as *const UffdioRange) };
+    let end = match r.start.checked_add(r.len) { Some(e) => e, None => return -(Errno::Einval.as_i32() as i64) };
     ufd.state.lock().ranges.retain(|reg| !(reg.start == r.start && reg.end == end));
     if let Some(mm) = current_mm() { mm.clear_uffd(r.start, end); }
+    0
+}
+
+/// UFFDIO_WAKE: validate the caller's range object, then wake waiters.
+fn ioc_wake(ufd: &UfData, arg: u64) -> i64 {
+    if let Err(rv) = validate_user_buf(arg, 16, 1) { return rv; }
+    // SAFETY: arg validated readable for the full uffdio_range object.
+    let _r: UffdioRange = unsafe { core::ptr::read_unaligned(arg as *const UffdioRange) };
+    ufd.wake_faulters();
     0
 }
 
 /// UFFDIO_COPY: allocate frames, copy the monitor's `src` bytes in, map
 /// them at `dst` in the faulting AS, then wake blocked faulters.
 fn ioc_copy(ufd: &UfData, arg: u64) -> i64 {
-    // SAFETY: arg validated < USER_VA_END; UffdioCopy is 40 bytes; CPL=0 read.
-    let mut c: UffdioCopy = unsafe { core::ptr::read_volatile(arg as *const UffdioCopy) };
+    if let Err(rv) = validate_user_buf_writable(arg, 40, 1) { return rv; }
+    // SAFETY: arg validated writable for the full uffdio_copy object.
+    let mut c: UffdioCopy = unsafe { core::ptr::read_unaligned(arg as *const UffdioCopy) };
     if c.dst == 0 || c.src == 0 || c.len == 0
        || (c.dst & (PAGE - 1)) != 0 || (c.len & (PAGE - 1)) != 0
-       || c.dst.checked_add(c.len).map_or(true, |e| e >= hal::USER_VA_END)
-       || c.src.checked_add(c.len).map_or(true, |e| e >= hal::USER_VA_END) {
+       || validate_user_buf(c.dst, c.len, 1).is_err()
+       || validate_user_buf(c.src, c.len, 1).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
     let mm = match current_mm() { Some(m) => m, None => return -(Errno::Efault.as_i32() as i64) };
     let done = install_pages(&mm, c.dst, Some(c.src), c.len);
     ufd.wake_faulters();
     c.copy = done;
-    // SAFETY: arg+32 is the `copy` output field within the 40-byte struct; aligned u64 write-back.
-    unsafe { core::ptr::write_volatile((arg + 32) as *mut u64, c.copy); }
+    // SAFETY: arg+32 is inside the validated uffdio_copy object.
+    unsafe { core::ptr::write_unaligned((arg + 32) as *mut u64, c.copy); }
     if done == c.len { 0 } else { -(Errno::Enomem.as_i32() as i64) }
 }
 
 /// UFFDIO_ZEROPAGE: install freshly-zeroed frames at the range, then wake.
 fn ioc_zeropage(ufd: &UfData, arg: u64) -> i64 {
-    // SAFETY: arg validated < USER_VA_END; UffdioZeropage is 32 bytes; CPL=0 read.
-    let mut z: UffdioZeropage = unsafe { core::ptr::read_volatile(arg as *const UffdioZeropage) };
+    if let Err(rv) = validate_user_buf_writable(arg, 32, 1) { return rv; }
+    // SAFETY: arg validated writable for the full uffdio_zeropage object.
+    let mut z: UffdioZeropage = unsafe { core::ptr::read_unaligned(arg as *const UffdioZeropage) };
     let (start, len) = (z.range.start, z.range.len);
     if start == 0 || len == 0
        || (start & (PAGE - 1)) != 0 || (len & (PAGE - 1)) != 0
-       || start.checked_add(len).map_or(true, |e| e >= hal::USER_VA_END) {
+       || validate_user_buf(start, len, 1).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
     let mm = match current_mm() { Some(m) => m, None => return -(Errno::Efault.as_i32() as i64) };
     let done = install_pages(&mm, start, None, len);
     ufd.wake_faulters();
     z.zeropage = done;
-    // SAFETY: arg+24 is the `zeropage` output field within the 32-byte struct; aligned u64 write-back.
-    unsafe { core::ptr::write_volatile((arg + 24) as *mut u64, z.zeropage); }
+    // SAFETY: arg+24 is inside the validated uffdio_zeropage object.
+    unsafe { core::ptr::write_unaligned((arg + 24) as *mut u64, z.zeropage); }
     if done == len { 0 } else { -(Errno::Enomem.as_i32() as i64) }
 }

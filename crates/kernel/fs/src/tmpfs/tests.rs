@@ -2,7 +2,6 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
 use vfs::{CreateCtx, FileType, InodeRef, VfsError};
-use vfs::superblock::SuperBlock;
 
 use super::{TmpfsFs, TmpfsSb};
 use super::dir::make_tmpfs_dir_inode;
@@ -63,76 +62,7 @@ mod statfs_tests {
 }
 
 #[cfg(test)]
-mod iget_tests {
-    use super::*;
-    use vfs::fs::FileSystem;
-
-    // Build a live tmpfs SuperBlock (fill_super back-stamps the root dir's sb
-    // weak, after which children build through `iget`). No PMM needed — no data
-    // writes, only inode lifecycle.
-    fn live_sb() -> Arc<SuperBlock> {
-        let fs = TmpfsFs::new(String::from("/"));
-        let root = fs.root_inode();
-        SuperBlock::for_backend(fs as Arc<dyn FileSystem>, Some(root), 0x1234_5678, String::from("tmpfs"))
-    }
-
-    // [inode D2] A child created on a back-stamped tmpfs mount is registered in
-    // the per-SB icache, and a later `ilookup`/`iget` of its ino returns the
-    // SAME `Arc` (shared inode identity, Linux iget) — never a fresh duplicate.
-    #[test]
-    fn create_child_has_icache_identity() {
-        let sb = live_sb();
-        let root = sb.s_root_inode().expect("root inode");
-        let child = root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
-        let ino = child.ino();
-
-        // Registered at build: visible in the icache immediately (no dentry yet).
-        let via_lookup = sb.ilookup(ino).expect("child cached in icache");
-        assert!(Arc::ptr_eq(&child, &via_lookup), "ilookup returns the SAME Arc");
-
-        // iget is a cache HIT — the build closure must NOT run (would be a fresh
-        // duplicate, the bug iget prevents).
-        let via_iget = sb.iget(ino, || panic!("iget must hit the cache, not rebuild"));
-        assert!(Arc::ptr_eq(&child, &via_iget), "iget returns the SAME Arc");
-
-        // The child carries the mount's SB (fsid derives from s_dev).
-        assert_eq!(child.fsid(), 0x1234_5678);
-    }
-
-    // [inode D2] An OPEN/held inode is NOT evicted: while any strong `Arc`
-    // lives (here the tree's `kids` ref + our handles), the icache `Weak` keeps
-    // upgrading. Once the last strong ref drops (unlink removed the kids ref +
-    // we drop our handles), the `Weak` dies and the slot reclaims — the
-    // Arc/`Weak` reclaim path, exactly as ext4 operates (no `iput` needed).
-    #[test]
-    fn held_inode_not_evicted_then_reclaimed_on_last_drop() {
-        let sb = live_sb();
-        let root = sb.s_root_inode().expect("root inode");
-        let child = root.create_child("g", 0o644, &CreateCtx::root()).expect("create g");
-        let ino = child.ino();
-
-        // Unlink drops the name (and the kids strong ref) but we still hold one.
-        root.unlink_child("g").expect("unlink g");
-        assert!(sb.ilookup(ino).is_some(), "still held → NOT evicted");
-
-        // Drop the last strong reference → the cache Weak can no longer upgrade.
-        drop(child);
-        assert!(sb.ilookup(ino).is_none(), "last ref gone → reclaimed");
-    }
-
-    // [inode D2] A second create of the SAME name path after reclaim yields a
-    // DISTINCT inode (fresh ino), and both never collide in the icache.
-    #[test]
-    fn distinct_children_distinct_icache_slots() {
-        let sb = live_sb();
-        let root = sb.s_root_inode().expect("root inode");
-        let a = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
-        let b = root.mkdir("d", 0o755, &CreateCtx::root()).expect("mkdir d");
-        assert_ne!(a.ino(), b.ino());
-        assert!(Arc::ptr_eq(&a, &sb.ilookup(a.ino()).unwrap()));
-        assert!(Arc::ptr_eq(&b, &sb.ilookup(b.ino()).unwrap()));
-    }
-}
+mod iget;
 
 #[cfg(test)]
 mod rename_overwrite_tests {
