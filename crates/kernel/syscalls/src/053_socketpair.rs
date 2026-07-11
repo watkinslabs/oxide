@@ -3,9 +3,9 @@
 use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 use net::sock::{InetSocket, SockKind};
 use crate::net_common::{SOCK_STREAM, SOCK_DGRAM};
+use crate::userbuf::validate_user_buf_writable;
 
 /// `socketpair` slot 53. AF_UNIX STREAM / SEQPACKET / DGRAM (F125).
 /// # C: O(1)
@@ -20,7 +20,7 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     if typ != SOCK_STREAM && typ != SOCK_SEQPACKET && typ != SOCK_DGRAM {
         return -(Errno::Esocktnosupport.as_i32() as i64);
     }
-    if svp == 0 || svp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf_writable(svp, 8, 4) { return rv; }
     let stream = if typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
     let msg    = if typ != SOCK_STREAM { Some(net::UnixMsgPair::new()) } else { None };
     let mk = |end: net::UnixEnd| -> vfs::InodeRef {
@@ -77,7 +77,7 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
         match fdt.alloc_limit(f, cur.nofile_soft()) { Ok(fd) => fd, Err(e) => return -(e as i64) }
     };
     // Write both fds back to user[]int sv[2].
-    // SAFETY: svp range validated < USER_VA_END; user page mapped.
+    // SAFETY: svp validated writable for the full int[2] output array.
     unsafe {
         core::ptr::write_volatile( svp           as *mut i32, a as i32);
         core::ptr::write_volatile((svp + 4)      as *mut i32, b as i32);
