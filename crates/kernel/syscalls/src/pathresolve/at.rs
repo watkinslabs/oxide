@@ -18,6 +18,12 @@ pub fn resolve_confined(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Resul
         .map_err(crate::namei_common::errno_from_vfs)
 }
 
+/// Resolve the parent directory of a `*at` pathname while preserving the
+/// dirfd/cwd mount identity. # C: O(components × dir-lookup) + O(symlinks)
+pub fn resolve_parent_at(dirfd: i32, raw: &str) -> Result<vfs::VfsPath, i64> {
+    resolve_at_path(dirfd, raw, vfs::LookupFlags { parent: true, ..Default::default() })
+}
+
 fn dirfd_base(dirfd: i32) -> Result<(u64, Arc<vfs::Dentry>), i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     let cur = sched::live::current().ok_or(ebadf)?;

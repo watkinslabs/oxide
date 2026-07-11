@@ -91,3 +91,15 @@ pub fn open_dentry(path: &str, inode: &InodeRef) -> alloc::sync::Arc<crate::dent
     }
     Dentry::new(None, String::from(name), Arc::clone(inode))
 }
+
+/// Build the opened leaf from an already-resolved parent dentry. This is the
+/// non-string `open_dentry` entry used by `openat` create paths whose authority
+/// is a `VfsPath`, not a rendered pathname. # C: O(1)
+pub fn open_dentry_at(parent: &alloc::sync::Arc<crate::dentry::Dentry>, name: &str, inode: &InodeRef) -> alloc::sync::Arc<crate::dentry::Dentry> {
+    use alloc::sync::Arc;
+    match crate::dcache::d_lookup(parent, name) {
+        Some(d) if d.is_negative() => crate::dcache::d_splice_alias(Arc::clone(inode), &d),
+        Some(d) => d,
+        None    => crate::dcache::d_add(parent, name, Arc::clone(inode)),
+    }
+}

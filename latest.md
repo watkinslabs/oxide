@@ -345,11 +345,11 @@ Fix status:
 
 - Done: `sys_statfs()` now resolves with `resolve_at_lookup()` and calls `statfs_for_mount()` on `vp.mnt_id`.
 
-### 7. `openat()` still stringifies before creation and dentry binding
+### 7. `openat()` stringifies before creation and dentry binding
 
 File: `crates/kernel/syscalls/src/257_openat.rs`
 
-Mixed state:
+Former mixed state:
 
 - Some `openat2` paths use `resolve_at_path()` correctly.
 - The common path still does `resolve_at_result()` into `path_str`.
@@ -367,6 +367,13 @@ Fix shape:
 - Create through `parent.inode`.
 - Bind fd dentry under `parent.dentry` directly, not by global `path_str`.
 - Use parent/created mount id from `parent.mnt_id`.
+
+Fix status:
+
+- Done: `openat()` now resolves the ordinary target through `resolve_at_path(dirfd, raw, flags)` even without `openat2` resolve modifiers, so existing-file opens carry the walked `VfsPath.dentry` and `mnt_id` into `File::new_at`.
+- Done: `O_CREAT` now uses `resolve_parent_at(dirfd, raw)` and creates through `parent.inode`; the resulting fd dentry is attached with `open_dentry_at(parent.dentry, leaf, inode)`.
+- Done: `vfs::file::open_dentry_at()` provides the non-string dcache attach primitive, with hosted coverage in `file_open_dentry::open_dentry_at_uses_supplied_parent`.
+- Remaining caveat: `path_str` is still used for Landlock/procfd magic-link detection, fsnotify text, and the legacy backend string passed to `create_anonymous`; those are rendering/compat surfaces, not the fd authority path fixed here.
 
 ### 8. mkdir/mkdirat/mknod/link/symlink/unlink/rename share string-parent helpers
 

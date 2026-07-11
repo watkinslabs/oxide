@@ -162,7 +162,7 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     // EAGAIN (CACHED) surface to userspace instead of collapsing to ENOENT.
     // BENEATH/IN_ROOT re-base the walk START on the dirfd (resolve_confined).
     let nofollow = (flags & O_NOFOLLOW) != 0;
-    let extra_resolved: Option<Option<vfs::VfsPath>> = if extra_active(&extra) {
+    let lookup_resolved: Option<vfs::VfsPath> = if extra_active(&extra) {
         let mut lookup = extra;
         lookup.no_follow_final = nofollow;
         let r: Result<vfs::VfsPath, i64> = if extra.beneath_exdev || extra.in_root {
@@ -173,15 +173,23 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
             crate::pathresolve::resolve_at_path(args.a0 as i32, s, lookup)
         };
         match r {
-            Ok(p) => Some(Some(p)),
-            Err(rv) if rv == -(Errno::Enoent.as_i32() as i64) => Some(None),
+            Ok(p) => Some(p),
+            Err(rv) if rv == -(Errno::Enoent.as_i32() as i64) => None,
             Err(rv) => return rv,
         }
-    } else { None };
+    } else {
+        let mut lookup = vfs::LookupFlags::default();
+        lookup.no_follow_final = nofollow;
+        match crate::pathresolve::resolve_at_path(args.a0 as i32, s, lookup) {
+            Ok(p) => Some(p),
+            Err(rv) if rv == -(Errno::Enoent.as_i32() as i64) => None,
+            Err(rv) => return rv,
+        }
+    };
     // O_TMPFILE short-circuits to anonymous inode creation. Each branch
     // also yields the `mnt_id` the file is opened through (Linux
     // `f_path.mnt`): the resolved mount for FS paths, 0 for anon devices.
-    let (inode, mnt_id, created) = if (flags & O_TMPFILE) != 0 {
+    let (inode, mnt_id, dentry, created) = if (flags & O_TMPFILE) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -193,40 +201,44 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         // ext4 for the rootfs. Routing every O_TMPFILE to ext4 returned ENOSPC
         // for tmpfs paths, which made journald (O_TMPFILE on /run/log/journal)
         // abort and cascaded to udevd/device units.
-        match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, rel)) => {
-                if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-                    return -(Errno::Erofs.as_i32() as i64);
-                }
-                match mnt.fs().create_anonymous(&rel, final_mode as u32) {
-                    Ok(i)  => (i, mnt.mnt_id, true),
-                    Err(_) => return -(Errno::Enospc.as_i32() as i64),
-                }
+        let Some(dir) = lookup_resolved.clone() else { return -(Errno::Enoent.as_i32() as i64); };
+        let Some(mnt) = vfs::mount::mount_by_id(dir.mnt_id) else { return -(Errno::Enoent.as_i32() as i64); };
+        if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            return -(Errno::Erofs.as_i32() as i64);
+        }
+        let rel = vfs::mount::render_path_for_mount(dir.mnt_id, &dir.dentry);
+        match mnt.fs().create_anonymous(&rel, final_mode as u32) {
+            Ok(i)  => {
+                let d = dir.dentry;
+                (i, mnt.mnt_id, d, true)
             }
-            None => return -(Errno::Enoent.as_i32() as i64),
+            Err(_) => return -(Errno::Enospc.as_i32() as i64),
         }
     } else if path_str == "/dev/ptmx" {
         let (master, _n) = devpts::allocate_pair();
-        (master, 0, false)
+        let d = vfs::file::open_dentry(path_str, &master);
+        (master, 0, d, false)
     } else if path_str == "/dev/tty" {
         // F200: caller's controlling terminal; ENXIO when none.
         match sched::live::current() {
             // SAFETY: single-mutator per `13§5` — current task on this CPU.
             Some(t) => match unsafe { (*t.ctty.get()).clone() } {
-                Some(i) => (i, 0, false),
+                Some(i) => {
+                    let d = vfs::file::open_dentry(path_str, &i);
+                    (i, 0, d, false)
+                }
                 None    => return -(Errno::Enxio.as_i32() as i64),
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
-    } else if let Some(vp) = extra_resolved
-        .unwrap_or_else(|| crate::pathresolve::resolve_path(path_str, nofollow)) {
+    } else if let Some(vp) = lookup_resolved {
         // O_CREAT|O_EXCL: an existing final component is a hard error (Linux
         // `do_last`/`lookup_open`: `if (open_flag & O_EXCL) → -EEXIST`).
         // O_TMPFILE short-circuited above, so this is the ordinary-open path.
         if (flags & O_CREAT) != 0 && (flags & O_EXCL) != 0 {
             return -(Errno::Eexist.as_i32() as i64);
         }
-        (vp.inode, vp.mnt_id, false)
+        (vp.inode, vp.mnt_id, vp.dentry, false)
     } else if (flags & O_CREAT) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -234,34 +246,35 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
         // S_IALLUGO (0o7777): preserve suid/sgid/sticky on O_CREAT (D8).
         let final_mode = mode & 0o7777 & !umask;
-        match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, _rel)) => {
-                if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-                    return -(Errno::Erofs.as_i32() as i64);
-                }
-                // ext4 D9: create on the RESOLVED PARENT dir inode + leaf name
-                // (Linux `filename_create` → `i_op->create`), instead of the
-                // whole-path `FileSystem::create` re-splitting the path string.
-                // Mirrors `mknod(S_IFREG)`; `final_mode` is already umasked and
-                // `apply_umask` is idempotent; owner = caller fsuid/fsgid.
-                let (pino, name) = match crate::namei_common::resolve_parent(path_str) {
-                    Ok(x) => x, Err(rv) => return rv,
-                };
-                let cred = crate::pathresolve::current_cred();
-                let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
-                // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create.
-                let r = { let _g = pino.inode_lock(); pino.create_child(&name, final_mode, &ctx) };
-                match r {
-                    Ok(i) => (i, mnt.mnt_id, true),
-                    Err(e) => {
-                        crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);
-                        // D7: surface the real VfsError→errno (EACCES/EROFS/
-                        // ENOSPC/ENOTDIR/…) instead of collapsing to ENOENT.
-                        return crate::namei_common::errno_from_vfs(e);
-                    }
-                }
+        let parent = match crate::pathresolve::resolve_parent_at(args.a0 as i32, s) {
+            Ok(x) => x, Err(rv) => return rv,
+        };
+        let name = match parent.last_component.clone() {
+            Some(n) => n,
+            None    => return -(Errno::Einval.as_i32() as i64),
+        };
+        let Some(mnt) = vfs::mount::mount_by_id(parent.mnt_id) else { return -(Errno::Enoent.as_i32() as i64); };
+        if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            return -(Errno::Erofs.as_i32() as i64);
+        }
+        // ext4 D9: create on the RESOLVED PARENT dir inode + leaf name
+        // (Linux `filename_create` → `i_op->create`), instead of the
+        // whole-path `FileSystem::create` re-splitting the path string.
+        let cred = crate::pathresolve::current_cred();
+        let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
+        // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create.
+        let r = { let _g = parent.inode.inode_lock(); parent.inode.create_child(&name, final_mode, &ctx) };
+        match r {
+            Ok(i) => {
+                let d = vfs::file::open_dentry_at(&parent.dentry, &name, &i);
+                (i, mnt.mnt_id, d, true)
             }
-            None => return -(Errno::Enoent.as_i32() as i64),
+            Err(e) => {
+                crate::namei_common::trace_run_vfs_error(b"openat-create", path_str, e);
+                // D7: surface the real VfsError→errno (EACCES/EROFS/
+                // ENOSPC/ENOTDIR/…) instead of collapsing to ENOENT.
+                return crate::namei_common::errno_from_vfs(e);
+            }
         }
     } else {
         // DIAG (debug-mount): surface ENOENT opens of the paths whose chase
@@ -346,11 +359,6 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    // Parented dentry (Linux `f_path.dentry`): the fd's path reconstructs by
-    // parent-walk (`Dentry::absolute_path`), not a stored whole string.
-    // O_TMPFILE inodes have no directory entry — their path is the *directory*.
-    let dentry_path = if (flags & O_TMPFILE) != 0 { "/" } else { path_str };
-    let dentry = vfs::file::open_dentry(dentry_path, &inode);
     let oflags = OpenFlags::from_bits_truncate(flags) - OpenFlags::O_CLOEXEC;
     // fifo(7): opening a named-pipe (S_IFIFO) inode binds the shared pipe ring
     // to the inode and runs the reader/writer rendezvous (Linux
