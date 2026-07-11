@@ -67,7 +67,7 @@ impl FileOps for FdInfoDirFileOps {
             if t == 0 { buf[0] = b'0'; n = 1; }
             else { while t > 0 { buf[n] = b'0' + (t % 10) as u8; t /= 10; n += 1; } }
             buf[..n].reverse();
-            let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
+            let s = crate::util::decimal_str(&buf, n);
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(s, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
