@@ -75,13 +75,14 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create/mknod (Linux
     // `filename_create` → `->create`/`->mknod`); dropped before the dcache update.
+    let node_dev = if matches!(real_ftype, S_IFIFO | S_IFSOCK) { 0 } else { dev };
     let r = {
         let _g = parent.inode.inode_lock();
         if real_ftype == S_IFREG {
             // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
             parent.inode.create_child(&name, perm as u32, &ctx).map(|_| ())
         } else {
-            parent.inode.mknod_child(&name, (real_ftype | perm) as u16, dev, &ctx)
+            parent.inode.mknod_child(&name, (real_ftype | perm) as u16, node_dev, &ctx)
         }
     };
     match r {
