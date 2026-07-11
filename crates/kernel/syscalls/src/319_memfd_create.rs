@@ -6,7 +6,6 @@ use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
-use hal::USER_VA_END;
 
 /// `sys_memfd_create(name, flags)` — slot 319.
 /// # C: O(N_fds) for the fd-table alloc
@@ -26,16 +25,12 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
         return -(Errno::Enosys.as_i32() as i64);
     }
     let allow_sealing = (flags & MFD_ALLOW_SEALING) != 0;
-    let name: String = if name_ptr == 0 || name_ptr >= USER_VA_END {
-        String::from("memfd")
-    } else {
-        // SAFETY: name_ptr range validated; user page mapped under caller's AS; bounded read.
-        let bytes = unsafe { devfs::read_user_cstr(name_ptr, 256) };
-        let s = bytes.and_then(|b| core::str::from_utf8(b).ok()).unwrap_or("memfd");
-        let mut out = String::from("memfd:");
-        out.push_str(s);
-        out
+    let s = match crate::mount_common::read_user_cstr_owned(name_ptr, 256) {
+        Ok(s) => s,
+        Err(e) => return e,
     };
+    let mut name = String::from("memfd:");
+    name.push_str(&s);
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
