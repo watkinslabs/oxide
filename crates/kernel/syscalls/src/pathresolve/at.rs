@@ -63,7 +63,9 @@ pub fn resolve_parent_at(dirfd: i32, raw: &str) -> Result<vfs::VfsPath, i64> {
     resolve_at_path(dirfd, raw, vfs::LookupFlags { parent: true, ..Default::default() })
 }
 
-fn at_path_empty(ptr: u64) -> Result<bool, i64> {
+/// Probe whether a user pathname is the empty string without consuming normal
+/// non-empty paths. NULL/unreadable pointers are `EFAULT`. # C: O(1)
+pub(crate) fn at_path_empty(ptr: u64) -> Result<bool, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }

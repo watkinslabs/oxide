@@ -69,8 +69,8 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
         return -(Errno::Eoverflow.as_i32() as i64);
     }
 
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
-    // path operates on the dirfd, ENOENT without it). name_to_handle_at FOLLOWS
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
+    // operates on the dirfd, NULL still EFAULTs). name_to_handle_at FOLLOWS
     // the final symlink only with AT_SYMLINK_FOLLOW; otherwise it does not.
     let nofollow = (flags & AT_SYMLINK_FOLLOW) == 0;
     let lf = vfs::LookupFlags {
