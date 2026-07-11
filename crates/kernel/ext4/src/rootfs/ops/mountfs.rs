@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use super::{RootfsState, ext4_file_ino};
+use super::RootfsState;
 
 /// `super_operations` for an ext4 mount (Linux `ext4_statfs`): live on-disk
 /// block/inode accounting read from the per-mount `RootfsState`. Installed as
@@ -104,29 +104,6 @@ impl vfs::fs::FileSystem for Ext4Mount {
     }
     fn root(&self) -> Option<vfs::InodeRef> { self.st.wrap_any_ino(2) }
     fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) { self.st.set_sb(sb); }
-    fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        self.st.create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
-    }
-    fn create_anonymous(&self, dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        self.st.create_anonymous_at(dir.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enospc)
-    }
-    fn unlink(&self, path: &str) -> vfs::fs::KResult<()> { self.st.unlink_at(path.as_bytes()) }
-    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
-        self.st.link_at(target.as_bytes(), link.as_bytes())
-    }
-    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        let ino = ext4_file_ino(&inode).ok_or(vfs::VfsError::Exdev)?;
-        self.st.link_inode_at(ino, link.as_bytes())
-    }
-    fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        self.st.rename_at(from.as_bytes(), to.as_bytes())
-    }
-    fn exchange(&self, a: &str, b: &str) -> vfs::fs::KResult<()> {
-        self.st.exchange_at(a.as_bytes(), b.as_bytes())
-    }
-    fn whiteout(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        self.st.whiteout_at(from.as_bytes(), to.as_bytes())
-    }
 }
 
 impl core::ops::Drop for Ext4Mount {

@@ -21,6 +21,45 @@ That second lookup can land on the wrong bind location, wrong namespace root, wr
 
 Current integrated state:
 
+- String-authority deletion pass completed in the dirty tree and extended:
+  - deleted `resolve_at_result`, `resolve_at`, `resolve_cwd`, `resolve_path_for_open`, the old `open(2)` implementation, proc-fd open string helpers, procfs synthetic fallback lookup, and dead `namei_common` string parent/resolve helpers.
+  - `open(2)` is now only an `openat(AT_FDCWD, ...)` shim; `openat`, `chdir`, `truncate`, `chroot`, `pivot_root`, `umount2`, `fspick`, ext4 source lookup, and debug-only access/name-to-handle logs no longer re-authorize via rendered strings.
+  - `inotify_add_watch`/`fanotify_mark` now resolve through task `cwd_vfs`/`root_vfs`, exact mount ids, and credentials; `FAN_MARK_DONT_FOLLOW` feeds `LookupFlags::no_follow_final`.
+  - VFS dirent create/delete hooks now pass parent `InodeRef`, so inotify no longer re-resolves rendered parent paths with `vfs::mount::lookup`.
+  - `bind(AF_UNIX)` materializes pathname sockets through `resolve_create_parent_at(AT_FDCWD, path)`, rolls back by exact parent object on registry failure, and no longer carries rendered pathname text for dcache invalidation.
+  - `openat(O_TMPFILE)` now calls the resolved directory inode's `i_op->tmpfile` with `CreateCtx`; VFS no longer exposes a filesystem-level `create_anonymous(dir_string, ...)` hook.
+  - `/proc/self/fd`/`/dev/fd` magic parsing moved out of generic VFS path code into syscall `pathresolve`; VFS no longer owns procfd ABI syntax.
+  - `umount2` now detaches only exact mounted roots resolved by `(mnt_id, root dentry)`; descendants or non-mounts return `EINVAL` instead of taking devfs/string fallback paths.
+  - `/proc` missing from the visible namespace no longer fabricates a private procfs tree.
+- Verification after deletion pass:
+  - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec`: pass.
+  - `cargo test -p fs --test fs_syscall_model -- --nocapture`: 1/1 pass.
+  - `cargo test -p fs --test udev_runtime_mounts -- --nocapture`: 3/3 pass.
+  - `cargo test -p fs tmpfile -- --nocapture`: 2/2 pass; `cargo test -p vfs --test inode_tmpfile_default -- --nocapture`: 1/1 pass.
+  - `cargo test -p vfs --lib`: 99/99 pass.
+- Hosted filesystem model added in `crates/kernel/fs/tests/udev_runtime_mounts.rs` and verified with `cargo test -p fs --test udev_runtime_mounts -- --nocapture` (3/3 pass).
+- The model now drives real VFS/tmpfs/namei/mount code through:
+  - host `/` with tmpfs `/run` and `/dev`,
+  - systemd-style service namespace clone,
+  - `make-rshared /`, `copy_mnt_ns`, `make-rslave /`,
+  - recursive bind of `/` to `/run/systemd/mount-rootfs`,
+  - recursive submount carry,
+  - `MS_MOVE(stage, /)` root switch,
+  - udev database temp create/write/chmod/rename,
+  - `/run/udev/tags/{seat,uaccess,master-of-seat}` tag materialization,
+  - independent udev/logind/late service namespaces seeing the same tmpfs objects,
+  - relative symlink and hardlink alias lookup,
+  - user-owned `/run/user/1000` creation with umask,
+  - `0600` user file DAC checks,
+  - sticky `01777` directory `may_delete` owner/non-owner/root behavior.
+- Result: the core VFS/tmpfs/mount namespace model does **not** reproduce the live `/run/udev/data/*` disappearance. A udev worker namespace write to `/run/udev/data/c226:0` is visible from an independently switched logind namespace and from a later namespace copied after the write.
+- Live trace `gnome-udevdb-trace5.log` still proves the real boot creates `/run/udev/data/c226:0` twice at ~27-28s, then later every `/run/udev/data/*` lookup returns `ENOENT` at ~63-72s while `/run/udev/tags/master-of-seat` remains visible. This points above the primitive VFS model: either an untraced deletion path (`unlinkat`/`rmdir`/rm_rf), a later `/run/udev/data` subtree replacement, or task/syscall-layer root/cwd/mount-id drift not represented by the direct VFS harness yet.
+- Added syscall-shaped hosted model in `crates/kernel/fs/tests/fs_syscall_model.rs`; verified with `cargo test -p fs --test fs_syscall_model -- --nocapture` (1/1 pass).
+- It drives syscall-style task state (`root`, `cwd`, `dirfd`, fdtable, creds, umask, mount namespace) over real VFS/tmpfs/namei/mount primitives for `openat`, `mkdirat`, `renameat`, `linkat`, `symlinkat`, `unlinkat`, `rmdir`, `chdir`, `fchdir`, read/write, chmod/chown, stat/lstat, readlink, truncate, mknod, getdents, and access checks.
+- Non-happy-path coverage now includes duplicate create `EEXIST`, missing parent `ENOENT`, unlink directory `EISDIR`, rmdir non-empty `ENOTEMPTY`, rmdir missing `ENOENT`, chmod/chown non-owner `EPERM`, secret-file traversal/read/truncate `EACCES`, sticky-dir non-owner delete `EPERM`, symlink lstat-vs-stat type split, hardlink linkcount/unlink survival, and cross-namespace getdents visibility.
+- Harness discoveries: `/run/user/1000` cannot be user-created under root-owned `/run/user` mode `0755`; Linux-shaped flow is root creates/chowns it. Also, another user chmod/chowning `/run/user/1000/secret` hits traversal `EACCES` before chmod ownership `EPERM` because the runtime dir is `0700`.
+- Result: the modeled syscall layer still does **not** reproduce `/run/udev/data/*` disappearance. The remaining live-only suspect is narrower: real syscall handler state drift, untraced live cleanup, or a mount/subtree replacement not represented by the hosted model yet, not primitive tmpfs/namei semantics.
+
 - The ext4 stale-inode slice is fixed enough to move the boot past the old PrivateTmp `ENOTDIR`.
 - The bind/mount path-identity slices are fixed enough to move the boot past the old `/proc/kallsyms` namespace `EBUSY`.
 - `MS_MOVE(stage, "/")` now publishes the moved stage mount as the namespace root after descendant relocation; hosted runtime-directory and greeter harnesses prove `/run`, `/dev`, and `/sys` resolution crosses the moved staged root instead of the covered old root.
@@ -446,11 +485,14 @@ Fix status:
 - Done: `mkdir`/`mkdirat` create through `parent.inode`, check target existence relative to the exact parent, check read-only through `parent.mnt_id`, and drop child cache by object parent.
 - Done: `mknod`/`mknodat` share the same parent-preserving path; `mknodat` no longer pre-resolves its dirfd-relative path into a global string.
 - Done: `symlink`/`symlinkat` now create via the exact `newdirfd` parent identity; the target string remains stored verbatim, matching Linux.
-- Done: `unlink`/`unlinkat` now use `resolve_unlink_parent_at()`, mutate `parent.inode`, capture the victim via `child_dentry(parent, leaf)`, check read-only through `parent.mnt_id`, and drop fallback cache by object parent. Rendered path text remains only for Landlock, AF_UNIX pathname registry-key compatibility, and fsnotify display; the AF_UNIX helper no longer calls path-based `d_delete_path()`.
+- Done: `unlink`/`unlinkat` now use `resolve_unlink_parent_at()`, mutate `parent.inode`, capture the victim via `child_dentry(parent, leaf)`, check read-only through `parent.mnt_id`, and drop fallback cache by object parent. Rendered path text remains only for Landlock, AF_UNIX pathname registry-key compatibility, and fsnotify display.
+- Done: AF_UNIX pathname `bind(2)` no longer calls the removed `vfs::mount::drop_stale_negative(abs)` global-root string re-walk; `create_unix_sock_node` and rollback paths invalidate only the exact `(parent dentry, leaf)` they already resolved.
 - Done: `rmdir` and `unlinkat(..., AT_REMOVEDIR)` now share `do_rmdir_at(dirfd, raw)`, preserve the walked parent identity, invalidate/unlink the captured victim dentry, and return Linux dot/root errors (`rmdir(".")` `EINVAL`, `rmdir("..")` `ENOTEMPTY`, `rmdir("/")` `EBUSY`; plain `unlink` dot/root forms `EISDIR`).
 - Done: `link`/`linkat` now resolve the source inode through the correct `*at` base and no-follow/follow flags, resolve the new name with `resolve_link_parent_at()`, mutate `parent.inode.link_child()`, drop dcache by object parent, and gate `EXDEV` by source/new-parent superblock instead of rendered mount-id strings. The only retained rendered source string is the existing `/proc/self/fd/N` special case for `AT_SYMLINK_FOLLOW`.
 - Done: all `rename`/`renameat`/`renameat2` variants now resolve both parents with `resolve_rename_parent_at()`, preserve both `*at` parent identities, reject cross-mount moves by resolved mount ids, use `vfs::namei::may_rename()`, mutate through `old_parent.inode.rename_child(..., flags)`, and update dcache/inotify by captured object parents/dentries. Rendered path text remains only for Landlock display.
 - Done: `RENAME_EXCHANGE` and `RENAME_WHITEOUT` no longer route through `FileSystem::{exchange,whiteout}` string hooks in the syscall path. Tmpfs and ext4 inode ops now implement those flags by resolved parent inodes; exchange drops the two exact child dcache slots, whiteout moves the source dentry to destination and lets the source whiteout repopulate from the backend.
+- Done: `FileSystem::{exchange,whiteout}` string hooks are deleted; ext4 tests now call backend state ops directly, and syscalls use resolved parent inode ops instead of any whole-path exchange/whiteout fallback.
+- Done: `O_TMPFILE` no longer renders the target directory to authorize/create an anonymous inode. The syscall resolves the directory once, gates read-only by its `mnt_id`, calls `dir.inode.tmpfile()`, and ext4 stamps tmpfile uid/gid from caller fsuid/fsgid.
 - Verification: `cargo test -p vfs --test may_rename -- --nocapture` passed 19/19; `cargo test -p ext4 --test rename_overwrite_image iop_rename_handles_exchange_whiteout -- --nocapture` passed; `cargo test -p fs tmpfs::tests::rename_overwrite_tests::iop_rename_handles_exchange_whiteout -- --nocapture` passed after gating signalfd's zombie-readiness probe to kernel builds; `cargo run -p xtask -- kernel --arch x86_64` passed.
 
 ## Mount Subsystem Split-Truth Sites
@@ -889,18 +931,16 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
   - `cargo test -p vfs --test greeter_sysfs_after_pivot -- --nocapture` passed: 5/5.
   - `cargo test -p vfs --test mount_move_validation -- --nocapture` passed: 7/7.
 
-### Legacy xattr path-identity harness gap
+### Legacy xattr path-identity harness
 
-- Fixed by inspection + kernel-target compile, but still needs a direct hosted behavior harness if practical.
-- Why no existing hosted syscall test caught it:
-  - `syscalls` is `target_os=oxide-kernel`.
-  - `fs::xattr` previously owned both user-pointer parsing and path resolution, so its hosted `lxattr_tests.rs` tested the wrong authority boundary.
-- Required harness shape:
-  - create two paths sharing dentries under different mount ids,
-  - set cwd/root to the bind or staged root identity,
-  - drive the legacy xattr shim or a test-exposed resolver with `setxattr`, `lsetxattr`, `getxattr`, `listxattr`, and `removexattr`,
-  - assert follow/no-follow on final symlink and assert write-side `EROFS` comes from the resolved mount id.
+- Hosted syscall-shaped coverage is now in `crates/kernel/fs/tests/fs_syscall_model.rs`.
+- Covered contracts:
+  - legacy/following xattr writes through a final symlink and is visible on the target inode;
+  - no-follow xattr writes the symlink inode itself;
+  - dirfd-relative xattr resolves under the dirfd's walked mount context;
+  - write-side xattr returns `EROFS` from the resolved `mnt_id` when that mount is read-only.
 - Current evidence:
+  - `cargo test -p fs --test fs_syscall_model -- --nocapture` passed.
   - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec` passed.
   - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec --features debug-mount` passed.
   - `cargo test -p fs --test udev_runtime_mounts -- --nocapture` passed.
@@ -930,30 +970,27 @@ Fix:
 
 Hosted proof:
 
-- `mount_proc_domainname_namespace.rs::ms_move_to_procfd_preserves_staged_target_render_path` reproduces the exact live sequence without boot:
-  - recursive bind `/` to `/run/systemd/mount-rootfs`;
-  - detach staged `/proc`;
-  - move a private procfs mount onto the staged procfd target;
-  - assert the moved procfs mount renders `/run/systemd/mount-rootfs/proc`, not `/proc`;
-  - run the systemd-style bind/remount convergence loop on `/run/systemd/mount-rootfs/proc/sys/kernel/domainname`.
+- `mount_proc_domainname_namespace.rs::ms_move_to_procfd_preserves_staged_target_render_path` reproduces recursive bind `/` to `/run/systemd/mount-rootfs`, staged `/proc` detach, private procfs move onto procfd target, and the systemd bind/remount convergence loop.
 - `cargo test -p vfs --test mount_proc_domainname_namespace -- --nocapture` passed: 4/4.
 - `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed: 8/8.
 - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec` passed.
 
-Live smoke:
+## Current Structural Cleanup: remove VFS whole-path mutation hooks
 
-- Fresh artifact: `target/artifacts/x86_64/kernel.elf` exported at Jul 11 05:01.
-- `gnome-boot-after-msmove-rendered-target.log`:
-  - `Started systemd-userdbd.service - User Database Manager.`
-  - `Started gdm.service - GNOME Display Manager.`
-  - `Reached target graphical.target - Graphical Interface.`
-- Remaining non-graphical failures observed:
-  - `sshd.service` exits nonzero;
-  - NetworkManager logs `do-change-link[1]: internal failure 5`;
-  - SELinux attr probe `/proc/1/attr/current` still hits an `ENOTDIR` trace.
+- Deleted `FileSystem::{create,unlink,link,link_inode,rename,lookup_path,exchange,whiteout}` from the VFS trait.
+- Deleted tmpfs/ext4 implementations and tmpfs dead path-walk helpers that existed only for those hooks.
+- Syscall authority remains resolved-parent/inode based: open/create/tmpfile/link/unlink/rename/mknod/symlink route through namei + `InodeOps`, not backend-global string re-splits.
+- Ext4 backend byte-path helpers remain only inside ext4 hosted image tests and `RootfsState` internals; they are not VFS/syscall authority.
+- AF_UNIX bind no longer stores path text for later dcache invalidation; O_TMPFILE now calls the resolved directory inode's `tmpfile` op.
+- Evidence:
+  - `cargo test -p vfs --lib -- --nocapture` passed: 96/96.
+  - `cargo test -p fs --lib -- --nocapture` passed: 88/88.
+  - `cargo test -p fs --test fs_syscall_model -- --nocapture` passed: 1/1.
+  - `cargo test -p ext4 --test rename_overwrite_image -- --nocapture` passed: 6/6.
+  - `cargo test -p ext4 --test two_mounts root_inode_routes_per_instance -- --nocapture` passed: 1/1.
+  - `cargo check -p syscalls --target targets/x86_64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec --message-format=short` passed.
+  - `cargo check -p syscalls --target targets/aarch64-unknown-oxide-kernel.json -Zbuild-std=core,alloc,compiler_builtins -Zjson-target-spec --message-format=short` passed.
 
-Next gates:
+Live smoke: `gnome-boot-after-msmove-rendered-target.log` reached `Started gdm.service` and `graphical.target`; remaining non-graphical observations were `sshd.service` nonzero, NetworkManager `internal failure 5`, and SELinux `/proc/1/attr/current` ENOTDIR.
 
-- Commit only the exact mount-display fix files and the updated hosted test; leave unrelated dirty work/logs alone.
-- Run a second GNOME smoke after commit if time permits, because earlier runtime blockers were intermittent.
-- Continue broad Linux correctness from the next observed failures, not by adding service-specific bypasses.
+Next gate: continue broad Linux correctness from the next observed failures, not by adding service-specific bypasses.

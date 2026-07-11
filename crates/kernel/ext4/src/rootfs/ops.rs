@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 mod mountfs;
 
 use block::types::InodeId;
-use super::inode::{build_file_inode, build_stat_inode, ext4_file_ino, ext4_wrap_ino};
+use super::inode::{build_file_inode, build_stat_inode, ext4_wrap_ino};
 use super::state::RootfsState;
 
 pub use mountfs::{Ext4Mount, Ext4SuperOps};
@@ -29,6 +29,15 @@ pub(crate) fn dirent_dt(i: &crate::Inode) -> u8 {
 }
 
 impl RootfsState {
+    /// A freshly allocated ext4 inode number may have a stale VFS inode-cache
+    /// slot from a prior unlinked object with the same ino. Drop it before
+    /// wrapping the new on-disk type, or `iget` can return the old FileType.
+    /// # C: O(log N_ino)
+    pub(crate) fn forget_created_ino(&self, ino: u32) {
+        self.page_cache.invalidate(InodeId(ino as u64));
+        if let Some(sb) = self.i_sb() { sb.iforget(ext4_wrap_ino(ino)); }
+    }
+
     /// Wrap `ino` (any type): regular → writeable file inode; else
     /// stat-only inode. Both carry `self` (via `i_private`) so ops route
     /// through this mount.
@@ -126,7 +135,7 @@ impl RootfsState {
     pub fn create_at(self: &Arc<Self>, path: &[u8], mode_perm: u16) -> Option<vfs::InodeRef> {
         let (pino, name) = self.parent_inode(path)?;
         let new_ino = self.mount.create_file(pino, name, mode_perm, 0, 0).ok()?;
-        self.page_cache.invalidate(InodeId(new_ino as u64));
+        self.forget_created_ino(new_ino);
         self.wrap_file(new_ino)
     }
 
@@ -136,7 +145,7 @@ impl RootfsState {
         let dir_ino = self.mount.lookup_path(dir_path).ok()?;
         let new_ino = self.mount.create_anonymous(dir_ino, mode_perm).ok()?;
         self.orphan_insert(new_ino);
-        self.page_cache.invalidate(InodeId(new_ino as u64));
+        self.forget_created_ino(new_ino);
         self.wrap_file(new_ino)
     }
 
@@ -181,7 +190,7 @@ impl RootfsState {
     pub fn symlink_at(&self, target: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
         let new_ino = self.mount.create_symlink(pino, name, target, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
-        self.page_cache.invalidate(InodeId(new_ino as u64));
+        self.forget_created_ino(new_ino);
         Ok(())
     }
 
@@ -189,14 +198,15 @@ impl RootfsState {
     pub fn mknod_at(&self, path: &[u8], mode: u16, rdev: u32) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
         let new_ino = self.mount.create_mknod(pino, name, mode, rdev, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
-        self.page_cache.invalidate(InodeId(new_ino as u64));
+        self.forget_created_ino(new_ino);
         Ok(())
     }
 
     /// # C: O(N parent entries)
     pub fn mkdir_at(&self, path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
-        self.mount.create_dir(pino, name, mode_perm, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
+        let new_ino = self.mount.create_dir(pino, name, mode_perm, 0, 0).map_err(|_| vfs::VfsError::Eio)?;
+        self.forget_created_ino(new_ino);
         Ok(())
     }
 

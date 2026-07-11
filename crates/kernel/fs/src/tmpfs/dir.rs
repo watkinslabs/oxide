@@ -61,29 +61,6 @@ pub(super) fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: 
     })
 }
 
-/// Resolve a tree-relative path per-component from `root`. # C: O(components·log N)
-pub(super) fn dir_resolve(root: &InodeRef, rel: &str) -> Option<InodeRef> {
-    let mut cur: InodeRef = root.clone();
-    for comp in rel.split('/').filter(|c| !c.is_empty()) {
-        cur = cur.lookup(comp).ok()?;
-    }
-    Some(cur)
-}
-
-/// Resolve the PARENT dir of `rel` to `(parent_inode, leaf_name)`.
-/// # C: O(components·log N)
-pub(super) fn dir_parent_of<'a>(root: &InodeRef, rel: &'a str) -> Option<(InodeRef, &'a str)> {
-    let mut parts = rel.split('/').filter(|c| !c.is_empty()).peekable();
-    let mut cur: InodeRef = root.clone();
-    let mut name = "";
-    while let Some(c) = parts.next() {
-        if parts.peek().is_none() { name = c; break; }
-        cur = cur.lookup(c).ok()?;
-    }
-    if name.is_empty() { return None; }
-    Some((cur, name))
-}
-
 /// `i_fop` for a tmpfs directory (readdir). # C: O(1)
 struct TmpfsDirFileOps;
 impl FileOps for TmpfsDirFileOps {
