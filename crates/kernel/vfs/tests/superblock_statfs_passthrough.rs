@@ -5,7 +5,7 @@
 //! `s_blocksize`, `f_fsid`←`s_dev`; superblock.rs `SuperBlock::statfs`).
 //!
 //! The existing `superblock_mount.rs` tests cover ONLY the all-zero default
-//! path (the generic `FsBackedSuperOps` reports no accounting). This locks the
+//! path (the generic fill-super statfs snapshot reports no accounting). This locks the
 //! other half: a real per-fs `SuperOps` (the ext4/tmpfs lane) that reports live
 //! block/inode usage AND its own non-default `f_type`/`f_bsize`/`f_fsid` must
 //! reach userspace verbatim — the VFS plumbing must neither drop the accounting

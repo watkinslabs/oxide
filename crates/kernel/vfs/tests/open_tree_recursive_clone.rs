@@ -83,7 +83,7 @@ fn child(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
 
 /// Build the dev-backed rootfs + a `/proc` api-mount, install the provider, and
 /// return (ns, root_mnt_id, proc_mnt_id, s_root, proc_dentry).
-fn setup() -> (u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
+fn setup() -> (u64, u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
     let ns = NEXT_NS.fetch_add(1, Ordering::Relaxed);
     // A `fn()` ns-provider cannot capture `ns`; stash it in a global the provider
     // reads. Serialized by SERIAL.
@@ -104,7 +104,7 @@ fn setup() -> (u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
     vfs::mount::register(Some(proc_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
         .expect("proc mount");
     let proc_id = vfs::mount::__lookup_mnt(root_id, &proc_d).expect("proc in hash").mnt_id;
-    (ns, root_id, proc_id, s_root, proc_d)
+    (ns, root_id, proc_id, dev, s_root, proc_d)
 }
 
 static CUR_NS: Mutex<u64> = Mutex::new(0);
@@ -117,11 +117,11 @@ fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_
 #[test]
 fn recursive_clone_hashonly_no_clobber() {
     let _g = guard();
-    let (_ns, root_id, proc_id, _s_root, proc_d) = setup();
+    let (_ns, root_id, proc_id, dev, _s_root, proc_d) = setup();
 
     // Premise: rootfs is dev-backed (the global-dentry-exposure precondition).
-    assert!(vfs::mount::mount_by_id(root_id).unwrap().fs().dev_id().is_some(),
-        "rootfs dev_id() == Some (live-gnome premise: clone shares the SB → global /proc dentry)");
+    assert_eq!(vfs::mount::mount_by_id(root_id).unwrap().sb().s_dev, dev,
+        "rootfs is dev-backed (live-gnome premise: clone shares the SB → global /proc dentry)");
     // Baseline: original (ns_root, /proc) resolves to the original proc mount.
     assert_eq!(vfs::mount::__lookup_mnt(root_id, &proc_d).map(|m| m.mnt_id), Some(proc_id),
         "baseline: original /proc in the strict hash");
@@ -154,7 +154,7 @@ fn recursive_clone_hashonly_no_clobber() {
 #[test]
 fn uncommitted_clone_tree_balances_s_active() {
     let _g = guard();
-    let (_ns, root_id, _proc_id, _s_root, _proc_d) = setup();
+    let (_ns, root_id, _proc_id, _dev, _s_root, _proc_d) = setup();
     let root_mnt = vfs::mount::mount_by_id(root_id).unwrap();
     let before = root_mnt.sb().s_active();
 
@@ -168,7 +168,7 @@ fn uncommitted_clone_tree_balances_s_active() {
 #[test]
 fn empty_path_clone_uses_dirfd_mount() {
     let _g = guard();
-    let (_ns, root_id, proc_id, s_root, _proc_d) = setup();
+    let (_ns, root_id, proc_id, _dev, s_root, _proc_d) = setup();
 
     let proc_vp = vfs::path_lookup_at_root_cred(
         s_root.clone(), root_id, s_root.clone(), root_id, "/proc",
@@ -186,7 +186,7 @@ fn empty_path_clone_uses_dirfd_mount() {
     let nodes = vfs::mount::clone_mount_tree(&vfs::mount::mount_by_id(empty_vp.mnt_id).unwrap(), true);
     assert_eq!(nodes.iter().filter(|n| n.rel.is_empty()).count(), 1,
         "open_tree empty-path clone has exactly one clone root");
-    assert_eq!(nodes.iter().find(|n| n.rel.is_empty()).unwrap().m.sb().fs().name(), "apifs_test",
+    assert_eq!(nodes.iter().find(|n| n.rel.is_empty()).unwrap().m.sb().s_type.name(), "apifs_test",
         "empty-path clone source is the fd's proc/api mount, not the rootfs");
     vfs::mount::release_clone_tree(&nodes);
 }
@@ -194,7 +194,7 @@ fn empty_path_clone_uses_dirfd_mount() {
 #[test]
 fn detached_clone_commit_under_bind_stage_uses_walked_parent_mount() {
     let _g = guard();
-    let (_ns, root_id, _proc_id, s_root, _proc_d) = setup();
+    let (_ns, root_id, _proc_id, _dev, s_root, _proc_d) = setup();
     let dev_d = child(&s_root, "dev");
     vfs::mount::register(Some(dev_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
         .expect("dev mount");

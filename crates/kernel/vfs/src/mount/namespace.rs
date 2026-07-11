@@ -380,9 +380,16 @@ pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: 
         match m.mnt_root() { Some(sr) => { tgt_base = sr; tgt_mnt = m.mnt_id; } None => break }
     }
     // Clone the source's submount SUBTREE (root EXCLUDED — already bound) as
-    // private binds, then splice it under the destination base, falling back to
-    // the bare `tgt` underlay when the mounted root cannot resolve a slot.
-    let nodes = copy_bind_subtree_from_arena(&src_m, src, ns, exclude_mnt);
+    // private binds. If `src` is the mountpoint the caller walked BEFORE
+    // crossing into `src_m`, subtree discovery starts at `src_m.mnt_root`
+    // (Linux source path after `follow_mount`), not at the covered parent-fs
+    // dentry. A caller that already supplied a crossed `struct path` dentry uses
+    // that dentry as-is.
+    let src_base = match src_m.mountpoint() {
+        Some(mp) if Arc::ptr_eq(&mp, src) => src_m.mnt_root().unwrap_or_else(|| src.clone()),
+        _ => src.clone(),
+    };
+    let nodes = copy_bind_subtree_from_arena(&src_m, &src_base, ns, exclude_mnt);
     // `tgt_mnt` is the mount whose `mnt_root` is `tgt_base` — the explicit parent
     // of every top-level cloned submount, threaded so the parent-aware
     // `commit_tree` need not (ambiguously) re-derive it from the shared dentry.

@@ -245,7 +245,7 @@ fn full_service_setup_pivot_and_switch_root_detach() {
         false
     };
     let tmpfs_under_stage = vfs::mount::all_mounts().iter()
-        .filter(|m| m.ns == sandbox && m.fs().name() == "tmpfs" && is_under(m, stage_id))
+        .filter(|m| m.ns == sandbox && m.sb().s_type.name() == "tmpfs" && is_under(m, stage_id))
         .count();
     assert!(tmpfs_under_stage >= 1,
         "tmpfs /run must be carried UNDER the stage by bind_submounts_rec (else mkdir /run/udev hits ext4 -> EIO)");
@@ -469,7 +469,7 @@ fn bind_clone_shares_source_superblock_and_staged_identity() {
         LookupFlags::default(), vfs::Cred::root()).expect("global domainname alias");
     assert!(Arc::ptr_eq(&src.dentry, &tgt.dentry), "proc leaf dentry is shared across staged and global proc");
     let src_m = vfs::mount::mount_by_id(src.mnt_id).expect("source proc mount");
-    assert_eq!(src_m.fs().name(), "procfs", "precondition: source is procfs");
+    assert_eq!(src_m.sb().s_type.name(), "procfs", "precondition: source is procfs");
 
     vfs::mount::register_bind_clone_under(src.mnt_id, tgt.dentry.clone(), src.mnt_id, src.dentry.clone())
         .expect("bind clone under staged proc");
@@ -482,7 +482,7 @@ fn bind_clone_shares_source_superblock_and_staged_identity() {
         "bind mountinfo root must be the source path relative to the source superblock root");
     assert!(Arc::ptr_eq(b.sb(), src_m.sb()),
         "Linux bind clone shares the source superblock; no synthetic bind SB");
-    assert_eq!(b.fs().name(), "procfs",
+    assert_eq!(b.sb().s_type.name(), "procfs",
         "bind mount fstype must be the source fstype, not a fake bind filesystem");
     assert_eq!(b.mnt_root().and_then(|d| d.inode()).map(|i| i.ino()), Some(src.inode.ino()),
         "bind mnt_root must be the source leaf dentry");

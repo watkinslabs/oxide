@@ -73,7 +73,7 @@ pub fn mountinfo_optional_fields(m: &Arc<super::Mount>) -> String {
 
 /// Render mountinfo field 10 (`source`) from VFS/SB ownership. # C: O(len name)
 pub fn mountinfo_source_field(m: &Arc<super::Mount>) -> String {
-    m.sb().show_devname().unwrap_or_else(|| String::from(m.fs().name()))
+    m.sb().show_devname().unwrap_or_else(|| String::from(m.sb().s_type.name()))
 }
 
 /// Render mountinfo field 11 (`super options`). # C: O(1)
