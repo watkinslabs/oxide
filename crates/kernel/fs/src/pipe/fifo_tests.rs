@@ -116,6 +116,6 @@ fn independent_opens_share_one_ring() {
 #[test]
 fn is_named_fifo_rejects_anon_pipe_and_eventfd() {
     assert!(!is_named_fifo(&make_pipe_inode()), "anon pipe is not a named FIFO");
-    assert!(!is_named_fifo(&make_eventfd_inode(0)), "eventfd is not a named FIFO");
+    assert!(!is_named_fifo(&make_eventfd_inode(0, false)), "eventfd is not a named FIFO");
     assert!(is_named_fifo(&fifo(0xF1F0_0007)), "mknod FIFO IS a named FIFO");
 }

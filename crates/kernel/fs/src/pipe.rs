@@ -96,6 +96,7 @@ pub fn smoke_test() {
 /// counter lives in `i_private`.
 pub struct EventfdData {
     counter: core::sync::atomic::AtomicU64,
+    semaphore: bool,
     /// Tasks parked in a blocking `read` that found the counter 0; woken by
     /// `write`. (No blocking-write parking: a u64 counter effectively never
     /// fills in these control-fd uses.)
@@ -105,14 +106,15 @@ pub struct EventfdData {
 static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0x4000_0000);
 
-/// `make_eventfd_inode(initial)` — a Fifo pseudo-inode whose counter drains on
-/// read and accumulates on write. # C: O(1)
-pub fn make_eventfd_inode(initial: u64) -> InodeRef {
+/// `make_eventfd_inode(initial, semaphore)` — a Fifo pseudo-inode whose counter
+/// drains on read and accumulates on write. # C: O(1)
+pub fn make_eventfd_inode(initial: u64, semaphore: bool) -> InodeRef {
     let ino = NEXT_EVENTFD_INO.fetch_add(1, Ordering::Relaxed);
     InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(EventfdFileOps))
         .poll_subs(PollSubscribers::new())
         .private(Arc::new(EventfdData {
             counter: core::sync::atomic::AtomicU64::new(initial),
+            semaphore,
             read_waiters: WaitList::new(),
         }))
         .build()
@@ -143,9 +145,10 @@ impl FileOps for EventfdFileOps {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
         let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
         loop {
-            let v = d.counter.swap(0, Ordering::AcqRel);
+            let v = eventfd_do_read(d);
             if v != 0 {
                 buf[..8].copy_from_slice(&v.to_ne_bytes());
+                if let Some(s) = inode.poll_subscribers() { s.notify(); }
                 return Ok(8);
             }
             #[cfg(target_os = "oxide-kernel")]
@@ -167,25 +170,45 @@ impl FileOps for EventfdFileOps {
     fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
         let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
-        let v = d.counter.swap(0, Ordering::AcqRel);
+        let v = eventfd_do_read(d);
         if v == 0 { return Err(vfs::VfsError::Eagain); }
         buf[..8].copy_from_slice(&v.to_ne_bytes());
+        if let Some(s) = inode.poll_subscribers() { s.notify(); }
         Ok(8)
     }
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
-        if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
+        if buf.len() != 8 { return Err(vfs::VfsError::Einval); }
         let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
         let mut a = [0u8; 8];
-        a.copy_from_slice(&buf[..8]);
+        a.copy_from_slice(buf);
         let add = u64::from_ne_bytes(a);
         if add == u64::MAX { return Err(vfs::VfsError::Einval); }
-        d.counter.fetch_add(add, Ordering::AcqRel);
+        loop {
+            let cur = d.counter.load(Ordering::Acquire);
+            if u64::MAX - cur <= add { return Err(vfs::VfsError::Eagain); }
+            if d.counter.compare_exchange(cur, cur + add, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                break;
+            }
+        }
         // Counter went nonzero → wake blocking readers parked on it, AND poll/
         // epoll waiters (sd-event drives eventfds via epoll_wait).
         d.read_waiters.wake_all();
         if let Some(s) = inode.poll_subscribers() { s.notify(); }
         Ok(8)
     }
+}
+
+fn eventfd_do_read(d: &EventfdData) -> u64 {
+    if d.semaphore {
+        loop {
+            let cur = d.counter.load(Ordering::Acquire);
+            if cur == 0 { return 0; }
+            if d.counter.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return 1;
+            }
+        }
+    }
+    d.counter.swap(0, Ordering::AcqRel)
 }
 
 /// `Inode`-backed anonymous pipe state (Linux `i_private`). One instance is
