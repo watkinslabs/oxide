@@ -44,3 +44,50 @@ pub fn register(full_path: &str, inode: InodeRef) {
 pub fn register_dir(full_path: &str) {
     sys_root().ensure_dir_path(rel(full_path));
 }
+
+/// Drop a cached sysfs dentry subtree by walking only under sysfs's own
+/// superblock root. `full_path` may be absolute `/sys/...` or sysfs-root
+/// relative `/...`; no global root lookup, mount traversal, or slow fs lookup
+/// is performed. # C: O(components)
+pub fn drop_cached(full_path: &str) {
+    let rel = rel(full_path);
+    if rel.is_empty() { return; }
+    let root_inode = sys_root().as_inode();
+    let mut cur = match root_inode.i_sb().and_then(|sb| sb.s_root()) {
+        Some(d) => d,
+        None => return,
+    };
+    let mut comps = rel.split('/').filter(|c| !c.is_empty()).peekable();
+    while let Some(comp) = comps.next() {
+        if comps.peek().is_none() {
+            vfs::d_drop_child(&cur, comp);
+            return;
+        }
+        cur = match cur.cached_child(comp).or_else(|| vfs::d_lookup(&cur, comp)) {
+            Some(d) => d,
+            None => return,
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::String;
+    use alloc::sync::Arc;
+    use vfs::fs::FileSystem;
+    use vfs::LookupFlags;
+
+    #[test]
+    fn drop_cached_invalidates_under_sysfs_root_without_global_walk() {
+        let path = "/sys/drop-cache-test/leaf";
+        crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), 0x51dc_a001));
+        let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(crate::SysfsFs);
+        let sb = vfs::SuperBlock::for_backend(fs, crate::SysfsFs.root(), vfs::superblock::next_anon_dev(), String::from("sysfs-test"));
+        let root = sb.s_root().expect("sysfs root dentry");
+        let (_, parent) = vfs::path_lookup(root.clone(), root.clone(), "/drop-cache-test", LookupFlags::default()).expect("parent cached");
+        assert!(vfs::path_lookup(root.clone(), root, "/drop-cache-test/leaf", LookupFlags::default()).is_ok());
+        assert!(vfs::d_lookup(&parent, "leaf").is_some(), "leaf cached before invalidation");
+        super::drop_cached(path);
+        assert!(vfs::d_lookup(&parent, "leaf").is_none(), "leaf dropped by sysfs-root dcache walk");
+    }
+}
