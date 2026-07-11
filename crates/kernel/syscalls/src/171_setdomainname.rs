@@ -119,16 +119,20 @@ pub fn sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
     let ptr = args.a0;
     let len = args.a1 as usize;
     if len > HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = crate::userbuf::validate_user_buf(ptr, len as u64, 1) { return rv; }
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    if !cur.has_cap(sched::cap::SYS_ADMIN) { return -(Errno::Eperm.as_i32() as i64); }
+    if len != 0 {
+        if let Err(rv) = crate::userbuf::validate_user_buf(ptr, len as u64, 1) { return rv; }
+    }
     let mut buf = [0u8; HOST_NAME_MAX];
-    // SAFETY: ptr range validated < USER_VA_END by validate_user_buf above; CPL=0 byte read through caller's AS for `len` bytes.
+    // SAFETY: nonzero source range was validated readable; Linux copyin accepts byte-granular storage.
     unsafe {
-        for i in 0..len { buf[i] = core::ptr::read_volatile((ptr + i as u64) as *const u8); }
+        for i in 0..len { buf[i] = core::ptr::read_unaligned((ptr + i as u64) as *const u8); }
     }
     // Write the calling task's UTS namespace (shared by all members);
     // uts_ns 0 = the global domainname.
     use core::sync::atomic::Ordering;
-    let uts_ns = sched::live::current().map(|c| c.uts_ns.load(Ordering::Acquire)).unwrap_or(0);
+    let uts_ns = cur.uts_ns.load(Ordering::Acquire);
     set_dom_for(uts_ns, &buf[..len]);
     0
 }
