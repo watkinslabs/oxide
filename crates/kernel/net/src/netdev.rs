@@ -67,6 +67,18 @@ pub struct NetStats {
     pub tx_dropped: u64,
 }
 
+/// Atomic interface snapshot for procfs/netlink-style readers. Name,
+/// MTU, flags, and counters are captured while the registry entry is
+/// live, so readers do not need a second lookup that can race removal.
+#[derive(Clone, Debug)]
+pub struct IfaceSnapshot {
+    pub id:    NetIfaceId,
+    pub name:  String,
+    pub mtu:   u32,
+    pub flags: u32,
+    pub stats: NetStats,
+}
+
 /// Linux `/sys/class/net/<if>/statistics/` field names, in the order
 /// `net/core/net-sysfs.c` registers them. Every name resolves to a
 /// u64 decimal. `sysfs` reads this for both `readdir` and per-field
@@ -255,19 +267,25 @@ impl IfaceRegistry {
         self.lookup_name_in_ns(name, 0)
     }
 
-    /// Snapshot (id, name, mtu) triples in the given namespace.
+    /// Snapshot interface identity/state in the given namespace.
     /// # C: O(N)
-    pub fn snapshot_in_ns(&self, ns: u64) -> Vec<(NetIfaceId, String, u32)> {
+    pub fn snapshot_in_ns(&self, ns: u64) -> Vec<IfaceSnapshot> {
         let g = self.inner.lock();
         g.entries.iter()
             .filter(|e| e.ns == ns)
-            .map(|e| (e.id, String::from(e.dev.name()), e.dev.mtu()))
+            .map(|e| IfaceSnapshot {
+                id: e.id,
+                name: String::from(e.dev.name()),
+                mtu: e.dev.mtu(),
+                flags: e.flags.load(Ordering::Acquire),
+                stats: e.dev.stats(),
+            })
             .collect()
     }
 
     /// Init-NS snapshot compatibility shim.
     /// # C: O(N)
-    pub fn snapshot(&self) -> Vec<(NetIfaceId, String, u32)> {
+    pub fn snapshot(&self) -> Vec<IfaceSnapshot> {
         self.snapshot_in_ns(0)
     }
 
@@ -306,19 +324,20 @@ mod tests {
     use super::*;
     use sync::TaskList;
 
-    struct DummyDev { name: &'static str, mtu: u32 }
+    struct DummyDev { name: &'static str, mtu: u32, stats: NetStats }
     impl NetDev for DummyDev {
         fn name(&self) -> &str { self.name }
         fn mac(&self) -> MacAddr { MacAddr::ZERO }
         fn mtu(&self) -> u32 { self.mtu }
         fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
+        fn stats(&self) -> NetStats { self.stats }
     }
 
     #[test]
     fn register_assigns_increasing_ids() {
         let r = IfaceRegistry::new();
-        let a = r.register(Arc::new(DummyDev { name: "lo", mtu: 65535 }));
-        let b = r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500 }));
+        let a = r.register(Arc::new(DummyDev { name: "lo", mtu: 65535, stats: NetStats::default() }));
+        let b = r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats: NetStats::default() }));
         assert_ne!(a, b);
         assert!(r.lookup(a).is_some());
         assert_eq!(r.lookup_name("lo").unwrap().0, a);
@@ -335,12 +354,28 @@ mod tests {
     #[test]
     fn snapshot_lists_all() {
         let r = IfaceRegistry::new();
-        r.register(Arc::new(DummyDev { name: "lo", mtu: 65535 }));
-        r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500 }));
+        r.register(Arc::new(DummyDev { name: "lo", mtu: 65535, stats: NetStats::default() }));
+        r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats: NetStats::default() }));
         let s = r.snapshot();
         assert_eq!(s.len(), 2);
-        assert!(s.iter().any(|t| t.1 == "lo"));
-        assert!(s.iter().any(|t| t.1 == "eth0"));
+        assert!(s.iter().any(|t| t.name == "lo"));
+        assert!(s.iter().any(|t| t.name == "eth0"));
+    }
+
+    #[test]
+    fn snapshot_carries_live_stats_without_second_lookup() {
+        let r = IfaceRegistry::new();
+        let stats = NetStats {
+            rx_packets: 11, rx_bytes: 1100, rx_errors: 1, rx_dropped: 2,
+            tx_packets: 13, tx_bytes: 1300, tx_errors: 3, tx_dropped: 4,
+        };
+        let id = r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats }));
+        let s = r.snapshot();
+        let row = s.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(row.name, "eth0");
+        assert_eq!(row.mtu, 1500);
+        assert_eq!(row.stats.rx_packets, 11);
+        assert_eq!(row.stats.tx_dropped, 4);
     }
 
     #[test]
