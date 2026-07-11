@@ -18,7 +18,7 @@ use std::sync::{Arc, OnceLock};
 use vfs::fs::FileSystem;
 use vfs::inode::{Inode, InodeBuilder};
 use vfs::mount::Propagation;
-use vfs::{default_file_ops, mk_mode, Dentry, FileType, InodeOps, InodeRef, KResult, SimpleSuperOps, SuperBlock, SuperOps, VfsError};
+use vfs::{default_file_ops, mk_mode, Dentry, FileSystemType, FileType, InodeOps, InodeRef, KResult, SimpleSuperOps, SuperBlock, SuperOps, VfsError};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x1000);
 
@@ -44,6 +44,10 @@ fn root() -> Arc<Dentry> {
     ROOT.get_or_init(|| Dentry::new_root(make_fixdir(2))).clone()
 }
 fn root_provider() -> Option<Arc<Dentry>> { Some(root()) }
+
+fn fs_type_for(fs: &Arc<dyn FileSystem>) -> Arc<dyn FileSystemType> {
+    vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is mounted explicitly")))
+}
 
 /// Canonical dentry for absolute `path`, built by descending from the root
 /// via the dcache (`d_lookup → i_op->lookup → d_add`) — the SAME per-
@@ -109,21 +113,23 @@ pub fn realize_sb(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, dev: u64, s_i
 
 #[allow(dead_code)]
 pub fn register(p: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
-    if p == "/" { return vfs::mount::register(None, fs); }
+    let ty = fs_type_for(&fs);
+    if p == "/" { return vfs::mount::register_typed(ty, None, fs); }
     if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
-        return vfs::mount::register(Some(raw_dentry(p)), fs);
+        return vfs::mount::register_typed(ty, Some(raw_dentry(p)), fs);
     }
     let target = mount_target(p);
-    vfs::mount::register_at(Some(target.mountpoint), fs, Some(target.parent.mnt_id))
+    vfs::mount::register_typed_at(ty, Some(target.mountpoint), fs, Some(target.parent.mnt_id))
 }
 #[allow(dead_code)]
 pub fn register_bind(p: &str, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
-    if p == "/" { return vfs::mount::register_bind(None, fs, root); }
+    let ty = fs_type_for(&fs);
+    if p == "/" { return vfs::mount::register_bind_typed(ty, None, fs, root); }
     if vfs::mount::root_mount_id(vfs::mount::current_ns()).is_none() {
-        return vfs::mount::register_bind(Some(raw_dentry(p)), fs, root);
+        return vfs::mount::register_bind_typed(ty, Some(raw_dentry(p)), fs, root);
     }
     let target = mount_target(p);
-    vfs::mount::register_bind_at(Some(target.mountpoint), fs, root, Some(target.parent.mnt_id))
+    vfs::mount::register_bind_typed_at(ty, Some(target.mountpoint), fs, root, Some(target.parent.mnt_id))
 }
 #[allow(dead_code)]
 pub fn unregister(p: &str) -> usize { vfs::mount::unregister(&dentry(p)) }
