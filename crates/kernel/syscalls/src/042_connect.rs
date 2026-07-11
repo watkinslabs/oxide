@@ -45,7 +45,11 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
-        net::sock::RemoteAddr::UnixPath(path)
+        let addr = match crate::namei_common::resolve_unix_addr(path) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        net::sock::RemoteAddr::Unix(addr)
     } else if family == AF_INET || family == AF_INET6 {
         let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
         if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }

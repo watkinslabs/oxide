@@ -72,6 +72,45 @@ fn udev_control_path_connect_wakes_accept_and_round_trips() {
 }
 
 #[test]
+fn pathname_registry_key_is_inode_identity_not_display_path() {
+    let registry = UnixRegistry::new();
+    let a = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 1, ino: 10 },
+        display: String::from("/run/a.sock"),
+    };
+    let b = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 1, ino: 11 },
+        display: String::from("/run/a.sock"),
+    };
+
+    registry.bind_addr(a.clone()).unwrap();
+    registry.bind_addr(b.clone()).unwrap();
+
+    assert!(registry.connect_addr(&a).is_some());
+    assert!(registry.connect_addr(&b).is_some());
+    assert_eq!(registry.snapshot_paths().len(), 2);
+}
+
+#[test]
+fn symlinked_pathname_connect_hits_same_inode_key() {
+    let registry = UnixRegistry::new();
+    let bound = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 2, ino: 20 },
+        display: String::from("/run/systemd/journal/dev-log"),
+    };
+    let via_link = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 2, ino: 20 },
+        display: String::from("/dev/log"),
+    };
+
+    registry.bind_addr(bound).unwrap();
+    let pair = registry.connect_addr(&via_link).expect("same inode key must connect");
+
+    assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some("/run/systemd/journal/dev-log"));
+    assert!(registry.bind_addr(via_link).is_err(), "same socket inode key is busy");
+}
+
+#[test]
 fn round_trip() {
     let p = UnixPair::new();
     p.write(UnixEnd::A, b"hello");

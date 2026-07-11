@@ -1,9 +1,11 @@
-use alloc::{collections::VecDeque, string::String, sync::Arc, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
 use sched;
 use vfs;
+
+use super::UnixAddr;
 
 pub struct UnixDgram {
     pub payload: Vec<u8>,
@@ -19,8 +21,10 @@ pub struct UnixDgram {
 
 pub struct UnixDgramQueue {
     pub msgs: Spinlock<VecDeque<UnixDgram>, UnixLockClass>,
-    /// Connected peer path for AF_UNIX SOCK_DGRAM.
-    pub peer: Spinlock<Option<String>, UnixLockClass>,
+    /// Bound local address for pathname/abstract datagram sockets.
+    pub bound: Spinlock<Option<UnixAddr>, UnixLockClass>,
+    /// Connected peer address for AF_UNIX SOCK_DGRAM.
+    pub peer: Spinlock<Option<UnixAddr>, UnixLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
     /// F181a: epoll subscribers of the owning InetSocket.
@@ -32,11 +36,24 @@ impl UnixDgramQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             msgs: Spinlock::new(VecDeque::new()),
+            bound: Spinlock::new(None),
             peer: Spinlock::new(None),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
         })
+    }
+
+    /// Store the local bind address.
+    /// # C: O(1)
+    pub fn set_bound(&self, addr: UnixAddr) {
+        *self.bound.lock() = Some(addr);
+    }
+
+    /// Return the local bind address, if any.
+    /// # C: O(1)
+    pub fn bound(&self) -> Option<UnixAddr> {
+        self.bound.lock().clone()
     }
 
     /// F181a: register owning InetSocket's subscribers.
@@ -46,14 +63,14 @@ impl UnixDgramQueue {
     }
 
     /// Store the connected datagram peer.
-    /// # C: O(N path)
-    pub fn set_peer(&self, path: String) {
-        *self.peer.lock() = Some(path);
+    /// # C: O(1)
+    pub fn set_peer(&self, addr: UnixAddr) {
+        *self.peer.lock() = Some(addr);
     }
 
     /// Return the connected datagram peer, if any.
     /// # C: O(1)
-    pub fn peer(&self) -> Option<String> {
+    pub fn peer(&self) -> Option<UnixAddr> {
         self.peer.lock().clone()
     }
 

@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use crate::namei_common::{
     child_dentry, drop_child_cache, errno_from_vfs, parent_mount_readonly, read_user_path,
-    render_child_path, render_parent_path, resolve_unlink_parent_at, unlink_unix_socket_path,
+    render_child_path, render_parent_path, resolve_unlink_parent_at, unlink_unix_socket_addr,
 };
 
 /// D30: capture the victim leaf dentry for `abs` BEFORE the backend removes the
@@ -43,6 +43,13 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
     // D30: grab the victim dentry before the backend drops the name (it would no
     // longer resolve afterwards) so `d_unlink` can drive the nlink↔alias coupling.
     let victim = child_dentry(&parent, &name);
+    let unix_addr = victim.as_ref()
+        .and_then(|d| d.inode())
+        .and_then(|i| if i.file_type() == vfs::FileType::Socket {
+            Some(net::UnixAddr::from_inode(p.clone(), &i))
+        } else {
+            None
+        });
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend unlink (Linux
     // `do_unlinkat` locks the parent); dropped before the dcache delete below.
     let r = { let _g = parent.inode.inode_lock(); parent.inode.unlink_child(&name) };
@@ -54,7 +61,7 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
         // (Linux `vfs_unlink` tail). No cached victim → path-based d_delete clears
         // any stale positive so stat/open after unlink still misses.
         Ok(())  => {
-            unlink_unix_socket_path(&p);
+            if let Some(a) = unix_addr.as_ref() { unlink_unix_socket_addr(a); }
             match victim {
                 Some(d) => {
                     // FAN_DELETE_SELF / IN_DELETE_SELF on the victim before its
@@ -66,10 +73,6 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
             }
             let pp = render_parent_path(&parent);
             vfs::fire_dirent_delete(&pp, &name);
-            0
-        }
-        Err(vfs::VfsError::Enoent) if unlink_unix_socket_path(&p) => {
-            drop_child_cache(&parent, &name);
             0
         }
         Err(e)  => errno_from_vfs(e),

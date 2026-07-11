@@ -6,6 +6,52 @@ use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
 use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, socket_from_fd};
 
+struct UnixSockNode {
+    parent: vfs::VfsPath,
+    name: alloc::string::String,
+    addr: net::UnixAddr,
+}
+
+fn create_unix_sock_node(path: &str) -> Result<Option<UnixSockNode>, i64> {
+    if net::unix_path_is_abstract(path) { return Ok(None); }
+    let (parent, name) = crate::namei_common::resolve_create_parent_at(crate::pathresolve::AT_FDCWD, path)?;
+    if crate::namei_common::parent_mount_readonly(&parent) {
+        return Err(-(Errno::Erofs.as_i32() as i64));
+    }
+    let cred = crate::pathresolve::current_cred();
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+    let r = {
+        let _g = parent.inode.inode_lock();
+        parent.inode.mknod_child(&name, vfs::S_IFSOCK as u16, 0, &ctx)
+    };
+    match r {
+        Ok(()) => {
+            let inode = match parent.inode.lookup(&name) {
+                Ok(i) => i,
+                Err(e) => return Err(crate::namei_common::errno_from_vfs(e)),
+            };
+            let addr = net::UnixAddr::from_inode(alloc::string::String::from(path), &inode);
+            vfs::file::iput(inode);
+            crate::namei_common::drop_child_cache(&parent, &name);
+            let pp = crate::namei_common::render_parent_path(&parent);
+            vfs::fire_dirent_create(&pp, &name);
+            Ok(Some(UnixSockNode { parent, name, addr }))
+        }
+        Err(vfs::VfsError::Eexist) => Err(-(Errno::Eaddrinuse.as_i32() as i64)),
+        Err(e) => Err(crate::namei_common::errno_from_vfs(e)),
+    }
+}
+
+fn remove_unix_sock_node(n: &UnixSockNode) {
+    let _ = {
+        let _g = n.parent.inode.inode_lock();
+        n.parent.inode.unlink_child(&n.name)
+    };
+    crate::namei_common::drop_child_cache(&n.parent, &n.name);
+    let pp = crate::namei_common::render_parent_path(&n.parent);
+    vfs::fire_dirent_delete(&pp, &n.name);
+}
+
 /// `bind(fd, addr, addrlen)` slot 49.
 /// # C: O(1)
 pub fn sys_bind(args: &SyscallArgs) -> i64 {
@@ -36,15 +82,24 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         Some(f) => f, None => return -(Errno::Efault.as_i32() as i64),
     };
     // Parse the user sockaddr into the typed BoundAddr enum.
+    let mut unix_node: Option<UnixSockNode> = None;
     let addr = if family == AF_UNIX as u16 {
         let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
         // If the socket is already SOCK_DGRAM, pass its queue along.
+        let node = match create_unix_sock_node(&path) {
+            Ok(n) => n,
+            Err(rv) => return rv,
+        };
+        let addr = node.as_ref()
+            .map(|n| n.addr.clone())
+            .unwrap_or_else(|| net::UnixAddr::from_sockaddr_path(path.clone()));
+        unix_node = node;
         match &*sock.kind.lock() {
             net::sock::SockKind::UnixDgram(q) =>
-                net::sock::BoundAddr::UnixDgram { path, queue: q.clone() },
-            _ => net::sock::BoundAddr::UnixListener(path),
+                net::sock::BoundAddr::UnixDgram { addr, queue: q.clone() },
+            _ => net::sock::BoundAddr::UnixListener(addr),
         }
     } else if family == AF_INET as u16 {
         let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
@@ -86,43 +141,11 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
-    // F153: also materialise an AF_UNIX path as a tmpfs sock inode
-    // so stat(path) returns S_IFSOCK + chmod/unlink flow through VFS.
-    let unix_path = match &addr {
-        net::sock::BoundAddr::UnixListener(p) => Some(p.clone()),
-        net::sock::BoundAddr::UnixDgram { path, .. } => Some(path.clone()),
-        _ => None,
-    };
     let rv = match net::sock::bind(&sock, addr) {
         Ok(()) => 0, Err(e) => errno_from_neterr(e),
     };
-    if rv == 0 {
-        if let Some(p) = unix_path {
-            if !net::unix_path_is_abstract(&p) {
-                // Materialise the AF_UNIX path as an S_IFSOCK node in whatever
-                // fs owns its parent dir (the tmpfs tree under /run, etc.), via
-                // the per-component `mknod_child` — no global path registry.
-                let (parent, name) = match p.rsplit_once('/') {
-                    Some((d, n)) if !n.is_empty() => (if d.is_empty() { "/" } else { d }, n),
-                    _ => ("", ""),
-                };
-                if !name.is_empty() {
-                    if let Ok(pino) = vfs::mount::lookup(parent) {
-                        const S_IFSOCK: u16 = 0xC000;
-                        let cred = crate::pathresolve::current_cred();
-                        let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
-                        if pino.mknod_child(name, S_IFSOCK, 0, &ctx).is_ok() {
-                            // mknod_child drives i_op->mknod straight off the parent
-                            // inode, bypassing namei's d_instantiate. Drop any cached
-                            // NEGATIVE dentry left by an earlier stat(path)==ENOENT so
-                            // the next lookup sees the new S_IFSOCK node instead of a
-                            // stale definitive-ENOENT negative.
-                            vfs::mount::drop_stale_negative(&p);
-                        }
-                    }
-                }
-            }
-        }
+    if rv != 0 {
+        if let Some(n) = unix_node.as_ref() { remove_unix_sock_node(n); }
     }
     rv
 }

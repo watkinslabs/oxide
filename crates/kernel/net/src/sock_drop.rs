@@ -62,7 +62,13 @@ impl Drop for InetSocket {
             // B518: unbind from the SAME net_ns registry the bind used
             // (recorded at bind time), not the closer's current ns.
             let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
-            crate::net_ns::ns_unix_registry(ns).unbind(&l.path);
+            crate::net_ns::ns_unix_registry(ns).unbind_addr(&l.addr);
+        }
+        if let SockKind::UnixDgram(q) = &*self.kind.lock() {
+            if let Some(addr) = q.bound() {
+                let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
+                crate::net_ns::ns_unix_registry(ns).dgram_unbind_addr(&addr);
+            }
         }
     }
 }
