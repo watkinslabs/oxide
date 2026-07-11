@@ -8,7 +8,7 @@ use super::root::resolution_root_vfs;
 fn trim_mount_raw(raw: &str) -> Result<&str, vfs::VfsError> {
     if raw.is_empty() { return Err(vfs::VfsError::Enoent); }
     let trimmed = if raw.len() > 1 { raw.trim_end_matches('/') } else { raw };
-    if trimmed.is_empty() { Err(vfs::VfsError::Enoent) } else { Ok(trimmed) }
+    if trimmed.is_empty() { Ok("/") } else { Ok(trimmed) }
 }
 
 fn rest_after<'a>(s: &'a str, p: &str) -> Option<&'a str> {
