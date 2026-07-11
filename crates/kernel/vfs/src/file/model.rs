@@ -137,10 +137,9 @@ impl File {
     /// `mnt_want_write` → `__mnt_want_write` + `sb_rdonly`). Reads the mount
     /// the file was opened THROUGH (the captured `f_path.vfsmount`, recovered
     /// by `mnt_id`) — O(1) by mount-id lookup — instead of re-deriving the
-    /// absolute pathname and re-walking it on every write (the old
-    /// `is_readonly_path(absolute_path())` round-trip, which could also resolve
+    /// absolute pathname and re-walking it on every write, which could resolve
     /// a DIFFERENT mount than the one the file was opened through if the tree
-    /// changed since open). An anon file (`mnt_id == 0`: pipe/socket/eventfd/…)
+    /// changed since open. An anon file (`mnt_id == 0`: pipe/socket/eventfd/…)
     /// has no vfsmount and is never mount-RO-blocked; its backend governs
     /// writability directly.
     /// # C: O(log N)

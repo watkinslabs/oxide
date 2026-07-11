@@ -22,7 +22,7 @@ pub fn dput(d: Arc<Dentry>) {
         // lockref ≥1 through the `sb`'s ref, so it never reaches the kill path).
         // Killing it here would `mark_dead` a dentry the mount tree still points
         // at (`s_root`, `mnt_root`): every later mount-crossing open re-finds the
-        // now-DEAD root and `mounts_in_ns`/`resolve_mount` fault dereferencing a
+        // now-DEAD root and `mounts_in_ns`/path rendering fault dereferencing a
         // reclaimed dentry. Retain it unconditionally. # C: O(1)
         if d.is_root() { drop(d); return; }
         let delete = d.d_op().and_then(|o| o.d_delete).map(|f| f(&d)).unwrap_or(false);
@@ -141,4 +141,3 @@ pub fn d_unlink(d: &Arc<Dentry>) -> bool {
     if last { d_prune_aliases(&inode); }
     last
 }
-

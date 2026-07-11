@@ -2,7 +2,7 @@
 //! from the CAPTURED `f_path.vfsmount` (the mount the file was opened through,
 //! recovered by `mnt_id`) — Linux `mnt_want_write` (`MNT_READONLY` |
 //! `sb_rdonly`) — NOT by re-deriving the absolute pathname and re-walking it on
-//! every write (`is_readonly_path(absolute_path())`). This both removes the
+//! every write. This both removes the
 //! O(path-length) per-write string round-trip AND fixes the divergence where a
 //! tree change after open could resolve a DIFFERENT mount than the one the
 //! file was actually opened through.

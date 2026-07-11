@@ -19,7 +19,7 @@ pub fn d_make_root(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Dentry> {
     // on the mountpoint in the PARENT fs, not the mounted-fs root), so `d_drop`
     // unhashes it — yet `resolve_path` crossing the mount keeps returning the
     // SB-pinned `s_root` Arc, now DEAD, to every later open (get/put-on-dead) →
-    // eventual `resolve_mount` #PF. `shrink_dcache_for_umount` force-detaches the
+    // eventual mount-walk #PF. `shrink_dcache_for_umount` force-detaches the
     // root regardless of `d_count` at umount, consuming this pin.
     root.inc_count();
     sb.set_s_root(root.clone());
@@ -61,10 +61,9 @@ pub fn d_lookup(parent: &Arc<Dentry>, name: &str) -> Option<Arc<Dentry>> {
     d_lookup_reval(parent, name, false)
 }
 
-/// Drop one cached child under an already-resolved parent dentry. This is the
-/// object-identity twin of syscall `d_drop_path`: callers that already hold the
-/// Linux parent path must not render a string and re-walk through a possibly
-/// different bind/root namespace. # C: O(1) expected
+/// Drop one cached child under an already-resolved parent dentry. Callers that
+/// already hold the Linux parent path must not render a string and re-walk
+/// through a possibly different bind/root namespace. # C: O(1) expected
 pub fn d_drop_child(parent: &Arc<Dentry>, name: &str) {
     match parent.cached_child(name).or_else(|| d_lookup(parent, name)) {
         Some(child) => d_drop(&child),
