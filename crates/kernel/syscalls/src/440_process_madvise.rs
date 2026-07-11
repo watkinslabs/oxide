@@ -14,14 +14,9 @@ const MADV_FREE:     u64 = 8; // lazy-free anon pages
 const MADV_COLD:     u64 = 20; // deactivate hint — no-op
 const MADV_PAGEOUT:  u64 = 21; // reclaim hint — no LRU/swap ⇒ no-op
 
-// sig arg for `sig_perm_check`: process_madvise carries no signal, so 0
-// (avoids the SIGCONT same-session bypass); Linux gates on PTRACE_MODE,
-// this codebase's closest same-owner-or-CAP check is `sig_perm_check`.
-const NO_SIG: i32 = 0;
-
 /// process_madvise(pidfd, iov, iovcnt, advice, flags). Applies `advice`
 /// to the iovec ranges in the TARGET task's address space (resolved via
-/// the pidfd). DONTNEED/FREE drop the target's pages; COLD/PAGEOUT/
+/// the pidfd). DONTNEED/FREE drop the caller's own pages; COLD/PAGEOUT/
 /// WILLNEED are genuine no-ops (oxide has no LRU/swap). Returns the total
 /// bytes advised (sum of iovec lengths), matching Linux.
 /// # C: O(sum(iov_len)/4096)
@@ -48,22 +43,19 @@ pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
     let target = match crate::pidfd::task_from_inode(&file.inode()) {
         Some(t) => t, None => return errno(Errno::Einval),
     };
-    if !crate::signal::sig_perm_check(cur, &target, NO_SIG) {
-        return errno(Errno::Eperm);
-    }
 
     // iovec array lives in the CALLER's AS; validates + caps n>1024 → EINVAL.
     let iovs = match crate::pvmrw::pvmrw_common::read_iovs(iov, iovcnt) { Ok(v) => v, Err(e) => return e };
 
-    let drop_pages = advice == MADV_DONTNEED || advice == MADV_FREE;
     let self_target = target.tid == cur.tid;
-    let target_root = if drop_pages && !self_target {
-        // SAFETY: target may be off-CPU; mm slot is single-mutator per task per `13§5`; snapshot the Arc<AddressSpace>.
-        match unsafe { target.mm_ref() }.cloned() {
-            Some(mm) => Some(mm.root_pa()),
-            None => None, // target has no mm (exited/kernel thread) — nothing to drop.
+    if !self_target {
+        match advice {
+            MADV_COLD | MADV_PAGEOUT | MADV_WILLNEED => {}
+            _ => return errno(Errno::Einval),
         }
-    } else { None };
+        if !cur.has_cap(sched::cap::SYS_NICE) { return errno(Errno::Eperm); }
+    }
+    let drop_pages = self_target && (advice == MADV_DONTNEED || advice == MADV_FREE);
 
     let mut total: u64 = 0;
     for (base, len) in iovs {
@@ -75,8 +67,6 @@ pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
             // Self pidfd: target root == active root — reuse the active-root
             // evictor (fully correct, no new PT-walk primitive).
             let _ = pmm::user_as::evict_pages_in_range(base, len);
-        } else if let Some(root_pa) = target_root {
-            let _ = pmm::user_as::evict_foreign_pages_in_range(root_pa, base, len);
         }
     }
     total as i64
