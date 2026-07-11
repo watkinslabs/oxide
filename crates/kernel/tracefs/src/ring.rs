@@ -187,10 +187,41 @@ pub(crate) fn set_sys_exit(on: bool) {
     syscall::tracepoint::install_sys_exit_hook(if on { Some(record_sys_exit) } else { None });
 }
 
-/// trim a null-padded comm field to its &str.
-fn comm_str(b: &[u8]) -> &str {
+/// Trim a null-padded comm field to its stored bytes. # C: O(n)
+fn comm_bytes(b: &[u8]) -> &[u8] {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-    core::str::from_utf8(&b[..end]).unwrap_or("?")
+    &b[..end]
+}
+
+/// Render one byte as a readable trace field without losing identity. # C: O(1)
+fn append_trace_byte(out: &mut Vec<u8>, b: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    match b {
+        b' '..=b'~' if b != b'\\' => out.push(b),
+        _ => {
+            out.extend_from_slice(b"\\x");
+            out.push(HEX[(b >> 4) as usize]);
+            out.push(HEX[(b & 0x0f) as usize]);
+        }
+    }
+}
+
+/// Escaped byte length for a trace comm field. # C: O(n)
+fn trace_bytes_len(b: &[u8]) -> usize {
+    b.iter().map(|c| if matches!(*c, b' '..=b'~') && *c != b'\\' { 1 } else { 4 }).sum()
+}
+
+/// Append a byte-preserving trace comm field. # C: O(n)
+fn append_comm(out: &mut Vec<u8>, b: &[u8]) {
+    for c in comm_bytes(b).iter().copied() { append_trace_byte(out, c); }
+}
+
+/// Append the fixed-width ftrace task column. # C: O(n)
+fn append_comm_col(out: &mut Vec<u8>, b: &[u8]) {
+    let comm = comm_bytes(b);
+    let len = trace_bytes_len(comm);
+    for _ in len..16 { out.push(b' '); }
+    for c in comm.iter().copied() { append_trace_byte(out, c); }
 }
 
 /// Append one record's Linux ftrace event line to `out`. # C: O(payload)
@@ -200,33 +231,35 @@ fn fmt_record(out: &mut Vec<u8>, e: &Record) {
     let p = e.data();
     match e.kind {
         KIND_MARK if p.len() >= 16 => {
-            let comm = comm_str(&p[..16]);
-            out.extend_from_slice(format!("{:>16}-{:<5} [{:03}] ..... {}.{:06}: tracing_mark_write: ",
-                comm, e.pid, e.cpu, secs, usec).as_bytes());
+            append_comm_col(out, &p[..16]);
+            out.extend_from_slice(format!("-{:<5} [{:03}] ..... {}.{:06}: tracing_mark_write: ",
+                e.pid, e.cpu, secs, usec).as_bytes());
             out.extend_from_slice(&p[16..]);
             out.push(b'\n');
         }
         KIND_SCHED_SWITCH if p.len() >= 16 + 4 + 16 => {
             // [prev_comm 16][next_pid u32 LE][next_comm 16]
-            let prev_comm = comm_str(&p[..16]);
             let next_pid = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
-            let next_comm = comm_str(&p[20..36]);
-            out.extend_from_slice(format!(
-                "{:>16}-{:<5} [{:03}] ..... {}.{:06}: sched_switch: prev_comm={} prev_pid={} ==> next_comm={} next_pid={}\n",
-                prev_comm, e.pid, e.cpu, secs, usec, prev_comm, e.pid, next_comm, next_pid).as_bytes());
+            append_comm_col(out, &p[..16]);
+            out.extend_from_slice(format!("-{:<5} [{:03}] ..... {}.{:06}: sched_switch: prev_comm=",
+                e.pid, e.cpu, secs, usec).as_bytes());
+            append_comm(out, &p[..16]);
+            out.extend_from_slice(format!(" prev_pid={} ==> next_comm=", e.pid).as_bytes());
+            append_comm(out, &p[20..36]);
+            out.extend_from_slice(format!(" next_pid={}\n", next_pid).as_bytes());
         }
         KIND_SYS_ENTER if p.len() >= 16 + 4 => {
-            let comm = comm_str(&p[..16]);
             let nr = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
-            out.extend_from_slice(format!("{:>16}-{:<5} [{:03}] ..... {}.{:06}: sys_enter: NR {}\n",
-                comm, e.pid, e.cpu, secs, usec, nr).as_bytes());
+            append_comm_col(out, &p[..16]);
+            out.extend_from_slice(format!("-{:<5} [{:03}] ..... {}.{:06}: sys_enter: NR {}\n",
+                e.pid, e.cpu, secs, usec, nr).as_bytes());
         }
         KIND_SYS_EXIT if p.len() >= 16 + 4 + 8 => {
-            let comm = comm_str(&p[..16]);
             let nr = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
             let ret = i64::from_le_bytes([p[20], p[21], p[22], p[23], p[24], p[25], p[26], p[27]]);
-            out.extend_from_slice(format!("{:>16}-{:<5} [{:03}] ..... {}.{:06}: sys_exit: NR {} = {}\n",
-                comm, e.pid, e.cpu, secs, usec, nr, ret).as_bytes());
+            append_comm_col(out, &p[..16]);
+            out.extend_from_slice(format!("-{:<5} [{:03}] ..... {}.{:06}: sys_exit: NR {} = {}\n",
+                e.pid, e.cpu, secs, usec, nr, ret).as_bytes());
         }
         _ => {}
     }
@@ -431,4 +464,23 @@ pub fn register() {
     // The per-event `events/.../enable` leaves are registered by the eventfs
     // model (`eventfs::register`), which also adds id/format/filter + the
     // subsystem/root aggregate enables.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comm_renderer_preserves_non_utf8_bytes() {
+        let mut out = Vec::new();
+        append_comm(&mut out, b"raw\xff\\x\0ignored");
+        assert_eq!(&out, b"raw\\xff\\x5cx");
+    }
+
+    #[test]
+    fn comm_column_pads_by_rendered_width() {
+        let mut out = Vec::new();
+        append_comm_col(&mut out, b"a\xff\0");
+        assert_eq!(&out, b"           a\\xff");
+    }
 }
