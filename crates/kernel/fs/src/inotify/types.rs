@@ -42,16 +42,22 @@ pub(crate) const FAN_FS_ERROR:       u32 = 0x0000_8000;
 pub(crate) const FAN_OPEN_PERM:      u32 = 0x0001_0000;
 pub(crate) const FAN_ACCESS_PERM:    u32 = 0x0002_0000;
 pub(crate) const FAN_OPEN_EXEC_PERM: u32 = 0x0004_0000;
+pub(crate) const FAN_PRE_ACCESS:     u32 = 0x0010_0000;
+pub(crate) const FAN_MNT_ATTACH:     u32 = 0x0100_0000;
+pub(crate) const FAN_MNT_DETACH:     u32 = 0x0200_0000;
 pub(crate) const FAN_EVENT_ON_CHILD: u32 = 0x0800_0000;
+pub(crate) const FAN_RENAME:         u32 = 0x1000_0000;
 pub(crate) const FAN_ONDIR:          u32 = 0x4000_0000;
 pub(crate) const FAN_CLOSE: u32 = FAN_CLOSE_WRITE | FAN_CLOSE_NOWRITE;
 pub(crate) const FAN_MOVE:  u32 = FAN_MOVED_FROM | FAN_MOVED_TO;
+pub(crate) const FAN_MNT_EVENTS: u32 = FAN_MNT_ATTACH | FAN_MNT_DETACH;
 pub(crate) const FAN_ALL_EVENT_BITS: u32 =
     FAN_ACCESS | FAN_MODIFY | FAN_ATTRIB | FAN_CLOSE | FAN_OPEN | FAN_OPEN_EXEC
     | FAN_MOVE | FAN_CREATE | FAN_DELETE | FAN_DELETE_SELF | FAN_MOVE_SELF
     | FAN_Q_OVERFLOW | FAN_FS_ERROR | FAN_OPEN_PERM | FAN_ACCESS_PERM
-    | FAN_OPEN_EXEC_PERM | FAN_EVENT_ON_CHILD | FAN_ONDIR;
-pub(crate) const PERM_BITS: u32 = FAN_OPEN_PERM | FAN_ACCESS_PERM | FAN_OPEN_EXEC_PERM;
+    | FAN_OPEN_EXEC_PERM | FAN_PRE_ACCESS | FAN_MNT_EVENTS | FAN_EVENT_ON_CHILD
+    | FAN_RENAME | FAN_ONDIR;
+pub(crate) const PERM_BITS: u32 = FAN_OPEN_PERM | FAN_ACCESS_PERM | FAN_OPEN_EXEC_PERM | FAN_PRE_ACCESS;
 pub(crate) const FAN_ALLOW: u32 = 0x01;
 pub(crate) const FAN_DENY:  u32 = 0x02;
 
@@ -83,7 +89,7 @@ pub(crate) static MOVE_COOKIE: AtomicU32 = AtomicU32::new(1);
 /// `FAN_MARK_FILESYSTEM`). Inode marks key on inode identity; mount and
 /// filesystem marks key on the owning superblock's `st_dev` (`fsid`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MarkScope { Inode, Mount, Filesystem }
+pub(crate) enum MarkScope { Inode, Mount, Filesystem, MountNamespace }
 
 #[derive(Clone)]
 pub(crate) struct Watch {
