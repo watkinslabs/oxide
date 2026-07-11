@@ -29,19 +29,29 @@ use syscall::SyscallArgs;
 /// # C: O(parent VMAs) | O(1) for CLONE_VM
 pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
+    const CLONE3_KNOWN_HIGH: u64 = crate::clone::CLONE_CLEAR_SIGHAND | crate::clone::CLONE_INTO_CGROUP;
+    const CLONE3_KNOWN_FLAGS: u64 = crate::clone::CLONE_LEGACY_FLAGS | CLONE3_KNOWN_HIGH;
+    const PAGE_SIZE: usize = 4096;
     let cl_args = args.a0;
     let size    = args.a1 as usize;
-    if size < 64 || size > 256 { return -(Errno::Einval.as_i32() as i64); }
+    if size < 64 { return -(Errno::Einval.as_i32() as i64); }
+    if size > PAGE_SIZE { return -(Errno::E2big.as_i32() as i64); }
     if cl_args == 0 || cl_args >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
     if cl_args.checked_add(size as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: cl_args range validated < USER_VA_END; CPL=0 reads
-    // through caller's AS; struct fields are u64-aligned per ABI.
-    const CLONE_PIDFD: u64 = 0x1000;
-    const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
+    if size > 88 {
+        let mut off = 88usize;
+        while off < size {
+            // SAFETY: cl_args+size validated above; byte tail is within the user-supplied clone_args extension area.
+            if unsafe { core::ptr::read_volatile((cl_args + off as u64) as *const u8) } != 0 {
+                return -(Errno::E2big.as_i32() as i64);
+            }
+            off += 1;
+        }
+    }
     // SAFETY: cl_args+size validated above; clone_args struct fields are 8-byte aligned per Linux ABI; CPL=0 reads via caller's AS.
     let (flags, pidfd_uptr, child_tid, parent_tid, exit_signal, stack, stack_size, tls) = unsafe {
         let p = cl_args as *const u64;
@@ -56,7 +66,27 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
             core::ptr::read_volatile(p.add(7)),
         )
     };
-    if (flags & CLONE_PIDFD) != 0
+    if (flags & !CLONE3_KNOWN_FLAGS) != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if (flags & crate::clone::CSIGNAL) != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if exit_signal > crate::clone::CSIGNAL { return -(Errno::Einval.as_i32() as i64); }
+    if (flags & (crate::clone::CLONE_THREAD | crate::clone::CLONE_PARENT)) != 0 && exit_signal != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if (flags & (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID))
+        == (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID) && pidfd_uptr == parent_tid {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if let Err(e) = crate::clone::validate_clone_core(flags) {
+        return -(e.as_i32() as i64);
+    }
+    if stack == 0 {
+        if stack_size != 0 { return -(Errno::Einval.as_i32() as i64); }
+    } else if stack_size == 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    } else if stack.checked_add(stack_size).map_or(true, |e| e > hal::USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    if (flags & crate::clone::CLONE_PIDFD) != 0
         && (pidfd_uptr == 0 || pidfd_uptr.checked_add(4).map_or(true, |e| e > hal::USER_VA_END)) {
         return -(Errno::Efault.as_i32() as i64);
     }
@@ -73,7 +103,7 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     // (the executor's later cg_attach then raced the empty-cgroup cleanup). The
     // cgroup field is at struct offset 80 (u64 #10); present only when the
     // caller's `size` covers it.
-    let into_cgid = if (flags & CLONE_INTO_CGROUP) != 0 {
+    let into_cgid = if (flags & crate::clone::CLONE_INTO_CGROUP) != 0 {
         if size < 88 { return -(Errno::Einval.as_i32() as i64); }
         // SAFETY: cl_args+size validated ≥88 above; u64 #10 (offset 80) is in
         // range and 8-byte aligned; CPL=0 read via caller's AS.
@@ -101,8 +131,8 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     } else {
         None
     };
-    let user_sp = stack.saturating_add(stack_size);
-    let merged_flags = flags | (exit_signal & 0xff);
+    let user_sp = stack + stack_size;
+    let merged_flags = flags | exit_signal;
     let rv = crate::clone::sys_clone_dispatch(
         args, merged_flags, user_sp, parent_tid, child_tid, tls,
     );
@@ -111,7 +141,7 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     }
     // CLONE_PIDFD: open a pidfd bound to the child and write the fd
     // number to *pidfd_uptr in caller's AS.
-    if rv > 0 && (flags & CLONE_PIDFD) != 0 {
+    if rv > 0 && (flags & crate::clone::CLONE_PIDFD) != 0 {
         let mut sa = *args;
         sa.a0 = rv as u64;
         sa.a1 = 0;
