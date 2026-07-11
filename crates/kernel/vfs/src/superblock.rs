@@ -69,6 +69,8 @@ pub struct SuperBlock {
     s_count: AtomicU32,
     /// `s_maxbytes` — largest file size this fs can represent (write-path cap).
     pub s_maxbytes: u64,
+    /// `s_max_links` — zero means unlimited; nonzero caps hardlinks in `vfs_link`.
+    pub s_max_links: AtomicU32,
     /// `s_time_gran` — timestamp granularity in ns (Linux `sb->s_time_gran`),
     /// set at `fill_super` ([`SuperBlock::set_time_gran`]) and consulted by
     /// [`SuperBlock::timestamp_truncate`] to floor inode atime/mtime/ctime to

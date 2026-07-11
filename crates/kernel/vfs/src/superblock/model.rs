@@ -29,6 +29,7 @@ impl SuperBlock {
             s_active: AtomicU32::new(1),
             s_count: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
+            s_max_links: AtomicU32::new(0),
             s_time_gran: AtomicU32::new(1),
             s_time_min: AtomicI64::new(TIME64_MIN),
             s_time_max: AtomicI64::new(TIME64_MAX),
