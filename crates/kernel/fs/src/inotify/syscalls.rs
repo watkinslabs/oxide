@@ -7,13 +7,26 @@ use vfs::{FileType, InodeRef};
 
 use crate::inotify::group::make_inotify_inode;
 use crate::inotify::types::{
-    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ALL_EVENT_BITS, MARK_COUNT, PERM_BITS,
-    PERM_MARK_COUNT,
+    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ALL_EVENT_BITS, IN_ALL_EVENTS,
+    MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
 
 const IN_NONBLOCK: u32 = 0o0_004_000;
 const IN_CLOEXEC:  u32 = 0o2_000_000;
 const IN_INIT_KNOWN: u32 = IN_NONBLOCK | IN_CLOEXEC;
+const IN_UNMOUNT:     u32 = 0x0000_2000;
+const IN_Q_OVERFLOW:  u32 = 0x0000_4000;
+const IN_IGNORED:     u32 = 0x0000_8000;
+const IN_ONLYDIR:     u32 = 0x0100_0000;
+const IN_DONT_FOLLOW: u32 = 0x0200_0000;
+const IN_EXCL_UNLINK: u32 = 0x0400_0000;
+const IN_MASK_CREATE: u32 = 0x1000_0000;
+const IN_MASK_ADD:    u32 = 0x2000_0000;
+const IN_ISDIR:       u32 = 0x4000_0000;
+const IN_ONESHOT:     u32 = 0x8000_0000;
+const ALL_INOTIFY_BITS: u32 = IN_ALL_EVENTS | IN_UNMOUNT | IN_Q_OVERFLOW | IN_IGNORED
+    | IN_ONLYDIR | IN_DONT_FOLLOW | IN_EXCL_UNLINK | IN_MASK_CREATE | IN_MASK_ADD
+    | IN_ISDIR | IN_ONESHOT;
 
 pub(crate) const FAN_CLOEXEC:           u32 = 0x0000_0001;
 pub(crate) const FAN_NONBLOCK:          u32 = 0x0000_0002;
@@ -107,9 +120,14 @@ fn read_watch_path(path_p: u64) -> Result<String, i64> {
     decode_watch_path_bytes(bytes)
 }
 
-fn resolve_watch_path(raw: &str, no_follow_final: bool) -> Result<InodeRef, i64> {
+fn resolve_watch_path(raw: &str, no_follow_final: bool, only_dir: bool) -> Result<InodeRef, i64> {
     let (start, root) = current_start_root()?;
-    let flags = vfs::LookupFlags { no_follow_final, ..Default::default() };
+    let flags = vfs::LookupFlags {
+        no_follow_final,
+        follow: !no_follow_final,
+        directory: only_dir,
+        ..Default::default()
+    };
     vfs::path_lookup_at_root_cred(
         start.dentry,
         start.mnt_id,
@@ -121,12 +139,12 @@ fn resolve_watch_path(raw: &str, no_follow_final: bool) -> Result<InodeRef, i64>
     ).map(|p| p.inode).map_err(|e| -(e as i64))
 }
 
-fn fd_to_inotify(fd: i32) -> Option<Arc<InotifyData>> {
-    let cur = sched::current()?;
+fn fd_to_inotify(fd: i32) -> Result<Arc<InotifyData>, Errno> {
+    let cur = sched::current().ok_or(Errno::Ebadf)?;
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    let f = fdt.get(fd).ok()?;
-    f.inode().i_private().clone().downcast::<InotifyData>().ok()
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
+    let f = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
+    f.inode().i_private().clone().downcast::<InotifyData>().map_err(|_| Errno::Einval)
 }
 
 /// `sys_inotify_init(flags=0)` / `sys_inotify_init1(flags)`.
@@ -227,11 +245,19 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let path_p = args.a1;
     let mask = args.a2 as u32;
+    if let Err(e) = validate_inotify_watch_mask_bits(mask) {
+        return -(e.as_i32() as i64);
+    }
     let inotify = match fd_to_inotify(fd) {
-        Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
+        Ok(a) => a, Err(e) => return -(e.as_i32() as i64),
     };
+    if let Err(e) = validate_inotify_watch_mask_after_fd(mask) {
+        return -(e.as_i32() as i64);
+    }
     let s = match read_watch_path(path_p) { Ok(s) => s, Err(rv) => return rv };
-    let inode = match resolve_watch_path(&s, false) {
+    let no_follow = (mask & IN_DONT_FOLLOW) != 0;
+    let only_dir = (mask & IN_ONLYDIR) != 0;
+    let inode = match resolve_watch_path(&s, no_follow, only_dir) {
         Ok(i) => i,
         Err(rv) => {
             #[cfg(feature = "debug-boot")]
@@ -240,17 +266,57 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
         }
     };
     let key = inode_key(&inode);
+    match add_or_update_watch(&inotify, key, inode.fsid(), mask) {
+        Ok(wd) => wd as i64,
+        Err(e) => -(e.as_i32() as i64),
+    }
+}
+
+/// Linux `inotify_add_watch` rejects unknown masks and a zero valid mask before
+/// fd lookup.
+/// # C: O(1)
+pub(crate) fn validate_inotify_watch_mask_bits(mask: u32) -> Result<(), Errno> {
+    if mask & !ALL_INOTIFY_BITS != 0 { return Err(Errno::Einval); }
+    if mask & ALL_INOTIFY_BITS == 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
+/// Linux checks this combination after the fd exists.
+/// # C: O(1)
+pub(crate) fn validate_inotify_watch_mask_after_fd(mask: u32) -> Result<(), Errno> {
+    if (mask & IN_MASK_ADD) != 0 && (mask & IN_MASK_CREATE) != 0 {
+        return Err(Errno::Einval);
+    }
+    Ok(())
+}
+
+/// Create or update an inode watch with Linux `IN_MASK_ADD`/`IN_MASK_CREATE`
+/// semantics. Stores only user event bits in the local dispatch mask; control
+/// flags guide add/update behavior and lookup only.
+/// # C: O(N_watches)
+pub(crate) fn add_or_update_watch(
+    inotify: &Arc<InotifyData>,
+    key: usize,
+    fsid: u64,
+    mask: u32,
+) -> Result<i32, Errno> {
+    let event_mask = mask & IN_ALL_EVENTS;
     let mut g = inotify.watches.lock();
     for w in g.iter_mut() {
         if w.scope == MarkScope::Inode && w.inode_key == key {
-            w.mask = mask;
-            return w.wd as i64;
+            if (mask & IN_MASK_CREATE) != 0 { return Err(Errno::Eexist); }
+            if (mask & IN_MASK_ADD) != 0 {
+                w.mask |= event_mask;
+            } else {
+                w.mask = event_mask;
+            }
+            return Ok(w.wd);
         }
     }
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
-    g.push(Watch { wd, inode_key: key, fsid: 0, scope: MarkScope::Inode, mask, ignored: 0 });
+    g.push(Watch { wd, inode_key: key, fsid, scope: MarkScope::Inode, mask: event_mask, ignored: 0 });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
-    wd as i64
+    Ok(wd)
 }
 
 /// `sys_inotify_rm_watch(fd, wd)`. Removes the watch from the fd's
@@ -260,7 +326,7 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let wd = args.a1 as i32;
     let inotify = match fd_to_inotify(fd) {
-        Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
+        Ok(a) => a, Err(e) => return -(e.as_i32() as i64),
     };
     let mut g = inotify.watches.lock();
     let n_before = g.len();
@@ -324,7 +390,7 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     let inotify = match fd_to_inotify(fd) {
-        Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
+        Ok(a) => a, Err(e) => return -(e.as_i32() as i64),
     };
     let scope = mark_scope(flags);
     let ignored = flags & (FAN_MARK_IGNORED_MASK | FAN_MARK_IGNORE) != 0;
@@ -342,7 +408,7 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     let bits = mask & FAN_ALL_EVENT_BITS;
     if bits == 0 { return -(Errno::Einval.as_i32() as i64); }
     let s = match read_watch_path(path_p) { Ok(s) => s, Err(rv) => return rv };
-    let inode = match resolve_watch_path(&s, flags & FAN_MARK_DONT_FOLLOW != 0) {
+    let inode = match resolve_watch_path(&s, flags & FAN_MARK_DONT_FOLLOW != 0, false) {
         Ok(i) => i,
         Err(rv) => {
             #[cfg(feature = "debug-boot")]
