@@ -18,13 +18,18 @@ pub(crate) fn link_inode_at(src: vfs::InodeRef, src_mnt_id: u64, dirfd: i32, raw
     if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);
     }
-    if matches!(src.file_type(), vfs::FileType::Directory) {
-        return -(Errno::Eperm.as_i32() as i64);
+    let cred = crate::pathresolve::current_cred();
+    if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+        return errno_from_vfs(e);
     }
     if src_mnt_id != parent.mnt_id {
         return -(Errno::Exdev.as_i32() as i64);
     }
-    let r = { let _g = parent.inode.inode_lock(); parent.inode.link_child(&src, &name, &vfs::CreateCtx::root()) };
+    if let Err(e) = vfs::may_link_source(&src, &cred) {
+        return errno_from_vfs(e);
+    }
+    let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.link_child(&src, &name, &ctx) };
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);

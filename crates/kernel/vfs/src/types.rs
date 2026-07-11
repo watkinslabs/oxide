@@ -179,6 +179,7 @@ pub enum VfsError {
     Etxtbsy = 26,
     Efbig   = 27,
     Espipe  = 29,
+    Emlink  = 31,
     Eagain  = 11,
     Epipe   = 32,
     Erofs   = 30,
