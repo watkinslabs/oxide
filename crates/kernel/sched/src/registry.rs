@@ -356,6 +356,40 @@ pub fn take_child_stop_event(
     None
 }
 
+/// waitid(WNOWAIT|WSTOPPED/WCONTINUED) helper: observe the first pending
+/// stop/cont event without consuming it. Same scan/filter/order as
+/// `take_child_stop_event`.
+/// # C: O(N_tasks)
+/// # Lk: REG.lock
+pub fn peek_child_stop_event(
+    parent: u32,
+    pid: i32,
+    parent_pgid: u32,
+    want_stop: bool,
+    want_cont: bool,
+) -> Option<(WaitChildSnapshot, u8, u32)> {
+    use core::sync::atomic::Ordering;
+    let g = REG.lock();
+    for (_, w) in g.iter() {
+        let Some(t) = w.upgrade() else { continue };
+        let cvpid = t.vtgid.load(Ordering::Acquire);
+        if !wait_pid_matches(
+            t.parent_tid.load(Ordering::Acquire), cvpid,
+            t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid)
+        {
+            continue;
+        }
+        if want_stop && t.stop_pending.load(Ordering::Acquire) {
+            let sig = t.stop_signal.load(Ordering::Acquire);
+            return Some((WaitChildSnapshot::from_task(&t), 1, sig as u32));
+        }
+        if want_cont && t.cont_pending.load(Ordering::Acquire) {
+            return Some((WaitChildSnapshot::from_task(&t), 2, 0));
+        }
+    }
+    None
+}
+
 /// Returns true if any live task has `parent_tid == parent`.
 /// # C: O(N_tasks)
 pub fn has_children(parent: u32) -> bool {
