@@ -264,6 +264,21 @@ pub(crate) fn resolve_rmdir_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::Vfs
     }
 }
 
+/// Resolve a rename side's parent. Linux `do_renameat2` only accepts
+/// `LAST_NORM`; root/dot/dotdot are `EBUSY`.
+/// # C: O(N parent components)
+pub(crate) fn resolve_rename_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Ebusy.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
+            Err(-(Errno::Ebusy.as_i32() as i64)),
+    }
+}
+
 /// Render a resolved parent path for hooks/diagnostics. Display only; never
 /// feed the result back into authority decisions. # C: O(depth)
 pub(crate) fn render_parent_path(parent: &vfs::VfsPath) -> String {
@@ -292,6 +307,19 @@ pub(crate) fn child_exists(parent: &vfs::VfsPath, leaf: &str) -> Result<bool, i6
     match parent.inode.lookup(leaf) {
         Ok(_) => Ok(true),
         Err(vfs::VfsError::Enoent) => Ok(false),
+        Err(e) => Err(errno_from_vfs(e)),
+    }
+}
+
+/// Lookup a child inode below an exact parent. `None` means a real negative
+/// result; other lookup failures preserve their errno. # C: O(1) expected + fs lookup
+pub(crate) fn child_inode(parent: &vfs::VfsPath, leaf: &str) -> Result<Option<vfs::InodeRef>, i64> {
+    if let Some(d) = vfs::d_lookup(&parent.dentry, leaf) {
+        return Ok(d.inode());
+    }
+    match parent.inode.lookup(leaf) {
+        Ok(i) => Ok(Some(i)),
+        Err(vfs::VfsError::Enoent) => Ok(None),
         Err(e) => Err(errno_from_vfs(e)),
     }
 }
