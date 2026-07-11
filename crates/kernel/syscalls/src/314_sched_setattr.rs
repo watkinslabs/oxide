@@ -5,6 +5,7 @@
 use core::sync::atomic::Ordering;
 use sched::{SchedClass, SchedPolicy};
 use syscall::{errno::Errno, SyscallArgs};
+use crate::userbuf::validate_user_buf;
 
 const SCHED_OTHER:    u32 = 0;
 const SCHED_FIFO:     u32 = 1;
@@ -34,10 +35,8 @@ pub fn sys_sched_setattr(args: &SyscallArgs) -> i64 {
     let pid = args.a0 as u32;
     let uattr = args.a1;
     if args.a2 != 0 { return -(Errno::Einval.as_i32() as i64); } // flags
-    if uattr == 0 || uattr.saturating_add(SCHED_ATTR_MIN_SIZE) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: uattr range-checked for >=48 bytes < USER_VA_END; read the fields.
+    if let Err(rv) = validate_user_buf(uattr, SCHED_ATTR_MIN_SIZE, 1) { return rv; }
+    // SAFETY: uattr validated readable for the fixed 48-byte sched_attr prefix.
     let (size, policy, nice, prio) = unsafe {
         (core::ptr::read_unaligned((uattr + SA_OFF_SIZE) as *const u32),
          core::ptr::read_unaligned((uattr + SA_OFF_POLICY) as *const u32),

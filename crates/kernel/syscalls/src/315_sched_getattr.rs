@@ -9,6 +9,7 @@
 use core::sync::atomic::Ordering;
 use sched::{SchedClass, SchedPolicy};
 use syscall::{errno::Errno, SyscallArgs};
+use crate::userbuf::validate_user_buf_writable;
 
 const SCHED_ATTR_SIZE: u32 = 48;
 
@@ -20,9 +21,7 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
     let size  = args.a2 as u32;
     let flags = args.a3;
     if flags != 0 || size < SCHED_ATTR_SIZE { return -(Errno::Einval.as_i32() as i64); }
-    if uattr == 0 || uattr.saturating_add(SCHED_ATTR_SIZE as u64) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf_writable(uattr, SCHED_ATTR_SIZE as u64, 1) { return rv; }
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
@@ -47,8 +46,7 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
     buf[16..20].copy_from_slice(&nice.to_le_bytes());
     buf[20..24].copy_from_slice(&prio.to_le_bytes());
     // [24..48) runtime/deadline/period = 0 (no SCHED_DEADLINE)
-    // SAFETY: uattr range checked < USER_VA_END above; 48-byte copy into the
-    // running task's user AS, which is active during the syscall.
+    // SAFETY: uattr validated writable for the 48-byte sched_attr result.
     unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), uattr as *mut u8, SCHED_ATTR_SIZE as usize); }
     0
 }
