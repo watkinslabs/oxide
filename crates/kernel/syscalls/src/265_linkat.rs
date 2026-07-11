@@ -52,6 +52,10 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         let file = match fdt.get(odir_fd) {
             Ok(f)  => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
+        let cred = crate::pathresolve::current_cred();
+        if !cred.cap_dac_read_search && !same_cred(file.f_cred(), &cred) {
+            return -(Errno::Enoent.as_i32() as i64);
+        }
         let inode = file.inode();
         return crate::s086_link::link_inode_at(inode.clone(), file.mnt_id(), args.a2 as i32, &link);
     }
@@ -80,4 +84,16 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         Err(rv) => return rv,
     };
     crate::s086_link::link_inode_at(src.inode, src.mnt_id, args.a2 as i32, &link)
+}
+
+fn same_cred(a: &vfs::Cred, b: &vfs::Cred) -> bool {
+    a.uid == b.uid && a.gid == b.gid
+        && a.cap_dac_override == b.cap_dac_override
+        && a.cap_dac_read_search == b.cap_dac_read_search
+        && a.cap_fowner == b.cap_fowner
+        && a.cap_chown == b.cap_chown
+        && a.cap_fsetid == b.cap_fsetid
+        && a.ngroups == b.ngroups
+        && a.groups[..(a.ngroups as usize).min(vfs::CRED_NGROUPS)]
+            == b.groups[..(b.ngroups as usize).min(vfs::CRED_NGROUPS)]
 }

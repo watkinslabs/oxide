@@ -36,6 +36,7 @@ pub const I_NEW:            u32 = 1 << 3;
 pub const I_WILL_FREE:      u32 = 1 << 4;
 pub const I_FREEING:        u32 = 1 << 5;
 pub const I_CLEAR:          u32 = 1 << 6;
+pub const I_LINKABLE:       u32 = 1 << 7;
 pub const I_DIRTY:          u32 = I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES;
 
 pub const S_SYNC:      u32 = 1 << 0;

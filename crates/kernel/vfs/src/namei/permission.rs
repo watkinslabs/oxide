@@ -209,7 +209,9 @@ pub fn may_link_source(src: &InodeRef, cred: &Cred) -> KResult<()> {
         return Err(VfsError::Eperm);
     }
     if matches!(src.file_type(), FileType::Directory) { return Err(VfsError::Eperm); }
-    if src.nlink() == 0 { return Err(VfsError::Enoent); }
+    if src.nlink() == 0 && src.i_state() & crate::inode::I_LINKABLE == 0 {
+        return Err(VfsError::Enoent);
+    }
     let max = src.i_sb().map(|sb| sb.s_max_links.load(Ordering::Relaxed)).unwrap_or(0);
     if max != 0 && src.nlink() >= max { return Err(VfsError::Emlink); }
     if PROTECTED_HARDLINKS

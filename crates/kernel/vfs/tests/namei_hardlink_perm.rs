@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{Cred, CRED_NGROUPS, FileType, InodeBuilder, InodeRef, KResult, VfsError,
-    S_APPEND, S_IMMUTABLE, default_file_ops, default_inode_ops, mk_mode};
+    I_LINKABLE, S_APPEND, S_IMMUTABLE, default_file_ops, default_inode_ops, mk_mode};
 
 struct TestFsType;
 impl FileSystemType for TestFsType {
@@ -80,6 +80,15 @@ fn unlinked_source_is_enoent() {
     let src = reg(0o644, 0);
     src.set_nlink(0);
     assert_eq!(vfs::may_link(&parent, &src, &user(0)), Err(VfsError::Enoent));
+}
+
+#[test]
+fn linkable_tmpfile_source_is_allowed_with_zero_nlink() {
+    let parent = dir(0o777);
+    let src = reg(0o644, 0);
+    src.set_nlink(0);
+    src.set_state(I_LINKABLE, 0);
+    assert_eq!(vfs::may_link(&parent, &src, &user(0)), Ok(()));
 }
 
 #[test]
