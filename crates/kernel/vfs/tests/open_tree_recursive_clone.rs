@@ -89,6 +89,7 @@ fn setup() -> (u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
     // reads. Serialized by SERIAL.
     *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()) = ns;
     vfs::mount::set_current_ns_provider(|| *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()));
+    *CUR_SROOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // ns-root mount over the dev-backed rootfs.
     let dev = NEXT_DEV.fetch_add(1, Ordering::Relaxed);
     vfs::mount::register(None, Arc::new(RootFs { dev, root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))

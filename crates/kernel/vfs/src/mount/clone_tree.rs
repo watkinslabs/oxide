@@ -183,7 +183,10 @@ fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u6
     if include_root {
         // The copy ROOT is positioned at the destination base (a DISTINCT fs),
         // never via the source dentry → `mp: None` (commit_tree uses `descend`).
-        let Some(rel) = src.mountpoint().and_then(|d| rel_under(&d, Some(base_mp))) else { return; };
+        let Some(rel) = src.mountpoint()
+            .and_then(|d| rel_under(&d, Some(base_mp)))
+            .or_else(|| src.mnt_root().and_then(|r| if Arc::ptr_eq(&r, base_mp) { Some(String::new()) } else { None }))
+            else { return; };
         out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel, mp: None });
     }
     let children: Vec<Arc<Mount>> = mounts_in_ns(src.ns).into_iter()
