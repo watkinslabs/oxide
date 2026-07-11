@@ -14,7 +14,7 @@ use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::mount_common::read_user_cstr_owned;
+use crate::mount_common::{read_optional_user_cstr_owned, read_user_cstr_owned};
 use crate::fsmount_common::mount_fstype_at;
 
 // mount(2) flag bits (linux/mount.h).
@@ -249,7 +249,9 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     }
 
     // New mount by fstype.
-    let source = read_user_cstr_owned(source_p, 256).unwrap_or_default();
+    let source = match read_optional_user_cstr_owned(source_p, 256) {
+        Ok(s) => s, Err(rv) => return rv,
+    };
     let fstype = match read_user_cstr_owned(fstype_p, 32)  { Ok(s) => s, Err(rv) => return rv };
     #[cfg(feature = "debug-boot")]
     if target.contains("credentials") {
@@ -260,7 +262,9 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         klog::write_raw(b"\n");
     }
     let data = if data_p != 0 {
-        read_user_cstr_owned(data_p, 4096).unwrap_or_default()
+        match read_user_cstr_owned(data_p, 4096) {
+            Ok(s) => s, Err(rv) => return rv,
+        }
     } else {
         String::new()
     };

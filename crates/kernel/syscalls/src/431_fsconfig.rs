@@ -37,12 +37,18 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
     let is_param = matches!(cmd, FSCONFIG_SET_FLAG | FSCONFIG_SET_STRING
         | FSCONFIG_SET_BINARY | FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY);
     let (key, value) = if is_param {
-        let key = match read_cstr(args.a2, 64) {
-            Some(k) if !k.is_empty() => k,
-            _ => return -(Errno::Einval.as_i32() as i64),
+        let key = match read_cstr_req(args.a2, 64) {
+            Ok(k) if !k.is_empty() => k,
+            Ok(_) => return -(Errno::Einval.as_i32() as i64),
+            Err(rv) => return rv,
         };
         let value = if cmd == FSCONFIG_SET_FLAG { alloc::string::String::new() }
-            else { read_cstr(args.a3, 256).unwrap_or_default() };
+            else {
+                match read_cstr_req(args.a3, 256) {
+                    Ok(v) => v,
+                    Err(rv) => return rv,
+                }
+            };
         (key, value)
     } else {
         (alloc::string::String::new(), alloc::string::String::new())

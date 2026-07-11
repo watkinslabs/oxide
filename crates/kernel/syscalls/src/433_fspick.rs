@@ -19,8 +19,9 @@ use crate::fsmount_common::*;
 pub fn sys_fspick(args: &SyscallArgs) -> i64 {
     const FSPICK_CLOEXEC: u64 = 1;
     if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
-    let path = match read_cstr(args.a1, 256) {
-        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
+    if args.a2 & !FSPICK_CLOEXEC != 0 { return -(Errno::Einval.as_i32() as i64); }
+    let path = match read_cstr_req(args.a1, 256) {
+        Ok(s) => s, Err(rv) => return rv,
     };
     let picked = match crate::pathresolve::resolve_path_raw(&path, false) {
         Ok(p) => p,

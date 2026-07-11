@@ -9,7 +9,7 @@ mod mount_ops;
 mod objects;
 mod registry;
 
-pub(crate) use fd::{fd_inode, install_fd, read_cstr};
+pub(crate) use fd::{fd_inode, install_fd, read_cstr, read_cstr_req};
 pub(crate) use mount_ops::mount_fstype_at;
 pub use objects::{FsContextInode, MountObjectInode};
 pub(crate) use registry::{fstype_ok, require_sys_admin, ensure_filesystems_registered};
