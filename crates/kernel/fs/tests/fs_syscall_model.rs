@@ -8,7 +8,7 @@ use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::mount::Propagation;
 use vfs::{default_file_ops, mk_mode, CreateCtx, Cred, Dentry, FileType, InodeBuilder, InodeOps};
-use vfs::{InodeRef, KResult, LookupFlags, VfsError, VfsPath};
+use vfs::{FileSystemType, InodeRef, KResult, LookupFlags, SuperBlock, VfsError, VfsPath};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
@@ -73,6 +73,12 @@ impl FileSystem for NamedFs {
     fn name(&self) -> &str { self.n }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
+struct NamedType(&'static str);
+impl FileSystemType for NamedType {
+    fn name(&self) -> &str { self.0 }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Enodev) }
+}
+fn fs_type(n: &'static str) -> Arc<dyn FileSystemType> { Arc::new(NamedType(n)) }
 
 fn setup_host(host: u64) -> Arc<Dentry> {
     set_ns(host);
@@ -82,18 +88,18 @@ fn setup_host(host: u64) -> Arc<Dentry> {
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     let _ = HOST_ROOT_INODE.set(root_inode.clone());
     vfs::set_root_dentry_provider(root_provider);
-    vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
+    vfs::mount::register_typed(fs_type("ext4"), None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
     let root_id = vfs::mount::root_mount_id(host).expect("root id");
     let run_mp = lookup_at(&root, root_id, &root, root_id, "/run", LookupFlags::default()).dentry;
     let run_fs = TmpfsFs::new(String::from("run"));
-    vfs::mount::register(Some(run_mp), run_fs.clone()).expect("mount /run tmpfs");
+    vfs::mount::register_typed(fs_type("tmpfs"), Some(run_mp), run_fs.clone()).expect("mount /run tmpfs");
     let run_root = run_fs.root_inode();
     let systemd = run_root.mkdir("systemd", 0o755, &CreateCtx::root()).expect("mkdir /run/systemd");
     systemd.mkdir("mount-rootfs", 0o755, &CreateCtx::root()).expect("mkdir mount-rootfs");
     run_root.mkdir("udev", 0o755, &CreateCtx::root()).expect("mkdir /run/udev");
     let dev_mp = lookup_at(&root, root_id, &root, root_id, "/dev", LookupFlags::default()).dentry;
     let dev_fs = TmpfsFs::new(String::from("dev"));
-    vfs::mount::register(Some(dev_mp), dev_fs.clone()).expect("mount /dev tmpfs");
+    vfs::mount::register_typed(fs_type("tmpfs"), Some(dev_mp), dev_fs.clone()).expect("mount /dev tmpfs");
     let dev_root = dev_fs.root_inode();
     dev_root.mkdir("char", 0o755, &CreateCtx::root()).expect("mkdir /dev/char");
     dev_root.mkdir("block", 0o755, &CreateCtx::root()).expect("mkdir /dev/block");
@@ -224,6 +230,15 @@ impl Proc {
     fn readlink(&self, path: &str) -> KResult<Vec<u8>> {
         let p = self.lookup(AT_FDCWD, path,
             LookupFlags { no_follow_final: true, follow: false, ..Default::default() })?;
+        p.inode.readlink()
+    }
+    fn readlinkat_empty(&self, dirfd: i32) -> KResult<Vec<u8>> {
+        let p = if dirfd == AT_FDCWD {
+            VfsPath { mnt_id: self.cwd_mnt, dentry: self.cwd.clone(), inode: self.cwd.inode().unwrap(), last_component: None }
+        } else {
+            self.fds[dirfd as usize].as_ref().expect("fd").p.clone()
+        };
+        if p.inode.file_type() != FileType::Symlink { return Err(VfsError::Enoent); }
         p.inode.readlink()
     }
     fn truncate(&self, path: &str, size: u64) -> KResult<()> {
@@ -395,6 +410,13 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert_eq!(logind.read_path("/run/udev/data/by-card0").expect("logind reads hardlink"), body);
     assert_eq!(logind.read_path("/run/udev/card0-db").expect("logind reads symlink"), body);
     assert_eq!(logind.readlink("/run/udev/card0-db").expect("readlink symlink"), b"data/c226:0");
+    assert!(matches!(logind.readlink("/run/udev/data/c226:0"), Err(VfsError::Einval)));
+    let link_path = udev.lookup(AT_FDCWD, "/run/udev/card0-db",
+        LookupFlags { no_follow_final: true, follow: false, ..Default::default() }).expect("link path");
+    let link_fd = udev.install(link_path, true, false);
+    assert_eq!(udev.readlinkat_empty(link_fd).expect("empty symlink fd"), b"data/c226:0");
+    assert!(matches!(udev.readlinkat_empty(fd), Err(VfsError::Enoent)));
+    assert!(matches!(udev.readlinkat_empty(AT_FDCWD), Err(VfsError::Enoent)));
     assert_eq!(logind.stat("/run/udev/card0-db", false).expect("lstat symlink").mode & vfs::S_IFMT, vfs::S_IFLNK);
     assert_eq!(logind.stat("/run/udev/card0-db", true).expect("stat symlink").mode & vfs::S_IFMT, vfs::S_IFREG);
     udev.setxattr_at(AT_FDCWD, "/run/udev/card0-db", true, "user.follow", b"target").expect("xattr follows final symlink");

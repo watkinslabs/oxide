@@ -5,8 +5,6 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf_writable;
-
 /// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
 /// procfs symlinks `/proc/self/{exe,cwd,root}` and per-pid
 /// `/proc/<tid>/{exe,cwd,root}`. All other paths return -EINVAL.
@@ -16,7 +14,6 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let buf_ptr  = args.a1;
     let bufsize  = args.a2;
     if bufsize == 0 { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf_writable(buf_ptr, bufsize, 1) { return rv; }
     // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
     let path = match crate::namei_common::read_user_path(path_ptr) {
         Ok(s)   => s,
@@ -49,6 +46,13 @@ pub(crate) fn readlink_at_path(dirfd: i32, raw: &str, buf_ptr: u64, bufsize: u64
         Ok(p) => p,
         Err(rv) => return rv,
     };
+    readlink_resolved(vp, false, buf_ptr, bufsize)
+}
+
+pub(crate) fn readlink_resolved(vp: vfs::VfsPath, empty_path: bool, buf_ptr: u64, bufsize: u64) -> i64 {
+    if !matches!(vp.inode.file_type(), vfs::FileType::Symlink) {
+        return -((if empty_path { Errno::Enoent } else { Errno::Einval }).as_i32() as i64);
+    }
     let target: alloc::vec::Vec<u8> = match vp.inode.get_link() {
         Ok(v) => v,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
@@ -60,6 +64,9 @@ pub(crate) fn readlink_at_path(dirfd: i32, raw: &str, buf_ptr: u64, bufsize: u64
 /// returning the byte count — shared by `readlink`/`readlinkat`. # C: O(n)
 pub(crate) fn write_link_target(target: &[u8], buf_ptr: u64, bufsize: u64) -> i64 {
     let n = (target.len() as u64).min(bufsize) as usize;
+    if n != 0 {
+        if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf_ptr, n as u64, 1) { return rv; }
+    }
     // SAFETY: caller validated the writable byte range; Linux readlink copyout accepts unaligned storage.
     unsafe {
         for i in 0..n {
