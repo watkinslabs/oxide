@@ -33,7 +33,6 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     else if let Some(rv) = sched::cred::cred_dispatch(nr, &args) { rv }
     else if let Some(rv) = sched::timers::timer_dispatch(nr, &args) { rv }
     else if let Some(rv) = crate::perms::perms_dispatch(nr, &args) { rv }
-    else if let Some(rv) = ::fs::xattr::xattr_dispatch(nr, &args) { rv }
     else if let Some(rv) = ::fs::keyring::keyring_dispatch(nr, &args) { rv }
     else if let Some(rv) = sched::compat::try_compat(nr, &args) { rv }
     // No modern route claimed this nr: honest ENOSYS. There is NO legacy
