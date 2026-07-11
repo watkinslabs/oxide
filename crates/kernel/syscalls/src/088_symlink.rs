@@ -4,11 +4,12 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
-    errno_from_vfs, read_user_path, resolve_create_parent_at, render_child_path,
-    child_exists, parent_mount_readonly, drop_child_cache,
+    errno_from_vfs, read_user_path, read_user_path_bytes, resolve_create_parent_at,
+    render_child_path, child_exists, parent_mount_readonly, drop_child_cache,
 };
 
 /// `symlink(target, linkpath)` slot 88.
@@ -16,13 +17,13 @@ use crate::namei_common::{
 pub fn sys_symlink(args: &SyscallArgs) -> i64 {
     // Linux `getname`: NULL/bad ptr → EFAULT, empty string → ENOENT,
     // ≥ PATH_MAX → ENAMETOOLONG (D29; was EINVAL on empty target).
-    let target = match read_user_path(args.a0) { Ok(s) => s, Err(rv) => return rv };
+    let target = match read_user_path_bytes(args.a0) { Ok(s) => s, Err(rv) => return rv };
     let link   = match read_user_path(args.a1) { Ok(s) => s, Err(rv) => return rv };
     symlink_impl(crate::pathresolve::AT_FDCWD, target, link)
 }
 
 /// # C: O(N parent entries)
-pub(crate) fn symlink_impl(dirfd: i32, target: String, link: String) -> i64 {
+pub(crate) fn symlink_impl(dirfd: i32, target: Vec<u8>, link: String) -> i64 {
     let (parent, name) = match resolve_create_parent_at(dirfd, &link) {
         Ok(x) => x, Err(rv) => return rv,
     };
@@ -46,7 +47,7 @@ pub(crate) fn symlink_impl(dirfd: i32, target: String, link: String) -> i64 {
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend symlink (Linux
     // `filename_create` → `->symlink`); dropped before the dcache update below.
-    let r = { let _g = parent.inode.inode_lock(); parent.inode.symlink_child(&name, target.as_bytes(), &ctx) };
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.symlink_child(&name, &target, &ctx) };
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);

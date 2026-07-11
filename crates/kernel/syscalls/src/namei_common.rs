@@ -6,6 +6,7 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
@@ -112,6 +113,25 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
     vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
     Ok(path)
+}
+
+/// Read a user pathname while preserving the exact non-NUL byte payload.
+/// Symlink targets use this path: Linux `symlink(2)` stores `oldname` verbatim
+/// after `getname`, it does not round-trip through a UTF-8 string.
+/// # C: O(strlen)
+pub(crate) fn read_user_path_bytes(ptr: u64) -> Result<Vec<u8>, i64> {
+    if ptr == 0 || ptr >= USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    // SAFETY: ptr in user range; user page mapped (caller's AS); PATH_MAX bound.
+    let bytes = unsafe { devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) }
+        .ok_or(-(Errno::Efault.as_i32() as i64))?;
+    if bytes.is_empty() {
+        return Err(-(Errno::Enoent.as_i32() as i64));
+    }
+    let path = vfs::path_from_bytes(bytes);
+    vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
+    Ok(bytes.to_vec())
 }
 
 /// # C: O(1)
