@@ -86,22 +86,7 @@ pub(super) fn dispatch_route_b(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_TEE => sched::xfer::sys_tee(args),
         syscall::nrs::NR_VMSPLICE => sched::xfer::sys_vmsplice(args),
         syscall::nrs::NR_OPENAT => crate::s257_openat::sys_openat(args),
-        syscall::nrs::NR_OPENAT2 => {
-            let how = args.a2;
-            if how == 0 || how >= hal::USER_VA_END {
-                -(syscall::errno::Errno::Efault.as_i32() as i64)
-            } else if args.a3 < 24 {
-                -(syscall::errno::Errno::Einval.as_i32() as i64)
-            } else {
-                let mut sa = *args; sa.a2 = 0; sa.a3 = 0;
-                let resolve = unsafe {
-                    sa.a2 = core::ptr::read_volatile(how as *const u64);
-                    sa.a3 = core::ptr::read_volatile((how + 8) as *const u64);
-                    core::ptr::read_volatile((how + 16) as *const u64)
-                };
-                crate::s257_openat::sys_openat2(&sa, resolve)
-            }
-        }
+        syscall::nrs::NR_OPENAT2 => crate::s257_openat::sys_openat2(args),
         syscall::nrs::NR_FACCESSAT2 => crate::fs_access::sys_faccessat2(args),
         syscall::nrs::NR_SYNC => crate::misc::sys_sync(args),
         syscall::nrs::NR_SYNCFS => crate::misc::sys_syncfs(args),

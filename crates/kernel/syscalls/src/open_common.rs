@@ -10,6 +10,8 @@ pub(crate) const O_CREAT:     u32 = 0o100;
 /// component → `EEXIST` (Linux `do_last`/`lookup_open`).
 pub(crate) const O_EXCL:      u32 = 0o200;
 pub(crate) const O_TRUNC:     u32 = 0o1000;
+pub(crate) const O_APPEND:    u32 = 0o2000;
+pub(crate) const O_DIRECTORY: u32 = 0o200000;
 // O_* flag VALUES are arch-specific (Linux fcntl.h per-arch overrides):
 // x86_64 = asm-generic (O_NOFOLLOW=0o400000); aarch64 uses the arm override
 // (O_NOFOLLOW=0o100000, while 0x20000 is O_LARGEFILE which musl-aarch64 sets).
@@ -22,6 +24,7 @@ pub(crate) const O_TMPFILE:   u32 = 0o20000000;
 /// `O_PATH` (asm-generic, both arches): an fd-reference open with no read/write
 /// access — bypasses `may_open`'s access-mode permission check.
 pub(crate) const O_PATH:      u32 = 0o10000000;
+pub(crate) const O_CLOEXEC:   u32 = 0o2000000;
 /// `O_ACCMODE` mask + the writable access modes.
 pub(crate) const O_ACCMODE:   u32 = 0o3;
 pub(crate) const O_WRONLY:    u32 = 0o1;
@@ -29,6 +32,62 @@ pub(crate) const O_RDWR:      u32 = 0o2;
 /// `O_NONBLOCK` (asm-generic, both arches): a non-blocking conflicting open
 /// fails the lease-break with `EWOULDBLOCK` instead of waiting.
 pub(crate) const O_NONBLOCK:  u32 = 0o4000;
+const O_NOCTTY:    u64 = 0o400;
+const O_DSYNC:     u64 = 0o10000;
+const O_ASYNC:     u64 = 0o20000;
+const O_DIRECT:    u64 = 0o40000;
+const O_LARGEFILE: u64 = 0o100000;
+const O_NOATIME:   u64 = 0o1000000;
+const __O_SYNC:    u64 = 0o4000000;
+const O_SYNC:      u64 = 0o4010000;
+pub(crate) const O_EMPTYPATH: u64 = 0o400000000;
+pub(crate) const OPENAT2_REGULAR: u64 = 0o40000000000;
+const VALID_OPEN_FLAGS: u64 = O_CREAT as u64 | O_EXCL as u64 | O_TRUNC as u64
+    | O_APPEND as u64
+    | O_DIRECTORY as u64 | O_NOFOLLOW as u64 | O_TMPFILE as u64 | O_PATH as u64
+    | O_CLOEXEC as u64 | O_ACCMODE as u64 | O_NONBLOCK as u64 | O_NOCTTY
+    | O_DSYNC | O_ASYNC | O_DIRECT | O_LARGEFILE | O_NOATIME | O_SYNC | O_EMPTYPATH;
+const VALID_OPENAT2_FLAGS: u64 = VALID_OPEN_FLAGS | OPENAT2_REGULAR;
+const O_PATH_FLAGS: u64 = O_DIRECTORY as u64 | O_NOFOLLOW as u64 | O_PATH as u64
+    | O_CLOEXEC as u64 | O_EMPTYPATH;
+
+/// Linux `build_open_how` / `build_open_flags` validation needed before path
+/// mutation. Legacy open/openat mask unsupported bits and let `O_PATH` strip
+/// every non-path flag; openat2 keeps the full 64-bit flags word for unknown-bit
+/// rejection. # C: O(1)
+pub(crate) fn normalize_open_flags(flags: u64, mode: u64, openat2: bool) -> Result<(u32, u32), i64> {
+    let mut f = flags;
+    let mut m = mode;
+    if !openat2 {
+        f &= VALID_OPEN_FLAGS;
+        m &= 0o7777;
+        if (f & O_PATH as u64) != 0 { f &= O_PATH_FLAGS; }
+        if (f & (O_CREAT as u64 | O_TMPFILE as u64)) == 0 { m = 0; }
+    } else {
+        if (f & !VALID_OPENAT2_FLAGS) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        if (f & (O_CREAT as u64 | O_TMPFILE as u64)) != 0 {
+            if (m & !0o7777) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        } else if m != 0 {
+            return Err(-(Errno::Einval.as_i32() as i64));
+        }
+        if (f & O_PATH as u64) != 0 && (f & !O_PATH_FLAGS) != 0 {
+            return Err(-(Errno::Einval.as_i32() as i64));
+        }
+    }
+    if (f & (O_DIRECTORY as u64 | O_CREAT as u64)) == (O_DIRECTORY as u64 | O_CREAT as u64) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    if (f & O_TMPFILE as u64) != 0 {
+        if (f & O_DIRECTORY as u64) == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        let acc = (f as u32) & O_ACCMODE;
+        if acc != O_WRONLY && acc != O_RDWR { return Err(-(Errno::Einval.as_i32() as i64)); }
+    }
+    if (f & (O_DIRECTORY as u64 | OPENAT2_REGULAR)) == (O_DIRECTORY as u64 | OPENAT2_REGULAR) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    if (f & __O_SYNC) != 0 { f |= O_DSYNC; }
+    Ok((f as u32, m as u32))
+}
 
 /// Linux `do_open` access enforcement, run after path resolution: `EROFS` for a
 /// write through a read-only mount (`mnt_want_write`), then the `may_open` DAC
