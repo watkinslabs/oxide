@@ -6,20 +6,17 @@
 
 use ::syscall::SyscallArgs;
 use ::syscall::errno::Errno;
-use ::hal::USER_VA_END;
 
 fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
     if timeout == 0 { return Ok(0); }
-    if timeout.checked_add(16).map_or(true, |end| end > USER_VA_END) {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
+    crate::userbuf::validate_user_buf(timeout, 16, 1)?;
     if !crate::time_common::clock_id_known(clockid) {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
-    // SAFETY: timeout+16 range checked above; timespec is two i64 fields.
-    let secs = unsafe { core::ptr::read_volatile(timeout as *const i64) };
-    // SAFETY: timeout+8 is inside the validated timespec.
-    let nsec = unsafe { core::ptr::read_volatile((timeout + 8) as *const i64) };
+    // SAFETY: timeout was validated as a readable 16-byte timespec; scalar loads permit unaligned user storage.
+    let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
+    // SAFETY: timeout+8 is inside the validated timespec and unaligned loads match user ABI copyin.
+    let nsec = unsafe { core::ptr::read_unaligned((timeout + 8) as *const i64) };
     if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
@@ -47,21 +44,18 @@ pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
         Ok(dl) => dl,
         Err(e) => return e,
     };
-    match ptr.checked_add(n * ENTRY_BYTES) {
-        Some(e) if e <= USER_VA_END => {},
-        _ => return -(Errno::Efault.as_i32() as i64),
-    }
+    if let Err(rv) = crate::userbuf::validate_user_buf(ptr, n * ENTRY_BYTES, 1) { return rv; }
     let mut uaddrs: ::alloc::vec::Vec<u64> = ::alloc::vec::Vec::with_capacity(n as usize);
     let mut vals:   ::alloc::vec::Vec<u32> = ::alloc::vec::Vec::with_capacity(n as usize);
     let mut private = true; // FUTEX2_PRIVATE per-waiter; AND across the set.
     for i in 0..n {
         let base = ptr + i * ENTRY_BYTES;
-        // SAFETY: base+24 ≤ ptr+n*24 ≤ USER_VA_END; CR3 is current's.
-        let val   = unsafe { core::ptr::read_volatile(base as *const u64) };
-        // SAFETY: base+24 ≤ ptr+n*24 ≤ USER_VA_END; CR3 is current's.
-        let uaddr = unsafe { core::ptr::read_volatile((base + 8) as *const u64) };
-        // SAFETY: flags at +16 within the 24-byte struct, in range.
-        let flags = unsafe { core::ptr::read_volatile((base + 16) as *const u32) };
+        // SAFETY: the full wait-vector byte span was validated; scalar loads permit unaligned user storage.
+        let val   = unsafe { core::ptr::read_unaligned(base as *const u64) };
+        // SAFETY: uaddr lies within the validated wait-vector entry.
+        let uaddr = unsafe { core::ptr::read_unaligned((base + 8) as *const u64) };
+        // SAFETY: flags lies within the validated wait-vector entry.
+        let flags = unsafe { core::ptr::read_unaligned((base + 16) as *const u32) };
         if (flags & ::ipc::live::futex::FUTEX_PRIVATE_FLAG) == 0 { private = false; }
         if val > u32::MAX as u64 { return -(Errno::Einval.as_i32() as i64); }
         uaddrs.push(uaddr);
