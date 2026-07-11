@@ -122,7 +122,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
             a.a1 = 0;
             crate::s293_pipe2::sys_pipe2(&a)
         }
-        syscall::nrs::NR_CREAT => crate::s002_open::sys_open(args),
+        syscall::nrs::NR_CREAT => crate::s002_open::sys_creat(args),
         syscall::nrs::NR_EXIT_GROUP => crate::s060_exit::sys_exit_group(args),
         syscall::nrs::NR_INIT_MODULE => crate::s175_init_module::sys_init_module(args),
         syscall::nrs::NR_FINIT_MODULE => crate::s313_finit_module::sys_finit_module(args),

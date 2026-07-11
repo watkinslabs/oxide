@@ -172,11 +172,11 @@ impl Proc {
         self.enter();
         if create {
             let p = self.parent(dirfd, path)?;
-            vfs::may_create(&p.inode, &self.cred)?;
             let name = p.last_component.as_deref().ok_or(VfsError::Einval)?;
             let inode = match p.inode.lookup(name) {
                 Ok(i) => i,
                 Err(VfsError::Enoent) => {
+                    vfs::may_create(&p.inode, &self.cred)?;
                     let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &self.cred, umask: self.umask };
                     p.inode.create_child(name, mode, &ctx)?
                 }
@@ -433,7 +433,6 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert!(data_names.iter().any(|n| n == "c226:0") && data_names.iter().any(|n| n == "by-card0"));
     assert!(matches!(logind.unlinkat("/run/udev/data"), Err(VfsError::Eisdir)));
     assert!(matches!(logind.rmdir("/run/udev/data"), Err(VfsError::Enotempty)));
-
     let user = cred(1000, 1000); let other = cred(1001, 1001);
     let mut user_proc = Proc::new(udev_ns, root.clone(), udev_root_mnt, user);
     user_proc.umask = 0o077;
@@ -444,7 +443,7 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     let secret_fd = user_proc.openat(AT_FDCWD, "/run/user/1000/secret", true, 0o666, true, true).expect("secret");
     let secret = user_proc.fds[secret_fd as usize].as_ref().unwrap().p.inode.clone();
     assert_eq!((secret.uid(), secret.gid(), secret.perm()), (Some(1000), Some(1000), Some(0o600)));
-    let other_proc = Proc::new(logind_ns, root.clone(), logind_root_mnt, other);
+    let mut other_proc = Proc::new(logind_ns, root.clone(), logind_root_mnt, other);
     assert!(matches!(other_proc.read_path("/run/user/1000/secret"), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.mkdirat(AT_FDCWD, "/run/user/1000/nope", 0o755), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.symlinkat(b"x", "/run/user/1000/nope-sym"), Err(VfsError::Eacces)));
@@ -452,6 +451,7 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert!(matches!(other_proc.access("/run/user/1000/secret", true, false, false), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.truncate("/run/user/1000/secret", 0), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.chmod("/run/udev/data/c226:0", 0o600), Err(VfsError::Eperm)));
+    other_proc.openat(AT_FDCWD, "/run/udev/data/c226:0", true, 0o600, true, false).expect("O_CREAT existing skips parent write");
     assert!(matches!(other_proc.chown("/run/udev/data/c226:0", 1001, 1001), Err(VfsError::Eperm)));
     assert!(matches!(udev.chmodat_flags("/run/udev/data/c226:0", 0o600, 0x8000_0000), Err(VfsError::Einval)));
     assert_eq!(udev.stat("/run/udev/data/c226:0", true).expect("bad chmodat flags did not mutate").mode & 0o777, 0o644);

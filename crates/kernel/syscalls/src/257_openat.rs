@@ -255,6 +255,9 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags) -> i64 {
         // (Linux `filename_create` → `i_op->create`), instead of the
         // old whole-path backend create re-splitting the path string.
         let cred = crate::pathresolve::current_cred();
+        if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+            return crate::namei_common::errno_from_vfs(e);
+        }
         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
         // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create.
         let r = { let _g = parent.inode.inode_lock(); parent.inode.create_child(&name, final_mode, &ctx) };
