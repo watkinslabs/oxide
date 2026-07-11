@@ -249,6 +249,10 @@ impl InodeOps for Ext4StatInodeOps {
 /// (ZST). # C: O(1)
 pub(crate) struct Ext4StatFileOps;
 
+fn ext4_dirent_name(name: &[u8]) -> alloc::string::String {
+    vfs::path_from_bytes(name)
+}
+
 impl FileOps for Ext4StatFileOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
@@ -264,9 +268,7 @@ impl FileOps for Ext4StatFileOps {
             if !keep_going { break; }
             let Ok(blk) = mount.read_file_block(&dir_inode, blk_idx) else { break };
             let _ = crate::iter_active(&blk, |e| {
-                let name = match core::str::from_utf8(e.name) {
-                    Ok(s) => s, Err(_) => return true,
-                };
+                let name = ext4_dirent_name(e.name);
                 if name.is_empty() { return true; }
                 idx += 1;
                 if idx <= off { return true; }
@@ -280,7 +282,7 @@ impl FileOps for Ext4StatFileOps {
                     7 => FileType::Symlink,
                     _ => FileType::Regular,
                 };
-                let keep = ctx.emit(name, e.inode as u64, ft, idx);
+                let keep = ctx.emit(&name, e.inode as u64, ft, idx);
                 if !keep { keep_going = false; }
                 keep
             });
@@ -313,4 +315,16 @@ pub(crate) fn build_stat_inode(
         .xattrs(xattrs)
         .private(data)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ext4_dirent_name;
+
+    #[test]
+    fn ext4_dirent_name_preserves_non_utf8_bytes() {
+        let raw = b"dir-\xff-entry";
+        let name = ext4_dirent_name(raw);
+        assert_eq!(vfs::path_into_bytes(&name), raw);
+    }
 }
