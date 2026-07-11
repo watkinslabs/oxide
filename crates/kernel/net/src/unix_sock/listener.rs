@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, string::String, sync::Arc, vec};
+use alloc::{collections::BTreeMap, string::String, sync::Arc, vec, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 use sched;
@@ -13,7 +13,7 @@ use vfs;
 /// listener's accept queue.
 pub struct UnixListener {
     pub addr: UnixAddr,
-    pub path: String,
+    pub path: Vec<u8>,
     pub accept_q: Spinlock<alloc::collections::VecDeque<Arc<UnixPair>>, UnixLockClass>,
     /// F170: per-listener waitlist for `sys_accept`.
     #[cfg(target_os = "oxide-kernel")]
@@ -24,33 +24,35 @@ pub struct UnixListener {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UnixAddrKey {
-    Abstract(String),
+    Abstract(Vec<u8>),
     Path { fsid: u64, ino: u64 },
 }
 
 #[derive(Clone)]
 pub struct UnixAddr {
     pub key: UnixAddrKey,
-    pub display: String,
+    pub display: Vec<u8>,
 }
 
 impl UnixAddr {
     /// # C: O(N path)
     pub fn from_abstract_or_test_path(path: String) -> Self {
-        if unix_path_is_abstract(&path) {
-            Self { key: UnixAddrKey::Abstract(path.clone()), display: path }
-        } else {
-            Self { key: UnixAddrKey::Abstract(path.clone()), display: path }
-        }
+        let path = path.into_bytes();
+        Self { key: UnixAddrKey::Abstract(path.clone()), display: path }
     }
 
     /// # C: O(1)
     pub fn from_inode(display: String, inode: &vfs::InodeRef) -> Self {
+        Self { key: UnixAddrKey::Path { fsid: inode.fsid(), ino: inode.ino() as u64 }, display: display.into_bytes() }
+    }
+
+    /// # C: O(1)
+    pub fn from_inode_bytes(display: Vec<u8>, inode: &vfs::InodeRef) -> Self {
         Self { key: UnixAddrKey::Path { fsid: inode.fsid(), ino: inode.ino() as u64 }, display }
     }
 
     /// # C: O(N path)
-    pub fn from_sockaddr_path(path: String) -> Self {
+    pub fn from_sockaddr_path(path: Vec<u8>) -> Self {
         Self { key: UnixAddrKey::Abstract(path.clone()), display: path }
     }
 
@@ -118,23 +120,25 @@ impl UnixListener {
 pub struct UnixRegistry {
     pub(crate) inner: Spinlock<BTreeMap<UnixAddrKey, Arc<UnixListener>>, UnixLockClass>,
     /// AF_UNIX SOCK_DGRAM path-bound queues (F121).
-    pub(crate) dgrams: Spinlock<BTreeMap<UnixAddrKey, (String, Arc<UnixDgramQueue>)>, UnixLockClass>,
+    pub(crate) dgrams: Spinlock<BTreeMap<UnixAddrKey, (Vec<u8>, Arc<UnixDgramQueue>)>, UnixLockClass>,
 }
 
 /// Linux AF_UNIX abstract namespace addresses are keyed by a leading
 /// NUL byte, not by a filesystem pathname.
-pub fn unix_path_is_abstract(path: &str) -> bool {
-    path.as_bytes().first().copied() == Some(0)
+pub fn unix_path_is_abstract<P: AsRef<[u8]>>(path: P) -> bool {
+    path.as_ref().first().copied() == Some(0)
 }
 
 /// Render a registry key the way `/proc/net/unix` reports it.
-pub fn unix_path_display(path: &str) -> String {
+pub fn unix_path_display<P: AsRef<[u8]>>(path: P) -> Vec<u8> {
+    let path = path.as_ref();
     if unix_path_is_abstract(path) {
-        let mut out = String::from("@");
-        out.push_str(core::str::from_utf8(&path.as_bytes()[1..]).unwrap_or(""));
+        let mut out = Vec::with_capacity(path.len());
+        out.push(b'@');
+        out.extend_from_slice(&path[1..]);
         out
     } else {
-        path.into()
+        path.to_vec()
     }
 }
 
@@ -242,8 +246,8 @@ impl UnixRegistry {
     }
 
     /// Snapshot all bound paths grouped by kind.
-    pub fn snapshot_paths(&self) -> vec::Vec<(u16, String)> {
-        let mut out: vec::Vec<(u16, String)> = vec::Vec::new();
+    pub fn snapshot_paths(&self) -> vec::Vec<(u16, Vec<u8>)> {
+        let mut out: vec::Vec<(u16, Vec<u8>)> = vec::Vec::new();
         for v in self.inner.lock().values() {
             out.push((0x0001, v.path.clone()));
         }
@@ -260,7 +264,7 @@ impl UnixRegistry {
         // (/run/dbus/system_bus_socket), get_session_proxy() returns NULL with no
         // login1 traffic → "Failed to find any matching session".
         #[cfg(feature = "debug-dbus")]
-        if addr.display.as_bytes().windows(3).any(|w| w == b"bus") {
+        if addr.display.windows(3).any(|w| w == b"bus") {
             let found = self.lookup_listener_addr(addr).is_some();
             klog::write_raw(b"[DBUSCONN t=");
             if let Some(c) = sched::live::current() {
@@ -269,7 +273,7 @@ impl UnixRegistry {
                 klog::write_raw(c.name.as_bytes());
             }
             klog::write_raw(if found { b" OK " } else { b" REFUSED " });
-            klog::write_raw(addr.display.as_bytes());
+            klog::write_raw(&addr.display);
             klog::write_raw(b"\n");
         }
         let listener = self.lookup_listener_addr(addr)?;
@@ -279,7 +283,7 @@ impl UnixRegistry {
             let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
             klog::write_raw(b"[UXCONNECT comm="); klog::write_raw(nm.as_bytes());
             klog::write_raw(b" pair="); klog::write_hex_u64(alloc::sync::Arc::as_ptr(&pair) as u64);
-            klog::write_raw(b" path="); klog::write_raw(addr.display.as_bytes());
+            klog::write_raw(b" path="); klog::write_raw(&addr.display);
             klog::write_raw(b"]\n");
         }
         // Retain the listener's canonical bound path so getsockname (end A,

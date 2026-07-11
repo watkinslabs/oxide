@@ -15,12 +15,12 @@ const AF_UNIX:  u16 = 1;
 /// NUL. `None`/empty path writes the bare 2-byte family (unbound socket).
 /// Caller's `getsockname` keeps the in/out addrlen the caller passed, which
 /// is what `sd_is_socket` relies on. # C: O(path len)
-pub(crate) fn write_sockaddr_un(ptr: u64, path: Option<&str>) {
+pub(crate) fn write_sockaddr_un(ptr: u64, path: Option<&[u8]>) {
     if ptr == 0 || ptr >= USER_VA_END { return; }
     // SAFETY: ptr validated in user range; caller AS active; bounded writes within sockaddr_un (2 + 108).
     unsafe {
         core::ptr::write_volatile(ptr as *mut u16, AF_UNIX);
-        let bytes = path.unwrap_or("").as_bytes();
+        let bytes = path.unwrap_or(&[]);
         let n = core::cmp::min(bytes.len(), 108);
         for i in 0..n {
             core::ptr::write_volatile((ptr + 2 + i as u64) as *mut u8, bytes[i]);
@@ -41,7 +41,7 @@ pub(crate) fn read_sa_family(ptr: u64) -> Option<u16> {
 /// Read sockaddr_un path. Filesystem paths are NUL-terminated; Linux
 /// abstract namespace paths preserve the addrlen-delimited leading NUL
 /// marker. # C: O(108)
-pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc::string::String> {
+pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc::vec::Vec<u8>> {
     if ptr == 0 || ptr >= USER_VA_END || addrlen <= 2 { return None; }
     let path_len = (addrlen - 2).min(108) as usize;
     // SAFETY: ptr in user range; caller's address space is active; read is bounded by sockaddr_un.
@@ -62,7 +62,7 @@ pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc:
                 bytes.push(b);
             }
         }
-        alloc::string::String::from_utf8(bytes).ok()
+        Some(bytes)
     }
 }
 

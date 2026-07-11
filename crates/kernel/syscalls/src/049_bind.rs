@@ -41,6 +41,13 @@ fn create_unix_sock_node(path: &str) -> Result<Option<UnixSockNode>, i64> {
     }
 }
 
+fn create_unix_sock_node_bytes(path: &[u8]) -> Result<Option<UnixSockNode>, i64> {
+    if net::unix_path_is_abstract(path) { return Ok(None); }
+    let path = core::str::from_utf8(path)
+        .map_err(|_| -(Errno::Einval.as_i32() as i64))?;
+    create_unix_sock_node(path)
+}
+
 fn remove_unix_sock_node(n: &UnixSockNode) {
     let _ = {
         let _g = n.parent.inode.inode_lock();
@@ -86,7 +93,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
         // If the socket is already SOCK_DGRAM, pass its queue along.
-        let node = match create_unix_sock_node(&path) {
+        let node = match create_unix_sock_node_bytes(&path) {
             Ok(n) => n,
             Err(rv) => return rv,
         };
