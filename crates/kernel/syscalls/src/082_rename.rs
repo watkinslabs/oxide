@@ -8,7 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
     child_dentry, child_inode, drop_child_cache, errno_from_vfs, parent_mount_readonly,
-    path_exists, read_user_path, render_child_path, resolve_parent, resolve_rename_parent_at,
+    read_user_path, render_child_path, resolve_rename_parent_at,
 };
 
 /// renameat2 flags (uapi/linux/fs.h).
@@ -17,83 +17,17 @@ pub(crate) const RENAME_EXCHANGE:  u32 = 1 << 1;
 pub(crate) const RENAME_WHITEOUT:  u32 = 1 << 2;
 
 /// `rename(from, to)` slot 82 / `renameat(odir, from, ndir, to)` slot 264 /
-/// `renameat2` slot 316. Plain rename routes through resolved parent inodes;
-/// EXCHANGE/WHITEOUT keep the temporary filesystem-string hook until VFS grows
-/// object-parent variants for those two operations.
+/// `renameat2` slot 316. Rename variants route through resolved parent inodes;
+/// strings are display/LSM inputs only, never object identity.
 /// # C: O(1)
 pub fn sys_rename(args: &SyscallArgs) -> i64 {
     rename_impl(-100, args.a0, -100, args.a1, 0)
-}
-
-/// Route a path-write operation through the mount table per `docs/16`.
-/// Returns the resolved (mount, relative_path), or the Linux errno for a
-/// missing/read-only mount.
-/// # C: O(N path components)
-fn mount_for_write(path: &str) -> Result<(alloc::sync::Arc<vfs::mount::Mount>, alloc::string::String), i64> {
-    let (mnt, rel) = vfs::mount::resolve_mount(path).ok_or(-(Errno::Enoent.as_i32() as i64))?;
-    if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-        return Err(-(Errno::Erofs.as_i32() as i64));
-    }
-    Ok((mnt, rel))
 }
 
 fn same_mount(a: &vfs::VfsPath, b: &vfs::VfsPath) -> bool { a.mnt_id == b.mnt_id }
 
 fn same_parent(a: &vfs::VfsPath, b: &vfs::VfsPath) -> bool {
     alloc::sync::Arc::ptr_eq(&a.dentry, &b.dentry)
-}
-
-/// Retained only for `RENAME_EXCHANGE`/`RENAME_WHITEOUT` until the VFS grows
-/// object-parent backend hooks for those two non-plain variants.
-/// # C: O(N path components)
-fn rename_special_legacy(from_dirfd: i32, from_raw: &str, to_dirfd: i32, to_raw: &str, flags: u32) -> i64 {
-    let f = match crate::pathresolve::resolve_at_result(from_dirfd, from_raw) {
-        Ok(rp) => rp, Err(rv) => return rv,
-    };
-    let t = match crate::pathresolve::resolve_at_result(to_dirfd, to_raw) {
-        Ok(rp) => rp, Err(rv) => return rv,
-    };
-    if (flags & RENAME_NOREPLACE != 0) && path_exists(&t) {
-        return -(Errno::Eexist.as_i32() as i64);
-    }
-    if (flags & RENAME_EXCHANGE != 0) && (!path_exists(&f) || !path_exists(&t)) {
-        return -(Errno::Enoent.as_i32() as i64);
-    }
-    if let Err(rv) = crate::landlock::check(&f,
-        ::security::landlock::access::REMOVE_FILE | ::security::landlock::access::REFER) { return rv; }
-    if let Err(rv) = crate::landlock::check(&t,
-        ::security::landlock::access::MAKE_REG | ::security::landlock::access::REFER) { return rv; }
-    let (mnt_f, rel_f) = match mount_for_write(&f) { Ok(x) => x, Err(rv) => return rv };
-    let (mnt_t, rel_t) = match mount_for_write(&t) { Ok(x) => x, Err(rv) => return rv };
-    if !alloc::sync::Arc::ptr_eq(&mnt_f, &mnt_t) {
-        return -(Errno::Exdev.as_i32() as i64);
-    }
-    let old_parent = resolve_parent(&f).ok();
-    let new_parent = resolve_parent(&t).ok();
-    let r = {
-        let _rg = match (&old_parent, &new_parent) {
-            (Some((op, _)), Some((np, _))) => Some(vfs::lock_rename(op, np)),
-            _ => None,
-        };
-        if flags & RENAME_EXCHANGE != 0 { mnt_f.fs().exchange(&rel_f, &rel_t) }
-        else { mnt_f.fs().whiteout(&rel_f, &rel_t) }
-    };
-    match r {
-        Ok(())  => {
-            if flags & RENAME_EXCHANGE != 0 {
-                crate::pathresolve::d_delete_path(&f);
-                crate::pathresolve::d_delete_path(&t);
-            } else {
-                crate::pathresolve::d_move_path(&f, &t);
-            }
-            if let (Some((op, _)), Some((np, _))) = (&old_parent, &new_parent) {
-                let moved = vfs::mount::lookup(&t).ok();
-                ::fs::inotify::fire_move(op, np, moved.as_ref());
-            }
-            0
-        }
-        Err(e)  => errno_from_vfs(e),
-    }
 }
 
 /// # C: O(1)
@@ -122,9 +56,6 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     if crate::namei_common::rename_component_busy(&from_raw)
         || crate::namei_common::rename_component_busy(&to_raw) {
         return -(Errno::Ebusy.as_i32() as i64);
-    }
-    if flags & (RENAME_EXCHANGE | RENAME_WHITEOUT) != 0 {
-        return rename_special_legacy(from_dirfd, &from_raw, to_dirfd, &to_raw, flags);
     }
     let (old_parent, old_name) = match resolve_rename_parent_at(from_dirfd, &from_raw) {
         Ok(x) => x, Err(rv) => return rv,
@@ -185,8 +116,11 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     };
     match r {
         Ok(())  => {
-            if let Some(d) = dest_victim { vfs::dcache::d_unlink(&d); }
-            if let Some(d) = source_dentry {
+            if flags & RENAME_EXCHANGE != 0 {
+                drop_child_cache(&old_parent, &old_name);
+                drop_child_cache(&new_parent, &new_name);
+            } else if let Some(d) = source_dentry {
+                if let Some(v) = dest_victim { vfs::dcache::d_unlink(&v); }
                 vfs::dcache::d_move(&d, &new_parent.dentry, &new_name);
             } else {
                 drop_child_cache(&old_parent, &old_name);

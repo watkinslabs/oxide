@@ -122,9 +122,10 @@ pub trait InodeOps: Send + Sync {
     /// # C: backend-dependent
     fn unlink(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Erofs) }
 
-    /// `i_op->rename` — rename `old_name` (in this dir) to `new_name` in
-    /// `new_dir`. `ctx` carries the mount idmap + caller cred (Linux
-    /// `->rename(struct mnt_idmap *, ...)`). Default `Erofs`.
+    /// `i_op->rename` — rename/exchange/whiteout `old_name` (in this dir) with
+    /// `new_name` in `new_dir`. `flags` is Linux `RENAME_*`; `ctx` carries the
+    /// mount idmap + caller cred (Linux `->rename(struct mnt_idmap *, ...)`).
+    /// Default `Erofs`.
     /// # C: backend-dependent
     fn rename(&self, _inode: &Inode, _old_name: &str, _new_dir: &Inode, _new_name: &str, _flags: u32, _ctx: &CreateCtx)
         -> KResult<()> { Err(VfsError::Erofs) }

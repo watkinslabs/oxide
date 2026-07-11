@@ -194,9 +194,6 @@ impl InodeOps for Ext4StatInodeOps {
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &vfs::CreateCtx)
         -> KResult<()>
     {
-        if flags & (vfs::namei::RENAME_EXCHANGE | vfs::namei::RENAME_WHITEOUT) != 0 {
-            return Err(VfsError::Einval);
-        }
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let nd = new_dir.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
@@ -205,10 +202,24 @@ impl InodeOps for Ext4StatInodeOps {
         let (from_p, to_p) = (d.ino, nd.ino);
         let mount = &d.st.mount;
         let target = d.st.lookup_child_ino(from_p, old_name).ok_or(VfsError::Enoent)?;
-        let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
-        let ftype = if src.is_dir() { crate::DT_DIR } else if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
-        let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
         let dest_victim = d.st.lookup_child_ino(to_p, new_name);
+        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
+            let bino = dest_victim.ok_or(VfsError::Enoent)?;
+            if from_p == to_p && old_name == new_name { return Ok(()); }
+            let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+            let dst = mount.read_inode(bino).map_err(|_| VfsError::Eio)?;
+            let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
+            return mount.run_journaled(|m| {
+                m.dir_unlink(from_p, from_name)?;
+                m.dir_unlink(to_p, to_name)?;
+                m.dir_link(from_p, from_name, bino, super::super::ops::dirent_dt(&dst))?;
+                m.dir_link(to_p, to_name, target, super::super::ops::dirent_dt(&src))?;
+                Ok(())
+            }).map_err(|_| VfsError::Eio);
+        }
+        let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        let ftype = super::super::ops::dirent_dt(&src);
+        let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
         let dest_is_dir = dest_victim
             .and_then(|v| mount.read_inode(v).ok())
             .map(|i| i.is_dir())
@@ -217,6 +228,9 @@ impl InodeOps for Ext4StatInodeOps {
             if dest_victim.is_some() { let _ = m.dir_unlink(to_p, to_name); }
             m.dir_link(to_p, to_name, target, ftype)?;
             m.dir_unlink(from_p, from_name)?;
+            if flags & vfs::namei::RENAME_WHITEOUT != 0 {
+                m.create_mknod(from_p, from_name, crate::inode::S_IFCHR, 0, 0, 0)?;
+            }
             Ok(())
         }).map_err(|_| VfsError::Eio)?;
         if let Some(victim_ino) = dest_victim {

@@ -419,8 +419,9 @@ Fix status:
 - Done: `unlink`/`unlinkat` now use `resolve_unlink_parent_at()`, mutate `parent.inode`, capture the victim via `child_dentry(parent, leaf)`, check read-only through `parent.mnt_id`, and drop fallback cache by object parent. Rendered path text remains only for Landlock, AF_UNIX pathname registry-key compatibility, and fsnotify display; the AF_UNIX helper no longer calls path-based `d_delete_path()`.
 - Done: `rmdir` and `unlinkat(..., AT_REMOVEDIR)` now share `do_rmdir_at(dirfd, raw)`, preserve the walked parent identity, invalidate/unlink the captured victim dentry, and return Linux dot/root errors (`rmdir(".")` `EINVAL`, `rmdir("..")` `ENOTEMPTY`, `rmdir("/")` `EBUSY`; plain `unlink` dot/root forms `EISDIR`).
 - Done: `link`/`linkat` now resolve the source inode through the correct `*at` base and no-follow/follow flags, resolve the new name with `resolve_link_parent_at()`, mutate `parent.inode.link_child()`, drop dcache by object parent, and gate `EXDEV` by source/new-parent superblock instead of rendered mount-id strings. The only retained rendered source string is the existing `/proc/self/fd/N` special case for `AT_SYMLINK_FOLLOW`.
-- Done: plain `rename`/`renameat`/`renameat2(flags=0|RENAME_NOREPLACE)` now resolve both parents with `resolve_rename_parent_at()`, preserve both `*at` parent identities, reject cross-mount moves by the resolved mount ids, use `vfs::namei::may_rename()`, mutate through `old_parent.inode.rename_child()`, and update dcache/inotify by captured object parents/dentries. Rendered path text remains only for Landlock display.
-- Remaining: `RENAME_EXCHANGE` and `RENAME_WHITEOUT` still route through the old `FileSystem::{exchange,whiteout}` string hooks because VFS has no object-parent backend operation for those variants yet. Next slice: add resolved-parent exchange/whiteout inode ops for ext4/tmpfs or a generic VFS op, then delete the special legacy path in `082_rename.rs`.
+- Done: all `rename`/`renameat`/`renameat2` variants now resolve both parents with `resolve_rename_parent_at()`, preserve both `*at` parent identities, reject cross-mount moves by resolved mount ids, use `vfs::namei::may_rename()`, mutate through `old_parent.inode.rename_child(..., flags)`, and update dcache/inotify by captured object parents/dentries. Rendered path text remains only for Landlock display.
+- Done: `RENAME_EXCHANGE` and `RENAME_WHITEOUT` no longer route through `FileSystem::{exchange,whiteout}` string hooks in the syscall path. Tmpfs and ext4 inode ops now implement those flags by resolved parent inodes; exchange drops the two exact child dcache slots, whiteout moves the source dentry to destination and lets the source whiteout repopulate from the backend.
+- Verification: `cargo test -p vfs --test may_rename -- --nocapture` passed 19/19; `cargo test -p ext4 --test rename_overwrite_image iop_rename_handles_exchange_whiteout -- --nocapture` passed; `cargo run -p xtask -- kernel --arch x86_64` passed. `cargo test -p fs tmpfs::tests::iop_rename_handles_exchange_whiteout -- --nocapture` is blocked by the pre-existing hosted `fs` lib-test gap (`signalfd.rs` references `sched::live` while hosted `sched` hides it).
 
 ## Mount Subsystem Split-Truth Sites
 
@@ -724,7 +725,7 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
    - Done: `symlink/symlinkat`
    - Done: `unlink/unlinkat/rmdir`
    - Done: `link/linkat`
-   - Plain `rename/renameat/renameat2` done; remaining `RENAME_EXCHANGE`/`RENAME_WHITEOUT` backend interface.
+   - Done: all `rename/renameat/renameat2` variants, including `RENAME_EXCHANGE` and `RENAME_WHITEOUT`, now route through resolved parent inode ops.
 
 7. Convert mount syscalls. **This is the current integration blocker.**
 

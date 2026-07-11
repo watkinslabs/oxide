@@ -189,19 +189,6 @@ pub(crate) fn resolve_parent(p: &str) -> Result<(vfs::InodeRef, String), i64> {
     }
 }
 
-/// True if `p` already resolves to an existing inode (final component
-/// not followed if it's a symlink). Linux checks target existence
-/// before the fs-specific `mkdir`, returning EEXIST regardless of
-/// parent writability. Without this, `mkdir` of an existing dir whose
-/// parent is a read-only pseudo-fs leaks the parent's EROFS — e.g.
-/// systemd's `cg_create("/")` does `mkdir("/sys/fs/cgroup")` (already
-/// present), whose parent `/sys/fs` is sysfs → EROFS instead of the
-/// EEXIST systemd treats as success, aborting its cgroup setup.
-/// # C: O(N path components)
-pub(crate) fn path_exists(p: &str) -> bool {
-    crate::pathresolve::resolve(p, true).is_some()
-}
-
 /// Resolve a create target's parent through the real `*at` base, preserving the
 /// walked parent `(mnt,dentry)` as authority and returning only the final leaf
 /// name as text. Dot leaves name an already-existing object in Linux's create
