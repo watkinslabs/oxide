@@ -329,6 +329,9 @@ pub fn may_rename(
     if is_exchange && new_target.is_none() {
         return Err(VfsError::Enoent);
     }
+    if let Some(t) = new_target {
+        if alloc::sync::Arc::ptr_eq(old_victim, t) { return Ok(()); }
+    }
     let is_dir = matches!(old_victim.file_type(), FileType::Directory);
     may_delete(old_dir, old_victim, is_dir, cred)?;
     match new_target {
