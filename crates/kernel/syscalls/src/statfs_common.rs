@@ -94,21 +94,21 @@ fn fill_usage(st: &mut SbStatFs) {
 /// Fill a 120-byte `struct statfs` (identical LP64 layout on x86_64 and
 /// aarch64) from a `SbStatFs`. # C: O(1)
 pub(crate) fn write_statfs(buf: u64, st: &SbStatFs) {
-    // SAFETY: caller validated 120-byte user buf < USER_VA_END, 8-aligned; CPL=0 writes through caller's AS.
+    // SAFETY: caller validated the full 120-byte user output span as writable.
     unsafe {
         for off in (0..120u64).step_by(8) {
-            core::ptr::write_volatile((buf + off) as *mut u64, 0);
+            core::ptr::write_unaligned((buf + off) as *mut u64, 0);
         }
-        core::ptr::write_volatile( buf        as *mut u64, st.f_type);          // f_type   @0
-        core::ptr::write_volatile((buf +  8)  as *mut u64, st.f_bsize as u64);  // f_bsize  @8
-        core::ptr::write_volatile((buf + 16)  as *mut u64, st.f_blocks);        // f_blocks @16
-        core::ptr::write_volatile((buf + 24)  as *mut u64, st.f_bfree);         // f_bfree  @24
-        core::ptr::write_volatile((buf + 32)  as *mut u64, st.f_bavail);        // f_bavail @32
-        core::ptr::write_volatile((buf + 40)  as *mut u64, st.f_files);         // f_files  @40
-        core::ptr::write_volatile((buf + 48)  as *mut u64, st.f_ffree);         // f_ffree  @48
-        core::ptr::write_volatile((buf + 56)  as *mut u64, st.f_fsid);          // f_fsid   @56 (__fsid_t)
-        core::ptr::write_volatile((buf + 64)  as *mut u64, 255);                // f_namelen@64 (NAME_MAX)
-        core::ptr::write_volatile((buf + 72)  as *mut u64, st.f_bsize as u64);  // f_frsize @72
-        core::ptr::write_volatile((buf + 80)  as *mut u64, st.f_flags);         // f_flags  @80 (ST_*)
+        core::ptr::write_unaligned( buf        as *mut u64, st.f_type);          // f_type   @0
+        core::ptr::write_unaligned((buf +  8)  as *mut u64, st.f_bsize as u64);  // f_bsize  @8
+        core::ptr::write_unaligned((buf + 16)  as *mut u64, st.f_blocks);        // f_blocks @16
+        core::ptr::write_unaligned((buf + 24)  as *mut u64, st.f_bfree);         // f_bfree  @24
+        core::ptr::write_unaligned((buf + 32)  as *mut u64, st.f_bavail);        // f_bavail @32
+        core::ptr::write_unaligned((buf + 40)  as *mut u64, st.f_files);         // f_files  @40
+        core::ptr::write_unaligned((buf + 48)  as *mut u64, st.f_ffree);         // f_ffree  @48
+        core::ptr::write_unaligned((buf + 56)  as *mut u64, st.f_fsid);          // f_fsid   @56 (__fsid_t)
+        core::ptr::write_unaligned((buf + 64)  as *mut u64, 255);                // f_namelen@64 (NAME_MAX)
+        core::ptr::write_unaligned((buf + 72)  as *mut u64, st.f_bsize as u64);  // f_frsize @72
+        core::ptr::write_unaligned((buf + 80)  as *mut u64, st.f_flags);         // f_flags  @80 (ST_*)
     }
 }

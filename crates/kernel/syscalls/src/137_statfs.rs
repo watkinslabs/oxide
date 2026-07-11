@@ -4,7 +4,7 @@
 
 use syscall::SyscallArgs;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 use crate::statfs_common::{statfs_for_mount, write_statfs};
 
 #[cfg(feature = "debug-mount")]
@@ -22,7 +22,7 @@ fn log_runtime_statfs(path_ptr: u64, rv: i64) {
 pub fn sys_statfs(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf      = args.a1;
-    if let Err(rv) = validate_user_buf(buf, 120, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, 120, 1) { return rv; }
     let lf = vfs::LookupFlags {
         no_follow_final: false,
         follow: true,

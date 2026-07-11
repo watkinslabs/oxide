@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_writable;
 use crate::statfs_common::{statfs_for_magic, write_statfs};
 
 /// `sys_fstatfs(fd, buf)` — slot 138. Reports the backing fs magic for
@@ -14,7 +14,7 @@ use crate::statfs_common::{statfs_for_magic, write_statfs};
 pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
-    if let Err(rv) = validate_user_buf(buf, 120, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, 120, 1) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
