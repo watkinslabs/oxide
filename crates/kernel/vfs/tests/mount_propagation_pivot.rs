@@ -60,9 +60,9 @@ fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
 
 fn setup_host(host: u64) -> Arc<Dentry> {
     set_ns(host);
-    let root_inode = dir(2, &[("run", dir(0x13, &[])), ("etc", dir(0x14, &[])),
+    let root_inode = HOST_ROOT_INODE.get().cloned().unwrap_or_else(|| dir(2, &[("run", dir(0x13, &[])), ("etc", dir(0x14, &[])),
         ("proc", dir(0x15, &[])), ("sys", dir(0x16, &[])), ("dev", dir(0x17, &[])),
-        ("var", dir(0x18, &[("tmp", dir(0x19, &[]))]))]);
+        ("var", dir(0x18, &[("tmp", dir(0x19, &[]))]))]));
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     let _ = HOST_ROOT_INODE.set(root_inode.clone());
     vfs::set_root_dentry_provider(root_provider);
