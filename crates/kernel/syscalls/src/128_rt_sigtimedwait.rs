@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_rt_sigtimedwait(set, info, timeout, sz)` — slot 128.
 /// # C: O(yields until signal or timeout)
@@ -21,18 +22,22 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
         klog::write_raw(b"\n");
     }
     if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
-    if set == 0 || set >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
+    if let Err(rv) = validate_user_buf(set, 8, 8) { return rv; }
+    if info != 0 {
+        if let Err(rv) = validate_user_buf_writable(info, 128, 4) { return rv; }
     }
-    // SAFETY: set validated < USER_VA_END; CPL=0 reads via active CR3.
+    if timeout != 0 {
+        if let Err(rv) = validate_user_buf(timeout, 16, 8) { return rv; }
+    }
+    // SAFETY: set validated as a readable 8-byte user sigset_t.
     let wanted = unsafe { core::ptr::read_volatile(set as *const u64) };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
     };
-    let deadline = if timeout != 0 && timeout < hal::USER_VA_END {
-        // SAFETY: timeout validated < USER_VA_END; struct timespec layout {tv_sec, tv_nsec}; CPL=0 reads.
+    let deadline = if timeout != 0 {
+        // SAFETY: timeout validated as readable 16-byte timespec storage.
         let secs = unsafe { core::ptr::read_volatile(timeout as *const i64) };
-        // SAFETY: timeout+8 inside the 16-byte timespec; aligned i64 read.
+        // SAFETY: timeout+8 is inside the validated 16-byte timespec.
         let nsec = unsafe { core::ptr::read_volatile((timeout + 8) as *const i64) };
         if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
             return -(Errno::Einval.as_i32() as i64);
@@ -59,8 +64,8 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
                 cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
                 None
             };
-            if info != 0 && info < hal::USER_VA_END {
-                // SAFETY: info validated < USER_VA_END; siginfo_t is 128 bytes; CPL=0 writes through caller's AS.
+            if info != 0 {
+                // SAFETY: info validated as writable 128-byte siginfo_t storage.
                 unsafe {
                     for i in 0..128usize {
                         core::ptr::write_volatile((info + i as u64) as *mut u8, 0);
