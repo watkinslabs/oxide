@@ -39,9 +39,12 @@ fn file(ino: u64) -> InodeRef {
 /// Symlink inode: the target body is stored inline (`i_link`), so `get_link`
 /// returns it directly (the walker's symlink fast path).
 fn sym(ino: u64, t: &str) -> InodeRef {
+    sym_bytes(ino, t.as_bytes())
+}
+fn sym_bytes(ino: u64, t: &[u8]) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777), default_inode_ops(), default_file_ops())
         .size(t.len() as u64)
-        .link(t.as_bytes().to_vec().into_boxed_slice())
+        .link(t.to_vec().into_boxed_slice())
         .build()
 }
 
@@ -65,10 +68,13 @@ fn mount_id_for(mp: &Arc<Dentry>, root: InodeRef) -> u64 {
 //   /etc/localtime -> /usr/share/zoneinfo/UTC   (abs symlink)
 //   /usr/share/zoneinfo/UTC  (file, ino 21)
 //   /link_rel -> etc/hostname   (rel symlink at root)
+//   /link_raw -> raw invalid-UTF8 target bytes
 //   /loopa -> loopb, /loopb -> loopa  (mutual loop)
 fn build_root() -> (Arc<Dentry>, u64, u64) {
     let hostname = file(11);
     let utc = file(21);
+    let raw_name = vfs::path_from_bytes(b"raw-\xff");
+    let raw_target = file(41);
     let etc = dir(10, &[
         ("hostname", hostname),
         ("localtime", sym(12, "/usr/share/zoneinfo/UTC")),
@@ -80,6 +86,8 @@ fn build_root() -> (Arc<Dentry>, u64, u64) {
         ("etc", etc),
         ("usr", usr),
         ("link_rel", sym(30, "etc/hostname")),
+        ("link_raw", sym_bytes(40, b"raw-\xff")),
+        (&raw_name, raw_target),
         ("loopa", sym(31, "loopb")),
         ("loopb", sym(32, "loopa")),
     ]);
@@ -115,6 +123,13 @@ fn follows_relative_symlink() {
     let (root, host_ino, _) = build_root();
     let (i, _) = look(&root, "/link_rel", LookupFlags::default()).expect("rel symlink");
     assert_eq!(i.ino(), host_ino, "link_rel → etc/hostname");
+}
+
+#[test]
+fn follows_non_utf8_symlink_target_without_lossy_decode() {
+    let (root, _, _) = build_root();
+    let (i, _) = look(&root, "/link_raw", LookupFlags::default()).expect("raw-byte symlink target");
+    assert_eq!(i.ino(), 41, "symlink target bytes must not be replaced by U+FFFD");
 }
 
 #[test]
