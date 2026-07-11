@@ -63,3 +63,20 @@ fn st_rdev_reported_for_char_device() {
     let reg = st.create_at(b"/plain", 0o644).expect("create plain");
     assert_eq!(reg.getattr(&Idmap::identity()).rdev, 0, "non-device st_rdev is 0");
 }
+
+#[test]
+fn rootfs_helpers_prepare_owner_and_mode_from_parent() {
+    let m = ext4::rootfs::Ext4Mount::open(build_disk()).unwrap();
+    let st = m.state();
+    st.mount.create_dir(2, b"sgid-parent", 0o2755, 0, 5000)
+        .expect("create sgid parent");
+
+    st.mkdir_at(b"/sgid-parent/sgid-dir", 0o777).expect("mkdir sgid child");
+    let dir = st.lookup_inode_any(b"/sgid-parent/sgid-dir").expect("lookup sgid dir");
+    assert_eq!(dir.gid(), Some(5000));
+    assert_eq!(dir.perm(), Some(0o2777), "mkdir helper must inherit SGID parent");
+
+    let file = st.create_at(b"/sgid-parent/sgid-file", 0o2775).expect("create sgid file");
+    assert_eq!(file.gid(), Some(5000));
+    assert_eq!(file.perm(), Some(0o2775), "create helper must use VFS mode prepare");
+}
