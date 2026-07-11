@@ -44,6 +44,8 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             }
         }
     }
+    let mut effective_options = options;
+    let mut pidfd_forced_nonblock = false;
     let pid_for_wait4: i32 = match idtype {
         P_ALL  => -1,
         P_PID  => {
@@ -56,11 +58,15 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         }
         P_PIDFD => {
             if id < 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
-            let tid = match crate::pidfd::tid_from_fd(id) {
-                Ok(t) => t,
+            let (target, flags) = match crate::pidfd::task_and_flags_from_fd(id) {
+                Ok(v) => v,
                 Err(e) => return -(e.as_i32() as i64),
             };
-            sched::live::registry::display_vpid(tid) as i32
+            if flags.contains(vfs::OpenFlags::O_NONBLOCK) && (options & WNOHANG) == 0 {
+                effective_options |= WNOHANG;
+                pidfd_forced_nonblock = true;
+            }
+            sched::live::registry::display_vpid(target.tid) as i32
         }
         _ => return -(syscall::errno::Errno::Einval.as_i32() as i64),
     };
@@ -92,14 +98,14 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     let mut local_uid: u32 = 0;
     // WNOWAIT: observe the matching event without consuming it. Linux checks
     // zombie/exited first, then stopped, then continued.
-    let rv = if options & WNOWAIT != 0 {
+    let rv = if effective_options & WNOWAIT != 0 {
         let (parent_tid, parent_pgid) = match sched::live::current() {
             Some(c) => (c.tid, c.pgid.load(core::sync::atomic::Ordering::Acquire)),
             None    => (0, 0),
         };
-        let want_exit = (options & WEXITED) != 0;
-        let want_stop = (options & WSTOPPED) != 0;
-        let want_cont = (options & WCONTINUED) != 0;
+        let want_exit = (effective_options & WEXITED) != 0;
+        let want_stop = (effective_options & WSTOPPED) != 0;
+        let want_cont = (effective_options & WCONTINUED) != 0;
         let event = if want_exit {
             sched::live::peek_one(parent_tid, pid_for_wait4, parent_pgid)
                 .map(|(child, code)| (child, if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }))
@@ -116,7 +122,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             None => {
                 if !sched::live::registry::has_children(parent_tid) {
                     -(syscall::errno::Errno::Echild.as_i32() as i64)
-                } else if options & WNOHANG != 0 {
+                } else if effective_options & WNOHANG != 0 {
                     0
                 } else {
                     // Blocking WNOWAIT without WNOHANG: park until a child
@@ -155,7 +161,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             }
         }
     } else {
-        let wait4_options = options & !WEXITED;
+        let wait4_options = effective_options & !WEXITED;
         crate::wait::wait4_with_status_sink(pid_for_wait4, wait4_options, |wstat| {
             local_wstat = wstat;
             Ok(())
@@ -198,5 +204,9 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             klog::write_raw(b"\n");
         }
     }
-    if rv < 0 { rv } else { 0 }
+    if rv < 0 {
+        rv
+    } else if rv == 0 && pidfd_forced_nonblock {
+        -(syscall::errno::Errno::Eagain.as_i32() as i64)
+    } else { 0 }
 }
