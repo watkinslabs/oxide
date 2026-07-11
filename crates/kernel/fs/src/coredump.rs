@@ -53,7 +53,8 @@ pub fn register_core_hooks() {
 /// (pipe) or an empty result falls back to `/core.<tid>`. Relative patterns are
 /// rooted at `/`. # C: O(len)
 fn expand_core_path(pattern: &[u8], tid: u32, name: &str, signo: i32) -> String {
-    let pat = core::str::from_utf8(pattern).unwrap_or("core").trim_end_matches('\n');
+    let pat_owned = vfs::path_from_bytes(pattern);
+    let pat = pat_owned.trim_end_matches('\n');
     if pat.is_empty() || pat.starts_with('|') { return format!("/core.{tid}"); }
     let mut out = String::new();
     let mut it = pat.chars().peekable();
@@ -220,6 +221,7 @@ pub fn write_for_current(signo: i32) {
 
 #[cfg(test)]
 mod core_pattern_tests {
+    use alloc::format;
     use super::expand_core_path;
     // core_pattern is honored (not store-and-ignore): the dump PATH is derived
     // from it, exactly like Linux `format_corename`.
@@ -235,6 +237,11 @@ mod core_pattern_tests {
     #[test]
     fn absolute_pattern_preserved() {
         assert_eq!(expand_core_path(b"/var/crash/%e-%P", 3, "app", 6), "/var/crash/app-3");
+    }
+    #[test]
+    fn raw_byte_pattern_is_preserved() {
+        let raw = vfs::path_from_bytes(b"core-\xff.42");
+        assert_eq!(expand_core_path(b"core-\xff.%p\n", 42, "bash", 11), format!("/{raw}"));
     }
     #[test]
     fn pipe_pattern_falls_back_to_file() {
