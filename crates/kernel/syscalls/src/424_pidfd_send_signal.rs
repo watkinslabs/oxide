@@ -8,9 +8,23 @@
 pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
+    const PIDFD_SIGNAL_THREAD:        u64 = 1 << 0;
+    const PIDFD_SIGNAL_THREAD_GROUP:  u64 = 1 << 1;
+    const PIDFD_SIGNAL_PROCESS_GROUP: u64 = 1 << 2;
+    const PIDFD_SIGNAL_FLAGS: u64 = PIDFD_SIGNAL_THREAD | PIDFD_SIGNAL_THREAD_GROUP | PIDFD_SIGNAL_PROCESS_GROUP;
     let fd  = args.a0 as i32;
     let sig = args.a1 as i32;
-    if !(1..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
+    let info = args.a2;
+    let flags = args.a3;
+    if !(0..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
+    if (flags & !PIDFD_SIGNAL_FLAGS) != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if (flags & PIDFD_SIGNAL_FLAGS).count_ones() > 1 { return -(Errno::Einval.as_i32() as i64); }
+    if info != 0 {
+        if let Err(rv) = crate::userbuf::validate_user_buf(info, 32, 1) { return rv; }
+        // SAFETY: info validated readable for leading siginfo_t fields; si_signo is the first i32.
+        let signo = unsafe { core::ptr::read_unaligned(info as *const i32) };
+        if signo != sig { return -(Errno::Einval.as_i32() as i64); }
+    }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -24,20 +38,33 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let task = match crate::pidfd::task_from_inode(&file.inode()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
     };
-    if !crate::signal::sig_perm_check(cur, &task, sig) {
-        return -(Errno::Eperm.as_i32() as i64);
+    let scope = if (flags & PIDFD_SIGNAL_THREAD) != 0
+        || ((flags & PIDFD_SIGNAL_FLAGS) == 0 && file.flags().contains(vfs::OpenFlags::O_EXCL)) {
+        PIDFD_SIGNAL_THREAD
+    } else if (flags & PIDFD_SIGNAL_PROCESS_GROUP) != 0 {
+        PIDFD_SIGNAL_PROCESS_GROUP
+    } else {
+        PIDFD_SIGNAL_THREAD_GROUP
+    };
+    let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
+    let mut posted = 0usize;
+    let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
+    for t in &tasks {
+        let hit = if scope == PIDFD_SIGNAL_THREAD {
+            t.tid == task.tid
+        } else if scope == PIDFD_SIGNAL_PROCESS_GROUP {
+            t.pgid.load(Ordering::Acquire) == task.pgid.load(Ordering::Acquire)
+        } else {
+            t.vtgid.load(Ordering::Acquire) == task.vtgid.load(Ordering::Acquire)
+        };
+        if !hit { continue; }
+        if !crate::signal::sig_perm_check(cur, t, sig) { continue; }
+        if sig != 0 {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+            if sig == 18 { sched::live::registry::wake_if_stopped(t); }
+            sched::live::wake_if_sleeping(t);
+        }
+        posted += 1;
     }
-    task.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
-    // F168 (pidfd path): posting the bit is not enough — a target parked
-    // Sleeping in an interruptible blocking syscall (e.g. wait4's
-    // park_for_wait4, which sets TaskState::Sleeping) must be woken so it
-    // re-checks pending, returns -EINTR, and runs the syscall-return
-    // dispatch tail that performs the SIG_DFL terminate. sys_kill (062) and
-    // tgkill (234) already do this; pidfd_send_signal was the only sender
-    // that set the bit without a wake — so systemd's pidfd-based
-    // SIGTERM/SIGABRT/SIGKILL never woke a wait4-parked child, leaving it
-    // unkillable (journald fork-child / sd-executor survive escalation).
-    if sig == 18 { sched::live::registry::wake_if_stopped(&task); }
-    sched::live::wake_if_sleeping(&task);
-    0
+    if posted == 0 { -(Errno::Eperm.as_i32() as i64) } else { 0 }
 }
