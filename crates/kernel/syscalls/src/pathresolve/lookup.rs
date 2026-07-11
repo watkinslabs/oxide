@@ -52,6 +52,80 @@ pub fn resolve_path_flags(abs: &str, mut flags: vfs::LookupFlags) -> Result<vfs:
     }
 }
 
+fn trim_mount_raw(raw: &str) -> Result<&str, vfs::VfsError> {
+    if raw.is_empty() { return Err(vfs::VfsError::Enoent); }
+    let trimmed = if raw.len() > 1 { raw.trim_end_matches('/') } else { raw };
+    if trimmed.is_empty() { Err(vfs::VfsError::Enoent) } else { Ok(trimmed) }
+}
+
+fn procfd_path(raw: &str) -> Option<vfs::VfsPath> {
+    let (tid_opt, fd) = vfs::path::dup_fd_target(raw)?;
+    let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
+    Some(vfs::VfsPath {
+        mnt_id: file.mnt_id(),
+        dentry: file.dentry().clone(),
+        inode: file.inode().clone(),
+        last_component: None,
+    })
+}
+
+fn raw_lookup_base() -> Result<(vfs::VfsPath, vfs::VfsPath, bool), vfs::VfsError> {
+    let (root, beneath) = resolution_root_vfs().ok_or(vfs::VfsError::Enoent)?;
+    let start = match sched::live::current() {
+        Some(cur) => {
+            // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
+            unsafe { (*cur.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone())
+        }
+        None => root.clone(),
+    };
+    Ok((start, root, beneath))
+}
+
+/// Resolve raw user path text directly from the live cwd/root `struct path`,
+/// without first rendering cwd into a string. # C: O(components × dir-lookup)
+pub fn resolve_path_raw(raw: &str, no_follow_final: bool) -> Result<vfs::VfsPath, vfs::VfsError> {
+    let raw = trim_mount_raw(raw)?;
+    if let Some(p) = procfd_path(raw) { return Ok(p); }
+    let (start, root, beneath) = raw_lookup_base()?;
+    let start_mnt = start.mnt_id;
+    let root_mnt = root.mnt_id;
+    let mut flags = vfs::LookupFlags { no_follow_final, ..Default::default() };
+    flags.beneath = flags.beneath || beneath;
+    vfs::path_lookup_at_root_cred(
+        start.dentry, start_mnt, root.dentry, root_mnt, raw, flags, current_cred())
+        .map_err(|e| {
+            if e == vfs::VfsError::Enotdir { trace_lookup_enotdir(raw, start_mnt, root_mnt); }
+            e
+        })
+}
+
+/// Resolve raw user path text as a mount attach target and return the display
+/// path derived from that walked identity. # C: O(components × dir-lookup)
+pub fn resolve_mount_target_raw(raw: &str) -> Result<(vfs::MountTarget, String), vfs::VfsError> {
+    let raw = trim_mount_raw(raw)?;
+    if let Some(p) = procfd_path(raw) {
+        let target = vfs::MountTarget { parent: p.clone(), mountpoint: p.dentry.clone() };
+        let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
+        return Ok((target, display));
+    }
+    let (start, root, _) = raw_lookup_base()?;
+    let start_mnt = start.mnt_id;
+    let root_mnt = root.mnt_id;
+    let res = vfs::mountpoint_lookup_at_root_cred(
+        start.dentry, start_mnt, root.dentry, root_mnt, raw, current_cred());
+    match res {
+        Ok(t) => {
+            let display = vfs::mount::render_path_for_mount(t.parent.mnt_id, &t.mountpoint);
+            Ok((t, display))
+        }
+        Err(vfs::VfsError::Enotdir) => {
+            trace_lookup_enotdir(raw, start_mnt, root_mnt);
+            Err(vfs::VfsError::Enotdir)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(feature = "debug-boot")]
 fn trace_lookup_enotdir(abs: &str, start_mnt: u64, root_mnt: u64) {
     klog::write_raw(b"[ENOTDIR] op=resolve_path_flags why=walk tid=");

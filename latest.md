@@ -745,10 +745,11 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
      - VFS now has `MountTarget { parent: VfsPath, mountpoint: Arc<Dentry> }` plus `mountpoint_lookup_at_root_cred()`, so target attach identity is a single walked `(parent_mnt_id, dentry)` result.
      - `sys_mount(MS_BIND)` now resolves source once as `VfsPath` and target once as `MountTarget`; it no longer does `mount_dentry(source)` + `resolve_path(source)` double walks or chooses bind placement from `target_d.absolute_path()`.
      - `sys_mount(MS_MOVE)`, propagation retunes, and new-fstype mounts now use the same mount-target resolver for the destination dentry instead of splitting final-dentry and parent-mount resolution.
+     - `sys_mount()` now resolves `target_raw` with `resolve_mount_target_raw()` directly from the live `cwd_vfs`/root `VfsPath`; `canonical_mount_path()` was removed, and procfd/magic-fd targets resolve to the opened file's `(mnt_id,dentry)` before rendering any display string.
+     - `mount_fstype_at()` takes the walked parent mount id from `MountTarget`; fstype mounts no longer re-resolve the rendered target string for attach parent identity.
      - Hosted proof: `cargo test -p vfs --test mount_target_lookup -- --nocapture` proves `/proc/kallsyms` and `/stage/proc/kallsyms` can share the same leaf dentry while the resolver still returns the staged bind mount as parent identity.
      - Verification: `cargo test -p vfs --test mount_propagation_pivot -- --nocapture` passed 8/8; `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 4/4; `cargo run -p xtask -- kernel --arch x86_64` passed; `OXIDE_STUB_BLOBS=1 cargo run -p xtask -- kernel --arch aarch64` passed.
    - Still required:
-     - replace `target = resolve_cwd(target_raw)`/`canonical_mount_path()` authority with one `VfsPath` walk.
      - make mountinfo root/source rendering call a shared VFS helper and test it hosted.
    - Done next slice:
      - `vfs::mount::project_path_under_root()` now owns reader-root projection for procfs mount reports.
@@ -756,7 +757,6 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
      - Hosted proof: `cargo test -p vfs --test mount_path_projection -- --nocapture` passed 4/4.
    - Delete the remaining legacy fake-SB bind helper path once all callers use `register_bind_clone_*`.
    - Keep rendered strings only as mountinfo payload, derived from the walked mount context.
-   - Make `canonical_mount_path()` non-authoritative or remove it from the mount attach path. Procfd/magic-link jumps should resolve to a `VfsPath`, not to a display string.
    - Make `/proc/self/mountinfo` render from the reader task's root/cwd/mount namespace view, not as a global list of stored absolute strings.
 
 8. Fix ext4 inode-cache coherence. **First slice tested**
