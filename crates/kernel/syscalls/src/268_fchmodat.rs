@@ -14,13 +14,12 @@ fn log_fchmodat_empty(dirfd: i32, rv: i64) {
     }
 }
 
-/// `sys_fchmodat(dirfd, path, mode, flags)` — slot 268.
-/// # C: O(N_path)
-pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
+/// Common `fchmodat2` body with an explicit Linux flags word. # C: O(N_path)
+pub(crate) fn sys_fchmodat_flags(args: &SyscallArgs, flags: u32) -> i64 {
     #[cfg(feature = "debug-mount")]
     let empty_path = crate::namei_common::read_user_path(args.a1).map(|p| p.is_empty()).unwrap_or(false);
-    let follow = (args.a3 as u32 & AT_SYMLINK_NOFOLLOW) == 0;
-    let (inode, mnt_id) = match resolve_at_target_mnt(args.a0 as i32, args.a1, args.a3 as u32, follow) {
+    let follow = (flags & AT_SYMLINK_NOFOLLOW) == 0;
+    let (inode, mnt_id) = match resolve_at_target_mnt(args.a0 as i32, args.a1, flags, follow) {
         Ok(p) => p, Err(rv) => {
             #[cfg(feature = "debug-mount")]
             if empty_path { log_fchmodat_empty(args.a0 as i32, rv); }
@@ -41,4 +40,10 @@ pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
         }
     }
     rv
+}
+
+/// `sys_fchmodat(dirfd, path, mode)` — slot 268.
+/// # C: O(N_path)
+pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
+    sys_fchmodat_flags(args, 0)
 }

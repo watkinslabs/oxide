@@ -17,6 +17,9 @@ static HOST_ROOT_INODE: OnceLock<InodeRef> = OnceLock::new();
 static PMM: OnceLock<()> = OnceLock::new();
 
 const AT_FDCWD: i32 = -100;
+const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+const AT_EMPTY_PATH: u32 = 0x1000;
+const AT_CHMOD_CHOWN_VALID: u32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
 const HOSTED_PMM_POOL: usize = 16 * 1024 * 1024;
 
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
@@ -253,6 +256,13 @@ impl Proc {
         vfs::may_chmod(&p.inode, &self.cred)?;
         p.inode.set_perm(vfs::chmod_sgid_strip(mode, &p.inode, &self.cred))
     }
+    fn chmodat_flags(&self, path: &str, mode: u16, flags: u32) -> KResult<()> {
+        if flags & !AT_CHMOD_CHOWN_VALID != 0 { return Err(VfsError::Einval); }
+        let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
+        let p = self.lookup(AT_FDCWD, path, LookupFlags { no_follow_final: !follow, follow, ..Default::default() })?;
+        vfs::may_chmod(&p.inode, &self.cred)?;
+        p.inode.set_perm(vfs::chmod_sgid_strip(mode, &p.inode, &self.cred))
+    }
     fn fchown(&self, fd: i32, uid: u32, gid: u32) -> KResult<()> {
         self.enter();
         let f = self.fds[fd as usize].as_ref().expect("fd");
@@ -261,6 +271,13 @@ impl Proc {
     }
     fn chown(&self, path: &str, uid: u32, gid: u32) -> KResult<()> {
         let p = self.lookup(AT_FDCWD, path, LookupFlags::default())?;
+        vfs::may_chown(&p.inode, Some(uid), Some(gid), &self.cred)?;
+        p.inode.set_owner(uid, gid)
+    }
+    fn chownat_flags(&self, path: &str, uid: u32, gid: u32, flags: u32) -> KResult<()> {
+        if flags & !AT_CHMOD_CHOWN_VALID != 0 { return Err(VfsError::Einval); }
+        let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
+        let p = self.lookup(AT_FDCWD, path, LookupFlags { no_follow_final: !follow, follow, ..Default::default() })?;
         vfs::may_chown(&p.inode, Some(uid), Some(gid), &self.cred)?;
         p.inode.set_owner(uid, gid)
     }
@@ -408,6 +425,11 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     assert!(matches!(other_proc.truncate("/run/user/1000/secret", 0), Err(VfsError::Eacces)));
     assert!(matches!(other_proc.chmod("/run/udev/data/c226:0", 0o600), Err(VfsError::Eperm)));
     assert!(matches!(other_proc.chown("/run/udev/data/c226:0", 1001, 1001), Err(VfsError::Eperm)));
+    assert!(matches!(udev.chmodat_flags("/run/udev/data/c226:0", 0o600, 0x8000_0000), Err(VfsError::Einval)));
+    assert_eq!(udev.stat("/run/udev/data/c226:0", true).expect("bad chmodat flags did not mutate").mode & 0o777, 0o644);
+    assert!(matches!(udev.chownat_flags("/run/udev/data/c226:0", 4242, 4242, 0x8000_0000), Err(VfsError::Einval)));
+    let unchanged = udev.lookup(AT_FDCWD, "/run/udev/data/c226:0", LookupFlags::default()).expect("bad chownat flags lookup").inode;
+    assert_eq!((unchanged.uid(), unchanged.gid()), (Some(0), Some(0)));
 
     udev.mkdirat(AT_FDCWD, "/run/sticky", 0o777).expect("mkdir sticky");
     let sticky = udev.lookup(AT_FDCWD, "/run/sticky", LookupFlags::default()).expect("sticky");

@@ -19,8 +19,9 @@ fn log_fchownat_empty(dirfd: i32, rv: i64) {
 pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
     #[cfg(feature = "debug-mount")]
     let empty_path = crate::namei_common::read_user_path(args.a1).map(|p| p.is_empty()).unwrap_or(false);
-    let follow = (args.a4 as u32 & AT_SYMLINK_NOFOLLOW) == 0;
-    let (inode, mnt_id) = match resolve_at_target_mnt(args.a0 as i32, args.a1, args.a4 as u32, follow) {
+    let flags = args.a4 as u32;
+    let follow = (flags & AT_SYMLINK_NOFOLLOW) == 0;
+    let (inode, mnt_id) = match resolve_at_target_mnt(args.a0 as i32, args.a1, flags, follow) {
         Ok(p) => p, Err(rv) => {
             #[cfg(feature = "debug-mount")]
             if empty_path { log_fchownat_empty(args.a0 as i32, rv); }
