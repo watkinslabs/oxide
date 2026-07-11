@@ -418,7 +418,8 @@ Fix status:
 - Done: `symlink`/`symlinkat` now create via the exact `newdirfd` parent identity; the target string remains stored verbatim, matching Linux.
 - Done: `unlink`/`unlinkat` now use `resolve_unlink_parent_at()`, mutate `parent.inode`, capture the victim via `child_dentry(parent, leaf)`, check read-only through `parent.mnt_id`, and drop fallback cache by object parent. Rendered path text remains only for Landlock, AF_UNIX pathname registry-key compatibility, and fsnotify display; the AF_UNIX helper no longer calls path-based `d_delete_path()`.
 - Done: `rmdir` and `unlinkat(..., AT_REMOVEDIR)` now share `do_rmdir_at(dirfd, raw)`, preserve the walked parent identity, invalidate/unlink the captured victim dentry, and return Linux dot/root errors (`rmdir(".")` `EINVAL`, `rmdir("..")` `ENOTEMPTY`, `rmdir("/")` `EBUSY`; plain `unlink` dot/root forms `EISDIR`).
-- Remaining: `link/linkat` and `rename/renameat/renameat2` still use the old string-parent helper pattern and need the same treatment.
+- Done: `link`/`linkat` now resolve the source inode through the correct `*at` base and no-follow/follow flags, resolve the new name with `resolve_link_parent_at()`, mutate `parent.inode.link_child()`, drop dcache by object parent, and gate `EXDEV` by source/new-parent superblock instead of rendered mount-id strings. The only retained rendered source string is the existing `/proc/self/fd/N` special case for `AT_SYMLINK_FOLLOW`.
+- Remaining: `rename/renameat/renameat2` still uses the old string-parent helper pattern and needs the same treatment.
 
 ## Mount Subsystem Split-Truth Sites
 
@@ -721,7 +722,7 @@ These operate on open `File`/`Inode` and generally preserve `mnt_id`. Still veri
    - Done: `mknod/mknodat`
    - Done: `symlink/symlinkat`
    - Done: `unlink/unlinkat/rmdir`
-   - `link/linkat`
+   - Done: `link/linkat`
    - `rename/renameat/renameat2`
 
 7. Convert mount syscalls. **This is the current integration blocker.**

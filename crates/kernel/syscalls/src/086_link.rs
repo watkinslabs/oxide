@@ -4,7 +4,45 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{
+    drop_child_cache, errno_from_vfs, parent_mount_readonly, read_user_path,
+    render_child_path, render_parent_path, resolve_link_parent_at,
+};
+
+fn same_superblock(a: &vfs::InodeRef, b: &vfs::InodeRef) -> bool {
+    match (a.i_sb(), b.i_sb()) {
+        (Some(sa), Some(sb)) => alloc::sync::Arc::ptr_eq(&sa, &sb),
+        _ => false,
+    }
+}
+
+pub(crate) fn link_inode_at(src: vfs::InodeRef, dirfd: i32, raw_link: &str) -> i64 {
+    let (parent, name) = match resolve_link_parent_at(dirfd, raw_link) {
+        Ok(x) => x, Err(rv) => return rv,
+    };
+    let p = render_child_path(&parent, &name);
+    if let Err(rv) = crate::landlock::check(&p,
+        ::security::landlock::access::MAKE_REG) { return rv; }
+    if parent_mount_readonly(&parent) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
+    if matches!(src.file_type(), vfs::FileType::Directory) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
+    if !same_superblock(&src, &parent.inode) {
+        return -(Errno::Exdev.as_i32() as i64);
+    }
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.link_child(&src, &name, &vfs::CreateCtx::root()) };
+    match r {
+        Ok(())  => {
+            drop_child_cache(&parent, &name);
+            let pp = render_parent_path(&parent);
+            vfs::fire_dirent_create(&pp, &name);
+            0
+        }
+        Err(e)  => errno_from_vfs(e),
+    }
+}
 
 /// `link(target, link)` slot 86. Hardlink only — both must
 /// resolve to ext4 paths.
@@ -17,58 +55,13 @@ pub fn sys_link(args: &SyscallArgs) -> i64 {
     let link = match read_user_path(args.a1) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let t = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &target) {
-        Ok(p) => p, Err(rv) => return rv,
-    };
-    let l = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &link) {
-        Ok(p) => p, Err(rv) => return rv,
-    };
-    if let Err(rv) = crate::landlock::check(&l,
-        ::security::landlock::access::MAKE_REG) { return rv; }
-    let (tm, _) = match vfs::mount::resolve_mount(&t) {
-        Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
-    };
-    let (lm, _) = match vfs::mount::resolve_mount(&l) {
-        Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
-    };
-    if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-        return -(Errno::Erofs.as_i32() as i64);
-    }
-    if tm.mnt_id != lm.mnt_id {
-        return -(Errno::Exdev.as_i32() as i64);
-    }
     // link(2) does NOT follow the trailing symlink of the source (Linux
     // `do_linkat` without `AT_SYMLINK_FOLLOW`): the inode of the source name
     // itself is linked. A directory source is EPERM (no fs permits dir links).
-    let src = match crate::pathresolve::resolve_path_result(&t, true) {
+    let src = match crate::pathresolve::resolve_at_path(crate::pathresolve::AT_FDCWD, &target,
+        vfs::LookupFlags { no_follow_final: true, ..Default::default() }) {
         Ok(p) => p.inode,
-        Err(e) => return errno_from_vfs(e),
+        Err(rv) => return rv,
     };
-    if matches!(src.file_type(), vfs::FileType::Directory) {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    // D9/D29: route through the resolved new-path PARENT's `i_op->link` (Linux
-    // `vfs_link` → `dir->i_op->link`) instead of the whole-path `FileSystem::link`,
-    // holding that parent's `i_rwsem` EXCLUSIVE across the backend (Linux
-    // `filename_create`). The backend resolves via `i_op.lookup` (no nested
-    // `i_rwsem`) → deadlock-free. On a parent-resolve miss, fall back to the
-    // whole-path FS link (byte-equivalent, conservative).
-    let r = match resolve_parent(&l) {
-        Ok((pino, name)) => {
-            let _g = pino.inode_lock();
-            pino.link_child(&src, &name, &vfs::CreateCtx::root())
-        }
-        Err(_) => tm.fs().link(&t, &l),
-    };
-    match r {
-        Ok(())  => {
-            crate::pathresolve::d_drop_path(&l);
-            vfs::fire_dirent_create(
-                crate::namei_common::parent_path(&l),
-                crate::namei_common::last_component(&l),
-            );
-            0
-        }
-        Err(e)  => errno_from_vfs(e),
-    }
+    link_inode_at(src, crate::pathresolve::AT_FDCWD, &link)
 }
