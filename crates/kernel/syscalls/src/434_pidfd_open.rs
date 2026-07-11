@@ -44,6 +44,7 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let dentry = vfs::dcache::d_alloc_pseudo("[pidfd]", inode.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDWR;
     if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    if (flags & PIDFD_THREAD) != 0 { fl |= OpenFlags::O_EXCL; }
     let file = File::new(inode, dentry, fl);
     match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd)  => {
