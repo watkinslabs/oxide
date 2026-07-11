@@ -50,15 +50,18 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     // vfs [MNTCREATE] mount-create lines to reconstruct how 10/11 are built.
     #[cfg(feature = "debug-mount")]
     {
-        let src = crate::mount_common::read_user_cstr_owned(args.a0, 256).unwrap_or_default();
-        let tgt = crate::mount_common::read_user_cstr_owned(args.a1, 256).unwrap_or_default();
-        klog::write_raw(b"[MNTCREATE] syscall=mount flags=0x");
-        klog::write_hex_u64(args.a3);
-        klog::write_raw(b" recursive=");
-        klog::write_raw(if args.a3 & MS_REC != 0 { b"true" } else { b"false" });
-        klog::write_raw(b" source="); klog::write_raw(src.as_bytes());
-        klog::write_raw(b" target="); klog::write_raw(tgt.as_bytes());
-        klog::write_raw(b"\n");
+        if let (Ok(src), Ok(tgt)) = (
+            crate::mount_common::read_user_cstr_owned(args.a0, 256),
+            crate::mount_common::read_user_cstr_owned(args.a1, 256),
+        ) {
+            klog::write_raw(b"[MNTCREATE] syscall=mount flags=0x");
+            klog::write_hex_u64(args.a3);
+            klog::write_raw(b" recursive=");
+            klog::write_raw(if args.a3 & MS_REC != 0 { b"true" } else { b"false" });
+            klog::write_raw(b" source="); klog::write_raw(src.as_bytes());
+            klog::write_raw(b" target="); klog::write_raw(tgt.as_bytes());
+            klog::write_raw(b"\n");
+        }
     }
     let rv = sys_mount_impl(args);
     // Failure-only trace: logging every successful mount floods the UART and
@@ -66,14 +69,14 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     // failures matter for 226/NAMESPACE diagnosis.
     #[cfg(feature = "debug-mount")]
     {
-        let tgt0 = crate::mount_common::read_user_cstr_owned(args.a1, 256).unwrap_or_default();
+        let Ok(tgt0) = crate::mount_common::read_user_cstr_owned(args.a1, 256) else { return rv; };
         // Log failures AND any mount that touches /proc or /sys (success too) —
         // the 226 is a shadowing /proc mount in the sandbox hiding the static
         // /proc/sys/kernel/domainname leaf. Need to see what gets mounted there.
         if rv < 0 || tgt0.contains("/proc") || tgt0.contains("/sys") {
         let tgt = tgt0;
-        let src = crate::mount_common::read_user_cstr_owned(args.a0, 128).unwrap_or_default();
-        let fst = crate::mount_common::read_user_cstr_owned(args.a2, 32).unwrap_or_default();
+        let Ok(src) = crate::mount_common::read_user_cstr_owned(args.a0, 128) else { return rv; };
+        let Ok(fst) = crate::mount_common::read_user_cstr_owned(args.a2, 32) else { return rv; };
         // src/fstype/flags inline so a failing /proc/self/fd/N mount shows what
         // it actually is (bind vs fstype vs the unknown-fstype EOPNOTSUPP path).
         let mut tag = alloc::string::String::from(tgt.as_str());

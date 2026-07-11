@@ -50,22 +50,22 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
     // an open_tree-cloned subtree is spliced under the sandbox root (10/11).
     #[cfg(feature = "debug-mount")]
     {
-        let from = read_cstr(args.a1, 256).unwrap_or_default();
-        let to = read_cstr(args.a3, 256).unwrap_or_default();
-        klog::write_raw(b"[MNTCREATE] syscall=move_mount flags=0x");
-        klog::write_hex_u64(args.a4);
-        klog::write_raw(b" recursive=false source="); klog::write_raw(from.as_bytes());
-        klog::write_raw(b" target="); klog::write_raw(to.as_bytes());
-        klog::write_raw(b"\n");
+        if let (Ok(from), Ok(to)) = (read_cstr(args.a1, 256), read_cstr(args.a3, 256)) {
+            klog::write_raw(b"[MNTCREATE] syscall=move_mount flags=0x");
+            klog::write_hex_u64(args.a4);
+            klog::write_raw(b" recursive=false source="); klog::write_raw(from.as_bytes());
+            klog::write_raw(b" target="); klog::write_raw(to.as_bytes());
+            klog::write_raw(b"\n");
+        }
     }
     let rv = sys_move_mount_impl(args);
     #[cfg(feature = "debug-mount")]
     {
-        let to = read_cstr(args.a3, 256).unwrap_or_default();
-        let from = read_cstr(args.a1, 256).unwrap_or_default();
-        let mut tag = alloc::string::String::from(to.as_str());
-        tag.push_str(" from="); tag.push_str(&from);
-        crate::mount_common::mnt_log("move_mount", &tag, rv);
+        if let (Ok(to), Ok(from)) = (read_cstr(args.a3, 256), read_cstr(args.a1, 256)) {
+            let mut tag = alloc::string::String::from(to.as_str());
+            tag.push_str(" from="); tag.push_str(&from);
+            crate::mount_common::mnt_log("move_mount", &tag, rv);
+        }
     }
     rv
 }

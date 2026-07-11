@@ -36,6 +36,7 @@ pub mod proc_dointvec;
 pub mod proc_handler;
 #[cfg(target_os = "oxide-kernel")] mod pid_sched;
 pub mod hooks;
+#[cfg(target_os = "oxide-kernel")] mod util;
 
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;

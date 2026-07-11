@@ -27,8 +27,9 @@ pub fn sys_umount2(args: &SyscallArgs) -> i64 {
     let rv = sys_umount2_impl(args);
     #[cfg(feature = "debug-mount")]
     {
-        let tgt = read_user_cstr_owned(args.a0, 256).unwrap_or_default();
-        crate::mount_common::mnt_log("umount2", &tgt, rv);
+        if let Ok(tgt) = read_user_cstr_owned(args.a0, 256) {
+            crate::mount_common::mnt_log("umount2", &tgt, rv);
+        }
     }
     rv
 }
