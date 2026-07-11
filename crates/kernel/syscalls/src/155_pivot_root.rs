@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::mount_common::read_user_cstr_owned;
+use crate::mount_common::read_user_path_required;
 
 /// `sys_pivot_root(new_root, put_old)` — slot 155. Makes the mount at
 /// `new_root` the namespace root and relocates the old root tree under
@@ -19,8 +19,8 @@ pub fn sys_pivot_root(args: &SyscallArgs) -> i64 {
     if !cur.has_cap(sched::cap::SYS_ADMIN) {
         return -(Errno::Eperm.as_i32() as i64);
     }
-    let new_root = match read_user_cstr_owned(args.a0, 256) { Ok(s) => s, Err(rv) => return rv };
-    let put_old  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
+    let new_root = match read_user_path_required(args.a0) { Ok(s) => s, Err(rv) => return rv };
+    let put_old  = match read_user_path_required(args.a1) { Ok(s) => s, Err(rv) => return rv };
     let (nr_target, _nr_display) = match crate::pathresolve::resolve_mount_target_raw(&new_root) {
         Ok(x) => x,
         Err(_) => {

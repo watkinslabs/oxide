@@ -14,7 +14,7 @@ use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::mount_common::{read_optional_user_cstr_owned, read_user_cstr_owned};
+use crate::mount_common::{read_optional_user_path, read_user_cstr_owned, read_user_path_required};
 use crate::fsmount_common::mount_fstype_at;
 
 // mount(2) flag bits (linux/mount.h).
@@ -51,8 +51,8 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     #[cfg(feature = "debug-mount")]
     {
         if let (Ok(src), Ok(tgt)) = (
-            crate::mount_common::read_user_cstr_owned(args.a0, 256),
-            crate::mount_common::read_user_cstr_owned(args.a1, 256),
+            crate::mount_common::read_optional_user_path(args.a0).map(|s| match s { Some(v) => v, None => String::from("(null)") }),
+            crate::mount_common::read_user_path_required(args.a1),
         ) {
             klog::write_raw(b"[MNTCREATE] syscall=mount flags=0x");
             klog::write_hex_u64(args.a3);
@@ -69,13 +69,13 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     // failures matter for 226/NAMESPACE diagnosis.
     #[cfg(feature = "debug-mount")]
     {
-        let Ok(tgt0) = crate::mount_common::read_user_cstr_owned(args.a1, 256) else { return rv; };
+        let Ok(tgt0) = crate::mount_common::read_user_path_required(args.a1) else { return rv; };
         // Log failures AND any mount that touches /proc or /sys (success too) —
         // the 226 is a shadowing /proc mount in the sandbox hiding the static
         // /proc/sys/kernel/domainname leaf. Need to see what gets mounted there.
         if rv < 0 || tgt0.contains("/proc") || tgt0.contains("/sys") {
         let tgt = tgt0;
-        let Ok(src) = crate::mount_common::read_user_cstr_owned(args.a0, 128) else { return rv; };
+        let Ok(src) = crate::mount_common::read_optional_user_path(args.a0).map(|s| match s { Some(v) => v, None => String::from("(null)") }) else { return rv; };
         let Ok(fst) = crate::mount_common::read_user_cstr_owned(args.a2, 32) else { return rv; };
         // src/fstype/flags inline so a failing /proc/self/fd/N mount shows what
         // it actually is (bind vs fstype vs the unknown-fstype EOPNOTSUPP path).
@@ -116,7 +116,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     if !cur.has_cap(sched::cap::SYS_ADMIN) {
         return -(Errno::Eperm.as_i32() as i64);
     }
-    let target_raw = match read_user_cstr_owned(target_p, 256) { Ok(s) => s, Err(rv) => return rv };
+    let target_raw = match read_user_path_required(target_p) { Ok(s) => s, Err(rv) => return rv };
     let (target_mt, target) = match crate::pathresolve::resolve_mount_target_raw(&target_raw) {
         Ok(t) => t,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
@@ -146,7 +146,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     // MS_BIND: redirect `target` into the `source` subtree. fstype is
     // ignored (may be NULL). Source is required.
     if flags & MS_BIND != 0 {
-        let source_raw = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        let source_raw = match read_user_path_required(source_p) { Ok(s) => s, Err(rv) => return rv };
         let source_vp = match crate::pathresolve::resolve_path_raw(&source_raw, false) {
             Ok(p) => p, Err(_) => return -(Errno::Enoent.as_i32() as i64),
         };
@@ -231,7 +231,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     // propagation; the new parent_id falls out of the recompute. Source
     // is the existing mount point (required, absolute).
     if flags & MS_MOVE != 0 {
-        let source_raw = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        let source_raw = match read_user_path_required(source_p) { Ok(s) => s, Err(rv) => return rv };
         // Identify the SOURCE mount by the `mnt_id` the walk crossed into (Linux
         // `path->mnt`), not a re-derived dentry: the source resolves THROUGH the
         // moved mount onto its (shared) root, which can't map back to a mount.
@@ -252,7 +252,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     }
 
     // New mount by fstype.
-    let source = match read_optional_user_cstr_owned(source_p, 256) {
+    let source = match read_optional_user_path(source_p) {
         Ok(s) => s, Err(rv) => return rv,
     };
     let fstype = match read_user_cstr_owned(fstype_p, 32)  { Ok(s) => s, Err(rv) => return rv };
