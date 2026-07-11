@@ -51,9 +51,9 @@ fn pc_cgroup(t: u32, _s: bool) -> InodeRef { crate::make_proc_cgroup(Some(t)) }
 fn pc_auxv(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(&[0u8; 16]) }
 fn pc_timerslack(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"50000\n") }
 fn pc_coredump_filter(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000033\n") }
-fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "exe") }
-fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "cwd") }
-fn pc_root(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "root") }
+fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_exe(t) }
+fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_cwd(t) }
+fn pc_root(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_root(t) }
 fn pc_fd(t: u32, is_self: bool) -> InodeRef { make_proc_fd_dir(if is_self { None } else { Some(t) }) }
 fn pc_fdinfo(t: u32, is_self: bool) -> InodeRef { crate::fdinfo::make_fdinfo_dir(if is_self { None } else { Some(t) }) }
 fn pc_attr(t: u32, _s: bool) -> InodeRef { make_proc_pid_attr_dir(t) }
