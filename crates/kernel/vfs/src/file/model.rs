@@ -184,6 +184,17 @@ impl File {
         self.f_op.ioctl_int(self, cmd)
     }
 
+    /// `file_operations->unlocked_ioctl` dispatch for file-specific ioctls.
+    /// # C: backend-dependent
+    pub fn unlocked_ioctl(
+        &self,
+        idmap: &crate::idmap::Idmap,
+        cred: &Cred,
+        cmd: crate::FileIoctlCmd,
+    ) -> crate::KResult<crate::FileIoctlReply> {
+        self.f_op.unlocked_ioctl(self, idmap, cred, cmd)
+    }
+
     /// Generic `fasync_helper` state transition for async-capable backends.
     /// Unsupported files never reach this; their `f_op->fasync` default returns
     /// `ENOTTY`, so no registry entry is published by accident. # C: O(1)

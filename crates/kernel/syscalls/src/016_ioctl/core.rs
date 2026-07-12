@@ -33,6 +33,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = handle_common_ioctl(cur, &file, &fdt, fd, req, arg) {
         return rv;
     }
+    if let Some(rv) = handle_file_ioctl(&file, req, arg) {
+        return rv;
+    }
     // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
     // systemd verifies a forked service is its child via this ioctl;
     // ENOTTY makes it SIGKILL the child (console-getty respawn).
@@ -136,4 +139,68 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         return -(Errno::Enotty.as_i32() as i64);
     }
     handle_tty_ioctl(&file, fd, req, arg)
+}
+
+fn handle_file_ioctl(file: &vfs::File, req: u64, arg: u64) -> Option<i64> {
+    match req {
+        super::uapi::EXT4_IOC_GETVERSION | super::uapi::FS_IOC_GETVERSION =>
+            Some(ioctl_getversion(file, arg)),
+        super::uapi::EXT4_IOC_SETVERSION | super::uapi::FS_IOC_SETVERSION =>
+            Some(ioctl_setversion(file, arg)),
+        _ => None,
+    }
+}
+
+fn ioctl_getversion(file: &vfs::File, arg: u64) -> i64 {
+    let idmap = vfs::mount::idmap_for(file.mnt_id());
+    let cred = current_cred();
+    let gen = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::GetVersion) {
+        Ok(vfs::FileIoctlReply::U32(v)) => v,
+        Ok(vfs::FileIoctlReply::Done) => return -(Errno::Enotty.as_i32() as i64),
+        Err(e) => return -(e as i64),
+    };
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, super::uapi::INT_BYTES, 1) {
+        return rv;
+    }
+    // SAFETY: arg validated writable for the Linux int payload.
+    unsafe { core::ptr::write_unaligned(arg as *mut u32, gen); }
+    0
+}
+
+fn ioctl_setversion(file: &vfs::File, arg: u64) -> i64 {
+    let idmap = vfs::mount::idmap_for(file.mnt_id());
+    let cred = current_cred();
+    if let Err(e) = file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::SetVersionPrepare) {
+        return -(e as i64);
+    }
+    let m = file.vfsmount();
+    if let Some(ref mnt) = m {
+        if let Err(e) = vfs::mount::mnt_want_write(mnt) { return -(e as i64); }
+        if mnt.sb().is_readonly() {
+            vfs::mount::mnt_drop_write(mnt);
+            return -(vfs::VfsError::Erofs as i64);
+        }
+    }
+    if let Err(rv) = crate::userbuf::validate_user_buf_readable(arg, super::uapi::INT_BYTES, 1) {
+        if let Some(ref mnt) = m { vfs::mount::mnt_drop_write(mnt); }
+        return rv;
+    }
+    // SAFETY: arg validated readable for the Linux int payload.
+    let gen = unsafe { core::ptr::read_unaligned(arg as *const u32) };
+    let rv = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::SetVersion(gen)) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    };
+    if let Some(ref mnt) = m { vfs::mount::mnt_drop_write(mnt); }
+    rv
+}
+
+#[cfg(not(test))]
+fn current_cred() -> vfs::Cred {
+    crate::pathresolve::current_cred()
+}
+
+#[cfg(test)]
+fn current_cred() -> vfs::Cred {
+    vfs::Cred::root()
 }

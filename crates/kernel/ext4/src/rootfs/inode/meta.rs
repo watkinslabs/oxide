@@ -33,6 +33,33 @@ pub(crate) fn ext4_fileattr_get(inode: &Inode) -> KResult<FileAttr> {
     })
 }
 
+/// `EXT4_IOC_GETVERSION`: return on-disk `i_generation`.
+/// # C: O(1) inode read
+pub(crate) fn ext4_getversion(inode: &Inode) -> KResult<u32> {
+    let (st, ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
+    Ok(st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?.generation)
+}
+
+/// Linux `EXT4_IOC_SETVERSION` pre-copyin admission: owner/CAP_FOWNER, then
+/// metadata_csum rejection before taking the mount write hold. # C: O(1)
+pub(crate) fn ext4_setversion_prepare(inode: &Inode, idmap: &Idmap, cred: &vfs::Cred) -> KResult<()> {
+    let (st, _ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
+    if !vfs::inode::inode_owner_or_capable(idmap, inode, cred) { return Err(VfsError::Eperm); }
+    if st.mount.sb.has_metadata_csum() { return Err(VfsError::Enotty); }
+    Ok(())
+}
+
+/// `EXT4_IOC_SETVERSION`: journal `i_generation`, stamp ctime, and bump
+/// in-core i_version. # C: O(1) inode write
+pub(crate) fn ext4_setversion(inode: &Inode, gen: u32) -> KResult<()> {
+    let (st, ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
+    let raw = vfs::inode_times::realtime_now_ns();
+    let ctime_ns = vfs::inode_times::current_time(inode, raw);
+    vfs::inode::inode_inc_iversion(inode);
+    st.mount.persist_inode_generation(ino, gen, ctime_ns).map_err(|_| VfsError::Eio)?;
+    inode.set_times(None, None, ctime_ns)
+}
+
 /// `ext4_fileattr_set` — the `FS_IOC_SETFLAGS` backend: fold the user-modifiable
 /// bits of `fa.flags` over the preserved kernel-internal flags, persist to the
 /// on-disk inode (journaled), and mirror IMMUTABLE/APPEND/NOATIME/SYNC into the
