@@ -382,6 +382,28 @@ fn fsxattr_set_rejects_extsize_hint_on_non_regular_file() {
 }
 
 #[test]
+fn unsupported_fileattr_ioctls_return_enotty() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let file = mk_file(FileType::Regular, OpenFlags::O_RDWR, 0);
+    let fd = fdt.alloc(Arc::clone(&file)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let mut flags = 0u32;
+    let mut xattr = [0u8; 28];
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_GETFLAGS, &mut flags as *mut u32 as u64),
+        Some(-(Errno::Enotty.as_i32() as i64)));
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_SETFLAGS, &flags as *const u32 as u64),
+        Some(-(Errno::Enotty.as_i32() as i64)));
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_FSGETXATTR, xattr.as_mut_ptr() as u64),
+        Some(-(Errno::Enotty.as_i32() as i64)));
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_FSSETXATTR, xattr.as_ptr() as u64),
+        Some(-(Errno::Enotty.as_i32() as i64)));
+    reset();
+}
+
+#[test]
 fn getfsuuid_copies_superblock_uuid_or_enotty_without_one() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
