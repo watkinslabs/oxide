@@ -7,8 +7,8 @@ use vfs::{FileType, InodeRef};
 
 use crate::inotify::types::{
     inode_key, Event, InotifyData, FAN_ATTRIB, FAN_DELETE_SELF, FAN_MOVED_FROM, FAN_MOVED_TO, FAN_MOVE_SELF,
-    FAN_ONDIR, FAN_OPEN_EXEC, IN_ACCESS, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_MODIFY, IN_OPEN,
-    MARK_COUNT, MOVE_COOKIE,
+    FAN_ONDIR, FAN_OPEN_EXEC, IN_ACCESS, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_IGNORED,
+    IN_MODIFY, IN_ONESHOT, IN_OPEN, MARK_COUNT, MOVE_COOKIE,
 };
 
 /// Global registry of weak refs to every live InotifyData. Walked
@@ -44,18 +44,28 @@ fn dispatch(inode: &InodeRef, mask_bit: u32, self_event: bool, cookie: u32) {
     let g = INSTANCES.lock();
     for w in g.iter() {
         let arc = match w.upgrade() { Some(a) => a, None => continue };
-        let watches = arc.watches.lock();
-        for wi in watches.iter() {
-            if !wi.applies(key, fsid) { continue; }
-            if (wi.ignored & mask_bit) != 0 { continue; }
-            if (wi.mask & mask_bit) == 0 { continue; }
+        let mut watches = arc.watches.lock();
+        let mut i = 0usize;
+        while i < watches.len() {
+            let wi = &watches[i];
+            if !wi.applies(key, fsid) { i += 1; continue; }
+            if (wi.ignored & mask_bit) != 0 { i += 1; continue; }
+            if (wi.mask & mask_bit) == 0 { i += 1; continue; }
             let mut report = mask_bit;
             if arc.fanotify {
-                if self_event && is_dir && (wi.mask & FAN_ONDIR) == 0 { continue; }
+                if self_event && is_dir && (wi.mask & FAN_ONDIR) == 0 { i += 1; continue; }
                 if is_dir { report |= FAN_ONDIR; }
             }
             let obj = if arc.fanotify { Some(inode.clone()) } else { None };
-            arc.events.lock().push_back(Event { wd: wi.wd, mask: report, cookie, len: 0, obj, pid });
+            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie, len: 0, obj, pid });
+            if !arc.fanotify && (wi.flags & IN_ONESHOT) != 0 {
+                let wd = wi.wd;
+                watches.remove(i);
+                MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
+                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, len: 0, obj: None, pid });
+                continue;
+            }
+            i += 1;
         }
     }
 }
