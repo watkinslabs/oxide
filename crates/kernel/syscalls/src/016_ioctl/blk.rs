@@ -8,6 +8,8 @@
 
 use vfs::InodeRef;
 
+use crate::userbuf::validate_user_buf_writable;
+
 /// `_IO(0x12,96)` — capacity in 512-byte sectors, `unsigned long *` out.
 const BLKGETSIZE:   u64 = 0x1260;
 /// `_IO(0x12,104)` — logical sector size, `int *` out.
@@ -55,20 +57,18 @@ pub(super) fn handle_blk_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i
 /// Store a `u64` out-param at the user pointer `arg`, guarding the address like
 /// the FIONREAD path in `core.rs`. Returns `0` (ioctl success). # C: O(1)
 fn write_u64(arg: u64, v: u64) -> i64 {
-    if arg != 0 && arg < hal::USER_VA_END {
-        // SAFETY: arg validated non-null and below USER_VA_END; 8-byte out-param
-        // matching the BLKGETSIZE64 / BLKGETSIZE `u64`/`unsigned long *` ABI.
-        unsafe { core::ptr::write_volatile(arg as *mut u64, v); }
-    }
+    if let Err(rv) = validate_user_buf_writable(arg, 8, 1) { return rv; }
+    // SAFETY: arg validated writable; 8-byte out-param matching the
+    // BLKGETSIZE64 / BLKGETSIZE `u64`/`unsigned long *` ABI.
+    unsafe { core::ptr::write_volatile(arg as *mut u64, v); }
     0
 }
 
 /// Store an `int`/`u32` out-param at the user pointer `arg`. # C: O(1)
 fn write_u32(arg: u64, v: u32) -> i64 {
-    if arg != 0 && arg < hal::USER_VA_END {
-        // SAFETY: arg validated non-null and below USER_VA_END; 4-byte out-param
-        // matching the BLKSSZGET / BLKBSZGET `int *` ABI.
-        unsafe { core::ptr::write_volatile(arg as *mut u32, v); }
-    }
+    if let Err(rv) = validate_user_buf_writable(arg, 4, 1) { return rv; }
+    // SAFETY: arg validated writable; 4-byte out-param matching the BLKSSZGET
+    // / BLKBSZGET `int *` ABI.
+    unsafe { core::ptr::write_volatile(arg as *mut u32, v); }
     0
 }
