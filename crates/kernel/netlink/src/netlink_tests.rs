@@ -123,6 +123,32 @@ fn raw_uevent_delivers_only_to_kernel_group() {
 }
 
 #[test]
+fn raw_uevent_stays_level_ready_until_consumed() {
+    use alloc::sync::Arc;
+    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    udevd.set_group_mask(1);
+    register_uevent_listener(&udevd);
+
+    let n = emit_uevent_with_env(
+        "add",
+        "/devices/pci0000:00/0000:00:04.0/virtio3/drm/card0",
+        "drm",
+        &["DEVNAME=dri/card0", "MAJOR=226", "MINOR=0", "DEVTYPE=drm_minor"]);
+    assert_eq!(n, 1);
+    assert_ne!(udevd.poll() & vfs::POLL_IN, 0, "queued coldplug uevent must poll readable");
+
+    let (msg, src) = udevd.peek_front().expect("queued uevent");
+    assert_eq!(src, 0);
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"ACTION=add"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"DEVPATH=/devices/pci0000:00/0000:00:04.0/virtio3/drm/card0"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"SUBSYSTEM=drm"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"DEVNAME=dri/card0"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"MAJOR=226"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"MINOR=0"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"DEVTYPE=drm_minor"));
+}
+
+#[test]
 fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
     use alloc::sync::Arc;
     let sender = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
