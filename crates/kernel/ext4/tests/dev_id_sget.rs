@@ -36,6 +36,20 @@ fn dev_id_reports_stored_dev_t() {
     assert_eq!(none.dev_id(), None, "no resolvable dev_t → None (fresh anon SB)");
 }
 
+#[test]
+fn registered_dev_id_publishes_ext4_sysfs_name() {
+    let name = "vdb738sysfs";
+    let idx = block::registry::register(name, disk());
+    assert!(idx != 0, "registered block disk");
+    let dev_t = block::registry::dev_t_of(name, idx) as u64;
+    let fs: Arc<dyn FileSystem> =
+        ext4::rootfs::Ext4Mount::open_with_dev(disk(), Some(dev_t)).expect("open_with_dev");
+    assert_eq!(fs.sysfs_name(), Some(String::from(name)));
+    let sb = common::realize_sb(fs.clone(), fs.root(), fs.dev_id().unwrap(), String::from("/dev/vdb738sysfs"));
+    assert_eq!(sb.s_sysfs_name(), name);
+    assert_ne!(sb.s_id, name, "sysfs name is not derived from s_id");
+}
+
 /// Two ext4 mounts of the SAME dev_t share ONE `SuperBlock` via `sget` — exactly
 /// what the mount engine's `build_sb` does for a `dev_id() == Some` backend.
 #[test]

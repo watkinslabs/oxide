@@ -31,6 +31,7 @@ pub trait FileSystem: Send + Sync {
     fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { None }
     fn root(&self) -> Option<InodeRef> { None }
     fn set_sb(&self, _sb: Weak<SuperBlock>) {}
+    fn sysfs_name(&self) -> Option<String> { None }
     fn show_options(&self) -> String { String::new() }
 }
 
@@ -57,12 +58,14 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
             sget(dev, move || {
                 let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
                 fs_for_stamp.set_sb(Arc::downgrade(&sb));
+                if let Some(name) = fs_for_stamp.sysfs_name() { sb.set_sysfs_name(&name); }
                 sb
             })
         }
         None => {
             let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
             fs.set_sb(Arc::downgrade(&sb));
+            if let Some(name) = fs.sysfs_name() { sb.set_sysfs_name(&name); }
             sb
         }
     }
