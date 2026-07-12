@@ -185,6 +185,7 @@ fn vfs_clone_file_range(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off:
     remap_verify_area(src_off, len)?;
     remap_verify_area(dst_off, len)?;
     remap_verify_alignment(dst, src_off, dst_off)?;
+    remap_verify_unshortenable_len(src, dst, src_off, len, flags)?;
     if same_inode(src, dst) && ranges_overlap(src_off, dst_off, len) {
         return Err(vfs::VfsError::Einval);
     }
@@ -286,6 +287,13 @@ fn remap_verify_alignment(dst: &vfs::File, src_off: u64, dst_off: u64) -> vfs::K
     let bs = dst.inode().i_sb().map(|sb| sb.s_blocksize as u64).filter(|bs| *bs != 0).unwrap_or(1);
     if src_off % bs != 0 || dst_off % bs != 0 { return Err(vfs::VfsError::Einval); }
     Ok(())
+}
+
+fn remap_verify_unshortenable_len(src: &vfs::File, dst: &vfs::File, src_off: u64, len: u64, flags: u32) -> vfs::KResult<()> {
+    if len == 0 || flags & REMAP_FILE_CAN_SHORTEN != 0 { return Ok(()); }
+    let bs = dst.inode().i_sb().map(|sb| sb.s_blocksize as u64).filter(|bs| *bs != 0).unwrap_or(1);
+    if len % bs == 0 || src_off.checked_add(len) == Some(src.inode().size()) { return Ok(()); }
+    Err(vfs::VfsError::Einval)
 }
 
 fn may_dedupe_file(cur: &sched::Task, file: &vfs::File) -> bool {
