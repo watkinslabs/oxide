@@ -1,4 +1,16 @@
 use super::*;
+use crate::munmap_range::{validate_munmap_range, MunmapRange};
+
+/// # C: O(log N_vmas)
+fn range_sealed(range: MunmapRange) -> bool {
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: running task on this CPU; read-only mm slot query.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            return mm.range_sealed(range.start, range.len_aligned);
+        }
+    }
+    with(|as_| as_.range_sealed(range.start, range.len_aligned)).unwrap_or(false)
+}
 
 pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     // DIAG (debug-syscall): a MADV_DONTNEED/FREE zap of a lib-arena page while a
@@ -95,23 +107,23 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         klog::write_raw(b" tid="); klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
         klog::write_raw(b"\n");
     }
-    use syscall::errno::Errno;
     use hal::{MmuOps, PageSize, Va};
-    if len == 0 || (addr & 0xfff) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    // Linux munmap(0, len): aligned, walks the (empty) low range, returns 0.
-    if addr == 0 { return 0; }
-    let len_aligned = (len + 0xfff) & !0xfff;
-    if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
-        return -(Errno::Einval.as_i32() as i64);
+    use syscall::errno::Errno;
+    let range = match validate_munmap_range(addr, len) {
+        Ok(r)  => r,
+        Err(e) => return e,
+    };
+    // mseal(2): direct munmap and MAP_FIXED overlap-clear both route through
+    // this glue, so reject sealed ranges before any PTE teardown.
+    if range_sealed(range) {
+        return -(Errno::Eperm.as_i32() as i64);
     }
     // DIAG (debug-mount): trace munmap range (the other PTE-zapping path).
     #[cfg(feature = "debug-mount")]
     {
         let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
         klog::write_raw(b"[mnt] MUNMAP addr="); klog::write_hex_u64(addr);
-        klog::write_raw(b" len=");              klog::write_hex_u64(len_aligned);
+        klog::write_raw(b" len=");              klog::write_hex_u64(range.len_aligned as u64);
         klog::write_raw(b" tid=");              klog::write_dec_u64(tid as u64);
         klog::write_raw(b"\n");
     }
@@ -119,7 +131,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
     let mask = current_mm_cpumask();
     let mut va = addr;
-    let end = addr + len_aligned;
+    let end = range.end;
     while va < end {
         // SAFETY: privileged read of live page tables; va is in user-half range validated above.
         #[cfg(target_arch = "x86_64")]
@@ -182,19 +194,15 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     // cur.mm — that's where the user's VMAs live, not the global
     // boot AS. Mirror glue_mmap so MAP_FIXED's overlap-clear
     // (via glue_munmap) hits the right AS.
-    let uva = match UserVirtAddr::new(addr) {
-        Some(u) => u,
-        None    => return -(Errno::Einval.as_i32() as i64),
-    };
     let r = if let Some(cur) = sched::live::current() {
         // SAFETY: running task on this CPU; sole mm writer.
         if let Some(mm) = unsafe { cur.mm_ref() } {
-            Some(mm.munmap(uva, len_aligned as usize))
+            Some(mm.munmap(range.start, range.len_aligned))
         } else {
-            with(|as_| as_.munmap(uva, len_aligned as usize))
+            with(|as_| as_.munmap(range.start, range.len_aligned))
         }
     } else {
-        with(|as_| as_.munmap(uva, len_aligned as usize))
+        with(|as_| as_.munmap(range.start, range.len_aligned))
     };
     match r {
         Some(Ok(()))  => 0,

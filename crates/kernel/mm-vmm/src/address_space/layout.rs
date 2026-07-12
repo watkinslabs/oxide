@@ -26,3 +26,8 @@ pub(super) fn end_of(start: UserVirtAddr, len: u64) -> KResult<UserVirtAddr> {
     let end = start.as_u64().checked_add(len).ok_or(Error::Inval)?;
     UserVirtAddr::new(end).ok_or(Error::Inval)
 }
+
+#[inline]
+pub(super) fn end_of_raw(start: UserVirtAddr, len: u64) -> KResult<u64> {
+    start.as_u64().checked_add(len).ok_or(Error::Inval)
+}
