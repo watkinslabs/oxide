@@ -201,6 +201,16 @@ impl FileOps for Ext4RegFileOps {
                 super::meta::ext4_setversion(file.inode(), gen)?;
                 Ok(FileIoctlReply::Done)
             }
+            FileIoctlCmd::GetFsLabel =>
+                Ok(FileIoctlReply::Label(super::meta::ext4_getfslabel(file.inode())?)),
+            FileIoctlCmd::SetFsLabelPrepare(cap) => {
+                super::meta::ext4_setfslabel_prepare(cap)?;
+                Ok(FileIoctlReply::Done)
+            }
+            FileIoctlCmd::SetFsLabel(label) => {
+                super::meta::ext4_setfslabel(file.inode(), label)?;
+                Ok(FileIoctlReply::Done)
+            }
         }
     }
 
