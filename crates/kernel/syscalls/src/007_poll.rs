@@ -1,6 +1,7 @@
 // 007 poll — one syscall, one file (docs/53 §0). Moved verbatim from poll.rs.
-#![cfg(target_os = "oxide-kernel")]
 
+extern crate alloc;
+use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -18,7 +19,67 @@ const POLLERR:  i16 = 0x0008;
 const POLLHUP:  i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
 const POLL_ALWAYS: i16 = POLLERR | POLLHUP | POLLNVAL;
-const NFDS_MAX: u64 = 4096;
+
+#[derive(Clone, Copy)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
+
+fn pollfd_bytes(nfds: u64) -> Result<u64, i64> {
+    nfds.checked_mul(8).ok_or(-(Errno::Efault.as_i32() as i64))
+}
+
+fn copy_pollfds_from_user(fds_ptr: u64, nfds: u64) -> Result<Vec<PollFd>, i64> {
+    let bytes = pollfd_bytes(nfds)?;
+    if let Err(rv) = crate::userbuf::validate_user_buf_readable(fds_ptr, bytes, 1) { return Err(rv); }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < nfds {
+        let p = fds_ptr + i * 8;
+        // SAFETY: pollfd[i].fd/events lie inside the readable validated nfds*8-byte range.
+        let fd = unsafe { core::ptr::read_unaligned(p as *const i32) };
+        // SAFETY: pollfd[i].events lie inside the readable validated nfds*8-byte range.
+        let events = unsafe { core::ptr::read_unaligned((p + 4) as *const i16) };
+        out.push(PollFd { fd, events, revents: 0 });
+        i += 1;
+    }
+    Ok(out)
+}
+
+fn copy_pollfds_revents_to_user(fds_ptr: u64, fds: &[PollFd]) -> Result<(), i64> {
+    let bytes = pollfd_bytes(fds.len() as u64)?;
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(fds_ptr, bytes, 1) { return Err(rv); }
+    for (i, pfd) in fds.iter().enumerate() {
+        let p = fds_ptr + (i as u64) * 8 + 6;
+        // SAFETY: pollfd[i].revents lies inside the writable validated nfds*8-byte range.
+        unsafe { core::ptr::write_unaligned(p as *mut i16, pfd.revents); }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn pty_poll_in_bit(ino: u64) -> i16 {
+    let is_master = (ino & 0x8000) == 0;
+    let pty_readable = devpts::pair_for((ino & 0x7FFF) as u32).map(|pair| {
+        pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
+    });
+    match pty_readable {
+        Some(true)  => POLLIN,
+        Some(false) => 0,
+        None        => POLLIN,
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn pty_poll_in_bit(_ino: u64) -> i16 { POLLIN }
 
 /// `sys_poll(fds, nfds, timeout)` — slot 7. Honors per-fd
 /// readiness via PTY-pair `master_readable`/`slave_readable`;
@@ -28,17 +89,14 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let fds_ptr = args.a0;
     let nfds    = args.a1;
     let timeout = args.a2 as i32;
-    if nfds == 0 {
-        if timeout > 0 { yield_sleep_ms(timeout as u64); }
-        return 0;
-    }
-    if nfds > NFDS_MAX { return -(Errno::Einval.as_i32() as i64); }
-    let bytes = match nfds.checked_mul(8) {
-        Some(v) => v, None => return -(Errno::Efault.as_i32() as i64),
-    };
-    if let Err(rv) = crate::userbuf::validate_user_buf_writable(fds_ptr, bytes, 1) { return rv; }
-    let cur = match sched::live::current() {
+    let cur = match current_task() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if nfds > cur.nofile_soft() as u64 { return -(Errno::Einval.as_i32() as i64); }
+    if nfds == 0 { return poll_no_fds(cur, timeout); }
+    let mut pfds = match copy_pollfds_from_user(fds_ptr, nfds) {
+        Ok(v)  => v,
+        Err(e) => return e,
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot per `13§5` single-mutator.
     let fdt = match unsafe { cur.fd_table_ref() } {
@@ -51,11 +109,8 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     // so a transition between scans still wakes us.
     let waiter = crate::poll::poll_common::PollWaiter::new();
     let mut subbed: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
-    for i in 0..nfds {
-        let p = fds_ptr + i * 8;
-        // SAFETY: pollfd[i].fd lies inside the validated nfds*8-byte range.
-        let fd = unsafe { core::ptr::read_unaligned(p as *const i32) };
-        if let Ok(file) = fdt.get(fd) {
+    for pfd in &pfds {
+        if let Ok(file) = fdt.get(pfd.fd) {
             if let Some(s) = file.inode().poll_subscribers() {
                 waiter.subscribe(s);
                 subbed.push(file.inode().clone());
@@ -76,13 +131,10 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
             klog::write_raw(b" tmo="); klog::write_dec_u64(timeout as u32 as u64);
             let mut i = 0u64;
             while i < nfds && i < 12 {
-                let p = fds_ptr + i * 8;
-                // SAFETY: pollfd[i] lies inside the validated nfds*8 byte range.
-                let fd = unsafe { core::ptr::read_unaligned(p as *const i32) };
-                let ev = unsafe { core::ptr::read_unaligned((p + 4) as *const i16) };
-                klog::write_raw(b" fd="); klog::write_dec_u64(fd as u64);
-                klog::write_raw(b"/ev="); klog::write_hex_u64(ev as u16 as u64);
-                if let Ok(file) = fdt.get(fd) {
+                let pfd = pfds[i as usize];
+                klog::write_raw(b" fd="); klog::write_dec_u64(pfd.fd as u64);
+                klog::write_raw(b"/ev="); klog::write_hex_u64(pfd.events as u16 as u64);
+                if let Ok(file) = fdt.get(pfd.fd) {
                     klog::write_raw(b"/ino="); klog::write_hex_u64(file.inode().ino());
                     klog::write_raw(b"/rdy="); klog::write_hex_u64(file.poll() as u64);
                 }
@@ -93,29 +145,15 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     }
     let rv: i64 = loop {
         let mut ready: i64 = 0;
-        for i in 0..nfds {
-            let p = fds_ptr + i * 8;
-            // SAFETY: pollfd[i] lies inside the validated nfds*8-byte range.
-            let fd     = unsafe { core::ptr::read_unaligned( p        as *const i32) };
-            // SAFETY: same validated range; Linux copyin accepts unaligned storage.
-            let events = unsafe { core::ptr::read_unaligned((p + 4)   as *const i16) };
+        for pfd in &mut pfds {
             let mut revents: i16 = 0;
-            if let Ok(file) = fdt.get(fd) {
+            if let Ok(file) = fdt.get(pfd.fd) {
                 if file.inode().file_type() == vfs::FileType::CharDev
                     && (file.inode().ino() & 0xFFFF_0000) == 0x6000_0000
                 {
                     // PTY: readability from the pair state (master/slave).
-                    let ino = file.inode().ino();
-                    let is_master = (ino & 0x8000) == 0;
-                    let pty_readable = devpts::pair_for((ino & 0x7FFF) as u32).map(|pair| {
-                        pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
-                    });
-                    let inb = match pty_readable {
-                        Some(true)  => POLLIN,
-                        Some(false) => 0,
-                        None        => POLLIN,
-                    };
-                    revents = events & (inb | POLLOUT);
+                    let inb = pty_poll_in_bit(file.inode().ino());
+                    revents = (pfd.events & (inb | POLLOUT)) | ((file.poll() as i16) & POLL_ALWAYS);
                 } else {
                     // Non-pty chardevs (e.g. /dev/console) + sockets / pipes /
                     // ext4 regulars: delegate to inode.poll() so POLLIN
@@ -127,13 +165,12 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
                     // POLL_IN/OUT/HUP bit layout as POLLIN/OUT/HUP; POSIX
                     // POLLHUP/ERR/NVAL always reported — see POLL_ALWAYS.)
                     let mask = file.poll() as i16;
-                    revents = mask & (events | POLL_ALWAYS);
+                    revents = mask & (pfd.events | POLL_ALWAYS);
                 }
-            } else if fd >= 0 {
+            } else if pfd.fd >= 0 {
                 revents = POLLNVAL;
             }
-            // SAFETY: revents at p+6 lies inside the validated writable range.
-            unsafe { core::ptr::write_unaligned((p + 6) as *mut i16, revents); }
+            pfd.revents = revents;
             if revents != 0 { ready += 1; }
         }
         if ready > 0 { break ready; }
@@ -146,10 +183,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         // sshd-session waits forever for its slave that already died
         // and the accept'd TCP socket leaks in CLOSE_WAIT. Mirrors the
         // pselect6 EINTR check.
-        use core::sync::atomic::Ordering;
-        let pending = cur.sigpending.load(Ordering::Acquire);
-        let mask    = cur.sigmask.load(Ordering::Acquire);
-        if pending & !mask != 0 {
+        if deliverable_signal_pending(cur) {
             break -(Errno::Eintr.as_i32() as i64);
         }
         // Park until a subscribed fd's `notify()` wakes us, or the caller's
@@ -169,13 +203,41 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     for ino in &subbed {
         if let Some(s) = ino.poll_subscribers() { waiter.unsubscribe(s); }
     }
+    if rv >= 0 {
+        if let Err(e) = copy_pollfds_revents_to_user(fds_ptr, &pfds) { return e; }
+    }
     rv
 }
 
-fn yield_sleep_ms(ms: u64) {
-    let dl = monotonic_ns().saturating_add(ms * 1_000_000);
-    while monotonic_ns() < dl {
-        // SAFETY: process ctx; runqueue installed; tick_yield reschedules.
-        unsafe { sched::live::tick_yield(); }
+fn poll_no_fds(cur: &sched::Task, timeout: i32) -> i64 {
+    if timeout == 0 { return 0; }
+    let deadline = if timeout > 0 {
+        Some(monotonic_ns().saturating_add((timeout as u64) * 1_000_000))
+    } else {
+        None
+    };
+    let waiter = crate::poll::poll_common::PollWaiter::new();
+    loop {
+        if deliverable_signal_pending(cur) {
+            return -(Errno::Eintr.as_i32() as i64);
+        }
+        if let Some(dl) = deadline {
+            if monotonic_ns() >= dl { return 0; }
+        }
+        const RESCAN_NS: u64 = 20_000_000;
+        let rescan_at = monotonic_ns().saturating_add(RESCAN_NS);
+        let park_dl = match deadline {
+            Some(d) => core::cmp::min(d, rescan_at),
+            None    => rescan_at,
+        };
+        // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
+        unsafe { waiter.park_until(park_dl); }
     }
+}
+
+fn deliverable_signal_pending(cur: &sched::Task) -> bool {
+    use core::sync::atomic::Ordering;
+    let pending = cur.sigpending.load(Ordering::Acquire);
+    let mask    = cur.sigmask.load(Ordering::Acquire);
+    pending & !mask != 0
 }
