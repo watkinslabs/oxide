@@ -6,9 +6,9 @@ use syscall::errno::Errno;
 pub(crate) const STAT_BYTES_X86_64: u64 = 144;
 #[cfg(any(test, target_arch = "aarch64"))]
 pub(crate) const STAT_BYTES_AARCH64: u64 = 128;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+#[cfg(all(any(test, target_os = "oxide-kernel"), target_arch = "x86_64"))]
 pub(crate) const STAT_BYTES: u64 = STAT_BYTES_X86_64;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+#[cfg(all(any(test, target_os = "oxide-kernel"), target_arch = "aarch64"))]
 pub(crate) const STAT_BYTES: u64 = STAT_BYTES_AARCH64;
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }

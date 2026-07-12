@@ -1,12 +1,16 @@
 // 005 fstat — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
 
-#![cfg(target_os = "oxide-kernel")]
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::stat_common::{STAT_BYTES, new_stat_from_kstat, write_new_stat_user};
 use crate::userbuf::validate_user_buf_writable;
+
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
 
 /// `sys_fstat(fd, statbuf)` — slot 5. 144-byte Linux x86_64 struct stat.
 /// # C: O(1)
@@ -17,7 +21,7 @@ pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     // Per-arch layout differs (mode@24/+rdev@40 vs mode@16/+rdev@32) — using
     // the x86 layout on aarch64 returned mismatched st_ino vs newfstatat
     // because the field offsets don't line up; broke musl's ttyname.
-    let cur = match sched::live::current() {
+    let cur = match current_task() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
