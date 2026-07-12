@@ -4,7 +4,6 @@ use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 use super::uapi::*;
 
-const O_ASYNC: u32 = 0o20000;
 const INODE_BLOCK_BYTES: u64 = 512;
 
 /// Linux `do_vfs_ioctl` common cases that run before driver/file-specific
@@ -27,7 +26,7 @@ pub(super) fn handle_common_ioctl(
             Err(e) => -(e as i64),
         }),
         FIONBIO => Some(ioctl_fionbio(file, arg)),
-        FIOASYNC => Some(ioctl_fioasync(file, arg)),
+        FIOASYNC => Some(ioctl_fioasync(file, fd, arg)),
         FIOQSIZE => Some(ioctl_fioqsize(file, arg)),
         FIGETBSZ => Some(ioctl_figetbsz(file, arg)),
         FICLONE => Some(ioctl_file_clone(file, fdt, arg as i64, 0, 0, 0)),
@@ -84,38 +83,31 @@ fn ioctl_fionbio(file: &vfs::File, arg: u64) -> i64 {
 }
 
 /// Linux `ioctl_fioasync`: read caller int and toggle `FASYNC`. # C: O(1)
-fn ioctl_fioasync(file: &alloc::sync::Arc<vfs::File>, arg: u64) -> i64 {
+fn ioctl_fioasync(file: &alloc::sync::Arc<vfs::File>, fd: i32, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
     // SAFETY: arg validated readable for one Linux int input.
     let on = unsafe { core::ptr::read_volatile(arg as *const i32) } != 0;
-    let was_async = file.is_async();
-    let mut fl = file.flags();
-    let async_flag = vfs::OpenFlags::from_bits_retain(O_ASYNC);
-    if on { fl |= async_flag; } else { fl &= !async_flag; }
-    file.set_fl(fl);
-    let now_async = file.is_async();
-    if now_async && !was_async {
-        register_fasync(file);
-    } else if was_async && !now_async {
-        vfs::file::fasync_unregister(file);
+    if file.is_async() == on { return 0; }
+    match file.fasync(fd, on) {
+        Ok(()) => {
+            if on { install_sigio_hook(); }
+            0
+        }
+        Err(e) => -(e as i64),
     }
-    0
 }
 
 /// Kernel target wires SIGIO delivery before adding the file to fasync. Hosted
 /// tests do not build `sched::live`, but still exercise the flag/registry path.
 /// # C: O(1)
 #[cfg(not(test))]
-fn register_fasync(file: &alloc::sync::Arc<vfs::File>) {
+fn install_sigio_hook() {
     sched::live::sigpend::install_sigio_hook();
-    vfs::file::fasync_register(file);
 }
 
 /// # C: O(1)
 #[cfg(test)]
-fn register_fasync(file: &alloc::sync::Arc<vfs::File>) {
-    vfs::file::fasync_register(file);
-}
+fn install_sigio_hook() {}
 
 /// Linux `FIOQSIZE`: dirs, regular files, and symlinks copy `loff_t` bytes.
 /// # C: O(1)

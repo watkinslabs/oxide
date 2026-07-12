@@ -109,6 +109,10 @@ impl vfs::FileOps for VsockFileOps {
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<VsockSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }
+    fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
+        file.set_fasync_state(on);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
