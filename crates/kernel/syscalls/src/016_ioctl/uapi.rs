@@ -10,6 +10,7 @@ pub(super) const FICLONE:   u64 = 0x4004_9409;
 pub(super) const FICLONERANGE: u64 = 0x4020_940D;
 pub(super) const FIDEDUPERANGE: u64 = 0xC018_9436;
 pub(super) const SIOCOUTQ:  u64 = 0x5411;
+pub(super) const BLKROGET:   u64 = 0x125E;
 pub(super) const BLKGETSIZE:   u64 = 0x1260;
 pub(super) const BLKSSZGET:    u64 = 0x1268;
 pub(super) const BLKDISCARD:   u64 = 0x1277;
