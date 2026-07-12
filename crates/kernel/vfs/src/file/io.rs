@@ -84,6 +84,13 @@ impl File {
         }
     }
 
+    fn write_limit(&self, off: u64, len: usize) -> KResult<usize> {
+        match self.inode.i_sb() {
+            Some(sb) => sb.generic_write_check_limits(off, len).ok_or(VfsError::Efbig),
+            None     => Ok(len),
+        }
+    }
+
     /// `write(2)` — advances the cursor by the byte count returned by
     /// the inode's `write`. Rejects read-only opens with `Ebadf`.
     /// `O_APPEND` snaps the offset to the current size before writing.
@@ -122,14 +129,7 @@ impl File {
         } else {
             self.pos.load(Ordering::Acquire)
         };
-        let buf = if let Some(sb) = self.inode.i_sb() {
-            match sb.generic_write_check_limits(off, buf.len()) {
-                Some(n) => &buf[..n],
-                None    => return Err(VfsError::Efbig),
-            }
-        } else {
-            buf
-        };
+        let buf = &buf[..self.write_limit(off, buf.len())?];
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
             self.f_op.write_nonblock_file(self, off, buf)?
@@ -272,6 +272,7 @@ impl File {
         // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
         // ignoring the caller's offset (documented quirk, pwrite(2) BUGS).
         let pos = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { off as u64 };
+        let buf = &buf[..self.write_limit(pos, buf.len())?];
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
             self.f_op.write_nonblock(&self.inode, pos, buf)?
@@ -372,13 +373,21 @@ impl File {
         let mut total: u64 = 0;
         for buf in bufs.iter() {
             if buf.is_empty() { continue; }
-            let want = buf.len();
             let off = base + total;
+            let capped = match self.write_limit(off, buf.len()) {
+                Ok(n)                 => n,
+                Err(e) if total == 0  => return Err(e),
+                Err(_)                => break,
+            };
+            if capped == 0 { continue; }
+            let hit_limit = capped < buf.len();
+            let buf = &buf[..capped];
+            let want = buf.len();
             // D2: dispatch through the cached `file->f_op` (snapshotted at open).
             let r = if nonblock { self.f_op.write_nonblock(&self.inode, off, buf) } else { self.f_op.write(&self.inode, off, buf) };
             match r {
                 Ok(0)                => break,
-                Ok(n)                => { total += n as u64; if n < want { break; } }
+                Ok(n)                => { total += n as u64; if n < want || hit_limit { break; } }
                 Err(e) if total == 0 => return Err(e),
                 Err(_)               => break,
             }
