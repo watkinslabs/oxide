@@ -15,6 +15,7 @@ fn request_numbers_match_linux_uapi() {
     assert_eq!(req::TIOCSPGRP, 0x5410);
     assert_eq!(req::TIOCGWINSZ, 0x5413);
     assert_eq!(req::TIOCSWINSZ, 0x5414);
+    assert_eq!(req::TIOCGEXCL, 0x80045440);
     assert_eq!(req::TIOCNOTTY, 0x5422);
     assert_eq!(req::TIOCGSID, 0x5429);
 }
