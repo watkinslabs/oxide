@@ -66,6 +66,7 @@ pub(super) const FS_NODUMP_FL: u32 = 0x0000_0040;
 pub(super) const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 pub(super) const FS_VERITY_FL: u32 = 0x0010_0000;
 pub(super) const FS_DAX_FL: u32 = 0x0200_0000;
+pub(super) const FS_CASEFOLD_FL: u32 = 0x4000_0000;
 
 pub(super) const FS_XFLAG_IMMUTABLE: u32 = 0x0000_0008;
 pub(super) const FS_XFLAG_APPEND: u32 = 0x0000_0010;
