@@ -72,6 +72,7 @@ mod namei_common;
 mod time_common;
 pub use time_common::init_wall_clock_from_rtc;
 mod statfs_common;
+mod stat_common;
 #[path = "000_read.rs"] pub mod s000_read;
 mod open_common;
 #[path = "002_open.rs"] pub mod s002_open;
