@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use block::types::InodeId;
-use vfs::file_ops::{FileOps, HoleOrData};
+use vfs::file_ops::{FileIoctlCmd, FileIoctlReply, FileOps, HoleOrData};
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{InodeOps, mk_mode};
 use vfs::mapping::AddressSpaceOps;
@@ -183,6 +183,27 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    fn unlocked_ioctl(
+        &self,
+        file: &vfs::File,
+        idmap: &vfs::idmap::Idmap,
+        cred: &vfs::Cred,
+        cmd: FileIoctlCmd,
+    ) -> KResult<FileIoctlReply> {
+        match cmd {
+            FileIoctlCmd::GetVersion =>
+                Ok(FileIoctlReply::U32(super::meta::ext4_getversion(file.inode())?)),
+            FileIoctlCmd::SetVersionPrepare => {
+                super::meta::ext4_setversion_prepare(file.inode(), idmap, cred)?;
+                Ok(FileIoctlReply::Done)
+            }
+            FileIoctlCmd::SetVersion(gen) => {
+                super::meta::ext4_setversion(file.inode(), gen)?;
+                Ok(FileIoctlReply::Done)
+            }
+        }
+    }
+
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         #[cfg(feature = "ext4-frame-cache")]
