@@ -15,11 +15,14 @@
 //! `Disk`'s stats-wrapped `BlockDevice` via whole-sector RMW.
 
 use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use vfs::{BlockDevOps, Devt};
 use vfs::types::{KResult, VfsError};
 
 use crate::blockdev::{BlockDevice, BlockRequest};
+use crate::types::{BlockError, KResult as BlockResult, BlockOp};
 use crate::registry::{by_dev, major_minor};
 
 /// Read `buf.len()` bytes from `dev` at byte offset `off`, translating to
@@ -63,6 +66,51 @@ pub fn write_at(dev: &dyn BlockDevice, off: u64, data: &[u8]) -> KResult<usize> 
     let mut wreq = BlockRequest::new_write(first, n, rmw.buffer);
     dev.submit_sync(&mut wreq).map_err(|_| VfsError::Eio)?;
     Ok(len)
+}
+
+/// Issue a block discard over an already-validated byte range. # C: O(blocks)
+pub fn discard_range(dev_t: u32, off: u64, len: u64) -> Option<BlockResult<()>> {
+    by_dev(dev_t).map(|d| submit_discard(d.dev.as_ref(), off, len))
+}
+
+fn submit_discard(dev: &dyn BlockDevice, off: u64, len: u64) -> BlockResult<()> {
+    let bs = dev.block_size() as u64;
+    if bs == 0 || (off | len) & (bs - 1) != 0 { return Err(BlockError::Einval); }
+    let mut block = off / bs;
+    let mut left = len / bs;
+    while left != 0 {
+        let n = core::cmp::min(left, u32::MAX as u64) as u32;
+        let mut req = BlockRequest {
+            op: BlockOp::Discard, start_block: block, len_blocks: n, buffer: Vec::new(),
+        };
+        dev.submit_sync(&mut req)?;
+        block += n as u64;
+        left -= n as u64;
+    }
+    Ok(())
+}
+
+/// Write zeroes over a byte range using the published block device. # C: O(len)
+pub fn zeroout_range(dev_t: u32, off: u64, len: u64) -> Option<BlockResult<()>> {
+    by_dev(dev_t).map(|d| {
+        let mut pos = off;
+        let mut left = len;
+        const CHUNK: u64 = 128 * 1024;
+        while left != 0 {
+            let n = core::cmp::min(left, CHUNK) as usize;
+            let zeros = vec![0u8; n];
+            let wrote = write_at(d.dev.as_ref(), pos, &zeros).map_err(|e| match e {
+                VfsError::Einval => BlockError::Einval,
+                VfsError::Enxio  => BlockError::Enxio,
+                VfsError::Enomem => BlockError::Enomem,
+                _                => BlockError::Eio,
+            })?;
+            if wrote != n { return Err(BlockError::Eio); }
+            pos += n as u64;
+            left -= n as u64;
+        }
+        Ok(())
+    })
 }
 
 /// `vfs::BlockDevOps` adapter over one registered disk's `BlockDevice`. Held by
