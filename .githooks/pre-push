@@ -69,9 +69,12 @@ if [ "$need_smoke" = "0" ]; then
 fi
 
 echo "pre-push: kernel surface changed, running boot-smoke (override with SKIP_SMOKE=1)"
+smoke_log_dir="/tmp/oxide-pre-push-smoke-$(date +%Y%m%d-%H%M%S)-$$"
+mkdir -p "$smoke_log_dir" 2>/dev/null || smoke_log_dir=""
 for arch in x86 arm; do
-    if ! make "smoke-$arch" SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-300}"; then
+    if ! SMOKE_KEEP_LOG_DIR="$smoke_log_dir" make "smoke-$arch" SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-300}"; then
         echo "pre-push: FAIL — make smoke-$arch did not reach login" >&2
+        [ -n "$smoke_log_dir" ] && echo "         preserved smoke logs: $smoke_log_dir" >&2
         echo "         push aborted; fix the boot regression or SKIP_SMOKE=1 to bypass" >&2
         exit 1
     fi
