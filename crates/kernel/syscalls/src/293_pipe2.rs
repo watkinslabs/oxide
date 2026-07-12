@@ -1,9 +1,15 @@
 // 293 pipe2 — one syscall, one file (docs/53 §0). Moved verbatim from lib.rs.
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::userbuf::validate_user_buf_writable;
+use crate::userbuf::write_i32_pair;
+
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
 
 /// # C: O(1)
 pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
@@ -17,8 +23,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     const VALID_FLAGS: u32 = O_CLOEXEC | O_NONBLOCK | O_DIRECT | O_NOTIFICATION_PIPE;
     if flags & !VALID_FLAGS != 0 { return -(Errno::Einval.as_i32() as i64); }
     if flags & O_NOTIFICATION_PIPE != 0 { return -(Errno::Enopkg.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf_writable(pipefd, 8, 4) { return rv; }
-    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
+    let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let inode = ::fs::pipe::make_pipe_inode();
@@ -45,19 +50,24 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     if (flags & O_DIRECT) != 0 { w_oflags |= OpenFlags::O_DIRECT; }
     let r_file = File::new(inode.clone(), dentry.clone(), r_oflags);
     let w_file = File::new(inode, dentry, w_oflags);
-    let r_fd = match fdt.alloc_limit(r_file, cur.nofile_soft())  { Ok(f) => f, Err(e) => return -(e as i64) };
-    let w_fd = match fdt.alloc_limit(w_file, cur.nofile_soft())  { Ok(f) => f, Err(e) => {
-        let _ = fdt.close(r_fd);
-        return -(e as i64);
-    }};
-    if (flags & O_CLOEXEC) != 0 {
-        let _ = fdt.set_cloexec(r_fd, true);
-        let _ = fdt.set_cloexec(w_fd, true);
+    let reserve_flags = OpenFlags::from_bits_retain(flags & O_CLOEXEC);
+    let r_fd = match fdt.get_unused_fd_flags(reserve_flags, cur.nofile_soft()) {
+        Ok(fd) => fd,
+        Err(e) => return -(e as i64),
+    };
+    let w_fd = match fdt.get_unused_fd_flags(reserve_flags, cur.nofile_soft()) {
+        Ok(fd) => fd,
+        Err(e) => {
+            fdt.put_unused_fd(r_fd);
+            return -(e as i64);
+        }
+    };
+    if let Err(rv) = write_i32_pair(pipefd, r_fd, w_fd) {
+        fdt.put_unused_fd(r_fd);
+        fdt.put_unused_fd(w_fd);
+        return rv;
     }
-    // SAFETY: pipefd validated writable for the full int[2] output array.
-    unsafe {
-        core::ptr::write_volatile(pipefd as *mut i32,         r_fd);
-        core::ptr::write_volatile((pipefd + 4) as *mut i32,   w_fd);
-    }
+    fdt.fd_install(r_fd, r_file);
+    fdt.fd_install(w_fd, w_file);
     0
 }
