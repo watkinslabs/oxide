@@ -20,6 +20,7 @@ pub mod addr;
 pub mod pkt;
 pub mod tcp_state;
 pub mod netdev;
+pub mod socket_args;
 pub mod loopback;
 pub mod ipv4;
 pub mod ipv6;
