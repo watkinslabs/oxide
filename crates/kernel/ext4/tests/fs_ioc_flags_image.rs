@@ -18,21 +18,38 @@ use vfs::{FileAttr, SuperBlock, VfsError};
 
 const IMAGE: &[u8] = include_bytes!("mini-j.img");
 const SECTOR: u32 = 512;
+const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
+const EXT4_RO_COMPAT_OFF: usize = EXT4_SUPERBLOCK_OFFSET + 0x64;
 
 // FS_*_FL == ext4 on-disk i_flags bits.
 const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
 const FS_NODUMP_FL:    u32 = 0x0000_0040;
 const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 const EXT4_EXTENTS_FL: u32 = 0x0008_0000; // kernel-internal, must be preserved
+const EXT4_FEATURE_RO_COMPAT_PROJECT: u32 = ext4::superblock::RO_COMPAT_PROJECT;
 
-fn shared_disk() -> Arc<dyn BlockDevice> {
-    let cap = (IMAGE.len() as u64) / (SECTOR as u64);
+fn shared_disk_from(image: Vec<u8>) -> Arc<dyn BlockDevice> {
+    let cap = (image.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
     let mut req = BlockRequest {
-        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: IMAGE.to_vec(),
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image,
     };
     disk.submit_sync(&mut req).expect("seed memdisk");
     disk
+}
+
+fn shared_disk() -> Arc<dyn BlockDevice> {
+    shared_disk_from(IMAGE.to_vec())
+}
+
+fn shared_project_disk() -> Arc<dyn BlockDevice> {
+    let mut image = IMAGE.to_vec();
+    let mut features = u32::from_le_bytes(
+        image[EXT4_RO_COMPAT_OFF..EXT4_RO_COMPAT_OFF + 4].try_into().unwrap(),
+    );
+    features |= EXT4_FEATURE_RO_COMPAT_PROJECT;
+    image[EXT4_RO_COMPAT_OFF..EXT4_RO_COMPAT_OFF + 4].copy_from_slice(&features.to_le_bytes());
+    shared_disk_from(image)
 }
 
 fn mount(disk: Arc<dyn BlockDevice>) -> (Arc<ext4::rootfs::Ext4Mount>, Arc<SuperBlock>) {
@@ -99,6 +116,25 @@ fn non_project_ext4_rejects_nonzero_project_id() {
         Err(VfsError::Eopnotsupp));
     assert_ne!(inode.fileattr_get().unwrap().flags & FS_NODUMP_FL, 0,
         "Linux ext4 applies flags before unsupported project-id rejection");
+}
+
+#[test]
+fn project_ext4_persists_nonzero_project_id() {
+    let disk = shared_project_disk();
+    let (m, sb) = mount(disk.clone());
+    let inode = m.state().create_at(b"/project.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/project.txt").expect("lookup");
+
+    assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 0);
+    inode.fileattr_set(&FileAttr { fsx_projid: 77, ..Default::default() })
+        .expect("set project id");
+    assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 77);
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_projid, 77);
+
+    drop(sb); drop(m);
+    let (m2, _sb2) = mount(disk);
+    let node = m2.state().lookup_inode_any(b"/project.txt").expect("lookup after remount");
+    assert_eq!(node.fileattr_get().unwrap().fsx_projid, 77);
 }
 
 #[test]

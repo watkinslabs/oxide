@@ -1,3 +1,4 @@
+use crate::inode::InodeError;
 use crate::mount::{Mount, MountError};
 
 // ext4 on-disk inode field byte offsets (Linux `struct ext4_inode`). The data
@@ -17,6 +18,7 @@ const OFF_ATIME_EXTRA: usize = 0x8C;
 const OFF_CRTIME:       usize = 0x90;
 const OFF_CRTIME_EXTRA: usize = 0x94;
 const OFF_FLAGS:        usize = 0x20; // i_flags (chattr flag word)
+const OFF_PROJID:       usize = 0x9C; // i_projid, present in >=160-byte inode
 
 impl Mount {
     /// Persist `i_flags` (@0x20) to `ino`'s on-disk inode, journaled — the ext4
@@ -26,6 +28,24 @@ impl Mount {
         self.run_journaled(|m| {
             let (mut b, _off) = m.read_inode_bytes(ino)?;
             b[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+
+    /// Persist `i_projid` (@0x9C) to `ino`'s on-disk inode, journaled. Linux
+    /// `ext4_ioctl_setproject` requires the PROJECT feature and enough inode
+    /// room for the field; callers enforce feature policy. # C: O(1) I/O, 1 txn
+    pub fn persist_inode_project(&self, ino: u32, projid: u32, ctime_ns: u64) -> Result<(), MountError> {
+        let isize = self.sb.inode_size as usize;
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            if b.len() < OFF_PROJID + 4 { return Err(MountError::Inode(InodeError::BadLen)); }
+            b[OFF_PROJID..OFF_PROJID + 4].copy_from_slice(&projid.to_le_bytes());
+            let (c_lo, c_ex) = enc_time(ctime_ns);
+            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
+            if isize >= OFF_CTIME_EXTRA + 4 {
+                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
+            }
             m.write_inode_bytes(ino, &b)
         })
     }
