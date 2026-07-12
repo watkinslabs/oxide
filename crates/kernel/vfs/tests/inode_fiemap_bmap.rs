@@ -60,8 +60,8 @@ fn defaults_match_linux_errno() {
     assert_eq!(p.fiemap(0, p.size(), &mut |_| { seen = true; true }), Err(VfsError::Eopnotsupp));
     assert!(!seen, "default fiemap emits no extents");
     assert_eq!(p.bmap(0), Err(VfsError::Einval));
-    assert_eq!(p.fileattr_get(), Err(VfsError::Eopnotsupp));
-    assert_eq!(p.fileattr_set(&FileAttr::default()), Err(VfsError::Eopnotsupp));
+    assert_eq!(p.fileattr_get(), Err(VfsError::Enotty));
+    assert_eq!(p.fileattr_set(&FileAttr::default()), Err(VfsError::Enotty));
 }
 
 /// A backend emits its extents in order, and the final extent carries
