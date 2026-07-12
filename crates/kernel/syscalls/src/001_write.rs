@@ -52,9 +52,7 @@ fn trace_session_write(file: &vfs::File, bytes: &[u8]) {
 pub fn sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
-    let cnt = args.a2 as usize;
-    if cnt == 0 { return 0; }
-    if let Err(rv) = crate::userbuf::validate_user_buf(buf, cnt as u64, 1) { return rv; }
+    let mut cnt = args.a2 as usize;
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
@@ -101,13 +99,31 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
             }
         }
     }
-    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
-    let slice: &[u8] = unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) };
+    let empty: [u8; 0] = [];
+    let slice: &[u8] = if cnt == 0 {
+        &empty
+    } else {
+        if let Err(rv) = crate::userbuf::validate_user_buf(buf, cnt as u64, 1) { return rv; }
+        cnt = crate::userbuf::clamp_rw_count(cnt);
+        let pos = crate::write_common::write_pos(&file);
+        cnt = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, cnt, true) {
+            Ok(n)  => n,
+            Err(e) => return e,
+        };
+        // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
+        unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }
+    };
     #[cfg(feature = "debug-session")]
     trace_session_write(&file, slice);
     #[cfg(feature = "debug-stderr")]
     trace_stderr_write(fd, slice);
-    match file.write(slice) {
+    let wr = file.write(slice);
+    #[cfg(feature = "debug-udevdb")]
+    {
+        let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
+        crate::namei_common::trace_udevdb_file(b"write", &file, rv);
+    }
+    match wr {
         Ok(n)  => {
             // DIAG (debug-wakelat): a write() returning 0 for a NON-zero request is
             // a Linux violation (must write >0, block, or error) and spins glibc's

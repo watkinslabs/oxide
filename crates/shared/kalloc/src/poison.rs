@@ -17,13 +17,20 @@ use core::ptr;
 
 use sync::{KMalloc, Spinlock};
 
-/// Only small blocks are poisoned/quarantined — Arc inners (File/Task/dentry/
-/// inode/superblock) all fall under this; large buffers free normally so the
-/// held-memory bound stays small.
-pub const POISON_MAX: usize = 4096;
-/// Ring depth. QN * POISON_MAX (= 8 MiB) is the worst-case held-out memory.
+/// Blocks up to this size are poisoned/quarantined. MUST exceed sizeof(
+/// ArcInner<Task>): Task alone is >4.6KB (rseq_ptr at offset 0x1180=4480, plus
+/// trailing fields + Creds), so the old 4096 cap EXCLUDED every freed Task slot
+/// from quarantine — and B712 evidence names freed Task slots as the residual
+/// corruptor's prime victim, so poison was structurally blind to it. 8192 covers
+/// Task (+Arc header +redzone) while still excluding huge page/DMA buffers.
+pub const POISON_MAX: usize = 8192;
+/// Ring depth. QN * POISON_MAX worst-case held-out memory. Large so blocks stay
+/// quarantined long enough that a LONG-LIVED stale-pointer UAF write lands while
+/// the block is still poisoned (the corruptor survives >2048 allocs).
 const QN: usize = 2048;
 const POISON_BYTE: u8 = 0xEE;
+const REDZONE_BYTE: u8 = 0xA5;
+pub const REDZONE_BYTES: usize = 32;
 /// Poison ONLY the leading bytes — an `ArcInner`'s strong+weak refcount words
 /// live at offset 0/8, and the `#UD`/overflow victim is the strong count. A
 /// reuse-UAF `Arc::clone`/`Weak::upgrade` on a quarantined block then reads
@@ -37,9 +44,70 @@ const POISON_HEAD: usize = 16;
 struct Slot { base: u64, size: u32, align: u32, live: bool }
 impl Slot { const EMPTY: Slot = Slot { base: 0, size: 0, align: 0, live: false }; }
 
-struct Quar { slots: [Slot; QN], idx: usize }
+struct Quar { slots: [Slot; QN], idx: usize, scan: usize }
 
-static QUAR: Spinlock<Quar, KMalloc> = Spinlock::new(Quar { slots: [Slot::EMPTY; QN], idx: 0 });
+static QUAR: Spinlock<Quar, KMalloc> = Spinlock::new(Quar { slots: [Slot::EMPTY; QN], idx: 0, scan: 0 });
+
+/// Re-verify the poison head of `n` quarantined slots (round-robin from
+/// `q.scan`). Any byte no longer 0xEE was WRITTEN after free (UAF write) — report
+/// base/size(=type)/offset/value once. Catches a LONG-LIVED stale-pointer write
+/// promptly (within QN/n frees of it happening), before eviction reclaims the
+/// block. # C: O(n)
+#[cfg(feature = "debug-heappoison")]
+fn scan_window(q: &mut Quar, n: usize) {
+    for _ in 0..n {
+        let i = q.scan; q.scan = (i + 1) % QN;
+        let s = q.slots[i];
+        if !s.live { continue; }
+        // Scan DEEP, not just the 16B refcount head: observed corruption offsets
+        // are 0x10/0x48/0x71 (16-113 bytes in), and a freed Task (>4.6KB) can be
+        // scribbled at a much deeper pointer field, so scan a wide window.
+        let head = core::cmp::min(1024, s.size as usize);
+        for off in 0..head {
+            // SAFETY: s.base/s.size from a prior alloc still owned by the ring.
+            let b = unsafe { ptr::read((s.base as *const u8).add(off)) };
+            if b != POISON_BYTE {
+                klog::write_raw(b"[UAF-WRITE-SCAN] freed base=0x");
+                klog::write_hex_u64(s.base);
+                klog::write_raw(b" size="); klog::write_dec_u64(s.size as u64);
+                klog::write_raw(b" off="); klog::write_dec_u64(off as u64);
+                klog::write_raw(b" val=0x"); klog::write_hex_u64(b as u64);
+                klog::write_raw(b"\n");
+                // Re-poison so we don't spam the same slot every sweep.
+                // SAFETY: same owned block; restoring the poison byte.
+                unsafe { ptr::write_bytes((s.base as *mut u8).add(off), POISON_BYTE, 1); }
+                break;
+            }
+        }
+    }
+}
+
+/// Expand a caller layout with a trailing redzone. The user pointer is still the
+/// allocation base; only the internal hole-list size grows. # C: O(1)
+pub fn alloc_layout(layout: Layout) -> Option<Layout> {
+    let size = layout.size().checked_add(REDZONE_BYTES)?;
+    Layout::from_size_align(size, layout.align()).ok()
+}
+
+/// Arm the trailing redzone immediately after the caller-visible bytes. # C: O(R)
+pub unsafe fn arm_redzone(ptr: *mut u8, layout: Layout) {
+    // SAFETY: caller allocated using `alloc_layout(layout)`, so the redzone
+    // range immediately after layout.size() is owned and writable.
+    unsafe { ptr::write_bytes(ptr.add(layout.size()), REDZONE_BYTE, REDZONE_BYTES); }
+}
+
+/// Verify the trailing redzone before freeing/quarantining. A mismatch proves a
+/// heap overflow by the owner of this allocation. # C: O(R)
+pub unsafe fn check_redzone(ptr: *mut u8, layout: Layout) {
+    for i in 0..REDZONE_BYTES {
+        // SAFETY: caller allocated using `alloc_layout(layout)`; byte i lies in
+        // the trailing redzone and is valid to read before deallocation.
+        let got = unsafe { ptr::read(ptr.add(layout.size() + i)) };
+        if got != REDZONE_BYTE {
+            panic!("heap redzone corrupted");
+        }
+    }
+}
 
 /// Poison `[ptr, ptr+size)` with 0xEE and hold the block in the quarantine
 /// ring (delaying reuse so a UAF read hits poison). Returns any older block
@@ -48,17 +116,50 @@ static QUAR: Spinlock<Quar, KMalloc> = Spinlock::new(Quar { slots: [Slot::EMPTY;
 /// borrowed; nothing may read the block until it is evicted and freed.
 /// # C: O(1)
 pub unsafe fn quarantine(ptr: *mut u8, layout: Layout) -> Option<(*mut u8, Layout)> {
-    // SAFETY: caller guarantees the block is just-freed and owned by us; fill only the leading refcount words so a UAF Arc/Weak deref traps while data fields stay valid (avoids breaking benign freed-memory readers).
-    unsafe { ptr::write_bytes(ptr, POISON_BYTE, core::cmp::min(POISON_HEAD, layout.size())); }
+    // FULL-BLOCK poison (diagnostic): fill the ENTIRE freed block with 0xEE so a
+    // UAF READ of any field (not just the refcount head) returns 0xEE.. → a
+    // pointer field reads 0xeeeeeeeeeeeeeeee and the deref faults at ~0xeeee..
+    // with the stale base pointer LIVE in a GPR → uaf_lookup (fault.rs) names the
+    // block size (=victim type). Breaks benign freed-readers, but those faults
+    // are also uaf_lookup hits — the FIRST hit names the corruptor's target.
+    // SAFETY: caller guarantees the block is just-freed and owned by us.
+    unsafe { ptr::write_bytes(ptr, POISON_BYTE, layout.size()); }
     let mut q = QUAR.lock();
     let i = q.idx;
     q.idx = (i + 1) % QN;
     let evict = if q.slots[i].live {
         let s = q.slots[i];
+        // VERIFY the poison is intact before really freeing: any byte in the
+        // poisoned head that is no longer 0xEE was WRITTEN while the block was
+        // quarantined (freed) — a use-after-free WRITE. Since Arc/Weak refcounts
+        // live at offset 0/8, a stale-Arc over-release scribbles a small count
+        // here. Report base+size (size names the victim type) + the first
+        // changed (offset,value) so the corruptor's target type is named.
+        let head = core::cmp::min(POISON_HEAD, s.size as usize);
+        // SAFETY: s.base/s.size came from a prior alloc still owned by the ring; reading the poisoned head is in-bounds.
+        for off in 0..head {
+            let b = unsafe { ptr::read((s.base as *const u8).add(off)) };
+            if b != POISON_BYTE {
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    klog::write_raw(b"[UAF-WRITE] freed block base=0x");
+                    klog::write_hex_u64(s.base);
+                    klog::write_raw(b" size="); klog::write_dec_u64(s.size as u64);
+                    klog::write_raw(b" off="); klog::write_dec_u64(off as u64);
+                    klog::write_raw(b" val=0x"); klog::write_hex_u64(b as u64);
+                    klog::write_raw(b"\n");
+                }
+                break;
+            }
+        }
         // SAFETY: (size,align) were split from a valid Layout on insert; reconstructing the same Layout is in-bounds by construction.
         Some((s.base as *mut u8, unsafe { Layout::from_size_align_unchecked(s.size as usize, s.align as usize) }))
     } else { None };
     q.slots[i] = Slot { base: ptr as u64, size: layout.size() as u32, align: layout.align() as u32, live: true };
+    // Re-verify a window of older quarantined blocks so a long-lived UAF write is
+    // caught promptly (full sweep every QN/32 frees).
+    #[cfg(feature = "debug-heappoison")]
+    scan_window(&mut q, 128);
     evict
 }
 

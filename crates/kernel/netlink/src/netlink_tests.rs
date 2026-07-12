@@ -32,6 +32,36 @@ fn nlmsg_align_rounds_up_to_4() {
 }
 
 #[test]
+fn vfs_write_dispatches_netlink_request_and_queues_reply() {
+    use alloc::sync::Arc;
+    let sock = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE));
+    let inode = make_netlink_socket_inode(Arc::clone(&sock));
+    let dentry = vfs::Dentry::new(None, "nl".into(), Arc::clone(&inode));
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+
+    let req = Nlmsghdr {
+        nlmsg_len:   Nlmsghdr::SIZE as u32,
+        nlmsg_type:  rtnetlink::RTM_GETLINK,
+        nlmsg_flags: flags::NLM_F_REQUEST | flags::NLM_F_DUMP,
+        nlmsg_seq:   77,
+        nlmsg_pid:   1234,
+    };
+    let mut msg = [0u8; Nlmsghdr::SIZE];
+    req.write_to(&mut msg);
+
+    assert_eq!(file.write(&msg), Ok(msg.len()));
+    let (reply, src) = sock.dequeue().expect("RTM_GETLINK reply queued");
+    assert_eq!(src, 0);
+    assert!(reply.len() >= Nlmsghdr::SIZE + 4, "multipart dump has NLMSG_DONE");
+    let done_at = reply.len() - (Nlmsghdr::SIZE + 4);
+    let done = Nlmsghdr::parse(&reply[done_at..]).expect("done header");
+    assert_eq!(done.nlmsg_type, msg::NLMSG_DONE);
+    assert_eq!(done.nlmsg_flags, flags::NLM_F_MULTI);
+    assert_eq!(done.nlmsg_seq, 77);
+    assert_eq!(done.nlmsg_pid, sock.port_id.load(Ordering::Acquire));
+}
+
+#[test]
 fn port_ids_are_unique() {
     let a = alloc_port_id();
     let b = alloc_port_id();
@@ -90,6 +120,32 @@ fn raw_uevent_delivers_only_to_kernel_group() {
     assert_eq!(n, 1);
     assert!(udevd.dequeue().is_some());
     assert!(monitor.dequeue().is_none());
+}
+
+#[test]
+fn raw_uevent_stays_level_ready_until_consumed() {
+    use alloc::sync::Arc;
+    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    udevd.set_group_mask(1);
+    register_uevent_listener(&udevd);
+
+    let n = emit_uevent_with_env(
+        "add",
+        "/devices/pci0000:00/0000:00:04.0/virtio3/drm/card0",
+        "drm",
+        &["DEVNAME=dri/card0", "MAJOR=226", "MINOR=0", "DEVTYPE=drm_minor"]);
+    assert_eq!(n, 1);
+    assert_ne!(udevd.poll() & vfs::POLL_IN, 0, "queued coldplug uevent must poll readable");
+
+    let (msg, src) = udevd.peek_front().expect("queued uevent");
+    assert_eq!(src, 0);
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"ACTION=add"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"DEVPATH=/devices/pci0000:00/0000:00:04.0/virtio3/drm/card0"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"SUBSYSTEM=drm"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"DEVNAME=dri/card0"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"MAJOR=226"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"MINOR=0"));
+    assert!(msg.split(|b| *b == 0).any(|e| e == b"DEVTYPE=drm_minor"));
 }
 
 #[test]

@@ -99,7 +99,9 @@ impl Runqueue {
         // pointed-to Task lives until the next `schedule()` swaps
         // it out and drops the prior strong ref. The borrow's
         // lifetime is the caller's preempt-off window.
-        unsafe { &*p }
+        let t = unsafe { &*p };
+        t.debug_check_canary("current_ref");
+        t
     }
 
     /// Atomically swap `current` to `next`, returning the prior
@@ -115,7 +117,9 @@ impl Runqueue {
         // SAFETY: `prev_raw` was previously installed via
         // `Arc::into_raw`; the matching `from_raw` reclaims the
         // strong ref we conceptually held in `current`.
-        unsafe { Arc::from_raw(prev_raw) }
+        let prev = unsafe { Arc::from_raw(prev_raw) };
+        prev.debug_check_canary("swap_current_prev");
+        prev
     }
 }
 

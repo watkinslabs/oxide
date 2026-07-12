@@ -13,7 +13,54 @@ use crate::ARCH_CTX_SIZE;
 use super::{ArchCtxBuf, ArchFpuBuf, Creds, PosixTimer, SaHandler, SchedClass, Task, TaskState};
 use crate::signum::Signum;
 
+#[cfg(feature = "debug-smp")]
+const TASK_CANARY_HEAD: u64 = 0x5441_534b_4845_4144;
+#[cfg(feature = "debug-smp")]
+const TASK_CANARY_TAIL: u64 = 0x5441_534b_5441_494c;
+
+#[cfg(feature = "debug-smp")]
+#[inline]
+fn task_canary_head(tid: u32) -> u64 {
+    TASK_CANARY_HEAD ^ ((tid as u64) << 32) ^ tid as u64
+}
+
+#[cfg(feature = "debug-smp")]
+#[inline]
+fn task_canary_tail(tid: u32) -> u64 {
+    TASK_CANARY_TAIL ^ ((tid as u64) << 17) ^ ((tid as u64) << 1)
+}
+
 impl Task {
+    /// Debug-smp Task lifetime sentinel. Trips when a stale `Task*` is used after
+    /// its allocation was freed/reused, before the later victim object faults.
+    /// # C: O(1)
+    #[cfg(feature = "debug-smp")]
+    pub fn debug_check_canary(&self, site: &'static str) {
+        let eh = task_canary_head(self.tid);
+        let et = task_canary_tail(self.tid);
+        let gh = self.dbg_canary_head.load(Ordering::Acquire);
+        let gt = self.dbg_canary_tail.load(Ordering::Acquire);
+        if gh != eh || gt != et {
+            klog::write_raw(b"[TASK-CANARY site=");
+            klog::write_raw(site.as_bytes());
+            klog::write_raw(b" ptr=");
+            klog::write_hex_u64(self as *const Task as u64);
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(self.tid as u64);
+            klog::write_raw(b" head=");
+            klog::write_hex_u64(gh);
+            klog::write_raw(b" tail=");
+            klog::write_hex_u64(gt);
+            klog::write_raw(b"]\n");
+        }
+        hal::kassert!(gh == eh && gt == et, "Task canary corrupted");
+    }
+
+    /// # C: O(1)
+    #[cfg(not(feature = "debug-smp"))]
+    #[inline]
+    pub fn debug_check_canary(&self, _site: &'static str) {}
+
     /// Process name for a task dump / procfs `comm`: the basename of the exec'd
     /// path (Linux sets `comm` from the invoked program at execve), falling back
     /// to the fork-time `name` before the first exec — so `ps` / `/proc/<pid>/
@@ -65,6 +112,8 @@ impl Task {
         mm: Option<Arc<AddressSpace>>,
     ) -> Self {
         Self {
+            #[cfg(feature = "debug-smp")]
+            dbg_canary_head: AtomicU64::new(task_canary_head(tid)),
             tid,
             tgid: AtomicU32::new(tid),
             name,
@@ -180,6 +229,8 @@ impl Task {
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
             creds: Creds::root(),
+            #[cfg(feature = "debug-smp")]
+            dbg_canary_tail: AtomicU64::new(task_canary_tail(tid)),
         }
     }
 
@@ -190,6 +241,7 @@ impl Task {
     /// against this task on another CPU.
     /// # C: O(1)
     pub unsafe fn fd_table_ref(&self) -> Option<&Arc<FdTable>> {
+        self.debug_check_canary("fd_table_ref");
         // SAFETY: caller asserts no concurrent writer; UnsafeCell::get is the supported deref pattern under documented external synchronization.
         unsafe { (&*self.fd_table.get()).as_ref() }
     }
@@ -201,6 +253,7 @@ impl Task {
     /// the runqueue invariant for this task; preempt-off; UP.
     /// # C: O(1) + Arc drop
     pub unsafe fn replace_fd_table(&self, new: Option<Arc<FdTable>>) {
+        self.debug_check_canary("replace_fd_table");
         // SAFETY: see fn-level contract; single-mutator on this CPU.
         unsafe { *self.fd_table.get() = new; }
     }
@@ -213,6 +266,7 @@ impl Task {
     /// scheduled (no concurrent reader of `kernel_stack`).
     /// # C: O(1)
     pub unsafe fn install_stack(&mut self, stack: Box<[u8]>) {
+        self.debug_check_canary("install_stack");
         let len = stack.len();
         self.stack = Some(stack);
         // Recompute top from the freshly stored Box. Borrowing
@@ -234,6 +288,7 @@ impl Task {
     /// pending `Context::switch` against this task.
     /// # C: O(1)
     pub unsafe fn arch_ctx_ptr<C: Sized>(&self) -> *mut C {
+        self.debug_check_canary("arch_ctx_ptr");
         const { assert!(core::mem::size_of::<C>() <= ARCH_CTX_SIZE,
             "Context size exceeds ARCH_CTX_SIZE; bump the constant in `crates/sched`"); }
         self.arch_ctx.get() as *mut C
@@ -241,6 +296,7 @@ impl Task {
 
     /// # C: O(1)
     pub fn state(&self) -> TaskState {
+        self.debug_check_canary("state");
         TaskState::from_u8(self.state.load(Ordering::Acquire))
             .expect("Task::state corrupt")
     }
@@ -249,6 +305,7 @@ impl Task {
     /// if the observed state didn't match `from`.
     /// # C: O(1)
     pub fn cas_state(&self, from: TaskState, to: TaskState) -> Result<(), TaskState> {
+        self.debug_check_canary("cas_state");
         match self.state.compare_exchange(
             from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire,
         ) {
@@ -258,7 +315,10 @@ impl Task {
     }
 
     /// # C: O(1)
-    pub fn set_state(&self, s: TaskState) { self.state.store(s as u8, Ordering::Release); }
+    pub fn set_state(&self, s: TaskState) {
+        self.debug_check_canary("set_state");
+        self.state.store(s as u8, Ordering::Release);
+    }
 
     /// PID-namespace-visible process id (`vtgid`, falling back to the real
     /// `tgid` when no NS virtualisation is active). This is the value Linux
@@ -269,6 +329,7 @@ impl Task {
     /// carrying the global tgid matches no unit and the service times out.
     /// # C: O(1)
     pub fn visible_pid(&self) -> u32 {
+        self.debug_check_canary("visible_pid");
         let v = self.vtgid.load(Ordering::Acquire);
         if v != 0 { v } else { self.tgid.load(Ordering::Acquire) }
     }
@@ -277,10 +338,14 @@ impl Task {
     /// `13§5` invariant 5. F211: also see `set_vruntime_to_floor`.
     /// # C: O(1)
     pub fn lift_vruntime(&self, floor: u64) {
+        self.debug_check_canary("lift_vruntime");
         let cur = self.vruntime.load(Ordering::Acquire);
         if cur < floor { self.vruntime.store(floor, Ordering::Release); }
     }
     /// F211 sleeper credit on wake (Linux place_entity).
     /// # C: O(1)
-    pub fn set_vruntime_to_floor(&self, f: u64) { self.vruntime.store(f, Ordering::Release); }
+    pub fn set_vruntime_to_floor(&self, f: u64) {
+        self.debug_check_canary("set_vruntime_to_floor");
+        self.vruntime.store(f, Ordering::Release);
+    }
 }

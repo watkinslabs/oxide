@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "debug-mount")]
+use crate::user_as::debug::{STEP_ROOT, STEP_RIP, STEP_VA};
 
 #[cfg(target_arch = "x86_64")]
 pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {

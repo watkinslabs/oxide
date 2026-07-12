@@ -1,11 +1,11 @@
 use super::*;
 
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
-static STEP_VA:   AtomicU64 = AtomicU64::new(0);
+pub(super) static STEP_VA:   AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
-static STEP_RIP:  AtomicU64 = AtomicU64::new(0);
+pub(super) static STEP_RIP:  AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
-static STEP_ROOT: AtomicU64 = AtomicU64::new(0);
+pub(super) static STEP_ROOT: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
 static PREV_TRAP_HOOK: AtomicU64 = AtomicU64::new(0);
 

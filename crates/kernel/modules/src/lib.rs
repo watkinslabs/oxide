@@ -130,5 +130,4 @@ mod stub_tests {
 }
 
 
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod registry;
