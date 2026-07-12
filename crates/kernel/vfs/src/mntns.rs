@@ -274,12 +274,19 @@ pub fn mnt_ns_enter(ns: u64) {
 /// # C: O(N_ns_mounts)
 pub fn mnt_ns_exit(ns: u64) -> bool {
     let Some(n) = ns_by_id(ns) else { return false; };
-    let prev = n.nr_tasks.fetch_sub(1, Ordering::AcqRel);
-    if prev <= 1 {
-        crate::mount::reap_ns(ns);
-        ns_forget(ns);
-        true
-    } else { false }
+    loop {
+        let prev = n.nr_tasks.load(Ordering::Acquire);
+        if prev == 0 { return false; }
+        if n.nr_tasks.compare_exchange(prev, prev - 1, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            continue;
+        }
+        if prev == 1 {
+            crate::mount::reap_ns(ns);
+            ns_forget(ns);
+            return true;
+        }
+        return false;
+    }
 }
 
 // ---------------------------------------------------------------------------

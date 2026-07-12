@@ -251,6 +251,36 @@ fn per_ns_isolation_and_copy_on_unshare() {
     assert!(common::mount_root_at("/u2b-only7").is_none(), "ns 0 can't see ns 7's new mount");
 }
 
+#[test]
+fn mountinfo_view_uses_the_mounting_task_namespace() {
+    let _g = guard();
+    const INIT_NS: u64 = 0x7800_0001;
+    const CHILD_NS: u64 = 0x7800_0002;
+    vfs::mount::set_current_ns_provider(|| INIT_NS);
+    common::register("/", Arc::new(TestFs { root_ino: 0x7800 })).expect("root");
+    common::register("/tmp-systemd-visible", Arc::new(TestFs { root_ino: 0x7801 })).expect("tmp");
+
+    let init_rows = vfs::mount::snapshot_ns_view(INIT_NS);
+    assert!(init_rows.iter().any(|m| m.mount_point_str() == "/tmp-systemd-visible"),
+        "mount(2) success in a task's namespace must be visible to that namespace's mountinfo reader");
+    let foreign_rows = vfs::mount::snapshot_ns_view(CHILD_NS);
+    assert!(foreign_rows.iter().all(|m| m.mount_point_str() != "/tmp-systemd-visible"),
+        "mountinfo must not recover missing rows by scanning foreign namespaces");
+
+    vfs::mount::snapshot_ns_map(INIT_NS, CHILD_NS);
+    vfs::mount::set_current_ns_provider(|| CHILD_NS);
+    common::register("/tmp-child-only", Arc::new(TestFs { root_ino: 0x7802 })).expect("child");
+
+    let child_rows = vfs::mount::snapshot_ns_view(CHILD_NS);
+    assert!(child_rows.iter().any(|m| m.mount_point_str() == "/tmp-systemd-visible"),
+        "copy-on-unshare preserves parent mounts in the child's mountinfo view");
+    assert!(child_rows.iter().any(|m| m.mount_point_str() == "/tmp-child-only"),
+        "new mounts after unshare appear in the child's mountinfo view");
+    let init_rows_after = vfs::mount::snapshot_ns_view(INIT_NS);
+    assert!(init_rows_after.iter().all(|m| m.mount_point_str() != "/tmp-child-only"),
+        "new mounts after unshare do not leak back to the parent namespace");
+}
+
 // K2V V7/U3-a: unregister detaches a TABLE mount (e.g. a bind) in the
 // caller's ns — before this, umount of a bind mount was a no-op.
 #[test]
