@@ -39,6 +39,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // fallback table (docs/53 hollow-shell) — an unimplemented syscall must
     // report ENOSYS, never silently hit a stub with wrong semantics.
     else { -(syscall::Errno::Enosys.as_i32() as i64) };
+    let rv = syscall::restart::normalize_user_return(rv);
     debug_syscall! { sched::trace::ret(nr, rv); }
     syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {
