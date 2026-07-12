@@ -148,6 +148,14 @@ pub trait FileOps: Send + Sync {
         self.poll_file(file.inode(), file.pos())
     }
 
+    /// `f_op->fasync` — backend admission for `FIOASYNC`/`F_SETFL(O_ASYNC)`.
+    /// Default means no fasync op installed; async-capable stream backends call
+    /// [`File::set_fasync_state`] to link/unlink the open description.
+    /// # C: backend-dependent
+    fn fasync_file(&self, _fd: i32, _file: &Arc<File>, _on: bool) -> KResult<()> {
+        Err(VfsError::Enotty)
+    }
+
     /// `MAP_SHARED` page-cache frame for page-aligned file offset `off`. Default
     /// forwards through the inode's `i_mapping` (one per-inode address space);
     /// `None` → the fault handler copies via `read` into a private frame.

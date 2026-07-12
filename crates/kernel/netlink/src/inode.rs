@@ -30,6 +30,11 @@ impl vfs::FileOps for NetlinkFileOps {
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<NetlinkSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }
+
+    fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
+        file.set_fasync_state(on);
+        Ok(())
+    }
 }
 
 /// Build the `Arc<Inode>` wrapping a netlink socket fd.
