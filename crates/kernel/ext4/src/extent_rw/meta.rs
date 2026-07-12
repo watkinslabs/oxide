@@ -22,13 +22,18 @@ const OFF_GENERATION:   usize = 0x64; // i_generation
 const OFF_PROJID:       usize = 0x9C; // i_projid, present in >=160-byte inode
 
 impl Mount {
-    /// Persist `i_flags` (@0x20) to `ino`'s on-disk inode, journaled — the ext4
-    /// half of `FS_IOC_SETFLAGS`. Caller has already folded the user-modifiable
-    /// bits over the preserved kernel-internal ones. # C: O(1) I/O, 1 txn
-    pub fn persist_inode_flags(&self, ino: u32, flags: u32) -> Result<(), MountError> {
+    /// Persist `i_flags` (@0x20) plus ctime to `ino`'s on-disk inode, journaled
+    /// — the ext4 half of `FS_IOC_SETFLAGS`. # C: O(1) I/O, 1 txn
+    pub fn persist_inode_flags(&self, ino: u32, flags: u32, ctime_ns: u64) -> Result<(), MountError> {
+        let isize = self.sb.inode_size as usize;
         self.run_journaled(|m| {
             let (mut b, _off) = m.read_inode_bytes(ino)?;
             b[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+            let (c_lo, c_ex) = enc_time(ctime_ns);
+            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
+            if isize >= OFF_CTIME_EXTRA + 4 {
+                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
+            }
             m.write_inode_bytes(ino, &b)
         })
     }
