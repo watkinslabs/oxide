@@ -225,6 +225,7 @@ pub fn sys_clone_dispatch(
         child.ns_membership.fetch_or(new_ns_bits, Ordering::Release);
         crate::s272_unshare::apply_new_namespaces(&child, new_ns_bits);
     }
+    vfs::mntns::mnt_ns_enter(child.mount_ns.load(Ordering::Acquire));
     // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
     // inherits the caller's parent link; otherwise the caller becomes parent.
     if (flags & CLONE_PARENT) != 0 {

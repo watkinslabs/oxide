@@ -52,4 +52,8 @@ fn alloc_ns_id_is_unique_nonzero_and_never_reused() {
     let after = mntns::alloc_ns_id();
     assert!(after > reaped, "post-reap allocation is monotonic, not recycled: {} <= {}", after, reaped);
     assert_ne!(after, reaped, "a reaped id is never handed back out");
+
+    let empty = mntns::alloc_ns_id();
+    assert!(!mntns::mnt_ns_exit(empty), "dropping an unentered ns is a no-op");
+    assert_eq!(mntns::ns_nr_mounts(empty), 0, "no-op exit must not corrupt the namespace object");
 }

@@ -273,7 +273,13 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
         NsKind::Net    => cur.net_ns.store(ns.id, Ordering::Release),
         NsKind::User   => cur.user_ns.store(ns.id, Ordering::Release),
         NsKind::Cgroup => cur.cgroup_ns.store(ns.id, Ordering::Release),
-        NsKind::Mnt    => cur.mount_ns.store(ns.id, Ordering::Release),
+        NsKind::Mnt    => {
+            let old = cur.mount_ns.swap(ns.id, Ordering::AcqRel);
+            if old != ns.id {
+                vfs::mntns::mnt_ns_enter(ns.id);
+                vfs::mntns::mnt_ns_exit(old);
+            }
+        }
     }
     0
 }

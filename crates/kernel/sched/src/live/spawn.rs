@@ -132,6 +132,7 @@ pub unsafe fn spawn_kernel_thread(
     // 4. Wrap, enqueue, return.
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    vfs::mntns::mnt_ns_enter(arc.mount_ns.load(Ordering::Acquire));
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
@@ -232,6 +233,7 @@ pub unsafe fn spawn_user_thread_with_vpid(
 
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    vfs::mntns::mnt_ns_enter(arc.mount_ns.load(Ordering::Acquire));
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
