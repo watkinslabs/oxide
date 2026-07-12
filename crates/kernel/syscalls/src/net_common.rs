@@ -17,6 +17,7 @@ pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
         net::NetError::Eaddrinuse    => Errno::Eaddrinuse,
         net::NetError::Eaddrnotavail => Errno::Eaddrnotavail,
         net::NetError::Edestaddrreq  => Errno::Edestaddrreq,
+        net::NetError::Emsgsize      => Errno::Emsgsize,
         net::NetError::Enobufs       => Errno::Enobufs,
         net::NetError::Enomem        => Errno::Enomem,
         net::NetError::Enetunreach   => Errno::Enetunreach,
@@ -87,6 +88,11 @@ pub(crate) fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSock
     inode.i_private().clone().downcast::<InetSocket>().ok()
 }
 
+/// Downcast an inode to the concrete AF_VSOCK socket. # C: O(1)
+pub(crate) fn inode_as_vsock(inode: &vfs::InodeRef) -> Option<Arc<net::vsock_socket::VsockSocket>> {
+    inode.i_private().clone().downcast::<net::vsock_socket::VsockSocket>().ok()
+}
+
 /// D3.3: resolve an fd to its AF_VSOCK socket Arc, or None for a
 /// closed fd / non-vsock inode. Mirrors `inode_as_inet_socket` but
 /// keys on the VSOCK_INO_TAG. # C: O(1)
@@ -95,10 +101,7 @@ pub(crate) fn vsock_from_fd(fd: u64) -> Option<Arc<net::vsock_socket::VsockSocke
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?;
     let file = fdt.get(fd as i32).ok()?;
-    let inode: &vfs::InodeRef = file.inode();
-    // Post-KEYSTONE: the vsock socket lives in `i_private`; recover the typed
-    // `Arc<VsockSocket>` via `Arc::downcast`.
-    inode.i_private().clone().downcast::<net::vsock_socket::VsockSocket>().ok()
+    inode_as_vsock(file.inode())
 }
 
 /// Resolve an fd to its vfs::File Arc (running task's fd table).

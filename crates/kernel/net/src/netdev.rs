@@ -41,6 +41,7 @@ pub enum NetError {
     Enomem,
     Eaddrnotavail,
     Edestaddrreq,
+    Emsgsize,
     Eaddrinuse,
     Enodev,
     Enetunreach,
