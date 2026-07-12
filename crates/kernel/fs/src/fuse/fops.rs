@@ -126,12 +126,13 @@ impl FileOps for FuseFileOps {
     }
 
     /// `FUSE_FLUSH` on `close(2)` (every fd close). Best-effort. # C: O(1) + rtt
-    fn on_flush(&self, inode: &Inode) {
+    fn on_flush(&self, inode: &Inode) -> KResult<()> {
         if let Ok(d) = fuse_data(inode) {
             let mut b = Vec::with_capacity(proto::FUSE_FLUSH_IN_SIZE);
             encode_flush(&mut b, 0);
             let _ = d.conn.call(proto::FUSE_FLUSH, d.nodeid, &b);
         }
+        Ok(())
     }
 
     /// `FUSE_RELEASE`/`FUSE_RELEASEDIR` at last close — drop the daemon's `fh`

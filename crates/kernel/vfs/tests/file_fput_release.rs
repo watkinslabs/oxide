@@ -36,8 +36,9 @@ impl FileOps for RelOps {
     fn on_release(&self, inode: &Inode) {
         inode.private::<RelCounter>().unwrap().releases.fetch_add(1, Ordering::SeqCst);
     }
-    fn on_flush(&self, inode: &Inode) {
+    fn on_flush(&self, inode: &Inode) -> KResult<()> {
         inode.private::<RelCounter>().unwrap().flushes.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
