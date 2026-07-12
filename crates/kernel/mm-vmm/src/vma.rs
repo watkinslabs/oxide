@@ -169,6 +169,16 @@ pub trait FileBacking: Send + Sync {
     /// Default no-op covers shmem/memfd-style backings where mapped pages are
     /// already the store. # C: O(N_dirty in range)
     fn writeback_range(&self, _start: u64, _end: u64) -> Result<(), ()> { Ok(()) }
+
+    /// Non-faulting Linux `mincore(2)` page-cache residency query for a
+    /// page-aligned file offset. `true` means a fault would not need backing I/O.
+    /// # C: O(log N_pages)
+    fn mincore_page(&self, _off: u64) -> bool { false }
+
+    /// Linux `can_do_mincore`: reveal exact file page-cache state only when the
+    /// caller owns/can-write the mapped file; otherwise mincore reports resident.
+    /// # C: O(1) or inode permission check
+    fn mincore_can_reveal(&self) -> bool { true }
 }
 
 /// VMA backing per `11§4`. `File` carries the file/inode ref via
