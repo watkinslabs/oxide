@@ -1,3 +1,5 @@
+extern crate alloc;
+use alloc::string::String;
 use core::sync::atomic::Ordering;
 use crate::types::KResult;
 use super::{SuperBlock, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SYNCHRONOUS};
@@ -210,6 +212,22 @@ impl SuperBlock {
 
     /// True iff a non-empty UUID has been published (`s_uuid_len != 0`). # C: O(1)
     pub fn has_uuid(&self) -> bool { self.s_uuid.lock().1 != 0 }
+
+    /// `s_sysfs_name` snapshot (Linux `super_block.s_sysfs_name`). Empty means
+    /// no `/sys/fs/<fstype>/...` programmatic path exists. # C: O(len name)
+    pub fn s_sysfs_name(&self) -> String { self.s_sysfs_name.lock().clone() }
+
+    /// True iff a non-empty sysfs handle has been published. # C: O(1)
+    pub fn has_sysfs_name(&self) -> bool { !self.s_sysfs_name.lock().is_empty() }
+
+    /// Publish Linux `super_block.s_sysfs_name`. Linux storage is
+    /// `UUID_STRING_LEN + 1`; keep at most 36 visible bytes and never synthesize
+    /// this from `s_id`. # C: O(len name)
+    pub fn set_sysfs_name(&self, name: &str) {
+        let mut out = String::new();
+        for b in name.bytes().take(36) { out.push(b as char); }
+        *self.s_sysfs_name.lock() = out;
+    }
 
     /// Publish the filesystem UUID (Linux `super_set_uuid` / a `fill_super`
     /// writing `sb->s_uuid` from the on-disk superblock). `len` is clamped to

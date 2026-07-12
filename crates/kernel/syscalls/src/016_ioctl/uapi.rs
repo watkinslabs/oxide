@@ -42,6 +42,9 @@ pub(super) const FS_IOC_ZERO_RANGE: u64 = 0x4030_5839;
 pub(super) const FS_IOC_FSGETXATTR: u64 = 0x801C_581F;
 pub(super) const FS_IOC_FSSETXATTR: u64 = 0x401C_5820;
 pub(super) const FS_IOC_GETFSUUID: u64 = 0x8011_1500;
+pub(super) const FS_IOC_GETFSSYSFSPATH: u64 = 0x8081_1501;
+pub(super) const FS_SYSFS_PATH_BYTES: u64 = 129;
+pub(super) const FS_SYSFS_PATH_NAME_BYTES: usize = 128;
 
 pub(super) const SEEK_SET: i16 = 0;
 pub(super) const SEEK_CUR: i16 = 1;

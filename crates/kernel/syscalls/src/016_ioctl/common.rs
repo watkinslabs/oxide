@@ -39,6 +39,7 @@ pub(super) fn handle_common_ioctl(
         FS_IOC_FSGETXATTR => Some(ioctl_fsgetxattr(file, arg)),
         FS_IOC_FSSETXATTR => Some(ioctl_fssetxattr(cur, file, arg)),
         FS_IOC_GETFSUUID => Some(ioctl_getfsuuid(file, arg)),
+        FS_IOC_GETFSSYSFSPATH => Some(ioctl_getfssysfspath(file, arg)),
         FIONREAD if file.inode().file_type() == vfs::FileType::Regular => {
             Some(ioctl_regular_fionread(file, arg))
         }
@@ -385,6 +386,32 @@ fn ioctl_getfsuuid(file: &vfs::File, arg: u64) -> i64 {
     unsafe {
         core::ptr::write_volatile(arg as *mut u8, len);
         core::ptr::copy_nonoverlapping(uuid.as_ptr(), (arg + 1) as *mut u8, 16);
+    }
+    0
+}
+
+/// Linux `FS_IOC_GETFSSYSFSPATH`: expose `fstype/s_sysfs_name`. # C: O(len name)
+fn ioctl_getfssysfspath(file: &vfs::File, arg: u64) -> i64 {
+    let sb = match file.inode().i_sb() {
+        Some(sb) => sb,
+        None => return -(Errno::Enotty.as_i32() as i64),
+    };
+    let name = sb.s_sysfs_name();
+    if name.is_empty() { return -(Errno::Enotty.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf_writable(arg, FS_SYSFS_PATH_BYTES, 1) { return rv; }
+    let ty = sb.s_type.name().as_bytes();
+    let sys = name.as_bytes();
+    let mut out = [0u8; FS_SYSFS_PATH_NAME_BYTES];
+    let mut n = 0usize;
+    for b in ty.iter().chain(core::iter::once(&b'/')).chain(sys.iter()) {
+        if n + 1 >= FS_SYSFS_PATH_NAME_BYTES { break; }
+        out[n] = *b;
+        n += 1;
+    }
+    // SAFETY: arg validated writable for fixed-size Linux `struct fs_sysfs_path`.
+    unsafe {
+        core::ptr::write_volatile(arg as *mut u8, n as u8);
+        core::ptr::copy_nonoverlapping(out.as_ptr(), (arg + 1) as *mut u8, FS_SYSFS_PATH_NAME_BYTES);
     }
     0
 }
