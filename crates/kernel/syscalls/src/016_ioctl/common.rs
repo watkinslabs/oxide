@@ -31,7 +31,7 @@ pub(super) fn handle_common_ioctl(
         FIGETBSZ => Some(ioctl_figetbsz(file, arg)),
         FICLONE => Some(ioctl_file_clone(file, fdt, arg as i64, 0, 0, 0)),
         FICLONERANGE => Some(ioctl_file_clone_range(file, fdt, arg)),
-        FIDEDUPERANGE => Some(ioctl_file_dedupe_range(file, fdt, arg)),
+        FIDEDUPERANGE => Some(ioctl_file_dedupe_range(cur, file, fdt, arg)),
         FIBMAP if file.inode().file_type() == vfs::FileType::Regular => Some(ioctl_fibmap(cur, file, arg)),
         FS_IOC_RESVSP | FS_IOC_RESVSP64 if file.inode().file_type() == vfs::FileType::Regular => {
             Some(ioctl_preallocate(file, 0, arg))
@@ -188,7 +188,7 @@ fn vfs_clone_file_range(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off:
 }
 
 /// Linux `FIDEDUPERANGE`: variable-length input with per-destination status. # C: FS-dependent
-fn ioctl_file_dedupe_range(file: &vfs::File, fdt: &vfs::FdTable, arg: u64) -> i64 {
+fn ioctl_file_dedupe_range(cur: &sched::Task, file: &vfs::File, fdt: &vfs::FdTable, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, DEDUPE_RANGE_BYTES, 1) { return rv; }
     let count = read_u16(arg + DEDUPE_DEST_COUNT) as usize;
     let size = DEDUPE_RANGE_BYTES + count as u64 * DEDUPE_INFO_BYTES;
@@ -223,7 +223,7 @@ fn ioctl_file_dedupe_range(file: &vfs::File, fdt: &vfs::FdTable, arg: u64) -> i6
         let status = match i32::try_from(dst_fd).ok().and_then(|fd| fdt.get(fd).ok()) {
             None => -(Errno::Ebadf.as_i32()),
             Some(_) if read_u32(base + DEDUPE_INFO_RESERVED) != 0 => -(Errno::Einval.as_i32()),
-            Some(dst) => match vfs_dedupe_file_range_one(file, src_off, &dst, read_u64(base + DEDUPE_INFO_DEST_OFFSET), len) {
+            Some(dst) => match vfs_dedupe_file_range_one(cur, file, src_off, &dst, read_u64(base + DEDUPE_INFO_DEST_OFFSET), len) {
                 Ok(()) => {
                     write_u64(base + DEDUPE_INFO_BYTES_DEDUPED, len);
                     FILE_DEDUPE_RANGE_SAME
@@ -237,10 +237,10 @@ fn ioctl_file_dedupe_range(file: &vfs::File, fdt: &vfs::FdTable, arg: u64) -> i6
     0
 }
 
-fn vfs_dedupe_file_range_one(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off: u64, len: u64) -> vfs::KResult<()> {
+fn vfs_dedupe_file_range_one(cur: &sched::Task, src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off: u64, len: u64) -> vfs::KResult<()> {
     remap_verify_area(src_off, len)?;
     remap_verify_area(dst_off, len)?;
-    if !may_dedupe_file(dst) { return Err(vfs::VfsError::Eperm); }
+    if !may_dedupe_file(cur, dst) { return Err(vfs::VfsError::Eperm); }
     if !same_superblock(src, dst) { return Err(vfs::VfsError::Exdev); }
     if dst.inode().file_type() == vfs::FileType::Directory { return Err(vfs::VfsError::Eisdir); }
     if !dst.supports_remap_file_range() { return Err(vfs::VfsError::Einval); }
@@ -274,8 +274,12 @@ fn remap_verify_area(pos: u64, len: u64) -> vfs::KResult<()> {
     }
 }
 
-fn may_dedupe_file(file: &vfs::File) -> bool {
-    file.f_mode().contains(vfs::Fmode::WRITE) || file.inode().uid() == Some(current_fsuid())
+fn may_dedupe_file(cur: &sched::Task, file: &vfs::File) -> bool {
+    if cur.has_cap(sched::cap::SYS_ADMIN) { return true; }
+    if file.f_mode().contains(vfs::Fmode::WRITE) { return true; }
+    let cred = dedupe_cred(cur);
+    if file.inode().uid() == Some(cred.uid) { return true; }
+    vfs::inode_permission(file.inode(), vfs::MAY_WRITE, &cred).is_ok()
 }
 
 fn same_superblock(a: &vfs::File, b: &vfs::File) -> bool {
@@ -419,11 +423,31 @@ fn write_i32(addr: u64, val: i32) {
 }
 
 #[cfg(not(test))]
-fn current_fsuid() -> u32 {
-    crate::pathresolve::current_cred().uid
+fn dedupe_cred(_cur: &sched::Task) -> vfs::Cred {
+    crate::pathresolve::current_cred()
 }
 
 #[cfg(test)]
-fn current_fsuid() -> u32 {
-    0
+fn dedupe_cred(cur: &sched::Task) -> vfs::Cred {
+    use core::sync::atomic::Ordering;
+    let effective = cur.creds.cap_effective.load(Ordering::Acquire);
+    let ng = (cur.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
+    let mut groups = [0u32; vfs::CRED_NGROUPS];
+    // SAFETY: hosted tests mutate the leaked task credentials before installing the current hook.
+    unsafe {
+        let g = &*cur.creds.groups.get();
+        groups[..ng].copy_from_slice(&g[..ng]);
+    }
+    let has = |cap: u32| effective & (1u64 << cap) != 0;
+    vfs::Cred {
+        uid: cur.creds.fsuid.load(Ordering::Acquire),
+        gid: cur.creds.fsgid.load(Ordering::Acquire),
+        cap_dac_override: has(sched::cap::DAC_OVERRIDE),
+        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
+        cap_fowner: has(sched::cap::FOWNER),
+        cap_chown: has(sched::cap::CHOWN),
+        cap_fsetid: has(sched::cap::FSETID),
+        ngroups: ng as u32,
+        groups,
+    }
 }
