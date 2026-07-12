@@ -195,6 +195,22 @@ fn mk_file_with_uuid(uuid: [u8; 16]) -> Arc<File> {
     File::new(ino, dentry, OpenFlags::O_RDONLY)
 }
 
+fn mk_file_with_sysfs_name(sysfs_name: Option<&str>) -> Arc<File> {
+    let fs_ty = vfs::fs::FsType::new("sysfsnamefs", 0x1601, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _| Err(VfsError::Enotty)));
+    let sb = SuperBlock::new(fs_ty, Arc::new(SimpleSuperOps {
+        magic: 0x1601,
+        block_size: 4096,
+        options: alloc::string::String::new(),
+    }), 0x1601, 0x1601, 4096, "not-the-sysfs-name".into(), Arc::new(()));
+    if let Some(name) = sysfs_name { sb.set_sysfs_name(name); }
+    let sb = Box::leak(Box::new(sb));
+    let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
+        mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(sb)).build();
+    let dentry = Dentry::new_root(Arc::clone(&ino));
+    File::new(ino, dentry, OpenFlags::O_RDONLY)
+}
+
 #[test]
 fn fioclex_and_fionclex_update_fdtable_close_on_exec() {
     let _guard = TEST_LOCK.lock().unwrap();
@@ -335,6 +351,28 @@ fn getfsuuid_copies_superblock_uuid_or_enotty_without_one() {
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_GETFSUUID, out.as_mut_ptr() as u64), Some(0));
     assert_eq!(out[0], 16);
     assert_eq!(&out[1..], &uuid);
+    reset();
+}
+
+#[test]
+fn getfssysfspath_uses_superblock_sysfs_name_or_enotty() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let empty = mk_file_with_sysfs_name(None);
+    let empty_fd = fdt.alloc(Arc::clone(&empty)).unwrap();
+    let file = mk_file_with_sysfs_name(Some("vda1"));
+    let fd = fdt.alloc(Arc::clone(&file)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let mut out = [0xAAu8; 129];
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &empty, &fdt, empty_fd, uapi::FS_IOC_GETFSSYSFSPATH, out.as_mut_ptr() as u64),
+        Some(-(Errno::Enotty.as_i32() as i64)));
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_GETFSSYSFSPATH, out.as_mut_ptr() as u64), Some(0));
+    assert_eq!(out[0], b"sysfsnamefs/vda1".len() as u8);
+    assert_eq!(&out[1..17], b"sysfsnamefs/vda1");
+    assert_eq!(out[17], 0);
+    assert!(out[18..].iter().all(|b| *b == 0));
     reset();
 }
 

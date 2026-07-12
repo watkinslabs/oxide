@@ -133,6 +133,10 @@ pub struct SuperBlock {
     s_writers_count: AtomicU32,
     /// `s_id` — `"/dev/vda1"`, `"tmpfs"`; `/proc/mounts` source column.
     pub s_id: String,
+    /// `s_sysfs_name` — programmatic handle under `/sys/fs/<fstype>/...`.
+    /// Distinct from `s_id`: Linux uses `s_id` for human/debug identity and
+    /// this field for `FS_IOC_GETFSSYSFSPATH`. Empty means unsupported.
+    s_sysfs_name: Spinlock<String, SbClass>,
     /// `s_uuid` (Linux `super_block.s_uuid`, a `uuid_t`) + `s_uuid_len` — the
     /// on-disk filesystem UUID a backend reads from its superblock at
     /// `fill_super` ([`SuperBlock::set_uuid`]). All-zero / `len == 0` ⇒ the fs

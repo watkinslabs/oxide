@@ -36,6 +36,7 @@ impl SuperBlock {
             s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
             s_writers_count: AtomicU32::new(0),
             s_id,
+            s_sysfs_name: Spinlock::new(String::new()),
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info: Spinlock::new(s_fs_info),
