@@ -50,6 +50,9 @@ debug-trace = ["kmain/debug-trace"]
 # Spin-stall probe (`sync` debug-smp). Rides the kmain feature graph so xtask
 # `--features debug-smp` reaches sched+sync and names a livelocked lock's rank.
 debug-smp = ["kmain/debug-smp"]
+# Heap poison+quarantine UAF localizer (`kalloc` debug-heappoison). Rides kmain
+# so `--features debug-heappoison` reaches kalloc and prints [UAF-WRITE*]/[UAF].
+debug-heappoison = ["kmain/debug-heappoison"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`). Rides the
 # kmain feature graph so xtask `--features debug-watchdog` reaches sched.
 debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]

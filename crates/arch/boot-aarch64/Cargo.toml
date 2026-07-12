@@ -38,4 +38,6 @@ debug-irq  = ["hal-aarch64/debug-irq"]
 debug-watchdog = ["kmain/debug-watchdog", "hal-aarch64/debug-watchdog"]
 # Spin-stall probe (`sync` debug-smp): names a livelocked lock's rank. Rides kmain.
 debug-smp = ["kmain/debug-smp"]
+# Heap poison+quarantine UAF localizer (`kalloc` debug-heappoison). Rides kmain.
+debug-heappoison = ["kmain/debug-heappoison"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]
