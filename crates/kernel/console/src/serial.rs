@@ -68,6 +68,14 @@ pub(crate) fn serial_write(buf: &[u8]) -> KResult<usize> {
 struct SerialFileOps;
 
 impl FileOps for SerialFileOps {
+    fn on_open(&self, _i: &Inode) -> KResult<()> {
+        crate::static_console::open()
+    }
+
+    fn on_release(&self, _i: &Inode) {
+        crate::static_console::close();
+    }
+
     fn read(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         serial_read(buf)
     }

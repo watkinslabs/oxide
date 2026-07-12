@@ -164,6 +164,21 @@ pub fn poll_subscribers() -> Option<&'static vfs::PollSubscribers> {
     console().map(|tty| tty.poll_subs())
 }
 
+/// Open admission for the serial console tty (`tty_reopen` TTY_EXCLUSIVE).
+/// # C: O(1)
+pub fn open() -> vfs::KResult<()> {
+    let cap = sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false);
+    match console() {
+        Some(tty) => tty.open_with_cap_sys_admin(cap).map(|_| ()),
+        None => Ok(()),
+    }
+}
+
+/// Last-close release for the serial console tty. # C: O(1)
+pub fn close() {
+    if let Some(tty) = console() { tty.close(); }
+}
+
 // --------------------------------------------------- ioctl source-of-truth
 //
 // `016_ioctl` routes the non-pty console branch here so the tty owns
@@ -205,6 +220,16 @@ pub fn flow(action: tty::TtyFlow) {
     if let Some(tty) = console() {
         tty.flow(action);
     }
+}
+
+/// TIOCEXCL/TIOCNXCL exclusive-open toggle. # C: O(1)
+pub fn set_exclusive(on: bool) {
+    if let Some(tty) = console() { tty.set_exclusive(on); }
+}
+
+/// TIOCGEXCL exclusive-open state. # C: O(1)
+pub fn exclusive() -> bool {
+    console().map(|tty| tty.exclusive()).unwrap_or(false)
 }
 
 // ----------------------------------------------------------- modem lines

@@ -12,6 +12,8 @@ use crate::pty::{
 use crate::wait::host::HostWait;
 use crate::wait::TtyWait;
 
+mod exclusive;
+
 /// Driver that records everything written + signals raised.
 #[derive(Default)]
 struct RecordingDriver {
