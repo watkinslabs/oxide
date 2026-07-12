@@ -32,6 +32,36 @@ fn nlmsg_align_rounds_up_to_4() {
 }
 
 #[test]
+fn vfs_write_dispatches_netlink_request_and_queues_reply() {
+    use alloc::sync::Arc;
+    let sock = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE));
+    let inode = make_netlink_socket_inode(Arc::clone(&sock));
+    let dentry = vfs::Dentry::new(None, "nl".into(), Arc::clone(&inode));
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+
+    let req = Nlmsghdr {
+        nlmsg_len:   Nlmsghdr::SIZE as u32,
+        nlmsg_type:  rtnetlink::RTM_GETLINK,
+        nlmsg_flags: flags::NLM_F_REQUEST | flags::NLM_F_DUMP,
+        nlmsg_seq:   77,
+        nlmsg_pid:   1234,
+    };
+    let mut msg = [0u8; Nlmsghdr::SIZE];
+    req.write_to(&mut msg);
+
+    assert_eq!(file.write(&msg), Ok(msg.len()));
+    let (reply, src) = sock.dequeue().expect("RTM_GETLINK reply queued");
+    assert_eq!(src, 0);
+    assert!(reply.len() >= Nlmsghdr::SIZE + 4, "multipart dump has NLMSG_DONE");
+    let done_at = reply.len() - (Nlmsghdr::SIZE + 4);
+    let done = Nlmsghdr::parse(&reply[done_at..]).expect("done header");
+    assert_eq!(done.nlmsg_type, msg::NLMSG_DONE);
+    assert_eq!(done.nlmsg_flags, flags::NLM_F_MULTI);
+    assert_eq!(done.nlmsg_seq, 77);
+    assert_eq!(done.nlmsg_pid, sock.port_id.load(Ordering::Acquire));
+}
+
+#[test]
 fn port_ids_are_unique() {
     let a = alloc_port_id();
     let b = alloc_port_id();
