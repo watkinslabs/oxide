@@ -79,7 +79,11 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     if (cur ^ new) & EXT4_EXTENTS_FL != 0 {
         return Err(VfsError::Eopnotsupp);
     }
-    st.mount.persist_inode_flags(ino, new).map_err(|_| VfsError::Eio)?;
+    let raw_now = vfs::inode_times::realtime_now_ns();
+    let ctime_ns = vfs::inode_times::current_time(inode, raw_now);
+    st.mount.persist_inode_flags(ino, new, ctime_ns).map_err(|_| VfsError::Eio)?;
+    vfs::inode::inode_inc_iversion(inode);
+    inode.set_times(None, None, ctime_ns)?;
     let mut s = inode.i_flags()
         & !(vfs::S_IMMUTABLE | vfs::S_APPEND | vfs::S_NOATIME | vfs::S_SYNC);
     if new & EXT4_IMMUTABLE_FL != 0 { s |= vfs::S_IMMUTABLE; }
