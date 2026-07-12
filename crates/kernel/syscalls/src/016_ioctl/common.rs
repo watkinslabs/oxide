@@ -255,6 +255,9 @@ fn vfs_dedupe_file_range_one(cur: &sched::Task, src: &vfs::File, src_off: u64, d
     if dst_off.checked_add(len).is_none_or(|end| dst_off >= dst.inode().size() || end > dst.inode().size()) {
         return Err(vfs::VfsError::Einval);
     }
+    if same_inode(src, dst) && ranges_overlap(src_off, dst_off, len) {
+        return Err(vfs::VfsError::Einval);
+    }
     match src.remap_file_range(src_off, dst, dst_off, len, REMAP_FILE_CAN_SHORTEN | REMAP_FILE_DEDUP) {
         Ok(_) => Ok(()),
         Err(e) => Err(e),

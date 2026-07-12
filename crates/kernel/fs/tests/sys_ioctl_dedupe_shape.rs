@@ -222,3 +222,32 @@ fn fideduperange_rejects_destination_range_past_eof_before_backend() {
     assert!(remap.calls.lock().unwrap().is_empty());
     reset();
 }
+
+#[test]
+fn fideduperange_rejects_same_inode_overlap_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(4));
+    let fdt = Arc::new(FdTable::new());
+    let file = mk_file(FileType::Regular, OpenFlags::O_RDWR, 20, remap.clone(), 0o644, 0, 0);
+    let dst_fd = fdt.alloc(Arc::clone(&file)).unwrap();
+    let src_fd = fdt.alloc(Arc::clone(&file)).unwrap();
+    let task = install_current_with_fdt_cred(Arc::clone(&fdt), 2000, 2000, 0);
+    let mut range = FileDedupeRangeOne {
+        src_offset: 2,
+        src_length: 4,
+        dest_count: 1,
+        reserved1: 0,
+        reserved2: 0,
+        info: [
+            FileDedupeRangeInfo { dest_fd: dst_fd as i64, dest_offset: 4, bytes_deduped: 99, status: -99, reserved: 0 },
+        ],
+    };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, src_fd, uapi::FIDEDUPERANGE, &mut range as *mut FileDedupeRangeOne as u64),
+        Some(0));
+    assert_eq!(range.info[0].bytes_deduped, 0);
+    assert_eq!(range.info[0].status, -(Errno::Einval.as_i32()));
+    assert!(remap.calls.lock().unwrap().is_empty());
+    reset();
+}
