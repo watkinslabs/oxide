@@ -11,7 +11,7 @@ use crate::inode::InodeRef;
 use crate::namei::Cred;
 use crate::types::{FileType, OpenFlags};
 
-use super::{fire_open_hook, fmode_from_flags, File, FileRaState, Fmode, DEFAULT_RA_PAGES, SETFL_MASK};
+use super::{fire_open_hook, fasync_register, fasync_unregister, fmode_from_flags, File, FileRaState, Fmode, DEFAULT_RA_PAGES, O_ASYNC, SETFL_MASK};
 
 impl File {
     /// Anonymous-inode / early-boot constructor: no vfsmount (`mnt_id=0`)
@@ -168,6 +168,31 @@ impl File {
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         self.f_op.poll_open_file(self)
+    }
+
+    /// `file_operations->fasync` dispatch for this open file description.
+    /// Backends that support async notification adjust `FASYNC` themselves,
+    /// matching Linux's `f_op->fasync` ownership of the flag transition.
+    /// # C: backend-dependent
+    pub fn fasync(self: &Arc<Self>, fd: i32, on: bool) -> crate::KResult<()> {
+        self.f_op.fasync_file(fd, self, on)
+    }
+
+    /// Generic `fasync_helper` state transition for async-capable backends.
+    /// Unsupported files never reach this; their `f_op->fasync` default returns
+    /// `ENOTTY`, so no registry entry is published by accident. # C: O(1)
+    pub fn set_fasync_state(self: &Arc<Self>, on: bool) {
+        let mut fl = self.flags();
+        let async_flag = OpenFlags::from_bits_retain(O_ASYNC);
+        if on {
+            fl |= async_flag;
+            self.set_flags(fl);
+            fasync_register(self);
+        } else {
+            fl &= !async_flag;
+            self.set_flags(fl);
+            fasync_unregister(self);
+        }
     }
 
     /// Run `file_operations->open` after this open file description exists.
