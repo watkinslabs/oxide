@@ -35,8 +35,7 @@ pub fn deliver_sigsegv_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
 #[cfg(target_arch = "x86_64")]
 pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
     let cur = match sched::live::current() { Some(c) => c, None => return false };
-    // SAFETY: sigactions slot single-mutator per `13§5`.
-    let sa = unsafe { (*cur.sigactions.get())[10] };  // SIGSEGV = 11, idx 10
+    let sa = cur.sigactions_ref().get(11);
     if sa.handler == 0 || sa.handler == 1 { return false; }
     let frame_ptr = hal_x86_64::current_fault_frame();
     if frame_ptr.is_null() { return false; }

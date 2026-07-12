@@ -24,22 +24,9 @@ use syscall::errno::Errno;
 /// address is in init's text not the child's, so iretq lands
 /// on an unmapped page and the child silently SIGSEGVs in its
 /// waitpid path.
-/// # SAFETY: running task on this CPU; preempt-off; sole writer
-/// to sigactions slot per `13§5` single-mutator invariant.
 /// # C: O(1) — 64-slot scan.
 pub(crate) fn reset_caught_signals(cur: &sched::Task) {
-    // SAFETY: running task on this CPU, preempt-off; sole writer to sigactions slot per `13§5` single-mutator invariant for the duration of this execve.
-    unsafe {
-        let table = &mut *cur.sigactions.get();
-        for slot in table.iter_mut() {
-            if slot.handler != 0 && slot.handler != 1 {
-                slot.handler  = 0;
-                slot.flags    = 0;
-                slot.restorer = 0;
-                slot.mask     = 0;
-            }
-        }
-    }
+    cur.sigactions_ref().reset_caught();
 }
 
 /// F129: sweep all other per-task state Linux execve(2) resets:
