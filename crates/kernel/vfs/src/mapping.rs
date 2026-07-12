@@ -162,6 +162,11 @@ pub trait AddressSpaceOps: Send + Sync {
         self.writeback()
     }
 
+    /// Non-faulting `mincore(2)` query for a page-aligned file offset. This is
+    /// the Linux `filemap_get_entry()` leg: report already-resident cache pages
+    /// without allocating or reading from backing storage. # C: O(log N_pages)
+    fn mincore_page(&self, off: u64) -> bool { let _ = off; false }
+
     /// Evict resident cache frames whose whole page lies in the byte range
     /// `[start, end)` (Linux `truncate_inode_pages_range`). A page is a
     /// victim only when fully covered: index `i` (page `[i·PG, (i+1)·PG)`)
