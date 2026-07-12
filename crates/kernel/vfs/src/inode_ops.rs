@@ -219,13 +219,14 @@ pub trait InodeOps: Send + Sync {
     fn bmap(&self, _inode: &Inode, _block: u64) -> KResult<u64> { Err(VfsError::Einval) }
 
     /// `i_op->fileattr_get` — `FS_IOC_GETFLAGS`/`FS_IOC_FSGETXATTR` view. Default
-    /// `Eopnotsupp`. # C: O(1)
-    fn fileattr_get(&self, _inode: &Inode) -> KResult<FileAttr> { Err(VfsError::Eopnotsupp) }
+    /// `Enotty` for absent ioctl support. # C: O(1)
+    fn fileattr_get(&self, _inode: &Inode) -> KResult<FileAttr> { Err(VfsError::Enotty) }
 
-    /// `i_op->fileattr_set` — apply a `chattr` flag change. Default `Eopnotsupp`.
+    /// `i_op->fileattr_set` — apply a `chattr` flag change. Default `Enotty`
+    /// for absent ioctl support.
     /// # C: O(1)
     fn fileattr_set(&self, _inode: &Inode, _fa: &FileAttr) -> KResult<()> {
-        Err(VfsError::Eopnotsupp)
+        Err(VfsError::Enotty)
     }
 
     /// `i_op->getxattr` — value bytes for `name`. Default routes to the inode's
