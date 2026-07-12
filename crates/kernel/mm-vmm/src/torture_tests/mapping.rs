@@ -106,6 +106,105 @@ fn mmap_fixed_overlap_replaces() {
     assert!(n == 3 || n == 1, "expect 3 split VMAs, got {}", n);
 }
 
+#[test]
+fn mremap_missing_source_is_fault_not_nomem() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    assert_eq!(
+        a.mremap_full(h, PAGE, 2 * PAGE, true, false, false, None),
+        Err(Error::Fault)
+    );
+}
+
+#[test]
+fn mremap_source_crossing_vma_end_is_fault() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(h), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    assert_eq!(
+        a.mremap_full(h, 2 * PAGE, 3 * PAGE, true, false, false, None),
+        Err(Error::Fault)
+    );
+}
+
+#[test]
+fn mremap_zero_old_len_private_duplicate_is_inval() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(h), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    assert_eq!(
+        a.mremap_full(h, 0, PAGE, true, false, false, None),
+        Err(Error::Inval)
+    );
+}
+
+#[test]
+fn mremap_dontunmap_uses_new_addr_as_hint() {
+    let a = AddressSpace::new(0).unwrap();
+    let src = UserVirtAddr::new(0x4000_0000).unwrap();
+    let dst = UserVirtAddr::new(0x5000_0000).unwrap();
+    a.mmap(Some(src), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    let moved = a.mremap_full(src, PAGE, PAGE, true, false, true, Some(dst)).unwrap();
+    assert_eq!(moved, dst);
+    assert!(a.find_vma(src).is_some(), "DONTUNMAP leaves source VMA mapped");
+    assert!(a.find_vma(dst).is_some(), "DONTUNMAP creates destination VMA");
+}
+
+#[test]
+fn mremap_dontunmap_preserves_source_prot_flags_and_file_offset() {
+    let a = AddressSpace::new(0).unwrap();
+    let src = UserVirtAddr::new(0x4000_0000).unwrap();
+    let sub = UserVirtAddr::new(0x4000_1000).unwrap();
+    let dst = UserVirtAddr::new(0x5000_0000).unwrap();
+    let file: Arc<dyn FileBacking> = Arc::new(FakeFile);
+    a.mmap(Some(src), 2 * PAGE, VmaProt::READ, VmaFlags::SHARED,
+        VmaBacking::File { backing: file.clone(), off: 0x7000 }, true).unwrap();
+
+    let moved = a.mremap_full(sub, PAGE, PAGE, true, false, true, Some(dst)).unwrap();
+    assert_eq!(moved, dst);
+    let v = a.find_vma(dst).expect("DONTUNMAP destination exists");
+    assert_eq!(v.prot, VmaProt::READ);
+    assert_eq!(v.flags, VmaFlags::SHARED);
+    match &v.backing {
+        VmaBacking::File { backing, off } => {
+            assert!(Arc::ptr_eq(backing, &file));
+            assert_eq!(*off, 0x7000 + PAGE as u64);
+        }
+        other => panic!("expected file backing, got {:?}", other),
+    }
+}
+
+#[test]
+fn mremap_expand_without_maymove_is_nomem() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    let blocker = UserVirtAddr::new(0x4000_1000).unwrap();
+    a.mmap(Some(h), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    a.mmap(Some(blocker), PAGE, VmaProt::READ, priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    assert_eq!(
+        a.mremap_full(h, PAGE, 2 * PAGE, false, false, false, None),
+        Err(Error::NoMem)
+    );
+}
+
+#[test]
+fn mremap_fixed_shrink_moves_to_fixed_address() {
+    let a = AddressSpace::new(0).unwrap();
+    let src = UserVirtAddr::new(0x4000_0000).unwrap();
+    let dst = UserVirtAddr::new(0x5000_0000).unwrap();
+    a.mmap(Some(src), 2 * PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    let moved = a.mremap_full(src, 2 * PAGE, PAGE, true, true, false, Some(dst)).unwrap();
+    assert_eq!(moved, dst);
+    assert!(a.find_vma(src).is_none(), "fixed shrink unmaps the old VMA");
+    assert!(a.find_vma(dst).is_some(), "fixed shrink installs destination VMA");
+}
+
 // ---------------------------------------------------------------
 // munmap edge cases
 // ---------------------------------------------------------------
