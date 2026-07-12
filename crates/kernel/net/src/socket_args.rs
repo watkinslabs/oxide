@@ -33,6 +33,12 @@ pub struct SocketArgs {
     pub nonblock: bool,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AcceptFlags {
+    pub cloexec:  bool,
+    pub nonblock: bool,
+}
+
 /// Linux `__sys_socket_create` + supported-family create gates. # C: O(1)
 pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw: bool) -> Result<SocketArgs, Errno> {
     let flags = raw_type & !SOCK_TYPE_MASK;
@@ -58,6 +64,16 @@ pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw:
         family,
         typ,
         protocol,
+        cloexec:  flags & SOCK_CLOEXEC != 0,
+        nonblock: flags & SOCK_NONBLOCK != 0,
+    })
+}
+
+/// Linux `__sys_accept4_file` flag gate. # C: O(1)
+pub fn parse_accept_flags(flags: u64) -> Result<AcceptFlags, Errno> {
+    let flags = u32::try_from(flags).map_err(|_| Errno::Einval)?;
+    if flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return Err(Errno::Einval); }
+    Ok(AcceptFlags {
         cloexec:  flags & SOCK_CLOEXEC != 0,
         nonblock: flags & SOCK_NONBLOCK != 0,
     })
@@ -125,6 +141,17 @@ mod tests {
         assert_eq!(a.typ, SOCK_STREAM);
         assert!(a.cloexec);
         assert!(a.nonblock);
+    }
+
+    #[test]
+    fn accept4_flags_accept_only_cloexec_and_nonblock() {
+        assert_eq!(parse_accept_flags(0).unwrap(), AcceptFlags { cloexec: false, nonblock: false });
+        assert_eq!(
+            parse_accept_flags((SOCK_CLOEXEC | SOCK_NONBLOCK) as u64).unwrap(),
+            AcceptFlags { cloexec: true, nonblock: true },
+        );
+        assert_eq!(parse_accept_flags(0x100).unwrap_err(), Errno::Einval);
+        assert_eq!(parse_accept_flags(u64::MAX).unwrap_err(), Errno::Einval);
     }
 
     #[test]
