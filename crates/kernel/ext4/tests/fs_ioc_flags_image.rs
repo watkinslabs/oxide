@@ -14,7 +14,7 @@ use alloc::sync::Arc;
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::{FileAttr, SuperBlock};
+use vfs::{FileAttr, SuperBlock, VfsError};
 
 const IMAGE: &[u8] = include_bytes!("mini-j.img");
 const SECTOR: u32 = 512;
@@ -22,6 +22,7 @@ const SECTOR: u32 = 512;
 // FS_*_FL == ext4 on-disk i_flags bits.
 const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
 const FS_NODUMP_FL:    u32 = 0x0000_0040;
+const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 const EXT4_EXTENTS_FL: u32 = 0x0008_0000; // kernel-internal, must be preserved
 
 fn shared_disk() -> Arc<dyn BlockDevice> {
@@ -79,4 +80,39 @@ fn chattr_flags_roundtrip_persist_and_preserve() {
     let ino2 = m2.state().mount.lookup_path(b"/chattr.txt").unwrap();
     assert_ne!(m2.state().mount.read_inode(ino2).unwrap().i_flags & EXT4_EXTENTS_FL, 0,
         "EXTENTS_FL still preserved after clear");
+}
+
+#[test]
+fn non_project_ext4_rejects_nonzero_project_id() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().create_at(b"/projid.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/projid.txt").expect("lookup");
+
+    assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 0);
+    assert_eq!(inode.fileattr_set(&FileAttr { fsx_projid: 42, ..Default::default() }),
+        Err(VfsError::Eopnotsupp));
+    assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 0);
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_projid, 0);
+
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: FS_NODUMP_FL, fsx_projid: 42, ..Default::default() }),
+        Err(VfsError::Eopnotsupp));
+    assert_ne!(inode.fileattr_get().unwrap().flags & FS_NODUMP_FL, 0,
+        "Linux ext4 applies flags before unsupported project-id rejection");
+}
+
+#[test]
+fn projinherit_is_directory_only() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let file = m.state().create_at(b"/not-dir.txt", 0o644).expect("create file");
+    assert_eq!(file.fileattr_set(&FileAttr { flags: FS_PROJINHERIT_FL, ..Default::default() }),
+        Err(VfsError::Eopnotsupp));
+    assert_eq!(file.fileattr_get().unwrap().flags & FS_PROJINHERIT_FL, 0);
+
+    m.state().mkdir_at(b"/dir", 0o755).expect("mkdir");
+    let dir = m.state().lookup_inode_any(b"/dir").expect("lookup dir");
+    dir.fileattr_set(&FileAttr { flags: FS_PROJINHERIT_FL, ..Default::default() })
+        .expect("set dir projinherit");
+    assert_ne!(dir.fileattr_get().unwrap().flags & FS_PROJINHERIT_FL, 0);
 }
