@@ -58,17 +58,19 @@ pub(super) fn handle_common_ioctl(
 /// Socket/pipe queue-count ioctls used after regular-file common handling.
 /// # C: O(1)
 pub(super) fn handle_nonchar_queue_ioctl(file: &vfs::File, req: u64, arg: u64) -> Option<i64> {
-    match req {
-        FIONREAD | SIOCOUTQ => {
-            if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return Some(rv); }
-            let n: u32 = if req == FIONREAD
-                && (file.inode().poll_file(file.pos()) & vfs::POLL_IN) != 0 { 1 } else { 0 };
-            // SAFETY: arg validated writable for one Linux int out-param.
-            unsafe { core::ptr::write_volatile(arg as *mut u32, n); }
-            Some(0)
-        }
-        _ => None,
-    }
+    let cmd = match req {
+        FIONREAD => vfs::IoctlIntCmd::Fionread,
+        SIOCOUTQ => vfs::IoctlIntCmd::Siocoutq,
+        _ => return None,
+    };
+    let n = match file.ioctl_int(cmd) {
+        Ok(n) => n,
+        Err(e) => return Some(-(e as i64)),
+    };
+    if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return Some(rv); }
+    // SAFETY: arg validated writable for one Linux int out-param.
+    unsafe { core::ptr::write_volatile(arg as *mut u32, n); }
+    Some(0)
 }
 
 /// Linux `ioctl_fionbio`: read caller int and toggle `O_NONBLOCK`. # C: O(1)

@@ -100,6 +100,9 @@ impl vfs::FileOps for InetFileOps {
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<InetSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }
+    fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
+        match file.inode().private::<InetSocket>() { Some(s) => s.ioctl_int(cmd), None => Err(vfs::VfsError::Einval) }
+    }
     fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
         file.set_fasync_state(on);
         Ok(())

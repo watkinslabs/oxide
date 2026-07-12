@@ -291,4 +291,49 @@ impl InetSocket {
             SockKind::TcpInit => POLL_OUT,
         }
     }
+
+    /// Linux `SIOCINQ/FIONREAD` and `SIOCOUTQ` queue-count ioctls. # C: O(queue)
+    pub fn ioctl_int(&self, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
+        match cmd {
+            vfs::IoctlIntCmd::Fionread => Ok(self.inq_len() as u32),
+            vfs::IoctlIntCmd::Siocoutq => Ok(self.outq_len() as u32),
+        }
+    }
+
+    fn inq_len(&self) -> usize {
+        match &*self.kind.lock() {
+            SockKind::Udp => {
+                let Some(p) = *self.local_port.lock() else { return 0; };
+                drain_loopback();
+                if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
+                    stack().recv_udp6_meta_opts(p, true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
+                } else {
+                    stack().recv_udp_meta_opts(p, true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
+                }
+            }
+            SockKind::TcpConn(entry) => { drain_loopback(); entry.conn.lock().recv_buf.len() }
+            SockKind::Unix(pair, end) => match end {
+                crate::UnixEnd::A => pair.b_to_a.lock().buf.len(),
+                crate::UnixEnd::B => pair.a_to_b.lock().buf.len(),
+            },
+            SockKind::UnixDgram(q) => q.msgs.lock().front().map(|m| m.payload.len()).unwrap_or(0),
+            SockKind::UnixMsgPair(pair, end) => {
+                let g = match end { crate::UnixEnd::A => pair.b_to_a.lock(), crate::UnixEnd::B => pair.a_to_b.lock() };
+                g.msgs.front().map(|m| m.payload.len()).unwrap_or(0)
+            }
+            SockKind::Packet { rx, .. } => rx.lock().front().map(|b| b.len()).unwrap_or(0),
+            SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
+        }
+    }
+
+    fn outq_len(&self) -> usize {
+        match &*self.kind.lock() {
+            SockKind::TcpConn(entry) => {
+                let c = entry.conn.lock();
+                c.send_buf.len() + c.retx_q.iter().map(|s| s.payload.len()).sum::<usize>()
+            }
+            SockKind::Udp | SockKind::Unix(..) | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
+            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
+        }
+    }
 }
