@@ -7,7 +7,7 @@ use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, In
 use crate::inotify::dispatch::register_instance;
 use crate::inotify::types::{
     inode_key, InotifyData, PermEvent, FAN_ACCESS_PERM, FAN_ALLOW, FAN_DENY, FAN_OPEN_EXEC_PERM, FAN_OPEN_PERM,
-    INOTIFY_INO_BASE, PERM_MARK_COUNT,
+    Event, INOTIFY_DEFAULT_MAX_QUEUED_EVENTS, INOTIFY_INO_BASE, IN_Q_OVERFLOW, PERM_MARK_COUNT,
 };
 
 impl InotifyData {
@@ -87,6 +87,19 @@ impl InotifyData {
 
     /// `true` for a `fanotify_init` group. # C: O(1)
     pub fn is_fanotify(&self) -> bool { self.fanotify }
+
+    /// Queue one notification, applying Linux's bounded per-group queue shape:
+    /// when full, drop the new event and retain one overflow marker.
+    /// # C: O(N_queue) only while already overflowed/full
+    pub(crate) fn enqueue_event(&self, ev: Event) {
+        let mut q = self.events.lock();
+        if q.len() < INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
+            q.push_back(ev);
+            return;
+        }
+        if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return; }
+        q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, len: 0, obj: None, pid: 0 });
+    }
 
     /// Apply a `struct fanotify_response { __s32 fd; __u32 response }` write:
     /// match the pending perm event by its minted fd, store the verdict so
