@@ -41,6 +41,8 @@ mod userbuf {
 
 #[path = "../../syscalls/src/016_ioctl/uapi.rs"]
 mod uapi;
+#[path = "../../syscalls/src/016_ioctl/fileattr.rs"]
+mod fileattr;
 #[path = "../../syscalls/src/016_ioctl/common.rs"]
 mod ioctl_common;
 
@@ -166,8 +168,12 @@ fn mk_file(ft: FileType, flags: OpenFlags, size: u64) -> Arc<File> {
 }
 
 fn mk_file_with_ops(flags: OpenFlags, size: u64, ops: Arc<IoctlOps>) -> Arc<File> {
+    mk_file_with_ops_type(FileType::Regular, flags, size, ops)
+}
+
+fn mk_file_with_ops_type(ft: FileType, flags: OpenFlags, size: u64, ops: Arc<IoctlOps>) -> Arc<File> {
     let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
-        mk_mode(FileType::Regular, 0o644), ops, default_file_ops()).size(size).build();
+        mk_mode(ft, 0o644), ops, default_file_ops()).size(size).build();
     let dentry = Dentry::new_root(Arc::clone(&ino));
     File::new(ino, dentry, flags)
 }
@@ -321,19 +327,48 @@ fn fsxattr_get_and_set_translate_linux_xflags() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
     let ops = Arc::new(IoctlOps::default());
-    *ops.attr.lock().unwrap() = FileAttr { flags: 0x10 | 0x80, fsx_xflags: 0, fsx_projid: 0 };
+    *ops.attr.lock().unwrap() = FileAttr { flags: 0x10 | 0x80, fsx_extsize: 64, fsx_nextents: 3, fsx_cowextsize: 128, ..Default::default() };
     let fdt = Arc::new(FdTable::new());
     let file = mk_file_with_ops(OpenFlags::O_RDWR, 0, Arc::clone(&ops));
     let fd = fdt.alloc(Arc::clone(&file)).unwrap();
     let task = install_current_with_fdt(Arc::clone(&fdt));
     let mut xattr = [0u8; 28];
-
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_FSGETXATTR, xattr.as_mut_ptr() as u64), Some(0));
     assert_eq!(u32::from_ne_bytes(xattr[0..4].try_into().unwrap()), 0x08 | 0x40);
-    xattr[0..4].copy_from_slice(&(0x10u32 | 0x80u32).to_ne_bytes());
+    assert_eq!(u32::from_ne_bytes(xattr[4..8].try_into().unwrap()), 64);
+    assert_eq!(u32::from_ne_bytes(xattr[8..12].try_into().unwrap()), 3);
+    assert_eq!(u32::from_ne_bytes(xattr[16..20].try_into().unwrap()), 128);
+    xattr[0..4].copy_from_slice(&(0x10u32 | 0x80u32 | uapi::FS_XFLAG_EXTSIZE | uapi::FS_XFLAG_COWEXTSIZE).to_ne_bytes());
+    xattr[4..8].copy_from_slice(&256u32.to_ne_bytes());
+    xattr[8..12].copy_from_slice(&7u32.to_ne_bytes());
     xattr[12..16].copy_from_slice(&42u32.to_ne_bytes());
+    xattr[16..20].copy_from_slice(&512u32.to_ne_bytes());
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_FSSETXATTR, xattr.as_ptr() as u64), Some(0));
-    assert_eq!(*ops.attr.lock().unwrap(), FileAttr { flags: 0x20 | 0x40, fsx_xflags: 0x10 | 0x80, fsx_projid: 42 });
+    assert_eq!(*ops.attr.lock().unwrap(), FileAttr {
+        flags: 0x20 | 0x40,
+        fsx_xflags: 0x10 | 0x80 | uapi::FS_XFLAG_EXTSIZE | uapi::FS_XFLAG_COWEXTSIZE,
+        fsx_extsize: 256,
+        fsx_nextents: 7,
+        fsx_projid: 42,
+        fsx_cowextsize: 512,
+    });
+    reset();
+}
+
+#[test]
+fn fsxattr_set_rejects_extsize_hint_on_non_regular_file() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let ops = Arc::new(IoctlOps::default());
+    let fdt = Arc::new(FdTable::new());
+    let file = mk_file_with_ops_type(FileType::Directory, OpenFlags::O_RDWR, 0, Arc::clone(&ops));
+    let fd = fdt.alloc(Arc::clone(&file)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let mut xattr = [0u8; 28];
+    xattr[0..4].copy_from_slice(&uapi::FS_XFLAG_EXTSIZE.to_ne_bytes());
+    xattr[4..8].copy_from_slice(&64u32.to_ne_bytes());
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_FSSETXATTR, xattr.as_ptr() as u64), Some(-(Errno::Einval.as_i32() as i64)));
+    assert_eq!(*ops.attr.lock().unwrap(), FileAttr::default());
     reset();
 }
 

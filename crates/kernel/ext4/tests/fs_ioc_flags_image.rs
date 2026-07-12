@@ -56,7 +56,7 @@ fn chattr_flags_roundtrip_persist_and_preserve() {
         "no chattr flags initially");
 
     // chattr +i +d (immutable + nodump).
-    inode.fileattr_set(&FileAttr { flags: FS_IMMUTABLE_FL | FS_NODUMP_FL, fsx_xflags: 0, fsx_projid: 0 })
+    inode.fileattr_set(&FileAttr { flags: FS_IMMUTABLE_FL | FS_NODUMP_FL, ..Default::default() })
         .expect("fileattr_set");
     assert_eq!(inode.fileattr_get().unwrap().flags & (FS_IMMUTABLE_FL | FS_NODUMP_FL),
         FS_IMMUTABLE_FL | FS_NODUMP_FL, "get reflects the set flags");
@@ -74,7 +74,7 @@ fn chattr_flags_roundtrip_persist_and_preserve() {
         FS_IMMUTABLE_FL | FS_NODUMP_FL, "remount: chattr flags persisted");
 
     // chattr -i -d clears them, still preserving EXTENTS_FL.
-    node.fileattr_set(&FileAttr { flags: 0, fsx_xflags: 0, fsx_projid: 0 }).expect("clear");
+    node.fileattr_set(&FileAttr::default()).expect("clear");
     assert_eq!(node.fileattr_get().unwrap().flags & (FS_IMMUTABLE_FL | FS_NODUMP_FL), 0, "cleared");
     let ino2 = m2.state().mount.lookup_path(b"/chattr.txt").unwrap();
     assert_ne!(m2.state().mount.read_inode(ino2).unwrap().i_flags & EXT4_EXTENTS_FL, 0,
