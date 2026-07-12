@@ -164,6 +164,11 @@ pub trait FileBacking: Send + Sync {
     /// supply a real frame so writes propagate to the file and other mappers.
     /// # C: O(log N_pages)
     fn shared_frame(&self, _off: u64) -> Option<u64> { None }
+
+    /// Flush dirty cache pages overlapping `[start,end)` to the backing store.
+    /// Default no-op covers shmem/memfd-style backings where mapped pages are
+    /// already the store. # C: O(N_dirty in range)
+    fn writeback_range(&self, _start: u64, _end: u64) -> Result<(), ()> { Ok(()) }
 }
 
 /// VMA backing per `11§4`. `File` carries the file/inode ref via

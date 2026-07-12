@@ -404,3 +404,25 @@ fn mseal_hole_rejected() {
     let a = AddressSpace::new(0).unwrap();
     assert!(a.mseal(uva(0x4000_0000), PAGE).is_err());  // unmapped → ENOMEM
 }
+
+#[test]
+fn update_flags_range_splits_for_mlock_and_munlock() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.mmap(Some(h), 4 * PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+
+    a.update_flags_range(uva(0x4000_1000), 2 * PAGE,
+        VmaFlags::LOCKED, VmaFlags::empty());
+    let vmas = a.snapshot_vmas();
+    assert_eq!(vmas.len(), 3);
+    assert!(!vmas[0].flags.contains(VmaFlags::LOCKED));
+    assert!( vmas[1].flags.contains(VmaFlags::LOCKED));
+    assert!(!vmas[2].flags.contains(VmaFlags::LOCKED));
+
+    a.update_flags_range(uva(0x4000_1000), PAGE,
+        VmaFlags::empty(), VmaFlags::LOCKED);
+    assert!(!a.find_vma(uva(0x4000_1000)).unwrap().flags.contains(VmaFlags::LOCKED));
+    assert!( a.find_vma(uva(0x4000_2000)).unwrap().flags.contains(VmaFlags::LOCKED));
+    a.audit().unwrap();
+}
