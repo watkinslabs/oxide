@@ -46,7 +46,15 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
         follow: !no_follow,
         ..Default::default()
     };
-    let vp = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+    // Linux `do_faccessat` overrides credentials before `filename_lookup`, so
+    // intermediate directory search and final inode permission use the same
+    // selected real/effective identity.
+    let cred = if flags & AT_EACCESS != 0 {
+        crate::pathresolve::current_cred()
+    } else {
+        crate::pathresolve::current_cred_real()
+    };
+    let vp = match crate::pathresolve::resolve_at_lookup_cred(dirfd, path_ptr, lf, cred) {
         Ok(p) => p,
         Err(rv) => {
             #[cfg(feature = "debug-mount")]
@@ -72,12 +80,6 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
         log_runtime_access("access", dirfd, path_ptr, 0);
         return 0;
     } // F_OK: existence only (already resolved).
-    // access(2) uses REAL ids; faccessat2(AT_EACCESS) uses effective (fs) ids.
-    let cred = if flags & AT_EACCESS != 0 {
-        crate::pathresolve::current_cred()
-    } else {
-        crate::pathresolve::current_cred_real()
-    };
     match vfs::inode_permission(&vp.inode, mask, &cred) {
         Ok(())  => {
             if mode & W_OK != 0 && !access_special_file(vp.inode.file_type()) {
