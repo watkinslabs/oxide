@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use sched::{SchedClass, Task};
+use syscall::errno::Errno;
 use vfs::{Dentry, FdTable, File, FileOps, FileType, InodeBuilder, InodeRef, KResult,
           OpenFlags, default_inode_ops, mk_mode};
 
@@ -141,5 +142,35 @@ fn fideduperange_allows_destination_with_may_write_permission() {
     assert_eq!(range.info[0].bytes_deduped, 4);
     assert_eq!(range.info[0].status, 0);
     assert_eq!(*remap.calls.lock().unwrap(), vec![(2, 6, 4, 3)]);
+    reset();
+}
+
+#[test]
+fn fideduperange_rejects_destination_range_past_eof_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(4));
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 20, remap.clone(), 0o644, 0, 0);
+    let dst = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 8, remap.clone(), 0o666, 1000, 1000);
+    let dst_fd = fdt.alloc(dst).unwrap();
+    let src_fd = fdt.alloc(Arc::clone(&src)).unwrap();
+    let task = install_current_with_fdt_cred(Arc::clone(&fdt), 2000, 2000, 0);
+    let mut range = FileDedupeRangeOne {
+        src_offset: 2,
+        src_length: 4,
+        dest_count: 1,
+        reserved1: 0,
+        reserved2: 0,
+        info: [
+            FileDedupeRangeInfo { dest_fd: dst_fd as i64, dest_offset: 6, bytes_deduped: 99, status: -99, reserved: 0 },
+        ],
+    };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &src, &fdt, src_fd, uapi::FIDEDUPERANGE, &mut range as *mut FileDedupeRangeOne as u64),
+        Some(0));
+    assert_eq!(range.info[0].bytes_deduped, 0);
+    assert_eq!(range.info[0].status, -(Errno::Einval.as_i32()));
+    assert!(remap.calls.lock().unwrap().is_empty());
     reset();
 }
