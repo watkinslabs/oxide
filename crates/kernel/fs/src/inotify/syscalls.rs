@@ -10,6 +10,7 @@ use crate::inotify::types::{
     inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ACCESS, FAN_ALL_EVENT_BITS,
     FAN_CLOSE, FAN_FS_ERROR, FAN_MNT_EVENTS, FAN_MODIFY, FAN_ONDIR, FAN_OPEN,
     FAN_OPEN_EXEC, FAN_PRE_ACCESS, FAN_Q_OVERFLOW, FAN_RENAME, IN_ALL_EVENTS,
+    IN_EXCL_UNLINK, IN_IGNORED, IN_ONESHOT, IN_Q_OVERFLOW, INOTIFY_MARK_FLAGS,
     MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
 
@@ -17,15 +18,11 @@ const IN_NONBLOCK: u32 = 0o0_004_000;
 const IN_CLOEXEC:  u32 = 0o2_000_000;
 const IN_INIT_KNOWN: u32 = IN_NONBLOCK | IN_CLOEXEC;
 const IN_UNMOUNT:     u32 = 0x0000_2000;
-const IN_Q_OVERFLOW:  u32 = 0x0000_4000;
-const IN_IGNORED:     u32 = 0x0000_8000;
 const IN_ONLYDIR:     u32 = 0x0100_0000;
 const IN_DONT_FOLLOW: u32 = 0x0200_0000;
-const IN_EXCL_UNLINK: u32 = 0x0400_0000;
 const IN_MASK_CREATE: u32 = 0x1000_0000;
 const IN_MASK_ADD:    u32 = 0x2000_0000;
 const IN_ISDIR:       u32 = 0x4000_0000;
-const IN_ONESHOT:     u32 = 0x8000_0000;
 const ALL_INOTIFY_BITS: u32 = IN_ALL_EVENTS | IN_UNMOUNT | IN_Q_OVERFLOW | IN_IGNORED
     | IN_ONLYDIR | IN_DONT_FOLLOW | IN_EXCL_UNLINK | IN_MASK_CREATE | IN_MASK_ADD
     | IN_ISDIR | IN_ONESHOT;
@@ -143,6 +140,28 @@ fn read_watch_path(path_p: u64) -> Result<String, i64> {
 
 fn resolve_watch_path(raw: &str, no_follow_final: bool, only_dir: bool) -> Result<InodeRef, i64> {
     let (start, root) = current_start_root()?;
+    resolve_watch_path_at(
+        start.dentry,
+        start.mnt_id,
+        root.dentry,
+        root.mnt_id,
+        raw,
+        no_follow_final,
+        only_dir,
+        current_cred(),
+    )
+}
+
+pub(crate) fn resolve_watch_path_at(
+    start: Arc<vfs::Dentry>,
+    start_mnt_id: u64,
+    root: Arc<vfs::Dentry>,
+    root_mnt_id: u64,
+    raw: &str,
+    no_follow_final: bool,
+    only_dir: bool,
+    cred: vfs::Cred,
+) -> Result<InodeRef, i64> {
     let flags = vfs::LookupFlags {
         no_follow_final,
         follow: !no_follow_final,
@@ -150,14 +169,17 @@ fn resolve_watch_path(raw: &str, no_follow_final: bool, only_dir: bool) -> Resul
         ..Default::default()
     };
     vfs::path_lookup_at_root_cred(
-        start.dentry,
-        start.mnt_id,
-        root.dentry,
-        root.mnt_id,
+        start,
+        start_mnt_id,
+        root,
+        root_mnt_id,
         raw,
         flags,
-        current_cred(),
-    ).map(|p| p.inode).map_err(|e| -(e as i64))
+        cred,
+    ).and_then(|p| {
+        vfs::inode_permission(&p.inode, vfs::MAY_READ, &cred)?;
+        Ok(p.inode)
+    }).map_err(|e| -(e as i64))
 }
 
 fn fd_to_inotify(fd: i32) -> Result<Arc<InotifyData>, Errno> {
@@ -355,8 +377,8 @@ pub(crate) fn validate_inotify_watch_mask_after_fd(mask: u32) -> Result<(), Errn
 }
 
 /// Create or update an inode watch with Linux `IN_MASK_ADD`/`IN_MASK_CREATE`
-/// semantics. Stores only user event bits in the local dispatch mask; control
-/// flags guide add/update behavior and lookup only.
+/// semantics. Stores user event bits in the dispatch mask and Linux mark flags
+/// (`IN_ONESHOT`, `IN_EXCL_UNLINK`) alongside it.
 /// # C: O(N_watches)
 pub(crate) fn add_or_update_watch(
     inotify: &Arc<InotifyData>,
@@ -365,22 +387,38 @@ pub(crate) fn add_or_update_watch(
     mask: u32,
 ) -> Result<i32, Errno> {
     let event_mask = mask & IN_ALL_EVENTS;
+    let mark_flags = mask & INOTIFY_MARK_FLAGS;
     let mut g = inotify.watches.lock();
     for w in g.iter_mut() {
         if w.scope == MarkScope::Inode && w.inode_key == key {
             if (mask & IN_MASK_CREATE) != 0 { return Err(Errno::Eexist); }
             if (mask & IN_MASK_ADD) != 0 {
                 w.mask |= event_mask;
+                w.flags |= mark_flags;
             } else {
                 w.mask = event_mask;
+                w.flags = mark_flags;
             }
             return Ok(w.wd);
         }
     }
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
-    g.push(Watch { wd, inode_key: key, fsid, scope: MarkScope::Inode, mask: event_mask, ignored: 0 });
+    g.push(Watch { wd, inode_key: key, fsid, scope: MarkScope::Inode, mask: event_mask, flags: mark_flags, ignored: 0 });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     Ok(wd)
+}
+
+/// Remove one watch and queue Linux `IN_IGNORED` for its wd.
+/// # C: O(N_watches)
+pub(crate) fn remove_watch(inotify: &Arc<InotifyData>, wd: i32) -> Result<(), Errno> {
+    let mut g = inotify.watches.lock();
+    let Some(pos) = g.iter().position(|w| w.wd == wd) else {
+        return Err(Errno::Einval);
+    };
+    g.remove(pos);
+    MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
+    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, len: 0, obj: None, pid: 0 });
+    Ok(())
 }
 
 /// `sys_inotify_rm_watch(fd, wd)`. Removes the watch from the fd's
@@ -392,12 +430,10 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
     let inotify = match fd_to_inotify(fd) {
         Ok(a) => a, Err(e) => return -(e.as_i32() as i64),
     };
-    let mut g = inotify.watches.lock();
-    let n_before = g.len();
-    g.retain(|w| w.wd != wd);
-    let removed = n_before - g.len();
-    if removed > 0 { MARK_COUNT.fetch_sub(removed, Ordering::AcqRel); }
-    if removed == 0 { -(Errno::Einval.as_i32() as i64) } else { 0 }
+    match remove_watch(&inotify, wd) {
+        Ok(()) => 0,
+        Err(e) => -(e.as_i32() as i64),
+    }
 }
 
 /// Scope selected by a `fanotify_mark` flag word (default = inode). # C: O(1)
@@ -500,7 +536,7 @@ pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usiz
     if !add { return -(Errno::Enoent.as_i32() as i64); }
     let (mask, ign) = if ignored { (0, bits) } else { (bits, 0) };
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
-    g.push(Watch { wd, inode_key: key, fsid, scope, mask, ignored: ign });
+    g.push(Watch { wd, inode_key: key, fsid, scope, mask, flags: 0, ignored: ign });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     perm_delta(0, mask);
     0

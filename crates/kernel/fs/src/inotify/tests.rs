@@ -1,4 +1,88 @@
 use super::*;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use crate::inotify::syscalls::resolve_watch_path_at;
+use vfs::{CreateCtx, Cred, Dentry, FileType, Inode, InodeBuilder, InodeOps,
+    InodeRef, KResult, VfsError, default_file_ops, mk_mode};
+
+struct DirData { kids: BTreeMap<&'static str, InodeRef> }
+struct DirOps;
+
+impl InodeOps for DirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        inode.private::<DirData>().ok_or(VfsError::Enotdir)?
+            .kids.get(name).cloned().ok_or(VfsError::Enoent)
+    }
+    fn create(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
+        Err(VfsError::Eio)
+    }
+    fn mkdir(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
+        Err(VfsError::Eio)
+    }
+    fn symlink(&self, _inode: &Inode, _name: &str, _target: &[u8], _ctx: &CreateCtx) -> KResult<()> {
+        Err(VfsError::Eio)
+    }
+}
+
+fn cred(uid: u32) -> Cred {
+    Cred {
+        uid, gid: uid, cap_dac_override: false, cap_dac_read_search: false,
+        cap_fowner: false, cap_chown: false, cap_fsetid: false,
+        ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS],
+    }
+}
+
+fn reg(ino: u64, mode: u16, uid: u32) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, mode), vfs::default_inode_ops(), default_file_ops())
+        .owner(uid, uid).build()
+}
+
+fn dir(ino: u64, mode: u16, uid: u32, kids: &[(&'static str, InodeRef)]) -> InodeRef {
+    let mut map = BTreeMap::new();
+    for (name, inode) in kids { map.insert(*name, inode.clone()); }
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, mode), Arc::new(DirOps), default_file_ops())
+        .owner(uid, uid).private(Arc::new(DirData { kids: map })).build()
+}
+
+fn errno(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
+
+fn path_err(r: Result<InodeRef, i64>) -> i64 {
+    match r {
+        Ok(_) => 0,
+        Err(e) => e,
+    }
+}
+
+fn read_event_pair(ino: &InotifyData) -> (i32, u32) {
+    let mut buf = [0u8; 16];
+    assert_eq!(ino.read(0, &mut buf), Ok(16));
+    (
+        i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+    )
+}
+
+#[test]
+fn inotify_watch_path_resolution_matches_linux_permission_shape() {
+    let public = reg(3, 0o644, 0);
+    let private = reg(4, 0o600, 0);
+    let subdir = dir(5, 0o755, 0, &[]);
+    let root_inode = dir(1, 0o755, 0, &[
+        ("public", public.clone()),
+        ("private", private),
+        ("subdir", subdir),
+    ]);
+    let root = Dentry::new_root(root_inode);
+    let user = cred(1000);
+
+    assert!(Arc::ptr_eq(
+        &resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/public", false, false, user).unwrap(),
+        &public,
+    ));
+    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/private", false, false, user)), errno(syscall::errno::Errno::Eacces));
+    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/missing", false, false, user)), errno(syscall::errno::Errno::Enoent));
+    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root, 0, "/public", false, true, user)), errno(syscall::errno::Errno::Enotdir));
+}
 
 #[test]
 fn inotify_init_flags_match_linux() {
@@ -56,6 +140,42 @@ fn inotify_add_watch_create_replace_and_add_semantics() {
     let flags_only = add_or_update_watch(&g, 0xbeefusize, 0x44, 0x0100_0000).unwrap();
     assert_eq!(flags_only, 2);
     assert_eq!(g.watches.lock()[1].mask, 0);
+}
+
+#[test]
+fn inotify_oneshot_removes_watch_and_queues_ignored() {
+    let ino = InotifyData::new(0);
+    let file = reg(6, 0o644, 0);
+    let wd = add_or_update_watch(&ino, inode_key(&file), file.fsid(), IN_MODIFY | IN_ONESHOT).unwrap();
+    fire_self(&file, IN_MODIFY);
+    assert_eq!(ino.watches.lock().len(), 0);
+    assert_eq!(read_event_pair(&ino), (wd, IN_MODIFY));
+    assert_eq!(read_event_pair(&ino), (wd, IN_IGNORED));
+    fire_self(&file, IN_MODIFY);
+    assert_eq!(ino.read(0, &mut [0u8; 16]), Err(vfs::VfsError::Eagain));
+}
+
+#[test]
+fn inotify_remove_watch_queues_ignored_and_rejects_missing_wd() {
+    let ino = InotifyData::new(0);
+    let wd = add_or_update_watch(&ino, 0xcafeusize, 0x44, IN_OPEN).unwrap();
+    assert_eq!(remove_watch(&ino, wd), Ok(()));
+    assert_eq!(read_event_pair(&ino), (wd, IN_IGNORED));
+    assert_eq!(remove_watch(&ino, wd), Err(syscall::errno::Errno::Einval));
+}
+
+#[test]
+fn inotify_queue_overflow_reports_single_overflow_event() {
+    let ino = InotifyData::new(0);
+    for _ in 0..INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
+        ino.enqueue_event(Event { wd: 1, mask: IN_OPEN, cookie: 0, len: 0, obj: None, pid: 0 });
+    }
+    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, len: 0, obj: None, pid: 0 });
+    ino.enqueue_event(Event { wd: 1, mask: IN_ATTRIB, cookie: 0, len: 0, obj: None, pid: 0 });
+    let q = ino.events.lock();
+    assert_eq!(q.len(), INOTIFY_DEFAULT_MAX_QUEUED_EVENTS + 1);
+    assert_eq!(q.back().map(|e| (e.wd, e.mask)), Some((-1, IN_Q_OVERFLOW)));
+    assert_eq!(q.iter().filter(|e| (e.mask & IN_Q_OVERFLOW) != 0).count(), 1);
 }
 
 #[test]
