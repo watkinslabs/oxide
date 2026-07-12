@@ -38,6 +38,10 @@ pub const EXT4_MAX_EXTENT_DEPTH: u16 = 5;
 /// 512-byte sectors (only with the huge_file RO_COMPAT feature). # C: n/a
 pub const EXT4_HUGE_FILE_FL: u32 = 0x0004_0000;
 
+/// `EXT4_EXTENTS_FL` in `i_flags` — `i_block` holds an extent tree root, not
+/// inline file/symlink bytes. # C: n/a
+pub const EXT4_EXTENTS_FL: u32 = 0x0008_0000;
+
 /// Valid extent-tree descent step: an interior node's child must be exactly one
 /// level shallower (all ext4 leaves sit at the same depth). Bounds every tree
 /// walk to the root depth — a step that is not strictly-decreasing-by-one marks
@@ -235,6 +239,7 @@ impl Inode {
     /// # C: O(1)
     pub fn fast_symlink_target(&self) -> Option<&[u8]> {
         if !self.is_link() { return None; }
+        if self.i_blocks != 0 || (self.i_flags & EXT4_EXTENTS_FL) != 0 { return None; }
         let n = self.size as usize;
         if n == 0 || n > I_BLOCK_LEN { return None; }
         Some(&self.i_block[..n])
