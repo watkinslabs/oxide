@@ -239,6 +239,9 @@ pub unsafe fn schedule() {
         if !matches!(prev_ref.sched_class(), SchedClass::Idle)
             && prev_ref.state() == TaskState::Runnable
         {
+            if prev_ref.yield_pending.swap(false, Ordering::AcqRel) {
+                inner.yield_current_task(prev_ref);
+            }
             let raw = rq.current.load(Ordering::Acquire);
             // SAFETY: raw came from Arc::into_raw; bumping the strong count is sound.
             unsafe { Arc::increment_strong_count(raw); }
@@ -404,6 +407,18 @@ pub unsafe fn tick_yield() {
             options(nomem, nostack, preserves_flags),
         );
     }
+}
+
+/// Linux `sched_yield(2)`: class-specific yield then schedule. # C: O(log N)
+/// # SAFETY: per `schedule()`.
+/// # Ctx: process|kthread; preempt-off
+pub unsafe fn sched_yield() {
+    if let Some(rq) = global() {
+        // SAFETY: current_ref borrow is bounded to this preempt-off syscall path.
+        unsafe { rq.current_ref() }.yield_pending.store(true, Ordering::Release);
+    }
+    // SAFETY: caller satisfies `schedule()`'s contract; yield marker consumed before requeue.
+    unsafe { schedule(); }
 }
 
 /// Yield for a caller that has ALREADY parked itself Sleeping on a wait

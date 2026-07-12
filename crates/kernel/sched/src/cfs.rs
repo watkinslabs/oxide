@@ -40,6 +40,12 @@ impl CfsRunqueue {
         self.tree.keys().next().map(|(v, _)| *v).unwrap_or(0)
     }
 
+    /// Rightmost task vruntime; used by Linux-shaped `sched_yield` to forfeit
+    /// current's place behind queued CFS peers. # C: O(log N)
+    pub fn max_vruntime(&self) -> u64 {
+        self.tree.keys().next_back().map(|(v, _)| *v).unwrap_or(0)
+    }
+
     /// Insert with key derived from the task's current vruntime
     /// snapshot.
     /// # C: O(log N)

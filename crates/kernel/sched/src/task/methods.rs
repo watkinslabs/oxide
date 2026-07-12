@@ -121,6 +121,7 @@ impl Task {
             on_rq:    AtomicBool::new(false),
             on_cpu:   AtomicBool::new(false),
             frozen:   AtomicBool::new(false),
+            yield_pending: AtomicBool::new(false),
             reaped:   AtomicBool::new(false),
             cpu:      AtomicU16::new(u16::MAX),
             vruntime: AtomicU64::new(0),

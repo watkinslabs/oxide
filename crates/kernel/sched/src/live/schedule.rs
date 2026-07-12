@@ -15,4 +15,4 @@ pub use lifecycle::{
     current, current_chroot_root, current_mount_ns, install_default_runqueue,
     mark_done, runqueue_active, uninstall_global_with_stats,
 };
-pub use switch::{oxide_finish_task_switch, park_yield, schedule, tick_yield};
+pub use switch::{oxide_finish_task_switch, park_yield, sched_yield, schedule, tick_yield};
