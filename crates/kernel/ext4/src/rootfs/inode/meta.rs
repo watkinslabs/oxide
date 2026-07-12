@@ -52,15 +52,28 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     if new & EXT4_NOATIME_FL   != 0 { s |= vfs::S_NOATIME; }
     if new & EXT4_SYNC_FL      != 0 { s |= vfs::S_SYNC; }
     inode.set_i_flags(s);
-    ext4_fileattr_setproject(&st, fa.fsx_projid)?;
+    ext4_fileattr_setproject(&st, inode, ino, fa.fsx_projid)?;
     Ok(())
 }
 
-fn ext4_fileattr_setproject(st: &super::super::state::RootfsState, projid: u32) -> KResult<()> {
+fn ext4_fileattr_setproject(
+    st: &super::super::state::RootfsState,
+    inode: &Inode,
+    ino: u32,
+    projid: u32,
+) -> KResult<()> {
     if !st.mount.sb.has_project() {
         return if projid == 0 { Ok(()) } else { Err(VfsError::Eopnotsupp) };
     }
-    Err(VfsError::Eopnotsupp)
+    if st.mount.sb.inode_size as usize <= crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
+        return Err(VfsError::Eopnotsupp);
+    }
+    let raw = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
+    if raw.i_projid == projid { return Ok(()); }
+    let raw_now = vfs::inode_times::realtime_now_ns();
+    let ctime_ns = vfs::inode_times::current_time(inode, raw_now);
+    st.mount.persist_inode_project(ino, projid, ctime_ns).map_err(|_| VfsError::Eio)?;
+    inode.set_times(None, None, ctime_ns)
 }
 
 /// `ext4_setattr` (Linux `fs/ext4/inode.c`): the `i_op->setattr` for every
