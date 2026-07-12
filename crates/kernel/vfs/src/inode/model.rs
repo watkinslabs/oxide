@@ -86,12 +86,15 @@ pub struct FiemapExtent {
 }
 
 /// Inode attribute view shared by `fileattr_get`/`fileattr_set` (Linux `struct
-/// fileattr`). Carries both the legacy `FS_*_FL` word and the `xflags`/projid.
+/// fileattr`). Carries the legacy `FS_*_FL` word and Linux `fsxattr` fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct FileAttr {
-    pub flags:      u32,
-    pub fsx_xflags: u32,
-    pub fsx_projid: u32,
+    pub flags:          u32,
+    pub fsx_xflags:     u32,
+    pub fsx_extsize:    u32,
+    pub fsx_nextents:   u32,
+    pub fsx_projid:     u32,
+    pub fsx_cowextsize: u32,
 }
 
 impl FileAttr {
@@ -102,6 +105,6 @@ impl FileAttr {
         if i_flags & super::flags::S_APPEND    != 0 { flags |= FS_APPEND_FL; }
         if i_flags & super::flags::S_NOATIME   != 0 { flags |= FS_NOATIME_FL; }
         if i_flags & super::flags::S_SYNC      != 0 { flags |= FS_SYNC_FL; }
-        FileAttr { flags, fsx_xflags: 0, fsx_projid: 0 }
+        FileAttr { flags, ..Default::default() }
     }
 }

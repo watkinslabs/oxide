@@ -36,8 +36,8 @@ pub(super) fn handle_common_ioctl(
         FS_IOC_RESVSP | FS_IOC_RESVSP64 => Some(ioctl_preallocate(file, 0, arg)),
         FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 => Some(ioctl_preallocate(file, FALLOC_FL_PUNCH_HOLE, arg)),
         FS_IOC_ZERO_RANGE => Some(ioctl_preallocate(file, FALLOC_FL_ZERO_RANGE, arg)),
-        FS_IOC_FSGETXATTR => Some(ioctl_fsgetxattr(file, arg)),
-        FS_IOC_FSSETXATTR => Some(ioctl_fssetxattr(cur, file, arg)),
+        FS_IOC_FSGETXATTR => Some(super::fileattr::ioctl_fsgetxattr(file, arg)),
+        FS_IOC_FSSETXATTR => Some(super::fileattr::ioctl_fssetxattr(cur, file, arg)),
         FS_IOC_GETFSUUID => Some(ioctl_getfsuuid(file, arg)),
         FS_IOC_GETFSSYSFSPATH => Some(ioctl_getfssysfspath(file, arg)),
         FIONREAD if file.inode().file_type() == vfs::FileType::Regular => {
@@ -327,51 +327,6 @@ fn ioctl_preallocate(file: &vfs::File, mode: u32, arg: u64) -> i64 {
     }
 }
 
-/// Linux `FS_IOC_FSGETXATTR`: copy `struct fsxattr` from fileattr state. # C: O(1)
-fn ioctl_fsgetxattr(file: &vfs::File, arg: u64) -> i64 {
-    let fa = match file.inode().fileattr_get() {
-        Ok(fa) => fattr_fill_xflags(fa),
-        Err(e) => return -(e as i64),
-    };
-    if let Err(rv) = validate_user_buf_writable(arg, FSXATTR_BYTES, 1) { return rv; }
-    write_u32(arg, fa.fsx_xflags & FS_XFLAGS_MASK);
-    write_u32(arg + 4, 0);
-    write_u32(arg + 8, 0);
-    write_u32(arg + 12, fa.fsx_projid);
-    write_u32(arg + 16, 0);
-    write_u64(arg + 20, 0);
-    0
-}
-
-/// Linux `FS_IOC_FSSETXATTR`: copy fsxattr, validate xflags, set fileattr. # C: FS-dependent
-fn ioctl_fssetxattr(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
-    if let Err(rv) = validate_user_buf_readable(arg, FSXATTR_BYTES, 1) { return rv; }
-    let xflags = read_u32(arg);
-    if xflags & !FS_XFLAGS_MASK != 0 { return -(Errno::Eopnotsupp.as_i32() as i64); }
-    let projid = read_u32(arg + 12);
-    let want = fattr_fill_xflags(vfs::FileAttr {
-        flags: 0,
-        fsx_xflags: xflags & !FS_XFLAG_RDONLY_MASK,
-        fsx_projid: projid,
-    });
-    if file.inode().uid() != Some(current_fsuid()) && !cur.has_cap(sched::cap::FOWNER) {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    let old = match file.inode().fileattr_get() {
-        Ok(fa) => fattr_fill_xflags(fa),
-        Err(e) => return -(e as i64),
-    };
-    if (want.flags ^ old.flags) & (FS_APPEND_FL | FS_IMMUTABLE_FL) != 0
-        && !cur.has_cap(sched::cap::LINUX_IMMUTABLE)
-    {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    match file.inode().fileattr_set(&want) {
-        Ok(()) => 0,
-        Err(e) => -(e as i64),
-    }
-}
-
 /// Linux `FS_IOC_GETFSUUID`: expose superblock UUID or `ENOTTY`. # C: O(1)
 fn ioctl_getfsuuid(file: &vfs::File, arg: u64) -> i64 {
     let sb = match file.inode().i_sb() {
@@ -416,30 +371,6 @@ fn ioctl_getfssysfspath(file: &vfs::File, arg: u64) -> i64 {
     0
 }
 
-fn fattr_fill_xflags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
-    if fa.fsx_xflags == 0 && fa.flags != 0 {
-        if fa.flags & FS_SYNC_FL      != 0 { fa.fsx_xflags |= FS_XFLAG_SYNC; }
-        if fa.flags & FS_IMMUTABLE_FL != 0 { fa.fsx_xflags |= FS_XFLAG_IMMUTABLE; }
-        if fa.flags & FS_APPEND_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_APPEND; }
-        if fa.flags & FS_NODUMP_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_NODUMP; }
-        if fa.flags & FS_NOATIME_FL   != 0 { fa.fsx_xflags |= FS_XFLAG_NOATIME; }
-        if fa.flags & FS_DAX_FL       != 0 { fa.fsx_xflags |= FS_XFLAG_DAX; }
-        if fa.flags & FS_PROJINHERIT_FL != 0 { fa.fsx_xflags |= FS_XFLAG_PROJINHERIT; }
-        if fa.flags & FS_VERITY_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_VERITY; }
-    }
-    if fa.flags == 0 && fa.fsx_xflags != 0 {
-        if fa.fsx_xflags & FS_XFLAG_IMMUTABLE != 0 { fa.flags |= FS_IMMUTABLE_FL; }
-        if fa.fsx_xflags & FS_XFLAG_APPEND    != 0 { fa.flags |= FS_APPEND_FL; }
-        if fa.fsx_xflags & FS_XFLAG_SYNC      != 0 { fa.flags |= FS_SYNC_FL; }
-        if fa.fsx_xflags & FS_XFLAG_NOATIME   != 0 { fa.flags |= FS_NOATIME_FL; }
-        if fa.fsx_xflags & FS_XFLAG_NODUMP    != 0 { fa.flags |= FS_NODUMP_FL; }
-        if fa.fsx_xflags & FS_XFLAG_DAX       != 0 { fa.flags |= FS_DAX_FL; }
-        if fa.fsx_xflags & FS_XFLAG_PROJINHERIT != 0 { fa.flags |= FS_PROJINHERIT_FL; }
-        if fa.fsx_xflags & FS_XFLAG_VERITY    != 0 { fa.flags |= FS_VERITY_FL; }
-    }
-    fa
-}
-
 fn read_u32(addr: u64) -> u32 {
     // SAFETY: caller validated the surrounding user payload before reading this field.
     unsafe { core::ptr::read_unaligned(addr as *const u32) }
@@ -458,11 +389,6 @@ fn read_i64(addr: u64) -> i64 {
 fn read_u64(addr: u64) -> u64 {
     // SAFETY: caller validated the surrounding user payload before reading this field.
     unsafe { core::ptr::read_unaligned(addr as *const u64) }
-}
-
-fn write_u32(addr: u64, val: u32) {
-    // SAFETY: caller validated the surrounding user payload before writing this field.
-    unsafe { core::ptr::write_unaligned(addr as *mut u32, val); }
 }
 
 fn write_u64(addr: u64, val: u64) {

@@ -149,7 +149,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         {
             return -(Errno::Eperm.as_i32() as i64);
         }
-        let fa = vfs::FileAttr { flags: want, fsx_xflags: 0, fsx_projid: 0 };
+        let fa = vfs::FileAttr { flags: want, ..Default::default() };
         return match file.inode().fileattr_set(&fa) {
             Ok(()) => 0, Err(e) => crate::namei_common::errno_from_vfs(e),
         };
