@@ -42,6 +42,8 @@ mod userbuf {
 mod uapi;
 #[path = "../../syscalls/src/016_ioctl/fileattr.rs"]
 mod fileattr;
+#[path = "../../syscalls/src/016_ioctl/remap.rs"]
+mod remap;
 #[path = "../../syscalls/src/016_ioctl/common.rs"]
 mod ioctl_common;
 
@@ -249,5 +251,36 @@ fn fideduperange_rejects_same_inode_overlap_before_backend() {
     assert_eq!(range.info[0].bytes_deduped, 0);
     assert_eq!(range.info[0].status, -(Errno::Einval.as_i32()));
     assert!(remap.calls.lock().unwrap().is_empty());
+    reset();
+}
+
+#[test]
+fn fideduperange_shortens_partial_eof_block_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(2048));
+    let sb = remap_sb(1024);
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_on_sb(FileType::Regular, OpenFlags::O_RDONLY, 3000, remap.clone(), 0o644, 0, 0, sb);
+    let dst = mk_file_on_sb(FileType::Regular, OpenFlags::O_RDONLY, 5000, remap.clone(), 0o666, 1000, 1000, sb);
+    let dst_fd = fdt.alloc(dst).unwrap();
+    let src_fd = fdt.alloc(Arc::clone(&src)).unwrap();
+    let task = install_current_with_fdt_cred(Arc::clone(&fdt), 2000, 2000, 0);
+    let mut range = FileDedupeRangeOne {
+        src_offset: 0,
+        src_length: 3000,
+        dest_count: 1,
+        reserved1: 0,
+        reserved2: 0,
+        info: [
+            FileDedupeRangeInfo { dest_fd: dst_fd as i64, dest_offset: 0, bytes_deduped: 99, status: -99, reserved: 0 },
+        ],
+    };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &src, &fdt, src_fd, uapi::FIDEDUPERANGE, &mut range as *mut FileDedupeRangeOne as u64),
+        Some(0));
+    assert_eq!(range.info[0].bytes_deduped, 3000);
+    assert_eq!(range.info[0].status, 0);
+    assert_eq!(*remap.calls.lock().unwrap(), vec![(0, 0, 2048, 3)]);
     reset();
 }

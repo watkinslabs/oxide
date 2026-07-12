@@ -10,6 +10,7 @@
 #[path = "016_ioctl/fiemap.rs"] mod fiemap;
 #[path = "016_ioctl/font.rs"] mod font;
 #[path = "016_ioctl/netns.rs"] mod netns;
+#[path = "016_ioctl/remap.rs"] mod remap;
 #[path = "016_ioctl/tioclinux.rs"] mod tioclinux;
 #[path = "016_ioctl/tty_ioctl.rs"] mod tty_ioctl;
 #[path = "016_ioctl/uapi.rs"] mod uapi;
