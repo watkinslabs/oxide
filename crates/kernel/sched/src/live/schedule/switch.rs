@@ -144,6 +144,8 @@ fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
 unsafe fn finish_switched_from(rq: &Runqueue) {
     let from = rq.switched_from.swap(core::ptr::null_mut(), Ordering::AcqRel);
     if !from.is_null() {
+        // SAFETY: `from` is the scheduler handoff pointer stored by schedule(); this debug read only validates the Task sentinel before the handoff write.
+        unsafe { (*from).debug_check_canary("finish_switched_from"); }
         // SAFETY: `from` was stored by schedule() before a context switch; the
         // outgoing task is kept alive by the switcher's frame or task registry.
         unsafe { (*from).on_cpu.store(false, Ordering::Release); }
@@ -232,6 +234,7 @@ pub unsafe fn schedule() {
     {
         // SAFETY: rq.current is non-null after install_global.
         let prev_ref = unsafe { rq.current_ref() };
+        prev_ref.debug_check_canary("schedule_prev_update");
         update_curr(prev_ref, &inner, now);
         if !matches!(prev_ref.sched_class(), SchedClass::Idle)
             && prev_ref.state() == TaskState::Runnable
@@ -259,6 +262,8 @@ pub unsafe fn schedule() {
 
     // SAFETY: prev_raw is non-null after install_global.
     let prev_ref = unsafe { &*prev_raw };
+    prev_ref.debug_check_canary("schedule_prev_raw");
+    next_arc.debug_check_canary("schedule_next_arc");
     // SAFETY: schedule path holds the runqueue invariant for both prev and next; preempt-off + single-CPU; no concurrent execve.
     let prev_root = unsafe { prev_ref.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
     // SAFETY: next_arc is owned by this schedule scope; the runqueue invariant for the picked task; no concurrent execve writer on this CPU.
@@ -305,6 +310,7 @@ pub unsafe fn schedule() {
     unsafe { finish_switched_from(rq); }
     rq.switched_from.store(prev_raw, Ordering::Release);
     let mut prev_arc_opt = Some(prev_arc);
+    prev_arc_opt.as_ref().expect("just set").debug_check_canary("schedule_prev_arc");
     if matches!(prev_arc_opt.as_ref().expect("just set").state(), TaskState::Zombie) {
         let dying = prev_arc_opt.take().expect("just set");
         rq.reap_pending.store(Arc::into_raw(dying) as *mut Task, Ordering::Release);

@@ -9,9 +9,10 @@ path = "src/lib.rs"
 
 [dependencies]
 sync = { path = "../../shared/sync" }
+klog = { path = "../../shared/klog", optional = true }
 
 [features]
 default = []
 hosted  = []
 # Diagnostic UAF localizer: poison + quarantine freed blocks (docs/02, dev-only).
-debug-heappoison = []
+debug-heappoison = ["dep:klog"]
