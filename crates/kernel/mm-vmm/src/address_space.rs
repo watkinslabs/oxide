@@ -20,6 +20,7 @@ use alloc::sync::{Arc, Weak};
 use sync::{AddressSpace as AddressSpaceClass, RwLock, RwReadGuard, Spinlock};
 
 use crate::tree::VmaTree;
+use crate::vma::{Vma, VmaBacking};
 use crate::KResult;
 
 mod fault;
@@ -205,6 +206,7 @@ impl AddressSpace {
         use core::sync::atomic::Ordering;
         self.brk.store(start, Ordering::Release);
         self.brk_max.store(max, Ordering::Release);
+        self.set_start_brk(start);
     }
 
     /// Current `brk` value (0 before the loader runs).
@@ -240,15 +242,36 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn try_set_brk(&self, new: u64) -> u64 {
         use core::sync::atomic::Ordering;
+        const PAGE_MASK: u64 = 0xfff;
         let cur = self.brk.load(Ordering::Acquire);
         let max = self.brk_max.load(Ordering::Acquire);
         if max == 0 { return cur; }                  // no heap reserved
-        if new < (cur & !0xfff) || new > max { return cur; }
-        // Page-round up.
-        let rounded = (new + 0xfff) & !0xfff;
+        let min = self.start_brk();
+        if new < min || new > max { return cur; }
+        let Some(rounded) = new.checked_add(PAGE_MASK).map(|v| v & !PAGE_MASK) else { return cur };
         if rounded > max { return cur; }
-        self.brk.store(rounded, Ordering::Release);
-        rounded
+        self.brk.store(new, Ordering::Release);
+        new
+    }
+
+    /// True when an anonymous demand fault lands inside the loader-reserved
+    /// heap window but above Linux's current `PAGE_ALIGN(mm->brk)` VMA end.
+    /// # C: O(1)
+    pub(super) fn brk_fault_past_current(&self, vma: &Vma, va_page: u64) -> bool {
+        if !matches!(vma.backing, VmaBacking::Anonymous) { return false; }
+        let (start, max, cur) = (self.start_brk(), self.brk_max(), self.brk());
+        if start == 0 || max == 0 || va_page < start || va_page >= max { return false; }
+        if vma.start.as_u64() > start || vma.end.as_u64() < max { return false; }
+        let active_end = cur.checked_add(0xfff).map(|v| v & !0xfff).unwrap_or(u64::MAX);
+        va_page >= active_end
+    }
+
+    #[cfg(test)]
+    /// # C: O(log N_vmas)
+    pub fn brk_fault_past_current_for_test(&self, va_page: u64) -> bool {
+        let Some(va) = hal::UserVirtAddr::new(va_page) else { return false };
+        let Some(vma) = self.find_vma(va) else { return false };
+        self.brk_fault_past_current(&vma, va_page)
     }
 
     /// PA of this AS's top-level page-table frame. Pass to
