@@ -82,6 +82,18 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
     Ok(())
 }
 
+/// Copy an `int[2]` fd pair to userspace with Linux `copy_to_user` fault shape.
+/// # C: O(1)
+pub(crate) fn write_i32_pair(ptr: u64, a: i32, b: i32) -> Result<(), i64> {
+    validate_user_buf_writable(ptr, 8, 4)?;
+    // SAFETY: ptr was validated writable for the full int[2] output array.
+    unsafe {
+        core::ptr::write_volatile(ptr as *mut i32, a);
+        core::ptr::write_volatile((ptr + 4) as *mut i32, b);
+    }
+    Ok(())
+}
+
 /// Same as `validate_user_buf` but confirms every page in the range belongs to
 /// a readable VMA before the kernel copies from it. # C: O(N_pages * log N_vmas)
 pub(crate) fn validate_user_buf_readable(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
