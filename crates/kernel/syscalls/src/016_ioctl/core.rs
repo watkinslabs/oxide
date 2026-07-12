@@ -33,7 +33,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = handle_common_ioctl(cur, &file, &fdt, fd, req, arg) {
         return rv;
     }
-    if let Some(rv) = handle_file_ioctl(&file, req, arg) {
+    if let Some(rv) = handle_file_ioctl(cur, &file, req, arg) {
         return rv;
     }
     // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
@@ -141,12 +141,14 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     handle_tty_ioctl(&file, fd, req, arg)
 }
 
-fn handle_file_ioctl(file: &vfs::File, req: u64, arg: u64) -> Option<i64> {
+fn handle_file_ioctl(cur: &sched::Task, file: &vfs::File, req: u64, arg: u64) -> Option<i64> {
     match req {
         super::uapi::EXT4_IOC_GETVERSION | super::uapi::FS_IOC_GETVERSION =>
             Some(ioctl_getversion(file, arg)),
         super::uapi::EXT4_IOC_SETVERSION | super::uapi::FS_IOC_SETVERSION =>
             Some(ioctl_setversion(file, arg)),
+        super::uapi::FS_IOC_GETFSLABEL => Some(ioctl_getfslabel(file, arg)),
+        super::uapi::FS_IOC_SETFSLABEL => Some(ioctl_setfslabel(cur, file, arg)),
         _ => None,
     }
 }
@@ -156,7 +158,7 @@ fn ioctl_getversion(file: &vfs::File, arg: u64) -> i64 {
     let cred = current_cred();
     let gen = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::GetVersion) {
         Ok(vfs::FileIoctlReply::U32(v)) => v,
-        Ok(vfs::FileIoctlReply::Done) => return -(Errno::Enotty.as_i32() as i64),
+        Ok(_) => return -(Errno::Enotty.as_i32() as i64),
         Err(e) => return -(e as i64),
     };
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, super::uapi::INT_BYTES, 1) {
@@ -188,6 +190,57 @@ fn ioctl_setversion(file: &vfs::File, arg: u64) -> i64 {
     // SAFETY: arg validated readable for the Linux int payload.
     let gen = unsafe { core::ptr::read_unaligned(arg as *const u32) };
     let rv = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::SetVersion(gen)) {
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    };
+    if let Some(ref mnt) = m { vfs::mount::mnt_drop_write(mnt); }
+    rv
+}
+
+fn ioctl_getfslabel(file: &vfs::File, arg: u64) -> i64 {
+    let idmap = vfs::mount::idmap_for(file.mnt_id());
+    let cred = current_cred();
+    let label = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::GetFsLabel) {
+        Ok(vfs::FileIoctlReply::Label(v)) => v,
+        Ok(_) => return -(Errno::Enotty.as_i32() as i64),
+        Err(e) => return -(e as i64),
+    };
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, super::uapi::EXT4_LABEL_BYTES, 1) {
+        return rv;
+    }
+    // SAFETY: arg validated writable for the Linux ext4 label payload.
+    unsafe { core::ptr::copy_nonoverlapping(label.as_ptr(), arg as *mut u8, label.len()); }
+    0
+}
+
+fn ioctl_setfslabel(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
+    let idmap = vfs::mount::idmap_for(file.mnt_id());
+    let cred = current_cred();
+    let cap = cur.has_cap(sched::cap::SYS_ADMIN);
+    if let Err(e) = file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::SetFsLabelPrepare(cap)) {
+        return -(e as i64);
+    }
+    if let Err(rv) = crate::userbuf::validate_user_buf_readable(arg, super::uapi::EXT4_LABEL_BYTES, 1) {
+        return rv;
+    }
+    let mut user = [0u8; super::uapi::EXT4_LABEL_MAX + 1];
+    // SAFETY: arg validated readable for the Linux ext4 label payload.
+    unsafe { core::ptr::copy_nonoverlapping(arg as *const u8, user.as_mut_ptr(), user.len()); }
+    let len = match user.iter().position(|&b| b == 0) {
+        Some(n) => n,
+        None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let mut label = [0u8; super::uapi::EXT4_LABEL_MAX];
+    label[..len].copy_from_slice(&user[..len]);
+    let m = file.vfsmount();
+    if let Some(ref mnt) = m {
+        if let Err(e) = vfs::mount::mnt_want_write(mnt) { return -(e as i64); }
+        if mnt.sb().is_readonly() {
+            vfs::mount::mnt_drop_write(mnt);
+            return -(vfs::VfsError::Erofs as i64);
+        }
+    }
+    let rv = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::SetFsLabel(label)) {
         Ok(_) => 0,
         Err(e) => -(e as i64),
     };
