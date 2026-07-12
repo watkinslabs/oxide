@@ -1,0 +1,71 @@
+pub(super) const FIONREAD:  u64 = 0x541B;
+pub(super) const FIONBIO:   u64 = 0x5421;
+pub(super) const FIONCLEX:  u64 = 0x5450;
+pub(super) const FIOCLEX:   u64 = 0x5451;
+pub(super) const FIOASYNC:  u64 = 0x5452;
+pub(super) const FIOQSIZE:  u64 = 0x5460;
+pub(super) const FIBMAP:    u64 = 0x0000_0001;
+pub(super) const FIGETBSZ:  u64 = 0x0000_0002;
+pub(super) const SIOCOUTQ:  u64 = 0x5411;
+pub(super) const INT_BYTES: u64 = 4;
+pub(super) const LOFF_BYTES: u64 = 8;
+
+pub(super) const FSXATTR_BYTES: u64 = 28;
+pub(super) const FSUUID2_BYTES: u64 = 17;
+pub(super) const SPACE_RESV_BYTES: u64 = 48;
+pub(super) const SPACE_RESV_L_WHENCE: u64 = 2;
+pub(super) const SPACE_RESV_L_START: u64 = 8;
+pub(super) const SPACE_RESV_L_LEN: u64 = 16;
+
+pub(super) const FS_IOC_RESVSP: u64 = 0x4030_5828;
+pub(super) const FS_IOC_UNRESVSP: u64 = 0x4030_5829;
+pub(super) const FS_IOC_RESVSP64: u64 = 0x4030_582A;
+pub(super) const FS_IOC_UNRESVSP64: u64 = 0x4030_582B;
+pub(super) const FS_IOC_ZERO_RANGE: u64 = 0x4030_5839;
+pub(super) const FS_IOC_FSGETXATTR: u64 = 0x801C_581F;
+pub(super) const FS_IOC_FSSETXATTR: u64 = 0x401C_5820;
+pub(super) const FS_IOC_GETFSUUID: u64 = 0x8011_1500;
+
+pub(super) const SEEK_SET: i16 = 0;
+pub(super) const SEEK_CUR: i16 = 1;
+pub(super) const SEEK_END: i16 = 2;
+pub(super) const FALLOC_FL_PUNCH_HOLE: u32 = 0x02;
+pub(super) const FALLOC_FL_ZERO_RANGE: u32 = 0x10;
+
+pub(super) const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
+pub(super) const FS_APPEND_FL: u32 = 0x0000_0020;
+pub(super) const FS_SYNC_FL: u32 = 0x0000_0008;
+pub(super) const FS_NOATIME_FL: u32 = 0x0000_0080;
+pub(super) const FS_NODUMP_FL: u32 = 0x0000_0040;
+pub(super) const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
+pub(super) const FS_VERITY_FL: u32 = 0x0010_0000;
+pub(super) const FS_DAX_FL: u32 = 0x0200_0000;
+
+pub(super) const FS_XFLAG_IMMUTABLE: u32 = 0x0000_0008;
+pub(super) const FS_XFLAG_APPEND: u32 = 0x0000_0010;
+pub(super) const FS_XFLAG_SYNC: u32 = 0x0000_0020;
+pub(super) const FS_XFLAG_NOATIME: u32 = 0x0000_0040;
+pub(super) const FS_XFLAG_NODUMP: u32 = 0x0000_0080;
+pub(super) const FS_XFLAG_PROJINHERIT: u32 = 0x0000_0200;
+pub(super) const FS_XFLAG_DAX: u32 = 0x0000_8000;
+pub(super) const FS_XFLAG_VERITY: u32 = 0x0002_0000;
+pub(super) const FS_XFLAG_PREALLOC: u32 = 0x0000_0002;
+pub(super) const FS_XFLAG_CASEFOLD: u32 = 0x0004_0000;
+pub(super) const FS_XFLAG_CASENONPRESERVING: u32 = 0x0008_0000;
+pub(super) const FS_XFLAG_HASATTR: u32 = 0x8000_0000;
+pub(super) const FS_XFLAG_EXTSIZE: u32 = 0x0000_0800;
+pub(super) const FS_XFLAG_COWEXTSIZE: u32 = 0x0001_0000;
+pub(super) const FS_XFLAG_RTINHERIT: u32 = 0x0000_0100;
+pub(super) const FS_XFLAG_NOSYMLINKS: u32 = 0x0000_0400;
+pub(super) const FS_XFLAG_EXTSZINHERIT: u32 = 0x0000_1000;
+pub(super) const FS_XFLAG_REALTIME: u32 = 0x0000_0001;
+pub(super) const FS_XFLAG_NODEFRAG: u32 = 0x0000_2000;
+pub(super) const FS_XFLAG_FILESTREAM: u32 = 0x0000_4000;
+pub(super) const FS_XFLAG_COMMON: u32 = FS_XFLAG_SYNC | FS_XFLAG_IMMUTABLE | FS_XFLAG_APPEND
+    | FS_XFLAG_NODUMP | FS_XFLAG_NOATIME | FS_XFLAG_DAX | FS_XFLAG_PROJINHERIT
+    | FS_XFLAG_VERITY;
+pub(super) const FS_XFLAG_RDONLY_MASK: u32 = FS_XFLAG_PREALLOC | FS_XFLAG_HASATTR | FS_XFLAG_VERITY
+    | FS_XFLAG_CASEFOLD | FS_XFLAG_CASENONPRESERVING;
+pub(super) const FS_XFLAGS_MASK: u32 = FS_XFLAG_COMMON | FS_XFLAG_RDONLY_MASK | FS_XFLAG_EXTSIZE
+    | FS_XFLAG_COWEXTSIZE | FS_XFLAG_RTINHERIT | FS_XFLAG_NOSYMLINKS | FS_XFLAG_EXTSZINHERIT
+    | FS_XFLAG_REALTIME | FS_XFLAG_NODEFRAG | FS_XFLAG_FILESTREAM;

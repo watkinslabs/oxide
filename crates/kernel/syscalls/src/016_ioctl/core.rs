@@ -7,7 +7,8 @@ use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
-use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, INT_BYTES};
+use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl};
+use super::uapi::INT_BYTES;
 use super::tty_ioctl::handle_tty_ioctl;
 
 /// `sys_ioctl(fd, request, arg)` - slot 16.
@@ -32,7 +33,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    if let Some(rv) = handle_common_ioctl(&file, &fdt, fd, req, arg) {
+    if let Some(rv) = handle_common_ioctl(cur, &file, &fdt, fd, req, arg) {
         return rv;
     }
     // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
