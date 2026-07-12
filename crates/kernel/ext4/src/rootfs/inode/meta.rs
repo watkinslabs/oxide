@@ -87,6 +87,20 @@ pub(crate) fn ext4_setfslabel(inode: &Inode, label: [u8; EXT4_LABEL_MAX]) -> KRe
     st.mount.persist_fs_label(&label).map_err(|_| VfsError::Eio)
 }
 
+/// Linux ext4 `FITRIM` admission: CAP_SYS_ADMIN first, then block discard
+/// capability before any usercopy. Local ext4 has no discard-capable block op.
+/// # C: O(1)
+pub(crate) fn ext4_fitrim_prepare(cap_sys_admin: bool) -> KResult<()> {
+    if !cap_sys_admin { return Err(VfsError::Eperm); }
+    Err(VfsError::Eopnotsupp)
+}
+
+/// `FITRIM` execution after ABI-layer usercopy. Unreachable until the block
+/// layer advertises discard support. # C: O(1)
+pub(crate) fn ext4_fitrim(_start: u64, _len: u64, _minlen: u64) -> KResult<()> {
+    Err(VfsError::Eopnotsupp)
+}
+
 /// `ext4_fileattr_set` — the `FS_IOC_SETFLAGS` backend: fold the user-modifiable
 /// bits of `fa.flags` over the preserved kernel-internal flags, persist to the
 /// on-disk inode (journaled), and mirror IMMUTABLE/APPEND/NOATIME/SYNC into the

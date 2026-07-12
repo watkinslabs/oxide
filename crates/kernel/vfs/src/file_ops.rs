@@ -57,6 +57,10 @@ pub enum FileIoctlCmd {
     SetFsLabelPrepare(bool),
     /// `FS_IOC_SETFSLABEL`: exact ext4 16-byte on-disk label payload.
     SetFsLabel([u8; 16]),
+    /// Pre-copyin admission for `FITRIM`; carries CAP_SYS_ADMIN.
+    FitTrimPrepare(bool),
+    /// `FITRIM`: filesystem trim request after ABI-layer usercopy.
+    FitTrim { start: u64, len: u64, minlen: u64 },
 }
 
 /// Return payload for [`FileOps::unlocked_ioctl`]. # C: O(1)
