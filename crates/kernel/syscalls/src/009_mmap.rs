@@ -35,11 +35,10 @@ impl Drop for DrmDumbBacking {
 
 /// # C: O(log N_vmas)
 pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
-    let fd     = args.a4 as i64;
+    let fd     = args.a4 as i32;
     let mut offset = args.a5;
     let flags  = args.a3;
-    const MAP_ANON: u64 = 0x20;
-    const MAP_SHARED: u64 = 0x01;
+    use pmm::mmap_flags::{validate_file_access, MAP_ANON, MAP_SHARED, MAP_TYPE};
     // File-backed mmap: resolve fd, wrap as FileBacking, pass to glue_mmap.
     // A device exposing a contiguous physical range (e.g. /dev/fbN, the
     // framebuffer) is mapped straight to that PA (Linux remap_pfn_range) via
@@ -55,11 +54,11 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // inode starts empty, grows sparse + zero-filled on demand). MAP_PRIVATE|
     // MAP_ANON is unchanged: pure zero-fill COW (backing stays None).
     if (flags & MAP_ANON) != 0 {
-        if (flags & MAP_SHARED) != 0 {
+        if (flags & MAP_TYPE) == MAP_SHARED {
             backing = Some(crate::mmap_file::InodeFileBacking::new(::fs::tmpfs::tmpfs_anon_file()));
             offset = 0;
         }
-    } else if fd >= 0 {
+    } else {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -70,6 +69,18 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         let file = match fdt.get(fd as i32) {
             Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
+        let path_noexec = file.vfsmount()
+            .map(|m| m.is_noexec() || m.sb().is_noexec())
+            .unwrap_or(false);
+        if let Err(e) = validate_file_access(
+            flags,
+            args.a2,
+            file.f_mode().contains(vfs::Fmode::READ),
+            file.f_mode().contains(vfs::Fmode::WRITE),
+            path_noexec,
+        ) {
+            return e;
+        }
         let inode = file.inode();
         // DRM dumb buffers: the `offset` is a MODE_MAP_DUMB cookie that
         // selects the buffer. Pin the dumb handle for the VMA lifetime and map
@@ -82,7 +93,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             }
             let drm_backing: alloc::sync::Arc<dyn vmm::FileBacking> =
                 alloc::sync::Arc::new(DrmDumbBacking { pin });
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, 0, Some(drm_backing), None) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, Some(drm_backing), None) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -93,7 +104,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         // fallback below (IoUringInode read/write return EINVAL).
         if let Some((pa, len)) = crate::io_uring::mmap_backing(inode, offset) {
             if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, 0, None, Some(pa)) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, None, Some(pa)) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -132,7 +143,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             },
         }
     }
-    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, offset, backing, phys_base) {
+    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, offset, backing, phys_base) {
         Ok(va)  => {
             #[cfg(feature = "debug-atexit")]
             if fd >= 0 {
