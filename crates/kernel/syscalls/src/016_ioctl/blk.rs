@@ -43,6 +43,7 @@ pub(super) fn handle_blk_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 None => Some(-errno(Errno::Einval)),
             }
         }
+        super::uapi::BLKROGET => Some(write_u32(arg, 0)),
         super::uapi::BLKDISCARD => Some(ioctl_discard(&inode, file, arg)),
         super::uapi::BLKSECDISCARD => Some(ioctl_secure_erase(file)),
         super::uapi::BLKZEROOUT => Some(ioctl_zeroout(&inode, file, arg)),

@@ -297,16 +297,19 @@ fn block_geometry_ioctls_still_report_registered_disk_shape() {
     let mut sectors: u64 = 0;
     let mut logical: u32 = 0;
     let mut soft: u32 = 0;
+    let mut readonly: u32 = u32::MAX;
 
     assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKGETSIZE64, &mut bytes as *mut u64 as u64), Some(0));
     assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKGETSIZE, &mut sectors as *mut u64 as u64), Some(0));
     assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKSSZGET, &mut logical as *mut u32 as u64), Some(0));
     assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKBSZGET, &mut soft as *mut u32 as u64), Some(0));
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKROGET, &mut readonly as *mut u32 as u64), Some(0));
 
     assert_eq!(bytes, 4096);
     assert_eq!(sectors, 8);
     assert_eq!(logical, 512);
     assert_eq!(soft, 512);
+    assert_eq!(readonly, 0);
     block::registry::unregister("vdblkgeometry");
     reset();
 }
