@@ -29,6 +29,9 @@ pub(super) fn handle_common_ioctl(
         FIOASYNC => Some(ioctl_fioasync(file, arg)),
         FIOQSIZE => Some(ioctl_fioqsize(file, arg)),
         FIGETBSZ => Some(ioctl_figetbsz(file, arg)),
+        FICLONE => Some(ioctl_file_clone(file, fdt, arg as i64, 0, 0, 0)),
+        FICLONERANGE => Some(ioctl_file_clone_range(file, fdt, arg)),
+        FIDEDUPERANGE => Some(ioctl_file_dedupe_range(file, fdt, arg)),
         FIBMAP => Some(ioctl_fibmap(cur, file, arg)),
         FS_IOC_RESVSP | FS_IOC_RESVSP64 => Some(ioctl_preallocate(file, 0, arg)),
         FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 => Some(ioctl_preallocate(file, FALLOC_FL_PUNCH_HOLE, arg)),
@@ -128,6 +131,141 @@ fn ioctl_figetbsz(file: &vfs::File, arg: u64) -> i64 {
     // SAFETY: arg validated writable for one Linux int out-param.
     unsafe { core::ptr::write_volatile(arg as *mut i32, bs as i32); }
     0
+}
+
+/// Linux `FICLONERANGE`: copy `struct file_clone_range`, then clone. # C: FS-dependent
+fn ioctl_file_clone_range(file: &alloc::sync::Arc<vfs::File>, fdt: &vfs::FdTable, arg: u64) -> i64 {
+    if let Err(rv) = validate_user_buf_readable(arg, FILE_CLONE_RANGE_BYTES, 1) { return rv; }
+    let src_fd = read_i64(arg);
+    let src_off = read_u64(arg + 8);
+    let src_len = read_u64(arg + 16);
+    let dst_off = read_u64(arg + 24);
+    ioctl_file_clone(file, fdt, src_fd, src_off, src_len, dst_off)
+}
+
+/// Linux `ioctl_file_clone`: fd lookup plus `vfs_clone_file_range`. # C: FS-dependent
+fn ioctl_file_clone(file: &alloc::sync::Arc<vfs::File>, fdt: &vfs::FdTable, src_fd: i64, src_off: u64, src_len: u64, dst_off: u64) -> i64 {
+    let src_fd = match i32::try_from(src_fd) {
+        Ok(fd) => fd,
+        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let src = match fdt.get(src_fd) {
+        Ok(f) => f,
+        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match vfs_clone_file_range(&src, src_off, file, dst_off, src_len, 0) {
+        Ok(done) if src_len != 0 && done != src_len => -(Errno::Einval.as_i32() as i64),
+        Ok(_) => 0,
+        Err(e) => -(e as i64),
+    }
+}
+
+fn vfs_clone_file_range(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off: u64, len: u64, flags: u32) -> vfs::KResult<u64> {
+    if !same_superblock(src, dst) { return Err(vfs::VfsError::Exdev); }
+    generic_file_rw_checks(src, dst)?;
+    if !src.supports_remap_file_range() { return Err(vfs::VfsError::Eopnotsupp); }
+    remap_verify_area(src_off, len)?;
+    remap_verify_area(dst_off, len)?;
+    src.remap_file_range(src_off, dst, dst_off, len, flags)
+}
+
+/// Linux `FIDEDUPERANGE`: variable-length input with per-destination status. # C: FS-dependent
+fn ioctl_file_dedupe_range(file: &vfs::File, fdt: &vfs::FdTable, arg: u64) -> i64 {
+    if let Err(rv) = validate_user_buf_readable(arg, DEDUPE_RANGE_BYTES, 1) { return rv; }
+    let count = read_u16(arg + DEDUPE_DEST_COUNT) as usize;
+    let size = DEDUPE_RANGE_BYTES + count as u64 * DEDUPE_INFO_BYTES;
+    if size > PAGE_BYTES { return -(Errno::Enomem.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf_readable(arg, size, 1) { return rv; }
+    let src_off = read_u64(arg + DEDUPE_SRC_OFFSET);
+    let src_len_in = read_u64(arg + DEDUPE_SRC_LENGTH);
+    if !file.f_mode().contains(vfs::Fmode::READ) { return -(Errno::Einval.as_i32() as i64); }
+    if read_u16(arg + DEDUPE_RESERVED1) != 0 || read_u32(arg + DEDUPE_RESERVED2) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    match file.inode().file_type() {
+        vfs::FileType::Directory => return -(Errno::Eisdir.as_i32() as i64),
+        vfs::FileType::Regular => {}
+        _ => return -(Errno::Einval.as_i32() as i64),
+    }
+    if !file.supports_remap_file_range() { return -(Errno::Eopnotsupp.as_i32() as i64); }
+    if let Err(e) = remap_verify_area(src_off, src_len_in) { return -(e as i64); }
+    if src_off.checked_add(src_len_in).is_none_or(|end| end > file.inode().size()) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let len = core::cmp::min(src_len_in, 1 << 30);
+    if let Err(rv) = validate_user_buf_writable(arg, size, 1) { return rv; }
+    for i in 0..count {
+        let base = arg + DEDUPE_RANGE_BYTES + i as u64 * DEDUPE_INFO_BYTES;
+        write_u64(base + DEDUPE_INFO_BYTES_DEDUPED, 0);
+        write_i32(base + DEDUPE_INFO_STATUS, FILE_DEDUPE_RANGE_SAME);
+    }
+    for i in 0..count {
+        let base = arg + DEDUPE_RANGE_BYTES + i as u64 * DEDUPE_INFO_BYTES;
+        let dst_fd = read_i64(base + DEDUPE_INFO_DEST_FD);
+        let status = match i32::try_from(dst_fd).ok().and_then(|fd| fdt.get(fd).ok()) {
+            None => -(Errno::Ebadf.as_i32()),
+            Some(_) if read_u32(base + DEDUPE_INFO_RESERVED) != 0 => -(Errno::Einval.as_i32()),
+            Some(dst) => match vfs_dedupe_file_range_one(file, src_off, &dst, read_u64(base + DEDUPE_INFO_DEST_OFFSET), len) {
+                Ok(()) => {
+                    write_u64(base + DEDUPE_INFO_BYTES_DEDUPED, len);
+                    FILE_DEDUPE_RANGE_SAME
+                }
+                Err(vfs::VfsError::Ebade) => FILE_DEDUPE_RANGE_DIFFERS,
+                Err(e) => -(e as i32),
+            },
+        };
+        write_i32(base + DEDUPE_INFO_STATUS, status);
+    }
+    0
+}
+
+fn vfs_dedupe_file_range_one(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off: u64, len: u64) -> vfs::KResult<()> {
+    remap_verify_area(src_off, len)?;
+    remap_verify_area(dst_off, len)?;
+    if !may_dedupe_file(dst) { return Err(vfs::VfsError::Eperm); }
+    if !same_superblock(src, dst) { return Err(vfs::VfsError::Exdev); }
+    if dst.inode().file_type() == vfs::FileType::Directory { return Err(vfs::VfsError::Eisdir); }
+    if !dst.supports_remap_file_range() { return Err(vfs::VfsError::Einval); }
+    if len == 0 { return Ok(()); }
+    match src.remap_file_range(src_off, dst, dst_off, len, REMAP_FILE_CAN_SHORTEN | REMAP_FILE_DEDUP) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn generic_file_rw_checks(src: &vfs::File, dst: &vfs::File) -> vfs::KResult<()> {
+    if src.inode().file_type() == vfs::FileType::Directory || dst.inode().file_type() == vfs::FileType::Directory {
+        return Err(vfs::VfsError::Eisdir);
+    }
+    if src.inode().file_type() != vfs::FileType::Regular || dst.inode().file_type() != vfs::FileType::Regular {
+        return Err(vfs::VfsError::Einval);
+    }
+    if !src.f_mode().contains(vfs::Fmode::READ)
+        || !dst.f_mode().contains(vfs::Fmode::WRITE)
+        || dst.flags().contains(vfs::OpenFlags::O_APPEND)
+    {
+        return Err(vfs::VfsError::Ebadf);
+    }
+    Ok(())
+}
+
+fn remap_verify_area(pos: u64, len: u64) -> vfs::KResult<()> {
+    match pos.checked_add(len) {
+        Some(_) => Ok(()),
+        None => Err(vfs::VfsError::Einval),
+    }
+}
+
+fn may_dedupe_file(file: &vfs::File) -> bool {
+    file.f_mode().contains(vfs::Fmode::WRITE) || file.inode().uid() == Some(current_fsuid())
+}
+
+fn same_superblock(a: &vfs::File, b: &vfs::File) -> bool {
+    match (a.inode().i_sb(), b.inode().i_sb()) {
+        (Some(x), Some(y)) => alloc::sync::Arc::ptr_eq(&x, &y),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// Linux regular-file `FIONREAD`: `i_size - f_pos` copied as an int. # C: O(1)
@@ -280,6 +418,21 @@ fn read_u32(addr: u64) -> u32 {
     unsafe { core::ptr::read_unaligned(addr as *const u32) }
 }
 
+fn read_u16(addr: u64) -> u16 {
+    // SAFETY: caller validated the surrounding user payload before reading this field.
+    unsafe { core::ptr::read_unaligned(addr as *const u16) }
+}
+
+fn read_i64(addr: u64) -> i64 {
+    // SAFETY: caller validated the surrounding user payload before reading this field.
+    unsafe { core::ptr::read_unaligned(addr as *const i64) }
+}
+
+fn read_u64(addr: u64) -> u64 {
+    // SAFETY: caller validated the surrounding user payload before reading this field.
+    unsafe { core::ptr::read_unaligned(addr as *const u64) }
+}
+
 fn write_u32(addr: u64, val: u32) {
     // SAFETY: caller validated the surrounding user payload before writing this field.
     unsafe { core::ptr::write_unaligned(addr as *mut u32, val); }
@@ -288,6 +441,11 @@ fn write_u32(addr: u64, val: u32) {
 fn write_u64(addr: u64, val: u64) {
     // SAFETY: caller validated the surrounding user payload before writing this field.
     unsafe { core::ptr::write_unaligned(addr as *mut u64, val); }
+}
+
+fn write_i32(addr: u64, val: i32) {
+    // SAFETY: caller validated the surrounding user payload before writing this field.
+    unsafe { core::ptr::write_unaligned(addr as *mut i32, val); }
 }
 
 #[cfg(not(test))]

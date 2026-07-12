@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use sched::{SchedClass, Task};
 use syscall::errno::Errno;
-use vfs::{Dentry, FdTable, File, FileAttr, FileType, Inode, InodeBuilder, InodeOps,
+use vfs::{Dentry, FdTable, File, FileAttr, FileOps, FileType, Inode, InodeBuilder, InodeOps,
           InodeRef, KResult, OpenFlags, SimpleSuperOps, SuperBlock, VfsError,
           default_file_ops, default_inode_ops, mk_mode};
 
@@ -55,11 +55,58 @@ struct SpaceResv {
     l_pad: [i32; 4],
 }
 
+#[repr(C)]
+struct FileCloneRange {
+    src_fd: i64,
+    src_offset: u64,
+    src_length: u64,
+    dest_offset: u64,
+}
+
+#[repr(C)]
+struct FileDedupeRangeInfo {
+    dest_fd: i64,
+    dest_offset: u64,
+    bytes_deduped: u64,
+    status: i32,
+    reserved: u32,
+}
+
+#[repr(C)]
+struct FileDedupeRangeOne {
+    src_offset: u64,
+    src_length: u64,
+    dest_count: u16,
+    reserved1: u16,
+    reserved2: u32,
+    info: [FileDedupeRangeInfo; 2],
+}
+
 #[derive(Default)]
 struct IoctlOps {
     bmap_block: AtomicU64,
     fallocate_calls: Mutex<Vec<(u64, u64, bool, bool, bool)>>,
     attr: Mutex<FileAttr>,
+}
+
+struct RemapOps {
+    ret: Mutex<KResult<u64>>,
+    calls: Mutex<Vec<(u64, u64, u64, u32)>>,
+}
+
+impl RemapOps {
+    fn new(ret: KResult<u64>) -> Arc<Self> {
+        Arc::new(Self { ret: Mutex::new(ret), calls: Mutex::new(Vec::new()) })
+    }
+}
+
+impl FileOps for RemapOps {
+    fn supports_remap_file_range(&self) -> bool { true }
+
+    fn remap_file_range(&self, _src: &File, src_off: u64, _dst: &File, dst_off: u64, len: u64, flags: u32) -> KResult<u64> {
+        self.calls.lock().unwrap().push((src_off, dst_off, len, flags));
+        *self.ret.lock().unwrap()
+    }
 }
 
 impl InodeOps for IoctlOps {
@@ -121,6 +168,13 @@ fn mk_file(ft: FileType, flags: OpenFlags, size: u64) -> Arc<File> {
 fn mk_file_with_ops(flags: OpenFlags, size: u64, ops: Arc<IoctlOps>) -> Arc<File> {
     let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
         mk_mode(FileType::Regular, 0o644), ops, default_file_ops()).size(size).build();
+    let dentry = Dentry::new_root(Arc::clone(&ino));
+    File::new(ino, dentry, flags)
+}
+
+fn mk_file_with_fop(flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>) -> Arc<File> {
+    let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
+        mk_mode(FileType::Regular, 0o644), default_inode_ops(), fop).size(size).build();
     let dentry = Dentry::new_root(Arc::clone(&ino));
     File::new(ino, dentry, flags)
 }
@@ -281,6 +335,90 @@ fn getfsuuid_copies_superblock_uuid_or_enotty_without_one() {
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_GETFSUUID, out.as_mut_ptr() as u64), Some(0));
     assert_eq!(out[0], 16);
     assert_eq!(&out[1..], &uuid);
+    reset();
+}
+
+#[test]
+fn ficlone_bad_source_fd_precedes_destination_mode_checks() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let dst = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 0);
+    let fd = fdt.alloc(Arc::clone(&dst)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &dst, &fdt, fd, uapi::FICLONE, 99),
+        Some(-(Errno::Ebadf.as_i32() as i64)));
+    reset();
+}
+
+#[test]
+fn ficlone_uses_linux_vfs_admission_and_reports_missing_remap_op() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 20);
+    let dst = mk_file(FileType::Regular, OpenFlags::O_RDWR, 0);
+    let src_fd = fdt.alloc(src).unwrap();
+    let dst_fd = fdt.alloc(Arc::clone(&dst)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &dst, &fdt, dst_fd, uapi::FICLONE, src_fd as u64),
+        Some(-(Errno::Eopnotsupp.as_i32() as i64)));
+    reset();
+}
+
+#[test]
+fn ficlonerange_copies_struct_and_rejects_short_backend_clone() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(9));
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_with_fop(OpenFlags::O_RDONLY, 20, remap.clone());
+    let dst = mk_file(FileType::Regular, OpenFlags::O_RDWR, 0);
+    let src_fd = fdt.alloc(src).unwrap();
+    let dst_fd = fdt.alloc(Arc::clone(&dst)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let range = FileCloneRange { src_fd: src_fd as i64, src_offset: 3, src_length: 10, dest_offset: 5 };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &dst, &fdt, dst_fd, uapi::FICLONERANGE, &range as *const FileCloneRange as u64),
+        Some(-(Errno::Einval.as_i32() as i64)));
+    assert_eq!(*remap.calls.lock().unwrap(), vec![(3, 5, 10, 0)]);
+    reset();
+}
+
+#[test]
+fn fideduperange_writes_per_destination_linux_statuses() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(4));
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_with_fop(OpenFlags::O_RDONLY, 20, remap.clone());
+    let dst_ok = mk_file_with_fop(OpenFlags::O_RDWR, 20, remap.clone());
+    let dst_no_remap = mk_file(FileType::Regular, OpenFlags::O_RDWR, 20);
+    let dst_ok_fd = fdt.alloc(dst_ok).unwrap();
+    let dst_no_remap_fd = fdt.alloc(dst_no_remap).unwrap();
+    let src_fd = fdt.alloc(Arc::clone(&src)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let mut range = FileDedupeRangeOne {
+        src_offset: 2,
+        src_length: 4,
+        dest_count: 2,
+        reserved1: 0,
+        reserved2: 0,
+        info: [
+            FileDedupeRangeInfo { dest_fd: dst_ok_fd as i64, dest_offset: 6, bytes_deduped: 99, status: -99, reserved: 0 },
+            FileDedupeRangeInfo { dest_fd: dst_no_remap_fd as i64, dest_offset: 8, bytes_deduped: 99, status: -99, reserved: 0 },
+        ],
+    };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &src, &fdt, src_fd, uapi::FIDEDUPERANGE, &mut range as *mut FileDedupeRangeOne as u64),
+        Some(0));
+    assert_eq!(range.info[0].bytes_deduped, 4);
+    assert_eq!(range.info[0].status, 0);
+    assert_eq!(range.info[1].bytes_deduped, 0);
+    assert_eq!(range.info[1].status, -(Errno::Einval.as_i32()));
+    assert_eq!(*remap.calls.lock().unwrap(), vec![(2, 6, 4, 3)]);
     reset();
 }
 

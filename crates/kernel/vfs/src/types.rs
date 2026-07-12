@@ -188,6 +188,7 @@ pub enum VfsError {
     Enotempty = 39,
     Enosys  = 38,
     Eloop   = 40,
+    Ebade   = 52,
     Eopnotsupp = 95,
     Edestaddrreq = 89,
     Eaddrnotavail = 99,
