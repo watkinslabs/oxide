@@ -9,6 +9,7 @@ pub fn glue_mmap(
     file_off: u64,
     backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
     phys_base: Option<u64>,
+    may_prot: VmaProt,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
     use crate::mmap_flags::{should_populate, validate_glue_admission, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN};
@@ -98,17 +99,18 @@ pub fn glue_mmap(
     let r = if let Some(cur) = sched::live::current() {
         // SAFETY: caller is the syscall dispatcher; preempt-off; running task on this CPU is the sole writer of mm slot.
         if let Some(mm) = unsafe { cur.mm_ref() } {
-            mm.mmap(
+            mm.mmap_with_may(
                 hint,
                 len_aligned,
                 prot_from_linux(prot),
+                may_prot,
                 vma_flags,
                 vma_backing.clone(),
                 is_fixed,
             )
         } else {
-            match with(|as_| as_.mmap(
-                hint, len_aligned, prot_from_linux(prot),
+            match with(|as_| as_.mmap_with_may(
+                hint, len_aligned, prot_from_linux(prot), may_prot,
                 vma_flags, vma_backing.clone(), is_fixed,
             )) {
                 Some(r) => r,
@@ -116,8 +118,8 @@ pub fn glue_mmap(
             }
         }
     } else {
-        match with(|as_| as_.mmap(
-            hint, len_aligned, prot_from_linux(prot),
+        match with(|as_| as_.mmap_with_may(
+            hint, len_aligned, prot_from_linux(prot), may_prot,
             vma_flags, VmaBacking::Anonymous, is_fixed,
         )) {
             Some(r) => r,
@@ -134,6 +136,7 @@ pub fn glue_mmap(
         // errno fidelity (Linux do_mmap): bad args are EINVAL; only genuine
         // exhaustion (no hole / no frame) is ENOMEM.
         Err(vmm::Error::Inval) => Err(-(Errno::Einval.as_i32() as i64)),
+        Err(vmm::Error::Access) => Err(-(Errno::Eacces.as_i32() as i64)),
         Err(_)   => Err(-(Errno::Enomem.as_i32() as i64)),
     }
 }

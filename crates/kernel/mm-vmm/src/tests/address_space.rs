@@ -281,6 +281,30 @@ fn mprotect_changes_prot() {
 }
 
 #[test]
+fn mprotect_rejects_access_beyond_may_prot() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap_with_may(Some(h), 2 * PAGE, VmaProt::READ, VmaProt::READ,
+        priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    assert_eq!(a.mprotect(h, PAGE, VmaProt::READ | VmaProt::WRITE), Err(Error::Access));
+    let v = a.find_vma(h).unwrap();
+    assert_eq!(v.prot, VmaProt::READ);
+}
+
+#[test]
+fn mprotect_split_preserves_may_prot() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap_with_may(Some(h), 3 * PAGE, VmaProt::READ, r_w(),
+        priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    let mid = UserVirtAddr::new(h.as_u64() + PAGE as u64).unwrap();
+    a.mprotect(mid, PAGE, r_w()).unwrap();
+    let v = a.find_vma(mid).unwrap();
+    assert_eq!(v.prot, r_w());
+    assert_eq!(v.may_prot, r_w());
+}
+
+#[test]
 fn mprotect_rejects_hole_inside_range() {
     let a = AddressSpace::new(0).unwrap();
     let h1 = UserVirtAddr::new(0x4000_0000).unwrap();
