@@ -39,3 +39,28 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
     }
     Ok(())
 }
+
+/// Validate `[ptr, ptr + len)` as a readable user buffer. # C: O(N_pages * log N_vmas)
+pub(crate) fn validate_user_buf_readable(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
+    validate_user_buf(ptr, len, align)?;
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        use hal::UserVirtAddr;
+        use vmm::VmaProt;
+        if len == 0 { return Ok(()); }
+        let cur = sched::live::current().ok_or(-(Errno::Efault.as_i32() as i64))?;
+        // SAFETY: current task mm is stable for this syscall while preemption is disabled.
+        let mm = unsafe { cur.mm_ref() }.ok_or(-(Errno::Efault.as_i32() as i64))?.clone();
+        let mut va = ptr & !0xFFF;
+        let end_inclusive = ptr + len - 1;
+        while va <= (end_inclusive & !0xFFF) {
+            let uva = UserVirtAddr::new(va).ok_or(-(Errno::Efault.as_i32() as i64))?;
+            match mm.find_vma(uva) {
+                Some(v) if v.prot.contains(VmaProt::READ) => {}
+                _ => return Err(-(Errno::Efault.as_i32() as i64)),
+            }
+            va = va.checked_add(0x1000).ok_or(-(Errno::Efault.as_i32() as i64))?;
+        }
+    }
+    Ok(())
+}

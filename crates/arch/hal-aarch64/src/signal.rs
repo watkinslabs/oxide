@@ -11,6 +11,8 @@
 
 use crate::SvcFrame;
 
+const SIGCONTEXT_RESERVED_BYTES: usize = 4096;
+
 /// Linux aarch64 `struct sigcontext` (== `ucontext.uc_mcontext`). __reserved
 /// holds optional fpsimd/extra records terminated by a zero magic; left zero.
 #[repr(C)]
@@ -21,7 +23,7 @@ struct Sigctx {
     sp: u64,
     pc: u64,
     pstate: u64,
-    __reserved: [u8; 512],
+    __reserved: [u8; SIGCONTEXT_RESERVED_BYTES],
 }
 
 #[repr(C)]
@@ -53,6 +55,8 @@ const _: () = {
     assert!(core::mem::offset_of!(Sigctx, sp) == 256);
     assert!(core::mem::offset_of!(Sigctx, pc) == 264);
     assert!(core::mem::offset_of!(Sigctx, pstate) == 272);
+    assert!(core::mem::offset_of!(Sigctx, __reserved) == 280);
+    assert!(core::mem::size_of::<Sigctx>() == 4376);
     assert!(core::mem::offset_of!(Ucontext, uc_mcontext) == 176);
     assert!(core::mem::offset_of!(RtSigframe, uc) == 128);
 };
@@ -96,7 +100,7 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     let mut sf: RtSigframe = unsafe { core::mem::zeroed() };
     sf.uc.uc_mcontext = Sigctx {
         fault_address: 0, regs, sp: saved_sp, pc: saved_pc, pstate: saved_pstate,
-        __reserved: [0; 512],
+        __reserved: [0; SIGCONTEXT_RESERVED_BYTES],
     };
     sf.uc.uc_sigmask = old_sigmask;
     sf.info[0..4].copy_from_slice(&(sig as i32).to_ne_bytes()); // si_signo
@@ -134,7 +138,9 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64)> {
     // ARM `ret`=`br lr` does NOT pop; handler epilogue restores SP to new_sp
     // before `ret`, so the restorer's `svc #0` fires with sp_el0 == frame_base.
     let frame_base = frame.sp_el0;
-    if frame_base == 0 || frame_base >= hal::USER_VA_END { return None; }
+    if frame_base == 0 || (frame_base & 15) != 0 { return None; }
+    if frame_base.checked_add(core::mem::size_of::<RtSigframe>() as u64)
+        .filter(|end| *end <= hal::USER_VA_END).is_none() { return None; }
     let uc_base = frame_base + core::mem::offset_of!(RtSigframe, uc) as u64;
     let mc_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_mcontext) as u64) as *const Sigctx;
     let sm_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64) as *const u64;
@@ -153,4 +159,33 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64)> {
     frame.elr_el1  = mc.pc;
     frame.spsr_el1 = mc.pstate;
     Some((sigmask, mc.regs[0] as i64))
+}
+
+/// User rt-sigframe range for pre-copy badframe validation. # C: O(1)
+pub unsafe fn rt_sigreturn_frame_range(frame: *mut SvcFrame) -> Option<(u64, u64, u64)> {
+    if frame.is_null() { return None; }
+    // SAFETY: rt_sigreturn dispatch supplies the live SVC frame pointer.
+    let frame = unsafe { &*frame };
+    let frame_base = frame.sp_el0;
+    if frame_base == 0 || (frame_base & 15) != 0 { return None; }
+    let len = core::mem::size_of::<RtSigframe>() as u64;
+    frame_base.checked_add(len).filter(|end| *end <= hal::USER_VA_END)?;
+    Some((frame_base, len, 16))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aarch64_rt_sigframe_matches_linux_uapi_shape() {
+        assert_eq!(core::mem::offset_of!(Sigctx, regs), 8);
+        assert_eq!(core::mem::offset_of!(Sigctx, sp), 256);
+        assert_eq!(core::mem::offset_of!(Sigctx, pc), 264);
+        assert_eq!(core::mem::offset_of!(Sigctx, pstate), 272);
+        assert_eq!(core::mem::offset_of!(Sigctx, __reserved), 280);
+        assert_eq!(core::mem::size_of::<Sigctx>(), 4376);
+        assert_eq!(core::mem::offset_of!(Ucontext, uc_mcontext), 176);
+        assert_eq!(core::mem::offset_of!(RtSigframe, uc), 128);
+    }
 }

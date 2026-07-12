@@ -69,26 +69,61 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
 
 /// Arch-neutral `rt_sigreturn` body: route to the per-arch restorer, store the
 /// restored sigmask, and return the interrupted syscall's retval (becomes user
-/// rax/x0 after the dispatch epilogue). EINVAL on a malformed frame.
+/// rax/x0 after the dispatch epilogue). Malformed frames force SIGSEGV.
 /// # SAFETY: caller is the rt_sigreturn syscall dispatch on the running task's
 /// per-task kernel stack; the per-arch saved frame is live.
 /// # C: O(1)
 #[inline]
 pub unsafe fn rt_sigreturn() -> i64 {
-    use syscall::errno::Errno;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let Some((ptr, len, align)) = hal_x86_64::rt_sigreturn_frame_range() else {
+            return bad_rt_sigframe();
+        };
+        if crate::userbuf::validate_user_buf_readable(ptr, len, align).is_err() {
+            return bad_rt_sigframe();
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    let frame = current_signal_svc_frame();
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: rt_sigreturn dispatch tail; `frame` is the live saved SVC frame.
+        let Some((ptr, len, align)) = (unsafe { hal_aarch64::rt_sigreturn_frame_range(frame) }) else {
+            return bad_rt_sigframe();
+        };
+        if crate::userbuf::validate_user_buf_readable(ptr, len, align).is_err() {
+            return bad_rt_sigframe();
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     // SAFETY: rt_sigreturn dispatch tail; hal owns the arch restore.
     let restored = unsafe { hal_x86_64::restore_signal_frame() };
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: rt_sigreturn dispatch tail; live saved SVC frame on this CPU.
-    let restored = unsafe { hal_aarch64::restore_signal_frame(hal_aarch64::current_svc_frame()) };
+    // SAFETY: rt_sigreturn dispatch tail; `frame` is the live saved SVC frame.
+    let restored = unsafe { hal_aarch64::restore_signal_frame(frame) };
     match restored {
         Some((sigmask, ret)) => {
             if let Some(c) = sched::live::current() {
-                c.sigmask.store(sigmask, Ordering::Release);
+                c.set_current_blocked(sigmask);
             }
             ret
         }
-        None => -(Errno::Einval.as_i32() as i64),
+        None => sched::live::terminate_current_with_signal(sched::live::Signum::Sigsegv.as_u8()),
     }
+}
+
+#[inline]
+fn bad_rt_sigframe() -> i64 {
+    sched::live::terminate_current_with_signal(sched::live::Signum::Sigsegv.as_u8())
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn current_signal_svc_frame() -> *mut hal_aarch64::SvcFrame {
+    sched::live::current()
+        .map(|c| c.svc_frame.load(Ordering::Acquire))
+        .filter(|p| *p != 0)
+        .map(|p| p as *mut hal_aarch64::SvcFrame)
+        .unwrap_or_else(hal_aarch64::current_svc_frame)
 }

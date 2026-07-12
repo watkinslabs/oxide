@@ -145,9 +145,14 @@ impl Task {
         let prior = self.sigmask.load(Ordering::Acquire);
         if let Some(mask) = set {
             let new = apply_sigprocmask(prior, how, mask)?;
-            self.sigmask.store(new, Ordering::Release);
+            self.set_current_blocked(new);
         }
         Ok(prior)
+    }
+
+    /// Linux set_current_blocked for user-originated masks. # C: O(1)
+    pub fn set_current_blocked(&self, mask: u64) {
+        self.sigmask.store(sanitize_mask(mask), Ordering::Release);
     }
 
     /// Clear a newly ignored signal from this thread group. # C: O(N_threads)
@@ -265,6 +270,11 @@ mod tests {
     fn rt_sigprocmask_strips_unblockable_signals() {
         let set = Signum::Sigusr1.bit() | Signum::Sigkill.bit() | Signum::Sigstop.bit();
         assert_eq!(Ok(Signum::Sigusr1.bit()), sigprocmask_snapshot(0, SIG_SETMASK, Some(set)));
+    }
+
+    #[test]
+    fn set_current_blocked_strips_unblockable_signals() {
+        assert_eq!(Signum::Sigusr2.bit(), sanitize_mask(Signum::Sigusr2.bit() | UNBLOCKABLE_MASK));
     }
 
     fn sigprocmask_snapshot(prior: u64, how: u64, set: Option<u64>) -> Result<u64, ()> {
