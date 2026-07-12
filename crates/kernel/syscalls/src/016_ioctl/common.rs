@@ -33,10 +33,16 @@ pub(super) fn handle_common_ioctl(
         FICLONE => Some(ioctl_file_clone(file, fdt, arg as i64, 0, 0, 0)),
         FICLONERANGE => Some(ioctl_file_clone_range(file, fdt, arg)),
         FIDEDUPERANGE => Some(ioctl_file_dedupe_range(file, fdt, arg)),
-        FIBMAP => Some(ioctl_fibmap(cur, file, arg)),
-        FS_IOC_RESVSP | FS_IOC_RESVSP64 => Some(ioctl_preallocate(file, 0, arg)),
-        FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 => Some(ioctl_preallocate(file, FALLOC_FL_PUNCH_HOLE, arg)),
-        FS_IOC_ZERO_RANGE => Some(ioctl_preallocate(file, FALLOC_FL_ZERO_RANGE, arg)),
+        FIBMAP if file.inode().file_type() == vfs::FileType::Regular => Some(ioctl_fibmap(cur, file, arg)),
+        FS_IOC_RESVSP | FS_IOC_RESVSP64 if file.inode().file_type() == vfs::FileType::Regular => {
+            Some(ioctl_preallocate(file, 0, arg))
+        }
+        FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 if file.inode().file_type() == vfs::FileType::Regular => {
+            Some(ioctl_preallocate(file, FALLOC_FL_PUNCH_HOLE, arg))
+        }
+        FS_IOC_ZERO_RANGE if file.inode().file_type() == vfs::FileType::Regular => {
+            Some(ioctl_preallocate(file, FALLOC_FL_ZERO_RANGE, arg))
+        }
         FS_IOC_GETFLAGS => Some(super::fileattr::ioctl_getflags(file, arg)),
         FS_IOC_SETFLAGS => Some(super::fileattr::ioctl_setflags(cur, file, arg)),
         FS_IOC_FSGETXATTR => Some(super::fileattr::ioctl_fsgetxattr(file, arg)),
