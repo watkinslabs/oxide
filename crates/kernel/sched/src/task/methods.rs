@@ -128,6 +128,13 @@ impl Task {
             sum_exec_runtime_ns: AtomicU64::new(0),
             last_syscall_nr: AtomicU32::new(u32::MAX),
             nsyscalls: AtomicU64::new(0),
+            io_rchar: AtomicU64::new(0),
+            io_wchar: AtomicU64::new(0),
+            io_syscr: AtomicU64::new(0),
+            io_syscw: AtomicU64::new(0),
+            io_read_bytes: AtomicU64::new(0),
+            io_write_bytes: AtomicU64::new(0),
+            io_cancelled_write_bytes: AtomicU64::new(0),
             futex_uaddr: AtomicU64::new(0),
             load_weight: AtomicU32::new(match class {
                 SchedClass::Normal { weight } => weight,
@@ -332,6 +339,15 @@ impl Task {
         self.debug_check_canary("visible_pid");
         let v = self.vtgid.load(Ordering::Acquire);
         if v != 0 { v } else { self.tgid.load(Ordering::Acquire) }
+    }
+
+    /// Linux `add_rchar(current, ret)` + `inc_syscr(current)` after vfs_read. # C: O(1)
+    pub fn account_read_result(&self, ret: i64) {
+        self.debug_check_canary("account_read_result");
+        if ret >= 0 {
+            self.io_rchar.fetch_add(ret as u64, Ordering::Relaxed);
+        }
+        self.io_syscr.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Lift this task's vruntime to `floor` if it's currently below;

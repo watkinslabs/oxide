@@ -283,7 +283,7 @@ pub(crate) fn read_unix_msg_blocking(
 /// F169: monotonic-ns reader visible to io helpers without
 /// crossing the kernel-vs-hosted boundary at every call site.
 #[cfg(target_os = "oxide-kernel")]
-fn monotonic_ns_safe() -> u64 {
+pub(crate) fn monotonic_ns_safe() -> u64 {
     use hal::TimerOps;
     #[cfg(target_arch = "x86_64")]
     { return hal_x86_64::X86TimerOps::monotonic_ns().0; }
@@ -341,7 +341,7 @@ pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<R
 /// `recvfrom` variant with datagram flags that affect queue consumption.
 /// # C: O(payload bytes)
 pub fn recvfrom_opts(
-    sock: &alloc::sync::Arc<InetSocket>,
+    sock: &InetSocket,
     max_len: usize,
     opts: RecvOptions,
 ) -> Result<Received, NetError> {
