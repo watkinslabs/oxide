@@ -10,6 +10,7 @@ extern crate alloc;
 mod common;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
@@ -28,6 +29,10 @@ const FS_DAX_FL:       u32 = 0x0200_0000;
 const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 const EXT4_EXTENTS_FL: u32 = 0x0008_0000; // kernel-internal, must be preserved
 const EXT4_FEATURE_RO_COMPAT_PROJECT: u32 = ext4::superblock::RO_COMPAT_PROJECT;
+const T_FILEATTR: u64 = 1_720_007_200 * 1_000_000_000 + 125_000_000;
+
+static NOW: AtomicU64 = AtomicU64::new(T_FILEATTR);
+fn now_provider() -> u64 { NOW.load(Ordering::Relaxed) }
 
 fn shared_disk_from(image: Vec<u8>) -> Arc<dyn BlockDevice> {
     let cap = (image.len() as u64) / (SECTOR as u64);
@@ -99,6 +104,32 @@ fn chattr_flags_roundtrip_persist_and_preserve() {
     let ino2 = m2.state().mount.lookup_path(b"/chattr.txt").unwrap();
     assert_ne!(m2.state().mount.read_inode(ino2).unwrap().i_flags & EXT4_EXTENTS_FL, 0,
         "EXTENTS_FL still preserved after clear");
+}
+
+#[test]
+fn setflags_updates_ctime_and_iversion() {
+    vfs::inode_times::set_realtime_provider(now_provider);
+    NOW.store(T_FILEATTR, Ordering::Relaxed);
+    let disk = shared_disk();
+    let (m, sb) = mount(disk.clone());
+    let inode = m.state().create_at(b"/chattr-time.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/chattr-time.txt").expect("lookup");
+    let before_version = vfs::inode::inode_query_iversion(&inode);
+    let flags = inode.fileattr_get().unwrap().flags;
+
+    inode.fileattr_set(&FileAttr { flags: flags | FS_NODUMP_FL, ..Default::default() })
+        .expect("set nodump");
+    assert_eq!(inode.ctime(), Some(T_FILEATTR), "in-core ctime stamped by SETFLAGS");
+    assert!(vfs::inode::inode_query_iversion(&inode) > before_version,
+        "SETFLAGS forces i_version bump like ext4_ioctl_setflags");
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().ctime_ns, T_FILEATTR,
+        "on-disk ctime stamped by SETFLAGS");
+
+    drop(inode); drop(sb); drop(m);
+    let (m2, _sb2) = mount(disk);
+    let ino2 = m2.state().mount.lookup_path(b"/chattr-time.txt").expect("lookup after remount");
+    assert_eq!(m2.state().mount.read_inode(ino2).unwrap().ctime_ns, T_FILEATTR,
+        "remount: SETFLAGS ctime persisted");
 }
 
 #[test]
