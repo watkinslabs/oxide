@@ -94,12 +94,33 @@ fn brk_set_below_initial_rejected() {
 }
 
 #[test]
-fn brk_page_rounds_up() {
+fn brk_stores_exact_byte_cursor() {
     let a = AddressSpace::new(0).unwrap();
     a.set_brk_window(0x40000, 0x80000);
-    // Request a non-page-aligned brk; should round up.
     let r = a.try_set_brk(0x40001);
-    assert_eq!(r, 0x41000);
+    assert_eq!(r, 0x40001);
+    assert_eq!(a.brk(), 0x40001);
+}
+
+#[test]
+fn brk_can_shrink_back_to_start_brk() {
+    let a = AddressSpace::new(0).unwrap();
+    a.set_brk_window(0x40000, 0x80000);
+    assert_eq!(a.try_set_brk(0x60001), 0x60001);
+    assert_eq!(a.try_set_brk(0x50000), 0x50000);
+    assert_eq!(a.try_set_brk(0x40000), 0x40000);
+}
+
+#[test]
+fn brk_reserved_heap_faults_only_to_page_aligned_cursor() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x40000);
+    a.mmap(Some(h), 0x40000, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    a.set_brk_window(0x40000, 0x80000);
+    assert_eq!(a.try_set_brk(0x41001), 0x41001);
+    assert!(!a.brk_fault_past_current_for_test(0x41000));
+    assert!(a.brk_fault_past_current_for_test(0x42000));
 }
 
 // ---------------------------------------------------------------
@@ -204,4 +225,3 @@ fn churn_1024_iterations_keeps_invariants() {
 // ---------------------------------------------------------------
 // Allocator exhaustion — request more than fits
 // ---------------------------------------------------------------
-
