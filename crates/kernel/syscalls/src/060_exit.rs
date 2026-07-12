@@ -125,6 +125,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
                 let owner_tid = if vt != 0 { vt } else { task.tid };
                 ipc::live::futex::exit_robust_list(rl, owner_tid);
             }
+            vfs::mntns::mnt_ns_exit(task.mount_ns.load(Ordering::Acquire));
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); sched::live::reparent_children(task.tid); }
