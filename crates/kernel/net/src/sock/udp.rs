@@ -52,6 +52,7 @@ pub(crate) fn bound_iface(sock: &InetSocket) -> Result<Option<NetIfaceId>, NetEr
 pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
     -> Result<usize, NetError>
 {
+    if crate::udp::udp4_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
     let src_port = sock.ensure_bound()?; let src_ip = *sock.local_ip.lock();
     let bound_iface = if dst.is_multicast() { crate::sock_mcast::bound_iface(sock, dst)? } else { bound_iface(sock)? };
     // F150: pick the right source IP for outbound. ANY-bound socket

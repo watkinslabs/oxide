@@ -23,8 +23,13 @@ fn fd_file_local(fd: u64) -> Option<Arc<vfs::File>> {
 /// # C: O(1) — fd-table lookup + ino tag check.
 pub fn is_netlink(fd: u64) -> bool {
     fd_file_local(fd)
-        .map(|f| (f.inode().ino() & 0xFFFF_FFFF_0000_0000) == NL_TAG)
+        .map(|f| is_netlink_file(&f))
         .unwrap_or(false)
+}
+
+/// True if `file` is backed by a NetlinkSocket inode. # C: O(1)
+pub fn is_netlink_file(file: &Arc<vfs::File>) -> bool {
+    (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == NL_TAG
 }
 
 /// Resolve `fd` to its concrete `NetlinkSocket`, if it is one.
@@ -333,7 +338,12 @@ fn dest_nl_groups(dest_p: u64, dest_len: u64) -> u32 {
 /// # C: O(len)
 pub fn send_coalesced(fd: u64, buf: &[u8], name: u64, namelen: u64) -> i64 {
     let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
-    send_slice(&file, buf, dest_nl_groups(name, namelen))
+    send_coalesced_file(&file, buf, name, namelen)
+}
+
+/// Send one coalesced message through an already-resolved netlink file. # C: O(len)
+pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen: u64) -> i64 {
+    send_slice(file, buf, dest_nl_groups(name, namelen))
 }
 
 /// Core netlink send over a byte slice. A KOBJECT_UEVENT socket carrying a
