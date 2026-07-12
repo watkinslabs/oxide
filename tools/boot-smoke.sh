@@ -75,11 +75,24 @@ kill_boot() {
 # SMOKE_KEEP_LOG=<path>: copy the last attempt's serial log there
 # before cleanup so a failed boot can be inspected (the temp log is
 # otherwise removed on exit).
-cleanup() {
-    kill_boot
-    if [ -n "${SMOKE_KEEP_LOG:-}" ] && [ -s "$LOG" ]; then
+# SMOKE_KEEP_LOG_DIR=<dir>: copy every attempt's serial log into this
+# directory as <arch>-attempt-<n>-<status>.log.
+keep_log_copy() {
+    local attempt="$1"
+    local status="$2"
+    [ -s "$LOG" ] || return 0
+    if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
         cp "$LOG" "$SMOKE_KEEP_LOG" 2>/dev/null || true
     fi
+    if [ -n "${SMOKE_KEEP_LOG_DIR:-}" ]; then
+        mkdir -p "$SMOKE_KEEP_LOG_DIR" 2>/dev/null || true
+        cp "$LOG" "$SMOKE_KEEP_LOG_DIR/${ARCH}-attempt-${attempt}-${status}.log" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    kill_boot
+    [ -n "$LOG" ] && keep_log_copy "cleanup" "last"
     rm -f "$LOG" "$PIDFILE"
 }
 trap cleanup EXIT
@@ -139,12 +152,14 @@ attempt_boot() {
             echo "boot-smoke: attempt $1 — qemu exited before login marker" >&2
             echo "------ last 60 lines of log ------" >&2
             tail -n 60 "$LOG" >&2
+            keep_log_copy "$1" "qemu-exited"
             close_sysrq
             return 1
         fi
         if grep -qF "$MARKER" "$LOG" 2>/dev/null; then
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
             echo "boot-smoke: PASS — $ARCH reached marker '$MARKER' in ${elapsed}s (attempt $1)"
+            keep_log_copy "$1" "pass"
             close_sysrq
             return 0
         fi
@@ -154,6 +169,7 @@ attempt_boot() {
     inject_sysrq
     echo "------ last 80 lines of log (incl. sysrq dump if it landed) ------" >&2
     tail -n 80 "$LOG" >&2
+    keep_log_copy "$1" "timeout"
     close_sysrq
     return 1
 }
@@ -172,9 +188,7 @@ while [ "$a" -le "$ATTEMPTS" ]; do
         exit 0
     fi
     kill_boot
-    if [ -n "${SMOKE_KEEP_LOG:-}" ] && [ -s "$LOG" ]; then
-        cp "$LOG" "$SMOKE_KEEP_LOG" 2>/dev/null || true
-    fi
+    keep_log_copy "$a" "post-fail"
     rm -f "$LOG"
     a=$(( a + 1 ))
 done
