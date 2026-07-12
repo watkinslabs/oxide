@@ -21,6 +21,7 @@ const IMAGE: &[u8] = include_bytes!("mini-j.img");
 const SECTOR: u32 = 512;
 const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
 const EXT4_RO_COMPAT_OFF: usize = EXT4_SUPERBLOCK_OFFSET + 0x64;
+const EXT4_PRJ_QUOTA_INUM_OFF: usize = EXT4_SUPERBLOCK_OFFSET + ext4::superblock::SB_OFF_PRJ_QUOTA_INUM;
 
 // FS_*_FL == ext4 on-disk i_flags bits.
 const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
@@ -55,6 +56,17 @@ fn shared_project_disk() -> Arc<dyn BlockDevice> {
     );
     features |= EXT4_FEATURE_RO_COMPAT_PROJECT;
     image[EXT4_RO_COMPAT_OFF..EXT4_RO_COMPAT_OFF + 4].copy_from_slice(&features.to_le_bytes());
+    shared_disk_from(image)
+}
+
+fn shared_project_quota_file_disk(quota_ino: u32) -> Arc<dyn BlockDevice> {
+    let mut image = IMAGE.to_vec();
+    let mut features = u32::from_le_bytes(
+        image[EXT4_RO_COMPAT_OFF..EXT4_RO_COMPAT_OFF + 4].try_into().unwrap(),
+    );
+    features |= EXT4_FEATURE_RO_COMPAT_PROJECT;
+    image[EXT4_RO_COMPAT_OFF..EXT4_RO_COMPAT_OFF + 4].copy_from_slice(&features.to_le_bytes());
+    image[EXT4_PRJ_QUOTA_INUM_OFF..EXT4_PRJ_QUOTA_INUM_OFF + 4].copy_from_slice(&quota_ino.to_le_bytes());
     shared_disk_from(image)
 }
 
@@ -185,6 +197,26 @@ fn project_id_change_bumps_iversion_after_setflags() {
 
     assert_eq!(vfs::inode::inode_query_iversion(&inode), before + 2,
         "Linux ext4_fileattr_set runs ext4_ioctl_setflags and ext4_ioctl_setproject, both force i_version");
+}
+
+#[test]
+fn hidden_project_quota_file_rejects_fileattr_change() {
+    let hello_ino = 12;
+    let disk = shared_project_quota_file_disk(hello_ino);
+    let (m, _sb) = mount(disk);
+    let ino = m.state().mount.lookup_path(b"/hello.txt").expect("lookup hello");
+    assert_eq!(ino, hello_ino, "fixture inode changed");
+    assert_eq!(m.state().mount.sb.prj_quota_inum, hello_ino);
+    let inode = m.state().lookup_inode_any(b"/hello.txt").expect("inode");
+    let before = inode.fileattr_get().unwrap();
+
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: before.flags | FS_NODUMP_FL, fsx_projid: 55, ..Default::default() }),
+        Err(VfsError::Eperm));
+
+    let after = inode.fileattr_get().unwrap();
+    assert_eq!(after.flags & FS_NODUMP_FL, before.flags & FS_NODUMP_FL);
+    assert_eq!(after.fsx_projid, before.fsx_projid);
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_projid, before.fsx_projid);
 }
 
 #[test]
