@@ -19,7 +19,7 @@ const FS_FL_USER_MODIFIABLE: u32 = 0x0003_80FF;
 pub(crate) fn ext4_fileattr_get(inode: &Inode) -> KResult<FileAttr> {
     let (st, ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
     let f = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?.i_flags;
-    Ok(FileAttr { flags: f & FS_FL_USER_VISIBLE, fsx_xflags: 0, fsx_projid: 0 })
+    Ok(FileAttr { flags: f & FS_FL_USER_VISIBLE, ..Default::default() })
 }
 
 /// `ext4_fileattr_set` — the `FS_IOC_SETFLAGS` backend: fold the user-modifiable
