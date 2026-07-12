@@ -1,0 +1,36 @@
+#![cfg(target_os = "oxide-kernel")]
+
+use syscall::errno::Errno;
+
+/// Effective byte offset for a cursor-advancing write. `O_APPEND` writes start
+/// from live `i_size`, matching Linux `IOCB_APPEND`. # C: O(1)
+pub(crate) fn write_pos(file: &vfs::File) -> u64 {
+    if file.flags().contains(vfs::OpenFlags::O_APPEND) {
+        file.inode().size()
+    } else {
+        file.pos()
+    }
+}
+
+/// Linux `generic_write_check_limits` RLIMIT_FSIZE half. The superblock
+/// `s_maxbytes` half lives in VFS; this half needs current-task rlimits and
+/// posts `SIGXFSZ` when a write starts beyond the soft file-size limit.
+/// # C: O(1)
+pub(crate) fn rlimit_fsize_cap(cur: &sched::Task, file: &vfs::File, pos: u64, len: usize,
+                               signal_on_efbig: bool) -> Result<usize, i64> {
+    if len == 0 || file.inode().file_type() != vfs::FileType::Regular {
+        return Ok(len);
+    }
+    // SAFETY: current task rlimits slot is single-mutator while this syscall runs.
+    let limit = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::FSIZE].0 };
+    if limit == sched::rlimit::INFINITY {
+        return Ok(len);
+    }
+    if pos >= limit {
+        if signal_on_efbig {
+            sched::live::sigpend::send_signal_self(sched::live::sigpend::Signum::Sigxfsz);
+        }
+        return Err(-(Errno::Efbig.as_i32() as i64));
+    }
+    Ok(core::cmp::min(len as u64, limit - pos) as usize)
+}
