@@ -212,6 +212,9 @@ impl PipeData {
         if len < cap && readers > 0 { mask |= vfs::POLL_OUT; }
         mask
     }
+
+    /// Bytes currently queued for `FIONREAD`. # C: O(1)
+    pub(super) fn queued_bytes(&self) -> usize { self.buf.lock().len }
 }
 
 static NEXT_PIPE_INO: core::sync::atomic::AtomicU64

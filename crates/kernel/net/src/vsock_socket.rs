@@ -109,6 +109,13 @@ impl vfs::FileOps for VsockFileOps {
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<VsockSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }
+    fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
+        let Some(s) = file.inode().private::<VsockSocket>() else { return Err(vfs::VfsError::Einval); };
+        Ok(match cmd {
+            vfs::IoctlIntCmd::Fionread => s.conn().map(|c| c.rx.lock().len() as u32).unwrap_or(0),
+            vfs::IoctlIntCmd::Siocoutq => s.conn().map(|c| { let cr = c.credit.lock(); cr.tx_cnt.wrapping_sub(cr.peer_fwd_cnt) }).unwrap_or(0),
+        })
+    }
     fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
         file.set_fasync_state(on);
         Ok(())
