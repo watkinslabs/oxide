@@ -5,6 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::stat_common::{stat_gid, stat_uid};
 use crate::userbuf::validate_user_buf_writable;
 
 const AT_EMPTY_PATH: u32       = 0x1000;
@@ -64,8 +65,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let st = vfs::vfs_getattr(&inode, &idmap);
     let mode = st.mode as u16;
     let rdev = st.rdev;
-    let stx_uid = st.uid;
-    let stx_gid = st.gid;
+    let stx_uid = stat_uid(st.uid);
+    let stx_gid = stat_gid(st.gid);
     let dev = crate::namei_common::fsid_to_dev(st.fsid);
     let stx_attributes = st.attributes | if is_mount_root { STATX_ATTR_MOUNT_ROOT } else { 0 };
     let stx_attributes_mask = st.attributes_mask | STATX_ATTR_MOUNT_ROOT;
