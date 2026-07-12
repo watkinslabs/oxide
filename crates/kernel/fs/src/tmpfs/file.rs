@@ -299,6 +299,12 @@ impl AddressSpaceOps for TmpfsFileData {
     /// shmem pages ARE the store — nothing to flush. # C: O(1)
     fn writeback(&self) -> Result<(), ()> { Ok(()) }
 
+    /// `mincore(2)` must not fault in tmpfs holes; only existing shmem frames
+    /// are resident. # C: O(log N_pages)
+    fn mincore_page(&self, off: u64) -> bool {
+        self.pages.lock().contains_key(&(off / PG as u64))
+    }
+
     /// # C: O(1)
     fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
 }

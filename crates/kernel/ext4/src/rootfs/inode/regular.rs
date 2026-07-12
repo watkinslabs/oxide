@@ -289,6 +289,8 @@ impl AddressSpaceOps for Ext4FileMapping {
         self.data.frames.writeback_range(start, end)
     }
 
+    fn mincore_page(&self, off: u64) -> bool { self.data.frames.mincore_page(off) }
+
     fn invalidate_range(&self, start: u64, end: u64) -> usize {
         self.data.frames.invalidate_range(start, end)
     }

@@ -9,7 +9,9 @@
 use alloc::sync::Arc;
 
 use block::{BlockError, CachedPage, InodeId, KResult as BlockResult, PageCache};
-use vfs::InodeRef;
+use vfs::{InodeRef, MAY_WRITE};
+use vfs::inode::inode_owner_or_capable;
+use vfs::idmap::IDENTITY;
 use vmm::FileBacking;
 
 /// Read-side file backing for `VmaBacking::File`. Goes through a
@@ -136,5 +138,22 @@ impl FileBacking for InodeFileBacking {
     /// # C: O(N_dirty in range)
     fn writeback_range(&self, start: u64, end: u64) -> Result<(), ()> {
         if let Some(m) = self.inode.i_mapping() { m.writeback_range(start, end) } else { Ok(()) }
+    }
+
+    /// Non-faulting `mincore(2)` page-cache query. # C: O(log N_pages)
+    fn mincore_page(&self, off: u64) -> bool {
+        if let Some(m) = self.inode.i_mapping() {
+            return m.mincore_page(off);
+        }
+        let page_off = off & !((PAGE - 1) as u64);
+        self.cache.lookup(InodeId(self.inode.ino()), page_off)
+            .map_or(false, |p| p.flags().contains(block::PageFlags::UPTODATE))
+    }
+
+    /// Linux `can_do_mincore()` file leg. # C: O(permission-check)
+    fn mincore_can_reveal(&self) -> bool {
+        let cred = crate::pathresolve::current_cred();
+        inode_owner_or_capable(&IDENTITY, self.inode.as_ref(), &cred)
+            || self.inode.permission(MAY_WRITE, &cred).is_ok()
     }
 }
