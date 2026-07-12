@@ -217,6 +217,12 @@ impl Ext4FrameStore {
         Some(pa)
     }
 
+    /// Non-faulting page-cache residency for `mincore(2)`: do not allocate,
+    /// read disk, or mark dirty. # C: O(log N_pages)
+    pub(crate) fn mincore_page(&self, off: u64) -> bool {
+        self.pages.lock().contains_key(&(off / PG as u64))
+    }
+
     /// Read-side fill (read(2) / mmap read-fault): copy bytes from the frame
     /// store starting at file offset `off` into `dst`. Short read past i_size;
     /// holes read as zero. Byte-identical to `RootfsState::read_cached`.
