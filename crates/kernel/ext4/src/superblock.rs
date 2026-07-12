@@ -41,13 +41,13 @@ pub const SUPPORTED_INCOMPAT: u32 =
 
 /// RO_COMPAT features this driver can safely WRITE. A bit outside this set
 /// (notably BIGALLOC=0x200, whose cluster bitmap we'd misread as per-block, or
-/// PROJECT/VERITY) means the fs must not be written by us (Linux
+/// VERITY) means the fs must not be written by us (Linux
 /// `EXT4_FEATURE_RO_COMPAT_SUPP` → RO mount). We have no RO-mount path yet, so
 /// an unknown RO_COMPAT bit refuses the mount rather than risk write corruption.
 pub const SUPPORTED_RO_COMPAT: u32 =
     RO_COMPAT_METADATA_CSUM | RO_COMPAT_GDT_CSUM | RO_COMPAT_SPARSE_SUPER
     | RO_COMPAT_LARGE_FILE | RO_COMPAT_HUGE_FILE | RO_COMPAT_DIR_NLINK
-    | RO_COMPAT_EXTRA_ISIZE | RO_COMPAT_METADATA_CSUM_SEED;
+    | RO_COMPAT_EXTRA_ISIZE | RO_COMPAT_PROJECT | RO_COMPAT_METADATA_CSUM_SEED;
 
 /// Errors decoded from `parse`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
