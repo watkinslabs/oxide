@@ -1,4 +1,8 @@
 pub(super) const FIONREAD:  u64 = 0x541B;
+#[allow(dead_code)]
+pub(super) const TIOCINQ:   u64 = FIONREAD;
+#[allow(dead_code)]
+pub(super) const SIOCINQ:   u64 = FIONREAD;
 pub(super) const FIONBIO:   u64 = 0x5421;
 pub(super) const FIONCLEX:  u64 = 0x5450;
 pub(super) const FIOCLEX:   u64 = 0x5451;
@@ -10,6 +14,8 @@ pub(super) const FICLONE:   u64 = 0x4004_9409;
 pub(super) const FICLONERANGE: u64 = 0x4020_940D;
 pub(super) const FIDEDUPERANGE: u64 = 0xC018_9436;
 pub(super) const SIOCOUTQ:  u64 = 0x5411;
+#[allow(dead_code)]
+pub(super) const TIOCOUTQ:  u64 = SIOCOUTQ;
 pub(super) const BLKROGET:   u64 = 0x125E;
 pub(super) const BLKGETSIZE:   u64 = 0x1260;
 pub(super) const BLKSSZGET:    u64 = 0x1268;
