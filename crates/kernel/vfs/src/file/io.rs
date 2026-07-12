@@ -122,6 +122,14 @@ impl File {
         } else {
             self.pos.load(Ordering::Acquire)
         };
+        let buf = if let Some(sb) = self.inode.i_sb() {
+            match sb.generic_write_check_limits(off, buf.len()) {
+                Some(n) => &buf[..n],
+                None    => return Err(VfsError::Efbig),
+            }
+        } else {
+            buf
+        };
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
             self.f_op.write_nonblock_file(self, off, buf)?
