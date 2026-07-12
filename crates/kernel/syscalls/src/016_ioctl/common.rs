@@ -219,7 +219,7 @@ fn ioctl_file_dedupe_range(cur: &sched::Task, file: &vfs::File, fdt: &vfs::FdTab
 /// Linux regular-file `FIONREAD`: `i_size - f_pos` copied as an int. # C: O(1)
 fn ioctl_regular_fionread(file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return rv; }
-    let n = (file.inode().size() as i64).saturating_sub(file.pos() as i64) as i32;
+    let n = (file.inode().size() as i64).wrapping_sub(file.pos() as i64) as i32;
     // SAFETY: arg validated writable for one Linux int out-param.
     unsafe { core::ptr::write_volatile(arg as *mut i32, n); }
     0
