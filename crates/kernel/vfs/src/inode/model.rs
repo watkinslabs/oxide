@@ -14,7 +14,7 @@ use crate::poll_subs::PollSubscribers;
 use crate::superblock::SuperBlock;
 use crate::types::Ino;
 
-use super::flags::{FS_APPEND_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_SYNC_FL};
+use super::flags::{FS_APPEND_FL, FS_CASEFOLD_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_SYNC_FL};
 
 /// `struct inode` reference (Linux `struct inode *`). CONCRETE — one type for
 /// every filesystem; behaviour comes from `i_op`/`i_fop`/`i_private`.
@@ -105,6 +105,7 @@ impl FileAttr {
         if i_flags & super::flags::S_APPEND    != 0 { flags |= FS_APPEND_FL; }
         if i_flags & super::flags::S_NOATIME   != 0 { flags |= FS_NOATIME_FL; }
         if i_flags & super::flags::S_SYNC      != 0 { flags |= FS_SYNC_FL; }
+        if i_flags & super::flags::S_CASEFOLD  != 0 { flags |= FS_CASEFOLD_FL; }
         FileAttr { flags, ..Default::default() }
     }
 }

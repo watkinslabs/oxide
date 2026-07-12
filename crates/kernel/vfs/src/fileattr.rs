@@ -1,9 +1,11 @@
 use crate::idmap::{Idmap, INVALID_ID};
 use crate::inode::{
-    FileAttr, InodeRef, inode_owner_or_capable, FS_APPEND_FL, FS_COMMON_FL, FS_DAX_FL,
+    FileAttr, InodeRef, inode_owner_or_capable, FS_APPEND_FL, FS_CASEFOLD_FL,
+    FS_COMMON_FL, FS_DAX_FL,
     FS_IMMUTABLE_FL, FS_NODUMP_FL, FS_NOATIME_FL, FS_PROJINHERIT_FL, FS_SYNC_FL, FS_VERITY_FL,
     FS_XFLAG_APPEND, FS_XFLAG_COWEXTSIZE, FS_XFLAG_DAX, FS_XFLAG_EXTSIZE,
-    FS_XFLAG_EXTSZINHERIT, FS_XFLAG_IMMUTABLE, FS_XFLAG_NOATIME, FS_XFLAG_NODUMP,
+    FS_XFLAG_EXTSZINHERIT, FS_XFLAG_IMMUTABLE, FS_XFLAG_CASEFOLD,
+    FS_XFLAG_NOATIME, FS_XFLAG_NODUMP,
     FS_XFLAG_PROJINHERIT, FS_XFLAG_SYNC, FS_XFLAG_VERITY, FS_XFLAG_COMMON,
 };
 use crate::namei::Cred;
@@ -87,6 +89,7 @@ fn fill_xflags(mut fa: FileAttr) -> FileAttr {
         if fa.flags & FS_DAX_FL       != 0 { fa.fsx_xflags |= FS_XFLAG_DAX; }
         if fa.flags & FS_PROJINHERIT_FL != 0 { fa.fsx_xflags |= FS_XFLAG_PROJINHERIT; }
         if fa.flags & FS_VERITY_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_VERITY; }
+        if fa.flags & FS_CASEFOLD_FL  != 0 { fa.fsx_xflags |= FS_XFLAG_CASEFOLD; }
     }
     fa
 }
