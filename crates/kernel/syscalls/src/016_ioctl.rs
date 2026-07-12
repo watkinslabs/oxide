@@ -11,6 +11,7 @@
 #[path = "016_ioctl/netns.rs"] mod netns;
 #[path = "016_ioctl/tioclinux.rs"] mod tioclinux;
 #[path = "016_ioctl/tty_ioctl.rs"] mod tty_ioctl;
+#[path = "016_ioctl/uapi.rs"] mod uapi;
 #[path = "016_ioctl/vt.rs"] mod vt;
 
 pub use self::core::sys_ioctl;
