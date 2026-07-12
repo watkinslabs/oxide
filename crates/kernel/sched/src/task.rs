@@ -64,6 +64,15 @@ pub struct Task {
     pub sum_exec_runtime_ns: AtomicU64,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
+    /// Linux task I/O accounting (`/proc/<pid>/io`). `rchar/syscr` are charged
+    /// by read-family syscalls; write-family lanes charge `wchar/syscw`.
+    pub io_rchar: AtomicU64,
+    pub io_wchar: AtomicU64,
+    pub io_syscr: AtomicU64,
+    pub io_syscw: AtomicU64,
+    pub io_read_bytes: AtomicU64,
+    pub io_write_bytes: AtomicU64,
+    pub io_cancelled_write_bytes: AtomicU64,
     /// diag: user VA this task is parked on in a futex WAIT (0 = not waiting).
     /// Set under the WAITERS lock before schedule(), cleared on resume; the
     /// watchdog dump prints it so a wedge shows exactly which lock each task
