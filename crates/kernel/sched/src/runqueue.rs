@@ -72,6 +72,20 @@ impl RunqueueInner {
         }
     }
 
+    /// Linux `yield_task()` class hook for the current runnable task before
+    /// `schedule()` re-enqueues it. # C: O(log N)
+    pub fn yield_current_task(&mut self, task: &Task) {
+        if self.nr_running() == 0 { return; }
+        match task.sched_class() {
+            SchedClass::Normal { .. } => {
+                let floor = self.cfs.max_vruntime().saturating_add(1);
+                task.lift_vruntime(floor);
+            }
+            SchedClass::Rt { .. } => {}
+            SchedClass::Idle => {}
+        }
+    }
+
     /// Pick + remove the next task per `13§7`. Falls back to the per-CPU
     /// idle task if both class queues are empty.
     /// # C: O(log N) (CFS path) / O(1) (RT path)

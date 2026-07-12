@@ -49,6 +49,8 @@ pub struct Task {
     pub on_cpu:   AtomicBool,
     /// cgroup v2 freezer: held off every runqueue (enqueue no-op) until thawed.
     pub frozen:   AtomicBool,
+    /// Linux `sched_yield`: consumed by `schedule()` before re-enqueueing current.
+    pub yield_pending: AtomicBool,
     /// True once `wait4`/`waitid` has collected this task's exit status (Linux
     /// `release_task`). The Task may still be pinned alive by an open pidfd, but
     /// a reaped process MUST vanish from `/proc`: procfs enumeration
