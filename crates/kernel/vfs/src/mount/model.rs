@@ -124,9 +124,6 @@ impl Mount {
     /// The mounted-instance superblock (Linux `mnt_sb`). # C: O(1)
     pub fn sb(&self) -> &Arc<SuperBlock> { &self.sb }
 
-    /// The backend behind this mount's superblock. # C: O(1)
-    pub fn fs(&self) -> &Arc<dyn FileSystem> { self.sb.fs() }
-
     /// Active writer count (Linux `mnt_writers`). # C: O(1)
     pub fn writers(&self) -> i32 { self.mnt_writers.load(Ordering::Acquire) }
 
@@ -166,9 +163,7 @@ pub(super) fn mount_exact_at(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
         if let Some(over) = hash_top(rootid, dptr(d)) { return mount_by_id(over); }
         return mount_by_id(rootid);
     }
-    let parent = parent_by_dentry(ns, d);
-    let id = hash_top(parent, dptr(d))?;
-    mount_by_id(id)
+    top_mount_on(ns, d).and_then(mount_by_id)
 }
 
 /// True iff a mount is attached exactly at mountpoint dentry `d` in `ns`.
@@ -219,6 +214,14 @@ pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     }
     let id = top_mount_on(ns, d)?;
     mount_by_id(id)
+}
+
+/// The mount rooted exactly at `(parent_mnt_id, d)` in the caller's namespace.
+/// This is the non-lossy form for callers that already resolved a Linux
+/// `struct path` mount target; a bare dentry is ambiguous across bind clones
+/// that share dentries. # C: O(log N)
+pub fn mount_at_path_exact_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
+    __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == current_ns())
 }
 
 /// Root mount id for namespace `ns` (Linux `mnt_ns->root`). # C: O(log N)

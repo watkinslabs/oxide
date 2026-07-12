@@ -83,9 +83,12 @@ pub fn sendmsg_unix_dgram_with_fds(
     sock: &Arc<InetSocket>, name: u64, namelen: u64, iov: u64, iovlen: u64,
     fds: Vec<Arc<File>>,
 ) -> i64 {
-    let path: alloc::string::String = if name != 0 {
+    let addr: net::UnixAddr = if name != 0 {
         match crate::net_sockaddr::read_sockaddr_un_path_len(name, namelen) {
-            Some(p) => p,
+            Some(p) => match crate::namei_common::resolve_unix_addr(p) {
+                Ok(a) => a,
+                Err(e) => return e,
+            },
             None => return -(Errno::Einval.as_i32() as i64),
         }
     } else {
@@ -97,7 +100,7 @@ pub fn sendmsg_unix_dgram_with_fds(
             _ => return -(Errno::Einval.as_i32() as i64),
         }
     };
-    let q = match net::sock::UNIX_REGISTRY.dgram_lookup(&path) {
+    let q = match net::net_ns::unix_registry_for_addr(&addr).dgram_lookup_addr(&addr) {
         Some(q) => q,
         None => return -(Errno::Econnrefused.as_i32() as i64),
     };
@@ -128,7 +131,7 @@ pub fn sendmsg_unix_dgram_with_fds(
         None => SenderCreds::default(),
     };
     let n = payload.len();
-    net::trace_dgram_journal(&path, &payload);
+    net::trace_dgram_journal(&addr.display, &payload);
     q.push(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds });
     n as i64
 }

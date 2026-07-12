@@ -14,6 +14,7 @@
 // loads make a min-heap of deadlines worthwhile.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+use super::sigpend::Signum;
 
 /// Last `now_ns` the scan walked the registry. Throttles the O(N)
 /// `live_tids()` walk (allocates + locks + retains) to a ~100 ms
@@ -23,6 +24,15 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// latency is within Linux ITIMER_REAL / SO_RCVTIMEO granularity.
 static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 const SCAN_PERIOD_NS: u64 = 100_000_000;
+
+fn fire_cpu_itimer(t: &crate::Task, deadline: &AtomicU64, interval: &AtomicU64, now_cpu: u64, sig: Signum) -> bool {
+    let dl = deadline.load(Ordering::Acquire);
+    if dl == 0 || dl > now_cpu { return false; }
+    let intv = interval.load(Ordering::Acquire);
+    deadline.store(if intv != 0 { now_cpu.saturating_add(intv) } else { 0 }, Ordering::Release);
+    t.sigpending.fetch_or(sig.bit(), Ordering::Release);
+    true
+}
 
 /// Walk the live task registry; wake any Sleeping task whose
 /// `wakeup_deadline_ns` is non-zero AND `<= now_ns`. Idempotent.
@@ -62,6 +72,15 @@ pub fn tick_wake_expired(now_ns: u64) {
             // Timer-ISR (IF=0): defer placement to the target's wake_list so the
             // tick never blocks on a contended rq lock and never enqueues a task
             // still on_cpu elsewhere. SAFETY: timer-ISR wake site; lookup keeps t alive.
+            unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
+        }
+        let u = t.utime_ns.load(Ordering::Acquire);
+        let s = t.stime_ns.load(Ordering::Acquire);
+        let cpu_fired =
+            fire_cpu_itimer(&t, &t.itimer_virtual_ns, &t.itimer_virtual_interval_ns, u, Signum::Sigvtalrm)
+            | fire_cpu_itimer(&t, &t.itimer_prof_ns, &t.itimer_prof_interval_ns, u.saturating_add(s), Signum::Sigprof);
+        if cpu_fired {
+            // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
             unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
         }
         let dl = t.wakeup_deadline_ns.load(Ordering::Acquire);

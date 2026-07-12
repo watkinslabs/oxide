@@ -19,12 +19,15 @@ use crate::fsmount_common::*;
 pub fn sys_fspick(args: &SyscallArgs) -> i64 {
     const FSPICK_CLOEXEC: u64 = 1;
     if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
-    let path = match read_cstr(args.a1, 256) {
-        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
+    if args.a2 & !FSPICK_CLOEXEC != 0 { return -(Errno::Einval.as_i32() as i64); }
+    let path = match read_cstr_req(args.a1, 256) {
+        Ok(s) => s, Err(rv) => return rv,
     };
-    let abs = crate::pathresolve::resolve_cwd(&path);
-    let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
-    let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
+    let picked = match crate::pathresolve::resolve_path_raw(&path, false) {
+        Ok(p) => p,
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
+    };
+    let mnt = match vfs::mount::mount_by_id(picked.mnt_id) {
         Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
     };
     // Bind a FOR_RECONFIGURE context to the picked mount's live SB + root dentry.
@@ -37,6 +40,6 @@ pub fn sys_fspick(args: &SyscallArgs) -> i64 {
     };
     let sb_flags = sb.s_flags();
     let fc = vfs::fs::FsContext::for_reconfigure(sb, root, sb_flags, vfs::fs::SB_FLAGS_USER_MASK);
-    let inode: InodeRef = FsContextInode::new_reconfigure(mnt.fs().name().to_string(), fc);
+    let inode: InodeRef = FsContextInode::new_reconfigure(mnt.sb().s_type.name().to_string(), fc);
     install_fd(inode, "[fscontext]", (args.a2 & FSPICK_CLOEXEC) != 0)
 }

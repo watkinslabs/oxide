@@ -101,7 +101,14 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     }
     let old_dst = match rel_under_seeded(&po_d, po_mnt, nr_mp.as_ref()) {
         Some(r) if !r.is_empty() => r,
-        _ if nr_mp.is_none() => rel_under_seeded(&po_d, po_mnt, None).unwrap_or_default(),
+        _ if nr_mp.is_none() => match rel_under_seeded(&po_d, po_mnt, None) {
+            Some(r) => r,
+            None => {
+                #[cfg(feature = "debug-mnt")]
+                klog::write_raw(b"[PIVOT-EINVAL] put_old has no root-relative path\n");
+                return Err(VfsError::Einval);
+            }
+        },
         _ => {
             #[cfg(feature = "debug-mnt")]
             klog::write_raw(b"[PIVOT-EINVAL] put_old not under new_root (non-stacking)\n");
@@ -175,6 +182,7 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>,
         for m in mounts.iter() {
             if let Some((_, p, d)) = dents.iter().find(|(id, _, _)| *id == m.mnt_id) {
                 let is_root = Some(m.mnt_id) == new_root_id;
+                if !preserve.contains(&m.mnt_id) { m.parent_id.store(0, Ordering::Release); }
                 set_mountpoint_dentry(m, if is_root { None } else { d.clone() }, p.clone());
             }
         }
@@ -185,9 +193,9 @@ fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>,
 
 /// Last-umount teardown (Linux `mntput` → `deactivate_super`): drop THIS
 /// mount's active reference on `sb` via the [`SuperBlock`] `s_active` refcount
-/// (D6). Each live mount holds exactly one active ref — `for_backend` seeds the
-/// first (`s_active == 1`) and every SB-sharing clone (`copy_mnt_ns`, the Linux
-/// `clone_mnt` path) grabs one via [`SuperBlock::grab_active`] — so the LAST
+/// (D6). Each live mount holds exactly one active ref: fill-super construction
+/// seeds the first (`s_active == 1`), and every SB-sharing clone (`copy_mnt_ns`,
+/// the Linux `clone_mnt` path) grabs one via [`SuperBlock::grab_active`] — so the LAST
 /// drop (1 → 0) runs `generic_shutdown_super` (sync_filesystem + `put_super`)
 /// exactly once, and a still-mounted sibling/ns-clone keeps the shared instance
 /// alive. Replaces the old O(N) `Arc::ptr_eq` mount-table scan, which could not
@@ -239,8 +247,18 @@ fn unlink_from_parent(m: &Arc<Mount>) {
 /// later mount in the child does NOT propagate back into the parent ns. The
 /// new ns is created. # C: O(N_mounts × depth)
 pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
+    let _ = copy_mnt_ns_map(from_ns, to_ns);
+}
+
+/// As [`copy_mnt_ns`], returning the old→new mount id mapping so the caller can
+/// translate any live `struct path` references it owns into the copied tree.
+/// Linux `copy_mnt_ns` updates `fs_struct` root/pwd this way; otherwise the task
+/// enters `to_ns` while its cwd/root still name mounts from `from_ns`.
+/// # C: O(N_mounts × depth)
+pub fn copy_mnt_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
     let src = mounts_in_ns(from_ns);
     mntns::ns_get_or_create(to_ns);
+    let mut map = Vec::new();
     // [D28a] serialize the whole ns clone (the per-clone MOUNTS inserts +
     // NAMESPACES root + the `rebuild_ns_index` link/hash wiring) as one writer
     // region. No `descend` / `put_super` runs here, so no sleep under the lock;
@@ -269,6 +287,7 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
         // leaves it UNLINKED); `rebuild_ns_index` reparents from it below. The
         // rendered path string is already set by `clone_mnt` (`mount_point_str`).
         *clone.mountpoint.lock() = m.mountpoint();
+        map.push((m.mnt_id, clone.mnt_id));
         // [D25] the clone of the SOURCE ns-root mount becomes the new ns root,
         // identified by the source's self-parent `is_root()` (the clone's own
         // self-parent is stamped later by `rebuild_ns_index`'s `None` arm).
@@ -282,10 +301,17 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
     mntns::commit_mounts(to_ns, src.len() as u64);
     rebuild_ns_index(to_ns);
     mntns::bump_gen(to_ns);
+    map
 }
 
 /// Back-compat alias for the unshare(CLONE_NEWNS) call site. # C: O(N×depth)
 pub fn snapshot_ns(from_ns: u64, to_ns: u64) { copy_mnt_ns(from_ns, to_ns); }
+
+/// Snapshot alias that also exposes the old→new mount id map for callers that
+/// hold live `struct path` objects. # C: O(N×depth)
+pub fn snapshot_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
+    copy_mnt_ns_map(from_ns, to_ns)
+}
 
 /// Reap every mount belonging to `ns` (Linux `free_mnt_ns` at last task
 /// exit). Drops the per-ns crossings, the hash, the `struct mountpoint`
@@ -320,23 +346,50 @@ pub(crate) fn reap_ns(ns: u64) {
 /// degenerate dest whose mounted root cannot resolve the slot, so a plain-dir
 /// recursive bind still mirrors (the NAMESPACE-226 procfs-clone case). # C: O(N×depth)
 pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
+    bind_submounts_rec_at(None, src, tgt, None)
+}
+
+/// As [`bind_submounts_rec`] but the caller supplies the target's containing
+/// mount id from the original path walk. Required when `tgt`'s dentry is shared
+/// across bind locations and `containing_mount_id` would guess the wrong parent.
+/// # C: O(N×depth)
+pub fn bind_submounts_rec_under(src: &Arc<Dentry>, tgt: &Arc<Dentry>, tgt_parent_hint: Option<u64>) -> usize {
+    bind_submounts_rec_at(None, src, tgt, tgt_parent_hint)
+}
+
+/// As [`bind_submounts_rec_under`] but the caller also supplies the source mount
+/// id from the source path walk. Required once bind roots preserve their source
+/// dentry: a later dentry-only exact lookup can confuse the source root with the
+/// just-created bind whose `mnt_root` is the same dentry. # C: O(N×depth)
+pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: &Arc<Dentry>,
+    tgt_parent_hint: Option<u64>) -> usize {
     let ns = current_ns();
-    let Some(src_m) = mount_exact_at(ns, src) else { return 0; };
+    let src_m = src_mnt_hint.and_then(mount_by_id)
+        .or_else(|| global_root().filter(|r| Arc::ptr_eq(r, src))
+            .and_then(|_| root_mount_id(ns)).and_then(mount_by_id))
+        .or_else(|| mount_exact_at(ns, src));
+    let Some(src_m) = src_m else { return 0; };
     // Unbindable source root is not cloned (Linux `IS_MNT_UNBINDABLE`, D15).
     if is_unbindable(&src_m) { return 0; }
-    // Base mountpoint to capture relative positions against: the source root's
-    // own mountpoint, or the global root for the namespace-root source.
-    let Some(base_mp) = src_m.mountpoint().or_else(global_root) else { return 0; };
     // Mirror under the TARGET's mounted ROOT, not its bare mountpoint dentry.
     let mut tgt_base = tgt.clone();
-    let mut tgt_mnt = containing_mount_id(ns, tgt);
+    let mut tgt_mnt = tgt_parent_hint.unwrap_or_else(|| containing_mount_id(ns, tgt));
+    let mut exclude_mnt = None;
     while let Some(m) = __lookup_mnt(tgt_mnt, &tgt_base) {
+        exclude_mnt = Some(m.mnt_id);
         match m.mnt_root() { Some(sr) => { tgt_base = sr; tgt_mnt = m.mnt_id; } None => break }
     }
     // Clone the source's submount SUBTREE (root EXCLUDED — already bound) as
-    // private binds, then splice it under the destination base, falling back to
-    // the bare `tgt` underlay when the mounted root cannot resolve a slot.
-    let nodes = copy_tree(&src_m, &base_mp, CloneType::Private, 0, &src_m, ns, false, Some(tgt));
+    // private binds. If `src` is the mountpoint the caller walked BEFORE
+    // crossing into `src_m`, subtree discovery starts at `src_m.mnt_root`
+    // (Linux source path after `follow_mount`), not at the covered parent-fs
+    // dentry. A caller that already supplied a crossed `struct path` dentry uses
+    // that dentry as-is.
+    let src_base = match src_m.mountpoint() {
+        Some(mp) if Arc::ptr_eq(&mp, src) => src_m.mnt_root().unwrap_or_else(|| src.clone()),
+        _ => src.clone(),
+    };
+    let nodes = copy_bind_subtree_from_arena(&src_m, &src_base, ns, exclude_mnt);
     // `tgt_mnt` is the mount whose `mnt_root` is `tgt_base` — the explicit parent
     // of every top-level cloned submount, threaded so the parent-aware
     // `commit_tree` need not (ambiguously) re-derive it from the shared dentry.
@@ -356,7 +409,7 @@ pub fn bind_submounts_rec(src: &Arc<Dentry>, tgt: &Arc<Dentry>) -> usize {
 /// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let from_m = mount_exact_at(current_ns(), from).ok_or(VfsError::Einval)?;
-    move_mount_m(from_m, to, None)
+    move_mount_m(from_m, to, None, None)
 }
 
 /// As [`move_mount`] but identifies the SOURCE mount by the `mnt_id` the path
@@ -383,14 +436,25 @@ pub fn move_mount_by_id_to(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry
     // [D32] Uniform cross-ns guard: `mount_by_id` is the ns-AGNOSTIC arena
     // lookup, so a by-id handle MUST pass `check_mnt` before any mutation.
     if !check_mnt(&from_m) { return Err(VfsError::Einval); }
-    move_mount_m(from_m, to, to_mnt_id)
+    move_mount_m(from_m, to, to_mnt_id, None)
+}
+
+/// As [`move_mount_by_id_to`] but preserves the caller's mount-aware target
+/// display path. Syscall target resolution owns this string because magic
+/// links such as `/proc/self/fd/N` can name a bind-shared mountpoint whose bare
+/// dentry path is the source location, not the reached mount-tree location.
+/// # C: O(N × depth)
+pub fn move_mount_by_id_to_rendered(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry>, rendered: String) -> KResult<()> {
+    let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
+    if !check_mnt(&from_m) { return Err(VfsError::Einval); }
+    move_mount_m(from_m, to, to_mnt_id, Some(rendered))
 }
 
 /// Shared MS_MOVE body for both [`move_mount`] variants. `dest_hint` is the
 /// destination parent mount id when known from the walk (see
 /// [`move_mount_by_id_to`]); `None` falls back to `parent_by_dentry(to)`.
 /// # C: O(N × depth)
-fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) -> KResult<()> {
+fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, dest_rendered: Option<String>) -> KResult<()> {
     let ns = current_ns();
     let from_id = from_m.mnt_id;
     let to_root = is_ns_root_dentry(to);
@@ -436,12 +500,34 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
             anc = if p == a { None } else { Some(p) };
         }
     }
-    if !to_root && top_mount_on(ns, to).is_some() { return Err(VfsError::Ebusy); }
-    let to_abs = if to_root { String::from("/") } else { abs_string(to) };
+    if !to_root && dest_pid.and_then(|p| __lookup_mnt(p, to)).is_some() { return Err(VfsError::Ebusy); }
+    let to_abs = if to_root { String::from("/") } else { dest_rendered.unwrap_or_else(|| abs_string(to)) };
+    let old_abs = from_m.mount_point_str();
     let old_mp = from_m.mountpoint();
     let old_parent = from_m.parent_id.load(Ordering::Acquire);
     let snap: Vec<Arc<Mount>> = subtree_ids(ns, from_id).iter()
         .filter_map(|id| mount_by_id(*id)).collect();
+    let mut descendant_plan: Vec<(Arc<Mount>, Arc<Dentry>, String, Option<String>)> = Vec::new();
+    for m in snap.iter() {
+        if m.mnt_id == from_id { continue; }
+        let Some(child_mp) = m.mountpoint() else { continue; };
+        let disp_seed = m.parent_id.load(Ordering::Acquire);
+        let old_child = m.mount_point_str();
+        let disp_rel = if old_child == old_abs {
+            Some(String::new())
+        } else if let Some(rest) = old_child.strip_prefix(old_abs.as_str()) {
+            if rest.starts_with('/') { Some(String::from(rest)) }
+            else { rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref()) }
+        } else {
+            rel_under_seeded(&child_mp, disp_seed, old_mp.as_ref())
+        };
+        let Some(disp_rel) = disp_rel else { return Err(VfsError::Einval); };
+        let new_rendered = if disp_rel.is_empty() { to_abs.clone() }
+                           else if to_abs == "/" { disp_rel.clone() }
+                           else { alloc::format!("{}{}", to_abs, disp_rel) };
+        let underlay_rel = old_mp.as_ref().and_then(|omp| plain_rel_under(&child_mp, omp));
+        descendant_plan.push((m.clone(), child_mp, new_rendered, underlay_rel));
+    }
 
     // --- 1) Re-seat the moved ROOT mount (the only attachment that changes). ---
     let new_root_d = if to_root { None } else { Some(to.clone()) };
@@ -476,13 +562,8 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
     //        keep IN-FS children in place (dentry/crossing/parent untouched).
     //        Both get their rendered (display) path re-based onto `to`. ---
     let to_base = new_root_d.clone().or_else(global_root);
-    for m in snap.iter() {
-        if m.mnt_id == from_id { continue; }
-        let Some(child_mp) = m.mountpoint() else { continue; };
-        let disp_rel = rel_under(&child_mp, old_mp.as_ref()).unwrap_or_default();
-        let new_rendered = if disp_rel.is_empty() { to_abs.clone() }
-                           else { alloc::format!("{}{}", to_abs, disp_rel) };
-        match old_mp.as_ref().and_then(|omp| plain_rel_under(&child_mp, omp)) {
+    for (m, child_mp, new_rendered, underlay_rel) in descendant_plan.iter() {
+        match underlay_rel {
             Some(rel) => {
                 // UNDERLAY child: relocate its mountpoint dentry to the mirrored
                 // underlay position beneath `to`, by an underlay descent (NOT
@@ -492,11 +573,11 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
                 let m_parent = m.parent_id.load(Ordering::Acquire);
                 {
                     let _w = MOUNT_WRITE.lock();
-                    hash_remove(m_parent, dptr(&child_mp), m.mnt_id);
+                    hash_remove(m_parent, dptr(child_mp), m.mnt_id);
                 }
                 let new_d = to_base.as_ref().and_then(|b| descend(b, rel.trim_start_matches('/')));
                 let _w = MOUNT_WRITE.lock();
-                set_mountpoint_dentry(m, new_d.clone(), new_rendered);
+                set_mountpoint_dentry(m, new_d.clone(), new_rendered.clone());
                 unlink_from_parent(m);
                 if let Some(d) = &new_d {
                     let np = parent_by_dentry(ns, d);
@@ -511,10 +592,11 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>) ->
             None => {
                 // IN-FS child: its mountpoint dentry is inside a moved fs and
                 // travels unchanged — only the rendered path follows the move.
-                *m.rendered_path.lock() = new_rendered;
+                *m.rendered_path.lock() = new_rendered.clone();
             }
         }
     }
+    if to_root { mntns::ns_set_root(ns, from_id); }
     mntns::bump_gen(ns);
     Ok(())
 }

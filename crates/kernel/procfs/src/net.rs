@@ -14,13 +14,13 @@ fn net_dev_body() -> alloc::vec::Vec<u8> {
     let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
     let stack = net::sock::stack();
     let snap = stack.ifaces.snapshot();
-    for (id, name, mtu) in snap {
-        let stats = stack.ifaces.lookup(id).map(|d| d.stats()).unwrap_or_default();
+    for iface in snap {
+        let stats = iface.stats;
         let _ = writeln!(s, "{:>6}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0  # mtu={}",
-            name,
+            iface.name,
             stats.rx_bytes, stats.rx_packets, stats.rx_errors, stats.rx_dropped,
             stats.tx_bytes, stats.tx_packets, stats.tx_errors, stats.tx_dropped,
-            mtu);
+            iface.mtu);
     }
     s.into_bytes()
 }
@@ -193,9 +193,9 @@ fn net_route_body() -> alloc::vec::Vec<u8> {
         "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
     );
     let stack = net::sock::stack();
+    let ifaces = stack.ifaces.snapshot();
     for re in stack.routes.snapshot() {
-        let dev = stack.ifaces.lookup(re.iface);
-        let iface_name = dev.as_ref().map(|d| d.name()).unwrap_or("lo");
+        let Some(iface) = ifaces.iter().find(|i| i.id == re.iface) else { continue };
         // Linux text encodes addrs in network-byte-order hex (LE
         // from the on-the-wire perspective).
         let dst_be = re.dst.as_u32().to_le();
@@ -203,7 +203,7 @@ fn net_route_body() -> alloc::vec::Vec<u8> {
                    else { !0u32 << (32 - re.prefix_len) };
         let _ = writeln!(s,
             "{}\t{:08X}\t{:08X}\t0001\t0\t0\t0\t{:08X}\t0\t0\t0",
-            iface_name, dst_be, 0u32, mask.to_le(),
+            iface.name, dst_be, 0u32, mask.to_le(),
         );
     }
     s.into_bytes()
@@ -224,9 +224,9 @@ pub fn make_proc_net_arp() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0
 /// probe this. v1 returns header + zero rows.
 fn net_unix_body() -> alloc::vec::Vec<u8> {
     use core::fmt::Write as _;
-    let mut s = String::from(
+    let mut out = String::from(
         "Num       RefCount Protocol Flags    Type St Inode Path\n",
-    );
+    ).into_bytes();
     // Each entry: opaque "Num" (we use a stable per-row counter),
     // RefCount 02, Protocol 0, Flags 0x10000 for stream listeners
     // (LISTENING) / 0 otherwise, Type (0001 stream | 0002 dgram),
@@ -235,14 +235,19 @@ fn net_unix_body() -> alloc::vec::Vec<u8> {
     let mut num: u64 = 1;
     // B518: `/proc/net/unix` reflects the reader's net_ns (id 0 = the
     // untouched global registry).
+    let mut line = String::new();
     for (kind, path) in net::net_ns::current_unix_registry().snapshot_paths() {
         let flags = if kind == 0x0001 { 0x10000u32 } else { 0u32 };
         let path = net::unix_path_display(&path);
-        let _ = writeln!(s, "{:016x}: 00000002 00000000 {:08x} {:04x} 01 0 {}",
-            num, flags, kind, path);
+        line.clear();
+        let _ = write!(line, "{:016x}: 00000002 00000000 {:08x} {:04x} 01 0 ",
+            num, flags, kind);
+        out.extend_from_slice(line.as_bytes());
+        out.extend_from_slice(&path);
+        out.push(b'\n');
         num += 1;
     }
-    s.into_bytes()
+    out
 }
 /// `/proc/net/unix` inode. # C: O(1)
 pub fn make_proc_net_unix() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0007 as Ino, net_unix_body) }

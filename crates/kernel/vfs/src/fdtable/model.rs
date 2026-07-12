@@ -54,9 +54,6 @@ impl FdTableInner {
         self.cloexec.get(word_idx(fd)).is_some_and(|w| w & bit_mask(fd) != 0)
     }
     pub(super) fn alloc_fd(&mut self, file: Arc<File>) -> KResult<i32> { self.alloc_fd_below(file, 0, FD_TABLE_MAX) }
-    pub(super) fn alloc_fd_min(&mut self, file: Arc<File>, min: usize) -> KResult<i32> {
-        self.alloc_fd_below(file, min, FD_TABLE_MAX)
-    }
     pub(super) fn find_free_fd(&self, min: usize, max: usize) -> KResult<usize> {
         let mut fd = min;
         loop {

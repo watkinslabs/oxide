@@ -32,16 +32,20 @@ pub(super) fn dispatch_route_b(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_PIDFD_OPEN => crate::s434_pidfd_open::sys_pidfd_open(args),
         syscall::nrs::NR_PIDFD_GETFD => crate::s438_pidfd_getfd::sys_pidfd_getfd(args),
         syscall::nrs::NR_PIDFD_SEND_SIGNAL => crate::s424_pidfd_send_signal::sys_pidfd_send_signal(args),
-        syscall::nrs::NR_INOTIFY_INIT | syscall::nrs::NR_INOTIFY_INIT1 => ::fs::inotify::sys_inotify_init1(args),
+        syscall::nrs::NR_INOTIFY_INIT => ::fs::inotify::sys_inotify_init(args),
+        syscall::nrs::NR_INOTIFY_INIT1 => ::fs::inotify::sys_inotify_init1(args),
         syscall::nrs::NR_INOTIFY_ADD_WATCH => ::fs::inotify::sys_inotify_add_watch(args),
         syscall::nrs::NR_INOTIFY_RM_WATCH => ::fs::inotify::sys_inotify_rm_watch(args),
-        syscall::nrs::NR_SIGNALFD | syscall::nrs::NR_SIGNALFD4 => ::fs::signalfd::sys_signalfd4(args),
+        syscall::nrs::NR_SIGNALFD => ::fs::signalfd::sys_signalfd(args),
+        syscall::nrs::NR_SIGNALFD4 => ::fs::signalfd::sys_signalfd4(args),
         syscall::nrs::NR_TIMERFD_CREATE => ::fs::timerfd::sys_timerfd_create(args),
         syscall::nrs::NR_TIMERFD_SETTIME => ::fs::timerfd::sys_timerfd_settime(args),
         syscall::nrs::NR_TIMERFD_GETTIME => ::fs::timerfd::sys_timerfd_gettime(args),
-        syscall::nrs::NR_EPOLL_CREATE | syscall::nrs::NR_EPOLL_CREATE1 => ::fs::epoll::sys_epoll_create1(args),
+        syscall::nrs::NR_EPOLL_CREATE => ::fs::epoll::sys_epoll_create(args),
+        syscall::nrs::NR_EPOLL_CREATE1 => ::fs::epoll::sys_epoll_create1(args),
         syscall::nrs::NR_EPOLL_CTL => ::fs::epoll::sys_epoll_ctl(args),
-        syscall::nrs::NR_EPOLL_WAIT | syscall::nrs::NR_EPOLL_PWAIT => ::fs::epoll::sys_epoll_wait(args),
+        syscall::nrs::NR_EPOLL_WAIT => ::fs::epoll::sys_epoll_wait(args),
+        syscall::nrs::NR_EPOLL_PWAIT => ::fs::epoll::sys_epoll_pwait(args),
         syscall::nrs::NR_EPOLL_PWAIT2 => ::fs::epoll::sys_epoll_pwait2(args),
         syscall::nrs::NR_GETPGID => crate::s121_getpgid::sys_getpgid(args),
         syscall::nrs::NR_GETSID => crate::s124_getsid::sys_getsid(args),
@@ -50,7 +54,8 @@ pub(super) fn dispatch_route_b(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_UMASK => crate::s095_umask::sys_umask(args),
         syscall::nrs::NR_ACCESS => crate::fs_access::sys_access(args),
         syscall::nrs::NR_FACCESSAT => crate::fs_access::sys_faccessat(args),
-        syscall::nrs::NR_EVENTFD | syscall::nrs::NR_EVENTFD2 => crate::s290_eventfd2::sys_eventfd2(args),
+        syscall::nrs::NR_EVENTFD => crate::s290_eventfd2::sys_eventfd(args),
+        syscall::nrs::NR_EVENTFD2 => crate::s290_eventfd2::sys_eventfd2(args),
         syscall::nrs::NR_GETDENTS => crate::s217_getdents64::sys_getdents(args),
         syscall::nrs::NR_GETDENTS64 => crate::s217_getdents64::sys_getdents64(args),
         syscall::nrs::NR_PREAD64 => crate::s017_pread64::sys_pread64(args),
@@ -81,27 +86,13 @@ pub(super) fn dispatch_route_b(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_TEE => sched::xfer::sys_tee(args),
         syscall::nrs::NR_VMSPLICE => sched::xfer::sys_vmsplice(args),
         syscall::nrs::NR_OPENAT => crate::s257_openat::sys_openat(args),
-        syscall::nrs::NR_OPENAT2 => {
-            let how = args.a2;
-            if how == 0 || how >= hal::USER_VA_END {
-                -(syscall::errno::Errno::Efault.as_i32() as i64)
-            } else if args.a3 < 24 {
-                -(syscall::errno::Errno::Einval.as_i32() as i64)
-            } else {
-                let mut sa = *args; sa.a2 = 0; sa.a3 = 0;
-                let resolve = unsafe {
-                    sa.a2 = core::ptr::read_volatile(how as *const u64);
-                    sa.a3 = core::ptr::read_volatile((how + 8) as *const u64);
-                    core::ptr::read_volatile((how + 16) as *const u64)
-                };
-                crate::s257_openat::sys_openat2(&sa, resolve)
-            }
-        }
+        syscall::nrs::NR_OPENAT2 => crate::s257_openat::sys_openat2(args),
         syscall::nrs::NR_FACCESSAT2 => crate::fs_access::sys_faccessat2(args),
         syscall::nrs::NR_SYNC => crate::misc::sys_sync(args),
         syscall::nrs::NR_SYNCFS => crate::misc::sys_syncfs(args),
         syscall::nrs::NR_REBOOT => crate::misc::sys_reboot(args),
         nr if matches!(nr, syscall::nrs::NR_FSYNC | syscall::nrs::NR_FDATASYNC | syscall::nrs::NR_SYNC_FILE_RANGE) => crate::misc::sys_fsync(args),
+        syscall::nrs::NR_CACHESTAT => crate::s451_cachestat::sys_cachestat(args),
         nr if matches!(nr, syscall::nrs::NR_PKEY_ALLOC | syscall::nrs::NR_PKEY_FREE | syscall::nrs::NR_PKEY_MPROTECT | syscall::nrs::NR_KCMP | syscall::nrs::NR_SET_MEMPOLICY | syscall::nrs::NR_GET_MEMPOLICY | syscall::nrs::NR_MBIND | syscall::nrs::NR_SET_MEMPOLICY_HOME_NODE | syscall::nrs::NR_MIGRATE_PAGES | syscall::nrs::NR_MOVE_PAGES | syscall::nrs::NR_PROCESS_MADVISE | syscall::nrs::NR_PROCESS_MRELEASE) => crate::misc::dispatch(nr, args),
         _ => return None,
     })

@@ -7,26 +7,26 @@
 // multiboot2 (legacy) boot path. aarch64 has no such region; it gets SMBIOS via
 // the EFI SMBIOS3 config table (wired separately by the arm boot handoff).
 
-use alloc::string::String;
+use alloc::vec::Vec;
 use sync::Spinlock;
 use sync::TaskList as DmiLock;
 
-/// Cached DMI system-identity strings. Empty String means field absent.
+/// Cached DMI system-identity bytes. Empty vector means field absent.
 #[derive(Default, Clone)]
 pub struct DmiId {
-    pub sys_vendor: String,       // type 1 manufacturer
-    pub product_name: String,     // type 1 product name
-    pub product_version: String,  // type 1 version
-    pub product_serial: String,   // type 1 serial
-    pub product_uuid: String,     // type 1 UUID (formatted)
-    pub bios_vendor: String,      // type 0 vendor
-    pub bios_version: String,     // type 0 version
-    pub bios_date: String,        // type 0 release date
-    pub board_vendor: String,     // type 2 manufacturer
-    pub board_name: String,       // type 2 product
-    pub board_version: String,    // type 2 version
-    pub chassis_vendor: String,   // type 3 manufacturer
-    pub chassis_version: String,  // type 3 version
+    pub sys_vendor: Vec<u8>,       // type 1 manufacturer
+    pub product_name: Vec<u8>,     // type 1 product name
+    pub product_version: Vec<u8>,  // type 1 version
+    pub product_serial: Vec<u8>,   // type 1 serial
+    pub product_uuid: Vec<u8>,     // type 1 UUID (formatted)
+    pub bios_vendor: Vec<u8>,      // type 0 vendor
+    pub bios_version: Vec<u8>,     // type 0 version
+    pub bios_date: Vec<u8>,        // type 0 release date
+    pub board_vendor: Vec<u8>,     // type 2 manufacturer
+    pub board_name: Vec<u8>,       // type 2 product
+    pub board_version: Vec<u8>,    // type 2 version
+    pub chassis_vendor: Vec<u8>,   // type 3 manufacturer
+    pub chassis_version: Vec<u8>,  // type 3 version
     /// Set once tables were located & decoded (Linux "DMI present").
     pub present: bool,
 }
@@ -34,7 +34,7 @@ pub struct DmiId {
 static DMI: Spinlock<Option<DmiId>, DmiLock> = Spinlock::new(None);
 
 /// Snapshot the decoded DMI identity for the sysfs `dmi` class. # C: O(1) clone
-pub fn dmi() -> DmiId { DMI.lock().clone().unwrap_or_default() }
+pub fn dmi() -> Option<DmiId> { DMI.lock().clone() }
 
 /// True once SMBIOS tables were located and decoded. # C: O(1)
 pub fn present() -> bool { DMI.lock().as_ref().map(|d| d.present).unwrap_or(false) }
@@ -119,8 +119,8 @@ fn decode_tables(tbl: &[u8]) -> DmiId {
         let fmt = &tbl[off..off + flen];
         let strset = &tbl[off + flen..];
         let strset_len = strset_span(strset);
-        let s = |field: usize| -> String {
-            if field < fmt.len() { smbios_string(strset, fmt[field]) } else { String::new() }
+        let s = |field: usize| -> Vec<u8> {
+            if field < fmt.len() { smbios_string(strset, fmt[field]) } else { Vec::new() }
         };
         match stype {
             0 => { out.bios_vendor = s(0x04); out.bios_version = s(0x05); out.bios_date = s(0x08); }
@@ -151,28 +151,28 @@ fn strset_span(set: &[u8]) -> usize {
     set.len()
 }
 
-/// 1-based `idx`th NUL-separated string from an SMBIOS string set. `0` is none.
-fn smbios_string(set: &[u8], idx: u8) -> String {
-    if idx == 0 { return String::new(); }
+/// 1-based `idx`th NUL-separated string bytes from an SMBIOS string set. `0` is none.
+fn smbios_string(set: &[u8], idx: u8) -> Vec<u8> {
+    if idx == 0 { return Vec::new(); }
     let mut cur: u8 = 1;
     for chunk in set.split(|&b| b == 0) {
         if cur == idx {
-            return String::from_utf8_lossy(chunk).into_owned();
+            return chunk.to_vec();
         }
         if chunk.is_empty() { break; } // hit the double-NUL terminator
         cur += 1;
     }
-    String::new()
+    Vec::new()
 }
 
 /// Format a 16-byte SMBIOS UUID as Linux does (little-endian first three fields).
-fn fmt_uuid(b: &[u8]) -> String {
-    if b.len() < 16 { return String::new(); }
+fn fmt_uuid(b: &[u8]) -> Vec<u8> {
+    if b.len() < 16 { return Vec::new(); }
     alloc::format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         b[3], b[2], b[1], b[0], b[5], b[4], b[7], b[6],
         b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
-    )
+    ).into_bytes()
 }
 
 fn store(id: DmiId) { *DMI.lock() = Some(id); }
@@ -186,11 +186,17 @@ mod tests {
     #[test]
     fn string_set_indexes_are_one_based() {
         let set = b"QEMU\0Standard PC\0\0";
-        assert_eq!(smbios_string(set, 0), "");
-        assert_eq!(smbios_string(set, 1), "QEMU");
-        assert_eq!(smbios_string(set, 2), "Standard PC");
-        assert_eq!(smbios_string(set, 3), "");
+        assert_eq!(smbios_string(set, 0), b"");
+        assert_eq!(smbios_string(set, 1), b"QEMU");
+        assert_eq!(smbios_string(set, 2), b"Standard PC");
+        assert_eq!(smbios_string(set, 3), b"");
         assert_eq!(strset_span(set), set.len());
+    }
+
+    #[test]
+    fn string_set_preserves_non_utf8_bytes() {
+        let set = b"raw-\xff\0\0";
+        assert_eq!(smbios_string(set, 1), b"raw-\xff");
     }
 
     #[test]
@@ -203,7 +209,7 @@ mod tests {
     fn uuid_uses_smbios_byte_order() {
         let uuid = [0x78, 0x56, 0x34, 0x12, 0xbc, 0x9a, 0xf0, 0xde,
                     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
-        assert_eq!(fmt_uuid(&uuid), "12345678-9abc-def0-1122-334455667788");
+        assert_eq!(fmt_uuid(&uuid), b"12345678-9abc-def0-1122-334455667788");
     }
 
     #[test]
@@ -221,11 +227,11 @@ mod tests {
 
         let id = decode_tables(&table);
         assert!(id.present);
-        assert_eq!(id.bios_vendor, "SeaBIOS");
-        assert_eq!(id.sys_vendor, "QEMU");
-        assert_eq!(id.product_name, "Standard PC");
-        assert_eq!(id.product_uuid, "12345678-9abc-def0-1122-334455667788");
-        assert_eq!(id.board_vendor, "QEMU");
-        assert_eq!(id.board_name, "Board");
+        assert_eq!(id.bios_vendor, b"SeaBIOS");
+        assert_eq!(id.sys_vendor, b"QEMU");
+        assert_eq!(id.product_name, b"Standard PC");
+        assert_eq!(id.product_uuid, b"12345678-9abc-def0-1122-334455667788");
+        assert_eq!(id.board_vendor, b"QEMU");
+        assert_eq!(id.board_name, b"Board");
     }
 }

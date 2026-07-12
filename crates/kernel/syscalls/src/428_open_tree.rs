@@ -1,8 +1,6 @@
 // 428 open_tree — one syscall, one file (docs/53 §0). Moved verbatim from fsmount.rs.
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::ToString;
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -18,13 +16,14 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
     const OPEN_TREE_CLONE:   u64 = 1;
     const OPEN_TREE_CLOEXEC: u64 = 0o2_000_000;     // O_CLOEXEC
     const AT_RECURSIVE:      u64 = 0x8000;          // clone the whole subtree
-    let path = match read_cstr(args.a1, 256) {
-        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
-    };
-    let abs = match crate::pathresolve::resolve_at_result(args.a0 as i32, &path) {
+    const AT_EMPTY_PATH:     u64 = 0x1000;
+    let vp = match crate::pathresolve::resolve_at_lookup(args.a0 as i32, args.a1, vfs::LookupFlags {
+        empty: (args.a2 & AT_EMPTY_PATH) != 0,
+        ..Default::default()
+    }) {
         Ok(p) => p, Err(rv) => return rv,
     };
-    let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
+    let display = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
     // TEMP (D24, debug-mnt): mount-creating syscall ENTRY trace (Stage-1a
     // replication source) — pair with vfs [MNTCREATE] clone/commit_hashonly.
     #[cfg(feature = "debug-mount")]
@@ -33,7 +32,7 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         klog::write_hex_u64(args.a2);
         klog::write_raw(b" recursive=");
         klog::write_raw(if args.a2 & AT_RECURSIVE != 0 { b"true" } else { b"false" });
-        klog::write_raw(b" source="); klog::write_raw(abs.as_bytes());
+        klog::write_raw(b" source="); klog::write_raw(display.as_bytes());
         klog::write_raw(b" target=<none>\n");
     }
     let cloexec = (args.a2 & OPEN_TREE_CLOEXEC) != 0;
@@ -48,10 +47,10 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         // commits it hash-only; fd-close releases it. This replaces the prior
         // single-(fs,root) capture that never replicated submounts.
         let recursive = (args.a2 & AT_RECURSIVE) != 0;
-        let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
+        let mnt = match vfs::mount::mount_by_id(vp.mnt_id) {
             Some(m) => m,
             None => {
-                crate::mount_common::mnt_log("open_tree_clone_NONE", &abs, -(Errno::Enoent.as_i32() as i64));
+                crate::mount_common::mnt_log("open_tree_clone_NONE", &display, -(Errno::Enoent.as_i32() as i64));
                 return -(Errno::Enoent.as_i32() as i64);
             }
         };
@@ -61,8 +60,5 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         return install_fd(mo, "open_tree", cloexec);
     }
     // Non-clone: an fd referring to the path's inode (O_PATH-ish).
-    match crate::pathresolve::resolve(&abs, false) {
-        Some(i) => install_fd(i, "open_tree", cloexec),
-        None    => -(Errno::Enoent.as_i32() as i64),
-    }
+    install_fd(vp.inode, "open_tree", cloexec)
 }

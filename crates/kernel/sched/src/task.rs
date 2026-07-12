@@ -80,6 +80,10 @@ pub struct Task {
     pub class_enc: AtomicU64,
 
     pub exit_status: AtomicI32,
+    /// Low-byte clone/fork exit signal (`task_struct::exit_signal`). Linux
+    /// wait selectors use this to distinguish normal SIGCHLD children from
+    /// clone children for `__WCLONE`/`__WALL`.
+    pub exit_signal: AtomicU8,
 
     /// Parent TID per `13§5` / `15§5`. Set by `sys_fork` when the
     /// child Task is constructed; `0` for tasks with no parent
@@ -271,6 +275,16 @@ pub struct Task {
     /// fires, dispatch tail re-arms `alarm_ns = now + interval` if
     /// non-zero. setitimer(0) sets; getitimer(0) reads.
     pub alarm_interval_ns: AtomicU64,
+    /// ITIMER_VIRTUAL absolute user-CPU deadline in `utime_ns`.
+    /// `0` = disarmed. Expiry posts SIGVTALRM.
+    pub itimer_virtual_ns: AtomicU64,
+    /// ITIMER_VIRTUAL period in user-CPU ns. `0` = one-shot.
+    pub itimer_virtual_interval_ns: AtomicU64,
+    /// ITIMER_PROF absolute CPU deadline in `utime_ns + stime_ns`.
+    /// `0` = disarmed. Expiry posts SIGPROF.
+    pub itimer_prof_ns: AtomicU64,
+    /// ITIMER_PROF period in combined CPU ns. `0` = one-shot.
+    pub itimer_prof_interval_ns: AtomicU64,
 
     /// Per-task umask per POSIX umask(2). Default 0o022. Fork
     /// inherits. AND-NOT with mode in sys_open/openat(O_CREAT).
@@ -386,11 +400,9 @@ pub struct Task {
     /// updates atomically when arg != 0xFFFFFFFF.
     pub personality: AtomicU32,
 
-    /// `chroot(2)` root path. Default "/" — every absolute path
-    /// resolves directly. After chroot, devfs::lookup prepends this
-    /// path so the task sees a subtree as "/". Single-mutator per
-    /// `13§5`. Inherited by fork/clone (children share parent's
-    /// chroot view); cleared on execve only via explicit chroot.
+    /// Legacy `chroot(2)` root text. Default "/" — retained only for old
+    /// diagnostics; live absolute path walks use `root_vfs` below. Single-mutator
+    /// per `13§5`. Inherited by fork/clone; cleared only via explicit chroot.
     pub root: UnsafeCell<alloc::string::String>,
     /// Per-task resolution root as a VFS path object (`fs_struct::root`).
     /// Absolute path walks should start here after chroot instead of treating

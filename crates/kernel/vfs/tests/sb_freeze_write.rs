@@ -17,7 +17,7 @@ use vfs::{
 struct FrType;
 impl FileSystemType for FrType {
     fn name(&self) -> &str { "frzfs" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 struct FrOps;
 impl SuperOps for FrOps {

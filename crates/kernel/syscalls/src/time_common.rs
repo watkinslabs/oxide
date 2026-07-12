@@ -7,11 +7,16 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use hal::TimerOps;
 
 pub(crate) const NS_PER_SEC: u64 = 1_000_000_000;
+pub(crate) const USEC_PER_SEC: u64 = 1_000_000;
+pub(crate) const NSEC_PER_USEC: u64 = 1_000;
+pub(crate) const TIMEVAL_SIZE: u64 = 16;
+pub(crate) const TIMEZONE_SIZE: u64 = 8;
+pub(crate) const TZ_MINUTESWEST_LIMIT: i32 = 15 * 60;
 
 pub(crate) const CLOCK_REALTIME:           u64 = 0;
 pub(crate) const CLOCK_MONOTONIC:          u64 = 1;
@@ -21,11 +26,15 @@ pub(crate) const CLOCK_MONOTONIC_RAW:      u64 = 4;
 pub(crate) const CLOCK_REALTIME_COARSE:    u64 = 5;
 pub(crate) const CLOCK_MONOTONIC_COARSE:   u64 = 6;
 pub(crate) const CLOCK_BOOTTIME:           u64 = 7;
+pub(crate) const CLOCK_REALTIME_ALARM:     u64 = 8;
+pub(crate) const CLOCK_BOOTTIME_ALARM:     u64 = 9;
 
 /// Wall-clock offset (ns since UNIX epoch) added to monotonic_ns
 /// when callers ask for CLOCK_REALTIME. Starts at 0 (v1 has no RTC);
 /// settimeofday / clock_settime overwrite it.
 pub(crate) static REALTIME_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TZ_MINUTESWEST: AtomicI32 = AtomicI32::new(0);
+pub(crate) static TZ_DSTTIME:     AtomicI32 = AtomicI32::new(0);
 
 /// Initialise CLOCK_REALTIME from the hardware RTC at boot (Linux reads the
 /// persistent clock in `timekeeping_init`). Without this the wall clock is
@@ -80,5 +89,6 @@ pub(crate) fn ns_for_clock(clk_id: u64) -> u64 {
 pub(crate) fn clock_id_known(clk_id: u64) -> bool {
     matches!(clk_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
         | CLOCK_THREAD_CPUTIME_ID | CLOCK_MONOTONIC_RAW
-        | CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME)
+        | CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME
+        | CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
 }

@@ -1,75 +1,126 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
-use alloc::sync::Arc;
-use vfs::fs::FileSystem;
 
 use super::cred::current_cred;
-use super::root::{resolution_root, root_dentry};
+use super::root::resolution_root_vfs;
 
-/// # C: O(components × dir-lookup)
-pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
-    resolve_path(abs, no_follow_final).map(|p| p.inode)
+fn trim_mount_raw(raw: &str) -> Result<&str, vfs::VfsError> {
+    if raw.is_empty() { return Err(vfs::VfsError::Enoent); }
+    let trimmed = if raw.len() > 1 { raw.trim_end_matches('/') } else { raw };
+    if trimmed.is_empty() { Ok("/") } else { Ok(trimmed) }
 }
 
-/// # C: O(components × dir-lookup)
-pub fn resolve_path(abs: &str, no_follow_final: bool) -> Option<vfs::VfsPath> {
-    resolve_path_result(abs, no_follow_final).ok()
+fn rest_after<'a>(s: &'a str, p: &str) -> Option<&'a str> {
+    let (sb, pb) = (s.as_bytes(), p.as_bytes());
+    if sb.len() >= pb.len() && &sb[..pb.len()] == pb { Some(&s[pb.len()..]) } else { None }
 }
 
-/// # C: O(components × dir-lookup)
-pub fn resolve_result(abs: &str, no_follow_final: bool) -> Result<vfs::InodeRef, vfs::VfsError> {
-    resolve_path_result(abs, no_follow_final).map(|p| p.inode)
+pub fn dup_fd_target(raw: &str) -> Option<(Option<u32>, i32)> {
+    match raw {
+        "/dev/stdin"  => return Some((None, 0)),
+        "/dev/stdout" => return Some((None, 1)),
+        "/dev/stderr" => return Some((None, 2)),
+        _ => {}
+    }
+    if let Some(rest) = rest_after(raw, "/dev/fd/") {
+        return rest.parse::<i32>().ok().map(|n| (None, n));
+    }
+    let rest = rest_after(raw, "/proc/")?;
+    let mut it = rest.splitn(3, '/');
+    let who = it.next()?;
+    if it.next()? != "fd" { return None; }
+    let fd: i32 = it.next()?.parse().ok()?;
+    let tid = if who == "self" { None } else { Some(who.parse::<u32>().ok()?) };
+    Some((tid, fd))
 }
 
-/// # C: O(components × dir-lookup)
-pub fn resolve_path_result(abs: &str, no_follow_final: bool) -> Result<vfs::VfsPath, vfs::VfsError> {
-    resolve_path_flags(abs, vfs::LookupFlags { no_follow_final, ..Default::default() })
+pub fn procfd_path(raw: &str) -> Option<vfs::VfsPath> {
+    let (tid_opt, fd) = dup_fd_target(raw)?;
+    let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
+    Some(vfs::VfsPath {
+        mnt_id: file.mnt_id(),
+        dentry: file.dentry().clone(),
+        inode: file.inode().clone(),
+        last_component: None,
+    })
 }
 
-/// # C: O(components × dir-lookup)
-pub fn resolve_path_flags(abs: &str, mut flags: vfs::LookupFlags) -> Result<vfs::VfsPath, vfs::VfsError> {
-    let (root, beneath) = resolution_root().ok_or(vfs::VfsError::Enoent)?;
-    flags.beneath = flags.beneath || beneath;
-    let Some(cur) = sched::live::current() else {
-        return vfs::path_lookup_cred(root.clone(), root, abs, flags, vfs::Cred::root());
+fn raw_lookup_base() -> Result<(vfs::VfsPath, vfs::VfsPath, bool), vfs::VfsError> {
+    let (root, beneath) = resolution_root_vfs().ok_or(vfs::VfsError::Enoent)?;
+    let start = match sched::live::current() {
+        Some(cur) => {
+            // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
+            unsafe { (*cur.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone())
+        }
+        None => root.clone(),
     };
-    // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
-    let start = unsafe { (*cur.cwd_vfs.get()).clone().map(|p| p.dentry) }.unwrap_or_else(|| root.clone());
-    match vfs::path_lookup_cred(start, root, abs, flags, current_cred()) {
-        Ok(p) => Ok(p),
-        Err(vfs::VfsError::Enoent) if abs.starts_with("/proc/") => resolve_procfs_fallback(abs).ok_or(vfs::VfsError::Enoent),
+    Ok((start, root, beneath))
+}
+
+/// Resolve raw user path text directly from the live cwd/root `struct path`,
+/// without first rendering cwd into a string. # C: O(components × dir-lookup)
+pub fn resolve_path_raw(raw: &str, no_follow_final: bool) -> Result<vfs::VfsPath, vfs::VfsError> {
+    let raw = trim_mount_raw(raw)?;
+    if let Some(p) = procfd_path(raw) { return Ok(p); }
+    let (start, root, beneath) = raw_lookup_base()?;
+    let start_mnt = start.mnt_id;
+    let root_mnt = root.mnt_id;
+    let mut flags = vfs::LookupFlags { no_follow_final, ..Default::default() };
+    flags.beneath = flags.beneath || beneath;
+    vfs::path_lookup_at_root_cred(
+        start.dentry, start_mnt, root.dentry, root_mnt, raw, flags, current_cred())
+        .map_err(|e| {
+            if e == vfs::VfsError::Enotdir { trace_lookup_enotdir(raw, start_mnt, root_mnt); }
+            e
+        })
+}
+
+/// Resolve raw user path text as a mount attach target and return the display
+/// path derived from that walked identity. # C: O(components × dir-lookup)
+pub fn resolve_mount_target_raw(raw: &str) -> Result<(vfs::MountTarget, String), vfs::VfsError> {
+    let raw = trim_mount_raw(raw)?;
+    if let Some(p) = procfd_path(raw) {
+        let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
+        let target = vfs::mount_target_from_resolved_path(p);
+        return Ok((target, display));
+    }
+    let (start, root, _) = raw_lookup_base()?;
+    let start_mnt = start.mnt_id;
+    let root_mnt = root.mnt_id;
+    let res = vfs::mountpoint_lookup_at_root_cred(
+        start.dentry, start_mnt, root.dentry, root_mnt, raw, current_cred());
+    match res {
+        Ok(t) => {
+            let display = vfs::mount::render_path_for_mount(t.parent.mnt_id, &t.mountpoint);
+            Ok((t, display))
+        }
+        Err(vfs::VfsError::Enotdir) => {
+            trace_lookup_enotdir(raw, start_mnt, root_mnt);
+            Err(vfs::VfsError::Enotdir)
+        }
         Err(e) => Err(e),
     }
 }
 
-/// # C: O(components)
-pub fn resolve_parent_path(abs: &str) -> Result<vfs::VfsPath, vfs::VfsError> {
-    resolve_path_flags(abs, vfs::LookupFlags { parent: true, ..Default::default() })
-}
-
-fn resolve_procfs_fallback(abs: &str) -> Option<vfs::VfsPath> {
-    let rest = abs.strip_prefix("/proc/")?;
-    if rest.is_empty() { return None; }
-    let mut inode = procfs::static_files::proc_root() as vfs::InodeRef;
-    let fs = Arc::new(procfs::fs_impl::ProcfsFs) as Arc<dyn FileSystem>;
-    let sb = vfs::SuperBlock::for_backend(fs, Some(inode.clone()), 0, String::from("procfs-fallback"));
-    let mut dentry = vfs::d_make_root(inode.clone(), &sb);
-    for comp in rest.split('/').filter(|c| !c.is_empty()) {
-        let child = match vfs::d_lookup(&dentry, comp) {
-            Some(d) if !d.is_negative() => d,
-            _ => {
-                let ci = inode.lookup(comp).ok()?;
-                vfs::d_add(&dentry, comp, ci)
-            }
-        };
-        inode = child.inode()?;
-        dentry = child;
+#[cfg(feature = "debug-boot")]
+fn trace_lookup_enotdir(abs: &str, start_mnt: u64, root_mnt: u64) {
+    klog::write_raw(b"[ENOTDIR] op=resolve_path_flags why=walk tid=");
+    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+    klog::write_raw(b" start_mnt=");
+    klog::write_dec_u64(start_mnt);
+    klog::write_raw(b" root_mnt=");
+    klog::write_dec_u64(root_mnt);
+    klog::write_raw(b" path=");
+    klog::write_raw(abs.as_bytes());
+    if let Some(c) = sched::live::current() {
+        // SAFETY: cwd slot single-mutator per 13§5; current task is sole reader here.
+        let cwd = unsafe { (*c.cwd.get()).clone() };
+        klog::write_raw(b" cwd=");
+        klog::write_raw(cwd.as_bytes());
     }
-    Some(vfs::VfsPath { mnt_id: 0, dentry, inode, last_component: None })
+    klog::write_raw(b"\n");
 }
 
-/// # C: O(components × dir-lookup)
-pub fn mount_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
-    resolve_path(abs, false).map(|p| p.dentry)
-}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_lookup_enotdir(_abs: &str, _start_mnt: u64, _root_mnt: u64) {}

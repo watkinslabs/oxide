@@ -5,8 +5,8 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf;
-use crate::statfs_common::{statfs_for_path, statfs_for_magic, write_statfs};
+use crate::userbuf::validate_user_buf_writable;
+use crate::statfs_common::{statfs_for_magic, write_statfs};
 
 /// `sys_fstatfs(fd, buf)` — slot 138. Reports the backing fs magic for
 /// an open fd, classified by the path the fd was opened with.
@@ -14,7 +14,7 @@ use crate::statfs_common::{statfs_for_path, statfs_for_magic, write_statfs};
 pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
-    if let Err(rv) = validate_user_buf(buf, 120, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, 120, 1) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -34,14 +34,7 @@ pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
         // `vfs_statfs(&f.f_path)`), not a re-classification by dentry-name string.
         crate::statfs_common::statfs_for_mount(&m)
     } else {
-        // No owning mount (anon/pseudo fd with no statfs_magic): last-resort
-        // name-string classification.
-        let name = file.dentry().name();
-        if name.starts_with('/') {
-            statfs_for_path(name)
-        } else {
-            statfs_for_magic(crate::statfs_common::M_TMPFS)
-        }
+        statfs_for_magic(crate::statfs_common::M_TMPFS)
     };
     write_statfs(buf, &st);
     0

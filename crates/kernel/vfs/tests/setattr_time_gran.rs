@@ -7,6 +7,8 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::superblock::NSEC_PER_SEC;
@@ -21,7 +23,7 @@ impl FileSystem for TFs {
 }
 
 fn sb_with_gran(gran: u32) -> Arc<SuperBlock> {
-    let sb = SuperBlock::for_backend(Arc::new(TFs), None, 0x55, String::from("tfs"));
+    let sb = common::realize_sb(Arc::new(TFs), None, 0x55, String::from("tfs"));
     sb.set_time_gran(gran);
     sb
 }

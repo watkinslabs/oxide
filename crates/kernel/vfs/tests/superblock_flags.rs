@@ -1,13 +1,15 @@
 //! superblock-D1/D16/D19 (`s_flags` + `SB_*` predicate surface): a `SuperBlock`
 //! carries the Linux `super_block.s_flags` mount/option bitmask with the full
 //! `SB_*` constant set and the `sb_rdonly`-style named predicates that the inode
-//! `IS_NOSUID`/`IS_NODEV`/`IS_SYNC`/… helpers consult. A fresh `for_backend` SB
+//! `IS_NOSUID`/`IS_NODEV`/`IS_SYNC`/… helpers consult. A fresh fill-super SB
 //! starts `SB_ACTIVE | SB_BORN`; `set_s_flags` flips arbitrary bits without
 //! rebuilding the SB; `generic_shutdown_super` clears `SB_ACTIVE` at teardown.
 //! Before the predicate surface landed, only `is_readonly`/`set_readonly`
 //! existed — a caller could not ask whether a mount was nosuid/nodev/sync/etc.
 
 use std::sync::Arc;
+
+mod common;
 
 use vfs::fs::FileSystem;
 use vfs::superblock::{
@@ -23,7 +25,7 @@ impl FileSystem for FFs {
 }
 
 fn sb() -> Arc<SuperBlock> {
-    SuperBlock::for_backend(Arc::new(FFs), None, next_anon_dev(), String::from("ffs"))
+    common::realize_sb(Arc::new(FFs), None, next_anon_dev(), String::from("ffs"))
 }
 
 #[test]

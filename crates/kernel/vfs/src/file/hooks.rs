@@ -51,10 +51,10 @@ struct InodeHooks {
     /// IN_CLOSE_* + pipe close accounting, fired in `File::Drop`. Multiple
     /// subsystems register; every occupied slot fires. `bool` = was-writable.
     close: [Option<fn(&InodeRef, bool)>; CLOSE_HOOK_SLOTS],
-    /// IN_CREATE — dirent created in a watched parent. Args: (parent, leaf).
-    dirent_create: Option<fn(&str, &str)>,
-    /// IN_DELETE — dirent removed from a watched parent. Args: (parent, leaf).
-    dirent_delete: Option<fn(&str, &str)>,
+    /// IN_CREATE — dirent created in a watched parent inode. Args: (parent, leaf).
+    dirent_create: Option<fn(&InodeRef, &str)>,
+    /// IN_DELETE — dirent removed from a watched parent inode. Args: (parent, leaf).
+    dirent_delete: Option<fn(&InodeRef, &str)>,
 }
 
 impl InodeHooks {
@@ -127,21 +127,21 @@ pub fn fire_clone_hook(file: &File) {
     }
 }
 
-/// Install the dirent-create hook (fires IN_CREATE; args (parent, leaf)).
-/// Fired by devfs / tmpfs path-registry mutations so inotify watches on the
-/// parent directory can dispatch IN_CREATE. # C: O(1)
-pub fn set_dirent_create_hook(f: fn(&str, &str)) { HOOKS.lock().dirent_create = Some(f); }
-/// Install the dirent-delete hook (fires IN_DELETE; args (parent, leaf)). # C: O(1)
-pub fn set_dirent_delete_hook(f: fn(&str, &str)) { HOOKS.lock().dirent_delete = Some(f); }
+/// Install the dirent-create hook (fires IN_CREATE; args (parent inode, leaf)).
+/// Fired after namespace mutations so inotify watches on the resolved parent
+/// directory can dispatch IN_CREATE without re-resolving a rendered path. # C: O(1)
+pub fn set_dirent_create_hook(f: fn(&InodeRef, &str)) { HOOKS.lock().dirent_create = Some(f); }
+/// Install the dirent-delete hook (fires IN_DELETE; args (parent inode, leaf)). # C: O(1)
+pub fn set_dirent_delete_hook(f: fn(&InodeRef, &str)) { HOOKS.lock().dirent_delete = Some(f); }
 
 /// Fire the dirent-create hook (no-op when not installed). # C: O(1)
-pub fn fire_dirent_create(parent: &str, leaf: &str) {
+pub fn fire_dirent_create(parent: &InodeRef, leaf: &str) {
     let h = HOOKS.lock().dirent_create;
     if let Some(f) = h { f(parent, leaf); }
 }
 
 /// Fire the dirent-delete hook (no-op when not installed). # C: O(1)
-pub fn fire_dirent_delete(parent: &str, leaf: &str) {
+pub fn fire_dirent_delete(parent: &InodeRef, leaf: &str) {
     let h = HOOKS.lock().dirent_delete;
     if let Some(f) = h { f(parent, leaf); }
 }

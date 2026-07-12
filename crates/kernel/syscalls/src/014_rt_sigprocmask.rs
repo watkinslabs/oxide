@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_rt_sigprocmask(how, set, oldset, sz)` — slot 14.
 /// # C: O(1)
@@ -20,26 +21,31 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
         Some(c) => c, None => return 0,
     };
     let prior = cur.sigmask.load(Ordering::Acquire);
-    if oldset != 0 && oldset < hal::USER_VA_END {
-        // SAFETY: oldset validated < USER_VA_END; CPL=0 writes through caller's AS.
-        unsafe { core::ptr::write_volatile(oldset as *mut u64, prior); }
+    if set != 0 {
+        if let Err(rv) = validate_user_buf(set, 8, 1) { return rv; }
+        // SAFETY: set validated as a readable 8-byte user sigset_t byte range; Linux copyin accepts unaligned storage.
+        let new_set = unsafe { core::ptr::read_unaligned(set as *const u64) };
+        let mut new_mask = match how {
+            SIG_BLOCK   => prior | new_set,
+            SIG_UNBLOCK => prior & !new_set,
+            SIG_SETMASK => new_set,
+            _           => return -(Errno::Einval.as_i32() as i64),
+        };
+        // signal(7): SIGKILL and SIGSTOP can never be blocked — strip them from
+        // any new mask. Without this a task could mask SIGKILL and then wedge in
+        // a blocking syscall (see the wait4 EINTR fix), unkillable.
+        use sched::live::sigpend::Signum;
+        new_mask &= !(Signum::Sigkill.bit() | Signum::Sigstop.bit());
+        cur.sigmask.store(new_mask, Ordering::Release);
     }
-    if set == 0 { return 0; }
-    if set >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // SAFETY: set validated < USER_VA_END; CPL=0 reads through caller's AS.
-    let new_set = unsafe { core::ptr::read_volatile(set as *const u64) };
-    let new_mask = match how {
-        SIG_BLOCK   => prior | new_set,
-        SIG_UNBLOCK => prior & !new_set,
-        SIG_SETMASK => new_set,
-        _           => return -(Errno::Einval.as_i32() as i64),
-    };
-    // signal(7): SIGKILL and SIGSTOP can never be blocked — strip them from
-    // any new mask. Without this a task could mask SIGKILL and then wedge in
-    // a blocking syscall (see the wait4 EINTR fix), unkillable.
-    use sched::live::sigpend::Signum;
-    let new_mask = new_mask & !(Signum::Sigkill.bit() | Signum::Sigstop.bit());
-    cur.sigmask.store(new_mask, Ordering::Release);
-    debug_ssh! { crate::signal_trace::sigprocmask(cur.tid, how, prior, new_mask); }
+    if oldset != 0 {
+        if let Err(rv) = validate_user_buf_writable(oldset, 8, 1) { return rv; }
+        // SAFETY: oldset validated as writable 8-byte user sigset_t byte range; Linux copyout accepts unaligned storage.
+        unsafe { core::ptr::write_unaligned(oldset as *mut u64, prior); }
+    }
+    debug_ssh! {
+        let applied = cur.sigmask.load(Ordering::Acquire);
+        crate::signal_trace::sigprocmask(cur.tid, how, prior, applied);
+    }
     0
 }

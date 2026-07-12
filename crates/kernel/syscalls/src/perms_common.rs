@@ -31,17 +31,12 @@ pub(crate) const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 /// the *xattrat family). `follow` controls symlink-following (AT_SYMLINK_NOFOLLOW).
 /// # C: O(N_path)
 pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
-    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
-    let raw = crate::namei_common::read_user_path(path_ptr)?;
-    // BUG D: resolve against the dirfd's directory for a real fd-relative
-    // dirfd (fchmodat/fchownat); resolve_at(AT_FDCWD, raw) == resolve_cwd(raw)
-    // so legacy chmod/chown are unchanged.
-    let resolved = crate::pathresolve::resolve_at_result(dirfd, &raw)?;
-    let s = resolved.as_str();
-    // THE resolver (path-walk): crosses mounts, follows symlinks unless
-    // `!follow` (chmod/chown follow; AT_SYMLINK_NOFOLLOW / lchown don't).
-    crate::pathresolve::resolve(s, !follow)
-        .ok_or(-(Errno::Enoent.as_i32() as i64))
+    let lf = vfs::LookupFlags {
+        no_follow_final: !follow,
+        follow,
+        ..Default::default()
+    };
+    crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf).map(|p| p.inode)
 }
 
 /// BUG E: resolve the `*at` target. `AT_EMPTY_PATH` (0x1000) with an empty
@@ -50,6 +45,15 @@ pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Res
 /// ownership/mode; without it the empty path resolved to EINVAL. Mirrors
 /// `newfstatat`'s AT_EMPTY_PATH handling.
 pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
+pub(crate) const AT_CHMOD_CHOWN_VALID: u32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
+
+/// Validate chmod/chown `*at` flags before lookup or mutation. # C: O(1)
+pub(crate) fn validate_chmod_chown_flags(flags: u32) -> Result<(), i64> {
+    if flags & !AT_CHMOD_CHOWN_VALID != 0 {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    Ok(())
+}
 
 // ===========================================================================
 // D4: chmod/chown ownership + EROFS enforcement. The DAC *decisions* live in
@@ -63,11 +67,12 @@ pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
 /// family can enforce EROFS on the owning mount. Preserves the path-walk errno
 /// (EACCES from `may_lookup`, ENOTDIR, ELOOP …). # C: O(N_path)
 pub(crate) fn resolve_path_mnt(dirfd: i32, path_ptr: u64, follow: bool) -> Result<(InodeRef, u64), i64> {
-    // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
-    let raw = crate::namei_common::read_user_path(path_ptr)?;
-    let resolved = crate::pathresolve::resolve_at_result(dirfd, &raw)?;
-    let vp = crate::pathresolve::resolve_path_result(resolved.as_str(), !follow)
-        .map_err(|e| -(e as i64))?;
+    let lf = vfs::LookupFlags {
+        no_follow_final: !follow,
+        follow,
+        ..Default::default()
+    };
+    let vp = crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf)?;
     Ok((vp.inode, vp.mnt_id))
 }
 
@@ -77,6 +82,12 @@ pub(crate) fn resolve_path_mnt(dirfd: i32, path_ptr: u64, follow: bool) -> Resul
 /// → EINVAL (Linux `setxattrat`/`getxattrat` reject `~(AT_SYMLINK_NOFOLLOW |
 /// AT_EMPTY_PATH)`). # C: O(N_path)
 pub(crate) fn resolve_xattr_at(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<InodeRef, i64> {
+    resolve_xattr_at_mnt(dirfd, path_ptr, at_flags).map(|p| p.0)
+}
+
+/// Resolve a `*xattrat`/legacy xattr target to `(inode, mnt_id)`, preserving
+/// mount identity for write-side EROFS checks. # C: O(N_path)
+pub(crate) fn resolve_xattr_at_mnt(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<(InodeRef, u64), i64> {
     if at_flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
@@ -89,7 +100,7 @@ pub(crate) fn resolve_xattr_at(dirfd: i32, path_ptr: u64, at_flags: u32) -> Resu
         follow,
         ..Default::default()
     };
-    crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf).map(|p| p.inode)
+    crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf).map(|p| (p.inode, p.mnt_id))
 }
 
 /// Resolve an open fd to its `Arc<File>` (carries `mnt_id` for EROFS). # C: O(1)
@@ -104,6 +115,7 @@ pub(crate) fn resolve_fd_file(fd: i32) -> Result<Arc<File>, i64> {
 pub(crate) fn resolve_at_target_mnt(dirfd: i32, path_ptr: u64, flags: u32, follow: bool)
     -> Result<(InodeRef, u64), i64>
 {
+    validate_chmod_chown_flags(flags)?;
     // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty path
     // operates on the dirfd, ENOENT without it); FOLLOW unless AT_SYMLINK_NOFOLLOW.
     let lf = vfs::LookupFlags {

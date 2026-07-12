@@ -73,7 +73,6 @@ impl FileSystem for NamedFs {
 
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
-static HOST_ROOT_INODE: OnceLock<InodeRef> = OnceLock::new();
 
 // Inode numbers of the two things the executor must reach post-relocation.
 const INO_UDEVD: u64 = 0xD_E5D;
@@ -95,10 +94,11 @@ fn setup_host(host: u64) -> Arc<Dentry> {
         ("usr", dir(0x10, &[])), ("lib64", dir(0x11, &[])),
         ("proc", dir(0x12, &[])), ("run", dir(0x13, &[])),
     ]);
-    let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
-    let _ = HOST_ROOT_INODE.set(root_inode.clone());
+    let global_root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     vfs::set_root_dentry_provider(root_provider);
     vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
+    let root_id = vfs::mount::root_mount_id(host).expect("root mount id");
+    let root = vfs::mount::root_dentry_for_mount_id(root_id).unwrap_or(global_root);
 
     let mount = |path: &str, fs: NamedFs| {
         let (_, d) = vfs::path_lookup(root.clone(), root.clone(), path, LookupFlags::default())
@@ -122,12 +122,14 @@ fn setup_host(host: u64) -> Arc<Dentry> {
 /// `mount("/", stage, MS_BIND|MS_REC)` = top bind + submount mirror.
 fn recursive_bind_root_onto(root: &Arc<Dentry>, stage_path: &str) -> Arc<Dentry> {
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), stage_path, LookupFlags::default()).expect("stage dir");
-    let host_root_inode = HOST_ROOT_INODE.get().expect("host root inode").clone();
-    // Top bind: host "/" fs onto the staging dentry.
-    vfs::mount::register_bind(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: host_root_inode.clone() }), host_root_inode)
+    let source = vfs::path_lookup_path(root.clone(), root.clone(), "/", LookupFlags::default())
+        .expect("source root");
+    let target_parent = vfs::mount::containing_mount_id(cur_ns(), &stage_d);
+    // Top bind: Linux bind clone from the resolved source `struct path`.
+    vfs::mount::register_bind_clone_under(target_parent, stage_d.clone(), source.mnt_id, source.dentry.clone())
         .expect("top bind");
     // Recursively clone every submount (/usr,/lib64,/proc,/run) under staging.
-    vfs::mount::bind_submounts_rec(root, &stage_d);
+    vfs::mount::bind_submounts_rec_at(Some(source.mnt_id), &source.dentry, &stage_d, Some(target_parent));
     stage_d
 }
 
@@ -169,7 +171,8 @@ fn executor_msmove_root_then_resolve_binary_and_lib() {
 
     // chroot(".") = resolve with `root` as the resolution root. The binary/lib
     // resolve at their canonical absolute paths through the moved root — no retry.
-    assert_reaches(&root, "");
+    let new_root = vfs::mount::root_dentry_for_mount_id(stage_id).expect("moved root dentry");
+    assert_reaches(&new_root, "");
 }
 
 // 4a'. pivot_root with a distinct put_old (the non-stacking pivot, exercising
@@ -221,11 +224,13 @@ fn executor_chroot_then_resolve_binary_and_lib() {
 
     // chroot(stage): subsequent resolution uses stage as the resolution root.
     // The cross-mount binary/lib must resolve relative to the chrooted root.
-    let (i, _) = vfs::path_lookup(stage_d.clone(), stage_d.clone(),
+    let stage_id = vfs::mount::mount_at_path_exact(&stage_d).expect("staging mount").mnt_id;
+    let stage_root = vfs::mount::root_dentry_for_mount_id(stage_id).expect("stage root");
+    let (i, _) = vfs::path_lookup(stage_root.clone(), stage_root.clone(),
         "/usr/lib/systemd/systemd-udevd", LookupFlags::default())
         .unwrap_or_else(|e| panic!("chroot udevd resolve: {e:?} (this is the 203/EXEC)"));
     assert_eq!(i.ino(), INO_UDEVD, "udevd inode (chroot)");
-    let (i, _) = vfs::path_lookup(stage_d.clone(), stage_d.clone(),
+    let (i, _) = vfs::path_lookup(stage_root.clone(), stage_root.clone(),
         "/lib64/ld-linux-x86-64.so.2", LookupFlags::default())
         .unwrap_or_else(|e| panic!("chroot ld resolve: {e:?} (this is the 203/EXEC)"));
     assert_eq!(i.ino(), INO_LD, "ld inode (chroot)");

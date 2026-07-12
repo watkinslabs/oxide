@@ -7,25 +7,27 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::{next_anon_dev, MAX_LFS_FILESIZE};
 use vfs::SuperBlock;
 
 /// Backend reporting a SMALL maxbytes so the cap is reachable in a hosted test
-/// (the real `s_maxbytes` comes from `for_backend`'s `MAX_LFS_FILESIZE`).
+/// (the real `s_maxbytes` comes from the fill-super default `MAX_LFS_FILESIZE`).
 struct CapFs;
 impl FileSystem for CapFs {
     fn name(&self) -> &str { "capfs" }
 }
 
 fn sb() -> Arc<SuperBlock> {
-    SuperBlock::for_backend(Arc::new(CapFs), None, next_anon_dev(), String::from("capfs"))
+    common::realize_sb(Arc::new(CapFs), None, next_anon_dev(), String::from("capfs"))
 }
 
 #[test]
 fn default_maxbytes_is_max_lfs() {
     let sb = sb();
-    assert_eq!(sb.s_maxbytes(), MAX_LFS_FILESIZE, "for_backend defaults to MAX_LFS_FILESIZE");
+    assert_eq!(sb.s_maxbytes(), MAX_LFS_FILESIZE, "from_ops defaults to MAX_LFS_FILESIZE");
 }
 
 #[test]

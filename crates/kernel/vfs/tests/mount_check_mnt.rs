@@ -1,9 +1,9 @@
-//! mount/D32 (check_mnt foreign-ns guard) + D22 (resolve_mount no cross-ns
+//! mount/D32 (check_mnt foreign-ns guard) + D22 (walk_to_mount no cross-ns
 //! leak). `check_mnt(m)` (Linux `fs/namespace.c`) is true iff `m` is in the
 //! caller's mount namespace; `mount_by_id` is deliberately ns-AGNOSTIC (the
 //! global arena), so any by-id / resolved handle must be gated on `check_mnt`
-//! before it crosses a namespace boundary. `resolve_mount` now gates on it:
-//! a path that resolves to a mount in another ns falls back to the caller's
+//! before it crosses a namespace boundary. `walk_to_mount` now gates on it:
+//! a path that reaches a mount in another ns falls back to the caller's
 //! own root mount, never leaking the foreign mount. Process-global table →
 //! SERIAL-guarded; a deterministic provider switches the caller's ns.
 
@@ -62,11 +62,10 @@ fn check_mnt_tracks_caller_namespace() {
     assert!(vfs::mount::check_mnt(&m), "guard re-passes in the owning ns");
 }
 
-/// `resolve_mount` never returns a mount from another namespace: a path that
-/// would resolve into ns A's tree, viewed from ns B, yields ns B's own root
-/// mount (or None), not the foreign mount (D22 cross-ns leak closed).
+/// The dentry-identity mount walk never returns a mount from another namespace:
+/// a path viewed from ns B must not yield ns A's submount.
 #[test]
-fn resolve_mount_does_not_leak_foreign_ns_mount() {
+fn walk_to_mount_does_not_leak_foreign_ns_mount() {
     let _g = enter();
     // ns A: a root mount + a sub mount.
     set_ns(0x3210);
@@ -79,11 +78,10 @@ fn resolve_mount_does_not_leak_foreign_ns_mount() {
     common::register("/", Arc::new(NFs { ino: 0xB0 })).expect("ns B root");
     let b_root_id = vfs::mount::root_mount_id(0x3211).expect("ns B root id");
 
-    // From ns B, resolving the foreign path must NOT yield ns A's sub mount.
-    if let Some((m, _)) = vfs::mount::resolve_mount("/foreign") {
-        assert_ne!(m.mnt_id, a_sub_id, "must not leak the foreign-ns mount");
-        assert_eq!(m.mnt_id, b_root_id,
-            "cross-ns resolution falls back to the caller's own root mount");
-        assert!(vfs::mount::check_mnt(&m), "the returned mount is in the caller's ns");
-    }
+    // From ns B, walking the same text must NOT yield ns A's sub mount.
+    let id = vfs::namei::walk_to_mount("/foreign").expect("owning mount in ns B");
+    let m = vfs::mount::mount_by_id(id).expect("mount by id");
+    assert_ne!(m.mnt_id, a_sub_id, "must not leak the foreign-ns mount");
+    assert_eq!(m.mnt_id, b_root_id, "missing path is owned by the caller's own root mount");
+    assert!(vfs::mount::check_mnt(&m), "the returned mount is in the caller's ns");
 }

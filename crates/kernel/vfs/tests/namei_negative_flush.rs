@@ -43,7 +43,7 @@ static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 struct NamedType(&'static str);
 impl FileSystemType for NamedType {
     fn name(&self) -> &str { self.0 }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 
 struct NullOps;

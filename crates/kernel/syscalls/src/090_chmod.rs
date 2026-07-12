@@ -10,21 +10,20 @@ use crate::perms_common::{resolve_path_mnt, do_chmod, AT_FDCWD};
 /// `sys_chmod(path, mode)` — slot 90.
 /// # C: O(N_path)
 pub fn sys_chmod(args: &SyscallArgs) -> i64 {
-    // F132: AF_UNIX socket paths don't have backing filesystem
-    // entries in v1 — the UnixRegistry tracks them by string key.
-    // Linux's bind(AF_UNIX) materialises a socket-type inode at the
-    // path; chmod on it succeeds. Until we materialise socket-type
-    // tmpfs inodes, accept chmod on any known UnixRegistry path
-    // so dhcpcd's control-socket setup (bind → chmod → listen)
-    // doesn't bail at the chmod step.
-    // SAFETY: read_user_cstr does its own ptr-range + bounded-read validation.
-    if let Some(bytes) = unsafe { devfs::read_user_cstr(args.a0, 108) } {
-        if let Ok(s) = core::str::from_utf8(bytes) {
-            if net::sock::UNIX_REGISTRY.is_bound(s) { return 0; }
+    let (inode, mnt_id) = match resolve_path_mnt(AT_FDCWD, args.a0, true) { Ok(p) => p, Err(rv) => {
+        #[cfg(feature = "debug-mount")]
+        if let Ok(path) = crate::namei_common::read_user_path(args.a0) {
+            if path.starts_with("/run") { crate::mount_common::mnt_log("chmod_resolve", &path, rv); }
+        }
+        return rv;
+    } };
+    let rc = do_chmod(&inode, mnt_id, args.a1 as u16);
+    #[cfg(feature = "debug-mount")]
+    if rc < 0 {
+        if let Ok(path) = crate::namei_common::read_user_path(args.a0) {
+            if path.starts_with("/run") { crate::mount_common::mnt_log("chmod", &path, rc); }
         }
     }
-    let (inode, mnt_id) = match resolve_path_mnt(AT_FDCWD, args.a0, true) { Ok(p) => p, Err(rv) => return rv };
-    let rc = do_chmod(&inode, mnt_id, args.a1 as u16);
     // FAN_ATTRIB / IN_ATTRIB on a successful metadata change (Linux fsnotify_change).
     if rc == 0 { ::fs::inotify::fire_attrib(&inode); }
     rc

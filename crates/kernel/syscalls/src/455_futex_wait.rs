@@ -12,16 +12,14 @@ const FUTEX_WAIT:       u32 = 0;
 
 fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
     if timeout == 0 { return Ok(0); }
-    if timeout.checked_add(16).map_or(true, |end| end > hal::USER_VA_END) {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
+    crate::userbuf::validate_user_buf(timeout, 16, 1)?;
     if !crate::time_common::clock_id_known(clockid) {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
-    // SAFETY: timeout+16 range checked above; timespec is two i64 fields.
-    let secs = unsafe { core::ptr::read_volatile(timeout as *const i64) };
-    // SAFETY: timeout+8 is inside the validated timespec.
-    let nsec = unsafe { core::ptr::read_volatile((timeout + 8) as *const i64) };
+    // SAFETY: timeout was validated as a readable 16-byte timespec; scalar loads permit unaligned user storage.
+    let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
+    // SAFETY: timeout+8 is inside the validated timespec and unaligned loads match user ABI copyin.
+    let nsec = unsafe { core::ptr::read_unaligned((timeout + 8) as *const i64) };
     if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
         return Err(-(Errno::Einval.as_i32() as i64));
     }

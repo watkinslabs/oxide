@@ -8,9 +8,13 @@
 
 extern crate alloc;
 
+use alloc::string::String;
+use alloc::sync::Arc;
 use std::sync::Once;
 
 use boot_info::{BootInfo, BootMemKind, BootMemRegion};
+use vfs::fs::FileSystem;
+use vfs::{InodeRef, SimpleSuperOps, SuperBlock, SuperOps};
 
 /// 64 MiB hosted pool — ample for any fixture file's pages plus the buddy
 /// bitmaps carved from the front.
@@ -44,4 +48,21 @@ pub fn boot_hosted_pmm() {
         unsafe { pmm::setup::init_from_boot_info(&info).expect("pmm init"); }
         pmm::setup::init_page_meta((POOL as u64) / 4096);
     });
+}
+
+/// Build a hosted ext4 test superblock without using removed backend authority.
+pub fn realize_sb(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, dev: u64, s_id: String) -> Arc<SuperBlock> {
+    let root = root.or_else(|| fs.root());
+    let s_op: Arc<dyn SuperOps> = fs.super_ops().unwrap_or_else(|| {
+        Arc::new(SimpleSuperOps {
+            magic: fs.magic(),
+            block_size: fs.block_size(),
+            options: fs.show_options(),
+        })
+    });
+    let ty: Arc<dyn vfs::FileSystemType> =
+        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
+    let sb = SuperBlock::from_ops(ty, s_op, root, fs.magic(), dev, fs.block_size(), s_id, Arc::new(()));
+    fs.set_sb(Arc::downgrade(&sb));
+    sb
 }

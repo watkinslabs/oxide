@@ -5,6 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::misc::misc_common::errno;
+use crate::userbuf::validate_user_buf_writable;
 
 /// move_pages(pid, count, pages, nodes, status, flags).
 /// # C: O(N=count, capped 4096)
@@ -16,12 +17,13 @@ pub fn sys_move_pages(args: &SyscallArgs) -> i64 {
     let count = args.a1 as usize;
     let status = args.a4;
     if status != 0 && count > 0 {
-        if status >= hal::USER_VA_END { return errno(Errno::Efault); }
+        let n = count.min(4096);
+        if let Err(rv) = validate_user_buf_writable(status, (n as u64).saturating_mul(4), 1) { return rv; }
         // Each page is "on node 0" in our single-node world.
-        for i in 0..count.min(4096) {
-            // SAFETY: status validated < USER_VA_END; bounded count loop; aligned i32 store into caller's AS.
+        for i in 0..n {
+            // SAFETY: status validated writable for n i32 status slots.
             unsafe {
-                core::ptr::write_volatile((status + (i*4) as u64) as *mut i32, 0);
+                core::ptr::write_unaligned((status + (i*4) as u64) as *mut i32, 0);
             }
         }
     }

@@ -64,6 +64,7 @@ pub(super) fn clone_mnt(src: &Arc<Mount>, ty: CloneType, pg: u64, master: &Arc<M
     let grabbed = sb.grab_active();
     hal::kassert!(grabbed, "clone_mnt: live source SB must grab an active ref");
     let clone = new_mount(sb, src.mount_point_str(), None, 0, new_id, ns);
+    if let Some(root) = src.mnt_root() { *clone.mnt_root.lock() = Some(root); }
     clone.flags.store(src.flags.load(Ordering::Acquire), Ordering::Release);
     // Keep only MNT_LOCKED on the copy (Linux `clone_mnt`); drop transient marks.
     clone.mnt_internal_flags.store(
@@ -116,17 +117,81 @@ pub(super) fn copy_tree(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, 
     out
 }
 
+/// Recursive-bind clone list from explicit mount-parent edges. # C: O(N×depth)
+pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ns: u64, exclude_id: Option<u64>) -> Vec<CloneNode> {
+    let mut out: Vec<CloneNode> = Vec::new();
+    let Some(base_rel) = src.mnt_root().and_then(|root| plain_rel_under(base_mp, &root)) else {
+        return out;
+    };
+    for m in mounts_in_ns(ns).into_iter() {
+        if m.mnt_id == src.mnt_id || is_unbindable(&m) { continue; }
+        if !mount_under(&m, src.mnt_id) { continue; }
+        if exclude_id == Some(m.mnt_id) { continue; }
+        if exclude_id.map(|ex| mount_under(&m, ex)).unwrap_or(false) { continue; }
+        let Some(mp) = m.mountpoint() else { continue; };
+        let Some(full_rel) = bind_rel_under_mount(&m, src.mnt_id) else { continue; };
+        let rel = if base_rel.is_empty() {
+            full_rel
+        } else {
+            let prefix = alloc::format!("{}/", base_rel);
+            match full_rel.strip_prefix(prefix.as_str()) {
+                Some(s) if !s.is_empty() => String::from(s),
+                _ => continue,
+            }
+        };
+        if rel.is_empty() { continue; }
+        out.push(CloneNode { m: clone_mnt(&m, CloneType::Private, 0, src, ns), rel, mp: Some(mp) });
+    }
+    out.sort_by_key(|n| n.rel.len());
+    out
+}
+
+fn mount_under(m: &Arc<Mount>, top: u64) -> bool {
+    let mut id = m.parent_id.load(Ordering::Acquire);
+    for _ in 0..64 {
+        if id == top { return true; }
+        let Some(p) = mount_by_id(id) else { break; };
+        let next = p.parent_id.load(Ordering::Acquire);
+        if next == id { break; }
+        id = next;
+    }
+    false
+}
+
+fn bind_rel_under_mount(m: &Arc<Mount>, top: u64) -> Option<String> {
+    let mut comps: Vec<String> = Vec::new();
+    let mut cur = m.clone();
+    for _ in 0..64 {
+        let parent = cur.parent_id.load(Ordering::Acquire);
+        if parent == cur.mnt_id { return None; }
+        let mp = cur.mountpoint()?;
+        let parent_root = mount_by_id(parent)?.mnt_root()?;
+        let seg = plain_rel_under(&mp, &parent_root)?;
+        if seg.is_empty() { return None; }
+        comps.push(seg);
+        if parent == top { break; }
+        cur = mount_by_id(parent)?;
+    }
+    if cur.parent_id.load(Ordering::Acquire) != top { return None; }
+    comps.reverse();
+    Some(comps.join("/"))
+}
+
 fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u64,
                   master: &Arc<Mount>, ns: u64, include_root: bool,
                   exclude: Option<&Arc<Dentry>>, out: &mut Vec<CloneNode>) {
     if include_root {
         // The copy ROOT is positioned at the destination base (a DISTINCT fs),
         // never via the source dentry → `mp: None` (commit_tree uses `descend`).
-        let rel = src.mountpoint().and_then(|d| rel_under(&d, Some(base_mp))).unwrap_or_default();
+        let Some(rel) = src.mountpoint()
+            .and_then(|d| rel_under(&d, Some(base_mp)))
+            .or_else(|| src.mnt_root().and_then(|r| if Arc::ptr_eq(&r, base_mp) { Some(String::new()) } else { None }))
+            else { return; };
         out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel, mp: None });
     }
-    // Snapshot children OUT of the lock before recursing (recursion re-locks).
-    let children: Vec<Arc<Mount>> = src.mnt_mounts.lock().iter().cloned().collect();
+    let children: Vec<Arc<Mount>> = mounts_in_ns(src.ns).into_iter()
+        .filter(|m| m.parent_id.load(Ordering::Acquire) == src.mnt_id && m.mnt_id != src.mnt_id)
+        .collect();
     for child in children.iter() {
         if is_unbindable(child) { continue; }                       // D15
         let Some(child_mp) = child.mountpoint() else { continue; };
@@ -331,6 +396,13 @@ pub fn release_clone_tree(nodes: &[CloneNode]) {
 /// key `(clone_root_id, /proc)` that coexists with `(ns_root_id, /proc)`. Returns
 /// the count committed. # C: O(N × depth)
 pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> usize {
+    commit_tree_hashonly_at(nodes, dest_base, 0)
+}
+
+/// As [`commit_tree_hashonly`] but caller supplies the mount that owns
+/// `dest_base`. Required for bind-shared dentries where parent-by-dentry is
+/// ambiguous. # C: O(N × depth)
+pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, dest_base_mnt: u64) -> usize {
     let ns = current_ns();
     let mut committed = 0usize;
     let mut dead: Vec<String> = Vec::new();
@@ -343,7 +415,8 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
             if rel.starts_with(d.as_str()) { release_clone(&m); continue 'node; }
         }
         let (parent_id, mp_d) = if rel.is_empty() {
-            (parent_by_dentry(ns, dest_base), dest_base.clone())
+            let base_mnt = if dest_base_mnt != 0 { dest_base_mnt } else { parent_by_dentry(ns, dest_base) };
+            (base_mnt, dest_base.clone())
         } else {
             // Deepest committed ancestor (longest `rel` that is a path-prefix).
             let chosen = placed.iter()
@@ -406,7 +479,11 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
 pub fn attach_recursive_mnt(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
                             root: Option<InodeRef>) -> KResult<usize> {
     let at = mp.clone();
-    attach(mp, fs, root, None)?;
+    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    match root {
+        Some(r) => register_bind_typed(ty, mp, fs, r)?,
+        None => register_typed(ty, mp, fs)?,
+    }
     Ok(match at { Some(d) => propagation::propagate_mount(&d), None => 0 })
 }
 

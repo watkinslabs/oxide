@@ -102,12 +102,14 @@ fn setup_host(host: u64) -> Arc<Dentry> {
 fn run_root() -> InodeRef { facdir(0x400) }
 
 fn recursive_bind_root_onto(root: &Arc<Dentry>, stage_path: &str) -> Arc<Dentry> {
-    let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), stage_path, LookupFlags::default()).expect("stage dir");
-    let host_root_inode = HOST_ROOT_INODE.get().expect("host root inode").clone();
-    vfs::mount::register_bind(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: host_root_inode.clone() }), host_root_inode)
+    let ns = cur_ns();
+    let source_mnt = vfs::mount::root_mount_id(ns).expect("source root mount");
+    let stage = vfs::path_lookup_at_root_cred(root.clone(), source_mnt, root.clone(), source_mnt,
+        stage_path, LookupFlags::default(), vfs::Cred::root()).expect("stage dir");
+    vfs::mount::register_bind_clone_under(stage.mnt_id, stage.dentry.clone(), source_mnt, root.clone())
         .expect("top bind");
-    vfs::mount::bind_submounts_rec(root, &stage_d);
-    stage_d
+    vfs::mount::bind_submounts_rec_at(Some(source_mnt), root, &stage.dentry, Some(stage.mnt_id));
+    stage.dentry
 }
 
 /// After systemd relocates the sandbox root (MS_MOVE stage -> /), logind resolves
@@ -126,7 +128,14 @@ fn logind_resolves_sysdev_after_msmove_relocation() {
     let stage = "/run/mount-rootfs";
     let stage_d = recursive_bind_root_onto(&root, stage);
     let stage_id = vfs::mount::mount_at_path_exact(&stage_d).expect("staging mount").mnt_id;
+    let sys_mp = vfs::d_lookup(&root, "sys").expect("/sys mountpoint dentry");
+    assert!(vfs::mount::__lookup_mnt(stage_id, &sys_mp).is_some(),
+        "recursive bind must clone /sys under the staged root before MS_MOVE");
     vfs::mount::move_mount_by_id(stage_id, &root).expect("MS_MOVE(stage, /)");
+    assert_eq!(vfs::mount::root_mount_id(SANDBOX), Some(stage_id),
+        "MS_MOVE(stage, /) must publish the staged root as namespace root");
+    assert!(vfs::mount::__lookup_mnt(stage_id, &sys_mp).is_some(),
+        "MS_MOVE(stage, /) must preserve /sys under the moved root");
 
     // logind's chase: openat(/sys, "dev") ... must land in sysfs, not the ext4
     // /sys underlay dir (which is empty → ENOENT → the greeter blocker).

@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, string::String, sync::Arc, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
@@ -107,7 +107,7 @@ pub struct UnixPair {
     /// PEER name of end B (the connecting client). `None` for a socketpair /
     /// an unbound listener (abstract-autobind not yet retained). Used by
     /// `getsockname`/`getpeername` to report the real path.
-    pub bind_path: Spinlock<Option<String>, UnixLockClass>,
+    pub bind_path: Spinlock<Option<Vec<u8>>, UnixLockClass>,
 }
 
 /// One directional byte queue plus its in-band SCM_RIGHTS bursts.
@@ -168,7 +168,7 @@ impl UnixPair {
     /// Record the listener's bound `sun_path` this pair was connected to.
     /// Called by the registry `connect(path)` before the ends go live.
     /// # C: O(path len)
-    pub fn set_bind_path(&self, path: String) {
+    pub fn set_bind_path(&self, path: Vec<u8>) {
         *self.bind_path.lock() = Some(path);
     }
 
@@ -176,7 +176,7 @@ impl UnixPair {
     /// (`end == B`) sees the listener's path it connected to; the accepted
     /// server socket (`end == A`) sees the client's address — unnamed here.
     /// # C: O(path len)
-    pub fn peer_path(&self, end: UnixEnd) -> Option<String> {
+    pub fn peer_path(&self, end: UnixEnd) -> Option<Vec<u8>> {
         match end {
             UnixEnd::B => self.bind_path.lock().clone(),
             UnixEnd::A => None,
@@ -186,7 +186,7 @@ impl UnixPair {
     /// The local bound `sun_path` as seen from `end`. Linux: the accepted
     /// server socket (`end == A`) inherits the listener path; the client
     /// (`end == B`) is unnamed. # C: O(path len)
-    pub fn local_path(&self, end: UnixEnd) -> Option<String> {
+    pub fn local_path(&self, end: UnixEnd) -> Option<Vec<u8>> {
         match end {
             UnixEnd::A => self.bind_path.lock().clone(),
             UnixEnd::B => None,

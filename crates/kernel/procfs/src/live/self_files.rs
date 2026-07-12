@@ -464,7 +464,7 @@ impl FileOps for ProcSelfFdOps {
                 }
             }
             buf[..n].reverse();
-            let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
+            let s = crate::util::decimal_str(&buf, n);
             let ino = fd_lookup_for(self.tid, s).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(s, ino, FileType::Symlink, next) {
                 return Ok(());

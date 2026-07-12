@@ -4,6 +4,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::errno::Errno;
+use alloc::string::String;
 
 /// `SIOCGSKNS` (linux/sockios.h). Issued on ANY socket fd; Linux `sock_ioctl`
 /// routes it to `open_related_ns(sock_net(sk), get_net_ns)`, returning an nsfs
@@ -42,7 +43,7 @@ pub fn handle_siocgskns() -> i64 {
     let ns_inode = nscg::proc_ns::ns_inode_for(cur, nscg::proc_ns::NsKind::Net);
     // Detached dentry named "net" (Linux nsfs anon dentry): the fd is a pure
     // ns reference, never path-walked further.
-    let dentry = vfs::file::open_dentry("net", &ns_inode);
+    let dentry = vfs::Dentry::new(None, String::from("net"), ns_inode.clone());
     // O_RDONLY description; `mnt_id` 0 marks the anonymous (SB-less) nsfs inode.
     let file = vfs::File::new_at(
         ns_inode, dentry, vfs::OpenFlags::empty(), 0, crate::pathresolve::current_cred(),

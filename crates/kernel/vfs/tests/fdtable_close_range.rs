@@ -98,4 +98,48 @@ fn close_range_empty_table_noop() {
     assert_eq!(t.live_fds(), alloc_vec(&[]));
 }
 
+/// CLOSE_RANGE_UNSHARE without CLOEXEC mirrors Linux `dup_fd(...,
+/// punch_hole)`: the new private table omits the range, while the old
+/// shared table remains unchanged and no transient file refs are taken
+/// for the punched-out slots.
+#[test]
+fn fork_clone_close_range_punches_hole_without_touching_source() {
+    let t = FdTable::new();
+    for _ in 0..5 { t.alloc(mk_file()).unwrap(); }
+    let held = t.get(2).unwrap();
+    let count_before = held.f_count();
+
+    let private = t.fork_clone_close_range(1, 3, false);
+
+    assert_eq!(t.live_fds(), alloc_vec(&[0, 1, 2, 3, 4]));
+    assert_eq!(private.live_fds(), alloc_vec(&[0, 4]));
+    assert!(t.get(2).is_ok(), "source table still owns fd in punched range");
+    assert_eq!(private.get(2).err(), Some(VfsError::Ebadf));
+    assert_eq!(held.f_count(), count_before, "punched range was not cloned then closed");
+}
+
+/// CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC must copy the whole shared table
+/// then mark only the requested span close-on-exec in the private copy.
+#[test]
+fn fork_clone_close_range_cloexec_copies_all_then_marks_private_span() {
+    let t = FdTable::new();
+    for _ in 0..4 { t.alloc(mk_file()).unwrap(); }
+    t.set_cloexec(0, true).unwrap();
+    let in_span = t.get(2).unwrap();
+    let count_before = in_span.f_count();
+
+    let private = t.fork_clone_close_range(1, 2, true);
+
+    assert_eq!(t.live_fds(), alloc_vec(&[0, 1, 2, 3]));
+    assert_eq!(private.live_fds(), alloc_vec(&[0, 1, 2, 3]));
+    assert_eq!(t.cloexec(0), Ok(true));
+    assert_eq!(t.cloexec(1), Ok(false));
+    assert_eq!(t.cloexec(2), Ok(false));
+    assert_eq!(private.cloexec(0), Ok(true));
+    assert_eq!(private.cloexec(1), Ok(true));
+    assert_eq!(private.cloexec(2), Ok(true));
+    assert_eq!(private.cloexec(3), Ok(false));
+    assert_eq!(in_span.f_count(), count_before + 1, "cloexec unshare keeps an fd ref in the private copy");
+}
+
 fn alloc_vec(s: &[i32]) -> Vec<i32> { s.to_vec() }

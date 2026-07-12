@@ -13,7 +13,6 @@ mod special;
 
 pub use ids::{EXT4_INO_MARK, EXT4_INO_MASK, ext4_unwrap_ino, ext4_wrap_ino, is_ext4_ino};
 
-pub(crate) use data::ext4_file_ino;
 #[allow(unused_imports)]
 pub(crate) use data::ext4_state_of;
 pub(crate) use regular::build_file_inode;

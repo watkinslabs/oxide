@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::file::File;
 use crate::types::{KResult, OpenFlags, VfsError};
 
-use super::model::{FD_TABLE_MAX, FdTable, FdTableInner, WORD_BITS, sane_fdtable_words, word_idx};
+use super::model::{FD_TABLE_MAX, FdTable, FdTableInner, WORD_BITS, bit_mask, sane_fdtable_words, word_idx};
 
 impl FdTable {
     pub fn count(&self) -> usize {
@@ -82,20 +82,35 @@ impl FdTable {
         Ok(())
     }
     pub fn dup(&self, fd: i32) -> KResult<i32> {
+        self.dup_limit(fd, FD_TABLE_MAX)
+    }
+    pub fn dup_limit(&self, fd: i32, limit: usize) -> KResult<i32> {
         let f = self.get(fd)?;
         crate::file::fire_clone_hook(&f);
-        self.alloc(f)
+        self.alloc_limit(f, limit)
     }
     pub fn dup_min(&self, fd: i32, min: i32) -> KResult<i32> {
+        self.dup_min_limit(fd, min, FD_TABLE_MAX)
+    }
+    pub fn dup_min_limit(&self, fd: i32, min: i32, limit: usize) -> KResult<i32> {
         let f = self.get(fd)?;
-        if min < 0 || min as usize >= FD_TABLE_MAX { return Err(VfsError::Einval); }
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        if min < 0 || min as usize >= max { return Err(VfsError::Einval); }
         crate::file::fire_clone_hook(&f);
-        self.inner.lock().alloc_fd_min(f, min as usize)
+        self.inner.lock().alloc_fd_below(f, min as usize, max)
     }
     pub fn dup2(&self, old_fd: i32, new_fd: i32) -> KResult<i32> {
+        self.dup2_limit(old_fd, new_fd, FD_TABLE_MAX)
+    }
+    pub fn dup2_limit(&self, old_fd: i32, new_fd: i32, limit: usize) -> KResult<i32> {
         if old_fd < 0 || new_fd < 0 || (new_fd as usize) >= FD_TABLE_MAX { return Err(VfsError::Ebadf); }
+        if old_fd == new_fd {
+            self.get(old_fd)?;
+            return Ok(new_fd);
+        }
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        if (new_fd as usize) >= max { return Err(VfsError::Ebadf); }
         let f = self.get(old_fd)?;
-        if old_fd == new_fd { return Ok(new_fd); }
         crate::file::fire_clone_hook(&f);
         let nf = new_fd as usize;
         let replaced = {
@@ -111,9 +126,14 @@ impl FdTable {
         Ok(new_fd)
     }
     pub fn dup3(&self, old_fd: i32, new_fd: i32, flags: OpenFlags) -> KResult<i32> {
+        self.dup3_limit(old_fd, new_fd, flags, FD_TABLE_MAX)
+    }
+    pub fn dup3_limit(&self, old_fd: i32, new_fd: i32, flags: OpenFlags, limit: usize) -> KResult<i32> {
         if flags.bits() & !OpenFlags::O_CLOEXEC.bits() != 0 { return Err(VfsError::Einval); }
         if old_fd == new_fd { return Err(VfsError::Einval); }
         if new_fd < 0 || (new_fd as usize) >= FD_TABLE_MAX { return Err(VfsError::Ebadf); }
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        if (new_fd as usize) >= max { return Err(VfsError::Ebadf); }
         let f = self.get(old_fd)?;
         crate::file::fire_clone_hook(&f);
         let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
@@ -157,6 +177,27 @@ impl FdTable {
             open_fds: g.open_fds[..words].to_vec(),
             cloexec: g.cloexec[..words].to_vec(),
         }) }
+    }
+    pub fn fork_clone_close_range(&self, first: u32, last: u32, cloexec_only: bool) -> Self {
+        let g = self.inner.lock();
+        let words = sane_fdtable_words(&g.open_fds);
+        let nfiles = words * WORD_BITS;
+        let mut files: Vec<Option<Arc<File>>> = Vec::with_capacity(nfiles);
+        let mut open_fds = g.open_fds[..words].to_vec();
+        let mut cloexec = g.cloexec[..words].to_vec();
+        for fd in 0..nfiles {
+            let in_range = (fd as u64) >= first as u64 && (fd as u64) <= last as u64;
+            if in_range && !cloexec_only {
+                files.push(None);
+                open_fds[word_idx(fd)] &= !bit_mask(fd);
+                cloexec[word_idx(fd)] &= !bit_mask(fd);
+                continue;
+            }
+            if let Some(f) = g.files.get(fd).and_then(|s| s.as_ref()) { crate::file::fire_clone_hook(f); }
+            files.push(g.files.get(fd).cloned().unwrap_or(None));
+            if in_range && cloexec_only { cloexec[word_idx(fd)] |= bit_mask(fd); }
+        }
+        Self { inner: sync::Spinlock::new(FdTableInner { files, open_fds, cloexec }) }
     }
     pub fn close_on_exec(&self) {
         let removed = {

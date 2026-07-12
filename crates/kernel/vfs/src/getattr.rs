@@ -2,14 +2,13 @@
 //!
 //! A single `Inode::getattr` inode-op (default `generic_fillattr`) assembles
 //! the `Kstat` every stat-family syscall encodes, replacing the field-by-field
-//! `S_IF*` mapping + overlay-merge + perm-fallback duplicated across
+//! `S_IF*` mapping duplicated across
 //! stat/lstat/fstat/newfstatat/statx. Backends that carry native metadata
 //! (ext4) override `getattr`; pseudo-fs use the default.
 
 extern crate alloc;
 use crate::idmap::Idmap;
 use crate::inode::Inode;
-use crate::inode_times::InodeTimes;
 use crate::types::FileType;
 
 /// `S_IF*` file-type bits as the `u32` `Kstat`/stat-ABI surface. Re-derived
@@ -218,7 +217,7 @@ mod dev_tests {
         use crate::types::FileType;
         for (ma, mi) in [(1u32, 3u32), (10, 200), (4, 300)] {
             let inode = make_device_node_inode(7, FileType::CharDev, Devt::new(ma, mi), 0o666, Weak::new());
-            let st = super::generic_fillattr(&inode, &crate::idmap::IDENTITY, None);
+            let st = super::generic_fillattr(&inode, &crate::idmap::IDENTITY);
             assert_eq!(st.mode & super::S_IFMT, super::S_IFCHR, "char type bits {ma}:{mi}");
             let d = Devt::from_raw(st.rdev);
             assert_eq!((d.major(), d.minor()), (ma, mi), "st_rdev decode {ma}:{mi}");
@@ -226,7 +225,7 @@ mod dev_tests {
         // A regular file reports st_rdev == 0 (Linux leaves it clear).
         let reg = crate::inode::InodeBuilder::new(8, super::S_IFREG | 0o644,
             crate::inode_ops::default_inode_ops(), crate::file_ops::default_file_ops()).build();
-        let st = super::generic_fillattr(&reg, &crate::idmap::IDENTITY, None);
+        let st = super::generic_fillattr(&reg, &crate::idmap::IDENTITY);
         assert_eq!(st.rdev, 0, "regular file st_rdev clear");
     }
 }
@@ -245,13 +244,8 @@ pub fn default_perm_for(ft: FileType) -> u16 {
 
 /// `generic_fillattr` — assemble a `Kstat` from the inode's own fields, applying
 /// the mount `idmap` to the owner ids. An identity idmap returns the raw fs ids,
-/// so the output is byte-identical to the pre-idmap stat path. D17: the concrete
-/// `struct Inode` now always stores its own perm/owner/times, so the legacy
-/// `inode_times` overlay is no longer merged — `overlay` is retained as a
-/// (now-inert) parameter for ABI/signature stability with the `i_op->getattr`
-/// override path and is ignored. # C: O(1)
-pub fn generic_fillattr(inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
-    let _ = &overlay; // D17: overlay no longer consulted (inode owns its fields)
+/// so the output is byte-identical to the pre-idmap stat path. # C: O(1)
+pub fn generic_fillattr(inode: &Inode, idmap: &Idmap) -> Kstat {
     let ft = inode.file_type();
     // ONE place builds the `S_IFMT` half of the mode: `FileType::to_ifmt`
     // (shared with `Inode::i_mode`). `st_rdev` is only meaningful for device
@@ -337,8 +331,8 @@ pub fn blocks_for(size: u64, bsize: u32) -> u64 {
 
 /// `vfs_getattr` (Linux `fs/stat.c`): the stat-family entry that dispatches to
 /// `i_op->getattr` (override) or `generic_fillattr` (default). # C: O(1)
-pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
-    inode.getattr(idmap, overlay)
+pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap) -> Kstat {
+    inode.getattr(idmap)
 }
 
 /// `vfs_getattr` with the statx `request_mask` honored for the request-gated
@@ -350,8 +344,8 @@ pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap, overlay: Optio
 /// gated on the request mask and not done in the unconditional
 /// `generic_fillattr`. # C: O(1)
 pub fn vfs_getattr_mask(inode: &crate::inode::InodeRef, idmap: &Idmap,
-                        overlay: Option<InodeTimes>, request_mask: u32) -> Kstat {
-    let mut st = inode.getattr(idmap, overlay);
+                        request_mask: u32) -> Kstat {
+    let mut st = inode.getattr(idmap);
     if request_mask & STATX_CHANGE_COOKIE != 0 && inode.i_version_raw().is_some() {
         st.change_cookie = crate::inode::inode_query_iversion(inode.as_ref());
         st.result_mask |= STATX_CHANGE_COOKIE;

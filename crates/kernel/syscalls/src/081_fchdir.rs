@@ -23,14 +23,12 @@ pub fn sys_fchdir(args: &SyscallArgs) -> i64 {
             if !matches!(file.inode().file_type(), vfs::FileType::Directory) {
                 return -(Errno::Enotdir.as_i32() as i64);
             }
-            let bytes = file.dentry().absolute_path();
-            let path = match core::str::from_utf8(&bytes) {
-                Ok(s) if s.starts_with('/') => alloc::string::String::from(s),
-                _ => return -(Errno::Enoent.as_i32() as i64),
-            };
-            let path_obj = match crate::pathresolve::resolve_path(&path, false) {
-                Some(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-                _ => return -(Errno::Enoent.as_i32() as i64),
+            let path = vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry());
+            let path_obj = vfs::VfsPath {
+                mnt_id: file.mnt_id(),
+                dentry: file.dentry().clone(),
+                inode: file.inode().clone(),
+                last_component: None,
             };
             // SAFETY: single-mutator per `13§5`; current task is sole writer.
             unsafe {

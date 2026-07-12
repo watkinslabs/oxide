@@ -3,7 +3,7 @@
 //! context gets FIRST refusal on LSM-prefixed options (`context=`, …) before the
 //! fs, stamps the label onto the just-built sb at `get_tree`, and is freed on
 //! teardown. Fails-before: `FsContext` had no `security` hook field — LSM
-//! options reached the legacy backend's comma-blob `->mount` (which rejects
+//! options reached the classic mount backend's comma-blob `->mount` (which rejects
 //! them) and there was no sb-labelling / free point. These prove the LSM
 //! consumes its own keys, non-LSM keys fall through to the fs, a forbidden LSM
 //! option fails the parse, `set_mnt_opts` runs once at get_tree, and `free` runs
@@ -11,6 +11,8 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+
+mod common;
 
 use vfs::fs::fs_context::{
     put_fs_context, vfs_get_tree, vfs_parse_fs_string, FsContext,
@@ -34,8 +36,8 @@ impl FileSystem for TFs {
 struct Ty;
 impl FileSystemType for Ty {
     fn name(&self) -> &str { "lsmtfs" }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "lsmtfs".to_string()))
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "lsmtfs".to_string()))
     }
 }
 
@@ -78,7 +80,7 @@ fn lsm_consumes_its_keys_before_the_fs() {
     let (sec, labels, ..) = lsm();
     let mut fc = ctx();
     fc.set_security(sec);
-    // The LSM claims `context=` — it must NOT reach the legacy backend (which
+    // The LSM claims `context=` — it must NOT reach the classic mount backend (which
     // would reject the unknown key). Proof the LSM ran first.
     vfs_parse_fs_string(&mut fc, "context", "system_u:object_r:tmp_t").unwrap();
     assert_eq!(labels.lock().unwrap().as_slice(),
@@ -96,7 +98,7 @@ fn non_lsm_keys_fall_through_to_the_fs() {
     vfs_parse_fs_string(&mut fc, "size", "16m").unwrap();
     assert!(labels.lock().unwrap().is_empty(), "LSM did not claim a non-LSM key");
     assert_eq!(fc.params().len(), 1);
-    assert!(fc.legacy_options().contains("size=16m"));
+    assert!(fc.classic_mount_options().contains("size=16m"));
 }
 
 #[test]

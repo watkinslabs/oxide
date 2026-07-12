@@ -21,15 +21,13 @@ pub fn sys_utimes(args: &SyscallArgs) -> i64 {
     if times_ptr == 0 {
         ia.atime_ns = now; ia.mtime_ns = now;
     } else {
-        if times_ptr.checked_add(32).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        // SAFETY: times_ptr+32 validated < USER_VA_END; CPL=0 reads two timeval (i64+i64) pairs through caller's AS.
+        if let Err(rv) = crate::userbuf::validate_user_buf(times_ptr, 32, 1) { return rv; }
+        // SAFETY: full timeval[2] byte range validated readable; Linux copyin accepts unaligned storage.
         let (asec, ausec, msec, musec) = unsafe {
-            (core::ptr::read_volatile( times_ptr        as *const i64),
-             core::ptr::read_volatile((times_ptr +  8)  as *const i64),
-             core::ptr::read_volatile((times_ptr + 16)  as *const i64),
-             core::ptr::read_volatile((times_ptr + 24)  as *const i64))
+            (core::ptr::read_unaligned( times_ptr        as *const i64),
+             core::ptr::read_unaligned((times_ptr +  8)  as *const i64),
+             core::ptr::read_unaligned((times_ptr + 16)  as *const i64),
+             core::ptr::read_unaligned((times_ptr + 24)  as *const i64))
         };
         if asec < 0 || msec < 0 || ausec < 0 || musec < 0
             || ausec >= 1_000_000 || musec >= 1_000_000 {

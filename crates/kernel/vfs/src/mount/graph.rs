@@ -106,7 +106,8 @@ fn cross_up(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Dentry>> {
 /// Absolute path rendered from a dentry's parent chain (Linux `d_path`) — the
 /// WRITE-ONLY rendered path. # C: O(depth)
 fn abs_string(d: &Arc<Dentry>) -> String {
-    String::from_utf8(d.absolute_path()).unwrap_or_else(|_| String::from("/"))
+    let p = d.absolute_path();
+    crate::path::path_from_bytes(&p)
 }
 
 /// MOUNT-AWARE rendered path for a mount attached at dentry `d` under `parent_id`
@@ -128,23 +129,54 @@ fn rendered_path_for(parent_id: u64, d: &Arc<Dentry>) -> String {
     if let Some(p) = mount_by_id(parent_id) {
         if let Some(proot) = root_dentry_for_mount_id(parent_id) {
             let root_ap = proot.absolute_path();
-            if d_ap.starts_with(root_ap.as_slice()) {
+            if d.is_subdir_of(&proot) && d_ap.starts_with(root_ap.as_slice()) {
                 // `/` root dentry renders as "/" (len 1); stripping it would eat the
                 // leading slash, so treat the fs root as a zero-length prefix.
                 let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
-                let rel = core::str::from_utf8(&d_ap[strip..]).unwrap_or("");
+                let rel = crate::path::path_from_bytes(&d_ap[strip..]);
                 let prp = p.mount_point_str();
                 return if prp == "/" {
                     if rel.is_empty() { String::from("/") } else { String::from(rel) }
                 } else {
                     let mut s = prp;
-                    s.push_str(rel);      // rel starts with '/' (or is empty ⇒ stacked at prp)
+                    s.push_str(&rel);      // rel starts with '/' (or is empty ⇒ stacked at prp)
                     s
                 };
             }
         }
     }
-    String::from_utf8(d_ap).unwrap_or_else(|_| String::from("/"))
+    crate::path::path_from_bytes(&d_ap)
+}
+
+/// Render a full `struct path` (`mnt_id`, dentry) for user-visible path text
+/// such as `getcwd`, using mount identity as authority. # C: O(depth)
+pub fn render_path_for_mount(mnt_id: u64, d: &Arc<Dentry>) -> String {
+    if mnt_id == MNT_ID_NONE { return abs_string(d); }
+    let d_ap = d.absolute_path();
+    let Some(m) = mount_by_id(mnt_id) else { return abs_string(d); };
+    let Some(root) = root_dentry_for_mount_id(mnt_id) else { return abs_string(d); };
+    let root_ap = root.absolute_path();
+    if !d.is_subdir_of(&root) || !d_ap.starts_with(root_ap.as_slice()) { return abs_string(d); }
+    let strip = if root_ap.as_slice() == b"/" { 0 } else { root_ap.len() };
+    let rel = crate::path::path_from_bytes(&d_ap[strip..]);
+    let mut base = m.mount_point_str();
+    if base == "/" {
+        if rel.is_empty() { String::from("/") } else { String::from(rel) }
+    } else {
+        base.push_str(&rel);
+        base
+    }
+}
+
+/// Project an absolute mount path into a reader's root view. `None` means the
+/// reader root is `/`; paths outside a confined root are hidden. # C: O(path len)
+pub fn project_path_under_root(path: &str, root: Option<&str>) -> Option<String> {
+    let Some(root) = root else { return Some(String::from(path)); };
+    if path == root { return Some(String::from("/")); }
+    if let Some(rest) = path.strip_prefix(root) {
+        if rest.starts_with('/') { return Some(String::from(rest)); }
+    }
+    None
 }
 
 /// Materialise the dentry at `rel` beneath `base` by a dentry→dentry descent
@@ -182,6 +214,19 @@ pub(super) fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 
 /// The global namespace-root dentry. # C: O(1)
 pub(super) fn global_root() -> Option<Arc<Dentry>> { crate::namei::root_dentry() }
+
+/// Normalize a bare namespace-root dentry into the current namespace root
+/// mount's real `(mnt_id, mnt_root)` pair. After `MS_MOVE(stage, "/")`, the
+/// global root dentry remains the caller-visible `/` anchor, but the namespace
+/// root mount may now be a bind whose `mnt_root` is a different dentry. A path
+/// walk seeded as `(new_root_mnt_id, old_global_root_dentry)` is split truth:
+/// the mount id and dentry name different objects. # C: O(log N)
+pub fn namespace_root_path(ns: u64, d: &Arc<Dentry>) -> Option<(u64, Arc<Dentry>)> {
+    if !is_ns_root_dentry(d) { return None; }
+    let mnt_id = root_mount_id(ns)?;
+    let root = root_dentry_for_mount_id(mnt_id)?;
+    Some((mnt_id, root))
+}
 
 // ---------------------------------------------------------------------------
 // (parent_mnt_id, mountpoint_dentry_ptr) -> mnt_id stack — Linux
@@ -444,8 +489,7 @@ fn rebuild_ns_index(ns: u64) {
                 // `mnt_parent` (Linux never re-derives it). When they do NOT share
                 // an `s_root`, the parent genuinely moved (a pivot relocation) and
                 // the freshly derived one wins.
-                let parent = if recorded != 0 && recorded != m.mnt_id
-                    && same_sb_root(recorded, derived) { recorded } else { derived };
+                let parent = if recorded != 0 && recorded != m.mnt_id { recorded } else { derived };
                 m.parent_id.store(parent, Ordering::Release);
                 if let Some(p) = mount_by_id(parent) {
                     *m.mnt_parent.lock() = Arc::downgrade(&p);
@@ -454,19 +498,5 @@ fn rebuild_ns_index(ns: u64) {
                 hash_insert(parent, dptr(&d), m.mnt_id);
             }
         }
-    }
-}
-
-/// True iff mounts `a` and `b` resolve to the SAME superblock root dentry (or are
-/// the same mount) — the signature of an SB-sharing clone pair that a bare
-/// dentry-ptr scan cannot disambiguate. # C: O(log N)
-fn same_sb_root(a: u64, b: u64) -> bool {
-    if a == b { return true; }
-    match (mount_by_id(a), mount_by_id(b)) {
-        (Some(ma), Some(mb)) => match (ma.sb.s_root(), mb.sb.s_root()) {
-            (Some(ra), Some(rb)) => dptr(&ra) == dptr(&rb),
-            _ => false,
-        },
-        _ => false,
     }
 }

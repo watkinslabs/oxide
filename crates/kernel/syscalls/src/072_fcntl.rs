@@ -50,7 +50,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return ebadf };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return ebadf };
     match cmd {
-        F_DUPFD | F_DUPFD_CLOEXEC => match fdt.dup_min(fd, arg as i32) {
+        F_DUPFD | F_DUPFD_CLOEXEC => match fdt.dup_min_limit(fd, arg as i32, cur.nofile_soft()) {
             Ok(n) => { if cmd == F_DUPFD_CLOEXEC { let _ = fdt.set_cloexec(n, true); } n as i64 }
             Err(e) => -(e as i64),
         },

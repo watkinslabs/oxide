@@ -1,21 +1,22 @@
 //! P7b rename-overwrite nlink authority: a plain rename that OVERWRITES an
 //! existing destination must drop the replaced target's in-memory `st_nlink`
 //! (Linux `vfs_rename`), mirroring the unlink path's authority now that the
-//! dcache `d_unlink` no longer touches nlink. RENAME_EXCHANGE (the trait
-//! `exchange`) must NOT drop — both inodes survive.
+//! dcache `d_unlink` no longer touches nlink. RENAME_EXCHANGE must NOT drop —
+//! both inodes survive.
 //!
 //! Image: mini.img (root dir = inode 2, no journal). We create two regular
 //! files in the root, hold the cached `Arc` for the destination, rename the
 //! source over it, and assert the replaced inode's nlink dropped to 0.
 
 extern crate alloc;
+mod common;
 use alloc::string::String;
 use alloc::sync::Arc;
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::{CreateCtx, SuperBlock};
+use vfs::{CreateCtx, FileType, SuperBlock};
 
 const MINI: &[u8] = include_bytes!("mini.img");
 const BLOCK_SIZE: u32 = 512;
@@ -34,7 +35,7 @@ fn mount() -> (Arc<ext4::rootfs::Ext4Mount>, Arc<SuperBlock>) {
     let m = ext4::rootfs::Ext4Mount::open(disk()).expect("Ext4Mount::open");
     let fs: Arc<dyn FileSystem> = m.clone();
     let root = fs.root();
-    let sb = SuperBlock::for_backend(fs, root, 0xE471_0001, String::from("ext4"));
+    let sb = common::realize_sb(fs, root, 0xE471_0001, String::from("ext4"));
     (m, sb)
 }
 
@@ -46,8 +47,7 @@ fn rename_overwrite_drops_replaced_target_nlink() {
     let dst = root.create_child("rdst", 0o644, &CreateCtx::root()).expect("create rdst");
     assert_eq!(dst.nlink(), 1, "fresh dest starts with one link");
 
-    let fs: Arc<dyn FileSystem> = m.clone();
-    fs.rename("/rsrc", "/rdst").expect("rename overwrite");
+    m.state().rename_at(b"/rsrc", b"/rdst").expect("rename overwrite");
 
     // The replaced (cached) destination inode lost its link.
     assert_eq!(dst.nlink(), 0, "replaced destination in-memory nlink dropped to 0");
@@ -59,7 +59,7 @@ fn rename_overwrite_drops_replaced_target_nlink() {
 #[test]
 fn iop_rename_overwrite_drops_replaced_target_nlink() {
     // D9: the resolved-parent `i_op->rename` is byte-equivalent to the
-    // whole-path `FileSystem::rename` — same overwrite + nlink-drop semantics.
+    // backend rename path — same overwrite + nlink-drop semantics.
     let (m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
     let src = root.create_child("isrc", 0o644, &CreateCtx::root()).expect("create isrc");
@@ -75,16 +75,21 @@ fn iop_rename_overwrite_drops_replaced_target_nlink() {
 }
 
 #[test]
-fn iop_rename_rejects_exchange_whiteout() {
+fn iop_rename_handles_exchange_whiteout() {
     let (_m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
     root.create_child("ix", 0o644, &CreateCtx::root()).expect("create ix");
-    assert!(matches!(
-        root.rename_child("ix", &root, "iy", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()),
-        Err(vfs::VfsError::Einval)));
-    assert!(matches!(
-        root.rename_child("ix", &root, "iy", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()),
-        Err(vfs::VfsError::Einval)));
+    root.create_child("iy", 0o644, &CreateCtx::root()).expect("create iy");
+    let ix = root.lookup("ix").expect("ix lookup");
+    let iy = root.lookup("iy").expect("iy lookup");
+
+    root.rename_child("ix", &root, "iy", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()).expect("exchange");
+    assert_eq!(root.lookup("ix").unwrap().ino(), iy.ino(), "ix now names old iy");
+    assert_eq!(root.lookup("iy").unwrap().ino(), ix.ino(), "iy now names old ix");
+
+    root.rename_child("iy", &root, "iz", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()).expect("whiteout");
+    assert_eq!(root.lookup("iz").unwrap().ino(), ix.ino(), "iz now names moved source");
+    assert_eq!(root.lookup("iy").unwrap().file_type(), FileType::CharDev, "source became whiteout");
 }
 
 #[test]
@@ -115,6 +120,23 @@ fn iop_link_child_hardlinks_and_bumps_nlink() {
 }
 
 #[test]
+fn rootfs_path_helpers_return_namei_errnos() {
+    let (m, _sb) = mount();
+    let st = m.state();
+
+    st.mkdir_at(b"/errdir", 0o755).expect("mkdir errdir");
+    assert!(matches!(st.mkdir_at(b"/errdir", 0o755), Err(vfs::VfsError::Eexist)));
+    assert!(matches!(st.symlink_at(b"x", b"/errdir"), Err(vfs::VfsError::Eexist)));
+    assert!(matches!(st.mknod_at(b"/errdir", vfs::S_IFIFO as u16 | 0o600, 0), Err(vfs::VfsError::Eexist)));
+    assert!(matches!(st.unlink_at(b"/errdir"), Err(vfs::VfsError::Eisdir)));
+
+    st.create_at(b"/errfile", 0o644).expect("create errfile");
+    assert!(matches!(st.rmdir_at(b"/errfile"), Err(vfs::VfsError::Enotdir)));
+    assert!(matches!(st.unlink_at(b"/missing"), Err(vfs::VfsError::Enoent)));
+    assert!(matches!(st.link_at(b"/errfile", b"/errdir"), Err(vfs::VfsError::Eexist)));
+}
+
+#[test]
 fn exchange_does_not_drop_either_nlink() {
     let (m, sb) = mount();
     let root = sb.s_root_inode().expect("root inode");
@@ -122,12 +144,32 @@ fn exchange_does_not_drop_either_nlink() {
     let b = root.create_child("xb", 0o644, &CreateCtx::root()).expect("create xb");
     assert_eq!((a.nlink(), b.nlink()), (1, 1));
 
-    let fs: Arc<dyn FileSystem> = m.clone();
-    fs.exchange("/xa", "/xb").expect("exchange");
+    m.state().exchange_at(b"/xa", b"/xb").expect("exchange");
 
     // Neither inode lost a link: RENAME_EXCHANGE only swaps names.
     assert_eq!(a.nlink(), 1, "exchange survivor a keeps its link");
     assert_eq!(b.nlink(), 1, "exchange survivor b keeps its link");
     assert!(m.state().lookup_path(b"/xa").is_some(), "name xa still present");
     assert!(m.state().lookup_path(b"/xb").is_some(), "name xb still present");
+}
+
+#[test]
+fn iop_create_reused_ino_rebuilds_cached_type() {
+    // GNOME/systemd PrivateTmp churn creates and removes many short-lived ext4
+    // names. If ext4 reuses an inode number while a stale VFS inode is still
+    // cached, i_op->mkdir must evict that slot before wrapping the new on-disk
+    // directory. Otherwise namei sees the new private-tmp parent as a regular
+    // file and the next component returns ENOTDIR.
+    let (_m, sb) = mount();
+    let root = sb.s_root_inode().expect("root inode");
+    let stale_file = root.create_child("reuse", 0o644, &CreateCtx::root()).expect("create file");
+    let stale_ino = stale_file.ino();
+    assert_eq!(stale_file.file_type(), FileType::Regular);
+
+    root.unlink_child("reuse").expect("unlink file");
+    let new_dir = root.mkdir("reuse", 0o755, &CreateCtx::root()).expect("mkdir reused name");
+
+    assert_eq!(new_dir.ino(), stale_ino, "fixture reused the freed inode number");
+    assert_eq!(new_dir.file_type(), FileType::Directory, "reused inode was rebuilt from disk type");
+    assert!(!Arc::ptr_eq(&new_dir, &stale_file), "mkdir did not return stale regular-file Arc");
 }

@@ -49,12 +49,26 @@ impl FileSystem for RwFs {
 }
 fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(RwFs { root_ino: ino }) }
 
+struct DirOps;
+impl vfs::InodeOps for DirOps {
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Ok(dir_inode(0xD1)) }
+}
+fn dir_inode(ino: u64) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(DirOps), vfs::default_file_ops()).build()
+}
+struct DirFs { root_ino: u64 }
+impl FileSystem for DirFs {
+    fn name(&self) -> &str { "dirfs_attr" }
+    fn root(&self) -> Option<InodeRef> { Some(dir_inode(self.root_ino)) }
+}
+fn dir_fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(DirFs { root_ino: ino }) }
+
 /// Build a realized SuperBlock over a writable backend (the `vfs_get_tree`
 /// outcome `attach_sb*` grafts).
 fn realized_sb(ino: u64) -> Arc<SuperBlock> {
     let f = fs(ino);
     let root = f.root();
-    SuperBlock::for_backend(f, root, next_anon_dev(), String::from("rwfs_attr"))
+    common::realize_sb(f, root, next_anon_dev(), String::from("rwfs_attr"))
 }
 
 /// A write-open `File` threaded with `mnt_id`, as the open syscall does.
@@ -147,9 +161,9 @@ fn setattr_rdonly_with_active_writer_is_ebusy() {
 fn setattr_tree_sets_three_mount_subtree() {
     let _g = guard();
     common::register("/", fs(0x1)).expect("root");
-    common::register("/t", fs(0xE0)).expect("t");
-    common::register("/t/x", fs(0xE1)).expect("t/x");
-    common::register("/t/x/y", fs(0xE2)).expect("t/x/y");
+    common::register("/t", dir_fs(0xE0)).expect("t");
+    common::register("/t/x", dir_fs(0xE1)).expect("t/x");
+    common::register("/t/x/y", dir_fs(0xE2)).expect("t/x/y");
     let top = common::mount_at_path_exact("/t").expect("top");
 
     mnt_setattr_tree_by_id(top.mnt_id, MNT_NOSUID, 0).expect("recursive setattr");

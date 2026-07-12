@@ -27,6 +27,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[cfg(target_os = "oxide-kernel")]
 use block::BlockDevice;
+#[cfg(target_os = "oxide-kernel")]
 use block::types::InodeId;
 
 /// Published root `RootfsState` (leaked `&'static`, filled by
@@ -231,33 +232,6 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     /// `i_sb()` resolves and `fsid()` reports `sb.s_dev`. # C: O(1)
     fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) {
         if let Some(st) = root() { st.set_sb(sb); }
-    }
-    fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        create_at(path.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enoent)
-    }
-    fn create_anonymous(&self, dir: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
-        create_anonymous_at(dir.as_bytes(), mode as u16).ok_or(vfs::VfsError::Enospc)
-    }
-    fn unlink(&self, path: &str) -> vfs::fs::KResult<()> { unlink_at(path.as_bytes()) }
-    fn link(&self, target: &str, link: &str) -> vfs::fs::KResult<()> {
-        link_at(target.as_bytes(), link.as_bytes())
-    }
-    fn link_inode(&self, inode: vfs::InodeRef, link: &str) -> vfs::fs::KResult<()> {
-        let ino = inode::ext4_file_ino(&inode).ok_or(vfs::VfsError::Exdev)?;
-        link_inode_at(ino, link.as_bytes())
-    }
-    fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        rename_at(from.as_bytes(), to.as_bytes())
-    }
-    /// ext4-native ATOMIC `RENAME_EXCHANGE` (one journaled dirent swap),
-    /// overriding the generic non-atomic 3-step default. # C: O(N) + 1 tx
-    fn exchange(&self, a: &str, b: &str) -> vfs::fs::KResult<()> {
-        exchange_at(a.as_bytes(), b.as_bytes())
-    }
-    /// ext4-native ATOMIC `RENAME_WHITEOUT` (one journaled rename + whiteout
-    /// chardev), overriding the generic two-step default. # C: O(N) + 1 tx
-    fn whiteout(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
-        whiteout_at(from.as_bytes(), to.as_bytes())
     }
 }
 

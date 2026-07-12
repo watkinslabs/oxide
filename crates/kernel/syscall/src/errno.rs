@@ -36,6 +36,7 @@ pub enum Errno {
     Etxtbsy = 26,
     Efbig   = 27,
     Espipe  = 29,
+    Emlink  = 31,
     Erofs   = 30,
     Enospc  = 28,
     Epipe   = 32,
@@ -46,6 +47,7 @@ pub enum Errno {
     Eloop   = 40,
     Eidrm   = 43,
     Enomsg  = 42,
+    Enopkg  = 65,
     Eoverflow         = 75,
     Enoprotoopt       = 92,
     Eopnotsupp        = 95,
@@ -63,6 +65,8 @@ pub enum Errno {
     Econnrefused      = 111,
     Econnreset        = 104,
     Estale            = 116,
+    Ecanceled         = 125,
+    Eftype            = 134,
 }
 
 impl Errno {

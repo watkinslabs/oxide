@@ -1,13 +1,11 @@
 // name_to_handle_at(2) per `15§5` / `16`. Linux exportable file
 // handles: encode inode identity so userspace can test two paths for
-// same-inode-ness without holding fds open. systemd's
-// running_in_chroot() depends on it — it FID-probes /proc/1/root and /
-// and compares the returned handles (an ENOSYS stub forces a fallback
-// path that wrongly concludes "chrooted" and freezes PID1).
+// same-inode-ness without holding fds open. systemd uses it in mountpoint
+// detection and chroot checks, comparing the FID plus the returned mount id.
 //
-// The handle we emit is the 8-byte inode number (FILEID-style); the
-// mount id is a single constant since v1 has one visible mount domain.
-// Same inode -> identical handle -> systemd sees the same file.
+// The handle we emit is the 8-byte inode number (FILEID-style); the returned
+// mount id is the resolved `struct path` mount id. Same inode + same mount id
+// means userspace sees the same mounted object.
 // open_by_handle_at (the reverse) is implemented in
 // 304_open_by_handle_at.rs (D47): it decodes this same 8-byte inode FID
 // and resolves it on mount_fd's superblock via ilookup(ino), gated on
@@ -17,7 +15,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
@@ -25,6 +22,18 @@ use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 // f_handle starts at offset 8; we write an 8-byte inode FID there.
 const FID_LEN: u32 = 8;
 const HANDLE_HDR: usize = 8; // handle_bytes(4) + handle_type(4)
+
+#[cfg(feature = "debug-mount")]
+fn log_runtime_handle(op: &'static str, dirfd: i32, path_ptr: u64, rv: i64) {
+    if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
+        if path.starts_with("/run/systemd") || path.contains("systemd/journal") {
+            let mut tag = alloc::string::String::from(path.as_str());
+            tag.push_str(" dirfd=");
+            tag.push_str(&alloc::format!("{}", dirfd));
+            crate::mount_common::mnt_log(op, &tag, rv);
+        }
+    }
+}
 
 /// `sys_name_to_handle_at(dirfd, path, handle, mount_id, flags)` — slot 303.
 /// Resolves the target inode (AT_EMPTY_PATH ⇒ dirfd; else path, following
@@ -35,13 +44,16 @@ const HANDLE_HDR: usize = 8; // handle_bytes(4) + handle_type(4)
 /// grow-and-retry protocol.
 /// # C: O(N_path)
 pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
+    const AT_HANDLE_FID: u32 = 0x200;
     const AT_EMPTY_PATH: u32 = 0x1000;
     const AT_SYMLINK_FOLLOW: u32 = 0x400;
+    const AT_VALID: u32 = AT_HANDLE_FID | AT_EMPTY_PATH | AT_SYMLINK_FOLLOW;
     let dirfd = args.a0 as i32;
     let path_ptr = args.a1;
     let handle_ptr = args.a2;
     let mnt_id_ptr = args.a3;
     let flags = args.a4 as u32;
+    if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
 
     // handle->handle_bytes is read first (caller-supplied capacity), then
     // the full header+FID is written back, so the struct must be R+W.
@@ -56,8 +68,8 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
         return -(Errno::Eoverflow.as_i32() as i64);
     }
 
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
-    // path operates on the dirfd, ENOENT without it). name_to_handle_at FOLLOWS
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
+    // operates on the dirfd, NULL still EFAULTs). name_to_handle_at FOLLOWS
     // the final symlink only with AT_SYMLINK_FOLLOW; otherwise it does not.
     let nofollow = (flags & AT_SYMLINK_FOLLOW) == 0;
     let lf = vfs::LookupFlags {
@@ -68,7 +80,11 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     };
     let (inode, mount_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
         Ok(p)  => (p.inode, p.mnt_id as i32),
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-mount")]
+            log_runtime_handle("name_to_handle_resolve", dirfd, path_ptr, rv);
+            return rv;
+        }
     };
 
     let fid = inode.ino().to_le_bytes();
@@ -83,13 +99,12 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((handle_ptr + HANDLE_HDR as u64 + i as u64) as *mut u8, *b);
         }
     }
-    if mnt_id_ptr != 0 && mnt_id_ptr < USER_VA_END {
-        if validate_user_buf_writable(mnt_id_ptr, 4, 1).is_ok() {
-            // Linux returns the mount table id here, not st_dev/fsid. systemd
-            // compares this with mountinfo and asserts it is non-negative.
-            // SAFETY: mnt_id_ptr validated writable for 4 bytes; single aligned i32 write of the mount id.
-            unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, mount_id); }
-        }
-    }
+    if let Err(rv) = validate_user_buf_writable(mnt_id_ptr, 4, 1) { return rv; }
+    // Linux returns the mount table id here, not st_dev/fsid. systemd compares
+    // this with mountinfo and asserts it is non-negative.
+    // SAFETY: mnt_id_ptr validated writable for 4 bytes; single aligned i32 write of the mount id.
+    unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, mount_id); }
+    #[cfg(feature = "debug-mount")]
+    log_runtime_handle("name_to_handle", dirfd, path_ptr, 0);
     0
 }

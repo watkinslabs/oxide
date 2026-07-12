@@ -29,7 +29,7 @@ fn tfile(flags: u32, btime: Option<u64>) -> InodeRef {
 /// `stx_btime` reads back 0.
 #[test]
 fn mask_is_basic_stats_without_btime() {
-    let st = vfs::generic_fillattr(&tfile(0, None), &IDENTITY, None);
+    let st = vfs::generic_fillattr(&tfile(0, None), &IDENTITY);
     assert_eq!(st.result_mask, STATX_BASIC_STATS, "exactly the base fields, no more");
     assert_eq!(st.result_mask & STATX_BTIME, 0, "STATX_BTIME clear when no birth time");
     assert_eq!(st.btime_ns, 0, "btime field zero when unavailable");
@@ -38,7 +38,7 @@ fn mask_is_basic_stats_without_btime() {
 /// A stored birth time adds `STATX_BTIME` to the mask and carries the value.
 #[test]
 fn btime_sets_mask_bit_and_value() {
-    let st = vfs::generic_fillattr(&tfile(0, Some(1_234_000_000_999)), &IDENTITY, None);
+    let st = vfs::generic_fillattr(&tfile(0, Some(1_234_000_000_999)), &IDENTITY);
     assert_eq!(st.result_mask & STATX_BTIME, STATX_BTIME, "STATX_BTIME set when present");
     assert_eq!(st.result_mask, STATX_BASIC_STATS | STATX_BTIME, "base set unchanged, only BTIME added");
     assert_eq!(st.btime_ns, 1_234_000_000_999, "btime value passed through");
@@ -49,22 +49,22 @@ fn btime_sets_mask_bit_and_value() {
 #[test]
 fn attributes_track_iflags() {
     // Neither flag.
-    let none = vfs::generic_fillattr(&tfile(0, None), &IDENTITY, None);
+    let none = vfs::generic_fillattr(&tfile(0, None), &IDENTITY);
     assert_eq!(none.attributes, 0, "no attrs when no flags");
     assert_eq!(none.attributes_mask, STATX_ATTR_IMMUTABLE | STATX_ATTR_APPEND,
                "mask always advertises the two understood bits");
 
     // Immutable only.
-    let imm = vfs::generic_fillattr(&tfile(S_IMMUTABLE, None), &IDENTITY, None);
+    let imm = vfs::generic_fillattr(&tfile(S_IMMUTABLE, None), &IDENTITY);
     assert_eq!(imm.attributes, STATX_ATTR_IMMUTABLE, "S_IMMUTABLE → STATX_ATTR_IMMUTABLE");
 
     // Append only.
-    let app = vfs::generic_fillattr(&tfile(S_APPEND, None), &IDENTITY, None);
+    let app = vfs::generic_fillattr(&tfile(S_APPEND, None), &IDENTITY);
     assert_eq!(app.attributes, STATX_ATTR_APPEND, "S_APPEND → STATX_ATTR_APPEND");
 
     // Both, plus an unrelated S_* bit that must NOT leak into stx_attributes.
     let both = vfs::generic_fillattr(
-        &tfile(S_IMMUTABLE | S_APPEND | (1 << 1), None), &IDENTITY, None);
+        &tfile(S_IMMUTABLE | S_APPEND | (1 << 1), None), &IDENTITY);
     assert_eq!(both.attributes, STATX_ATTR_IMMUTABLE | STATX_ATTR_APPEND,
                "only immutable+append surface; other i_flags bits ignored");
     assert_eq!(both.attributes & !both.attributes_mask, 0,
@@ -79,6 +79,6 @@ fn default_btime_none() {
     let plain = InodeBuilder::new(8, mk_mode(FileType::Regular, 0o644),
             default_inode_ops(), default_file_ops()).build();
     assert_eq!(plain.btime(), None);
-    let st = vfs::generic_fillattr(&plain, &IDENTITY, None);
+    let st = vfs::generic_fillattr(&plain, &IDENTITY);
     assert_eq!(st.result_mask & STATX_BTIME, 0);
 }

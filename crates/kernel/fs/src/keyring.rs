@@ -23,6 +23,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 // keyctl(2) special keyring ids (uapi/linux/keyctl.h). A negative serial
 // passed to any op resolves (lazily creating) to the caller's real keyring.
@@ -35,6 +36,8 @@ const KEY_SPEC_GROUP_KEYRING:        i32 = -6;
 
 const ENOKEY:      i32 = 126;
 const EKEYREVOKED: i32 = 128;
+const KEY_TYPE_MAX: usize = 32;
+const KEY_MAX_DESC_SIZE: usize = 4096;
 
 /// The first serial handed out. Serials climb from here so no real key collides
 /// with the (removed) legacy sentinel `1`.
@@ -137,24 +140,52 @@ impl Store {
     }
 }
 
-fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
-    if p == 0 || p >= hal::USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
-    // SAFETY: p validated < USER_VA_END; bounded read via existing helper.
-    let bytes = unsafe { devfs::read_user_cstr(p, max) };
-    let s = bytes.and_then(|b| core::str::from_utf8(b).ok()).ok_or(-(Errno::Einval.as_i32() as i64))?;
-    Ok(String::from(s))
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+fn key_string_from_bytes(bytes: &[u8]) -> String {
+    vfs::path_from_bytes(bytes)
+}
+
+fn read_user_key_cstr(p: u64, max: usize) -> Result<Vec<u8>, i64> {
+    if p == 0 { return Err(err(Errno::Efault)); }
+    match syscall::scan_user_cstr(p, max as u64, |va| {
+        // SAFETY: scan_user_cstr validates each user VA before this byte read.
+        unsafe { core::ptr::read_unaligned(va as *const u8) }
+    }) {
+        Ok(b) => Ok(b),
+        Err(Errno::Enametoolong) => Err(err(Errno::Einval)),
+        Err(e) => Err(err(e)),
+    }
+}
+
+fn read_user_key_type(p: u64) -> Result<String, i64> {
+    let b = read_user_key_cstr(p, KEY_TYPE_MAX)?;
+    if b.is_empty() { return Err(err(Errno::Einval)); }
+    if b[0] == b'.' { return Err(err(Errno::Eperm)); }
+    Ok(key_string_from_bytes(&b))
+}
+
+fn read_user_key_desc(p: u64) -> Result<String, i64> {
+    let b = read_user_key_cstr(p, KEY_MAX_DESC_SIZE)?;
+    Ok(key_string_from_bytes(&b))
 }
 
 fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
     if len == 0 { return Ok(Vec::new()); }
-    if p == 0 || p >= hal::USER_VA_END
-        || p.checked_add(len as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
+    validate_user_buf(p, len as u64, 1)?;
     let mut out = alloc::vec![0u8; len];
-    // SAFETY: p+len validated < USER_VA_END; CPL=0 byte reads through caller's AS into kernel buffer.
-    unsafe { for i in 0..len { out[i] = core::ptr::read_volatile((p + i as u64) as *const u8); } }
+    // SAFETY: exact user byte range validated; destination is a kernel-owned Vec.
+    unsafe { for i in 0..len { out[i] = core::ptr::read_unaligned((p + i as u64) as *const u8); } }
     Ok(out)
+}
+
+fn write_user_prefix(p: u64, src: &[u8], limit: usize) -> Result<(), i64> {
+    let n = core::cmp::min(limit, src.len());
+    if n == 0 { return Ok(()); }
+    validate_user_buf_writable(p, n as u64, 1)?;
+    // SAFETY: copied byte prefix is writable-user validated; source is kernel-owned.
+    unsafe { for i in 0..n { core::ptr::write_unaligned((p + i as u64) as *mut u8, src[i]); } }
+    Ok(())
 }
 
 /// Current task identity for keyctl special-keyring resolution. Falls back to
@@ -267,8 +298,8 @@ pub fn inherit_session(parent_tid: u32, child_tid: u32) {
 
 /// `sys_add_key(type, desc, payload, plen, keyring)` — slot 217. # C: O(N)
 pub fn sys_add_key(args: &SyscallArgs) -> i64 {
-    let key_type = match read_user_cstr_owned(args.a0, 64) { Ok(s) => s, Err(rv) => return rv };
-    let description = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
+    let key_type = match read_user_key_type(args.a0) { Ok(s) => s, Err(rv) => return rv };
+    let description = match read_user_key_desc(args.a1) { Ok(s) => s, Err(rv) => return rv };
     let payload = match read_user_bytes(args.a2, args.a3 as usize) { Ok(v) => v, Err(rv) => return rv };
     add_key_core(cur_ids(), &key_type, &description, payload, args.a4 as i32)
 }
@@ -276,8 +307,8 @@ pub fn sys_add_key(args: &SyscallArgs) -> i64 {
 /// `sys_request_key(type, desc, callout, dest)` — slot 218. No callout helper,
 /// so a miss is ENOKEY. # C: O(N)
 pub fn sys_request_key(args: &SyscallArgs) -> i64 {
-    let key_type = match read_user_cstr_owned(args.a0, 64) { Ok(s) => s, Err(rv) => return rv };
-    let description = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
+    let key_type = match read_user_key_type(args.a0) { Ok(s) => s, Err(rv) => return rv };
+    let description = match read_user_key_desc(args.a1) { Ok(s) => s, Err(rv) => return rv };
     let g = STORE.lock();
     for k in g.keys.values() {
         if !k.revoked && k.key_type == key_type && k.description == description { return k.serial as i64; }
@@ -318,7 +349,7 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
     match args.a0 {
         KEYCTL_JOIN_SESSION_KEYRING => {
             let name = if args.a1 == 0 { None }
-                       else { match read_user_cstr_owned(args.a1, 256) { Ok(s) => Some(s), Err(rv) => return rv } };
+                       else { match read_user_key_desc(args.a1) { Ok(s) => Some(s), Err(rv) => return rv } };
             join_session(t, name.as_deref()) as i64
         }
         KEYCTL_GET_KEYRING_ID => get_keyring_id(t, args.a1 as i32, args.a2 != 0),
@@ -384,13 +415,7 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             } else { k.payload.clone() };
             let want = bytes.len();
             if buf_p == 0 || buflen == 0 { return want as i64; }
-            if buf_p >= hal::USER_VA_END
-                || buf_p.checked_add(buflen as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-                return -(Errno::Efault.as_i32() as i64);
-            }
-            let n = core::cmp::min(buflen, want);
-            // SAFETY: buf_p+n validated < USER_VA_END; CPL=0 writes of kernel-owned bytes into caller's AS.
-            unsafe { for i in 0..n { core::ptr::write_volatile((buf_p + i as u64) as *mut u8, bytes[i]); } }
+            if let Err(rv) = write_user_prefix(buf_p, &bytes, buflen) { return rv; }
             want as i64
         }
         KEYCTL_DESCRIBE => {
@@ -401,19 +426,13 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             s.push('\0');
             let want = s.len();
             if buf_p == 0 || buflen == 0 { return want as i64; }
-            if buf_p >= hal::USER_VA_END
-                || buf_p.checked_add(buflen as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-                return -(Errno::Efault.as_i32() as i64);
-            }
-            let n = core::cmp::min(buflen, want);
             let bytes = s.as_bytes();
-            // SAFETY: buf_p+n validated < USER_VA_END; CPL=0 writes of kernel-owned bytes into caller's AS.
-            unsafe { for i in 0..n { core::ptr::write_volatile((buf_p + i as u64) as *mut u8, bytes[i]); } }
+            if let Err(rv) = write_user_prefix(buf_p, bytes, buflen) { return rv; }
             want as i64
         }
         KEYCTL_SEARCH => {
-            let key_type = match read_user_cstr_owned(args.a2, 64) { Ok(s) => s, Err(rv) => return rv };
-            let description = match read_user_cstr_owned(args.a3, 256) { Ok(s) => s, Err(rv) => return rv };
+            let key_type = match read_user_key_type(args.a2) { Ok(s) => s, Err(rv) => return rv };
+            let description = match read_user_key_desc(args.a3) { Ok(s) => s, Err(rv) => return rv };
             let g = STORE.lock();
             for k in g.keys.values() {
                 if !k.revoked && k.key_type == key_type && k.description == description { return k.serial as i64; }

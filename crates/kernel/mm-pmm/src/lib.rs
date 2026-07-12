@@ -115,6 +115,7 @@ mod tests;
 
 pub mod boot;
 pub mod setup;
+mod mmap_flags;
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod user_as;

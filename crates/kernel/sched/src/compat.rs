@@ -39,32 +39,6 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // ---- POSIX shape: pause/sigsuspend behaviour ----
         NR_RESTART_SYSCALL  => Some(eintr),
 
-        // ---- silent-0 (accept; nothing to track v1) ----
-        // get_robust_list / set_robust_list moved to real impl in F65.
-        NR_CACHESTAT
-        // POSIX timer family moved to real impl in F71 (per-task slot
-        // array + syscall-return-tail firing).
-        // pkey_* — userspace 'always have pkey 0' fallback. Linux pkey
-        // alloc returns -1 (and EINVAL) when MPK isn't supported; we
-        // return 0 because callers (glibc/musl) treat any non-negative
-        // alloc result as "you have a key" and skip the unsupported branch
-        // by reading /proc/self/status PkeyMask. Real MPK rides docs/06.
-        // pkey_* moved to real (per-task) allocator below.
-        // process_madvise / process_mrelease — KCMP / NUMA family
-        // moved to real impls in `syscall_glue_misc.rs`.
-        // Keyring (P38b admit). PAM/login/sudo/dbus probe these at
-        // start-up; -ENOSYS makes them refuse to authenticate. v1
-        // returns silent-0 (a synthetic "key serial" for callers
-        // that only check non-negative). Real keyring storage +
-        // permission checks ride a follow-up.
-        // ADD_KEY / REQUEST_KEY / KEYCTL moved to real impl (F76).
-        // POSIX MQ admin ops. MQ_OPEN/UNLINK/TIMEDSEND/TIMEDRECEIVE
-        // are real (priority-ordered records via posix_mq.rs).
-        // MQ_NOTIFY/GETSETATTR stay silent-0 (no per-task signal-on-
-        // arrival yet, no live mq_attr mutation).
-        // MQ_NOTIFY / MQ_GETSETATTR moved to real impl (F77).
-                                       => Some(0),
-
         // xattr family moved to real impl (F90, xattr_overlay.rs).
 
         // ---- privileged-op refuse ----

@@ -41,8 +41,8 @@ fn kv_num(tok: &str, key: &str) -> Option<usize> {
 
 /// Parse a `format` body into its field table. Each field line is
 /// `\tfield:TYPE NAME[;\toffset:..;\tsize:..;\tsigned:..]`. # C: O(format)
-pub fn parse_fields(format: &[u8]) -> Vec<Field> {
-    let text = core::str::from_utf8(format).unwrap_or("");
+pub fn parse_fields(format: &[u8]) -> Result<Vec<Field>, ParseError> {
+    let text = core::str::from_utf8(format).map_err(|_| ParseError::BadFormat)?;
     let mut out = Vec::new();
     for line in text.lines() {
         let toks: Vec<&str> = line.split('\t').filter(|t| !t.is_empty()).collect();
@@ -65,7 +65,7 @@ pub fn parse_fields(format: &[u8]) -> Vec<Field> {
         let is_string = decl.contains("char") && (is_array || type_part.contains('*') || last.contains('*'));
         out.push(Field { name, size, signed, is_string });
     }
-    out
+    Ok(out)
 }
 
 // ---- AST -------------------------------------------------------------------
@@ -94,7 +94,7 @@ pub enum Ast {
 /// Filter parse failure (→ EINVAL at the filter file). # C: O(1)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {
-    Empty, UnknownField, BadOp, BadValue, TypeMismatch, Syntax, Trailing,
+    Empty, UnknownField, BadOp, BadValue, BadFormat, TypeMismatch, Syntax, Trailing,
 }
 
 // ---- tokenizer -------------------------------------------------------------
@@ -149,7 +149,8 @@ fn tokenize(src: &[u8]) -> Result<Vec<Tok>, ParseError> {
             c if is_ident_ch(c) => {
                 let start = i;
                 while i < src.len() && is_ident_ch(src[i]) { i += 1; }
-                out.push(Tok::Ident(String::from_utf8_lossy(&src[start..i]).into_owned()));
+                let s = core::str::from_utf8(&src[start..i]).map_err(|_| ParseError::BadValue)?;
+                out.push(Tok::Ident(s.into()));
             }
             _ => return Err(ParseError::Syntax),
         }
@@ -349,7 +350,7 @@ impl FilterSlot {
             self.has_filter.store(false, Ordering::Release);
             return Ok(());
         }
-        let fields = parse_fields(self.format);
+        let fields = parse_fields(self.format)?;
         let ast = compile(trimmed, &fields)?; // Err → prior filter kept (below not reached)
         let mut g = self.state.lock();
         g.raw.clear(); g.raw.extend_from_slice(trimmed); g.raw.push(b'\n');

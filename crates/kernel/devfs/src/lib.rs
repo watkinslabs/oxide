@@ -30,7 +30,7 @@
 
 extern crate alloc;
 pub mod boot;
-pub mod tree;
+mod tree;
 
 use alloc::string::String;
 
@@ -99,7 +99,7 @@ pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
 /// (namei resolved any chroot/confined-root before reaching here, D18), so no
 /// string-prefix translation is applied.
 /// # C: O(depth)
-pub fn lookup(path: &str) -> Option<InodeRef> {
+fn lookup(path: &str) -> Option<InodeRef> {
     let cur_ns = current_mount_ns();
     if cur_ns != 0 {
         if let Some(i) = tree::lookup(cur_ns, path) { return Some(i); }
@@ -144,12 +144,11 @@ pub fn add_device_node(class: &str, name: &str, dev_t: Option<(u32, u32)>, facto
 /// `name` matches the `add_device_node` form. # C: O(depth)
 pub fn del_device_node(name: &str) {
     let path = if name.starts_with('/') { String::from(name) } else { alloc::format!("/dev/{}", name) };
-    if let Some(dentry) = vfs::resolve_path_dentry(&path) {
-        vfs::d_invalidate(&dentry);
-    }
     // Broadcast: devtmpfs is one shared instance, so hot-unplug removes the node
     // from every mount namespace's /dev, not just ns0.
-    tree::unregister_subtree_all(&path);
+    for inode in tree::unregister_subtree_all_inodes(&path) {
+        vfs::dcache::d_prune_aliases(&inode);
+    }
 }
 
 /// Detach the entry at `mount_point` (and its subtree) from `mount_ns`.
@@ -229,15 +228,15 @@ mod fs_tests {
         use vfs::FileSystemType;
         use vfs::fs::{FsFlags, FsType, MountSpec};
         // The exact ctor registered for "devtmpfs" in the syscalls crate.
-        let ctor = Box::new(|_s: &str, _t: &str, _d: &str| {
+        let ctor = Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str| {
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
-            Ok(MountSpec { fs, bind_root: None, strict: false })
+            Ok(MountSpec::from_filesystem(ty, fs, None, false, alloc::string::String::from("devtmpfs")))
         });
         let ty = FsType::new("devtmpfs", 0x0102_1994, FsFlags::empty(), ctor);
         // The realized SuperBlock carries the DevfsFs backend + TMPFS_MAGIC.
-        let sb = ty.mount("", "").expect("devtmpfs realizes a SuperBlock");
+        let sb = ty.mount(None, "").expect("devtmpfs realizes a SuperBlock");
         assert_eq!(sb.s_magic, 0x0102_1994, "devtmpfs SB stamps TMPFS_MAGIC");
-        assert_eq!(sb.fs().name(), "devfs", "SB backend is DevfsFs");
+        assert_eq!(sb.s_type.name(), "devtmpfs", "SB type is registered file_system_type");
     }
 
     /// Stage C (D27): `populate_defaults` now self-registers the mem char

@@ -31,10 +31,10 @@ impl InodeOps for Ext4StatInodeOps {
         d.st.wrap_any_ino(child).ok_or(VfsError::Enoent)
     }
 
-    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap, overlay: Option<vfs::inode_times::InodeTimes>)
+    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap)
         -> vfs::getattr::Kstat
     {
-        let mut k = vfs::getattr::generic_fillattr(inode, idmap, overlay);
+        let mut k = vfs::getattr::generic_fillattr(inode, idmap);
         if let Some(d) = inode.private::<Ext4StatData>() {
             if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
         }
@@ -85,8 +85,9 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let perm = ctx.apply_umask(mode) as u16;
-        d.st.mount.create_dir(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid())
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
+        d.st.mount.create_dir(d.ino, name.as_bytes(), m & 0o7777, uid, gid)
             .map_err(super::regular::vfs_error_from_mount)?;
         let child = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Eio)?;
         d.st.wrap_any_ino(child).ok_or(VfsError::Eio)
@@ -127,8 +128,9 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let perm = ctx.apply_umask(mode) as u16;
-        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), perm, ctx.fsuid(), ctx.fsgid())
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
+        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), m & 0o7777, uid, gid)
             .map_err(super::regular::vfs_error_from_mount)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         d.st.wrap_file(ino).ok_or(VfsError::Eio)
@@ -175,7 +177,8 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, ctx.fsuid(), ctx.fsgid())
+        let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
+        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, uid, gid)
             .map_err(super::regular::vfs_error_from_mount)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         Ok(())
@@ -185,8 +188,9 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let mode = (mode & crate::inode::S_IFMT) | (ctx.apply_umask((mode & 0o7777) as u32) as u16);
-        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, ctx.fsuid(), ctx.fsgid()).map_err(|_| VfsError::Eio)?;
+        let (uid, gid, mode) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
+            mode, mode, ctx.cred, ctx.umask);
+        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, uid, gid).map_err(|_| VfsError::Eio)?;
         d.st.page_cache.invalidate(InodeId(ino as u64));
         Ok(())
     }
@@ -194,9 +198,6 @@ impl InodeOps for Ext4StatInodeOps {
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &vfs::CreateCtx)
         -> KResult<()>
     {
-        if flags & (vfs::namei::RENAME_EXCHANGE | vfs::namei::RENAME_WHITEOUT) != 0 {
-            return Err(VfsError::Einval);
-        }
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let nd = new_dir.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
@@ -205,10 +206,24 @@ impl InodeOps for Ext4StatInodeOps {
         let (from_p, to_p) = (d.ino, nd.ino);
         let mount = &d.st.mount;
         let target = d.st.lookup_child_ino(from_p, old_name).ok_or(VfsError::Enoent)?;
-        let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
-        let ftype = if src.is_dir() { crate::DT_DIR } else if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
-        let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
         let dest_victim = d.st.lookup_child_ino(to_p, new_name);
+        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
+            let bino = dest_victim.ok_or(VfsError::Enoent)?;
+            if from_p == to_p && old_name == new_name { return Ok(()); }
+            let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+            let dst = mount.read_inode(bino).map_err(|_| VfsError::Eio)?;
+            let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
+            return mount.run_journaled(|m| {
+                m.dir_unlink(from_p, from_name)?;
+                m.dir_unlink(to_p, to_name)?;
+                m.dir_link(from_p, from_name, bino, super::super::ops::dirent_dt(&dst))?;
+                m.dir_link(to_p, to_name, target, super::super::ops::dirent_dt(&src))?;
+                Ok(())
+            }).map_err(|_| VfsError::Eio);
+        }
+        let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
+        let ftype = super::super::ops::dirent_dt(&src);
+        let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
         let dest_is_dir = dest_victim
             .and_then(|v| mount.read_inode(v).ok())
             .map(|i| i.is_dir())
@@ -217,6 +232,9 @@ impl InodeOps for Ext4StatInodeOps {
             if dest_victim.is_some() { let _ = m.dir_unlink(to_p, to_name); }
             m.dir_link(to_p, to_name, target, ftype)?;
             m.dir_unlink(from_p, from_name)?;
+            if flags & vfs::namei::RENAME_WHITEOUT != 0 {
+                m.create_mknod(from_p, from_name, crate::inode::S_IFCHR, 0, 0, 0)?;
+            }
             Ok(())
         }).map_err(|_| VfsError::Eio)?;
         if let Some(victim_ino) = dest_victim {
@@ -235,6 +253,10 @@ impl InodeOps for Ext4StatInodeOps {
 /// (ZST). # C: O(1)
 pub(crate) struct Ext4StatFileOps;
 
+fn ext4_dirent_name(name: &[u8]) -> alloc::string::String {
+    vfs::path_from_bytes(name)
+}
+
 impl FileOps for Ext4StatFileOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
@@ -250,9 +272,7 @@ impl FileOps for Ext4StatFileOps {
             if !keep_going { break; }
             let Ok(blk) = mount.read_file_block(&dir_inode, blk_idx) else { break };
             let _ = crate::iter_active(&blk, |e| {
-                let name = match core::str::from_utf8(e.name) {
-                    Ok(s) => s, Err(_) => return true,
-                };
+                let name = ext4_dirent_name(e.name);
                 if name.is_empty() { return true; }
                 idx += 1;
                 if idx <= off { return true; }
@@ -266,7 +286,7 @@ impl FileOps for Ext4StatFileOps {
                     7 => FileType::Symlink,
                     _ => FileType::Regular,
                 };
-                let keep = ctx.emit(name, e.inode as u64, ft, idx);
+                let keep = ctx.emit(&name, e.inode as u64, ft, idx);
                 if !keep { keep_going = false; }
                 keep
             });
@@ -299,4 +319,16 @@ pub(crate) fn build_stat_inode(
         .xattrs(xattrs)
         .private(data)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ext4_dirent_name;
+
+    #[test]
+    fn ext4_dirent_name_preserves_non_utf8_bytes() {
+        let raw = b"dir-\xff-entry";
+        let name = ext4_dirent_name(raw);
+        assert_eq!(vfs::path_into_bytes(&name), raw);
+    }
 }

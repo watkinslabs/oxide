@@ -41,15 +41,15 @@ impl FileSystem for PseudoBe {
 }
 
 /// A `file_system_type` whose `mount` (`fill_super`) builds a real SB over the
-/// backend root — the legacy adapter `get_tree` the new-mount-API path drives.
+/// backend root — the classic mount adapter `get_tree` the new-mount-API path drives.
 /// `flags` carries the D23 `FS_REQUIRES_DEV` classification.
 struct Ty { nm: &'static str, root_ino: u64, flags: FsFlags }
 impl FileSystemType for Ty {
     fn name(&self) -> &str { self.nm }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
         let fs: Arc<dyn FileSystem> = Arc::new(PseudoBe { root_ino: self.root_ino });
         let root = fs.root();
-        Ok(SuperBlock::for_backend(fs, root, next_anon_dev(), self.nm.to_string()))
+        Ok(common::realize_sb(fs, root, next_anon_dev(), self.nm.to_string()))
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
 }

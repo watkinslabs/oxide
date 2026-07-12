@@ -217,8 +217,8 @@ impl Nameidata {
                     }
                     Err(VfsError::Enoent) => {
                         // D5/D6 negative-on-miss, gated for safety (see
-                        // `neg_cache_ok`): the create syscalls flush this leaf
-                        // negative via `pathresolve::d_drop_path`, so a
+                        // `neg_cache_ok`): create syscalls flush this leaf
+                        // negative by resolved parent dentry/name, so a
                         // subsequently-created file is never masked.
                         if neg_cache_ok(&self.cur_inode) {
                             crate::dcache::d_add_negative(&self.cur_dentry, comp);
@@ -304,45 +304,45 @@ impl Nameidata {
                         continue;
                     }
                     LinkTarget::Path(bytes) => {
-                let target = String::from_utf8_lossy(&bytes).into_owned();
-                // Suspend the active frame's remainder (Linux `nd->stack` push)
-                // and make the link target the new active frame; the remainder is
-                // resumed (Linux `put_link`) when the target is consumed. Skip the
-                // push when nothing remains, so an exhausted frame is never stacked
-                // — keeping the resume loop and `is_final` exact.
-                if idx < queue.len() {
-                    saved.push((core::mem::take(&mut queue), idx));
-                    // Linux `nd->depth++` — one more suspended link frame is
-                    // live. Cap the NESTING separately from the total count: a
-                    // pathologically deep stack of pending remainders is ELOOP
-                    // at MAX_NESTED_LINKS even while the total is under
-                    // MAXSYMLINKS (Linux rejects both over-nesting and
-                    // over-counting). `saved.len() == self.depth` holds.
-                    self.depth += 1;
-                    if self.depth > MAX_NESTED_LINKS { return Err(VfsError::Eloop); }
-                }
-                queue = components(&target);
-                idx = 0;
-                if target.as_bytes().first() == Some(&b'/') {
-                    // RESOLVE_BENEATH (`beneath_exdev`): an absolute symlink
-                    // target escapes above the scoped dirfd → EXDEV (Linux),
-                    // checked BEFORE the jump-to-root.
-                    if self.flags.beneath_exdev { return Err(VfsError::Exdev); }
-                    // Absolute target jumps to the resolution root (Linux
-                    // `nd_jump_root`), exactly as an absolute pathname does
-                    // (`to_root` at the top of `walk`). Under a CONFINED root —
-                    // chroot (`beneath`, wired by `pathresolve::resolution_root`)
-                    // or RESOLVE_IN_ROOT — `root` IS the jail/dirfd, so the
-                    // target restarts there and cannot escape: a chroot'd
-                    // `/etc/foo` symlink resolves to `<jail>/etc/foo`, NOT the
-                    // global tree.
-                    self.to_root()?;
-                }
-                // D22: the link's name/target was consumed — a `d_move` of the
-                // symlink dentry under us taints the target read, so restart.
-                if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
-                // Relative target keeps walking from the symlink's directory.
-                continue;
+                        let target = crate::path::path_from_bytes(&bytes);
+                        // Suspend the active frame's remainder (Linux `nd->stack` push)
+                        // and make the link target the new active frame; the remainder is
+                        // resumed (Linux `put_link`) when the target is consumed. Skip the
+                        // push when nothing remains, so an exhausted frame is never stacked
+                        // — keeping the resume loop and `is_final` exact.
+                        if idx < queue.len() {
+                            saved.push((core::mem::take(&mut queue), idx));
+                            // Linux `nd->depth++` — one more suspended link frame is
+                            // live. Cap the NESTING separately from the total count: a
+                            // pathologically deep stack of pending remainders is ELOOP
+                            // at MAX_NESTED_LINKS even while the total is under
+                            // MAXSYMLINKS (Linux rejects both over-nesting and
+                            // over-counting). `saved.len() == self.depth` holds.
+                            self.depth += 1;
+                            if self.depth > MAX_NESTED_LINKS { return Err(VfsError::Eloop); }
+                        }
+                        queue = components(&target);
+                        idx = 0;
+                        if target.as_bytes().first() == Some(&b'/') {
+                            // RESOLVE_BENEATH (`beneath_exdev`): an absolute symlink
+                            // target escapes above the scoped dirfd → EXDEV (Linux),
+                            // checked BEFORE the jump-to-root.
+                            if self.flags.beneath_exdev { return Err(VfsError::Exdev); }
+                            // Absolute target jumps to the resolution root (Linux
+                            // `nd_jump_root`), exactly as an absolute pathname does
+                            // (`to_root` at the top of `walk`). Under a CONFINED root —
+                            // chroot (`beneath`, wired by `pathresolve::resolution_root`)
+                            // or RESOLVE_IN_ROOT — `root` IS the jail/dirfd, so the
+                            // target restarts there and cannot escape: a chroot'd
+                            // `/etc/foo` symlink resolves to `<jail>/etc/foo`, NOT the
+                            // global tree.
+                            self.to_root()?;
+                        }
+                        // D22: the link's name/target was consumed — a `d_move` of the
+                        // symlink dentry under us taints the target read, so restart.
+                        if renamed(&child, cseq) { return Ok(WalkOutcome::Restart); }
+                        // Relative target keeps walking from the symlink's directory.
+                        continue;
                     }
                 }
             }

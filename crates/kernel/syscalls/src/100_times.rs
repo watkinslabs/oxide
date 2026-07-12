@@ -33,13 +33,13 @@ pub fn sys_times(args: &SyscallArgs) -> i64 {
     let cutime_ticks = sched::clock::ns_to_clk_tck(cutime_ns);
     let cstime_ticks = sched::clock::ns_to_clk_tck(cstime_ns);
     if buf != 0 {
-        if let Err(rv) = validate_user_buf_writable(buf, 32, 8) { return rv; }
+        if let Err(rv) = validate_user_buf_writable(buf, 32, 1) { return rv; }
         // SAFETY: validated 32-byte writable user buf; CPL=0 writes through caller's AS.
         unsafe {
-            core::ptr::write_volatile( buf       as *mut u64, utime_ticks);
-            core::ptr::write_volatile((buf + 8)  as *mut u64, stime_ticks);
-            core::ptr::write_volatile((buf + 16) as *mut u64, cutime_ticks);
-            core::ptr::write_volatile((buf + 24) as *mut u64, cstime_ticks);
+            core::ptr::write_unaligned( buf       as *mut u64, utime_ticks);
+            core::ptr::write_unaligned((buf + 8)  as *mut u64, stime_ticks);
+            core::ptr::write_unaligned((buf + 16) as *mut u64, cutime_ticks);
+            core::ptr::write_unaligned((buf + 24) as *mut u64, cstime_ticks);
         }
     }
     sched::clock::ns_to_clk_tck(now) as i64

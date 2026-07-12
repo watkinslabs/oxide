@@ -1,7 +1,7 @@
 //! superblock-D25: typed `s_fs_info` backend-private state slot. `set_fs_info`
 //! installs a concrete `Arc<T>` (Linux `fill_super` setting `sb->s_fs_info`) and
 //! `fs_info_as::<T>()` reads it back downcast; a wrong-type downcast yields
-//! `None`. The `for_backend`/`new` placeholder is the `()` unit (no private
+//! `None`. The `from_ops`/`new` placeholder is the `()` unit (no private
 //! state). Mirrors `inode.private::<T>()`.
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use vfs::{KResult, VfsError};
 struct TType;
 impl FileSystemType for TType {
     fn name(&self) -> &str { "tfsinfofs" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 struct TOps;
 impl SuperOps for TOps {

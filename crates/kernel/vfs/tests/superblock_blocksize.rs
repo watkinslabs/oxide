@@ -1,5 +1,5 @@
 //! superblock-D12: `s_blocksize` comes from the backend's `FileSystem::block_size()`
-//! (not a hardcoded 4096). `for_backend` plumbs it, and `statfs` reports it as
+//! (not a hardcoded 4096). fill-super plumbs it, and `statfs` reports it as
 //! `f_bsize`. A backend overriding block_size() is reflected end-to-end at the
 //! VFS layer (ext4 supplying its real on-disk block size is the fs-impl half).
 

@@ -26,7 +26,7 @@ fn nondev_inode(ft: FileType) -> InodeRef {
     InodeBuilder::new(4, mk_mode(ft, 0), default_inode_ops(), default_file_ops()).rdev(0xdead).build()
 }
 
-fn fill_rdev(i: &Inode) -> u32 { vfs::generic_fillattr(i, &IDENTITY, None).rdev }
+fn fill_rdev(i: &Inode) -> u32 { vfs::generic_fillattr(i, &IDENTITY).rdev }
 
 #[test]
 fn encode_dev_matches_devt_and_splits_high_minor() {

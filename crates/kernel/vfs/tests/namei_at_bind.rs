@@ -97,3 +97,50 @@ fn at_dotdot_climbs_via_mountpoint_not_lexical() {
     assert_eq!(p.inode.ino(), 11, "`..` crossed to /a then resolved y (mount-tree, not lexical)");
     assert_ne!(p.mnt_id, bind.mnt_id, "after climbing out, mnt_id is the parent mount, not the bind");
 }
+
+#[test]
+fn at_relative_bind_result_drives_readonly_mount_decision() {
+    let _g = SERIAL.lock().unwrap();
+    let (root, bind) = build();
+    vfs::mount::remount_flags_by_id(bind.mnt_id, vfs::mount::MS_RDONLY)
+        .expect("mark bind readonly");
+    let base = bind.mnt_root().expect("bind mnt_root");
+    let p = vfs::path_lookup_at_cred(base, bind.mnt_id, root.clone(), "x",
+        LookupFlags::default(), Cred::root()).expect("resolve x under bind");
+    assert_eq!(p.inode.ino(), 21, "relative `x` resolves the bind's file");
+    assert_eq!(p.mnt_id, bind.mnt_id,
+        "metadata syscalls must enforce readonly against the bind mount id");
+    let m = vfs::mount::mount_by_id(p.mnt_id).expect("resolved mount exists");
+    assert_ne!(m.flags() & vfs::mount::MNT_RDONLY, 0,
+        "the resolved VfsPath carries the readonly mount, not the canonical source");
+}
+
+#[test]
+fn bind_path_render_uses_file_mount_not_source_dentry_chain() {
+    let _g = SERIAL.lock().unwrap();
+    let (root, bind) = build();
+    let base = bind.mnt_root().expect("bind mnt_root");
+    let p = vfs::path_lookup_at_cred(base, bind.mnt_id, root.clone(), "x",
+        LookupFlags::default(), Cred::root()).expect("resolve x under bind");
+    assert_eq!(p.inode.ino(), 21, "relative `x` resolves the bind's file");
+    assert_eq!(p.mnt_id, bind.mnt_id, "path keeps the bind mount id");
+    assert_eq!(vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry), "/a/b/x",
+        "getcwd/fchdir display must render through the bind mount, not `/x`");
+}
+
+#[test]
+fn open_tree_clone_source_uses_walked_mount_id() {
+    let _g = SERIAL.lock().unwrap();
+    let (root, bind) = build();
+    let base = bind.mnt_root().expect("bind mnt_root");
+    let p = vfs::path_lookup_at_cred(base, bind.mnt_id, root.clone(), "x",
+        LookupFlags::default(), Cred::root()).expect("resolve x under bind");
+    assert_eq!(p.mnt_id, bind.mnt_id,
+        "open_tree must use the single walked VfsPath mount id, not rendered dentry text");
+    let src = vfs::mount::mount_by_id(p.mnt_id).expect("walked mount exists");
+    let nodes = vfs::mount::clone_mount_tree(&src, true);
+    let root_clone = nodes.iter().find(|n| n.rel.is_empty()).expect("root clone");
+    assert_eq!(root_clone.m.mnt_root().and_then(|d| d.inode()).map(|i| i.ino()), Some(20),
+        "clone source is the bind root mount selected by VfsPath.mnt_id");
+    vfs::mount::release_clone_tree(&nodes);
+}

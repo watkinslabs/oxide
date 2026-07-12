@@ -2,11 +2,11 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
-    read_user_path, errno_from_vfs, resolve_parent, path_exists, strip_trailing_slash,
+    read_user_path, errno_from_vfs, strip_trailing_slash, resolve_create_parent_at,
+    render_child_path, child_exists, parent_mount_readonly, drop_child_cache,
 };
 
 /// `mkdir(path, mode)` slot 83.
@@ -16,16 +16,20 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     let raw = match read_user_path(args.a0) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
-        Ok(p) => p, Err(rv) => return rv,
+    let raw = strip_trailing_slash(&raw);
+    let (parent, name) = match resolve_create_parent_at(crate::pathresolve::AT_FDCWD, raw) {
+        Ok(x) => x, Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdir", raw, rv);
+            #[cfg(feature = "debug-mount")]
+            if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_noparent", raw, rv); }
+            return rv;
+        }
     };
-    let p = String::from(strip_trailing_slash(&p));
-    if let Err(rv) = crate::landlock::check(&p,
-        ::security::landlock::access::MAKE_DIR) { return rv; }
-    // Linux do_mkdirat: `mode &= ~current_umask()` (D23).
+    let p = render_child_path(&parent, &name);
     let umask = sched::live::current()
         .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
-    let mode = (args.a1 as u32) & 0o7777 & !umask;
+    let mode = (args.a1 as u32) & 0o7777;
     // D57: walk the parent FIRST so a non-directory path component surfaces
     // ENOTDIR (Linux filename_create), then EEXIST (target present) BEFORE
     // EROFS — Linux returns EEXIST before mnt_want_write, and systemd's
@@ -33,31 +37,70 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     // returning EEXIST (success), not EROFS. resolve_parent is a read-only
     // walk, so reordering it ahead of these checks cannot leak the parent's
     // EROFS.
-    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
-    if !matches!(pino.file_type(), vfs::FileType::Directory) {
-        return -(Errno::Enotdir.as_i32() as i64);
+    if !matches!(parent.inode.file_type(), vfs::FileType::Directory) {
+        let rv = -(Errno::Enotdir.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
+        return rv;
     }
-    if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
-    if vfs::mount::is_readonly_path(&p) {
+    match child_exists(&parent, &name) {
+        Ok(true) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdir", &p, -(Errno::Eexist.as_i32() as i64));
+            #[cfg(feature = "debug-mount")]
+            if p.contains("/run/systemd/journal") { crate::mount_common::mnt_log("mkdir_eexist", &p, -(Errno::Eexist.as_i32() as i64)); }
+            return -(Errno::Eexist.as_i32() as i64);
+        }
+        Ok(false) => {}
+        Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
+            #[cfg(feature = "debug-mount")]
+            if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_exists", raw, rv); }
+            return rv;
+        }
+    }
+    if parent_mount_readonly(&parent) {
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"mkdir", &p, -(Errno::Erofs.as_i32() as i64));
+        #[cfg(feature = "debug-mount")]
+        if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_rofs", raw, -(Errno::Erofs.as_i32() as i64)); }
         return -(Errno::Erofs.as_i32() as i64);
+    }
+    if let Err(rv) = crate::landlock::check_parent(&parent,
+        ::security::landlock::access::MAKE_DIR) { return rv; }
+    let cred = crate::pathresolve::current_cred();
+    if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+        let rv = errno_from_vfs(e);
+        #[cfg(feature = "debug-udevdb")]
+        crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
+        return rv;
     }
     // Thread the mount idmap + caller cred + umask so the new dir gets the right
     // owner (Linux `->mkdir(struct mnt_idmap *, ...)`).
-    let cred = crate::pathresolve::current_cred();
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
     // D29: hold the parent dir's `i_rwsem` EXCLUSIVE across the backend mkdir
     // (Linux `filename_create` → `->mkdir`). Scope is just the op; the rank-40
-    // i_rwsem is dropped before the rank-50/60 dcache `d_drop_path` below.
-    let r = { let _g = pino.inode_lock(); pino.mkdir(&name, mode, &ctx) };
+    // i_rwsem is dropped before the rank-50/60 object-cache drop below.
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.mkdir(&name, mode, &ctx) };
     match r {
         Ok(_) => {
-            crate::pathresolve::d_drop_path(&p);
-            vfs::fire_dirent_create(crate::namei_common::parent_path(&p), &name);
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdir", &p, 0);
+            #[cfg(feature = "debug-mount")]
+            if p.contains("/run/systemd/journal") { crate::mount_common::mnt_log("mkdir", &p, 0); }
+            drop_child_cache(&parent, &name);
+            vfs::fire_dirent_create(&parent.inode, &name);
             0
         }
         Err(e) => {
             crate::namei_common::trace_run_vfs_error(b"mkdir", &p, e);
-            errno_from_vfs(e)
+            let rv = errno_from_vfs(e);
+            #[cfg(feature = "debug-udevdb")]
+            crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
+            #[cfg(feature = "debug-mount")]
+            if p.starts_with("/run") { crate::mount_common::mnt_log("mkdir", &p, rv); }
+            rv
         }
     }
 }

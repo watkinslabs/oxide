@@ -17,13 +17,12 @@ const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 fn read_user_ns_pair(p: u64, idx: usize, now: u64) -> Result<Option<(u64, bool)>, i64> {
     // Linux: each timespec is 16 bytes (sec + nsec, i64 each).
     let off = (idx * 16) as u64;
-    if p.checked_add(off + 16).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: p+off+16 validated < USER_VA_END; CPL=0 reads the timespec pair (i64 sec, i64 nsec) through caller's AS.
+    let slot = p.checked_add(off).ok_or(-(Errno::Efault.as_i32() as i64))?;
+    crate::userbuf::validate_user_buf(slot, 16, 1)?;
+    // SAFETY: full timespec byte range validated readable; Linux copyin accepts unaligned storage.
     unsafe {
-        let sec  = core::ptr::read_volatile((p + off)     as *const i64);
-        let nsec = core::ptr::read_volatile((p + off + 8) as *const i64);
+        let sec  = core::ptr::read_unaligned(slot       as *const i64);
+        let nsec = core::ptr::read_unaligned((slot + 8) as *const i64);
         if nsec == UTIME_OMIT { return Ok(None); }
         if nsec == UTIME_NOW  { return Ok(Some((now, false))); }
         if sec < 0 || nsec < 0 || nsec >= 1_000_000_000 {

@@ -4,7 +4,9 @@
 use core::sync::atomic::Ordering;
 
 use syscall::SyscallArgs;
+use syscall::errno::Errno;
 
+use crate::userbuf::validate_user_buf;
 use crate::time_common::{NS_PER_SEC, CLOCK_REALTIME, REALTIME_OFFSET_NS, monotonic_ns};
 
 /// `sys_clock_settime(clk_id, tp)` — slot 227. CLOCK_REALTIME
@@ -14,16 +16,21 @@ use crate::time_common::{NS_PER_SEC, CLOCK_REALTIME, REALTIME_OFFSET_NS, monoton
 pub fn kernel_clock_settime(args: &SyscallArgs) -> i64 {
     let clk_id = args.a0;
     let tp = args.a1;
-    if tp == 0 || tp >= hal::USER_VA_END { return 0; }
-    // SAFETY: tp validated 16-byte range; CPL=0 reads through caller's AS.
+    if !matches!(clk_id, CLOCK_REALTIME) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if let Err(rv) = validate_user_buf(tp, 16, 1) { return rv; }
+    // SAFETY: tp validated as readable 16-byte timespec storage.
     let (sec, nsec) = unsafe {
-        let s = core::ptr::read_volatile(tp as *const u64);
-        let n = core::ptr::read_volatile((tp + 8) as *const u64);
+        let s = core::ptr::read_unaligned(tp as *const i64);
+        let n = core::ptr::read_unaligned((tp + 8) as *const i64);
         (s, n)
     };
-    if matches!(clk_id, CLOCK_REALTIME) {
-        let target = sec.saturating_mul(NS_PER_SEC).saturating_add(nsec);
-        REALTIME_OFFSET_NS.store(sched::clock::settimeofday_offset(monotonic_ns(), target), Ordering::Release);
+    if sec < 0 || nsec < 0 || nsec >= NS_PER_SEC as i64 {
+        return -(Errno::Einval.as_i32() as i64);
     }
+    let target = (sec as u64).saturating_mul(NS_PER_SEC).saturating_add(nsec as u64);
+    REALTIME_OFFSET_NS.store(sched::clock::settimeofday_offset(monotonic_ns(), target), Ordering::Release);
+    sched::clock::note_realtime_change();
     0
 }

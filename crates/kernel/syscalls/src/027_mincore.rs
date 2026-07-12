@@ -10,11 +10,8 @@ pub fn sys_mincore(args: &SyscallArgs) -> i64 {
     use hal::{MmuOps, UserVirtAddr, Va};
     use syscall::errno::Errno;
     let (addr, len, vec) = (args.a0, args.a1, args.a2);
-    if addr == 0 || (addr & 0xFFF) != 0 { return -(Errno::Einval.as_i32() as i64); }
-    let pages = (len + 0xfff) / 0x1000;
-    if vec == 0 || vec.checked_add(pages).map_or(true, |e| e >= hal::USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if addr == 0 || len == 0 || (addr & 0xFFF) != 0 { return -(Errno::Einval.as_i32() as i64); }
+    let pages = match len.checked_add(0xfff) { Some(v) => v / 0x1000, None => return -(Errno::Enomem.as_i32() as i64) };
     if let Err(rv) = validate_user_buf_writable(vec, pages, 1) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Einval.as_i32() as i64) };
     // SAFETY: mm slot single-mutator per `13§5`.
@@ -29,8 +26,8 @@ pub fn sys_mincore(args: &SyscallArgs) -> i64 {
             #[cfg(target_arch = "aarch64")]
             { hal_aarch64::mmu_ops::ArmMmu::translate(Va(va)).map_or(0, |_| 1) }
         };
-        // SAFETY: vec range validated writable above; CPL=0 byte write through caller's AS.
-        unsafe { core::ptr::write_volatile((vec + i) as *mut u8, r); }
+        // SAFETY: vec byte range validated writable above; Linux copyout accepts unaligned storage.
+        unsafe { core::ptr::write_unaligned((vec + i) as *mut u8, r); }
     }
     0
 }

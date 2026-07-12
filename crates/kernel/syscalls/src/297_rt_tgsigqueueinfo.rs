@@ -3,6 +3,7 @@
 
 use syscall::SyscallArgs;
 use crate::signal_common::*;
+use crate::userbuf::validate_user_buf;
 
 /// `sys_rt_tgsigqueueinfo(tgid, tid, sig, info)` — slot 297.
 /// # C: O(1)
@@ -11,6 +12,7 @@ pub fn sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
     let tid   = args.a1 as u32;
     let sig   = args.a2 as u32;
     let info_ptr = args.a3;
+    if let Err(rv) = validate_user_buf(info_ptr, 32, 1) { return rv; }
     if sig < 33 || sig > 64 {
         let tgkill_args = SyscallArgs {
             a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0,

@@ -40,19 +40,16 @@ pub(crate) fn rt_sigqueue_to(tid: u32, sig: u32, info_ptr: u64) -> i64 {
     let target = match sched::live::registry::resolve_user_pid(tid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let info = if info_ptr != 0 && info_ptr < hal::USER_VA_END {
-        // SAFETY: info_ptr validated < USER_VA_END; siginfo_t leading fields are signo/errno/code/pid/uid/value (lay-of-the-land Linux x86_64); CPL=0 reads through caller's AS.
-        unsafe {
-            let signo_u = core::ptr::read_volatile(info_ptr as *const i32) as u32;
-            let _errno = core::ptr::read_volatile((info_ptr + 4) as *const i32);
-            let code   = core::ptr::read_volatile((info_ptr + 8) as *const i32);
-            let pid    = core::ptr::read_volatile((info_ptr + 16) as *const u32);
-            let uid    = core::ptr::read_volatile((info_ptr + 20) as *const u32);
-            let value  = core::ptr::read_volatile((info_ptr + 24) as *const u64);
-            sched::SigInfo { signo: signo_u, code, pid, uid, value }
-        }
-    } else {
-        sched::SigInfo { signo: sig, code: 0, pid: 0, uid: 0, value: 0 }
+    if let Err(rv) = crate::userbuf::validate_user_buf(info_ptr, 32, 1) { return rv; }
+    // SAFETY: info_ptr validated readable for the siginfo_t leading fields used here.
+    let info = unsafe {
+        let signo_u = core::ptr::read_unaligned(info_ptr as *const i32) as u32;
+        let _errno = core::ptr::read_unaligned((info_ptr + 4) as *const i32);
+        let code   = core::ptr::read_unaligned((info_ptr + 8) as *const i32);
+        let pid    = core::ptr::read_unaligned((info_ptr + 16) as *const u32);
+        let uid    = core::ptr::read_unaligned((info_ptr + 20) as *const u32);
+        let value  = core::ptr::read_unaligned((info_ptr + 24) as *const u64);
+        sched::SigInfo { signo: signo_u, code, pid, uid, value }
     };
     target.rt_push(info);
     target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);

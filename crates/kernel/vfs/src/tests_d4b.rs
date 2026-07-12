@@ -46,11 +46,11 @@ fn cred_with(uid: u32) -> Cred {
 fn t1_idmap_maps_stat_uid() {
     let inode = MetaInode::reg(0o644, 1000, 1000);
     let map = Idmap::uniform(0, 100_000, 65536);
-    let st = generic_fillattr(inode.as_ref(), &map, None);
+    let st = generic_fillattr(inode.as_ref(), &map);
     assert_eq!(st.uid, 101_000);
     assert_eq!(st.gid, 101_000);
     assert_eq!(st.mode, S_IFREG | 0o644);
-    let id = generic_fillattr(inode.as_ref(), &Idmap::identity(), None);
+    let id = generic_fillattr(inode.as_ref(), &Idmap::identity());
     assert_eq!(id.uid, 1000);
     assert_eq!(id.gid, 1000);
 }
@@ -113,10 +113,10 @@ fn t4_utimensat_omit_leaves_other() {
     assert_eq!(inode.mtime(), Some(555)); // updated
 }
 
-// T5: generic_fillattr overlay + perm()==None reproduces the default fallback.
+// T5: generic_fillattr reports symlink native permission bits.
 #[test]
 fn t5_fillattr_default_perm_fallback() {
-    let inode: InodeRef = MetaInode::symlink(b"/x"); // perm()==None, Symlink
-    let st = generic_fillattr(inode.as_ref(), &Idmap::identity(), None);
-    assert_eq!(st.mode & 0o7777, 0o777); // default_perm_for(Symlink)
+    let inode: InodeRef = MetaInode::symlink(b"/x");
+    let st = generic_fillattr(inode.as_ref(), &Idmap::identity());
+    assert_eq!(st.mode & 0o7777, 0o777);
 }

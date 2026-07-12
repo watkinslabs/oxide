@@ -17,8 +17,7 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
 
 /// Trim trailing NULs/spaces from a fixed CPUID byte array → &str.
 fn trim(b: &[u8]) -> &str {
-    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-    core::str::from_utf8(&b[..end]).unwrap_or("").trim()
+    crate::util::ascii_field_trimmed(b)
 }
 
 fn body() -> Vec<u8> {

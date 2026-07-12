@@ -1,12 +1,14 @@
 //! superblock-D (`s_uuid`): a `SuperBlock` carries the Linux
 //! `super_block.s_uuid` (a 16-byte `uuid_t`) plus `s_uuid_len`, published by a
 //! backend's `fill_super` from its on-disk superblock and consumed by
-//! `name_to_handle_at` FID generation and UUID display. A fresh `for_backend`
-//! SB has no UUID (all-zero, len 0); `set_uuid` publishes one without rebuilding
+//! `name_to_handle_at` FID generation and UUID display. A fresh fill-super SB
+//! has no UUID (all-zero, len 0); `set_uuid` publishes one without rebuilding
 //! the SB. None of this existed before — the SB modelled `s_id`/`s_dev` but had
 //! no filesystem-UUID field at all.
 
 use std::sync::Arc;
+
+mod common;
 
 use vfs::fs::FileSystem;
 use vfs::superblock::next_anon_dev;
@@ -18,7 +20,7 @@ impl FileSystem for UFs {
 }
 
 fn sb() -> Arc<SuperBlock> {
-    SuperBlock::for_backend(Arc::new(UFs), None, next_anon_dev(), String::from("ufs"))
+    common::realize_sb(Arc::new(UFs), None, next_anon_dev(), String::from("ufs"))
 }
 
 #[test]

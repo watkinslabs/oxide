@@ -14,10 +14,12 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::next_anon_dev;
 use vfs::{
-    FileType, Inode, InodeBuilder, KResult, SbStatFs, SuperBlock, SuperOps,
+    FileType, Inode, InodeBuilder, KResult, SbStatFs, SuperOps,
     default_file_ops, default_inode_ops, mk_mode, I_DIRTY, I_NEW,
 };
 
@@ -58,7 +60,7 @@ fn tinode() -> Arc<Inode> {
 /// stats reach userspace verbatim through the SB-level passthroughs.
 #[test]
 fn sb_show_options_dispatches_to_overridden_s_op() {
-    let sb = SuperBlock::for_backend(Arc::new(RichFs), None, next_anon_dev(), String::from("richfs"));
+    let sb = common::realize_sb(Arc::new(RichFs), None, next_anon_dev(), String::from("richfs"));
     assert_eq!(sb.show_options(), ",size=10240k,nr_inodes=2560,mode=755");
     assert_eq!(sb.show_devname(), Some(String::from("server:/export")));
     assert_eq!(sb.show_path(), Some(String::from("/synthetic/root")));
@@ -69,7 +71,7 @@ fn sb_show_options_dispatches_to_overridden_s_op() {
 /// — empty options, `None` devname/path/stats.
 #[test]
 fn sb_show_options_defaults_to_empty_and_none() {
-    let sb = SuperBlock::for_backend(Arc::new(PlainFs), None, next_anon_dev(), String::from("plainfs"));
+    let sb = common::realize_sb(Arc::new(PlainFs), None, next_anon_dev(), String::from("plainfs"));
     assert_eq!(sb.show_options(), "");
     assert_eq!(sb.show_devname(), None);
     assert_eq!(sb.show_path(), None);
@@ -80,7 +82,7 @@ fn sb_show_options_defaults_to_empty_and_none() {
 /// bits into `i_state` and MASKS OUT a smuggled lifecycle bit (`I_NEW`).
 #[test]
 fn dirty_inode_default_marks_state_and_masks_lifecycle() {
-    let sb = SuperBlock::for_backend(Arc::new(PlainFs), None, next_anon_dev(), String::from("plainfs"));
+    let sb = common::realize_sb(Arc::new(PlainFs), None, next_anon_dev(), String::from("plainfs"));
     let inode = tinode();
     assert_eq!(inode.i_state() & I_DIRTY, 0, "born clean");
     // Try to smuggle I_NEW through the dirtying path alongside the dirty bits.

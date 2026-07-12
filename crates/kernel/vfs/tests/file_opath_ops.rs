@@ -102,7 +102,7 @@ fn opath_bit_not_truncated() {
 #[test]
 fn opath_fstat_works() {
     let f = opath_file();
-    let st = f.inode().getattr(&Idmap::identity(), None);
+    let st = f.inode().getattr(&Idmap::identity());
     assert_eq!(st.size, 4096, "fstat on O_PATH fd reports the real size");
     assert_eq!(st.mode & 0o7777, 0o644, "fstat on O_PATH fd reports the real mode");
 }

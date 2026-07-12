@@ -5,7 +5,7 @@
 //! `s_blocksize`, `f_fsid`←`s_dev`; superblock.rs `SuperBlock::statfs`).
 //!
 //! The existing `superblock_mount.rs` tests cover ONLY the all-zero default
-//! path (the generic `FsBackedSuperOps` reports no accounting). This locks the
+//! path (the generic fill-super statfs snapshot reports no accounting). This locks the
 //! other half: a real per-fs `SuperOps` (the ext4/tmpfs lane) that reports live
 //! block/inode usage AND its own non-default `f_type`/`f_bsize`/`f_fsid` must
 //! reach userspace verbatim — the VFS plumbing must neither drop the accounting
@@ -16,9 +16,11 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::next_anon_dev;
-use vfs::{KResult, SbStatFs, SuperBlock, SuperOps};
+use vfs::{KResult, SbStatFs, SuperOps};
 
 /// A per-fs `SuperOps` reporting a fully-populated `kstatfs` (the ext4-class
 /// case): live block/inode accounting plus a backend-chosen `f_type`/`f_bsize`/
@@ -68,7 +70,7 @@ impl FileSystem for ZeroFs {
 /// clobber.
 #[test]
 fn statfs_passes_through_backend_accounting_and_identity() {
-    let sb = SuperBlock::for_backend(Arc::new(FullFs), None, next_anon_dev(), String::from("fullfs"));
+    let sb = common::realize_sb(Arc::new(FullFs), None, next_anon_dev(), String::from("fullfs"));
     let st = sb.statfs().expect("statfs");
     // Usage counters survive intact (the D10 "no synthetic usage" guarantee).
     assert_eq!(st.f_blocks, 100_000, "f_blocks from backend");
@@ -88,7 +90,7 @@ fn statfs_passes_through_backend_accounting_and_identity() {
 /// `f_fsid` filled from `s_magic`/`s_blocksize`/`s_dev` — and ONLY those.
 #[test]
 fn statfs_defaults_only_zero_identity_fields() {
-    let sb = SuperBlock::for_backend(Arc::new(ZeroFs), None, next_anon_dev(), String::from("zerofs"));
+    let sb = common::realize_sb(Arc::new(ZeroFs), None, next_anon_dev(), String::from("zerofs"));
     let st = sb.statfs().expect("statfs");
     assert_eq!(st.f_type,  0x7A7A_7A7A, "f_type defaulted from s_magic");
     assert_eq!(st.f_bsize, 512,         "f_bsize defaulted from s_blocksize");

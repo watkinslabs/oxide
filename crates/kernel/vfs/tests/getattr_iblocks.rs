@@ -16,7 +16,7 @@ use vfs::{FileType, InodeBuilder, default_file_ops, default_inode_ops, generic_f
 fn stored_i_blocks_reported_verbatim() {
     let i = InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
         .size(1 << 20).blocks(8).build();
-    let st = generic_fillattr(&i, &IDENTITY, None);
+    let st = generic_fillattr(&i, &IDENTITY);
     assert_eq!(st.blocks, 8, "stored i_blocks reported, not the size estimate");
 }
 
@@ -26,6 +26,6 @@ fn stored_i_blocks_reported_verbatim() {
 fn zero_i_blocks_estimates_from_size() {
     let i = InodeBuilder::new(1, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops())
         .size(1).build();
-    let st = generic_fillattr(&i, &IDENTITY, None);
+    let st = generic_fillattr(&i, &IDENTITY);
     assert_eq!(st.blocks, 4096 / 512, "1-byte file rounds up to one 4 KiB block");
 }
