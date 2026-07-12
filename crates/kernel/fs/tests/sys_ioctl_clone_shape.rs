@@ -161,6 +161,26 @@ fn ficlonerange_rejects_unaligned_offsets_before_backend() {
 }
 
 #[test]
+fn ficlonerange_rejects_unaligned_midfile_length_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new();
+    let sb = remap_sb(4096);
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_with_fop_on_sb(OpenFlags::O_RDONLY, 12288, remap.clone(), sb);
+    let dst = mk_file_with_fop_on_sb(OpenFlags::O_RDWR, 12288, remap.clone(), sb);
+    let src_fd = fdt.alloc(src).unwrap();
+    let dst_fd = fdt.alloc(Arc::clone(&dst)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let range = FileCloneRange { src_fd: src_fd as i64, src_offset: 0, src_length: 4097, dest_offset: 4096 };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &dst, &fdt, dst_fd, uapi::FICLONERANGE, &range as *const FileCloneRange as u64),
+        Some(-(Errno::Einval.as_i32() as i64)));
+    assert!(remap.calls.lock().unwrap().is_empty());
+    reset();
+}
+
+#[test]
 fn ficlonerange_allows_same_inode_adjacent_ranges() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
