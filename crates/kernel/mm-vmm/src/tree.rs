@@ -251,11 +251,13 @@ impl VmaTree {
         if start.as_u64() >= end.as_u64() { return Err(Error::Inval); }
 
         // First pass: validate full coverage. Walk in-tree from `start`
-        // and ensure consecutive VMAs cover [start, end) without holes.
+        // and ensure consecutive VMAs cover [start, end) without holes
+        // and allow every requested access bit (`VM_MAY*`).
         let mut cursor = start.as_u64();
         for (_, v) in self.map.range(..end) {
             if v.end.as_u64() <= cursor { continue; }
             if v.start.as_u64() > cursor { return Err(Error::Inval); }
+            if !v.may_prot.contains(new_prot) { return Err(Error::Access); }
             cursor = v.end.as_u64();
             if cursor >= end.as_u64() { break; }
         }

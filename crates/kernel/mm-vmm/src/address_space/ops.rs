@@ -84,6 +84,22 @@ impl AddressSpace {
         backing: VmaBacking,
         fixed: bool,
     ) -> KResult<UserVirtAddr> {
+        self.mmap_with_may(hint, len, prot, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC,
+            flags, backing, fixed)
+    }
+
+    /// Place a new VMA with Linux `VM_MAY*` permissions.
+    /// # C: O(log N) hint path; O(N) hole search fallback
+    pub fn mmap_with_may(
+        &self,
+        hint: Option<UserVirtAddr>,
+        len: usize,
+        prot: VmaProt,
+        may_prot: VmaProt,
+        flags: VmaFlags,
+        backing: VmaBacking,
+        fixed: bool,
+    ) -> KResult<UserVirtAddr> {
         validate_len(len)?;
         let len_u64 = len as u64;
 
@@ -120,7 +136,7 @@ impl AddressSpace {
 
         let end_va = end_of(start_va, len_u64)?;
         let is_anon_vma = matches!(backing, VmaBacking::Anonymous);
-        tree.insert(Vma::new(start_va, end_va, prot, flags, backing))
+        tree.insert(Vma::new_with_may(start_va, end_va, prot, may_prot, flags, backing))
             .map_err(|_| Error::Inval)?;
         // A4-rmap (GAP A4-1): attach the owning-AS chain edge for the
         // newly mapped range. Linux `anon_vma_prepare`: the originating

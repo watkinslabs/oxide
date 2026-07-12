@@ -39,6 +39,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let mut offset = args.a5;
     let flags  = args.a3;
     use pmm::mmap_flags::{validate_file_access, MAP_ANON, MAP_SHARED, MAP_TYPE};
+    let mut may_prot = vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC;
     // File-backed mmap: resolve fd, wrap as FileBacking, pass to glue_mmap.
     // A device exposing a contiguous physical range (e.g. /dev/fbN, the
     // framebuffer) is mapped straight to that PA (Linux remap_pfn_range) via
@@ -81,6 +82,12 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         ) {
             return e;
         }
+        if (flags & MAP_TYPE) == MAP_SHARED && !file.f_mode().contains(vfs::Fmode::WRITE) {
+            may_prot.remove(vmm::VmaProt::WRITE);
+        }
+        if path_noexec {
+            may_prot.remove(vmm::VmaProt::EXEC);
+        }
         let inode = file.inode();
         // DRM dumb buffers: the `offset` is a MODE_MAP_DUMB cookie that
         // selects the buffer. Pin the dumb handle for the VMA lifetime and map
@@ -93,7 +100,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             }
             let drm_backing: alloc::sync::Arc<dyn vmm::FileBacking> =
                 alloc::sync::Arc::new(DrmDumbBacking { pin });
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, Some(drm_backing), None) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, Some(drm_backing), None, may_prot) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -104,7 +111,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         // fallback below (IoUringInode read/write return EINVAL).
         if let Some((pa, len)) = crate::io_uring::mmap_backing(inode, offset) {
             if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, None, Some(pa)) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, None, Some(pa), may_prot) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -143,7 +150,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             },
         }
     }
-    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, offset, backing, phys_base) {
+    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, offset, backing, phys_base, may_prot) {
         Ok(va)  => {
             #[cfg(feature = "debug-atexit")]
             if fd >= 0 {
