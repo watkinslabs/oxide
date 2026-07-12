@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use sched::{SchedClass, Task};
 use syscall::errno::Errno;
 use vfs::{Dentry, FdTable, File, FileOps, FileType, InodeBuilder, InodeRef, KResult,
-          OpenFlags, default_inode_ops, mk_mode};
+          OpenFlags, SimpleSuperOps, SuperBlock, default_inode_ops, mk_mode};
 
 mod userbuf {
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -105,6 +105,23 @@ fn mk_file_with_fop(flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>) -> Arc<F
     File::new(ino, dentry, flags)
 }
 
+fn remap_sb(block_size: u32) -> &'static Arc<SuperBlock> {
+    let fs_ty = vfs::fs::FsType::new("remap-alignfs", 0x7930, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _| Err(vfs::VfsError::Enotty)));
+    let sb = SuperBlock::new(fs_ty, Arc::new(SimpleSuperOps {
+        magic: 0x7930,
+        block_size,
+        options: alloc::string::String::new(),
+    }), 0x7930, 0x7930, block_size, "remap-alignfs".into(), Arc::new(()));
+    Box::leak(Box::new(sb))
+}
+
+fn mk_file_with_fop_on_sb(flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>, sb: &'static Arc<SuperBlock>) -> Arc<File> {
+    let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
+        mk_mode(FileType::Regular, 0o644), default_inode_ops(), fop).size(size).sb(Arc::downgrade(sb)).build();
+    let dentry = Dentry::new_root(Arc::clone(&ino));
+    File::new(ino, dentry, flags)
+}
+
 #[test]
 fn ficlonerange_rejects_same_inode_overlap_before_backend() {
     let _guard = TEST_LOCK.lock().unwrap();
@@ -118,6 +135,26 @@ fn ficlonerange_rejects_same_inode_overlap_before_backend() {
     let range = FileCloneRange { src_fd: src_fd as i64, src_offset: 0, src_length: 8, dest_offset: 4 };
 
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, dst_fd, uapi::FICLONERANGE, &range as *const FileCloneRange as u64),
+        Some(-(Errno::Einval.as_i32() as i64)));
+    assert!(remap.calls.lock().unwrap().is_empty());
+    reset();
+}
+
+#[test]
+fn ficlonerange_rejects_unaligned_offsets_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new();
+    let sb = remap_sb(4096);
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_with_fop_on_sb(OpenFlags::O_RDONLY, 8192, remap.clone(), sb);
+    let dst = mk_file_with_fop_on_sb(OpenFlags::O_RDWR, 8192, remap.clone(), sb);
+    let src_fd = fdt.alloc(src).unwrap();
+    let dst_fd = fdt.alloc(Arc::clone(&dst)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let range = FileCloneRange { src_fd: src_fd as i64, src_offset: 1, src_length: 4096, dest_offset: 0 };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &dst, &fdt, dst_fd, uapi::FICLONERANGE, &range as *const FileCloneRange as u64),
         Some(-(Errno::Einval.as_i32() as i64)));
     assert!(remap.calls.lock().unwrap().is_empty());
     reset();

@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use sched::{SchedClass, Task};
 use syscall::errno::Errno;
 use vfs::{Dentry, FdTable, File, FileOps, FileType, InodeBuilder, InodeRef, KResult,
-          OpenFlags, default_inode_ops, mk_mode};
+          OpenFlags, SimpleSuperOps, SuperBlock, default_inode_ops, mk_mode};
 
 mod userbuf {
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -115,6 +115,23 @@ fn mk_file(ft: FileType, flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>, per
     File::new(ino, dentry, flags)
 }
 
+fn remap_sb(block_size: u32) -> &'static Arc<SuperBlock> {
+    let fs_ty = vfs::fs::FsType::new("dedupe-alignfs", 0x7931, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _| Err(vfs::VfsError::Enotty)));
+    let sb = SuperBlock::new(fs_ty, Arc::new(SimpleSuperOps {
+        magic: 0x7931,
+        block_size,
+        options: alloc::string::String::new(),
+    }), 0x7931, 0x7931, block_size, "dedupe-alignfs".into(), Arc::new(()));
+    Box::leak(Box::new(sb))
+}
+
+fn mk_file_on_sb(ft: FileType, flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>, perm: u16, uid: u32, gid: u32, sb: &'static Arc<SuperBlock>) -> Arc<File> {
+    let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
+        mk_mode(ft, perm), default_inode_ops(), fop).size(size).owner(uid, gid).sb(Arc::downgrade(sb)).build();
+    let dentry = Dentry::new_root(Arc::clone(&ino));
+    File::new(ino, dentry, flags)
+}
+
 #[test]
 fn fideduperange_allows_destination_with_may_write_permission() {
     let _guard = TEST_LOCK.lock().unwrap();
@@ -142,6 +159,37 @@ fn fideduperange_allows_destination_with_may_write_permission() {
     assert_eq!(range.info[0].bytes_deduped, 4);
     assert_eq!(range.info[0].status, 0);
     assert_eq!(*remap.calls.lock().unwrap(), vec![(2, 6, 4, 3)]);
+    reset();
+}
+
+#[test]
+fn fideduperange_rejects_unaligned_destination_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(4096));
+    let sb = remap_sb(4096);
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_on_sb(FileType::Regular, OpenFlags::O_RDONLY, 8192, remap.clone(), 0o644, 0, 0, sb);
+    let dst = mk_file_on_sb(FileType::Regular, OpenFlags::O_RDONLY, 8192, remap.clone(), 0o666, 1000, 1000, sb);
+    let dst_fd = fdt.alloc(dst).unwrap();
+    let src_fd = fdt.alloc(Arc::clone(&src)).unwrap();
+    let task = install_current_with_fdt_cred(Arc::clone(&fdt), 2000, 2000, 0);
+    let mut range = FileDedupeRangeOne {
+        src_offset: 0,
+        src_length: 4096,
+        dest_count: 1,
+        reserved1: 0,
+        reserved2: 0,
+        info: [
+            FileDedupeRangeInfo { dest_fd: dst_fd as i64, dest_offset: 1, bytes_deduped: 99, status: -99, reserved: 0 },
+        ],
+    };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &src, &fdt, src_fd, uapi::FIDEDUPERANGE, &mut range as *mut FileDedupeRangeOne as u64),
+        Some(0));
+    assert_eq!(range.info[0].bytes_deduped, 0);
+    assert_eq!(range.info[0].status, -(Errno::Einval.as_i32()));
+    assert!(remap.calls.lock().unwrap().is_empty());
     reset();
 }
 
