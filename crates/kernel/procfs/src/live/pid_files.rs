@@ -1,6 +1,6 @@
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use super::io_files::io_body_for_task;
 use super::pid_ino;
 use super::self_files::{push, push_hex, push_u64};
 use vfs::InodeRef;
@@ -97,9 +97,17 @@ pid_inode_ctor!(make_pid_maps, pid_maps_body, 0x23);
 pid_inode_ctor!(make_pid_comm, pid_comm_body, 0x24);
 pid_inode_ctor!(make_pid_environ, pid_environ_body, 0x25);
 pid_inode_ctor!(make_pid_statm, pid_statm_body, 0x26);
+pid_inode_ctor!(make_pid_io, pid_io_body, 0x29);
 pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
 use crate::pid_sched::pid_sched_body;
 pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
+
+fn pid_io_body(tid: u32) -> Vec<u8> {
+    match sched::live::registry::lookup(tid) {
+        Some(t) => io_body_for_task(&t),
+        None    => Vec::new(),
+    }
+}
 
 fn pid_limits_body(tid: u32) -> Vec<u8> {
     use sched::rlimit::{format_rlim, rlim};

@@ -11,7 +11,7 @@ use crate::{
     make_proc_cmdline, make_proc_loadavg, make_proc_meminfo, make_proc_root,
     make_proc_self_cmdline, make_proc_self_comm, make_proc_self_environ, make_proc_self_exe,
     make_proc_self_fd, make_proc_self_maps, make_proc_self_root, make_proc_self_stat,
-    make_proc_self_status, make_proc_uptime, StaticFileInode, FILESYSTEMS, IO_BODY,
+    make_proc_self_io, make_proc_self_status, make_proc_uptime, StaticFileInode, FILESYSTEMS,
     LIMITS_BODY, VERSION_BODY,
 };
 use crate::{make_proc_self_cwd, make_proc_cgroup};
@@ -248,7 +248,7 @@ pub fn register_static_files() {
         "/proc/self/limits",
         StaticFileInode::new(LIMITS_BODY) as InodeRef,
     );
-    crate::reg::register("/proc/self/io", StaticFileInode::new(IO_BODY) as InodeRef);
+    crate::reg::register("/proc/self/io", make_proc_self_io());
     crate::reg::register(
         "/proc/self/mountinfo",
         crate::mounts::make_proc_mountinfo(None),

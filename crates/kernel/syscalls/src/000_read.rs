@@ -1,13 +1,19 @@
 // 000 read — one syscall, one file (docs/53 §0).
 use syscall::{errno::Errno, SyscallArgs};
 
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
+
 /// `sys_read(fd, buf, cnt)` — slot 0. Work fn: `vfs::File::read`.
 /// # C: O(cnt) on the underlying inode read.
 pub fn sys_read(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
-    let cnt = args.a2 as usize;
-    let cur = match sched::live::current() {
+    let mut cnt = args.a2 as usize;
+    let cur = match current_task() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
@@ -16,23 +22,31 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     // netlink sockets support read() (Linux): pop one datagram from the
     // socket recv queue (same path as recvfrom, no peer addr).
     if crate::netlink_fd::is_netlink(fd as u64) {
-        return crate::netlink_fd::read(fd as u64, buf, cnt);
+        let ret = crate::netlink_fd::read(fd as u64, buf, cnt);
+        cur.account_read_result(ret);
+        return ret;
     }
+    if !file.f_mode().contains(vfs::Fmode::READ) { return -(Errno::Ebadf.as_i32() as i64); }
     // fanotify FAN_ACCESS_PERM: blocks until a daemon allows/denies (fast
     // no-op when no perm marks exist). Deny → EACCES.
     if !::fs::inotify::check_access_perm(&file.inode()) { return -(Errno::Eacces.as_i32() as i64); }
     if cnt == 0 {
         let mut empty: [u8; 0] = [];
-        return match file.read(&mut empty) {
+        let ret = match file.read(&mut empty) {
             Ok(n)  => n as i64,
             Err(e) => -(e as i64),
         };
+        cur.account_read_result(ret);
+        return ret;
     }
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
+    cnt = crate::userbuf::clamp_rw_count(cnt);
     // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf_writable; user pages mapped via active CR3; demand-paging resolves not-present pages on first kernel-side write.
     let slice: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, cnt) };
-    match file.read(slice) {
+    let ret = match file.read(slice) {
         Ok(n)  => n as i64,
         Err(e) => -(e as i64),
-    }
+    };
+    cur.account_read_result(ret);
+    ret
 }
