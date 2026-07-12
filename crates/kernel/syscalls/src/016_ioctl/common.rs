@@ -165,10 +165,23 @@ fn ioctl_file_clone(file: &alloc::sync::Arc<vfs::File>, fdt: &vfs::FdTable, src_
     }
 }
 
-fn vfs_clone_file_range(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off: u64, len: u64, flags: u32) -> vfs::KResult<u64> {
+fn vfs_clone_file_range(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off: u64, mut len: u64, flags: u32) -> vfs::KResult<u64> {
     if !same_superblock(src, dst) { return Err(vfs::VfsError::Exdev); }
     generic_file_rw_checks(src, dst)?;
     if !src.supports_remap_file_range() { return Err(vfs::VfsError::Eopnotsupp); }
+    if flags & REMAP_FILE_DEDUP == 0 {
+        let size = src.inode().size();
+        if len == 0 {
+            if src_off == size { return Ok(0); }
+            if src_off > size { return Err(vfs::VfsError::Einval); }
+            len = size - src_off;
+        } else if src_off >= size {
+            return Err(vfs::VfsError::Einval);
+        } else if src_off.checked_add(len).is_none_or(|end| end > size)
+            && flags & REMAP_FILE_CAN_SHORTEN == 0 {
+            return Err(vfs::VfsError::Einval);
+        }
+    }
     remap_verify_area(src_off, len)?;
     remap_verify_area(dst_off, len)?;
     src.remap_file_range(src_off, dst, dst_off, len, flags)

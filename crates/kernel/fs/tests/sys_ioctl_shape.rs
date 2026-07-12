@@ -417,6 +417,42 @@ fn ficlone_bad_source_fd_precedes_destination_mode_checks() {
 }
 
 #[test]
+fn ficlone_zero_length_expands_to_source_eof_like_linux() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(20));
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_with_fop(FileType::Regular, OpenFlags::O_RDONLY, 20, remap.clone());
+    let dst = mk_file_with_fop(FileType::Regular, OpenFlags::O_RDWR, 0, remap.clone());
+    let src_fd = fdt.alloc(src).unwrap();
+    let dst_fd = fdt.alloc(Arc::clone(&dst)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &dst, &fdt, dst_fd, uapi::FICLONE, src_fd as u64), Some(0));
+    assert_eq!(*remap.calls.lock().unwrap(), vec![(0, 0, 20, 0)]);
+    reset();
+}
+
+#[test]
+fn ficlonerange_rejects_unshortenable_range_past_source_eof_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let remap = RemapOps::new(Ok(1));
+    let fdt = Arc::new(FdTable::new());
+    let src = mk_file_with_fop(FileType::Regular, OpenFlags::O_RDONLY, 20, remap.clone());
+    let dst = mk_file_with_fop(FileType::Regular, OpenFlags::O_RDWR, 0, remap.clone());
+    let src_fd = fdt.alloc(src).unwrap();
+    let dst_fd = fdt.alloc(Arc::clone(&dst)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let range = FileCloneRange { src_fd: src_fd as i64, src_offset: 12, src_length: 16, dest_offset: 0 };
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &dst, &fdt, dst_fd, uapi::FICLONERANGE, &range as *const FileCloneRange as u64),
+        Some(-(Errno::Einval.as_i32() as i64)));
+    assert!(remap.calls.lock().unwrap().is_empty());
+    reset();
+}
+
+#[test]
 fn ficlone_uses_linux_vfs_admission_and_reports_missing_remap_op() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
