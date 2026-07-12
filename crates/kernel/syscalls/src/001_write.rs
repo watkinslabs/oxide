@@ -52,7 +52,7 @@ fn trace_session_write(file: &vfs::File, bytes: &[u8]) {
 pub fn sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
-    let cnt = args.a2 as usize;
+    let mut cnt = args.a2 as usize;
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
@@ -104,7 +104,12 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
         &empty
     } else {
         if let Err(rv) = crate::userbuf::validate_user_buf(buf, cnt as u64, 1) { return rv; }
-        let cnt = crate::userbuf::clamp_rw_count(cnt);
+        cnt = crate::userbuf::clamp_rw_count(cnt);
+        let pos = crate::write_common::write_pos(&file);
+        cnt = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, cnt, true) {
+            Ok(n)  => n,
+            Err(e) => return e,
+        };
         // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
         unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }
     };
