@@ -184,6 +184,7 @@ fn vfs_clone_file_range(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off:
     }
     remap_verify_area(src_off, len)?;
     remap_verify_area(dst_off, len)?;
+    remap_verify_alignment(dst, src_off, dst_off)?;
     if same_inode(src, dst) && ranges_overlap(src_off, dst_off, len) {
         return Err(vfs::VfsError::Einval);
     }
@@ -248,6 +249,7 @@ fn vfs_dedupe_file_range_one(cur: &sched::Task, src: &vfs::File, src_off: u64, d
     if dst.inode().file_type() == vfs::FileType::Directory { return Err(vfs::VfsError::Eisdir); }
     if !dst.supports_remap_file_range() { return Err(vfs::VfsError::Einval); }
     if len == 0 { return Ok(()); }
+    remap_verify_alignment(dst, src_off, dst_off)?;
     if dst_off.checked_add(len).is_none_or(|end| dst_off >= dst.inode().size() || end > dst.inode().size()) {
         return Err(vfs::VfsError::Einval);
     }
@@ -278,6 +280,12 @@ fn remap_verify_area(pos: u64, len: u64) -> vfs::KResult<()> {
         Some(_) => Ok(()),
         None => Err(vfs::VfsError::Einval),
     }
+}
+
+fn remap_verify_alignment(dst: &vfs::File, src_off: u64, dst_off: u64) -> vfs::KResult<()> {
+    let bs = dst.inode().i_sb().map(|sb| sb.s_blocksize as u64).filter(|bs| *bs != 0).unwrap_or(1);
+    if src_off % bs != 0 || dst_off % bs != 0 { return Err(vfs::VfsError::Einval); }
+    Ok(())
 }
 
 fn may_dedupe_file(cur: &sched::Task, file: &vfs::File) -> bool {
