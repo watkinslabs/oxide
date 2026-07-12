@@ -50,6 +50,9 @@ pub enum Error {
     NotImplemented,
     NoMem,
     Inval,
+    Fault,
+    Perm,
+    Again,
     Access,
     Io,
 }
