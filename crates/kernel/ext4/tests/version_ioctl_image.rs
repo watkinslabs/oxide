@@ -198,3 +198,29 @@ fn setfslabel_persists_zero_padded_label_across_remount() {
         Ok(FileIoctlReply::Label(*b"GNOME\0\0\0\0\0\0\0\0\0\0\0\0")),
     );
 }
+
+#[test]
+fn fitrim_requires_cap_sys_admin_before_discard_check() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().lookup_inode_any(b"/").expect("root");
+    let file = open_file(inode);
+
+    assert_eq!(
+        file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::FitTrimPrepare(false)),
+        Err(VfsError::Eperm),
+    );
+}
+
+#[test]
+fn fitrim_reports_no_discard_support_before_usercopy_like_linux() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().lookup_inode_any(b"/").expect("root");
+    let file = open_file(inode);
+
+    assert_eq!(
+        file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::FitTrimPrepare(true)),
+        Err(VfsError::Eopnotsupp),
+    );
+}

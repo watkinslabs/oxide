@@ -149,6 +149,7 @@ fn handle_file_ioctl(cur: &sched::Task, file: &vfs::File, req: u64, arg: u64) ->
             Some(ioctl_setversion(file, arg)),
         super::uapi::FS_IOC_GETFSLABEL => Some(ioctl_getfslabel(file, arg)),
         super::uapi::FS_IOC_SETFSLABEL => Some(ioctl_setfslabel(cur, file, arg)),
+        super::uapi::FITRIM => Some(ioctl_fitrim(cur, file, arg)),
         _ => None,
     }
 }
@@ -245,6 +246,38 @@ fn ioctl_setfslabel(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
         Err(e) => -(e as i64),
     };
     if let Some(ref mnt) = m { vfs::mount::mnt_drop_write(mnt); }
+    rv
+}
+
+fn ioctl_fitrim(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
+    let idmap = vfs::mount::idmap_for(file.mnt_id());
+    let cred = current_cred();
+    let cap = cur.has_cap(sched::cap::SYS_ADMIN);
+    if let Err(e) = file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::FitTrimPrepare(cap)) {
+        return -(e as i64);
+    }
+    if let Err(rv) = crate::userbuf::validate_user_buf_readable(arg, super::uapi::FSTRIM_RANGE_BYTES, 1) {
+        return rv;
+    }
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, super::uapi::FSTRIM_RANGE_BYTES, 1) {
+        return rv;
+    }
+    // SAFETY: arg validated readable for the Linux fstrim_range payload.
+    let start = unsafe { core::ptr::read_unaligned(arg as *const u64) };
+    // SAFETY: arg+8 validated readable inside the Linux fstrim_range payload.
+    let len = unsafe { core::ptr::read_unaligned((arg + 8) as *const u64) };
+    // SAFETY: arg+16 validated readable inside the Linux fstrim_range payload.
+    let minlen = unsafe { core::ptr::read_unaligned((arg + 16) as *const u64) };
+    let rv = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::FitTrim { start, len, minlen }) {
+        Ok(_) => 0,
+        Err(e) => return -(e as i64),
+    };
+    // SAFETY: arg validated writable for the Linux fstrim_range payload.
+    unsafe {
+        core::ptr::write_unaligned(arg as *mut u64, start);
+        core::ptr::write_unaligned((arg + 8) as *mut u64, len);
+        core::ptr::write_unaligned((arg + 16) as *mut u64, minlen);
+    }
     rv
 }
 
