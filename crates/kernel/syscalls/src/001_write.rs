@@ -104,6 +104,7 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
         &empty
     } else {
         if let Err(rv) = crate::userbuf::validate_user_buf(buf, cnt as u64, 1) { return rv; }
+        let cnt = crate::userbuf::clamp_rw_count(cnt);
         // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
         unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }
     };
