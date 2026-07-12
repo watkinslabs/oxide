@@ -43,6 +43,9 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     if inode.file_type() == vfs::FileType::Regular && fa.flags & EXT4_PROJINHERIT_FL != 0 {
         return Err(VfsError::Eopnotsupp);
     }
+    if fa.flags & !FS_FL_USER_VISIBLE != 0 {
+        return Err(VfsError::Eopnotsupp);
+    }
     let cur = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?.i_flags;
     let new = (cur & !FS_FL_USER_MODIFIABLE) | (fa.flags & FS_FL_USER_MODIFIABLE);
     ext4_ioctl_check_immutable(&st, ino, cur, fa.fsx_projid, new)?;
