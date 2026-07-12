@@ -318,14 +318,14 @@ fn fsxattr_get_and_set_translate_linux_xflags() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
     let ops = Arc::new(IoctlOps::default());
-    *ops.attr.lock().unwrap() = FileAttr { flags: 0x10 | 0x80, fsx_extsize: 64, fsx_nextents: 3, fsx_cowextsize: 128, ..Default::default() };
+    *ops.attr.lock().unwrap() = FileAttr { flags: 0x10 | 0x80 | uapi::FS_CASEFOLD_FL, fsx_extsize: 64, fsx_nextents: 3, fsx_cowextsize: 128, ..Default::default() };
     let fdt = Arc::new(FdTable::new());
     let file = mk_file_with_ops(OpenFlags::O_RDWR, 0, Arc::clone(&ops));
     let fd = fdt.alloc(Arc::clone(&file)).unwrap();
     let task = install_current_with_fdt(Arc::clone(&fdt));
     let mut xattr = [0u8; 28];
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_FSGETXATTR, xattr.as_mut_ptr() as u64), Some(0));
-    assert_eq!(u32::from_ne_bytes(xattr[0..4].try_into().unwrap()), 0x08 | 0x40);
+    assert_eq!(u32::from_ne_bytes(xattr[0..4].try_into().unwrap()), 0x08 | 0x40 | uapi::FS_XFLAG_CASEFOLD);
     assert_eq!(u32::from_ne_bytes(xattr[4..8].try_into().unwrap()), 64);
     assert_eq!(u32::from_ne_bytes(xattr[8..12].try_into().unwrap()), 3);
     assert_eq!(u32::from_ne_bytes(xattr[16..20].try_into().unwrap()), 128);
@@ -336,7 +336,7 @@ fn fsxattr_get_and_set_translate_linux_xflags() {
     xattr[16..20].copy_from_slice(&512u32.to_ne_bytes());
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_FSSETXATTR, xattr.as_ptr() as u64), Some(0));
     assert_eq!(*ops.attr.lock().unwrap(), FileAttr {
-        flags: 0x20 | 0x40,
+        flags: 0x20 | 0x40 | uapi::FS_CASEFOLD_FL,
         fsx_xflags: 0x10 | 0x80 | uapi::FS_XFLAG_EXTSIZE | uapi::FS_XFLAG_COWEXTSIZE,
         fsx_extsize: 256,
         fsx_nextents: 7,
