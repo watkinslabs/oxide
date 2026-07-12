@@ -1,11 +1,17 @@
 // 020 writev — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
 
-#![cfg(target_os = "oxide-kernel")]
-
+use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
+use crate::userbuf::validate_user_buf_readable;
+
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
 
 // DIAG (debug-stderr): lightweight fd==2 echo for the writev path (no ld.so
 // verassert VMA dump), mirroring 001_write's trace_stderr_write.
@@ -163,39 +169,95 @@ fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
     }
 }
 
-/// `sys_writev(fd, iov, iovcnt)` — slot 20. fd_table-routed
-/// version: looks up the open `File`, walks the iovec array,
-/// calls `File::write` for each non-empty buffer. Returns total
-/// bytes written or the first negative errno encountered.
-/// # C: O(iovcnt × iov[i].len)
+/// `sys_writev(fd, iov, iovcnt)` — slot 20. Imports the Linux `iovec` array,
+/// applies `UIO_MAXIOV`/`MAX_RW_COUNT`, then dispatches one vectored VFS write
+/// so the open-file cursor advances atomically across the whole request.
+/// # C: O(iovcnt + sum(iov[i].len))
 pub fn sys_writev(args: &SyscallArgs) -> i64 {
-    dtrace!(b"WV_IN", args.a2);
     const IOV_MAX: u64 = 1024;
     let fd     = args.a0 as i32;
     let iov    = args.a1;
     let iovcnt = args.a2;
-    let cur = match sched::live::current() {
+    let cur = match current_task() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
+        None    => {
+            let ret = -(Errno::Ebadf.as_i32() as i64);
+            cur.account_write_result(ret);
+            return ret;
+        }
     };
     let file = match fdt.get(fd) {
         Ok(f)  => f,
-        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        Err(_) => {
+            let ret = -(Errno::Ebadf.as_i32() as i64);
+            cur.account_write_result(ret);
+            return ret;
+        }
     };
-    if iovcnt == 0 { return 0; }
-    if iovcnt > IOV_MAX { return -(Errno::Einval.as_i32() as i64); }
+    if !file.f_mode().contains(vfs::Fmode::WRITE) {
+        let ret = -(Errno::Ebadf.as_i32() as i64);
+        cur.account_write_result(ret);
+        return ret;
+    }
+    if iovcnt > IOV_MAX {
+        let ret = -(Errno::Einval.as_i32() as i64);
+        cur.account_write_result(ret);
+        return ret;
+    }
     let array_bytes = match iovcnt.checked_mul(16) {
         Some(v) => v,
-        None    => return -(Errno::Efault.as_i32() as i64),
+        None    => {
+            let ret = -(Errno::Efault.as_i32() as i64);
+            cur.account_write_result(ret);
+            return ret;
+        }
     };
-    if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
+    if iovcnt != 0 {
+        if let Err(rv) = validate_user_buf(iov, array_bytes, 8) {
+            cur.account_write_result(rv);
+            return rv;
+        }
+    }
+    let mut ranges: Vec<(u64, usize)> = Vec::new();
+    let mut imported_total = 0usize;
+    for i in 0..iovcnt {
+        let iov_i = iov + i * 16;
+        // SAFETY: iov array validated above; iov_i lies inside; 8-byte aligned per Linux ABI.
+        let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+        // SAFETY: same range as the read above; iov_len at +8 is 8-byte aligned.
+        let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+        if len == 0 { continue; }
+        if let Err(rv) = validate_user_buf_readable(base, len, 1) {
+            cur.account_write_result(rv);
+            return rv;
+        }
+        let remaining = crate::userbuf::MAX_RW_COUNT.saturating_sub(imported_total);
+        if remaining == 0 { break; }
+        let capped = core::cmp::min(len as usize, remaining);
+        imported_total = imported_total.saturating_add(capped);
+        if capped != 0 {
+            ranges.push((base, capped));
+        }
+    }
+    let mut bufs: Vec<&[u8]> = Vec::new();
+    for (base, len) in ranges {
+        // SAFETY: range validated readable in the caller's AS before CPL=0 dereference.
+        let bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(base as *const u8, len)
+        };
+        #[cfg(feature = "debug-atexit")]
+        trace_stderr_writev(fd, bytes);
+        #[cfg(all(feature = "debug-stderr", not(feature = "debug-atexit")))]
+        trace_stderr_echo(fd, bytes);
+        bufs.push(bytes);
+    }
     // Linux writev(2): the iovec array forms ONE message. For a message-boundary
-    // socket (UDP / AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET) the per-iovec loop below
+    // socket (UDP / AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET) the VFS scalar fallback
     // would emit ONE datagram PER iovec and fragment the message. systemd's
     // user-lookup writev — [uid(4)][gid(4)][unit_id(N)] — then arrives at PID1 as
     // 4-byte datagrams, tripping "Received too short user lookup message,
@@ -204,6 +266,7 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
     // into one buffer and write once so the socket layer emits a single datagram.
     // Regular files and STREAM sockets fall through — the byte stream is
     // identical either way. Mirrors the same fix in 046 sendmsg.
+    #[cfg(target_os = "oxide-kernel")]
     if let Some(sock) = crate::net_common::socket_from_fd(args.a0) {
         let msg_boundary = matches!(
             &*sock.kind.lock(),
@@ -211,77 +274,33 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
                 | net::sock::SockKind::UnixDgram(_)
                 | net::sock::SockKind::UnixMsgPair(_, _)
         );
-        if msg_boundary {
+        if msg_boundary && imported_total != 0 {
             let mut msg: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-            for i in 0..iovcnt {
-                let iov_i = iov + i * 16;
-                // SAFETY: iov array validated above; iov_i inside; {base@0,len@8} LP64 iovec.
-                let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
-                let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
-                if len == 0 { continue; }
-                if let Err(rv) = validate_user_buf(base, len, 1) { return rv; }
-                // SAFETY: base..base+len validated < USER_VA_END; CPL=0 read of caller AS.
-                let src = unsafe { core::slice::from_raw_parts(base as *const u8, len as usize) };
-                msg.extend_from_slice(src);
-            }
+            for b in bufs.iter() { msg.extend_from_slice(b); }
             let wr = file.write(&msg);
             #[cfg(feature = "debug-udevdb")]
             {
                 let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
                 crate::namei_common::trace_udevdb_file(b"writev", &file, rv);
             }
-            return match wr {
+            let ret = match wr {
                 Ok(n)  => n as i64,
                 Err(e) => -(e as i64),
             };
+            cur.account_write_result(ret);
+            return ret;
         }
     }
-    let limit_base = crate::write_common::write_pos(&file);
-    let mut total: u64 = 0;
-    for i in 0..iovcnt {
-        let iov_i = iov + i * 16;
-        // SAFETY: iov array validated above; iov_i lies inside; 8-byte aligned per Linux ABI.
-        let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
-        // SAFETY: same range as the read above; iov_len at +8 is 8-byte aligned.
-        let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
-        dtrace!(b"WV_IOV", len);
-        if len == 0 { continue; }
-        if let Err(rv) = validate_user_buf(base, len, 1) { return rv; }
-        let pos = limit_base.saturating_add(total);
-        let capped = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, len as usize, total == 0) {
-            Ok(n)                 => n,
-            Err(e) if total == 0  => return e,
-            Err(_)                => break,
-        };
-        if capped == 0 { continue; }
-        // SAFETY: range validated < USER_VA_END; CPL=0 reads through caller's user pages.
-        let bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(base as *const u8, capped)
-        };
-        #[cfg(feature = "debug-atexit")]
-        trace_stderr_writev(fd, bytes);
-        #[cfg(all(feature = "debug-stderr", not(feature = "debug-atexit")))]
-        trace_stderr_echo(fd, bytes);
-        dtrace!(b"WV_PRE_W");
-        let wr = file.write(bytes);
-        #[cfg(feature = "debug-udevdb")]
-        {
-            let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
-            crate::namei_common::trace_udevdb_file(b"writev", &file, rv);
-        }
-        match wr {
-            Ok(n)  => {
-                dtrace!(b"WV_OK", n as u64);
-                total = total.saturating_add(n as u64);
-                if n < capped || capped < len as usize { break; }
-            }
-            Err(e) => {
-                dtrace!(b"WV_ERR", e as u64);
-                if total == 0 { return -(e as i64); }
-                break;
-            }
-        }
+    let wr = file.write_iter(&bufs);
+    #[cfg(feature = "debug-udevdb")]
+    {
+        let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
+        crate::namei_common::trace_udevdb_file(b"writev", &file, rv);
     }
-    dtrace!(b"WV_OUT", total);
-    total as i64
+    let ret = match wr {
+        Ok(n)  => n as i64,
+        Err(e) => -(e as i64),
+    };
+    cur.account_write_result(ret);
+    ret
 }
