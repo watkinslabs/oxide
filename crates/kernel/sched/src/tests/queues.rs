@@ -98,6 +98,18 @@ fn cfs_min_vruntime_tracks_leftmost() {
 }
 
 #[test]
+fn cfs_max_vruntime_tracks_rightmost() {
+    let mut q = CfsRunqueue::new();
+    assert_eq!(q.max_vruntime(), 0);
+    q.enqueue(normal(1, 100, 1024));
+    q.enqueue(normal(2, 50, 1024));
+    q.enqueue(normal(3, 200, 1024));
+    assert_eq!(q.max_vruntime(), 200);
+    assert_eq!(q.pick_leftmost().unwrap().tid, 2);
+    assert_eq!(q.max_vruntime(), 200);
+}
+
+#[test]
 fn cfs_ties_disambiguated_by_tid() {
     let mut q = CfsRunqueue::new();
     q.enqueue(normal(7, 100, 1024));
@@ -203,6 +215,34 @@ fn rq_enqueue_stamps_task_cpu_owner() {
     let t = normal(9, 100, 1024);
     rq.enqueue(Arc::clone(&t));
     assert_eq!(t.cpu.load(Ordering::Acquire), 3);
+}
+
+#[test]
+fn rq_sched_yield_normal_forfeits_cfs_position() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let current = normal(1, 0, 1024);
+    rq.enqueue(normal(2, 0, 1024));
+    rq.enqueue(normal(3, 5, 1024));
+
+    rq.yield_current_task(&current);
+    rq.enqueue(Arc::clone(&current));
+
+    assert_eq!(rq.pick_next_task().tid, 2);
+    assert_eq!(rq.pick_next_task().tid, 3);
+    assert_eq!(rq.pick_next_task().tid, 1);
+}
+
+#[test]
+fn rq_sched_yield_rt_requeues_current_at_fifo_tail() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let current = rt(1, 50);
+    rq.enqueue(rt(2, 50));
+
+    rq.yield_current_task(&current);
+    rq.enqueue(Arc::clone(&current));
+
+    assert_eq!(rq.pick_next_task().tid, 2);
+    assert_eq!(rq.pick_next_task().tid, 1);
 }
 
 #[test]

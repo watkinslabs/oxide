@@ -1,15 +1,26 @@
 // 024 sched_yield — one syscall, one file (docs/53 §0). Moved verbatim from proc.rs.
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use syscall::SyscallArgs;
 
-/// `sys_sched_yield()` — slot 24. tick_yield + 0.
+#[cfg(target_os = "oxide-kernel")]
+fn do_sched_yield() {
+    if sched::live::global().is_some() {
+        // SAFETY: process ctx; runqueue installed; preempt-off through syscall handler; Linux sched_yield marker is consumed in schedule before requeue.
+        unsafe { sched::live::sched_yield(); }
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn do_sched_yield() {}
+
+/// `sys_sched_yield()` — slot 24. scheduler class yield + 0.
 /// # C: O(log N)
 pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
     // DIAG (debug-syscall): a process spinning on sched_yield (the boot wedge)
     // never makes progress. Log the caller's user RIP every Nth yield so the
     // spin loop can be symbolized (which lock/condition it busy-waits on).
-    #[cfg(feature = "debug-syscall")]
+    #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscall"))]
     {
         use core::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
@@ -95,9 +106,6 @@ pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
             klog::write_raw(b"\n");
         }
     }
-    if sched::live::global().is_some() {
-        // SAFETY: process ctx; runqueue installed; preempt-off through the syscall handler; tick_yield saves into current.arch_ctx + Context::switch's away.
-        unsafe { sched::live::tick_yield(); }
-    }
+    do_sched_yield();
     0
 }
