@@ -53,6 +53,8 @@ pub(super) const FS_IOC_GETFSUUID: u64 = 0x8011_1500;
 pub(super) const FS_IOC_GETFSSYSFSPATH: u64 = 0x8081_1501;
 pub(super) const FS_IOC_GETFSLABEL: u64 = 0x8100_9431;
 pub(super) const FS_IOC_SETFSLABEL: u64 = 0x4100_9432;
+pub(super) const FITRIM: u64 = 0xC018_5879;
+pub(super) const FSTRIM_RANGE_BYTES: u64 = 24;
 pub(super) const FS_SYSFS_PATH_BYTES: u64 = 129;
 pub(super) const FS_SYSFS_PATH_NAME_BYTES: usize = 128;
 
