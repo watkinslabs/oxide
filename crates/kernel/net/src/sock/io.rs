@@ -1,5 +1,32 @@
 use super::*;
 
+fn current_sender_creds() -> SenderCreds {
+    match sched::live::current() {
+        Some(t) => SenderCreds {
+            pid: t.visible_pid(),
+            uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
+            gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
+        },
+        None => SenderCreds::default(),
+    }
+}
+
+fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
+    match e {
+        crate::NetError::Eagain        => vfs::VfsError::Eagain,
+        crate::NetError::Eio           => vfs::VfsError::Eio,
+        crate::NetError::Einval        => vfs::VfsError::Einval,
+        crate::NetError::Enobufs       => vfs::VfsError::Enobufs,
+        crate::NetError::Enomem        => vfs::VfsError::Enomem,
+        crate::NetError::Eaddrnotavail => vfs::VfsError::Eaddrnotavail,
+        crate::NetError::Edestaddrreq  => vfs::VfsError::Edestaddrreq,
+        crate::NetError::Enetunreach   => vfs::VfsError::Enetunreach,
+        crate::NetError::Econnrefused  => vfs::VfsError::Econnrefused,
+        crate::NetError::Enotconn      => vfs::VfsError::Enotconn,
+        _                              => vfs::VfsError::Eio,
+    }
+}
+
 impl InetSocket {
     /// `f_op->read` — blocking stream/datagram read. # C: backend-dependent
     pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
@@ -145,7 +172,7 @@ impl InetSocket {
                 let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
                 crate::sock_io::write_tcp_blocking(&entry, buf, cap, deadline_ns, nodelay, cork)
             }
-            K::Other => Err(vfs::VfsError::Einval),
+            K::Other => crate::sock::sendto(self, buf, None, current_sender_creds()).map_err(vfs_from_neterr),
         }
     }
 

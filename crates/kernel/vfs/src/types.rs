@@ -189,9 +189,14 @@ pub enum VfsError {
     Enosys  = 38,
     Eloop   = 40,
     Eopnotsupp = 95,
+    Edestaddrreq = 89,
+    Eaddrnotavail = 99,
+    Enetunreach = 101,
+    Enobufs  = 105,
     Enametoolong = 36,
     /// ENOTCONN — read/write on a stream socket with no connection.
     Enotconn = 107,
+    Econnrefused = 111,
     /// ECANCELED — timerfd read after TFD_TIMER_CANCEL_ON_SET clock change.
     Ecanceled = 125,
 }

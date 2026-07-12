@@ -16,6 +16,7 @@ pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
     -(match e {
         net::NetError::Eaddrinuse    => Errno::Eaddrinuse,
         net::NetError::Eaddrnotavail => Errno::Eaddrnotavail,
+        net::NetError::Edestaddrreq  => Errno::Edestaddrreq,
         net::NetError::Enobufs       => Errno::Enobufs,
         net::NetError::Enomem        => Errno::Enomem,
         net::NetError::Enetunreach   => Errno::Enetunreach,
