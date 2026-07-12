@@ -20,6 +20,12 @@ pub const IN_MOVED_TO:      u32 = 0x0080;
 pub const IN_CREATE:        u32 = 0x0100;
 pub const IN_DELETE:        u32 = 0x0200;
 pub const IN_ALL_EVENTS:    u32 = 0x0fff;
+pub(crate) const IN_IGNORED:     u32 = 0x0000_8000;
+pub(crate) const IN_Q_OVERFLOW:  u32 = 0x0000_4000;
+pub(crate) const IN_EXCL_UNLINK: u32 = 0x0400_0000;
+pub(crate) const IN_ONESHOT:     u32 = 0x8000_0000;
+pub(crate) const INOTIFY_MARK_FLAGS: u32 = IN_EXCL_UNLINK | IN_ONESHOT;
+pub(crate) const INOTIFY_DEFAULT_MAX_QUEUED_EVENTS: usize = 16_384;
 
 // fanotify event-mask bits (`linux/fanotify.h`). The low bits coincide with the
 // matching IN_* values, so the shared fire path treats a fanotify mask and an
@@ -101,6 +107,8 @@ pub(crate) struct Watch {
     pub(crate) scope: MarkScope,
     /// Events that generate a notification on a matching object.
     pub(crate) mask: u32,
+    /// Inotify mark flags (`IN_ONESHOT`, `IN_EXCL_UNLINK`) that are not event bits.
+    pub(crate) flags: u32,
     /// `FAN_MARK_IGNORED_MASK` / `FAN_MARK_IGNORE`: events suppressed on a
     /// matching object even when `mask` would request them.
     pub(crate) ignored: u32,
