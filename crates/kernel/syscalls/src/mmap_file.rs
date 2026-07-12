@@ -130,4 +130,11 @@ impl FileBacking for InodeFileBacking {
     /// MAP_SHARED: defer to the inode's page-frame store (tmpfs/memfd return
     /// a real frame; other inodes default to None → copy path). # C: O(log N)
     fn shared_frame(&self, off: u64) -> Option<u64> { self.inode.mmap_shared_frame(off) }
+
+    /// `msync(MS_SYNC)`/range fsync writeback over the inode address_space.
+    /// Inodes without an address_space have no mapped dirty frame store here.
+    /// # C: O(N_dirty in range)
+    fn writeback_range(&self, start: u64, end: u64) -> Result<(), ()> {
+        if let Some(m) = self.inode.i_mapping() { m.writeback_range(start, end) } else { Ok(()) }
+    }
 }
