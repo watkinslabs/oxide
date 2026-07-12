@@ -108,6 +108,9 @@ pub(crate) fn ext4_fitrim(_start: u64, _len: u64, _minlen: u64) -> KResult<()> {
 /// # C: O(1) + one journaled inode write
 pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     let (st, ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
+    if st.mount.sb.is_quota_inode(ino) {
+        return Err(VfsError::Eperm);
+    }
     if inode.file_type() == vfs::FileType::Regular && fa.flags & EXT4_PROJINHERIT_FL != 0 {
         return Err(VfsError::Eopnotsupp);
     }
