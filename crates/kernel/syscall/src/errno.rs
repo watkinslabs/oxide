@@ -47,6 +47,7 @@ pub enum Errno {
     Eloop   = 40,
     Eidrm   = 43,
     Enomsg  = 42,
+    Ebade   = 52,
     Enopkg  = 65,
     Eoverflow         = 75,
     Enoprotoopt       = 92,

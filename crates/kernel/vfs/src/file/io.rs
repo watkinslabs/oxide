@@ -84,6 +84,18 @@ impl File {
         }
     }
 
+    /// True when this open file description has Linux `f_op->remap_file_range`.
+    /// # C: O(1)
+    pub fn supports_remap_file_range(&self) -> bool {
+        self.f_op.supports_remap_file_range()
+    }
+
+    /// Dispatch to Linux-shaped `f_op->remap_file_range`. VFS admission checks
+    /// live in syscall/VFS callers; this only invokes the backend op. # C: backend
+    pub fn remap_file_range(&self, src_off: u64, dst: &File, dst_off: u64, len: u64, flags: u32) -> KResult<u64> {
+        self.f_op.remap_file_range(self, src_off, dst, dst_off, len, flags)
+    }
+
     /// `write(2)` — advances the cursor by the byte count returned by
     /// the inode's `write`. Rejects read-only opens with `Ebadf`.
     /// `O_APPEND` snaps the offset to the current size before writing.

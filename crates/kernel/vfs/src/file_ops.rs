@@ -156,6 +156,20 @@ pub trait FileOps: Send + Sync {
         inode.i_mapping().and_then(|m| m.shared_frame(off))
     }
 
+    /// Whether this file vtable implements Linux `f_op->remap_file_range`.
+    /// Default false so VFS admission reports the Linux no-op errno before
+    /// calling into a backend. # C: O(1)
+    fn supports_remap_file_range(&self) -> bool { false }
+
+    /// `f_op->remap_file_range` — clone/dedupe `[src_off, src_off+len)` from
+    /// this source open file into `dst` at `dst_off`. `flags` carries Linux
+    /// `REMAP_FILE_*`. Default `Eopnotsupp`; filesystems with reflink support
+    /// override both this and [`Self::supports_remap_file_range`]. # C: backend
+    fn remap_file_range(&self, src: &File, src_off: u64, dst: &File, dst_off: u64, len: u64, flags: u32) -> KResult<u64> {
+        let _ = (src, src_off, dst, dst_off, len, flags);
+        Err(VfsError::Eopnotsupp)
+    }
+
     /// `f_op->open` — open-time hook fired after path resolution, before the
     /// `File`/fd is built; a driver may reject the open. Default `Ok`. # C: O(1)
     fn on_open(&self, _inode: &Inode) -> KResult<()> { Ok(()) }
