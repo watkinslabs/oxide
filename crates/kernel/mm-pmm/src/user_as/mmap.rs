@@ -12,7 +12,7 @@ pub fn glue_mmap(
     may_prot: VmaProt,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
-    use crate::mmap_flags::{should_populate, validate_glue_admission, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN};
+    use crate::mmap_flags::{should_populate, validate_glue_admission, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_LOCKED};
     let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_base.is_some())?;
     let is_anon = admission.is_anon;
     let is_shared = admission.is_shared;
@@ -80,6 +80,7 @@ pub fn glue_mmap(
     // 64 KiB guard distance below vma.start (used by pthread stacks
     // and ld.so's main stack).
     if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
+    if (flags & MAP_LOCKED) != 0 { vma_flags |= VmaFlags::LOCKED; }
     let vma_backing = match (phys_base, backing) {
         (Some(pa), _) => VmaBacking::PhysRange { base_pa: pa + file_off },
         (None, Some(b)) => VmaBacking::File { backing: b, off: file_off },
