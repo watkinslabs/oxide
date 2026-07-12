@@ -260,6 +260,22 @@ fn regular_fionread_reports_size_minus_position_as_linux_common_ioctl() {
 }
 
 #[test]
+fn regular_fionread_reports_negative_size_minus_position_past_eof() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let file = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 12);
+    file.set_pos(20);
+    let fd = fdt.alloc(Arc::clone(&file)).unwrap();
+    let task = install_current_with_fdt(Arc::clone(&fdt));
+    let mut out: i32 = 99;
+
+    assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FIONREAD, &mut out as *mut i32 as u64), Some(0));
+    assert_eq!(out, -8);
+    reset();
+}
+
+#[test]
 fn socket_fionread_rejects_null_out_pointer_instead_of_succeeding() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
