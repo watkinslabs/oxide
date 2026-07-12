@@ -24,6 +24,7 @@ const EXT4_RO_COMPAT_OFF: usize = EXT4_SUPERBLOCK_OFFSET + 0x64;
 // FS_*_FL == ext4 on-disk i_flags bits.
 const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
 const FS_NODUMP_FL:    u32 = 0x0000_0040;
+const FS_DAX_FL:       u32 = 0x0200_0000;
 const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 const EXT4_EXTENTS_FL: u32 = 0x0008_0000; // kernel-internal, must be preserved
 const EXT4_FEATURE_RO_COMPAT_PROJECT: u32 = ext4::superblock::RO_COMPAT_PROJECT;
@@ -152,6 +153,20 @@ fn ext4_rejects_extent_layout_toggle_without_corruption() {
     assert_eq!(inode.fileattr_set(&FileAttr { flags: flags & !EXT4_EXTENTS_FL, ..Default::default() }),
         Err(VfsError::Eopnotsupp));
     assert_ne!(m.state().mount.read_inode(ino).unwrap().i_flags & EXT4_EXTENTS_FL, 0);
+}
+
+#[test]
+fn ext4_rejects_unsupported_dax_flag_without_corruption() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().create_at(b"/dax.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/dax.txt").expect("lookup");
+    let flags = inode.fileattr_get().unwrap().flags;
+
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: flags | FS_DAX_FL, ..Default::default() }),
+        Err(VfsError::Eopnotsupp));
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_flags & FS_DAX_FL, 0);
+    assert_eq!(inode.fileattr_get().unwrap().flags & FS_DAX_FL, 0);
 }
 
 #[test]
