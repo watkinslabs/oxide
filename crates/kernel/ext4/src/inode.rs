@@ -105,6 +105,11 @@ pub struct Inode {
     /// (EXTENTS_FL 0x80000, INLINE_DATA_FL 0x10000000). Drives
     /// `FS_IOC_GETFLAGS` and VFS immutable/append enforcement.
     pub i_flags:     u32,
+    /// `i_projid` @0x9C — ext4 project id (Linux `struct ext4_inode::i_projid`).
+    /// Meaningful only when the superblock advertises PROJECT and the inode is
+    /// large enough to contain the field; otherwise Linux treats it as the
+    /// default project id 0.
+    pub i_projid:    u32,
     /// Inline extent tree root + leaves (60 bytes verbatim).
     pub i_block:     [u8; I_BLOCK_LEN],
     /// This inode's number, stamped by `read_inode` after parse (parse itself
@@ -180,6 +185,9 @@ impl Inode {
         // i_crtime @0x90 + i_crtime_extra @0x94 — only in a >128-byte inode;
         // decode_time yields 0 when the extra word is out of range.
         let crtime_ns = if isize > 0x90 { decode_time(buf, 0x90, 0x94, isize) } else { 0 };
+        let i_projid = if isize >= 0xA0 {
+            u32::from_le_bytes([buf[0x9C], buf[0x9D], buf[0x9E], buf[0x9F]])
+        } else { 0 };
         Ok(Inode {
             mode,
             size: size_lo | (size_hi << 32),
@@ -192,6 +200,7 @@ impl Inode {
             ctime_ns,
             crtime_ns,
             i_flags: i_flags_raw,
+            i_projid,
             i_block,
             ino: 0, // stamped by read_inode (parse has no ino)
             generation: u32::from_le_bytes([buf[0x64], buf[0x65], buf[0x66], buf[0x67]]),

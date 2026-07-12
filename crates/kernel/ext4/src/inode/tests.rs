@@ -69,6 +69,23 @@ fn parse_owner_merges_low_and_high_words() {
 }
 
 #[test]
+fn parse_project_id_when_inode_is_large_enough() {
+    let sb = fake_sb_inode_size(256);
+    let mut buf = make_inode_buf(256, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+    buf[0x9C..0xA0].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert_eq!(ino.i_projid, 0x1234_5678);
+}
+
+#[test]
+fn parse_project_id_defaults_zero_for_old_inode_size() {
+    let sb = fake_sb_inode_size(128);
+    let buf = make_inode_buf(128, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert_eq!(ino.i_projid, 0);
+}
+
+#[test]
 fn parse_directory_kind() {
     let sb = fake_sb_inode_size(256);
     let buf = make_inode_buf(256, S_IFDIR | 0o755, 4096, 2, [0u8; I_BLOCK_LEN]);
