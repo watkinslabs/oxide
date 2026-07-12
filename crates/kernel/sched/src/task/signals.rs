@@ -1,12 +1,30 @@
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
 
+use sync::{Spinlock, TaskList as TaskListClass};
 use vmm::AddressSpace;
 
 use super::Task;
+use crate::signum::{self, DefaultAction, Signum};
+
+const SIG_DFL: u64 = 0;
+const SIG_IGN: u64 = 1;
+const SIGACTION_COUNT: usize = 64;
+const SA_NOCLDSTOP: u64 = 0x00000001;
+const SA_NOCLDWAIT: u64 = 0x00000002;
+const SA_SIGINFO:   u64 = 0x00000004;
+const SA_RESTORER:  u64 = 0x04000000;
+const SA_ONSTACK:   u64 = 0x08000000;
+const SA_RESTART:   u64 = 0x10000000;
+const SA_NODEFER:   u64 = 0x40000000;
+const SA_RESETHAND: u64 = 0x80000000;
+const UAPI_SA_FLAGS: u64 = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_SIGINFO | SA_RESTORER
+    | SA_ONSTACK | SA_RESTART | SA_NODEFER | SA_RESETHAND;
+const UNBLOCKABLE_MASK: u64 = Signum::Sigkill.bit() | Signum::Sigstop.bit();
 
 /// Linux `struct sigaction` core fields per `27§3`.
 #[repr(C, align(8))]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct SaHandler {
     /// Handler entry. `0` = SIG_DFL (default disposition); `1` =
     /// SIG_IGN (ignore). Anything else = user fn pointer.
@@ -21,7 +39,115 @@ pub struct SaHandler {
     pub mask:      u64,
 }
 
+pub struct SigActions {
+    table: Spinlock<[SaHandler; SIGACTION_COUNT], TaskListClass>,
+}
+
+impl SigActions {
+    /// Fresh Linux sighand action table. # C: O(1)
+    pub fn new() -> Self { Self { table: Spinlock::new([SaHandler::default(); SIGACTION_COUNT]) } }
+
+    /// Deep-copy action table for fork/clone without CLONE_SIGHAND. # C: O(64)
+    pub fn fork_clone(&self) -> Self { Self { table: Spinlock::new(*self.table.lock()) } }
+
+    /// Read one action slot for signal delivery. # C: O(1)
+    pub fn get(&self, sig: u32) -> SaHandler { self.table.lock()[(sig - 1) as usize] }
+
+    /// Reset caught handlers at execve. # C: O(64)
+    pub fn reset_caught(&self) {
+        let mut t = self.table.lock();
+        for slot in t.iter_mut() {
+            if slot.handler != SIG_DFL && slot.handler != SIG_IGN {
+                *slot = SaHandler::default();
+            }
+        }
+    }
+
+    /// Linux do_sigaction core: validate, snapshot old, sanitize, install.
+    /// # C: O(1) plus ignored-signal flush below.
+    pub fn set_action(&self, sig: usize, act: Option<SaHandler>) -> Result<SaHandler, ()> {
+        if sig == 0 || sig > SIGACTION_COUNT || act.is_some() && signum::is_unblockable(sig as u32) {
+            return Err(());
+        }
+        let idx = sig - 1;
+        let mut t = self.table.lock();
+        let old = sanitize_action(t[idx]);
+        if let Some(mut new) = act {
+            new.flags = sanitize_flags(new.flags);
+            new.mask  = sanitize_mask(new.mask);
+            t[idx] = new;
+        }
+        Ok(old)
+    }
+}
+
+impl Default for SigActions {
+    fn default() -> Self { Self::new() }
+}
+
+fn sanitize_flags(flags: u64) -> u64 { flags & UAPI_SA_FLAGS }
+fn sanitize_mask(mask: u64) -> u64 { mask & !UNBLOCKABLE_MASK }
+fn sanitize_action(mut act: SaHandler) -> SaHandler {
+    act.flags = sanitize_flags(act.flags);
+    act.mask = sanitize_mask(act.mask);
+    act
+}
+
+fn ignores_signal(sig: usize, act: SaHandler) -> bool {
+    act.handler == SIG_IGN
+        || act.handler == SIG_DFL && signum::default_action(sig as u32) == DefaultAction::Ign
+}
+
 impl Task {
+    /// Borrow the shared sighand table. # C: O(1)
+    pub fn sigactions_ref(&self) -> &SigActions {
+        // SAFETY: the Arc slot is replaced only before a child is scheduled; the shared table behind it is internally locked.
+        unsafe { &*self.sigactions.get() }
+    }
+
+    /// Clone the shared sighand pointer for CLONE_SIGHAND. # C: O(1)
+    pub fn sigactions_arc(&self) -> Arc<SigActions> {
+        // SAFETY: the Arc slot is stable for scheduled tasks; cloning only bumps the Arc refcount.
+        unsafe { Arc::clone(&*self.sigactions.get()) }
+    }
+
+    /// Replace a not-yet-scheduled child's sighand pointer. # C: O(1)
+    /// # SAFETY: caller must be the sole owner/mutator before runqueue publication.
+    pub unsafe fn replace_sigactions(&self, new: Arc<SigActions>) {
+        // SAFETY: caller guarantees child publication has not happened, so no concurrent readers can observe the slot replacement.
+        unsafe { *self.sigactions.get() = new; }
+    }
+
+    /// Linux rt_sigaction work function after syscall copy-in. # C: O(N_threads)
+    pub fn rt_sigaction(&self, sig: usize, act: Option<SaHandler>) -> Result<SaHandler, ()> {
+        let old = self.sigactions_ref().set_action(sig, act)?;
+        if act.map(|a| ignores_signal(sig, a)).unwrap_or(false) {
+            self.flush_pending_signal_group(sig);
+        }
+        Ok(old)
+    }
+
+    /// Clear a newly ignored signal from this thread group. # C: O(N_threads)
+    pub fn flush_pending_signal_group(&self, sig: usize) {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let tgid = self.tgid.load(Ordering::Acquire);
+            for (_vtid, tid) in crate::registry::thread_entries(tgid) {
+                if let Some(t) = crate::registry::lookup(tid) { t.flush_pending_signal(sig); }
+            }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.flush_pending_signal(sig);
+    }
+
+    /// Clear one pending signal and its queued payloads. # C: O(1)
+    pub fn flush_pending_signal(&self, sig: usize) {
+        if sig == 0 || sig > SIGACTION_COUNT { return; }
+        self.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+        if sig == Signum::Sigchld as usize { self.child_sigq.lock().clear(); }
+        if (33..=64).contains(&sig) { self.rt_sigqueue.lock()[sig - 33].clear(); }
+    }
+
     /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;
     /// callers must observe the single-mutator invariant per the
     /// `mm` field doc.
@@ -65,5 +191,29 @@ impl Task {
         if let Some(m) = old { crate::live::schedule::park_active_mm(m); }
         #[cfg(not(target_os = "oxide-kernel"))]
         drop(old); // hosted: no live CR3 to protect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rt_sigaction_sanitizes_flags_and_mask() {
+        let sa = SigActions::new();
+        let input = SaHandler { handler: 0x1234, flags: u64::MAX, restorer: 0x5678, mask: u64::MAX };
+        assert_eq!(sa.set_action(Signum::Sigusr1 as usize, Some(input)), Ok(SaHandler::default()));
+        let got = sa.get(Signum::Sigusr1 as u32);
+        assert_eq!(got.flags, UAPI_SA_FLAGS);
+        assert_eq!(got.mask & UNBLOCKABLE_MASK, 0);
+    }
+
+    #[test]
+    fn rt_sigaction_rejects_catching_unblockable_signals() {
+        let sa = SigActions::new();
+        let input = SaHandler { handler: 0x1234, flags: 0, restorer: 0, mask: 0 };
+        assert_eq!(sa.set_action(Signum::Sigkill as usize, Some(input)), Err(()));
+        assert_eq!(sa.set_action(Signum::Sigstop as usize, Some(input)), Err(()));
+        assert_eq!(sa.set_action(Signum::Sigkill as usize, None), Ok(SaHandler::default()));
     }
 }

@@ -263,17 +263,15 @@ pub fn sys_clone_dispatch(
         unsafe { child.replace_fd_table(Some(child_fdt)); }
     }
 
-    // Inherit signal handlers; CLONE_SIGHAND callers get the same
-    // copy. v1 doesn't yet share a single sigaction array via Arc,
-    // so SIGHAND vs default both perform a deep copy. Real sharing
-    // lands when the threading subsystem grows a sighand_struct.
-    // SAFETY: child not yet scheduled (sole writer); parent reads happen on its running CPU per single-mutator invariant.
-    unsafe {
-        *child.sigactions.get() = *cur.sigactions.get();
-        if (flags & CLONE_CLEAR_SIGHAND) != 0 {
-            *child.sigactions.get() = [sched::SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64];
-        }
-    }
+    let child_sigactions = if (flags & CLONE_CLEAR_SIGHAND) != 0 {
+        alloc::sync::Arc::new(sched::SigActions::new())
+    } else if (flags & CLONE_SIGHAND) != 0 {
+        cur.sigactions_arc()
+    } else {
+        alloc::sync::Arc::new(cur.sigactions_ref().fork_clone())
+    };
+    // SAFETY: child is not scheduled yet; clone path is sole mutator of its task slots.
+    unsafe { child.replace_sigactions(child_sigactions); }
     // F205: ALWAYS inherit sigmask on clone/fork, regardless of
     // CLONE_SIGHAND. Per POSIX fork(2) "process signal mask" is in
     // the unconditional-inherit list; per Linux copy_thread() the
@@ -289,8 +287,6 @@ pub fn sys_clone_dispatch(
     // lifetime, leaving SIGCHLD permanently in the mask for
     // dropbear-aarch64 and breaking the SSH channel-close path.
     child.sigmask.store(cur.sigmask.load(Ordering::Acquire), Ordering::Release);
-    let _ = CLONE_SIGHAND;
-
     // CLONE_PARENT_SETTID: write child tid in caller's AS.
     if (flags & CLONE_PARENT_SETTID) != 0 {
         // SAFETY: ptid validated < USER_VA_END; CPL=0 writes in caller's AS.
