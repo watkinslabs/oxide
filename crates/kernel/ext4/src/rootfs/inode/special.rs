@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use block::types::InodeId;
-use vfs::file_ops::FileOps;
+use vfs::file_ops::{FileIoctlCmd, FileIoctlReply, FileOps};
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{InodeOps, mk_mode};
 use vfs::{DirContext, FileType, Inode, InodeRef, KResult, VfsError};
@@ -273,6 +273,27 @@ fn ext4_dirent_name(name: &[u8]) -> alloc::string::String {
 }
 
 impl FileOps for Ext4StatFileOps {
+    fn unlocked_ioctl(
+        &self,
+        file: &vfs::File,
+        idmap: &vfs::idmap::Idmap,
+        cred: &vfs::Cred,
+        cmd: FileIoctlCmd,
+    ) -> KResult<FileIoctlReply> {
+        match cmd {
+            FileIoctlCmd::GetVersion =>
+                Ok(FileIoctlReply::U32(super::meta::ext4_getversion(file.inode())?)),
+            FileIoctlCmd::SetVersionPrepare => {
+                super::meta::ext4_setversion_prepare(file.inode(), idmap, cred)?;
+                Ok(FileIoctlReply::Done)
+            }
+            FileIoctlCmd::SetVersion(gen) => {
+                super::meta::ext4_setversion(file.inode(), gen)?;
+                Ok(FileIoctlReply::Done)
+            }
+        }
+    }
+
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }

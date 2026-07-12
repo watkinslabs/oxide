@@ -41,6 +41,27 @@ pub enum IoctlIntCmd {
     Siocoutq,
 }
 
+/// Linux `file_operations->unlocked_ioctl` operations whose usercopy remains
+/// in the syscall ABI layer. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FileIoctlCmd {
+    /// `EXT4_IOC_GETVERSION` / legacy `FS_IOC_GETVERSION`.
+    GetVersion,
+    /// Pre-copyin admission for `EXT4_IOC_SETVERSION`.
+    SetVersionPrepare,
+    /// `EXT4_IOC_SETVERSION` / legacy `FS_IOC_SETVERSION`.
+    SetVersion(u32),
+}
+
+/// Return payload for [`FileOps::unlocked_ioctl`]. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FileIoctlReply {
+    /// ioctl succeeded without a scalar payload.
+    Done,
+    /// ioctl returned a 32-bit scalar copied by the ABI layer.
+    U32(u32),
+}
+
 /// `filldir`-style sink (Linux `struct dir_context.actor` / `filldir_t`): the
 /// callback `getdents` installs to pack one directory entry into the user
 /// buffer. `emit` returns `false` when the buffer cannot hold the entry — the
@@ -169,6 +190,19 @@ pub trait FileOps: Send + Sync {
     /// Int-valued `f_op->unlocked_ioctl` subset. Default `ENOTTY`; stream and
     /// socket backends override with their queue accounting. # C: backend
     fn ioctl_int(&self, _file: &File, _cmd: IoctlIntCmd) -> KResult<u32> {
+        Err(VfsError::Enotty)
+    }
+
+    /// `f_op->unlocked_ioctl` for filesystem/file-specific ioctls. Usercopy is
+    /// kept in the syscall crate; the backend owns permission and mutation.
+    /// # C: backend-dependent
+    fn unlocked_ioctl(
+        &self,
+        _file: &File,
+        _idmap: &crate::idmap::Idmap,
+        _cred: &crate::namei::Cred,
+        _cmd: FileIoctlCmd,
+    ) -> KResult<FileIoctlReply> {
         Err(VfsError::Enotty)
     }
 
