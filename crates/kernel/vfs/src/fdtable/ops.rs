@@ -88,8 +88,9 @@ impl FdTable {
     }
     pub fn dup_limit(&self, fd: i32, limit: usize) -> KResult<i32> {
         let f = self.get(fd)?;
+        let n = self.alloc_limit(Arc::clone(&f), limit)?;
         crate::file::fire_clone_hook(&f);
-        self.alloc_limit(f, limit)
+        Ok(n)
     }
     pub fn dup_min(&self, fd: i32, min: i32) -> KResult<i32> {
         self.dup_min_limit(fd, min, FD_TABLE_MAX)
@@ -98,8 +99,9 @@ impl FdTable {
         let f = self.get(fd)?;
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         if min < 0 || min as usize >= max { return Err(VfsError::Einval); }
+        let n = self.inner.lock().alloc_fd_below(Arc::clone(&f), min as usize, max)?;
         crate::file::fire_clone_hook(&f);
-        self.inner.lock().alloc_fd_below(f, min as usize, max)
+        Ok(n)
     }
     pub fn dup2(&self, old_fd: i32, new_fd: i32) -> KResult<i32> {
         self.dup2_limit(old_fd, new_fd, FD_TABLE_MAX)
@@ -113,17 +115,17 @@ impl FdTable {
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         if (new_fd as usize) >= max { return Err(VfsError::Ebadf); }
         let f = self.get(old_fd)?;
-        crate::file::fire_clone_hook(&f);
         let nf = new_fd as usize;
         let replaced = {
             let mut g = self.inner.lock();
             g.ensure_capacity(nf);
             let old = g.files[nf].take();
-            g.files[nf] = Some(f);
+            g.files[nf] = Some(Arc::clone(&f));
             g.set_open(nf, true);
             g.set_cloexec_bit(nf, false);
             old
         };
+        crate::file::fire_clone_hook(&f);
         if let Some(old) = replaced { let _ = old.flush(); }
         Ok(new_fd)
     }
@@ -137,18 +139,18 @@ impl FdTable {
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         if (new_fd as usize) >= max { return Err(VfsError::Ebadf); }
         let f = self.get(old_fd)?;
-        crate::file::fire_clone_hook(&f);
         let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
         let nf = new_fd as usize;
         let replaced = {
             let mut g = self.inner.lock();
             g.ensure_capacity(nf);
             let old = g.files[nf].take();
-            g.files[nf] = Some(f);
+            g.files[nf] = Some(Arc::clone(&f));
             g.set_open(nf, true);
             g.set_cloexec_bit(nf, cloexec);
             old
         };
+        crate::file::fire_clone_hook(&f);
         if let Some(old) = replaced { let _ = old.flush(); }
         Ok(new_fd)
     }
