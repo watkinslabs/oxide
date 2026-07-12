@@ -31,7 +31,7 @@ impl Mount {
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
+            m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
             m.dir_link(parent_ino, name, new_ino, dir::DT_REG)?;
             Ok(new_ino)
         })
@@ -56,7 +56,7 @@ impl Mount {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
+            m.init_inode(parent_ino, new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
             let usable = crate::csum::dir_usable_len(&m.sb, bs);
             let mut blk = alloc::vec![0u8; bs];
             blk[0..4].copy_from_slice(&new_ino.to_le_bytes());
@@ -109,7 +109,7 @@ impl Mount {
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFLNK | 0o777, 1, uid, gid)?;
+            m.init_inode(parent_ino, new_ino, S_IFLNK | 0o777, 1, uid, gid)?;
             if target.len() <= I_BLOCK_LEN {
                 let (mut bytes, _off) = m.read_inode_bytes(new_ino)?;
                 for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] {
@@ -168,6 +168,7 @@ impl Mount {
             if m.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
                 bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
             }
+            m.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
             if matches!(ftype, S_IFCHR | S_IFBLK) {
                 bytes[0x28..0x2C].copy_from_slice(&rdev.to_le_bytes());
             }

@@ -217,3 +217,48 @@ fn projinherit_is_directory_only() {
         .expect("set dir projinherit");
     assert_ne!(dir.fileattr_get().unwrap().flags & FS_PROJINHERIT_FL, 0);
 }
+
+#[test]
+fn project_inherit_stamps_new_children() {
+    let disk = shared_project_disk();
+    let (m, _sb) = mount(disk);
+    m.state().mkdir_at(b"/project-dir", 0o755).expect("mkdir");
+    let dir = m.state().lookup_inode_any(b"/project-dir").expect("lookup dir");
+    let flags = dir.fileattr_get().unwrap().flags;
+    dir.fileattr_set(&FileAttr { flags: flags | FS_PROJINHERIT_FL, fsx_projid: 123, ..Default::default() })
+        .expect("set projinherit");
+
+    let file = m.state().create_at(b"/project-dir/file", 0o644).expect("create file");
+    assert_eq!(file.fileattr_get().unwrap().fsx_projid, 123);
+
+    m.state().mkdir_at(b"/project-dir/subdir", 0o755).expect("mkdir child");
+    let subdir = m.state().lookup_inode_any(b"/project-dir/subdir").expect("lookup child dir");
+    assert_eq!(subdir.fileattr_get().unwrap().fsx_projid, 123);
+    assert_ne!(subdir.fileattr_get().unwrap().flags & FS_PROJINHERIT_FL, 0);
+
+    m.state().symlink_at(b"file", b"/project-dir/link").expect("symlink");
+    let link_ino = m.state().mount.lookup_path(b"/project-dir/link").expect("lookup link");
+    assert_eq!(m.state().mount.read_inode(link_ino).unwrap().i_projid, 123);
+}
+
+#[test]
+fn project_inherit_rejects_cross_project_link_and_rename() {
+    let disk = shared_project_disk();
+    let (m, _sb) = mount(disk);
+    m.state().mkdir_at(b"/p1", 0o755).expect("mkdir p1");
+    m.state().mkdir_at(b"/p2", 0o755).expect("mkdir p2");
+    for (path, projid) in [(b"/p1" as &[u8], 10), (b"/p2" as &[u8], 20)] {
+        let dir = m.state().lookup_inode_any(path).expect("lookup dir");
+        let flags = dir.fileattr_get().unwrap().flags;
+        dir.fileattr_set(&FileAttr { flags: flags | FS_PROJINHERIT_FL, fsx_projid: projid, ..Default::default() })
+            .expect("set project dir");
+    }
+    m.state().create_at(b"/p1/file", 0o644).expect("create file");
+
+    assert_eq!(m.state().link_at(b"/p1/file", b"/p2/hardlink"), Err(VfsError::Exdev));
+    assert!(m.state().mount.lookup_path(b"/p2/hardlink").is_err());
+
+    assert_eq!(m.state().rename_at(b"/p1/file", b"/p2/file"), Err(VfsError::Exdev));
+    assert!(m.state().mount.lookup_path(b"/p1/file").is_ok());
+    assert!(m.state().mount.lookup_path(b"/p2/file").is_err());
+}
