@@ -8,8 +8,8 @@ use std::sync::Mutex;
 
 use sched::{SchedClass, Task};
 use syscall::errno::Errno;
-use vfs::{Dentry, FdTable, File, FileAttr, FileOps, FileType, Inode, InodeBuilder, InodeOps,
-          InodeRef, KResult, OpenFlags, SimpleSuperOps, SuperBlock, VfsError,
+use vfs::{Dentry, Devt, FdTable, File, FileAttr, FileOps, FileType, Inode, InodeBuilder, InodeOps,
+          InodeRef, KResult, OpenFlags, SimpleSuperOps, SuperBlock, VfsError, make_device_node_inode,
           default_file_ops, default_inode_ops, mk_mode};
 
 mod userbuf {
@@ -41,6 +41,8 @@ mod userbuf {
 
 #[path = "../../syscalls/src/016_ioctl/uapi.rs"]
 mod uapi;
+#[path = "../../syscalls/src/016_ioctl/blk.rs"]
+mod blk;
 #[path = "../../syscalls/src/016_ioctl/fileattr.rs"]
 mod fileattr;
 #[path = "../../syscalls/src/016_ioctl/remap.rs"]
@@ -208,6 +210,105 @@ fn mk_file_with_sysfs_name(sysfs_name: Option<&str>) -> Arc<File> {
         .sb(Arc::downgrade(sb)).build();
     let dentry = Dentry::new_root(Arc::clone(&ino));
     File::new(ino, dentry, OpenFlags::O_RDONLY)
+}
+
+fn mk_block_file(name: &str, flags: OpenFlags, blocks: u64) -> (Arc<File>, Arc<block::blockdev::MemDisk<sync::Inode>>) {
+    let disk = block::blockdev::MemDisk::<sync::Inode>::new(512, blocks);
+    let idx = block::registry::register(name, Arc::clone(&disk) as Arc<dyn block::blockdev::BlockDevice>);
+    assert_ne!(idx, 0, "block registry should publish the test disk");
+    let devt = Devt::from_raw(block::registry::dev_t_of(name, idx));
+    let ino = make_device_node_inode(NEXT_INO.fetch_add(1, Ordering::Relaxed),
+        FileType::BlockDev, devt, 0o660, alloc::sync::Weak::new());
+    let dentry = Dentry::new_root(Arc::clone(&ino));
+    (File::new(ino, dentry, flags), disk)
+}
+
+fn write_disk(disk: &dyn block::blockdev::BlockDevice, start: u64, blocks: u32, byte: u8) {
+    let mut req = block::blockdev::BlockRequest::new_write(start, blocks, alloc::vec![byte; blocks as usize * 512]);
+    disk.submit_sync(&mut req).expect("seed test disk");
+}
+
+fn read_disk(disk: &dyn block::blockdev::BlockDevice, start: u64, blocks: u32) -> alloc::vec::Vec<u8> {
+    let mut req = block::blockdev::BlockRequest::new_read(start, blocks, 512);
+    disk.submit_sync(&mut req).expect("read test disk");
+    req.buffer
+}
+
+#[test]
+fn block_discard_family_is_handled_before_enotty_fallback() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let (file, disk) = mk_block_file("vdblkdiscard", OpenFlags::O_RDWR, 8);
+    let mut range = [0u64, 512u64];
+    write_disk(disk.as_ref(), 0, 2, 0xA5);
+
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKDISCARD, range.as_mut_ptr() as u64), Some(0));
+    let after_discard = read_disk(disk.as_ref(), 0, 2);
+    assert!(after_discard[..512].iter().all(|&b| b == 0));
+    assert!(after_discard[512..].iter().all(|&b| b == 0xA5));
+
+    range = [512, 512];
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKZEROOUT, range.as_mut_ptr() as u64), Some(0));
+    let after_zeroout = read_disk(disk.as_ref(), 0, 2);
+    assert!(after_zeroout.iter().all(|&b| b == 0));
+
+    let mut zeroes: u32 = u32::MAX;
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKDISCARDZEROES, &mut zeroes as *mut u32 as u64), Some(0));
+    assert_eq!(zeroes, 0);
+    block::registry::unregister("vdblkdiscard");
+    reset();
+}
+
+#[test]
+fn block_discard_family_matches_linux_admission_order() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let (ro_file, _disk) = mk_block_file("vdblkrodiscard", OpenFlags::O_RDONLY, 8);
+    let mut range = [0u64, 512u64];
+
+    assert_eq!(blk::handle_blk_ioctl(&ro_file, uapi::BLKDISCARD, range.as_mut_ptr() as u64),
+        Some(-(Errno::Ebadf.as_i32() as i64)));
+    assert_eq!(userbuf::READABLE_CALLS.load(Ordering::SeqCst), 1,
+        "BLKDISCARD copies the range before the write-open gate");
+
+    userbuf::reset();
+    assert_eq!(blk::handle_blk_ioctl(&ro_file, uapi::BLKZEROOUT, range.as_mut_ptr() as u64),
+        Some(-(Errno::Ebadf.as_i32() as i64)));
+    assert_eq!(userbuf::READABLE_CALLS.load(Ordering::SeqCst), 0,
+        "BLKZEROOUT checks write-open before copying the range");
+
+    userbuf::reset();
+    let (rw_file, _disk2) = mk_block_file("vdblksecure", OpenFlags::O_RDWR, 8);
+    assert_eq!(blk::handle_blk_ioctl(&rw_file, uapi::BLKSECDISCARD, range.as_mut_ptr() as u64),
+        Some(-(Errno::Eopnotsupp.as_i32() as i64)));
+    assert_eq!(userbuf::READABLE_CALLS.load(Ordering::SeqCst), 0,
+        "unsupported BLKSECDISCARD reports capability absence before usercopy");
+    block::registry::unregister("vdblkrodiscard");
+    block::registry::unregister("vdblksecure");
+    reset();
+}
+
+#[test]
+fn block_geometry_ioctls_still_report_registered_disk_shape() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let (file, _disk) = mk_block_file("vdblkgeometry", OpenFlags::O_RDONLY, 8);
+    let mut bytes: u64 = 0;
+    let mut sectors: u64 = 0;
+    let mut logical: u32 = 0;
+    let mut soft: u32 = 0;
+
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKGETSIZE64, &mut bytes as *mut u64 as u64), Some(0));
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKGETSIZE, &mut sectors as *mut u64 as u64), Some(0));
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKSSZGET, &mut logical as *mut u32 as u64), Some(0));
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKBSZGET, &mut soft as *mut u32 as u64), Some(0));
+
+    assert_eq!(bytes, 4096);
+    assert_eq!(sectors, 8);
+    assert_eq!(logical, 512);
+    assert_eq!(soft, 512);
+    block::registry::unregister("vdblkgeometry");
+    reset();
 }
 
 #[test]
