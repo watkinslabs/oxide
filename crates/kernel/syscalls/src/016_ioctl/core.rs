@@ -3,8 +3,11 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
+
 use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
+use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, INT_BYTES};
 use super::tty_ioctl::handle_tty_ioctl;
 
 /// `sys_ioctl(fd, request, arg)` - slot 16.
@@ -29,6 +32,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Some(rv) = handle_common_ioctl(&file, &fdt, fd, req, arg) {
+        return rv;
+    }
     // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
     // systemd verifies a forked service is its child via this ioctl;
     // ENOTTY makes it SIGKILL the child (console-getty respawn).
@@ -121,13 +127,13 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         let fa = match file.inode().fileattr_get() {
             Ok(f) => f, Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
-        if arg == 0 || arg >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return rv; }
         // SAFETY: arg validated < USER_VA_END; FS_IOC_GETFLAGS writes one int flag word.
         unsafe { core::ptr::write_volatile(arg as *mut u32, fa.flags); }
         return 0;
     }
     if req == FS_IOC_SETFLAGS {
-        if arg == 0 || arg >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
         // SAFETY: arg validated < USER_VA_END; read the caller's int flag word.
         let want = unsafe { core::ptr::read_volatile(arg as *const u32) };
         // inode_owner_or_capable: only the owner (or CAP_FOWNER) may chattr.
@@ -164,35 +170,8 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         // treats ENOTTY as FATAL — so a blanket ENOTTY crashed the whole D-Bus
         // system bus (Inappropriate ioctl for device), taking down every
         // D-Bus-dependent service (logind↔gdm → no greeter). Answer them.
-        const FIONREAD:  u64 = 0x541B; // == SIOCINQ: bytes available to read
-        const SIOCOUTQ:  u64 = 0x5411; // == TIOCOUTQ: bytes queued to send
-        const FIONBIO:   u64 = 0x5421; // set/clear O_NONBLOCK
-        const FIOASYNC:  u64 = 0x5452; // set/clear O_ASYNC
-        match req {
-            FIONREAD | SIOCOUTQ => {
-                // Report a pending byte count as an int out-param. Best-effort:
-                // FIONREAD signals "data readable" (1) vs not (0); SIOCOUTQ (send
-                // queue) reports drained (0). Never fatal, unlike ENOTTY.
-                let n: u32 = if req == FIONREAD
-                    && (file.inode().poll_file(file.pos()) & vfs::POLL_IN) != 0 { 1 } else { 0 };
-                if arg != 0 && arg < hal::USER_VA_END {
-                    // SAFETY: arg validated < USER_VA_END; 4-byte int out-param.
-                    unsafe { core::ptr::write_volatile(arg as *mut u32, n); }
-                }
-                return 0;
-            }
-            FIONBIO => {
-                if arg != 0 && arg < hal::USER_VA_END {
-                    // SAFETY: arg validated; read the on/off int the caller passed.
-                    let on = unsafe { core::ptr::read_volatile(arg as *const u32) } != 0;
-                    let mut fl = file.flags();
-                    if on { fl |= vfs::OpenFlags::O_NONBLOCK; } else { fl &= !vfs::OpenFlags::O_NONBLOCK; }
-                    file.set_flags(fl);
-                }
-                return 0;
-            }
-            FIOASYNC => return 0, // accept; async SIGIO wiring rides fasync
-            _ => {}
+        if let Some(rv) = handle_nonchar_queue_ioctl(&file, req, arg) {
+            return rv;
         }
         return -(Errno::Enotty.as_i32() as i64);
     }

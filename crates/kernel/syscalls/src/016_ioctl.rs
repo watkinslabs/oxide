@@ -4,6 +4,7 @@
 
 #[path = "016_ioctl/autofs.rs"] mod autofs;
 #[path = "016_ioctl/blk.rs"] mod blk;
+#[path = "016_ioctl/common.rs"] mod common;
 #[path = "016_ioctl/core.rs"] mod core;
 #[path = "016_ioctl/fiemap.rs"] mod fiemap;
 #[path = "016_ioctl/font.rs"] mod font;
