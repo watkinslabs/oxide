@@ -289,7 +289,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
 ///   Udp/other  → socket_sendto with dest or stored peer
 /// # C: O(payload bytes)
 pub fn sendto(
-    sock: &alloc::sync::Arc<InetSocket>,
+    sock: &InetSocket,
     payload: &[u8],
     dest: Option<RemoteAddr>,
     creds: SenderCreds,
@@ -316,7 +316,7 @@ pub fn sendto(
     if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
         let path = match dest.clone() {
             Some(RemoteAddr::Unix(p)) => p,
-            _ => q.peer().ok_or(NetError::Eaddrnotavail)?,
+            _ => q.peer().ok_or(NetError::Edestaddrreq)?,
         };
         let q = crate::net_ns::unix_registry_for_addr(&path).dgram_lookup_addr(&path)
             .ok_or(NetError::Econnrefused)?;
@@ -343,11 +343,15 @@ pub fn sendto(
     if let Some(RemoteAddr::Inet6 { ip, port }) = dest {
         return crate::sock_v6::sendto_v6(sock, ip, port, payload);
     }
+    if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
+        let (ip, port) = sock.peer6.lock().ok_or(NetError::Edestaddrreq)?;
+        return crate::sock_v6::sendto_v6(sock, ip, port, payload);
+    }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),
         Some(RemoteAddr::Unix(_))           => return Err(NetError::Einval),
         Some(RemoteAddr::Inet6 { .. })      => unreachable!(),
-        None => sock.peer.lock().ok_or(NetError::Eaddrnotavail)?,
+        None => sock.peer.lock().ok_or(NetError::Edestaddrreq)?,
     };
     socket_sendto(sock, dst_ip, dst_port, payload)
 }
