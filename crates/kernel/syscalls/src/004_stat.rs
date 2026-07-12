@@ -1,7 +1,5 @@
 // 004 stat — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
 
-#![cfg(target_os = "oxide-kernel")]
-
 use syscall::SyscallArgs;
 
 use crate::stat_common::{STAT_BYTES, new_stat_from_kstat, write_new_stat_user};
