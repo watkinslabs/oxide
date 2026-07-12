@@ -398,18 +398,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
     // O_CREAT cache flush/fsnotify is done in the create branch from the exact
     // resolved parent VfsPath. Re-walking display text here would collapse bind or
     // chroot identity back into display text.
-    // Linux `do_dentry_open`: an O_PATH (FMODE_PATH) descriptor is a pure
-    // fd-reference — it NEVER calls `f_op->open`, so the device driver's open is
-    // skipped. Our `on_open` IS that driver hook (char/block `->open`), so gating
-    // it on !O_PATH matches Linux. Without this, an O_PATH open of a char node
-    // whose (major,minor) has no registered driver — e.g. systemd's ProtectKernelLogs
-    // inaccessible node `/run/systemd/inaccessible/chr` (devt 0:0) bound over
-    // /dev/kmsg — hit `lookup_chrdev` → ENXIO. systemd `mount_entry_chase`
-    // O_PATH-opens each mount target during namespace setup, so that ENXIO aborted
-    // the whole sandbox (EXIT_NAMESPACE 226 for logind/udevd/… → no graphical target).
-    if (flags & O_PATH) == 0 {
-        if let Err(e) = inode.on_open() { return -(e as i64); }
-    }
+    // Linux `do_dentry_open` runs `f_op->open` once. `install_open_at` owns it so O_PATH can
+    // skip it and backends that need `file->private_data` see the final `File`.
     // DAC + EROFS enforcement (Linux `may_open`), before the O_TRUNC truncate.
     if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, created) {
         #[cfg(feature = "debug-eacces")]
