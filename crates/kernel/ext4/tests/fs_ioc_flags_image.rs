@@ -67,14 +67,15 @@ fn chattr_flags_roundtrip_persist_and_preserve() {
     let inode = m.state().create_at(b"/chattr.txt", 0o644).expect("create");
     let ino = m.state().mount.lookup_path(b"/chattr.txt").expect("lookup");
 
-    // Fresh regular file: EXTENTS_FL set on disk, no chattr user flags visible.
+    // Fresh regular file: EXTENTS_FL is Linux-visible through FS_IOC_GETFLAGS.
     assert_ne!(m.state().mount.read_inode(ino).unwrap().i_flags & EXT4_EXTENTS_FL, 0,
         "regular file carries EXTENTS_FL");
-    assert_eq!(inode.fileattr_get().unwrap().flags & (FS_IMMUTABLE_FL | FS_NODUMP_FL), 0,
-        "no chattr flags initially");
+    let initial_flags = inode.fileattr_get().unwrap().flags;
+    assert_ne!(initial_flags & EXT4_EXTENTS_FL, 0, "GETFLAGS reports EXTENTS_FL");
+    assert_eq!(initial_flags & (FS_IMMUTABLE_FL | FS_NODUMP_FL), 0, "no chattr flags initially");
 
     // chattr +i +d (immutable + nodump).
-    inode.fileattr_set(&FileAttr { flags: FS_IMMUTABLE_FL | FS_NODUMP_FL, ..Default::default() })
+    inode.fileattr_set(&FileAttr { flags: initial_flags | FS_IMMUTABLE_FL | FS_NODUMP_FL, ..Default::default() })
         .expect("fileattr_set");
     assert_eq!(inode.fileattr_get().unwrap().flags & (FS_IMMUTABLE_FL | FS_NODUMP_FL),
         FS_IMMUTABLE_FL | FS_NODUMP_FL, "get reflects the set flags");
@@ -92,7 +93,7 @@ fn chattr_flags_roundtrip_persist_and_preserve() {
         FS_IMMUTABLE_FL | FS_NODUMP_FL, "remount: chattr flags persisted");
 
     // chattr -i -d clears them, still preserving EXTENTS_FL.
-    node.fileattr_set(&FileAttr::default()).expect("clear");
+    node.fileattr_set(&FileAttr { flags: EXT4_EXTENTS_FL, ..Default::default() }).expect("clear");
     assert_eq!(node.fileattr_get().unwrap().flags & (FS_IMMUTABLE_FL | FS_NODUMP_FL), 0, "cleared");
     let ino2 = m2.state().mount.lookup_path(b"/chattr.txt").unwrap();
     assert_ne!(m2.state().mount.read_inode(ino2).unwrap().i_flags & EXT4_EXTENTS_FL, 0,
@@ -112,7 +113,8 @@ fn non_project_ext4_rejects_nonzero_project_id() {
     assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 0);
     assert_eq!(m.state().mount.read_inode(ino).unwrap().i_projid, 0);
 
-    assert_eq!(inode.fileattr_set(&FileAttr { flags: FS_NODUMP_FL, fsx_projid: 42, ..Default::default() }),
+    let flags = inode.fileattr_get().unwrap().flags;
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: flags | FS_NODUMP_FL, fsx_projid: 42, ..Default::default() }),
         Err(VfsError::Eopnotsupp));
     assert_ne!(inode.fileattr_get().unwrap().flags & FS_NODUMP_FL, 0,
         "Linux ext4 applies flags before unsupported project-id rejection");
@@ -126,7 +128,8 @@ fn project_ext4_persists_nonzero_project_id() {
     let ino = m.state().mount.lookup_path(b"/project.txt").expect("lookup");
 
     assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 0);
-    inode.fileattr_set(&FileAttr { fsx_projid: 77, ..Default::default() })
+    let flags = inode.fileattr_get().unwrap().flags;
+    inode.fileattr_set(&FileAttr { flags, fsx_projid: 77, ..Default::default() })
         .expect("set project id");
     assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 77);
     assert_eq!(m.state().mount.read_inode(ino).unwrap().i_projid, 77);
@@ -135,6 +138,52 @@ fn project_ext4_persists_nonzero_project_id() {
     let (m2, _sb2) = mount(disk);
     let node = m2.state().lookup_inode_any(b"/project.txt").expect("lookup after remount");
     assert_eq!(node.fileattr_get().unwrap().fsx_projid, 77);
+}
+
+#[test]
+fn ext4_rejects_extent_layout_toggle_without_corruption() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().create_at(b"/extent-toggle.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/extent-toggle.txt").expect("lookup");
+    let flags = inode.fileattr_get().unwrap().flags;
+
+    assert_ne!(flags & EXT4_EXTENTS_FL, 0, "created regular file uses extents");
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: flags & !EXT4_EXTENTS_FL, ..Default::default() }),
+        Err(VfsError::Eopnotsupp));
+    assert_ne!(m.state().mount.read_inode(ino).unwrap().i_flags & EXT4_EXTENTS_FL, 0);
+}
+
+#[test]
+fn immutable_project_ext4_rejects_project_id_change() {
+    let disk = shared_project_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().create_at(b"/immutable-project.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/immutable-project.txt").expect("lookup");
+
+    let flags = inode.fileattr_get().unwrap().flags;
+    inode.fileattr_set(&FileAttr { flags: flags | FS_IMMUTABLE_FL, fsx_projid: 7, ..Default::default() })
+        .expect("set immutable project id");
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: flags | FS_IMMUTABLE_FL, fsx_projid: 8, ..Default::default() }),
+        Err(VfsError::Eperm));
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_projid, 7);
+    assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 7);
+}
+
+#[test]
+fn immutable_ext4_rejects_other_flag_change() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().create_at(b"/immutable-flags.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/immutable-flags.txt").expect("lookup");
+
+    let flags = inode.fileattr_get().unwrap().flags;
+    inode.fileattr_set(&FileAttr { flags: flags | FS_IMMUTABLE_FL, ..Default::default() })
+        .expect("set immutable");
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: flags | FS_IMMUTABLE_FL | FS_NODUMP_FL, ..Default::default() }),
+        Err(VfsError::Eperm));
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_flags & FS_NODUMP_FL, 0);
+    assert_eq!(inode.fileattr_get().unwrap().flags & FS_NODUMP_FL, 0);
 }
 
 #[test]
@@ -148,7 +197,8 @@ fn projinherit_is_directory_only() {
 
     m.state().mkdir_at(b"/dir", 0o755).expect("mkdir");
     let dir = m.state().lookup_inode_any(b"/dir").expect("lookup dir");
-    dir.fileattr_set(&FileAttr { flags: FS_PROJINHERIT_FL, ..Default::default() })
+    let flags = dir.fileattr_get().unwrap().flags;
+    dir.fileattr_set(&FileAttr { flags: flags | FS_PROJINHERIT_FL, ..Default::default() })
         .expect("set dir projinherit");
     assert_ne!(dir.fileattr_get().unwrap().flags & FS_PROJINHERIT_FL, 0);
 }
