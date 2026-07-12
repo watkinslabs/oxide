@@ -10,31 +10,30 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use sync::{Spinlock, TaskList as ShmLockClass};
 
+mod shmctl;
+pub use self::shmctl::sys_shmctl;
+
 const IPC_PRIVATE: i32 = 0;
 const IPC_CREAT: u64 = 0o1000;
 const IPC_EXCL: u64 = 0o2000;
 const IPC_MODE_MASK: u64 = 0o777;
 const IPC_PERM_BITS: u32 = 0o7;
-const CAP_IPC_OWNER: u32 = 15;
 const SHM_HUGETLB: u64 = 0o4000;
 const SHM_RDONLY: u64 = 0o10000;
 const SHM_RND: u64 = 0o20000;
 const SHM_REMAP: u64 = 0o40000;
 const SHM_EXEC: u64 = 0o100000;
+pub(super) const SHM_DEST: u32 = 0o1000;
+pub(super) const SHM_LOCKED: u32 = 0o2000;
 const SHMLBA: u64 = PAGE_SIZE;
 const S_IRUGO: u64 = 0o444;
 const S_IWUGO: u64 = 0o222;
 const S_IXUGO: u64 = 0o111;
 
-/// `shmctl` cmd values (Linux).
-const IPC_RMID: u64 = 0;
-const IPC_STAT: u64 = 2;
-const IPC_INFO: u64 = 3;
-
-const PAGE_SIZE: u64 = 4096;
+pub(super) const PAGE_SIZE: u64 = 4096;
 const SHM_MIN_SIZE: usize = 1;
-const SHMMNI: usize = 4096;
-const SHM_MAX_SIZE: usize = usize::MAX - (1 << 24);
+pub(super) const SHMMNI: usize = 4096;
+pub(super) const SHM_MAX_SIZE: usize = usize::MAX - (1 << 24);
 
 /// One SysV shm segment. Backed by a single shared shmem (anonymous tmpfs)
 /// object — every `shmat` maps THIS object MAP_SHARED, so all attaches (and
@@ -66,15 +65,17 @@ fn current_ipc_ns() -> u64 {
 }
 
 #[derive(Clone)]
-struct IpcCred {
-    euid: u32,
-    egid: u32,
-    groups: [u32; sched::Creds::NGROUPS_V1],
-    ngroups: usize,
-    cap_ipc_owner: bool,
+pub(super) struct IpcCred {
+    pub(super) euid: u32,
+    pub(super) egid: u32,
+    pub(super) groups: [u32; sched::Creds::NGROUPS_V1],
+    pub(super) ngroups: usize,
+    pub(super) cap_ipc_owner: bool,
+    pub(super) cap_ipc_lock: bool,
+    pub(super) cap_sys_admin: bool,
 }
 
-fn current_ipc_cred() -> IpcCred {
+pub(super) fn current_ipc_cred() -> IpcCred {
     use core::sync::atomic::Ordering;
     let mut out = IpcCred {
         euid: 0,
@@ -82,11 +83,15 @@ fn current_ipc_cred() -> IpcCred {
         groups: [0; sched::Creds::NGROUPS_V1],
         ngroups: 0,
         cap_ipc_owner: true,
+        cap_ipc_lock: true,
+        cap_sys_admin: true,
     };
     if let Some(t) = sched::current() {
         out.euid = t.creds.euid.load(Ordering::Acquire);
         out.egid = t.creds.egid.load(Ordering::Acquire);
-        out.cap_ipc_owner = t.has_cap(CAP_IPC_OWNER);
+        out.cap_ipc_owner = t.has_cap(sched::cap::IPC_OWNER);
+        out.cap_ipc_lock = t.has_cap(sched::cap::IPC_LOCK);
+        out.cap_sys_admin = t.has_cap(sched::cap::SYS_ADMIN);
         let n = t.creds.ngroups.load(Ordering::Acquire) as usize;
         out.ngroups = n.min(sched::Creds::NGROUPS_V1);
         // SAFETY: supplementary groups are mutated only by the running task's credential syscall path; snapshot tolerates a stale concurrent value.
@@ -102,7 +107,7 @@ fn in_group(cred: &IpcCred, gid: u32) -> bool {
     cred.egid == gid || cred.groups[..cred.ngroups].contains(&gid)
 }
 
-fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {
+pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {
     let req = (((flg >> 6) | (flg >> 3) | flg) as u32) & IPC_PERM_BITS;
     let mut granted = seg.mode;
     if cred.euid == seg.cuid || cred.euid == seg.uid {
@@ -118,12 +123,12 @@ fn valid_new_size(size: usize) -> bool {
     size.checked_add((PAGE_SIZE - 1) as usize).is_some()
 }
 
-struct ShmRegistry {
+pub(super) struct ShmRegistry {
     next_id: AtomicI32,
     segs: Spinlock<Vec<Arc<ShmSegment>>, ShmLockClass>,
 }
 
-static REG: ShmRegistry = ShmRegistry {
+pub(super) static REG: ShmRegistry = ShmRegistry {
     next_id: AtomicI32::new(1),
     segs: Spinlock::new(Vec::new()),
 };
@@ -188,7 +193,7 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
     id as i64
 }
 
-fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
+pub(super) fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
     let ns = current_ipc_ns();
     let g = REG.segs.lock();
     g.iter().find(|s| s.id == id && s.ns == ns).cloned()
@@ -350,54 +355,6 @@ pub fn sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
     // residual VMA gets reaped at execve / exit anyway.
     let _ = mm.munmap(ua, PAGE_SIZE as usize);
     0
-}
-
-/// `shmctl(shmid, cmd, buf)` — slot 31. v1 honors IPC_RMID
-/// (frees the segment) and accepts IPC_STAT / IPC_INFO with a
-/// zero-fill writeback so callers don't bail.
-/// # C: O(N_segments)
-pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
-    use syscall::errno::Errno;
-    let shmid = args.a0 as i32;
-    let cmd   = args.a1;
-    let buf   = args.a2;
-    match cmd {
-        IPC_RMID => {
-            let mut g = REG.segs.lock();
-            let before = g.len();
-            g.retain(|s| s.id != shmid);
-            if g.len() == before {
-                return -(Errno::Einval.as_i32() as i64);
-            }
-            0
-        }
-        IPC_STAT | IPC_INFO => {
-            let seg = match lookup_by_id(shmid) {
-                Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-            };
-            if buf != 0 && buf < hal::USER_VA_END {
-                // struct shmid64_ds (Linux x86_64, 112 B). Populate the fields we
-                // track — shm_perm.key@0, shm_perm.mode@20, shm_segsz@48,
-                // shm_cpid@80, shm_nattch@88 — instead of the old all-zero fill
-                // (which made `ipcs -m` and stat readers see a 0-byte segment).
-                let mut ds = [0u8; 112];
-                ds[0..4].copy_from_slice(&seg.key.to_le_bytes());
-                ds[20..24].copy_from_slice(&seg.mode.to_le_bytes());
-                ds[48..56].copy_from_slice(&(seg.size as u64).to_le_bytes());
-                ds[80..84].copy_from_slice(&(seg.cpid as i32).to_le_bytes());
-                let nattch = seg.nattch.load(core::sync::atomic::Ordering::Acquire).max(0) as u64;
-                ds[88..96].copy_from_slice(&nattch.to_le_bytes());
-                // SAFETY: buf validated < USER_VA_END; byte-wise write is alignment-safe; CPL=0 writes through caller's AS.
-                unsafe {
-                    for i in 0..112usize {
-                        core::ptr::write_volatile((buf + i as u64) as *mut u8, ds[i]);
-                    }
-                }
-            }
-            0
-        }
-        _ => -(Errno::Einval.as_i32() as i64),
-    }
 }
 
 #[cfg(test)]
