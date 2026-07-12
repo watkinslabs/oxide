@@ -37,6 +37,38 @@ pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
 pub use registry::{fs_supers, next_anon_dev, register_super, sget};
 pub(crate) use registry::alloc_anon_minor;
 
+type FreezeParkHook = fn(usize);
+type FreezeScheduleHook = fn();
+type FreezeWakeHook = fn(usize);
+
+struct FreezeWaitHooks {
+    park:     Option<FreezeParkHook>,
+    schedule: Option<FreezeScheduleHook>,
+    wake:     Option<FreezeWakeHook>,
+}
+
+static FREEZE_WAIT_LOCK: Spinlock<(), SbClass> = Spinlock::new(());
+static FREEZE_WAIT_HOOKS: Spinlock<FreezeWaitHooks, SbClass> = Spinlock::new(FreezeWaitHooks {
+    park: None, schedule: None, wake: None,
+});
+
+/// Install sb-freeze wait hooks. VFS owns freeze state; sched owns task parking.
+/// # C: O(1)
+pub fn set_freeze_wait_hooks(park: FreezeParkHook, schedule: FreezeScheduleHook, wake: FreezeWakeHook) {
+    *FREEZE_WAIT_HOOKS.lock() = FreezeWaitHooks { park: Some(park), schedule: Some(schedule), wake: Some(wake) };
+}
+
+/// Clear sb-freeze wait hooks for hosted tests that install process-global hooks.
+/// # C: O(1)
+pub fn clear_freeze_wait_hooks() {
+    *FREEZE_WAIT_HOOKS.lock() = FreezeWaitHooks { park: None, schedule: None, wake: None };
+}
+
+fn freeze_wait_hooks() -> FreezeWaitHooks {
+    let h = FREEZE_WAIT_HOOKS.lock();
+    FreezeWaitHooks { park: h.park, schedule: h.schedule, wake: h.wake }
+}
+
 /// `struct super_block`. One per mounted fs instance (`16§2` inv 3).
 pub struct SuperBlock {
     /// `s_op` — super_operations vtable.

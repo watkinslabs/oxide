@@ -21,6 +21,11 @@ fn current_mount_ns() -> u64 {
 /// # C: O(1)
 pub fn install_vfs_hooks() {
     vfs::mount::set_current_ns_provider(current_mount_ns);
+    vfs::superblock::set_freeze_wait_hooks(
+        sched::live::sb_freeze::park,
+        sched::live::sb_freeze::schedule_after_park,
+        sched::live::sb_freeze::wake,
+    );
     // The mount engine NEVER resolves a mount-point STRING to a dentry
     // (`docs/16§3`): every caller hands `register*`/`move_mount`/… the
     // `Arc<Dentry>` its namei walk produced. The only provider needed is the

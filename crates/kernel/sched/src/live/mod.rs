@@ -35,6 +35,7 @@ pub mod ttwu;
 pub mod wait_list;
 pub mod zombies;
 pub mod sigpend;
+pub mod sb_freeze;
 pub mod tick_deadline;
 #[cfg(feature = "debug-wakelat")]
 pub mod wakelat;

@@ -81,3 +81,30 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
     }
     Ok(())
 }
+
+/// Same as `validate_user_buf` but confirms every page in the range belongs to
+/// a readable VMA before the kernel copies from it. # C: O(N_pages * log N_vmas)
+pub(crate) fn validate_user_buf_readable(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
+    use hal::UserVirtAddr;
+    use vmm::VmaProt;
+    validate_user_buf(ptr, len, align)?;
+    if len == 0 { return Ok(()); }
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return Err(-(Errno::Efault.as_i32() as i64)),
+    };
+    // SAFETY: mm slot single-mutator per `13§5`; we are the running task on this CPU and the sole reader during the syscall.
+    let mm = match unsafe { cur.mm_ref() } {
+        Some(m) => m.clone(), None => return Err(-(Errno::Efault.as_i32() as i64)),
+    };
+    let mut va = ptr & !0xFFF;
+    let end_inclusive = ptr + len - 1;
+    while va <= (end_inclusive & !0xFFF) {
+        let uva = UserVirtAddr::new(va).ok_or(-(Errno::Efault.as_i32() as i64))?;
+        match mm.find_vma(uva) {
+            Some(v) if v.prot.contains(VmaProt::READ) => {}
+            _ => return Err(-(Errno::Efault.as_i32() as i64)),
+        }
+        va = va.checked_add(0x1000).ok_or(-(Errno::Efault.as_i32() as i64))?;
+    }
+    Ok(())
+}
