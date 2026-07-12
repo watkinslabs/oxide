@@ -1,9 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use vfs::{Dentry, FdTable, File, FileType, InodeBuilder, InodeRef, OpenFlags, VfsError, default_file_ops, default_inode_ops, mk_mode};
 
 static CLONE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn record_clone(_ino: &InodeRef, _writable: bool) {
     CLONE_CALLS.fetch_add(1, Ordering::AcqRel);
@@ -29,6 +31,7 @@ fn mk_file() -> Arc<File> {
 /// clone-hook accounting is for successful descriptor installs only.
 #[test]
 fn failed_dup_allocation_does_not_fire_clone_hook() {
+    let _guard = TEST_LOCK.lock().unwrap();
     reset_clone_hook();
     let t = FdTable::new();
     let fd = t.alloc(mk_file()).unwrap();
@@ -41,6 +44,7 @@ fn failed_dup_allocation_does_not_fire_clone_hook() {
 
 #[test]
 fn dup2_and_dup3_fire_clone_hook_once_per_successful_install() {
+    let _guard = TEST_LOCK.lock().unwrap();
     reset_clone_hook();
     let t = FdTable::new();
     let old = t.alloc(mk_file()).unwrap();
