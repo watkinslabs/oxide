@@ -78,8 +78,10 @@ impl FdTable {
                 _ => return Err(VfsError::Ebadf),
             }
         };
-        if let Some(f) = removed { f.flush(); }
-        Ok(())
+        match removed {
+            Some(f) => f.flush(),
+            None    => Ok(()),
+        }
     }
     pub fn dup(&self, fd: i32) -> KResult<i32> {
         self.dup_limit(fd, FD_TABLE_MAX)
@@ -122,7 +124,7 @@ impl FdTable {
             g.set_cloexec_bit(nf, false);
             old
         };
-        if let Some(old) = replaced { old.flush(); }
+        if let Some(old) = replaced { let _ = old.flush(); }
         Ok(new_fd)
     }
     pub fn dup3(&self, old_fd: i32, new_fd: i32, flags: OpenFlags) -> KResult<i32> {
@@ -147,7 +149,7 @@ impl FdTable {
             g.set_cloexec_bit(nf, cloexec);
             old
         };
-        if let Some(old) = replaced { old.flush(); }
+        if let Some(old) = replaced { let _ = old.flush(); }
         Ok(new_fd)
     }
     pub fn set_cloexec(&self, fd: i32, on: bool) -> KResult<()> {
@@ -216,7 +218,7 @@ impl FdTable {
             }
             removed
         };
-        for f in removed { f.flush(); }
+        for f in removed { let _ = f.flush(); }
     }
     pub fn close_range(&self, first: u32, last: u32, cloexec_only: bool) {
         let removed = {
@@ -241,6 +243,6 @@ impl FdTable {
             }
             removed
         };
-        for f in removed { f.flush(); }
+        for f in removed { let _ = f.flush(); }
     }
 }

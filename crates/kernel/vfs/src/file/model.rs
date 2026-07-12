@@ -225,9 +225,9 @@ impl File {
 
     /// Per-close flush (Linux `file_operations->flush`, fired by
     /// `filp_close` on every `close(2)`/`dup2`-replace/cloexec drop —
-    /// NOT only the last). Distinct from `on_release` (last-ref). Default
-    /// inode impl is a no-op. # C: depends on inode impl
-    pub fn flush(&self) { self.inode.on_flush(); }
+    /// NOT only the last). Dispatches through this open file description's
+    /// snapshotted `f_op`, not the inode's current `i_fop`. # C: depends on f_op
+    pub fn flush(&self) -> crate::KResult<()> { self.f_op.on_flush_file(self) }
 
     /// FMODE_ATOMIC_POS predicate (Linux `do_dentry_open`: set only for
     /// `S_ISREG`/`S_ISDIR`). Seekable files carry a real cursor whose

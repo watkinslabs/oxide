@@ -179,8 +179,16 @@ pub trait FileOps: Send + Sync {
     }
 
     /// `f_op->flush` — per-`close(2)` hook on EVERY fd close (not only the
-    /// last). MUST NOT panic/block. # C: O(1)
-    fn on_flush(&self, _inode: &Inode) {}
+    /// last). Its errno is returned by `close(2)` after the fd table entry has
+    /// already been removed. # C: O(1)
+    fn on_flush(&self, _inode: &Inode) -> KResult<()> { Ok(()) }
+
+    /// `f_op->flush` with access to the open file description. Backends whose
+    /// flush target is per-open state override this; default preserves
+    /// inode-only drivers. # C: O(1)
+    fn on_flush_file(&self, file: &File) -> KResult<()> {
+        self.on_flush(file.inode())
+    }
 
     /// `f_op->llseek` SEEK_HOLE/SEEK_DATA core (Linux `generic_file_llseek` →
     /// `*_seek_hole_data`): map the starting byte `offset` to the next data byte
