@@ -60,6 +60,8 @@ pub enum Errno {
     Enotsock          = 88,
     Edestaddrreq      = 89,
     Emsgsize          = 90,
+    Eprototype        = 91,
+    Eprotonosupport   = 93,
     Esocktnosupport   = 94,
     Enotconn          = 107,
     Etimedout         = 110,
