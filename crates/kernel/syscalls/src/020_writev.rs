@@ -224,7 +224,13 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
                 let src = unsafe { core::slice::from_raw_parts(base as *const u8, len as usize) };
                 msg.extend_from_slice(src);
             }
-            return match file.write(&msg) {
+            let wr = file.write(&msg);
+            #[cfg(feature = "debug-udevdb")]
+            {
+                let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
+                crate::namei_common::trace_udevdb_file(b"writev", &file, rv);
+            }
+            return match wr {
                 Ok(n)  => n as i64,
                 Err(e) => -(e as i64),
             };
@@ -257,7 +263,13 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         #[cfg(all(feature = "debug-stderr", not(feature = "debug-atexit")))]
         trace_stderr_echo(fd, bytes);
         dtrace!(b"WV_PRE_W");
-        match file.write(bytes) {
+        let wr = file.write(bytes);
+        #[cfg(feature = "debug-udevdb")]
+        {
+            let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
+            crate::namei_common::trace_udevdb_file(b"writev", &file, rv);
+        }
+        match wr {
             Ok(n)  => {
                 dtrace!(b"WV_OK", n as u64);
                 total = total.saturating_add(n as u64);

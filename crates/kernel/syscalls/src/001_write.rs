@@ -117,7 +117,13 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     trace_session_write(&file, slice);
     #[cfg(feature = "debug-stderr")]
     trace_stderr_write(fd, slice);
-    match file.write(slice) {
+    let wr = file.write(slice);
+    #[cfg(feature = "debug-udevdb")]
+    {
+        let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
+        crate::namei_common::trace_udevdb_file(b"write", &file, rv);
+    }
+    match wr {
         Ok(n)  => {
             // DIAG (debug-wakelat): a write() returning 0 for a NON-zero request is
             // a Linux violation (must write >0, block, or error) and spins glibc's
