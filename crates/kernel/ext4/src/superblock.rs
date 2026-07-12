@@ -29,6 +29,7 @@ pub const RO_COMPAT_LARGE_FILE:    u32 = 0x0002;
 pub const RO_COMPAT_HUGE_FILE:     u32 = 0x0008;
 pub const RO_COMPAT_DIR_NLINK:     u32 = 0x0020;
 pub const RO_COMPAT_EXTRA_ISIZE:   u32 = 0x0040;
+pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
 
 /// INCOMPAT features this driver understands well enough to interpret the
 /// on-disk layout. An INCOMPAT bit OUTSIDE this set (e.g. META_BG, MMP, INLINE_
@@ -242,6 +243,12 @@ impl Superblock {
     /// NOT be merged in as high bits). # C: O(1)
     pub fn has_huge_file(&self) -> bool {
         (self.feature_ro_compat & RO_COMPAT_HUGE_FILE) != 0
+    }
+
+    /// `EXT4_FEATURE_RO_COMPAT_PROJECT`: project-id quota/inheritance field is
+    /// meaningful on this fs. # C: O(1)
+    pub fn has_project(&self) -> bool {
+        (self.feature_ro_compat & RO_COMPAT_PROJECT) != 0
     }
 
     /// True iff GDT_CSUM (legacy CRC16) is on instead of CRC32C.
