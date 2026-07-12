@@ -8,6 +8,14 @@ use crate::addr::Ipv4Addr;
 use crate::ipv4::ip_checksum;
 
 pub const UDP_HDR_LEN: usize = 8;
+pub const UDP4_MAX_PAYLOAD: usize = 65_507;
+pub const UDP6_MAX_PAYLOAD: usize = 65_527;
+
+/// True when an IPv4 UDP payload cannot fit in Linux's UDP datagram limit. # C: O(1)
+pub fn udp4_payload_too_large(len: usize) -> bool { len > UDP4_MAX_PAYLOAD }
+
+/// True when an IPv6 UDP payload cannot fit in Linux's UDP datagram limit. # C: O(1)
+pub fn udp6_payload_too_large(len: usize) -> bool { len > UDP6_MAX_PAYLOAD }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum UdpError { Short, BadChecksum, BadLen }
@@ -225,5 +233,13 @@ mod tests {
         UdpHdr::build_into(1, 2, src, src, b"abcd", &mut buf);
         buf[4] = 0xFF;  // claim much larger length than buffer
         assert_eq!(UdpHdr::parse(&buf, src, src).err().unwrap(), UdpError::BadLen);
+    }
+
+    #[test]
+    fn linux_payload_limits_are_protocol_owned() {
+        assert!(!udp4_payload_too_large(UDP4_MAX_PAYLOAD));
+        assert!(udp4_payload_too_large(UDP4_MAX_PAYLOAD + 1));
+        assert!(!udp6_payload_too_large(UDP6_MAX_PAYLOAD));
+        assert!(udp6_payload_too_large(UDP6_MAX_PAYLOAD + 1));
     }
 }

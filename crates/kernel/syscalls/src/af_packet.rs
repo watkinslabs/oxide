@@ -65,13 +65,13 @@ pub fn write_sockaddr_ll(src_p: u64, sock: &Arc<InetSocket>, frame: &[u8]) {
 /// # C: O(len) — single copy into a fresh Vec.
 pub fn sendto(
     sock: &Arc<InetSocket>,
-    bufp: u64,
-    len: usize,
+    body: &[u8],
     dest_p: u64,
+    dest_len: usize,
 ) -> Option<i64> {
     // F146: extract sll_addr from sockaddr_ll if caller supplied
     // dest; SOCK_DGRAM uses it as the L2 destination MAC.
-    let dest_mac: Option<[u8; 6]> = if dest_p != 0 && dest_p + 20 <= USER_VA_END {
+    let dest_mac: Option<[u8; 6]> = if dest_p != 0 && dest_len >= 20 && dest_p + 20 <= USER_VA_END {
         // SAFETY: dest_p..dest_p+20 bounds-checked above; user page mapped under caller's AS at CPL=0; sockaddr_ll layout is little-endian fixed-shape u16 family + u16 proto + i32 ifindex + u16 hatype + u8 pkttype + u8 halen + u8[8] addr.
         let fam = unsafe { core::ptr::read_volatile(dest_p as *const u16) };
         if fam == 17 {
@@ -101,13 +101,6 @@ pub fn sendto(
         Some(d) => d,
         None    => return Some(-(Errno::Enoent.as_i32() as i64)),
     };
-    if bufp == 0 || bufp >= USER_VA_END || len == 0 {
-        return Some(-(Errno::Einval.as_i32() as i64));
-    }
-    // SAFETY: caller verified bufp..bufp+len is in the user range and the user page is mapped under the active AS; CPL=0 read.
-    let body: alloc::vec::Vec<u8> = unsafe {
-        core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
-    };
     const SOCK_DGRAM: u8 = 2;
     if sock_type == SOCK_DGRAM {
         // Prepend ethernet header: dst MAC = dest_mac or broadcast;
@@ -127,7 +120,7 @@ pub fn sendto(
         };
     }
     // SOCK_RAW: caller-supplied full L2 frame.
-    match dev.xmit_raw(&body) {
+    match dev.xmit_raw(body) {
         Ok(()) => Some(body.len() as i64),
         Err(_) => Some(-(Errno::Enobufs.as_i32() as i64)),
     }

@@ -86,7 +86,11 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
                 let src = unsafe { core::slice::from_raw_parts(base as *const u8, len) };
                 msg.extend_from_slice(src);
             }
-            return crate::s044_sendto::send_over_socket(&sock, &msg, name, namelen as u64, flags, fd);
+            let dest = match crate::s044_sendto::parse_send_dest(&sock, name, namelen as u64) {
+                Ok((d, _)) => d,
+                Err(e) => return e,
+            };
+            return crate::s044_sendto::send_over_socket(&sock, &msg, dest, flags, fd);
         }
     }
     let mut total: i64 = 0;

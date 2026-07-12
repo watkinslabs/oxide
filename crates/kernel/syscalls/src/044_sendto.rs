@@ -2,17 +2,51 @@
 #![cfg(target_os = "oxide-kernel")]
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 use net::sock::SockKind;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::{AF_INET6, errno_from_neterr, file_is_nonblock, socket_from_fd};
+use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, fd_file, file_is_nonblock, inode_as_inet_socket, inode_as_vsock};
+use crate::userbuf::validate_user_buf_readable;
+
+fn validate_send_payload(bufp: u64, len: usize) -> Result<(), i64> {
+    if len == 0 { return Ok(()); }
+    validate_user_buf_readable(bufp, len as u64, 1)
+}
+
+fn copy_send_payload(bufp: u64, len: usize) -> alloc::vec::Vec<u8> {
+    if len == 0 { return alloc::vec::Vec::new(); }
+    // SAFETY: bufp..bufp+len was validated readable in the caller address space.
+    unsafe { core::slice::from_raw_parts(bufp as *const u8, len).to_vec() }
+}
+
+pub(crate) fn parse_send_dest(sock: &net::sock::InetSocket, dest_p: u64, dest_len: u64) -> Result<(Option<net::sock::RemoteAddr>, usize), i64> {
+    if dest_p == 0 { return Ok((None, 0)); }
+    let len = move_sockaddr_to_kernel_shape(dest_p, dest_len)?;
+    if matches!(*sock.kind.lock(), SockKind::UnixDgram(_)) {
+        let p = read_sockaddr_un_path_len(dest_p, len as u64).ok_or(-(Errno::Einval.as_i32() as i64))?;
+        return crate::namei_common::resolve_unix_addr(p).map(|a| (Some(net::sock::RemoteAddr::Unix(a)), len));
+    }
+    let fam = read_sa_family_checked(dest_p, len)?;
+    if fam == AF_INET6 as u16 {
+        require_sockaddr_in6(len)?;
+        return match read_sockaddr_in6(dest_p) {
+            Some((_fam, port, bytes, _scope)) => Ok((Some(net::sock::RemoteAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }), len)),
+            None => Err(-(Errno::Efault.as_i32() as i64)),
+        };
+    }
+    if fam == AF_INET as u16 {
+        require_sockaddr_in(len)?;
+        return match read_sockaddr_any(dest_p) {
+            Some((_fam, ip, port)) => Ok((Some(net::sock::RemoteAddr::Inet { ip, port }), len)),
+            None => Err(-(Errno::Eafnosupport.as_i32() as i64)),
+        };
+    }
+    Err(-(Errno::Eafnosupport.as_i32() as i64))
+}
 
 /// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
 /// # C: O(payload bytes)
 pub fn sys_sendto(args: &SyscallArgs) -> i64 {
-    use hal::TimerOps;
-    use core::sync::atomic::Ordering;
     const MSG_DONTWAIT: u64 = 0x40;
     let fd     = args.a0;
     let bufp   = args.a1;
@@ -20,45 +54,51 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     let flags  = args.a3;
     let dest_p = args.a4;
     let dest_len = args.a5;
-    // F132: netlink fd routing must happen BEFORE socket_from_fd,
-    // which only knows InetSocket — netlink would otherwise hit
-    // the ENOTSOCK branch despite is_netlink() recognizing it.
-    if crate::netlink_fd::is_netlink(fd) {
-        if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        if len > 65507 { return -(Errno::Emsgsize.as_i32() as i64); }
-        return crate::netlink_fd::sendto(fd, bufp, len, dest_p, dest_len);
+    if let Err(e) = validate_send_payload(bufp, len) {
+        return e;
     }
-    // D3.3: AF_VSOCK send/sendto → OP_RW via the socket inode write
-    // path (STREAM, dest ignored — already connected).
-    if crate::net_common::vsock_from_fd(fd).is_some() {
-        if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: ptr range validated; user page mapped under caller's AS.
-        let payload: alloc::vec::Vec<u8> = unsafe {
-            core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
+    let file = match fd_file(fd) {
+        Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let generic_dest_len = || -> Result<usize, i64> {
+        if dest_p == 0 { Ok(0) } else { move_sockaddr_to_kernel_shape(dest_p, dest_len) }
+    };
+    if crate::netlink_fd::is_netlink_file(&file) {
+        let dest_len = match generic_dest_len() {
+            Ok(n) => n,
+            Err(e) => return e,
         };
+        let payload = copy_send_payload(bufp, len);
+        return crate::netlink_fd::send_coalesced_file(&file, &payload, dest_p, dest_len as u64);
+    }
+    if inode_as_vsock(file.inode()).is_some() {
+        if let Err(e) = generic_dest_len() {
+            return e;
+        }
+        let payload = copy_send_payload(bufp, len);
         let nb = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
-        // Post-KEYSTONE: the data path is the inode's `i_fop` (vsock FileOps);
-        // route the write through the concrete inode's delegators.
-        let file = match crate::net_common::fd_file(fd) {
-            Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
-        };
         let r = if nb { file.inode().write_nonblock(0, &payload) } else { file.inode().write(0, &payload) };
         return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
     }
-    let sock   = match socket_from_fd(fd) {
+    let sock   = match inode_as_inet_socket(file.inode()) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"sendto"); return -(Errno::Enotsock.as_i32() as i64); }
     };
-    if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    if len > 65507 { return -(Errno::Emsgsize.as_i32() as i64); }
-    // F131/F146: AF_PACKET fast path lives in af_packet.rs.
-    if let Some(rv) = crate::af_packet::sendto(&sock, bufp, len, dest_p) {
-        return rv;
+    if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
+        let dest_len = match generic_dest_len() {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        let payload = copy_send_payload(bufp, len);
+        if let Some(rv) = crate::af_packet::sendto(&sock, &payload, dest_p, dest_len) {
+            return rv;
+        }
     }
-    // SAFETY: ptr range validated; user page mapped under caller's AS.
-    let payload: alloc::vec::Vec<u8> = unsafe {
-        core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
+    let (dest, _dest_len) = match parse_send_dest(&sock, dest_p, dest_len) {
+        Ok(d) => d,
+        Err(e) => return e,
     };
-    send_over_socket(&sock, &payload, dest_p, dest_len, flags, fd)
+    let payload = copy_send_payload(bufp, len);
+    send_over_socket(&sock, &payload, dest, flags, fd)
 }
 
 /// Send one kernel-space `payload` as a SINGLE message over an already-resolved
@@ -70,8 +110,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
 pub fn send_over_socket(
     sock: &alloc::sync::Arc<net::sock::InetSocket>,
     payload: &[u8],
-    dest_p: u64,
-    dest_len: u64,
+    dest: Option<net::sock::RemoteAddr>,
     flags: u64,
     fd: u64,
 ) -> i64 {
@@ -85,33 +124,6 @@ pub fn send_over_socket(
     #[cfg(target_arch = "aarch64")]
     let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
-    // Parse optional destination based on socket family.
-    let dest = if dest_p == 0 {
-        None
-    } else if matches!(*sock.kind.lock(), SockKind::UnixDgram(_)) {
-        match read_sockaddr_un_path_len(dest_p, dest_len) {
-            Some(p) => match crate::namei_common::resolve_unix_addr(p) {
-                Ok(a) => Some(net::sock::RemoteAddr::Unix(a)),
-                Err(e) => return e,
-            },
-            None    => return -(Errno::Einval.as_i32() as i64),
-        }
-    } else if read_sa_family(dest_p) == Some(AF_INET6 as u16) {
-        // AF_INET6 destination: parse the 28-byte sockaddr_in6 and
-        // route through the v6 send path. Reading it as sockaddr_in
-        // (the v4 branch below) would mis-read the address as
-        // 0.0.0.0 and silently send a v4 datagram into the void.
-        match read_sockaddr_in6(dest_p) {
-            Some((_fam, port, bytes, _scope)) =>
-                Some(net::sock::RemoteAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }),
-            None => return -(Errno::Eafnosupport.as_i32() as i64),
-        }
-    } else {
-        match read_sockaddr_any(dest_p) {
-            Some((_fam, ip, port)) => Some(net::sock::RemoteAddr::Inet { ip, port }),
-            None => return -(Errno::Eafnosupport.as_i32() as i64),
-        }
-    };
     // Fetch sender creds for AF_UNIX SCM.
     let creds = match sched::live::current() {
         Some(t) => net::sock::SenderCreds {

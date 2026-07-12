@@ -81,6 +81,7 @@ fn resolve_v6_hop_limit(sock: &InetSocket, dst_ip: crate::Ipv6Addr) -> u8 {
 pub fn sendto_v6(sock: &InetSocket,
                   dst_ip: crate::Ipv6Addr, dst_port: u16,
                   payload: &[u8]) -> Result<usize, NetError> {
+    if crate::udp::udp6_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
     // Lock-across-match hazard (see connect_v6): read the slot into a
     // temporary so the guard drops before the None arm re-locks to
     // assign — otherwise the re-lock spins against the still-held
