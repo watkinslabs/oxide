@@ -174,13 +174,6 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
     let fd     = args.a0 as i32;
     let iov    = args.a1;
     let iovcnt = args.a2;
-    if iovcnt == 0 { return 0; }
-    if iovcnt > IOV_MAX { return -(Errno::Einval.as_i32() as i64); }
-    let array_bytes = match iovcnt.checked_mul(16) {
-        Some(v) => v,
-        None    => return -(Errno::Efault.as_i32() as i64),
-    };
-    if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
@@ -194,6 +187,13 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         Ok(f)  => f,
         Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if iovcnt == 0 { return 0; }
+    if iovcnt > IOV_MAX { return -(Errno::Einval.as_i32() as i64); }
+    let array_bytes = match iovcnt.checked_mul(16) {
+        Some(v) => v,
+        None    => return -(Errno::Efault.as_i32() as i64),
+    };
+    if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
     // Linux writev(2): the iovec array forms ONE message. For a message-boundary
     // socket (UDP / AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET) the per-iovec loop below
     // would emit ONE datagram PER iovec and fragment the message. systemd's
@@ -230,6 +230,7 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
             };
         }
     }
+    let limit_base = crate::write_common::write_pos(&file);
     let mut total: u64 = 0;
     for i in 0..iovcnt {
         let iov_i = iov + i * 16;
@@ -240,9 +241,16 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         dtrace!(b"WV_IOV", len);
         if len == 0 { continue; }
         if let Err(rv) = validate_user_buf(base, len, 1) { return rv; }
+        let pos = limit_base.saturating_add(total);
+        let capped = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, len as usize, total == 0) {
+            Ok(n)                 => n,
+            Err(e) if total == 0  => return e,
+            Err(_)                => break,
+        };
+        if capped == 0 { continue; }
         // SAFETY: range validated < USER_VA_END; CPL=0 reads through caller's user pages.
         let bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(base as *const u8, len as usize)
+            core::slice::from_raw_parts(base as *const u8, capped)
         };
         #[cfg(feature = "debug-atexit")]
         trace_stderr_writev(fd, bytes);
@@ -250,8 +258,16 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         trace_stderr_echo(fd, bytes);
         dtrace!(b"WV_PRE_W");
         match file.write(bytes) {
-            Ok(n)  => { dtrace!(b"WV_OK", n as u64); total = total.saturating_add(n as u64); }
-            Err(e) => { dtrace!(b"WV_ERR", e as u64); return -(e as i64); }
+            Ok(n)  => {
+                dtrace!(b"WV_OK", n as u64);
+                total = total.saturating_add(n as u64);
+                if n < capped || capped < len as usize { break; }
+            }
+            Err(e) => {
+                dtrace!(b"WV_ERR", e as u64);
+                if total == 0 { return -(e as i64); }
+                break;
+            }
         }
     }
     dtrace!(b"WV_OUT", total);
