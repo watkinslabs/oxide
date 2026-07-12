@@ -12,6 +12,6 @@ use crate::misc::misc_common::errno;
 /// # C: O(1) + mprotect cost
 pub fn sys_pkey_mprotect(args: &SyscallArgs) -> i64 {
     let key = args.a3 as i32;
-    if key <= 0 { crate::s010_mprotect::sys_mprotect(args) }
+    if key == -1 || key == 0 { crate::s010_mprotect::sys_mprotect(args) }
     else        { errno(Errno::Einval) }
 }

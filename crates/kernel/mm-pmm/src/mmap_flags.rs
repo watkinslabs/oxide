@@ -21,6 +21,10 @@ pub const MAP_UNINITIALIZED: u64   = 0x4000000;
 
 pub const PROT_WRITE: u64 = 0x2;
 pub const PROT_EXEC:  u64 = 0x4;
+pub const PROT_SEM:   u64 = 0x8;
+pub const PROT_GROWSDOWN: u64 = 0x01000000;
+pub const PROT_GROWSUP:   u64 = 0x02000000;
+pub const PROT_KNOWN: u64 = 0x1 | PROT_WRITE | PROT_EXEC | PROT_SEM | PROT_GROWSDOWN | PROT_GROWSUP;
 
 const MAP_KNOWN: u64 = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANON
     | MAP_GROWSDOWN | MAP_DENYWRITE | MAP_EXECUTABLE | MAP_LOCKED
@@ -39,6 +43,15 @@ pub struct GlueAdmission {
     pub is_anon: bool,
     pub is_shared: bool,
     pub len_aligned: usize,
+}
+
+/// # C: O(1)
+pub fn validate_prot(prot: u64) -> Result<(), i64> {
+    if (prot & !PROT_KNOWN) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    if (prot & (PROT_GROWSDOWN | PROT_GROWSUP)) == (PROT_GROWSDOWN | PROT_GROWSUP) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    Ok(())
 }
 
 /// Linux `flags & MAP_TYPE` decoding. `MAP_SHARED_VALIDATE` is the value `3`,
@@ -241,5 +254,13 @@ mod tests {
         assert!(!should_populate(MAP_PRIVATE | MAP_ANON | MAP_POPULATE | MAP_NONBLOCK));
         assert!(should_populate(MAP_PRIVATE | MAP_ANON | MAP_LOCKED));
         assert!(!should_populate(MAP_PRIVATE | MAP_ANON));
+    }
+
+    #[test]
+    fn mprotect_prot_validation_matches_linux_admission() {
+        assert_eq!(validate_prot(0), Ok(()));
+        assert_eq!(validate_prot(0x1 | PROT_WRITE | PROT_EXEC | PROT_SEM), Ok(()));
+        assert_eq!(validate_prot(PROT_GROWSDOWN | PROT_GROWSUP), Err(-(Errno::Einval.as_i32() as i64)));
+        assert_eq!(validate_prot(0x8000_0000), Err(-(Errno::Einval.as_i32() as i64)));
     }
 }

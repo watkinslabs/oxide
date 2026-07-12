@@ -254,6 +254,7 @@ pub struct Vma {
     pub start: UserVirtAddr,
     pub end:   UserVirtAddr,
     pub prot:  VmaProt,
+    pub may_prot: VmaProt,
     pub flags: VmaFlags,
     pub backing: VmaBacking,
     pub rss: AtomicU64,
@@ -271,6 +272,7 @@ impl core::fmt::Debug for Vma {
             .field("start", &self.start)
             .field("end", &self.end)
             .field("prot", &self.prot)
+            .field("may_prot", &self.may_prot)
             .field("flags", &self.flags)
             .field("backing", &self.backing)
             .field("rss", &self.rss.load(Ordering::Relaxed))
@@ -291,6 +293,20 @@ impl Vma {
         flags: VmaFlags,
         backing: VmaBacking,
     ) -> Self {
+        Self::new_with_may(start, end, prot, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC,
+            flags, backing)
+    }
+
+    /// Construct a VMA with Linux `VM_MAY*` rights.
+    /// # C: O(1)
+    pub fn new_with_may(
+        start: UserVirtAddr,
+        end:   UserVirtAddr,
+        prot:  VmaProt,
+        may_prot: VmaProt,
+        flags: VmaFlags,
+        backing: VmaBacking,
+    ) -> Self {
         // Anonymous VMAs: allocate a fresh anon_vma family. The
         // chain edge for *this* VMA gets attached by the caller
         // (`AddressSpace::mmap`) once the VMA is in the tree and
@@ -302,7 +318,7 @@ impl Vma {
             None
         };
         Self {
-            start, end, prot, flags, backing,
+            start, end, prot, may_prot, flags, backing,
             rss: AtomicU64::new(0),
             anon_vma,
             uffd: None,
@@ -336,6 +352,7 @@ impl Vma {
     pub fn mergeable_with_next(&self, next: &Vma) -> bool {
         if self.end != next.start { return false; }
         if self.prot != next.prot { return false; }
+        if self.may_prot != next.may_prot { return false; }
         if self.flags != next.flags { return false; }
         // Different userfaultfd registrations never coalesce (Linux
         // `is_mergeable_vma` compares `vm_userfaultfd_ctx`). The flag
@@ -388,6 +405,7 @@ impl Vma {
             start: new_start,
             end:   new_end,
             prot:  self.prot,
+            may_prot: self.may_prot,
             flags: self.flags,
             backing,
             rss: AtomicU64::new(0),
@@ -408,6 +426,7 @@ impl Clone for Vma {
             start: self.start,
             end:   self.end,
             prot:  self.prot,
+            may_prot: self.may_prot,
             // The child does NOT inherit the uffd registration: we
             // advertise no UFFD_FEATURE_EVENT_FORK, so Linux
             // `dup_userfaultfd` clears `vm_userfaultfd_ctx` + the
