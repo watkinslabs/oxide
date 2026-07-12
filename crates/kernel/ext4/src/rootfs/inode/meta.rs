@@ -9,12 +9,13 @@ const EXT4_SYNC_FL:      u32 = 0x0000_0008;
 const EXT4_IMMUTABLE_FL: u32 = 0x0000_0010;
 const EXT4_APPEND_FL:    u32 = 0x0000_0020;
 const EXT4_NOATIME_FL:   u32 = 0x0000_0080;
+const EXT4_EXTENTS_FL:   u32 = 0x0008_0000;
 const EXT4_PROJINHERIT_FL: u32 = FS_PROJINHERIT_FL;
-/// `lsattr`-visible flags (Linux `FS_FL_USER_VISIBLE`).
-const FS_FL_USER_VISIBLE:    u32 = 0x0003_DFFF | EXT4_PROJINHERIT_FL;
-/// `chattr`-settable flags (Linux `FS_FL_USER_MODIFIABLE`); everything else
-/// (EXTENTS_FL 0x80000, INLINE_DATA_FL, HUGE_FILE, …) is preserved.
-const FS_FL_USER_MODIFIABLE: u32 = 0x0003_80FF | EXT4_PROJINHERIT_FL;
+/// `lsattr`-visible ext4 flags (Linux `EXT4_FL_USER_VISIBLE` subset this
+/// backend can report without advertising unsupported layouts).
+const FS_FL_USER_VISIBLE:    u32 = 0x0003_DFFF | EXT4_EXTENTS_FL | EXT4_PROJINHERIT_FL;
+/// `chattr`-settable ext4 flags (Linux `EXT4_FL_USER_MODIFIABLE` subset).
+const FS_FL_USER_MODIFIABLE: u32 = 0x0003_80FF | EXT4_EXTENTS_FL | EXT4_PROJINHERIT_FL;
 
 /// `ext4_fileattr_get` — the `FS_IOC_GETFLAGS` backend: the inode's on-disk
 /// `i_flags` masked to the user-visible set. # C: O(1) inode read
@@ -44,6 +45,10 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     }
     let cur = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?.i_flags;
     let new = (cur & !FS_FL_USER_MODIFIABLE) | (fa.flags & FS_FL_USER_MODIFIABLE);
+    ext4_ioctl_check_immutable(&st, ino, cur, fa.fsx_projid, new)?;
+    if (cur ^ new) & EXT4_EXTENTS_FL != 0 {
+        return Err(VfsError::Eopnotsupp);
+    }
     st.mount.persist_inode_flags(ino, new).map_err(|_| VfsError::Eio)?;
     let mut s = inode.i_flags()
         & !(vfs::S_IMMUTABLE | vfs::S_APPEND | vfs::S_NOATIME | vfs::S_SYNC);
@@ -53,6 +58,26 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     if new & EXT4_SYNC_FL      != 0 { s |= vfs::S_SYNC; }
     inode.set_i_flags(s);
     ext4_fileattr_setproject(&st, inode, ino, fa.fsx_projid)?;
+    Ok(())
+}
+
+fn ext4_ioctl_check_immutable(
+    st: &super::super::state::RootfsState,
+    ino: u32,
+    cur_flags: u32,
+    projid: u32,
+    new_flags: u32,
+) -> KResult<()> {
+    if cur_flags & EXT4_IMMUTABLE_FL == 0 || new_flags & EXT4_IMMUTABLE_FL == 0 {
+        return Ok(());
+    }
+    if (cur_flags & !EXT4_IMMUTABLE_FL) != (new_flags & !EXT4_IMMUTABLE_FL) {
+        return Err(VfsError::Eperm);
+    }
+    if st.mount.sb.has_project() {
+        let raw = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
+        if raw.i_projid != projid { return Err(VfsError::Eperm); }
+    }
     Ok(())
 }
 
