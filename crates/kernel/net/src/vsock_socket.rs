@@ -27,6 +27,7 @@ pub enum VsockKind {
 /// AF_VSOCK socket VFS state. # C: O(1)
 pub struct VsockSocket {
     pub kind: Spinlock<VsockKind, SockLockClass>,
+    pub so_type: core::sync::atomic::AtomicU8,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
     pub poll_subs: Arc<vfs::PollSubscribers>,
@@ -35,8 +36,14 @@ pub struct VsockSocket {
 impl VsockSocket {
     /// `socket(AF_VSOCK, SOCK_STREAM, 0)`. # C: O(1)
     pub fn new() -> Self {
+        Self::new_type(crate::socket_args::SOCK_STREAM)
+    }
+
+    /// `socket(AF_VSOCK, type, protocol)`. # C: O(1)
+    pub fn new_type(typ: u32) -> Self {
         VsockSocket {
             kind: Spinlock::new(VsockKind::Init),
+            so_type: core::sync::atomic::AtomicU8::new(typ as u8),
             read_shut: core::sync::atomic::AtomicBool::new(false),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
         }
