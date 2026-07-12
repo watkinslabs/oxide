@@ -29,18 +29,8 @@ impl AddressSpace {
         SR: FnMut(u64, &alloc::sync::Arc<crate::AnonVma>, u32),
         IR: FnMut(u64),
     {
-        // Per spec §5: read VMA tree (concurrent with other faults), but
-        // CLONE the VMA and DROP the read guard here — the File/SHARED arms
-        // below sleep on block I/O (`backing.shared_frame`/`read_at` →
-        // ext4 → virtio-blk park_blk → schedule). Holding this address-space
-        // -wide `vmas` read lock across that blocking I/O deadlocks any peer
-        // thread of the same mm that needs `vmas.write()` (mmap/munmap/
-        // mprotect/stack-grow) — the raw non-reentrant busy-spin never yields
-        // or checks signals, wedging the process uninterruptibly (and, via a
-        // held `Mount::state`, the whole ext4 fs). Multi-threaded mmap writers
-        // (systemd-journald, gnome-shell) hit this; single-threaded ones don't.
-        // Mirrors the correct drop-before-I/O pattern in the sibling
-        // write-protection handler (`fault/write.rs`).
+        // Clone the VMA then drop the read guard before File/SHARED backing I/O;
+        // holding `vmas` across block sleep deadlocks peer mmap/munmap writers.
         let vma = match self.vmas.read().find_containing(va) {
             Some(v) => v.clone(),
             None    => return Err(Error::Inval),    // EFAULT upstream
@@ -48,6 +38,8 @@ impl AddressSpace {
         if !vma.permits(access) {
             return Err(Error::Inval);                // EFAULT upstream
         }
+        let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+        if self.brk_fault_past_current(&vma, va_page) { return Err(Error::Inval); }
 
         match &vma.backing {
             VmaBacking::Anonymous => {
@@ -62,7 +54,6 @@ impl AddressSpace {
                     hal::zerotrap::trap((dst) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
                     core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
                 }
-                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let pte_flags = vma.prot.to_page_flags();
                 // DIAG (debug-atexit): anon-arm install in the lib arena — this
                 // arm zeros the frame, so if it fires at a library-tail VA the
