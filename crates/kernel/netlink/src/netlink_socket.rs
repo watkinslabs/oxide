@@ -69,6 +69,11 @@ impl NetlinkSocket {
         self.rx_queue.lock().front().cloned()
     }
 
+    /// Length of the next readable netlink datagram for `FIONREAD`. # C: O(1)
+    pub fn front_len(&self) -> u32 {
+        self.rx_queue.lock().front().map(|(m, _)| m.len() as u32).unwrap_or(0)
+    }
+
     /// Dispatch a single parsed request header.
     /// # C: O(reply build)
     fn handle_one(&self, hdr: &Nlmsghdr, msg: &[u8]) {

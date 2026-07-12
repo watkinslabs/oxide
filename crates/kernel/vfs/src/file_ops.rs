@@ -31,6 +31,16 @@ pub enum HoleOrData {
     Hole,
 }
 
+/// Int-valued Linux `unlocked_ioctl` queue queries whose copy_to_user remains
+/// owned by the syscall ABI layer. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IoctlIntCmd {
+    /// `FIONREAD` / `SIOCINQ` — readable bytes or next datagram length.
+    Fionread,
+    /// `SIOCOUTQ` / `TIOCOUTQ` — protocol-defined outgoing queued bytes.
+    Siocoutq,
+}
+
 /// `filldir`-style sink (Linux `struct dir_context.actor` / `filldir_t`): the
 /// callback `getdents` installs to pack one directory entry into the user
 /// buffer. `emit` returns `false` when the buffer cannot hold the entry — the
@@ -153,6 +163,12 @@ pub trait FileOps: Send + Sync {
     /// [`File::set_fasync_state`] to link/unlink the open description.
     /// # C: backend-dependent
     fn fasync_file(&self, _fd: i32, _file: &Arc<File>, _on: bool) -> KResult<()> {
+        Err(VfsError::Enotty)
+    }
+
+    /// Int-valued `f_op->unlocked_ioctl` subset. Default `ENOTTY`; stream and
+    /// socket backends override with their queue accounting. # C: backend
+    fn ioctl_int(&self, _file: &File, _cmd: IoctlIntCmd) -> KResult<u32> {
         Err(VfsError::Enotty)
     }
 
