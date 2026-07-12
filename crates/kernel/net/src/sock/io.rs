@@ -44,13 +44,15 @@ impl InetSocket {
             Unix(Arc<crate::UnixPair>, crate::UnixEnd),
             UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
             Tcp(Arc<TcpEntry>),
-            Other,
+            Msg,
+            NotConnected,
         }
         let k = match &*self.kind.lock() {
             SockKind::Unix(p, e)        => K::Unix(p.clone(), *e),
             SockKind::UnixMsgPair(p, e) => K::UnixMsgPair(p.clone(), *e),
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
-            _                            => K::Other,
+            SockKind::Udp | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
+            _                            => K::NotConnected,
         };
         let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
         let deadline_ns = compute_deadline_ns(timeo);
@@ -66,7 +68,8 @@ impl InetSocket {
                 // monotonic deadline; 0 = no timeout (indefinite).
                 crate::sock_io::read_tcp_blocking(&entry, buf, deadline_ns)
             }
-            K::Other => Err(vfs::VfsError::Einval),
+            K::Msg => crate::sock_vfs_read::read_msg_socket_blocking(self, buf, deadline_ns),
+            K::NotConnected => Err(vfs::VfsError::Enotconn),
         }
     }
 
@@ -86,13 +89,15 @@ impl InetSocket {
             Unix(Arc<crate::UnixPair>, crate::UnixEnd),
             UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
             Tcp(Arc<TcpEntry>),
-            Other,
+            Msg,
+            NotConnected,
         }
         let k = match &*self.kind.lock() {
             SockKind::Unix(p, e)        => K::Unix(p.clone(), *e),
             SockKind::UnixMsgPair(p, e) => K::UnixMsgPair(p.clone(), *e),
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
-            _                            => K::Other,
+            SockKind::Udp | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
+            _                            => K::NotConnected,
         };
         match k {
             K::Tcp(entry) => {
@@ -136,9 +141,18 @@ impl InetSocket {
                     None => Err(vfs::VfsError::Eagain),
                 }
             }
-            // Udp / UnixDgram / Packet / TcpInit / TcpListener: read() returns
-            // EINVAL for these (they use recvfrom/recvmsg) — no blocking path.
-            K::Other => self.read(_off, buf),
+            // Datagram/packet sockets: read() consumes one packet via the
+            // same receive core as recvfrom(..., src=NULL). TCP init/listener
+            // sockets are not connected and return ENOTCONN like Linux.
+            K::Msg => match crate::sock_io::recvfrom_opts(self, buf.len(), crate::sock_io::RecvOptions::default()) {
+                Ok(r) => {
+                    let n = r.payload.len();
+                    buf[..n].copy_from_slice(&r.payload);
+                    Ok(n)
+                }
+                Err(e) => Err(crate::sock_vfs_read::recv_vfs_err(e)),
+            },
+            K::NotConnected => Err(vfs::VfsError::Enotconn),
         }
     }
 
