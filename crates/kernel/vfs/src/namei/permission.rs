@@ -187,6 +187,30 @@ pub fn may_create(dir: &InodeRef, cred: &Cred) -> KResult<()> {
     inode_permission(dir, MAY_WRITE | MAY_EXEC, cred)
 }
 
+const PROTECTED_FIFOS: u8 = 1;
+const PROTECTED_REGULAR: u8 = 2;
+
+/// `may_create_in_sticky` (Linux `fs/namei.c`): an `O_CREAT` open of an entry
+/// that already exists in a sticky directory is denied unless the existing
+/// inode is owned by the caller or by the directory owner. The sysctl defaults
+/// match this tree's `/proc/sys/fs/protected_{fifos,regular}` leaves. # C: O(1)
+pub fn may_create_in_sticky(dir: &InodeRef, inode: &InodeRef, cred: &Cred) -> KResult<()> {
+    let Some(dir_mode) = dir.perm() else { return Ok(()); };
+    if dir_mode & crate::types::S_ISVTX == 0 { return Ok(()); }
+    let ft = inode.file_type();
+    if ft == FileType::Regular && PROTECTED_REGULAR == 0 { return Ok(()); }
+    if ft == FileType::Fifo && PROTECTED_FIFOS == 0 { return Ok(()); }
+    let inode_uid = inode.uid().unwrap_or(0);
+    if inode_uid == dir.uid().unwrap_or(0) { return Ok(()); }
+    if inode_uid == cred.uid { return Ok(()); }
+    if dir_mode & 0o002 != 0 { return Err(VfsError::Eacces); }
+    if dir_mode & 0o020 != 0 {
+        if ft == FileType::Fifo && PROTECTED_FIFOS >= 2 { return Err(VfsError::Eacces); }
+        if ft == FileType::Regular && PROTECTED_REGULAR >= 2 { return Err(VfsError::Eacces); }
+    }
+    Ok(())
+}
+
 const PROTECTED_HARDLINKS: bool = true;
 
 /// Linux `safe_hardlink_source`: non-owner hardlinks are only safe for regular

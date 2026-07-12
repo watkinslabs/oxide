@@ -174,7 +174,12 @@ impl Proc {
             let p = self.parent(dirfd, path)?;
             let name = p.last_component.as_deref().ok_or(VfsError::Einval)?;
             let inode = match p.inode.lookup(name) {
-                Ok(i) => i,
+                Ok(i) => {
+                    if i.file_type() == FileType::Directory { return Err(VfsError::Eisdir); }
+                    vfs::may_create_in_sticky(&p.inode, &i, &self.cred)?;
+                    vfs::may_open(&i, readable, writable, &self.cred)?;
+                    i
+                }
                 Err(VfsError::Enoent) => {
                     vfs::may_create(&p.inode, &self.cred)?;
                     let ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &self.cred, umask: self.umask };
@@ -464,6 +469,9 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     sticky.inode.set_perm(0o1777).expect("chmod sticky");
     let owned = user_proc.openat(AT_FDCWD, "/run/sticky/owned", true, 0o666, true, true).expect("owned");
     user_proc.fchmod(owned, 0o600).expect("chmod owned");
+    assert!(matches!(other_proc.openat(AT_FDCWD, "/run/sticky/owned", true, 0o600, true, false), Err(VfsError::Eacces)));
+    assert!(matches!(other_proc.openat(AT_FDCWD, "/run/sticky", true, 0o600, true, false), Err(VfsError::Eisdir)));
+    user_proc.openat(AT_FDCWD, "/run/sticky/owned", true, 0o600, true, true).expect("owner O_CREAT existing in sticky");
     assert!(matches!(other_proc.unlinkat("/run/sticky/owned"), Err(VfsError::Eperm)));
     assert!(matches!(user_proc.unlinkat("/run/sticky/owned/"), Err(VfsError::Enotdir)));
     user_proc.unlinkat("/run/sticky/owned").expect("owner unlink in sticky");

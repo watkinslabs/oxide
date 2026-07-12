@@ -275,6 +275,17 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
         if (flags & O_CREAT) != 0 && (flags & O_EXCL) != 0 {
             return -(Errno::Eexist.as_i32() as i64);
         }
+        if (flags & O_CREAT) != 0 {
+            if vp.inode.file_type() == vfs::FileType::Directory {
+                return -(Errno::Eisdir.as_i32() as i64);
+            }
+            if let Some(parent) = vp.dentry.parent().and_then(|d| d.inode()) {
+                let cred = crate::pathresolve::current_cred();
+                if let Err(e) = vfs::may_create_in_sticky(&parent, &vp.inode, &cred) {
+                    return crate::namei_common::errno_from_vfs(e);
+                }
+            }
+        }
         if regular_only && vp.inode.file_type() != vfs::FileType::Regular {
             return -(Errno::Eftype.as_i32() as i64);
         }
