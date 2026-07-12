@@ -74,6 +74,28 @@ impl NetStack {
         listener.accept_q.lock().pop_front()
     }
 
+    /// Remove a connected TCP entry from the demux table. # C: O(log N)
+    pub fn tcp_disconnect_entry(&self, entry: &Arc<TcpEntry>) {
+        let key = {
+            let c = entry.conn.lock();
+            TcpKey {
+                local_ip: c.local.ip, local_port: c.local.port,
+                remote_ip: c.remote.ip, remote_port: c.remote.port,
+            }
+        };
+        self.tcp_conns.lock().remove(&key);
+    }
+
+    /// Remove a listening TCP entry from the listen table. # C: O(N bucket)
+    pub fn tcp_unlisten_entry(&self, entry: &Arc<TcpListenEntry>) {
+        let key = TcpListenKey { local_ip: entry.local.ip, local_port: entry.local.port };
+        let mut g = self.tcp_listens.lock();
+        if let Some(v) = g.get_mut(&key) {
+            v.retain(|e| !Arc::ptr_eq(e, entry));
+            if v.is_empty() { g.remove(&key); }
+        }
+    }
+
     /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain
     /// when full. # C: O(data + N segments)
     pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool, cork: bool)

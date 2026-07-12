@@ -4,7 +4,8 @@
 
 use hal::USER_VA_END;
 use net::sock::InetSocket;
-use crate::userbuf::validate_user_buf_writable;
+use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
+use syscall::errno::Errno;
 
 const AF_INET:  u32 = 2;
 const AF_INET6: u32 = 10;
@@ -15,7 +16,43 @@ const SOCKADDR_UN_LEN:    usize = 110;
 const SOCKADDR_IN_LEN:    usize = 16;
 const SOCKADDR_IN6_LEN:   usize = 28;
 const SOCKADDR_NL_LEN:    usize = 12;
+const SOCKADDR_VM_LEN:    usize = 16;
 const SOCKADDR_STORAGE:   usize = SOCKADDR_UN_LEN;
+const SA_FAMILY_LEN:      usize = 2;
+
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// Linux `move_addr_to_kernel`: validate signed socklen, storage bound, and
+/// readable user range before any family-specific parse. # C: O(N pages)
+pub(crate) fn move_sockaddr_to_kernel_shape(ptr: u64, addrlen: u64) -> Result<usize, i64> {
+    let len = addrlen as i32;
+    if len < 0 { return Err(err(Errno::Einval)); }
+    let len = len as usize;
+    if len > 128 { return Err(err(Errno::Einval)); }
+    if len != 0 { validate_user_buf_readable(ptr, len as u64, 1)?; }
+    Ok(len)
+}
+
+/// Read `sa_family` after the Linux copyin-equivalent validation. # C: O(1)
+pub(crate) fn read_sa_family_checked(ptr: u64, addrlen: usize) -> Result<u16, i64> {
+    if addrlen < SA_FAMILY_LEN { return Err(err(Errno::Einval)); }
+    read_sa_family(ptr).ok_or(err(Errno::Efault))
+}
+
+/// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
+pub(crate) fn require_sockaddr_in(addrlen: usize) -> Result<(), i64> {
+    if addrlen < SOCKADDR_IN_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
+}
+
+/// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
+pub(crate) fn require_sockaddr_in6(addrlen: usize) -> Result<(), i64> {
+    if addrlen < SOCKADDR_IN6_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
+}
+
+/// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
+pub(crate) fn require_sockaddr_vm(addrlen: usize) -> Result<(), i64> {
+    if addrlen < SOCKADDR_VM_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
+}
 
 pub(crate) struct EncodedSockaddr {
     bytes: [u8; SOCKADDR_STORAGE],
