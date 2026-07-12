@@ -37,6 +37,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_GET_RW_HINT: u64 = 1035; const F_SET_RW_HINT: u64 = 1036;
     const F_GET_FILE_RW_HINT: u64 = 1037; const F_SET_FILE_RW_HINT: u64 = 1038;
     const RWH_WRITE_LIFE_EXTREME: u64 = 5;
+    const O_ASYNC: u64 = 0o20000;
     // Lease types (== the l_type record-lock values): read / write / unlock.
     const F_RDLCK: i32 = 0; const F_WRLCK: i32 = 1; const F_UNLCK: i32 = 2;
     // dnotify F_NOTIFY DN_* event bits + DN_MULTISHOT (Linux fcntl.h).
@@ -72,18 +73,20 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             // SETFL masking (preserve access mode + creation flags, update only
             // O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME/O_ASYNC) lives in the VFS
             // work fn `File::set_fl` per `53§3`; the shim forwards the raw `arg`.
-            // Toggling O_ASYNC (de)registers the fd for fasync SIGIO delivery —
-            // done here (not in `set_fl`) because the fasync registry keys on the
-            // `Arc<File>` the fd table holds (Linux `setfl` -> `f_op->fasync`).
+            // Toggling O_ASYNC calls the backend `f_op->fasync` when present;
+            // absent fasync support is ignored here, unlike `ioctl(FIOASYNC)`.
             let was_async = file.is_async();
-            file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
-            let now_async = file.is_async();
-            if now_async && !was_async {
-                sched::live::sigpend::install_sigio_hook();
-                vfs::file::fasync_register(&file);
-            } else if was_async && !now_async {
-                vfs::file::fasync_unregister(&file);
+            let want_async = (arg & O_ASYNC) != 0;
+            if want_async != was_async {
+                match file.fasync(fd, want_async) {
+                    Ok(()) => {
+                        if want_async { sched::live::sigpend::install_sigio_hook(); }
+                    }
+                    Err(vfs::VfsError::Enotty) => {}
+                    Err(e) => return -(e as i64),
+                }
             }
+            file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
             0
         }
         F_GETPIPE_SZ => match fs::pipe::pipe_size(file.inode()) {

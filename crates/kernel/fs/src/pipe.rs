@@ -209,6 +209,7 @@ impl FileOps for PipeFileOps {
     fn poll(&self, inode: &Inode) -> u32 {
         pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0)
     }
+    fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +308,7 @@ impl FileOps for FifoFileOps {
     fn poll(&self, inode: &Inode) -> u32 {
         fifo_pipe_lookup(inode).map(|p| p.poll_mask()).unwrap_or(0)
     }
+    fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
     /// Last-close of THIS FIFO open description (Linux `pipe_release`): drop the
     /// reader and/or writer count this open took in `fifo_open` (per its
     /// `f_mode`), wake the opposite side so a peer sees EOF / EPIPE, and GC the
