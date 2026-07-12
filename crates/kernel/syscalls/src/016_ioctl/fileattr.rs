@@ -95,6 +95,7 @@ fn fattr_fill_xflags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
         if fa.flags & FS_DAX_FL       != 0 { fa.fsx_xflags |= FS_XFLAG_DAX; }
         if fa.flags & FS_PROJINHERIT_FL != 0 { fa.fsx_xflags |= FS_XFLAG_PROJINHERIT; }
         if fa.flags & FS_VERITY_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_VERITY; }
+        if fa.flags & FS_CASEFOLD_FL  != 0 { fa.fsx_xflags |= FS_XFLAG_CASEFOLD; }
     }
     if fa.flags == 0 && fa.fsx_xflags != 0 {
         if fa.fsx_xflags & FS_XFLAG_IMMUTABLE != 0 { fa.flags |= FS_IMMUTABLE_FL; }
@@ -105,6 +106,7 @@ fn fattr_fill_xflags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
         if fa.fsx_xflags & FS_XFLAG_DAX       != 0 { fa.flags |= FS_DAX_FL; }
         if fa.fsx_xflags & FS_XFLAG_PROJINHERIT != 0 { fa.flags |= FS_PROJINHERIT_FL; }
         if fa.fsx_xflags & FS_XFLAG_VERITY    != 0 { fa.flags |= FS_VERITY_FL; }
+        if fa.fsx_xflags & FS_XFLAG_CASEFOLD  != 0 { fa.flags |= FS_CASEFOLD_FL; }
     }
     fa
 }
@@ -118,6 +120,7 @@ fn fattr_fill_flags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
     if fa.flags & FS_DAX_FL       != 0 { fa.fsx_xflags |= FS_XFLAG_DAX; }
     if fa.flags & FS_PROJINHERIT_FL != 0 { fa.fsx_xflags |= FS_XFLAG_PROJINHERIT; }
     if fa.flags & FS_VERITY_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_VERITY; }
+    if fa.flags & FS_CASEFOLD_FL  != 0 { fa.fsx_xflags |= FS_XFLAG_CASEFOLD; }
     fa
 }
 

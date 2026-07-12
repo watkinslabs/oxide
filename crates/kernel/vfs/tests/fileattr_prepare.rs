@@ -1,7 +1,7 @@
 use vfs::idmap::Idmap;
 use vfs::inode::{
-    FS_APPEND_FL, FS_COMPR_FL, FS_IMMUTABLE_FL, FS_XFLAG_APPEND, FS_XFLAG_EXTSIZE,
-    FS_XFLAG_PROJINHERIT, FS_XFLAG_RTINHERIT,
+    FS_APPEND_FL, FS_CASEFOLD_FL, FS_COMPR_FL, FS_IMMUTABLE_FL, FS_XFLAG_APPEND,
+    FS_XFLAG_EXTSIZE, FS_XFLAG_PROJINHERIT, FS_XFLAG_RTINHERIT, S_CASEFOLD,
 };
 use vfs::{
     Cred, CRED_NGROUPS, FileAttr, FileAttrSource, FileType, InodeBuilder, VfsError,
@@ -99,4 +99,9 @@ fn immutable_append_toggle_requires_linux_immutable_capability() {
         Err(VfsError::Eperm));
     assert!(fileattr_prepare_set(&Idmap::identity(), &node, old, want, FileAttrSource::Flags,
         &cred(0, false), true, true).is_ok());
+}
+
+#[test]
+fn fileattr_from_i_flags_reports_casefold() {
+    assert_eq!(FileAttr::from_i_flags(S_CASEFOLD).flags & FS_CASEFOLD_FL, FS_CASEFOLD_FL);
 }
