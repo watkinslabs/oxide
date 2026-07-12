@@ -142,7 +142,9 @@ pub fn glue_mmap(
     }
 }
 
-fn populate_current_range(start: UserVirtAddr, len: usize, prot: VmaProt) {
+/// Populate the current task's user page tables over `[start,start+len)`.
+/// # C: O(len / PAGE_SIZE)
+pub fn populate_current_range(start: UserVirtAddr, len: usize, prot: VmaProt) {
     if let Some(cur) = sched::live::current() {
         // SAFETY: running task on this CPU; single-mutator mm slot per `13§5`.
         if let Some(mm) = unsafe { cur.mm_ref() } {

@@ -12,7 +12,7 @@ use block::{BlockError, CachedPage, InodeId, KResult as BlockResult, PageCache};
 use vfs::{InodeRef, MAY_WRITE};
 use vfs::inode::inode_owner_or_capable;
 use vfs::idmap::IDENTITY;
-use vmm::FileBacking;
+use vmm::{FileBacking, FileBackingError};
 
 /// Read-side file backing for `VmaBacking::File`. Goes through a
 /// dedicated `PageCache`, which fetches missing pages via
@@ -155,5 +155,18 @@ impl FileBacking for InodeFileBacking {
         let cred = crate::pathresolve::current_cred();
         inode_owner_or_capable(&IDENTITY, self.inode.as_ref(), &cred)
             || self.inode.permission(MAY_WRITE, &cred).is_ok()
+    }
+
+    /// `MADV_REMOVE` file punch-hole leg. # C: filesystem-dependent
+    fn madvise_remove(&self, off: u64, len: u64) -> Result<(), FileBackingError> {
+        self.inode.fallocate(off, len, true, false, true).map_err(|e| match e {
+            vfs::VfsError::Eacces => FileBackingError::Acces,
+            vfs::VfsError::Ebadf => FileBackingError::Badf,
+            vfs::VfsError::Einval => FileBackingError::Inval,
+            vfs::VfsError::Eio => FileBackingError::Io,
+            vfs::VfsError::Enomem => FileBackingError::NoMem,
+            vfs::VfsError::Eopnotsupp => FileBackingError::OpNotSupp,
+            _ => FileBackingError::Inval,
+        })
     }
 }
