@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 use crate::types::KResult;
-use super::{SuperBlock, SB_ACTIVE, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_UNFROZEN};
+use super::{freeze_wait_hooks, SuperBlock, FREEZE_WAIT_LOCK, SB_ACTIVE, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_UNFROZEN};
 
 impl SuperBlock {
     /// `s_op->sync_fs` one pass (Linux `__sync_filesystem` inner call).
@@ -32,28 +32,44 @@ impl SuperBlock {
     /// # C: O(1)
     pub fn is_frozen(&self) -> bool { self.sb_freeze_level() != SB_UNFROZEN }
 
-    /// `sb_start_write` (trylock variant, Linux `__sb_start_write_trylock`):
-    /// admit a write(2)/page-fault writer iff the sb is both writable and
-    /// unfrozen. On success the caller MUST pair with [`sb_end_write`]. Returns
-    /// `false` if `SB_RDONLY` (Linux `mnt_want_write` → `-EROFS`) or frozen so
-    /// the syscall layer can fail `EROFS`/block-retry. The post-increment
-    /// re-check mirrors the percpu_rwsem reader/writer barrier: a freeze racing
-    /// in between backs the writer out so `freeze_super` never proceeds with a
-    /// leaked writer. # C: O(1)
+    /// `sb_start_write` (Linux `sb_start_write`): admit a write(2)/page-fault
+    /// writer iff the sb is writable, sleeping while `s_writers.frozen` blocks
+    /// new writers. On success the caller MUST pair with [`sb_end_write`].
+    /// Returns `false` only for `SB_RDONLY` (`mnt_want_write` → `-EROFS`) or if
+    /// no scheduler hook exists in hosted/pre-init code. # C: O(1) or sleeps
     pub fn sb_start_write(&self) -> bool {
-        if self.is_readonly() { return false; }
-        if self.is_frozen() { return false; }
-        self.s_writers_count.fetch_add(1, Ordering::AcqRel);
-        if self.is_frozen() {
-            self.s_writers_count.fetch_sub(1, Ordering::AcqRel);
-            return false;
+        loop {
+            let _g = FREEZE_WAIT_LOCK.lock();
+            if self.is_readonly() { return false; }
+            if !self.is_frozen() {
+                self.s_writers_count.fetch_add(1, Ordering::AcqRel);
+                return true;
+            }
+            let hooks = freeze_wait_hooks();
+            match (hooks.park, hooks.schedule) {
+                (Some(park), Some(schedule)) => {
+                    park(self.freeze_wait_key());
+                    drop(_g);
+                    schedule();
+                }
+                _ => return false,
+            }
         }
-        true
     }
 
     /// `sb_end_write`: release a writer admitted by [`sb_start_write`].
     /// # C: O(1)
-    pub fn sb_end_write(&self) { self.s_writers_count.fetch_sub(1, Ordering::AcqRel); }
+    pub fn sb_end_write(&self) {
+        let prev = self.s_writers_count.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            let _g = FREEZE_WAIT_LOCK.lock();
+            if self.is_frozen() {
+                if let Some(wake) = freeze_wait_hooks().wake {
+                    wake(self.freeze_wait_key());
+                }
+            }
+        }
+    }
 
     /// Live `sb_start_write` holder count (the freeze drain target). # C: O(1)
     pub fn sb_writers(&self) -> u32 { self.s_writers_count.load(Ordering::Acquire) }
@@ -66,20 +82,24 @@ impl SuperBlock {
     /// gate stops NEW ones; existing holders drop on their syscall return).
     /// # C: O(dirty)
     pub fn freeze_super(&self) -> KResult<()> {
-        if self.s_writers_frozen.compare_exchange(
-            SB_UNFROZEN, SB_FREEZE_WRITE, Ordering::AcqRel, Ordering::Acquire).is_err() {
-            return Err(crate::types::VfsError::Ebusy);
+        {
+            let _g = FREEZE_WAIT_LOCK.lock();
+            if self.s_writers_frozen.compare_exchange(
+                SB_UNFROZEN, SB_FREEZE_WRITE, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                return Err(crate::types::VfsError::Ebusy);
+            }
         }
+        self.wait_for_writers_drained();
         // New writers now rejected; flush dirty state before sealing on-disk.
         self.s_writers_frozen.store(SB_FREEZE_PAGEFAULT, Ordering::Release);
         if let Err(e) = self.sync_fs(true) {
-            self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release);
+            self.unfreeze_and_wake();
             return Err(e);
         }
         self.s_writers_frozen.store(SB_FREEZE_FS, Ordering::Release);
         match self.s_op.freeze_fs() {
             Ok(()) => { self.s_writers_frozen.store(SB_FREEZE_COMPLETE, Ordering::Release); Ok(()) }
-            Err(e) => { self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release); Err(e) }
+            Err(e) => { self.unfreeze_and_wake(); Err(e) }
         }
     }
 
@@ -89,8 +109,40 @@ impl SuperBlock {
     pub fn thaw_super(&self) -> KResult<()> {
         if !self.is_frozen() { return Err(crate::types::VfsError::Einval); }
         self.s_op.thaw_fs()?;
-        self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release);
+        self.unfreeze_and_wake();
         Ok(())
+    }
+
+    fn unfreeze_and_wake(&self) {
+        let _g = FREEZE_WAIT_LOCK.lock();
+        self.s_writers_frozen.store(SB_UNFROZEN, Ordering::Release);
+        if let Some(wake) = freeze_wait_hooks().wake {
+            wake(self.freeze_wait_key());
+        }
+    }
+
+    fn wait_for_writers_drained(&self) {
+        loop {
+            let _g = FREEZE_WAIT_LOCK.lock();
+            if self.sb_writers() == 0 { return; }
+            let hooks = freeze_wait_hooks();
+            match (hooks.park, hooks.schedule) {
+                (Some(park), Some(schedule)) => {
+                    park(self.freeze_wait_key());
+                    drop(_g);
+                    schedule();
+                }
+                _ => {
+                    drop(_g);
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    }
+
+    /// Stable key for sched-owned sb-freeze wait queues. # C: O(1)
+    fn freeze_wait_key(&self) -> usize {
+        self as *const SuperBlock as usize
     }
 
     /// `generic_shutdown_super` (Linux fs/super.c): the last-`s_active`-drop

@@ -61,19 +61,12 @@ impl File {
     /// `file_start_write` (Linux `fs/super.c` `sb_start_write` via the
     /// `vfs_write`/`write_iter` path): admit THIS description as an in-flight
     /// writer against its inode's superblock freeze gate before any data write,
-    /// returning an RAII [`SbWriteGuard`] whose `Drop` runs `sb_end_write` on
-    /// EVERY return/error path. Gated on regular files — freeze (SB_FREEZE_WRITE)
-    /// protects on-disk filesystem data, and gating to `FileType::Regular`
-    /// avoids holding the writer count across a parking pipe/socket write
-    /// (which would wedge a freeze drain). An anon/regular file with no live
-    /// superblock is not gated (its backend governs writability).
-    ///
-    /// CAVEAT (documented approximation): Linux `sb_start_write` SLEEPS on a
-    /// frozen sb until `thaw_super`; there is no blocking writer wait-queue on
-    /// this write path, so a NEW write to a FROZEN sb returns `Erofs` instead
-    /// of blocking. The freeze itself still drains correctly — the level gate
-    /// rejects new writers and `sb_writers()` tracks in-flight holders.
-    /// # C: O(1)
+    /// sleeping while the sb is frozen and returning an RAII [`SbWriteGuard`]
+    /// whose `Drop` runs `sb_end_write` on EVERY return/error path. Gated on
+    /// regular files — freeze protects on-disk filesystem data, and gating to
+    /// `FileType::Regular` avoids holding the writer count across a parking
+    /// pipe/socket write. An anon/regular file with no live superblock is not
+    /// gated. # C: O(1) or sleeps
     fn file_start_write(&self) -> KResult<SbWriteGuard> {
         if !matches!(self.inode.file_type(), FileType::Regular) {
             return Ok(SbWriteGuard(None));
@@ -106,7 +99,7 @@ impl File {
             return Err(VfsError::Erofs);
         }
         // D27: admit as a sb-freeze in-flight writer (Linux `file_start_write`).
-        // EROFS if the sb is FROZEN; guard's Drop runs `sb_end_write` on every
+        // Frozen sb sleeps until thaw; guard's Drop runs `sb_end_write` on every
         // return/error path below.
         let _sbw = self.file_start_write()?;
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
@@ -266,7 +259,7 @@ impl File {
             return Err(VfsError::Erofs);
         }
         // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
-        // EROFS on a FROZEN sb. Guard releases on every return path.
+        // frozen sb sleeps until thaw. Guard releases on every return path.
         let _sbw = self.file_start_write()?;
         let f = self.flags();
         // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
@@ -355,7 +348,7 @@ impl File {
             return Err(VfsError::Erofs);
         }
         // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
-        // EROFS on a FROZEN sb. Guard releases on every return path.
+        // frozen sb sleeps until thaw. Guard releases on every return path.
         let _sbw = self.file_start_write()?;
         let f = self.flags();
         let nonblock = f.contains(OpenFlags::O_NONBLOCK);
