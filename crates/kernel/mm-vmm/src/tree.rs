@@ -16,10 +16,14 @@ use core::ops::Bound;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use hal::UserVirtAddr;
+use hal::{UserVirtAddr, USER_VA_END};
 
 use crate::vma::Vma;
 use crate::Error;
+
+fn raw_end_key(end: u64) -> Option<UserVirtAddr> {
+    UserVirtAddr::new(end).or_else(|| if end == USER_VA_END { UserVirtAddr::new(USER_VA_END - 1) } else { None })
+}
 
 /// Sorted, non-overlapping set of VMAs covering some subset of user
 /// virtual address space. Lookup `O(log N)` (`11§4`); insert worst-case
@@ -191,15 +195,17 @@ impl VmaTree {
         start: UserVirtAddr,
         end: UserVirtAddr,
     ) -> Vec<Vma> {
-        let mut removed = Vec::new();
-        if start.as_u64() >= end.as_u64() { return removed; }
+        self.remove_range_raw_end(start, end.as_u64())
+    }
 
-        // Collect keys of all VMAs overlapping [start, end). A VMA
-        // overlaps iff its start < end AND its end > start. The map
-        // range `..end` selects every VMA whose start < end; we then
-        // filter on the opposite endpoint.
+    /// # C: O(K + log N), K = #intersecting VMAs
+    pub fn remove_range_raw_end(&mut self, start: UserVirtAddr, end: u64) -> Vec<Vma> {
+        let mut removed = Vec::new();
+        if start.as_u64() >= end { return removed; }
+        let Some(end_key) = raw_end_key(end) else { return removed };
+
         let mut keys: Vec<UserVirtAddr> = Vec::new();
-        for (k, v) in self.map.range(..end) {
+        for (k, v) in self.map.range(..end_key) {
             if v.end.as_u64() > start.as_u64() {
                 keys.push(*k);
             }
@@ -210,7 +216,7 @@ impl VmaTree {
             let v_start = v.start.as_u64();
             let v_end   = v.end.as_u64();
             let s = start.as_u64().max(v_start);
-            let e = end.as_u64().min(v_end);
+            let e = end.min(v_end);
 
             // Left-kept fragment.
             if v_start < s {
@@ -475,7 +481,13 @@ impl VmaTree {
     /// munmap/mremap call this first and return EPERM when true (mseal(2)).
     /// # C: O(N_vma in range)
     pub fn any_sealed(&self, start: UserVirtAddr, end: UserVirtAddr) -> bool {
-        self.map.range(..end).any(|(_, v)|
+        self.any_sealed_raw_end(start, end.as_u64())
+    }
+
+    /// # C: O(N_vma in range)
+    pub fn any_sealed_raw_end(&self, start: UserVirtAddr, end: u64) -> bool {
+        let Some(end_key) = raw_end_key(end) else { return false };
+        self.map.range(..end_key).any(|(_, v)|
             v.end.as_u64() > start.as_u64()
                 && v.flags.contains(crate::vma::VmaFlags::SEALED))
     }

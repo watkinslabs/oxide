@@ -51,6 +51,7 @@ pub use debug::{install_lock_step_hook, lock_step_hook};
 use debug::segv_dump;
 pub use fault::user_fault_handler;
 pub use mmap::glue_mmap;
+pub use crate::munmap_range::validate_munmap_range;
 pub use unmap::{evict_pages_in_range, glue_munmap};
 #[cfg(target_arch = "x86_64")]
 pub use diag::{diag_verify_file_pages, prefault_stack};
