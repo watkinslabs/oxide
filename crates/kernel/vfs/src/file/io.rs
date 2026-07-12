@@ -221,6 +221,9 @@ impl File {
         if !self.f_mode.contains(Fmode::READ) {
             return Err(VfsError::Ebadf);
         }
+        if matches!(self.inode.file_type(), FileType::Directory) {
+            return Err(VfsError::Eisdir);
+        }
         let f = self.flags();
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
