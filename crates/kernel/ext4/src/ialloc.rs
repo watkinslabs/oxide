@@ -16,6 +16,7 @@ use crate::mount::{Mount, MountError};
 use crate::superblock::{SB_OFF_FREE_INODES, SB_OFF_LAST_ORPHAN, SUPERBLOCK_LEN, SUPERBLOCK_OFFSET};
 
 mod create;
+mod project;
 
 /// On-disk inode byte offset of `NEXT_ORPHAN` — Linux overloads `i_dtime`
 /// (@0x14) as the "next orphan inode number" pointer while an inode sits on
@@ -214,7 +215,7 @@ impl Mount {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, uid, gid)?;
+            m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, uid, gid)?;
             // Persist on the on-disk orphan list: a crash before a name is
             // linked (or before the last fd closes) leaves the inode + its
             // blocks recoverable by `orphan_cleanup` on the next mount,
@@ -458,7 +459,7 @@ impl Mount {
     /// through the mount idmap) — split into the low u16 (0x02/0x18) and the
     /// osd2 high u16 (0x78/0x7A). Other timestamps stay 0.
     /// # C: O(1) I/O
-    pub fn init_inode(&self, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32)
+    pub fn init_inode(&self, parent_ino: u32, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32)
         -> Result<(), MountError>
     {
         let mut bytes = vec![0u8; self.sb.inode_size as usize];
@@ -480,6 +481,7 @@ impl Mount {
         if ftype == S_IFREG || ftype == S_IFDIR {
             bytes[0x20..0x24].copy_from_slice(&0x0008_0000u32.to_le_bytes());
         }
+        self.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
         let hdr = ExtentHeader { magic: EXT4_EXT_MAGIC, entries: 0, max: 4, depth: 0, generation: 0 };
         let mut i_block = [0u8; I_BLOCK_LEN];
         inode::write_extent_header(&mut i_block, &hdr);

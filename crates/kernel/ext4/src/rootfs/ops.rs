@@ -28,6 +28,20 @@ pub(crate) fn dirent_dt(i: &crate::Inode) -> u8 {
     }
 }
 
+/// Linux ext4 `PROJINHERIT` boundary check: hardlink/rename into a project
+/// inheriting directory requires the moved inode's project id to match the
+/// destination directory, otherwise `-EXDEV`. # C: O(1) inode reads
+pub(crate) fn project_inherit_allows_child(
+    mount: &crate::Mount,
+    parent_ino: u32,
+    child_ino: u32,
+) -> Result<(), vfs::VfsError> {
+    let parent = mount.read_inode(parent_ino).map_err(|_| vfs::VfsError::Eio)?;
+    if parent.i_flags & vfs::inode::FS_PROJINHERIT_FL == 0 { return Ok(()); }
+    let child = mount.read_inode(child_ino).map_err(|_| vfs::VfsError::Eio)?;
+    if parent.i_projid == child.i_projid { Ok(()) } else { Err(vfs::VfsError::Exdev) }
+}
+
 fn namei_error_from_mount(e: crate::MountError) -> vfs::VfsError {
     match e {
         crate::MountError::NotFound | crate::MountError::Dir(crate::dir::DirError::NotFound) => vfs::VfsError::Enoent,
@@ -182,6 +196,7 @@ impl RootfsState {
         let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
         let (parent_ino, name_owned) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
         if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
+        project_inherit_allows_child(&self.mount, parent_ino, ino)?;
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
         self.mount.run_journaled(|m| {
             m.dir_link(parent_ino, &name, ino, ftype)?;
@@ -262,6 +277,7 @@ impl RootfsState {
         if inode.is_dir() { return Err(vfs::VfsError::Eperm); }
         let (parent_ino, name_owned) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
         if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
+        project_inherit_allows_child(&self.mount, parent_ino, target)?;
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
         let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
         self.mount.run_journaled(|m| {
@@ -279,6 +295,7 @@ impl RootfsState {
         let from_name: alloc::vec::Vec<u8> = from_name_owned.to_vec();
         let (to_p, to_name_owned) = self.parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
         let to_name: alloc::vec::Vec<u8> = to_name_owned.to_vec();
+        project_inherit_allows_child(&self.mount, to_p, target)?;
         let ftype = if inode.is_dir() { crate::DT_DIR } else if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
         // Replaced destination (plain rename = non-EXCHANGE; RENAME_EXCHANGE
         // routes through `exchange`, which only ever renames into a vacated temp
@@ -348,6 +365,8 @@ impl RootfsState {
         let bino = self.mount.lookup_path(b).map_err(|_| vfs::VfsError::Enoent)?;
         // Exchanging a name with itself is a no-op (Linux returns 0).
         if apino == bpino && aname == bname { return Ok(()); }
+        project_inherit_allows_child(&self.mount, apino, bino)?;
+        project_inherit_allows_child(&self.mount, bpino, aino)?;
         let aft = dirent_dt(&self.mount.read_inode(aino).map_err(|_| vfs::VfsError::Eio)?);
         let bft = dirent_dt(&self.mount.read_inode(bino).map_err(|_| vfs::VfsError::Eio)?);
         let (aname, bname) = (aname.to_vec(), bname.to_vec());

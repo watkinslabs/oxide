@@ -171,6 +171,7 @@ impl InodeOps for Ext4StatInodeOps {
         let src = d.st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
         if src.is_dir() { return Err(VfsError::Eperm); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        super::super::ops::project_inherit_allows_child(&d.st.mount, d.ino, ino)?;
         let ftype = if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
         let name_b = name.as_bytes();
         d.st.mount.run_journaled(|m| {
@@ -219,8 +220,10 @@ impl InodeOps for Ext4StatInodeOps {
         let mount = &d.st.mount;
         let target = d.st.lookup_child_ino(from_p, old_name).ok_or(VfsError::Enoent)?;
         let dest_victim = d.st.lookup_child_ino(to_p, new_name);
+        super::super::ops::project_inherit_allows_child(mount, to_p, target)?;
         if flags & vfs::namei::RENAME_EXCHANGE != 0 {
             let bino = dest_victim.ok_or(VfsError::Enoent)?;
+            super::super::ops::project_inherit_allows_child(mount, from_p, bino)?;
             if from_p == to_p && old_name == new_name { return Ok(()); }
             let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
             let dst = mount.read_inode(bino).map_err(|_| VfsError::Eio)?;
