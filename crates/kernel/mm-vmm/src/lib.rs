@@ -33,7 +33,7 @@ pub use address_space::{
     PR_SET_MM_START_CODE, PR_SET_MM_START_DATA, PR_SET_MM_START_STACK,
 };
 pub use anon_vma::{AnonVma, RmapTarget};
-pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, Vma, VmaBacking, VmaFlags, VmaProt};
+pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
 pub use uffd::UffdContext;
 
