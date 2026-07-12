@@ -17,6 +17,14 @@ const IPC_MODE_MASK: u64 = 0o777;
 const IPC_PERM_BITS: u32 = 0o7;
 const CAP_IPC_OWNER: u32 = 15;
 const SHM_HUGETLB: u64 = 0o4000;
+const SHM_RDONLY: u64 = 0o10000;
+const SHM_RND: u64 = 0o20000;
+const SHM_REMAP: u64 = 0o40000;
+const SHM_EXEC: u64 = 0o100000;
+const SHMLBA: u64 = PAGE_SIZE;
+const S_IRUGO: u64 = 0o444;
+const S_IWUGO: u64 = 0o222;
+const S_IXUGO: u64 = 0o111;
 
 /// `shmctl` cmd values (Linux).
 const IPC_RMID: u64 = 0;
@@ -186,14 +194,90 @@ fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
     g.iter().find(|s| s.id == id && s.ns == ns).cloned()
 }
 
+#[derive(Copy, Clone, Debug)]
+struct ShmatPlan {
+    addr: Option<u64>,
+    len: usize,
+    prot: vmm::VmaProt,
+    fixed: bool,
+}
+
+fn page_align_len(size: usize) -> Option<usize> {
+    size.checked_add((PAGE_SIZE - 1) as usize).map(|v| v & !((PAGE_SIZE - 1) as usize))
+}
+
+fn shmat_addr(shmaddr: u64, shmflg: u64) -> Result<Option<u64>, syscall::errno::Errno> {
+    use syscall::errno::Errno;
+    if shmaddr != 0 {
+        let mut addr = shmaddr;
+        if (addr & (SHMLBA - 1)) != 0 {
+            if (shmflg & SHM_RND) == 0 { return Err(Errno::Einval); }
+            addr &= !(SHMLBA - 1);
+            if addr == 0 && (shmflg & SHM_REMAP) != 0 { return Err(Errno::Einval); }
+        }
+        Ok(Some(addr))
+    } else if (shmflg & SHM_REMAP) != 0 {
+        Err(Errno::Einval)
+    } else {
+        Ok(None)
+    }
+}
+
+fn shmat_prot_access(shmflg: u64) -> (vmm::VmaProt, u64) {
+    let (mut prot, mut acc_mode) = if (shmflg & SHM_RDONLY) != 0 {
+        (vmm::VmaProt::READ, S_IRUGO)
+    } else {
+        (vmm::VmaProt::READ | vmm::VmaProt::WRITE, S_IRUGO | S_IWUGO)
+    };
+    if (shmflg & SHM_EXEC) != 0 {
+        prot |= vmm::VmaProt::EXEC;
+        acc_mode |= S_IXUGO;
+    }
+    (prot, acc_mode)
+}
+
+fn shmat_plan(
+    seg: &ShmSegment, cred: &IpcCred, shmaddr: u64, shmflg: u64, overlaps: bool,
+) -> Result<ShmatPlan, syscall::errno::Errno> {
+    use syscall::errno::Errno;
+    let addr = shmat_addr(shmaddr, shmflg)?;
+    let (prot, acc_mode) = shmat_prot_access(shmflg);
+    if !ipc_permitted(seg, cred, acc_mode) { return Err(Errno::Eacces); }
+    let len = page_align_len(seg.size).ok_or(Errno::Enomem)?;
+    if let Some(a) = addr {
+        let end = a.checked_add(len as u64).ok_or(Errno::Einval)?;
+        if end > hal::USER_VA_END { return Err(Errno::Einval); }
+        if (shmflg & SHM_REMAP) == 0 && overlaps { return Err(Errno::Einval); }
+    }
+    Ok(ShmatPlan { addr, len, prot, fixed: addr.is_some() && (shmflg & SHM_REMAP) != 0 })
+}
+
+fn shmat_range_overlaps(mm: &vmm::AddressSpace, addr: u64, len: usize) -> bool {
+    let end = addr.saturating_add(len as u64);
+    mm.snapshot_vmas().iter().any(|v| v.start.as_u64() < end && v.end.as_u64() > addr)
+}
+
+fn errno_from_vmm(e: vmm::Error) -> syscall::errno::Errno {
+    match e {
+        vmm::Error::Inval => syscall::errno::Errno::Einval,
+        vmm::Error::Access => syscall::errno::Errno::Eacces,
+        vmm::Error::Perm => syscall::errno::Errno::Eperm,
+        vmm::Error::Fault => syscall::errno::Errno::Efault,
+        vmm::Error::Again => syscall::errno::Errno::Eagain,
+        vmm::Error::Io => syscall::errno::Errno::Eio,
+        vmm::Error::NotImplemented => syscall::errno::Errno::Enosys,
+        vmm::Error::NoMem => syscall::errno::Errno::Enomem,
+    }
+}
+
 /// `shmat(shmid, shmaddr, shmflg)` — slot 30.
 /// # C: O(N_segments) lookup
 pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
-    use vmm::{VmaProt, VmaFlags, VmaBacking};
+    use vmm::{VmaFlags, VmaBacking};
     let shmid = args.a0 as i32;
-    let _addr = args.a1;
-    let _flg  = args.a2;
+    let addr = args.a1;
+    let flg  = args.a2;
     let seg = match lookup_by_id(shmid) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -204,25 +288,38 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     let mm = match unsafe { cur.mm_ref() } {
         Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64),
     };
-    // Map the segment's ONE shared shmem backing MAP_SHARED at a kernel-picked
-    // hole — the anon-shmem recipe (VmaFlags::SHARED|ANONYMOUS + File{tmpfs},
-    // Linux `shmem`): every attach maps the same inode, so all attaches (and
-    // forked children) alias the same physical frames and see each other's
-    // writes. The Arc<ShmSegment> in REG keeps the backing alive until IPC_RMID.
-    let len_aligned = (seg.size as u64 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let cred = current_ipc_cred();
+    let first = match shmat_plan(&seg, &cred, addr, flg, false) {
+        Ok(p) => p,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    let overlaps = first.addr.map(|a| (flg & SHM_REMAP) == 0 && shmat_range_overlaps(&mm, a, first.len)).unwrap_or(false);
+    let plan = match if overlaps { shmat_plan(&seg, &cred, addr, flg, true) } else { Ok(first) } {
+        Ok(p) => p,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    let hint = match plan.addr {
+        Some(a) => match hal::UserVirtAddr::new(a) {
+            Some(u) => Some(u), None => return -(Errno::Einval.as_i32() as i64),
+        },
+        None => None,
+    };
     let res = mm.mmap(
-        None, len_aligned as usize,
-        VmaProt::READ | VmaProt::WRITE,
+        hint, plan.len,
+        plan.prot,
         VmaFlags::SHARED | VmaFlags::ANONYMOUS,
         VmaBacking::File { backing: seg.backing.clone(), off: 0 },
-        false,
+        plan.fixed,
     );
     match res {
         Ok(va)  => {
             seg.nattch.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
             va.as_u64() as i64
         }
-        Err(_)  => -(Errno::Enomem.as_i32() as i64),
+        Err(e)  => {
+            let eno = errno_from_vmm(e);
+            -(eno.as_i32() as i64)
+        }
     }
 }
 
@@ -304,124 +401,4 @@ pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
-    struct FakeBacking;
-
-    impl vmm::FileBacking for FakeBacking {
-        fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
-        fn size_hint(&self) -> u64 { 0 }
-    }
-
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn err(e: syscall::errno::Errno) -> i64 {
-        -(e.as_i32() as i64)
-    }
-
-    fn cred(euid: u32, egid: u32, groups: &[u32], cap: bool) -> IpcCred {
-        let mut out = IpcCred {
-            euid,
-            egid,
-            groups: [0; sched::Creds::NGROUPS_V1],
-            ngroups: groups.len().min(sched::Creds::NGROUPS_V1),
-            cap_ipc_owner: cap,
-        };
-        out.groups[..out.ngroups].copy_from_slice(&groups[..out.ngroups]);
-        out
-    }
-
-    fn reset() {
-        REG.next_id.store(1, AtomicOrdering::Release);
-        REG.segs.lock().clear();
-    }
-
-    fn backing() -> Arc<dyn vmm::FileBacking> {
-        Arc::new(FakeBacking)
-    }
-
-    fn shmget(key: i32, size: usize, flg: u64, cred: IpcCred) -> i64 {
-        shmget_with_backing_cred(key, size, flg, 77, cred, backing)
-    }
-
-    #[test]
-    fn private_key_always_creates_and_validates_new_size() {
-        let _g = TEST_LOCK.lock().unwrap();
-        reset();
-        let c = cred(10, 20, &[], false);
-        let a = shmget(IPC_PRIVATE, 1, 0, c.clone());
-        let b = shmget(IPC_PRIVATE, 1, 0, c.clone());
-        assert!(a > 0);
-        assert!(b > 0);
-        assert_ne!(a, b);
-        assert_eq!(shmget(IPC_PRIVATE, 0, 0, c), err(syscall::errno::Errno::Einval));
-    }
-
-    #[test]
-    fn missing_public_key_without_create_returns_enoent_before_size_validation() {
-        let _g = TEST_LOCK.lock().unwrap();
-        reset();
-        let calls = AtomicUsize::new(0);
-        let r = shmget_with_backing_cred(123, 0, 0, 77, cred(1, 1, &[], false), || {
-            calls.fetch_add(1, AtomicOrdering::AcqRel);
-            backing()
-        });
-        assert_eq!(r, err(syscall::errno::Errno::Enoent));
-        assert_eq!(calls.load(AtomicOrdering::Acquire), 0);
-    }
-
-    #[test]
-    fn create_public_key_records_owner_mode_and_lazy_allocates() {
-        let _g = TEST_LOCK.lock().unwrap();
-        reset();
-        let calls = AtomicUsize::new(0);
-        let id = shmget_with_backing_cred(44, 4096, IPC_CREAT | 0o640, 77, cred(42, 7, &[], false), || {
-            calls.fetch_add(1, AtomicOrdering::AcqRel);
-            backing()
-        });
-        assert!(id > 0);
-        assert_eq!(calls.load(AtomicOrdering::Acquire), 1);
-        let seg = lookup_by_id(id as i32).unwrap();
-        assert_eq!(seg.key, 44);
-        assert_eq!(seg.size, 4096);
-        assert_eq!(seg.mode, 0o640);
-        assert_eq!(seg.uid, 42);
-        assert_eq!(seg.gid, 7);
-        assert_eq!(seg.cuid, 42);
-        assert_eq!(seg.cgid, 7);
-    }
-
-    #[test]
-    fn existing_key_honors_excl_size_and_permissions() {
-        let _g = TEST_LOCK.lock().unwrap();
-        reset();
-        let owner = cred(10, 20, &[], false);
-        let id = shmget(55, 8192, IPC_CREAT | 0o640, owner.clone());
-        assert!(id > 0);
-        assert_eq!(shmget(55, 0, 0, owner.clone()), id);
-        assert_eq!(shmget(55, 8193, 0, owner.clone()), err(syscall::errno::Errno::Einval));
-        assert_eq!(shmget(55, 1, IPC_CREAT | IPC_EXCL, owner.clone()), err(syscall::errno::Errno::Eexist));
-        assert_eq!(shmget(55, 1, 0o400, cred(99, 99, &[], false)), err(syscall::errno::Errno::Eacces));
-        assert_eq!(shmget(55, 1, 0o400, cred(99, 20, &[], false)), id);
-        assert_eq!(shmget(55, 1, 0o400, cred(99, 99, &[20], false)), id);
-        assert_eq!(shmget(55, 1, 0o400, cred(99, 99, &[], true)), id);
-    }
-
-    #[test]
-    fn hugetlb_create_is_rejected_without_allocating_normal_shmem() {
-        let _g = TEST_LOCK.lock().unwrap();
-        reset();
-        let calls = AtomicUsize::new(0);
-        let c = cred(10, 20, &[], false);
-        let r = shmget_with_backing_cred(66, 4096, IPC_CREAT | SHM_HUGETLB | 0o600, 77, c.clone(), || {
-            calls.fetch_add(1, AtomicOrdering::AcqRel);
-            backing()
-        });
-        assert_eq!(r, err(syscall::errno::Errno::Einval));
-        assert_eq!(calls.load(AtomicOrdering::Acquire), 0);
-        let id = shmget(66, 4096, IPC_CREAT | 0o600, c.clone());
-        assert_eq!(shmget(66, 1, SHM_HUGETLB, c), id);
-    }
-}
+mod tests;
