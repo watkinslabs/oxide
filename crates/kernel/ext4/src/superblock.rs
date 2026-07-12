@@ -68,6 +68,10 @@ pub const SB_OFF_UUID:           usize = 0x68;
 pub const SB_OFF_VOLUME_NAME:    usize = 0x78;
 /// `EXT4_LABEL_MAX`: on-disk label bytes, not necessarily NUL-terminated.
 pub const EXT4_LABEL_MAX:        usize = 16;
+/// Hidden quota inode fields (`s_*_quota_inum`) per Linux `ext4_super_block`.
+pub const SB_OFF_USR_QUOTA_INUM: usize = 0x240;
+pub const SB_OFF_GRP_QUOTA_INUM: usize = 0x244;
+pub const SB_OFF_PRJ_QUOTA_INUM: usize = 0x26C;
 /// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
 pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
 /// `s_feature_ro_compat` METADATA_CSUM_SEED bit.
@@ -110,6 +114,11 @@ pub struct Superblock {
     pub uuid: [u8; 16],
     /// `s_volume_name[16]` — ext4 filesystem label, zero-padded on disk.
     pub volume_name: [u8; EXT4_LABEL_MAX],
+    /// Hidden quota file inode numbers. Linux treats these as quota files and
+    /// rejects user flag/project-id mutation.
+    pub usr_quota_inum: u32,
+    pub grp_quota_inum: u32,
+    pub prj_quota_inum: u32,
     /// Stored-seed override (when RO_COMPAT_METADATA_CSUM_SEED on).
     /// Otherwise zero; caller derives from `uuid` instead.
     pub stored_csum_seed: u32,
@@ -213,6 +222,9 @@ impl Superblock {
                 v.copy_from_slice(&buf[SB_OFF_VOLUME_NAME..SB_OFF_VOLUME_NAME + EXT4_LABEL_MAX]);
                 v
             },
+            usr_quota_inum:    rd_u32(buf, SB_OFF_USR_QUOTA_INUM),
+            grp_quota_inum:    rd_u32(buf, SB_OFF_GRP_QUOTA_INUM),
+            prj_quota_inum:    rd_u32(buf, SB_OFF_PRJ_QUOTA_INUM),
             stored_csum_seed:  rd_u32(buf, SB_OFF_CHECKSUM_SEED),
             hash_seed: [
                 rd_u32(buf, 0xEC), rd_u32(buf, 0xF0),
@@ -260,6 +272,12 @@ impl Superblock {
     /// meaningful on this fs. # C: O(1)
     pub fn has_project(&self) -> bool {
         (self.feature_ro_compat & RO_COMPAT_PROJECT) != 0
+    }
+
+    /// Linux hidden quota-file identity from `s_usr_quota_inum`,
+    /// `s_grp_quota_inum`, and `s_prj_quota_inum`. # C: O(1)
+    pub fn is_quota_inode(&self, ino: u32) -> bool {
+        ino != 0 && (ino == self.usr_quota_inum || ino == self.grp_quota_inum || ino == self.prj_quota_inum)
     }
 
     /// True iff GDT_CSUM (legacy CRC16) is on instead of CRC32C.
@@ -322,6 +340,26 @@ mod tests {
         assert_eq!(sb.inode_size,       256);
         assert!(sb.has_extents());
         assert_eq!(sb.group_count(),    1);
+    }
+
+    #[test]
+    fn parses_hidden_quota_inode_numbers() {
+        let mut b = make_sb(
+            1024, 8192, 2,
+            8192, 1024, EXT4_SUPER_MAGIC, INCOMPAT_EXTENTS, 256,
+        );
+        b[SB_OFF_USR_QUOTA_INUM..SB_OFF_USR_QUOTA_INUM + 4].copy_from_slice(&12u32.to_le_bytes());
+        b[SB_OFF_GRP_QUOTA_INUM..SB_OFF_GRP_QUOTA_INUM + 4].copy_from_slice(&13u32.to_le_bytes());
+        b[SB_OFF_PRJ_QUOTA_INUM..SB_OFF_PRJ_QUOTA_INUM + 4].copy_from_slice(&14u32.to_le_bytes());
+        let sb = Superblock::parse(&b).expect("parse");
+        assert_eq!(sb.usr_quota_inum, 12);
+        assert_eq!(sb.grp_quota_inum, 13);
+        assert_eq!(sb.prj_quota_inum, 14);
+        assert!(sb.is_quota_inode(12));
+        assert!(sb.is_quota_inode(13));
+        assert!(sb.is_quota_inode(14));
+        assert!(!sb.is_quota_inode(0));
+        assert!(!sb.is_quota_inode(15));
     }
 
     #[test]
