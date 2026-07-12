@@ -6,7 +6,7 @@ use super::uapi::*;
 
 /// Linux `FS_IOC_FSGETXATTR`: copy `struct fsxattr` from fileattr state. # C: O(1)
 pub(super) fn ioctl_fsgetxattr(file: &vfs::File, arg: u64) -> i64 {
-    let fa = match file.inode().fileattr_get() {
+    let fa = match vfs::fileattr_get(file.inode()) {
         Ok(fa) => fattr_fill_xflags(fa),
         Err(e) => return -(e as i64),
     };
@@ -22,7 +22,7 @@ pub(super) fn ioctl_fsgetxattr(file: &vfs::File, arg: u64) -> i64 {
 
 /// Linux `FS_IOC_GETFLAGS`: copy the legacy `FS_*_FL` flag word. # C: O(1)
 pub(super) fn ioctl_getflags(file: &vfs::File, arg: u64) -> i64 {
-    let fa = match file.inode().fileattr_get() {
+    let fa = match vfs::fileattr_get(file.inode()) {
         Ok(fa) => fa,
         Err(e) => return -(e as i64),
     };
@@ -76,21 +76,10 @@ fn vfs_fileattr_set(cur: &sched::Task, file: &vfs::File, want: vfs::FileAttr, so
 fn vfs_fileattr_set_inner(cur: &sched::Task, file: &vfs::File, want: vfs::FileAttr, source: vfs::FileAttrSource) -> i64 {
     let idmap = vfs::mount::idmap_for(file.mnt_id());
     let cred = current_cred();
-    if !vfs::inode::inode_owner_or_capable(&idmap, file.inode().as_ref(), &cred) {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    let old = match file.inode().fileattr_get() {
-        Ok(fa) => fattr_fill_xflags(fa),
-        Err(e) => return -(e as i64),
-    };
-    let want = match vfs::fileattr_prepare_set(&idmap, file.inode(), old, want, source, &cred,
+    match vfs::fileattr_set(&idmap, file.inode(), want, source, &cred,
         cur_in_init_user_ns(cur) && cur.has_cap(sched::cap::LINUX_IMMUTABLE),
         cur_in_init_user_ns(cur))
     {
-        Ok(fa) => fa,
-        Err(e) => return -(e as i64),
-    };
-    match file.inode().fileattr_set(&want) {
         Ok(()) => 0,
         Err(e) => -(e as i64),
     }

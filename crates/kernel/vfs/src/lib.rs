@@ -63,7 +63,7 @@ pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX};
 pub use file::{File, Fmode, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use inode::{Inode, InodeBuilder, InodeRef, SealCarrier, FileAttr, FiemapExtent, get_next_ino, generic_update_time, inode_unlock, lock_rename, unlock_rename, RenameLockGuard, prepare_create_owner_mode, prepare_symlink_owner, I_DIRTY, I_NEW, I_FREEING, I_LINKABLE, S_IMMUTABLE, S_APPEND, S_NOATIME, S_SYNC, S_ATIME, S_MTIME, S_CTIME, S_VERSION, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
-pub use fileattr::{FileAttrSource, fileattr_prepare_set};
+pub use fileattr::{FileAttrSource, clear_fileattr_hooks, fileattr_get, fileattr_prepare_set, fileattr_set, set_fileattr_hooks};
 pub use inode_ops::{InodeOps, DefaultInodeOps, default_inode_ops, mk_mode, CreateCtx};
 pub use xattr::{SimpleXattrs, XattrError};
 pub use file_ops::{FileOps, DefaultFileOps, default_file_ops, DirContext, DirEmit};
