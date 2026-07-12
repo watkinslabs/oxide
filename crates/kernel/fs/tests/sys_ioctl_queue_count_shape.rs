@@ -110,6 +110,29 @@ fn siocoutq_uses_backend_outgoing_count() {
 }
 
 #[test]
+fn linux_queue_count_aliases_route_to_same_backend_commands() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let ops = Arc::new(QueueOps::default());
+    ops.inq.store(37, Ordering::SeqCst);
+    ops.outq.store(12, Ordering::SeqCst);
+    let file = mk_queue_file(Arc::clone(&ops));
+    let mut tiocinq = 0u32;
+    let mut siocinq = 0u32;
+    let mut tiocoutq = 0u32;
+
+    assert_eq!(ioctl_common::handle_nonchar_queue_ioctl(&file, uapi::TIOCINQ, &mut tiocinq as *mut u32 as u64), Some(0));
+    assert_eq!(ioctl_common::handle_nonchar_queue_ioctl(&file, uapi::SIOCINQ, &mut siocinq as *mut u32 as u64), Some(0));
+    assert_eq!(ioctl_common::handle_nonchar_queue_ioctl(&file, uapi::TIOCOUTQ, &mut tiocoutq as *mut u32 as u64), Some(0));
+
+    assert_eq!(tiocinq, 37);
+    assert_eq!(siocinq, 37);
+    assert_eq!(tiocoutq, 12);
+    assert_eq!(ops.calls.load(Ordering::SeqCst), 3);
+    reset();
+}
+
+#[test]
 fn unsupported_queue_ioctl_returns_enotty_without_user_copyout() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
