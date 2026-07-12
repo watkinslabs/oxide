@@ -183,6 +183,15 @@ pub struct VfsPath {
     pub last_component: Option<String>,
 }
 
+/// Mount syscall target: the final mountpoint dentry plus the parent path's
+/// exact mount identity. Linux attaches a mount to `(parent vfsmount, dentry)`;
+/// a bare dentry is ambiguous under bind mounts that share dentries.
+#[derive(Clone)]
+pub struct MountTarget {
+    pub parent: VfsPath,
+    pub mountpoint: Arc<Dentry>,
+}
+
 /// Linux `nd->last_type` (`fs/namei.c`) — the classification of a LOOKUP_PARENT
 /// walk's final segment, derived from `VfsPath.last_component`. A caller
 /// (`do_rmdir`/`do_unlinkat`/`do_renameat2`) matches on this to reject the

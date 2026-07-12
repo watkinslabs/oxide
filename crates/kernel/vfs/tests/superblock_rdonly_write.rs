@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::superblock::next_anon_dev;
 use vfs::{SbStatFs, SuperBlock, SuperOps};
@@ -28,7 +30,7 @@ impl FileSystem for RoFs {
 
 fn build() -> Arc<SuperBlock> {
     let fs = Arc::new(RoFs);
-    SuperBlock::for_backend(fs, None, next_anon_dev(), String::from("rofs"))
+    common::realize_sb(fs, None, next_anon_dev(), String::from("rofs"))
 }
 
 #[test]

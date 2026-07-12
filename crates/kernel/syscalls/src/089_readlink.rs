@@ -5,31 +5,24 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::validate_user_buf_writable;
-
 /// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
 /// procfs symlinks `/proc/self/{exe,cwd,root}` and per-pid
-/// `/proc/<tid>/{exe,cwd,root}`. `exe` reports argv[0] from the
-/// task's cmdline snapshot (`/init` when unset). All other paths
-/// return -EINVAL.
+/// `/proc/<tid>/{exe,cwd,root}`. All other paths return -EINVAL.
 /// # C: O(1) + O(N_tasks) for per-pid lookup
 pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf_ptr  = args.a1;
     let bufsize  = args.a2;
     if bufsize == 0 { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf_writable(buf_ptr, bufsize, 1) { return rv; }
     // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
     let path = match crate::namei_common::read_user_path(path_ptr) {
         Ok(s)   => s,
         Err(rv) => return rv,
     };
-    let raw: &str = path.as_str();
-    let resolved = crate::pathresolve::resolve_cwd(raw);
-    readlink_resolved_path(resolved.as_str(), buf_ptr, bufsize)
+    readlink_at_path(crate::pathresolve::AT_FDCWD, path.as_str(), buf_ptr, bufsize)
 }
 
-pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -> i64 {
+pub(crate) fn readlink_at_path(dirfd: i32, raw: &str, buf_ptr: u64, bufsize: u64) -> i64 {
     // DIAG (debug-syscall): the intermittent boot wedge shows a process looping
     // on readlink=-22 (EINVAL). Log the path every Nth call so the spun path is
     // symbolizable (which symlink the process wrongly sees as a non-symlink, or
@@ -41,19 +34,29 @@ pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -
         if N.fetch_add(1, Ordering::Relaxed) % 2000 == 0 {
             let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
             klog::write_raw(b"[RLTRACE] tid="); klog::write_dec_u64(tid as u64);
-            klog::write_raw(b" path="); klog::write_raw(path_s.as_bytes());
+            klog::write_raw(b" path="); klog::write_raw(raw.as_bytes());
             klog::write_raw(b"\n");
         }
     }
-    // proc-link family first (/proc/self/exe etc) — not backed by Inode::readlink.
-    // Otherwise resolve via the dentry walk with no_follow_final=true: Linux
-    // readlink follows INTERMEDIATE symlinks in the path but returns the FINAL
-    // component's link target itself (never follows it). EINVAL when the final
-    // isn't a symlink (Inode::readlink errors), ENOENT when it doesn't resolve.
-    let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) { t }
-        else if let Some(inode) = crate::pathresolve::resolve(path_s, true) {
-            match inode.get_link() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
-        } else { return -(Errno::Enoent.as_i32() as i64); };
+    // Linux readlink follows intermediate symlinks in the path but returns the
+    // final component's link target itself. Keep the resolved `struct path`
+    // intact; procfs magic links expose their live text through Inode::get_link.
+    let vp = match crate::pathresolve::resolve_at_path(dirfd, raw,
+        vfs::LookupFlags { no_follow_final: true, ..Default::default() }) {
+        Ok(p) => p,
+        Err(rv) => return rv,
+    };
+    readlink_resolved(vp, false, buf_ptr, bufsize)
+}
+
+pub(crate) fn readlink_resolved(vp: vfs::VfsPath, empty_path: bool, buf_ptr: u64, bufsize: u64) -> i64 {
+    if !matches!(vp.inode.file_type(), vfs::FileType::Symlink) {
+        return -((if empty_path { Errno::Enoent } else { Errno::Einval }).as_i32() as i64);
+    }
+    let target: alloc::vec::Vec<u8> = match vp.inode.get_link() {
+        Ok(v) => v,
+        Err(e) => return crate::namei_common::errno_from_vfs(e),
+    };
     write_link_target(&target, buf_ptr, bufsize)
 }
 
@@ -61,10 +64,13 @@ pub(crate) fn readlink_resolved_path(path_s: &str, buf_ptr: u64, bufsize: u64) -
 /// returning the byte count — shared by `readlink`/`readlinkat`. # C: O(n)
 pub(crate) fn write_link_target(target: &[u8], buf_ptr: u64, bufsize: u64) -> i64 {
     let n = (target.len() as u64).min(bufsize) as usize;
-    // SAFETY: buf range validated < USER_VA_END by the caller; CPL=0 writes through caller's AS.
+    if n != 0 {
+        if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf_ptr, n as u64, 1) { return rv; }
+    }
+    // SAFETY: caller validated the writable byte range; Linux readlink copyout accepts unaligned storage.
     unsafe {
         for i in 0..n {
-            core::ptr::write_volatile((buf_ptr + i as u64) as *mut u8, target[i]);
+            core::ptr::write_unaligned((buf_ptr + i as u64) as *mut u8, target[i]);
         }
     }
     n as i64

@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_nanosleep(req, rem)` — slot 35. yield-loop on monotonic clock.
 /// # C: O(req_ns / yield_quantum)
@@ -9,11 +10,11 @@ pub fn sys_nanosleep(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
     use syscall::errno::Errno;
     let req = args.a0;
-    if req == 0 || req >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // SAFETY: req validated < USER_VA_END; user page mapped (caller's AS); CPL=0 reads via active CR3.
-    let secs = unsafe { core::ptr::read_volatile(req as *const i64) };
-    // SAFETY: same validated range; tv_nsec at +8 is 8-byte aligned per Linux ABI.
-    let nsec = unsafe { core::ptr::read_volatile((req + 8) as *const i64) };
+    if let Err(rv) = validate_user_buf(req, 16, 1) { return rv; }
+    // SAFETY: req validated as readable 16-byte timespec storage.
+    let secs = unsafe { core::ptr::read_unaligned(req as *const i64) };
+    // SAFETY: req+8 is inside the validated timespec storage.
+    let nsec = unsafe { core::ptr::read_unaligned((req + 8) as *const i64) };
     if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -36,14 +37,15 @@ pub fn sys_nanosleep(args: &SyscallArgs) -> i64 {
             let pending = c.sigpending.load(Ordering::Acquire);
             let mask    = c.sigmask.load(Ordering::Acquire);
             if pending & !mask != 0 {
-                if rem != 0 && rem < hal::USER_VA_END {
+                if rem != 0 {
+                    if let Err(rv) = validate_user_buf_writable(rem, 16, 1) { return rv; }
                     let left  = deadline.saturating_sub(now());
                     let rsec  = (left / 1_000_000_000) as i64;
                     let rnsec = (left % 1_000_000_000) as i64;
-                    // SAFETY: rem validated < USER_VA_END; caller's AS mapped; CPL=0 writes.
+                    // SAFETY: rem validated writable for a 16-byte timespec.
                     unsafe {
-                        core::ptr::write_volatile(rem as *mut i64, rsec);
-                        core::ptr::write_volatile((rem + 8) as *mut i64, rnsec);
+                        core::ptr::write_unaligned(rem as *mut i64, rsec);
+                        core::ptr::write_unaligned((rem + 8) as *mut i64, rnsec);
                     }
                 }
                 return -(Errno::Eintr.as_i32() as i64);

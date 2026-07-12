@@ -6,9 +6,8 @@ use core::any::Any;
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 use sync::{RwLock, Spinlock};
 use crate::dentry::Dentry;
-use crate::fs::FileSystem;
 use crate::inode::InodeRef;
-use super::{FileSystemType, FsBackedSuperOps, FsBackedType, NullFs, SuperBlock, SuperOps, MAX_LFS_FILESIZE, SB_ACTIVE, SB_BORN, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
+use super::{FileSystemType, SuperBlock, SuperOps, MAX_LFS_FILESIZE, SB_ACTIVE, SB_BORN, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
 
 impl SuperBlock {
     /// Construct a superblock with no root yet. The backend then builds
@@ -30,6 +29,7 @@ impl SuperBlock {
             s_active: AtomicU32::new(1),
             s_count: AtomicU32::new(1),
             s_maxbytes: MAX_LFS_FILESIZE,
+            s_max_links: AtomicU32::new(0),
             s_time_gran: AtomicU32::new(1),
             s_time_min: AtomicI64::new(TIME64_MIN),
             s_time_max: AtomicI64::new(TIME64_MAX),
@@ -39,61 +39,29 @@ impl SuperBlock {
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
             s_fs_info: Spinlock::new(s_fs_info),
-            s_fs: Arc::new(NullFs),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
         })
     }
 
-    /// `fill_super` for a legacy `Arc<dyn FileSystem>` backend: build a fresh
-    /// superblock whose `s_op`/`s_type` adapt the backend, `s_magic` is
-    /// `fs.magic()`, `s_dev` is the per-instance anon dev, and whose `s_root`
-    /// dentry is installed over `root_inode` (the bind/whole-fs root). Every
-    /// production mount is allocated here (Linux `mount_bdev`/`mount_nodev`).
+    /// Finish `fill_super` after the backend selected explicit `s_type` and
+    /// `s_op`. The root dentry is derived from the supplied root inode; no
+    /// backend object is retained behind the live superblock.
     /// # C: O(1)
-    pub fn for_backend(
-        fs: Arc<dyn FileSystem>,
+    pub fn from_ops(
+        s_type: Arc<dyn FileSystemType>,
+        s_op: Arc<dyn SuperOps>,
         root_inode: Option<InodeRef>,
+        s_magic: u64,
         s_dev: u64,
+        s_blocksize: u32,
         s_id: String,
+        s_fs_info: Arc<dyn Any + Send + Sync>,
     ) -> Arc<Self> {
-        // `fill_super` installs the backend's own `super_operations` when it
-        // publishes one (ext4 → live on-disk block/inode accounting); else the
-        // generic adapter reporting `f_type`/`f_bsize` only.
-        let s_op: Arc<dyn SuperOps> = fs.super_ops()
-            .unwrap_or_else(|| Arc::new(FsBackedSuperOps { fs: fs.clone() }));
-        let s_type: Arc<dyn FileSystemType> = Arc::new(FsBackedType { fs: fs.clone() });
-        let s_magic = fs.magic();
-        let s_blocksize = fs.block_size();
-        let sb = Arc::new(Self {
-            s_op, s_type, s_magic, s_dev, s_blocksize,
-            s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
-            s_active: AtomicU32::new(1),
-            s_count: AtomicU32::new(1),
-            s_maxbytes: MAX_LFS_FILESIZE,
-            s_time_gran: AtomicU32::new(1),
-            s_time_min: AtomicI64::new(TIME64_MIN),
-            s_time_max: AtomicI64::new(TIME64_MAX),
-            s_writers_frozen: AtomicU32::new(SB_UNFROZEN),
-            s_writers_count: AtomicU32::new(0),
-            s_id,
-            s_uuid: Spinlock::new(([0u8; 16], 0)),
-            s_root: RwLock::new(None),
-            s_fs_info: Spinlock::new(Arc::new(())),
-            s_fs: fs,
-            icache: Spinlock::new(BTreeMap::new()),
-            s_wb: Spinlock::new(BTreeMap::new()),
-        });
-        // `fill_super`: back-stamp the SB into the backend's per-mount state
-        // BEFORE building the root dentry, so the root inode's `i_sb()` (and
-        // every inode the backend builds afterwards) resolves to this SB.
-        sb.s_fs.set_sb(Arc::downgrade(&sb));
+        let sb = Self::new(s_type, s_op, s_magic, s_dev, s_blocksize, s_id, s_fs_info);
         if let Some(i) = root_inode { crate::dcache::d_make_root(i, &sb); }
         sb
     }
-
-    /// The backend (Linux: the SB's write/inode-op carrier). # C: O(1)
-    pub fn fs(&self) -> &Arc<dyn FileSystem> { &self.s_fs }
 
     /// The root dentry of this instance (Linux `sb->s_root`). # C: O(1)
     pub fn s_root(&self) -> Option<Arc<Dentry>> { self.s_root.read().clone() }
@@ -116,7 +84,7 @@ impl SuperBlock {
     /// per-superblock private state. Typed: a backend passes its concrete
     /// `Arc<Ext4SbInfo>`/`Arc<TmpfsArena>` and reads it back via
     /// [`Self::fs_info_as`], replacing the `Arc::new(())` placeholder
-    /// `for_backend` seeds. # C: O(1)
+    /// installed at fill-super construction. # C: O(1)
     pub fn set_fs_info<T: Any + Send + Sync>(&self, info: Arc<T>) {
         *self.s_fs_info.lock() = info;
     }

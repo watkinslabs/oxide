@@ -48,10 +48,10 @@ pub fn make_landlock_inode(ruleset_id: u64) -> InodeRef {
 /// Check `(path, op)` against the calling task's landlock chain.
 /// Returns Ok(()) when every entry in the chain allows the op;
 /// Err(-EACCES-as-i64) on first denial. Empty chain = unrestricted.
-/// Called from path-based syscalls (openat, unlinkat, …) before
-/// the actual VFS work.
+/// Called from path-based syscalls (openat, unlinkat, …) before the actual VFS
+/// work. Uses the resolved VFS path identity, never rendered path text.
 /// # C: O(N_chain × N_rules)
-pub fn check(path: &str, op: u64) -> Result<(), i64> {
+pub fn check(path: &vfs::VfsPath, op: u64) -> Result<(), i64> {
     let cur = match sched::live::current() { Some(c) => c, None => return Ok(()) };
     let chain_ids = cur.landlock_chain.lock().clone();
     if chain_ids.is_empty() { return Ok(()); }
@@ -59,4 +59,12 @@ pub fn check(path: &str, op: u64) -> Result<(), i64> {
         chain_ids.into_iter().filter_map(ll::lookup).collect();
     if ll::chain_permits(&chain, path, op) { Ok(()) }
     else { Err(-(Errno::Eacces.as_i32() as i64)) }
+}
+
+/// Check a not-yet-instantiated child by the resolved parent path. Linux
+/// path-beneath creation permissions are anchored on the containing directory;
+/// the leaf text is not object identity until the backend creates a dentry.
+/// # C: O(N_chain × N_rules)
+pub fn check_parent(parent: &vfs::VfsPath, op: u64) -> Result<(), i64> {
+    check(parent, op)
 }

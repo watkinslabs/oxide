@@ -15,6 +15,18 @@ const AT_EACCESS: u32 = 0x200;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const AT_EMPTY_PATH: u32 = 0x1000;
 
+#[cfg(feature = "debug-mount")]
+fn log_runtime_access(op: &'static str, dirfd: i32, path_ptr: u64, rv: i64) {
+    if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
+        if path.starts_with("/run/systemd") || path.contains("systemd/journal") {
+            let mut tag = alloc::string::String::from(path.as_str());
+            tag.push_str(" dirfd=");
+            tag.push_str(&alloc::format!("{}", dirfd));
+            crate::mount_common::mnt_log(op, &tag, rv);
+        }
+    }
+}
+
 /// Permission check resolving `path_ptr` against `dirfd` (real `faccessat(2)`
 /// dirfd semantics; AT_FDCWD = -100 → cwd). `mode` is the R/W/X bitmask;
 /// `flags` carries `AT_EACCESS`/`AT_SYMLINK_NOFOLLOW`. Returns 0 on grant.
@@ -25,8 +37,8 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
     const VALID_FLAGS: u32 = AT_EACCESS | AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
     if flags & !VALID_FLAGS != 0 { return -(Errno::Einval.as_i32() as i64); }
     let no_follow = flags & AT_SYMLINK_NOFOLLOW != 0;
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
-    // path operates on the dirfd, ENOENT without it); faccessat FOLLOWS the
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
+    // operates on the dirfd, NULL still EFAULTs); faccessat FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW) unless AT_SYMLINK_NOFOLLOW.
     let lf = vfs::LookupFlags {
         empty: (flags & AT_EMPTY_PATH) != 0,
@@ -35,14 +47,19 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
         ..Default::default()
     };
     let vp = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
-        Ok(p) => p, Err(rv) => return rv,
+        Ok(p) => p,
+        Err(rv) => {
+            #[cfg(feature = "debug-mount")]
+            log_runtime_access("access_resolve", dirfd, path_ptr, rv);
+            return rv;
+        }
     };
-    // W_OK on a read-only mount → EROFS (Linux access(2)).
-    if mode & W_OK != 0 && vp.mnt_id != 0 {
-        use core::sync::atomic::Ordering;
+    if mode & X_OK != 0 && matches!(vp.inode.file_type(), vfs::FileType::Regular) {
         if let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) {
-            if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-                return -(Errno::Erofs.as_i32() as i64);
+            if m.is_noexec() {
+                #[cfg(feature = "debug-mount")]
+                log_runtime_access("access_noexec", dirfd, path_ptr, -(Errno::Eacces.as_i32() as i64));
+                return -(Errno::Eacces.as_i32() as i64);
             }
         }
     }
@@ -50,7 +67,11 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
     if mode & R_OK != 0 { mask |= vfs::MAY_READ; }
     if mode & W_OK != 0 { mask |= vfs::MAY_WRITE; }
     if mode & X_OK != 0 { mask |= vfs::MAY_EXEC; }
-    if mask == 0 { return 0; } // F_OK: existence only (already resolved).
+    if mask == 0 {
+        #[cfg(feature = "debug-mount")]
+        log_runtime_access("access", dirfd, path_ptr, 0);
+        return 0;
+    } // F_OK: existence only (already resolved).
     // access(2) uses REAL ids; faccessat2(AT_EACCESS) uses effective (fs) ids.
     let cred = if flags & AT_EACCESS != 0 {
         crate::pathresolve::current_cred()
@@ -58,7 +79,32 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
         crate::pathresolve::current_cred_real()
     };
     match vfs::inode_permission(&vp.inode, mask, &cred) {
-        Ok(())  => 0,
-        Err(e)  => -(e as i64),
+        Ok(())  => {
+            if mode & W_OK != 0 && !access_special_file(vp.inode.file_type()) {
+                if let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) {
+                    if m.is_readonly() {
+                        #[cfg(feature = "debug-mount")]
+                        log_runtime_access("access_rofs", dirfd, path_ptr, -(Errno::Erofs.as_i32() as i64));
+                        return -(Errno::Erofs.as_i32() as i64);
+                    }
+                }
+            }
+            #[cfg(feature = "debug-mount")]
+            log_runtime_access("access", dirfd, path_ptr, 0);
+            0
+        }
+        Err(e)  => {
+            let rv = -(e as i64);
+            #[cfg(feature = "debug-mount")]
+            log_runtime_access("access", dirfd, path_ptr, rv);
+            rv
+        }
     }
+}
+
+/// Linux `special_file`: char/block/fifo/socket skip the post-permission EROFS
+/// rewrite in `faccessat*`.
+/// # C: O(1)
+fn access_special_file(ft: vfs::FileType) -> bool {
+    matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev | vfs::FileType::Fifo | vfs::FileType::Socket)
 }

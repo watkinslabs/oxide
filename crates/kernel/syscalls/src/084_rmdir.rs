@@ -4,27 +4,51 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::{
+    child_dentry, drop_child_cache, errno_from_vfs, parent_mount_readonly, read_user_path,
+    resolve_rmdir_parent_at,
+};
 
 /// Single rmdir core — both `rmdir(2)` (slot 84, x86 legacy) and
 /// `unlinkat(…, AT_REMOVEDIR)` (the only form aarch64 has) delegate
 /// here so the two ABI entry points can never diverge (Linux routes
-/// both through `do_rmdirat`). `p` is the resolved absolute path;
-/// the caller has already run the landlock REMOVE_DIR check.
+/// both through `do_rmdirat`).
 /// Pseudo-fs dirs (cgroupfs, …) own their rmdir; ext4 dirs go to the
 /// ext4 backend; everything else is read-only.
 /// # C: O(1)
-pub(crate) fn do_rmdir(p: &str) -> i64 {
-    if vfs::mount::is_readonly_path(p) {
-        return -(Errno::Erofs.as_i32() as i64);
-    }
-    let (pino, name) = match resolve_parent(p) { Ok(x) => x, Err(rv) => return rv };
+pub(crate) fn do_rmdir_at(dirfd: i32, raw: &str) -> i64 {
+    if let Some(rv) = crate::namei_common::rmdir_dot_errno(raw) { return rv; }
+    let (parent, name) = match resolve_rmdir_parent_at(dirfd, raw) {
+        Ok(x) => x, Err(rv) => return rv,
+    };
     // D30: capture the victim dir dentry before the backend removes it.
-    let victim = crate::s087_unlink::victim_dentry(p);
+    let victim = child_dentry(&parent, &name);
+    let landlock_target = victim.as_ref()
+        .and_then(|d| d.inode().map(|inode| vfs::VfsPath {
+            mnt_id: parent.mnt_id,
+            dentry: d.clone(),
+            inode,
+            last_component: None,
+        }));
+    let landlock_result = match landlock_target.as_ref() {
+        Some(vp) => crate::landlock::check(vp, ::security::landlock::access::REMOVE_DIR),
+        None => crate::landlock::check_parent(&parent, ::security::landlock::access::REMOVE_DIR),
+    };
+    if let Err(rv) = landlock_result { return rv; }
+    if parent_mount_readonly(&parent) {
+        return -(syscall::errno::Errno::Erofs.as_i32() as i64);
+    }
+    if let Some(d) = victim.as_ref() {
+        if let Some(inode) = d.inode() {
+            let cred = crate::pathresolve::current_cred();
+            if let Err(e) = vfs::namei::may_delete(&parent.inode, &inode, true, &cred) {
+                return errno_from_vfs(e);
+            }
+        }
+    }
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend rmdir (Linux
     // `do_rmdir` locks the parent); dropped before the dcache invalidate below.
-    let r = { let _g = pino.inode_lock(); pino.rmdir(&name) };
+    let r = { let _g = parent.inode.inode_lock(); parent.inode.rmdir(&name) };
     match r {
         // D25+D30: backend rmdir ran first. With the victim dir dentry in hand,
         // `d_invalidate` FIRST tears down its whole cached subtree (the dentry +
@@ -37,9 +61,9 @@ pub(crate) fn do_rmdir(p: &str) -> i64 {
         Ok(())  => {
             match victim {
                 Some(d) => { vfs::d_invalidate(&d); vfs::dcache::d_unlink(&d); }
-                None    => crate::pathresolve::d_invalidate_path(p),
+                None    => drop_child_cache(&parent, &name),
             }
-            vfs::fire_dirent_delete(crate::namei_common::parent_path(p), &name);
+            vfs::fire_dirent_delete(&parent.inode, &name);
             0
         }
         Err(e)  => errno_from_vfs(e),
@@ -53,13 +77,5 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
     let raw = match read_user_path(args.a0) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    // do_rmdirat: `.` final component → EINVAL, `..` → ENOTEMPTY (checked on
-    // the raw path before resolution normalises the dots away).
-    if let Some(rv) = crate::namei_common::rmdir_dot_errno(&raw) { return rv; }
-    let p = match crate::pathresolve::resolve_at_result(crate::pathresolve::AT_FDCWD, &raw) {
-        Ok(p) => p, Err(rv) => return rv,
-    };
-    if let Err(rv) = crate::landlock::check(&p,
-        ::security::landlock::access::REMOVE_DIR) { return rv; }
-    do_rmdir(&p)
+    do_rmdir_at(crate::pathresolve::AT_FDCWD, &raw)
 }

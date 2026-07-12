@@ -128,47 +128,13 @@ pub fn mnt_drop_write(m: &Mount) { m.mnt_writers.fetch_sub(1, Ordering::AcqRel);
 /// ns must gate on it before acting. # C: O(1)
 pub fn check_mnt(m: &Mount) -> bool { m.ns == current_ns() }
 
-/// The mount that OWNS `path`, by dentry-identity crossing (Linux
-/// `path_lookup`), NOT a longest-`mount_point` string scan. A walk that lands
-/// on a mount in ANOTHER namespace is rejected (Linux `check_mnt`): the caller
-/// sees only its own ns's tree, so the result falls back to the caller's root
-/// mount, never the foreign mount. # C: O(components)
-pub fn resolve_mount(path: &str) -> Option<(Arc<Mount>, String)> {
-    let ns = current_ns();
-    // [D22] A failed walk (path does not resolve — e.g. before any root mount
-    // exists) returns `None` (→ ENOENT), NOT a silent substitution of the ns
-    // root. `walk_to_mount` already returns the deepest OWNING mount for a
-    // not-yet-existing leaf, so a normal path still resolves; only a truly
-    // unresolvable walk yields `None`.
-    let id = crate::namei::walk_to_mount(path)?;
-    let m = mount_by_id(id)?;
-    // Cross-ns guard kept: a walk that lands on a FOREIGN-ns mount falls back to
-    // the caller's own root mount (never leaks the foreign mount).
-    if !check_mnt(&m) { return root_mount_id(ns).and_then(mount_by_id).map(|r| (r, path.to_string())); }
-    Some((m, path.to_string()))
-}
-
-/// True when the mount that owns `path` is remounted read-only. # C: O(components)
-pub fn is_readonly_path(path: &str) -> bool {
-    resolve_mount(path)
-        .map(|(m, _)| (m.flags.load(Ordering::Acquire) & MNT_RDONLY) != 0)
-        .unwrap_or(false)
-}
-
-/// Whole-path → inode resolver (convenience for path-string callers). # C: O(components)
-pub fn lookup(path: &str) -> KResult<InodeRef> {
-    crate::namei::resolve_abs(path)
-}
-
 /// Root inode of the mount rooted EXACTLY at mountpoint dentry `d`. # C: O(log N)
 pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
     if is_ns_root_dentry(d) { return None; }
     let m = mount_at_path_exact(d)?;
     // [D5] `mnt_root` (the mounted-fs root DENTRY) is the single source of
-    // truth: its inode IS the bind-root inode (`for_backend`→`d_make_root`
-    // stamps it as `s_root->d_inode`), so derive instead of reading the legacy
-    // `root` inode copy. `fs().root()` covers an `s_root`-less SB.
-    m.mnt_root().and_then(|r| r.inode()).or_else(|| m.fs().root())
+    // truth: its inode IS the bind-root inode stamped as `s_root->d_inode`.
+    m.mnt_root().and_then(|r| r.inode())
 }
 
 /// Root inode of a concrete mount id (the path walk's crossing primitive).
@@ -176,7 +142,7 @@ pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
 pub fn root_for_mount_id(mnt_id: u64) -> Option<InodeRef> {
     let m = mount_by_id(mnt_id)?;
     // [D5] derive from `mnt_root` (see `mount_root_at`).
-    m.mnt_root().and_then(|r| r.inode()).or_else(|| m.fs().root())
+    m.mnt_root().and_then(|r| r.inode())
 }
 
 /// The mounted fs's ROOT DENTRY for `mnt_id` (Linux `mnt->mnt_root`). The
@@ -215,6 +181,11 @@ pub fn mountpoint_for_root_ptr(d: *const Dentry) -> Option<Arc<Dentry>> {
 /// # C: O(N_mounts)
 pub fn snapshot() -> Vec<Arc<Mount>> {
     mounts_in_ns(current_ns())
+}
+
+/// Snapshot an explicit mount namespace (for `/proc/<pid>/mountinfo`). # C: O(N_mounts)
+pub fn snapshot_ns_view(ns: u64) -> Vec<Arc<Mount>> {
+    mounts_in_ns(ns)
 }
 
 /// Snapshot ALL mounts regardless of namespace (kernel-internal audits).

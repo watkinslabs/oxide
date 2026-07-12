@@ -3,7 +3,7 @@
 // Module manifest:
 // - `registry`: anon device allocation and global superblock registry.
 // - `flags`: Linux `SB_*`, freeze, max-size, and timestamp constants.
-// - `ops`: `SuperOps`, `FileSystemType`, statfs payload, and legacy fs adapters.
+// - `ops`: `SuperOps`, `FileSystemType`, and statfs payload.
 // - `model`: constructors and core superblock fields/accessors.
 // - `icache`: inode-cache, alias, nlink, dirty-state, and eviction helpers.
 // - `stat`: statfs and `/proc` display hook pass-throughs.
@@ -20,7 +20,6 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
-use crate::fs::FileSystem;
 use crate::inode::{Inode, InodeRef};
 use crate::types::Ino;
 
@@ -34,10 +33,9 @@ mod registry;
 mod stat;
 
 pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
-pub use ops::{FileSystemType, SbStatFs, SuperOps};
+pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
 pub use registry::{fs_supers, next_anon_dev, register_super, sget};
 pub(crate) use registry::alloc_anon_minor;
-pub(crate) use ops::{FsBackedSuperOps, FsBackedType, NullFs};
 
 /// `struct super_block`. One per mounted fs instance (`16§2` inv 3).
 pub struct SuperBlock {
@@ -71,6 +69,8 @@ pub struct SuperBlock {
     s_count: AtomicU32,
     /// `s_maxbytes` — largest file size this fs can represent (write-path cap).
     pub s_maxbytes: u64,
+    /// `s_max_links` — zero means unlimited; nonzero caps hardlinks in `vfs_link`.
+    pub s_max_links: AtomicU32,
     /// `s_time_gran` — timestamp granularity in ns (Linux `sb->s_time_gran`),
     /// set at `fill_super` ([`SuperBlock::set_time_gran`]) and consulted by
     /// [`SuperBlock::timestamp_truncate`] to floor inode atime/mtime/ctime to
@@ -104,7 +104,7 @@ pub struct SuperBlock {
     /// `s_uuid` (Linux `super_block.s_uuid`, a `uuid_t`) + `s_uuid_len` — the
     /// on-disk filesystem UUID a backend reads from its superblock at
     /// `fill_super` ([`SuperBlock::set_uuid`]). All-zero / `len == 0` ⇒ the fs
-    /// has no UUID (the `for_backend` default). Consumed by `name_to_handle_at`
+    /// has no UUID. Consumed by `name_to_handle_at`
     /// FID generation and the `STATX_ATTR`/`/proc` UUID display. Locked because
     /// it is set after construction (like `s_root`) without rebuilding the SB.
     s_uuid: Spinlock<([u8; 16], u8), SbClass>,
@@ -118,11 +118,6 @@ pub struct SuperBlock {
     /// because Linux sets it AFTER `alloc_super` (post-construction), so the slot
     /// is replaceable without rebuilding the SB. # consumers: per-fs state.
     s_fs_info: Spinlock<Arc<dyn Any + Send + Sync>, SbClass>,
-    /// The legacy `Arc<dyn FileSystem>` backend carrying the write/inode ops
-    /// (`create`/`unlink`/`link`/`rename`/`root`/`mounts_line`) that
-    /// `SuperOps`/`FileSystemType` do not. The mount table reaches the
-    /// backend through `sb.fs()`. `NullFs` for an `s_fs`-less test SB.
-    s_fs: Arc<dyn FileSystem>,
     /// Per-instance inode cache (`iget`/`ilookup`/`iput`) keyed by `ino`. Each
     /// [`IcacheEntry`] is a `Weak<Inode>` + the inode's `i_dentry` ALIAS list;
     /// the lifecycle state (`i_state`/`i_count`/`__i_nlink`) lives on the

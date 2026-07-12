@@ -7,7 +7,7 @@
 //! - `attach`: superblock materialization plus root/submount registration.
 //! - `clone_tree`: open_tree/bind clone construction and recursive graft commit.
 //! - `namespace`: pivot/copy/reap/bind/move namespace-tree mutations.
-//! - `attrs`: remount, mount_setattr, write pins, and path query helpers.
+//! - `attrs`: remount, mount_setattr, write pins, and inode lookup helpers.
 //! - `propagation`: peer/slave propagation fan-out.
 //! - `detach`: umount/detach tear-down.
 //! - `mnt_flags`: internal lifecycle flags and mount_setattr translation.
@@ -22,17 +22,17 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, 
 use sync::{MountTable as MountClass, MountWrite as MountWriteClass, Spinlock};
 
 use crate::dentry::Dentry;
-use crate::fs::{FileSystem, KResult};
+use crate::fs::{superblock_from_filesystem, FileSystem, KResult};
 use crate::inode::InodeRef;
 use crate::mntns::{self, get_mountpoint, put_mountpoint, Mountpoint};
-use crate::superblock::{next_anon_dev, sget, SuperBlock};
+use crate::superblock::{FileSystemType, SuperBlock};
 use crate::types::VfsError;
 
 // Re-export the namespace / notify / hook surface so callers keep using
 // `vfs::mount::*` (provider install, generation poll, chroot hook, reap).
 pub use crate::mntns::{
     chroot_fs_refs, current_ns, mnt_ns_enter, mnt_ns_exit, mount_generation,
-    mountinfo_poll_mask, set_chroot_refs_hook, set_current_ns_provider,
+    mountinfo_poll_mask, mountinfo_poll_mask_ns, set_chroot_refs_hook, set_current_ns_provider,
     ChrootRefsHook, MntNamespace, Mountpoint as MountpointObj, NsProvider,
 };
 
@@ -46,11 +46,6 @@ pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propa
 mod detach;
 pub use detach::{mountpoint_dentry_of, unregister, unregister_top};
 pub(crate) use detach::detach_mounts_on;
-
-// Stale-negative-dentry invalidation for inode-op-direct create paths that
-// bypass namei's d_instantiate (AF_UNIX bind mknod_child, etc.).
-mod invalidate;
-pub use invalidate::drop_stale_negative;
 
 // mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /
 // MNT_INTERNAL / MNT_DOOMED / …, Linux `include/linux/mount.h`) distinct from
@@ -73,6 +68,12 @@ pub use expiry::{
 
 mod flags;
 pub use flags::*;
+
+mod render;
+pub use render::{
+    mountinfo_mount_options, mountinfo_optional_fields, mountinfo_root_field,
+    mountinfo_source_field, mountinfo_super_options, render_mount_root_field,
+};
 
 include!("mount/graph.rs");
 include!("mount/model.rs");

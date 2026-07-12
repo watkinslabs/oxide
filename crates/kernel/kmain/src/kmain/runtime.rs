@@ -141,7 +141,7 @@ fn init_runtime_subsystems() {
     sched::live::set_robust_exit_hook(ipc::live::futex::exit_robust_list);
     let _ = unsafe { nscg::init() };
     sched::cgroup::install();
-    cgroup::set_notify_hook(fs::inotify::fire_modify_path);
+    cgroup::set_notify_hook(fs::inotify::fire_modify);
     debug_cgroup! { cgroup::selftest::run(); }
     let _ = unsafe { security::init() };
     let _ = unsafe { drv::init() };

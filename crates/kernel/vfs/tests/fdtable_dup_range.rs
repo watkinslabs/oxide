@@ -77,6 +77,31 @@ fn dupfd_in_range_lands_at_min() {
     assert_eq!(hi, FD_TABLE_MAX as i32 - 1, "FD_TABLE_MAX-1 is the last legal fd");
 }
 
+/// F_DUPFD is also capped by the caller's current RLIMIT_NOFILE soft
+/// limit, not just the fd-table's hard ceiling.
+#[test]
+fn dupfd_min_at_soft_limit_is_einval() {
+    let t = FdTable::new();
+    let fd = t.alloc(mk_file()).unwrap();
+    assert_eq!(t.dup_min_limit(fd, 4, 4), Err(VfsError::Einval),
+        "F_DUPFD arg == RLIMIT_NOFILE must be EINVAL");
+    assert_eq!(t.dup_min_limit(fd, 3, 4), Ok(3),
+        "F_DUPFD may allocate the highest fd below RLIMIT_NOFILE");
+}
+
+/// dup(2) allocates the lowest free descriptor below RLIMIT_NOFILE and
+/// returns EMFILE when no such slot exists.
+#[test]
+fn dup_limit_soft_boundary_is_emfile() {
+    let t = FdTable::new();
+    let fd = t.alloc(mk_file()).unwrap();
+    assert_eq!(fd, 0);
+    assert_eq!(t.dup_limit(fd, 1), Err(VfsError::Emfile),
+        "dup cannot allocate fd == RLIMIT_NOFILE");
+    assert_eq!(t.dup_limit(fd, 2), Ok(1),
+        "raising the soft limit exposes fd 1");
+}
+
 /// dup2 newfd out of range → EBADF (Linux dup2 contract — NOT EINVAL),
 /// and negative oldfd/newfd → EBADF.
 #[test]
@@ -87,4 +112,20 @@ fn dup2_out_of_range_newfd_is_ebadf() {
         "dup2 newfd >= FD_TABLE_MAX must be EBADF");
     assert_eq!(t.dup2(fd, -1), Err(VfsError::Ebadf), "dup2 negative newfd must be EBADF");
     assert_eq!(t.dup2(-1, 5), Err(VfsError::Ebadf), "dup2 negative oldfd must be EBADF");
+}
+
+/// dup2 uses RLIMIT_NOFILE for a non-equal target fd, but the
+/// oldfd==newfd special case only verifies that the fd exists.
+#[test]
+fn dup2_limit_honors_soft_limit_except_equal_fd() {
+    let t = FdTable::new();
+    let fd = t.alloc(mk_file()).unwrap();
+    assert_eq!(t.dup2_limit(fd, 4, 4), Err(VfsError::Ebadf),
+        "dup2 newfd == RLIMIT_NOFILE must be EBADF");
+    assert_eq!(t.dup2_limit(fd, 3, 4), Ok(3),
+        "dup2 may install at the highest fd below RLIMIT_NOFILE");
+
+    let high = t.dup_min(fd, 10).unwrap();
+    assert_eq!(t.dup2_limit(high, high, 4), Ok(high),
+        "dup2(oldfd == newfd) does not reject an existing fd above a later-lowered soft limit");
 }

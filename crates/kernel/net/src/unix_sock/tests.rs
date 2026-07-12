@@ -43,8 +43,20 @@ fn abstract_and_literal_at_paths_are_distinct() {
 fn abstract_path_display_uses_procfs_at_prefix() {
     assert!(unix_path_is_abstract("\0svc"));
     assert!(!unix_path_is_abstract("@svc"));
-    assert_eq!(unix_path_display("\0svc"), "@svc");
-    assert_eq!(unix_path_display("@svc"), "@svc");
+    assert_eq!(unix_path_display("\0svc"), b"@svc".to_vec());
+    assert_eq!(unix_path_display("@svc"), b"@svc".to_vec());
+}
+
+#[test]
+fn abstract_names_are_byte_identity_not_utf8_strings() {
+    let registry = UnixRegistry::new();
+    let raw = b"\0svc\xff".to_vec();
+    let addr = UnixAddr::from_sockaddr_path(raw.clone());
+
+    registry.bind_addr(addr.clone()).unwrap();
+
+    assert!(registry.lookup_listener_addr(&addr).is_some());
+    assert_eq!(unix_path_display(raw), b"@svc\xff".to_vec());
 }
 
 #[test]
@@ -62,13 +74,71 @@ fn udev_control_path_connect_wakes_accept_and_round_trips() {
 
     let server = listener.accept_q.lock().pop_front().expect("accepted pair");
     assert!(Arc::ptr_eq(&server, &client));
-    assert_eq!(server.local_path(UnixEnd::A).as_deref(), Some("/run/udev/control"));
-    assert_eq!(client.peer_path(UnixEnd::B).as_deref(), Some("/run/udev/control"));
+    assert_eq!(server.local_path(UnixEnd::A).as_deref(), Some(&b"/run/udev/control"[..]));
+    assert_eq!(client.peer_path(UnixEnd::B).as_deref(), Some(&b"/run/udev/control"[..]));
 
     assert_eq!(client.write(UnixEnd::B, b"reload"), 6);
     assert_eq!(server.read(UnixEnd::A, 64), b"reload".to_vec());
     assert_eq!(server.write(UnixEnd::A, b"ok"), 2);
     assert_eq!(client.read(UnixEnd::B, 64), b"ok".to_vec());
+}
+
+#[test]
+fn pathname_registry_key_is_inode_identity_not_display_path() {
+    let registry = UnixRegistry::new();
+    let a = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 1, ino: 10 },
+        display: b"/run/a.sock".to_vec(),
+    };
+    let b = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 1, ino: 11 },
+        display: b"/run/a.sock".to_vec(),
+    };
+
+    registry.bind_addr(a.clone()).unwrap();
+    registry.bind_addr(b.clone()).unwrap();
+
+    assert!(registry.connect_addr(&a).is_some());
+    assert!(registry.connect_addr(&b).is_some());
+    assert_eq!(registry.snapshot_paths().len(), 2);
+}
+
+#[test]
+fn symlinked_pathname_connect_hits_same_inode_key() {
+    let registry = UnixRegistry::new();
+    let bound = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 2, ino: 20 },
+        display: b"/run/systemd/journal/dev-log".to_vec(),
+    };
+    let via_link = UnixAddr {
+        key: UnixAddrKey::Path { fsid: 2, ino: 20 },
+        display: b"/dev/log".to_vec(),
+    };
+
+    registry.bind_addr(bound).unwrap();
+    let pair = registry.connect_addr(&via_link).expect("same inode key must connect");
+
+    assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some(&b"/run/systemd/journal/dev-log"[..]));
+    assert!(registry.bind_addr(via_link).is_err(), "same socket inode key is busy");
+}
+
+#[test]
+fn pathname_addr_preserves_non_utf8_display_bytes() {
+    let registry = UnixRegistry::new();
+    let ino: vfs::InodeRef = vfs::InodeBuilder::new(
+        0x5150,
+        vfs::mk_mode(vfs::FileType::Socket, 0o600),
+        vfs::default_inode_ops(),
+        vfs::default_file_ops(),
+    ).build();
+    let raw = b"/run/raw-\xff.sock".to_vec();
+    let addr = UnixAddr::from_inode_bytes(raw.clone(), &ino);
+
+    registry.bind_addr(addr.clone()).unwrap();
+
+    let pair = registry.connect_addr(&addr).expect("raw pathname socket address must connect");
+    assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some(&raw[..]));
+    assert!(matches!(addr.key, UnixAddrKey::Path { fsid, ino: got } if fsid == ino.fsid() && got == ino.ino() as u64));
 }
 
 #[test]
@@ -207,16 +277,15 @@ fn msgpair_bidirectional() {
 // getpeername returned ENOTCONN for every AF_UNIX fd (broke sd-bus/dbus).
 #[test]
 fn connected_pair_reports_bind_path() {
-    use alloc::string::String;
     let p = UnixPair::new();
-    p.set_bind_path(String::from("/run/systemd/private"));
+    p.set_bind_path(b"/run/systemd/private".to_vec());
 
     // Client (end B): peer = the listener path; local = unnamed.
-    assert_eq!(p.peer_path(UnixEnd::B).as_deref(), Some("/run/systemd/private"));
+    assert_eq!(p.peer_path(UnixEnd::B).as_deref(), Some(&b"/run/systemd/private"[..]));
     assert_eq!(p.local_path(UnixEnd::B), None);
 
     // Accepted server (end A): local = the listener path; peer = unnamed client.
-    assert_eq!(p.local_path(UnixEnd::A).as_deref(), Some("/run/systemd/private"));
+    assert_eq!(p.local_path(UnixEnd::A).as_deref(), Some(&b"/run/systemd/private"[..]));
     assert_eq!(p.peer_path(UnixEnd::A), None);
 }
 

@@ -10,9 +10,10 @@ use syscall::{errno::Errno, SyscallArgs};
 pub fn sys_lsm_list_modules(args: &SyscallArgs) -> i64 {
     let size_ptr = args.a1;
     if args.a2 != 0 { return -(Errno::Einval.as_i32() as i64); }   // flags must be 0
-    if size_ptr != 0 && size_ptr.saturating_add(4) <= hal::USER_VA_END {
-        // SAFETY: size_ptr range-checked < USER_VA_END; u32 store into user AS.
-        unsafe { core::ptr::write_volatile(size_ptr as *mut u32, 0); }
+    if size_ptr != 0 {
+        if let Err(rv) = crate::userbuf::validate_user_buf_writable(size_ptr, 4, 1) { return rv; }
+        // SAFETY: size_ptr validated writable for four bytes; Linux copyout accepts unaligned storage.
+        unsafe { core::ptr::write_unaligned(size_ptr as *mut u32, 0); }
     }
     0
 }

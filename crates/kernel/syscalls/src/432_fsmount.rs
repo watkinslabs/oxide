@@ -1,8 +1,6 @@
 // 432 fsmount — one syscall, one file (docs/53 §0). Moved verbatim from fsmount.rs.
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::ToString;
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::InodeRef;
@@ -58,13 +56,9 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
                 (Some(sb), Some(root)) => (sb.clone(), root.clone()),
                 _ => return -(Errno::Einval.as_i32() as i64),
             };
-            let source = fc.source().unwrap_or("").to_string();
-            let mo: InodeRef = MountObjectInode::new_realized(sb, root, ctx.fstype.clone(), source, attrs);
+            let mo: InodeRef = MountObjectInode::new_realized(sb, root, ctx.fstype.clone(), attrs);
             return install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0);
         }
     }
-    // LEGACY: defer materialisation to move_mount → mount_fstype.
-    let source = ctx.source.lock().clone();
-    let mo: InodeRef = MountObjectInode::new(ctx.fstype.clone(), source, attrs);
-    install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0)
+    -(Errno::Einval.as_i32() as i64)
 }

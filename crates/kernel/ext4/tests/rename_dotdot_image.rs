@@ -6,6 +6,7 @@
 //! Image: mini-j.img (journaled).
 
 extern crate alloc;
+mod common;
 use alloc::string::String;
 use alloc::sync::Arc;
 
@@ -32,7 +33,7 @@ fn mount(disk: Arc<dyn BlockDevice>) -> (Arc<ext4::rootfs::Ext4Mount>, Arc<Super
     let m = ext4::rootfs::Ext4Mount::open(disk).expect("Ext4Mount::open");
     let fs: Arc<dyn FileSystem> = m.clone();
     let root = fs.root();
-    let sb = SuperBlock::for_backend(fs, root, 0xE471_D07D, String::from("ext4"));
+    let sb = common::realize_sb(fs, root, 0xE471_D07D, String::from("ext4"));
     (m, sb)
 }
 

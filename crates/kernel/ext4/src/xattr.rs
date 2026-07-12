@@ -77,6 +77,14 @@ fn join_name(name_index: u8, name: &str) -> Option<String> {
     Some(s)
 }
 
+fn xattr_suffix_from_bytes(name: &[u8]) -> String {
+    vfs::path_from_bytes(name)
+}
+
+pub(super) fn xattr_suffix_bytes(name: &str) -> Vec<u8> {
+    vfs::path_into_bytes(name)
+}
+
 /// Decode an entry+value stream into `(full_name, value)` pairs. `first_off` is
 /// the byte offset of the first `ext4_xattr_entry`; `base_off` is the offset
 /// `e_value_offs` is relative to (= `first_off` for ibody, = block start for the
@@ -106,10 +114,9 @@ fn decode_entries(buf: &[u8], first_off: usize, base_off: usize, end_off: usize,
             let v_start = base_off + value_offs;
             let v_end   = v_start + value_size;
             if v_end <= end_off {
-                if let Ok(name) = core::str::from_utf8(&buf[name_start..name_end]) {
-                    if let Some(full) = join_name(name_index, name) {
-                        out.push((full, buf[v_start..v_end].to_vec()));
-                    }
+                let name = xattr_suffix_from_bytes(&buf[name_start..name_end]);
+                if let Some(full) = join_name(name_index, &name) {
+                    out.push((full, buf[v_start..v_end].to_vec()));
                 }
             }
         }
@@ -157,9 +164,13 @@ pub fn encode_ibody(ino_bytes: &mut [u8], hdr_off: usize, isize: usize,
 
     // Split + sort. Names in no known namespace are dropped (cannot be
     // expressed on disk); they survive only in the in-core store.
-    let mut sorted: Vec<(u8, &str, &[u8])> = Vec::with_capacity(entries.len());
+    let mut sorted: Vec<(u8, Vec<u8>, &[u8])> = Vec::with_capacity(entries.len());
     for (full, val) in entries {
-        if let Some((idx, suffix)) = split_name(full) { sorted.push((idx, suffix, val.as_slice())); }
+        if let Some((idx, suffix)) = split_name(full) {
+            let name = xattr_suffix_bytes(suffix);
+            if name.len() > u8::MAX as usize { return Err(()); }
+            sorted.push((idx, name, val.as_slice()));
+        }
     }
     if sorted.is_empty() {
         // Nothing on-disk-expressible; leave the (already zeroed) no-magic region.
@@ -167,7 +178,7 @@ pub fn encode_ibody(ino_bytes: &mut [u8], hdr_off: usize, isize: usize,
     }
     sorted.sort_by(|a, b| a.0.cmp(&b.0)
         .then(a.1.len().cmp(&b.1.len()))
-        .then(a.1.as_bytes().cmp(b.1.as_bytes())));
+        .then(a.1.cmp(&b.1)));
 
     ino_bytes[hdr_off..hdr_off + 4].copy_from_slice(&EXT4_XATTR_MAGIC.to_le_bytes());
     let base = hdr_off + 4;
@@ -175,7 +186,7 @@ pub fn encode_ibody(ino_bytes: &mut [u8], hdr_off: usize, isize: usize,
     let mut value_end = isize;
 
     for (idx, suffix, val) in &sorted {
-        let name_bytes = suffix.as_bytes();
+        let name_bytes = suffix.as_slice();
         let name_len = name_bytes.len();
         let elen = xattr_entry_len(name_len);
         let vsize = xattr_value_size(val.len());
@@ -382,6 +393,20 @@ mod tests {
     }
 
     #[test]
+    fn ibody_xattr_name_preserves_non_utf8_suffix_bytes() {
+        let mut b = blank_inode();
+        let raw_suffix = b"raw-\xff";
+        let mut full = "user.".to_string();
+        full.push_str(&vfs::path_from_bytes(raw_suffix));
+        let entries = alloc::vec![(full.clone(), b"v".to_vec())];
+        encode_ibody(&mut b, HDR, ISIZE, &entries).expect("encode raw suffix");
+        let name_start = HDR + 4 + ENTRY_HDR_LEN;
+        assert_eq!(b[HDR + 4] as usize, raw_suffix.len());
+        assert_eq!(&b[name_start..name_start + raw_suffix.len()], raw_suffix);
+        assert_eq!(decode_ibody(&b, HDR, ISIZE), entries);
+    }
+
+    #[test]
     fn empty_entries_leaves_no_magic() {
         let mut b = blank_inode();
         encode_ibody(&mut b, HDR, ISIZE, &[]).expect("encode empty");
@@ -427,5 +452,18 @@ mod tests {
         blk[value_pos] = b'v';
         let got = decode_block(&blk);
         assert_eq!(got, alloc::vec![("user.x".to_string(), b"v".to_vec())]);
+    }
+
+    #[test]
+    fn external_xattr_name_preserves_non_utf8_suffix_bytes() {
+        let raw_suffix = b"raw-\xff";
+        let mut full = "user.".to_string();
+        full.push_str(&vfs::path_from_bytes(raw_suffix));
+        let entries = alloc::vec![(full.clone(), b"v".to_vec())];
+        let blk = encode_block(&entries, 1024).expect("encode external raw suffix");
+        let name_start = BLOCK_HDR_LEN + ENTRY_HDR_LEN;
+        assert_eq!(blk[BLOCK_HDR_LEN] as usize, raw_suffix.len());
+        assert_eq!(&blk[name_start..name_start + raw_suffix.len()], raw_suffix);
+        assert_eq!(decode_block(&blk), entries);
     }
 }

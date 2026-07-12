@@ -28,7 +28,7 @@ const ANON_MAGIC: u64 = 0x9fa0;
 struct NullType;
 impl FileSystemType for NullType {
     fn name(&self) -> &str { "t" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
 }
 struct NullOps;
 impl SuperOps for NullOps {

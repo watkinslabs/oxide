@@ -3,7 +3,6 @@
 // RTT / cwnd / retransmit stats. Layout matches uapi/linux/tcp.h
 // (Linux 6.x; older fields only — newer ones default to 0).
 
-use hal::USER_VA_END;
 use net::sock::{InetSocket, SockKind};
 
 /// Minimal Linux tcp_info subset (104 bytes — fields up through
@@ -50,21 +49,23 @@ const TCP_INFO_LEN: usize = core::mem::size_of::<TcpInfo>();
 
 /// # C: O(1)
 pub fn write_tcp_info(sock: &InetSocket, optval: u64, optlen_p: u64) -> i64 {
-    if optval == 0 || optval >= USER_VA_END
-        || optlen_p == 0 || optlen_p >= USER_VA_END { return 0; }
-    // SAFETY: optlen_p validated < USER_VA_END; CPL=0 read through caller's AS.
-    let optlen = unsafe { core::ptr::read_volatile(optlen_p as *const u32) } as usize;
-    if optlen < 4 { return 0; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(optlen_p, 4, 1) { return rv; }
+    // SAFETY: optlen_p was validated as a readable 4-byte user span; scalar load permits unaligned user storage.
+    let optlen = unsafe { core::ptr::read_unaligned(optlen_p as *const u32) } as usize;
     let writelen = core::cmp::min(optlen, TCP_INFO_LEN);
+    if writelen > 0 {
+        if let Err(rv) = crate::userbuf::validate_user_buf_writable(optval, writelen as u64, 1) { return rv; }
+    }
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(optlen_p, 4, 1) { return rv; }
     let mut info = TcpInfo::default();
     populate(sock, &mut info);
-    // SAFETY: bytewise copy of POD into validated user range; len bounded.
+    // SAFETY: copy spans were validated above; byte stores and u32 optlen store permit unaligned user storage.
     unsafe {
         let src = &info as *const TcpInfo as *const u8;
         for i in 0..writelen {
-            core::ptr::write_volatile((optval + i as u64) as *mut u8, *src.add(i));
+            core::ptr::write_unaligned((optval + i as u64) as *mut u8, *src.add(i));
         }
-        core::ptr::write_volatile(optlen_p as *mut u32, writelen as u32);
+        core::ptr::write_unaligned(optlen_p as *mut u32, writelen as u32);
     }
     0
 }

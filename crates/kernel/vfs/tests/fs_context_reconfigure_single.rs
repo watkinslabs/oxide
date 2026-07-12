@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::fs_context::{vfs_get_tree, FsContext, FsParameter};
 use vfs::fs::{reconfigure_single, FileSystem};
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
@@ -29,8 +31,8 @@ impl FileSystem for TFs {
 struct Ty;
 impl FileSystemType for Ty {
     fn name(&self) -> &str { "rsfs" }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "rsfs".to_string()))
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "rsfs".to_string()))
     }
 }
 
@@ -63,8 +65,8 @@ fn string_param_is_accepted_and_committed() {
 #[test]
 fn rejected_param_fails_and_does_not_commit() {
     let sb = live_sb();
-    // An fd value has no string form a legacy comma-blob ->mount can carry, so the
-    // legacy parse_param rejects it (EINVAL). The helper surfaces that and never
+    // An fd value has no string form a classic mount comma-blob ->mount can carry, so the
+    // classic mount parse_param rejects it (EINVAL). The helper surfaces that and never
     // reaches reconfigure_super, leaving the requested SB_RDONLY UNAPPLIED.
     let r = reconfigure_single(sb.clone(), SB_RDONLY, &[FsParameter::fd("loop", 3)]);
     assert_eq!(r.unwrap_err(), VfsError::Einval);

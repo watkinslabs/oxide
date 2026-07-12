@@ -60,7 +60,7 @@ pub use sigpend::{
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,
 };
 pub use tick_deadline::tick_wake_expired;
-pub use zombies::{enqueue_zombie, has_zombies, park_for_wait4, park_zombie, peek_one, reap_one, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4};
+pub use zombies::{enqueue_zombie, has_wait_zombies, has_zombies, park_for_wait4, park_zombie, peek_one, reap_one, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4};
 
 pub mod preempt;
 

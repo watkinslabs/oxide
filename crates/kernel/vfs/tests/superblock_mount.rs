@@ -1,5 +1,5 @@
 //! B1 acceptance: every mount carries a real `SuperBlock` (Linux `mnt_sb`),
-//! allocated by `SuperBlock::for_backend` inside the mount engine — NOT only
+//! allocated by `from_ops` inside the mount engine — NOT only
 //! by `object_model.rs`. Proves each backend mounts via a superblock with a
 //! valid `s_root` dentry + `s_magic`, a per-instance `s_dev`, and a working
 //! `statfs`; and that a bind keeps `mnt_root` (source subtree) while owning
@@ -31,7 +31,7 @@ fn make_tdir(ino: u64) -> InodeRef {
 }
 
 /// A backend standing in for any real fs (tmpfs/ext4/procfs/…): it carries a
-/// `magic` + a root inode, exactly the surface `for_backend` reads.
+/// `magic` + a root inode, exactly the surface fill-super reads.
 struct TestFs { magic: u64, root_ino: u64 }
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
@@ -56,8 +56,7 @@ fn mount_carries_real_superblock() {
         "s_root dentry covers the fs root inode");
     assert_eq!(sb.s_magic, fs.magic(), "s_magic == backend magic");
     assert_ne!(sb.s_dev, 0, "per-instance s_dev allocated (get_anon_bdev)");
-    // The SB reaches the backend (Linux mnt_sb->s_fs).
-    assert_eq!(m.fs().magic(), fs.magic(), "mount reaches backend via sb.fs()");
+    assert_eq!(m.sb().s_type.name(), "testfs", "mount reaches filesystem type through mnt_sb");
 }
 
 /// T-statfs-real: statfs reports the mount's own SB magic, not a guess.

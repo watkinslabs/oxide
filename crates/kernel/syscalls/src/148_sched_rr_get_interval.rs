@@ -13,7 +13,7 @@ pub fn sys_sched_rr_get_interval(args: &SyscallArgs) -> i64 {
     let pid = args.a0 as u32;
     let tp  = args.a1;
     if tp == 0 { return -(Errno::Efault.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf_writable(tp, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(tp, 16, 1) { return rv; }
     let t = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
@@ -22,8 +22,8 @@ pub fn sys_sched_rr_get_interval(args: &SyscallArgs) -> i64 {
     if t.is_none() { return -(Errno::Esrch.as_i32() as i64); }
     // SAFETY: tp validated writable; struct timespec is { i64 sec; i64 nsec }; CPL=0.
     unsafe {
-        core::ptr::write_volatile( tp        as *mut i64, 0);
-        core::ptr::write_volatile((tp +  8)  as *mut i64, 100_000_000);
+        core::ptr::write_unaligned( tp        as *mut i64, 0);
+        core::ptr::write_unaligned((tp +  8)  as *mut i64, 100_000_000);
     }
     0
 }

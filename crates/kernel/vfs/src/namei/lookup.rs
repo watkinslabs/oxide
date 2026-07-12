@@ -3,9 +3,9 @@ use alloc::sync::Arc;
 
 use crate::dentry::Dentry;
 use crate::inode::InodeRef;
-use crate::types::KResult;
+use crate::types::{KResult, VfsError};
 
-use super::{Cred, LookupFlags, Nameidata, VfsPath};
+use super::{Cred, LastType, LookupFlags, MountTarget, Nameidata, VfsPath};
 
 /// Resolve `path` from `start` with `root`, returning `(inode, dentry)`.
 /// Compatibility wrapper over `path_lookup_path`; default-allow cred.
@@ -66,6 +66,76 @@ pub fn path_lookup_at_cred(
 ) -> KResult<VfsPath> {
     let ns = crate::mount::current_ns();
     let root_mnt_id = crate::mount::containing_mount_id(ns, &root);
+    path_lookup_at_root_cred(start, start_mnt_id, root, root_mnt_id, path, flags, cred)
+}
+
+/// As [`path_lookup_at_cred`] but both start and resolution-root carry exact
+/// mount ids. Used when callers hold full `struct path` equivalents; re-deriving
+/// either id from a bare dentry is ambiguous for bind/pivot clones sharing one
+/// superblock root. # C: O(components × dir-lookup) + O(symlinks)
+pub fn path_lookup_at_root_cred(
+    start: Arc<Dentry>,
+    start_mnt_id: u64,
+    root: Arc<Dentry>,
+    root_mnt_id: u64,
+    path: &str,
+    flags: LookupFlags,
+    cred: Cred,
+) -> KResult<VfsPath> {
     let mut nd = Nameidata::new_at(start, start_mnt_id, root, root_mnt_id, flags, cred)?;
     nd.walk(path)
+}
+
+/// Resolve a mount syscall target without crossing a mount attached at the
+/// final component. Intermediate components use normal mount-aware lookup, so
+/// the returned parent carries the exact `vfsmount` identity for attach.
+/// # C: O(components × dir-lookup) + O(symlinks)
+pub fn mountpoint_lookup_at_root_cred(
+    start: Arc<Dentry>,
+    start_mnt_id: u64,
+    root: Arc<Dentry>,
+    root_mnt_id: u64,
+    path: &str,
+    cred: Cred,
+) -> KResult<MountTarget> {
+    if path == "/" {
+        let p = path_lookup_at_root_cred(
+            start, start_mnt_id, root, root_mnt_id, path, LookupFlags::default(), cred)?;
+        return Ok(MountTarget { mountpoint: p.dentry.clone(), parent: p });
+    }
+    let parent = path_lookup_at_root_cred(
+        start, start_mnt_id, root, root_mnt_id, path,
+        LookupFlags { parent: true, ..Default::default() }, cred)?;
+    if parent.last_type() != LastType::Norm { return Err(VfsError::Einval); }
+    let name = parent.last_component.as_deref().ok_or(VfsError::Einval)?;
+    let pi = parent.dentry.inode().ok_or(VfsError::Enoent)?;
+    let mountpoint = match crate::d_lookup(&parent.dentry, name) {
+        Some(d) if !d.is_negative() => d,
+        _ => {
+            let ci = pi.lookup(name)?;
+            crate::d_add(&parent.dentry, name, ci)
+        }
+    };
+    Ok(MountTarget { parent, mountpoint })
+}
+
+/// Convert a resolved `struct path` (for magic fd links such as
+/// `/proc/self/fd/N`) into a mount attach target. If the fd path already points
+/// at a mount root, Linux stacks the new mount on that mount's original
+/// `(mnt_parent, mnt_mountpoint)`, not inside the mounted filesystem's root.
+/// # C: O(log N)
+pub fn mount_target_from_resolved_path(p: VfsPath) -> MountTarget {
+    if let Some(root) = crate::mount::root_dentry_for_mount_id(p.mnt_id) {
+        if Arc::ptr_eq(&root, &p.dentry) {
+            if let Some((mp, parent_id)) = crate::mount::mountpoint_of(p.mnt_id) {
+                if let Some(inode) = mp.inode() {
+                    return MountTarget {
+                        mountpoint: mp.clone(),
+                        parent: VfsPath { mnt_id: parent_id, dentry: mp, inode, last_component: None },
+                    };
+                }
+            }
+        }
+    }
+    MountTarget { mountpoint: p.dentry.clone(), parent: p }
 }

@@ -129,70 +129,6 @@ fn lexical_normalize_clamps_dotdot_at_absolute_root() {
     assert_eq!(lexical_normalize("/../../a").as_deref(), Some("/a"));
 }
 
-// ---------------------------------------------------------------------------
-// fd-link / dup-fd parsing (T8 — /dev/std*, /dev/fd/N, /proc/<pid>/fd/N).
-// The Linux magic-fd-link open/readlink/reopen contract: these paths
-// resolve by duplicating an existing open file description, NOT by a
-// normal path walk. Locks the parsing so the console/serial fd plumbing
-// can't silently regress (the `/dev/stdout`→fd 1 reopen path).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn dup_fd_target_std_streams() {
-    use crate::path::dup_fd_target;
-    assert_eq!(dup_fd_target("/dev/stdin"),  Some((None, 0)));
-    assert_eq!(dup_fd_target("/dev/stdout"), Some((None, 1)));
-    assert_eq!(dup_fd_target("/dev/stderr"), Some((None, 2)));
-}
-
-#[test]
-fn dup_fd_target_dev_fd_n() {
-    use crate::path::dup_fd_target;
-    assert_eq!(dup_fd_target("/dev/fd/0"),  Some((None, 0)));
-    assert_eq!(dup_fd_target("/dev/fd/1"),  Some((None, 1)));
-    assert_eq!(dup_fd_target("/dev/fd/42"), Some((None, 42)));
-    // Not a valid fd number → not an fd-link (resolve normally).
-    assert_eq!(dup_fd_target("/dev/fd/abc"), None);
-}
-
-#[test]
-fn dup_fd_target_proc_self_and_pid_fd() {
-    use crate::path::{dup_fd_target, parse_proc_fd};
-    assert_eq!(dup_fd_target("/proc/self/fd/0"), Some((None, 0)));
-    assert_eq!(dup_fd_target("/proc/self/fd/2"), Some((None, 2)));
-    assert_eq!(dup_fd_target("/proc/1/fd/1"),    Some((Some(1), 1)));
-    assert_eq!(parse_proc_fd("/proc/123/fd/7"),  Some((Some(123), 7)));
-    // The /proc/self/fd dir itself (no <n>) is not an fd-link target.
-    assert_eq!(parse_proc_fd("/proc/self/fd"), None);
-}
-
-#[test]
-fn dup_fd_target_execve_magic_fd_forms() {
-    // execve("/proc/self/fd/N") and execveat(fd,"",AT_EMPTY_PATH) (the
-    // latter synthesises "/proc/self/fd/<dirfd>") both route through
-    // dup_fd_target so the exec loader reads the OPEN file description's
-    // backing inode — the only way a sealed memfd (whose d_path can't be
-    // re-resolved) is exec-able, matching Linux do_execveat_common.
-    use crate::path::dup_fd_target;
-    // The exact strings execve / execveat hand the loader.
-    assert_eq!(dup_fd_target("/proc/self/fd/3"),  Some((None, 3)));
-    assert_eq!(dup_fd_target("/proc/self/fd/17"), Some((None, 17)));
-    assert_eq!(dup_fd_target("/dev/fd/3"),        Some((None, 3)));
-    // Per-pid form (/proc/<pid>/fd/<n>) is exec-able too.
-    assert_eq!(dup_fd_target("/proc/42/fd/3"),    Some((Some(42), 3)));
-}
-
-#[test]
-fn dup_fd_target_rejects_non_fd_links() {
-    use crate::path::dup_fd_target;
-    // Real device + regular paths must resolve via the normal walk.
-    assert_eq!(dup_fd_target("/dev/console"), None);
-    assert_eq!(dup_fd_target("/dev/tty"),     None);
-    assert_eq!(dup_fd_target("/etc/passwd"),  None);
-    assert_eq!(dup_fd_target("/proc/self/status"), None);
-}
-
-// ---------------------------------------------------------------------------
 // Dentry
 // ---------------------------------------------------------------------------
 
@@ -308,7 +244,7 @@ fn path_from_bytes_roundtrips_non_utf8() {
 }
 
 // ---------------------------------------------------------------------------
-// RENAME_EXCHANGE / RENAME_WHITEOUT + non-UTF-8 resolution against a mock FS
+// Non-UTF-8 resolution against a mock FS
 // ---------------------------------------------------------------------------
 
 use alloc::collections::BTreeMap;
@@ -327,9 +263,6 @@ impl TestDir {
     }
     fn insert(&self, name: &[u8], ino: u64, ft: FileType, rdev: u32) {
         self.ents.write().insert(name.to_vec(), (ino, ft, rdev));
-    }
-    fn get(&self, name: &[u8]) -> Option<(u64, FileType, u32)> {
-        self.ents.read().get(name).copied()
     }
     // Build the concrete directory inode backed by this `TestDir` (stored as
     // `i_private`; `TestDirOps` reads it back via `inode.private::<TestDir>()`).
@@ -371,57 +304,16 @@ struct TestFs { dir: Arc<TestDir> }
 impl crate::fs::FileSystem for TestFs {
     fn name(&self) -> &str { "testfs" }
     fn root(&self) -> Option<InodeRef> { Some(self.dir.inode()) }
-    fn rename(&self, from: &str, to: &str) -> KResult<()> {
-        let fk = crate::path::path_into_bytes(from);
-        let tk = crate::path::path_into_bytes(to);
-        let mut e = self.dir.ents.write();
-        let v = e.remove(&fk).ok_or(VfsError::Enoent)?;
-        e.insert(tk, v);
-        Ok(())
-    }
-}
-
-#[test]
-fn rename_exchange_swaps_two_files() {
-    use crate::fs::FileSystem;
-    let fs = TestFs { dir: TestDir::new() };
-    fs.dir.insert(b"a", 11, FileType::Regular, 0);
-    fs.dir.insert(b"b", 22, FileType::Regular, 0);
-    fs.exchange("a", "b").unwrap();
-    assert_eq!(fs.dir.get(b"a").unwrap().0, 22);
-    assert_eq!(fs.dir.get(b"b").unwrap().0, 11);
-    assert_eq!(fs.dir.ents.read().len(), 2); // temp name cleaned up
-}
-
-#[test]
-fn rename_exchange_missing_side_is_enoent() {
-    use crate::fs::FileSystem;
-    let fs = TestFs { dir: TestDir::new() };
-    fs.dir.insert(b"a", 11, FileType::Regular, 0);
-    assert_eq!(fs.exchange("a", "nope"), Err(VfsError::Enoent));
-}
-
-#[test]
-fn rename_whiteout_plants_chardev_at_source() {
-    use crate::fs::FileSystem;
-    let fs = TestFs { dir: TestDir::new() };
-    fs.dir.insert(b"src", 11, FileType::Regular, 0);
-    fs.whiteout("src", "dst").unwrap();
-    assert_eq!(fs.dir.get(b"dst").unwrap().0, 11); // file moved to dest
-    let (_, ft, rdev) = fs.dir.get(b"src").unwrap();
-    assert_eq!(ft, FileType::CharDev);             // whiteout = char dev
-    assert_eq!(rdev, 0);                           //          rdev 0/0
 }
 
 #[test]
 fn non_utf8_filename_resolves_and_stats() {
-    use crate::fs::FileSystem;
     let fs = TestFs { dir: TestDir::new() };
     let name = b"caf\xe9"; // trailing 0xE9 — invalid UTF-8
     fs.dir.insert(name, 77, FileType::Regular, 0);
     // userspace handed these raw bytes; decode as read_user_path does.
     let path = crate::path::path_from_bytes(name);
-    let ino = fs.lookup_path(&path).expect("non-utf8 name resolves");
+    let ino = fs.dir.inode().lookup(&path).expect("non-utf8 name resolves");
     assert_eq!(ino.ino(), 77); // stat reads the resolved inode number
 }
 

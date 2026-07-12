@@ -49,8 +49,6 @@ pub(crate) fn reset_caught_signals(cur: &sched::Task) {
 ///     the head is set to NULL.")
 ///   * pdeath_sig → 0 (per prctl(PR_SET_PDEATHSIG): "is cleared upon
 ///     a call to execve")
-///   * alarm / interval timer → 0 (per alarm(2): "All asynchronous
-///     events ... are cleared by execve()")
 ///   * POSIX timers → all disarmed and cleared (per timer_create(2):
 ///     "Timers are not preserved across an execve(2)")
 ///   * RT signal queues → drained (per signal(7) sigqueue semantics:
@@ -75,9 +73,8 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     cur.rseq_sig.store(0, Ordering::Release);
     // parent-death signal cleared — handler would be in the old text.
     cur.pdeathsig.store(0, Ordering::Release);
-    // ITIMER_REAL / alarm() armed against the dying image.
-    cur.alarm_ns.store(0, Ordering::Release);
-    cur.alarm_interval_ns.store(0, Ordering::Release);
+    // alarm(2)/setitimer(2) interval timers survive execve; fork creates a
+    // fresh Task with disarmed timer fields, matching Linux's lifetime rule.
     // POSIX timers — disarm + clear handler addresses (which point
     // into the old text).
     // SAFETY: running task on this CPU, preempt-off; sole writer to the per-task posix_timers slot per `13§5` single-mutator invariant for the duration of this execve.

@@ -1,45 +1,27 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::sync::Arc;
-use crate::file_ops::FileOps;
-use crate::fs::{FileSystem, FsFlags};
+use crate::fs::FsFlags;
 use crate::fs::fs_context::FsContextOps;
+use crate::file_ops::FileOps;
 use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING};
 use crate::inode_ops::InodeOps;
 use crate::types::{Ino, KResult};
-use super::{next_anon_dev, SuperBlock};
+use super::SuperBlock;
 
-/// Placeholder backend for an `s_fs`-less superblock built via
-/// [`SuperBlock::new`] (the object-model unit tests). Production superblocks
-/// are built via [`SuperBlock::for_backend`] and carry their real backend.
-pub(crate) struct NullFs;
-impl FileSystem for NullFs {
-    fn name(&self) -> &str { "none" }
+/// Simple `super_operations` for pseudo/in-core filesystems whose statfs state
+/// is fixed at fill-super time. This is an explicit `s_op`, not a fallback from
+/// a mounted backend object.
+pub struct SimpleSuperOps {
+    pub magic:      u64,
+    pub block_size: u32,
+    pub options:    String,
 }
-
-/// Adapter exposing a legacy `Arc<dyn FileSystem>` as `super_operations`
-/// (`s_op`). `statfs` reports the backend `magic` as `f_type`; the inode
-/// `SuperBlock::statfs` then defaults `f_bsize` from `s_blocksize`. This is
-/// the generic `fill_super` glue so every backend gets a working superblock
-/// without a per-fs `SuperOps` impl (richer per-fs `SuperOps` layer on top).
-pub(crate) struct FsBackedSuperOps { pub(crate) fs: Arc<dyn FileSystem> }
-impl SuperOps for FsBackedSuperOps {
+impl SuperOps for SimpleSuperOps {
     fn statfs(&self) -> KResult<SbStatFs> {
-        Ok(SbStatFs { f_type: self.fs.magic(), f_bsize: self.fs.block_size(), ..Default::default() })
+        Ok(SbStatFs { f_type: self.magic, f_bsize: self.block_size, ..Default::default() })
     }
-}
-
-/// Adapter exposing a legacy `Arc<dyn FileSystem>` as `file_system_type`
-/// (`s_type`). `mount` is `fill_super`: build a fresh superblock over the
-/// backend's root inode.
-pub(crate) struct FsBackedType { pub(crate) fs: Arc<dyn FileSystem> }
-impl FileSystemType for FsBackedType {
-    fn name(&self) -> &str { self.fs.name() }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
-        Ok(SuperBlock::for_backend(self.fs.clone(), self.fs.root(),
-            next_anon_dev(), String::from(self.fs.name())))
-    }
-    fn fs_flags(&self) -> FsFlags { self.fs.fs_flags() }
+    fn show_options(&self) -> String { self.options.clone() }
 }
 
 /// `statfs(2)` payload a superblock reports (Linux `struct kstatfs`
@@ -193,7 +175,7 @@ pub trait FileSystemType: Send + Sync {
     /// FS-type name: `"ext4"`, `"tmpfs"`. # C: O(1)
     fn name(&self) -> &str;
     /// Build a superblock instance (`fill_super`). # C: FS-dependent
-    fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>>;
+    fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>>;
     /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`) — the
     /// type-level classification the new-mount-API `vfs_get_tree` consults for
     /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /
@@ -202,7 +184,7 @@ pub trait FileSystemType: Send + Sync {
     fn fs_flags(&self) -> FsFlags { FsFlags::empty() }
     /// `file_system_type::init_fs_context` (Linux) — install a backend-specific
     /// `fs_context_operations` for the new mount API. `None` (the default) ⇒ the
-    /// legacy adapter ([`crate::fs::fs_context::LegacyFsContextOps`]) replays the
+    /// classic mount adapter ([`crate::fs::fs_context::ClassicMountFsContextOps`]) replays the
     /// accumulated options to [`FileSystemType::mount`] at `get_tree`. # C: O(1)
     fn init_fs_context(&self) -> Option<Arc<dyn FsContextOps>> { None }
 }

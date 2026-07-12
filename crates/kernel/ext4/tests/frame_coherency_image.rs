@@ -46,7 +46,7 @@ fn open_with_sb(disk: Arc<dyn BlockDevice>) -> (Arc<ext4::rootfs::Ext4Mount>, Ar
     let m = ext4::rootfs::Ext4Mount::open(disk).unwrap();
     let fs: Arc<dyn FileSystem> = m.clone();
     let root = fs.root();
-    let sb = SuperBlock::for_backend(fs.clone(), root, 0x1234_5678, String::from("ext4"));
+    let sb = common::realize_sb(fs.clone(), root, 0x1234_5678, String::from("ext4"));
     (m, sb)
 }
 

@@ -61,29 +61,6 @@ pub(super) fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: 
     })
 }
 
-/// Resolve a tree-relative path per-component from `root`. # C: O(components·log N)
-pub(super) fn dir_resolve(root: &InodeRef, rel: &str) -> Option<InodeRef> {
-    let mut cur: InodeRef = root.clone();
-    for comp in rel.split('/').filter(|c| !c.is_empty()) {
-        cur = cur.lookup(comp).ok()?;
-    }
-    Some(cur)
-}
-
-/// Resolve the PARENT dir of `rel` to `(parent_inode, leaf_name)`.
-/// # C: O(components·log N)
-pub(super) fn dir_parent_of<'a>(root: &InodeRef, rel: &'a str) -> Option<(InodeRef, &'a str)> {
-    let mut parts = rel.split('/').filter(|c| !c.is_empty()).peekable();
-    let mut cur: InodeRef = root.clone();
-    let mut name = "";
-    while let Some(c) = parts.next() {
-        if parts.peek().is_none() { name = c; break; }
-        cur = cur.lookup(c).ok()?;
-    }
-    if name.is_empty() { return None; }
-    Some((cur, name))
-}
-
 /// `i_fop` for a tmpfs directory (readdir). # C: O(1)
 struct TmpfsDirFileOps;
 impl FileOps for TmpfsDirFileOps {
@@ -120,11 +97,9 @@ impl InodeOps for TmpfsDirOps {
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let ino = next_ino();
-        // Owner = caller fsuid/fsgid mapped down through the mount idmap; perm =
-        // requested mode with umask cleared (Linux `shmem_mkdir` → `shmem_get_inode`
-        // → `inode_init_owner`). Closes fsimpls D35 (was always uid/gid=0).
-        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
-        let d = make_tmpfs_dir_inode(ino, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
+        let d = make_tmpfs_dir_inode(ino, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), d.clone());
         inode.inc_nlink(); // child's ".." adds a link to this parent dir
         Ok(d)
@@ -160,9 +135,9 @@ impl InodeOps for TmpfsDirOps {
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
-        // Owner from caller cred (idmap-mapped), perm with umask cleared. # D35
-        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
-        let child = make_tmpfs_file_inode(false, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
+        let child = make_tmpfs_file_inode(false, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
         g.insert(name.into(), child.clone());
         Ok(child)
     }
@@ -175,8 +150,9 @@ impl InodeOps for TmpfsDirOps {
     /// cleared. Like `create_anonymous` it is not inode-charged (no name). # C: O(1)
     fn tmpfile(&self, inode: &Inode, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
         let dd = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
-        let perm = (ctx.apply_umask(mode) & 0o7777) as u16;
-        let child = make_tmpfs_file_inode(false, perm, ctx.fsuid(), ctx.fsgid(), dd.sb_weak(), dd.acct.clone());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
+        let child = make_tmpfs_file_inode(false, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
         child.set_nlink(0); // O_TMPFILE: unlinked until linkat gives it a name
         Ok(child)
     }
@@ -209,8 +185,8 @@ impl InodeOps for TmpfsDirOps {
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
-        // Symlinks carry no umask (always 0777) but DO take the caller owner. # D35
-        g.insert(name.into(), make_tmpfs_symlink_inode(target, ctx.fsuid(), ctx.fsgid(), dd.sb_weak()));
+        let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
+        g.insert(name.into(), make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak()));
         Ok(())
     }
 
@@ -224,11 +200,12 @@ impl InodeOps for TmpfsDirOps {
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let sb = dd.sb_weak();
-        let perm = (ctx.apply_umask(mode as u32) & 0o7777) as u16;
-        let (uid, gid) = (ctx.fsuid(), ctx.fsgid());
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
+            mode, mode, ctx.cred, ctx.umask);
+        let perm = m & 0o7777;
         let child: InodeRef = match mode & S_IFMT {
-            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, rdev, uid, gid, sb),
-            S_IFSOCK => make_tmpfs_sock_inode(uid, gid, sb),
+            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, 0, uid, gid, sb),
+            S_IFSOCK => make_tmpfs_sock_inode(perm, uid, gid, sb),
             S_IFCHR  => make_device_node_inode(
                 next_ino(), FileType::CharDev,
                 Devt::from_raw(rdev), perm, sb),
@@ -241,28 +218,42 @@ impl InodeOps for TmpfsDirOps {
         Ok(())
     }
 
-    /// `i_op->rename` (Linux `shmem_rename2` reached via `vfs_rename`): the
-    /// resolved-parent variant of `TmpfsFs::rename` — detach the source from
-    /// this dir, drop any overwritten dest's link, attach the source under the
-    /// new name in `new_dir`. Only the plain rename routes here;
-    /// `RENAME_EXCHANGE`/`RENAME_WHITEOUT` stay on the `FileSystem` path and are
-    /// rejected defensively. # C: O(log N)
+    /// `i_op->rename` (Linux `shmem_rename2` reached via `vfs_rename`): mutate
+    /// resolved parent directories directly for plain rename, `RENAME_EXCHANGE`,
+    /// and `RENAME_WHITEOUT`; no whole-path string rewalk. # C: O(log N)
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &CreateCtx)
         -> KResult<()>
     {
-        if flags & (vfs::namei::RENAME_EXCHANGE | vfs::namei::RENAME_WHITEOUT) != 0 {
-            return Err(VfsError::Einval);
-        }
         let sdir = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let ddir = new_dir.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
+        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
+            if core::ptr::eq(sdir, ddir) {
+                let mut g = sdir.kids.lock();
+                if old_name == new_name { return if g.contains_key(old_name) { Ok(()) } else { Err(VfsError::Enoent) }; }
+                let a = g.get(old_name).cloned().ok_or(VfsError::Enoent)?;
+                let b = g.get(new_name).cloned().ok_or(VfsError::Enoent)?;
+                g.insert(old_name.into(), b);
+                g.insert(new_name.into(), a);
+                return Ok(());
+            }
+            let mut sg = sdir.kids.lock();
+            let mut dg = ddir.kids.lock();
+            let a = sg.get(old_name).cloned().ok_or(VfsError::Enoent)?;
+            let b = dg.get(new_name).cloned().ok_or(VfsError::Enoent)?;
+            sg.insert(old_name.into(), b);
+            dg.insert(new_name.into(), a);
+            return Ok(());
+        }
         let moved = sdir.remove(old_name).ok_or(VfsError::Enoent)?;
-        // Replaced destination loses its link (Linux `vfs_rename`): a directory
-        // target is cleared to 0, else drop one link; reclaim the inode charge
-        // once no name remains. Mirrors `TmpfsFs::rename`.
         if let Some(victim) = ddir.remove(new_name) {
             if victim.file_type() == FileType::Directory { victim.set_nlink(0); }
             else { victim.drop_nlink(); }
             if victim.nlink() == 0 { ddir.acct.free_inode(); }
+        }
+        if flags & vfs::namei::RENAME_WHITEOUT != 0 {
+            let sb = sdir.sb_weak();
+            let wo = make_device_node_inode(next_ino(), FileType::CharDev, Devt::from_raw(0), 0, sb);
+            sdir.insert(old_name, wo);
         }
         ddir.insert(new_name, moved);
         Ok(())

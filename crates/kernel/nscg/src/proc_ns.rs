@@ -8,6 +8,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{default_inode_ops, mk_mode};
@@ -23,7 +24,7 @@ pub const CLONE_NEWUSER:  u64 = 0x10000000;
 pub const CLONE_NEWPID:   u64 = 0x20000000;
 pub const CLONE_NEWNET:   u64 = 0x40000000;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum NsKind {
     Mnt, Cgroup, Uts, Ipc, User, Pid, Net,
 }
@@ -71,6 +72,31 @@ impl NsKind {
             _        => return None,
         })
     }
+}
+
+static NS_GLOBAL_IDS: sync::Spinlock<alloc::collections::BTreeMap<(NsKind, u64), u64>, sync::TaskList> =
+    sync::Spinlock::new(alloc::collections::BTreeMap::new());
+static NS_NEXT_GLOBAL_ID: AtomicU64 = AtomicU64::new(9);
+
+/// Linux `ns_common.ns_id` value for a namespace. Initial IDs are the public
+/// nsfs ABI constants; non-init IDs are unique across kinds. # C: O(log N)
+pub fn ns_global_id(kind: NsKind, id: u64) -> u64 {
+    if id == 0 {
+        return match kind {
+            NsKind::Ipc    => 1,
+            NsKind::Uts    => 2,
+            NsKind::User   => 3,
+            NsKind::Pid    => 4,
+            NsKind::Cgroup => 5,
+            NsKind::Net    => 7,
+            NsKind::Mnt    => 8,
+        };
+    }
+    let mut g = NS_GLOBAL_IDS.lock();
+    if let Some(v) = g.get(&(kind, id)) { return *v; }
+    let v = NS_NEXT_GLOBAL_ID.fetch_add(1, Ordering::Relaxed);
+    g.insert((kind, id), v);
+    v
 }
 
 /// Inode-number tag — high byte 0x72 ("r" for "ref").
@@ -231,7 +257,7 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: u64, cap: u32) -> bool {
 pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    if nstype != 0 && (nstype & ns.kind.clone_bit()) == 0 {
+    if nstype != 0 && nstype != ns.kind.clone_bit() {
         return -(Errno::Einval.as_i32() as i64);
     }
     match ns.kind {
@@ -296,5 +322,24 @@ mod ns_link_tests {
         assert_eq!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Net, 5), "same ns -> same st_ino");
         assert_ne!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Net, 6), "distinct id -> distinct");
         assert_ne!(ns_ino(NsKind::Net, 5), ns_ino(NsKind::Uts, 5), "distinct kind -> distinct");
+    }
+
+    #[test]
+    fn setns_rejects_nonexact_type_mask_for_namespace_fd() {
+        use core::sync::atomic::Ordering;
+        let t = sched::Task::new(77, "t", sched::SchedClass::Normal { weight: 1024 });
+        let ns = NsInode { kind: NsKind::Uts, id: 9 };
+        let mixed = CLONE_NEWUTS | CLONE_NEWNET;
+        assert_eq!(setns_apply(&ns, mixed, &t), -(syscall::errno::Errno::Einval.as_i32() as i64));
+        assert_eq!(t.uts_ns.load(Ordering::Acquire), 0);
+        assert_eq!(setns_apply(&ns, CLONE_NEWUTS, &t), 0);
+        assert_eq!(t.uts_ns.load(Ordering::Acquire), 9);
+    }
+
+    #[test]
+    fn namespace_global_ids_do_not_collide_across_kinds() {
+        assert_eq!(ns_global_id(NsKind::User, 0), 3);
+        assert_eq!(ns_global_id(NsKind::Mnt, 0), 8);
+        assert_ne!(ns_global_id(NsKind::User, 4), ns_global_id(NsKind::Mnt, 4));
     }
 }

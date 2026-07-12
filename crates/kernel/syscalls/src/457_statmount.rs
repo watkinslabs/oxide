@@ -4,6 +4,8 @@
 use syscall::{errno::Errno, SyscallArgs};
 use alloc::vec::Vec;
 
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+
 // struct mnt_id_req { u32 size; u32 spare; u64 mnt_id; u64 param; }
 const REQ_OFF_MNT_ID: u64 = 8;
 const REQ_MIN_SIZE:   u64 = 24;
@@ -36,10 +38,8 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
     let req     = args.a0;
     let ubuf    = args.a1;
     let bufsize = args.a2 as usize;
-    if req == 0 || req.saturating_add(REQ_MIN_SIZE) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: req range-checked for the 24-byte mnt_id_req; read mnt_id field.
+    if let Err(rv) = validate_user_buf(req, REQ_MIN_SIZE, 1) { return rv; }
+    // SAFETY: req validated readable for the minimum mnt_id_req prefix.
     let mnt_id = unsafe { core::ptr::read_unaligned((req + REQ_OFF_MNT_ID) as *const u64) };
     let m = match ::vfs::mount::mount_by_id(mnt_id) {
         Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
@@ -48,22 +48,20 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
 
     // str[] area: fs-type name, mount root, mount point (each NUL-terminated).
     let mut strs: Vec<u8> = Vec::new();
-    let fs_off    = strs.len() as u32; strs.extend_from_slice(m.fs().name().as_bytes());   strs.push(0);
+    let fs_off    = strs.len() as u32; strs.extend_from_slice(m.sb().s_type.name().as_bytes()); strs.push(0);
     let root_off  = strs.len() as u32; strs.extend_from_slice(b"/");                      strs.push(0);
     let point_off = strs.len() as u32; strs.extend_from_slice(m.mount_point_str().as_bytes()); strs.push(0);
 
     let total = SM_HDR_SIZE + strs.len();
     if bufsize < total { return -(Errno::Eoverflow.as_i32() as i64); }
-    if ubuf == 0 || ubuf.saturating_add(total as u64) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf_writable(ubuf, total as u64, 1) { return rv; }
     let mask = STATMOUNT_SB_BASIC | STATMOUNT_MNT_BASIC | STATMOUNT_MNT_ROOT
         | STATMOUNT_MNT_POINT | STATMOUNT_FS_TYPE | STATMOUNT_MNT_NS_ID;
 
     let mut buf = alloc::vec![0u8; total];
     buf[SM_OFF_SIZE..SM_OFF_SIZE + U32].copy_from_slice(&(total as u32).to_le_bytes());
     buf[SM_OFF_MASK..SM_OFF_MASK + U64].copy_from_slice(&mask.to_le_bytes());
-    buf[SM_OFF_SB_MAGIC..SM_OFF_SB_MAGIC + U64].copy_from_slice(&m.fs().magic().to_le_bytes());
+    buf[SM_OFF_SB_MAGIC..SM_OFF_SB_MAGIC + U64].copy_from_slice(&m.sb().s_magic.to_le_bytes());
     buf[SM_OFF_FS_TYPE..SM_OFF_FS_TYPE + U32].copy_from_slice(&fs_off.to_le_bytes());
     buf[SM_OFF_MNT_ID..SM_OFF_MNT_ID + U64].copy_from_slice(&mnt_id.to_le_bytes());
     buf[SM_OFF_MNT_PARENT_ID..SM_OFF_MNT_PARENT_ID + U64].copy_from_slice(&parent.to_le_bytes());
@@ -72,7 +70,7 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
     buf[SM_OFF_MNT_NS_ID..SM_OFF_MNT_NS_ID + U64].copy_from_slice(&m.ns.to_le_bytes());
     buf[SM_HDR_SIZE..].copy_from_slice(&strs);
 
-    // SAFETY: ubuf range-checked for `total` bytes < USER_VA_END; copy into user AS.
+    // SAFETY: ubuf validated writable for `total` bytes; byte copy is alignment-independent.
     unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), ubuf as *mut u8, total); }
     0
 }

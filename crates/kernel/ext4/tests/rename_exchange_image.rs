@@ -12,6 +12,7 @@
 //! rely on.
 
 extern crate alloc;
+mod common;
 use alloc::string::String;
 use alloc::sync::Arc;
 
@@ -41,7 +42,7 @@ fn mount(disk: Arc<dyn BlockDevice>) -> (Arc<ext4::rootfs::Ext4Mount>, Arc<Super
     let m = ext4::rootfs::Ext4Mount::open(disk).expect("Ext4Mount::open");
     let fs: Arc<dyn FileSystem> = m.clone();
     let root = fs.root();
-    let sb = SuperBlock::for_backend(fs, root, 0xE471_0002, String::from("ext4"));
+    let sb = common::realize_sb(fs, root, 0xE471_0002, String::from("ext4"));
     (m, sb)
 }
 
@@ -58,8 +59,7 @@ fn exchange_swaps_two_files_atomically_across_remount() {
     let b_ino = m.state().lookup_path(b"/xb").expect("xb ino");
     assert_ne!(a_ino, b_ino, "two distinct inodes");
 
-    let fs: Arc<dyn FileSystem> = m.clone();
-    fs.exchange("/xa", "/xb").expect("atomic exchange");
+    m.state().exchange_at(b"/xa", b"/xb").expect("atomic exchange");
 
     // Same mount: names now resolve to each other's inode.
     assert_eq!(m.state().lookup_path(b"/xa"), Some(b_ino), "xa now holds b's inode");
@@ -80,8 +80,7 @@ fn whiteout_plants_chardev_at_source_dst_gets_moved_inode_across_remount() {
     root.create_child("wsrc", 0o644, &CreateCtx::root()).expect("create wsrc");
     let src_ino = m.state().lookup_path(b"/wsrc").expect("wsrc ino");
 
-    let fs: Arc<dyn FileSystem> = m.clone();
-    fs.whiteout("/wsrc", "/wdst").expect("atomic whiteout");
+    m.state().whiteout_at(b"/wsrc", b"/wdst").expect("atomic whiteout");
 
     // dst now holds the moved inode; src holds a fresh whiteout inode.
     assert_eq!(m.state().lookup_path(b"/wdst"), Some(src_ino), "wdst got the moved inode");

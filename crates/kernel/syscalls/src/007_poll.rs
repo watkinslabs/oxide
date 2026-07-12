@@ -36,7 +36,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let bytes = match nfds.checked_mul(8) {
         Some(v) => v, None => return -(Errno::Efault.as_i32() as i64),
     };
-    if let Err(rv) = crate::userbuf::validate_user_buf_writable(fds_ptr, bytes, 4) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(fds_ptr, bytes, 1) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -53,8 +53,8 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let mut subbed: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
     for i in 0..nfds {
         let p = fds_ptr + i * 8;
-        // SAFETY: pollfd[i].fd inside the validated nfds*8-byte range.
-        let fd = unsafe { core::ptr::read_volatile(p as *const i32) };
+        // SAFETY: pollfd[i].fd lies inside the validated nfds*8-byte range.
+        let fd = unsafe { core::ptr::read_unaligned(p as *const i32) };
         if let Ok(file) = fdt.get(fd) {
             if let Some(s) = file.inode().poll_subscribers() {
                 waiter.subscribe(s);
@@ -77,9 +77,9 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
             let mut i = 0u64;
             while i < nfds && i < 12 {
                 let p = fds_ptr + i * 8;
-                // SAFETY: pollfd[i] inside validated nfds*8 range.
-                let fd = unsafe { core::ptr::read_volatile(p as *const i32) };
-                let ev = unsafe { core::ptr::read_volatile((p + 4) as *const i16) };
+                // SAFETY: pollfd[i] lies inside the validated nfds*8 byte range.
+                let fd = unsafe { core::ptr::read_unaligned(p as *const i32) };
+                let ev = unsafe { core::ptr::read_unaligned((p + 4) as *const i16) };
                 klog::write_raw(b" fd="); klog::write_dec_u64(fd as u64);
                 klog::write_raw(b"/ev="); klog::write_hex_u64(ev as u16 as u64);
                 if let Ok(file) = fdt.get(fd) {
@@ -95,10 +95,10 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         let mut ready: i64 = 0;
         for i in 0..nfds {
             let p = fds_ptr + i * 8;
-            // SAFETY: pollfd[i] inside validated nfds*8-byte range; 4-byte aligned read.
-            let fd     = unsafe { core::ptr::read_volatile( p        as *const i32) };
-            // SAFETY: same validated range; events at +4 is 2-byte aligned.
-            let events = unsafe { core::ptr::read_volatile((p + 4)   as *const i16) };
+            // SAFETY: pollfd[i] lies inside the validated nfds*8-byte range.
+            let fd     = unsafe { core::ptr::read_unaligned( p        as *const i32) };
+            // SAFETY: same validated range; Linux copyin accepts unaligned storage.
+            let events = unsafe { core::ptr::read_unaligned((p + 4)   as *const i16) };
             let mut revents: i16 = 0;
             if let Ok(file) = fdt.get(fd) {
                 if file.inode().file_type() == vfs::FileType::CharDev
@@ -129,9 +129,11 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
                     let mask = file.poll() as i16;
                     revents = mask & (events | POLL_ALWAYS);
                 }
+            } else if fd >= 0 {
+                revents = POLLNVAL;
             }
-            // SAFETY: revents at p+6 inside validated range; 2-byte aligned.
-            unsafe { core::ptr::write_volatile((p + 6) as *mut i16, revents); }
+            // SAFETY: revents at p+6 lies inside the validated writable range.
+            unsafe { core::ptr::write_unaligned((p + 6) as *mut i16, revents); }
             if revents != 0 { ready += 1; }
         }
         if ready > 0 { break ready; }

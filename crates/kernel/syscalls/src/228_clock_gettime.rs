@@ -12,14 +12,14 @@ use crate::time_common::{NS_PER_SEC, ns_for_clock};
 pub fn kernel_clock_gettime(args: &SyscallArgs) -> i64 {
     let clk_id = args.a0;
     let tp = args.a1;
-    if let Err(rv) = validate_user_buf_writable(tp, 16, 8) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(tp, 16, 1) { return rv; }
     let ns = ns_for_clock(clk_id);
     let tv_sec  = ns / NS_PER_SEC;
     let tv_nsec = ns % NS_PER_SEC;
-    // SAFETY: tp validated 16-byte range below USER_VA_END + 8-byte aligned; CPL=0 writes through caller's AS.
+    // SAFETY: tp validated writable for one 16-byte timespec result.
     unsafe {
-        core::ptr::write_volatile(tp as *mut u64,         tv_sec);
-        core::ptr::write_volatile((tp + 8) as *mut u64,   tv_nsec);
+        core::ptr::write_unaligned(tp as *mut u64,         tv_sec);
+        core::ptr::write_unaligned((tp + 8) as *mut u64,   tv_nsec);
     }
     0
 }

@@ -31,7 +31,7 @@ fn guard() -> MutexGuard<'static, ()> {
 
 struct TDirOps;
 impl vfs::InodeOps for TDirOps {
-    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    fn lookup(&self, _inode: &Inode, _n: &str) -> KResult<InodeRef> { Ok(tdir(0xD00)) }
 }
 fn tdir(ino: u64) -> InodeRef {
     vfs::InodeBuilder::new(ino, vfs::mk_mode(FileType::Directory, 0o755),
@@ -131,6 +131,8 @@ fn bind_as_clone_roots_at_source_inode() {
 #[test]
 fn ms_rec_clones_submounts() {
     let _g = guard();
+    vfs::mount::set_current_ns_provider(|| 0x7130);
+    common::register("/", Arc::new(TestFs { root_ino: 0x0100 })).expect("root");
     common::register("/rsrc", Arc::new(TestFs { root_ino: 0x100 })).expect("src");
     common::register("/rsrc/sub", Arc::new(TestFs { root_ino: 0x200 })).expect("submount");
     let r = common::mount_root_at("/rsrc").expect("src root");
@@ -156,6 +158,29 @@ fn ms_rec_from_root_clones_absolute_submounts() {
     let cgroup = common::mount_root_at("/stage/sys/fs/cgroup").expect("cloned /sys/fs/cgroup");
     assert_eq!(proc.ino(), 0x200);
     assert_eq!(cgroup.ino(), 0x300);
+}
+
+#[test]
+fn ms_rec_from_subdir_clones_only_submounts_below_source_dentry() {
+    let _g = guard();
+    const NS: u64 = 0x7132;
+    vfs::mount::set_current_ns_provider(|| NS);
+    common::register("/", Arc::new(TestFs { root_ino: 0x7100 })).expect("root");
+    let src_d = common::dentry("/rsub-src");
+    let tgt_d = common::dentry("/rsub-tgt");
+    common::register("/rsub-src/sub", Arc::new(TestFs { root_ino: 0x7200 })).expect("inside");
+    common::register("/rsub-outside", Arc::new(TestFs { root_ino: 0x7300 })).expect("outside");
+    let source_mnt = vfs::mount::root_mount_id(NS).expect("source root id");
+    let target_parent = vfs::mount::containing_mount_id(NS, &tgt_d);
+    vfs::mount::register_bind_clone_under(target_parent, tgt_d.clone(), source_mnt, src_d.clone()).expect("top bind");
+    let n = vfs::mount::bind_submounts_rec_at(Some(source_mnt), &src_d, &tgt_d, Some(target_parent));
+    assert_eq!(n, 1, "recursive bind clones only submounts under the source dentry");
+    let snap = vfs::mount::snapshot_all();
+    let sub = snap.iter().find(|m| m.ns == NS && m.mount_point_str() == "/rsub-tgt/sub")
+        .expect("inside submount cloned");
+    assert_eq!(sub.mnt_root().and_then(|d| d.inode()).map(|i| i.ino()), Some(0x7200));
+    assert!(snap.iter().all(|m| m.ns != NS || m.mount_point_str() != "/rsub-tgt/rsub-outside"),
+        "outside sibling mount must not be cloned under the target");
 }
 
 // K2V V7-d: propagation peer-group ids.
@@ -294,6 +319,8 @@ fn join_peer_group_shares_group() {
 fn propagate_mount_reaches_peers() {
     let _g = guard();
     use vfs::mount::Propagation;
+    vfs::mount::set_current_ns_provider(|| 0x7131);
+    common::register("/", Arc::new(TestFs { root_ino: 0xA000 })).expect("root");
     // /pp-a shared (peer group P); /pp-b joins P (a peer of /pp-a).
     common::register("/pp-a", Arc::new(TestFs { root_ino: 0xA })).expect("a");
     common::set_propagation("/pp-a", Propagation::Shared).expect("share a");
@@ -328,7 +355,7 @@ fn pivot_root_swaps_namespace_root() {
     common::pivot_root("/nr", "/nr/old").expect("pivot");
     let snap = vfs::mount::snapshot();
     let ino_at = |mp: &str| snap.iter().find(|m| m.mount_point_str() == mp)
-        .and_then(|m| m.fs().root()).map(|i| i.ino());
+        .and_then(|m| m.sb().s_root_inode()).map(|i| i.ino());
     assert_eq!(ino_at("/"), Some(0xB), "new_root is now /");
     assert_eq!(ino_at("/sub"), Some(0xC), "new_root submount rebased to /sub");
     assert_eq!(ino_at("/old"), Some(0xA), "old root relocated under put_old");

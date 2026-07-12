@@ -18,15 +18,17 @@ pub use flags::{
     FIEMAP_EXTENT_SHARED, FIEMAP_EXTENT_UNKNOWN, FIEMAP_EXTENT_UNWRITTEN, FS_APPEND_FL,
     FS_COMPR_FL, FS_IMMUTABLE_FL, FS_NODUMP_FL, FS_NOATIME_FL, FS_SECRM_FL, FS_SYNC_FL,
     FS_UNRM_FL, I_CLEAR, I_DIRTY, I_DIRTY_DATASYNC, I_DIRTY_PAGES, I_DIRTY_SYNC, I_FREEING,
-    I_NEW, I_VERSION_INCREMENT, I_VERSION_QUERIED, I_VERSION_QUERIED_SHIFT, I_WILL_FREE,
+    I_LINKABLE, I_NEW, I_VERSION_INCREMENT, I_VERSION_QUERIED, I_VERSION_QUERIED_SHIFT, I_WILL_FREE,
     POLL_ERR, POLL_HUP, POLL_IN, POLL_OUT, POLL_PRI, POLL_RDHUP, S_APPEND, S_ATIME, S_CASEFOLD,
     S_CTIME, S_DAX, S_DEAD, S_DIRSYNC, S_ENCRYPTED, S_IMMUTABLE, S_MTIME, S_NOATIME, S_SYNC,
     S_VERITY, S_VERSION,
 };
 pub use helpers::{
     generic_update_time, get_next_ino, inode_inc_iversion, inode_init_owner,
-    inode_maybe_inc_iversion, inode_owner_or_capable, inode_peek_iversion_raw,
-    inode_query_iversion, inode_set_iversion_raw, is_append, is_immutable, is_noatime, is_sync,
+    inode_init_owner_idmap, inode_maybe_inc_iversion, inode_owner_or_capable,
+    inode_peek_iversion_raw, inode_query_iversion, inode_set_iversion_raw,
+    is_append, is_immutable, is_noatime, is_sync, prepare_create_owner_mode,
+    prepare_symlink_owner,
 };
 pub(crate) use helpers::no_data_op_errno;
 pub use locking::{RenameLockGuard, inode_unlock, lock_rename, unlock_rename};

@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
 use vfs::inode::{Inode, InodeBuilder};
-use vfs::{default_file_ops, mk_mode, Dentry, FileType, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, mk_mode, Cred, Dentry, FileType, InodeOps, InodeRef, KResult, LookupFlags, VfsError};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -83,12 +83,13 @@ fn child(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
 
 /// Build the dev-backed rootfs + a `/proc` api-mount, install the provider, and
 /// return (ns, root_mnt_id, proc_mnt_id, s_root, proc_dentry).
-fn setup() -> (u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
+fn setup() -> (u64, u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
     let ns = NEXT_NS.fetch_add(1, Ordering::Relaxed);
     // A `fn()` ns-provider cannot capture `ns`; stash it in a global the provider
     // reads. Serialized by SERIAL.
     *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()) = ns;
     vfs::mount::set_current_ns_provider(|| *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()));
+    *CUR_SROOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // ns-root mount over the dev-backed rootfs.
     let dev = NEXT_DEV.fetch_add(1, Ordering::Relaxed);
     vfs::mount::register(None, Arc::new(RootFs { dev, root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
@@ -103,7 +104,7 @@ fn setup() -> (u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
     vfs::mount::register(Some(proc_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
         .expect("proc mount");
     let proc_id = vfs::mount::__lookup_mnt(root_id, &proc_d).expect("proc in hash").mnt_id;
-    (ns, root_id, proc_id, s_root, proc_d)
+    (ns, root_id, proc_id, dev, s_root, proc_d)
 }
 
 static CUR_NS: Mutex<u64> = Mutex::new(0);
@@ -116,11 +117,11 @@ fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_
 #[test]
 fn recursive_clone_hashonly_no_clobber() {
     let _g = guard();
-    let (_ns, root_id, proc_id, _s_root, proc_d) = setup();
+    let (_ns, root_id, proc_id, dev, _s_root, proc_d) = setup();
 
     // Premise: rootfs is dev-backed (the global-dentry-exposure precondition).
-    assert!(vfs::mount::mount_by_id(root_id).unwrap().fs().dev_id().is_some(),
-        "rootfs dev_id() == Some (live-gnome premise: clone shares the SB → global /proc dentry)");
+    assert_eq!(vfs::mount::mount_by_id(root_id).unwrap().sb().s_dev, dev,
+        "rootfs is dev-backed (live-gnome premise: clone shares the SB → global /proc dentry)");
     // Baseline: original (ns_root, /proc) resolves to the original proc mount.
     assert_eq!(vfs::mount::__lookup_mnt(root_id, &proc_d).map(|m| m.mnt_id), Some(proc_id),
         "baseline: original /proc in the strict hash");
@@ -153,7 +154,7 @@ fn recursive_clone_hashonly_no_clobber() {
 #[test]
 fn uncommitted_clone_tree_balances_s_active() {
     let _g = guard();
-    let (_ns, root_id, _proc_id, _s_root, _proc_d) = setup();
+    let (_ns, root_id, _proc_id, _dev, _s_root, _proc_d) = setup();
     let root_mnt = vfs::mount::mount_by_id(root_id).unwrap();
     let before = root_mnt.sb().s_active();
 
@@ -162,6 +163,63 @@ fn uncommitted_clone_tree_balances_s_active() {
     vfs::mount::release_clone_tree(&nodes);
     assert_eq!(root_mnt.sb().s_active(), before,
         "release_clone_tree drops the clones' active refs → s_active balanced");
+}
+
+#[test]
+fn empty_path_clone_uses_dirfd_mount() {
+    let _g = guard();
+    let (_ns, root_id, proc_id, _dev, s_root, _proc_d) = setup();
+
+    let proc_vp = vfs::path_lookup_at_root_cred(
+        s_root.clone(), root_id, s_root.clone(), root_id, "/proc",
+        LookupFlags::default(), Cred::root(),
+    ).expect("walk /proc through mounted procfs");
+    assert_eq!(proc_vp.mnt_id, proc_id, "/proc walk crosses into the proc mount");
+
+    let empty_vp = vfs::path_lookup_at_root_cred(
+        proc_vp.dentry.clone(), proc_vp.mnt_id, s_root.clone(), root_id, "",
+        LookupFlags { empty: true, ..Default::default() }, Cred::root(),
+    ).expect("open_tree(dirfd, \"\", AT_EMPTY_PATH) resolves the dirfd path");
+    assert_eq!(empty_vp.mnt_id, proc_id,
+        "AT_EMPTY_PATH must operate on the dirfd mount, not return ENOENT or the namespace root");
+
+    let nodes = vfs::mount::clone_mount_tree(&vfs::mount::mount_by_id(empty_vp.mnt_id).unwrap(), true);
+    assert_eq!(nodes.iter().filter(|n| n.rel.is_empty()).count(), 1,
+        "open_tree empty-path clone has exactly one clone root");
+    assert_eq!(nodes.iter().find(|n| n.rel.is_empty()).unwrap().m.sb().s_type.name(), "apifs_test",
+        "empty-path clone source is the fd's proc/api mount, not the rootfs");
+    vfs::mount::release_clone_tree(&nodes);
+}
+
+#[test]
+fn detached_clone_commit_under_bind_stage_uses_walked_parent_mount() {
+    let _g = guard();
+    let (_ns, root_id, _proc_id, _dev, s_root, _proc_d) = setup();
+    let dev_d = child(&s_root, "dev");
+    vfs::mount::register(Some(dev_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
+        .expect("dev mount");
+    let dev_id = vfs::mount::__lookup_mnt(root_id, &dev_d).expect("original dev").mnt_id;
+
+    let stage = child(&s_root, "stage");
+    let root_nodes = vfs::mount::clone_mount_tree(&vfs::mount::mount_by_id(root_id).unwrap(), true);
+    let n = vfs::mount::commit_tree_hashonly_at(root_nodes, &stage, root_id);
+    assert!(n >= 2, "stage receives root clone and submount clones");
+    let stage_id = vfs::mount::__lookup_mnt(root_id, &stage).expect("stage root clone").mnt_id;
+
+    // The staged /dev slot is the same dentry as the original /dev slot because
+    // the cloned root shares the dev-backed rootfs s_root. A detached mount
+    // committed here must therefore use the walked parent mount id (stage_id);
+    // deriving by dentry ancestry alone picks root_id.
+    let dev_nodes = vfs::mount::clone_mount_tree(&vfs::mount::mount_by_id(dev_id).unwrap(), true);
+    let n = vfs::mount::commit_tree_hashonly_at(dev_nodes, &dev_d, stage_id);
+    assert_eq!(n, 1, "root-only /dev detached clone committed");
+    let staged_dev = vfs::mount::__lookup_mnt(stage_id, &dev_d)
+        .expect("detached /dev clone must be attached under staged root");
+    assert_ne!(staged_dev.mnt_id, dev_id, "staged /dev clone is distinct from original /dev");
+    assert_eq!(staged_dev.parent_id.load(Ordering::Acquire), stage_id,
+        "staged /dev clone parent must be the walked stage root, not original root");
+    assert_eq!(vfs::mount::__lookup_mnt(root_id, &dev_d).map(|m| m.mnt_id), Some(dev_id),
+        "original /dev crossing remains intact");
 }
 
 #[allow(dead_code)]

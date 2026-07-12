@@ -6,7 +6,6 @@ use alloc::sync::Arc;
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
-use vfs::Inode;
 use vfs::idmap::Idmap;
 
 const IMAGE: &[u8] = include_bytes!("mini.img");
@@ -36,7 +35,7 @@ fn st_blocks_reflects_real_allocation_not_size() {
     inode.fallocate(0, 16 * 1024, /*keep_size=*/true, /*zero_range=*/false, /*punch=*/false)
         .expect("fallocate keep_size");
 
-    let k = inode.getattr(&Idmap::identity(), None);
+    let k = inode.getattr(&Idmap::identity());
     let bsize = inode.i_sb().map(|s| s.s_blocksize).unwrap_or_else(|| inode.blksize());
     let generic = vfs::getattr::blocks_for(k.size, bsize);
 
@@ -57,10 +56,27 @@ fn st_rdev_reported_for_char_device() {
     st.mknod_at(b"/cdev", ext4::inode::S_IFCHR | 0o666, rdev).expect("mknod");
 
     let node = st.lookup_inode_any(b"/cdev").expect("lookup cdev");
-    let k = node.getattr(&Idmap::identity(), None);
+    let k = node.getattr(&Idmap::identity());
     assert_eq!(k.rdev, rdev, "char-device st_rdev must round-trip the stored device number");
 
     // A regular file leaves st_rdev at 0.
     let reg = st.create_at(b"/plain", 0o644).expect("create plain");
-    assert_eq!(reg.getattr(&Idmap::identity(), None).rdev, 0, "non-device st_rdev is 0");
+    assert_eq!(reg.getattr(&Idmap::identity()).rdev, 0, "non-device st_rdev is 0");
+}
+
+#[test]
+fn rootfs_helpers_prepare_owner_and_mode_from_parent() {
+    let m = ext4::rootfs::Ext4Mount::open(build_disk()).unwrap();
+    let st = m.state();
+    st.mount.create_dir(2, b"sgid-parent", 0o2755, 0, 5000)
+        .expect("create sgid parent");
+
+    st.mkdir_at(b"/sgid-parent/sgid-dir", 0o777).expect("mkdir sgid child");
+    let dir = st.lookup_inode_any(b"/sgid-parent/sgid-dir").expect("lookup sgid dir");
+    assert_eq!(dir.gid(), Some(5000));
+    assert_eq!(dir.perm(), Some(0o2777), "mkdir helper must inherit SGID parent");
+
+    let file = st.create_at(b"/sgid-parent/sgid-file", 0o2775).expect("create sgid file");
+    assert_eq!(file.gid(), Some(5000));
+    assert_eq!(file.perm(), Some(0o2775), "create helper must use VFS mode prepare");
 }

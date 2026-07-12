@@ -3,10 +3,10 @@ use alloc::sync::Arc;
 use vfs::fs::FileSystem;
 use vfs::{Dentry, InodeRef, KResult};
 
-use crate::{inode, is_mounted, state::TREE, tree, MOUNT};
+use crate::{inode, is_mounted, state::TREE, tree};
 
 /// cgroup2 filesystem for the unified mount table (`16§7`). Mounted
-/// at `/sys/fs/cgroup`; `vfs::mount::lookup` routes paths here. cgroupfs
+/// at `/sys/fs/cgroup`; VFS namei routes paths here. cgroupfs
 /// OWNS its inodes: `lookup` strips the mount prefix, resolves the
 /// relative cgroup path through the hierarchy (`tree.rs`), and SYNTHESIZES
 /// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.
@@ -34,20 +34,6 @@ impl FileSystem for CgroupFs {
         if !is_mounted() { return None; }
         Some(inode::make_cg_dir(tree::ROOT))
     }
-    /// # C: O(1)
-    fn mounts_line(&self, mp: &str, _sb: Option<&vfs::SuperBlock>) -> alloc::string::String {
-        let mut s = alloc::string::String::from("cgroup2 ");
-        s.push_str(mp);
-        s.push_str(" cgroup2 rw,nosuid,nodev,noexec,relatime 0 0\n");
-        s
-    }
-}
-
-/// Mount the unified hierarchy at the canonical boot location.
-/// # C: O(path components)
-pub fn mount_root() -> bool {
-    let mp = vfs::resolve_path_dentry(MOUNT);
-    mount_at(MOUNT, mp).is_ok()
 }
 
 /// Mount the shared unified cgroup2 hierarchy on the caller-walked mountpoint.
@@ -57,7 +43,8 @@ pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
     let first = TREE.lock().mount_root();
     let fs = Arc::new(CgroupFs::new(mount_point));
     let root = inode::make_cg_dir(tree::ROOT);
-    match vfs::mount::register_bind(mp, fs, root) {
+    let ty = vfs::fs::get_fs_type("cgroup2").ok_or(vfs::VfsError::Enodev)?;
+    match vfs::mount::register_bind_typed(ty, mp, fs, root) {
         Ok(()) => Ok(()),
         Err(vfs::VfsError::Eexist) if !first => Ok(()),
         Err(e) => Err(e),

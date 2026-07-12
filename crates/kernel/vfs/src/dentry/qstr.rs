@@ -37,9 +37,10 @@ impl QStr {
     /// # C: O(1)
     pub fn name(&self) -> &str {
         match &self.name {
-            // Bytes were copied from a valid `&str` in `new`; checked decode
-            // can never fail, `unwrap_or` keeps it unsafe-free.
-            DName::Inline { buf, len } => core::str::from_utf8(&buf[..*len as usize]).unwrap_or(""),
+            DName::Inline { buf, len } => {
+                // SAFETY: inline bytes were copied from a valid &str in QStr::new.
+                unsafe { core::str::from_utf8_unchecked(&buf[..*len as usize]) }
+            }
             DName::Heap(s) => s,
         }
     }

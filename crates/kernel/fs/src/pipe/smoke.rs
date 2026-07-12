@@ -22,7 +22,7 @@ pub fn smoke_test() {
     let r = pipe.write(0, b"x");
     kassert!(matches!(r, Err(vfs::VfsError::Epipe)), "pipe write w/o readers = EPIPE");
 
-    let evt = make_eventfd_inode(0);
+    let evt = make_eventfd_inode(0, false);
     let n = evt.write(0, &0x1234u64.to_ne_bytes()).expect("evt.write");
     kassert!(n == 8, "evt write len");
     let mut ev = [0u8; 8];

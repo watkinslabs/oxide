@@ -30,7 +30,7 @@ fn owned_inode(uid: u32, gid: u32) -> InodeRef {
 #[test]
 fn identity_mount_shows_raw_owner() {
     let i = owned_inode(1000, 2000);
-    let st = vfs::generic_fillattr(&i, &IDENTITY, None);
+    let st = vfs::generic_fillattr(&i, &IDENTITY);
     assert_eq!(st.uid, 1000);
     assert_eq!(st.gid, 2000);
 }
@@ -41,7 +41,7 @@ fn idmapped_mount_translates_owner() {
     // fs [0,65536) <-> vfs [100000,165536).
     let map = Idmap::uniform(0, 100_000, 65_536);
     let i = owned_inode(1000, 1500);
-    let st = vfs::generic_fillattr(&i, &map, None);
+    let st = vfs::generic_fillattr(&i, &map);
     // raw fs 1000/1500 must NOT survive — they are mapped out to the vfs window.
     assert_eq!(st.uid, 101_000, "fs uid 1000 -> vfsuid 101000");
     assert_eq!(st.gid, 101_500, "fs gid 1500 -> vfsgid 101500");
@@ -52,7 +52,7 @@ fn idmapped_mount_translates_owner() {
 fn idmapped_unmapped_owner_is_invalid() {
     let map = Idmap::uniform(0, 100_000, 65_536);
     let i = owned_inode(70_000, 70_000);
-    let st = vfs::generic_fillattr(&i, &map, None);
+    let st = vfs::generic_fillattr(&i, &map);
     assert_eq!(st.uid, INVALID, "unmapped fs uid surfaces as (uid_t)-1, not 70000");
     assert_eq!(st.gid, INVALID);
 }

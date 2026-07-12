@@ -11,31 +11,8 @@ pub fn glue_mmap(
     phys_base: Option<u64>,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
-    const MAP_SHARED:  u64 = 0x01;
-    const MAP_PRIVATE: u64 = 0x02;
-    const MAP_FIXED:   u64 = 0x10;
-    const MAP_ANON:    u64 = 0x20;
-    const MAP_GROWSDOWN: u64       = 0x100;
-    const MAP_DENYWRITE: u64       = 0x800;     // no-op since 2.6
-    const MAP_EXECUTABLE: u64      = 0x1000;    // no-op since 2.6
-    const MAP_LOCKED:    u64       = 0x2000;    // accept as no-op (no swap)
-    const MAP_NORESERVE: u64       = 0x4000;    // accept; we don't overcommit
-    const MAP_POPULATE:  u64       = 0x8000;    // accept; demand-fault still works
-    const MAP_NONBLOCK:  u64       = 0x10000;   // accept; no readahead anyway
-    const MAP_STACK:     u64       = 0x20000;   // alias for GROWSDOWN per Linux
-    const MAP_HUGETLB:   u64       = 0x40000;   // reject (no huge-tlb yet)
-    const MAP_SYNC:      u64       = 0x80000;   // DAX; accept as no-op
-    const MAP_FIXED_NOREPLACE: u64 = 0x100000;
-    const MAP_UNINITIALIZED: u64   = 0x4000000; // CONFIG_MMAP_ALLOW_UNINITIALIZED
-    // Bit-field of all flags we tolerate without semantic effect.
-    const MAP_KNOWN: u64 = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANON
-        | MAP_GROWSDOWN | MAP_DENYWRITE | MAP_EXECUTABLE | MAP_LOCKED
-        | MAP_NORESERVE | MAP_POPULATE | MAP_NONBLOCK | MAP_STACK
-        | MAP_HUGETLB | MAP_SYNC | MAP_FIXED_NOREPLACE | MAP_UNINITIALIZED;
-    // Linux: unknown flags → EINVAL (kernel rejects future bits).
-    if (flags & !MAP_KNOWN) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    // MAP_HUGETLB: huge-page backing; v1 has no huge-tlb pool. Reject.
-    if (flags & MAP_HUGETLB) != 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
+    use crate::mmap_flags::{MAP_ANON, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_PRIVATE, MAP_SHARED};
+    crate::mmap_flags::validate(flags)?;
 
     // File-backed mmap requires a backing from the caller and a
     // page-aligned offset; anonymous mmap rejects a backing.

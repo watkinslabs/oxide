@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
-use vfs::{FileType, InodeRef, KResult, VfsError};
+use vfs::{FileType, InodeRef, KResult};
 
 mod common;
 
@@ -26,10 +26,10 @@ fn guard() -> MutexGuard<'static, ()> {
     g
 }
 
-/// Test directory inode: a bare mountpoint dir whose `lookup` misses (ENOENT).
+/// Test directory inode: child-capable so mkdtemp-style targets are real paths.
 struct TDirOps;
 impl InodeOps for TDirOps {
-    fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enoent) }
+    fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> { Ok(tdir(0x515)) }
 }
 fn tdir(ino: u64) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
@@ -70,7 +70,7 @@ fn udevd_sysfs_move_from_mkdtemp_temp_path() {
     // The moved mount is now resolvable at /sys (top of the stack), same id.
     let at_sys = common::mount_at_path_exact("/sys").expect("mount at /sys");
     assert_eq!(at_sys.mnt_id, temp_id, "the moved sysfs is now the mount at /sys");
-    assert_eq!(at_sys.fs().root().map(|i| i.ino()), Some(0x55), "moved sysfs root inode");
+    assert_eq!(at_sys.mnt_root().and_then(|d| d.inode()).map(|i| i.ino()), Some(0x55), "moved sysfs root inode");
 
     // Parent of /sys is the mount owning '/' (root mount), by identity.
     let root_id = vfs::mount::root_mount_id(ns).expect("root id");

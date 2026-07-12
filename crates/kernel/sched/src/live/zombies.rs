@@ -321,7 +321,23 @@ pub fn has_zombies(parent: u32) -> bool {
     ZOMBIES.lock().iter().any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
 }
 
-use crate::registry::wait_pid_matches;
+use crate::registry::{self, wait_candidate_matches, WaitChildSnapshot};
+use crate::wait_select::{Candidate, Waiter};
+
+/// # C: O(N_tasks)
+fn zombie_candidate(t: &Task) -> Candidate {
+    let parent_tid = t.parent_tid.load(Ordering::Acquire);
+    let parent_tgid = registry::lookup(parent_tid)
+        .map(|p| p.tgid.load(Ordering::Acquire))
+        .unwrap_or(0);
+    Candidate {
+        parent_tid,
+        parent_tgid,
+        vpid:        t.vtgid.load(Ordering::Acquire),
+        pgid:        t.pgid.load(Ordering::Acquire),
+        exit_signal: t.exit_signal.load(Ordering::Acquire),
+    }
+}
 
 /// Peek one Zombie child matching the `wait4` filter WITHOUT removing
 /// it — the `waitid(2)` `WNOWAIT` contract (leave the child in a
@@ -330,19 +346,16 @@ use crate::registry::wait_pid_matches;
 /// pid belongs to, then reaps separately; if the peek reaped, that
 /// second wait would get ECHILD and systemd mis-supervises the service.
 /// # C: O(N_zombies)
-pub fn peek_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
+pub fn peek_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> Option<(WaitChildSnapshot, i32)> {
     use core::sync::atomic::Ordering;
     let q = ZOMBIES.lock();
-    let t = q.iter().find(|t| wait_pid_matches(
-        t.parent_tid.load(Ordering::Acquire), t.vtgid.load(Ordering::Acquire),
-        t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid))?;
-    // Return the child's vpid (vtgid) — what waitid reports as its return +
-    // siginfo si_pid — NOT the internal tid. Mirrors reap_one.
-    Some((t.vtgid.load(Ordering::Acquire), t.exit_status.load(Ordering::Acquire)))
+    let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
+    let t = q.iter().find(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))?;
+    Some((WaitChildSnapshot::from_task(t), t.exit_status.load(Ordering::Acquire)))
 }
 
 /// # C: O(N_zombies)
-pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
+pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> Option<(WaitChildSnapshot, i32)> {
     use core::sync::atomic::Ordering;
     let mut q = ZOMBIES.lock();
     #[cfg(feature = "debug-ssh")]
@@ -367,14 +380,13 @@ pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
             klog::write_raw(b"\n");
         }
     }
-    let pos = q.iter().position(|t| wait_pid_matches(
-        t.parent_tid.load(Ordering::Acquire), t.vtgid.load(Ordering::Acquire),
-        t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid))?;
+    let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
+    let pos = q.iter().position(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))?;
     let t = q.remove(pos);
     // Return the child's vpid (vtgid) — the PID userspace waited on — NOT the
     // opaque internal tid. Single pid identity (Linux): waitpid returns the
     // same value fork() returned.
-    let vpid = t.vtgid.load(Ordering::Acquire);
+    let child = WaitChildSnapshot::from_task(&t);
     let code = t.exit_status.load(Ordering::Acquire);
     // Linux release_task: a reaped process leaves /proc immediately, even if a
     // pidfd still pins the task_struct. Mark it so procfs enumeration drops it —
@@ -382,7 +394,14 @@ pub fn reap_one(parent: u32, pid: i32, parent_pgid: u32) -> Option<(u32, i32)> {
     // ps/htop (the strong Arc keeps the registry Weak alive).
     t.reaped.store(true, Ordering::Release);
     drop(t);  // strong-ref released; Task freed if no other holders
-    Some((vpid, code))
+    Some((child, code))
+}
+
+/// # C: O(N_zombies × N_tasks)
+pub fn has_wait_zombies(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> bool {
+    let q = ZOMBIES.lock();
+    let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
+    q.iter().any(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))
 }
 
 /// B14: reap zombies whose parent is gone — Linux subreaper path.

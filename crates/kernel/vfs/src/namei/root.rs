@@ -18,7 +18,7 @@ pub fn resolve_abs(path: &str) -> KResult<InodeRef> {
 }
 
 /// Resolve absolute `path` to its canonical DENTRY (parent chain intact) by
-/// the per-component walk from the global root. Used by `install_open` to
+/// the per-component walk from the global root. Used by open-path tests to
 /// obtain the real parent dentry for an opened file. `None` if the root dentry
 /// isn't built yet (early boot) or the path doesn't resolve. # C: O(components)
 pub fn resolve_path_dentry(path: &str) -> Option<Arc<Dentry>> {
@@ -53,8 +53,8 @@ pub fn root_dentry() -> Option<Arc<Dentry>> {
 /// mount whose subtree contains `path`. Walks components from the global root,
 /// crossing mounts to the mounted fs `s_root` (Linux `__follow_mount`) so the
 /// dcache stays canonical with `path_lookup`, tracking the last-crossed mount
-/// id. NEVER invokes a whole-path delegate (so `resolve_mount → lookup →
-/// resolve_mount` cannot recurse). On a missing/whole-path component it STOPS
+/// id. NEVER invokes a filesystem whole-path delegate, so mount ownership and
+/// final inode lookup cannot recurse through each other. On a missing/whole-path component it STOPS
 /// and returns the current (owning) mount, so open-create/rename/link on a
 /// not-yet-existing leaf still yield the parent's mount. `None` only before the
 /// root exists. # C: O(components × dir-lookup)

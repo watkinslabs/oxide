@@ -4,6 +4,7 @@
 
 use syscall::SyscallArgs;
 use crate::affinity_common::{affinity_target, online_cpu_mask};
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_sched_getaffinity(pid, cpusetsize, mask)` — slot 204. Writes the
 /// task's `cpus_allowed` bitmask (masked to online CPUs) into the user
@@ -12,12 +13,11 @@ use crate::affinity_common::{affinity_target, online_cpu_mask};
 pub fn sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let (pid, cpusetsize, mask) = (args.a0 as u32, args.a1, args.a2);
-    if mask == 0 || mask >= hal::USER_VA_END || cpusetsize < 8 {
-        return -(syscall::errno::Errno::Einval.as_i32() as i64);
-    }
+    if cpusetsize < 8 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf_writable(mask, 8, 1) { return rv; }
     let t = match affinity_target(pid) { Some(t) => t, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64) };
     let m = t.cpus_allowed.load(Ordering::Acquire) & online_cpu_mask();
-    // SAFETY: mask validated < USER_VA_END; cpusetsize >= 8 guarantees the 8-byte write fits; CPL=0 writes through caller's AS.
-    unsafe { core::ptr::write_volatile(mask as *mut u64, m); }
+    // SAFETY: mask validated writable for the supported 8-byte cpu_set_t.
+    unsafe { core::ptr::write_unaligned(mask as *mut u64, m); }
     8
 }

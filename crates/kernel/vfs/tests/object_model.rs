@@ -20,7 +20,7 @@ use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
 struct RamFsType;
 impl FileSystemType for RamFsType {
     fn name(&self) -> &str { "ramfs" }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> { Ok(mount_ramfs(0x858458f6)) }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Ok(mount_ramfs(0x858458f6)) }
 }
 
 struct RamFsOps { magic: u64 }

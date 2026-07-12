@@ -30,6 +30,7 @@ pub mod rt;
 pub mod runqueue;
 pub mod task;
 pub mod signum;
+pub mod wait_select;
 mod sigqueue;
 mod sched_enc;
 

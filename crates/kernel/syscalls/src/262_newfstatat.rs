@@ -33,13 +33,8 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
 
     // Unknown flag bits → EINVAL (Linux vfs_fstatat).
     if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
-    // X3: kernel writes into buf in CPL=0 — require it user-writable. Linux
-    // copy_to_user does not require the caller's struct stat pointer to be
-    // naturally aligned, so only validate the byte range.
-    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
-
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty/NULL
-    // path operates on the dirfd, ENOENT without it); a normal stat FOLLOWS the
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
+    // or NULL operates on the dirfd); a normal stat FOLLOWS the
     // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. The engine
     // preserves ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG (X1/X2/X4/X5).
     let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
@@ -49,14 +44,22 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
         follow: !nofollow,
         ..Default::default()
     };
-    let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+    let (inode, mnt_id) = match crate::pathresolve::resolve_at_lookup_maybe_null(dirfd, path_ptr, lf) {
         Ok(p)  => (p.inode, p.mnt_id),
-        Err(rv) => return rv,
+        Err(rv) => {
+            #[cfg(feature = "debug-mount")]
+            if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
+                if path.starts_with("/run") {
+                    crate::mount_common::mnt_log("newfstatat", &path, rv);
+                }
+            }
+            return rv;
+        }
     };
 
-    // vfs_getattr → i_op->getattr: S_IF* mapping + overlay merge + idmap-out.
+    // vfs_getattr → i_op->getattr: S_IF* mapping + native metadata + idmap-out.
     let idmap = vfs::mount::idmap_for(mnt_id);
-    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let st = vfs::vfs_getattr(&inode, &idmap);
     let mode = st.mode;
     let rdev = st.rdev as u64;
     let uid  = st.uid;
@@ -70,6 +73,9 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     let at = st.atime_ns;
     let mt = st.mtime_ns;
     let ct = st.ctime_ns;
+
+    // Linux vfs_fstatat runs before cp_new_stat faults the output buffer.
+    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
 
     // SAFETY: buf validated STAT_BYTES writable below USER_VA_END; unaligned
     // stores match Linux copy_to_user semantics for user-provided buffers.

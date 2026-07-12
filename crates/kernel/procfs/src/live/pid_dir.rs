@@ -5,6 +5,7 @@ use core::sync::atomic::Ordering;
 use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
 
 use super::ns_dir::make_proc_pid_ns_dir;
+use super::pid_attr::make_proc_pid_attr_dir;
 use super::pid_files::{
     make_pid_cmdline, make_pid_comm, make_pid_environ, make_pid_limits, make_pid_maps,
     make_pid_sched, make_pid_stat, make_pid_statm, make_pid_status,
@@ -44,17 +45,18 @@ fn pc_idmap(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b" 
 fn pc_setgroups(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"allow\n") }
 fn pc_syscall(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"running\n") }
 fn pc_empty(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"") }
-fn pc_mounts(_t: u32, _s: bool) -> InodeRef { crate::mounts::make_proc_mounts() }
-fn pc_mountinfo(_t: u32, _s: bool) -> InodeRef { crate::mounts::make_proc_mountinfo() }
+fn pc_mounts(t: u32, is_self: bool) -> InodeRef { crate::mounts::make_proc_mounts(if is_self { None } else { Some(t) }) }
+fn pc_mountinfo(t: u32, is_self: bool) -> InodeRef { crate::mounts::make_proc_mountinfo(if is_self { None } else { Some(t) }) }
 fn pc_cgroup(t: u32, _s: bool) -> InodeRef { crate::make_proc_cgroup(Some(t)) }
 fn pc_auxv(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(&[0u8; 16]) }
 fn pc_timerslack(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"50000\n") }
 fn pc_coredump_filter(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000033\n") }
-fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "exe") }
-fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "cwd") }
-fn pc_root(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_link(t, "root") }
+fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_exe(t) }
+fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_cwd(t) }
+fn pc_root(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_root(t) }
 fn pc_fd(t: u32, is_self: bool) -> InodeRef { make_proc_fd_dir(if is_self { None } else { Some(t) }) }
 fn pc_fdinfo(t: u32, is_self: bool) -> InodeRef { crate::fdinfo::make_fdinfo_dir(if is_self { None } else { Some(t) }) }
+fn pc_attr(t: u32, _s: bool) -> InodeRef { make_proc_pid_attr_dir(t) }
 
 const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
     ("status", FileType::Regular, pc_status),
@@ -95,6 +97,7 @@ const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
     ("root", FileType::Symlink, pc_root),
     ("fd", FileType::Directory, pc_fd),
     ("fdinfo", FileType::Directory, pc_fdinfo),
+    ("attr", FileType::Directory, pc_attr),
 ];
 
 fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
@@ -117,7 +120,7 @@ fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
         }
         "ns" => Ok(make_proc_pid_ns_dir(tid)),
         "projid_map" => Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n")),
-        "make-it-fail" | "fail-nth" | "pagemap" | "kpagecount" | "kpageflags" | "attr" => {
+        "make-it-fail" | "fail-nth" | "pagemap" | "kpagecount" | "kpageflags" => {
             Ok(StaticFileInode::new(b""))
         }
         "wakeups_count" => Ok(StaticFileInode::new(b"0\n")),
@@ -211,7 +214,7 @@ impl FileOps for ProcPidTaskDirOps {
                 }
             }
             buf[..n].reverse();
-            let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
+            let s = crate::util::decimal_str(&buf, n);
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(s, ino, FileType::Directory, next) {
                 return Ok(());

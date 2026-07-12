@@ -44,6 +44,18 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_STATFS => crate::statfs::sys_statfs(args),
         syscall::nrs::NR_FSTATFS => crate::statfs::sys_fstatfs(args),
         syscall::nrs::NR_GETCPU => crate::s309_getcpu::sys_getcpu(args),
+        syscall::nrs::NR_SETXATTR => crate::s188_setxattr::sys_setxattr(args),
+        syscall::nrs::NR_LSETXATTR => crate::s189_lsetxattr::sys_lsetxattr(args),
+        syscall::nrs::NR_FSETXATTR => crate::s190_fsetxattr::sys_fsetxattr(args),
+        syscall::nrs::NR_GETXATTR => crate::s191_getxattr::sys_getxattr(args),
+        syscall::nrs::NR_LGETXATTR => crate::s192_lgetxattr::sys_lgetxattr(args),
+        syscall::nrs::NR_FGETXATTR => crate::s193_fgetxattr::sys_fgetxattr(args),
+        syscall::nrs::NR_LISTXATTR => crate::s194_listxattr::sys_listxattr(args),
+        syscall::nrs::NR_LLISTXATTR => crate::s195_llistxattr::sys_llistxattr(args),
+        syscall::nrs::NR_FLISTXATTR => crate::s196_flistxattr::sys_flistxattr(args),
+        syscall::nrs::NR_REMOVEXATTR => crate::s197_removexattr::sys_removexattr(args),
+        syscall::nrs::NR_LREMOVEXATTR => crate::s198_lremovexattr::sys_lremovexattr(args),
+        syscall::nrs::NR_FREMOVEXATTR => crate::s199_fremovexattr::sys_fremovexattr(args),
         syscall::nrs::NR_SCHED_GETPARAM => crate::s143_sched_getparam::sys_sched_getparam(args),
         syscall::nrs::NR_SCHED_SETSCHEDULER => crate::s144_sched_setscheduler::sys_sched_setscheduler(args),
         syscall::nrs::NR_SCHED_GETSCHEDULER => crate::s145_sched_getscheduler::sys_sched_getscheduler(args),
@@ -73,7 +85,27 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_CLONE => {
             #[cfg(target_arch = "x86_64")] let (ctid, tls) = (args.a3, args.a4);
             #[cfg(target_arch = "aarch64")] let (ctid, tls) = (args.a4, args.a3);
-            crate::clone::sys_clone_dispatch(args, args.a0, args.a1, args.a2, ctid, tls)
+            let flags = args.a0;
+            if (flags & (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID))
+                == (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID) {
+                return Some(-(syscall::errno::Errno::Einval.as_i32() as i64));
+            }
+            if (flags & crate::clone::CLONE_PIDFD) != 0
+                && (args.a2 == 0 || args.a2.checked_add(4).map_or(true, |e| e > hal::USER_VA_END)) {
+                return Some(-(syscall::errno::Errno::Efault.as_i32() as i64));
+            }
+            let rv = crate::clone::sys_clone_dispatch(args, flags, args.a1, args.a2, ctid, tls);
+            if rv > 0 && (flags & crate::clone::CLONE_PIDFD) != 0 {
+                let mut sa = *args;
+                sa.a0 = rv as u64;
+                sa.a1 = 0;
+                let pidfd = crate::s434_pidfd_open::sys_pidfd_open(&sa);
+                if pidfd >= 0 {
+                    // SAFETY: a2+4 validated writable user range above; CPL=0 4-byte int write in caller AS.
+                    unsafe { core::ptr::write_volatile(args.a2 as *mut i32, pidfd as i32); }
+                }
+            }
+            rv
         }
         syscall::nrs::NR_EXECVE => crate::execve::sys_execve(args),
         syscall::nrs::NR_EXECVEAT => crate::execve::sys_execveat(args),
@@ -90,7 +122,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
             a.a1 = 0;
             crate::s293_pipe2::sys_pipe2(&a)
         }
-        syscall::nrs::NR_CREAT => crate::s002_open::sys_open(args),
+        syscall::nrs::NR_CREAT => crate::s002_open::sys_creat(args),
         syscall::nrs::NR_EXIT_GROUP => crate::s060_exit::sys_exit_group(args),
         syscall::nrs::NR_INIT_MODULE => crate::s175_init_module::sys_init_module(args),
         syscall::nrs::NR_FINIT_MODULE => crate::s313_finit_module::sys_finit_module(args),
@@ -119,12 +151,14 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_LISTMOUNT => crate::s458_listmount::sys_listmount(args),
         syscall::nrs::NR_FILE_GETATTR => crate::s468_file_getattr::sys_file_getattr(args),
         syscall::nrs::NR_FILE_SETATTR => crate::s469_file_setattr::sys_file_setattr(args),
+        syscall::nrs::NR_LISTNS => crate::s470_listns::sys_listns(args),
         syscall::nrs::NR_RSEQ_SLICE_YIELD => crate::s471_rseq_slice_yield::sys_rseq_slice_yield(args),
         syscall::nrs::NR_SCHED_SETPARAM => crate::s142_sched_setparam::sys_sched_setparam(args),
         syscall::nrs::NR_SCHED_SETATTR => crate::s314_sched_setattr::sys_sched_setattr(args),
         syscall::nrs::NR_OPEN_TREE_ATTR => crate::s467_open_tree_attr::sys_open_tree_attr(args),
         syscall::nrs::NR_SYSLOG => syscall::dmesg::sys_syslog(args),
         syscall::nrs::NR_URETPROBE => crate::s335_uretprobe::sys_uretprobe(args),
+        syscall::nrs::NR_UPROBE => crate::s336_uprobe::sys_uprobe(args),
         syscall::nrs::NR_MAP_SHADOW_STACK => crate::s453_map_shadow_stack::sys_map_shadow_stack(args),
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
         syscall::nrs::NR_RT_SIGRETURN => unsafe { ::fs::sig_dispatch::rt_sigreturn() },

@@ -4,11 +4,12 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, resolve_parent};
+use crate::namei_common::read_user_path;
 
 /// `linkat(odir, target, ndir, link, flags)` slot 265. Supports
 /// `AT_EMPTY_PATH` (flag bit 0x1000): when set and `target` is the
-/// empty string, the source is the fd in `odir`, not a path. Supports
+/// empty string, the source is the fd in `odir`, not a path; non-empty
+/// `target` still takes the normal path lookup. Supports
 /// `AT_SYMLINK_FOLLOW` (0x400): the source path is dereferenced before
 /// hard-linking, including Linux magic fd links such as `/proc/self/fd/N`.
 /// This is how O_TMPFILE inodes get a name after creation when userspace
@@ -31,22 +32,16 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     let link = match read_user_path(link_p) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let l = match crate::pathresolve::resolve_at_result(args.a2 as i32, &link) {
-        Ok(p) => p, Err(rv) => return rv,
-    };
-    if let Err(rv) = crate::landlock::check(&l,
-        ::security::landlock::access::MAKE_REG) { return rv; }
 
-    if (flags & AT_EMPTY_PATH) != 0 {
-        // target must be empty (NULL ptr or "").
-        let target_empty = if target_p == 0 {
-            true
-        } else {
-            // SAFETY: target_p in user range (we don't deref past 256B); user page mapped under caller's AS on the syscall path; bounded read.
-            let bytes = unsafe { devfs::read_user_cstr(target_p, 256) };
-            matches!(bytes, Some(b) if b.is_empty())
-        };
-        if !target_empty { return -(Errno::Einval.as_i32() as i64); }
+    let target_empty = if (flags & AT_EMPTY_PATH) != 0 {
+        match crate::pathresolve::at_path_empty(target_p) {
+            Ok(v) => v,
+            Err(rv) => return rv,
+        }
+    } else {
+        false
+    };
+    if target_empty {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -57,139 +52,48 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         let file = match fdt.get(odir_fd) {
             Ok(f)  => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
+        let cred = crate::pathresolve::current_cred();
+        if !cred.cap_dac_read_search && !same_cred(file.f_cred(), &cred) {
+            return -(Errno::Enoent.as_i32() as i64);
+        }
         let inode = file.inode();
-        // vfs_link: hard-linking a directory is EPERM (no filesystem permits it).
-        if matches!(inode.file_type(), vfs::FileType::Directory) {
-            return -(Errno::Eperm.as_i32() as i64);
-        }
-        let (lm, _) = match vfs::mount::resolve_mount(&l) {
-            Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
-        };
-        if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-            return -(Errno::Erofs.as_i32() as i64);
-        }
-        // D9/D29: route through the resolved new-path PARENT's `i_op->link`
-        // (Linux `vfs_link`), holding its `i_rwsem` EXCLUSIVE (Linux
-        // `filename_create`). Backend resolves via `i_op.lookup` (no nested
-        // `i_rwsem`) → deadlock-free. Parent-resolve miss → whole-path fallback.
-        let r = match resolve_parent(&l) {
-            Ok((pino, name)) => {
-                let _g = pino.inode_lock();
-                pino.link_child(&inode, &name, &vfs::CreateCtx::root())
-            }
-            Err(_) => lm.fs().link_inode(inode.clone(), &l),
-        };
-        return match r {
-            Ok(())  => {
-                crate::pathresolve::d_drop_path(&l);
-                vfs::fire_dirent_create(
-                    crate::namei_common::parent_path(&l),
-                    crate::namei_common::last_component(&l),
-                );
-                0
-            }
-            Err(e)  => errno_from_vfs(e),
-        };
+        return crate::s086_link::link_inode_at(inode.clone(), file.mnt_id(), args.a2 as i32, &link);
     }
 
     // Classic path→path linkat. With AT_SYMLINK_FOLLOW, Linux links the
-    // resolved source inode instead of the symlink dentry itself. `/proc/*/fd`
-    // entries are magic links to open file descriptions; route them through
-    // the fd table so an O_TMPFILE fd can be materialized in its own mount.
+    // resolved source inode instead of the symlink dentry itself.
     // D1/D2: PATH_MAX errno contract (non-AT_EMPTY_PATH path source).
     let target = match read_user_path(target_p) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let t = match crate::pathresolve::resolve_at_result(odir_fd, &target) {
-        Ok(p) => p, Err(rv) => return rv,
-    };
     if (flags & AT_SYMLINK_FOLLOW) != 0 {
-        let source_inode = if let Some((tid_opt, fd)) = crate::open_common::parse_proc_fd(&t) {
-            match sched::proclink::proc_fd_file(tid_opt, fd) {
-                Some(f) => f.inode().clone(),
-                None => return -(Errno::Ebadf.as_i32() as i64),
-            }
-        } else {
-            // AT_SYMLINK_FOLLOW: explicitly FOLLOW the trailing symlink
-            // (LOOKUP_FOLLOW) so the resolved target inode is linked.
-            let lf = vfs::LookupFlags { follow: true, ..Default::default() };
-            match crate::pathresolve::resolve_path_flags(&t, lf) {
-                Ok(p) => p.inode,
-                Err(e) => return errno_from_vfs(e),
-            }
+        // AT_SYMLINK_FOLLOW: explicitly FOLLOW the trailing symlink
+        // (LOOKUP_FOLLOW) so the resolved target inode is linked.
+        let lf = vfs::LookupFlags { follow: true, ..Default::default() };
+        let source_inode = match crate::pathresolve::resolve_at_path(odir_fd, &target, lf) {
+            Ok(p) => p,
+            Err(rv) => return rv,
         };
-        // vfs_link: hard-linking a directory is EPERM.
-        if matches!(source_inode.file_type(), vfs::FileType::Directory) {
-            return -(Errno::Eperm.as_i32() as i64);
-        }
-        let (lm, _) = match vfs::mount::resolve_mount(&l) {
-            Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
-        };
-        if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-            return -(Errno::Erofs.as_i32() as i64);
-        }
-        // D9/D29: route the resolved source inode through the new-path PARENT's
-        // `i_op->link` (Linux `vfs_link`), `i_rwsem` EXCLUSIVE; deadlock-free
-        // backend lookup. Parent-resolve miss → whole-path fallback.
-        let r = match resolve_parent(&l) {
-            Ok((pino, name)) => {
-                let _g = pino.inode_lock();
-                pino.link_child(&source_inode, &name, &vfs::CreateCtx::root())
-            }
-            Err(_) => lm.fs().link_inode(source_inode, &l),
-        };
-        return match r {
-            Ok(()) => {
-                crate::pathresolve::d_drop_path(&l);
-                vfs::fire_dirent_create(
-                    crate::namei_common::parent_path(&l),
-                    crate::namei_common::last_component(&l),
-                );
-                0
-            }
-            Err(e) => errno_from_vfs(e),
-        };
+        return crate::s086_link::link_inode_at(source_inode.inode, source_inode.mnt_id, args.a2 as i32, &link);
     }
     // vfs_link: hard-linking a directory is EPERM. Without AT_SYMLINK_FOLLOW the
     // source symlink is not followed (nofollow), matching the linked inode.
-    let src = match crate::pathresolve::resolve_path_result(&t, true) {
-        Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => {
-            return -(Errno::Eperm.as_i32() as i64);
-        }
-        Ok(p)  => p.inode,
-        Err(e) => return errno_from_vfs(e),
+    let src = match crate::pathresolve::resolve_at_path(odir_fd, &target,
+        vfs::LookupFlags { no_follow_final: true, ..Default::default() }) {
+        Ok(p)  => p,
+        Err(rv) => return rv,
     };
-    let (tm, _) = match vfs::mount::resolve_mount(&t) {
-        Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
-    };
-    let (lm, _) = match vfs::mount::resolve_mount(&l) {
-        Some(v) => v, None => return -(Errno::Enoent.as_i32() as i64),
-    };
-    if (lm.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-        return -(Errno::Erofs.as_i32() as i64);
-    }
-    if tm.mnt_id != lm.mnt_id {
-        return -(Errno::Exdev.as_i32() as i64);
-    }
-    // D9/D29: route through the resolved new-path PARENT's `i_op->link` (Linux
-    // `vfs_link`), `i_rwsem` EXCLUSIVE; deadlock-free backend lookup.
-    // Parent-resolve miss → whole-path fallback.
-    let r = match resolve_parent(&l) {
-        Ok((pino, name)) => {
-            let _g = pino.inode_lock();
-            pino.link_child(&src, &name, &vfs::CreateCtx::root())
-        }
-        Err(_) => tm.fs().link(&t, &l),
-    };
-    match r {
-        Ok(())  => {
-            crate::pathresolve::d_drop_path(&l);
-            vfs::fire_dirent_create(
-                crate::namei_common::parent_path(&l),
-                crate::namei_common::last_component(&l),
-            );
-            0
-        }
-        Err(e)  => errno_from_vfs(e),
-    }
+    crate::s086_link::link_inode_at(src.inode, src.mnt_id, args.a2 as i32, &link)
+}
+
+fn same_cred(a: &vfs::Cred, b: &vfs::Cred) -> bool {
+    a.uid == b.uid && a.gid == b.gid
+        && a.cap_dac_override == b.cap_dac_override
+        && a.cap_dac_read_search == b.cap_dac_read_search
+        && a.cap_fowner == b.cap_fowner
+        && a.cap_chown == b.cap_chown
+        && a.cap_fsetid == b.cap_fsetid
+        && a.ngroups == b.ngroups
+        && a.groups[..(a.ngroups as usize).min(vfs::CRED_NGROUPS)]
+            == b.groups[..(b.ngroups as usize).min(vfs::CRED_NGROUPS)]
 }

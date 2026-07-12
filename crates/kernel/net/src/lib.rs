@@ -37,7 +37,7 @@ pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
 
 pub mod unix_sock;
 pub use unix_sock::{
-    UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
+    UnixAddr, UnixAddrKey, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
     unix_path_display, unix_path_is_abstract,
 };
 pub mod net_ns;
@@ -118,14 +118,14 @@ fn tcp_retx_timer(now_ns: u64) { sock::stack().tcp_retx_tick(now_ns); }
 /// place the human-readable cause appears. Gated on `debug-boot`.
 /// # C: O(payload bytes)
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
-pub fn trace_dgram_journal(path: &str, payload: &[u8]) {
-    let is_journal = path.as_bytes().windows(7).any(|w| w == b"journal")
-        || path.as_bytes().windows(4).any(|w| w == b"/log")
-        || path.as_bytes().windows(6).any(|w| w == b"notify")
-        || path.as_bytes().windows(7).any(|w| w == b"dev-log");
+pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
+    let is_journal = path.windows(7).any(|w| w == b"journal")
+        || path.windows(4).any(|w| w == b"/log")
+        || path.windows(6).any(|w| w == b"notify")
+        || path.windows(7).any(|w| w == b"dev-log");
     if !is_journal { return; }
     klog::write_raw(b"[B288 dgram ");
-    klog::write_raw(crate::unix_sock::unix_path_display(path).as_bytes());
+    klog::write_raw(&crate::unix_sock::unix_path_display(path));
     klog::write_raw(b" pid=");
     let pid = sched::live::current().map(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
     klog::write_dec_u64(pid as u64);
@@ -140,7 +140,7 @@ pub fn trace_dgram_journal(path: &str, payload: &[u8]) {
 /// # C: O(1)
 #[cfg(not(all(target_os = "oxide-kernel", feature = "debug-boot")))]
 #[inline]
-pub fn trace_dgram_journal(_path: &str, _payload: &[u8]) {}
+pub fn trace_dgram_journal(_path: &[u8], _payload: &[u8]) {}
 
 /// Register net's periodic timers (TCP retransmit). Boot, once.
 /// # C: O(1)

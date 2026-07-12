@@ -20,7 +20,6 @@ use crate::idmap::Idmap;
 use crate::inode::{FileAttr, FiemapExtent, Inode, S_IMMUTABLE};
 use crate::inode::InodeRef;
 use crate::getattr::Kstat;
-use crate::inode_times::InodeTimes;
 use crate::namei::Cred;
 use crate::setattr::Iattr;
 use crate::types::{KResult, VfsError};
@@ -36,7 +35,8 @@ static ROOT_CRED: Cred = Cred::root();
 /// A backend that materialises a new inode stamps its owner from
 /// [`fsuid`](Self::fsuid)/[`fsgid`](Self::fsgid) (the caller ids mapped DOWN
 /// through the mount idmap, Linux `mapped_fsuid`/`mapped_fsgid`) and its perm
-/// bits from [`apply_umask`](Self::apply_umask). # C: O(1)
+/// bits from `prepare_create_owner_mode`, which applies Linux
+/// `vfs_prepare_mode` + `inode_init_owner` once. # C: O(1)
 pub struct CreateCtx<'a> {
     /// Per-mount id map (Linux `mnt_idmap`); identity for a non-idmapped mount.
     pub idmap: &'a crate::idmap::Idmap,
@@ -58,7 +58,9 @@ impl CreateCtx<'_> {
     pub fn fsuid(&self) -> u32 { self.idmap.map_in_uid(self.cred.uid) }
     /// fs `i_gid` for a new inode: caller fsgid mapped DOWN. # C: O(extents)
     pub fn fsgid(&self) -> u32 { self.idmap.map_in_gid(self.cred.gid) }
-    /// Requested perm bits with the umask cleared (Linux `mode & ~umask`).
+    /// Requested perm bits with the umask cleared. Prefer
+    /// `prepare_create_owner_mode` for new inode creation so SGID inheritance
+    /// and allowed-mode masks are handled with the umask.
     /// # C: O(1)
     pub fn apply_umask(&self, mode: u32) -> u32 { mode & !(self.umask as u32) }
 }
@@ -122,9 +124,10 @@ pub trait InodeOps: Send + Sync {
     /// # C: backend-dependent
     fn unlink(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Erofs) }
 
-    /// `i_op->rename` — rename `old_name` (in this dir) to `new_name` in
-    /// `new_dir`. `ctx` carries the mount idmap + caller cred (Linux
-    /// `->rename(struct mnt_idmap *, ...)`). Default `Erofs`.
+    /// `i_op->rename` — rename/exchange/whiteout `old_name` (in this dir) with
+    /// `new_name` in `new_dir`. `flags` is Linux `RENAME_*`; `ctx` carries the
+    /// mount idmap + caller cred (Linux `->rename(struct mnt_idmap *, ...)`).
+    /// Default `Erofs`.
     /// # C: backend-dependent
     fn rename(&self, _inode: &Inode, _old_name: &str, _new_dir: &Inode, _new_name: &str, _flags: u32, _ctx: &CreateCtx)
         -> KResult<()> { Err(VfsError::Erofs) }
@@ -136,9 +139,8 @@ pub trait InodeOps: Send + Sync {
     /// supplies the mount idmap + caller cred + umask for owner/mode (exactly the
     /// create-family contract). The default is `Eopnotsupp` — the errno
     /// `do_tmpfile` reports for a filesystem without the op — so a backend
-    /// compiles unchanged until it overrides. Distinct from the legacy
-    /// path/string `FileSystem::create_anonymous`: this acts on the parent
-    /// dir-inode, takes the idmap, and stamps the caller owner.
+    /// compiles unchanged until it overrides. Acts on the parent dir-inode,
+    /// takes the idmap, and stamps the caller owner.
     /// # C: backend-dependent
     fn tmpfile(&self, _inode: &Inode, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
         Err(VfsError::Eopnotsupp)
@@ -164,8 +166,8 @@ pub trait InodeOps: Send + Sync {
     /// `i_op->getattr` — assemble the stat/statx `Kstat`. Default
     /// `generic_fillattr` over the concrete inode fields + mount idmap.
     /// # C: O(1)
-    fn getattr(&self, inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
-        crate::getattr::generic_fillattr(inode, idmap, overlay)
+    fn getattr(&self, inode: &Inode, idmap: &Idmap) -> Kstat {
+        crate::getattr::generic_fillattr(inode, idmap)
     }
 
     /// `i_op->setattr` — apply a prepared `Iattr`. Default `simple_setattr`

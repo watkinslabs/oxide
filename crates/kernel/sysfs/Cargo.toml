@@ -16,3 +16,7 @@ drv   = { path = "../../drivers/drv" }
 modules = { path = "../modules" }
 firmware = { path = "../firmware" }
 klog = { path = "../../shared/klog" }
+
+[features]
+default = []
+hosted = ["modules/hosted"]

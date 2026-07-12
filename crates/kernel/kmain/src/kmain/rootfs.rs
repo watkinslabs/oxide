@@ -33,23 +33,26 @@ pub unsafe fn init(info: &BootInfo) {
         modules::linux_time::set_now_hook(module_time_now_ns);
         modules::registry::init_exports();
         crate::syscalls::mount::install_vfs_hooks();
-        let _ = vfs::mount::register(None, Arc::new(ext4::rootfs::Ext4RootfsFs));
-        boot_register("/dev",  Arc::new(::devfs::DevfsFs));
-        boot_register("/proc", Arc::new(procfs::fs_impl::ProcfsFs));
-        boot_register("/sys",  Arc::new(crate::sysfs::SysfsFs));
-        cgroup::mount_root();
+        crate::syscalls::ensure_mount_filesystems_registered();
+        if let Some(ext4_ty) = vfs::fs::get_fs_type("ext4") {
+            let _ = vfs::mount::register_typed(ext4_ty, None, Arc::new(ext4::rootfs::Ext4RootfsFs));
+        }
+        boot_register("devtmpfs", "/dev",  Arc::new(::devfs::DevfsFs));
+        boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs));
+        boot_register("sysfs",    "/sys",  Arc::new(crate::sysfs::SysfsFs));
+        boot_register_cgroup();
         let tmp = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/tmp"));
         let tmp_root = tmp.root_inode();
-        boot_register_bind("/tmp", tmp, tmp_root);
+        boot_register_bind("tmpfs", "/tmp", tmp, tmp_root);
         let shm = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/dev/shm"));
         let shm_root = shm.root_inode();
-        boot_register_bind("/dev/shm", shm, shm_root);
+        boot_register_bind("tmpfs", "/dev/shm", shm, shm_root);
         let run = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/run"));
         let run_root = run.root_inode();
-        boot_register_bind("/run", run, run_root);
+        boot_register_bind("tmpfs", "/run", run, run_root);
         if let Some(home_dev) = block::registry::by_serial("oxide-home") {
             if let Ok(home_fs) = ext4::rootfs::Ext4Mount::open(home_dev) {
-                boot_register("/home", home_fs);
+                boot_register("ext4", "/home", home_fs);
             }
         }
         debug_cgroup! { cgroup::selftest::run(); }
@@ -167,17 +170,30 @@ fn handoff_to_userspace(info: &BootInfo) {
 /// resolves. A missing underlay is SKIPPED rather than passed as `None`,
 /// which the engine reads as the namespace root. # C: O(path components)
 #[cfg(target_os = "oxide-kernel")]
-fn boot_register(path: &str, fs: Arc<dyn vfs::fs::FileSystem>) {
+fn boot_register(fstype: &str, path: &str, fs: Arc<dyn vfs::fs::FileSystem>) {
     if let Some(d) = vfs::resolve_path_dentry(path) {
-        let _ = vfs::mount::register(Some(d), fs);
+        if let Some(ty) = vfs::fs::get_fs_type(fstype) {
+            let _ = vfs::mount::register_typed(ty, Some(d), fs);
+        }
     }
 }
 
 /// Boot bind-mount registration (per-mount root inode), same walk-then-attach
 /// contract as `boot_register`. # C: O(path components)
 #[cfg(target_os = "oxide-kernel")]
-fn boot_register_bind(path: &str, fs: Arc<dyn vfs::fs::FileSystem>, root: vfs::InodeRef) {
+fn boot_register_bind(fstype: &str, path: &str, fs: Arc<dyn vfs::fs::FileSystem>, root: vfs::InodeRef) {
     if let Some(d) = vfs::resolve_path_dentry(path) {
-        let _ = vfs::mount::register_bind(Some(d), fs, root);
+        if let Some(ty) = vfs::fs::get_fs_type(fstype) {
+            let _ = vfs::mount::register_bind_typed(ty, Some(d), fs, root);
+        }
+    }
+}
+
+/// Boot cgroup2 registration: rootfs owns the early static mountpoint walk;
+/// cgroupfs receives the already-resolved `/sys/fs/cgroup` dentry. # C: O(path components)
+#[cfg(target_os = "oxide-kernel")]
+fn boot_register_cgroup() {
+    if let Some(d) = vfs::resolve_path_dentry(cgroup::MOUNT) {
+        let _ = cgroup::mount_at(cgroup::MOUNT, Some(d));
     }
 }

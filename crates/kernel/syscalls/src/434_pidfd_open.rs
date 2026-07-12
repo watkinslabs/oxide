@@ -6,9 +6,17 @@
 pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
-    const PIDFD_NONBLOCK: u64 = 0o0_004_000;
-    let pid = args.a0 as u32;
+    const PIDFD_NONBLOCK: u64 = OpenFlags::O_NONBLOCK.bits() as u64;
+    const PIDFD_THREAD:   u64 = OpenFlags::O_EXCL.bits() as u64;
+    let pid_arg = args.a0 as i32;
     let flags = args.a1;
+    if (flags & !(PIDFD_NONBLOCK | PIDFD_THREAD)) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if pid_arg <= 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let pid = pid_arg as u32;
     // F109: pidfd_open with pid arg interpreted in caller's pid_ns.
     let cur_ns = sched::live::current()
         .map(|c| c.pid_ns.load(core::sync::atomic::Ordering::Acquire))
@@ -20,6 +28,11 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let target = match sched::live::registry::lookup_in_ns(cur_ns, pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
+    if (flags & PIDFD_THREAD) == 0
+        && target.vtid.load(core::sync::atomic::Ordering::Acquire)
+            != target.vtgid.load(core::sync::atomic::Ordering::Acquire) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -31,9 +44,13 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let dentry = vfs::dcache::d_alloc_pseudo("[pidfd]", inode.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDWR;
     if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    if (flags & PIDFD_THREAD) != 0 { fl |= OpenFlags::O_EXCL; }
     let file = File::new(inode, dentry, fl);
     match fdt.alloc_limit(file, cur.nofile_soft()) {
-        Ok(fd)  => fd as i64,
+        Ok(fd)  => {
+            let _ = fdt.set_cloexec(fd, true);
+            fd as i64
+        }
         Err(e)  => -(e as i64),
     }
 }

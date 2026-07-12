@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::fs_context::{vfs_get_tree, FsContext};
 use vfs::fs::{reconfigure_super, FileSystem, SB_FLAGS_USER_MASK};
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
@@ -31,8 +33,8 @@ impl FileSystem for TFs {
 struct Ty;
 impl FileSystemType for Ty {
     fn name(&self) -> &str { "pickfs" }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> {
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "pickfs".to_string()))
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> {
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "pickfs".to_string()))
     }
 }
 

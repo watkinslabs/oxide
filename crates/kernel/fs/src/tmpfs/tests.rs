@@ -2,7 +2,6 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 
 use vfs::{CreateCtx, FileType, InodeRef, VfsError};
-use vfs::superblock::SuperBlock;
 
 use super::{TmpfsFs, TmpfsSb};
 use super::dir::make_tmpfs_dir_inode;
@@ -63,76 +62,7 @@ mod statfs_tests {
 }
 
 #[cfg(test)]
-mod iget_tests {
-    use super::*;
-    use vfs::fs::FileSystem;
-
-    // Build a live tmpfs SuperBlock (fill_super back-stamps the root dir's sb
-    // weak, after which children build through `iget`). No PMM needed — no data
-    // writes, only inode lifecycle.
-    fn live_sb() -> Arc<SuperBlock> {
-        let fs = TmpfsFs::new(String::from("/"));
-        let root = fs.root_inode();
-        SuperBlock::for_backend(fs as Arc<dyn FileSystem>, Some(root), 0x1234_5678, String::from("tmpfs"))
-    }
-
-    // [inode D2] A child created on a back-stamped tmpfs mount is registered in
-    // the per-SB icache, and a later `ilookup`/`iget` of its ino returns the
-    // SAME `Arc` (shared inode identity, Linux iget) — never a fresh duplicate.
-    #[test]
-    fn create_child_has_icache_identity() {
-        let sb = live_sb();
-        let root = sb.s_root_inode().expect("root inode");
-        let child = root.create_child("f", 0o644, &CreateCtx::root()).expect("create f");
-        let ino = child.ino();
-
-        // Registered at build: visible in the icache immediately (no dentry yet).
-        let via_lookup = sb.ilookup(ino).expect("child cached in icache");
-        assert!(Arc::ptr_eq(&child, &via_lookup), "ilookup returns the SAME Arc");
-
-        // iget is a cache HIT — the build closure must NOT run (would be a fresh
-        // duplicate, the bug iget prevents).
-        let via_iget = sb.iget(ino, || panic!("iget must hit the cache, not rebuild"));
-        assert!(Arc::ptr_eq(&child, &via_iget), "iget returns the SAME Arc");
-
-        // The child carries the mount's SB (fsid derives from s_dev).
-        assert_eq!(child.fsid(), 0x1234_5678);
-    }
-
-    // [inode D2] An OPEN/held inode is NOT evicted: while any strong `Arc`
-    // lives (here the tree's `kids` ref + our handles), the icache `Weak` keeps
-    // upgrading. Once the last strong ref drops (unlink removed the kids ref +
-    // we drop our handles), the `Weak` dies and the slot reclaims — the
-    // Arc/`Weak` reclaim path, exactly as ext4 operates (no `iput` needed).
-    #[test]
-    fn held_inode_not_evicted_then_reclaimed_on_last_drop() {
-        let sb = live_sb();
-        let root = sb.s_root_inode().expect("root inode");
-        let child = root.create_child("g", 0o644, &CreateCtx::root()).expect("create g");
-        let ino = child.ino();
-
-        // Unlink drops the name (and the kids strong ref) but we still hold one.
-        root.unlink_child("g").expect("unlink g");
-        assert!(sb.ilookup(ino).is_some(), "still held → NOT evicted");
-
-        // Drop the last strong reference → the cache Weak can no longer upgrade.
-        drop(child);
-        assert!(sb.ilookup(ino).is_none(), "last ref gone → reclaimed");
-    }
-
-    // [inode D2] A second create of the SAME name path after reclaim yields a
-    // DISTINCT inode (fresh ino), and both never collide in the icache.
-    #[test]
-    fn distinct_children_distinct_icache_slots() {
-        let sb = live_sb();
-        let root = sb.s_root_inode().expect("root inode");
-        let a = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
-        let b = root.mkdir("d", 0o755, &CreateCtx::root()).expect("mkdir d");
-        assert_ne!(a.ino(), b.ino());
-        assert!(Arc::ptr_eq(&a, &sb.ilookup(a.ino()).unwrap()));
-        assert!(Arc::ptr_eq(&b, &sb.ilookup(b.ino()).unwrap()));
-    }
-}
+mod iget;
 
 #[cfg(test)]
 mod rename_overwrite_tests {
@@ -151,7 +81,7 @@ mod rename_overwrite_tests {
         assert_eq!(dst.nlink(), 1);
         let free_before = fs.super_ops().unwrap().statfs().unwrap().f_ffree;
 
-        fs.rename("/src", "/dst").expect("rename overwrite");
+        root.rename_child("src", &root, "dst", 0, &CreateCtx::root()).expect("rename overwrite");
 
         // Replaced target lost its link; its inode charge was reclaimed.
         assert_eq!(dst.nlink(), 0, "replaced destination nlink dropped to 0");
@@ -163,8 +93,8 @@ mod rename_overwrite_tests {
         assert!(matches!(root.lookup("src"), Err(VfsError::Enoent)), "source name gone");
     }
 
-    // RENAME_EXCHANGE (FileSystem::exchange) swaps two existing paths; NEITHER
-    // inode loses its link (both survive with nlink unchanged).
+    // RENAME_EXCHANGE swaps two existing names through resolved parent inodes;
+    // NEITHER inode loses its link (both survive with nlink unchanged).
     #[test]
     fn exchange_does_not_drop_either_nlink() {
         let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
@@ -172,7 +102,7 @@ mod rename_overwrite_tests {
         let a = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
         let b = root.create_child("b", 0o644, &CreateCtx::root()).expect("create b");
 
-        fs.exchange("/a", "/b").expect("exchange");
+        root.rename_child("a", &root, "b", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()).expect("exchange");
 
         // Both inodes survive with their single link intact.
         assert_eq!(a.nlink(), 1, "exchange survivor a keeps its link");
@@ -184,7 +114,7 @@ mod rename_overwrite_tests {
 
     // D9: `i_op->rename` (resolved-parent path) — same-dir plain rename moves the
     // source inode onto the destination name, overwriting (and dropping the link
-    // of) an existing target, byte-equivalent to `FileSystem::rename`.
+    // of) an existing target.
     #[test]
     fn iop_rename_same_dir_overwrites() {
         let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 16));
@@ -241,35 +171,35 @@ mod rename_overwrite_tests {
     }
 
     // D13: tmpfs is TARGET-INDEPENDENT — a non-root mount (`/run`) behaves
-    // identically to `/` for the i_op write ops, and the whole-path FileSystem
-    // fallbacks (mount-relative, leading-`/` stripped) address the same tree.
+    // identically to `/` for resolved-parent i_op write ops.
     #[test]
     fn nonroot_mount_realizes_identically() {
         let fs = TmpfsFs::with_limits(String::from("/run"), TmpfsSb::new(64, 16));
         let root = fs.root_inode();
         assert_eq!(root.ino(), ROOT_INO, "root ino is the fixed constant, not target-derived");
-        // i_op create + whole-path FileSystem fallbacks operate on the same tree.
         root.create_child("a", 0o644, &CreateCtx::root()).expect("iop create");
-        // FileSystem::create with a mount-relative path hits the SAME inode tree.
-        let viafs = fs.create("/a", 0o644).expect("fs create resolves existing");
-        assert!(Arc::ptr_eq(&viafs, &root.lookup("a").unwrap()), "fs path == i_op tree");
-        // FileSystem::link fallback (whole-path) links within the tree.
-        fs.link("/a", "/b").expect("fs link fallback");
+        let a = root.lookup("a").expect("a");
+        root.link_child(&a, "b", &CreateCtx::root()).expect("iop link");
         assert!(Arc::ptr_eq(&root.lookup("b").unwrap(), &root.lookup("a").unwrap()), "b is a hardlink of a");
     }
 
-    // D9: `i_op->rename` rejects EXCHANGE/WHITEOUT (those keep the FileSystem
-    // path); the inode-op handles only the plain rename.
+    // D9: `i_op->rename` handles EXCHANGE/WHITEOUT by resolved parent inodes;
+    // the syscall path must not rewalk filesystem strings for these variants.
     #[test]
-    fn iop_rename_rejects_exchange_whiteout() {
+    fn iop_rename_handles_exchange_whiteout() {
         let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
         root.create_child("x", 0o644, &CreateCtx::root()).expect("x");
-        assert!(matches!(
-            root.rename_child("x", &root, "y", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()),
-            Err(VfsError::Einval)));
-        assert!(matches!(
-            root.rename_child("x", &root, "y", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()),
-            Err(VfsError::Einval)));
+        root.create_child("y", 0o644, &CreateCtx::root()).expect("y");
+        let x = root.lookup("x").expect("x lookup");
+        let y = root.lookup("y").expect("y lookup");
+
+        root.rename_child("x", &root, "y", vfs::namei::RENAME_EXCHANGE, &CreateCtx::root()).expect("exchange");
+        assert!(Arc::ptr_eq(&root.lookup("x").unwrap(), &y), "x now names old y");
+        assert!(Arc::ptr_eq(&root.lookup("y").unwrap(), &x), "y now names old x");
+
+        root.rename_child("y", &root, "z", vfs::namei::RENAME_WHITEOUT, &CreateCtx::root()).expect("whiteout");
+        assert!(Arc::ptr_eq(&root.lookup("z").unwrap(), &x), "z now names moved source");
+        assert_eq!(root.lookup("y").unwrap().file_type(), FileType::CharDev, "source became whiteout");
     }
 }
 
@@ -301,7 +231,6 @@ mod symlink_tests {
 #[cfg(test)]
 mod nlink_mode_tests {
     use super::*;
-    use vfs::fs::FileSystem;
 
     // D32: a fresh file starts at nlink=1; a hardlink raises it; unlink lowers
     // it (Linux tmpfs/simple_fs link accounting).
@@ -311,11 +240,11 @@ mod nlink_mode_tests {
         let root = fs.root_inode();
         let f = root.create_child("a", 0o644, &CreateCtx::root()).expect("create a");
         assert_eq!(f.nlink(), 1);
-        fs.link_inode(f.clone(), "/b").expect("hardlink b");
+        root.link_child(&f, "b", &CreateCtx::root()).expect("hardlink b");
         assert_eq!(f.nlink(), 2);
-        fs.unlink("/b").expect("unlink b");
+        root.unlink_child("b").expect("unlink b");
         assert_eq!(f.nlink(), 1);
-        fs.unlink("/a").expect("unlink a");
+        root.unlink_child("a").expect("unlink a");
         assert_eq!(f.nlink(), 0);
     }
 
@@ -332,15 +261,16 @@ mod nlink_mode_tests {
         assert_eq!(root.nlink(), 2);
     }
 
-    // D35: mkdir/create honour the caller-supplied permission bits instead of
-    // a hardcoded 0o755/0o644.
+    // D35: mkdir/create honour Linux-prepared permission bits instead of a
+    // hardcoded 0o755/0o644; mkdir masks caller-supplied SGID unless inherited
+    // from an SGID parent.
     #[test]
     fn create_and_mkdir_honour_mode() {
         let root = make_tmpfs_dir_inode(ROOT_INO, 0o755, 0, 0, Weak::new(), TmpfsSb::unlimited());
         let f = root.create_child("f", 0o600, &CreateCtx::root()).expect("create f");
         assert_eq!(f.perm(), Some(0o600));
         let d = root.mkdir("d", 0o2750, &CreateCtx::root()).expect("mkdir d");
-        assert_eq!(d.perm(), Some(0o2750));
+        assert_eq!(d.perm(), Some(0o750));
     }
 
     // D35 (idmap lane): a new tmpfs inode takes its owner from the caller cred

@@ -69,7 +69,7 @@ impl FileOps for ProcRootOps {
                     }
                 }
                 buf[..n].reverse();
-                core::str::from_utf8(&buf[..n]).unwrap_or("0")
+                crate::util::decimal_str(&buf, n)
             };
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(s, ino, FileType::Directory, next) {

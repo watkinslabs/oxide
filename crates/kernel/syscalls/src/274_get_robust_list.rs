@@ -2,6 +2,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_get_robust_list(pid, head_out, len_out)` — slot 274. `pid==0`
 /// means the calling thread; non-zero pids are looked up in the
@@ -14,10 +15,8 @@ pub fn sys_get_robust_list(args: &SyscallArgs) -> i64 {
     let pid      = args.a0 as u32;
     let head_out = args.a1;
     let len_out  = args.a2;
-    if head_out == 0 || head_out >= hal::USER_VA_END
-        || len_out == 0 || len_out >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf_writable(head_out, 8, 1) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(len_out, 8, 1) { return rv; }
     let (head, len) = if pid == 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
@@ -31,10 +30,10 @@ pub fn sys_get_robust_list(args: &SyscallArgs) -> i64 {
         (task.robust_list_head.load(Ordering::Acquire),
          task.robust_list_len.load(Ordering::Acquire))
     };
-    // SAFETY: head_out/len_out validated < USER_VA_END; CPL=0 writes through caller's AS.
+    // SAFETY: head_out/len_out validated writable for 8-byte outputs.
     unsafe {
-        core::ptr::write_volatile(head_out as *mut u64, head);
-        core::ptr::write_volatile(len_out  as *mut u64, len);
+        core::ptr::write_unaligned(head_out as *mut u64, head);
+        core::ptr::write_unaligned(len_out  as *mut u64, len);
     }
     0
 }

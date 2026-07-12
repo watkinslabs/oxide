@@ -19,10 +19,7 @@ pub fn statfs(&self) -> KResult<SbStatFs> {
     /// option tail (each option self-comma-prefixed), appended after the generic
     /// per-mount flags. The SB-level entry point a `/proc/self/mountinfo` reader
     /// calls in hand of the `Arc<SuperBlock>` (mirrors the [`Self::statfs`]
-    /// passthrough). The legacy `/proc/mounts` line is still composed by
-    /// [`crate::fs::FileSystem::mounts_line`] over `FileSystem::show_options`;
-    /// routing that consumer through this `s_op` hook is the cross-file
-    /// follow-up. # C: O(len opts)
+    /// passthrough). # C: O(len opts)
     pub fn show_options(&self) -> String { self.s_op.show_options() }
 
     /// `s_op->show_devname` passthrough — backend override of the source-device

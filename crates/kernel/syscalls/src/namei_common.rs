@@ -5,8 +5,61 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
+
+#[cfg(feature = "debug-udevdb")]
+fn is_udevdb_path_bytes(path: &[u8]) -> bool {
+    const DATA: &[u8] = b"/run/udev/data";
+    const TAGS: &[u8] = b"/run/udev/tags";
+    path.windows(DATA.len()).any(|w| w == DATA)
+        || path.windows(TAGS.len()).any(|w| w == TAGS)
+}
+
+#[cfg(feature = "debug-udevdb")]
+pub(crate) fn trace_udevdb_path(op: &'static [u8], path: &str, rv: i64) {
+    if !is_udevdb_path_bytes(path.as_bytes()) { return; }
+    klog::write_raw(b"[UDEVDB ");
+    klog::write_raw(op);
+    klog::write_raw(b" rv=");
+    if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+    else { klog::write_dec_u64(rv as u64); }
+    klog::write_raw(b" tid=");
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b"/");
+        klog::write_raw(c.name.as_bytes());
+    } else {
+        klog::write_raw(b"0");
+    }
+    klog::write_raw(b" path=");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"]\n");
+}
+
+#[cfg(feature = "debug-udevdb")]
+pub(crate) fn trace_udevdb_file(op: &'static [u8], file: &vfs::File, rv: i64) {
+    let path = vfs::mount::render_path_for_mount(file.mnt_id(), file.dentry());
+    if !is_udevdb_path_bytes(path.as_bytes()) { return; }
+    klog::write_raw(b"[UDEVDB ");
+    klog::write_raw(op);
+    klog::write_raw(b" rv=");
+    if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+    else { klog::write_dec_u64(rv as u64); }
+    klog::write_raw(b" tid=");
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b"/");
+        klog::write_raw(c.name.as_bytes());
+    } else {
+        klog::write_raw(b"0");
+    }
+    klog::write_raw(b" path=");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"]\n");
+}
 
 /// debug-boot: trace the syscalls systemd-logind runs while classifying
 /// `/dev/dri/card0` for `TakeDevice`. mutter reports `Failed to open gpu ...
@@ -62,18 +115,23 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     Ok(path)
 }
 
-/// D26: every path leaves through the lexical normalizer — an absolute path is
-/// normalized (no raw-string passthrough), a relative path is joined to cwd then
-/// normalized. A normalization miss returns `None` (callers map to ENOENT, Linux
-/// for a path that cannot be normalized), never a silent raw unnormalized string;
-/// this keeps path resolution deterministic.
-/// # C: O(1)
-pub(crate) fn resolve(path_raw: &str) -> Option<String> {
-    if path_raw.starts_with('/') { return vfs::path::lexical_normalize(path_raw); }
-    let cur = sched::live::current()?;
-    // SAFETY: cwd slot single-mutator per `13§5`; current task is sole writer.
-    let cwd = unsafe { (*cur.cwd.get()).clone() };
-    vfs::path::resolve_against_cwd(&cwd, path_raw)
+/// Read a user pathname while preserving the exact non-NUL byte payload.
+/// Symlink targets use this path: Linux `symlink(2)` stores `oldname` verbatim
+/// after `getname`, it does not round-trip through a UTF-8 string.
+/// # C: O(strlen)
+pub(crate) fn read_user_path_bytes(ptr: u64) -> Result<Vec<u8>, i64> {
+    if ptr == 0 || ptr >= USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    // SAFETY: ptr in user range; user page mapped (caller's AS); PATH_MAX bound.
+    let bytes = unsafe { devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) }
+        .ok_or(-(Errno::Efault.as_i32() as i64))?;
+    if bytes.is_empty() {
+        return Err(-(Errno::Enoent.as_i32() as i64));
+    }
+    let path = vfs::path_from_bytes(bytes);
+    vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
+    Ok(bytes.to_vec())
 }
 
 /// # C: O(1)
@@ -139,6 +197,7 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Etxtbsy => Errno::Etxtbsy as i32,
         vfs::VfsError::Efbig   => Errno::Efbig   as i32,
         vfs::VfsError::Espipe  => Errno::Espipe  as i32,
+        vfs::VfsError::Emlink  => Errno::Emlink  as i32,
         vfs::VfsError::Eagain  => Errno::Eagain  as i32,
         vfs::VfsError::Epipe   => Errno::Epipe   as i32,
         vfs::VfsError::Erofs   => Errno::Erofs   as i32,
@@ -150,6 +209,7 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp as i32,
         vfs::VfsError::Enametoolong => Errno::Enametoolong as i32,
         vfs::VfsError::Enotconn => Errno::Enotconn as i32,
+        vfs::VfsError::Ecanceled => Errno::Ecanceled as i32,
     } as i64)
 }
 
@@ -165,54 +225,179 @@ pub(crate) fn trace_run_vfs_error(op: &[u8], path: &str, e: vfs::VfsError) {
 }
 
 /// Resolve the PARENT directory of absolute `p` through the engine
-/// LOOKUP_PARENT walk (`pathresolve::resolve_parent_path`, Linux
-/// `filename_parentat`) and return `(parent_inode, leaf_name)` — THE resolver
-/// feeding every namespace mutation per `docs/16§3` (namei D16). The walk
-/// stops before the final component, returning the resolved parent dir inode +
-/// the leaf reported VERBATIM (so a not-yet-existing leaf is fine; the per-
-/// component child op on the parent then services the create/unlink/rename).
-/// Replaces the old `split_parent` (`rfind('/')`) string split + a separate
-/// full `resolve(parent)` walk; the leaf classification (`.`/`..`/root) is
-/// owned by the engine (`VfsPath::last_type`) but the callers still pre-reject
-/// the dot-forms on the RAW path (`rmdir_dot_errno`/`rename_component_busy`)
-/// before lexical normalization collapses them. The owning mount's inode
-/// services the op (ext4 dir → ext4 create/unlink; tmpfs → tmpfs; read-only
-/// pseudo-fs → Erofs), exactly as Linux `inode_operations`. A `/` (no leaf,
-/// `last_type == Root`) maps to EINVAL — the same error the old `split_parent`
-/// returned for a parent-less path. # C: O(N parent components)
-pub(crate) fn resolve_parent(p: &str) -> Result<(vfs::InodeRef, String), i64> {
-    let vp = crate::pathresolve::resolve_parent_path(p).map_err(errno_from_vfs)?;
-    match vp.last_component {
-        Some(name) => Ok((vp.inode, name)),
-        None       => Err(-(Errno::Einval.as_i32() as i64)),
+/// Resolve a create target's parent through the real `*at` base, preserving the
+/// walked parent `(mnt,dentry)` as authority and returning only the final leaf
+/// name as text. Non-normal leaves name an already-existing object in Linux's
+/// create family (`filename_create` seeds `-EEXIST` before `LAST_NORM` check).
+/// # C: O(N parent components)
+pub(crate) fn resolve_create_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Einval.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot => Err(-(Errno::Eexist.as_i32() as i64)),
+        vfs::LastType::Root => Err(-(Errno::Eexist.as_i32() as i64)),
     }
 }
 
-/// True if `p` already resolves to an existing inode (final component
-/// not followed if it's a symlink). Linux checks target existence
-/// before the fs-specific `mkdir`, returning EEXIST regardless of
-/// parent writability. Without this, `mkdir` of an existing dir whose
-/// parent is a read-only pseudo-fs leaks the parent's EROFS — e.g.
-/// systemd's `cg_create("/")` does `mkdir("/sys/fs/cgroup")` (already
-/// present), whose parent `/sys/fs` is sysfs → EROFS instead of the
-/// EEXIST systemd treats as success, aborting its cgroup setup.
-/// # C: O(N path components)
-pub(crate) fn path_exists(p: &str) -> bool {
-    crate::pathresolve::resolve(p, true).is_some()
+/// Resolve a hardlink destination parent. Existing directory/root/dot targets
+/// are EEXIST for Linux link(2), not the create-family legacy EINVAL-on-root.
+/// # C: O(N parent components)
+pub(crate) fn resolve_link_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Eexist.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
+            Err(-(Errno::Eexist.as_i32() as i64)),
+    }
 }
 
-/// Linux pathname AF_UNIX sockets are removed from the filesystem namespace by
-/// unlink(2). Existing socket objects stay alive, but a later bind to the same
-/// pathname must be allowed. Our socket registry is separate from tmpfs, so
-/// unlink has to drop the registry key as well as the socket inode.
-/// # C: O(log N)
-pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
-    if net::unix_path_is_abstract(p) || !net::sock::UNIX_REGISTRY.is_bound(p) {
+/// Resolve an unlink target's parent without collapsing the authority back into
+/// a string. Dot/root targets are directories to Linux unlink(2), so reject them
+/// before backend `unlink("."/"..")` can manufacture filesystem-specific ENOENT.
+/// # C: O(N parent components)
+pub(crate) fn resolve_unlink_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Eisdir.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
+            Err(-(Errno::Eisdir.as_i32() as i64)),
+    }
+}
+
+/// Resolve an rmdir target's parent. The raw `.`/`..` split is handled by
+/// `rmdir_dot_errno`; removing the root is Linux EBUSY. # C: O(N parent components)
+pub(crate) fn resolve_rmdir_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Ebusy.as_i32() as i64)),
+        },
+        vfs::LastType::Root => Err(-(Errno::Ebusy.as_i32() as i64)),
+        vfs::LastType::Dot | vfs::LastType::Dotdot => Err(-(Errno::Einval.as_i32() as i64)),
+    }
+}
+
+/// Resolve a rename side's parent. Linux `do_renameat2` only accepts
+/// `LAST_NORM`; root/dot/dotdot are `EBUSY`.
+/// # C: O(N parent components)
+pub(crate) fn resolve_rename_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    match vp.last_type() {
+        vfs::LastType::Norm => match vp.last_component.clone() {
+            Some(name) => Ok((vp, name)),
+            None => Err(-(Errno::Ebusy.as_i32() as i64)),
+        },
+        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
+            Err(-(Errno::Ebusy.as_i32() as i64)),
+    }
+}
+
+/// Render a resolved parent path for hooks/diagnostics. Display only; never
+/// feed the result back into authority decisions. # C: O(depth)
+pub(crate) fn render_parent_path(parent: &vfs::VfsPath) -> String {
+    vfs::mount::render_path_for_mount(parent.mnt_id, &parent.dentry)
+}
+
+/// Render `parent/leaf` for Landlock/logging from exact parent identity.
+/// Display only; authority remains `parent`. # C: O(depth + leaf)
+pub(crate) fn render_child_path(parent: &vfs::VfsPath, leaf: &str) -> String {
+    let mut p = render_parent_path(parent);
+    if p == "/" {
+        p.push_str(leaf);
+    } else {
+        p.push('/');
+        p.push_str(leaf);
+    }
+    p
+}
+
+/// True if `leaf` exists below the exact parent dentry. This replaces whole-path
+/// string re-walks for create EEXIST ordering. # C: O(1) expected + fs lookup
+pub(crate) fn child_exists(parent: &vfs::VfsPath, leaf: &str) -> Result<bool, i64> {
+    if let Some(d) = vfs::d_lookup(&parent.dentry, leaf) {
+        return Ok(d.inode().is_some());
+    }
+    match parent.inode.lookup(leaf) {
+        Ok(_) => Ok(true),
+        Err(vfs::VfsError::Enoent) => Ok(false),
+        Err(e) => Err(errno_from_vfs(e)),
+    }
+}
+
+/// Lookup a child inode below an exact parent. `None` means a real negative
+/// result; other lookup failures preserve their errno. # C: O(1) expected + fs lookup
+pub(crate) fn child_inode(parent: &vfs::VfsPath, leaf: &str) -> Result<Option<vfs::InodeRef>, i64> {
+    if let Some(d) = vfs::d_lookup(&parent.dentry, leaf) {
+        return Ok(d.inode());
+    }
+    match parent.inode.lookup(leaf) {
+        Ok(i) => Ok(Some(i)),
+        Err(vfs::VfsError::Enoent) => Ok(None),
+        Err(e) => Err(errno_from_vfs(e)),
+    }
+}
+
+/// Capture the positive child dentry under an already-resolved parent, without
+/// rendering/re-walking the full path. Used before unlink/rmdir so the VFS tail
+/// can update the exact alias the backend removed. # C: O(1) expected + fs lookup
+pub(crate) fn child_dentry(parent: &vfs::VfsPath, leaf: &str) -> Option<Arc<vfs::Dentry>> {
+    match vfs::d_lookup(&parent.dentry, leaf) {
+        Some(d) if d.inode().is_some() => Some(d),
+        Some(_) => None,
+        None => match parent.inode.lookup(leaf) {
+            Ok(i) => Some(vfs::d_add(&parent.dentry, leaf, i)),
+            Err(_) => None,
+        },
+    }
+}
+
+/// Read-only check by the already-resolved owning mount. # C: O(log N)
+pub(crate) fn parent_mount_readonly(parent: &vfs::VfsPath) -> bool {
+    vfs::mount::mount_by_id(parent.mnt_id)
+        .map(|m| (m.flags() & vfs::mount::MNT_RDONLY) != 0)
+        .unwrap_or(false)
+}
+
+/// Drop stale child cache by object parent, not rendered pathname. # C: O(1)
+pub(crate) fn drop_child_cache(parent: &vfs::VfsPath, leaf: &str) {
+    vfs::d_drop_child(&parent.dentry, leaf);
+}
+
+/// Resolve a user AF_UNIX sockaddr path to the kernel rendezvous key. Abstract
+/// addresses stay byte-name keyed in the caller's netns; pathname addresses use
+/// the caller's VFS root/cwd and follow the final symlink to the socket inode.
+/// # C: O(path components)
+pub(crate) fn resolve_unix_addr(path: alloc::vec::Vec<u8>) -> Result<net::UnixAddr, i64> {
+    if net::unix_path_is_abstract(&path) {
+        return Ok(net::UnixAddr::from_sockaddr_path(path));
+    }
+    let decoded = vfs::path_from_bytes(&path);
+    let p = crate::pathresolve::resolve_path_raw(&decoded, false)
+        .map_err(errno_from_vfs)?;
+    if p.inode.file_type() != vfs::FileType::Socket {
+        return Err(-(Errno::Econnrefused.as_i32() as i64));
+    }
+    Ok(net::UnixAddr::from_inode_bytes(path, &p.inode))
+}
+
+/// Drop a pathname AF_UNIX registry binding after VFS unlink removed the socket
+/// inode. Existing connected socket objects stay alive. # C: O(log N)
+pub(crate) fn unlink_unix_socket_addr(addr: &net::UnixAddr) -> bool {
+    if !addr.is_pathname() || !net::sock::UNIX_REGISTRY.is_bound_addr(addr) {
         return false;
     }
-    net::sock::UNIX_REGISTRY.unbind(p);
-    net::sock::UNIX_REGISTRY.dgram_unbind(p);
-    crate::pathresolve::d_delete_path(p);
+    net::sock::UNIX_REGISTRY.unbind_addr(addr);
+    net::sock::UNIX_REGISTRY.dgram_unbind_addr(addr);
     true
 }
 
@@ -222,18 +407,6 @@ pub(crate) fn unlink_unix_socket_path(p: &str) -> bool {
 pub(crate) fn last_component(raw: &str) -> &str {
     let trimmed = raw.trim_end_matches('/');
     trimmed.rsplit('/').next().unwrap_or(trimmed)
-}
-
-/// Parent path string for fsnotify hooks after a successful mutation. Inputs
-/// here are resolved absolute paths; root children report parent `/`.
-/// # C: O(N)
-pub(crate) fn parent_path(abs: &str) -> &str {
-    let trimmed = abs.trim_end_matches('/');
-    match trimmed.rfind('/') {
-        Some(0) => "/",
-        Some(i) => &trimmed[..i],
-        _ => "/",
-    }
 }
 
 /// Linux `do_rmdirat`: a final component of `.` → EINVAL, `..` → ENOTEMPTY

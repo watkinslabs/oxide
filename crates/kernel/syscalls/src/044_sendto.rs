@@ -90,7 +90,10 @@ pub fn send_over_socket(
         None
     } else if matches!(*sock.kind.lock(), SockKind::UnixDgram(_)) {
         match read_sockaddr_un_path_len(dest_p, dest_len) {
-            Some(p) => Some(net::sock::RemoteAddr::UnixPath(p)),
+            Some(p) => match crate::namei_common::resolve_unix_addr(p) {
+                Ok(a) => Some(net::sock::RemoteAddr::Unix(a)),
+                Err(e) => return e,
+            },
             None    => return -(Errno::Einval.as_i32() as i64),
         }
     } else if read_sa_family(dest_p) == Some(AF_INET6 as u16) {

@@ -13,6 +13,18 @@ use super::propagation::propagation_targets;
 pub fn unregister(d: &Arc<Dentry>) -> usize {
     let ns = current_ns();
     let Some(target) = mount_exact_at(ns, d) else { return 0; };
+    unregister_mount(target)
+}
+
+/// Detach the mount rooted exactly at `(parent_mnt_id, d)` in the caller's ns.
+/// This is the non-lossy form for propagation mirrors under bind-shared
+/// dentries. # C: O(log N)
+pub fn unregister_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> usize {
+    let Some(target) = __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == current_ns()) else { return 0; };
+    unregister_mount(target)
+}
+
+fn unregister_mount(target: Arc<Mount>) -> usize {
     let id = target.mnt_id;
     let mp = target.mountpoint();
     let parent = target.parent_id.load(Ordering::Acquire);
@@ -38,8 +50,8 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
     if target.mnt_count() == 0 { super::put_super_if_last(&sb); }
     // Linux `umount_tree`: a detached mount leaves its namespace tree, so drop
     // its slot from `mnt_ns->nr_mounts` (frees cap headroom for a re-mount).
-    mntns::dec_mounts(ns, 1);
-    mntns::bump_gen(ns);
+    mntns::dec_mounts(target.ns, 1);
+    mntns::bump_gen(target.ns);
     1
 }
 
@@ -128,19 +140,19 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
     // propagate_umount: detach the mirror at every propagation target of the
     // parent before removing the primary (Linux unmounts propagated copies).
     if let Some(parent) = mount_by_id(top.parent_id.load(Ordering::Acquire)) {
-        if let Some(top_mp) = top.mountpoint() {
-            if let Some(rel) = rel_under(&top_mp, parent.mountpoint().as_ref()) {
+        if let (Some(top_mp), Some(parent_root)) = (top.mountpoint(), parent.mnt_root()) {
+            if let Some(rel) = plain_rel_under(&top_mp, &parent_root) {
                 if !rel.is_empty() {
                     for peer in propagation_targets(&parent) {
                         if peer.ns != ns { continue; }
-                        let base = match peer.mountpoint().or_else(global_root) { Some(b) => b, None => continue };
+                        let base = match peer.mnt_root().or_else(|| peer.mountpoint()).or_else(global_root) { Some(b) => b, None => continue };
                         // Resolve the mirror's MOUNTPOINT dentry WITHOUT the
                         // final cross: the mirror is mounted there, so a crossing
                         // `descend` would return the mirror ROOT — not a
                         // mountpoint, so `unregister`'s `mount_exact_at` could not
                         // find the mount and the peer mirror would leak.
                         if let Some(mp) = descend_mountpoint(&base, &rel) {
-                            let _ = unregister(&mp);
+                            let _ = unregister_under(peer.mnt_id, &mp);
                         }
                     }
                 }

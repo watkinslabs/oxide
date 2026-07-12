@@ -132,7 +132,7 @@ impl SuperBlock {
     /// `grab_super` (Linux `atomic_inc_not_zero(&s->s_active)`): take one extra
     /// active reference IFF the SB is still live (count != 0). Returns `false`
     /// once teardown has begun so an sget-style lookup never resurrects a dying
-    /// instance and bind/sharing callers fall through to a fresh `for_backend`.
+    /// instance and callers build a fresh filled superblock instead.
     /// Each `true` MUST be paired with a [`SuperBlock::deactivate_super`].
     /// # C: O(1)
     pub fn grab_active(&self) -> bool {
@@ -228,7 +228,7 @@ impl SuperBlock {
 
     /// Publish the fs timestamp granularity (Linux `fill_super` writing
     /// `sb->s_time_gran`). A backend that persists coarser-than-ns times calls
-    /// this once after [`SuperBlock::for_backend`] so [`Self::timestamp_truncate`]
+    /// this once after fill-super so [`Self::timestamp_truncate`]
     /// floors to it. `0` is normalized to `1` (ns precision) so the truncation
     /// math never divides by zero. # C: O(1)
     pub fn set_time_gran(&self, gran: u32) {
@@ -244,7 +244,7 @@ impl SuperBlock {
     /// Publish the fs timestamp range (Linux `fill_super` writing
     /// `sb->s_time_min`/`sb->s_time_max` from the on-disk timestamp field width).
     /// A backend whose epoch window is narrower than `time64_t` calls this once
-    /// after [`SuperBlock::for_backend`] so [`Self::timestamp_truncate`] clamps
+    /// after fill-super so [`Self::timestamp_truncate`] clamps
     /// out-of-range setattr times. `min > max` is normalized by swapping so the
     /// clamp window is never inverted. # C: O(1)
     pub fn set_time_range(&self, min: i64, max: i64) {

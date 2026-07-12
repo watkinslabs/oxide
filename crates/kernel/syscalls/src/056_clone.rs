@@ -7,6 +7,45 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+pub(crate) const CSIGNAL:              u64 = 0xff;
+pub(crate) const CLONE_VM:             u64 = 0x100;
+pub(crate) const CLONE_FS:             u64 = 0x200;
+pub(crate) const CLONE_FILES:          u64 = 0x400;
+pub(crate) const CLONE_SIGHAND:        u64 = 0x800;
+pub(crate) const CLONE_PIDFD:          u64 = 0x1000;
+pub(crate) const CLONE_VFORK:          u64 = 0x4000;
+pub(crate) const CLONE_PARENT:         u64 = 0x8000;
+pub(crate) const CLONE_THREAD:         u64 = 0x10000;
+pub(crate) const CLONE_NEWNS:          u64 = 0x20000;
+pub(crate) const CLONE_SETTLS:         u64 = 0x80000;
+pub(crate) const CLONE_PARENT_SETTID:  u64 = 0x100000;
+pub(crate) const CLONE_CHILD_CLEARTID: u64 = 0x200000;
+pub(crate) const CLONE_DETACHED:       u64 = 0x400000;
+pub(crate) const CLONE_CHILD_SETTID:   u64 = 0x1000000;
+pub(crate) const CLONE_NEWUSER:        u64 = 0x10000000;
+pub(crate) const CLONE_NEWPID:         u64 = 0x20000000;
+pub(crate) const CLONE_CLEAR_SIGHAND:  u64 = 1u64 << 32;
+pub(crate) const CLONE_INTO_CGROUP:    u64 = 1u64 << 33;
+pub(crate) const CLONE_LEGACY_FLAGS:   u64 = 0xffff_ffff;
+
+fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// # C: O(1)
+pub(crate) fn validate_clone_core(flags: u64) -> Result<(), Errno> {
+    if (flags & (CLONE_NEWNS | CLONE_FS)) == (CLONE_NEWNS | CLONE_FS) { return Err(Errno::Einval); }
+    if (flags & (CLONE_NEWUSER | CLONE_FS)) == (CLONE_NEWUSER | CLONE_FS) { return Err(Errno::Einval); }
+    if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 { return Err(Errno::Einval); }
+    if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 { return Err(Errno::Einval); }
+    if (flags & CLONE_THREAD) != 0 && (flags & (CLONE_NEWUSER | CLONE_NEWPID)) != 0 { return Err(Errno::Einval); }
+    if (flags & CLONE_PIDFD) != 0 && (flags & CLONE_DETACHED) != 0 { return Err(Errno::Einval); }
+    if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_CLEAR_SIGHAND) != 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
+fn user_i32_ptr_ok(p: u64) -> bool {
+    p != 0 && p.checked_add(core::mem::size_of::<i32>() as u64).map_or(false, |e| e <= hal::USER_VA_END)
+}
+
 /// `sys_clone_dispatch` — unified clone path for fork/vfork/
 /// clone/clone3. `flags` carries the Linux CLONE_* bitmap; the lowest
 /// 8 bits are the exit_signal (SIGCHLD = 17 for fork). `child_stack`
@@ -14,16 +53,6 @@ use syscall::errno::Errno;
 /// + `ctid` are user pointers honored by CLONE_PARENT_SETTID /
 /// CLONE_CHILD_SETTID / CLONE_CHILD_CLEARTID.
 ///
-/// Honored flag bits (best-effort; rest accepted silently):
-///   CLONE_VM       0x100   — share parent's mm via `Arc::clone`
-///   CLONE_FILES    0x400   — share parent's fd_table via `Arc::clone`
-///   CLONE_SIGHAND  0x800   — share parent's sigactions (Arc-on-write
-///                            unsupported v1; copy on spawn)
-///   CLONE_THREAD   0x10000 — child.tgid = parent.tgid; same process
-///   CLONE_PARENT_SETTID  0x100000 — write child tid to *ptid
-///   CLONE_CHILD_SETTID   0x1000000 — write child tid to *ctid (in child AS)
-///   CLONE_CHILD_CLEARTID 0x200000 — store ctid in clear_child_tid
-///   CLONE_SETTLS         0x80000 — write tls to child's FS_BASE
 /// # C: O(parent VMAs) for COW; O(1) for CLONE_VM
 pub fn sys_clone_dispatch(
     _args: &SyscallArgs,
@@ -34,24 +63,18 @@ pub fn sys_clone_dispatch(
     tls: u64,
 ) -> i64 {
     use core::sync::atomic::Ordering;
-    const CLONE_VM:        u64 = 0x100;
-    const CLONE_FS:        u64 = 0x200;
-    const CLONE_FILES:     u64 = 0x400;
-    const CLONE_SIGHAND:   u64 = 0x800;
-    const CLONE_THREAD:    u64 = 0x10000;
-    const CLONE_SETTLS:    u64 = 0x80000;
-    const CLONE_PARENT_SETTID: u64 = 0x100000;
-    const CLONE_CHILD_CLEARTID: u64 = 0x200000;
-    const CLONE_CHILD_SETTID:   u64 = 0x1000000;
-    let _ = CLONE_FS; // accepted but not yet differentiated from cwd-inherit
+    if let Err(e) = validate_clone_core(flags) { return errno(e); }
+    if (flags & CLONE_PARENT_SETTID) != 0 && !user_i32_ptr_ok(ptid) { return errno(Errno::Efault); }
+    if (flags & CLONE_CHILD_SETTID) != 0 && !user_i32_ptr_ok(ctid) { return errno(Errno::Efault); }
+    if (flags & CLONE_CHILD_CLEARTID) != 0 && ctid >= hal::USER_VA_END { return errno(Errno::Efault); }
     let cur = match sched::live::current() {
         Some(c) => c,
-        None    => return -(Errno::Einval.as_i32() as i64),
+        None    => return errno(Errno::Einval),
     };
     // SAFETY: we are the running task on this CPU; no concurrent writer to our mm; preempt-off through the syscall handler.
     let parent_mm = match unsafe { cur.mm_ref() } {
         Some(m) => m,
-        None    => return -(Errno::Einval.as_i32() as i64),
+        None    => return errno(Errno::Einval),
     };
 
     // cgroup v2 pids controller (`26§4`): a fork/clone producing one more
@@ -61,7 +84,7 @@ pub fn sys_clone_dispatch(
     {
         let proc_pid = cur.tgid.load(core::sync::atomic::Ordering::Relaxed) as u64;
         if cgroup::fork_would_exceed_pids(proc_pid) {
-            return -(Errno::Eagain.as_i32() as i64);
+            return errno(Errno::Eagain);
         }
     }
 
@@ -76,7 +99,7 @@ pub fn sys_clone_dispatch(
             // SAFETY: capture_kernel_master ran at pmm::user_as::init; PMM up.
             match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
                 Some(r) => r,
-                None    => return -(Errno::Enomem.as_i32() as i64),
+                None    => return errno(Errno::Enomem),
             }
         };
         #[cfg(target_arch = "aarch64")]
@@ -84,7 +107,7 @@ pub fn sys_clone_dispatch(
             // SAFETY: master L0 captured at pmm::user_as::init; PMM up; new_user_l0 zeroes + populates kernel half.
             match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
                 Some(r) => r,
-                None    => return -(Errno::Enomem.as_i32() as i64),
+                None    => return errno(Errno::Enomem),
             }
         };
         let hhdm = pmm::user_as::hhdm_offset();
@@ -114,7 +137,7 @@ pub fn sys_clone_dispatch(
                 pmm::user_as::install_teardown(&m);
                 m
             }
-            Err(_) => return -(Errno::Enomem.as_i32() as i64),
+            Err(_) => return errno(Errno::Enomem),
         }
     };
 
@@ -122,11 +145,12 @@ pub fn sys_clone_dispatch(
     let spawn = clone_spawn_arch(child_tid, child_stack, child_mm);
     let child = match spawn {
         Ok(t)  => t,
-        Err(_) => return -(Errno::Enomem.as_i32() as i64),
+        Err(_) => return errno(Errno::Enomem),
     };
     // The vpid (vtid) to return to the parent — captured now, before the
     // `child` Arc may be dropped at the end. spawn stamped it.
     let child_vpid_ret = child.vtid.load(Ordering::Acquire);
+    child.exit_signal.store((flags & CSIGNAL) as u8, Ordering::Release);
 
     // CLONE_THREAD: the new task joins the caller's thread group.
     // Without it the child is its own process leader and tgid==tid.
@@ -144,9 +168,12 @@ pub fn sys_clone_dispatch(
         // in.
         child.vtgid.store(cur.vtgid.load(Ordering::Acquire), Ordering::Release);
     }
-    // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
-    // for `park_zombie` SIGCHLD delivery (P3-67).
-    child.parent_tid.store(cur.tid, Ordering::Release);
+    // Record parent_tid for wait ownership. CLONE_PARENT makes the child a
+    // sibling of the caller: its wait parent is the caller's parent.
+    let wait_parent_tid = if (flags & CLONE_PARENT) != 0 {
+        cur.parent_tid.load(Ordering::Acquire)
+    } else { cur.tid };
+    child.parent_tid.store(wait_parent_tid, Ordering::Release);
     // cgroup v2 (`26§4`): a forked process inherits the parent's cgroup
     // (Linux cgroup_post_fork); a new thread charges the process's cgroup
     // so pids.current counts it.
@@ -198,11 +225,13 @@ pub fn sys_clone_dispatch(
         child.ns_membership.fetch_or(new_ns_bits, Ordering::Release);
         crate::s272_unshare::apply_new_namespaces(&child, new_ns_bits);
     }
-    // Materialise an Arc<Task> for the parent by bumping its
-    // strong count (the runqueue's `current` AtomicPtr already
-    // holds one), then downgrade to Weak<Task>. Drops the bumped
-    // Arc immediately — Weak alone keeps the slot live.
-    if let Some(rq) = sched::live::global() {
+    // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
+    // inherits the caller's parent link; otherwise the caller becomes parent.
+    if (flags & CLONE_PARENT) != 0 {
+        // SAFETY: caller is current on this CPU; child not scheduled; clone
+        // just copies the existing parent Weak without mutating the caller.
+        unsafe { *child.parent_arc.get() = (*cur.parent_arc.get()).clone(); }
+    } else if let Some(rq) = sched::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
             // SAFETY: rq.current was installed via Arc::into_raw in `Runqueue::new` / `swap_current`; bumping the strong count is sound because the conceptual Arc held by current is alive while we run on it.
@@ -241,6 +270,9 @@ pub fn sys_clone_dispatch(
     // SAFETY: child not yet scheduled (sole writer); parent reads happen on its running CPU per single-mutator invariant.
     unsafe {
         *child.sigactions.get() = *cur.sigactions.get();
+        if (flags & CLONE_CLEAR_SIGHAND) != 0 {
+            *child.sigactions.get() = [sched::SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64];
+        }
     }
     // F205: ALWAYS inherit sigmask on clone/fork, regardless of
     // CLONE_SIGHAND. Per POSIX fork(2) "process signal mask" is in
@@ -260,7 +292,7 @@ pub fn sys_clone_dispatch(
     let _ = CLONE_SIGHAND;
 
     // CLONE_PARENT_SETTID: write child tid in caller's AS.
-    if (flags & CLONE_PARENT_SETTID) != 0 && ptid != 0 && ptid < hal::USER_VA_END {
+    if (flags & CLONE_PARENT_SETTID) != 0 {
         // SAFETY: ptid validated < USER_VA_END; CPL=0 writes in caller's AS.
         // Linux writes the child's TID (the vtid userspace sees), not the
         // opaque internal tid.
@@ -274,8 +306,7 @@ pub fn sys_clone_dispatch(
     // active CR3, which only matches the child for CLONE_VM. Skip
     // it otherwise — a real impl would queue the write for the
     // child's first instruction.
-    if (flags & CLONE_CHILD_SETTID) != 0 && ctid != 0 && ctid < hal::USER_VA_END
-       && (flags & CLONE_VM) != 0
+    if (flags & CLONE_CHILD_SETTID) != 0 && (flags & CLONE_VM) != 0
     {
         // SAFETY: ctid validated < USER_VA_END; AS shared (CLONE_VM); CPL=0.
         // Child's TID = its vtid (what gettid() returns), not internal tid.
@@ -300,7 +331,7 @@ pub fn sys_clone_dispatch(
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    let _ = tls;
+    let _ = (tls, CLONE_SETTLS);
 
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_clone: parent_tid=");
@@ -328,7 +359,6 @@ pub fn sys_clone_dispatch(
     // yield in the parent until it clears. Wake sites:
     //   - sys_execve: after CLOEXEC drop, before SP setup.
     //   - sys_exit / sys_exit_group: alongside mark_done.
-    const CLONE_VFORK: u64 = 0x4000;
     if (flags & CLONE_VFORK) != 0 {
         child.vfork_pending.store(true, Ordering::Release);
         // Hold the Arc<child> across the yield loop so the child's

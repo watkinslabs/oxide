@@ -5,22 +5,12 @@ use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 
 use crate::inode::InodeRef;
-use crate::superblock::{FileSystemType, SuperBlock, SuperOps};
+use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, next_anon_dev, sget};
 use crate::types::VfsError;
 
 use super::flags::FsFlags;
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
-
-fn push_u32(s: &mut String, n: u32) {
-    if n == 0 { s.push('0'); return; }
-    let mut buf = [0u8; 10];
-    let mut i = buf.len();
-    let mut v = n;
-    while v > 0 { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; }
-    // SAFETY: buf[i..] holds only ASCII digits, valid UTF-8.
-    s.push_str(unsafe { core::str::from_utf8_unchecked(&buf[i..]) });
-}
 
 pub trait FileSystem: Send + Sync {
     fn name(&self) -> &str;
@@ -40,106 +30,70 @@ pub trait FileSystem: Send + Sync {
     fn block_size(&self) -> u32 { 4096 }
     fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { None }
     fn root(&self) -> Option<InodeRef> { None }
-    fn create(&self, path: &str, mode: u32) -> KResult<InodeRef> { let _ = (path, mode); Err(VfsError::Erofs) }
-    fn create_anonymous(&self, dir: &str, mode: u32) -> KResult<InodeRef> { let _ = (dir, mode); Err(VfsError::Erofs) }
-    fn unlink(&self, path: &str) -> KResult<()> { let _ = path; Err(VfsError::Erofs) }
-    fn link(&self, target: &str, link: &str) -> KResult<()> { let _ = (target, link); Err(VfsError::Erofs) }
-    fn link_inode(&self, inode: InodeRef, link: &str) -> KResult<()> { let _ = (inode, link); Err(VfsError::Erofs) }
-    fn rename(&self, from: &str, to: &str) -> KResult<()> { let _ = (from, to); Err(VfsError::Erofs) }
-    fn lookup_path(&self, path: &str) -> Option<InodeRef> {
-        let mut cur = self.root()?;
-        for comp in path.split('/').filter(|c| !c.is_empty() && *c != ".") { cur = cur.lookup(comp).ok()?; }
-        Some(cur)
-    }
-    fn exchange(&self, a: &str, b: &str) -> KResult<()> {
-        if self.lookup_path(a).is_none() || self.lookup_path(b).is_none() { return Err(VfsError::Enoent); }
-        let mut tmp = alloc::string::String::new();
-        let mut n: u32 = 0;
-        loop {
-            tmp.clear();
-            tmp.push_str(a);
-            tmp.push_str(".oxexch");
-            push_u32(&mut tmp, n);
-            if self.lookup_path(&tmp).is_none() { break; }
-            n = n.checked_add(1).ok_or(VfsError::Eexist)?;
-            if n > 65536 { return Err(VfsError::Eexist); }
-        }
-        self.rename(a, &tmp)?;
-        if let Err(e) = self.rename(b, a) {
-            let _ = self.rename(&tmp, a);
-            return Err(e);
-        }
-        if let Err(e) = self.rename(&tmp, b) {
-            let _ = self.rename(a, b);
-            let _ = self.rename(&tmp, a);
-            return Err(e);
-        }
-        Ok(())
-    }
-    fn whiteout(&self, from: &str, to: &str) -> KResult<()> {
-        const S_IFCHR: u16 = 0x2000;
-        self.rename(from, to)?;
-        let from = from.strip_suffix('/').unwrap_or(from);
-        let (parent, name) = match from.rfind('/') { Some(i) => (&from[..i], &from[i + 1..]), None => ("", from) };
-        let pino = match self.lookup_path(parent) {
-            Some(p) => p,
-            None => { let _ = self.rename(to, from); return Err(VfsError::Enoent); }
-        };
-        if let Err(e) = pino.mknod_child(name, S_IFCHR, 0, &crate::CreateCtx::root()) {
-            let _ = self.rename(to, from);
-            return Err(e);
-        }
-        Ok(())
-    }
     fn set_sb(&self, _sb: Weak<SuperBlock>) {}
     fn show_options(&self) -> String { String::new() }
-    fn mounts_line(&self, mount_point: &str, sb: Option<&SuperBlock>) -> String {
-        let mut s = String::new();
-        s.push_str(self.name());
-        s.push(' ');
-        s.push_str(mount_point);
-        s.push(' ');
-        s.push_str(self.name());
-        s.push_str(" rw,relatime");
-        match sb {
-            Some(sb) => s.push_str(&sb.show_options()),
-            None => s.push_str(&self.show_options()),
+}
+
+/// Realize a not-yet-converted filesystem implementation into a Linux
+/// `SuperBlock`. This is a fill-super compatibility boundary only: the returned
+/// SB carries all live authority in `s_type`, `s_op`, `s_root`, and
+/// `s_fs_info`; no `Arc<dyn FileSystem>` is retained behind it or consulted by
+/// the mount namespace. # C: O(N_sb) for device-backed reuse.
+pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn FileSystem>,
+    root_inode: Option<InodeRef>, s_id: String) -> Arc<SuperBlock> {
+    let root = root_inode.or_else(|| fs.root());
+    let s_op: Arc<dyn SuperOps> = fs.super_ops().unwrap_or_else(|| {
+        Arc::new(SimpleSuperOps {
+            magic: fs.magic(),
+            block_size: fs.block_size(),
+            options: fs.show_options(),
+        })
+    });
+    let s_magic = fs.magic();
+    let s_blocksize = fs.block_size();
+    match fs.dev_id() {
+        Some(dev) => {
+            let fs_for_stamp = fs.clone();
+            sget(dev, move || {
+                let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
+                fs_for_stamp.set_sb(Arc::downgrade(&sb));
+                sb
+            })
         }
-        s.push_str(" 0 0\n");
-        s
+        None => {
+            let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
+            fs.set_sb(Arc::downgrade(&sb));
+            sb
+        }
     }
 }
 
-pub struct MountSpec {
-    pub fs:        Arc<dyn FileSystem>,
-    pub bind_root: Option<InodeRef>,
-    pub strict:    bool,
-}
-
-pub type FsConstructor = dyn Fn(&str, &str, &str) -> KResult<MountSpec> + Send + Sync;
+pub type FsConstructor = dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str) -> KResult<Arc<SuperBlock>> + Send + Sync;
 
 pub struct FsType {
     pub(super) name:  String,
     pub(super) magic: u64,
     pub(super) flags: FsFlags,
+    self_ref:          Weak<FsType>,
     pub(super) ctor:  Box<FsConstructor>,
 }
 
 impl FsType {
     pub fn new(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>) -> Arc<Self> {
-        Arc::new(Self { name: name.to_string(), magic, flags, ctor })
+        Arc::new_cyclic(|self_ref| Self { name: name.to_string(), magic, flags, self_ref: self_ref.clone(), ctor })
     }
-    pub fn construct(&self, source: &str, target: &str, data: &str) -> KResult<MountSpec> { (self.ctor)(source, target, data) }
+    fn as_type(&self) -> Arc<dyn FileSystemType> {
+        self.self_ref.upgrade().expect("registered filesystem type self-ref") as Arc<dyn FileSystemType>
+    }
+    pub fn construct(&self, source: Option<&str>, target: &str, data: &str) -> KResult<Arc<SuperBlock>> { (self.ctor)(self.as_type(), source, target, data) }
     pub fn magic(&self) -> u64 { self.magic }
     pub fn fs_flags(&self) -> FsFlags { self.flags }
 }
 
 impl FileSystemType for FsType {
     fn name(&self) -> &str { &self.name }
-    fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>> {
-        let spec = (self.ctor)(src, "", opts)?;
-        let root = spec.bind_root.or_else(|| spec.fs.root());
-        Ok(SuperBlock::for_backend(spec.fs, root, crate::superblock::next_anon_dev(), self.name.clone()))
+    fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
+        (self.ctor)(self.as_type(), src, "", opts)
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
 }

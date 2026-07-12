@@ -8,6 +8,7 @@
 
 use core::sync::atomic::Ordering;
 use syscall::{errno::Errno, SyscallArgs};
+use crate::userbuf::validate_user_buf;
 
 /// SCHED_RESET_ON_FORK is ORed into the policy arg; mask it (the reset-on-fork
 /// flag itself is a follow-up — accepted, not yet enforced).
@@ -20,10 +21,8 @@ pub fn sys_sched_setscheduler(args: &SyscallArgs) -> i64 {
     let policy = (args.a1 as u32) & !SCHED_RESET_ON_FORK;
     let uparam = args.a2;
     // struct sched_param { int sched_priority; } — 4 bytes.
-    if uparam == 0 || uparam.saturating_add(4) > hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: uparam range-checked for 4 bytes < USER_VA_END; read sched_priority.
+    if let Err(rv) = validate_user_buf(uparam, 4, 1) { return rv; }
+    // SAFETY: uparam validated readable for struct sched_param.sched_priority.
     let prio = unsafe { core::ptr::read_unaligned(uparam as *const i32) };
     if prio < 0 { return -(Errno::Einval.as_i32() as i64); }
     let task = if pid == 0 {

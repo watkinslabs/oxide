@@ -10,6 +10,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::inode::{InodeBuilder, I_DIRTY_SYNC};
 use vfs::superblock::next_anon_dev;
@@ -41,7 +43,7 @@ fn make_ramfile(ino: u64) -> InodeRef {
 fn build() -> (Arc<SuperBlock>, Arc<SyncOps>) {
     let ops = Arc::new(SyncOps { waits: Mutex::new(Vec::new()), fail_async: AtomicBool::new(false) });
     let fs = Arc::new(SyncFs { ops: ops.clone() });
-    let sb = SuperBlock::for_backend(fs, None, next_anon_dev(), String::from("syncfs"));
+    let sb = common::realize_sb(fs, None, next_anon_dev(), String::from("syncfs"));
     (sb, ops)
 }
 

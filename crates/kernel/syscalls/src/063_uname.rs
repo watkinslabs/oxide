@@ -17,10 +17,10 @@ const UNAME_MACHINE: &[u8] = b"aarch64";
 /// Write a utsname field at offset `off`: `src` then NUL pad to 65 B.
 unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     let n = src.len().min(UTSNAME_FIELD_LEN - 1);
-    // SAFETY: caller validated [tp, tp+UTSNAME_TOTAL_LEN) writable; CPL=0 byte writes for src copy + NUL pad.
+    // SAFETY: caller validated [tp, tp+UTSNAME_TOTAL_LEN) writable; Linux copyout accepts byte-granular storage.
     unsafe {
-        for i in 0..n { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, src[i]); }
-        for i in n..UTSNAME_FIELD_LEN { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, 0u8); }
+        for i in 0..n { core::ptr::write_unaligned((tp + (off + i) as u64) as *mut u8, src[i]); }
+        for i in n..UTSNAME_FIELD_LEN { core::ptr::write_unaligned((tp + (off + i) as u64) as *mut u8, 0u8); }
     }
 }
 

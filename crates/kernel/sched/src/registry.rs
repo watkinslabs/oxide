@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::{Task, TaskState};
+use crate::wait_select::{self, Candidate, Waiter};
 
 static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass> = Spinlock::new(Vec::new());
 
@@ -273,31 +274,55 @@ pub fn try_wake_stopped(task: &Task) -> bool {
     true
 }
 
-/// wait4(2) child-selection predicate per `docs/15§5` — the single source
-/// of truth shared by the zombie-reap path (`live::zombies::reap_one`/
-/// `peek_one`) and the stop/cont path (`take_child_stop_event`). The four
-/// POSIX `pid` forms (Linux `kernel/exit.c eligible_child`):
-///   `-1`   any child of `parent`
-///   `0`    child of `parent` in the waiter's process group (`parent_pgid`)
-///   `>0`   that specific child by **kernel tid** — `056_clone` returns the
-///          vpid to the parent (clone returns the child's vtid==vtgid), so
-///          `waitpid(pid)` carries the vpid and we match the child's vtgid.
-///   `<-1`  any child in process group `-pid`
-/// `c_*` = the candidate child's fields: `c_parent_tid` is the INTERNAL tid
-/// (kernel parent-linkage), `c_vpid` is the child's vtgid (the PID userspace
-/// sees), `c_pgid` is the process-group id (vpid space). Pure → unit-tested.
-/// # C: O(1)
-pub(crate) fn wait_pid_matches(
-    c_parent_tid: u32, c_vpid: u32, c_pgid: u32,
-    parent: u32, pid: i32, parent_pgid: u32,
-) -> bool {
-    if c_parent_tid != parent { return false; }
-    match pid {
-        -1          => true,
-        0           => c_pgid == parent_pgid,
-        p if p > 0  => c_vpid == p as u32,
-        p           => c_pgid == (-p) as u32, // p < -1: process group -pid
+#[derive(Copy, Clone)]
+pub struct WaitChildSnapshot {
+    pub vpid:     u32,
+    pub uid:      u32,
+    pub utime_ns: u64,
+    pub stime_ns: u64,
+}
+
+impl WaitChildSnapshot {
+    /// # C: O(1)
+    pub fn from_task(t: &Task) -> Self {
+        use core::sync::atomic::Ordering;
+        Self {
+            vpid:     t.vtgid.load(Ordering::Acquire),
+            uid:      t.creds.ruid.load(Ordering::Acquire),
+            utime_ns: t.utime_ns.load(Ordering::Acquire),
+            stime_ns: t.stime_ns.load(Ordering::Acquire),
+        }
     }
+}
+
+/// # C: O(N_tasks)
+fn parent_tgid_locked(g: &[(u32, Weak<Task>)], parent_tid: u32) -> u32 {
+    for (tid, w) in g.iter() {
+        if *tid == parent_tid {
+            if let Some(t) = w.upgrade() {
+                return t.tgid.load(core::sync::atomic::Ordering::Acquire);
+            }
+        }
+    }
+    0
+}
+
+/// # C: O(N_tasks)
+fn candidate_locked(g: &[(u32, Weak<Task>)], t: &Task) -> Candidate {
+    use core::sync::atomic::Ordering;
+    let parent_tid = t.parent_tid.load(Ordering::Acquire);
+    Candidate {
+        parent_tid,
+        parent_tgid: parent_tgid_locked(g, parent_tid),
+        vpid:        t.vtgid.load(Ordering::Acquire),
+        pgid:        t.pgid.load(Ordering::Acquire),
+        exit_signal: t.exit_signal.load(Ordering::Acquire),
+    }
+}
+
+/// # C: O(N_tasks)
+pub(crate) fn wait_candidate_matches(c: Candidate, waiter: Waiter, pid: i32, options: u64) -> bool {
+    wait_select::eligible(c, waiter, pid, options)
 }
 
 /// wait4(WUNTRACED/WCONTINUED) helper: take first pending stop/cont.
@@ -308,28 +333,60 @@ pub(crate) fn wait_pid_matches(
 /// # Lk: REG.lock
 pub fn take_child_stop_event(
     parent: u32,
+    parent_tgid: u32,
     pid: i32,
     parent_pgid: u32,
+    options: u64,
     want_stop: bool,
     want_cont: bool,
-) -> Option<(u32, u8, u32)> {
+) -> Option<(WaitChildSnapshot, u8, u32)> {
     use core::sync::atomic::Ordering;
     let g = REG.lock();
+    let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
-        let cvpid = t.vtgid.load(Ordering::Acquire);
-        if !wait_pid_matches(
-            t.parent_tid.load(Ordering::Acquire), cvpid,
-            t.pgid.load(Ordering::Acquire), parent, pid, parent_pgid)
-        {
+        if !wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options) {
             continue;
         }
         if want_stop && t.stop_pending.swap(false, Ordering::AcqRel) {
             let sig = t.stop_signal.load(Ordering::Acquire);
-            return Some((cvpid, 1, sig as u32));
+            return Some((WaitChildSnapshot::from_task(&t), 1, sig as u32));
         }
         if want_cont && t.cont_pending.swap(false, Ordering::AcqRel) {
-            return Some((cvpid, 2, 0));
+            return Some((WaitChildSnapshot::from_task(&t), 2, 0));
+        }
+    }
+    None
+}
+
+/// waitid(WNOWAIT|WSTOPPED/WCONTINUED) helper: observe the first pending
+/// stop/cont event without consuming it. Same scan/filter/order as
+/// `take_child_stop_event`.
+/// # C: O(N_tasks)
+/// # Lk: REG.lock
+pub fn peek_child_stop_event(
+    parent: u32,
+    parent_tgid: u32,
+    pid: i32,
+    parent_pgid: u32,
+    options: u64,
+    want_stop: bool,
+    want_cont: bool,
+) -> Option<(WaitChildSnapshot, u8, u32)> {
+    use core::sync::atomic::Ordering;
+    let g = REG.lock();
+    let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
+    for (_, w) in g.iter() {
+        let Some(t) = w.upgrade() else { continue };
+        if !wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options) {
+            continue;
+        }
+        if want_stop && t.stop_pending.load(Ordering::Acquire) {
+            let sig = t.stop_signal.load(Ordering::Acquire);
+            return Some((WaitChildSnapshot::from_task(&t), 1, sig as u32));
+        }
+        if want_cont && t.cont_pending.load(Ordering::Acquire) {
+            return Some((WaitChildSnapshot::from_task(&t), 2, 0));
         }
     }
     None
@@ -343,6 +400,15 @@ pub fn has_children(parent: u32) -> bool {
     g.iter()
         .filter_map(|(_, w)| w.upgrade())
         .any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
+}
+
+/// # C: O(N_tasks²)
+pub fn has_wait_children(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> bool {
+    let g = REG.lock();
+    let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
+    g.iter()
+        .filter_map(|(_, w)| w.upgrade())
+        .any(|t| wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options))
 }
 
 /// Snapshot every live task whose pgid matches. Used by tty
@@ -385,45 +451,4 @@ pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
 #[cfg(test)]
 pub fn clear_for_tests() {
     REG.lock().clear();
-}
-
-#[cfg(test)]
-mod wait_match_tests {
-    use super::wait_pid_matches;
-    // Candidate child: parent_tid=100, kernel tid=4242, pgid=70.
-    // Waiter: parent_tid=100, process group 70.
-    const PARENT: u32 = 100;
-    const TID:    u32 = 4242;
-    const PGID:   u32 = 70;
-    fn m(pid: i32) -> bool { wait_pid_matches(PARENT, TID, PGID, 100, pid, 70) }
-
-    #[test]
-    fn minus_one_matches_any_child() { assert!(m(-1)); }
-
-    #[test]
-    fn positive_pid_matches_kernel_tid_not_pgid() {
-        assert!(m(4242));   // clone returned the kernel tid → waitpid(tid) matches
-        assert!(!m(70));    // a pgid is not a tid
-        assert!(!m(4243));  // wrong tid
-    }
-
-    #[test]
-    fn zero_matches_waiters_pgrp_only() {
-        assert!(wait_pid_matches(PARENT, TID, 70, 100, 0, 70));  // same pgrp
-        assert!(!wait_pid_matches(PARENT, TID, 88, 100, 0, 70)); // other pgrp
-    }
-
-    #[test]
-    fn neg_pgid_matches_that_process_group() {
-        assert!(m(-70));    // -pid == child pgid 70
-        assert!(!m(-88));   // different pgrp
-        assert!(!m(-4242)); // a tid is not a pgid
-    }
-
-    #[test]
-    fn other_parent_never_matches() {
-        for pid in [-4242, -70, -1, 0, 70, 4242] {
-            assert!(!wait_pid_matches(PARENT, TID, PGID, 999, pid, 70), "pid={pid}");
-        }
-    }
 }

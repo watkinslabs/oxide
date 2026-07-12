@@ -28,6 +28,7 @@ pub mod binfmt_misc;
 pub mod coredump;
 pub mod ptrace;
 pub mod sig_dispatch;
+mod userbuf;
 
 /// Install fs runtime hooks: flock release-on-close, inotify
 /// IN_MODIFY-on-write, pipe reader/writer close tracking, epoll broadcast.

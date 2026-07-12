@@ -20,7 +20,7 @@ use vfs::{FileType, InodeBuilder, InodeRef, KResult, IDENTITY,
 struct NullType;
 impl FileSystemType for NullType {
     fn name(&self) -> &str { "t" }
-    fn mount(&self, _s: &str, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
+    fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
 }
 struct NullOps;
 impl SuperOps for NullOps {
@@ -35,7 +35,7 @@ fn st_blocks(bs: u32, size: u64) -> u64 {
     let s = sb(bs);
     let f = InodeBuilder::new(7, mk_mode(FileType::Regular, 0), default_inode_ops(), default_file_ops())
         .sb(Arc::downgrade(&s)).size(size).build();
-    vfs::generic_fillattr(&f, &IDENTITY, None).blocks
+    vfs::generic_fillattr(&f, &IDENTITY).blocks
 }
 
 #[test]

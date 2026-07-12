@@ -3,18 +3,21 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
+use crate::userbuf::validate_user_buf_writable;
 
 /// # C: O(1)
 pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     use vfs::{File, OpenFlags};
     let pipefd = args.a0;
     let flags  = args.a1 as u32;
-    const O_NONBLOCK: u32 = 0o4000;
-    const O_CLOEXEC:  u32 = 0o2000000;
-    if pipefd == 0 || pipefd >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    const O_NONBLOCK: u32 = OpenFlags::O_NONBLOCK.bits();
+    const O_DIRECT:   u32 = OpenFlags::O_DIRECT.bits();
+    const O_CLOEXEC:  u32 = OpenFlags::O_CLOEXEC.bits();
+    const O_NOTIFICATION_PIPE: u32 = OpenFlags::O_EXCL.bits();
+    const VALID_FLAGS: u32 = O_CLOEXEC | O_NONBLOCK | O_DIRECT | O_NOTIFICATION_PIPE;
+    if flags & !VALID_FLAGS != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if flags & O_NOTIFICATION_PIPE != 0 { return -(Errno::Enopkg.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf_writable(pipefd, 8, 4) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
@@ -39,6 +42,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     let mut r_oflags = OpenFlags::O_RDONLY;
     let mut w_oflags = OpenFlags::O_WRONLY;
     if (flags & O_NONBLOCK) != 0 { r_oflags |= OpenFlags::O_NONBLOCK; w_oflags |= OpenFlags::O_NONBLOCK; }
+    if (flags & O_DIRECT) != 0 { w_oflags |= OpenFlags::O_DIRECT; }
     let r_file = File::new(inode.clone(), dentry.clone(), r_oflags);
     let w_file = File::new(inode, dentry, w_oflags);
     let r_fd = match fdt.alloc_limit(r_file, cur.nofile_soft())  { Ok(f) => f, Err(e) => return -(e as i64) };
@@ -50,7 +54,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
         let _ = fdt.set_cloexec(r_fd, true);
         let _ = fdt.set_cloexec(w_fd, true);
     }
-    // SAFETY: pipefd validated < USER_VA_END; user page mapped per active CR3 = caller's AS.
+    // SAFETY: pipefd validated writable for the full int[2] output array.
     unsafe {
         core::ptr::write_volatile(pipefd as *mut i32,         r_fd);
         core::ptr::write_volatile((pipefd + 4) as *mut i32,   w_fd);

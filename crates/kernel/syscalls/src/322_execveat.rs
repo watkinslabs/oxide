@@ -24,9 +24,7 @@ pub fn sys_execveat(args: &SyscallArgs) -> i64 {
     let argv  = args.a2;
     let envp  = args.a3;
     let flags = args.a4;
-    let path_is_empty = if pathp == 0 {
-        true
-    } else if pathp >= USER_VA_END {
+    let path_is_empty = if pathp == 0 || pathp >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     } else {
         // SAFETY: pathp validated < USER_VA_END; one-byte probe.

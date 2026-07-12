@@ -17,7 +17,7 @@ use vfs::{KResult, VfsError};
 struct FakeType { nm: &'static str }
 impl FileSystemType for FakeType {
     fn name(&self) -> &str { self.nm }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 
 #[test]

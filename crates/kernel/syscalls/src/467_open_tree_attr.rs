@@ -16,9 +16,8 @@ pub fn sys_open_tree_attr(args: &SyscallArgs) -> i64 {
     let uattr = args.a3;
     let size  = args.a4 as usize;
     if uattr != 0 {
-        if size < MOUNT_ATTR_SIZE || uattr >= hal::USER_VA_END {
-            return -(Errno::Einval.as_i32() as i64);
-        }
+        if size < MOUNT_ATTR_SIZE { return -(Errno::Einval.as_i32() as i64); }
+        if let Err(rv) = crate::userbuf::validate_user_buf(uattr, MOUNT_ATTR_SIZE as u64, 1) { return rv; }
     }
     // dfd/path/flags are in a0/a1/a2 — the same positions sys_open_tree reads.
     crate::s428_open_tree::sys_open_tree(args)

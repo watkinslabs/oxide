@@ -1,12 +1,4 @@
-// F132: netlink-fd shims for socket-shaped syscalls. The socket
-// syscall layer otherwise routes through InetSocket only — netlink
-// inodes (tag `NLSK` in the high bits of `ino()`) need special
-// handling for bind / getsockname / setsockopt / sendto / recvfrom.
-// Split out of net.rs to keep that file under the 1000-line cap.
-//
-// All helpers return Some(rv) when the fd is a netlink socket and
-// they've handled the call; None to fall through to the InetSocket
-// path.
+// F132: netlink-fd shims for socket-shaped syscalls.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -14,6 +6,8 @@ use alloc::vec::Vec;
 use alloc::sync::Arc;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
+
+use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_nl};
 
 const NL_TAG: u64 = 0x4E4C_534B_0000_0000;
 
@@ -40,11 +34,7 @@ fn netlink_sock(fd: u64) -> Option<Arc<vfs::File>> {
     if (f.inode().ino() & 0xFFFF_FFFF_0000_0000) == NL_TAG { Some(f) } else { None }
 }
 
-// DIAG (debug-uevent): trace the udev-monitor delivery chain that gdm's greeter
-// depends on. gdm's GUdevClient re-checks graphics ONLY on a cooked add/change
-// uevent (its 10s timer is one-shot). The chain is two hops: udevd worker sends
-// the cooked device UNICAST to the manager port; the manager re-broadcasts it to
-// group 2, where gdm's monitor listens. A drop at either hop = gdm never wakes.
+// DIAG (debug-uevent): trace the udev-monitor delivery chain.
 #[cfg(feature = "debug-uevent")]
 fn uev_kv<'a>(payload: &'a [u8], key: &[u8]) -> &'a [u8] {
     let mut i = 0;
@@ -265,13 +255,7 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
             core::ptr::write_volatile((name +  8)  as *mut u32, nl_groups);
         }
     }
-    // SCM_CREDENTIALS ancillary: modern systemd-udevd's `sd-device-monitor`
-    // reads SO_PASSCRED creds off each uevent and DROPS any message that lacks
-    // an SCM_CREDENTIALS record or whose uid != 0 ("No sender credentials
-    // received, ignoring message"). Kernel-originated uevents carry ucred
-    // {pid:0,uid:0,gid:0}. Without this every uevent was silently ignored:
-    // udevd drained the socket but processed no device (empty /run/udev/data,
-    // no master-of-seat tag, seat0 non-graphical, gdm greeter never launched).
+    // SCM_CREDENTIALS ancillary: udevd drops uevents without root credentials.
     // cmsghdr (LP64) = {len:u64@0, level:i32@8, type:i32@12}; SCM_CREDENTIALS
     // (SOL_SOCKET=1, type=2) data = struct ucred {pid:i32,uid:u32,gid:u32}.
     // CMSG_LEN(12)=28, CMSG_SPACE(12)=32. Only emit for the uevent monitor
@@ -305,8 +289,7 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
 /// with `nl_pid = current.tid` (the bind-implied pid musl + dhcpcd
 /// expect to see back).
 /// # C: O(1)
-pub fn getsockname(fd: u64, addr_p: u64) -> i64 {
-    if addr_p == 0 || addr_p >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+pub fn getsockname(fd: u64, addr_p: u64, addrlen_p: u64) -> i64 {
     // nl_pid MUST be the socket's port_id — the same value its replies
     // carry in nlmsg_pid. sd_netlink learns this via getsockname and then
     // drops any reply whose nlmsg_pid differs. Returning current.tid here
@@ -317,14 +300,8 @@ pub fn getsockname(fd: u64, addr_p: u64) -> i64 {
         .and_then(|f| f.inode().private::<::netlink::NetlinkSocket>()
             .map(|s| s.port_id.load(Ordering::Acquire)))
         .unwrap_or_else(|| sched::live::current().map(|c| c.tid).unwrap_or(1));
-    // SAFETY: addr_p validated < USER_VA_END; sockaddr_nl is 12 bytes (u16 family, u16 pad, u32 pid, u32 groups).
-    unsafe {
-        core::ptr::write_volatile( addr_p        as *mut u16, 16); // AF_NETLINK
-        core::ptr::write_volatile((addr_p +  2)  as *mut u16, 0);
-        core::ptr::write_volatile((addr_p +  4)  as *mut u32, pid as u32);
-        core::ptr::write_volatile((addr_p +  8)  as *mut u32, 0);
-    }
-    0
+    let sa = encoded_sockaddr_nl(pid as u32, 0);
+    copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }
 
 /// `sendto(fd, buf, len, ...)` for netlink — routes the message

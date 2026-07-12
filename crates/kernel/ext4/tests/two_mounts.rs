@@ -86,15 +86,15 @@ fn page_caches_are_per_mount() {
     assert!(a_h1 > a_h0, "A's own cache records the hit");
 }
 
-/// FileSystem trait surface routes through each instance's own mount.
+/// Root inode export routes through each instance's own mount.
 #[test]
-fn fs_trait_routes_per_instance() {
-    let a: Arc<dyn FileSystem> = open(MINI);
-    let b: Arc<dyn FileSystem> = open(WALK);
-    assert!(a.lookup_path("/hello.txt").is_some());
-    assert!(a.lookup_path("/usr/bin/realtool").is_none());
-    assert!(b.lookup_path("/usr/bin/realtool").is_some());
-    assert!(b.lookup_path("/hello.txt").is_none());
+fn root_inode_routes_per_instance() {
+    let a = open(MINI);
+    let b = open(WALK);
+    assert!(a.state().lookup_path(b"/hello.txt").is_some());
+    assert!(a.state().lookup_path(b"/usr/bin/realtool").is_none());
+    assert!(b.state().lookup_path(b"/usr/bin/realtool").is_some());
+    assert!(b.state().lookup_path(b"/hello.txt").is_none());
     assert!(a.root().is_some() && b.root().is_some());
 }
 

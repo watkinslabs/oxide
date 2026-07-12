@@ -130,6 +130,10 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
     let vp = match crate::pathresolve::resolve_at_lookup(dirfd, args.a1, lf) {
         Ok(p) => p, Err(rv) => return rv,
     };
+    let is_mount_root = vfs::mount::root_dentry_for_mount_id(vp.mnt_id)
+        .map(|root| alloc::sync::Arc::ptr_eq(&root, &vp.dentry))
+        .unwrap_or(false);
+    if !is_mount_root { return -(Errno::Einval.as_i32() as i64); }
     if propagation != 0 {
         let kind = if propagation & MS_UNBINDABLE != 0 { Propagation::Unbindable }
             else if propagation & MS_SLAVE != 0 { Propagation::Slave }

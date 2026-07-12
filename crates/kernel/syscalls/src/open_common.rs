@@ -10,6 +10,7 @@ pub(crate) const O_CREAT:     u32 = 0o100;
 /// component → `EEXIST` (Linux `do_last`/`lookup_open`).
 pub(crate) const O_EXCL:      u32 = 0o200;
 pub(crate) const O_TRUNC:     u32 = 0o1000;
+pub(crate) const O_APPEND:    u32 = 0o2000;
 pub(crate) const O_DIRECTORY: u32 = 0o200000;
 // O_* flag VALUES are arch-specific (Linux fcntl.h per-arch overrides):
 // x86_64 = asm-generic (O_NOFOLLOW=0o400000); aarch64 uses the arm override
@@ -23,6 +24,7 @@ pub(crate) const O_TMPFILE:   u32 = 0o20000000;
 /// `O_PATH` (asm-generic, both arches): an fd-reference open with no read/write
 /// access — bypasses `may_open`'s access-mode permission check.
 pub(crate) const O_PATH:      u32 = 0o10000000;
+pub(crate) const O_CLOEXEC:   u32 = 0o2000000;
 /// `O_ACCMODE` mask + the writable access modes.
 pub(crate) const O_ACCMODE:   u32 = 0o3;
 pub(crate) const O_WRONLY:    u32 = 0o1;
@@ -30,6 +32,62 @@ pub(crate) const O_RDWR:      u32 = 0o2;
 /// `O_NONBLOCK` (asm-generic, both arches): a non-blocking conflicting open
 /// fails the lease-break with `EWOULDBLOCK` instead of waiting.
 pub(crate) const O_NONBLOCK:  u32 = 0o4000;
+const O_NOCTTY:    u64 = 0o400;
+const O_DSYNC:     u64 = 0o10000;
+const O_ASYNC:     u64 = 0o20000;
+const O_DIRECT:    u64 = 0o40000;
+const O_LARGEFILE: u64 = 0o100000;
+const O_NOATIME:   u64 = 0o1000000;
+const __O_SYNC:    u64 = 0o4000000;
+const O_SYNC:      u64 = 0o4010000;
+pub(crate) const O_EMPTYPATH: u64 = 0o400000000;
+pub(crate) const OPENAT2_REGULAR: u64 = 0o40000000000;
+const VALID_OPEN_FLAGS: u64 = O_CREAT as u64 | O_EXCL as u64 | O_TRUNC as u64
+    | O_APPEND as u64
+    | O_DIRECTORY as u64 | O_NOFOLLOW as u64 | O_TMPFILE as u64 | O_PATH as u64
+    | O_CLOEXEC as u64 | O_ACCMODE as u64 | O_NONBLOCK as u64 | O_NOCTTY
+    | O_DSYNC | O_ASYNC | O_DIRECT | O_LARGEFILE | O_NOATIME | O_SYNC | O_EMPTYPATH;
+const VALID_OPENAT2_FLAGS: u64 = VALID_OPEN_FLAGS | OPENAT2_REGULAR;
+const O_PATH_FLAGS: u64 = O_DIRECTORY as u64 | O_NOFOLLOW as u64 | O_PATH as u64
+    | O_CLOEXEC as u64 | O_EMPTYPATH;
+
+/// Linux `build_open_how` / `build_open_flags` validation needed before path
+/// mutation. Legacy open/openat mask unsupported bits and let `O_PATH` strip
+/// every non-path flag; openat2 keeps the full 64-bit flags word for unknown-bit
+/// rejection. # C: O(1)
+pub(crate) fn normalize_open_flags(flags: u64, mode: u64, openat2: bool) -> Result<(u32, u32), i64> {
+    let mut f = flags;
+    let mut m = mode;
+    if !openat2 {
+        f &= VALID_OPEN_FLAGS;
+        m &= 0o7777;
+        if (f & O_PATH as u64) != 0 { f &= O_PATH_FLAGS; }
+        if (f & (O_CREAT as u64 | O_TMPFILE as u64)) == 0 { m = 0; }
+    } else {
+        if (f & !VALID_OPENAT2_FLAGS) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        if (f & (O_CREAT as u64 | O_TMPFILE as u64)) != 0 {
+            if (m & !0o7777) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        } else if m != 0 {
+            return Err(-(Errno::Einval.as_i32() as i64));
+        }
+        if (f & O_PATH as u64) != 0 && (f & !O_PATH_FLAGS) != 0 {
+            return Err(-(Errno::Einval.as_i32() as i64));
+        }
+    }
+    if (f & (O_DIRECTORY as u64 | O_CREAT as u64)) == (O_DIRECTORY as u64 | O_CREAT as u64) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    if (f & O_TMPFILE as u64) != 0 {
+        if (f & O_DIRECTORY as u64) == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        let acc = (f as u32) & O_ACCMODE;
+        if acc != O_WRONLY && acc != O_RDWR { return Err(-(Errno::Einval.as_i32() as i64)); }
+    }
+    if (f & (O_DIRECTORY as u64 | OPENAT2_REGULAR)) == (O_DIRECTORY as u64 | OPENAT2_REGULAR) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    if (f & __O_SYNC) != 0 { f |= O_DSYNC; }
+    Ok((f as u32, m as u32))
+}
 
 /// Linux `do_open` access enforcement, run after path resolution: `EROFS` for a
 /// write through a read-only mount (`mnt_want_write`), then the `may_open` DAC
@@ -114,75 +172,4 @@ pub(crate) fn break_lease_for_open(inode: &vfs::InodeRef, flags: u32) -> Option<
         unsafe { sched::live::schedule::schedule(); }
     }
     None
-}
-
-/// Map a path that resolves by **duplicating an existing open file
-/// description** → `(tid_opt, fd)`: `/dev/std{in,out,err}`, `/dev/fd/<n>`,
-/// `/proc/<pid|self>/fd/<n>` (Linux magic fd-link open semantics).
-/// Delegates to the hosted-tested `vfs::path::dup_fd_target` so the
-/// parsing contract is locked by `vfs` unit tests (T8).
-/// # C: O(N_path)
-pub(crate) fn dup_fd_target(path: &str) -> Option<(Option<u32>, i32)> {
-    vfs::path::dup_fd_target(path)
-}
-
-/// Parse `/proc/{self|<pid>}/fd/<n>` → `(tid_opt, fd)` (`self` ⇒ `None`).
-/// # C: O(N_path)
-pub(crate) fn parse_proc_fd(path: &str) -> Option<(Option<u32>, i32)> {
-    vfs::path::parse_proc_fd(path)
-}
-
-/// Open `/proc/<pid>/fd/<n>` — the Linux magic-symlink reopen (`proc_fd_link`
-/// `get_link` → `nd_jump_link` to the target `(mnt,dentry,inode)`, then a FRESH
-/// open with the CALLER's flags). The result carries a NEW `f_mode` derived from
-/// `flags`, NOT a dup of the original description. Duping instead (the old bug)
-/// meant a chase()-style `O_PATH` fd reopened `O_RDONLY` via `fd_reopen` stayed
-/// `FMODE_PATH`, so `read(2)` returned `EBADF` — os-release + `StateDirectory=`
-/// setup failed, stalling accounts-daemon and the GNOME greeter. # C: O(1)
-pub(crate) fn open_proc_fd(tid_opt: Option<u32>, fd: i32, flags: u32) -> i64 {
-    const O_CLOEXEC: u32 = 0o2000000;
-    let target = match sched::proclink::proc_fd_file(tid_opt, fd) {
-        Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let inode  = target.inode().clone();
-    let dentry = target.dentry().clone();
-    let mnt_id = target.mnt_id();
-    // Linux `do_dentry_open`: an O_PATH (FMODE_PATH) reopen never runs
-    // `f_op->open` (pure fd-reference); any other access mode does.
-    if (flags & O_PATH) == 0 {
-        if let Err(e) = inode.on_open() { return -(e as i64); }
-    }
-    // `may_open` re-check: a magic-link reopen can only obtain access the caller
-    // is permitted (this is why /proc/self/fd can't escalate). O_PATH exempt.
-    if let Some(rv) = enforce_open_perm(&inode, mnt_id, flags, false) { return rv; }
-    if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let oflags = vfs::OpenFlags::from_bits_truncate(flags) - vfs::OpenFlags::O_CLOEXEC;
-    let file = vfs::File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
-    // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
-    // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
-    // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
-    let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;
-    match fdt.alloc_limit(file, nofile) {
-        Ok(n) => {
-            if (flags & O_CLOEXEC) != 0 {
-                if let Err(e) = fdt.set_cloexec(n, true) { return -(e as i64); }
-            }
-            n as i64
-        }
-        Err(e) => -(e as i64),
-    }
-}
-
-/// Resolve a user path for open/openat: absolute lexically normalised,
-/// relative joined to cwd then normalised; bare `.`/`..` preserved.
-/// # C: O(N)
-pub(crate) fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
-    Some(crate::pathresolve::resolve_cwd(path_raw))
 }

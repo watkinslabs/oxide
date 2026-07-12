@@ -17,11 +17,17 @@ pub fn current_cred_real() -> vfs::Cred {
 fn cred_for(real: bool) -> vfs::Cred {
     use core::sync::atomic::Ordering;
     let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
-    let eff = c.creds.cap_effective.load(Ordering::Acquire);
+    let effective = c.creds.cap_effective.load(Ordering::Acquire);
+    let permitted = c.creds.cap_permitted.load(Ordering::Acquire);
     let (uid, gid) = if real {
         (c.creds.ruid.load(Ordering::Acquire), c.creds.rgid.load(Ordering::Acquire))
     } else {
         (c.creds.fsuid.load(Ordering::Acquire), c.creds.fsgid.load(Ordering::Acquire))
+    };
+    let eff = if real {
+        if uid == 0 { permitted } else { 0 }
+    } else {
+        effective
     };
     let ng = (c.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
     let mut groups = [0u32; vfs::CRED_NGROUPS];

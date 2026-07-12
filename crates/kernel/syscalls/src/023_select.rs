@@ -3,40 +3,27 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
+use hal::TimerOps;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_select(nfds, readfds, writefds, exceptfds, timeout)` — slot 23.
 /// # C: O(nfds)
 pub fn sys_select(args: &SyscallArgs) -> i64 {
-    use hal::TimerOps;
-    const NFDS_MAX: u64 = 4096;
-    let nfds        = args.a0;
-    let readfds_p   = args.a1;
-    let writefds_p  = args.a2;
-    let exceptfds_p = args.a3;
     let timeout_p   = args.a4;
-    if nfds > NFDS_MAX { return -(Errno::Einval.as_i32() as i64); }
-    let fdset_bytes = ((nfds + 7) / 8).min(128);
-    for &p in &[readfds_p, writefds_p, exceptfds_p] {
-        if p != 0 {
-            if let Err(rv) = validate_user_buf_writable(p, fdset_bytes, 1) { return rv; }
-        }
-    }
     // Decode timeout (struct timeval { tv_sec: i64, tv_usec: i64 }
     // = 16 B). NULL = block forever; {0,0} = non-block.
-    let deadline_ns: Option<u64> = if timeout_p == 0 || timeout_p >= USER_VA_END {
+    let deadline_ns = if timeout_p == 0 {
         None
     } else {
-        if let Err(rv) = validate_user_buf(timeout_p, 16, 8) { return rv; }
-        // SAFETY: timeout_p validated < USER_VA_END; 16 B aligned struct timeval read.
+        if let Err(rv) = validate_user_buf(timeout_p, 16, 1) { return rv; }
+        // SAFETY: timeout_p validated readable for the 16-byte timeval.
         let (s, u) = unsafe {
             (
-                core::ptr::read_volatile(timeout_p as *const i64),
-                core::ptr::read_volatile((timeout_p + 8) as *const i64),
+                core::ptr::read_unaligned(timeout_p as *const i64),
+                core::ptr::read_unaligned((timeout_p + 8) as *const i64),
             )
         };
-        if s < 0 || u < 0 { return -(Errno::Einval.as_i32() as i64); }
+        if s < 0 || u < 0 || u >= 1_000_000 { return -(Errno::Einval.as_i32() as i64); }
         let total_ns = (s as u64).saturating_mul(1_000_000_000).saturating_add((u as u64) * 1_000);
         #[cfg(target_arch = "x86_64")]
         let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
@@ -44,12 +31,30 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
         let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         Some(now.saturating_add(total_ns))
     };
+    sys_select_with_deadline(args, deadline_ns)
+}
+
+/// Shared select engine for select/pselect after timeout conversion.
+/// # C: O(nfds)
+pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u64>) -> i64 {
+    const NFDS_MAX: u64 = 4096;
+    let nfds        = args.a0;
+    let readfds_p   = args.a1;
+    let writefds_p  = args.a2;
+    let exceptfds_p = args.a3;
+    if nfds > NFDS_MAX { return -(Errno::Einval.as_i32() as i64); }
+    let fdset_bytes = ((nfds + 7) / 8).min(128);
+    for &p in &[readfds_p, writefds_p, exceptfds_p] {
+        if p != 0 {
+            if let Err(rv) = validate_user_buf_writable(p, fdset_bytes, 1) { return rv; }
+        }
+    }
     let bit_at = |p: u64, i: u64| -> bool {
-        if p == 0 || p >= USER_VA_END { return false; }
+        if p == 0 { return false; }
         let byte_off = (i / 8) as u64;
-        if byte_off >= 128 { return false; }
-        // SAFETY: byte within the 128-byte fd_set; CPL=0 reads through caller's AS.
-        let b = unsafe { core::ptr::read_volatile((p + byte_off) as *const u8) };
+        if byte_off >= fdset_bytes { return false; }
+        // SAFETY: fdset was validated writable/readable for fdset_bytes above.
+        let b = unsafe { core::ptr::read_unaligned((p + byte_off) as *const u8) };
         (b & (1u8 << (i & 7))) != 0
     };
     let cur = match sched::live::current() {
@@ -87,11 +92,11 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
     let rv: i64 = loop {
         // Zero user fd_sets so we can write ready bits in.
         for &p in &[readfds_p, writefds_p, exceptfds_p] {
-            if p != 0 && p < USER_VA_END {
-                // SAFETY: 128-byte fd_set fits in user range; CPL=0 writes through caller's AS.
+            if p != 0 {
+                // SAFETY: fdset was validated writable for fdset_bytes above.
                 unsafe {
-                    for i in 0..128usize {
-                        core::ptr::write_volatile((p + i as u64) as *mut u8, 0);
+                    for i in 0..fdset_bytes {
+                        core::ptr::write_unaligned((p + i) as *mut u8, 0);
                     }
                 }
             }
@@ -107,8 +112,8 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
                          || (mask & vfs::POLL_HUP) != 0;
             let got_write = (mask & vfs::POLL_OUT) != 0;
             let mut hit = false;
-            if want_read  && got_read  { set_bit(readfds_p, fd); hit = true; }
-            if want_write && got_write { set_bit(writefds_p, fd); hit = true; }
+            if want_read  && got_read  { set_bit(readfds_p, fd, fdset_bytes); hit = true; }
+            if want_write && got_write { set_bit(writefds_p, fd, fdset_bytes); hit = true; }
             if hit { ready += 1; }
         }
         if ready > 0 {
@@ -170,13 +175,13 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
 }
 
 #[inline]
-fn set_bit(p: u64, i: u64) {
-    if p == 0 || p >= USER_VA_END { return; }
+fn set_bit(p: u64, i: u64, fdset_bytes: u64) {
+    if p == 0 { return; }
     let byte_off = (i / 8) as u64;
-    if byte_off >= 128 { return; }
-    // SAFETY: byte within the 128-byte fd_set; CPL=0 read+write through caller's AS.
+    if byte_off >= fdset_bytes { return; }
+    // SAFETY: fdset was validated writable for fdset_bytes by the caller.
     unsafe {
-        let b = core::ptr::read_volatile((p + byte_off) as *const u8);
-        core::ptr::write_volatile((p + byte_off) as *mut u8, b | (1u8 << (i & 7)));
+        let b = core::ptr::read_unaligned((p + byte_off) as *const u8);
+        core::ptr::write_unaligned((p + byte_off) as *mut u8, b | (1u8 << (i & 7)));
     }
 }

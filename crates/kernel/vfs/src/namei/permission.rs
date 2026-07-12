@@ -1,5 +1,6 @@
 use crate::inode::InodeRef;
 use crate::types::{FileType, KResult, VfsError};
+use core::sync::atomic::Ordering;
 
 use super::{Cred, MAY_EXEC, MAY_READ, MAY_WRITE, S_ISGID, S_ISUID, S_IXGRP};
 
@@ -186,6 +187,51 @@ pub fn may_create(dir: &InodeRef, cred: &Cred) -> KResult<()> {
     inode_permission(dir, MAY_WRITE | MAY_EXEC, cred)
 }
 
+const PROTECTED_HARDLINKS: bool = true;
+
+/// Linux `safe_hardlink_source`: non-owner hardlinks are only safe for regular
+/// files that are not setuid, not executable-setgid, and readable+writable by
+/// the caller. # C: O(ngroups)
+fn safe_hardlink_source(inode: &InodeRef, cred: &Cred) -> bool {
+    let mode = inode.i_mode();
+    if !matches!(inode.file_type(), FileType::Regular) { return false; }
+    if mode & S_ISUID != 0 { return false; }
+    if (mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP) { return false; }
+    inode_permission(inode, MAY_READ | MAY_WRITE, cred).is_ok()
+}
+
+/// Linux `may_linkat` + `vfs_link` source-side pre-backend gate. Destination
+/// create permission and mount-identity ordering live in the syscall layer
+/// because Linux runs `filename_create()` before `old_path.mnt != new_path.mnt`.
+/// # C: O(ngroups)
+pub fn may_link_source(src: &InodeRef, cred: &Cred) -> KResult<()> {
+    if src.i_flags() & (crate::inode::S_APPEND | crate::inode::S_IMMUTABLE) != 0 {
+        return Err(VfsError::Eperm);
+    }
+    if matches!(src.file_type(), FileType::Directory) { return Err(VfsError::Eperm); }
+    if src.nlink() == 0 && src.i_state() & crate::inode::I_LINKABLE == 0 {
+        return Err(VfsError::Enoent);
+    }
+    let max = src.i_sb().map(|sb| sb.s_max_links.load(Ordering::Relaxed)).unwrap_or(0);
+    if max != 0 && src.nlink() >= max { return Err(VfsError::Emlink); }
+    if PROTECTED_HARDLINKS
+        && cred.uid != src.uid().unwrap_or(0)
+        && !cred.cap_fowner
+        && !safe_hardlink_source(src, cred)
+    {
+        return Err(VfsError::Eperm);
+    }
+    Ok(())
+}
+
+/// Combined destination+source hardlink gate for hosted VFS callers that are
+/// not modeling syscall-level `filename_create()` / `EXDEV` ordering.
+/// # C: O(ngroups)
+pub fn may_link(parent: &InodeRef, src: &InodeRef, cred: &Cred) -> KResult<()> {
+    may_create(parent, cred)?;
+    may_link_source(src, cred)
+}
+
 /// `check_sticky` (Linux `fs/namei.c`) — restricted-deletion test for a child
 /// in a sticky (`S_ISVTX`) directory. Returns `true` when the deletion is
 /// FORBIDDEN: the parent `dir` carries the sticky bit AND the caller neither
@@ -282,6 +328,9 @@ pub fn may_rename(
     }
     if is_exchange && new_target.is_none() {
         return Err(VfsError::Enoent);
+    }
+    if let Some(t) = new_target {
+        if alloc::sync::Arc::ptr_eq(old_victim, t) { return Ok(()); }
     }
     let is_dir = matches!(old_victim.file_type(), FileType::Directory);
     may_delete(old_dir, old_victim, is_dir, cred)?;

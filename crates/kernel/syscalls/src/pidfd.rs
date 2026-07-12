@@ -79,7 +79,22 @@ pub fn tid_from_fd(fd: i32) -> Result<u32, syscall::errno::Errno> {
     // for the duration of the syscall.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
     let file = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
-    tid_from_ino(file.inode().ino()).ok_or(Errno::Einval)
+    tid_from_ino(file.inode().ino()).ok_or(Errno::Ebadf)
+}
+
+/// Resolve a pidfd number to its pinned target task and current open-file
+/// flags. Linux `pidfd_get_pid` validates by file operations, not inode number,
+/// and returns EBADF for any open fd that is not a pidfd.
+/// # C: O(1)
+pub fn task_and_flags_from_fd(fd: i32) -> Result<(Arc<sched::Task>, vfs::OpenFlags), syscall::errno::Errno> {
+    use syscall::errno::Errno;
+    let cur = sched::live::current().ok_or(Errno::Ebadf)?;
+    // SAFETY: current task is running on this CPU; fd_table pointer is stable
+    // for the duration of the syscall.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
+    let file = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
+    let target = task_from_inode(&file.inode()).ok_or(Errno::Ebadf)?;
+    Ok((target, file.flags()))
 }
 
 /// Recover the pinned target task from a pidfd inode.

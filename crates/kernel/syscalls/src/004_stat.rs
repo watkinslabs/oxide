@@ -21,29 +21,25 @@ pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
     #[cfg(target_arch = "aarch64")]
     const STAT_BYTES: u64 = 128;
 
-    // X3: the kernel writes into this buffer in CPL=0 — validate it is
-    // user-writable, else a buffer pointing at .rodata #PFs the kernel.
-    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
     // X2/X4/X5: PATH_MAX read; EFAULT(bad ptr) / ENOENT(empty) / ENAMETOOLONG.
-    let raw = match crate::namei_common::read_user_path(path_ptr) {
-        Ok(s) => s, Err(rv) => return rv,
+    // THE resolver: one namei walk from AT_FDCWD. This preserves `cwd_vfs`
+    // mount identity across fchdir/chroot/bind/pivot state instead of
+    // rendering cwd to a string and re-walking a different namespace view.
+    // stat(2) follows a final symlink; lstat(2) does not.
+    let lf = vfs::LookupFlags {
+        no_follow_final: !follow,
+        follow,
+        ..Default::default()
     };
-    let resolved = crate::pathresolve::resolve_cwd(&raw);
-    let s = resolved.as_str();
-    // THE resolver: the dentry path-walk (crosses mounts, delegates
-    // whole-path fs, follows symlinks). stat(2) follows a final symlink;
-    // lstat(2) does not (`follow`). X1: preserve ENOTDIR/ELOOP/EACCES.
-    // THE resolver returns the owning mount so the mount idmap can map the
-    // owner ids out (identity for non-idmapped mounts ⇒ raw fs ids).
-    let vp = match crate::pathresolve::resolve_path_result(s, !follow) {
+    let vp = match crate::pathresolve::resolve_at_lookup(crate::pathresolve::AT_FDCWD, path_ptr, lf) {
         Ok(p)  => p,
-        Err(e) => return crate::namei_common::errno_from_vfs(e),
+        Err(rv) => return rv,
     };
     let inode = vp.inode;
     // vfs_getattr → i_op->getattr (default generic_fillattr): one place for
-    // the S_IF* mapping + inode_times overlay merge + idmap-out owner ids.
+    // the S_IF* mapping + native inode metadata + idmap-out owner ids.
     let idmap = vfs::mount::idmap_for(vp.mnt_id);
-    let st = vfs::vfs_getattr(&inode, &idmap, vfs::inode_times::get(&inode));
+    let st = vfs::vfs_getattr(&inode, &idmap);
     let mode = st.mode;
     let rdev = st.rdev as u64;
     let uid  = st.uid;
@@ -55,6 +51,8 @@ pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
     let nlink = st.nlink;
     let blksize = st.blksize;
     let (at, mt, ct) = (st.atime_ns, st.mtime_ns, st.ctime_ns);
+    // Linux resolves/getattrs first, then cp_new_stat faults the output buffer.
+    if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
     // SAFETY: buf validated STAT_BYTES writable below USER_VA_END; unaligned
     // stores match Linux copy_to_user semantics for user-provided buffers.
     unsafe {

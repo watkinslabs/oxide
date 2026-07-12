@@ -9,13 +9,11 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use sync::{Spinlock, Tty as FuseClass};
 use vfs::{DirContext, File, FileOps, FileType, Idmap, Inode, InodeOps, InodeRef, KResult, VfsError};
 use vfs::{Kstat, generic_fillattr};
-use vfs::inode_times::InodeTimes;
 
 use super::fs::{build_inode, fuse_data, name_body};
 use super::proto::{self, Attr};
@@ -55,9 +53,9 @@ impl InodeOps for FuseInodeOps {
     }
 
     /// `FUSE_GETATTR` — refresh + report this inode's attributes. On a daemon
-    /// error we fall back to the locally cached fields (`getattr` cannot fail in
-    /// this VFS signature). # C: O(1) + rtt
-    fn getattr(&self, inode: &Inode, idmap: &Idmap, overlay: Option<InodeTimes>) -> Kstat {
+    /// error, report the locally cached fields because this VFS signature cannot
+    /// return an errno. # C: O(1) + rtt
+    fn getattr(&self, inode: &Inode, idmap: &Idmap) -> Kstat {
         if let Ok(d) = fuse_data(inode) {
             let mut body = Vec::with_capacity(proto::FUSE_GETATTR_IN_SIZE);
             proto::GetattrIn { getattr_flags: 0, fh: 0 }.encode(&mut body);
@@ -65,7 +63,7 @@ impl InodeOps for FuseInodeOps {
                 if let Some(ao) = proto::AttrOut::decode(&reply) { apply_attr(inode, &ao.attr); }
             }
         }
-        generic_fillattr(inode, idmap, overlay)
+        generic_fillattr(inode, idmap)
     }
 }
 
@@ -162,12 +160,16 @@ fn readdir_stream(conn: &super::conn::FuseConn, nodeid: u64, fh: u64, ctx: &mut 
     let reply = conn.call(proto::FUSE_READDIR, nodeid, &body)?;
     let ents = proto::decode_dirent_stream(&reply).ok_or(VfsError::Eio)?;
     for e in ents {
-        let name = match core::str::from_utf8(&e.name) { Ok(s) => s, Err(_) => continue };
+        let name = fuse_dirent_name(&e.name);
         let ft = FileType::from_ifmt((e.d_type << 12) as u16);
         // The daemon's `off` is the resume cookie for the NEXT entry (Linux).
-        if !ctx.emit(name, e.ino, ft, e.off) { break; }
+        if !ctx.emit(&name, e.ino, ft, e.off) { break; }
     }
     Ok(())
+}
+
+fn fuse_dirent_name(name: &[u8]) -> alloc::string::String {
+    vfs::path_from_bytes(name)
 }
 
 /// Encode a `struct fuse_release_in` (`fh,flags,release_flags,lock_owner`).
@@ -185,4 +187,16 @@ fn encode_flush(out: &mut Vec<u8>, fh: u64) {
     proto::put_u32(out, 0); // unused
     proto::put_u32(out, 0); // padding
     proto::put_u64(out, 0); // lock_owner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fuse_dirent_name;
+
+    #[test]
+    fn fuse_dirent_name_preserves_non_utf8_bytes() {
+        let raw = b"raw-\xff-entry";
+        let name = fuse_dirent_name(raw);
+        assert_eq!(vfs::path_into_bytes(&name), raw);
+    }
 }

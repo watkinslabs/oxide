@@ -1,7 +1,7 @@
 //! `get_tree_*` superblock-sharing helpers (Linux `fs/super.c`). A backend's
 //! `get_tree` op calls `get_tree_nodev` (fresh SB per mount), `get_tree_single`
 //! (one SB for the whole fs_type), or `get_tree_keyed` (SB shared by a key)
-//! instead of hand-allocating. Fails-before: only the legacy `->mount` path
+//! instead of hand-allocating. Fails-before: only the classic `->mount` path
 //! existed; there was no `sget`-style sharing, so two mounts of a
 //! single-instance pseudo-fs each built a divergent SB. These prove nodev never
 //! shares, single collapses to one SB (fill_super runs once), keyed shares by
@@ -12,6 +12,8 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+
+mod common;
 
 use vfs::fs::{get_tree_keyed, get_tree_nodev, get_tree_single, FileSystem};
 use vfs::fs::fs_context::FsContext;
@@ -32,7 +34,7 @@ impl FileSystem for TFs {
 struct Ty { nm: &'static str }
 impl FileSystemType for Ty {
     fn name(&self) -> &str { self.nm }
-    fn mount(&self, _src: &str, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
+    fn mount(&self, _src: Option<&str>, _opts: &str) -> KResult<Arc<SuperBlock>> { Err(VfsError::Einval) }
 }
 
 /// A fill_super closure factory: builds a real SB over a fresh root and counts
@@ -42,7 +44,7 @@ fn filler(nm: &'static str, calls: Arc<AtomicU32>)
     move |_fc| {
         calls.fetch_add(1, Ordering::SeqCst);
         let fs: Arc<dyn FileSystem> = Arc::new(TFs { nm });
-        Ok(SuperBlock::for_backend(fs.clone(), TFs { nm }.root(), next_anon_dev(), nm.to_string()))
+        Ok(common::realize_sb(fs.clone(), TFs { nm }.root(), next_anon_dev(), nm.to_string()))
     }
 }
 

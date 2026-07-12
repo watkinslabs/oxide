@@ -6,31 +6,34 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::namei_common::{read_user_path, errno_from_vfs, path_exists, resolve_parent};
+use crate::namei_common::{
+    child_dentry, child_inode, drop_child_cache, errno_from_vfs, parent_mount_readonly,
+    read_user_path, render_child_path, resolve_rename_parent_at,
+};
 
 /// renameat2 flags (uapi/linux/fs.h).
 pub(crate) const RENAME_NOREPLACE: u32 = 1 << 0;
 pub(crate) const RENAME_EXCHANGE:  u32 = 1 << 1;
 pub(crate) const RENAME_WHITEOUT:  u32 = 1 << 2;
 
-/// `rename(from, to)` slot 82 / `renameat(odir, from, ndir, to)`
-/// slot 264 / `renameat2` slot 316. We collapse all three into
-/// link-then-unlink against the ext4 mount.
+/// `rename(from, to)` slot 82 / `renameat(odir, from, ndir, to)` slot 264 /
+/// `renameat2` slot 316. Rename variants route through resolved parent inodes;
+/// strings are display/LSM inputs only, never object identity.
 /// # C: O(1)
 pub fn sys_rename(args: &SyscallArgs) -> i64 {
     rename_impl(-100, args.a0, -100, args.a1, 0)
 }
 
-/// Route a path-write operation through the mount table per `docs/16`.
-/// Returns the resolved (mount, relative_path), or the Linux errno for a
-/// missing/read-only mount.
-/// # C: O(N path components)
-fn mount_for_write(path: &str) -> Result<(alloc::sync::Arc<vfs::mount::Mount>, alloc::string::String), i64> {
-    let (mnt, rel) = vfs::mount::resolve_mount(path).ok_or(-(Errno::Enoent.as_i32() as i64))?;
-    if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-        return Err(-(Errno::Erofs.as_i32() as i64));
-    }
-    Ok((mnt, rel))
+fn same_mount(a: &vfs::VfsPath, b: &vfs::VfsPath) -> bool { a.mnt_id == b.mnt_id }
+
+fn same_parent(a: &vfs::VfsPath, b: &vfs::VfsPath) -> bool {
+    alloc::sync::Arc::ptr_eq(&a.dentry, &b.dentry)
+}
+
+#[cfg(feature = "debug-udevdb")]
+fn trace_rename_udevdb(from: &str, to: &str, rv: i64) {
+    crate::namei_common::trace_udevdb_path(b"rename-from", from, rv);
+    crate::namei_common::trace_udevdb_path(b"rename-to", to, rv);
 }
 
 /// # C: O(1)
@@ -58,119 +61,153 @@ pub(crate) fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr:
     // before resolution normalises the dots away.
     if crate::namei_common::rename_component_busy(&from_raw)
         || crate::namei_common::rename_component_busy(&to_raw) {
-        return -(Errno::Ebusy.as_i32() as i64);
+        let rv = -(Errno::Ebusy.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, rv);
+        return rv;
     }
-    // BUG D follow-up: resolve each side against its dirfd (renameat).
-    let f = match crate::pathresolve::resolve_at_result(from_dirfd, &from_raw) {
-        Ok(rp) => rp, Err(rv) => return rv,
+    let (old_parent, old_name) = match resolve_rename_parent_at(from_dirfd, &from_raw) {
+        Ok(x) => x, Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
     };
-    let t = match crate::pathresolve::resolve_at_result(to_dirfd, &to_raw) {
-        Ok(rp) => rp, Err(rv) => return rv,
+    let (new_parent, new_name) = match resolve_rename_parent_at(to_dirfd, &to_raw) {
+        Ok(x) => x, Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
     };
-    // D26: an attempt to make a directory a subdirectory of itself → EINVAL
-    // (Linux is_subdir / d_ancestor). `t` strictly under `f` ⇒ `t` == `f` + "/…".
-    if f != "/" {
-        if let Some(rest) = t.strip_prefix(f.as_str()) {
-            if rest.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
+    if !same_mount(&old_parent, &new_parent) {
+        let rv = -(Errno::Exdev.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, rv);
+        return rv;
+    }
+    if parent_mount_readonly(&old_parent) || parent_mount_readonly(&new_parent) {
+        let rv = -(Errno::Erofs.as_i32() as i64);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, rv);
+        return rv;
+    }
+    let old_victim = match child_inode(&old_parent, &old_name) {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            let rv = -(Errno::Enoent.as_i32() as i64);
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
+        Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
+    };
+    let new_target = match child_inode(&new_parent, &new_name) {
+        Ok(i) => i,
+        Err(rv) => {
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
+    };
+    if flags & RENAME_NOREPLACE == 0 {
+        if let Some(t) = new_target.as_ref() {
+            if alloc::sync::Arc::ptr_eq(&old_victim, t) {
+                #[cfg(feature = "debug-udevdb")]
+                trace_rename_udevdb(&from_raw, &to_raw, 0);
+                return 0;
+            }
         }
     }
-    // RENAME_NOREPLACE: fail with EEXIST if the target already exists
-    // (mv -n, dpkg atomic installs). Pre-check before the backend rename,
-    // which would otherwise silently overwrite → data loss.
-    if (flags & RENAME_NOREPLACE != 0) && path_exists(&t) {
-        return -(Errno::Eexist.as_i32() as i64);
+    if flags == 0 && same_parent(&old_parent, &new_parent) && old_name == new_name {
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&from_raw, &to_raw, 0);
+        return 0;
     }
-    // RENAME_EXCHANGE: both names must already exist (Linux ENOENT else).
-    // Pre-check here so the missing-side errno is reported against the
-    // dirfd-resolved path, not the backend's relative one.
-    if (flags & RENAME_EXCHANGE != 0) && (!path_exists(&f) || !path_exists(&t)) {
-        return -(Errno::Enoent.as_i32() as i64);
+    if let Some(src_d) = child_dentry(&old_parent, &old_name) {
+        if matches!(old_victim.file_type(), vfs::FileType::Directory)
+            && new_parent.dentry.is_subdir_of(&src_d) {
+            let rv = -(Errno::Einval.as_i32() as i64);
+            #[cfg(feature = "debug-udevdb")]
+            trace_rename_udevdb(&from_raw, &to_raw, rv);
+            return rv;
+        }
     }
     // Landlock: from-side needs REMOVE_FILE | REMOVE_DIR | REFER;
     // to-side needs MAKE_REG. Approximate as REMOVE_FILE+MAKE_REG.
     let la = ::security::landlock::access::REMOVE_FILE
            | ::security::landlock::access::MAKE_REG
            | ::security::landlock::access::REFER;
-    if let Err(rv) = crate::landlock::check(&f, la) { return rv; }
-    if let Err(rv) = crate::landlock::check(&t, la) { return rv; }
-    // rename must be within a single mount (Linux EXDEV otherwise).
-    let (mnt_f, rel_f) = match mount_for_write(&f) { Ok(x) => x, Err(rv) => return rv };
-    let (mnt_t, rel_t) = match mount_for_write(&t) { Ok(x) => x, Err(rv) => return rv };
-    if !alloc::sync::Arc::ptr_eq(&mnt_f, &mnt_t) {
-        return -(Errno::Exdev.as_i32() as i64);
+    let _f_disp = render_child_path(&old_parent, &old_name);
+    let _t_disp = render_child_path(&new_parent, &new_name);
+    let old_check = vfs::VfsPath {
+        mnt_id: old_parent.mnt_id,
+        dentry: vfs::file::open_dentry_at(&old_parent.dentry, &old_name, &old_victim),
+        inode: old_victim.clone(),
+        last_component: None,
+    };
+    if let Err(rv) = crate::landlock::check(&old_check, la) {
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&_f_disp, &_t_disp, rv);
+        return rv;
+    }
+    let new_check = match new_target.as_ref() {
+        Some(i) => vfs::VfsPath {
+            mnt_id: new_parent.mnt_id,
+            dentry: vfs::file::open_dentry_at(&new_parent.dentry, &new_name, i),
+            inode: i.clone(),
+            last_component: None,
+        },
+        None => new_parent.clone(),
+    };
+    if let Err(rv) = crate::landlock::check(&new_check, la) {
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&_f_disp, &_t_disp, rv);
+        return rv;
+    }
+    if let Err(e) = vfs::namei::may_rename(&old_parent.inode, &old_victim, &new_parent.inode,
+        new_target.as_ref(), flags, same_parent(&old_parent, &new_parent),
+        &crate::pathresolve::current_cred()) {
+        let rv = errno_from_vfs(e);
+        #[cfg(feature = "debug-udevdb")]
+        trace_rename_udevdb(&_f_disp, &_t_disp, rv);
+        return rv;
     }
     // D29: hold BOTH parent dirs' `i_rwsem` via `lock_rename` (Linux
     // `vfs_rename` → `lock_rename`) across the backend rename. `lock_rename`
     // orders the two rank-40 `i_rwsem`s by address (deadlock-safe vs. a reverse
     // concurrent rename) and locks a same-dir rename's single inode ONCE. The
     // backend resolves names via `i_op.lookup` (no nested `i_rwsem`), so holding
-    // the exclusive side here is deadlock-free. Best-effort: on a parent-resolve
-    // miss, proceed unlocked rather than introduce a new errno. The guard drops
-    // at the end of this block — before the rank-50/60 dcache update below.
-    let old_parent = resolve_parent(&f).ok();
-    let new_parent = resolve_parent(&t).ok();
-    // D30: a plain rename that overwrites an existing destination removes the
-    // destination's name — its inode loses a hard link. Capture that victim
-    // dentry before the backend replaces it so the dcache half below can drive
-    // `drop_link` + last-alias retirement on it (EXCHANGE swaps both names, so
-    // neither is removed; NOREPLACE already errored above on an existing dest).
-    let dest_victim = if flags & (RENAME_EXCHANGE | RENAME_WHITEOUT) == 0 && path_exists(&t) {
-        crate::s087_unlink::victim_dentry(&t)
-    } else { None };
-    // EXCHANGE atomically swaps; WHITEOUT renames then leaves a whiteout
-    // char-dev (0,0) at the source; plain rename is link-then-replace.
+    // the exclusive side here is deadlock-free. The guard drops at the end of
+    // this block — before the rank-50/60 dcache update below.
+    let source_dentry = child_dentry(&old_parent, &old_name);
+    let dest_victim = if new_target.is_some() { child_dentry(&new_parent, &new_name) } else { None };
     let r = {
-        let _rg = match (&old_parent, &new_parent) {
-            (Some((op, _)), Some((np, _))) => Some(vfs::lock_rename(op, np)),
-            _ => None,
-        };
-        if flags & RENAME_EXCHANGE != 0 {
-            mnt_f.fs().exchange(&rel_f, &rel_t)
-        } else if flags & RENAME_WHITEOUT != 0 {
-            mnt_f.fs().whiteout(&rel_f, &rel_t)
-        } else {
-            // D9: route the plain rename through the resolved-parent
-            // `i_op->rename` (Linux `vfs_rename` → `old_dir->i_op->rename`)
-            // instead of the whole-path `FileSystem::rename`. Both parents are
-            // already resolved for `lock_rename`; if either resolve missed, fall
-            // back to the FS path (byte-equivalent, conservative). EXCHANGE/
-            // WHITEOUT keep the FS path above.
-            match (&old_parent, &new_parent) {
-                (Some((op, oname)), Some((np, nname))) =>
-                    op.rename_child(oname, np, nname, flags, &vfs::CreateCtx::root()),
-                _ => mnt_f.fs().rename(&rel_f, &rel_t),
-            }
-        }
+        let _rg = vfs::lock_rename(&old_parent.inode, &new_parent.inode);
+        old_parent.inode.rename_child(&old_name, &new_parent.inode, &new_name, flags, &vfs::CreateCtx::root())
     };
-    match r {
+    let rv = match r {
         Ok(())  => {
             if flags & RENAME_EXCHANGE != 0 {
-                // EXCHANGE swaps two inodes under two surviving names — neither
-                // d_moves; both cached dentries now point at the wrong inode, so
-                // drop both and let the next walk re-resolve.
-                crate::pathresolve::d_delete_path(&f);
-                crate::pathresolve::d_delete_path(&t);
+                drop_child_cache(&old_parent, &old_name);
+                drop_child_cache(&new_parent, &new_name);
+            } else if let Some(d) = source_dentry {
+                if let Some(v) = dest_victim { vfs::dcache::d_unlink(&v); }
+                vfs::dcache::d_move(&d, &new_parent.dentry, &new_name);
             } else {
-                // D30: an overwritten destination loses its name first — `d_unlink`
-                // drops the replaced inode's link and retires it on its last name
-                // (Linux `vfs_rename` calls this for the replaced target). Done
-                // before d_move_path rehomes the source onto the dest (parent,name).
-                if let Some(d) = dest_victim { vfs::dcache::d_unlink(&d); }
-                // D9: plain/whiteout rename → `d_move` the source dentry onto the
-                // destination (parent,name) (Linux `d_move`), instead of
-                // discarding it via two `d_delete`s. d_move_path also drops any
-                // stale dentry already at the dest. WHITEOUT's leftover source
-                // node re-resolves on the next walk (d_move d_drops the source).
-                crate::pathresolve::d_move_path(&f, &t);
+                drop_child_cache(&old_parent, &old_name);
+                drop_child_cache(&new_parent, &new_name);
             }
-            // FAN_MOVED_FROM/TO (paired cookie) + FAN_MOVE_SELF (Linux
-            // fsnotify_move). Best-effort: needs both resolved parents.
-            if let (Some((op, _)), Some((np, _))) = (&old_parent, &new_parent) {
-                let moved = vfs::mount::lookup(&t).ok();
-                ::fs::inotify::fire_move(op, np, moved.as_ref());
-            }
+            ::fs::inotify::fire_move(&old_parent.inode, &new_parent.inode, Some(&old_victim));
             0
         }
         Err(e)  => errno_from_vfs(e),
-    }
+    };
+    #[cfg(feature = "debug-udevdb")]
+    trace_rename_udevdb(&_f_disp, &_t_disp, rv);
+    rv
 }

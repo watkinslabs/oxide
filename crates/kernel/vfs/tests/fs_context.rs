@@ -8,6 +8,8 @@
 
 use std::sync::{Arc, Mutex};
 
+mod common;
+
 use vfs::fs::fs_context::{
     reconfigure_super, vfs_get_tree, vfs_parse_fs_param, vfs_parse_fs_string, FsContext,
     FsContextOps, FsContextPhase, FsContextPurpose, FsParameter, KResult as FcResult, ParamResult,
@@ -33,17 +35,17 @@ impl FileSystem for TFs {
 /// received so the test can assert the context threaded them through, then
 /// builds a real superblock with a root dentry.
 struct TFsType {
-    seen: Arc<Mutex<Vec<(String, String)>>>,
+    seen: Arc<Mutex<Vec<(Option<String>, String)>>>,
 }
 impl FileSystemType for TFsType {
     fn name(&self) -> &str { "tfs" }
-    fn mount(&self, src: &str, opts: &str) -> KResult<Arc<SuperBlock>> {
-        self.seen.lock().unwrap().push((src.to_string(), opts.to_string()));
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
+    fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
+        self.seen.lock().unwrap().push((src.map(str::to_string), opts.to_string()));
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
     }
 }
 
-fn new_type() -> (Arc<TFsType>, Arc<Mutex<Vec<(String, String)>>>) {
+fn new_type() -> (Arc<TFsType>, Arc<Mutex<Vec<(Option<String>, String)>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     (Arc::new(TFsType { seen: seen.clone() }), seen)
 }
@@ -66,7 +68,7 @@ fn params_accumulate_not_dropped() {
     vfs_parse_fs_param(&mut fc, &FsParameter::flag("noexec")).unwrap();
     // Both options were retained (Linux never silently drops fsconfig params).
     assert_eq!(fc.params().len(), 2, "params accumulated, not discarded");
-    let opts = fc.legacy_options();
+    let opts = fc.classic_mount_options();
     assert!(opts.contains("size=64m"), "string param rendered key=value: {opts}");
     assert!(opts.contains("noexec"), "flag param rendered key-only: {opts}");
 }
@@ -95,11 +97,21 @@ fn get_tree_materialises_sb_and_pins_root() {
     let root = fc.root().expect("get_tree pinned fc->root");
     let sb = fc.sb().expect("get_tree set fc->sb");
     assert!(Arc::ptr_eq(root, &sb.s_root().unwrap()), "fc->root == fc->sb->s_root");
-    // The legacy get_tree threaded source + the comma-joined opts to ->mount.
+    // The classic-mount get_tree threaded source + the comma-joined opts to ->mount.
     let calls = seen.lock().unwrap();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "dev");
+    assert_eq!(calls[0].0.as_deref(), Some("dev"));
     assert!(calls[0].1.contains("size=8m"), "opts blob: {}", calls[0].1);
+}
+
+#[test]
+fn get_tree_preserves_absent_source_as_none() {
+    let (ty, seen) = new_type();
+    let mut fc = FsContext::for_mount(ty, 0);
+    vfs_get_tree(&mut fc).unwrap();
+    let calls = seen.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, None);
 }
 
 #[test]
@@ -167,7 +179,7 @@ fn reconfigure_on_mount_context_is_einval() {
 struct CustomOps {
     saw_foo: Arc<Mutex<bool>>,
     reconfigured: Arc<Mutex<bool>>,
-    seen: Arc<Mutex<Vec<(String, String)>>>,
+    seen: Arc<Mutex<Vec<(Option<String>, String)>>>,
 }
 impl FsContextOps for CustomOps {
     fn parse_param(&self, _fc: &mut FsContext, param: &FsParameter) -> FcResult<ParamResult> {
@@ -178,8 +190,8 @@ impl FsContextOps for CustomOps {
         Ok(ParamResult::Declined)
     }
     fn get_tree(&self, _fc: &mut FsContext) -> FcResult<Arc<SuperBlock>> {
-        self.seen.lock().unwrap().push(("custom".to_string(), String::new()));
-        Ok(SuperBlock::for_backend(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
+        self.seen.lock().unwrap().push((Some("custom".to_string()), String::new()));
+        Ok(common::realize_sb(Arc::new(TFs), TFs.root(), next_anon_dev(), "tfs".to_string()))
     }
     fn reconfigure(&self, _fc: &mut FsContext) -> FcResult<()> {
         *self.reconfigured.lock().unwrap() = true;

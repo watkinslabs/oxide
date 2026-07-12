@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use vfs::fs::FileSystem;
 use vfs::inode::InodeBuilder;
 use vfs::superblock::next_anon_dev;
@@ -30,7 +32,7 @@ fn reg(ino: u64) -> InodeRef {
 }
 
 fn sb() -> Arc<SuperBlock> {
-    SuperBlock::for_backend(Arc::new(NlinkFs), None, next_anon_dev(), String::from("nlinkfs"))
+    common::realize_sb(Arc::new(NlinkFs), None, next_anon_dev(), String::from("nlinkfs"))
 }
 
 #[test]
