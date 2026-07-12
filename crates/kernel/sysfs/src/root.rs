@@ -75,14 +75,21 @@ mod tests {
     use alloc::string::String;
     use alloc::sync::Arc;
     use vfs::fs::FileSystem;
+    use vfs::superblock::FileSystemType;
     use vfs::LookupFlags;
+
+    struct SysfsType;
+    impl FileSystemType for SysfsType {
+        fn name(&self) -> &str { "sysfs" }
+        fn mount(&self, _src: Option<&str>, _opts: &str) -> vfs::KResult<Arc<vfs::SuperBlock>> { Err(vfs::VfsError::Enodev) }
+    }
 
     #[test]
     fn drop_cached_invalidates_under_sysfs_root_without_global_walk() {
         let path = "/sys/drop-cache-test/leaf";
         crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), 0x51dc_a001));
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(crate::SysfsFs);
-        let sb = vfs::SuperBlock::for_backend(fs, crate::SysfsFs.root(), vfs::superblock::next_anon_dev(), String::from("sysfs-test"));
+        let sb = vfs::fs::superblock_from_filesystem(Arc::new(SysfsType), fs, crate::SysfsFs.root(), String::from("sysfs-test"));
         let root = sb.s_root().expect("sysfs root dentry");
         let (_, parent) = vfs::path_lookup(root.clone(), root.clone(), "/drop-cache-test", LookupFlags::default()).expect("parent cached");
         assert!(vfs::path_lookup(root.clone(), root, "/drop-cache-test/leaf", LookupFlags::default()).is_ok());
