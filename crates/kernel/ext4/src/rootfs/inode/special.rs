@@ -301,6 +301,14 @@ impl FileOps for Ext4StatFileOps {
                 super::meta::ext4_setfslabel(file.inode(), label)?;
                 Ok(FileIoctlReply::Done)
             }
+            FileIoctlCmd::FitTrimPrepare(cap) => {
+                super::meta::ext4_fitrim_prepare(cap)?;
+                Ok(FileIoctlReply::Done)
+            }
+            FileIoctlCmd::FitTrim { start, len, minlen } => {
+                super::meta::ext4_fitrim(start, len, minlen)?;
+                Ok(FileIoctlReply::Done)
+            }
         }
     }
 
