@@ -120,11 +120,11 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // extents. A regular-file/dir fd is not a CharDev, so route here before the
     // generic non-CharDev path returns ENOTTY.
     if let Some(rv) = super::fiemap::handle_fiemap(&file.inode(), req, arg) { return rv; }
-    // Block-device geometry ioctls (BLKGETSIZE64/BLKGETSIZE/BLKSSZGET/BLKBSZGET).
+    // Block-device ioctls (geometry + discard family).
     // A block node is not a CharDev, so answer these before the generic
     // non-CharDev path returns ENOTTY — blkid/mkfs/udev probe them on /dev/vda.
     if file.inode().file_type() == vfs::FileType::BlockDev {
-        if let Some(rv) = handle_blk_ioctl(&file.inode(), req, arg) { return rv; }
+        if let Some(rv) = handle_blk_ioctl(&file, req, arg) { return rv; }
     }
     if file.inode().file_type() != vfs::FileType::CharDev {
         // Socket/pipe ioctls (Linux `sock_ioctl`): a socket is NOT a CharDev but

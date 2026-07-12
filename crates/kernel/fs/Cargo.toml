@@ -23,6 +23,7 @@ devfs    = { path = "../devfs" }
 procfs   = { path = "../procfs" }
 
 [dev-dependencies]
+block = { path = "../block" }
 boot-info = { path = "../../shared/boot-info" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
