@@ -32,6 +32,8 @@ pub use signals::SaHandler;
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
 pub struct Task {
+    #[cfg(feature = "debug-smp")]
+    pub dbg_canary_head: AtomicU64,
     pub tid:  u32,
     /// Thread-group id per Linux clone(CLONE_THREAD) semantics —
     /// the leader's `tid` shared by every thread in the same
@@ -474,4 +476,6 @@ pub struct Task {
     /// Single-mutator: the running task on this CPU is the sole writer
     /// (setuid family runs on the calling task only).
     pub creds: Creds,
+    #[cfg(feature = "debug-smp")]
+    pub dbg_canary_tail: AtomicU64,
 }

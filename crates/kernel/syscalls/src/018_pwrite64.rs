@@ -12,10 +12,9 @@ use crate::userbuf::validate_user_buf;
 pub fn sys_pwrite64(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
-    let cnt = args.a2;
+    let mut cnt = args.a2;
     let off = args.a3;
-    if cnt == 0 { return 0; }
-    if let Err(rv) = validate_user_buf(buf, cnt, 1) { return rv; }
+    if (off as i64) < 0 { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -25,6 +24,14 @@ pub fn sys_pwrite64(args: &SyscallArgs) -> i64 {
     };
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if cnt == 0 { return 0; }
+    if let Err(rv) = validate_user_buf(buf, cnt, 1) { return rv; }
+    cnt = crate::userbuf::clamp_rw_count(cnt as usize) as u64;
+    let pos = crate::write_common::positional_write_pos(&file, off);
+    cnt = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, cnt as usize, true) {
+        Ok(n)  => n as u64,
+        Err(e) => return e,
     };
     // SAFETY: range [buf, buf+cnt) validated < USER_VA_END; user pages mapped via active CR3; CPL=0 reads through user mapping.
     let bytes: &[u8] = unsafe {

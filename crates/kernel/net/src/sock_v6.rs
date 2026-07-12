@@ -51,7 +51,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
 /// IPV6_MULTICAST_HOPS (multicast dst) or IPV6_UNICAST_HOPS (unicast dst).
 /// The `-1` sentinel means "unset" → Linux default: 1 for multicast,
 /// `IPV6_DEFAULT_HOP_LIMIT` for unicast. # C: O(1)
-fn resolve_v6_hop_limit(sock: &alloc::sync::Arc<InetSocket>, dst_ip: crate::Ipv6Addr) -> u8 {
+fn resolve_v6_hop_limit(sock: &InetSocket, dst_ip: crate::Ipv6Addr) -> u8 {
     use core::sync::atomic::Ordering;
     if dst_ip.is_multicast() {
         let h = sock.opts.ipv6_mcast_hops.load(Ordering::Acquire);
@@ -65,7 +65,7 @@ fn resolve_v6_hop_limit(sock: &alloc::sync::Arc<InetSocket>, dst_ip: crate::Ipv6
 /// F180b: AF_INET6 datagram sendto. Allocates an ephemeral src port
 /// on demand; routes via stack().send_udp6_to.
 /// # C: O(payload)
-pub fn sendto_v6(sock: &alloc::sync::Arc<InetSocket>,
+pub fn sendto_v6(sock: &InetSocket,
                   dst_ip: crate::Ipv6Addr, dst_port: u16,
                   payload: &[u8]) -> Result<usize, NetError> {
     // Lock-across-match hazard (see connect_v6): read the slot into a

@@ -30,6 +30,7 @@ impl Task {
     /// this task on another CPU.
     /// # C: O(1)
     pub unsafe fn mm_ref(&self) -> Option<&Arc<AddressSpace>> {
+        self.debug_check_canary("mm_ref");
         // SAFETY: caller asserts no concurrent writer; UnsafeCell::get is the supported deref pattern for shared interior mutability under documented external synchronization.
         unsafe { (&*self.mm.get()).as_ref() }
     }
@@ -57,6 +58,7 @@ impl Task {
     /// to call on an actively-scheduled task from another CPU.
     /// # C: O(1)
     pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
+        self.debug_check_canary("replace_mm");
         // SAFETY: see fn-level contract; single-mutator on this CPU.
         let old = unsafe { core::mem::replace(&mut *self.mm.get(), new) };
         #[cfg(target_os = "oxide-kernel")]

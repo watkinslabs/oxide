@@ -38,6 +38,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
         if !raw.is_null() {
             // SAFETY: rq.current was installed via Arc::into_raw and is non-null after install_global; the AtomicPtr's strong-ref-via-raw keeps the pointee alive across this borrow; we are running ON this task so no concurrent freer.
             let task: &sched::Task = unsafe { &*raw };
+            task.debug_check_canary("sys_exit_current");
             // DIAG (debug-watchdog): a non-zero exit dumps the task's recent
             // syscalls so a service's status=1/FAILURE shows its failing call.
             sched::diag::dump_exit_recent(task.name, args.a0);
