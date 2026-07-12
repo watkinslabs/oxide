@@ -20,6 +20,7 @@ extern crate std;
 pub mod args;
 pub mod errno;
 pub mod nrs;
+pub mod restart;
 pub mod tracepoint;
 pub mod userptr;
 pub mod wait;
