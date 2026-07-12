@@ -144,7 +144,7 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
 /// Restore the full register set from the rt_sigframe's ucontext into the
 /// saved syscall frame. Returns `(restored_sigmask, dispatch_retval)` — the
 /// caller stores the mask (sched) and propagates the retval as user rax.
-/// `None` on a malformed frame (caller returns EINVAL).
+/// `None` on a malformed frame (caller forces SIGSEGV).
 /// # SAFETY: rt_sigreturn dispatch ctx on the running task's syscall kstack.
 /// # C: O(1)
 pub unsafe fn restore_signal_frame() -> Option<(u64, i64)> {
@@ -152,7 +152,9 @@ pub unsafe fn restore_signal_frame() -> Option<(u64, i64)> {
     let frame = unsafe { &*current_user_frame() };
     let cur_rsp = frame[2];               // = new_rsp + 8 (ret popped pretcode)
     let frame_base = cur_rsp.saturating_sub(8);
-    if frame_base == 0 || frame_base >= hal::USER_VA_END { return None; }
+    if frame_base == 0 { return None; }
+    if frame_base.checked_add(core::mem::size_of::<RtSigframe>() as u64)
+        .filter(|end| *end <= hal::USER_VA_END).is_none() { return None; }
     let uc_base = frame_base + core::mem::offset_of!(RtSigframe, uc) as u64;
     let mc_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_mcontext) as u64) as *const Sigctx;
     let sm_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64) as *const u64;
@@ -171,4 +173,31 @@ pub unsafe fn restore_signal_frame() -> Option<(u64, i64)> {
     s(7, mc.rip);  s(8, mc.eflags); s(9, mc.rsp);
     s(10, mc.rbx); s(11, mc.rbp); s(12, mc.r13); s(13, mc.r14); s(14, mc.r15); s(15, mc.r12);
     Some((sigmask, mc.rax as i64))
+}
+
+/// User rt-sigframe range for pre-copy badframe validation. # C: O(1)
+pub fn rt_sigreturn_frame_range() -> Option<(u64, u64, u64)> {
+    // SAFETY: rt_sigreturn dispatch context owns the live syscall frame slots.
+    let frame = unsafe { &*current_user_frame() };
+    let frame_base = frame[2].checked_sub(8)?;
+    if frame_base == 0 { return None; }
+    let len = core::mem::size_of::<RtSigframe>() as u64;
+    frame_base.checked_add(len).filter(|end| *end <= hal::USER_VA_END)?;
+    Some((frame_base, len, 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x86_64_rt_sigframe_matches_linux_uapi_shape() {
+        assert_eq!(core::mem::offset_of!(Sigctx, rip), 128);
+        assert_eq!(core::mem::offset_of!(Sigctx, eflags), 136);
+        assert_eq!(core::mem::offset_of!(Sigctx, cr2), 176);
+        assert_eq!(core::mem::size_of::<Sigctx>(), 256);
+        assert_eq!(core::mem::offset_of!(Ucontext, uc_mcontext), 40);
+        assert_eq!(core::mem::offset_of!(Ucontext, uc_sigmask), 296);
+        assert_eq!(core::mem::offset_of!(RtSigframe, uc), 8);
+    }
 }
