@@ -95,6 +95,18 @@ bitflags::bitflags! {
         /// `VM_UFFD_MISSING`): a NotPresent fault in this VMA is routed
         /// to the registered `uffd` context instead of being zero-filled.
         const UFFD_MISSING = 1 << 8;
+        /// madvise(MADV_RANDOM): prefer minimal readahead.
+        const RAND_READ = 1 << 9;
+        /// madvise(MADV_SEQUENTIAL): prefer sequential readahead.
+        const SEQ_READ = 1 << 10;
+        /// madvise(MADV_DONTDUMP): exclude from core dump.
+        const DONTDUMP = 1 << 11;
+        /// madvise(MADV_MERGEABLE): KSM-merge candidate.
+        const MERGEABLE = 1 << 12;
+        /// madvise(MADV_HUGEPAGE): transparent hugepage preference.
+        const HUGEPAGE = 1 << 13;
+        /// madvise(MADV_NOHUGEPAGE): transparent hugepage opt-out.
+        const NOHUGEPAGE = 1 << 14;
     }
 }
 
@@ -179,6 +191,23 @@ pub trait FileBacking: Send + Sync {
     /// caller owns/can-write the mapped file; otherwise mincore reports resident.
     /// # C: O(1) or inode permission check
     fn mincore_can_reveal(&self) -> bool { true }
+
+    /// Linux `MADV_REMOVE`: punch a shared writable file range with
+    /// `FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE`.
+    /// # C: filesystem-dependent
+    fn madvise_remove(&self, _off: u64, _len: u64) -> Result<(), FileBackingError> {
+        Err(FileBackingError::OpNotSupp)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FileBackingError {
+    Acces,
+    Badf,
+    Inval,
+    Io,
+    NoMem,
+    OpNotSupp,
 }
 
 /// VMA backing per `11§4`. `File` carries the file/inode ref via
