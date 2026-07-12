@@ -42,8 +42,7 @@ pub fn check(
     };
     let signo = sig.signo();
     let bit = 1u64 << (signo - 1);
-    // SAFETY: single-mutator per `13§5`; reading this task's own sigaction disposition.
-    let ignored = unsafe { (*cur.sigactions.get())[(signo - 1) as usize].handler == 1 };
+    let ignored = cur.sigactions_ref().get(signo as u32).handler == 1;
     let blocked = cur.sigmask.load(Ordering::Acquire) & bit != 0;
     let tostop = lflag_bits & lflag::TOSTOP != 0;
     // Orphan scan is O(pgrp); only run it when the decision would otherwise

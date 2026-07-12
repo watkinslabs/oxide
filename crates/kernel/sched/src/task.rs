@@ -28,7 +28,7 @@ mod types;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::Creds;
-pub use signals::SaHandler;
+pub use signals::{SaHandler, SigActions};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
 pub struct Task {
@@ -183,13 +183,8 @@ pub struct Task {
     pub sigaltstack_size:  AtomicU64,
     pub sigaltstack_flags: AtomicU32,
 
-    /// Per-task `struct sigaction` array per `27§4`. Slot i holds
-    /// the handler/flags/mask/restorer for signal i+1 (1..=64).
-    /// `rt_sigaction` writes; signal-delivery reads to choose the
-    /// dispatch path (SIG_DFL = terminate; SIG_IGN = drop;
-    /// non-NULL = build frame + jump). Wrapped in `UnsafeCell` for
-    /// the same single-mutator-per-active-CPU invariant as `mm`.
-    pub sigactions: UnsafeCell<[SaHandler; 64]>,
+    /// Linux `sighand_struct`: shared by CLONE_SIGHAND siblings, deep-copied by fork.
+    pub sigactions: UnsafeCell<Arc<SigActions>>,
 
     /// Weak-ref to parent Task per `27§5` SIGCHLD delivery. Set
     /// by `sys_fork` when this task is constructed; `None` for

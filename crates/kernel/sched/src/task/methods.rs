@@ -10,7 +10,7 @@ use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
 
-use super::{ArchCtxBuf, ArchFpuBuf, Creds, PosixTimer, SaHandler, SchedClass, Task, TaskState};
+use super::{ArchCtxBuf, ArchFpuBuf, Creds, PosixTimer, SigActions, SchedClass, Task, TaskState};
 use crate::signum::Signum;
 
 #[cfg(feature = "debug-smp")]
@@ -168,7 +168,7 @@ impl Task {
             sigaltstack_sp:    AtomicU64::new(0),
             sigaltstack_size:  AtomicU64::new(0),
             sigaltstack_flags: AtomicU32::new(2 /* SS_DISABLE */),
-            sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
+            sigactions: UnsafeCell::new(Arc::new(SigActions::new())),
             parent_arc: UnsafeCell::new(None),
             cmdline:    UnsafeCell::new(None),
             ctty:       UnsafeCell::new(None),

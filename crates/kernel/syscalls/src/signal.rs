@@ -73,9 +73,7 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
             cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
         }
     }
-    // SAFETY: running task on this CPU; preempt-off; sole reader of sigactions slot per single-mutator invariant in `13§5`.
-    let table = unsafe { &*cur.sigactions.get() };
-    let h = table[(sig - 1) as usize];
+    let h = cur.sigactions_ref().get(sig);
     // SIGKILL/SIGSTOP can never be caught or ignored (signal(7)): force SIG_DFL
     // so a stale/buggy handler-table slot can't intercept them. rt_sigaction
     // (013) already rejects installing a disposition for them — defense in depth.
