@@ -51,6 +51,12 @@ pub enum FileIoctlCmd {
     SetVersionPrepare,
     /// `EXT4_IOC_SETVERSION` / legacy `FS_IOC_SETVERSION`.
     SetVersion(u32),
+    /// `FS_IOC_GETFSLABEL` on filesystem-specific `f_op->unlocked_ioctl`.
+    GetFsLabel,
+    /// Pre-copyin admission for `FS_IOC_SETFSLABEL`; carries CAP_SYS_ADMIN.
+    SetFsLabelPrepare(bool),
+    /// `FS_IOC_SETFSLABEL`: exact ext4 16-byte on-disk label payload.
+    SetFsLabel([u8; 16]),
 }
 
 /// Return payload for [`FileOps::unlocked_ioctl`]. # C: O(1)
@@ -60,6 +66,8 @@ pub enum FileIoctlReply {
     Done,
     /// ioctl returned a 32-bit scalar copied by the ABI layer.
     U32(u32),
+    /// ioctl returned an ext4 label buffer including the trailing NUL byte.
+    Label([u8; 17]),
 }
 
 /// `filldir`-style sink (Linux `struct dir_context.actor` / `filldir_t`): the

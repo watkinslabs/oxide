@@ -16,6 +16,8 @@ pub(super) const PAGE_BYTES: u64 = 4096;
 
 pub(super) const FSXATTR_BYTES: u64 = 28;
 pub(super) const FSUUID2_BYTES: u64 = 17;
+pub(super) const EXT4_LABEL_MAX: usize = 16;
+pub(super) const EXT4_LABEL_BYTES: u64 = 17;
 pub(super) const FILE_CLONE_RANGE_BYTES: u64 = 32;
 pub(super) const DEDUPE_RANGE_BYTES: u64 = 24;
 pub(super) const DEDUPE_INFO_BYTES: u64 = 32;
@@ -49,6 +51,8 @@ pub(super) const FS_IOC_FSGETXATTR: u64 = 0x801C_581F;
 pub(super) const FS_IOC_FSSETXATTR: u64 = 0x401C_5820;
 pub(super) const FS_IOC_GETFSUUID: u64 = 0x8011_1500;
 pub(super) const FS_IOC_GETFSSYSFSPATH: u64 = 0x8081_1501;
+pub(super) const FS_IOC_GETFSLABEL: u64 = 0x8100_9431;
+pub(super) const FS_IOC_SETFSLABEL: u64 = 0x4100_9432;
 pub(super) const FS_SYSFS_PATH_BYTES: u64 = 129;
 pub(super) const FS_SYSFS_PATH_NAME_BYTES: usize = 128;
 
