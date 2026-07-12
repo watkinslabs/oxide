@@ -43,6 +43,8 @@ mod userbuf {
 mod uapi;
 #[path = "../../syscalls/src/016_ioctl/fileattr.rs"]
 mod fileattr;
+#[path = "../../syscalls/src/016_ioctl/remap.rs"]
+mod remap;
 #[path = "../../syscalls/src/016_ioctl/common.rs"]
 mod ioctl_common;
 
