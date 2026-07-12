@@ -143,7 +143,7 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod rseq;
 #[cfg(target_os = "oxide-kernel")] pub mod timers;
 #[cfg(target_os = "oxide-kernel")] pub mod trace;
-#[cfg(target_os = "oxide-kernel")] pub mod xfer;
+pub mod xfer;
 
 /// [D26] Periodic mount-expiry sweep (Linux's `mark_mounts_for_expiry`
 /// housekeeping): runs one two-pass grace over every registered expire list so
