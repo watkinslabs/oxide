@@ -31,6 +31,11 @@ impl vfs::FileOps for NetlinkFileOps {
         inode.private::<NetlinkSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }
 
+    fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
+        let Some(s) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        match cmd { vfs::IoctlIntCmd::Fionread => Ok(s.front_len()), vfs::IoctlIntCmd::Siocoutq => Ok(0) }
+    }
+
     fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
         file.set_fasync_state(on);
         Ok(())

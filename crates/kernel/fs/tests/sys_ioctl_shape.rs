@@ -48,39 +48,23 @@ mod ioctl_common;
 
 #[repr(C)]
 struct SpaceResv {
-    l_type: i16,
-    l_whence: i16,
-    l_start: i64,
-    l_len: i64,
-    l_sysid: i32,
-    l_pid: u32,
+    l_type: i16, l_whence: i16, l_start: i64, l_len: i64, l_sysid: i32, l_pid: u32,
     l_pad: [i32; 4],
 }
 
 #[repr(C)]
 struct FileCloneRange {
-    src_fd: i64,
-    src_offset: u64,
-    src_length: u64,
-    dest_offset: u64,
+    src_fd: i64, src_offset: u64, src_length: u64, dest_offset: u64,
 }
 
 #[repr(C)]
 struct FileDedupeRangeInfo {
-    dest_fd: i64,
-    dest_offset: u64,
-    bytes_deduped: u64,
-    status: i32,
-    reserved: u32,
+    dest_fd: i64, dest_offset: u64, bytes_deduped: u64, status: i32, reserved: u32,
 }
 
 #[repr(C)]
 struct FileDedupeRangeOne {
-    src_offset: u64,
-    src_length: u64,
-    dest_count: u16,
-    reserved1: u16,
-    reserved2: u32,
+    src_offset: u64, src_length: u64, dest_count: u16, reserved1: u16, reserved2: u32,
     info: [FileDedupeRangeInfo; 2],
 }
 
@@ -108,6 +92,13 @@ impl FileOps for RemapOps {
     fn remap_file_range(&self, _src: &File, src_off: u64, _dst: &File, dst_off: u64, len: u64, flags: u32) -> KResult<u64> {
         self.calls.lock().unwrap().push((src_off, dst_off, len, flags));
         *self.ret.lock().unwrap()
+    }
+
+    fn ioctl_int(&self, _file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> {
+        match cmd {
+            vfs::IoctlIntCmd::Fionread => Ok(4),
+            vfs::IoctlIntCmd::Siocoutq => Ok(0),
+        }
     }
 }
 
@@ -178,9 +169,9 @@ fn mk_file_with_ops_type(ft: FileType, flags: OpenFlags, size: u64, ops: Arc<Ioc
     File::new(ino, dentry, flags)
 }
 
-fn mk_file_with_fop(flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>) -> Arc<File> {
+fn mk_file_with_fop(ft: FileType, flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>) -> Arc<File> {
     let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
-        mk_mode(FileType::Regular, 0o644), default_inode_ops(), fop).size(size).build();
+        mk_mode(ft, 0o644), default_inode_ops(), fop).size(size).build();
     let dentry = Dentry::new_root(Arc::clone(&ino));
     File::new(ino, dentry, flags)
 }
@@ -271,7 +262,7 @@ fn socket_fionread_rejects_null_out_pointer_instead_of_succeeding() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();
     let fdt = Arc::new(FdTable::new());
-    let fd = fdt.alloc(mk_file(FileType::Socket, OpenFlags::O_RDWR, 0)).unwrap();
+    let fd = fdt.alloc(mk_file_with_fop(FileType::Socket, OpenFlags::O_RDWR, 0, RemapOps::new(Ok(0)))).unwrap();
     let task = install_current_with_fdt(Arc::clone(&fdt));
 
     let file = file_for(&fdt, fd);
@@ -447,7 +438,7 @@ fn ficlonerange_copies_struct_and_rejects_short_backend_clone() {
     reset();
     let remap = RemapOps::new(Ok(9));
     let fdt = Arc::new(FdTable::new());
-    let src = mk_file_with_fop(OpenFlags::O_RDONLY, 20, remap.clone());
+    let src = mk_file_with_fop(FileType::Regular, OpenFlags::O_RDONLY, 20, remap.clone());
     let dst = mk_file(FileType::Regular, OpenFlags::O_RDWR, 0);
     let src_fd = fdt.alloc(src).unwrap();
     let dst_fd = fdt.alloc(Arc::clone(&dst)).unwrap();
@@ -466,8 +457,8 @@ fn fideduperange_writes_per_destination_linux_statuses() {
     reset();
     let remap = RemapOps::new(Ok(4));
     let fdt = Arc::new(FdTable::new());
-    let src = mk_file_with_fop(OpenFlags::O_RDONLY, 20, remap.clone());
-    let dst_ok = mk_file_with_fop(OpenFlags::O_RDWR, 20, remap.clone());
+    let src = mk_file_with_fop(FileType::Regular, OpenFlags::O_RDONLY, 20, remap.clone());
+    let dst_ok = mk_file_with_fop(FileType::Regular, OpenFlags::O_RDWR, 20, remap.clone());
     let dst_no_remap = mk_file(FileType::Regular, OpenFlags::O_RDWR, 20);
     let dst_ok_fd = fdt.alloc(dst_ok).unwrap();
     let dst_no_remap_fd = fdt.alloc(dst_no_remap).unwrap();

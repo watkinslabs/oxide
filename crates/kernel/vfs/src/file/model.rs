@@ -178,6 +178,12 @@ impl File {
         self.f_op.fasync_file(fd, self, on)
     }
 
+    /// Int-valued `file_operations->unlocked_ioctl` dispatch for queue queries.
+    /// # C: backend-dependent
+    pub fn ioctl_int(&self, cmd: crate::IoctlIntCmd) -> crate::KResult<u32> {
+        self.f_op.ioctl_int(self, cmd)
+    }
+
     /// Generic `fasync_helper` state transition for async-capable backends.
     /// Unsupported files never reach this; their `f_op->fasync` default returns
     /// `ENOTTY`, so no registry entry is published by accident. # C: O(1)
