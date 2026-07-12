@@ -106,6 +106,15 @@ fn pread_on_fifo_is_espipe() {
 }
 
 #[test]
+fn pread_on_directory_is_eisdir() {
+    let ino: InodeRef = InodeBuilder::new(0xd17e, mk_mode(FileType::Directory, 0o755),
+        default_inode_ops(), default_file_ops()).build();
+    let dentry = Dentry::new_root(Arc::clone(&ino));
+    let f = File::new(ino, dentry, OpenFlags::O_RDONLY);
+    assert_eq!(f.pread(&mut [0u8; 1], 0), Err(VfsError::Eisdir));
+}
+
+#[test]
 fn pwrite_on_fifo_is_espipe() {
     let f = fifo_file(OpenFlags::O_WRONLY);
     assert_eq!(f.pwrite(b"x", 0), Err(VfsError::Espipe));
