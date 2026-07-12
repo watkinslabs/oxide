@@ -12,11 +12,23 @@ use crate::sock_opts::apply_tcp_keepalive_opts;
 
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
-                   dst_ip: crate::Ipv6Addr, port: u16) -> Result<(), NetError> {
-    let is_dgram = matches!(*sock.kind.lock(), SockKind::Udp);
-    if is_dgram {
-        *sock.peer6.lock() = Some((dst_ip, port));
-        return Ok(());
+                   dst_ip: crate::Ipv6Addr, port: u16, nonblock: bool) -> Result<(), NetError> {
+    {
+        let kind = sock.kind.lock();
+        match &*kind {
+            SockKind::Udp => {
+                drop(kind);
+                *sock.peer6.lock() = Some((dst_ip, port));
+                return Ok(());
+            }
+            SockKind::TcpConn(e) => {
+                let st = e.conn.lock().state;
+                if st == crate::tcp_state::TcpState::Established { return Err(NetError::Eisconn); }
+                return Err(NetError::Ealready);
+            }
+            SockKind::TcpListener(_) => return Err(NetError::Einval),
+            _ => {}
+        }
     }
     let local_port = {
         let cur = *sock.local_port.lock();
@@ -44,6 +56,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
     apply_tcp_keepalive_opts(sock, &entry);
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     *sock.peer6.lock() = Some((dst_ip, port));
+    if nonblock { return Err(NetError::Einprogress); }
     crate::sock_io::connect_wait_established(&entry)
 }
 

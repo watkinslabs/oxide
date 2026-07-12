@@ -365,11 +365,8 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
     deliver_rx_from(owner, h, payload)
 }
 
-/// Client connect: allocate a local port, register the connection, send
-/// OP_REQUEST, and (kernel) park until OP_RESPONSE / RST. Returns the
-/// connection on success. # C: O(RTT)
-pub fn connect_from(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64, peer_port: u32)
-    -> Result<alloc::sync::Arc<VsockConn>, NetError>
+/// Start a client connect; send OP_REQUEST and leave Connecting. # C: O(1)
+pub fn connect_from_start(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64, peer_port: u32) -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
     let Some((owner, local_cid)) = endpoint_by_owner(owner) else {
         return Err(NetError::Enetunreach);
@@ -383,14 +380,21 @@ pub fn connect_from(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid
         TABLE.remove(c.key());
         return Err(NetError::Enetunreach);
     }
+    Ok(c)
+}
+
+/// Wait for a started client connection to complete. # C: O(RTT)
+pub fn connect_wait(c: &alloc::sync::Arc<VsockConn>) -> Result<(), NetError> {
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = c;
     #[cfg(target_os = "oxide-kernel")]
     {
         let budget = crate::vsock::VSOCK_CONNECT_POLL_BUDGET;
         for _ in 0..budget {
-            let _ = poll_rx_for(owner);
+            let _ = poll_rx_for(c.owner);
             let st = *c.st.lock();
             match st {
-                VsockState::Connected   => return Ok(c),
+                VsockState::Connected   => return Ok(()),
                 VsockState::Closed      => { TABLE.remove(c.key()); return Err(NetError::Econnrefused); }
                 _ => {}
             }
@@ -403,18 +407,24 @@ pub fn connect_from(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid
         return Err(NetError::Eio);
     }
     #[cfg(not(target_os = "oxide-kernel"))]
+    Ok(())
+}
+
+/// Client connect: start, wait for OP_RESPONSE / RST, return conn. # C: O(RTT)
+pub fn connect_from(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64, peer_port: u32) -> Result<alloc::sync::Arc<VsockConn>, NetError>
+{
+    let c = connect_from_start(owner, local_port, peer_cid, peer_port)?;
+    connect_wait(&c)?;
     Ok(c)
 }
 
 /// Client connect through the compatibility primary endpoint. # C: O(RTT)
-pub fn connect(peer_cid: u64, peer_port: u32)
-    -> Result<alloc::sync::Arc<VsockConn>, NetError>
+pub fn connect(peer_cid: u64, peer_port: u32) -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
     connect_from(None, None, peer_cid, peer_port)
 }
 
-/// Connect-poll budget (tick_yield iterations) before giving up. Named,
-/// not a magic literal. # C: O(1)
+/// Connect-poll budget (tick_yield iterations) before giving up. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub const VSOCK_CONNECT_POLL_BUDGET: u32 = 2_000_000;
 

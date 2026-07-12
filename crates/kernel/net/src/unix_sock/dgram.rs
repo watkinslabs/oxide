@@ -68,6 +68,11 @@ impl UnixDgramQueue {
         *self.peer.lock() = Some(addr);
     }
 
+    /// Clear the connected datagram peer. # C: O(1)
+    pub fn clear_peer(&self) {
+        *self.peer.lock() = None;
+    }
+
     /// Return the connected datagram peer, if any.
     /// # C: O(1)
     pub fn peer(&self) -> Option<UnixAddr> {

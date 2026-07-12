@@ -68,6 +68,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
 /// Already-validated remote-address target for connect/sendto.
 #[derive(Clone)]
 pub enum RemoteAddr {
+    /// AF_UNSPEC disconnect request.
+    Unspec,
     /// `connect`/`sendto` on AF_UNIX — registry lookup by path.
     Unix(crate::UnixAddr),
     /// `connect`/`sendto` on AF_INET — IPv4 destination.
@@ -77,8 +79,52 @@ pub enum RemoteAddr {
 }
 
 /// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
-pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<(), NetError> {
+pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: bool) -> Result<(), NetError> {
     match addr {
+        RemoteAddr::Unspec => {
+            enum Disc {
+                Udp,
+                UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
+                TcpConn(alloc::sync::Arc<TcpEntry>),
+                TcpListener(alloc::sync::Arc<TcpListenEntry>),
+                Bad,
+            }
+            let disc = {
+                let kind = sock.kind.lock();
+                match &*kind {
+                    SockKind::Udp => Disc::Udp,
+                    SockKind::UnixDgram(q) => Disc::UnixDgram(q.clone()),
+                    SockKind::TcpConn(entry) => Disc::TcpConn(entry.clone()),
+                    SockKind::TcpListener(listener) => Disc::TcpListener(listener.clone()),
+                    _ => Disc::Bad,
+                }
+            };
+            match disc {
+                Disc::Udp => {
+                    *sock.peer.lock() = None;
+                    *sock.peer6.lock() = None;
+                    Ok(())
+                }
+                Disc::UnixDgram(q) => {
+                    q.clear_peer();
+                    Ok(())
+                }
+                Disc::TcpConn(entry) => {
+                    stack().tcp_disconnect_entry(&entry);
+                    entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+                    *sock.peer.lock() = None;
+                    *sock.peer6.lock() = None;
+                    *sock.kind.lock() = SockKind::TcpInit;
+                    Ok(())
+                }
+                Disc::TcpListener(listener) => {
+                    stack().tcp_unlisten_entry(&listener);
+                    *sock.kind.lock() = SockKind::TcpInit;
+                    Ok(())
+                }
+                Disc::Bad => Err(NetError::Einval),
+            }
+        }
         RemoteAddr::Unix(addr) => {
             if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
                 if crate::net_ns::unix_registry_for_addr(&addr).dgram_lookup_addr(&addr).is_none() {
@@ -86,6 +132,11 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
                 }
                 q.set_peer(addr);
                 return Ok(());
+            }
+            match &*sock.kind.lock() {
+                SockKind::Unix(_, _) => return Err(NetError::Eisconn),
+                SockKind::UnixListener(_) => return Err(NetError::Einval),
+                _ => {}
             }
             // B47: connect to a non-existent AF_UNIX path returns
             // ECONNREFUSED on Linux (no listener) — used to return
@@ -107,10 +158,22 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             Ok(())
         }
         RemoteAddr::Inet { ip: dst_ip, port } => {
-            let is_dgram = matches!(*sock.kind.lock(), SockKind::Udp);
-            if is_dgram {
-                *sock.peer.lock() = Some((dst_ip, port));
-                return Ok(());
+            {
+                let kind = sock.kind.lock();
+                match &*kind {
+                    SockKind::Udp => {
+                        drop(kind);
+                        *sock.peer.lock() = Some((dst_ip, port));
+                        return Ok(());
+                    }
+                    SockKind::TcpConn(e) => {
+                        let st = e.conn.lock().state;
+                        if st == crate::tcp_state::TcpState::Established { return Err(NetError::Eisconn); }
+                        return Err(NetError::Ealready);
+                    }
+                    SockKind::TcpListener(_) => return Err(NetError::Einval),
+                    _ => {}
+                }
             }
             // TCP active open: allocate local port if unbound, default
             // local IP to loopback if ANY, kick stack, drain a few
@@ -161,6 +224,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             apply_tcp_keepalive_opts(sock, &entry);
             *sock.kind.lock() = SockKind::TcpConn(entry.clone());
             *sock.peer.lock() = Some((dst_ip, port));
+            if nonblock { return Err(NetError::Einprogress); }
             // F159: park on entry.rx_waiters for the SYN-ACK. The
             // virtio_net_rx_kthread drives the SYN retransmission
             // timer (RFC 6298) and aborts after 6 SYN retries;
@@ -171,7 +235,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // wakes are issued post-mutation.
             crate::sock_io::connect_wait_established(&entry)
         }
-        RemoteAddr::Inet6 { ip, port } => crate::sock_v6::connect_v6(sock, ip, port),
+        RemoteAddr::Inet6 { ip, port } => crate::sock_v6::connect_v6(sock, ip, port, nonblock),
     }
 }
 
@@ -316,6 +380,7 @@ pub fn sendto(
     if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
         let path = match dest.clone() {
             Some(RemoteAddr::Unix(p)) => p,
+            Some(RemoteAddr::Unspec) => return Err(NetError::Einval),
             _ => q.peer().ok_or(NetError::Edestaddrreq)?,
         };
         let q = crate::net_ns::unix_registry_for_addr(&path).dgram_lookup_addr(&path)
@@ -349,9 +414,60 @@ pub fn sendto(
     }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),
+        Some(RemoteAddr::Unspec)            => return Err(NetError::Einval),
         Some(RemoteAddr::Unix(_))           => return Err(NetError::Einval),
         Some(RemoteAddr::Inet6 { .. })      => unreachable!(),
         None => sock.peer.lock().ok_or(NetError::Edestaddrreq)?,
     };
     socket_sendto(sock, dst_ip, dst_port, payload)
+}
+
+#[cfg(all(test, target_os = "oxide-kernel"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn udp_af_unspec_connect_clears_peer() {
+        let sock = alloc::sync::Arc::new(InetSocket::new_udp());
+        connect(&sock, RemoteAddr::Inet { ip: Ipv4Addr::LOOPBACK, port: 53 }, false).unwrap();
+        assert_eq!(*sock.peer.lock(), Some((Ipv4Addr::LOOPBACK, 53)));
+
+        connect(&sock, RemoteAddr::Unspec, false).unwrap();
+
+        assert_eq!(*sock.peer.lock(), None);
+    }
+
+    #[test]
+    fn unix_dgram_af_unspec_connect_clears_peer() {
+        let sock = alloc::sync::Arc::new(InetSocket::new_unix_dgram());
+        let addr = crate::UnixAddr::from_sockaddr_path(b"\0svc".to_vec());
+        if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
+            q.set_peer(addr);
+        } else {
+            panic!("expected unix dgram socket");
+        }
+
+        connect(&sock, RemoteAddr::Unspec, false).unwrap();
+
+        if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
+            assert!(q.peer().is_none());
+        } else {
+            panic!("expected unix dgram socket");
+        }
+    }
+
+    #[test]
+    fn connected_stream_connect_returns_eisconn() {
+        let sock = alloc::sync::Arc::new(InetSocket::new_tcp());
+        let local = crate::Endpoint { ip: crate::addr::IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40000 };
+        let remote = crate::Endpoint { ip: crate::addr::IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
+        let mut conn = crate::TcpConn::new_client(local, remote, 1);
+        conn.state = crate::tcp_state::TcpState::Established;
+        *sock.kind.lock() = SockKind::TcpConn(alloc::sync::Arc::new(TcpEntry::new(conn)));
+
+        assert_eq!(
+            connect(&sock, RemoteAddr::Inet { ip: Ipv4Addr::LOOPBACK, port: 80 }, false),
+            Err(NetError::Eisconn),
+        );
+    }
 }
