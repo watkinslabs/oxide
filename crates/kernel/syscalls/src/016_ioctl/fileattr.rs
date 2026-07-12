@@ -20,6 +20,25 @@ pub(super) fn ioctl_fsgetxattr(file: &vfs::File, arg: u64) -> i64 {
     0
 }
 
+/// Linux `FS_IOC_GETFLAGS`: copy the legacy `FS_*_FL` flag word. # C: O(1)
+pub(super) fn ioctl_getflags(file: &vfs::File, arg: u64) -> i64 {
+    let fa = match file.inode().fileattr_get() {
+        Ok(fa) => fa,
+        Err(e) => return -(e as i64),
+    };
+    if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return rv; }
+    write_u32(arg, fa.flags);
+    0
+}
+
+/// Linux `FS_IOC_SETFLAGS`: set the legacy `FS_*_FL` flag word. # C: FS-dependent
+pub(super) fn ioctl_setflags(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
+    if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
+    let flags = read_u32(arg);
+    let want = fattr_fill_flags(vfs::FileAttr { flags, ..Default::default() });
+    vfs_fileattr_set(cur, file, want, vfs::FileAttrSource::Flags)
+}
+
 /// Linux `FS_IOC_FSSETXATTR`: copy fsxattr, validate xflags, set fileattr. # C: FS-dependent
 pub(super) fn ioctl_fssetxattr(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, FSXATTR_BYTES, 1) { return rv; }
@@ -37,19 +56,37 @@ pub(super) fn ioctl_fssetxattr(cur: &sched::Task, file: &vfs::File, arg: u64) ->
         fsx_projid: projid,
         fsx_cowextsize: cowextsize,
     });
-    if file.inode().uid() != Some(current_fsuid()) && !cur.has_cap(sched::cap::FOWNER) {
+    vfs_fileattr_set(cur, file, want, vfs::FileAttrSource::Fsxattr)
+}
+
+fn vfs_fileattr_set(cur: &sched::Task, file: &vfs::File, want: vfs::FileAttr, source: vfs::FileAttrSource) -> i64 {
+    let m = file.vfsmount();
+    if let Some(ref mnt) = m {
+        if let Err(e) = vfs::mount::mnt_want_write(mnt) { return -(e as i64); }
+        if mnt.sb().is_readonly() {
+            vfs::mount::mnt_drop_write(mnt);
+            return -(vfs::VfsError::Erofs as i64);
+        }
+    }
+    let rv = vfs_fileattr_set_inner(cur, file, want, source);
+    if let Some(ref mnt) = m { vfs::mount::mnt_drop_write(mnt); }
+    rv
+}
+
+fn vfs_fileattr_set_inner(cur: &sched::Task, file: &vfs::File, want: vfs::FileAttr, source: vfs::FileAttrSource) -> i64 {
+    let idmap = vfs::mount::idmap_for(file.mnt_id());
+    let cred = current_cred();
+    if !vfs::inode::inode_owner_or_capable(&idmap, file.inode().as_ref(), &cred) {
         return -(Errno::Eperm.as_i32() as i64);
     }
     let old = match file.inode().fileattr_get() {
         Ok(fa) => fattr_fill_xflags(fa),
         Err(e) => return -(e as i64),
     };
-    if (want.flags ^ old.flags) & (FS_APPEND_FL | FS_IMMUTABLE_FL) != 0
-        && !cur.has_cap(sched::cap::LINUX_IMMUTABLE)
+    let want = match vfs::fileattr_prepare_set(&idmap, file.inode(), old, want, source, &cred,
+        cur_in_init_user_ns(cur) && cur.has_cap(sched::cap::LINUX_IMMUTABLE),
+        cur_in_init_user_ns(cur))
     {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    let want = match fileattr_set_prepare(file.inode().file_type(), want) {
         Ok(fa) => fa,
         Err(e) => return -(e as i64),
     };
@@ -57,28 +94,6 @@ pub(super) fn ioctl_fssetxattr(cur: &sched::Task, file: &vfs::File, arg: u64) ->
         Ok(()) => 0,
         Err(e) => -(e as i64),
     }
-}
-
-fn fileattr_set_prepare(ft: vfs::FileType, mut fa: vfs::FileAttr) -> vfs::KResult<vfs::FileAttr> {
-    if fa.fsx_xflags & FS_XFLAG_EXTSIZE != 0 && ft != vfs::FileType::Regular {
-        return Err(vfs::VfsError::Einval);
-    }
-    if fa.fsx_xflags & FS_XFLAG_EXTSZINHERIT != 0 && ft != vfs::FileType::Directory {
-        return Err(vfs::VfsError::Einval);
-    }
-    if fa.fsx_xflags & FS_XFLAG_COWEXTSIZE != 0
-        && ft != vfs::FileType::Regular && ft != vfs::FileType::Directory
-    {
-        return Err(vfs::VfsError::Einval);
-    }
-    if fa.fsx_xflags & FS_XFLAG_DAX != 0
-        && ft != vfs::FileType::Regular && ft != vfs::FileType::Directory
-    {
-        return Err(vfs::VfsError::Einval);
-    }
-    if fa.fsx_extsize == 0 { fa.fsx_xflags &= !(FS_XFLAG_EXTSIZE | FS_XFLAG_EXTSZINHERIT); }
-    if fa.fsx_cowextsize == 0 { fa.fsx_xflags &= !FS_XFLAG_COWEXTSIZE; }
-    Ok(fa)
 }
 
 fn fattr_fill_xflags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
@@ -105,6 +120,18 @@ fn fattr_fill_xflags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
     fa
 }
 
+fn fattr_fill_flags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
+    if fa.flags & FS_SYNC_FL      != 0 { fa.fsx_xflags |= FS_XFLAG_SYNC; }
+    if fa.flags & FS_IMMUTABLE_FL != 0 { fa.fsx_xflags |= FS_XFLAG_IMMUTABLE; }
+    if fa.flags & FS_APPEND_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_APPEND; }
+    if fa.flags & FS_NODUMP_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_NODUMP; }
+    if fa.flags & FS_NOATIME_FL   != 0 { fa.fsx_xflags |= FS_XFLAG_NOATIME; }
+    if fa.flags & FS_DAX_FL       != 0 { fa.fsx_xflags |= FS_XFLAG_DAX; }
+    if fa.flags & FS_PROJINHERIT_FL != 0 { fa.fsx_xflags |= FS_XFLAG_PROJINHERIT; }
+    if fa.flags & FS_VERITY_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_VERITY; }
+    fa
+}
+
 fn read_u32(addr: u64) -> u32 {
     // SAFETY: caller validated the surrounding user payload before reading this field.
     unsafe { core::ptr::read_unaligned(addr as *const u32) }
@@ -121,11 +148,21 @@ fn write_u64(addr: u64, val: u64) {
 }
 
 #[cfg(not(test))]
-fn current_fsuid() -> u32 {
-    crate::pathresolve::current_cred().uid
+fn current_cred() -> vfs::Cred {
+    crate::pathresolve::current_cred()
 }
 
 #[cfg(test)]
-fn current_fsuid() -> u32 {
-    0
+fn current_cred() -> vfs::Cred {
+    vfs::Cred::root()
+}
+
+#[cfg(not(test))]
+fn cur_in_init_user_ns(cur: &sched::Task) -> bool {
+    cur.user_ns.load(core::sync::atomic::Ordering::Acquire) == 0
+}
+
+#[cfg(test)]
+fn cur_in_init_user_ns(_cur: &sched::Task) -> bool {
+    true
 }

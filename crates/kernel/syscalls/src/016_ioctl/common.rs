@@ -36,6 +36,8 @@ pub(super) fn handle_common_ioctl(
         FS_IOC_RESVSP | FS_IOC_RESVSP64 => Some(ioctl_preallocate(file, 0, arg)),
         FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 => Some(ioctl_preallocate(file, FALLOC_FL_PUNCH_HOLE, arg)),
         FS_IOC_ZERO_RANGE => Some(ioctl_preallocate(file, FALLOC_FL_ZERO_RANGE, arg)),
+        FS_IOC_GETFLAGS => Some(super::fileattr::ioctl_getflags(file, arg)),
+        FS_IOC_SETFLAGS => Some(super::fileattr::ioctl_setflags(cur, file, arg)),
         FS_IOC_FSGETXATTR => Some(super::fileattr::ioctl_fsgetxattr(file, arg)),
         FS_IOC_FSSETXATTR => Some(super::fileattr::ioctl_fssetxattr(cur, file, arg)),
         FS_IOC_GETFSUUID => Some(ioctl_getfsuuid(file, arg)),

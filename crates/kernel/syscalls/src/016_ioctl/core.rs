@@ -3,12 +3,9 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
-
 use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
 use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl};
-use super::uapi::INT_BYTES;
 use super::tty_ioctl::handle_tty_ioctl;
 
 /// `sys_ioctl(fd, request, arg)` - slot 16.
@@ -114,44 +111,6 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         return match r {
             Ok(())  => 0,
             Err(e)  => crate::namei_common::errno_from_vfs(e),
-        };
-    }
-    // FS_IOC_GETFLAGS / FS_IOC_SETFLAGS (Linux fs/ioctl.c ioctl_getflags/
-    // setflags) — the chattr/lsattr inode flag word. Regular files + directories
-    // (any inode whose fs implements fileattr_get/set); route BEFORE the CharDev
-    // gate. Was a blanket ENOTTY → chattr/lsattr/e2fsprogs failed.
-    const FS_IOC_GETFLAGS: u64 = 0x8008_6601; // _IOR('f', 1, long)
-    const FS_IOC_SETFLAGS: u64 = 0x4008_6602; // _IOW('f', 2, long)
-    const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
-    const FS_APPEND_FL:    u32 = 0x0000_0020;
-    if req == FS_IOC_GETFLAGS {
-        let fa = match file.inode().fileattr_get() {
-            Ok(f) => f, Err(e) => return crate::namei_common::errno_from_vfs(e),
-        };
-        if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return rv; }
-        // SAFETY: arg validated < USER_VA_END; FS_IOC_GETFLAGS writes one int flag word.
-        unsafe { core::ptr::write_volatile(arg as *mut u32, fa.flags); }
-        return 0;
-    }
-    if req == FS_IOC_SETFLAGS {
-        if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
-        // SAFETY: arg validated < USER_VA_END; read the caller's int flag word.
-        let want = unsafe { core::ptr::read_volatile(arg as *const u32) };
-        // inode_owner_or_capable: only the owner (or CAP_FOWNER) may chattr.
-        let cred = crate::pathresolve::current_cred();
-        if file.inode().uid() != Some(cred.uid) && !cur.has_cap(sched::cap::FOWNER) {
-            return -(Errno::Eperm.as_i32() as i64);
-        }
-        // Toggling IMMUTABLE/APPEND additionally needs CAP_LINUX_IMMUTABLE.
-        let cur_flags = file.inode().fileattr_get().map(|f| f.flags).unwrap_or(0);
-        if (want ^ cur_flags) & (FS_IMMUTABLE_FL | FS_APPEND_FL) != 0
-            && !cur.has_cap(sched::cap::LINUX_IMMUTABLE)
-        {
-            return -(Errno::Eperm.as_i32() as i64);
-        }
-        let fa = vfs::FileAttr { flags: want, ..Default::default() };
-        return match file.inode().fileattr_set(&fa) {
-            Ok(()) => 0, Err(e) => crate::namei_common::errno_from_vfs(e),
         };
     }
     // FS_IOC_FIEMAP (filefrag/backup/dedup): map a regular file's physical
