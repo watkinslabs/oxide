@@ -9,7 +9,7 @@ use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
-use super::layout::{end_of, is_aligned, validate_aligned, validate_len};
+use super::layout::{end_of, end_of_raw, is_aligned, validate_aligned, validate_len};
 use super::limits::{MMAP_TOP, STACK_GROW_MAX};
 use super::AddressSpace;
 
@@ -163,7 +163,7 @@ impl AddressSpace {
     pub fn munmap(&self, addr: UserVirtAddr, len: usize) -> KResult<()> {
         validate_len(len)?;
         validate_aligned(addr)?;
-        let end = end_of(addr, len as u64)?;
+        let end = end_of_raw(addr, len as u64)?;
         let mut tree = self.vmas.write();
         // A4-rmap (GAP A4-2): detach the anon_vma chain edges of every
         // VMA the unmap touches (their pre-split ranges), then re-attach
@@ -172,8 +172,8 @@ impl AddressSpace {
         // lock-step with the VMA tree; lazy weak-pruning alone leaves
         // stale wide edges (still PTE-checked by the walker, so this is
         // hygiene, not a soundness fix — but it keeps the chain bounded).
-        self.rmap_resplit(&mut tree, addr.as_u64(), end.as_u64(), |t, s, e| { let _ = t.remove_range(
-            UserVirtAddr::new(s).expect("uva"), UserVirtAddr::new(e).expect("uva")); Ok(()) })?;
+        self.rmap_resplit(&mut tree, addr.as_u64(), end, |t, s, e| { let _ = t.remove_range_raw_end(
+            UserVirtAddr::new(s).expect("uva"), e); Ok(()) })?;
         Ok(())
     }
 
@@ -246,8 +246,8 @@ impl AddressSpace {
     /// userspace ops are sealed, matching Linux.
     /// # C: O(K)
     pub fn range_sealed(&self, addr: UserVirtAddr, len: usize) -> bool {
-        match end_of(addr, len as u64) {
-            Ok(end) => self.vmas.read().any_sealed(addr, end),
+        match end_of_raw(addr, len as u64) {
+            Ok(end) => self.vmas.read().any_sealed_raw_end(addr, end),
             Err(_)  => false,
         }
     }

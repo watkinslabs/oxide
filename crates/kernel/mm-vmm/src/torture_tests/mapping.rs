@@ -133,6 +133,23 @@ fn munmap_zero_len_rejected() {
 }
 
 #[test]
+fn munmap_from_zero_removes_low_overlap() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(MIN_USER_VA).unwrap();
+    a.mmap(Some(h), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    a.munmap(UserVirtAddr::new(0).unwrap(), 2 * PAGE).unwrap();
+    assert!(a.find_vma(h).is_none());
+}
+
+#[test]
+fn munmap_hole_can_end_at_user_va_end() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(USER_VA_END - PAGE as u64).unwrap();
+    a.munmap(h, PAGE).unwrap();
+}
+
+#[test]
 fn munmap_partial_splits_vma() {
     let a = AddressSpace::new(0).unwrap();
     let h = UserVirtAddr::new(0x4000_0000).unwrap();
@@ -288,4 +305,3 @@ fn mseal_hole_rejected() {
     let a = AddressSpace::new(0).unwrap();
     assert!(a.mseal(uva(0x4000_0000), PAGE).is_err());  // unmapped → ENOMEM
 }
-
