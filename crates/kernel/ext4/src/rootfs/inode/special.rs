@@ -87,10 +87,10 @@ impl InodeOps for Ext4StatInodeOps {
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
-        d.st.mount.create_dir(d.ino, name.as_bytes(), m & 0o7777, uid, gid)
+        let ino = d.st.mount.create_dir(d.ino, name.as_bytes(), m & 0o7777, uid, gid)
             .map_err(super::regular::vfs_error_from_mount)?;
-        let child = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Eio)?;
-        d.st.wrap_any_ino(child).ok_or(VfsError::Eio)
+        d.st.forget_created_ino(ino);
+        d.st.wrap_any_ino(ino).ok_or(VfsError::Eio)
     }
 
     fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
@@ -132,7 +132,19 @@ impl InodeOps for Ext4StatInodeOps {
             0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
         let ino = d.st.mount.create_file(d.ino, name.as_bytes(), m & 0o7777, uid, gid)
             .map_err(super::regular::vfs_error_from_mount)?;
-        d.st.page_cache.invalidate(InodeId(ino as u64));
+        d.st.forget_created_ino(ino);
+        d.st.wrap_file(ino).ok_or(VfsError::Eio)
+    }
+
+    fn tmpfile(&self, inode: &Inode, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
+        let d = Self::data(inode)?;
+        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
+            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
+        let ino = d.st.mount.create_anonymous_as(d.ino, m & 0o7777, uid, gid)
+            .map_err(super::regular::vfs_error_from_mount)?;
+        d.st.orphan_insert(ino);
+        d.st.forget_created_ino(ino);
         d.st.wrap_file(ino).ok_or(VfsError::Eio)
     }
 
@@ -180,7 +192,7 @@ impl InodeOps for Ext4StatInodeOps {
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
         let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, uid, gid)
             .map_err(super::regular::vfs_error_from_mount)?;
-        d.st.page_cache.invalidate(InodeId(ino as u64));
+        d.st.forget_created_ino(ino);
         Ok(())
     }
 
@@ -191,7 +203,7 @@ impl InodeOps for Ext4StatInodeOps {
         let (uid, gid, mode) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
             mode, mode, ctx.cred, ctx.umask);
         let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, uid, gid).map_err(|_| VfsError::Eio)?;
-        d.st.page_cache.invalidate(InodeId(ino as u64));
+        d.st.forget_created_ino(ino);
         Ok(())
     }
 

@@ -204,10 +204,17 @@ impl Mount {
     pub fn create_anonymous(&self, parent_ino: u32, mode_perm: u16)
         -> Result<u32, MountError>
     {
+        self.create_anonymous_as(parent_ino, mode_perm, 0, 0)
+    }
+
+    /// Create an anonymous regular file with explicit owner ids. # C: O(1)
+    pub fn create_anonymous_as(&self, parent_ino: u32, mode_perm: u16, uid: u32, gid: u32)
+        -> Result<u32, MountError>
+    {
         self.run_journaled(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, 0, 0)?;
+            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, uid, gid)?;
             // Persist on the on-disk orphan list: a crash before a name is
             // linked (or before the last fd closes) leaves the inode + its
             // blocks recoverable by `orphan_cleanup` on the next mount,

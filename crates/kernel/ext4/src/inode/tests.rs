@@ -148,6 +148,19 @@ fn file_type_helpers() {
 }
 
 #[test]
+fn extent_backed_60_byte_symlink_is_not_fast() {
+    let sb = fake_sb_inode_size(256);
+    let ib = make_extent_iblock(1, 0, &[(0, 1, 0x120)]);
+    let mut buf = make_inode_buf(256, S_IFLNK | 0o777, I_BLOCK_LEN as u64, 1, ib);
+    buf[0x1C..0x20].copy_from_slice(&8u32.to_le_bytes());
+    buf[0x20..0x24].copy_from_slice(&EXT4_EXTENTS_FL.to_le_bytes());
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert!(ino.is_link());
+    assert_eq!(ino.size, I_BLOCK_LEN as u64);
+    assert!(ino.fast_symlink_target().is_none());
+}
+
+#[test]
 fn extent_child_depth_bounds_descent() {
     // Valid step: child exactly one level shallower.
     assert!(extent_child_depth_ok(5, 4));
