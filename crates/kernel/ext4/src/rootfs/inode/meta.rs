@@ -10,6 +10,7 @@ const EXT4_SYNC_FL:      u32 = 0x0000_0008;
 const EXT4_IMMUTABLE_FL: u32 = 0x0000_0010;
 const EXT4_APPEND_FL:    u32 = 0x0000_0020;
 const EXT4_NOATIME_FL:   u32 = 0x0000_0080;
+const EXT4_JOURNAL_DATA_FL: u32 = 0x0000_4000;
 const EXT4_EXTENTS_FL:   u32 = 0x0008_0000;
 const EXT4_PROJINHERIT_FL: u32 = FS_PROJINHERIT_FL;
 /// `lsattr`-visible ext4 flags (Linux `EXT4_FL_USER_VISIBLE` subset this
@@ -118,6 +119,9 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
         return Err(VfsError::Eopnotsupp);
     }
     let cur = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?.i_flags;
+    if (cur ^ fa.flags) & EXT4_JOURNAL_DATA_FL != 0 {
+        return Err(VfsError::Eopnotsupp);
+    }
     let new = (cur & !FS_FL_USER_MODIFIABLE) | (fa.flags & FS_FL_USER_MODIFIABLE);
     ext4_ioctl_check_immutable(&st, ino, cur, fa.fsx_projid, new)?;
     if (cur ^ new) & EXT4_EXTENTS_FL != 0 {

@@ -26,6 +26,7 @@ const EXT4_PRJ_QUOTA_INUM_OFF: usize = EXT4_SUPERBLOCK_OFFSET + ext4::superblock
 // FS_*_FL == ext4 on-disk i_flags bits.
 const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
 const FS_NODUMP_FL:    u32 = 0x0000_0040;
+const FS_JOURNAL_DATA_FL: u32 = 0x0000_4000;
 const FS_DAX_FL:       u32 = 0x0200_0000;
 const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 const EXT4_EXTENTS_FL: u32 = 0x0008_0000; // kernel-internal, must be preserved
@@ -245,6 +246,21 @@ fn ext4_rejects_unsupported_dax_flag_without_corruption() {
         Err(VfsError::Eopnotsupp));
     assert_eq!(m.state().mount.read_inode(ino).unwrap().i_flags & FS_DAX_FL, 0);
     assert_eq!(inode.fileattr_get().unwrap().flags & FS_DAX_FL, 0);
+}
+
+#[test]
+fn ext4_rejects_journal_data_flag_toggle_without_noop_success() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().create_at(b"/journal-data.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/journal-data.txt").expect("lookup");
+    let flags = inode.fileattr_get().unwrap().flags;
+
+    assert_eq!(flags & FS_JOURNAL_DATA_FL, 0);
+    assert_eq!(inode.fileattr_set(&FileAttr { flags: flags | FS_JOURNAL_DATA_FL, ..Default::default() }),
+        Err(VfsError::Eopnotsupp));
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_flags & FS_JOURNAL_DATA_FL, 0);
+    assert_eq!(inode.fileattr_get().unwrap().flags & FS_JOURNAL_DATA_FL, 0);
 }
 
 #[test]
