@@ -184,6 +184,9 @@ fn vfs_clone_file_range(src: &vfs::File, src_off: u64, dst: &vfs::File, dst_off:
     }
     remap_verify_area(src_off, len)?;
     remap_verify_area(dst_off, len)?;
+    if same_inode(src, dst) && ranges_overlap(src_off, dst_off, len) {
+        return Err(vfs::VfsError::Einval);
+    }
     src.remap_file_range(src_off, dst, dst_off, len, flags)
 }
 
@@ -288,6 +291,14 @@ fn same_superblock(a: &vfs::File, b: &vfs::File) -> bool {
         (None, None) => true,
         _ => false,
     }
+}
+
+fn same_inode(a: &vfs::File, b: &vfs::File) -> bool {
+    alloc::sync::Arc::ptr_eq(a.inode(), b.inode())
+}
+
+fn ranges_overlap(a: u64, b: u64, len: u64) -> bool {
+    len != 0 && a < b.saturating_add(len) && b < a.saturating_add(len)
 }
 
 /// Linux regular-file `FIONREAD`: `i_size - f_pos` copied as an int. # C: O(1)
