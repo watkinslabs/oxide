@@ -119,6 +119,7 @@ impl FdTable {
         let replaced = {
             let mut g = self.inner.lock();
             g.ensure_capacity(nf);
+            if g.is_open(nf) && g.files[nf].is_none() { return Err(VfsError::Ebusy); }
             let old = g.files[nf].take();
             g.files[nf] = Some(Arc::clone(&f));
             g.set_open(nf, true);
@@ -144,6 +145,7 @@ impl FdTable {
         let replaced = {
             let mut g = self.inner.lock();
             g.ensure_capacity(nf);
+            if g.is_open(nf) && g.files[nf].is_none() { return Err(VfsError::Ebusy); }
             let old = g.files[nf].take();
             g.files[nf] = Some(Arc::clone(&f));
             g.set_open(nf, true);
