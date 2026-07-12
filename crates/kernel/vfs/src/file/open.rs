@@ -25,34 +25,36 @@ pub fn install_open_at(
     limit: usize,
     fop_override: Option<alloc::sync::Arc<dyn crate::file_ops::FileOps>>,
 ) -> Result<i32, VfsError> {
-    if flags.contains(OpenFlags::O_DIRECTORY)
-        && !flags.contains(OpenFlags::O_TMPFILE)
-        && !matches!(inode.file_type(), crate::types::FileType::Directory)
-    {
-        return Err(VfsError::Enotdir);
-    }
-    if flags.contains(OpenFlags::O_TRUNC) {
-        if mnt_id != 0 {
-            if let Some(m) = crate::mount::mount_by_id(mnt_id) {
-                if (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly() {
-                    return Err(VfsError::Erofs);
+    let fd = fdt.get_unused_fd_flags(flags, limit).map_err(|_| VfsError::Emfile)?;
+    let result = (|| {
+        if flags.contains(OpenFlags::O_DIRECTORY)
+            && !flags.contains(OpenFlags::O_TMPFILE)
+            && !matches!(inode.file_type(), crate::types::FileType::Directory)
+        {
+            return Err(VfsError::Enotdir);
+        }
+        let needs_trunc = flags.contains(OpenFlags::O_TRUNC);
+        if needs_trunc {
+            if mnt_id != 0 {
+                if let Some(m) = crate::mount::mount_by_id(mnt_id) {
+                    if (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly() {
+                        return Err(VfsError::Erofs);
+                    }
                 }
             }
         }
-        let _ = inode.truncate(0);
-    }
-    let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
-    let file_flags = flags - OpenFlags::O_CLOEXEC;
-    let file = match fop_override {
-        Some(fop) => File::new_at_fop(inode, dentry, file_flags, mnt_id, cred, fop),
-        None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
-    };
-    if !file_flags.contains(OpenFlags::O_PATH) { file.open_hook()?; }
-    let fd = fdt.alloc_limit(file, limit).map_err(|_| VfsError::Emfile)?;
-    if cloexec {
-        fdt.set_cloexec(fd, true)?;
-    }
-    Ok(fd)
+        let file_flags = flags - OpenFlags::O_CLOEXEC;
+        let file = match fop_override {
+            Some(fop) => File::new_at_fop(inode, dentry, file_flags, mnt_id, cred, fop),
+            None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
+        };
+        if !file_flags.contains(OpenFlags::O_PATH) { file.open_hook()?; }
+        if needs_trunc { file.inode().truncate(0)?; }
+        fdt.fd_install(fd, file);
+        Ok(fd)
+    })();
+    if result.is_err() { fdt.put_unused_fd(fd); }
+    result
 }
 
 /// Build the opened leaf from an already-resolved parent dentry. This is the
