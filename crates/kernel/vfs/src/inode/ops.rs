@@ -103,7 +103,7 @@ impl Inode {
     /// `f_op->release` hook. # C: O(1)
     pub fn on_release(&self) { self.i_fop.on_release(self) }
     /// `f_op->flush` hook. # C: O(1)
-    pub fn on_flush(&self) { self.i_fop.on_flush(self) }
+    pub fn on_flush(&self) -> KResult<()> { self.i_fop.on_flush(self) }
     /// `show_fdinfo` extra lines. # C: O(1)
     pub fn fdinfo_extra(&self, out: &mut Vec<u8>) { self.i_fop.fdinfo_extra(self, out) }
 }

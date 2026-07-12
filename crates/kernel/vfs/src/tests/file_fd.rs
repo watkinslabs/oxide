@@ -381,7 +381,7 @@ fn fdtable_flush_fires_on_close() {
     impl FileOps for FlushOps {
         fn read(&self, _i: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
         fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
-        fn on_flush(&self, _i: &Inode) { FLUSHED.fetch_add(1, O::Relaxed); }
+        fn on_flush(&self, _i: &Inode) -> KResult<()> { FLUSHED.fetch_add(1, O::Relaxed); Ok(()) }
     }
     FLUSHED.store(0, O::Relaxed);
     let i: InodeRef = InodeBuilder::new(9, mk_mode(FileType::Regular, 0o644),
@@ -394,6 +394,46 @@ fn fdtable_flush_fires_on_close() {
     t.close(a).unwrap();
     t.close(b).unwrap();
     assert_eq!(FLUSHED.load(O::Relaxed), 2);
+}
+
+#[test]
+fn fdtable_close_returns_flush_error_after_removing_fd() {
+    struct FlushErrOps;
+    impl FileOps for FlushErrOps {
+        fn on_flush(&self, _i: &Inode) -> KResult<()> { Err(VfsError::Eio) }
+    }
+    let i: InodeRef = InodeBuilder::new(10, mk_mode(FileType::Regular, 0o644),
+        default_inode_ops(), Arc::new(FlushErrOps)).build();
+    let d = Dentry::new_root(Arc::clone(&i));
+    let t = FdTable::new();
+    let fd = t.alloc(File::new(i, d, OpenFlags::O_RDWR)).unwrap();
+    assert_eq!(t.close(fd), Err(VfsError::Eio));
+    assert_eq!(t.close(fd), Err(VfsError::Ebadf), "Linux removes fd before returning flush errno");
+}
+
+#[test]
+fn fdtable_close_flushes_snapshotted_file_ops() {
+    use core::sync::atomic::{AtomicUsize, Ordering as O};
+    static INODE_FLUSH: AtomicUsize = AtomicUsize::new(0);
+    static FILE_FLUSH: AtomicUsize = AtomicUsize::new(0);
+    struct InodeOps;
+    impl FileOps for InodeOps {
+        fn on_flush(&self, _i: &Inode) -> KResult<()> { INODE_FLUSH.fetch_add(1, O::Relaxed); Ok(()) }
+    }
+    struct FileOnlyOps;
+    impl FileOps for FileOnlyOps {
+        fn on_flush_file(&self, _f: &File) -> KResult<()> { FILE_FLUSH.fetch_add(1, O::Relaxed); Ok(()) }
+    }
+    INODE_FLUSH.store(0, O::Relaxed);
+    FILE_FLUSH.store(0, O::Relaxed);
+    let i: InodeRef = InodeBuilder::new(11, mk_mode(FileType::Regular, 0o644),
+        default_inode_ops(), Arc::new(InodeOps)).build();
+    let d = Dentry::new_root(Arc::clone(&i));
+    let t = FdTable::new();
+    let fd = t.alloc(File::new_at_fop(i, d, OpenFlags::O_RDWR, 0, Cred::root(), Arc::new(FileOnlyOps))).unwrap();
+    t.close(fd).unwrap();
+    assert_eq!(FILE_FLUSH.load(O::Relaxed), 1);
+    assert_eq!(INODE_FLUSH.load(O::Relaxed), 0);
 }
 
 struct RwCapType;
