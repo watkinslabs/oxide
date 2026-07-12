@@ -5,6 +5,7 @@ use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 use super::uapi::*;
 
 const O_ASYNC: u32 = 0o20000;
+const INODE_BLOCK_BYTES: u64 = 512;
 
 /// Linux `do_vfs_ioctl` common cases that run before driver/file-specific
 /// `unlocked_ioctl`. # C: O(1)
@@ -118,8 +119,9 @@ fn ioctl_fioqsize(file: &vfs::File, arg: u64) -> i64 {
         _ => return -(Errno::Enotty.as_i32() as i64),
     }
     if let Err(rv) = validate_user_buf_writable(arg, LOFF_BYTES, 1) { return rv; }
+    let bytes = file.inode().blocks() * INODE_BLOCK_BYTES;
     // SAFETY: arg validated writable for one Linux loff_t out-param.
-    unsafe { core::ptr::write_volatile(arg as *mut i64, file.inode().size() as i64); }
+    unsafe { core::ptr::write_volatile(arg as *mut i64, bytes as i64); }
     0
 }
 
