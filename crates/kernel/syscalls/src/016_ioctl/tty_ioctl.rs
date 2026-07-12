@@ -14,6 +14,7 @@ const TCXONC:     u64 = 0x540A; // tcflow(): 0=TCOOFF 1=TCOON 2=TCIOFF 3=TCION
 const TCFLSH:     u64 = 0x540B; // tcflush(): arg 0=TCIFLUSH 1=TCOFLUSH 2=TCIOFLUSH
 const TIOCEXCL:   u64 = 0x540C;
 const TIOCNXCL:   u64 = 0x540D;
+const TIOCGEXCL:  u64 = 0x80045440;
 const TIOCGWINSZ: u64 = 0x5413;
 const TIOCSWINSZ: u64 = 0x5414;
 const TIOCGPTN:   u64 = 0x80045430;
@@ -38,7 +39,7 @@ const TIOCMSET:   u64 = 0x5418;
 // c_iflag/c_oflag/c_cflag/c_lflag (4*4), c_line (1), c_cc[19] = 36 B.
 const KERNEL_TERMIOS_BYTES: usize = tty::pty::TERMIOS_OFF_CC + tty::pty::NCCS;
 
-pub(super) fn handle_tty_ioctl(file: &vfs::File, fd: i32, req: u64, arg: u64) -> i64 {
+pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -> i64 {
     // KD_*/VT_* ioctls on /dev/tty<N> + /dev/tty0 + /dev/console
     // route through the vt crate.
     if let Some(rv) = handle_vt_ioctl(file.inode(), req, arg) {
@@ -186,9 +187,29 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, fd: i32, req: u64, arg: u64) ->
             0
         }
         TIOCEXCL | TIOCNXCL => {
-            // Linux accepts exclusive-mode toggles on tty fds. We do not
-            // enforce TIOCEXCL yet, but returning ENOTTY is observably wrong:
-            // systemd and getty use TIOCNXCL during console setup.
+            let on = req == TIOCEXCL;
+            if let Some(pair) = &pty_pair {
+                pair.set_exclusive((ino & 0x8000) == 0, on);
+            } else {
+                match console::route(ino) {
+                    console::TtyTarget::Serial => console::static_console::set_exclusive(on),
+                    console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).set_exclusive(on),
+                }
+            }
+            0
+        }
+        TIOCGEXCL => {
+            if let Err(rv) = validate_user_buf_writable(arg, 4, 4) { return rv; }
+            let excl = if let Some(pair) = &pty_pair {
+                pair.exclusive((ino & 0x8000) == 0)
+            } else {
+                match console::route(ino) {
+                    console::TtyTarget::Serial => console::static_console::exclusive(),
+                    console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).exclusive(),
+                }
+            };
+            // SAFETY: arg validated 4-byte aligned; CPL=0 writes through caller's AS.
+            unsafe { core::ptr::write_volatile(arg as *mut i32, excl as i32); }
             0
         }
         TCXONC => {

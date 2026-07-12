@@ -124,6 +124,21 @@ pub(crate) fn vt_write(vt: u8, ino: Ino, buf: &[u8]) -> KResult<usize> {
 struct ConsoleFileOps;
 
 impl FileOps for ConsoleFileOps {
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        let vt = console_data(file.inode())?.vt;
+        let v = if vt == 0 { foreground_vt() } else { vt };
+        let cap = sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false);
+        vt_tty::vt_tty(v).open_with_cap_sys_admin(cap)?;
+        file.set_private_data(v as u64);
+        Ok(())
+    }
+
+    fn on_release_file(&self, file: &File) {
+        let v = file.private_data() as u8;
+        if v == 0 { return; }
+        vt_tty::vt_tty(v).close();
+    }
+
     fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let vt = console_data(inode)?.vt;
         vt_read(vt, inode.ino(), buf)
@@ -154,6 +169,29 @@ fn console_data(inode: &Inode) -> KResult<&ConsoleData> {
 struct SystemConsoleFileOps;
 
 impl FileOps for SystemConsoleFileOps {
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => {
+                crate::static_console::open()?;
+                file.set_private_data(0);
+                Ok(())
+            }
+            cmdline::ConsoleKind::Vt(_) => {
+                let vt = foreground_vt();
+                let cap = sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false);
+                vt_tty::vt_tty(vt).open_with_cap_sys_admin(cap)?;
+                file.set_private_data(vt as u64);
+                Ok(())
+            }
+        }
+    }
+
+    fn on_release_file(&self, file: &File) {
+        let v = file.private_data() as u8;
+        if v == 0 { crate::static_console::close(); }
+        else { vt_tty::vt_tty(v).close(); }
+    }
+
     fn read(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         match cmdline::preferred_console() {
             cmdline::ConsoleKind::Serial => serial::serial_read(buf),

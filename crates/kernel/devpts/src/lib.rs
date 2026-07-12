@@ -48,6 +48,10 @@ pub struct LockedPair {
     /// before the slave can be opened, matching `pts_unix98_lookup`'s
     /// `-EIO` on a locked slave. POSIX requires `unlockpt` pre-slave-open.
     locked: AtomicBool,
+    master_exclusive: AtomicBool,
+    slave_exclusive: AtomicBool,
+    master_opens: AtomicU32,
+    slave_opens: AtomicU32,
 }
 
 impl LockedPair {
@@ -58,6 +62,10 @@ impl LockedPair {
             inner: Spinlock::new(TtyPair::new(pts_num)),
             ino_master, ino_slave,
             locked: AtomicBool::new(true),
+            master_exclusive: AtomicBool::new(false),
+            slave_exclusive: AtomicBool::new(false),
+            master_opens: AtomicU32::new(0),
+            slave_opens: AtomicU32::new(0),
         })
     }
     /// # C: O(1)
@@ -68,6 +76,30 @@ impl LockedPair {
     /// `TIOCSPTLCK` setter: non-zero arg locks, zero unlocks.
     /// # C: O(1)
     pub fn set_locked(&self, v: bool) { self.locked.store(v, Ordering::Release); }
+    /// TIOCEXCL/TIOCNXCL setter for one pty endpoint. # C: O(1)
+    pub fn set_exclusive(&self, master: bool, v: bool) {
+        if master { &self.master_exclusive } else { &self.slave_exclusive }.store(v, Ordering::Release);
+    }
+    /// TIOCGEXCL readback for one pty endpoint. # C: O(1)
+    pub fn exclusive(&self, master: bool) -> bool {
+        if master { &self.master_exclusive } else { &self.slave_exclusive }.load(Ordering::Acquire)
+    }
+    /// Linux `tty_reopen` TTY_EXCLUSIVE admission for one pty endpoint. # C: O(1)
+    pub fn open_endpoint(&self, master: bool, cap_sys_admin: bool) -> KResult<()> {
+        let excl = if master { &self.master_exclusive } else { &self.slave_exclusive };
+        let opens = if master { &self.master_opens } else { &self.slave_opens };
+        if excl.load(Ordering::Acquire) && opens.load(Ordering::Acquire) != 0 && !cap_sys_admin {
+            return Err(VfsError::Ebusy);
+        }
+        opens.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+    /// Last-close release for one pty endpoint. # C: O(1)
+    pub fn close_endpoint(&self, master: bool) {
+        let opens = if master { &self.master_opens } else { &self.slave_opens };
+        let prev = opens.load(Ordering::Acquire);
+        if prev != 0 { opens.fetch_sub(1, Ordering::AcqRel); }
+    }
 }
 
 /// Recover the backing `LockedPair` from a pty inode's `i_private`. # C: O(1)
@@ -100,6 +132,11 @@ pub fn make_slave_inode(pair: Arc<LockedPair>) -> InodeRef {
 /// `file_operations` for the master (`/dev/ptmx`) side of a pty pair.
 struct PtyMasterFileOps;
 impl FileOps for PtyMasterFileOps {
+    fn on_open(&self, inode: &Inode) -> KResult<()> {
+        let pair = pair_of(inode)?;
+        pair.open_endpoint(true, current_has_sys_admin())
+    }
+
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         let pair = pair_of(inode)?;
         // Yield-block until the slave has written something. Mirrors the slave.
@@ -153,6 +190,7 @@ impl FileOps for PtyMasterFileOps {
     /// # C: O(1)
     fn on_release(&self, inode: &Inode) {
         let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return };
+        pair.close_endpoint(true);
         let fg = {
             let mut g = pair.inner.lock();
             g.master_hangup();
@@ -177,7 +215,12 @@ impl FileOps for PtySlaveFileOps {
     /// # C: O(1)
     fn on_open(&self, inode: &Inode) -> KResult<()> {
         let pair = pair_of(inode)?;
-        if pair.is_locked() { Err(VfsError::Eio) } else { Ok(()) }
+        if pair.is_locked() { return Err(VfsError::Eio); }
+        pair.open_endpoint(false, current_has_sys_admin())
+    }
+
+    fn on_release(&self, inode: &Inode) {
+        if let Ok(pair) = pair_of(inode) { pair.close_endpoint(false); }
     }
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         let pair = pair_of(inode)?;
@@ -232,6 +275,10 @@ fn post_signal_pgrp(pgid: u32, bits: u64) -> usize {
         t.sigpending.fetch_or(bits, Ordering::Release);
     }
     n
+}
+
+fn current_has_sys_admin() -> bool {
+    sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false)
 }
 
 static NEXT_PTS: AtomicU32 = AtomicU32::new(0);

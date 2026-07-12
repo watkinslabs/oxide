@@ -32,6 +32,8 @@ pub mod req {
     pub const TIOCSPGRP: u32 = 0x5410;
     /// Make this the controlling tty.
     pub const TIOCSCTTY: u32 = 0x540E;
+    /// Get exclusive open mode state.
+    pub const TIOCGEXCL: u32 = 0x80045440;
     /// Give up the controlling tty.
     pub const TIOCNOTTY: u32 = 0x5422;
     /// Get controlling session id.

@@ -12,9 +12,9 @@ use crate::wait::TtyWait;
 /// flip buffer is consumed straight into `n_tty_receive_buf`, so the
 /// ldisc IS the post-flip input store here) and the driver (the
 /// `driver_write` echo path re-enters it under the same lock).
-struct PortInner<D: TtyDriver> {
-    ldisc: NTty,
-    driver: D,
+pub(super) struct PortInner<D: TtyDriver> {
+    pub(super) ldisc: NTty,
+    pub(super) driver: D,
 }
 
 /// `tty_port` + `tty_struct` fused into one core object (oxide collapses
@@ -26,7 +26,7 @@ struct PortInner<D: TtyDriver> {
 ///   - the wait queue (`W: TtyWait`),
 ///   - winsize, fg pgrp, session id, controlling-tty linkage atomics.
 pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
-    inner: Spinlock<PortInner<D>, TtyClass>,
+    pub(super) inner: Spinlock<PortInner<D>, TtyClass>,
     wait: W,
     /// `winsize` (rows/cols/xpixel/ypixel) — TIOCGWINSZ/TIOCSWINSZ.
     winsize: Spinlock<Winsize, TtyClass>,
@@ -38,7 +38,11 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// `close()` drops; the driver's `open()`/`close()` hooks fire on the
     /// 0→1 / 1→0 edges only (first open powers the device, last close
     /// quiesces it).
-    open_count: AtomicU32,
+    pub(super) open_count: AtomicU32,
+    /// Exclusive reopen mode (Linux `TTY_EXCLUSIVE`, set by TIOCEXCL).
+    /// While an opener exists, later opens by callers without CAP_SYS_ADMIN
+    /// fail with EBUSY; TIOCNXCL clears it and TIOCGEXCL reads it.
+    pub(super) exclusive: AtomicBool,
     /// Per-tty poll/select/epoll wait queue (the Linux `tty->poll` wait
     /// queue). poll/select/epoll subscribe here via the fd's inode; every
     /// RX / hangup transition calls `subs.notify()` to wake ONLY the tasks
@@ -65,6 +69,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             fg_pgrp: AtomicU32::new(0),
             sid: AtomicU32::new(0),
             open_count: AtomicU32::new(0),
+            exclusive: AtomicBool::new(false),
             subs: vfs::PollSubscribers::new(),
             output_stopped: AtomicBool::new(false),
         }
@@ -415,42 +420,6 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             return Some(rv);
         }
         crate::ioctl::core_ioctl(self, cmd, arg)
-    }
-
-    // --- open / close / hangup (Linux tty lifecycle) ------------------
-
-    /// Current open reference count (Linux `tty_struct::count`).
-    /// # C: O(1)
-    pub fn open_count(&self) -> u32 {
-        self.open_count.load(Ordering::Acquire)
-    }
-
-    /// Open reference: bump the count; fire `driver.open()` on the 0→1
-    /// edge (first opener powers the device). The VFS open path for the
-    /// tty inode calls this once per `open(2)` that succeeds. Returns the
-    /// new count.
-    /// # C: O(1)
-    pub fn open(&self) -> u32 {
-        let prev = self.open_count.fetch_add(1, Ordering::AcqRel);
-        if prev == 0 {
-            self.inner.lock().driver.open();
-        }
-        prev + 1
-    }
-
-    /// Release reference: drop the count; fire `driver.close()` on the
-    /// 1→0 edge (last closer quiesces the device). The VFS release path
-    /// (final fd close) calls this. Saturates at 0 (a close with no open
-    /// is a no-op, never an underflow). Returns the new count.
-    /// # C: O(1)
-    pub fn close(&self) -> u32 {
-        let prev = self.open_count.load(Ordering::Acquire);
-        if prev == 0 { return 0; }
-        let now = self.open_count.fetch_sub(1, Ordering::AcqRel) - 1;
-        if now == 0 {
-            self.inner.lock().driver.close();
-        }
-        now
     }
 
     /// Hang up the tty (Linux `tty_hangup` / `__tty_hangup`): raise SIGHUP
