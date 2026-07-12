@@ -190,9 +190,7 @@ pub unsafe extern "C" fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64 {
     hal_aarch64::set_current_svc_frame(frame_ptr as u64);
     let cur = match sched::current() { Some(c) => c, None => return 0 };
     cur.svc_frame.store(frame_ptr as u64, Ordering::Release);
-    // SAFETY: running task on this CPU; preempt-off; sole reader of the
-    // sigactions slot per the single-mutator invariant in `13§5`.
-    let sa = unsafe { (&*cur.sigactions.get())[(SIGILL - 1) as usize] };
+    let sa = cur.sigactions_ref().get(SIGILL);
     if sa.handler != SIG_DFL_H && sa.handler != SIG_IGN_H {
         // Saved user x0 at fault — restored into x0 on rt_sigreturn.
         // SAFETY: frame_ptr is the 288 B frame; x0 slot at offset 0.
