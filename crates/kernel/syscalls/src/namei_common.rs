@@ -206,6 +206,7 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Enotempty => Errno::Enotempty as i32,
         vfs::VfsError::Enosys  => Errno::Enosys  as i32,
         vfs::VfsError::Eloop   => Errno::Eloop   as i32,
+        vfs::VfsError::Ebade   => Errno::Ebade   as i32,
         vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp as i32,
         vfs::VfsError::Edestaddrreq => Errno::Edestaddrreq as i32,
         vfs::VfsError::Eaddrnotavail => Errno::Eaddrnotavail as i32,
