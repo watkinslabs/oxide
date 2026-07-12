@@ -50,6 +50,7 @@ pub enum Error {
     NotImplemented,
     NoMem,
     Inval,
+    Access,
     Io,
 }
 
@@ -125,4 +126,3 @@ mod tests_shortfill;
 // normalization translate and the CoW re-read (SMP TOCTOU).
 #[cfg(test)]
 mod tests_ldso_toctou;
-
