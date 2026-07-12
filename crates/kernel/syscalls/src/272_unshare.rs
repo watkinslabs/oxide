@@ -76,7 +76,15 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     let bits = ns_bits_from_flags(flags);
     if bits == 0 { return 0; }
     cur.ns_membership.fetch_or(bits, Ordering::Release);
+    let old_mnt_ns = cur.mount_ns.load(Ordering::Acquire);
     apply_new_namespaces(cur, bits);
+    if (bits & (1u64 << 0)) != 0 {
+        let new_mnt_ns = cur.mount_ns.load(Ordering::Acquire);
+        if new_mnt_ns != old_mnt_ns {
+            vfs::mntns::mnt_ns_enter(new_mnt_ns);
+            vfs::mntns::mnt_ns_exit(old_mnt_ns);
+        }
+    }
     0
 }
 
@@ -137,8 +145,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) {
     if (bits & (1u64 << 0)) != 0 {
         // CLONE_NEWNS — fresh mount_ns id (F107 substrate) + snapshot
         // parent's NS-tagged mount entries into the new id (F119).
-        static NEXT_MOUNT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        let new_id = NEXT_MOUNT_NS.fetch_add(1, Ordering::AcqRel);
+        let new_id = vfs::mntns::alloc_ns_id();
         let parent_ns = task.mount_ns.load(Ordering::Acquire);
         devfs::snapshot_ns(parent_ns, new_id);
         // U2-b: copy the unified mount table's entries too, so the new ns
