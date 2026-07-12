@@ -12,6 +12,17 @@ pub(crate) fn write_pos(file: &vfs::File) -> u64 {
     }
 }
 
+/// Effective byte offset for a positional write. Linux still honors the
+/// `O_APPEND` quirk for pwrite/pwritev, so append-mode descriptions use live
+/// `i_size`; otherwise the caller's explicit offset is used. # C: O(1)
+pub(crate) fn positional_write_pos(file: &vfs::File, off: u64) -> u64 {
+    if file.flags().contains(vfs::OpenFlags::O_APPEND) {
+        file.inode().size()
+    } else {
+        off
+    }
+}
+
 /// Linux `generic_write_check_limits` RLIMIT_FSIZE half. The superblock
 /// `s_maxbytes` half lives in VFS; this half needs current-task rlimits and
 /// posts `SIGXFSZ` when a write starts beyond the soft file-size limit.

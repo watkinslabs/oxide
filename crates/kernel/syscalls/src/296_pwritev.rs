@@ -39,13 +39,7 @@ pub fn sys_pwritev(args: &SyscallArgs) -> i64 {
     let iov    = args.a1;
     let iovcnt = args.a2;
     let mut off = offset_from_args(args);
-    if iovcnt == 0 { return 0; }
-    if iovcnt > IOV_MAX { return -(Errno::Einval.as_i32() as i64); }
-    let array_bytes = match iovcnt.checked_mul(16) {
-        Some(v) => v,
-        None    => return -(Errno::Efault.as_i32() as i64),
-    };
-    if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
+    if (off as i64) < 0 { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
@@ -59,6 +53,13 @@ pub fn sys_pwritev(args: &SyscallArgs) -> i64 {
         Ok(f)  => f,
         Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if iovcnt == 0 { return 0; }
+    if iovcnt > IOV_MAX { return -(Errno::Einval.as_i32() as i64); }
+    let array_bytes = match iovcnt.checked_mul(16) {
+        Some(v) => v,
+        None    => return -(Errno::Efault.as_i32() as i64),
+    };
+    if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
     let mut total: u64 = 0;
     for i in 0..iovcnt {
         let iov_i = iov + i * 16;
@@ -69,16 +70,23 @@ pub fn sys_pwritev(args: &SyscallArgs) -> i64 {
         if len == 0 { continue; }
         // Source buffer is READ from the caller's AS (validate readable).
         if let Err(rv) = validate_user_buf(base, len, 1) { return rv; }
+        let pos = crate::write_common::positional_write_pos(&file, off);
+        let capped = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, len as usize, total == 0) {
+            Ok(n)                 => n,
+            Err(e) if total == 0  => return e,
+            Err(_)                => break,
+        };
+        if capped == 0 { continue; }
         // SAFETY: range validated < USER_VA_END; CPL=0 reads through caller's AS.
         let buf: &[u8] = unsafe {
-            core::slice::from_raw_parts(base as *const u8, len as usize)
+            core::slice::from_raw_parts(base as *const u8, capped)
         };
-        match file.inode().write(off, buf) {
+        match file.pwrite(buf, off as i64) {
             Ok(0)  => break,
             Ok(n)  => {
                 total = total.saturating_add(n as u64);
                 off   = off.saturating_add(n as u64);
-                if (n as u64) < len { break; }
+                if n < capped || capped < len as usize { break; }
             }
             // Match Linux: surface the error only if nothing was written yet;
             // otherwise return the short count already written.
