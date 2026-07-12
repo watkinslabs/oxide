@@ -111,8 +111,11 @@ pub(crate) fn encoded_sockaddr_nl(pid: u32, groups: u32) -> EncodedSockaddr {
 pub(crate) fn copy_sockaddr_to_user(addr: u64, addrlen: u64, sa: &EncodedSockaddr) -> i64 {
     if let Err(rv) = validate_user_buf_writable(addrlen, 4, 4) { return rv; }
     // SAFETY: addrlen validated writable for a 4-byte socklen_t; syscall runs in caller AS.
-    let user_len = unsafe { core::ptr::read_volatile(addrlen as *const u32) as usize };
-    let copy_len = core::cmp::min(user_len, sa.len);
+    let user_len = unsafe { core::ptr::read_volatile(addrlen as *const i32) };
+    if user_len < 0 { return err(Errno::Einval); }
+    let copy_len = core::cmp::min(user_len as usize, sa.len);
+    // SAFETY: addrlen validated writable for a 4-byte socklen_t; Linux writes the true length before sockaddr copyout.
+    unsafe { core::ptr::write_volatile(addrlen as *mut u32, sa.len as u32); }
     if copy_len != 0 {
         if let Err(rv) = validate_user_buf_writable(addr, copy_len as u64, 1) { return rv; }
     }
@@ -121,7 +124,6 @@ pub(crate) fn copy_sockaddr_to_user(addr: u64, addrlen: u64, sa: &EncodedSockadd
         for (i, b) in sa.as_bytes()[..copy_len].iter().enumerate() {
             core::ptr::write_volatile((addr + i as u64) as *mut u8, *b);
         }
-        core::ptr::write_volatile(addrlen as *mut u32, sa.len as u32);
     }
     0
 }
@@ -258,22 +260,6 @@ pub(crate) fn read_sockaddr_vm(ptr: u64) -> Option<(u16, u32, u64)> {
     }
 }
 
-/// D3.3: write sockaddr_vm (16 B) at `ptr` (accept/getpeername).
-/// # C: O(1)
-pub(crate) fn write_sockaddr_vm(ptr: u64, port: u32, cid: u64) {
-    if ptr == 0 || ptr >= USER_VA_END { return; }
-    if ptr.checked_add(16).map_or(true, |e| e >= USER_VA_END) { return; }
-    const AF_VSOCK: u16 = 40;
-    // SAFETY: 16 bytes inside validated range; caller's AS active.
-    unsafe {
-        core::ptr::write_volatile(ptr as *mut u16, AF_VSOCK);
-        core::ptr::write_volatile((ptr + 2) as *mut u16, 0u16);
-        core::ptr::write_volatile((ptr + 4) as *mut u32, port);
-        core::ptr::write_volatile((ptr + 8) as *mut u32, cid as u32);
-        core::ptr::write_volatile((ptr + 12) as *mut u32, 0u32);
-    }
-}
-
 /// IPv4-mapped check (`::ffff:a.b.c.d`).
 /// Used to thread V6 sockets through the V4 transport for v1. # C: O(1)
 pub(crate) fn ipv4_from_v6_mapped(b: &[u8; 16]) -> Option<net::Ipv4Addr> {
@@ -377,9 +363,25 @@ pub(crate) fn encoded_sockaddr_un_path(path: Option<&[u8]>) -> EncodedSockaddr {
     encoded_sockaddr_un(path)
 }
 
+/// Encode `struct sockaddr_vm` without touching user memory. # C: O(1)
+pub(crate) fn encoded_sockaddr_vm(port: u32, cid: u64) -> EncodedSockaddr {
+    let mut out = EncodedSockaddr::new(SOCKADDR_VM_LEN);
+    out.put_u16(0, net::socket_args::AF_VSOCK as u16);
+    out.put_u16(2, 0);
+    out.put_u32(4, port);
+    out.put_u32(8, cid as u32);
+    out.put_u32(12, 0);
+    out
+}
+
 /// Write a sockaddr_in6 from a genuine IPv6 source address (the recv
 /// path's `peer6`), as opposed to the V4-state synthesis above.
 /// # C: O(1)
 pub(crate) fn write_sockaddr_in6_peer(ptr: u64, ip: net::Ipv6Addr, port: u16) {
     write_sockaddr_in6(ptr, ip.0, port.to_be(), 0);
+}
+
+/// Encode a genuine IPv6 peer address. # C: O(1)
+pub(crate) fn encoded_sockaddr_in6_peer(ip: net::Ipv6Addr, port: u16) -> EncodedSockaddr {
+    encoded_sockaddr_in6(ip.0, port.to_be(), 0)
 }
