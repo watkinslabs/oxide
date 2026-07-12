@@ -116,6 +116,9 @@ mod tests;
 pub mod boot;
 pub mod setup;
 pub mod mmap_flags;
+mod munmap_range;
+
+pub use munmap_range::{validate_munmap_range, MunmapRange};
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod user_as;
