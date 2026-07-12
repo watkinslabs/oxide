@@ -3,6 +3,7 @@ use vfs::inode::FS_PROJINHERIT_FL;
 use vfs::{FileAttr, Iattr, Inode, KResult, VfsError};
 
 use super::data::ext4_state_of;
+use crate::superblock::{EXT4_LABEL_MAX, SB_OFF_VOLUME_NAME, SUPERBLOCK_OFFSET};
 
 // ext4 on-disk `i_flags` (@0x20) bits — IDENTICAL to the `FS_*_FL` chattr view.
 const EXT4_SYNC_FL:      u32 = 0x0000_0008;
@@ -58,6 +59,32 @@ pub(crate) fn ext4_setversion(inode: &Inode, gen: u32) -> KResult<()> {
     vfs::inode::inode_inc_iversion(inode);
     st.mount.persist_inode_generation(ino, gen, ctime_ns).map_err(|_| VfsError::Eio)?;
     inode.set_times(None, None, ctime_ns)
+}
+
+/// `FS_IOC_GETFSLABEL`: return `s_volume_name` padded with one NUL byte.
+/// # C: O(1)
+pub(crate) fn ext4_getfslabel(inode: &Inode) -> KResult<[u8; EXT4_LABEL_MAX + 1]> {
+    let (st, _ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
+    let mut out = [0u8; EXT4_LABEL_MAX + 1];
+    let label = st.mount.read_meta_byte_range(
+        SUPERBLOCK_OFFSET + SB_OFF_VOLUME_NAME as u64,
+        EXT4_LABEL_MAX,
+    ).map_err(|_| VfsError::Eio)?;
+    out[..EXT4_LABEL_MAX].copy_from_slice(&label);
+    Ok(out)
+}
+
+/// Linux `FS_IOC_SETFSLABEL` pre-copyin admission: CAP_SYS_ADMIN first.
+/// # C: O(1)
+pub(crate) fn ext4_setfslabel_prepare(cap_sys_admin: bool) -> KResult<()> {
+    if cap_sys_admin { Ok(()) } else { Err(VfsError::Eperm) }
+}
+
+/// `FS_IOC_SETFSLABEL`: journal the zero-padded 16-byte superblock label.
+/// # C: O(SB rw)
+pub(crate) fn ext4_setfslabel(inode: &Inode, label: [u8; EXT4_LABEL_MAX]) -> KResult<()> {
+    let (st, _ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
+    st.mount.persist_fs_label(&label).map_err(|_| VfsError::Eio)
 }
 
 /// `ext4_fileattr_set` — the `FS_IOC_SETFLAGS` backend: fold the user-modifiable

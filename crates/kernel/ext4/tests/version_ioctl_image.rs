@@ -17,6 +17,8 @@ const MINI: &[u8] = include_bytes!("mini.img");
 const SECTOR: u32 = 512;
 const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
 const EXT4_RO_COMPAT_OFF: usize = EXT4_SUPERBLOCK_OFFSET + 0x64;
+const EXT4_LABEL_OFF: usize = EXT4_SUPERBLOCK_OFFSET + 0x78;
+const EXT4_LABEL_MAX: usize = 16;
 const RO_COMPAT_METADATA_CSUM: u32 = ext4::superblock::RO_COMPAT_METADATA_CSUM;
 const RO_COMPAT_METADATA_CSUM_SEED: u32 = ext4::superblock::RO_COMPAT_METADATA_CSUM_SEED;
 
@@ -45,6 +47,17 @@ fn no_metadata_csum_disk() -> Arc<dyn BlockDevice> {
     );
     ro &= !(RO_COMPAT_METADATA_CSUM | RO_COMPAT_METADATA_CSUM_SEED);
     image[EXT4_RO_COMPAT_OFF..EXT4_RO_COMPAT_OFF + 4].copy_from_slice(&ro.to_le_bytes());
+    shared_disk_from(image)
+}
+
+fn labeled_disk(label: &[u8]) -> Arc<dyn BlockDevice> {
+    let mut image = IMAGE.to_vec();
+    let n = label.len().min(EXT4_LABEL_MAX);
+    image[EXT4_LABEL_OFF..EXT4_LABEL_OFF + EXT4_LABEL_MAX].fill(0);
+    image[EXT4_LABEL_OFF..EXT4_LABEL_OFF + n].copy_from_slice(&label[..n]);
+    ext4::csum::stamp_superblock_csum(&ext4::Superblock::parse(
+        &image[EXT4_SUPERBLOCK_OFFSET..EXT4_SUPERBLOCK_OFFSET + ext4::superblock::SUPERBLOCK_LEN],
+    ).expect("parse sb"), &mut image[EXT4_SUPERBLOCK_OFFSET..EXT4_SUPERBLOCK_OFFSET + ext4::superblock::SUPERBLOCK_LEN]);
     shared_disk_from(image)
 }
 
@@ -128,4 +141,60 @@ fn setversion_persists_generation_and_updates_ctime() {
     let (m2, _sb2) = mount(disk);
     let ino2 = m2.state().mount.lookup_path(b"/version-set.txt").expect("lookup after remount");
     assert_eq!(m2.state().mount.read_inode(ino2).unwrap().generation, 0x1234_5678);
+}
+
+#[test]
+fn getfslabel_returns_superblock_label_with_trailing_nul() {
+    let disk = labeled_disk(b"ROOTVOL");
+    let (m, _sb) = mount(disk);
+    let inode = m.state().lookup_inode_any(b"/").expect("root");
+    let file = open_file(inode);
+
+    assert_eq!(
+        file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::GetFsLabel),
+        Ok(FileIoctlReply::Label(*b"ROOTVOL\0\0\0\0\0\0\0\0\0\0")),
+    );
+}
+
+#[test]
+fn setfslabel_requires_cap_sys_admin_before_mutation() {
+    let disk = shared_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().lookup_inode_any(b"/").expect("root");
+    let file = open_file(inode);
+
+    assert_eq!(
+        file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::SetFsLabelPrepare(false)),
+        Err(VfsError::Eperm),
+    );
+    assert_eq!(m.state().mount.sb.volume_name, *b"oxide-j\0\0\0\0\0\0\0\0\0");
+}
+
+#[test]
+fn setfslabel_persists_zero_padded_label_across_remount() {
+    let disk = shared_disk();
+    let (m, sb) = mount(disk.clone());
+    let inode = m.state().lookup_inode_any(b"/").expect("root");
+    let file = open_file(inode);
+    let mut label = [0u8; EXT4_LABEL_MAX];
+    label[..5].copy_from_slice(b"GNOME");
+
+    file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::SetFsLabelPrepare(true))
+        .expect("prepare");
+    file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::SetFsLabel(label))
+        .expect("set label");
+    assert_eq!(
+        file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::GetFsLabel),
+        Ok(FileIoctlReply::Label(*b"GNOME\0\0\0\0\0\0\0\0\0\0\0\0")),
+    );
+
+    drop(file); drop(sb); drop(m);
+    let (m2, _sb2) = mount(disk);
+    assert_eq!(m2.state().mount.sb.volume_name, label);
+    let inode2 = m2.state().lookup_inode_any(b"/").expect("root after remount");
+    let file2 = open_file(inode2);
+    assert_eq!(
+        file2.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::GetFsLabel),
+        Ok(FileIoctlReply::Label(*b"GNOME\0\0\0\0\0\0\0\0\0\0\0\0")),
+    );
 }

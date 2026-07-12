@@ -64,6 +64,10 @@ pub enum SuperblockError {
 
 /// `s_uuid` byte offset in the superblock.
 pub const SB_OFF_UUID:           usize = 0x68;
+/// `s_volume_name` byte offset in the superblock; fixed 16-byte ext4 label.
+pub const SB_OFF_VOLUME_NAME:    usize = 0x78;
+/// `EXT4_LABEL_MAX`: on-disk label bytes, not necessarily NUL-terminated.
+pub const EXT4_LABEL_MAX:        usize = 16;
 /// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
 pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
 /// `s_feature_ro_compat` METADATA_CSUM_SEED bit.
@@ -104,6 +108,8 @@ pub struct Superblock {
     /// 16-byte filesystem UUID (`s_uuid`). Used as the seed for
     /// metadata_csum computation when METADATA_CSUM_SEED is off.
     pub uuid: [u8; 16],
+    /// `s_volume_name[16]` — ext4 filesystem label, zero-padded on disk.
+    pub volume_name: [u8; EXT4_LABEL_MAX],
     /// Stored-seed override (when RO_COMPAT_METADATA_CSUM_SEED on).
     /// Otherwise zero; caller derives from `uuid` instead.
     pub stored_csum_seed: u32,
@@ -201,6 +207,11 @@ impl Superblock {
                 let mut u = [0u8; 16];
                 u.copy_from_slice(&buf[SB_OFF_UUID..SB_OFF_UUID + 16]);
                 u
+            },
+            volume_name:       {
+                let mut v = [0u8; EXT4_LABEL_MAX];
+                v.copy_from_slice(&buf[SB_OFF_VOLUME_NAME..SB_OFF_VOLUME_NAME + EXT4_LABEL_MAX]);
+                v
             },
             stored_csum_seed:  rd_u32(buf, SB_OFF_CHECKSUM_SEED),
             hash_seed: [

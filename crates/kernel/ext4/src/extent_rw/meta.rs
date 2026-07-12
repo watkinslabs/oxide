@@ -1,5 +1,6 @@
 use crate::inode::InodeError;
 use crate::mount::{Mount, MountError};
+use crate::superblock::{EXT4_LABEL_MAX, SB_OFF_VOLUME_NAME, SUPERBLOCK_LEN, SUPERBLOCK_OFFSET};
 
 // ext4 on-disk inode field byte offsets (Linux `struct ext4_inode`). The data
 // path owns size/blocks/nlink/extents; this writer touches only the metadata
@@ -22,6 +23,17 @@ const OFF_GENERATION:   usize = 0x64; // i_generation
 const OFF_PROJID:       usize = 0x9C; // i_projid, present in >=160-byte inode
 
 impl Mount {
+    /// Persist `s_volume_name` through the journal. Linux `FS_IOC_SETFSLABEL`
+    /// copies exactly `EXT4_LABEL_MAX` zero-padded bytes. # C: O(SB rw)
+    pub fn persist_fs_label(&self, label: &[u8; EXT4_LABEL_MAX]) -> Result<(), MountError> {
+        self.run_journaled(|m| {
+            let mut sb = m.read_meta_byte_range(SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
+            sb[SB_OFF_VOLUME_NAME..SB_OFF_VOLUME_NAME + EXT4_LABEL_MAX].copy_from_slice(label);
+            crate::csum::stamp_superblock_csum(&m.sb, &mut sb);
+            m.metadata_write(SUPERBLOCK_OFFSET, &sb)
+        })
+    }
+
     /// Persist `i_flags` (@0x20) plus ctime to `ino`'s on-disk inode, journaled
     /// — the ext4 half of `FS_IOC_SETFLAGS`. # C: O(1) I/O, 1 txn
     pub fn persist_inode_flags(&self, ino: u32, flags: u32, ctime_ns: u64) -> Result<(), MountError> {
