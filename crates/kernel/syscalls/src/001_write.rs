@@ -1,6 +1,12 @@
 // 001 write — one syscall, one file (docs/53 §0).
 use syscall::{errno::Errno, SyscallArgs};
 
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
+
 // DIAG (debug-stderr): echo fd==2 (stderr) writes to the console tagged with the
 // writing tid+name. GLib/GTK/mutter log fatal errors via write(2,...) to stderr;
 // gdm routes the session's stderr to a pipe/journal, so those death messages
@@ -53,10 +59,11 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     let mut cnt = args.a2 as usize;
-    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
+    let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+    if !file.f_mode().contains(vfs::Fmode::WRITE) { return -(Errno::Ebadf.as_i32() as i64); }
     // DIAG (debug-wakelat): symbolize systemd-hwdb (tid 4135)'s write() CALLER
     // stack during its serialize-spin. The USERIP sampler only catches the libc
     // syscall wrapper (0x7ffff71af75e); the real infinite loop is hwdb's own .text
@@ -103,14 +110,14 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     let slice: &[u8] = if cnt == 0 {
         &empty
     } else {
-        if let Err(rv) = crate::userbuf::validate_user_buf(buf, cnt as u64, 1) { return rv; }
+        if let Err(rv) = crate::userbuf::validate_user_buf_readable(buf, cnt as u64, 1) { return rv; }
         cnt = crate::userbuf::clamp_rw_count(cnt);
         let pos = crate::write_common::write_pos(&file);
         cnt = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, cnt, true) {
             Ok(n)  => n,
             Err(e) => return e,
         };
-        // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
+        // SAFETY: range [buf, buf+cnt) validated readable in the caller's AS before CPL=0 dereference.
         unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }
     };
     #[cfg(feature = "debug-session")]
@@ -123,7 +130,7 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
         let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
         crate::namei_common::trace_udevdb_file(b"write", &file, rv);
     }
-    match wr {
+    let ret = match wr {
         Ok(n)  => {
             // DIAG (debug-wakelat): a write() returning 0 for a NON-zero request is
             // a Linux violation (must write >0, block, or error) and spins glibc's
@@ -197,5 +204,7 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
             }
             -(e as i64)
         },
-    }
+    };
+    cur.account_write_result(ret);
+    ret
 }

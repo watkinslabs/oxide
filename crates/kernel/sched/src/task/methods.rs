@@ -350,6 +350,15 @@ impl Task {
         self.io_syscr.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Linux `add_wchar(current, ret)` + `inc_syscw(current)` after vfs_write. # C: O(1)
+    pub fn account_write_result(&self, ret: i64) {
+        self.debug_check_canary("account_write_result");
+        if ret >= 0 {
+            self.io_wchar.fetch_add(ret as u64, Ordering::Relaxed);
+        }
+        self.io_syscw.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Lift this task's vruntime to `floor` if it's currently below;
     /// `13§5` invariant 5. F211: also see `set_vruntime_to_floor`.
     /// # C: O(1)
