@@ -11,38 +11,16 @@ pub fn glue_mmap(
     phys_base: Option<u64>,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
-    use crate::mmap_flags::{MAP_ANON, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_PRIVATE, MAP_SHARED};
-    crate::mmap_flags::validate(flags)?;
+    use crate::mmap_flags::{should_populate, validate_glue_admission, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN};
+    let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_base.is_some())?;
+    let is_anon = admission.is_anon;
+    let is_shared = admission.is_shared;
+    let len_aligned = admission.len_aligned;
+    let populate = should_populate(flags);
 
     // File-backed mmap requires a backing from the caller and a
     // page-aligned offset; anonymous mmap rejects a backing.
-    let is_anon = flags & MAP_ANON != 0;
     let _ = fd;
-    if is_anon {
-        // MAP_SHARED|MAP_ANON carries an anonymous shmem backing object
-        // (Linux `shmem_zero_setup`): the caller hands us a frame-backed
-        // anonymous tmpfs inode so fork(2) ALIASES the frames (one backing
-        // object, no anon_vma, no COW split) and parent/child see each
-        // other's writes. MAP_PRIVATE|MAP_ANON is pure zero-fill COW and
-        // must NOT carry a backing.
-        if phys_base.is_some() { return Err(-(Errno::Einval.as_i32() as i64)); }
-        if backing.is_some() && (flags & MAP_SHARED) == 0 {
-            return Err(-(Errno::Einval.as_i32() as i64));
-        }
-    } else if phys_base.is_some() {
-        // Device physical mapping (e.g. /dev/fbN, Linux remap_pfn_range):
-        // no FileBacking, just a page-aligned offset into the device memory.
-        if (file_off & 0xfff) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    } else {
-        if backing.is_none()       { return Err(-(Errno::Ebadf.as_i32() as i64)); }
-        if (file_off & 0xfff) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    }
-    if len == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    // SHARED + PRIVATE are mutually exclusive per Linux; require
-    // exactly one. Linux returns EINVAL when neither is set.
-    let is_shared  = flags & MAP_SHARED  != 0;
-    let is_private = flags & MAP_PRIVATE != 0;
-    if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
     let want_fixed = flags & MAP_FIXED != 0;
     let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
     // Linux: MAP_STACK is a NO-OP hint (mman.h: "provided for
@@ -51,7 +29,6 @@ pub fn glue_mmap(
     // stray fault in a hole below one silently extended the stack over the
     // hole instead of SIGSEGV-ing. Only an explicit MAP_GROWSDOWN grows.
     let want_grows_down = flags & MAP_GROWSDOWN != 0;
-    let len_aligned = ((len + 0xfff) & !0xfff) as usize;
     if (want_fixed || want_no_replace) && (addr == 0 || (addr & 0xfff) != 0) {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
@@ -148,10 +125,48 @@ pub fn glue_mmap(
         }
     };
     match r {
-        Ok(uva)  => Ok(uva.as_u64()),
+        Ok(uva)  => {
+            if populate {
+                populate_current_range(uva, len_aligned, prot_from_linux(prot));
+            }
+            Ok(uva.as_u64())
+        }
         // errno fidelity (Linux do_mmap): bad args are EINVAL; only genuine
         // exhaustion (no hole / no frame) is ENOMEM.
         Err(vmm::Error::Inval) => Err(-(Errno::Einval.as_i32() as i64)),
         Err(_)   => Err(-(Errno::Enomem.as_i32() as i64)),
+    }
+}
+
+fn populate_current_range(start: UserVirtAddr, len: usize, prot: VmaProt) {
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: running task on this CPU; single-mutator mm slot per `13§5`.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            populate_range(mm, start, len, prot);
+            return;
+        }
+    }
+    let _ = with(|as_| populate_range(as_, start, len, prot));
+}
+
+fn populate_range(mm: &AddressSpace, start: UserVirtAddr, len: usize, prot: VmaProt) {
+    use super::fault::do_handle;
+    let access = if prot.contains(VmaProt::READ) {
+        FaultAccess::Read
+    } else if prot.contains(VmaProt::WRITE) {
+        FaultAccess::Write
+    } else if prot.contains(VmaProt::EXEC) {
+        FaultAccess::Exec
+    } else {
+        return;
+    };
+    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    let mut va = start.as_u64();
+    let end = va.saturating_add(len as u64);
+    while va < end {
+        if let Some(uva) = UserVirtAddr::new(va) {
+            let _ = do_handle(mm, uva, FaultKind::NotPresent { access }, hhdm);
+        }
+        va = va.saturating_add(0x1000);
     }
 }
