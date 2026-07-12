@@ -13,10 +13,10 @@ pub fn sys_shmget(args: &SyscallArgs) -> i64 {
     let key  = args.a0 as i32;
     let size = args.a1 as usize;
     let flg  = args.a2;
-    let backing: alloc::sync::Arc<dyn vmm::FileBacking> =
-        crate::mmap_file::InodeFileBacking::new(::fs::tmpfs::tmpfs_anon_file());
     let cpid = sched::live::current()
         .map(|c| c.vtgid.load(core::sync::atomic::Ordering::Acquire))
         .unwrap_or(0);
-    ipc::sysv_shm::shmget_with_backing(key, size, flg, cpid, backing)
+    ipc::sysv_shm::shmget_with_backing(key, size, flg, cpid, || {
+        crate::mmap_file::InodeFileBacking::new(::fs::tmpfs::tmpfs_anon_file())
+    })
 }
