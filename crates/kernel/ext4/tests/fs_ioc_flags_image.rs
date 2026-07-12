@@ -173,6 +173,21 @@ fn project_ext4_persists_nonzero_project_id() {
 }
 
 #[test]
+fn project_id_change_bumps_iversion_after_setflags() {
+    let disk = shared_project_disk();
+    let (m, _sb) = mount(disk);
+    let inode = m.state().create_at(b"/project-version.txt", 0o644).expect("create");
+    let flags = inode.fileattr_get().unwrap().flags;
+    let before = vfs::inode::inode_query_iversion(&inode);
+
+    inode.fileattr_set(&FileAttr { flags, fsx_projid: 88, ..Default::default() })
+        .expect("set project id");
+
+    assert_eq!(vfs::inode::inode_query_iversion(&inode), before + 2,
+        "Linux ext4_fileattr_set runs ext4_ioctl_setflags and ext4_ioctl_setproject, both force i_version");
+}
+
+#[test]
 fn ext4_rejects_extent_layout_toggle_without_corruption() {
     let disk = shared_disk();
     let (m, _sb) = mount(disk);

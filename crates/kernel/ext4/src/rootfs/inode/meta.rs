@@ -158,6 +158,7 @@ fn ext4_fileattr_setproject(
     if raw.i_projid == projid { return Ok(()); }
     let raw_now = vfs::inode_times::realtime_now_ns();
     let ctime_ns = vfs::inode_times::current_time(inode, raw_now);
+    vfs::inode::inode_inc_iversion(inode);
     st.mount.persist_inode_project(ino, projid, ctime_ns).map_err(|_| VfsError::Eio)?;
     inode.set_times(None, None, ctime_ns)
 }
