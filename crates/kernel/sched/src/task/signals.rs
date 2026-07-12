@@ -21,6 +21,9 @@ const SA_RESETHAND: u64 = 0x80000000;
 const UAPI_SA_FLAGS: u64 = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_SIGINFO | SA_RESTORER
     | SA_ONSTACK | SA_RESTART | SA_NODEFER | SA_RESETHAND;
 const UNBLOCKABLE_MASK: u64 = Signum::Sigkill.bit() | Signum::Sigstop.bit();
+pub const SIG_BLOCK:   u64 = 0;
+pub const SIG_UNBLOCK: u64 = 1;
+pub const SIG_SETMASK: u64 = 2;
 
 /// Linux `struct sigaction` core fields per `27§3`.
 #[repr(C, align(8))]
@@ -93,6 +96,16 @@ fn sanitize_action(mut act: SaHandler) -> SaHandler {
     act
 }
 
+fn apply_sigprocmask(prior: u64, how: u64, set: u64) -> Result<u64, ()> {
+    let new = match how {
+        SIG_BLOCK   => prior | set,
+        SIG_UNBLOCK => prior & !set,
+        SIG_SETMASK => set,
+        _           => return Err(()),
+    };
+    Ok(sanitize_mask(new))
+}
+
 fn ignores_signal(sig: usize, act: SaHandler) -> bool {
     act.handler == SIG_IGN
         || act.handler == SIG_DFL && signum::default_action(sig as u32) == DefaultAction::Ign
@@ -125,6 +138,16 @@ impl Task {
             self.flush_pending_signal_group(sig);
         }
         Ok(old)
+    }
+
+    /// Linux rt_sigprocmask work function after syscall copy-in. # C: O(1)
+    pub fn rt_sigprocmask(&self, how: u64, set: Option<u64>) -> Result<u64, ()> {
+        let prior = self.sigmask.load(Ordering::Acquire);
+        if let Some(mask) = set {
+            let new = apply_sigprocmask(prior, how, mask)?;
+            self.sigmask.store(new, Ordering::Release);
+        }
+        Ok(prior)
     }
 
     /// Clear a newly ignored signal from this thread group. # C: O(N_threads)
@@ -215,5 +238,39 @@ mod tests {
         assert_eq!(sa.set_action(Signum::Sigkill as usize, Some(input)), Err(()));
         assert_eq!(sa.set_action(Signum::Sigstop as usize, Some(input)), Err(()));
         assert_eq!(sa.set_action(Signum::Sigkill as usize, None), Ok(SaHandler::default()));
+    }
+
+    #[test]
+    fn rt_sigprocmask_ignores_how_when_set_is_null() {
+        let prior = Signum::Sigusr1.bit();
+        assert_eq!(Ok(prior), sigprocmask_snapshot(prior, 999, None));
+    }
+
+    #[test]
+    fn rt_sigprocmask_rejects_bad_how_when_set_exists() {
+        let prior = Signum::Sigusr1.bit();
+        assert_eq!(Err(()), sigprocmask_snapshot(prior, 999, Some(Signum::Sigusr2.bit())));
+    }
+
+    #[test]
+    fn rt_sigprocmask_applies_block_unblock_and_setmask() {
+        let usr1 = Signum::Sigusr1.bit();
+        let usr2 = Signum::Sigusr2.bit();
+        assert_eq!(Ok(usr1 | usr2), sigprocmask_snapshot(usr1, SIG_BLOCK, Some(usr2)));
+        assert_eq!(Ok(usr1), sigprocmask_snapshot(usr1 | usr2, SIG_UNBLOCK, Some(usr2)));
+        assert_eq!(Ok(usr2), sigprocmask_snapshot(usr1, SIG_SETMASK, Some(usr2)));
+    }
+
+    #[test]
+    fn rt_sigprocmask_strips_unblockable_signals() {
+        let set = Signum::Sigusr1.bit() | Signum::Sigkill.bit() | Signum::Sigstop.bit();
+        assert_eq!(Ok(Signum::Sigusr1.bit()), sigprocmask_snapshot(0, SIG_SETMASK, Some(set)));
+    }
+
+    fn sigprocmask_snapshot(prior: u64, how: u64, set: Option<u64>) -> Result<u64, ()> {
+        match set {
+            Some(mask) => apply_sigprocmask(prior, how, mask),
+            None => Ok(prior),
+        }
     }
 }

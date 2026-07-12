@@ -28,7 +28,7 @@ mod types;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::Creds;
-pub use signals::{SaHandler, SigActions};
+pub use signals::{SaHandler, SigActions, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
 pub struct Task {
