@@ -18,6 +18,7 @@ const OFF_ATIME_EXTRA: usize = 0x8C;
 const OFF_CRTIME:       usize = 0x90;
 const OFF_CRTIME_EXTRA: usize = 0x94;
 const OFF_FLAGS:        usize = 0x20; // i_flags (chattr flag word)
+const OFF_GENERATION:   usize = 0x64; // i_generation
 const OFF_PROJID:       usize = 0x9C; // i_projid, present in >=160-byte inode
 
 impl Mount {
@@ -41,6 +42,23 @@ impl Mount {
             let (mut b, _off) = m.read_inode_bytes(ino)?;
             if b.len() < OFF_PROJID + 4 { return Err(MountError::Inode(InodeError::BadLen)); }
             b[OFF_PROJID..OFF_PROJID + 4].copy_from_slice(&projid.to_le_bytes());
+            let (c_lo, c_ex) = enc_time(ctime_ns);
+            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
+            if isize >= OFF_CTIME_EXTRA + 4 {
+                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
+            }
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+
+    /// Persist `i_generation` plus ctime to `ino`'s on-disk inode, journaled.
+    /// Linux `EXT4_IOC_SETVERSION` also bumps `i_version`; VFS owns that.
+    /// # C: O(1) I/O, 1 txn
+    pub fn persist_inode_generation(&self, ino: u32, gen: u32, ctime_ns: u64) -> Result<(), MountError> {
+        let isize = self.sb.inode_size as usize;
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            b[OFF_GENERATION..OFF_GENERATION + 4].copy_from_slice(&gen.to_le_bytes());
             let (c_lo, c_ex) = enc_time(ctime_ns);
             b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
             if isize >= OFF_CTIME_EXTRA + 4 {
