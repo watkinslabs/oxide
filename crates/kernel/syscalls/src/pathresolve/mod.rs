@@ -11,7 +11,7 @@ mod lookup;
 mod root;
 
 pub(crate) use at::at_path_empty;
-pub use at::{AT_FDCWD, resolve_at_lookup, resolve_at_lookup_maybe_null, resolve_at_path, resolve_confined, resolve_parent_at};
+pub use at::{AT_FDCWD, resolve_at_lookup, resolve_at_lookup_cred, resolve_at_lookup_maybe_null, resolve_at_path, resolve_confined, resolve_parent_at};
 pub use cred::{current_cred, current_cred_real};
 pub use exec::{read_exec, read_exec_inode};
 pub use lookup::{dup_fd_target, procfd_path, resolve_mount_target_raw, resolve_path_raw};

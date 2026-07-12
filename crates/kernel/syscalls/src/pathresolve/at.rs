@@ -44,11 +44,16 @@ fn dirfd_base(dirfd: i32, op: &'static [u8], raw: &str) -> Result<(u64, Arc<vfs:
 }
 
 /// # C: O(components × dir-lookup) + O(symlinks)
-pub fn resolve_at_path(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+pub fn resolve_at_path(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+    resolve_at_path_cred(dirfd, raw, flags, current_cred())
+}
+
+/// # C: O(components × dir-lookup) + O(symlinks)
+pub fn resolve_at_path_cred(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
     let (mid, base) = dirfd_base(dirfd, b"resolve_at_path", raw)?;
     let (root, beneath) = resolution_root_vfs().ok_or(-(Errno::Enoent.as_i32() as i64))?;
     flags.beneath = flags.beneath || beneath;
-    vfs::path_lookup_at_root_cred(base, mid, root.dentry, root.mnt_id, raw, flags, current_cred())
+    vfs::path_lookup_at_root_cred(base, mid, root.dentry, root.mnt_id, raw, flags, cred)
         .map_err(|e| {
             if e == vfs::VfsError::Enotdir {
                 trace_enotdir(b"resolve_at_path", dirfd, raw, b"walk", None, mid, b"");
@@ -94,12 +99,17 @@ fn resolve_empty_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
 
 /// # C: O(components × dir-lookup)
 pub fn resolve_at_lookup(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+    resolve_at_lookup_cred(dirfd, path_ptr, flags, current_cred())
+}
+
+/// # C: O(components × dir-lookup)
+pub fn resolve_at_lookup_cred(dirfd: i32, path_ptr: u64, flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
     if at_path_empty(path_ptr)? {
         if !flags.empty { return Err(-(Errno::Enoent.as_i32() as i64)); }
         return resolve_empty_at(dirfd);
     }
     let raw = crate::namei_common::read_user_path(path_ptr)?;
-    resolve_at_path(dirfd, &raw, flags)
+    resolve_at_path_cred(dirfd, &raw, flags, cred)
 }
 
 /// Linux stat-family `getname_maybe_null`: NULL is allowed only when
