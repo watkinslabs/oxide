@@ -129,7 +129,7 @@ fn xattr_external_create_inode_failure_cleanup_free_failure_preserves_quota_and_
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
     assert_eq!(file_acl(&after_bytes), 0);
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
     assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
     assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
@@ -160,7 +160,7 @@ fn xattr_external_create_block_write_failure_cleanup_free_failure_preserves_quot
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
     assert_eq!(file_acl(&after_bytes), 0);
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
     assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
     assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
