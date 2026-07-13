@@ -126,3 +126,29 @@ fn sys_quotactl_xfs_onoff_waits_for_frozen_block_superblock_hosted() {
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
     vfs::superblock::clear_freeze_wait_hooks();
 }
+
+#[test]
+fn sys_quotactl_xfs_onoff_waits_for_frozen_readonly_block_superblock_hosted() {
+    let _guard = begin_test();
+    let target_sb = install_block_target();
+    target_sb.set_readonly(true);
+    *FREEZE_TARGET.lock().unwrap() = Some(target_sb.clone());
+    vfs::superblock::set_freeze_wait_hooks(freeze_park_hook, freeze_schedule_hook, freeze_wake_hook);
+    target_sb.freeze_super().expect("freeze readonly target superblock");
+    let args = SyscallArgs {
+        a0: cmd::qcmd(cmd::Q_XQUOTAON, cmd::USRQUOTA),
+        a1: SPECIAL_ADDR,
+        a2: 0,
+        a3: 0,
+        a4: 0,
+        a5: 0,
+    };
+
+    assert_eq!(sys::sys_quotactl(&args), eno(Errno::Esrch));
+    assert!(!target_sb.is_frozen());
+    assert_eq!(target_sb.sb_writers(), 0);
+    assert_eq!(FREEZE_PARKS.load(Ordering::SeqCst), 1);
+    assert!(FREEZE_WAKES.load(Ordering::SeqCst) >= 1);
+    assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
+    vfs::superblock::clear_freeze_wait_hooks();
+}
