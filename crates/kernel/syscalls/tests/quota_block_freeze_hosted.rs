@@ -144,7 +144,7 @@ fn sys_quotactl_xfs_onoff_waits_for_frozen_readonly_block_superblock_hosted() {
         a5: 0,
     };
 
-    assert_eq!(sys::sys_quotactl(&args), eno(Errno::Esrch));
+    assert_eq!(sys::sys_quotactl(&args), eno(Errno::Erofs));
     assert!(!target_sb.is_frozen());
     assert_eq!(target_sb.sb_writers(), 0);
     assert_eq!(FREEZE_PARKS.load(Ordering::SeqCst), 1);

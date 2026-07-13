@@ -92,23 +92,39 @@ fn args(subcmd: u64) -> SyscallArgs {
 }
 
 #[test]
-fn block_readonly_setinfo_reaches_current_task_before_usercopy_hosted() {
+fn block_readonly_classic_write_commands_return_erofs_before_current_task_hosted() {
     let _guard = begin_test();
-    let _target_sb = install_readonly_target("block-readonly-setinfo-target-sb", 0x5155_2A11,
-        "block-readonly-setinfo-special-sb", 0x5155_2A12);
+    let _target_sb = install_readonly_target("block-readonly-classic-target-sb", 0x5155_2A11,
+        "block-readonly-classic-special-sb", 0x5155_2A12);
 
-    assert_eq!(sys::sys_quotactl(&args(cmd::Q_SETINFO)), eno(Errno::Esrch));
-    assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
+    for subcmd in [cmd::Q_GETQUOTA, cmd::Q_GETNEXTQUOTA, cmd::Q_SETQUOTA, cmd::Q_SETINFO, cmd::Q_QUOTAOFF] {
+        READ_USER_PATH_CALLS.lock().unwrap().clear();
+        assert_eq!(sys::sys_quotactl(&args(subcmd)), eno(Errno::Erofs));
+        assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
+    }
 }
 
 #[test]
-fn block_readonly_setquota_reaches_current_task_before_usercopy_hosted() {
+fn block_readonly_quotaon_returns_erofs_after_quota_path_and_special_lookup_hosted() {
     let _guard = begin_test();
-    let _target_sb = install_readonly_target("block-readonly-setquota-target-sb", 0x5155_2A13,
-        "block-readonly-setquota-special-sb", 0x5155_2A14);
+    let _target_sb = install_readonly_target("block-readonly-quotaon-target-sb", 0x5155_2A13,
+        "block-readonly-quotaon-special-sb", 0x5155_2A14);
 
-    assert_eq!(sys::sys_quotactl(&args(cmd::Q_SETQUOTA)), eno(Errno::Esrch));
-    assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
+    assert_eq!(sys::sys_quotactl(&args(cmd::Q_QUOTAON)), eno(Errno::Erofs));
+    assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[0, SPECIAL_ADDR]);
+}
+
+#[test]
+fn block_readonly_xfs_write_commands_return_erofs_before_usercopy_hosted() {
+    let _guard = begin_test();
+    let _target_sb = install_readonly_target("block-readonly-xfs-target-sb", 0x5155_2A17,
+        "block-readonly-xfs-special-sb", 0x5155_2A18);
+
+    for subcmd in [xfs::Q_XSETQLIM, xfs::Q_XQUOTAON, xfs::Q_XQUOTAOFF, xfs::Q_XQUOTARM] {
+        READ_USER_PATH_CALLS.lock().unwrap().clear();
+        assert_eq!(sys::sys_quotactl(&args(subcmd)), eno(Errno::Erofs));
+        assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
+    }
 }
 
 #[test]
