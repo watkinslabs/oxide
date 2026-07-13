@@ -150,6 +150,11 @@ impl QuotaInfo {
     pub fn format(&self, kind: QuotaType) -> u32 { self.info[kind.slot()].fmt.load(Ordering::Acquire) }
     /// Backing dquot cache. # C: O(1)
     pub fn dquots(&self) -> &DquotSet { &self.dquots }
+    /// Hosted tests inspect leaked active references without parking quota-off. # C: O(log N)
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub fn active_refs_for_tests(&self, qid: Kqid) -> usize {
+        self.dquots.lookup(qid).map(|dq| dq.active_refs()).unwrap_or(0)
+    }
     /// Quota-file hook snapshot for one class. # C: O(1)
     pub fn operations(&self, kind: QuotaType) -> Option<Arc<dyn DquotOperations>> { self.info[kind.slot()].ops.lock().clone() }
     /// Any installed quota-file hook, used by filesystems with shared hook objects. # C: O(MAXQUOTAS)

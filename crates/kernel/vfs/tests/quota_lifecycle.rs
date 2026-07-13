@@ -8,8 +8,8 @@ use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{
     Dquot, DquotOperations, FileType, InodeBuilder, Kqid, KResult, QuotaType, VfsError,
     default_file_ops, default_inode_ops, dquot_charge_usage, dquot_drop_type, dquot_initialize, dquot_release_usage,
-    inode_dquot, mk_mode, quota_getinfo, quota_getquota, quota_off, quota_on, quota_setinfo,
-    quota_setquota, quota_shutdown, IIF_BGRACE, IIF_IGRACE, MemDqblk, MemDqinfo,
+    dquot_transfer_inode, inode_dquot, mk_mode, quota_getinfo, quota_getquota, quota_off, quota_on, quota_setinfo,
+    quota_setquota, quota_shutdown, DquotTransferIds, DquotUsage, IIF_BGRACE, IIF_IGRACE, MemDqblk, MemDqinfo,
 };
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -329,4 +329,30 @@ fn dquot_initialize_partial_failure_leaves_no_inode_slot() {
     assert_eq!(quota_off(&sb, QuotaType::User), Ok(()));
     assert_eq!(quota_off(&sb, QuotaType::Group), Ok(()));
     assert_eq!(user.releases.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn dquot_transfer_partial_dqget_failure_releases_new_refs() {
+    let sb = sb();
+    let user = Arc::new(QOps::default());
+    let group = Arc::new(QOps::default());
+    quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, user.clone()).unwrap();
+    quota_on(&sb, QuotaType::Group, vfs::QFMT_VFS_V1, group.clone()).unwrap();
+    let ino = inode(&sb, 1000, 100, 1);
+    dquot_initialize(&ino).unwrap();
+    group.acquire_fail.store(1, Ordering::SeqCst);
+
+    assert_eq!(
+        dquot_transfer_inode(&ino, DquotUsage::inode(4096, 0), DquotTransferIds { uid: Some(2000), gid: Some(200), projid: None }),
+        Err(VfsError::Eio)
+    );
+
+    assert_eq!(sb.s_dquot.active_refs_for_tests(Kqid::user(2000)), 0);
+    assert_eq!(sb.s_dquot.active_refs_for_tests(Kqid::group(200)), 0);
+    assert_eq!(inode_dquot(&ino, QuotaType::User).unwrap().id(), Kqid::user(1000));
+    assert_eq!(inode_dquot(&ino, QuotaType::Group).unwrap().id(), Kqid::group(100));
+    dquot_drop_type(&ino, QuotaType::User);
+    dquot_drop_type(&ino, QuotaType::Group);
+    assert_eq!(quota_off(&sb, QuotaType::User), Ok(()));
+    assert_eq!(quota_off(&sb, QuotaType::Group), Ok(()));
 }
