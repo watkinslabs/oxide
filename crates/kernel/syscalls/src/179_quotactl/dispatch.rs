@@ -52,8 +52,7 @@ pub(super) fn quotactl_dispatch_sb_block(
         match rv {
             Some(rv) => return rv,
             None => {
-                if !sb.sb_start_write() { return eno(Errno::Erofs); }
-                sb.sb_end_write();
+                if !sb.wait_until_thawed() { return eno(Errno::Erofs); }
             }
         }
     }
