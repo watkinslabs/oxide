@@ -1,8 +1,18 @@
 use alloc::vec::Vec;
 
 use block::{BlockDevice, BlockRequest};
+#[cfg(not(target_os = "oxide-kernel"))]
+use core::sync::atomic::Ordering;
 
-use super::MountError;
+use super::{Mount, MountError};
+
+impl Mount {
+    pub(crate) fn write_data_byte_range(&self, byte_off: u64, data: &[u8]) -> Result<(), MountError> {
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.faults.next_data_write.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
+        write_byte_range(&*self.dev, byte_off, data)
+    }
+}
 
 /// Write `data` to `dev` at byte offset `byte_off`. RMW for any
 /// partial-block write — `data` need not be sector-multiple. A

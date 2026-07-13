@@ -22,6 +22,16 @@ const OFF_FLAGS:        usize = 0x20; // i_flags (chattr flag word)
 const OFF_GENERATION:   usize = 0x64; // i_generation
 const OFF_PROJID:       usize = 0x9C; // i_projid, present in >=160-byte inode
 
+#[derive(Clone, Copy)]
+pub(crate) struct InodeMetaUpdate {
+    pub(crate) mode: u16,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+    pub(crate) atime_ns: u64,
+    pub(crate) mtime_ns: u64,
+    pub(crate) ctime_ns: u64,
+}
+
 impl Mount {
     /// Persist `s_volume_name` through the journal. Linux `FS_IOC_SETFSLABEL`
     /// copies exactly `EXT4_LABEL_MAX` zero-padded bytes. # C: O(SB rw)
@@ -45,6 +55,37 @@ impl Mount {
             b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
             if isize >= OFF_CTIME_EXTRA + 4 {
                 b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
+            }
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+
+    /// Persist only `i_flags` to `ino`'s on-disk inode, journaled. ext4 visible
+    /// quota-on dirties the inode after setting protection flags without
+    /// changing mtime/ctime. # C: O(1) I/O, 1 txn
+    pub fn persist_inode_flags_only(&self, ino: u32, flags: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            b[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+
+    /// Persist `i_flags`, `i_mtime`, and `i_ctime` to `ino`'s on-disk inode,
+    /// journaled. ext4 visible quota-off uses this after generic quota teardown
+    /// clears the quota-file protection flags. # C: O(1) I/O, 1 txn
+    pub fn persist_inode_flags_mctime(&self, ino: u32, flags: u32, mtime_ns: u64, ctime_ns: u64) -> Result<(), MountError> {
+        let isize = self.sb.inode_size as usize;
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            b[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
+            let (c_lo, c_ex) = enc_time(ctime_ns);
+            let (mt_lo, mt_ex) = enc_time(mtime_ns);
+            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
+            b[OFF_MTIME..OFF_MTIME + 4].copy_from_slice(&mt_lo.to_le_bytes());
+            if isize >= OFF_MTIME_EXTRA + 4 {
+                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
+                b[OFF_MTIME_EXTRA..OFF_MTIME_EXTRA + 4].copy_from_slice(&mt_ex.to_le_bytes());
             }
             m.write_inode_bytes(ino, &b)
         })
@@ -117,6 +158,25 @@ pub(crate) fn stamp_new_inode_times(b: &mut [u8], isize: usize, now_ns: u64) {
 }
 
 impl Mount {
+    pub(crate) fn stamp_inode_meta_fields(&self, b: &mut [u8], meta: InodeMetaUpdate) {
+        b[OFF_MODE..OFF_MODE + 2].copy_from_slice(&meta.mode.to_le_bytes());
+        b[OFF_UID_LO..OFF_UID_LO + 2].copy_from_slice(&((meta.uid & 0xFFFF) as u16).to_le_bytes());
+        b[OFF_UID_HI..OFF_UID_HI + 2].copy_from_slice(&((meta.uid >> 16) as u16).to_le_bytes());
+        b[OFF_GID_LO..OFF_GID_LO + 2].copy_from_slice(&((meta.gid & 0xFFFF) as u16).to_le_bytes());
+        b[OFF_GID_HI..OFF_GID_HI + 2].copy_from_slice(&((meta.gid >> 16) as u16).to_le_bytes());
+        let (a_lo, a_ex) = enc_time(meta.atime_ns);
+        let (c_lo, c_ex) = enc_time(meta.ctime_ns);
+        let (m_lo, m_ex) = enc_time(meta.mtime_ns);
+        b[OFF_ATIME..OFF_ATIME + 4].copy_from_slice(&a_lo.to_le_bytes());
+        b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
+        b[OFF_MTIME..OFF_MTIME + 4].copy_from_slice(&m_lo.to_le_bytes());
+        if self.sb.inode_size as usize >= OFF_ATIME_EXTRA + 4 {
+            b[OFF_ATIME_EXTRA..OFF_ATIME_EXTRA + 4].copy_from_slice(&a_ex.to_le_bytes());
+            b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
+            b[OFF_MTIME_EXTRA..OFF_MTIME_EXTRA + 4].copy_from_slice(&m_ex.to_le_bytes());
+        }
+    }
+
     /// Persist an inode's mode / owner / timestamps to its on-disk slot
     /// (journaled) — the ext4 half of `notify_change` (Linux `ext4_setattr` →
     /// `__ext4_mark_inode_dirty`). Size/blocks/nlink/extents are owned by the
@@ -126,26 +186,9 @@ impl Mount {
     pub fn persist_inode_meta(&self, ino: u32, mode: u16, uid: u32, gid: u32,
         atime_ns: u64, mtime_ns: u64, ctime_ns: u64) -> Result<(), MountError>
     {
-        let isize = self.sb.inode_size as usize;
         self.run_journaled(|m| {
             let (mut b, _off) = m.read_inode_bytes(ino)?;
-            b[OFF_MODE..OFF_MODE + 2].copy_from_slice(&mode.to_le_bytes());
-            b[OFF_UID_LO..OFF_UID_LO + 2].copy_from_slice(&((uid & 0xFFFF) as u16).to_le_bytes());
-            b[OFF_UID_HI..OFF_UID_HI + 2].copy_from_slice(&((uid >> 16) as u16).to_le_bytes());
-            b[OFF_GID_LO..OFF_GID_LO + 2].copy_from_slice(&((gid & 0xFFFF) as u16).to_le_bytes());
-            b[OFF_GID_HI..OFF_GID_HI + 2].copy_from_slice(&((gid >> 16) as u16).to_le_bytes());
-            let (a_lo, a_ex) = enc_time(atime_ns);
-            let (c_lo, c_ex) = enc_time(ctime_ns);
-            let (m_lo, m_ex) = enc_time(mtime_ns);
-            b[OFF_ATIME..OFF_ATIME + 4].copy_from_slice(&a_lo.to_le_bytes());
-            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&c_lo.to_le_bytes());
-            b[OFF_MTIME..OFF_MTIME + 4].copy_from_slice(&m_lo.to_le_bytes());
-            // The nanosecond / epoch-high halves only exist in a >128-byte inode.
-            if isize >= OFF_ATIME_EXTRA + 4 {
-                b[OFF_ATIME_EXTRA..OFF_ATIME_EXTRA + 4].copy_from_slice(&a_ex.to_le_bytes());
-                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&c_ex.to_le_bytes());
-                b[OFF_MTIME_EXTRA..OFF_MTIME_EXTRA + 4].copy_from_slice(&m_ex.to_le_bytes());
-            }
+            m.stamp_inode_meta_fields(&mut b, InodeMetaUpdate { mode, uid, gid, atime_ns, mtime_ns, ctime_ns });
             m.write_inode_bytes(ino, &b)
         })
     }

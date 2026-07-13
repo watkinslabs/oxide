@@ -67,7 +67,7 @@ fn devpts_fs_smoke() {
     let s_op: Arc<dyn vfs::SuperOps> =
         Arc::new(vfs::SimpleSuperOps { magic: DEVPTS_MAGIC, block_size: 4096, options: alloc::string::String::new() });
     let sb = SuperBlock::from_ops(Arc::new(DevptsType), s_op, fs.root(), DEVPTS_MAGIC, DEVPTS_FSID, 4096, alloc::string::String::from("devpts"), Arc::new(()));
-    fs.set_sb(Arc::downgrade(&sb));
+    fs.set_sb(Arc::downgrade(&sb)).expect("devpts set_sb");
     kassert!(sb.s_magic == DEVPTS_MAGIC, "devpts sb s_magic");
     let rino = sb.s_root_inode().expect("devpts s_root inode");
     kassert!(rino.file_type() == FileType::Directory, "devpts s_root is dir");

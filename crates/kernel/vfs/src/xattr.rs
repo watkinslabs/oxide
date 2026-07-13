@@ -20,9 +20,10 @@ use alloc::vec::Vec;
 
 use sync::{Inode as InodeLockClass, Spinlock};
 
-/// Xattr backend error — the three Linux xattr-storage outcomes that are not a
-/// plain success. Distinct from [`crate::VfsError`] because `ENODATA` (61) has
-/// no VfsError variant; the syscall layer maps these to the raw xattr errnos.
+/// Xattr backend error — Linux xattr-storage outcomes that are not a plain
+/// success. Distinct from [`crate::VfsError`] because `ENODATA` (61) has no
+/// VfsError variant; filesystem backends still report real VFS failures through
+/// `Fs` so quota/space errors reach syscall edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum XattrError {
     /// `ENODATA` — the named attribute does not exist (get/remove, or
@@ -32,6 +33,8 @@ pub enum XattrError {
     Exists,
     /// `EOPNOTSUPP` — this inode's filesystem has no xattr store.
     NotSup,
+    /// Filesystem-backed failure (`EDQUOT`, `ENOSPC`, `EIO`, ...).
+    Fs(crate::VfsError),
 }
 
 /// `simple_xattrs` (Linux `fs/xattr.c`) — a per-inode name→value map under the
@@ -76,6 +79,19 @@ impl SimpleXattrs {
     /// All attribute names (for listxattr). # C: O(N)
     pub fn list_names(&self) -> Vec<String> {
         self.map.lock().keys().cloned().collect()
+    }
+
+    /// Full name/value snapshot for filesystem writeback. # C: O(N)
+    pub fn entries(&self) -> Vec<(String, Vec<u8>)> {
+        self.map.lock().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Replace the in-core cache after the owning filesystem committed the new
+    /// xattr set. # C: O(N log N)
+    pub fn replace_all(&self, entries: &[(String, Vec<u8>)]) {
+        let mut g = self.map.lock();
+        g.clear();
+        for (k, v) in entries { g.insert(k.clone(), v.clone()); }
     }
 }
 

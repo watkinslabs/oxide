@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use vfs::superblock::SB_RDONLY;
 
 use super::RootfsState;
 
@@ -64,6 +65,50 @@ impl vfs::SuperOps for Ext4SuperOps {
         self.st.frozen.store(false, core::sync::atomic::Ordering::Release);
         Ok(())
     }
+
+    fn remount_fs(&self, sb_flags: u64) -> vfs::KResult<()> {
+        if let Some(sb) = self.st.i_sb() {
+            if sb_flags & SB_RDONLY != 0 { return vfs::quota_suspend_sysfiles(&sb); }
+            self.st.enable_mount_quotas(&sb, true)?;
+        }
+        Ok(())
+    }
+
+    fn quota_on(&self, sb: &vfs::SuperBlock, kind: vfs::QuotaType, format_id: u32, path: Option<&vfs::VfsPath>) -> vfs::KResult<()> {
+        crate::quota::quota_on_ext4(&self.st, sb, kind, format_id, path)
+    }
+
+    fn quota_on_supported(&self, _sb: &vfs::SuperBlock, _kind: vfs::QuotaType) -> bool { true }
+
+    fn quota_supported(&self) -> bool { true }
+
+    fn quota_type_supported(&self, _kind: vfs::QuotaType) -> bool { true }
+
+    fn quota_enable(&self, sb: &vfs::SuperBlock, kind: vfs::QuotaType) -> vfs::KResult<()> {
+        if !sb.s_dquot.is_enabled(kind) || sb.s_dquot.info(kind).dqi_flags & vfs::DQF_SYS_FILE == 0 {
+            return Err(vfs::VfsError::Esrch);
+        }
+        vfs::quota_enable_limits(sb, kind)
+    }
+
+    fn quota_enable_supported(&self, sb: &vfs::SuperBlock, kind: vfs::QuotaType) -> bool {
+        sb.s_dquot.is_enabled(kind) && sb.s_dquot.info(kind).dqi_flags & vfs::DQF_SYS_FILE != 0
+    }
+
+    fn quota_disable(&self, sb: &vfs::SuperBlock, kind: vfs::QuotaType) -> vfs::KResult<()> {
+        if !sb.s_dquot.is_enabled(kind) || sb.s_dquot.info(kind).dqi_flags & vfs::DQF_SYS_FILE == 0 {
+            return Err(vfs::VfsError::Esrch);
+        }
+        vfs::quota_disable_limits(sb, kind)
+    }
+
+    fn quota_disable_supported(&self, sb: &vfs::SuperBlock, kind: vfs::QuotaType) -> bool {
+        sb.s_dquot.is_enabled(kind) && sb.s_dquot.info(kind).dqi_flags & vfs::DQF_SYS_FILE != 0
+    }
+
+    fn quota_off(&self, sb: &vfs::SuperBlock, kind: vfs::QuotaType) -> vfs::KResult<()> {
+        vfs::quota_off(sb, kind)
+    }
 }
 
 pub struct Ext4Mount {
@@ -107,7 +152,7 @@ impl vfs::fs::FileSystem for Ext4Mount {
         Some(Arc::new(Ext4SuperOps::new(self.st.clone())))
     }
     fn root(&self) -> Option<vfs::InodeRef> { self.st.wrap_any_ino(2) }
-    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) { self.st.set_sb(sb); }
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) -> vfs::KResult<()> { self.st.set_sb(sb) }
 }
 
 impl core::ops::Drop for Ext4Mount {
@@ -123,7 +168,7 @@ impl core::ops::Drop for Ext4Mount {
         for ino in orphans {
             if let Ok(inode) = self.st.mount.read_inode(ino) {
                 if inode.links_count == 0 {
-                    let _ = self.st.mount.free_orphan_inode(ino);
+                    let _ = self.st.free_orphan_inode(ino);
                 }
             }
         }

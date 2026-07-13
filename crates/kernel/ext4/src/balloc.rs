@@ -13,6 +13,8 @@
 use crate::gdt;
 use crate::mount::{Mount, MountError};
 use crate::superblock::{Superblock, SB_OFF_FREE_BLOCKS_LO, SB_OFF_FREE_BLOCKS_HI};
+#[cfg(not(target_os = "oxide-kernel"))]
+use core::sync::atomic::Ordering;
 
 extern crate alloc;
 
@@ -22,6 +24,15 @@ impl Mount {
     /// atomically.
     /// # C: O(N_groups * block_size) worst-case
     pub fn alloc_block(&self, hint: u32) -> Result<u64, MountError> {
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.faults.next_alloc_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let left = self.faults.alloc_block_after.load(Ordering::Acquire);
+            if left != 0 && self.faults.alloc_block_after.fetch_sub(1, Ordering::AcqRel) == 1 {
+                return Err(MountError::BlockIo);
+            }
+        }
         self.run_journaled(|m| {
             let groups = m.sb.group_count();
             if groups == 0 { return Err(MountError::NoSpace); }
@@ -40,6 +51,15 @@ impl Mount {
     /// scope. `DoubleFree` if the bit was already clear.
     /// # C: O(block_size) within one group
     pub fn free_block(&self, phys_blk: u64) -> Result<(), MountError> {
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.faults.next_free_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let left = self.faults.free_block_after.load(Ordering::Acquire);
+            if left != 0 && self.faults.free_block_after.fetch_sub(1, Ordering::AcqRel) == 1 {
+                return Err(MountError::BlockIo);
+            }
+        }
         self.run_journaled(|m| {
             let (group, bit) = m.locate_block(phys_blk)?;
             let gd_orig = {

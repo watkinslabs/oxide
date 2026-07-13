@@ -63,7 +63,7 @@ impl vfs::fs::FileSystem for AutofsFs {
     fn name(&self) -> &str { "autofs" }
     fn magic(&self) -> u64 { AUTOFS_SUPER_MAGIC }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
-    fn set_sb(&self, sb: alloc::sync::Weak<vfs::superblock::SuperBlock>) {
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::superblock::SuperBlock>) -> vfs::KResult<()> {
         if let Some(sb) = sb.upgrade() {
             // `state.dev` holds the RAW `s_dev` so `AutofsRoot::fsid` reports it
             // and `fstat(mountpoint)` yields `fsid_to_dev(s_dev)` (the stat ABI).
@@ -76,6 +76,7 @@ impl vfs::fs::FileSystem for AutofsFs {
             self.root.set_fsid(sb.s_dev);
             register_mount(vfs::fsid_to_dev(sb.s_dev), Arc::clone(&self.state));
         }
+        Ok(())
     }
 }
 

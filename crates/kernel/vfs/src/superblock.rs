@@ -21,6 +21,7 @@ use sync::{RwLock, Spinlock, Superblock as SbClass};
 
 use crate::dentry::Dentry;
 use crate::inode::{Inode, InodeRef};
+use crate::quota::QuotaInfo;
 use crate::types::Ino;
 
 mod attrs;
@@ -34,7 +35,7 @@ mod stat;
 
 pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
 pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
-pub use registry::{fs_supers, next_anon_dev, register_super, sget};
+pub use registry::{fs_supers, next_anon_dev, register_super, sb_by_dev, sget, sget_result};
 pub(crate) use registry::alloc_anon_minor;
 
 type FreezeParkHook = fn(usize);
@@ -146,6 +147,9 @@ pub struct SuperBlock {
     s_uuid: Spinlock<([u8; 16], u8), SbClass>,
     /// `s_root` — the ROOT DENTRY (strong; see CYCLE NOTE).
     s_root: RwLock<Option<Arc<Dentry>>, SbClass>,
+    /// `s_umount` — Linux superblock rwsem analogue; quota on/off take it
+    /// exclusive, other targeted quota ops take it shared.
+    s_umount: RwLock<(), SbClass>,
     /// `s_fs_info` — backend-private state slot (Linux `super_block.s_fs_info`):
     /// the ext4 on-disk-sb struct / tmpfs arena / pseudo-fs context a backend
     /// hangs off its instance. Typed `Arc<dyn Any>` like `inode.i_private`;
@@ -166,6 +170,8 @@ pub struct SuperBlock {
     /// caller's. `mark_inode_dirty` (clean→dirty) inserts, writeback /
     /// `clear_inode` / `iput` (dirty→clean) removes. Driven from `superblock_wb.rs`.
     pub(crate) s_wb: Spinlock<BTreeMap<Ino, InodeRef>, SbClass>,
+    /// `s_dquot` — superblock quota state and dquot cache.
+    pub s_dquot: QuotaInfo,
 }
 
 /// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode or

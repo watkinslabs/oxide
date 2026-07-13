@@ -1,21 +1,31 @@
 use crate::inode::{self, I_BLOCK_LEN};
+use crate::extent_rw::meta::InodeMetaUpdate;
 use crate::mount::{Mount, MountError, read_byte_range_pub};
+use alloc::vec::Vec;
 
 impl Mount {
     /// Truncate `ino` to `new_len`, freeing trailing data and extent metadata.
     /// # C: O(N_extents) + N_blocks_freed I/O
     pub fn truncate_inode(&self, ino: u32, new_len: u64) -> Result<(), MountError> {
-        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len))
+        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len, None))
     }
 
-    pub(super) fn truncate_inode_inner(&self, ino: u32, new_len: u64) -> Result<(), MountError> {
+    pub(crate) fn truncate_inode_with_meta(&self, ino: u32, new_len: u64, meta: InodeMetaUpdate)
+        -> Result<(), MountError>
+    {
+        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len, Some(meta)))
+    }
+
+    pub(super) fn truncate_inode_inner(&self, ino: u32, new_len: u64, meta: Option<InodeMetaUpdate>)
+        -> Result<(), MountError>
+    {
         let bs = self.sb.block_size as u64;
         let inode = self.read_inode(ino)?;
         let cur_size = inode.size;
         if new_len > cur_size {
             // Extend by writing 0 bytes at new_len-1 (zero-fills).
             let z = [0u8; 1];
-            return self.write_at(ino, new_len - 1, &z);
+            return self.write_at_inner(ino, new_len - 1, &z, meta);
         }
         // Shrink path. Free every data block at logical index >= blocks_keep
         // and reclaim any extent-tree metadata block that becomes orphaned.
@@ -25,6 +35,8 @@ impl Mount {
         let mut i_block = [0u8; I_BLOCK_LEN];
         i_block.copy_from_slice(&bytes[0x28..0x28 + I_BLOCK_LEN]);
         let hdr0 = inode::parse_extent_header(&i_block)?;
+        let mut blocks_to_free = Vec::new();
+        let mut node_writes = Vec::new();
         if hdr0.depth == 0 {
             // Inline leaf (depth 0): shrink the trailing extents in place.
             let mut new_entries = hdr0.entries;
@@ -33,11 +45,11 @@ impl Mount {
                 let first = e.block as u64;
                 let last_excl = first + e.len as u64;
                 if first >= blocks_keep {
-                    for k in 0..e.len as u64 { let _ = self.free_block(e.start_lba() + k); }
+                    for k in 0..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
                     new_entries -= 1;
                 } else if last_excl > blocks_keep {
                     let keep = (blocks_keep - first) as u16;
-                    for k in keep as u64..e.len as u64 { let _ = self.free_block(e.start_lba() + k); }
+                    for k in keep as u64..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
                     let mut e2 = e; e2.len = keep;
                     inode::write_inline_extent(&mut i_block, i, &e2);
                 }
@@ -49,17 +61,32 @@ impl Mount {
             // Depth >= 1: recurse the rightmost path, freeing orphaned
             // subtrees + tail data (was DepthUnsupported — truncating any
             // multi-extent file failed).
-            self.truncate_interior_inline(ino, gen, &mut i_block, hdr0, blocks_keep)?;
+            self.truncate_interior_inline(ino, gen, &mut i_block, hdr0, blocks_keep, &mut blocks_to_free, &mut node_writes)?;
         }
         // i_blocks (512-byte sectors): recompute from the remaining DATA
         // extents + surviving extent-tree metadata blocks across the
         // whole tree, matching Linux's i_blocks accounting.
-        let sectors = self.count_all_sectors(&i_block)?;
+        let sectors = self.count_all_sectors_planned(&i_block, &node_writes)?;
+        let old_sectors = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
+        self.account_i_blocks_delta(ino, old_sectors, sectors)?;
         bytes[0x1C..0x20].copy_from_slice(&sectors.to_le_bytes());
         bytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(&i_block);
         bytes[0x04..0x08].copy_from_slice(&((new_len & 0xFFFF_FFFF) as u32).to_le_bytes());
         bytes[0x6C..0x70].copy_from_slice(&((new_len >> 32) as u32).to_le_bytes());
-        self.write_inode_bytes(ino, &bytes)?;
+        if let Some(meta) = meta { self.stamp_inode_meta_fields(&mut bytes, meta); }
+        for (lba, mut buf) in node_writes {
+            if let Err(e) = self.write_extent_block(ino, gen, lba, &mut buf) {
+                return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
+            }
+        }
+        if let Err(e) = self.write_inode_bytes(ino, &bytes) {
+            return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
+        }
+        for b in blocks_to_free {
+            if let Err(e) = self.free_block(b) {
+                return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
+            }
+        }
         Ok(())
     }
 
@@ -69,7 +96,8 @@ impl Mount {
     /// the inline header to an empty depth-0 tree if everything was freed.
     /// # C: O(tree) block I/Os
     pub(super) fn truncate_interior_inline(&self, ino: u32, gen: u32, i_block: &mut [u8; I_BLOCK_LEN],
-                                hdr: inode::ExtentHeader, blocks_keep: u64)
+                                hdr: inode::ExtentHeader, blocks_keep: u64,
+                                blocks_to_free: &mut Vec<u64>, node_writes: &mut Vec<(u64, Vec<u8>)>)
         -> Result<(), MountError>
     {
         let mut entries = hdr.entries;
@@ -77,11 +105,11 @@ impl Mount {
             let idx = inode::parse_extent_idx(i_block, &hdr, i).ok_or(MountError::NotFound)?;
             let child = idx.leaf_lba();
             if idx.block as u64 >= blocks_keep {
-                self.free_subtree(child, hdr.depth - 1)?;
+                self.collect_subtree_blocks(child, hdr.depth - 1, blocks_to_free)?;
                 entries -= 1;
             } else {
-                if self.truncate_node(ino, gen, child, hdr.depth - 1, blocks_keep)? {
-                    let _ = self.free_block(child);
+                if self.truncate_node(ino, gen, child, hdr.depth - 1, blocks_keep, blocks_to_free, node_writes)? {
+                    blocks_to_free.push(child);
                     entries -= 1;
                 }
                 break; // earlier children are entirely < blocks_keep → kept
@@ -104,7 +132,8 @@ impl Mount {
     /// logical blocks < `blocks_keep`. Returns true if the node became
     /// empty (caller frees the block + drops its parent idx).
     /// # C: O(subtree) block I/Os
-    pub(super) fn truncate_node(&self, ino: u32, gen: u32, lba: u64, depth: u16, blocks_keep: u64) -> Result<bool, MountError> {
+    pub(super) fn truncate_node(&self, ino: u32, gen: u32, lba: u64, depth: u16, blocks_keep: u64,
+        blocks_to_free: &mut Vec<u64>, node_writes: &mut Vec<(u64, Vec<u8>)>) -> Result<bool, MountError> {
         let bs = self.sb.block_size as usize;
         let mut buf = read_byte_range_pub(&*self.dev, lba * bs as u64, bs)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
@@ -115,11 +144,11 @@ impl Mount {
                 let first = e.block as u64;
                 let last_excl = first + e.len as u64;
                 if first >= blocks_keep {
-                    for k in 0..e.len as u64 { let _ = self.free_block(e.start_lba() + k); }
+                    for k in 0..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
                     entries -= 1;
                 } else if last_excl > blocks_keep {
                     let keep = (blocks_keep - first) as u16;
-                    for k in keep as u64..e.len as u64 { let _ = self.free_block(e.start_lba() + k); }
+                    for k in keep as u64..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
                     let mut e2 = e; e2.len = keep;
                     inode::write_inline_extent_slice(&mut buf, i, &e2);
                     break;
@@ -130,11 +159,11 @@ impl Mount {
                 let idx = inode::parse_extent_idx_slice(&buf, &hdr, i).ok_or(MountError::NotFound)?;
                 let child = idx.leaf_lba();
                 if idx.block as u64 >= blocks_keep {
-                    self.free_subtree(child, depth - 1)?;
+                    self.collect_subtree_blocks(child, depth - 1, blocks_to_free)?;
                     entries -= 1;
                 } else {
-                    if self.truncate_node(ino, gen, child, depth - 1, blocks_keep)? {
-                        let _ = self.free_block(child);
+                    if self.truncate_node(ino, gen, child, depth - 1, blocks_keep, blocks_to_free, node_writes)? {
+                        blocks_to_free.push(child);
                         entries -= 1;
                     }
                     break;
@@ -143,32 +172,84 @@ impl Mount {
         }
         let mut nh = hdr; nh.entries = entries;
         inode::write_extent_header_slice(&mut buf, &nh);
-        // The surviving node block changed (entries / trimmed extent) →
-        // restamp its extent-tail csum on write.
-        self.write_extent_block(ino, gen, lba, &mut buf)?;
+        if entries != 0 {
+            // The surviving node block changed (entries / trimmed extent) →
+            // restamp its extent-tail csum when the plan is applied.
+            node_writes.push((lba, buf));
+        }
         Ok(entries == 0)
     }
 
     /// Free every block under (and including) the metadata block at `lba`:
     /// all data blocks at the leaves + every interior/leaf metadata block.
     /// # C: O(subtree) block I/Os
-    pub(super) fn free_subtree(&self, lba: u64, depth: u16) -> Result<(), MountError> {
+    pub(super) fn collect_subtree_blocks(&self, lba: u64, depth: u16, blocks_to_free: &mut Vec<u64>) -> Result<(), MountError> {
         let bs = self.sb.block_size as usize;
         let buf = read_byte_range_pub(&*self.dev, lba * bs as u64, bs)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
         if depth == 0 {
             for i in 0..hdr.entries {
                 let e = inode::parse_inline_extent_slice(&buf, &hdr, i).ok_or(MountError::NotFound)?;
-                for k in 0..e.len as u64 { let _ = self.free_block(e.start_lba() + k); }
+                for k in 0..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
             }
         } else {
             for i in 0..hdr.entries {
                 let idx = inode::parse_extent_idx_slice(&buf, &hdr, i).ok_or(MountError::NotFound)?;
-                self.free_subtree(idx.leaf_lba(), depth - 1)?;
+                self.collect_subtree_blocks(idx.leaf_lba(), depth - 1, blocks_to_free)?;
             }
         }
-        let _ = self.free_block(lba);
+        blocks_to_free.push(lba);
         Ok(())
+    }
+
+    fn count_all_sectors_planned(&self, i_block: &[u8; I_BLOCK_LEN], node_writes: &[(u64, Vec<u8>)]) -> Result<u32, MountError> {
+        let hdr = inode::parse_extent_header(i_block)?;
+        let spb = self.sb.block_size / 512;
+        if hdr.depth == 0 {
+            let mut s = 0u32;
+            for i in 0..hdr.entries {
+                if let Some(e) = inode::parse_inline_extent(i_block, &hdr, i) {
+                    s = s.saturating_add((e.len as u32) * spb);
+                }
+            }
+            return Ok(s);
+        }
+        let mut s = 0u32;
+        for i in 0..hdr.entries {
+            let idx = inode::parse_extent_idx(i_block, &hdr, i).ok_or(MountError::NotFound)?;
+            s = s.saturating_add(spb);
+            s = s.saturating_add(self.count_all_sectors_node_planned(idx.leaf_lba(), hdr.depth - 1, node_writes)?);
+        }
+        Ok(s)
+    }
+
+    fn count_all_sectors_node_planned(&self, lba: u64, depth: u16, node_writes: &[(u64, Vec<u8>)]) -> Result<u32, MountError> {
+        let bs = self.sb.block_size as usize;
+        let disk_buf;
+        let buf = match node_writes.iter().rev().find(|(node_lba, _)| *node_lba == lba) {
+            Some((_, planned)) => planned.as_slice(),
+            None => {
+                disk_buf = read_byte_range_pub(&*self.dev, lba * bs as u64, bs)?;
+                disk_buf.as_slice()
+            }
+        };
+        let hdr = inode::parse_extent_header_slice(buf)?;
+        let spb = self.sb.block_size / 512;
+        let mut s = 0u32;
+        if depth == 0 {
+            for i in 0..hdr.entries {
+                if let Some(e) = inode::parse_inline_extent_slice(buf, &hdr, i) {
+                    s = s.saturating_add((e.len as u32) * spb);
+                }
+            }
+        } else {
+            for i in 0..hdr.entries {
+                let idx = inode::parse_extent_idx_slice(buf, &hdr, i).ok_or(MountError::NotFound)?;
+                s = s.saturating_add(spb);
+                s = s.saturating_add(self.count_all_sectors_node_planned(idx.leaf_lba(), depth - 1, node_writes)?);
+            }
+        }
+        Ok(s)
     }
 
     /// Sum data blocks + extent-tree metadata blocks (in 512-byte

@@ -5,7 +5,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 
 use crate::inode::InodeRef;
-use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, next_anon_dev, sget};
+use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, next_anon_dev, sget_result};
 use crate::types::VfsError;
 
 use super::flags::FsFlags;
@@ -30,7 +30,7 @@ pub trait FileSystem: Send + Sync {
     fn block_size(&self) -> u32 { 4096 }
     fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { None }
     fn root(&self) -> Option<InodeRef> { None }
-    fn set_sb(&self, _sb: Weak<SuperBlock>) {}
+    fn set_sb(&self, _sb: Weak<SuperBlock>) -> KResult<()> { Ok(()) }
     fn sysfs_name(&self) -> Option<String> { None }
     fn show_options(&self) -> String { String::new() }
 }
@@ -41,7 +41,7 @@ pub trait FileSystem: Send + Sync {
 /// `s_fs_info`; no `Arc<dyn FileSystem>` is retained behind it or consulted by
 /// the mount namespace. # C: O(N_sb) for device-backed reuse.
 pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn FileSystem>,
-    root_inode: Option<InodeRef>, s_id: String) -> Arc<SuperBlock> {
+    root_inode: Option<InodeRef>, s_id: String) -> KResult<Arc<SuperBlock>> {
     let root = root_inode.or_else(|| fs.root());
     let s_op: Arc<dyn SuperOps> = fs.super_ops().unwrap_or_else(|| {
         Arc::new(SimpleSuperOps {
@@ -55,18 +55,18 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
     match fs.dev_id() {
         Some(dev) => {
             let fs_for_stamp = fs.clone();
-            sget(dev, move || {
+            sget_result(dev, move || {
                 let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
-                fs_for_stamp.set_sb(Arc::downgrade(&sb));
+                fs_for_stamp.set_sb(Arc::downgrade(&sb))?;
                 if let Some(name) = fs_for_stamp.sysfs_name() { sb.set_sysfs_name(&name); }
-                sb
+                Ok(sb)
             })
         }
         None => {
             let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
-            fs.set_sb(Arc::downgrade(&sb));
+            fs.set_sb(Arc::downgrade(&sb))?;
             if let Some(name) = fs.sysfs_name() { sb.set_sysfs_name(&name); }
-            sb
+            Ok(sb)
         }
     }
 }

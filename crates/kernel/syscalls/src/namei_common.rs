@@ -179,6 +179,7 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
     -(match e {
         vfs::VfsError::Eperm   => Errno::Eperm   as i32,
         vfs::VfsError::Enoent  => Errno::Enoent  as i32,
+        vfs::VfsError::Esrch   => Errno::Esrch   as i32,
         vfs::VfsError::Eintr   => Errno::Eintr   as i32,
         vfs::VfsError::Eio     => Errno::Eio     as i32,
         vfs::VfsError::Enxio   => Errno::Enxio   as i32,
@@ -200,6 +201,7 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Emlink  => Errno::Emlink  as i32,
         vfs::VfsError::Eagain  => Errno::Eagain  as i32,
         vfs::VfsError::Epipe   => Errno::Epipe   as i32,
+        vfs::VfsError::Erange  => Errno::Erange  as i32,
         vfs::VfsError::Erofs   => Errno::Erofs   as i32,
         vfs::VfsError::Ebusy   => Errno::Ebusy   as i32,
         vfs::VfsError::Enospc  => Errno::Enospc  as i32,
@@ -215,6 +217,8 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Enametoolong => Errno::Enametoolong as i32,
         vfs::VfsError::Enotconn => Errno::Enotconn as i32,
         vfs::VfsError::Econnrefused => Errno::Econnrefused as i32,
+        vfs::VfsError::Euclean => Errno::Euclean as i32,
+        vfs::VfsError::Edquot => Errno::Edquot as i32,
         vfs::VfsError::Ecanceled => Errno::Ecanceled as i32,
     } as i64)
 }
