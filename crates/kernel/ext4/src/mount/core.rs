@@ -312,7 +312,10 @@ impl Mount {
                     }
                     Ok(v)
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    self.refresh_cached_meta();
+                    Err(e)
+                }
             }
         }
     }

@@ -231,12 +231,12 @@ impl Mount {
             written += copy_len;
         }
         if let Err(e) = self.flush_pending_data_writes(pending) {
-            let _ = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+            if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
             return Err(e);
         }
         // Persist the (potentially partial-block) i_size.
         if let Err(e) = self.set_inode_size_with_meta(ino, new_size, meta) {
-            let _ = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+            if let Err(rb) = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated) { return Err(rb); }
             return Err(e);
         }
         Ok(())
