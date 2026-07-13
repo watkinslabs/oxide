@@ -50,6 +50,21 @@ impl vfs::SuperOps for UserQuotaOps {
     fn quota_type_supported(&self, kind: vfs::QuotaType) -> bool { kind == vfs::QuotaType::User }
 }
 
+struct StateOps;
+impl vfs::SuperOps for StateOps {
+    fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> { Ok(vfs::SbStatFs::default()) }
+    fn quota_supported(&self) -> bool { true }
+    fn quota_type_supported(&self, kind: vfs::QuotaType) -> bool { kind == vfs::QuotaType::User }
+    fn quota_get_state_supported(&self, _sb: &vfs::SuperBlock) -> bool { true }
+    fn quota_get_state(&self, _sb: &vfs::SuperBlock) -> vfs::KResult<vfs::QuotaState> {
+        Ok(vfs::QuotaState { types: core::array::from_fn(|idx| {
+            let mut ty = vfs::QuotaTypeState::default();
+            if idx == vfs::QuotaType::User.slot() { ty.accounting = false; }
+            ty
+        }) })
+    }
+}
+
 #[repr(C)]
 struct TestIfDqinfo {
     dqi_bgrace: u64,
@@ -108,13 +123,39 @@ fn targeted_dispatch_rejects_type_before_current_task_hosted() {
 fn targeted_dispatch_supported_type_current_task_order_hosted() {
     let sb = sb_with_ops(Arc::new(UserQuotaOps));
 
-    assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_SYNC, cmd::USRQUOTA), 0, 0), 0);
+    assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_SYNC, cmd::USRQUOTA), 0, 0), eno(Errno::Enosys));
     assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_GETINFO, cmd::USRQUOTA), 0, 0), eno(Errno::Esrch));
     assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_QUOTAOFF, cmd::USRQUOTA), 0, 0), eno(Errno::Esrch));
     assert_eq!(
         dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_QUOTAON, cmd::USRQUOTA), vfs::QFMT_VFS_V1 as u64, 0),
         eno(Errno::Esrch),
     );
+}
+
+#[test]
+fn targeted_dispatch_getinfo_checks_get_state_support_before_state_hosted() {
+    let _guard = begin_current_test();
+    install_current(0, true);
+    let sb = sb_with_ops(Arc::new(UserQuotaOps));
+
+    assert_eq!(
+        dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_GETINFO, cmd::USRQUOTA), 0, 0),
+        eno(Errno::Enosys),
+    );
+    CURRENT_TASK_PTR.store(0, Ordering::Release);
+}
+
+#[test]
+fn targeted_dispatch_getinfo_get_state_inactive_returns_esrch_before_copyout_hosted() {
+    let _guard = begin_current_test();
+    install_current(0, true);
+    let sb = sb_with_ops(Arc::new(StateOps));
+
+    assert_eq!(
+        dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_GETINFO, cmd::USRQUOTA), 0, 0),
+        eno(Errno::Esrch),
+    );
+    CURRENT_TASK_PTR.store(0, Ordering::Release);
 }
 
 #[test]

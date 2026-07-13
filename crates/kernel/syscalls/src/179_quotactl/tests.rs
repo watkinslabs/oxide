@@ -57,7 +57,7 @@ fn targeted_dispatch_rejects_type_before_current_task() {
 fn targeted_dispatch_classic_supported_type_current_task_order() {
     let sb = sb_with_ops(Arc::new(UserQuotaOps));
 
-    assert_eq!(quotactl_dispatch_sb(&sb, qcmd(Q_SYNC, USRQUOTA), 0, 0), 0);
+    assert_eq!(quotactl_dispatch_sb(&sb, qcmd(Q_SYNC, USRQUOTA), 0, 0), err(Errno::Enosys));
     assert_eq!(quotactl_dispatch_sb(&sb, qcmd(Q_GETINFO, USRQUOTA), 0, 0), err(Errno::Esrch));
     assert_eq!(quotactl_dispatch_sb(&sb, qcmd(Q_QUOTAOFF, USRQUOTA), 0, 0), err(Errno::Esrch));
     assert_eq!(quotactl_dispatch_sb(&sb, qcmd(Q_QUOTAON, USRQUOTA), vfs::QFMT_VFS_V1 as u64, 0), err(Errno::Esrch));

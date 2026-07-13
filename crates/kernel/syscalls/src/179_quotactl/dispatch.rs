@@ -81,7 +81,8 @@ fn quotactl_dispatch_sb_with_path(
     if !sb.s_op.quota_type_supported(kind) { return eno(Errno::Einval); }
 
     if subcmd == Q_SYNC {
-        return vfs::quota_sync(sb, kind).map(|_| 0).unwrap_or_else(crate::namei_common::errno_from_vfs);
+        if !sb.s_op.quota_sync_supported(sb, kind) { return eno(Errno::Enosys); }
+        return sb.s_op.quota_sync(sb, kind).map(|_| 0).unwrap_or_else(crate::namei_common::errno_from_vfs);
     }
 
     let cur = match current_task() {
@@ -122,7 +123,12 @@ fn quotactl_dispatch_sb_with_path(
             vfs::quota_setquota_masked(sb, qid, dqblk, fieldmask, quota_now_sec()).map(|_| 0).unwrap_or_else(crate::namei_common::errno_from_vfs)
         }
         Q_GETINFO => {
-            let info = match vfs::quota_getinfo(sb, kind) { Ok(i) => i, Err(e) => return crate::namei_common::errno_from_vfs(e) };
+            if !sb.s_op.quota_get_state_supported(sb) { return eno(Errno::Enosys); }
+            let state = match sb.s_op.quota_get_state(sb) { Ok(s) => s, Err(e) => return crate::namei_common::errno_from_vfs(e) };
+            let type_state = state.types[kind.slot()];
+            if !type_state.accounting { return eno(Errno::Esrch); }
+            let mut info = type_state.info;
+            info.dqi_valid = vfs::IIF_ALL;
             write_dqinfo(addr, info)
         }
         Q_SETINFO => {

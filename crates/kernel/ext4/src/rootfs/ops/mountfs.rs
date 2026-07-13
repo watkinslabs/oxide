@@ -109,6 +109,8 @@ impl vfs::SuperOps for Ext4SuperOps {
     fn quota_off(&self, sb: &vfs::SuperBlock, kind: vfs::QuotaType) -> vfs::KResult<()> {
         vfs::quota_off(sb, kind)
     }
+
+    fn quota_sync_supported(&self, _sb: &vfs::SuperBlock, _kind: vfs::QuotaType) -> bool { true }
 }
 
 pub struct Ext4Mount {
