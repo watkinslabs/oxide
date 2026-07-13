@@ -95,7 +95,7 @@ pub fn quota_suspend_sysfiles(sb: &SuperBlock) -> KResult<()> {
 /// Final superblock quota teardown used by unmount. # C: O(MAXQUOTAS*(N_ino+N_dq))
 pub fn quota_shutdown(sb: &SuperBlock) -> KResult<()> {
     for kind in [QuotaType::User, QuotaType::Group, QuotaType::Project] {
-        if sb.s_dquot.is_enabled(kind) { quota_off(sb, kind)?; }
+        if sb.s_dquot.is_enabled(kind) || sb.s_dquot.is_closing(kind) { quota_off(sb, kind)?; }
     }
     Ok(())
 }
