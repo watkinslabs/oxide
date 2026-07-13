@@ -25,6 +25,7 @@ const USR_MAGIC: u32 = 0xd9c0_1f11;
 const GRP_MAGIC: u32 = 0xd9c0_1927;
 const PRJ_MAGIC: u32 = 0xd9c0_3f14;
 const V2_VERSION_V1: u32 = 1;
+const FS_NODUMP_FL: u32 = vfs::inode::FS_NODUMP_FL;
 
 fn shared_disk_from(image: Vec<u8>) -> Arc<dyn BlockDevice> {
     let cap = (image.len() as u64) / (SECTOR as u64);
@@ -228,6 +229,36 @@ fn project_transfer_edquot_preserves_user_group_and_old_project_usage() {
 }
 
 #[test]
+fn fileattr_flags_persist_when_project_transfer_edquot_preserves_quota() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_all_quota_disk()).expect("rw mount with all hidden quotas");
+    let inode = m.state().create_at(b"/fileattr-project-edquot.txt", 0o644).expect("create file");
+    let ino = inode.ino() as u32;
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(ino, 0, &vec![0xC4; (bs * 4) as usize]).expect("write file");
+    let flags = inode.fileattr_get().expect("attrs before edquot").flags;
+    assert_eq!(flags & FS_NODUMP_FL, 0);
+    let old_p = quota(&sb, Kqid::project(0));
+    let new_p = quota(&sb, Kqid::project(77));
+
+    enable_space_hardlimit(&sb, Kqid::project(77), 1);
+    assert_eq!(
+        inode.fileattr_set(&FileAttr { flags: flags | FS_NODUMP_FL, fsx_projid: 77, ..Default::default() }),
+        Err(VfsError::Edquot)
+    );
+
+    let raw = m.state().mount.read_inode(ino).expect("raw after fileattr edquot");
+    assert_ne!(raw.i_flags & FS_NODUMP_FL, 0);
+    assert_ne!(inode.fileattr_get().expect("attrs after edquot").flags & FS_NODUMP_FL, 0);
+    assert_eq!(raw.i_projid, 0);
+    assert_eq!(inode.fileattr_get().expect("project after edquot").fsx_projid, 0);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curspace, old_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curinodes, old_p.dqb_curinodes);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curspace, new_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curinodes, new_p.dqb_curinodes);
+}
+
+#[test]
 fn chown_edquot_after_project_transfer_preserves_project_and_old_owner_usage() {
     common::boot_hosted_pmm();
     let (m, sb) = mount_result(seeded_all_quota_disk()).expect("rw mount with all hidden quotas");
@@ -296,6 +327,36 @@ fn project_transfer_dirty_failure_rolls_back_all_quota_records() {
 }
 
 #[test]
+fn fileattr_flags_persist_when_project_transfer_dirty_failure_preserves_quota() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_all_quota_disk()).expect("rw mount with all hidden quotas");
+    let inode = m.state().create_at(b"/fileattr-project-dirty-fail.txt", 0o644).expect("create file");
+    let ino = inode.ino() as u32;
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(ino, 0, &vec![0xE6; (bs * 4) as usize]).expect("write file");
+    let flags = inode.fileattr_get().expect("attrs before dirty failure").flags;
+    assert_eq!(flags & FS_NODUMP_FL, 0);
+    let old_p = quota(&sb, Kqid::project(0));
+    let new_p = quota(&sb, Kqid::project(77));
+
+    m.state().mount.fail_next_quota_mark_dirty_for_tests();
+    assert_eq!(
+        inode.fileattr_set(&FileAttr { flags: flags | FS_NODUMP_FL, fsx_projid: 77, ..Default::default() }),
+        Err(VfsError::Eio)
+    );
+
+    let raw = m.state().mount.read_inode(ino).expect("raw after fileattr dirty failure");
+    assert_ne!(raw.i_flags & FS_NODUMP_FL, 0);
+    assert_ne!(inode.fileattr_get().expect("attrs after dirty failure").flags & FS_NODUMP_FL, 0);
+    assert_eq!(raw.i_projid, 0);
+    assert_eq!(inode.fileattr_get().expect("project after dirty failure").fsx_projid, 0);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curspace, old_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curinodes, old_p.dqb_curinodes);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curspace, new_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curinodes, new_p.dqb_curinodes);
+}
+
+#[test]
 fn chown_dirty_failure_after_project_transfer_rolls_back_owner_only() {
     common::boot_hosted_pmm();
     let (m, sb) = mount_result(seeded_all_quota_disk()).expect("rw mount with all hidden quotas");
@@ -350,7 +411,7 @@ fn project_persist_failure_retries_quota_transfer_rollback() {
     assert_eq!(old_p.dqb_curspace, charged);
     assert_eq!(new_p.dqb_curspace, 0);
 
-    m.state().mount.fail_next_inode_write_for_tests();
+    m.state().mount.fail_inode_write_after_for_tests(1);
     m.state().mount.fail_quota_mark_dirty_after_for_tests(3);
     assert_eq!(
         inode.fileattr_set(&FileAttr { flags: inode.fileattr_get().unwrap().flags, fsx_projid: 77, ..Default::default() }),
@@ -360,6 +421,33 @@ fn project_persist_failure_retries_quota_transfer_rollback() {
     let raw = m.state().mount.read_inode(ino).expect("raw after project persist failure");
     assert_eq!(raw.i_projid, 0);
     assert_eq!(inode.fileattr_get().expect("attrs after project rollback retry").fsx_projid, 0);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curspace, old_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curinodes, old_p.dqb_curinodes);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curspace, new_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curinodes, new_p.dqb_curinodes);
+}
+
+#[test]
+fn fileattr_flags_persist_when_project_persist_failure_rolls_back_quota() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_all_quota_disk()).expect("rw mount with all hidden quotas");
+    let inode = m.state().create_at(b"/fileattr-project-persist-fail.txt", 0o644).expect("create file");
+    let ino = inode.ino() as u32;
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(ino, 0, &vec![0xA8; (bs * 4) as usize]).expect("write file");
+    let flags = inode.fileattr_get().expect("attrs before persist failure").flags;
+    let old_p = quota(&sb, Kqid::project(0));
+    let new_p = quota(&sb, Kqid::project(77));
+
+    m.state().mount.fail_inode_write_after_for_tests(1);
+    assert_eq!(
+        inode.fileattr_set(&FileAttr { flags: flags | FS_NODUMP_FL, fsx_projid: 77, ..Default::default() }),
+        Err(VfsError::Eio)
+    );
+
+    let raw = m.state().mount.read_inode(ino).expect("raw after fileattr persist failure");
+    assert_ne!(raw.i_flags & FS_NODUMP_FL, 0);
+    assert_eq!(raw.i_projid, 0);
     assert_eq!(quota(&sb, Kqid::project(0)).dqb_curspace, old_p.dqb_curspace);
     assert_eq!(quota(&sb, Kqid::project(0)).dqb_curinodes, old_p.dqb_curinodes);
     assert_eq!(quota(&sb, Kqid::project(77)).dqb_curspace, new_p.dqb_curspace);
