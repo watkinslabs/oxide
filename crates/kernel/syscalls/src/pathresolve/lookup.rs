@@ -51,7 +51,9 @@ fn raw_lookup_base() -> Result<(vfs::VfsPath, vfs::VfsPath, bool), vfs::VfsError
     let start = match sched::live::current() {
         Some(cur) => {
             // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
-            unsafe { (*cur.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone())
+            unsafe { (*cur.cwd_vfs.get()).clone() }
+                .filter(|p| p.mnt_id != vfs::mount::MNT_ID_NONE)
+                .unwrap_or_else(|| root.clone())
         }
         None => root.clone(),
     };

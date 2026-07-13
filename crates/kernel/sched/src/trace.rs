@@ -31,7 +31,7 @@ pub fn entry(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) {
         // lifecycle, all tasks, low volume. Pinpoints a stuck futex waiter
         // (and the op/uaddr) while a peer spins on sched_yield.
         let interesting = matches!(nr,
-            24 | 56 | 57 | 58 | 435 | 59 | 60 | 61
+            24 | 41..=55 | 56 | 57 | 58 | 435 | 59 | 60 | 61
             | 202 | 231 | 247 | 449 | 454 | 455 | 456
             | 112 | 116 | 117 | 119 | 126 | 157 | 248 | 249 | 250 | 272 | 302 | 308);   // yield/proc lifecycle/wait/futex + PAM keyring/ns/cred
         if !interesting { return; }
@@ -64,7 +64,7 @@ pub fn ret(nr: u64, rv: i64) {
             None => return,
         };
         let interesting = matches!(nr,
-            24 | 56 | 57 | 58 | 435 | 59 | 60 | 61
+            24 | 41..=55 | 56 | 57 | 58 | 435 | 59 | 60 | 61
             | 202 | 231 | 247 | 449 | 454 | 455 | 456
             | 112 | 116 | 117 | 119 | 126 | 157 | 248 | 249 | 250 | 272 | 302 | 308);   // yield/proc lifecycle/wait/futex + PAM keyring/ns/cred
         // Also surface ANY syscall returning EPERM (rv==-1) across all tasks —

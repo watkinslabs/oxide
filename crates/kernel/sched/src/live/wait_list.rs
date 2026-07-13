@@ -74,8 +74,12 @@ impl WaitList {
         unsafe { Arc::increment_strong_count(raw); }
         // SAFETY: matching Arc::from_raw consumes the bumped ref.
         let arc = unsafe { Arc::from_raw(raw) };
-        arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
         arc.set_state(TaskState::Sleeping);
+        // Publish Sleeping before the deadline. If the scanner runs between
+        // these stores it retries next tick; publishing in the opposite order
+        // lets it consume an already-expired deadline while claim_wake still
+        // sees Runnable, after which this task can sleep with no armed wake.
+        arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
         let mut g = self.waiters.lock();
         // Dedup: drop any prior entry for this task before re-pushing.
         // A signal wake / deadline scanner rouses a parked task WITHOUT

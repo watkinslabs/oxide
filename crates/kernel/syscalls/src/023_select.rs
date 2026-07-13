@@ -2,6 +2,7 @@
 #![cfg(any(target_os = "oxide-kernel", test))]
 
 extern crate alloc;
+use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::poll::poll_common::monotonic_ns;
@@ -129,16 +130,17 @@ pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u
     // wait queue (PollSubscribers). The fd's readiness transition `notify()`s
     // only its subscribers — no global broadcast.
     let waiter = crate::poll::poll_common::PollWaiter::new();
-    let mut subbed: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
+    let mut subbed: alloc::vec::Vec<Arc<vfs::PollSubscribers>> = alloc::vec::Vec::new();
     for &(fd, _, _, _) in &wanted {
         if let Ok(file) = fdt.get(fd as i32) {
-            if let Some(s) = file.inode().poll_subscribers() {
-                waiter.subscribe(s);
-                subbed.push(file.inode().clone());
+            if let Some(s) = file.poll_subscribers() {
+                waiter.subscribe(&s);
+                subbed.push(s);
             }
         }
     }
     let rv: i64 = loop {
+        let observed = waiter.generation();
         let mut res_in  = alloc::vec![0u8; fdset_len as usize];
         let mut res_out = alloc::vec![0u8; fdset_len as usize];
         let mut res_ex  = alloc::vec![0u8; fdset_len as usize];
@@ -201,21 +203,22 @@ pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u
                 break 0;
             }
         }
-        // Park until a subscribed fd's `notify()` wakes us, or the caller's
-        // timeout. Bounded safety-net rescan only covers polled fds with no
-        // event source (timerfd) + the scan→park window (same as epoll_wait).
-        const RESCAN_NS: u64 = 20_000_000;
-        let rescan_at = now.saturating_add(RESCAN_NS);
-        let park_dl = match deadline_ns {
-            Some(d) => core::cmp::min(d, rescan_at),
-            None    => rescan_at,
-        };
+        let source_deadline = wanted.iter().filter_map(|(fd, _, _, _)| {
+            fdt.get(*fd as i32).ok().and_then(|file| file.poll_deadline_ns())
+        }).min();
+        let park_dl = min_deadline(deadline_ns, source_deadline).unwrap_or(0);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
-        unsafe { waiter.park_until(park_dl); }
+        unsafe { waiter.park_until(observed, park_dl); }
     };
     // Drop our registration from every fd we subscribed to.
-    for ino in &subbed {
-        if let Some(s) = ino.poll_subscribers() { waiter.unsubscribe(s); }
-    }
+    for s in &subbed { waiter.unsubscribe(s); }
     rv
+}
+
+fn min_deadline(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(core::cmp::min(x, y)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
 }

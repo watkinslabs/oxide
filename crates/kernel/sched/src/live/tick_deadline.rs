@@ -85,11 +85,9 @@ pub fn tick_wake_expired(now_ns: u64) {
         }
         let dl = t.wakeup_deadline_ns.load(Ordering::Acquire);
         if dl == 0 || dl > now_ns { continue; }
-        // Clear the deadline before the wake so a task already roused by a racing
-        // explicit waker doesn't keep re-matching this scan (ttwu_deferred also
-        // clears it after a successful Sleeping→Runnable claim).
-        t.wakeup_deadline_ns.store(0, Ordering::Release);
         // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
+        // ttwu clears the deadline only after winning Sleeping -> Runnable;
+        // a losing scan must leave it armed for the next tick.
         unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
     }
 }

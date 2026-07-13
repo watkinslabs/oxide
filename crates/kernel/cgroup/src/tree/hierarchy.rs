@@ -52,15 +52,14 @@ impl Tree {
         Ok((id, avail))
     }
 
-    /// Remove an empty leaf cgroup. ENOTEMPTY if it has children or
-    /// member procs; EBUSY for the root.
+    /// Remove an empty leaf cgroup. EBUSY if it has online children or tasks.
     /// # C: O(log n)
     pub fn remove(&mut self, id: u64) -> KResult<()> {
         if id == ROOT { return Err(VfsError::Ebusy); }
         let (parent, name) = {
             let n = self.nodes.get(&id).ok_or(VfsError::Enoent)?;
             if !n.children.is_empty() || !n.procs.is_empty() {
-                return Err(VfsError::Enotempty);
+                return Err(VfsError::Ebusy);
             }
             (n.parent.unwrap(), n.name.clone())
         };

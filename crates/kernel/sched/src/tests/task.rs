@@ -1,5 +1,7 @@
 use crate::task::{SchedClass, SchedPolicy, Task, TaskState};
 use core::sync::atomic::Ordering;
+use std::sync::{Arc, Barrier};
+use std::vec::Vec;
 
 #[test]
 fn cpus_allowed_defaults_to_any() {
@@ -31,6 +33,59 @@ fn task_cas_state_transitions() {
     assert_eq!(t.state(), TaskState::Sleeping);
     t.cas_state(TaskState::Sleeping, TaskState::Runnable).unwrap();
     assert_eq!(t.state(), TaskState::Runnable);
+}
+
+#[test]
+fn concurrent_wakers_have_one_placement_owner() {
+    const WAKERS: usize = 8;
+    let task = Arc::new(Task::new(2, "wake-claim", SchedClass::Normal { weight: 1024 }));
+    task.set_state(TaskState::Sleeping);
+    let start = Arc::new(Barrier::new(WAKERS));
+    let mut joins = Vec::new();
+    for _ in 0..WAKERS {
+        let task = Arc::clone(&task);
+        let start = Arc::clone(&start);
+        joins.push(std::thread::spawn(move || {
+            start.wait();
+            task.claim_wake()
+        }));
+    }
+    let winners: usize = joins.into_iter().map(|j| usize::from(j.join().unwrap())).sum();
+    assert_eq!(winners, 1, "only one waker may own runqueue placement");
+    assert_eq!(task.state(), TaskState::Runnable);
+}
+
+#[test]
+fn pending_wake_closes_current_task_state_check_race() {
+    use crate::task::PendingWake;
+    use crate::RunqueueInner;
+
+    let prev = super::common::normal(3, 0, 1024);
+    let next = super::common::normal(4, 1, 1024);
+    let idle = super::common::idle(0);
+    let mut rq = RunqueueInner::new(0, Arc::clone(&idle));
+    prev.set_state(TaskState::Sleeping);
+    prev.on_cpu.store(true, Ordering::Release);
+
+    let observed = prev.state();
+    assert_eq!(observed, TaskState::Sleeping, "schedule snapshots the parked state");
+    assert!(prev.claim_wake(), "ttwu wins after schedule's stale state snapshot");
+    let next_raw = Arc::as_ptr(&next) as *mut Task;
+    assert_eq!(prev.pending_wake(next_raw), PendingWake::Defer,
+        "the outgoing task cannot be queued before switch-off completes");
+    assert_eq!(rq.nr_running(), 0);
+
+    prev.on_cpu.store(false, Ordering::Release);
+    assert_eq!(prev.pending_wake(next_raw), PendingWake::Ready);
+    rq.enqueue(Arc::clone(&prev));
+    assert_eq!(rq.nr_running(), 1);
+    assert!(prev.on_rq.load(Ordering::Acquire));
+    assert_eq!(prev.pending_wake(next_raw), PendingWake::Drop,
+        "a stale wake-list copy must not duplicate the enqueue");
+    rq.enqueue(Arc::clone(&prev));
+    assert_eq!(rq.nr_running(), 1);
+    assert!(Arc::ptr_eq(&rq.pick_next_task(), &prev));
+    assert!(Arc::ptr_eq(&rq.pick_next_task(), &idle));
 }
 
 #[test]

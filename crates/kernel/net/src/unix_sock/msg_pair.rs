@@ -142,7 +142,7 @@ impl UnixMsgPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            wake_msgpair_peer_subs(self, end);
+            wake_msgpair_peer_subs(self, end, vfs::POLL_IN);
         }
         n
     }
@@ -213,7 +213,7 @@ impl UnixMsgPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            wake_msgpair_peer_subs(self, end);
+            wake_msgpair_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_HUP);
         }
     }
 

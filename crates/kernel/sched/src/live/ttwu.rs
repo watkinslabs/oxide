@@ -9,6 +9,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use crate::task::PendingWake;
+use crate::live::runqueue::Runqueue;
 use crate::{Task, TaskState};
 use super::runqueue::global_for;
 use sync::{Spinlock, Runqueue as RunqueueClass};
@@ -47,6 +49,48 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
     let mut g = WAKE_LISTS[i].0.lock();
     if g.is_empty() { return Vec::new(); }
     core::mem::take(&mut *g)
+}
+
+/// Drain this CPU's claimed wakes and return tasks now safe to enqueue. Tasks
+/// still completing a switch-off are returned to their installed owner CPU;
+/// that CPU's next scheduler edge retries after `finish_task_switch` clears
+/// `on_cpu`. # C: O(deferred)
+fn wake_list_ready(cpu: u32, current: *mut Task) -> Vec<Arc<Task>> {
+    let mut ready = Vec::new();
+    for task in wake_list_drain(cpu) {
+        match task.pending_wake(current) {
+            PendingWake::Drop => {}
+            PendingWake::Ready => ready.push(task),
+            PendingWake::Defer => {
+                let owner = task.cpu.load(Ordering::Acquire) as u32;
+                // SAFETY: bounded lookup; an absent old owner cannot drain a list.
+                let target = if owner < cpu::MAX_CPUS as u32
+                    && unsafe { global_for(owner) }.is_some() { owner } else { cpu };
+                wake_list_push(target, task);
+                resched_curr(target);
+            }
+        }
+    }
+    ready
+}
+
+/// Linux `sched_ttwu_pending`: consume this CPU's wake-list after switch
+/// ownership is settled and enqueue each task exactly once. Called both before
+/// a pick and from `finish_task_switch`; the latter closes a wake arriving
+/// after the pre-pick drain but before the outgoing task clears `on_cpu`.
+/// # C: O(deferred * log N)
+pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
+    let ready = wake_list_ready(cpu, current);
+    if ready.is_empty() { return false; }
+    let mut inner = rq.inner.lock();
+    for task in ready {
+        task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+        inner.enqueue(task);
+    }
+    rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    drop(inner);
+    resched_curr(cpu);
+    true
 }
 
 /// This CPU's index (gs:0 / TPIDR). Host build → 0.
@@ -174,13 +218,15 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
 /// alive; preempt discipline per the wake path.
 /// # C: O(N_cpus + log N)
 unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
-    if task.cas_state(TaskState::Sleeping, TaskState::Runnable).is_err() {
-        if task.state() != TaskState::Runnable
-            || task.on_cpu.load(Ordering::Acquire)
-            || task.on_rq.load(Ordering::Acquire)
-        {
-            return false;
-        }
+    if !task.claim_wake() {
+        // The Sleeping -> Runnable transition is the exclusive placement
+        // claim. A winner may not have reached `on_rq` yet, so treating
+        // Runnable && !on_cpu && !on_rq as repairable lets a second waker put
+        // the same task on another CPU's wake-list. Once the first copy is
+        // picked (and clears on_rq), that delayed copy can enqueue a task that
+        // is already executing, corrupting its saved context. Linux ttwu loses
+        // this race at the state claim and performs no second placement.
+        return false;
     }
     // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
     task.wakeup_deadline_ns.store(0, Ordering::Release);
@@ -212,12 +258,17 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
 /// # C: O(N_cpus + log N)
 unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
     let me = this_cpu();
-    // Timer-ISR callers cannot take any rq lock here, but they are already on
-    // a CPU that will drain its own wake-list on the next schedule edge. Keeping
-    // forced-deferred wakes local avoids marking a sleeper Runnable and then
-    // stranding it on a remote CPU's wake-list if that CPU never reaches the
-    // drain point promptly.
-    let target = if force_defer { me } else { select_task_rq(&task) };
+    let owner = task.cpu.load(Ordering::Acquire) as u32;
+    let on_cpu = task.on_cpu.load(Ordering::Acquire);
+    // SAFETY: owner is range-checked and global_for returns None unless that
+    // CPU has an installed runqueue.
+    let owner_online = owner < cpu::MAX_CPUS as u32
+        && unsafe { global_for(owner) }.is_some();
+    let target = if on_cpu && owner_online {
+        owner
+    } else {
+        select_task_rq(&task)
+    };
     // Defer to the target's wake_list (Linux `ttwu_queue_wakelist`) when we must
     // not place directly: the task is still switching OFF elsewhere (`on_cpu`),
     // the target is remote, or the caller forced it (timer ISR). The target

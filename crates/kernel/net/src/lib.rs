@@ -70,6 +70,8 @@ pub mod vsock_socket;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_io;
 #[cfg(target_os = "oxide-kernel")]
+pub mod sock_recv;
+#[cfg(target_os = "oxide-kernel")]
 pub(crate) mod sock_vfs_read;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_drop;

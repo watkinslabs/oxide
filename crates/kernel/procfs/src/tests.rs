@@ -10,6 +10,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 #[test]
 fn empty_fs_lists_empty_root() {
@@ -297,6 +298,34 @@ fn proc_sys_resolves_own_tree() {
     // Isolation: a fresh foreign root does NOT see procfs's entries.
     let foreign = kernfs::PseudoDir::new_root(kernfs::dir_ino("/x"), 0xABCD);
     assert!(foreign.lookup_path("sys/kernel/pid_max").is_none());
+}
+
+static DOMAIN_TEST_SLOT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+fn test_domain_get() -> Vec<u8> {
+    DOMAIN_TEST_SLOT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+fn test_domain_set(src: &[u8]) {
+    *DOMAIN_TEST_SLOT.lock().unwrap_or_else(|e| e.into_inner()) =
+        vfs::path::trim_hostname(src, 64).to_vec();
+}
+
+#[test]
+fn proc_sys_kernel_domainname_is_live_writable_hook() {
+    *DOMAIN_TEST_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = b"old-domain".to_vec();
+    crate::hooks::set_domainname_hooks(test_domain_get, test_domain_set);
+    use crate::proc_handler::ProcHandler;
+    let leaf = crate::proc_handler::StrHook {
+        get: crate::hooks::domainname,
+        set: crate::hooks::set_domainname,
+    };
+    let mut buf = [0u8; 32];
+    let body = leaf.format();
+    buf[..body.len()].copy_from_slice(&body);
+    assert_eq!(&buf[..body.len()], b"old-domain\n");
+    leaf.store(b"new-domain\n").expect("domain write");
+    let body = leaf.format();
+    assert_eq!(&body, b"new-domain\n");
+    assert_eq!(&*DOMAIN_TEST_SLOT.lock().unwrap_or_else(|e| e.into_inner()), b"new-domain");
 }
 
 #[test]

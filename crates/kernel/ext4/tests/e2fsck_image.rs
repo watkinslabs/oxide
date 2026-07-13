@@ -435,3 +435,33 @@ fn punch_hole_zeros_range_and_stays_e2fsck_clean() {
         None        => eprintln!("e2fsck unavailable — skipped fsck"),
     }
 }
+
+#[test]
+fn truncate_and_punch_preserve_external_xattr_i_blocks() {
+    let (disk, cap) = build_disk(MINI);
+    {
+        let m = ext4::Mount::open(disk.clone()).unwrap();
+        let bs = m.sb.block_size as usize;
+        let spb = (m.sb.block_size / 512) as u64;
+        let f = m.create_file(2, b"xattr-blocks.bin", 0o644, 0, 0).unwrap();
+        m.write_at(f, 0, &std::vec![0x5a; bs * 3]).unwrap();
+        m.store_xattrs(f, &[("user.large".into(), std::vec![0x33; 300])]).unwrap();
+
+        let with_xattr = m.read_inode(f).unwrap();
+        assert_eq!(with_xattr.i_blocks, spb * 4, "three data blocks plus external xattr");
+
+        m.truncate_inode(f, bs as u64).unwrap();
+        let truncated = m.read_inode(f).unwrap();
+        assert_eq!(truncated.i_blocks, spb * 2, "truncate retains external xattr charge");
+
+        m.punch_hole_inode(f, 0, bs as u64).unwrap();
+        let punched = m.read_inode(f).unwrap();
+        assert_eq!(punched.i_blocks, spb, "xattr block remains after all data is punched");
+    }
+    let bytes = dump_disk(&disk, cap);
+    match e2fsck_clean(&bytes) {
+        Some(true) => {}
+        Some(false) => panic!("e2fsck reported errors after xattr truncate/punch"),
+        None => eprintln!("e2fsck unavailable - skipped fsck"),
+    }
+}

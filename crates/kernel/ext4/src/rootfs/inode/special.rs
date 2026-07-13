@@ -191,9 +191,13 @@ impl InodeOps for Ext4StatInodeOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if target.file_type() == FileType::Directory { return Err(VfsError::Eperm); }
         let ino = ext4_file_ino(target).ok_or(VfsError::Exdev)?;
-        let src = d.st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
+        let src = d.st.mount.read_inode(ino).map_err(super::regular::vfs_error_from_mount)?;
         if src.is_dir() { return Err(VfsError::Eperm); }
-        if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
+        match d.st.lookup_child_ino_result(d.ino, name) {
+            Ok(_) => return Err(VfsError::Eexist),
+            Err(crate::MountError::NotFound) => {}
+            Err(e) => return Err(super::regular::vfs_error_from_mount(e)),
+        }
         super::super::ops::project_inherit_allows_child(&d.st.mount, d.ino, ino)?;
         let ftype = if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
         let name_b = name.as_bytes();
@@ -202,7 +206,7 @@ impl InodeOps for Ext4StatInodeOps {
             m.adjust_nlink(ino, 1)?;
             m.orphan_del(ino)?;
             Ok(())
-        }).map_err(|_| VfsError::Eio)?;
+        }).map_err(super::regular::vfs_error_from_mount)?;
         d.st.orphan_remove(ino);
         d.st.page_cache.invalidate(InodeId(ino as u64));
         target.inc_nlink();

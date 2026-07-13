@@ -45,8 +45,12 @@ fn pc_idmap(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b" 
 fn pc_setgroups(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"allow\n") }
 fn pc_syscall(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"running\n") }
 fn pc_empty(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"") }
-fn pc_mounts(t: u32, is_self: bool) -> InodeRef { crate::mounts::make_proc_mounts(if is_self { None } else { Some(t) }) }
-fn pc_mountinfo(t: u32, is_self: bool) -> InodeRef { crate::mounts::make_proc_mountinfo(if is_self { None } else { Some(t) }) }
+fn pc_mounts(t: u32, is_self: bool) -> InodeRef {
+    crate::mounts::make_proc_mounts(if is_self { None } else { Some(t) })
+}
+fn pc_mountinfo(t: u32, is_self: bool) -> InodeRef {
+    crate::mounts::make_proc_mountinfo(if is_self { None } else { Some(t) })
+}
 fn pc_cgroup(t: u32, _s: bool) -> InodeRef { crate::make_proc_cgroup(Some(t)) }
 fn pc_auxv(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(&[0u8; 16]) }
 fn pc_timerslack(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"50000\n") }

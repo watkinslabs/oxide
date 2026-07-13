@@ -1,5 +1,4 @@
-// `schedule()` - the ONE task-switch primitive per `13§8` +
-// `sched-anal.md`/`smp-arch.md` Phase A. There is no second engine:
+// `schedule()` - the ONE task-switch primitive per `13§8`.
 // the timer/IPI IRQ path only sets `need_resched`; the actual switch
 // happens through `schedule()` at the return-to-user slow path
 // (`oxide_irq_resched_on_exit` -> `schedule()`), at `preempt_enable`
@@ -14,11 +13,7 @@
 //     `irq_enable` (Linux `finish_lock_switch` = `raw_spin_unlock_irq`)
 //     + `preempt_enable_no_check` (-1). Net 0 per switch; the +1/IRQ
 //     state of a frozen switcher is paid by whoever it switched to.
-//   - first-run tasks reach `finish_task_switch` via the scaffold
-//     trampoline `oxide_finish_switch_tramp` baked at the bottom of
-//     `new_*_with_irq_frame` (asm: `call oxide_finish_task_switch;
-//     jmp oxide_irq_resume_user`), so a fresh task also pays the -1
-//     and re-enables IRQs before its first `iretq`/`eret` to user.
+//   - first-run tasks pay the same handoff through the architecture scaffold.
 //
 // `pick_next_task` + the `if next.mm != prev.mm: switch_address_space`
 // AS-swap hook (`13§8`) are unchanged. With v1's single global user AS
@@ -26,7 +21,6 @@
 // kthread->user pair; wired via `MmuOps::activate(next.mm.root_pa)`.
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use hal::{Context, MmuOps};
@@ -175,6 +169,8 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
         // this CPU's previous switch; the outgoing task is kept alive by
         // reap_pending (drained below) or its runqueue/registry membership.
         unsafe { finish_switched_from(rq); }
+        let current = rq.current.load(Ordering::Acquire);
+        super::super::ttwu::sched_ttwu_pending(rq.cpu as u32, current, rq);
         let raw = rq.reap_pending.swap(core::ptr::null_mut(), Ordering::AcqRel);
         if !raw.is_null() {
             // SAFETY: `raw` came from `Arc::into_raw` in schedule()'s zombie path; reclaim it and hand ownership to ZOMBIES.
@@ -214,23 +210,10 @@ pub unsafe fn schedule() {
     let now = now_ns();
 
     let me_cpu = sched_current_cpu() as u32;
-    let mut ready: Vec<Arc<Task>> = Vec::new();
-    let mut redeferred = false;
-    for t in super::super::ttwu::wake_list_drain(me_cpu) {
-        if t.on_cpu.load(Ordering::Acquire) {
-            super::super::ttwu::wake_list_push(me_cpu, t);
-            redeferred = true;
-        } else {
-            ready.push(t);
-        }
-    }
-    if redeferred { crate::preempt::set_need_resched(); }
+    let current = rq.current.load(Ordering::Acquire);
+    super::super::ttwu::sched_ttwu_pending(me_cpu, current, rq);
 
     let mut inner = rq.inner.lock();
-    for t in ready {
-        t.set_vruntime_to_floor(inner.cfs.min_vruntime());
-        inner.enqueue(t);
-    }
     {
         // SAFETY: rq.current is non-null after install_global.
         let prev_ref = unsafe { rq.current_ref() };
@@ -251,6 +234,8 @@ pub unsafe fn schedule() {
         }
     }
     let next_arc = inner.pick_next_task();
+    hal::kassert!(!next_arc.on_rq.load(Ordering::Acquire),
+        "schedule picked task still marked on_rq");
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
 
     let next_raw = Arc::as_ptr(&next_arc) as *mut Task;
@@ -300,10 +285,21 @@ pub unsafe fn schedule() {
 
     // SAFETY: caller asserts preempt-off; we are about to context-switch off this Task. Until that completes the prev Arc must remain alive - store it in a function-local where its destructor runs only on the eventual return.
     let prev_arc = unsafe { rq.swap_current(next_arc) };
+    #[cfg(target_arch = "aarch64")]
+    {
+        // `current_svc_frame()` is per-CPU, while a blocked syscall's frame is
+        // per-task. Restore the incoming task's frame pointer before switching
+        // stacks so clone/exec/signal code cannot read or rewrite the task that
+        // last entered SVC on this CPU.
+        let frame = unsafe { rq.current_ref() }.svc_frame.load(Ordering::Acquire);
+        hal_aarch64::set_current_svc_frame(frame);
+    }
     // SAFETY: rq.current was just set to the new Arc by swap_current.
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
     // SAFETY: rq.current was just set to next; prev_raw is the outgoing task, kept alive by `prev_arc`/the runqueue across the switch.
-    unsafe { rq.current_ref() }.on_cpu.store(true, Ordering::Release);
+    hal::kassert!(unsafe { rq.current_ref() }.on_cpu
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok(), "schedule selected task already owned by another CPU");
     // SAFETY: rq.current was just set to next and this scheduler context owns
     // the incoming task's CPU ownership transition.
     unsafe { rq.current_ref() }.cpu.store(me as u16, Ordering::Release);

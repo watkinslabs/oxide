@@ -18,12 +18,36 @@ const AT_EMPTY_PATH: u32 = 0x1000;
 #[cfg(feature = "debug-mount")]
 fn log_runtime_access(op: &'static str, dirfd: i32, path_ptr: u64, rv: i64) {
     if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
-        if path.starts_with("/run/systemd") || path.contains("systemd/journal") {
+        if path.starts_with("/run/systemd") || path.contains("systemd/journal") || path.starts_with("/sys/fs/cgroup") {
             let mut tag = alloc::string::String::from(path.as_str());
             tag.push_str(" dirfd=");
             tag.push_str(&alloc::format!("{}", dirfd));
             crate::mount_common::mnt_log(op, &tag, rv);
         }
+    }
+}
+
+#[cfg(feature = "debug-mount")]
+fn log_access_rofs_detail(dirfd: i32, path_ptr: u64, vp: &vfs::VfsPath, m: &vfs::mount::Mount) {
+    if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
+        if !path.starts_with("/sys/fs/cgroup") { return; }
+        klog::write_raw(b"[ACCESS-EROFS] ns=");
+        klog::write_dec_u64(sched::live::current_mount_ns());
+        klog::write_raw(b" dirfd=");
+        if dirfd < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-dirfd) as u64); }
+        else { klog::write_dec_u64(dirfd as u64); }
+        klog::write_raw(b" path=");
+        klog::write_raw(path.as_bytes());
+        klog::write_raw(b" resolved_mnt=");
+        klog::write_dec_u64(vp.mnt_id);
+        klog::write_raw(b" mount_ns=");
+        klog::write_dec_u64(m.ns);
+        klog::write_raw(b" mnt_flags=0x");
+        klog::write_hex_u64(m.flags());
+        klog::write_raw(b" mp=");
+        let mp = m.mount_point_str();
+        klog::write_raw(mp.as_bytes());
+        klog::write_raw(b"\n");
     }
 }
 
@@ -86,7 +110,10 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
                 if let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) {
                     if m.is_readonly() {
                         #[cfg(feature = "debug-mount")]
-                        log_runtime_access("access_rofs", dirfd, path_ptr, -(Errno::Erofs.as_i32() as i64));
+                        {
+                            log_access_rofs_detail(dirfd, path_ptr, &vp, &m);
+                            log_runtime_access("access_rofs", dirfd, path_ptr, -(Errno::Erofs.as_i32() as i64));
+                        }
                         return -(Errno::Erofs.as_i32() as i64);
                     }
                 }

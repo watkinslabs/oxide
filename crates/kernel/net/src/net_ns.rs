@@ -210,6 +210,8 @@ mod tests {
         let n2 = ns_net(0x5181_0003);
         let l1 = n1.unix.bind(p.clone()).expect("bind ns1");
         let l2 = n2.unix.bind(p.clone()).expect("same path in ns2 is free — isolated");
+        l1.listen();
+        l2.listen();
         // A connect in ns1 reaches ns1's listener ONLY.
         assert!(n1.unix.connect(&p).is_some());
         assert_eq!(l1.accept_q.lock().len(), 1);
@@ -285,6 +287,7 @@ mod tests {
         let bus = String::from("/run/dbus/system_bus_socket");
         // dbus-broker (ns 0) binds the pathname listener into the global reg.
         let listener = g.bind(bus.clone()).expect("bind system bus in ns 0");
+        listener.listen();
 
         // A private-ns client's connect ROUTES by unix_path_is_global: a
         // pathname address resolves against the global registry, NOT its
@@ -318,6 +321,7 @@ mod tests {
         let reg = UnixRegistry::new();
         let p = String::from("/run/sc1-queue.sock");
         let l = reg.bind(p.clone()).expect("bind");
+        l.listen();
         // No accept() has run.
         assert_eq!(l.accept_q.lock().len(), 0);
         assert!(reg.connect(&p).is_some(), "connect-before-accept queues");

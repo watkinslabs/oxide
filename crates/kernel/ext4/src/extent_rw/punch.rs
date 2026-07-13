@@ -170,7 +170,7 @@ impl Mount {
                 inode::write_extent_idx(&mut i_block, li as u16, &Self::idx_for_lba(chunk[0].block, leaf_lba));
             }
             let sectors = match self.count_all_sectors(&i_block) {
-                Ok(sectors) => sectors,
+                Ok(sectors) => sectors.saturating_add(super::external_xattr_sectors(&self.sb, ibytes)),
                 Err(e) => {
                     self.free_allocated_blocks(&new_meta);
                     return Err(e);
@@ -191,7 +191,8 @@ impl Mount {
         }
 
         // Recompute i_blocks (512-byte sectors) from the rebuilt tree.
-        let sectors = self.count_all_sectors(&i_block)?;
+        let sectors = self.count_all_sectors(&i_block)?
+            .saturating_add(super::external_xattr_sectors(&self.sb, ibytes));
         let old_sectors = u32::from_le_bytes([ibytes[0x1C], ibytes[0x1D], ibytes[0x1E], ibytes[0x1F]]);
         self.account_i_blocks_delta(ino, old_sectors, sectors)?;
         ibytes[0x1C..0x20].copy_from_slice(&sectors.to_le_bytes());

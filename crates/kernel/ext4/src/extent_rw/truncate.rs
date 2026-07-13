@@ -1,6 +1,6 @@
 use crate::inode::{self, I_BLOCK_LEN};
 use crate::extent_rw::meta::InodeMetaUpdate;
-use crate::mount::{Mount, MountError, read_byte_range_pub};
+use crate::mount::{Mount, MountError};
 use alloc::vec::Vec;
 
 impl Mount {
@@ -66,7 +66,8 @@ impl Mount {
         // i_blocks (512-byte sectors): recompute from the remaining DATA
         // extents + surviving extent-tree metadata blocks across the
         // whole tree, matching Linux's i_blocks accounting.
-        let sectors = self.count_all_sectors_planned(&i_block, &node_writes)?;
+        let sectors = self.count_all_sectors_planned(&i_block, &node_writes)?
+            .saturating_add(super::external_xattr_sectors(&self.sb, &bytes));
         let old_sectors = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
         self.account_i_blocks_delta(ino, old_sectors, sectors)?;
         bytes[0x1C..0x20].copy_from_slice(&sectors.to_le_bytes());
@@ -134,8 +135,7 @@ impl Mount {
     /// # C: O(subtree) block I/Os
     pub(super) fn truncate_node(&self, ino: u32, gen: u32, lba: u64, depth: u16, blocks_keep: u64,
         blocks_to_free: &mut Vec<u64>, node_writes: &mut Vec<(u64, Vec<u8>)>) -> Result<bool, MountError> {
-        let bs = self.sb.block_size as usize;
-        let mut buf = read_byte_range_pub(&*self.dev, lba * bs as u64, bs)?;
+        let mut buf = self.read_metadata_block(lba)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
         let mut entries = hdr.entries;
         if depth == 0 {
@@ -184,8 +184,7 @@ impl Mount {
     /// all data blocks at the leaves + every interior/leaf metadata block.
     /// # C: O(subtree) block I/Os
     pub(super) fn collect_subtree_blocks(&self, lba: u64, depth: u16, blocks_to_free: &mut Vec<u64>) -> Result<(), MountError> {
-        let bs = self.sb.block_size as usize;
-        let buf = read_byte_range_pub(&*self.dev, lba * bs as u64, bs)?;
+        let buf = self.read_metadata_block(lba)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
         if depth == 0 {
             for i in 0..hdr.entries {
@@ -224,12 +223,11 @@ impl Mount {
     }
 
     fn count_all_sectors_node_planned(&self, lba: u64, depth: u16, node_writes: &[(u64, Vec<u8>)]) -> Result<u32, MountError> {
-        let bs = self.sb.block_size as usize;
         let disk_buf;
         let buf = match node_writes.iter().rev().find(|(node_lba, _)| *node_lba == lba) {
             Some((_, planned)) => planned.as_slice(),
             None => {
-                disk_buf = read_byte_range_pub(&*self.dev, lba * bs as u64, bs)?;
+                disk_buf = self.read_metadata_block(lba)?;
                 disk_buf.as_slice()
             }
         };
@@ -281,8 +279,7 @@ impl Mount {
     }
 
     pub(super) fn count_all_sectors_node(&self, lba: u64, depth: u16) -> Result<u32, MountError> {
-        let bs = self.sb.block_size as usize;
-        let buf = read_byte_range_pub(&*self.dev, lba * bs as u64, bs)?;
+        let buf = self.read_metadata_block(lba)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
         let spb = self.sb.block_size / 512;
         let mut s = 0u32;

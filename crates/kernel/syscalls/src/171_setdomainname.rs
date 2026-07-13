@@ -111,6 +111,15 @@ pub fn snapshot_current() -> alloc::vec::Vec<u8> { host_for(current_uts_ns()) }
 /// hostname` write hook. # C: O(1)
 pub fn set_current(b: &[u8]) { set_host_for(current_uts_ns(), b) }
 
+/// Domainname reader for `/proc/sys/kernel/domainname`. # C: O(1)
+pub fn domain_snapshot_current() -> alloc::vec::Vec<u8> {
+    let d = dom_for(current_uts_ns());
+    if d.is_empty() { b"(none)".to_vec() } else { d }
+}
+
+/// Domainname write hook for `/proc/sys/kernel/domainname`. # C: O(1)
+pub fn domain_set_current(b: &[u8]) { set_dom_for(current_uts_ns(), b) }
+
 /// `sys_setdomainname(name, len)` — slot 171. Mirror of sethostname
 /// for the NIS/YP domain name slot.
 /// # C: O(N)

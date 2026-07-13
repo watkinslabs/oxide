@@ -449,7 +449,13 @@ impl Ext4FrameStore {
         // commits — the systemd-hwdb-update sysinit stall (~1358 commits for a
         // 13.5MB file). Verified by tests/writeback_amp_image + writeback_ryw.
         let rv = self.st.mount.run_journaled(|_m| {
-            for (_idx, page_start, len, pa) in &plan {
+            for (n, (_idx, page_start, len, pa)) in plan.iter().enumerate() {
+                if n != 0 && (n & 0x0f) == 0 {
+                    // Linux writeback paths contain cond_resched() points; a
+                    // large fsync must not monopolize the CPU while flushing
+                    // hundreds of dirty pages from one address_space.
+                    crate::mount::cooperative_yield();
+                }
                 let base = match pmm::setup::frame_ptr(*pa) { Some(b) => b, None => { failed = true; continue; } };
                 // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
                 // read-only view handed to the block layer for the duration.

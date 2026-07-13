@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
+use vfs::PollSubscribers;
 
 use vfs::{Ino, InodeRef};
 
@@ -157,6 +158,7 @@ pub struct InotifyData {
     pub(crate) events:  Spinlock<VecDeque<Event>, TaskListClass>,
     /// fanotify perm events awaiting delivery to the daemon's read().
     pub(crate) perm_queue: Spinlock<VecDeque<Arc<PermEvent>>, TaskListClass>,
+    pub(crate) poll_subs: Arc<PollSubscribers>,
     /// Perm events the daemon has read (minted-fd → event), awaiting its
     /// `fanotify_response` write.
     pub(crate) perm_pending: Spinlock<Vec<(i32, Arc<PermEvent>)>, TaskListClass>,

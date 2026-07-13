@@ -19,6 +19,9 @@ use core::sync::atomic::Ordering;
 use crate::{Task, TaskState};
 use sync::{Spinlock, TaskList as TaskListClass};
 
+mod reparent;
+pub use reparent::{reap_orphans, reparent_children};
+
 /// Registry of Zombie tasks awaiting `wait4`. Pushed to by
 /// `sys_exit`; popped by `sys_wait4`. v1 single-CPU
 /// — single global Vec under a spinlock at lock class `TaskList`
@@ -35,41 +38,6 @@ static ZOMBIES: Spinlock<Vec<Arc<Task>>, TaskListClass>
 /// per-CPU.
 static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
     = Spinlock::new(Vec::new());
-
-/// Move `task` to the Zombie registry. Caller (sys_exit handler)
-/// has already set the task's state to Zombie via
-/// `crate::mark_done` and wants the Arc kept alive until the
-/// parent reaps it. P3-67: also posts SIGCHLD (sig 17) into the
-/// parent's sigpending bitmap — bash's job-control SIGCHLD handler
-/// triggers off this.
-/// # SAFETY: caller is the sys_exit handler running on the task's
-/// own kernel stack, preempt-off, single-CPU UP.
-/// # C: O(1) push + Weak upgrade
-pub fn park_zombie(task: Arc<Task>) {
-    // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
-    let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
-    if let Some(ref p) = parent {
-        // B117: record the child-exit siginfo BEFORE the pending bit
-        // so a SIGCHLD delivered to an SA_SIGINFO handler reads the
-        // right si_pid/si_status/si_code (siginfo(7)).
-        push_child_event(&task, p);
-        // F167: typed signal bit instead of `1u64 << 16` magic.
-        p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
-        accrue_child_time(&task, p);
-    }
-    let parent_tid = task.parent_tid.load(Ordering::Acquire);
-    ZOMBIES.lock().push(task);
-    wake_wait4_parent(parent_tid);
-    // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
-    // signalfd (systemd) — wake_wait4_parent only covers wait4 parkers.
-    if let Some(p) = parent { wake_task_for_signal(&p); }
-    // The exiting task is now a Zombie, so ANY pidfd for it polls readable.
-    // Modern systemd tracks each service child via a pidfd in its epoll (not
-    // SIGCHLD), so a child exit must wake epoll waiters to re-scan + reap —
-    // else the oneshot service's exited child is never reaped and the service
-    // (journal-flush, sysctl, …) hangs its full start timeout, wedging the boot.
-    super::notify_epoll_waiters();
-}
 
 /// B117: queue a SIGCHLD child-exit `SigInfo` against `parent` so
 /// the SIGCHLD delivery path fills the handler's siginfo_t. `si_pid`
@@ -125,64 +93,41 @@ fn accrue_child_time(child: &Task, parent: &Task) {
         .fetch_add(child.stime_ns.load(Ordering::Acquire), Ordering::AcqRel);
 }
 
-/// Post-mortem signaling without taking ownership of the Arc. Splits
-/// the SIGCHLD + wake-wait4 work out of `park_zombie` so the dying
-/// task can call this from sys_exit / sigsegv without bumping the
-/// rq.current strong count. The actual ZOMBIES push happens later
-/// inside `schedule()` when it detects `TaskState::Zombie` on prev
-/// and transfers the prev_arc returned by `swap_current` directly
-/// — that avoids the leak where a zombie's prev_arc on its dead
-/// kernel stack never drops because the dead task never resumes.
-/// # C: O(N_waiters) wake.
-pub fn signal_child_exit(task: &Task) {
-    use core::sync::atomic::Ordering;
-    // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
-    let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
-    let parent_tid = task.parent_tid.load(Ordering::Acquire);
+/// Mark the exit path for deferred parent publication. The switch tail owns the
+/// Arc and calls `enqueue_zombie`, which must make the child waitable before
+/// exposing SIGCHLD to signalfd or a handler. # C: O(1)
+pub fn signal_child_exit(_task: &Task) {
     #[cfg(feature = "debug-ssh")]
     {
-        klog::write_raw(b"[INFO]  ssh-trace: signal_child_exit child=");
-        klog::write_dec_u64(task.tid as u64);
-        klog::write_raw(b" parent_tid=");
-        klog::write_dec_u64(parent_tid as u64);
-        klog::write_raw(b" parent_upgrade=");
-        klog::write_dec_u64(if parent.is_some() { 1 } else { 0 });
+        klog::write_raw(b"[INFO]  ssh-trace: defer signal_child_exit child=");
+        klog::write_dec_u64(_task.tid as u64);
         klog::write_raw(b"\n");
     }
-    if let Some(ref p) = parent {
-        // B117: queue child-exit siginfo (si_pid/si_status/si_code)
-        // before flagging SIGCHLD so an SA_SIGINFO handler sees it.
-        push_child_event(task, p);
-        // F167: typed signal bit.
-        p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
-        // G3: roll the child's CPU time into the parent's RUSAGE_CHILDREN /
-        // tms_c[us]time counters. This is the live exit path (park_zombie is
-        // unused), so signal-killed and normally-exited children both roll up.
-        accrue_child_time(task, p);
-    }
-    wake_wait4_parent(parent_tid);
-    // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
-    // signalfd (systemd) — wake_wait4_parent only covers wait4 parkers.
-    if let Some(p) = parent { wake_task_for_signal(&p); }
-    // Wake epoll waiters polling this task's pidfd (systemd tracks service
-    // children via pidfd-in-epoll) so they re-scan + reap — see park_zombie.
-    super::notify_epoll_waiters();
 }
 
 /// Push `task` onto the ZOMBIES list. Used by `schedule()` when it
 /// detects that prev's state is Zombie: rather than leaking the Arc
 /// returned by `swap_current` on the dying task's about-to-be-orphaned
 /// kernel stack, transfer ownership here so reap_one can release it.
-/// # C: O(1) push.
+/// Parent publication order is strict: ZOMBIES first, queued siginfo second,
+/// pending bit and signalfd notification third, waiter wakeups last. # C: O(1)
 pub fn enqueue_zombie(task: Arc<Task>) {
-    ZOMBIES.lock().push(task);
-    // The zombie is only NOW reapable + `has_zombies`-visible — but its SIGCHLD
-    // + epoll gen bump already fired in `signal_child_exit` before this point.
-    // Advance the gen again so the parent's next epoll_wait rescan re-evaluates
-    // its signalfd/pidfd (which now reports POLL_IN) and reaps, instead of
-    // EPOLLET-suppressing the already-`et_seen` bit until an unrelated event
-    // (~45s later). Gen-bump only (no wake) — safe in the switch tail.
-    super::bump_epoll_gen();
+    // SAFETY: parent_arc is installed before task publication and remains stable
+    // through exit; upgrading before moving the Arc keeps the parent live.
+    let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
+    let parent_tid = task.parent_tid.load(Ordering::Acquire);
+    ZOMBIES.lock().push(Arc::clone(&task));
+    if let Some(ref p) = parent {
+        push_child_event(&task, p);
+        accrue_child_time(&task, p);
+        p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
+    }
+    // Pidfds have not migrated to a target-owned PollSubscribers source. Keep
+    // their legacy broadcast after waitability publication; signalfd wakes via
+    // the pending signal's targeted source above and does not rely on this.
+    super::notify_epoll_waiters();
+    wake_wait4_parent(parent_tid);
+    if let Some(p) = parent { wake_task_for_signal(&p); }
 }
 
 /// Park the current task in WAITERS, marking it Sleeping. Caller
@@ -404,125 +349,6 @@ pub fn has_wait_zombies(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u3
     q.iter().any(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))
 }
 
-/// B14: reap zombies whose parent is gone — Linux subreaper path.
-/// Linux's do_exit → forget_original_parent walks children at
-/// parent-exit time and reparents them to init (or the nearest
-/// PR_SET_CHILD_SUBREAPER); init's SIGCHLD handler then reaps via
-/// wait4. We do the equivalent here in one place: any zombie whose
-/// parent_tid no longer resolves to a live Task gets dropped on
-/// the next tick — same end-to-end behavior as init reaping its
-/// reparented children.
-/// # C: O(N_zombies × N_tasks).
-pub fn reap_orphans() {
-    use crate::registry;
-    let q = ZOMBIES.lock();
-    for t in q.iter() {
-        let pt = t.parent_tid.load(Ordering::Acquire);
-        if pt == 0 { continue; }
-        if registry::lookup(pt).is_none() {
-            // Parent vanished without reparenting this zombie. Linux NEVER
-            // destroys an unreaped zombie — forget_original_parent reparents
-            // orphans to init (PID 1, the subreaper) which then wait4()s them.
-            // The old code DROPPED such zombies every tick, so a child that
-            // exited during sd-executor setup (before systemd's post-clone3
-            // pidref) became unresolvable → systemd's pidfd_open returned ESRCH
-            // → "Failed to spawn executor: No such process" → udevd never ran.
-            // Reparent to init instead; it stays pidfd-resolvable until reaped.
-            t.parent_tid.store(1, Ordering::Release);
-        }
-    }
-}
-
-/// Linux `forget_original_parent` — walk live children of the
-/// exiting task and rewrite their `parent_tid` to PID 1 (init).
-/// Called from `sys_exit` so that when the children themselves
-/// exit later, they queue SIGCHLD to init rather than to a
-/// dead parent that will never wait4 them, and `reap_orphans`
-/// above sees them as orphans only if init itself dies.
-/// # C: O(N_tasks).
-pub fn reparent_children(dying_tid: u32) {
-    use crate::registry;
-    // B-reparent: reparent to PID 1 (init) by its INTERNAL tid, not the
-    // literal vpid `1`. parent_tid is the kernel-internal tid used by
-    // wake_wait4_parent / reap_one / wait_pid_matches; init's vtgid is 1
-    // but its internal tid is the kernel-assigned value (e.g. 0xC0DE_0002).
-    // Storing `1` pointed every orphan at a non-existent task, so when a
-    // double-forked service's orphaned grandchild later exited, its
-    // SIGCHLD + wake targeted nobody and it became an unreapable zombie —
-    // a lost-wakeup boot hang under systemd (which double-forks heavily).
-    // Also rewrite parent_arc to init's Weak so signal_child_exit can
-    // upgrade it and post SIGCHLD into init's signalfd (its reap path).
-    let init = registry::lookup_by_vpid(1);
-    let init_tid = init.as_ref().map(|t| t.tid).unwrap_or(1);
-    let init_weak = init.as_ref().map(alloc::sync::Arc::downgrade);
-    let mut reparented_zombie = false;
-    for tid in registry::live_tids() {
-        if let Some(t) = registry::lookup(tid) {
-            if t.parent_tid.load(Ordering::Acquire) == dying_tid {
-                // PR_SET_PDEATHSIG (Linux `forget_original_parent`): when the
-                // real parent thread exits, every child that armed a
-                // parent-death signal receives it. systemd's exec helpers
-                // (`(sd-pam)`/`(sd-userns)`/`FORK_DEATHSIG_*`) arm this and
-                // then `pause()` for a barrier; if the executor dies they MUST
-                // get the signal and exit. Without delivery the helper lingered
-                // as an orphan, PID 1 later SIGKILLed it, and the executor's
-                // barrier/pidref handshake reported the helper as vanished
-                // (EXIT_RUNTIME_DIRECTORY "No such process"). Deliver before
-                // reparenting, exactly like the kernel sends it from the
-                // original parent's exit. `pdeathsig` holds the raw signal
-                // number (1..=64); 0 means disarmed.
-                let pds = t.pdeathsig.load(Ordering::Acquire);
-                if (1..=64).contains(&pds) {
-                    t.sigpending.fetch_or(1u64 << (pds - 1), Ordering::Release);
-                    crate::live::wake_if_sleeping(&t);
-                }
-                t.parent_tid.store(init_tid, Ordering::Release);
-                if let Some(ref w) = init_weak {
-                    // SAFETY: single-CPU UP, preempt-off in sys_exit; the
-                    // reparented child is not running on any CPU, so we are the
-                    // sole writer to its parent_arc cell during this rewrite.
-                    unsafe { *t.parent_arc.get() = Some(w.clone()); }
-                }
-                // Linux forget_original_parent → do_notify_parent: a child that
-                // is ALREADY a zombie when reparented sent its SIGCHLD to the
-                // now-dead original parent, so the new parent (init) never
-                // learned to reap it. Re-notify init here, or the reparented
-                // zombie leaks forever (init parked in epoll on its SIGCHLD
-                // signalfd never wakes to wait4 it — systemd then can't observe
-                // the exit of a double-forked service, and gdm's graphical
-                // session stalls). Its parent_tid is now init_tid so reap_one
-                // matches; we just need the wake.
-                if matches!(t.state(), TaskState::Zombie) {
-                    // Re-queue the child-exit event onto init's SIGCHLD child
-                    // queue with the child's real vpid/status. Without a queued
-                    // record, init's signalfd read + systemd's waitid(P_ALL,
-                    // WNOWAIT) peek find ssi_pid=0 and reap nothing, so the
-                    // orphaned session helper leaks — stalling the session.
-                    if let Some(ref p) = init { push_child_event(&t, p); }
-                    reparented_zombie = true;
-                }
-            }
-        }
-    }
-    if reparented_zombie {
-        if let Some(ref p) = init {
-            p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
-            wake_wait4_parent(init_tid);
-            wake_task_for_signal(p);
-        }
-        // A child that was ALREADY a zombie when reparented posts SIGCHLD into
-        // init but that alone does not re-fire init's SIGCHLD signalfd if it is
-        // registered EPOLLET: waking the task without advancing the epoll
-        // readiness generation leaves `scan_once` computing new_edges==0, so
-        // init re-parks without reading the signalfd → the reparented orphan
-        // (a burst of modprobe/udevadm/mount/sysctl whose service parent exited)
-        // leaks forever and its oneshot unit hangs its start timeout, wedging
-        // the boot. Bump GLOBAL_EPOLL_GEN so the level-ready (has_zombies)
-        // signalfd fires. Mirrors the park_zombie notify.
-        super::notify_epoll_waiters();
-    }
-}
-
 /// Terminate the CURRENT task as if killed by signal `sig` (default fatal
 /// action) and schedule away — DIVERGES. The page-fault handler calls this
 /// when a USER-mode fault is unresolvable: Linux delivers SIGSEGV/SIGBUS whose
@@ -534,6 +360,10 @@ pub fn reparent_children(dying_tid: u32) {
 /// kernel stack, IRQs off, runqueue installed.
 /// # C: O(N_tasks) reparent + O(log N) schedule
 pub fn terminate_current_with_signal(sig: u8) -> ! {
+    // Linux fatal default actions are group-fatal. Post SIGKILL to every
+    // sibling before dismantling the current task so no thread survives with
+    // resources or userspace locks owned by the faulting thread.
+    super::zap_other_threads();
     if let Some(rq) = crate::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
@@ -559,7 +389,12 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); reparent_children(task.tid); }
             crate::live::mark_done(task);
-            signal_child_exit(task);
+            // A non-leader thread is auto-released in the switch tail. The
+            // group leader publishes the process exit and SIGCHLD once the
+            // group-fatal signal reaches it.
+            if task.tid == task.tgid.load(Ordering::Acquire) {
+                signal_child_exit(task);
+            }
         }
     }
     // SAFETY: exception ctx; preempt-off; Zombie state means no re-enqueue.

@@ -41,7 +41,8 @@ impl FileOps for PidfdFileOps {
     /// # C: O(1)
     fn poll(&self, inode: &Inode) -> u32 {
         let target = match inode.private::<PidfdInode>() { Some(p) => &p.target, None => return vfs::POLL_IN };
-        if target.state() == sched::task::TaskState::Zombie { vfs::POLL_IN } else { 0 }
+        let ready = target.state() == sched::task::TaskState::Zombie;
+        if ready { vfs::POLL_IN } else { 0 }
     }
     /// Linux `pidfd_show_fdinfo`: append `Pid:`/`NSpid:` so `/proc/<pid>/
     /// fdinfo/<n>` carries the target pid. `Pid:` = the target's vpid in the
@@ -51,6 +52,10 @@ impl FileOps for PidfdFileOps {
     fn fdinfo_extra(&self, inode: &Inode, out: &mut alloc::vec::Vec<u8>) {
         use core::fmt::Write;
         let target = match inode.private::<PidfdInode>() { Some(p) => &p.target, None => return };
+        if target.reaped.load(core::sync::atomic::Ordering::Acquire) {
+            let _ = write!(FdinfoFmt(out), "Pid:\t-1\n");
+            return;
+        }
         let vpid = target.vtgid.load(core::sync::atomic::Ordering::Acquire);
         if vpid != 0 {
             let _ = write!(FdinfoFmt(out), "Pid:\t{}\nNSpid:\t{}\n", vpid, vpid);

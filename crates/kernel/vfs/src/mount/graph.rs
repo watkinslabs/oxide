@@ -2,17 +2,13 @@
 /// # C: O(1)
 fn dptr(d: &Arc<Dentry>) -> usize { Arc::as_ptr(d) as *const () as usize }
 
-/// TEMP (D24, `debug-mnt`): emit ONE grep-able `[MNTCREATE]` line at a mount
-/// create/attach/clone/graft site, via the same raw klog sink the `[MNTDIVERGE]`
-/// probe uses. Lets the boot log reconstruct the exact sequence + via-tag that
-/// builds the sandbox-root mounts (mnt_id 10/11) and whether the api-mounts
-/// (/proc,/sys,/dev,/run) are re-created beneath them. Prod-inert (feature-off ⇒
-/// no call sites). # C: O(name len)
+/// TEMP `debug-mnt` mount create/attach/clone trace. # C: O(name len)
 #[cfg(feature = "debug-mnt")]
 fn mntcreate_log(via: &str, new_id: u64, parent: u64, mp: Option<&Arc<Dentry>>,
                  root: Option<&Arc<Dentry>>, sb: Option<&Arc<SuperBlock>>) {
     klog::write_raw(b"[MNTCREATE] via=");
     klog::write_raw(via.as_bytes());
+    klog::write_raw(b" ns="); klog::write_dec_u64(current_ns());
     klog::write_raw(b" new_id="); klog::write_dec_u64(new_id);
     klog::write_raw(b" parent="); klog::write_dec_u64(parent);
     klog::write_raw(b" mp_dentry=ptr:0x");

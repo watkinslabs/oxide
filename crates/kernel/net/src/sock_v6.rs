@@ -18,6 +18,21 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
         match &*kind {
             SockKind::Udp => {
                 drop(kind);
+                let local_port = {
+                    let cur = *sock.local_port.lock();
+                    match cur {
+                        Some(p) => p,
+                        None    => {
+                            let p = alloc_ephemeral_port6()?;
+                            stack().set_udp6_bound_iface(p, bound_iface(sock)?);
+                            *sock.local_port.lock() = Some(p);
+                            p
+                        }
+                    }
+                };
+                if let Some(q) = stack().udp6_queue_arc(local_port) {
+                    q.register_poll_subs(&sock.poll_subs);
+                }
                 *sock.peer6.lock() = Some((dst_ip, port));
                 return Ok(());
             }

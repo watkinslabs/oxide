@@ -120,6 +120,36 @@ fn iop_link_child_hardlinks_and_bumps_nlink() {
 }
 
 #[test]
+fn tmpfile_publish_over_existing_destination() {
+    // systemd-hwdb writes an O_TMPFILE, chmods it, links it under a temporary
+    // name through /proc/self/fd, then atomically renames it over hwdb.bin.
+    let (m, sb) = mount();
+    let root = sb.s_root_inode().expect("root inode");
+    let old = root.create_child("hwdb.bin", 0o644, &CreateCtx::root()).expect("create old hwdb");
+    let tmp = root.tmpfile(0o640, &CreateCtx::root()).expect("create anonymous hwdb");
+    let tmp_ino = tmp.ino();
+    assert_eq!(tmp.nlink(), 0, "anonymous inode starts unlinked");
+
+    tmp.set_state(vfs::I_LINKABLE, 0);
+    tmp.setattr(&vfs::IDENTITY, &vfs::Iattr {
+        valid: vfs::ATTR_MODE,
+        mode: 0o444,
+        ..Default::default()
+    }).expect("chmod anonymous hwdb");
+    m.state().mount.write_at(tmp_ino as u32, 0, b"oxide-hwdb").expect("write anonymous hwdb");
+
+    root.link_child(&tmp, ".#hwdb.tmp", &CreateCtx::root()).expect("publish temporary link");
+    assert_eq!(tmp.nlink(), 1, "published tmpfile has one link");
+    root.rename_child(".#hwdb.tmp", &root, "hwdb.bin", 0, &CreateCtx::root()).expect("replace hwdb atomically");
+
+    assert_eq!(old.nlink(), 0, "replaced hwdb was unlinked");
+    assert_eq!(tmp.nlink(), 1, "published hwdb retains one link");
+    assert_eq!(root.lookup("hwdb.bin").expect("new hwdb lookup").ino(), tmp_ino);
+    assert!(matches!(root.lookup(".#hwdb.tmp"), Err(vfs::VfsError::Enoent)));
+    assert_eq!(m.state().read_file(b"/hwdb.bin").expect("read new hwdb"), b"oxide-hwdb");
+}
+
+#[test]
 fn rootfs_path_helpers_return_namei_errnos() {
     let (m, _sb) = mount();
     let st = m.state();

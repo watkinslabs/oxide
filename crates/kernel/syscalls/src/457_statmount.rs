@@ -7,8 +7,10 @@ use alloc::vec::Vec;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 // struct mnt_id_req { u32 size; u32 spare; u64 mnt_id; u64 param; }
+const REQ_OFF_SIZE:   u64 = 0;
 const REQ_OFF_MNT_ID: u64 = 8;
 const REQ_MIN_SIZE:   u64 = 24;
+const REQ_MAX_SIZE:   u64 = 4096;
 
 // struct statmount fixed-header field byte-offsets (Linux uapi).
 const SM_OFF_SIZE:          usize = 0;
@@ -32,18 +34,52 @@ const STATMOUNT_MNT_POINT: u64 = 0x10;
 const STATMOUNT_FS_TYPE:   u64 = 0x20;
 const STATMOUNT_MNT_NS_ID: u64 = 0x40;
 
+fn read_req_mnt_id(req: u64) -> Result<u64, i64> {
+    if let Err(rv) = validate_user_buf(req, 4, 1) { return Err(rv); }
+    // SAFETY: req validated readable for the size prefix.
+    let size = unsafe { core::ptr::read_unaligned((req + REQ_OFF_SIZE) as *const u32) } as u64;
+    if size < REQ_MIN_SIZE { return Err(-(Errno::Einval.as_i32() as i64)); }
+    if size > REQ_MAX_SIZE { return Err(-(Errno::E2big.as_i32() as i64)); }
+    if let Err(rv) = validate_user_buf(req, size, 1) { return Err(rv); }
+    // SAFETY: req validated readable for the minimum mnt_id_req fields.
+    Ok(unsafe { core::ptr::read_unaligned((req + REQ_OFF_MNT_ID) as *const u64) })
+}
+
+#[cfg(feature = "debug-mount")]
+fn trace_statmount(ns: u64, mnt_id: u64, flags: u64, rv: i64) {
+    klog::write_raw(b"[MOUNTAPI] statmount ns="); klog::write_dec_u64(ns);
+    klog::write_raw(b" mnt_id="); klog::write_dec_u64(mnt_id);
+    klog::write_raw(b" flags="); klog::write_dec_u64(flags);
+    klog::write_raw(b" rv=");
+    if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-rv) as u64); }
+    else { klog::write_dec_u64(rv as u64); }
+    klog::write_raw(b"\n");
+}
+
 /// `sys_statmount(req, buf, bufsize, flags)` — slot 457.
 /// # C: O(N_mounts)
 pub fn sys_statmount(args: &SyscallArgs) -> i64 {
     let req     = args.a0;
     let ubuf    = args.a1;
     let bufsize = args.a2 as usize;
-    if let Err(rv) = validate_user_buf(req, REQ_MIN_SIZE, 1) { return rv; }
-    // SAFETY: req validated readable for the minimum mnt_id_req prefix.
-    let mnt_id = unsafe { core::ptr::read_unaligned((req + REQ_OFF_MNT_ID) as *const u64) };
+    let flags   = args.a3;
+    if flags != 0 { return -(Errno::Einval.as_i32() as i64); }
+    let mnt_id = match read_req_mnt_id(req) { Ok(v) => v, Err(rv) => return rv };
+    let ns = ::vfs::mount::current_ns();
     let m = match ::vfs::mount::mount_by_id(mnt_id) {
-        Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
+        Some(m) => m, None => {
+            let rv = -(Errno::Enoent.as_i32() as i64);
+            #[cfg(feature = "debug-mount")]
+            trace_statmount(ns, mnt_id, flags, rv);
+            return rv;
+        }
     };
+    if m.ns != ns {
+        let rv = -(Errno::Enoent.as_i32() as i64);
+        #[cfg(feature = "debug-mount")]
+        trace_statmount(ns, mnt_id, flags, rv);
+        return rv;
+    }
     let parent = ::vfs::mount::parent_mnt_id(&m);
 
     // str[] area: fs-type name, mount root, mount point (each NUL-terminated).
@@ -72,5 +108,7 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
 
     // SAFETY: ubuf validated writable for `total` bytes; byte copy is alignment-independent.
     unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), ubuf as *mut u8, total); }
+    #[cfg(feature = "debug-mount")]
+    trace_statmount(ns, mnt_id, flags, 0);
     0
 }

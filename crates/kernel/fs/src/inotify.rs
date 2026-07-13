@@ -2,12 +2,16 @@
 // - `types`: shared constants, watch/event records, global counters, and group state.
 // - `group`: inotify/fanotify group inode/file ops, read/write paths, and perm-gate checks.
 // - `dispatch`: global registry, event routing, VFS hook wiring, and fire_* helpers.
-// - `syscalls`: watch-path resolution plus inotify/fanotify syscall entry points and mark editing.
+// - `path`: watch-path resolution through task root/cwd plus credentials.
+// - `validate`: inotify/fanotify UAPI flags and Linux argument validation.
+// - `syscalls`: inotify/fanotify syscall entry points and mark editing.
 
 mod dispatch;
 mod group;
+mod path;
 mod syscalls;
 mod types;
+mod validate;
 
 #[cfg(test)]
 #[path = "inotify_fan_tests.rs"]
@@ -30,11 +34,13 @@ pub(crate) use dispatch::{fire_child, fire_self};
 #[cfg(test)]
 pub(crate) use group::InotifyFileOps;
 #[cfg(test)]
-pub(crate) use syscalls::{add_or_update_watch, apply_mark, remove_watch, validate_fanotify_init, validate_fanotify_init_args,
-    validate_fanotify_mark_group, validate_fanotify_mark_prefd, validate_inotify_init_flags,
-    validate_inotify_watch_mask_after_fd, validate_inotify_watch_mask_bits, FAN_CLASS_CONTENT,
-    FAN_CLASS_PRE_CONTENT, FAN_CLOEXEC, FAN_ENABLE_AUDIT, FAN_MARK_ADD, FAN_MARK_EVICTABLE, FAN_MARK_FILESYSTEM,
-    FAN_MARK_FLUSH, FAN_MARK_IGNORE, FAN_MARK_IGNORED_MASK, FAN_MARK_MOUNT, FAN_MARK_MNTNS, FAN_MARK_REMOVE,
+pub(crate) use syscalls::{add_or_update_watch, apply_mark, remove_watch};
+#[cfg(test)]
+pub(crate) use validate::{validate_fanotify_init, validate_fanotify_init_args, validate_fanotify_mark_group,
+    validate_fanotify_mark_prefd, validate_inotify_init_flags, validate_inotify_watch_mask_after_fd,
+    validate_inotify_watch_mask_bits, FAN_CLASS_CONTENT, FAN_CLASS_PRE_CONTENT, FAN_CLOEXEC,
+    FAN_ENABLE_AUDIT, FAN_MARK_ADD, FAN_MARK_EVICTABLE, FAN_MARK_FILESYSTEM, FAN_MARK_FLUSH,
+    FAN_MARK_IGNORE, FAN_MARK_IGNORED_MASK, FAN_MARK_MOUNT, FAN_MARK_MNTNS, FAN_MARK_REMOVE,
     FAN_MARK_ONLYDIR, FAN_NONBLOCK, FAN_REPORT_DIR_FID, FAN_REPORT_FD_ERROR, FAN_REPORT_FID,
     FAN_REPORT_MNT, FAN_REPORT_NAME, FAN_REPORT_TARGET_FID};
 #[cfg(test)]

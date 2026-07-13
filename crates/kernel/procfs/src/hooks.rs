@@ -6,6 +6,8 @@ use alloc::vec::Vec;
 static BOOT_SECS: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static HOST_GET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static HOST_SET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static DOM_GET:   AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static DOM_SET:   AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CMDLINE:   AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CPAT_GET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CPAT_SET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
@@ -38,6 +40,11 @@ pub fn set_hostname_hooks(get: fn() -> Vec<u8>, set: fn(&[u8])) {
     HOST_SET.store(set as *mut (), Ordering::Release);
 }
 /// # C: O(1)
+pub fn set_domainname_hooks(get: fn() -> Vec<u8>, set: fn(&[u8])) {
+    DOM_GET.store(get as *mut (), Ordering::Release);
+    DOM_SET.store(set as *mut (), Ordering::Release);
+}
+/// # C: O(1)
 pub fn set_cmdline_hook(f: fn() -> &'static [u8]) { CMDLINE.store(f as *mut (), Ordering::Release); }
 
 /// # C: O(1)
@@ -59,6 +66,20 @@ pub fn set_hostname(b: &[u8]) {
     let p = HOST_SET.load(Ordering::Acquire);
     if p.is_null() { return; }
     // SAFETY: pointer set from a `fn(&[u8])` via set_hostname_hooks.
+    let f: fn(&[u8]) = unsafe { core::mem::transmute(p) }; f(b)
+}
+/// # C: O(1)
+pub fn domainname() -> Vec<u8> {
+    let p = DOM_GET.load(Ordering::Acquire);
+    if p.is_null() { return Vec::new(); }
+    // SAFETY: pointer set from a `fn() -> Vec<u8>` via set_domainname_hooks.
+    let f: fn() -> Vec<u8> = unsafe { core::mem::transmute(p) }; f()
+}
+/// # C: O(1)
+pub fn set_domainname(b: &[u8]) {
+    let p = DOM_SET.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: pointer set from a `fn(&[u8])` via set_domainname_hooks.
     let f: fn(&[u8]) = unsafe { core::mem::transmute(p) }; f(b)
 }
 /// # C: O(1)

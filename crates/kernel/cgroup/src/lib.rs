@@ -100,7 +100,13 @@ pub fn read_file(cgid: u64, file: &str) -> KResult<Vec<u8>> {
 /// relies on this to land service executors in the right cgroup v2 node.
 /// # C: O(members)
 pub fn attach_into(cgid: u64, vpid: u64) {
-    let tid = resolve_pid(vpid);
+    if let Some(tid) = resolve_pid(vpid) { attach_tid_into(cgid, tid); }
+}
+
+/// Place canonical task `tid` into `cgid` before it can run. Used by
+/// clone3(CLONE_INTO_CGROUP), whose child is born in the destination cgroup.
+/// # C: O(members)
+pub fn attach_tid_into(cgid: u64, tid: u64) {
     let src = TREE.lock().cgroup_of(tid);
     TREE.lock().add_proc(cgid, tid);
     if src != cgid { notify_events_chain(src); }
@@ -143,7 +149,7 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             // Membership keys on the canonical tid (what `current().tid`
             // and fork-inheritance use); the written value is a vpid in
             // the writer's pid namespace. Translate before storing.
-            let tid = resolve_pid(vpid);
+            let tid = resolve_pid(vpid).ok_or(VfsError::Esrch)?;
             // Source cgroup (before the move) may flip populated 1→0;
             // destination may flip 0→1 — notify both chains.
             let src = TREE.lock().cgroup_of(tid);
@@ -240,6 +246,14 @@ pub fn fork_would_exceed_pids(pid: u64) -> bool {
     if !t.is_mounted() { return false; }
     let cg = t.cgroup_of(pid);
     t.fork_would_exceed_pids(cg)
+}
+
+/// True iff one more task born directly into `cgid` would exceed pids.max.
+/// # C: O(depth · subtree)
+pub fn fork_would_exceed_cgroup(cgid: u64) -> bool {
+    let t = TREE.lock();
+    if !t.is_mounted() { return false; }
+    t.fork_would_exceed_pids(cgid)
 }
 
 /// Try to charge `bytes` to `pid`'s cgroup memory controller. Returns

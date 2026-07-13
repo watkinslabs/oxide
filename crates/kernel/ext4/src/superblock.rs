@@ -76,6 +76,8 @@ pub const SB_OFF_GRP_QUOTA_INUM: usize = 0x244;
 pub const SB_OFF_PRJ_QUOTA_INUM: usize = 0x26C;
 /// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
 pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
+/// `s_reserved_gdt_blocks` byte offset.
+pub const SB_OFF_RESERVED_GDT_BLOCKS: usize = 0xCE;
 /// `s_feature_ro_compat` METADATA_CSUM_SEED bit.
 pub const RO_COMPAT_METADATA_CSUM_SEED: u32 = 0x0020_0000;
 
@@ -129,6 +131,9 @@ pub struct Superblock {
     pub hash_seed: [u32; 4],
     /// `s_def_hash_version` (offset 0xFC) — default htree hash algo.
     pub def_hash_version: u8,
+    /// `s_reserved_gdt_blocks`: resize_inode-reserved GDT blocks after each
+    /// primary/backup descriptor table.
+    pub reserved_gdt_blocks: u16,
 }
 
 /// Field offsets we mutate when persisting counter updates back to
@@ -233,6 +238,7 @@ impl Superblock {
                 rd_u32(buf, 0xF4), rd_u32(buf, 0xF8),
             ],
             def_hash_version: buf[0xFC],
+            reserved_gdt_blocks: rd_u16(buf, SB_OFF_RESERVED_GDT_BLOCKS),
         })
     }
 
@@ -259,6 +265,11 @@ impl Superblock {
     /// # C: O(1)
     pub fn has_metadata_csum(&self) -> bool {
         (self.feature_ro_compat & RO_COMPAT_METADATA_CSUM) != 0
+    }
+
+    /// True iff sparse-super backup layout is enabled. # C: O(1)
+    pub fn has_sparse_super(&self) -> bool {
+        (self.feature_ro_compat & RO_COMPAT_SPARSE_SUPER) != 0
     }
 
     /// `EXT4_FEATURE_RO_COMPAT_HUGE_FILE`: when set, `i_blocks` uses the 48-bit
