@@ -64,6 +64,7 @@ fn quotactl_dispatch_sb_block_inner(
 ) -> Option<i64> {
     if quotactl_cmd_write(cmd) {
         if sb.is_frozen() { return None; }
+        if sb.is_readonly() { return Some(eno(Errno::Erofs)); }
     }
     Some(quotactl_dispatch_sb_with_path(sb, cmd, id, addr, quotaon_path))
 }
