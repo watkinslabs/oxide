@@ -69,6 +69,23 @@ impl SuperBlock {
         }
     }
 
+    /// Wait for a frozen superblock without admitting a writer. # C: O(1) or sleeps
+    pub fn wait_until_thawed(&self) -> bool {
+        loop {
+            let _g = FREEZE_WAIT_LOCK.lock();
+            if !self.is_frozen() { return true; }
+            let hooks = freeze_wait_hooks();
+            match (hooks.park, hooks.schedule) {
+                (Some(park), Some(schedule)) => {
+                    park(self.freeze_wait_key());
+                    drop(_g);
+                    schedule();
+                }
+                _ => return false,
+            }
+        }
+    }
+
     /// `sb_end_write`: release a writer admitted by [`sb_start_write`].
     /// # C: O(1)
     pub fn sb_end_write(&self) {
