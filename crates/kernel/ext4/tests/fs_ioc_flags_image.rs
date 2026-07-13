@@ -22,6 +22,9 @@ const SECTOR: u32 = 512;
 const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
 const EXT4_RO_COMPAT_OFF: usize = EXT4_SUPERBLOCK_OFFSET + 0x64;
 const EXT4_PRJ_QUOTA_INUM_OFF: usize = EXT4_SUPERBLOCK_OFFSET + ext4::superblock::SB_OFF_PRJ_QUOTA_INUM;
+const HELLO_INO: u32 = 12;
+const PRJ_MAGIC: u32 = 0xd9c0_3f14;
+const V2_VERSION_V1: u32 = 1;
 
 // FS_*_FL == ext4 on-disk i_flags bits.
 const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
@@ -69,6 +72,14 @@ fn shared_project_quota_file_disk(quota_ino: u32) -> Arc<dyn BlockDevice> {
     image[EXT4_RO_COMPAT_OFF..EXT4_RO_COMPAT_OFF + 4].copy_from_slice(&features.to_le_bytes());
     image[EXT4_PRJ_QUOTA_INUM_OFF..EXT4_PRJ_QUOTA_INUM_OFF + 4].copy_from_slice(&quota_ino.to_le_bytes());
     shared_disk_from(image)
+}
+
+fn empty_project_quota_file() -> Vec<u8> {
+    let mut q = vec![0u8; 2048];
+    q[0..4].copy_from_slice(&PRJ_MAGIC.to_le_bytes());
+    q[4..8].copy_from_slice(&V2_VERSION_V1.to_le_bytes());
+    q[20..24].copy_from_slice(&2u32.to_le_bytes());
+    q
 }
 
 fn mount(disk: Arc<dyn BlockDevice>) -> (Arc<ext4::rootfs::Ext4Mount>, Arc<SuperBlock>) {
@@ -201,13 +212,115 @@ fn project_id_change_bumps_iversion_after_setflags() {
 }
 
 #[test]
+fn project_id_change_transfers_project_quota_usage() {
+    common::boot_hosted_pmm();
+    let disk = shared_project_quota_file_disk(HELLO_INO);
+    let (m, sb) = mount(disk);
+    m.state().mount.write_at(HELLO_INO, 0, &empty_project_quota_file()).expect("seed quota file");
+    sb.s_op.quota_on(&sb, vfs::QuotaType::Project, vfs::QFMT_VFS_V1, None).expect("quota_on");
+
+    let inode = m.state().create_at(b"/charged-project.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/charged-project.txt").expect("lookup");
+    m.state().mount.write_at(ino, 0, &[0x5a; 2048]).expect("write file");
+    let usage = m.state().mount.read_inode(ino).expect("read raw").i_blocks as u64 * 512;
+    assert_ne!(usage, 0);
+
+    let before = vfs::quota_getquota(&sb, vfs::Kqid::project(0)).expect("old project quota");
+    assert_eq!(before.dqb_curspace, usage);
+    assert_eq!(before.dqb_curinodes, 1);
+
+    let flags = inode.fileattr_get().unwrap().flags;
+    inode.fileattr_set(&FileAttr { flags, fsx_projid: 77, ..Default::default() })
+        .expect("set project id");
+
+    let old = vfs::quota_getquota(&sb, vfs::Kqid::project(0)).expect("old after transfer");
+    let new = vfs::quota_getquota(&sb, vfs::Kqid::project(77)).expect("new after transfer");
+    assert_eq!(old.dqb_curspace, 0);
+    assert_eq!(old.dqb_curinodes, 0);
+    assert_eq!(new.dqb_curspace, usage);
+    assert_eq!(new.dqb_curinodes, 1);
+}
+
+#[test]
+fn project_id_change_after_iget_uses_cached_disk_project_id_for_quota_transfer() {
+    common::boot_hosted_pmm();
+    let disk = shared_project_quota_file_disk(HELLO_INO);
+    let (m, sb) = mount(disk);
+    m.state().mount.write_at(HELLO_INO, 0, &empty_project_quota_file()).expect("seed quota file");
+    sb.s_op.quota_on(&sb, vfs::QuotaType::Project, vfs::QFMT_VFS_V1, None).expect("quota_on");
+
+    let inode = m.state().create_at(b"/cached-project.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/cached-project.txt").expect("lookup");
+    let flags = inode.fileattr_get().unwrap().flags;
+    inode.fileattr_set(&FileAttr { flags, fsx_projid: 11, ..Default::default() })
+        .expect("set initial project id");
+    m.state().mount.write_at(ino, 0, &[0x5a; 2048]).expect("write file");
+    let usage = m.state().mount.read_inode(ino).expect("read raw").i_blocks as u64 * 512;
+    assert_ne!(usage, 0);
+    assert_eq!(vfs::quota_getquota(&sb, vfs::Kqid::project(11)).expect("project 11").dqb_curspace, usage);
+
+    let vfs_ino = inode.ino();
+    drop(inode);
+    sb.iforget(vfs_ino);
+    let inode = m.state().lookup_inode_any(b"/cached-project.txt").expect("re-iget cached inode");
+    assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 11);
+
+    let flags = inode.fileattr_get().unwrap().flags;
+    inode.fileattr_set(&FileAttr { flags, fsx_projid: 77, ..Default::default() })
+        .expect("transfer from reloaded project id");
+
+    let old = vfs::quota_getquota(&sb, vfs::Kqid::project(11)).expect("old after transfer");
+    let new = vfs::quota_getquota(&sb, vfs::Kqid::project(77)).expect("new after transfer");
+    assert_eq!(old.dqb_curspace, 0);
+    assert_eq!(old.dqb_curinodes, 0);
+    assert_eq!(new.dqb_curspace, usage);
+    assert_eq!(new.dqb_curinodes, 1);
+}
+
+#[test]
+fn project_id_change_edquot_leaves_project_and_quota_unchanged() {
+    common::boot_hosted_pmm();
+    let disk = shared_project_quota_file_disk(HELLO_INO);
+    let (m, sb) = mount(disk);
+    m.state().mount.write_at(HELLO_INO, 0, &empty_project_quota_file()).expect("seed quota file");
+    sb.s_op.quota_on(&sb, vfs::QuotaType::Project, vfs::QFMT_VFS_V1, None).expect("quota_on");
+
+    let inode = m.state().create_at(b"/project-edquot.txt", 0o644).expect("create");
+    let ino = m.state().mount.lookup_path(b"/project-edquot.txt").expect("lookup");
+    m.state().mount.write_at(ino, 0, &[0x5a; 2048]).expect("write file");
+    let usage = m.state().mount.read_inode(ino).expect("read raw").i_blocks as u64 * 512;
+    assert_ne!(usage, 0);
+
+    let before_old = vfs::quota_getquota(&sb, vfs::Kqid::project(0)).expect("old project before");
+    let before_new = vfs::quota_getquota(&sb, vfs::Kqid::project(77)).expect("new project before");
+    vfs::quota_setquota(&sb, vfs::Kqid::project(77), vfs::MemDqblk {
+        dqb_bhardlimit: 1,
+        dqb_curspace: before_new.dqb_curspace,
+        dqb_curinodes: before_new.dqb_curinodes,
+        ..vfs::MemDqblk::new()
+    }).expect("limit destination project");
+
+    let flags = inode.fileattr_get().unwrap().flags;
+    assert_eq!(
+        inode.fileattr_set(&FileAttr { flags, fsx_projid: 77, ..Default::default() }),
+        Err(VfsError::Edquot),
+    );
+
+    assert_eq!(inode.fileattr_get().unwrap().fsx_projid, 0);
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().i_projid, 0);
+    assert_eq!(vfs::quota_getquota(&sb, vfs::Kqid::project(0)).expect("old after").dqb_curspace, before_old.dqb_curspace);
+    assert_eq!(vfs::quota_getquota(&sb, vfs::Kqid::project(0)).expect("old after").dqb_curinodes, before_old.dqb_curinodes);
+    assert_eq!(vfs::quota_getquota(&sb, vfs::Kqid::project(77)).expect("new after").dqb_curspace, before_new.dqb_curspace);
+    assert_eq!(vfs::quota_getquota(&sb, vfs::Kqid::project(77)).expect("new after").dqb_curinodes, before_new.dqb_curinodes);
+}
+
+#[test]
 fn hidden_project_quota_file_rejects_fileattr_change() {
-    let hello_ino = 12;
-    let disk = shared_project_quota_file_disk(hello_ino);
+    let disk = shared_project_quota_file_disk(HELLO_INO);
     let (m, _sb) = mount(disk);
     let ino = m.state().mount.lookup_path(b"/hello.txt").expect("lookup hello");
-    assert_eq!(ino, hello_ino, "fixture inode changed");
-    assert_eq!(m.state().mount.sb.prj_quota_inum, hello_ino);
+    assert_eq!(ino, HELLO_INO, "fixture inode changed");
+    assert_eq!(m.state().mount.sb.prj_quota_inum, HELLO_INO);
     let inode = m.state().lookup_inode_any(b"/hello.txt").expect("inode");
     let before = inode.fileattr_get().unwrap();
 

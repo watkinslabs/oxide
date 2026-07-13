@@ -6,6 +6,8 @@ use crate::fs::fs_context::FsContextOps;
 use crate::file_ops::FileOps;
 use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING};
 use crate::inode_ops::InodeOps;
+use crate::namei::VfsPath;
+use crate::quota::{Kqid, MemDqblk, QuotaState, QuotaType};
 use crate::types::{Ino, KResult};
 use super::SuperBlock;
 
@@ -71,6 +73,87 @@ pub trait SuperOps: Send + Sync {
     /// `fs_context_operations.reconfigure` supersedes this for converted
     /// filesystems; this is the classic hook for the rest. # C: FS-dependent
     fn remount_fs(&self, _sb_flags: u64) -> KResult<()> { Ok(()) }
+    /// `s_qcop->quota_on` / filesystem quota enable hook. Default no-op
+    /// unsupported for filesystems without on-disk quota files. # C: FS-dependent
+    fn quota_on(&self, _sb: &SuperBlock, _kind: QuotaType, _format_id: u32, _path: Option<&VfsPath>) -> KResult<()> {
+        Err(crate::types::VfsError::Eopnotsupp)
+    }
+    /// True when `s_qcop->quota_on` is installed. # C: O(1)
+    fn quota_on_supported(&self, _sb: &SuperBlock, _kind: QuotaType) -> bool { false }
+    /// Filesystem installs Linux `s_qcop` quotactl hooks. # C: O(1)
+    fn quota_supported(&self) -> bool { false }
+    /// Filesystem supports this Linux quota class (`s_quota_types`). # C: O(1)
+    fn quota_type_supported(&self, _kind: QuotaType) -> bool { false }
+    /// `s_qcop->quota_enable` / system quota-file enforcement enable.
+    /// # C: FS-dependent
+    fn quota_enable(&self, _sb: &SuperBlock, _kind: QuotaType) -> KResult<()> {
+        Err(crate::types::VfsError::Enosys)
+    }
+    /// True when `s_qcop->quota_enable` is installed. # C: O(1)
+    fn quota_enable_supported(&self, _sb: &SuperBlock, _kind: QuotaType) -> bool { false }
+    /// `s_qcop->quota_disable` / system quota-file enforcement disable.
+    /// # C: FS-dependent
+    fn quota_disable(&self, _sb: &SuperBlock, _kind: QuotaType) -> KResult<()> {
+        Err(crate::types::VfsError::Enosys)
+    }
+    /// True when `s_qcop->quota_disable` is installed. # C: O(1)
+    fn quota_disable_supported(&self, _sb: &SuperBlock, _kind: QuotaType) -> bool { false }
+    /// `s_qcop->get_state` / XFS-compatible quota-state snapshot. # C: FS-dependent
+    fn quota_get_state(&self, sb: &SuperBlock) -> KResult<QuotaState> {
+        sb.s_dquot.any_operations().ok_or(crate::types::VfsError::Enosys)?.get_state(sb)
+    }
+    /// True when `s_qcop->get_state` is installed. # C: O(1)
+    fn quota_get_state_supported(&self, sb: &SuperBlock) -> bool {
+        sb.s_dquot.any_operations().is_some()
+    }
+    /// `s_qcop->quota_off` / filesystem quota disable hook. # C: FS-dependent
+    fn quota_off(&self, sb: &SuperBlock, kind: QuotaType) -> KResult<()> {
+        crate::quota_off(sb, kind)
+    }
+    /// `s_qcop->set_xstate` / XFS-compatible quota enable. # C: FS-dependent
+    fn quota_enable_xfs(&self, _sb: &SuperBlock, _flags: u32) -> KResult<()> {
+        Err(crate::types::VfsError::Enosys)
+    }
+    /// True when `s_qcop->set_xstate` quota-enable hook is installed. # C: O(1)
+    fn quota_enable_xfs_supported(&self, _sb: &SuperBlock) -> bool { false }
+    /// `s_qcop->set_xstate` / XFS-compatible quota disable. # C: FS-dependent
+    fn quota_disable_xfs(&self, _sb: &SuperBlock, _flags: u32) -> KResult<()> {
+        Err(crate::types::VfsError::Enosys)
+    }
+    /// True when `s_qcop->set_xstate` quota-disable hook is installed. # C: O(1)
+    fn quota_disable_xfs_supported(&self, _sb: &SuperBlock) -> bool { false }
+    /// `s_qcop->rm_xquota` / XFS-compatible quota-file removal. # C: FS-dependent
+    fn quota_remove_xfs(&self, _sb: &SuperBlock, _flags: u32) -> KResult<()> {
+        Err(crate::types::VfsError::Enosys)
+    }
+    /// `s_qcop->set_info` / XFS-compatible quota info update.
+    /// # C: FS-dependent
+    fn quota_set_info_xfs(&self, sb: &SuperBlock, kind: QuotaType, info: crate::quota::MemDqinfo) -> KResult<()> {
+        crate::quota_setinfo(sb, kind, info)
+    }
+    /// True when `s_qcop->set_info` is installed. # C: O(1)
+    fn quota_set_info_xfs_supported(&self, sb: &SuperBlock) -> bool {
+        sb.s_dquot.any_operations().is_some()
+    }
+    /// `s_qcop->get_dqblk` / XFS-compatible quota record read.
+    /// # C: O(log N)+FS
+    fn quota_get_xfs(&self, sb: &SuperBlock, qid: Kqid) -> KResult<MemDqblk> {
+        crate::quota_getquota(sb, qid)
+    }
+    /// `s_qcop->get_nextdqblk` / XFS-compatible next quota record read.
+    /// # C: FS-dependent
+    fn quota_get_next_xfs(&self, sb: &SuperBlock, qid: Kqid) -> KResult<(Kqid, MemDqblk)> {
+        crate::quota_getnextquota(sb, qid)
+    }
+    /// `s_qcop->set_dqblk` / XFS-compatible masked quota record update.
+    /// # C: O(log N)+FS
+    fn quota_set_xfs(&self, sb: &SuperBlock, qid: Kqid, dqblk: MemDqblk, fieldmask: u32, now_sec: u64) -> KResult<()> {
+        crate::quota_setquota_masked(sb, qid, dqblk, fieldmask, now_sec)
+    }
+    /// True when `s_qcop->set_dqblk` is installed. # C: O(1)
+    fn quota_set_xfs_supported(&self, sb: &SuperBlock) -> bool {
+        sb.s_dquot.any_operations().is_some()
+    }
     /// `put_super` — last-umount teardown. Default no-op. # C: O(1)
     fn put_super(&self) {}
 

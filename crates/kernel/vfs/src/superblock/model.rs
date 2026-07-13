@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 use sync::{RwLock, Spinlock};
 use crate::dentry::Dentry;
 use crate::inode::InodeRef;
+use crate::quota::QuotaInfo;
 use super::{FileSystemType, SuperBlock, SuperOps, MAX_LFS_FILESIZE, SB_ACTIVE, SB_BORN, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
 
 impl SuperBlock {
@@ -23,7 +24,7 @@ impl SuperBlock {
         s_id: String,
         s_fs_info: Arc<dyn Any + Send + Sync>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let sb = Arc::new(Self {
             s_op, s_type, s_magic, s_dev, s_blocksize,
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_active: AtomicU32::new(1),
@@ -39,10 +40,14 @@ impl SuperBlock {
             s_sysfs_name: Spinlock::new(String::new()),
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
+            s_umount: RwLock::new(()),
             s_fs_info: Spinlock::new(s_fs_info),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
-        })
+            s_dquot: QuotaInfo::new(),
+        });
+        sb.s_dquot.bind_super(&sb);
+        sb
     }
 
     /// Finish `fill_super` after the backend selected explicit `s_type` and

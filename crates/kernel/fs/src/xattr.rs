@@ -153,6 +153,15 @@ fn write_user_bytes(p: u64, src: &[u8]) -> Result<(), i64> {
     Ok(())
 }
 
+fn xattr_errno(e: XattrError) -> i64 {
+    match e {
+        XattrError::Exists   => -(EEXIST as i64),
+        XattrError::NotFound => -(ENODATA as i64),
+        XattrError::NotSup   => -(EOPNOTSUPP as i64),
+        XattrError::Fs(e)    => -(e as i32 as i64),
+    }
+}
+
 fn do_set(inode: &InodeRef, name: String, value: Vec<u8>, flags: u32) -> i64 {
     // XATTR_CREATE | XATTR_REPLACE together is invalid (Linux EINVAL).
     if flags & XATTR_CREATE != 0 && flags & XATTR_REPLACE != 0 {
@@ -164,10 +173,8 @@ fn do_set(inode: &InodeRef, name: String, value: Vec<u8>, flags: u32) -> i64 {
     let create  = flags & XATTR_CREATE  != 0;
     let replace = flags & XATTR_REPLACE != 0;
     match inode.setxattr(&name, value, create, replace) {
-        Ok(())                    => 0,
-        Err(XattrError::Exists)   => -(EEXIST as i64),
-        Err(XattrError::NotFound) => -(ENODATA as i64),
-        Err(XattrError::NotSup)   => -(EOPNOTSUPP as i64),
+        Ok(()) => 0,
+        Err(e) => xattr_errno(e),
     }
 }
 
@@ -179,6 +186,7 @@ fn do_get(inode: &InodeRef, name: &str, buf_p: u64, buflen: usize) -> i64 {
         Err(XattrError::NotFound) => return -(ENODATA as i64),
         Err(XattrError::NotSup)   => return -(EOPNOTSUPP as i64),
         Err(XattrError::Exists)   => return -(EOPNOTSUPP as i64),
+        Err(XattrError::Fs(e))    => return -(e as i32 as i64),
     };
     let want = val.len();
     if buflen == 0 { return want as i64; }
@@ -193,6 +201,7 @@ fn do_list(inode: &InodeRef, buf_p: u64, buflen: usize) -> i64 {
         Ok(ns) => ns.into_iter().filter(|n| !read_hidden(n)).collect(),
         Err(XattrError::NotSup) => return -(EOPNOTSUPP as i64),
         Err(XattrError::NotFound) | Err(XattrError::Exists) => return -(EOPNOTSUPP as i64),
+        Err(XattrError::Fs(e)) => return -(e as i32 as i64),
     };
     let payload = xattr_list_payload(&names);
     let total = payload.len();
@@ -215,10 +224,8 @@ fn do_remove(inode: &InodeRef, name: &str) -> i64 {
     if let Err(rv) = check_name_len(name) { return rv; }
     if let Err(rv) = check_write_perm(inode, name) { return rv; }
     match inode.removexattr(name) {
-        Ok(())                    => 0,
-        Err(XattrError::NotFound) => -(ENODATA as i64),
-        Err(XattrError::NotSup)   => -(EOPNOTSUPP as i64),
-        Err(XattrError::Exists)   => -(EOPNOTSUPP as i64),
+        Ok(()) => 0,
+        Err(e) => xattr_errno(e),
     }
 }
 

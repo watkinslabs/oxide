@@ -7,7 +7,7 @@ use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{InodeOps, mk_mode};
 use vfs::{DirContext, FileType, Inode, InodeRef, KResult, VfsError};
 
-use super::data::{Ext4StatData, ext4_file_ino, persist_inode_xattrs};
+use super::data::{Ext4StatData, ext4_file_ino, remove_inode_xattr, set_inode_xattr};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
 
@@ -57,17 +57,11 @@ impl InodeOps for Ext4StatInodeOps {
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
         -> Result<(), vfs::XattrError>
     {
-        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
-        store.set(name, value, create, replace)?;
-        persist_inode_xattrs(inode);
-        Ok(())
+        set_inode_xattr(inode, name, value, create, replace)
     }
 
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), vfs::XattrError> {
-        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
-        store.remove(name)?;
-        persist_inode_xattrs(inode);
-        Ok(())
+        remove_inode_xattr(inode, name)
     }
 
     fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
@@ -87,8 +81,14 @@ impl InodeOps for Ext4StatInodeOps {
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
-        let ino = d.st.mount.create_dir(d.ino, name.as_bytes(), m & 0o7777, uid, gid)
-            .map_err(super::regular::vfs_error_from_mount)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
+        let ino = match d.st.mount.create_dir(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
+            Ok(ino) => ino,
+            Err(e) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
+                return Err(super::regular::vfs_error_from_mount(e));
+            }
+        };
         d.st.forget_created_ino(ino);
         d.st.wrap_any_ino(ino).ok_or(VfsError::Eio)
     }
@@ -116,7 +116,12 @@ impl InodeOps for Ext4StatInodeOps {
         // and decrement the parent's link count (ext4_rmdir). Replaces the old
         // dirent-remove + inode-bit-free that leaked the dir's data blocks and
         // never persisted the parent nlink drop.
-        mount.rmdir(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
+        super::super::quota::release_existing_inode_usage(&d.st, &i)?;
+        if let Err(e) = mount.run_journaled(|m| m.rmdir(d.ino, name.as_bytes())) {
+            let _ = super::super::quota::recharge_existing_inode_usage(&d.st, &i);
+            return Err(super::regular::vfs_error_from_mount(e));
+        }
+        super::super::quota::drop_existing_inode_dquots(&d.st, target);
         if let Some(sb) = d.st.i_sb() {
             if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.set_nlink(0); }
         }
@@ -130,8 +135,14 @@ impl InodeOps for Ext4StatInodeOps {
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
-        let ino = d.st.mount.create_file(d.ino, name.as_bytes(), m & 0o7777, uid, gid)
-            .map_err(super::regular::vfs_error_from_mount)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
+        let ino = match d.st.mount.create_file(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
+            Ok(ino) => ino,
+            Err(e) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
+                return Err(super::regular::vfs_error_from_mount(e));
+            }
+        };
         d.st.forget_created_ino(ino);
         d.st.wrap_file(ino).ok_or(VfsError::Eio)
     }
@@ -141,8 +152,14 @@ impl InodeOps for Ext4StatInodeOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
-        let ino = d.st.mount.create_anonymous_as(d.ino, m & 0o7777, uid, gid)
-            .map_err(super::regular::vfs_error_from_mount)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
+        let ino = match d.st.mount.create_anonymous_as(d.ino, m & 0o7777, uid, gid) {
+            Ok(ino) => ino,
+            Err(e) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
+                return Err(super::regular::vfs_error_from_mount(e));
+            }
+        };
         d.st.orphan_insert(ino);
         d.st.forget_created_ino(ino);
         d.st.wrap_file(ino).ok_or(VfsError::Eio)
@@ -155,7 +172,13 @@ impl InodeOps for Ext4StatInodeOps {
         let target = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
         let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
         if i.is_dir() { return Err(VfsError::Eisdir); }
-        mount.unlink(d.ino, name.as_bytes()).map_err(|_| VfsError::Eio)?;
+        let final_link = i.links_count <= 1;
+        if final_link { super::super::quota::release_existing_inode_usage(&d.st, &i)?; }
+        if let Err(e) = mount.run_journaled(|m| m.unlink(d.ino, name.as_bytes())) {
+            if final_link { let _ = super::super::quota::recharge_existing_inode_usage(&d.st, &i); }
+            return Err(super::regular::vfs_error_from_mount(e));
+        }
+        if final_link { super::super::quota::drop_existing_inode_dquots(&d.st, target); }
         d.st.page_cache.invalidate(InodeId(target as u64));
         if let Some(sb) = d.st.i_sb() {
             if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.drop_link(); }
@@ -191,8 +214,15 @@ impl InodeOps for Ext4StatInodeOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
-        let ino = d.st.mount.create_symlink(d.ino, name.as_bytes(), target, uid, gid)
-            .map_err(super::regular::vfs_error_from_mount)?;
+        let mode = vfs::types::S_IFLNK | 0o777;
+        super::super::quota::charge_new_inode(&d.st, d.ino, mode, uid, gid)?;
+        let ino = match d.st.mount.create_symlink(d.ino, name.as_bytes(), target, uid, gid) {
+            Ok(ino) => ino,
+            Err(e) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, mode, uid, gid);
+                return Err(super::regular::vfs_error_from_mount(e));
+            }
+        };
         d.st.forget_created_ino(ino);
         Ok(())
     }
@@ -203,7 +233,14 @@ impl InodeOps for Ext4StatInodeOps {
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, mode) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
             mode, mode, ctx.cred, ctx.umask);
-        let ino = d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, uid, gid).map_err(|_| VfsError::Eio)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, mode, uid, gid)?;
+        let ino = match d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, uid, gid) {
+            Ok(ino) => ino,
+            Err(_) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, mode, uid, gid);
+                return Err(VfsError::Eio);
+            }
+        };
         d.st.forget_created_ino(ino);
         Ok(())
     }
@@ -219,6 +256,7 @@ impl InodeOps for Ext4StatInodeOps {
         let (from_p, to_p) = (d.ino, nd.ino);
         let mount = &d.st.mount;
         let target = d.st.lookup_child_ino(from_p, old_name).ok_or(VfsError::Enoent)?;
+        if from_p == to_p && old_name == new_name && flags & vfs::namei::RENAME_EXCHANGE == 0 { return Ok(()); }
         let dest_victim = d.st.lookup_child_ino(to_p, new_name);
         super::super::ops::project_inherit_allows_child(mount, to_p, target)?;
         if flags & vfs::namei::RENAME_EXCHANGE != 0 {
@@ -243,21 +281,41 @@ impl InodeOps for Ext4StatInodeOps {
             .and_then(|v| mount.read_inode(v).ok())
             .map(|i| i.is_dir())
             .unwrap_or(false);
-        mount.run_journaled(|m| {
-            if dest_victim.is_some() { let _ = m.dir_unlink(to_p, to_name); }
+        let dest_raw = dest_victim.and_then(|v| mount.read_inode(v).ok());
+        const WHITEOUT_MODE: u16 = crate::inode::S_IFCHR;
+        let whiteout = flags & vfs::namei::RENAME_WHITEOUT != 0;
+        let dest_quota_released = dest_raw.as_ref().map_or(Ok(false),
+            |raw| super::super::quota::pre_release_existing_inode_if_final(&d.st, raw))?;
+        if whiteout {
+            if let Err(e) = super::super::quota::charge_new_inode(&d.st, from_p, WHITEOUT_MODE, 0, 0) {
+                if dest_quota_released { if let Some(raw) = dest_raw.as_ref() { let _ = super::super::quota::rollback_existing_inode_release(&d.st, raw); } }
+                return Err(e);
+            }
+        }
+        let rename = mount.run_journaled(|m| {
+            if dest_victim.is_some() {
+                if dest_is_dir { m.rmdir(to_p, to_name)?; } else { m.unlink(to_p, to_name)?; }
+            }
             m.dir_link(to_p, to_name, target, ftype)?;
             m.dir_unlink(from_p, from_name)?;
-            if flags & vfs::namei::RENAME_WHITEOUT != 0 {
-                m.create_mknod(from_p, from_name, crate::inode::S_IFCHR, 0, 0, 0)?;
-            }
+            if whiteout { m.create_mknod(from_p, from_name, WHITEOUT_MODE, 0, 0, 0)?; }
             Ok(())
-        }).map_err(|_| VfsError::Eio)?;
+        });
+        if let Err(e) = rename {
+            mount.refresh_cached_meta();
+            if whiteout {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, from_p, WHITEOUT_MODE, 0, 0);
+            }
+            if dest_quota_released { if let Some(raw) = dest_raw.as_ref() { let _ = super::super::quota::rollback_existing_inode_release(&d.st, raw); } }
+            return Err(super::regular::vfs_error_from_mount(e));
+        }
         if let Some(victim_ino) = dest_victim {
             if let Some(sb) = d.st.i_sb() {
                 if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
                     if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
                 }
             }
+            if dest_quota_released { super::super::quota::drop_existing_inode_dquots(&d.st, victim_ino); }
         }
         Ok(())
     }
@@ -355,19 +413,22 @@ impl FileOps for Ext4StatFileOps {
 /// CHR/BLK nodes (generic_fillattr reads it for those types only). # C: O(1)
 pub(crate) fn build_stat_inode(
     st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
-    uid: u32, gid: u32, times: (u64, u64, u64, u64),
+    uid: u32, gid: u32, projid: u32, times: (u64, u64, u64, u64),
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
+    let blocks = data.st.mount.read_inode(ino).map(|i| i.i_blocks as u64).unwrap_or(0);
     InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(ft, perm),
                       Arc::new(Ext4StatInodeOps), Arc::new(Ext4StatFileOps))
         .sb(weak_sb)
         .size(size)
+        .blocks(blocks)
         .nlink(nlink)
         .rdev(rdev)
         .owner(uid, gid)
+        .projid(projid)
         .times(times.0, times.1, times.2)
         .btime(times.3)
         .xattrs(xattrs)

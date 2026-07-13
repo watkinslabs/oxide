@@ -1,131 +1,34 @@
 // Glue between per-arch syscall asm stub and dispatch table per `15§4`.
 
 #![no_std]
-#![cfg(target_os = "oxide-kernel")]
-#[macro_use] extern crate kmacros;
+
+#[cfg(target_os = "oxide-kernel")]
+include!("kernel_body.rs");
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 extern crate alloc;
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+extern crate std;
 
-mod anon_dname;
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
-// Moved out of the kernel binary with the syscall layer (docs/53):
-pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio; pub mod pidfd;
-// One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]
-// under an `sNNN_` alias (a module name can't start with a digit).
-#[path = "452_fchmodat2.rs"] pub mod s452_fchmodat2; #[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set; #[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
-#[path = "090_chmod.rs"] pub mod s090_chmod; #[path = "091_fchmod.rs"] pub mod s091_fchmod; #[path = "268_fchmodat.rs"] pub mod s268_fchmodat; #[path = "092_chown.rs"] pub mod s092_chown; #[path = "093_fchown.rs"] pub mod s093_fchown; #[path = "260_fchownat.rs"] pub mod s260_fchownat;
-#[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr; #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get; #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
-#[path = "465_listxattrat.rs"] pub mod s465_listxattrat; #[path = "466_removexattrat.rs"] pub mod s466_removexattrat; #[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
-#[path = "188_setxattr.rs"] pub mod s188_setxattr; #[path = "189_lsetxattr.rs"] pub mod s189_lsetxattr; #[path = "190_fsetxattr.rs"] pub mod s190_fsetxattr;
-#[path = "191_getxattr.rs"] pub mod s191_getxattr; #[path = "192_lgetxattr.rs"] pub mod s192_lgetxattr; #[path = "193_fgetxattr.rs"] pub mod s193_fgetxattr;
-#[path = "194_listxattr.rs"] pub mod s194_listxattr; #[path = "195_llistxattr.rs"] pub mod s195_llistxattr; #[path = "196_flistxattr.rs"] pub mod s196_flistxattr;
-#[path = "197_removexattr.rs"] pub mod s197_removexattr; #[path = "198_lremovexattr.rs"] pub mod s198_lremovexattr; #[path = "199_fremovexattr.rs"] pub mod s199_fremovexattr;
-#[path = "468_file_getattr.rs"] pub mod s468_file_getattr; #[path = "469_file_setattr.rs"] pub mod s469_file_setattr; #[path = "470_listns.rs"] pub mod s470_listns; #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
-#[path = "451_cachestat.rs"] pub mod s451_cachestat;
-#[path = "335_uretprobe.rs"] pub mod s335_uretprobe; #[path = "336_uprobe.rs"] pub mod s336_uprobe; #[path = "453_map_shadow_stack.rs"] pub mod s453_map_shadow_stack;
-#[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam; #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr; #[path = "013_rt_sigaction.rs"] pub mod s013_rt_sigaction;
-#[path = "014_rt_sigprocmask.rs"] pub mod s014_rt_sigprocmask; #[path = "062_kill.rs"] pub mod s062_kill; #[path = "127_rt_sigpending.rs"] pub mod s127_rt_sigpending;
-#[path = "128_rt_sigtimedwait.rs"] pub mod s128_rt_sigtimedwait; #[path = "129_rt_sigqueueinfo.rs"] pub mod s129_rt_sigqueueinfo; #[path = "130_rt_sigsuspend.rs"] pub mod s130_rt_sigsuspend;
-#[path = "131_sigaltstack.rs"] pub mod s131_sigaltstack; #[path = "234_tgkill.rs"] pub mod s234_tgkill; #[path = "272_unshare.rs"] pub mod s272_unshare;
-#[path = "297_rt_tgsigqueueinfo.rs"] pub mod s297_rt_tgsigqueueinfo; #[path = "308_setns.rs"] pub mod s308_setns; #[path = "428_open_tree.rs"] pub mod s428_open_tree;
-#[path = "429_move_mount.rs"] pub mod s429_move_mount; #[path = "430_fsopen.rs"] pub mod s430_fsopen; #[path = "431_fsconfig.rs"] pub mod s431_fsconfig;
-#[path = "432_fsmount.rs"] pub mod s432_fsmount; #[path = "433_fspick.rs"] pub mod s433_fspick; #[path = "442_mount_setattr.rs"] pub mod s442_mount_setattr;
-#[path = "041_socket.rs"] pub mod s041_socket; #[path = "042_connect.rs"] pub mod s042_connect; #[path = "043_accept.rs"] pub mod s043_accept;
-#[path = "044_sendto.rs"] pub mod s044_sendto; #[path = "046_sendmsg.rs"] pub mod s046_sendmsg; #[path = "047_recvmsg.rs"] pub mod s047_recvmsg;
-#[path = "048_shutdown.rs"] pub mod s048_shutdown; #[path = "049_bind.rs"] pub mod s049_bind; #[path = "050_listen.rs"] pub mod s050_listen;
-#[path = "051_getsockname.rs"] pub mod s051_getsockname; #[path = "052_getpeername.rs"] pub mod s052_getpeername; #[path = "053_socketpair.rs"] pub mod s053_socketpair;
-#[path = "054_setsockopt/mod.rs"] pub mod s054_setsockopt; #[path = "055_getsockopt.rs"] pub mod s055_getsockopt; #[path = "082_rename.rs"] pub mod s082_rename;
-#[path = "083_mkdir.rs"] pub mod s083_mkdir; #[path = "084_rmdir.rs"] pub mod s084_rmdir; #[path = "086_link.rs"] pub mod s086_link;
-#[path = "087_unlink.rs"] pub mod s087_unlink; #[path = "088_symlink.rs"] pub mod s088_symlink; #[path = "133_mknod.rs"] pub mod s133_mknod;
-#[path = "258_mkdirat.rs"] pub mod s258_mkdirat; #[path = "259_mknodat.rs"] pub mod s259_mknodat; #[path = "263_unlinkat.rs"] pub mod s263_unlinkat;
-#[path = "264_renameat.rs"] pub mod s264_renameat; #[path = "265_linkat.rs"] pub mod s265_linkat; #[path = "266_symlinkat.rs"] pub mod s266_symlinkat;
-#[path = "316_renameat2.rs"] pub mod s316_renameat2; #[path = "228_clock_gettime.rs"] pub mod s228_clock_gettime; #[path = "229_clock_getres.rs"] pub mod s229_clock_getres;
-#[path = "227_clock_settime.rs"] pub mod s227_clock_settime; #[path = "096_gettimeofday.rs"] pub mod s096_gettimeofday; #[path = "164_settimeofday.rs"] pub mod s164_settimeofday;
-#[path = "201_time.rs"] pub mod s201_time; #[path = "137_statfs.rs"] pub mod s137_statfs; #[path = "138_fstatfs.rs"] pub mod s138_fstatfs;
-#[path = "001_write.rs"] pub mod s001_write; #[path = "257_openat.rs"] pub mod s257_openat; #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
-#[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
-#[path = "132_utime.rs"] pub mod s132_utime; #[path = "235_utimes.rs"] pub mod s235_utimes; #[path = "280_utimensat.rs"] pub mod s280_utimensat;
-mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path = "165_mount.rs"] pub mod s165_mount; #[path = "166_umount2.rs"] pub mod s166_umount2;
-#[path = "424_pidfd_send_signal.rs"] pub mod s424_pidfd_send_signal; #[path = "434_pidfd_open.rs"] pub mod s434_pidfd_open; #[path = "438_pidfd_getfd.rs"] pub mod s438_pidfd_getfd;
-#[path = "444_landlock_create_ruleset.rs"] pub mod s444_landlock_create_ruleset; #[path = "445_landlock_add_rule.rs"] pub mod s445_landlock_add_rule; #[path = "446_landlock_restrict_self.rs"] pub mod s446_landlock_restrict_self;
-mod fs_access_common; #[path = "021_access.rs"] pub mod s021_access; #[path = "269_faccessat.rs"] pub mod s269_faccessat; #[path = "307_sendmmsg.rs"] pub mod s307_sendmmsg; #[path = "299_recvmmsg.rs"] pub mod s299_recvmmsg;
-mod xattr_common;
-mod write_common;
-#[path = "290_eventfd2.rs"] pub mod s290_eventfd2; #[path = "319_memfd_create.rs"] pub mod s319_memfd_create;
-mod affinity_common; #[path = "203_sched_setaffinity.rs"] pub mod s203_sched_setaffinity; #[path = "204_sched_getaffinity.rs"] pub mod s204_sched_getaffinity;
-mod execve_common; #[path = "059_execve/mod.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;
-#[path = "425_io_uring_setup.rs"] pub mod s425_io_uring_setup; #[path = "426_io_uring_enter.rs"] pub mod s426_io_uring_enter; #[path = "427_io_uring_register.rs"] pub mod s427_io_uring_register;
-#[path = "462_mseal.rs"] pub mod s462_mseal;
-#[path = "039_getpid.rs"] pub mod s039_getpid;
-#[path = "003_close.rs"] pub mod s003_close;
-#[path = "461_lsm_list_modules.rs"] pub mod s461_lsm_list;
-#[path = "318_getrandom.rs"] pub mod s318_getrandom;
-#[path = "463_setxattrat.rs"] pub mod s463_setxattrat;
-#[path = "464_getxattrat.rs"] pub mod s464_getxattrat;
-#[path = "457_statmount.rs"] pub mod s457_statmount;
-#[path = "458_listmount.rs"] pub mod s458_listmount;
-#[path = "314_sched_setattr.rs"] pub mod s314_sched_setattr;
-mod signal_common;
-mod fsmount_common;
-pub use fsmount_common::ensure_filesystems_registered as ensure_mount_filesystems_registered;
-mod net_common;
-mod namei_common;
-mod time_common;
-pub use time_common::init_wall_clock_from_rtc;
-mod statfs_common;
-mod stat_common;
-#[path = "000_read.rs"] pub mod s000_read;
-mod open_common;
-#[path = "002_open.rs"] pub mod s002_open;
-#[path = "110_getppid.rs"] pub mod s110_getppid;
-#[path = "009_mmap.rs"] pub mod s009_mmap;
-#[path = "029_shmget.rs"] pub mod s029_shmget;
-#[path = "011_munmap.rs"] pub mod s011_munmap;
-#[path = "012_brk.rs"] pub mod s012_brk;
-#[path = "060_exit.rs"] pub mod s060_exit;
-#[path = "293_pipe2.rs"] pub mod s293_pipe2;
-#[path = "148_sched_rr_get_interval.rs"] pub mod s148_sched_rr_get_interval;
-#[path = "175_init_module.rs"] pub mod s175_init_module;
-#[path = "176_delete_module.rs"] pub mod s176_delete_module;
-#[path = "313_finit_module.rs"] pub mod s313_finit_module;
-#[path = "158_arch_prctl.rs"] pub mod s158_arch_prctl;
-#[path = "005_fstat.rs"] pub mod s005_fstat; #[path = "079_getcwd.rs"] pub mod s079_getcwd; #[path = "080_chdir.rs"] pub mod s080_chdir;
-#[path = "081_fchdir.rs"] pub mod s081_fchdir; #[path = "020_writev.rs"] pub mod s020_writev; #[path = "019_readv.rs"] pub mod s019_readv;
-#[path = "008_lseek.rs"] pub mod s008_lseek; #[path = "089_readlink.rs"] pub mod s089_readlink; #[path = "267_readlinkat.rs"] pub mod s267_readlinkat;
-#[path = "332_statx.rs"] pub mod s332_statx; #[path = "072_fcntl.rs"] pub mod s072_fcntl; #[path = "217_getdents64.rs"] pub mod s217_getdents64;
-#[path = "017_pread64.rs"] pub mod s017_pread64; #[path = "018_pwrite64.rs"] pub mod s018_pwrite64; #[path = "295_preadv.rs"] pub mod s295_preadv;
-#[path = "296_pwritev.rs"] pub mod s296_pwritev; #[path = "076_truncate.rs"] pub mod s076_truncate; #[path = "077_ftruncate.rs"] pub mod s077_ftruncate;
-#[path = "436_close_range.rs"] pub mod s436_close_range; #[path = "032_dup.rs"] pub mod s032_dup; #[path = "033_dup2.rs"] pub mod s033_dup2;
-#[path = "292_dup3.rs"] pub mod s292_dup3; #[path = "004_stat.rs"] pub mod s004_stat; #[path = "006_lstat.rs"] pub mod s006_lstat;
-#[path = "024_sched_yield.rs"] pub mod s024_sched_yield; #[path = "186_gettid.rs"] pub mod s186_gettid; #[path = "218_set_tid_address.rs"] pub mod s218_set_tid_address;
-#[path = "202_futex.rs"] pub mod s202_futex; #[path = "435_clone3.rs"] pub mod s435_clone3; #[path = "010_mprotect.rs"] pub mod s010_mprotect;
-#[path = "028_madvise.rs"] pub mod s028_madvise; #[path = "302_prlimit64.rs"] pub mod s302_prlimit64; #[path = "035_nanosleep.rs"] pub mod s035_nanosleep;
-#[path = "153_vhangup.rs"] pub mod s153_vhangup; #[path = "273_set_robust_list.rs"] pub mod s273_set_robust_list; #[path = "274_get_robust_list.rs"] pub mod s274_get_robust_list;
-#[path = "097_getrlimit.rs"] pub mod s097_getrlimit; #[path = "160_setrlimit.rs"] pub mod s160_setrlimit; #[path = "098_getrusage.rs"] pub mod s098_getrusage;
-#[path = "100_times.rs"] pub mod s100_times; #[path = "099_sysinfo.rs"] pub mod s099_sysinfo; #[path = "025_mremap.rs"] pub mod s025_mremap;
-#[path = "026_msync.rs"] pub mod s026_msync; #[path = "027_mincore.rs"] pub mod s027_mincore; #[path = "149_mlock_family.rs"] pub mod s149_mlock_family;
-#[path = "111_getpgrp.rs"] pub mod s111_getpgrp; #[path = "121_getpgid.rs"] pub mod s121_getpgid; #[path = "124_getsid.rs"] pub mod s124_getsid;
-#[path = "109_setpgid.rs"] pub mod s109_setpgid; #[path = "112_setsid.rs"] pub mod s112_setsid; #[path = "095_umask.rs"] pub mod s095_umask;
-#[path = "309_getcpu.rs"] pub mod s309_getcpu; #[path = "143_sched_getparam.rs"] pub mod s143_sched_getparam; #[path = "145_sched_getscheduler.rs"] pub mod s145_sched_getscheduler;
-#[path = "144_sched_setscheduler.rs"] pub mod s144_sched_setscheduler;
-#[path = "146_sched_get_priority_max.rs"] pub mod s146_sched_get_priority_max; #[path = "147_sched_get_priority_min.rs"] pub mod s147_sched_get_priority_min; #[path = "324_membarrier.rs"] pub mod s324_membarrier;
-#[path = "170_sethostname.rs"] pub mod s170_sethostname; #[path = "037_alarm.rs"] pub mod s037_alarm; #[path = "034_pause.rs"] pub mod s034_pause;
-#[path = "038_setitimer.rs"] pub mod s038_setitimer; #[path = "036_getitimer.rs"] pub mod s036_getitimer;
-mod userbuf;
-pub mod dispatch;
-#[path = "161_chroot.rs"] pub mod chroot;
-#[path = "230_clock_nanosleep.rs"] pub mod clock_nanosleep;
-#[path = "056_clone.rs"] pub mod clone;
-#[path = "449_futex_waitv.rs"] pub mod futex_waitv;
-#[path = "303_name_to_handle_at.rs"] pub mod handle;
-#[path = "304_open_by_handle_at.rs"] pub mod s304_open_by_handle_at;
-#[path = "171_setdomainname.rs"] pub mod hostname;
-#[path = "016_ioctl.rs"] pub mod ioctl;
-#[path = "045_recvfrom.rs"] pub mod net_recv;
-#[path = "262_newfstatat.rs"] pub mod newfstatat;
-#[path = "101_ptrace.rs"] pub mod ptrace;
-#[path = "063_uname.rs"] pub mod uname;
-#[path = "247_waitid.rs"] pub mod waitid;
-#[path = "061_wait4.rs"] pub mod wait;
-#[path = "179_quotactl.rs"] pub mod s179_quotactl; #[path = "443_quotactl_fd.rs"] pub mod s443_quotactl_fd;
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod namei_common {
+    use alloc::string::String;
 
-pub mod anonfd; pub mod execve; pub mod fs; pub mod fs_access; pub mod hwrng; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei; pub mod perms; pub mod perms_common; pub mod poll; pub mod proc; pub mod ptrace_fpu; pub mod pvmrw; pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time; pub mod utime_common; pub mod priority; pub mod pathresolve; pub mod affinity;
+    pub fn errno_from_vfs(e: vfs::VfsError) -> i64 { -(e as i64) }
+    pub fn read_user_path(_addr: u64) -> Result<String, i64> {
+        Err(-(syscall::errno::Errno::Efault.as_i32() as i64))
+    }
+}
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod pathresolve {
+    pub fn resolve_path_raw(_raw: &str, _follow: bool) -> vfs::KResult<vfs::VfsPath> {
+        Err(vfs::VfsError::Enoent)
+    }
+}
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "179_quotactl.rs"] pub mod s179_quotactl;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "443_quotactl_fd.rs"] pub mod s443_quotactl_fd;

@@ -136,10 +136,14 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let vp = match crate::pathresolve::resolve_path_raw(&target_raw, false) {
             Ok(p) => p, Err(_) => return -(Errno::Einval.as_i32() as i64),
         };
-        return match vfs::mount::remount_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE) {
+        let r = if flags & MS_BIND != 0 {
+            vfs::mount::remount_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE)
+        } else {
+            vfs::mount::remount_super_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE)
+        };
+        return match r {
             Ok(()) => 0,
-            Err(vfs::VfsError::Einval) => -(Errno::Einval.as_i32() as i64),
-            Err(_) => -(Errno::Ebusy.as_i32() as i64),
+            Err(e) => crate::namei_common::errno_from_vfs(e),
         };
     }
 

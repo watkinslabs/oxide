@@ -30,10 +30,14 @@ pub const MS_RDONLY: u64 = 0x1;
 pub const MS_NOSUID: u64 = 0x2;
 pub const MS_NODEV: u64 = 0x4;
 pub const MS_NOEXEC: u64 = 0x8;
+pub const MS_SYNCHRONOUS: u64 = 0x10;
+pub const MS_MANDLOCK: u64 = 0x40;
+pub const MS_DIRSYNC: u64 = 0x80;
 pub const MS_NOATIME: u64 = 0x400;
 pub const MS_NODIRATIME: u64 = 0x800;
 pub const MS_RELATIME: u64 = 1 << 21;
 pub const MS_STRICTATIME: u64 = 1 << 24;
+pub const MS_LAZYTIME: u64 = 1 << 25;
 
 /// Map a mount(2) MS_* OPTION request mask to the per-mount MNT_* flag space
 /// (Linux `do_mount`/`reconfigure`: derive `mnt_flags` from the request). The

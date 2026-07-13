@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, Superblock as SbClass};
 use super::SuperBlock;
+use crate::types::KResult;
 
 /// `unnamed_dev_ida` minor allocator (Linux `fs/super.c` `get_anon_bdev`) —
 /// the single monotonically-increasing minor source shared by BOTH the
@@ -41,6 +42,11 @@ pub fn fs_supers() -> Vec<Arc<SuperBlock>> {
     FS_SUPERS.lock().iter().filter_map(Weak::upgrade).collect()
 }
 
+/// Find a live superblock by backing `s_dev`. # C: O(N_sb)
+pub fn sb_by_dev(dev: u64) -> Option<Arc<SuperBlock>> {
+    FS_SUPERS.lock().iter().filter_map(Weak::upgrade).find(|sb| sb.s_dev == dev)
+}
+
 /// Register `sb` in the global `fs_supers` list (Linux `fill_super` →
 /// `list_add(&s->s_list, &super_blocks)`). Prunes dead `Weak`s and de-dups an
 /// already-registered live instance on the way. # C: O(N_sb)
@@ -57,18 +63,27 @@ pub fn register_super(sb: &Arc<SuperBlock>) {
 /// umount). Otherwise `build()` a fresh instance, register it, and return it.
 /// This is the dedup used by the mount table's device-backed fill-super path;
 /// anonymous/pseudo filesystems still receive a fresh anon device. # C: O(N_sb)
-pub fn sget(dev: u64, build: impl FnOnce() -> Arc<SuperBlock>) -> Arc<SuperBlock> {
+pub fn sget_result(dev: u64, build: impl FnOnce() -> KResult<Arc<SuperBlock>>) -> KResult<Arc<SuperBlock>> {
     {
         let g = FS_SUPERS.lock();
         for w in g.iter() {
             if let Some(sb) = w.upgrade() {
-                if sb.s_dev == dev && sb.grab_active() { sb.s_count_inc(); return sb; }
+                if sb.s_dev == dev && sb.grab_active() { sb.s_count_inc(); return Ok(sb); }
             }
         }
     }
-    let sb = build();
+    let sb = build()?;
     register_super(&sb);
-    sb
+    Ok(sb)
+}
+
+/// Infallible compatibility wrapper for callers whose fill-super cannot fail.
+/// # C: O(N_sb)
+pub fn sget(dev: u64, build: impl FnOnce() -> Arc<SuperBlock>) -> Arc<SuperBlock> {
+    match sget_result(dev, || Ok(build())) {
+        Ok(sb) => sb,
+        Err(_) => unreachable!(),
+    }
 }
 
 // `s_flags` bits (Linux include/linux/fs.h). User-visible mount RO/option

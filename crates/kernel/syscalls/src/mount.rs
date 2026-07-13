@@ -26,6 +26,11 @@ pub fn install_vfs_hooks() {
         sched::live::sb_freeze::schedule_after_park,
         sched::live::sb_freeze::wake,
     );
+    vfs::set_quota_wait_hooks(
+        sched::live::quota_wait::park,
+        sched::live::quota_wait::schedule_after_park,
+        sched::live::quota_wait::wake,
+    );
     // The mount engine NEVER resolves a mount-point STRING to a dentry
     // (`docs/16§3`): every caller hands `register*`/`move_mount`/… the
     // `Arc<Dentry>` its namei walk produced. The only provider needed is the

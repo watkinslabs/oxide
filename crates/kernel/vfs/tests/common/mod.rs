@@ -102,7 +102,7 @@ pub fn realize_sb(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, dev: u64, s_i
     let ty: Arc<dyn vfs::FileSystemType> =
         vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
     let sb = SuperBlock::from_ops(ty, s_op, root, fs.magic(), dev, fs.block_size(), s_id, Arc::new(()));
-    fs.set_sb(Arc::downgrade(&sb));
+    fs.set_sb(Arc::downgrade(&sb)).expect("test fs set_sb");
     sb
 }
 

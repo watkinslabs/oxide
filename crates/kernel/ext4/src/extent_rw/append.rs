@@ -1,5 +1,5 @@
 use crate::inode::{self, I_BLOCK_LEN};
-use crate::mount::{Mount, MountError, write_byte_range};
+use crate::mount::{Mount, MountError};
 
 use super::EXT4_MAX_EXTENT_DEPTH;
 
@@ -79,31 +79,48 @@ impl Mount {
         }
 
         let hint_group = Self::extent_hint_group(self, &leaf_extents, logical);
-        let phys = self.alloc_block(hint_group)?;
+        let mut simulated_extents = leaf_extents;
+        Self::insert_extent_record(&mut simulated_extents, Self::extent_for(logical, 0))?;
+        let extra_meta_sectors = self.extra_meta_sectors_for_insert(&i_block, &hdr, logical, simulated_extents.len())?;
+        let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
+        let charged_i_blocks = prev_i_blocks
+            .saturating_add((self.sb.block_size / 512) as u32)
+            .saturating_add(extra_meta_sectors);
+        self.account_i_blocks_delta(ino, prev_i_blocks, charged_i_blocks)?;
+
+        let phys = match self.alloc_block(hint_group) {
+            Ok(phys) => phys,
+            Err(e) => {
+                return Err(self.rollback_i_blocks_delta(ino, charged_i_blocks, prev_i_blocks, e));
+            }
+        };
         let new_extent = if unwritten {
             Self::extent_for_unwritten(logical, phys, 1)
         } else {
-            if !defer_data { write_byte_range(&*self.dev, phys * bs as u64, data)?; }
+            if !defer_data {
+                if let Err(e) = self.write_data_byte_range(phys * bs as u64, data) {
+                    return Err(self.rollback_insert_charge(ino, prev_i_blocks, charged_i_blocks, Some(phys), &[], e));
+                }
+            }
             Self::extent_for(logical, phys)
         };
 
-        let mut simulated_extents = leaf_extents;
-        Self::insert_extent_record(&mut simulated_extents, new_extent)?;
-        match self.insert_would_exceed_max_depth(&i_block, &hdr, logical, simulated_extents.len()) {
-            Ok(false) => {}
-            Ok(true) => {
-                let _ = self.free_block(phys);
-                return Err(MountError::ExtentTreeFull);
-            }
+        let insert = self.insert_into_inline_root(ino, gen, &mut i_block, hdr, logical, new_extent, hint_group);
+        let (actual_extra_meta_sectors, allocated_meta_blocks) = match insert {
+            Ok(r) => r,
             Err(e) => {
-                let _ = self.free_block(phys);
-                return Err(e);
+                return Err(self.rollback_insert_charge(ino, prev_i_blocks, charged_i_blocks, Some(phys), &[], e));
             }
+        };
+        if actual_extra_meta_sectors != extra_meta_sectors {
+            self.free_allocated_blocks(&allocated_meta_blocks);
+            return Err(self.rollback_insert_charge(ino, prev_i_blocks, charged_i_blocks, Some(phys), &[], MountError::CorruptExtentTree));
         }
-
-        let extra_meta_sectors =
-            self.insert_into_inline_root(ino, gen, &mut i_block, hdr, logical, new_extent, hint_group)?;
-        self.persist_inode_after_append(ino, ino_bytes, ino_byte_off, &i_block, new_size, extra_meta_sectors)?;
+        if let Err(e) = self.persist_inode_after_append(ino, ino_bytes, ino_byte_off, &i_block, new_size, extra_meta_sectors, true) {
+            self.free_allocated_blocks(&allocated_meta_blocks);
+            let _ = self.free_block(phys);
+            return Err(e);
+        }
         Ok(logical)
     }
 
