@@ -106,6 +106,14 @@ pub trait SuperOps: Send + Sync {
     fn quota_get_state_supported(&self, sb: &SuperBlock) -> bool {
         sb.s_dquot.any_operations().is_some()
     }
+    /// `s_qcop->quota_sync` / persist one quota class. # C: FS-dependent
+    fn quota_sync(&self, sb: &SuperBlock, kind: QuotaType) -> KResult<()> {
+        crate::quota_sync(sb, kind)
+    }
+    /// True when `s_qcop->quota_sync` is installed. # C: O(1)
+    fn quota_sync_supported(&self, sb: &SuperBlock, kind: QuotaType) -> bool {
+        sb.s_dquot.operations(kind).is_some()
+    }
     /// `s_qcop->quota_off` / filesystem quota disable hook. # C: FS-dependent
     fn quota_off(&self, sb: &SuperBlock, kind: QuotaType) -> KResult<()> {
         crate::quota_off(sb, kind)
