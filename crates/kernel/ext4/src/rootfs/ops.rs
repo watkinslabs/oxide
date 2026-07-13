@@ -198,7 +198,7 @@ impl RootfsState {
         let raw = self.mount.read_inode(ino).map_err(|_| vfs::VfsError::Eio)?;
         if raw.links_count != 0 { return Ok(()); }
         self.mount.free_orphan_inode(ino).map_err(|_| vfs::VfsError::Eio)?;
-        let quota = super::quota::release_existing_inode(self, ino, &raw);
+        let quota = super::quota::release_existing_inode_retry(self, ino, &raw);
         self.page_cache.invalidate(InodeId(ino as u64));
         quota
     }
