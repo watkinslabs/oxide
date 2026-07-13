@@ -82,7 +82,7 @@ const SYSCTL_TREE: &[Node] = &[
         File("osrelease",             Const(b"5.15.0-oxide\n")),
         File("ostype",                Const(b"Linux\n")),
         File("version",               Const(b"#1 SMP PREEMPT oxide v0.1.0\n")),
-        File("domainname",            Const(b"(none)\n")),
+        File("domainname",            StrHook(crate::hooks::domainname, crate::hooks::set_domainname)),
         File("threads-max",           Int(32768, Some((20, INT_MAX)))),
         File("printk",                Bytes(b"4\t4\t1\t7\n")),
         File("sched_rr_timeslice_ms", Int(100, Some((1, INT_MAX)))),

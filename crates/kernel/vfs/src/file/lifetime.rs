@@ -11,6 +11,7 @@ use super::hooks::{close_hooks, flock_release_hook};
 
 impl Drop for File {
     fn drop(&mut self) {
+        self.release_epoll_links();
         // Drop any lease / dnotify registration (Linux `__fput` → `locks_remove_file`
         // / `dnotify_flush`). Weaks self-expire, but prune eagerly + fix the counters.
         if self.lease.load(Ordering::Acquire) != F_UNLCK { lease_unregister(self); }
@@ -35,8 +36,6 @@ impl Drop for File {
             let f = OpenFlags::from_bits_retain(bits);
             f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
         };
-        // Copy the close-hook slots out under the registry lock, release it,
-        // then fire each — no foreign hook runs while the lock is held.
         let close = close_hooks();
         for slot in close.iter() {
             if let Some(f) = slot { f(&self.inode, was_writable); }

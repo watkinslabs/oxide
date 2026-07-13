@@ -159,12 +159,42 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         // (not crossing the final mountpoint) with the walked parent mount id.
         let source_d = source_vp.dentry.clone();
         let source_mnt = source_vp.mnt_id;
-        if !vfs::mount::mount_by_id(source_mnt).map(|m| vfs::mount::check_mnt(&m)).unwrap_or(false) {
+        let source_ok = vfs::mount::mount_by_id(source_mnt).map(|m| vfs::mount::check_mnt(&m)).unwrap_or(false);
+        #[cfg(feature = "debug-mount")]
+        if target_raw.starts_with("/proc/self/fd/") || source_raw == "/" {
+            klog::write_raw(b"[MNTBIND] ns=");
+            klog::write_dec_u64(ns);
+            klog::write_raw(b" source=");
+            klog::write_raw(source_raw.as_bytes());
+            klog::write_raw(b" source_mnt=");
+            klog::write_dec_u64(source_mnt);
+            klog::write_raw(b" source_ok=");
+            klog::write_dec_u64(if source_ok { 1 } else { 0 });
+            klog::write_raw(b" target=");
+            klog::write_raw(target_raw.as_bytes());
+            klog::write_raw(b" target_parent=");
+            klog::write_dec_u64(target_mt.parent.mnt_id);
+            klog::write_raw(b"\n");
+        }
+        if !source_ok {
             return -(Errno::Einval.as_i32() as i64);
         }
         let target_d = target_mt.mountpoint.clone();
         let target_parent_mnt = target_mt.parent.mnt_id;
-        if !vfs::mount::mount_by_id(target_parent_mnt).map(|m| vfs::mount::check_mnt(&m)).unwrap_or(false) {
+        let target_ok = vfs::mount::mount_by_id(target_parent_mnt).map(|m| vfs::mount::check_mnt(&m)).unwrap_or(false);
+        #[cfg(feature = "debug-mount")]
+        if target_raw.starts_with("/proc/self/fd/") || source_raw == "/" {
+            klog::write_raw(b"[MNTBIND2] ns=");
+            klog::write_dec_u64(ns);
+            klog::write_raw(b" target_parent=");
+            klog::write_dec_u64(target_parent_mnt);
+            klog::write_raw(b" target_ok=");
+            klog::write_dec_u64(if target_ok { 1 } else { 0 });
+            klog::write_raw(b" target_render=");
+            klog::write_raw(target.as_bytes());
+            klog::write_raw(b"\n");
+        }
+        if !target_ok {
             return -(Errno::Einval.as_i32() as i64);
         }
         // Linux `do_add_mount` keys the target on `(parent vfsmount, dentry)`.

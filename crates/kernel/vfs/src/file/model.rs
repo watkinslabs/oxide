@@ -99,6 +99,7 @@ impl File {
             f_version: AtomicU64::new(0),
             // RWH_WRITE_LIFE_NOT_SET (Linux `F_GET_RW_HINT` default).
             rw_hint: AtomicU64::new(0),
+            epoll_links: Spinlock::new(alloc::vec::Vec::new()),
         })
     }
 
@@ -168,6 +169,18 @@ impl File {
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         self.f_op.poll_open_file(self)
+    }
+
+    /// Wait source selected by `f_op->poll` registration for this caller.
+    /// # C: O(1)
+    pub fn poll_subscribers(&self) -> Option<Arc<crate::PollSubscribers>> {
+        self.f_op.poll_subscribers(self)
+    }
+
+    /// Earliest monotonic deadline for an unnotified readiness transition.
+    /// # C: O(1)
+    pub fn poll_deadline_ns(&self) -> Option<u64> {
+        self.f_op.poll_deadline_ns(self)
     }
 
     /// `file_operations->fasync` dispatch for this open file description.

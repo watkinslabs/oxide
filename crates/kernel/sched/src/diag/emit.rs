@@ -74,6 +74,8 @@ fn dump_tasks_emit() {
         klog::write_raw(b" ptid="); col_dec(t.parent_tid.load(Ordering::Relaxed) as u64, 6);
         let fux = t.futex_uaddr.load(Ordering::Relaxed);
         if fux != 0 { klog::write_raw(b" fux="); klog::write_hex_u64(fux); }
+        let wake_dl = t.wakeup_deadline_ns.load(Ordering::Relaxed);
+        if wake_dl != 0 { klog::write_raw(b" wake_dl_ns="); klog::write_dec_u64(wake_dl); }
         if let Some(p) = unsafe { &*t.exe_path.get() } {
             klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
         }

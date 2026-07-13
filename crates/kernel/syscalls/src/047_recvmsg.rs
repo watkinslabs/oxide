@@ -1,5 +1,6 @@
 // 047 recvmsg — one syscall, one file (docs/53 §0). Moved verbatim from net.rs.
 #![cfg(target_os = "oxide-kernel")]
+use core::sync::atomic::Ordering;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
@@ -124,53 +125,23 @@ fn recvmsg_blocking(
     len: usize,
     flags: u64,
 ) -> Result<net::sock::Received, i64> {
-    use core::sync::atomic::Ordering;
-    use hal::TimerOps;
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
     let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
-    #[cfg(target_arch = "x86_64")]
-    let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
-    #[cfg(target_arch = "aarch64")]
-    let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
-    loop {
-        if matches!(*sock.kind.lock(), SockKind::Udp)
-            && sock.family.load(Ordering::Acquire) != net::sock::AF_INET6
-        {
-            if let Some(p) = *sock.local_port.lock() {
-                if let Some(q) = net::sock::stack().udp_queue_arc(p) {
-                    let e = q.take_error();
-                    if e != 0 { return Err(-(e as i64)); }
-                }
+    let opts = net::sock::RecvOptions { peek: (flags & MSG_PEEK) != 0 };
+    if nonblock {
+        return net::sock::recvfrom_opts(sock, len, opts).map_err(errno_from_neterr);
+    }
+    let is_v6 = sock.family.load(Ordering::Acquire) == net::sock::AF_INET6;
+    if matches!(*sock.kind.lock(), SockKind::Udp) && !is_v6 {
+        if let Some(p) = *sock.local_port.lock() {
+            if let Some(q) = net::sock::stack().udp_queue_arc(p) {
+                let e = q.take_error();
+                if e != 0 { return Err(-(e as i64)); }
             }
-        }
-        match net::sock::recvfrom_opts(sock, len, net::sock::RecvOptions { peek: (flags & MSG_PEEK) != 0 }) {
-            Ok(r) => return Ok(r),
-            Err(net::NetError::Eagain) => {
-                if nonblock { return Err(-(Errno::Eagain.as_i32() as i64)); }
-                if let Some(dl) = deadline { if now() >= dl { return Err(-(Errno::Eagain.as_i32() as i64)); } }
-                let dl = deadline.unwrap_or(0);
-                let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
-                let is_v6 = sock.family.load(Ordering::Acquire) == net::sock::AF_INET6;
-                let v6_q = if is_udp && is_v6 { sock.local_port.lock().and_then(|p| net::sock::stack().udp6_queue_arc(p)) } else { None };
-                let udp_q = if is_udp && !is_v6 { sock.local_port.lock().and_then(|p| net::sock::stack().udp_queue_arc(p)) } else { None };
-                #[cfg(target_os = "oxide-kernel")]
-                if let Some(q) = v6_q {
-                    // SAFETY: wait list parking is scheduler-local and immediately followed by schedule.
-                    unsafe { q.waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
-                } else if let Some(q) = udp_q {
-                    // SAFETY: wait list parking is scheduler-local and immediately followed by schedule.
-                    unsafe { q.waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
-                } else {
-                    // SAFETY: cooperative yield is scheduler-local on oxide-kernel targets.
-                    unsafe { sched::live::tick_yield(); }
-                }
-                #[cfg(not(target_os = "oxide-kernel"))]
-                return Err(-(Errno::Eagain.as_i32() as i64));
-            }
-            Err(e) => return Err(errno_from_neterr(e)),
         }
     }
+    let deadline = net::sock::compute_deadline_ns(timeo);
+    net::sock_recv::recv_blocking(sock, len, opts, deadline).map_err(errno_from_neterr)
 }
 
 const MSG_CTRUNC: u32 = 0x08;

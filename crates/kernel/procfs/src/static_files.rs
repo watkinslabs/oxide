@@ -249,14 +249,6 @@ pub fn register_static_files() {
         StaticFileInode::new(LIMITS_BODY) as InodeRef,
     );
     crate::reg::register("/proc/self/io", make_proc_self_io());
-    crate::reg::register(
-        "/proc/self/mountinfo",
-        crate::mounts::make_proc_mountinfo(None),
-    );
-    crate::reg::register(
-        "/proc/self/mounts",
-        crate::mounts::make_proc_mounts(None),
-    );
     // /proc/pressure/{cpu,memory,io} — PSI pressure files (B517). O_RDWR:
     // read renders the snapshot, write registers a poll trigger. Creating
     // these clears systemd's memory-pressure-watch EOPNOTSUPP.

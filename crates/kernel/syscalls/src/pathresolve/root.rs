@@ -22,24 +22,29 @@ pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
 pub(super) fn resolution_root_vfs() -> Option<(vfs::VfsPath, bool)> {
     let global = root_dentry()?;
     let ns = vfs::mount::current_ns();
-    let namespace_root = |global: &Arc<vfs::Dentry>| -> Option<vfs::VfsPath> {
-        let (mnt_id, dentry) = vfs::mount::namespace_root_path(ns, global)?;
+    let namespace_root = || -> Option<vfs::VfsPath> {
+        let mnt_id = vfs::mount::root_mount_id(ns)?;
+        let dentry = vfs::mount::root_dentry_for_mount_id(mnt_id)?;
         let inode = dentry.inode()?;
         Some(vfs::VfsPath { mnt_id, dentry, inode, last_component: None })
     };
     let Some(cur) = sched::live::current() else {
-        if let Some(p) = namespace_root(&global) { return Some((p, false)); }
+        if let Some(p) = namespace_root() { return Some((p, false)); }
         let inode = global.inode()?;
         return Some((vfs::VfsPath { mnt_id: vfs::mount::MNT_ID_NONE, dentry: global, inode, last_component: None }, false));
     };
     // SAFETY: task.root_vfs single-mutator per 13§5; the running task on this CPU is the sole writer.
     if let Some(p) = unsafe { (*cur.root_vfs.get()).clone() } {
-        return Some((p, true));
+        if p.mnt_id == vfs::mount::MNT_ID_NONE {
+            if let Some(p) = namespace_root() { return Some((p, false)); }
+        } else {
+            return Some((p, true));
+        }
     }
     // SAFETY: task.root single-mutator per 13§5; the running task on this CPU is the sole writer.
     let rp = unsafe { (*cur.root.get()).clone() };
     if rp == "/" {
-        if let Some(p) = namespace_root(&global) { return Some((p, false)); }
+        if let Some(p) = namespace_root() { return Some((p, false)); }
         let inode = global.inode()?;
         return Some((vfs::VfsPath { mnt_id: vfs::mount::MNT_ID_NONE, dentry: global, inode, last_component: None }, false));
     }

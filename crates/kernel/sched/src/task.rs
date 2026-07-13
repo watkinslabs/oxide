@@ -28,8 +28,11 @@ mod types;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::Creds;
-pub use signals::{SaHandler, SigActions, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PendingWake { Drop, Ready, Defer }
 
 pub struct Task {
     #[cfg(feature = "debug-smp")]
@@ -149,7 +152,7 @@ pub struct Task {
     /// `kill`/`tgkill` from any CPU; checked at syscall return per
     /// `27§5` ("signals delivered on transition to user mode").
     /// # C: O(1)
-    pub sigpending: AtomicU64,
+    pub sigpending: SignalPending,
 
     /// Per-RT-signal (33..=64) siginfo_t queue. RT signals preserve
     /// multiplicity per POSIX RT semantics: every `sigqueue(SIGRTn,

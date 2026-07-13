@@ -21,6 +21,8 @@ pub(crate) fn mnt_log(_op: &str, _path: &str, _rv: i64) {
     {
         klog::write_raw(b"[mnt] ");
         klog::write_raw(_op.as_bytes());
+        klog::write_raw(b" ns=");
+        klog::write_dec_u64(sched::live::current_mount_ns());
         klog::write_raw(b" path=");
         klog::write_raw(_path.as_bytes());
         klog::write_raw(b" rv=");
@@ -37,6 +39,8 @@ pub(crate) fn mnt_log_hex(_op: &str, _path: &str, _flags: u64, _rv: i64) {
     {
         klog::write_raw(b"[mnt] ");
         klog::write_raw(_op.as_bytes());
+        klog::write_raw(b" ns=");
+        klog::write_dec_u64(sched::live::current_mount_ns());
         klog::write_raw(b" path=");
         klog::write_raw(_path.as_bytes());
         klog::write_hex_u64(_flags);

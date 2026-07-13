@@ -909,6 +909,7 @@ name = "netlink"
 version = "0.1.0"
 dependencies = [
  "net",
+ "sched",
  "sync",
  "vfs",
 ]

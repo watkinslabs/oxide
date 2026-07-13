@@ -81,8 +81,8 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_DUP => crate::s032_dup::sys_dup(args),
         syscall::nrs::NR_DUP2 => crate::s033_dup2::sys_dup2(args),
         syscall::nrs::NR_DUP3 => crate::s292_dup3::sys_dup3(args),
-        syscall::nrs::NR_FORK => crate::clone::sys_clone_dispatch(args, 0x11, 0, 0, 0, 0),
-        syscall::nrs::NR_VFORK => crate::clone::sys_clone_dispatch(args, 0x4111, 0, 0, 0, 0),
+        syscall::nrs::NR_FORK => crate::clone::sys_clone_dispatch(args, 0x11, 0, 0, 0, 0, None),
+        syscall::nrs::NR_VFORK => crate::clone::sys_clone_dispatch(args, 0x4111, 0, 0, 0, 0, None),
         syscall::nrs::NR_CLONE => {
             #[cfg(target_arch = "x86_64")] let (ctid, tls) = (args.a3, args.a4);
             #[cfg(target_arch = "aarch64")] let (ctid, tls) = (args.a4, args.a3);
@@ -95,7 +95,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
                 && (args.a2 == 0 || args.a2.checked_add(4).map_or(true, |e| e > hal::USER_VA_END)) {
                 return Some(-(syscall::errno::Errno::Efault.as_i32() as i64));
             }
-            let rv = crate::clone::sys_clone_dispatch(args, flags, args.a1, args.a2, ctid, tls);
+            let rv = crate::clone::sys_clone_dispatch(args, flags, args.a1, args.a2, ctid, tls, None);
             if rv > 0 && (flags & crate::clone::CLONE_PIDFD) != 0 {
                 let mut sa = *args;
                 sa.a0 = rv as u64;

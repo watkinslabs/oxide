@@ -57,17 +57,19 @@ pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
         // (internal tid) ran, so raise/abort/pthread_kill silently ESRCH'd and
         // the signal was never posted (verified: the handler never ran).
         if let Some(t) = lookup(vpid) {
-            return Some(t);
+            return if t.reaped.load(Ordering::Acquire) { None } else { Some(t) };
         }
         let g = REG.lock();
         return g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
-            t.vtid.load(Ordering::Acquire) == vpid
-                || t.vtgid.load(Ordering::Acquire) == vpid
+            !t.reaped.load(Ordering::Acquire)
+                && (t.vtid.load(Ordering::Acquire) == vpid
+                    || t.vtgid.load(Ordering::Acquire) == vpid)
         });
     }
     let g = REG.lock();
     g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
-        t.pid_ns.load(Ordering::Acquire) == ns
+        !t.reaped.load(Ordering::Acquire)
+            && t.pid_ns.load(Ordering::Acquire) == ns
             && (t.vtgid.load(Ordering::Acquire) == vpid || t.vtid.load(Ordering::Acquire) == vpid)
     })
 }
@@ -185,7 +187,7 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
     let mut fallback: Option<Arc<Task>> = None;
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
-        if t.vtgid.load(Ordering::Acquire) != vpid {
+        if t.reaped.load(Ordering::Acquire) || t.vtgid.load(Ordering::Acquire) != vpid {
             continue;
         }
         if t.vtid.load(Ordering::Acquire) == vpid {
@@ -205,6 +207,7 @@ pub fn display_vpid(tid: u32) -> u64 {
     use core::sync::atomic::Ordering;
     match lookup(tid) {
         Some(t) => {
+            if t.reaped.load(Ordering::Acquire) { return tid as u64; }
             let v = t.vtgid.load(Ordering::Acquire);
             if v != 0 {
                 v as u64
@@ -408,7 +411,10 @@ pub fn has_wait_children(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     g.iter()
         .filter_map(|(_, w)| w.upgrade())
-        .any(|t| wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options))
+        .any(|t| {
+            !t.reaped.load(core::sync::atomic::Ordering::Acquire)
+                && wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options)
+        })
 }
 
 /// Snapshot every live task whose pgid matches. Used by tty
@@ -420,7 +426,7 @@ pub fn tasks_in_pgrp(pgid: u32) -> Vec<Arc<Task>> {
     let g = REG.lock();
     g.iter()
         .filter_map(|(_, w)| w.upgrade())
-        .filter(|t| t.pgid.load(Ordering::Acquire) == pgid)
+        .filter(|t| !t.reaped.load(Ordering::Acquire) && t.pgid.load(Ordering::Acquire) == pgid)
         .collect()
 }
 

@@ -5,7 +5,7 @@ use hal::USER_VA_END;
 use syscall::errno::Errno;
 
 use super::cred::current_cred;
-use super::root::{resolution_root_vfs, root_dentry};
+use super::root::resolution_root_vfs;
 
 pub const AT_FDCWD: i32 = -100;
 
@@ -28,10 +28,10 @@ fn dirfd_base(dirfd: i32, op: &'static [u8], raw: &str) -> Result<(u64, Arc<vfs:
     if dirfd == AT_FDCWD {
         // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is sole writer.
         if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } {
-            return Ok((p.mnt_id, p.dentry));
+            if p.mnt_id != vfs::mount::MNT_ID_NONE { return Ok((p.mnt_id, p.dentry)); }
         }
-        let d = root_dentry().ok_or(ebadf)?;
-        return Ok((0, d));
+        let root = resolution_root_vfs().ok_or(ebadf)?.0;
+        return Ok((root.mnt_id, root.dentry));
     }
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
@@ -85,10 +85,10 @@ fn resolve_empty_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
     if dirfd == AT_FDCWD {
         let cur = sched::live::current().ok_or(ebadf)?;
         // SAFETY: cwd_vfs slot single-mutator per 13§5; current task sole writer.
-        if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } { return Ok(p); }
-        let dentry = root_dentry().ok_or(ebadf)?;
-        let inode = dentry.inode().ok_or(ebadf)?;
-        return Ok(vfs::VfsPath { mnt_id: 0, dentry, inode, last_component: None });
+        if let Some(p) = unsafe { (*cur.cwd_vfs.get()).clone() } {
+            if p.mnt_id != vfs::mount::MNT_ID_NONE { return Ok(p); }
+        }
+        return Ok(resolution_root_vfs().ok_or(ebadf)?.0);
     }
     let cur = sched::live::current().ok_or(ebadf)?;
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
