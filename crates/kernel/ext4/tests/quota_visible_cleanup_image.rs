@@ -130,3 +130,32 @@ fn visible_quota_on_mark_failure_preserves_preexisting_flags() {
     let raw_after = m.state().mount.read_inode(qino).expect("raw quota after failed on");
     assert_eq!(raw_after.i_flags & (FS_IMMUTABLE_FL | FS_NOATIME_FL), FS_IMMUTABLE_FL | FS_NOATIME_FL);
 }
+
+#[test]
+fn failed_visible_quotaon_does_not_replace_retry_cleanup_file() {
+    common::boot_hosted_pmm();
+    let disk = quota_disk();
+    let (m, sb) = mount(disk);
+    let a = m.state().create_at(b"/visible-a.quota", 0o600).expect("create visible quota A");
+    let b = m.state().create_at(b"/visible-b.quota", 0o600).expect("create visible quota B");
+    let aino = a.ino() as u32;
+    let bino = b.ino() as u32;
+    m.state().mount.write_at(aino, 0, &empty_project_quota_file()).expect("seed visible quota A");
+    m.state().mount.write_at(bino, 0, &empty_project_quota_file()).expect("seed visible quota B");
+    let root = sb.s_root().expect("root dentry");
+    let apath = vfs::path_lookup_path(root.clone(), root.clone(), "/visible-a.quota", vfs::LookupFlags::default()).expect("resolve A");
+    let bpath = vfs::path_lookup_path(root.clone(), root, "/visible-b.quota", vfs::LookupFlags::default()).expect("resolve B");
+
+    sb.s_op.quota_on(&sb, vfs::QuotaType::Project, vfs::QFMT_VFS_V1, Some(&apath)).expect("quota_on A");
+    m.state().mount.fail_next_inode_write_for_tests();
+    assert_eq!(vfs::quota_off(&sb, vfs::QuotaType::Project), Err(vfs::VfsError::Eio));
+    assert!(sb.s_dquot.is_closing(vfs::QuotaType::Project));
+
+    assert_eq!(sb.s_op.quota_on(&sb, vfs::QuotaType::Project, vfs::QFMT_VFS_V1, Some(&bpath)), Err(vfs::VfsError::Ebusy));
+    vfs::quota_off(&sb, vfs::QuotaType::Project).expect("retry quota_off A");
+
+    let araw = m.state().mount.read_inode(aino).expect("raw A after retry");
+    let braw = m.state().mount.read_inode(bino).expect("raw B after retry");
+    assert_eq!(araw.i_flags & (FS_IMMUTABLE_FL | FS_NOATIME_FL), 0, "retry clears original visible quota file");
+    assert_eq!(braw.i_flags & (FS_IMMUTABLE_FL | FS_NOATIME_FL), 0, "failed quota_on does not make B the cleanup file");
+}
