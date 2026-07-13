@@ -9,7 +9,7 @@ use vfs::{
     Dquot, DquotOperations, FileType, InodeBuilder, Kqid, KResult, QuotaType, VfsError,
     default_file_ops, default_inode_ops, dquot_charge_usage, dquot_drop_type, dquot_initialize, dquot_release_usage,
     inode_dquot, mk_mode, quota_getinfo, quota_getquota, quota_off, quota_on, quota_setinfo,
-    quota_setquota, IIF_BGRACE, IIF_IGRACE, MemDqblk, MemDqinfo,
+    quota_setquota, quota_shutdown, IIF_BGRACE, IIF_IGRACE, MemDqblk, MemDqinfo,
 };
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -186,6 +186,28 @@ fn quota_off_retains_dirty_dquot_when_final_drop_writeback_fails() {
     assert_eq!(quota_off(&sb, QuotaType::User), Ok(()));
     assert!(sb.s_dquot.dquots().lookup(qid).is_none());
     assert_eq!(ops.releases.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn quota_shutdown_retries_closing_class_after_failed_quota_off() {
+    let sb = sb();
+    let ops = Arc::new(QOps::default());
+    let qid = Kqid::user(1000);
+    quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, ops.clone()).unwrap();
+    quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 4096, ..MemDqblk::new() }).unwrap();
+    let ino = inode(&sb, 1000, 1, 1);
+    dquot_initialize(&ino).unwrap();
+    ops.write_fail.store(3, Ordering::SeqCst);
+
+    assert_eq!(quota_off(&sb, QuotaType::User), Err(VfsError::Eio));
+    assert!(!sb.s_dquot.is_enabled(QuotaType::User));
+    assert!(sb.s_dquot.is_closing(QuotaType::User));
+
+    quota_shutdown(&sb).expect("shutdown retries closing quota class");
+
+    assert!(!sb.s_dquot.is_closing(QuotaType::User));
+    assert!(sb.s_dquot.dquots().lookup(qid).is_none());
+    assert!(sb.s_dquot.operations(QuotaType::User).is_none());
 }
 
 #[test]
