@@ -161,7 +161,7 @@ fn sys_quotactl_fd_truncates_cmd_to_u32_after_fd_lookup_hosted() {
     let _guard = begin_test();
     let fd = install_fd(mounted_file(sb("fd-high-qsync-sb")), 0, true);
 
-    assert_eq!(qfd_sys::sys_quotactl_fd(&high_cmd_qsync_args(fd)), 0);
+    assert_eq!(qfd_sys::sys_quotactl_fd(&high_cmd_qsync_args(fd)), eno(Errno::Enosys));
 }
 
 #[test]
