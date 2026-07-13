@@ -118,7 +118,7 @@ impl InodeOps for Ext4StatInodeOps {
         // never persisted the parent nlink drop.
         super::super::quota::release_existing_inode_usage(&d.st, &i)?;
         if let Err(e) = mount.run_journaled(|m| m.rmdir(d.ino, name.as_bytes())) {
-            let _ = super::super::quota::recharge_existing_inode_usage(&d.st, &i);
+            let _ = super::super::quota::rollback_existing_inode_release(&d.st, &i);
             return Err(super::regular::vfs_error_from_mount(e));
         }
         super::super::quota::drop_existing_inode_dquots(&d.st, target);
@@ -175,7 +175,7 @@ impl InodeOps for Ext4StatInodeOps {
         let final_link = i.links_count <= 1;
         if final_link { super::super::quota::release_existing_inode_usage(&d.st, &i)?; }
         if let Err(e) = mount.run_journaled(|m| m.unlink(d.ino, name.as_bytes())) {
-            if final_link { let _ = super::super::quota::recharge_existing_inode_usage(&d.st, &i); }
+            if final_link { let _ = super::super::quota::rollback_existing_inode_release(&d.st, &i); }
             return Err(super::regular::vfs_error_from_mount(e));
         }
         if final_link { super::super::quota::drop_existing_inode_dquots(&d.st, target); }

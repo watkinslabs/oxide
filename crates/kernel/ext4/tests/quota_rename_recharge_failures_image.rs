@@ -138,3 +138,106 @@ fn vfs_rename_overwrite_inode_write_failure_retries_destination_quota_recharge()
     assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
     assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
 }
+
+#[test]
+fn final_unlink_inode_write_failure_retries_quota_recharge() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
+    let qid = Kqid::project(0);
+    let file = m.state().create_at(b"/unlink-recharge.txt", 0o644).expect("create file");
+    let ino = file.ino() as u32;
+    let before_raw = m.state().mount.read_inode(ino).expect("raw before");
+    let before_free_inodes = m.state().mount.state_free_inodes();
+    let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+    drop(file);
+
+    m.state().mount.fail_quota_mark_dirty_after_for_tests(1);
+    m.state().mount.fail_next_inode_write_for_tests();
+    let err = m.state().unlink_at(b"/unlink-recharge.txt").expect_err("injected unlink inode write failure");
+
+    assert_eq!(err, VfsError::Eio);
+    assert_eq!(m.state().lookup_path(b"/unlink-recharge.txt"), Some(ino));
+    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
+    let after_raw = m.state().mount.read_inode(ino).expect("raw after");
+    assert_eq!(after_raw.links_count, before_raw.links_count);
+    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
+    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
+    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
+}
+
+#[test]
+fn final_rmdir_inode_write_failure_retries_quota_recharge() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
+    let qid = Kqid::project(0);
+    m.state().mkdir_at(b"/rmdir-recharge", 0o755).expect("mkdir");
+    let ino = m.state().lookup_path(b"/rmdir-recharge").expect("lookup dir");
+    let before_raw = m.state().mount.read_inode(ino).expect("raw before");
+    let before_free_inodes = m.state().mount.state_free_inodes();
+    let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+
+    m.state().mount.fail_quota_mark_dirty_after_for_tests(1);
+    m.state().mount.fail_next_inode_write_for_tests();
+    let err = m.state().rmdir_at(b"/rmdir-recharge").expect_err("injected rmdir inode write failure");
+
+    assert_eq!(err, VfsError::Eio);
+    assert_eq!(m.state().lookup_path(b"/rmdir-recharge"), Some(ino));
+    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
+    let after_raw = m.state().mount.read_inode(ino).expect("raw after");
+    assert_eq!(after_raw.links_count, before_raw.links_count);
+    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
+    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
+    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
+}
+
+#[test]
+fn vfs_final_unlink_inode_write_failure_retries_quota_recharge() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
+    let qid = Kqid::project(0);
+    let root = sb.s_root_inode().expect("root inode");
+    let file = root.create_child("iop-unlink-recharge.txt", 0o644, &CreateCtx::root()).expect("create file");
+    let ino = file.ino() as u32;
+    let before_raw = m.state().mount.read_inode(ino).expect("raw before");
+    let before_free_inodes = m.state().mount.state_free_inodes();
+    let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+
+    m.state().mount.fail_quota_mark_dirty_after_for_tests(1);
+    m.state().mount.fail_next_inode_write_for_tests();
+    let err = root.unlink_child("iop-unlink-recharge.txt").expect_err("injected vfs unlink inode write failure");
+
+    assert_eq!(err, VfsError::Eio);
+    assert_eq!(m.state().lookup_path(b"/iop-unlink-recharge.txt"), Some(ino));
+    assert_eq!(root.lookup("iop-unlink-recharge.txt").expect("source remains").ino(), file.ino());
+    assert_eq!(file.nlink(), before_raw.links_count.into());
+    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
+    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
+    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
+    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
+}
+
+#[test]
+fn vfs_final_rmdir_inode_write_failure_retries_quota_recharge() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
+    let qid = Kqid::project(0);
+    let root = sb.s_root_inode().expect("root inode");
+    let dir = root.mkdir("iop-rmdir-recharge", 0o755, &CreateCtx::root()).expect("mkdir");
+    let ino = dir.ino() as u32;
+    let before_raw = m.state().mount.read_inode(ino).expect("raw before");
+    let before_free_inodes = m.state().mount.state_free_inodes();
+    let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+
+    m.state().mount.fail_quota_mark_dirty_after_for_tests(1);
+    m.state().mount.fail_next_inode_write_for_tests();
+    let err = root.rmdir("iop-rmdir-recharge").expect_err("injected vfs rmdir inode write failure");
+
+    assert_eq!(err, VfsError::Eio);
+    assert_eq!(m.state().lookup_path(b"/iop-rmdir-recharge"), Some(ino));
+    assert_eq!(root.lookup("iop-rmdir-recharge").expect("dir remains").ino(), dir.ino());
+    assert_eq!(dir.nlink(), before_raw.links_count.into());
+    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
+    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
+    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
+    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
+}
