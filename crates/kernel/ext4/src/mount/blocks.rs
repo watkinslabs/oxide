@@ -4,7 +4,7 @@ use crate::gdt;
 use crate::inode::{self, Inode, InodeError};
 
 use super::{Mount, MountError};
-use super::io::{read_byte_range, write_byte_range};
+use super::io::read_byte_range;
 
 impl Mount {
     /// Read inode `ino` (1-indexed) from disk.
@@ -182,7 +182,7 @@ impl Mount {
         }
         let phys = self.resolve_pblock(inode, file_blk)?;
         let byte_off = phys * (self.sb.block_size as u64);
-        write_byte_range(&*self.dev, byte_off, data)
+        self.write_data_byte_range(byte_off, data)
     }
 
     /// Shadow-aware companion to `read_file_block`: walks the
@@ -287,7 +287,7 @@ impl Mount {
         let bs = self.sb.block_size as usize;
         let zero = alloc::vec![0u8; bs];
         for i in 0..len as u64 {
-            write_byte_range(&*self.dev, (start_lba + i) * (bs as u64), &zero)?;
+            self.write_data_byte_range((start_lba + i) * (bs as u64), &zero)?;
         }
         Ok(())
     }

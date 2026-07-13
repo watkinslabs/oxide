@@ -3,6 +3,18 @@ use crate::types::KResult;
 use super::{freeze_wait_hooks, SuperBlock, FREEZE_WAIT_LOCK, SB_ACTIVE, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_UNFROZEN};
 
 impl SuperBlock {
+    /// Hold `s_umount` shared while running `f`. # C: O(f)
+    pub fn with_s_umount_read<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _g = self.s_umount.read();
+        f()
+    }
+
+    /// Hold `s_umount` exclusive while running `f`. # C: O(f)
+    pub fn with_s_umount_write<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _g = self.s_umount.write();
+        f()
+    }
+
     /// `s_op->sync_fs` one pass (Linux `__sync_filesystem` inner call).
     /// # C: O(dirty)
     pub fn sync_fs(&self, wait: bool) -> KResult<()> { self.s_op.sync_fs(wait) }
@@ -156,6 +168,7 @@ impl SuperBlock {
     /// # C: O(tree + N_ino)
     pub fn generic_shutdown_super(&self) -> u32 {
         let _ = self.sync_filesystem();
+        let _ = crate::quota::quota_shutdown(self);
         self.set_s_flags(0, SB_ACTIVE);
         let busy = self.evict_inodes();
         self.put_super();

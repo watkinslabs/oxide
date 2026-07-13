@@ -90,3 +90,39 @@ fn chmod_chown_utimes_survive_remount() {
     assert_eq!(node.mtime(), Some(D5_MTIME), "remount: utimes mtime persisted (ns)");
     assert_eq!(node.ctime(), Some(D5_CTIME), "remount: ctime persisted (ns)");
 }
+
+#[test]
+fn size_setattr_persists_size_and_times_in_one_inode_write() {
+    let disk = shared_disk();
+    let (m, sb) = mount(disk.clone());
+    let st = m.state();
+    let inode = st.create_at(b"/truncate-d5.txt", 0o644).expect("create truncate-d5.txt");
+    let ino = inode.ino() as u32;
+    let bs = st.mount.sb.block_size as u64;
+    st.mount.write_at(ino, 0, &vec![0x41; (bs * 3) as usize]).expect("seed truncate file");
+    let before = st.mount.read_inode(ino).expect("raw before size setattr");
+    assert_eq!(before.size, bs * 3);
+
+    let new_mtime = 1_710_000_000 * 1_000_000_000 + 222_333_444;
+    let new_ctime = 1_710_000_001 * 1_000_000_000 + 333_444_555;
+    let ia = vfs::Iattr {
+        valid: vfs::ATTR_SIZE | vfs::ATTR_MTIME | vfs::ATTR_CTIME,
+        size: bs,
+        mtime_ns: new_mtime,
+        ctime_ns: new_ctime,
+        ..Default::default()
+    };
+    st.mount.fail_inode_write_after_for_tests(1);
+    inode.setattr(&Idmap::identity(), &ia).expect("size setattr must not fail after truncate");
+
+    let after = st.mount.read_inode(ino).expect("raw after size setattr");
+    assert_eq!(after.size, bs, "raw inode size changed by combined truncate");
+    assert!(after.i_blocks < before.i_blocks, "truncate released blocks");
+    drop(sb); drop(m);
+
+    let (m2, _sb2) = mount(disk);
+    let node = m2.state().lookup_inode_any(b"/truncate-d5.txt").expect("lookup truncate-d5 after remount");
+    assert_eq!(node.size(), bs, "remount: size persisted");
+    assert_eq!(node.mtime(), Some(new_mtime), "remount: mtime persisted with size");
+    assert_eq!(node.ctime(), Some(new_ctime), "remount: ctime persisted with size");
+}

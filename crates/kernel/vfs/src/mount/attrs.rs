@@ -24,18 +24,57 @@ pub fn remount_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
     apply_remount(&m, flags)
 }
 
+/// `mount(2) MS_REMOUNT` for a non-bind remount: update the superblock flags
+/// through `SuperBlock::reconfigure_super` first, then commit the per-mount
+/// `MNT_*` option bits. A backend remount failure leaves both flag sets
+/// unchanged, matching Linux's fail-before commit shape. # C: O(dirty)
+pub fn remount_super_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
+    let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
+    if !check_mnt(&m) { return Err(VfsError::Einval); }
+    let (old, new) = proposed_mnt_flags(&m, flags);
+    if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
+        return Err(VfsError::Ebusy);
+    }
+    let sb_set = ms_to_sb(flags);
+    m.sb.reconfigure_super(sb_set, SB_REMOUNT_MASK & !sb_set)?;
+    m.flags.store(new, Ordering::Release);
+    mntns::bump_gen(m.ns);
+    Ok(())
+}
+
 /// Shared option update for both [`remount_flags`] variants. `flags` is the
 /// mount(2) MS_* REQUEST mask; it is mapped to the per-mount MNT_* space
 /// ([`ms_to_mnt`]) before being committed (D10). # C: O(1)
 fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
-    let old = m.flags.load(Ordering::Acquire);
-    let new = (old & !MNT_OPTION_MASK) | (ms_to_mnt(flags) & MNT_OPTION_MASK);
+    let (old, new) = proposed_mnt_flags(m, flags);
     if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
         return Err(VfsError::Ebusy);
     }
     m.flags.store(new, Ordering::Release);
     mntns::bump_gen(m.ns);
     Ok(())
+}
+
+fn proposed_mnt_flags(m: &Arc<Mount>, flags: u64) -> (u64, u64) {
+    let old = m.flags.load(Ordering::Acquire);
+    let new = (old & !MNT_OPTION_MASK) | (ms_to_mnt(flags) & MNT_OPTION_MASK);
+    (old, new)
+}
+
+const SB_REMOUNT_MASK: u64 = crate::superblock::SB_RDONLY
+    | crate::superblock::SB_SYNCHRONOUS
+    | crate::superblock::SB_MANDLOCK
+    | crate::superblock::SB_DIRSYNC
+    | crate::superblock::SB_LAZYTIME;
+
+fn ms_to_sb(flags: u64) -> u64 {
+    let mut sb = 0;
+    if flags & crate::mount::MS_RDONLY != 0 { sb |= crate::superblock::SB_RDONLY; }
+    if flags & crate::mount::MS_SYNCHRONOUS != 0 { sb |= crate::superblock::SB_SYNCHRONOUS; }
+    if flags & crate::mount::MS_MANDLOCK != 0 { sb |= crate::superblock::SB_MANDLOCK; }
+    if flags & crate::mount::MS_DIRSYNC != 0 { sb |= crate::superblock::SB_DIRSYNC; }
+    if flags & crate::mount::MS_LAZYTIME != 0 { sb |= crate::superblock::SB_LAZYTIME; }
+    sb
 }
 
 /// [D52] Commit `set_mnt`/`clr_mnt` (already in the MNT_* space) onto mount `m`:

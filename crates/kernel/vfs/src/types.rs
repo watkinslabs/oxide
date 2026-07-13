@@ -158,6 +158,7 @@ bitflags::bitflags! {
 pub enum VfsError {
     Eperm   = 1,
     Enoent  = 2,
+    Esrch   = 3,
     Eintr   = 4,
     Eio     = 5,
     /// ENXIO — `open(2)` of a device node whose `(major,minor)` has no
@@ -182,6 +183,7 @@ pub enum VfsError {
     Emlink  = 31,
     Eagain  = 11,
     Epipe   = 32,
+    Erange  = 34,
     Erofs   = 30,
     Ebusy   = 16,
     Enospc  = 28,
@@ -198,8 +200,12 @@ pub enum VfsError {
     /// ENOTCONN — read/write on a stream socket with no connection.
     Enotconn = 107,
     Econnrefused = 111,
+    /// EUCLEAN — filesystem metadata is structurally corrupt.
+    Euclean = 117,
     /// ECANCELED — timerfd read after TFD_TIMER_CANCEL_ON_SET clock change.
     Ecanceled = 125,
+    /// EDQUOT — quota hard limit exceeded.
+    Edquot  = 122,
 }
 
 pub type KResult<T> = core::result::Result<T, VfsError>;

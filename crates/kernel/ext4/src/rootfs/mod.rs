@@ -13,6 +13,7 @@
 mod state;
 mod inode;
 mod ops;
+mod quota;
 mod framecache;
 
 pub use state::RootfsState;
@@ -27,8 +28,6 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[cfg(target_os = "oxide-kernel")]
 use block::BlockDevice;
-#[cfg(target_os = "oxide-kernel")]
-use block::types::InodeId;
 
 /// Published root `RootfsState` (leaked `&'static`, filled by
 /// `init`/`set_test_mount`). The free-fn API + `Ext4RootfsFs` resolve
@@ -120,9 +119,8 @@ fn close_hook_free_orphan(ino_ref: &vfs::InodeRef, _was_writable: bool) {
     if Arc::strong_count(ino_ref) != 1 { return; }
     if let Ok(inode) = st.mount.read_inode(ino) {
         if inode.links_count == 0 {
-            let _ = st.mount.free_orphan_inode(ino);
+            let _ = st.free_orphan_inode(ino);
             st.orphan_remove(ino);
-            st.page_cache.invalidate(InodeId(ino as u64));
         }
     }
 }
@@ -230,8 +228,9 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn root(&self) -> Option<vfs::InodeRef> { wrap_any_ino(2) }
     /// Back-stamp the SB into the published ROOT state so root-fs inodes'
     /// `i_sb()` resolves and `fsid()` reports `sb.s_dev`. # C: O(1)
-    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) {
-        if let Some(st) = root() { st.set_sb(sb); }
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) -> vfs::KResult<()> {
+        if let Some(st) = root() { st.set_sb(sb)?; }
+        Ok(())
     }
 }
 

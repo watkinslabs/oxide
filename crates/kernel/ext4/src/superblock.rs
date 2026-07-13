@@ -29,6 +29,7 @@ pub const RO_COMPAT_LARGE_FILE:    u32 = 0x0002;
 pub const RO_COMPAT_HUGE_FILE:     u32 = 0x0008;
 pub const RO_COMPAT_DIR_NLINK:     u32 = 0x0020;
 pub const RO_COMPAT_EXTRA_ISIZE:   u32 = 0x0040;
+pub const RO_COMPAT_QUOTA:         u32 = 0x0100;
 pub const RO_COMPAT_PROJECT:       u32 = 0x2000;
 
 /// INCOMPAT features this driver understands well enough to interpret the
@@ -47,7 +48,8 @@ pub const SUPPORTED_INCOMPAT: u32 =
 pub const SUPPORTED_RO_COMPAT: u32 =
     RO_COMPAT_METADATA_CSUM | RO_COMPAT_GDT_CSUM | RO_COMPAT_SPARSE_SUPER
     | RO_COMPAT_LARGE_FILE | RO_COMPAT_HUGE_FILE | RO_COMPAT_DIR_NLINK
-    | RO_COMPAT_EXTRA_ISIZE | RO_COMPAT_PROJECT | RO_COMPAT_METADATA_CSUM_SEED;
+    | RO_COMPAT_EXTRA_ISIZE | RO_COMPAT_QUOTA | RO_COMPAT_PROJECT
+    | RO_COMPAT_METADATA_CSUM_SEED;
 
 /// Errors decoded from `parse`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -272,6 +274,12 @@ impl Superblock {
     /// meaningful on this fs. # C: O(1)
     pub fn has_project(&self) -> bool {
         (self.feature_ro_compat & RO_COMPAT_PROJECT) != 0
+    }
+
+    /// `EXT4_FEATURE_RO_COMPAT_QUOTA`: hidden quota files are kernel-owned and
+    /// enabled at read-write mount time. # C: O(1)
+    pub fn has_quota(&self) -> bool {
+        (self.feature_ro_compat & RO_COMPAT_QUOTA) != 0
     }
 
     /// Linux hidden quota-file identity from `s_usr_quota_inum`,

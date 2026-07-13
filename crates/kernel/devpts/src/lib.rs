@@ -438,7 +438,7 @@ impl vfs::fs::FileSystem for DevptsFs {
     /// instance `s_dev`. The slave nodes carry an explicit `DEVPTS_FSID`
     /// override (set at build), so their `st_dev` is the devpts fs id either
     /// way. # C: O(tree)
-    fn set_sb(&self, sb: Weak<SuperBlock>) { self.root.set_sb(sb); }
+    fn set_sb(&self, sb: Weak<SuperBlock>) -> vfs::KResult<()> { self.root.set_sb(sb); Ok(()) }
 }
 
 /// Process-wide singleton devpts instance. The current pty namespace is global
