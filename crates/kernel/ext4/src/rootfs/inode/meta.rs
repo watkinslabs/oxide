@@ -184,7 +184,7 @@ fn ext4_fileattr_setproject(
     vfs::inode::inode_inc_iversion(inode);
     inode.set_projid(projid);
     if st.mount.persist_inode_project(ino, projid, ctime_ns).is_err() {
-        let _ = super::super::quota::transfer_project_inode(st, inode, &raw, raw.i_projid);
+        super::super::quota::rollback_project_inode_transfer(st, inode, &raw, raw.i_projid)?;
         inode.set_projid(raw.i_projid);
         return Err(VfsError::Eio);
     }
@@ -224,7 +224,7 @@ pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<
             inode.mtime().unwrap_or(0),
             inode.ctime().unwrap_or(0),
         ).is_err() {
-            rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime);
+            rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime)?;
             return Err(VfsError::Eio);
         }
     }
@@ -272,7 +272,7 @@ fn ext4_setattr_size(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
             owner_meta.mtime_ns,
             owner_meta.ctime_ns,
         ).is_err() {
-            rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime);
+            rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime)?;
             return Err(VfsError::Eio);
         }
     }
@@ -284,7 +284,7 @@ fn ext4_setattr_size(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     rest.valid &= !(vfs::ATTR_SIZE | vfs::ATTR_UID | vfs::ATTR_GID);
     if rest.valid == 0 { return Ok(()); }
     if vfs::simple_setattr(inode, idmap, &rest).is_err() {
-        rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime);
+        rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime)?;
         return Err(VfsError::Eio);
     }
     Ok(())
@@ -333,18 +333,25 @@ fn rollback_setattr_inode(
     old_atime: u64,
     old_mtime: u64,
     old_ctime: u64,
-) {
+) -> KResult<()> {
     if inode.uid().unwrap_or(0) != old_uid || inode.gid().unwrap_or(0) != old_gid {
         let usage = vfs::DquotUsage { space: inode.blocks().saturating_mul(512), reserved_space: 0, inodes: 1 };
-        let _ = vfs::dquot_transfer_inode(inode, usage, vfs::DquotTransferIds {
+        match vfs::dquot_transfer_inode(inode, usage, vfs::DquotTransferIds {
             uid: Some(old_uid),
             gid: Some(old_gid),
             projid: None,
-        });
-        let _ = inode.set_owner(old_uid, old_gid);
+        }) {
+            Ok(()) => {}
+            Err(_) => vfs::dquot_transfer_inode(inode, usage, vfs::DquotTransferIds {
+                uid: Some(old_uid),
+                gid: Some(old_gid),
+                projid: None,
+            })?,
+        }
+        inode.set_owner(old_uid, old_gid)?;
     }
-    let _ = inode.set_perm(old_mode & 0o7777);
-    let _ = inode.set_times(Some(old_atime), Some(old_mtime), old_ctime);
+    inode.set_perm(old_mode & 0o7777)?;
+    inode.set_times(Some(old_atime), Some(old_mtime), old_ctime)
 }
 
 fn refresh_cached_usage_from_raw(
