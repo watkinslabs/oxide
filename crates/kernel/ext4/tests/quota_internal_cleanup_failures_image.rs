@@ -148,7 +148,7 @@ fn inline_promotion_inode_failure_second_cleanup_free_failure_preserves_quota() 
     let err = m.state().mount.write_at(ino, 8 * bs, &[0x72]).expect_err("inode write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -190,7 +190,7 @@ fn inline_root_split_metadata_failure_cleanup_free_failure_preserves_quota_and_t
     let err = m.state().mount.write_at(ino, 16 * bs, &[0x83]).expect_err("root split metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -232,7 +232,7 @@ fn inline_root_split_right_alloc_failure_cleanup_free_failure_preserves_quota_an
     let err = m.state().mount.write_at(ino, 16 * bs, &[0x86]).expect_err("root split right allocation fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -274,7 +274,7 @@ fn inline_root_split_second_root_alloc_failure_cleanup_free_failure_preserves_qu
     let err = m.state().mount.write_at(ino, 16 * bs, &[0x8C]).expect_err("root split second metadata allocation fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -316,7 +316,7 @@ fn inline_root_split_right_metadata_failure_cleanup_free_failure_preserves_quota
     let err = m.state().mount.write_at(ino, 16 * bs, &[0x89]).expect_err("root split right metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -350,7 +350,7 @@ fn external_leaf_first_metadata_failure_cleanup_free_failure_preserves_quota_and
     let err = m.state().mount.write_at(ino, 10 * bs, &[0x92]).expect_err("right leaf metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -380,7 +380,7 @@ fn depth_two_child_right_metadata_failure_cleanup_free_failure_preserves_quota_a
     let err = m.state().mount.write_at(ino, 18 * bs, &[0xA7]).expect_err("depth-two child right metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -411,7 +411,7 @@ fn depth_two_child_left_metadata_failure_cleanup_free_failure_preserves_quota_an
     let err = m.state().mount.write_at(ino, 18 * bs, &[0xA6]).expect_err("depth-two child left metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -442,7 +442,7 @@ fn depth_two_parent_alloc_failure_cleanup_free_failure_preserves_quota_and_tree(
     let err = m.state().mount.write_at(ino, 18 * bs, &[0xA4]).expect_err("depth-two parent metadata allocation fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -473,7 +473,7 @@ fn depth_two_parent_left_metadata_failure_cleanup_free_failure_preserves_quota_a
     let err = m.state().mount.write_at(ino, 18 * bs, &[0xA5]).expect_err("depth-two parent left metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);

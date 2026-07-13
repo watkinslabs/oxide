@@ -90,7 +90,39 @@ fn punch_rebuild_metadata_failure_cleanup_free_failure_preserves_quota_and_tree(
     let err = m.state().mount.punch_hole_inode(ino, 4 * bs, bs).expect_err("replacement leaf write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
+    let after_raw = m.state().mount.read_inode(ino).expect("raw after");
+    assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
+    assert_eq!(after_raw.size, before_raw.size);
+    assert_eq!(vfs::quota_getquota(&sb, qid).expect("quota after").dqb_curspace, before_q.dqb_curspace);
+    assert_eq!(m.state().mount.extent_map(ino).expect("extent map after"), before_map);
+}
+
+#[test]
+fn punch_multileaf_rebuild_second_leaf_failure_cleanup_free_failure_preserves_quota_and_tree() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
+    let qid = Kqid::project(0);
+    let inode = m.state().create_at(b"/punch-multileaf-cleanup-free-fail.txt", 0o644).expect("create file");
+    let ino = inode.ino() as u32;
+    let bs = m.state().mount.sb.block_size as u64;
+    let leaf_max = ext4::csum::extent_block_max(&m.state().mount.sb, bs as usize) as u64;
+
+    for n in 0..(leaf_max + 6) {
+        m.state().mount.write_at(ino, n * 2 * bs, &[0xE7]).expect("seed sparse extents");
+    }
+    let before_raw = m.state().mount.read_inode(ino).expect("raw before");
+    assert_eq!(ext4::parse_extent_header(&before_raw.i_block).expect("extent header").depth, 1);
+    let before_free = m.state().mount.state_free_blocks();
+    let before_map = m.state().mount.extent_map(ino).expect("extent map before");
+    let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+
+    m.state().mount.fail_extent_block_write_after_for_tests(1);
+    m.state().mount.fail_next_free_block_for_tests();
+    let err = m.state().mount.punch_hole_inode(ino, leaf_max * bs, bs).expect_err("second replacement leaf write fails");
+
+    assert!(matches!(err, ext4::MountError::BlockIo));
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
