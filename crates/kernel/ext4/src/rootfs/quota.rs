@@ -30,6 +30,21 @@ pub(crate) fn release_existing_inode(st: &RootfsState, ino: u32, raw: &crate::In
     Ok(())
 }
 
+/// Release existing inode quota after committed deletion, retrying dirty failure once. # C: O(1)+VFS quota
+pub(crate) fn release_existing_inode_retry(st: &RootfsState, ino: u32, raw: &crate::Inode) -> vfs::KResult<()> {
+    match release_existing_inode_usage(st, raw) {
+        Ok(()) => {
+            drop_existing_inode_dquots(st, ino);
+            Ok(())
+        }
+        Err(_) => {
+            release_existing_inode_usage(st, raw)?;
+            drop_existing_inode_dquots(st, ino);
+            Ok(())
+        }
+    }
+}
+
 /// Release inode-count quota without detaching cached dquots. # C: O(1)+VFS quota
 pub(crate) fn release_existing_inode_usage(st: &RootfsState, raw: &crate::Inode) -> vfs::KResult<()> {
     let Some(sb) = st.i_sb() else { return Ok(()); };
