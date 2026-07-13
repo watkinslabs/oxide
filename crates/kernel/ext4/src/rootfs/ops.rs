@@ -235,7 +235,7 @@ impl RootfsState {
         if final_link { super::quota::release_existing_inode_usage(self, &inode)?; }
         let name = name.to_vec();
         if let Err(e) = self.mount.run_journaled(|m| m.unlink(pino, &name)) {
-            if final_link { let _ = super::quota::recharge_existing_inode_usage(self, &inode); }
+            if final_link { let _ = super::quota::rollback_existing_inode_release(self, &inode); }
             return Err(namei_error_from_mount(e));
         }
         if final_link { super::quota::drop_existing_inode_dquots(self, target); }
@@ -312,7 +312,7 @@ impl RootfsState {
         super::quota::release_existing_inode_usage(self, &inode)?;
         let name = name.to_vec();
         if let Err(e) = self.mount.run_journaled(|m| m.rmdir(pino, &name)) {
-            let _ = super::quota::recharge_existing_inode_usage(self, &inode);
+            let _ = super::quota::rollback_existing_inode_release(self, &inode);
             return Err(namei_error_from_mount(e));
         }
         super::quota::drop_existing_inode_dquots(self, target);
