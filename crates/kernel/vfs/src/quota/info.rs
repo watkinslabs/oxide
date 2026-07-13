@@ -113,6 +113,10 @@ impl QuotaInfo {
         let bit = kind_bit(kind);
         self.suspended_limits.fetch_and(!bit, Ordering::AcqRel) & bit != 0
     }
+    /// True if a suspended quota class had enforcement active before suspend. # C: O(1)
+    pub fn has_suspended_limits(&self, kind: QuotaType) -> bool {
+        self.suspended_limits.load(Ordering::Acquire) & kind_bit(kind) != 0
+    }
     /// True while quota-off teardown is draining one class. # C: O(1)
     pub fn is_closing(&self, kind: QuotaType) -> bool {
         self.closing.load(Ordering::Acquire) & kind_bit(kind) != 0
