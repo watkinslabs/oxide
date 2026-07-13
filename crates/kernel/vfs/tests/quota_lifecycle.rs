@@ -7,7 +7,7 @@ use std::time::Duration;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{
     Dquot, DquotOperations, FileType, InodeBuilder, Kqid, KResult, QuotaType, VfsError,
-    default_file_ops, default_inode_ops, dquot_charge_usage, dquot_initialize, dquot_release_usage,
+    default_file_ops, default_inode_ops, dquot_charge_usage, dquot_drop_type, dquot_initialize, dquot_release_usage,
     inode_dquot, mk_mode, quota_getinfo, quota_getquota, quota_off, quota_on, quota_setinfo,
     quota_setquota, IIF_BGRACE, IIF_IGRACE, MemDqblk, MemDqinfo,
 };
@@ -65,6 +65,8 @@ impl SuperOps for TOps {
 
 #[derive(Default)]
 struct QOps {
+    acquires:   AtomicUsize,
+    acquire_fail: AtomicUsize,
     writes:     AtomicUsize,
     write_fail: AtomicUsize,
     info_writes: AtomicUsize,
@@ -75,6 +77,14 @@ struct QOps {
 
 impl DquotOperations for QOps {
     fn as_any(&self) -> &dyn core::any::Any { self }
+    fn acquire_dquot(&self, _dq: &Dquot) -> KResult<()> {
+        self.acquires.fetch_add(1, Ordering::SeqCst);
+        if self.acquire_fail.load(Ordering::SeqCst) != 0 {
+            self.acquire_fail.fetch_sub(1, Ordering::SeqCst);
+            return Err(VfsError::Eio);
+        }
+        Ok(())
+    }
     fn write_dquot(&self, _dq: &Dquot) -> KResult<()> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         if self.write_fail.load(Ordering::SeqCst) != 0 {
@@ -257,4 +267,44 @@ fn quota_off_waits_for_external_dquot_refs() {
     assert!(sb.s_dquot.dquots().lookup(Kqid::user(1000)).is_none());
     assert_eq!(ops.releases.load(Ordering::SeqCst), 1);
     vfs::clear_quota_wait_hooks();
+}
+
+#[test]
+fn dquot_initialize_reuses_existing_inode_slot() {
+    let sb = sb();
+    let ops = Arc::new(QOps::default());
+    quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, ops.clone()).unwrap();
+    let ino = inode(&sb, 1000, 1, 1);
+
+    dquot_initialize(&ino).unwrap();
+    let first = inode_dquot(&ino, QuotaType::User).expect("first dquot");
+    dquot_initialize(&ino).unwrap();
+    let second = inode_dquot(&ino, QuotaType::User).expect("second dquot");
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(ops.acquires.load(Ordering::SeqCst), 1, "second initialize does not leak another active dquot ref");
+    dquot_drop_type(&ino, QuotaType::User);
+    assert_eq!(quota_off(&sb, QuotaType::User), Ok(()));
+    assert_eq!(ops.releases.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn dquot_initialize_partial_failure_leaves_no_inode_slot() {
+    let sb = sb();
+    let user = Arc::new(QOps::default());
+    let group = Arc::new(QOps::default());
+    group.acquire_fail.store(1, Ordering::SeqCst);
+    quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, user.clone()).unwrap();
+    quota_on(&sb, QuotaType::Group, vfs::QFMT_VFS_V1, group.clone()).unwrap();
+    let ino = inode(&sb, 1000, 100, 1);
+
+    assert_eq!(dquot_initialize(&ino), Err(VfsError::Eio));
+
+    assert!(inode_dquot(&ino, QuotaType::User).is_none());
+    assert!(inode_dquot(&ino, QuotaType::Group).is_none());
+    assert_eq!(user.acquires.load(Ordering::SeqCst), 1);
+    assert_eq!(group.acquires.load(Ordering::SeqCst), 1);
+    assert_eq!(quota_off(&sb, QuotaType::User), Ok(()));
+    assert_eq!(quota_off(&sb, QuotaType::Group), Ok(()));
+    assert_eq!(user.releases.load(Ordering::SeqCst), 1);
 }
