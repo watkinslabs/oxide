@@ -83,3 +83,50 @@ fn visible_quota_off_clear_failure_retains_retry_state() {
     let raw_after_retry = m.state().mount.read_inode(qino).expect("raw quota after retry");
     assert_eq!(raw_after_retry.i_flags & (FS_IMMUTABLE_FL | FS_NOATIME_FL), 0);
 }
+
+#[test]
+fn visible_quota_off_preserves_preexisting_immutable_noatime_flags() {
+    common::boot_hosted_pmm();
+    let disk = quota_disk();
+    let (m, sb) = mount(disk);
+    let qfile = m.state().create_at(b"/visible-preexisting.quota", 0o600).expect("create visible quota");
+    let qino = qfile.ino() as u32;
+    m.state().mount.write_at(qino, 0, &empty_project_quota_file()).expect("seed visible quota");
+    let raw = m.state().mount.read_inode(qino).expect("raw quota before flags");
+    m.state().mount.persist_inode_flags_only(qino, raw.i_flags | FS_IMMUTABLE_FL | FS_NOATIME_FL)
+        .expect("set preexisting flags");
+    qfile.set_i_flags(qfile.i_flags() | vfs::S_IMMUTABLE | vfs::S_NOATIME);
+    let root = sb.s_root().expect("root dentry");
+    let qpath = vfs::path_lookup_path(root.clone(), root, "/visible-preexisting.quota", vfs::LookupFlags::default()).expect("resolve visible quota");
+
+    sb.s_op.quota_on(&sb, vfs::QuotaType::Project, vfs::QFMT_VFS_V1, Some(&qpath)).expect("quota_on visible");
+    vfs::quota_off(&sb, vfs::QuotaType::Project).expect("quota_off visible");
+
+    assert_eq!(qfile.i_flags() & (vfs::S_IMMUTABLE | vfs::S_NOATIME), vfs::S_IMMUTABLE | vfs::S_NOATIME);
+    let raw_after = m.state().mount.read_inode(qino).expect("raw quota after off");
+    assert_eq!(raw_after.i_flags & (FS_IMMUTABLE_FL | FS_NOATIME_FL), FS_IMMUTABLE_FL | FS_NOATIME_FL);
+}
+
+#[test]
+fn visible_quota_on_mark_failure_preserves_preexisting_flags() {
+    common::boot_hosted_pmm();
+    let disk = quota_disk();
+    let (m, sb) = mount(disk);
+    let qfile = m.state().create_at(b"/visible-mark-fail.quota", 0o600).expect("create visible quota");
+    let qino = qfile.ino() as u32;
+    m.state().mount.write_at(qino, 0, &empty_project_quota_file()).expect("seed visible quota");
+    let raw = m.state().mount.read_inode(qino).expect("raw quota before flags");
+    m.state().mount.persist_inode_flags_only(qino, raw.i_flags | FS_IMMUTABLE_FL | FS_NOATIME_FL)
+        .expect("set preexisting flags");
+    qfile.set_i_flags(qfile.i_flags() | vfs::S_IMMUTABLE | vfs::S_NOATIME);
+    let root = sb.s_root().expect("root dentry");
+    let qpath = vfs::path_lookup_path(root.clone(), root, "/visible-mark-fail.quota", vfs::LookupFlags::default()).expect("resolve visible quota");
+
+    m.state().mount.fail_next_inode_write_for_tests();
+    assert_eq!(sb.s_op.quota_on(&sb, vfs::QuotaType::Project, vfs::QFMT_VFS_V1, Some(&qpath)), Err(vfs::VfsError::Eio));
+
+    assert!(!sb.s_dquot.is_enabled(vfs::QuotaType::Project));
+    assert_eq!(qfile.i_flags() & (vfs::S_IMMUTABLE | vfs::S_NOATIME), vfs::S_IMMUTABLE | vfs::S_NOATIME);
+    let raw_after = m.state().mount.read_inode(qino).expect("raw quota after failed on");
+    assert_eq!(raw_after.i_flags & (FS_IMMUTABLE_FL | FS_NOATIME_FL), FS_IMMUTABLE_FL | FS_NOATIME_FL);
+}
