@@ -76,16 +76,49 @@ pub fn dquot_initialize(inode: &Inode) -> KResult<()> {
             if slot.is_none() { *slot = Some(ops); break; }
         }
     }
+    let old = inode.i_dquot.snapshot();
+    let mut new = old.clone();
+    let mut acquired: [Option<DquotRef>; MAXQUOTAS] = core::array::from_fn(|_| None);
     if sb.s_dquot.is_enabled(QuotaType::User) {
-        inode.i_dquot.set(QuotaType::User, Some(sb.s_dquot.dqget(Kqid::user(inode.uid().unwrap_or(0)))?));
+        attach_initialized_slot(&sb, &old, &mut new, &mut acquired, QuotaType::User, Kqid::user(inode.uid().unwrap_or(0)))?;
     }
     if sb.s_dquot.is_enabled(QuotaType::Group) {
-        inode.i_dquot.set(QuotaType::Group, Some(sb.s_dquot.dqget(Kqid::group(inode.gid().unwrap_or(0)))?));
+        attach_initialized_slot(&sb, &old, &mut new, &mut acquired, QuotaType::Group, Kqid::group(inode.gid().unwrap_or(0)))?;
     }
     if sb.s_dquot.is_enabled(QuotaType::Project) {
-        inode.i_dquot.set(QuotaType::Project, Some(sb.s_dquot.dqget(Kqid::project(inode.projid()))?));
+        attach_initialized_slot(&sb, &old, &mut new, &mut acquired, QuotaType::Project, Kqid::project(inode.projid()))?;
+    }
+    inode.i_dquot.replace(new);
+    for kind in [QuotaType::User, QuotaType::Group, QuotaType::Project] {
+        let idx = kind.slot();
+        if !same_slot(&old[idx], &inode.i_dquot.get(kind)) {
+            if let Some(dq) = old[idx].clone() { sb.s_dquot.dqput(dq); }
+        }
     }
     Ok(())
+}
+
+fn attach_initialized_slot(
+    sb: &SuperBlock,
+    old: &[Option<DquotRef>; MAXQUOTAS],
+    new: &mut [Option<DquotRef>; MAXQUOTAS],
+    acquired: &mut [Option<DquotRef>; MAXQUOTAS],
+    kind: QuotaType,
+    qid: Kqid,
+) -> KResult<()> {
+    let idx = kind.slot();
+    if old[idx].as_ref().is_some_and(|dq| dq.id() == qid) { return Ok(()); }
+    match sb.s_dquot.dqget(qid) {
+        Ok(dq) => {
+            acquired[idx] = Some(dq.clone());
+            new[idx] = Some(dq);
+            Ok(())
+        }
+        Err(e) => {
+            for dq in acquired.iter_mut().filter_map(Option::take) { sb.s_dquot.dqput(dq); }
+            Err(e)
+        }
+    }
 }
 
 /// New quota ids for inode-owner/project transfer. `None` leaves a class alone.
