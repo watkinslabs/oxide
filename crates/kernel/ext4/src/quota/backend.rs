@@ -45,18 +45,24 @@ pub(super) struct Ext4QuotaOps {
     files: Spinlock<[u32; vfs::MAXQUOTAS], QuotaMapClass>,
     formats: Spinlock<[u32; vfs::MAXQUOTAS], QuotaMapClass>,
     hidden: Spinlock<[bool; vfs::MAXQUOTAS], QuotaMapClass>,
+    visible_orig_flags: Spinlock<[u32; vfs::MAXQUOTAS], QuotaMapClass>,
     offsets: Spinlock<BTreeMap<vfs::Kqid, u64>, QuotaMapClass>,
 }
 
 impl Ext4QuotaOps {
     pub(super) fn new(st: Arc<RootfsState>) -> Self {
-        Self { st, files: Spinlock::new([0; vfs::MAXQUOTAS]), formats: Spinlock::new([0; vfs::MAXQUOTAS]), hidden: Spinlock::new([false; vfs::MAXQUOTAS]), offsets: Spinlock::new(BTreeMap::new()) }
+        Self { st, files: Spinlock::new([0; vfs::MAXQUOTAS]), formats: Spinlock::new([0; vfs::MAXQUOTAS]), hidden: Spinlock::new([false; vfs::MAXQUOTAS]), visible_orig_flags: Spinlock::new([0; vfs::MAXQUOTAS]), offsets: Spinlock::new(BTreeMap::new()) }
     }
 
     pub(super) fn set_file(&self, kind: vfs::QuotaType, ino: u32, fmt: u32, hidden: bool) {
         self.files.lock()[kind.slot()] = ino;
         self.formats.lock()[kind.slot()] = fmt;
         self.hidden.lock()[kind.slot()] = hidden;
+        self.visible_orig_flags.lock()[kind.slot()] = 0;
+    }
+
+    pub(super) fn remember_visible_orig_flags(&self, kind: vfs::QuotaType, flags: u32) {
+        self.visible_orig_flags.lock()[kind.slot()] = flags;
     }
 
     pub(super) fn remember_offset(&self, qid: vfs::Kqid, off: u64) {
@@ -71,16 +77,19 @@ impl Ext4QuotaOps {
         self.files.lock()[kind.slot()] = 0;
         self.formats.lock()[kind.slot()] = 0;
         self.hidden.lock()[kind.slot()] = false;
+        self.visible_orig_flags.lock()[kind.slot()] = 0;
         self.offsets.lock().retain(|qid, _| qid.kind != kind);
     }
 
     fn clear_file(&self, kind: vfs::QuotaType) -> vfs::KResult<()> {
         let ino = self.files.lock()[kind.slot()];
         let hidden = self.hidden.lock()[kind.slot()];
-        if ino != 0 && !hidden { clear_visible_quota_file(&self.st, ino)?; }
+        let orig_flags = self.visible_orig_flags.lock()[kind.slot()];
+        if ino != 0 && !hidden { clear_visible_quota_file(&self.st, ino, orig_flags)?; }
         self.files.lock()[kind.slot()] = 0;
         self.hidden.lock()[kind.slot()] = false;
         self.formats.lock()[kind.slot()] = 0;
+        self.visible_orig_flags.lock()[kind.slot()] = 0;
         self.offsets.lock().retain(|qid, _| qid.kind != kind);
         Ok(())
     }
