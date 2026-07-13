@@ -26,6 +26,11 @@ use sync::{Spinlock, TaskList as TaskListClass};
 
 use super::state::RootfsState;
 
+mod dirty;
+pub use dirty::flush_all_dirty;
+#[cfg(test)]
+mod tests;
+
 /// Page granule (Linux PAGE_SIZE). ext4 block size is `<= PG`; a page holds
 /// `PG / block_size` consecutive file blocks.
 const PG: usize = 4096;
@@ -395,7 +400,7 @@ impl Ext4FrameStore {
         self.sums.lock().remove(&idx); // DIAG: page may legitimately change now
         self.dirty.lock().insert(idx);
         if !self.registered.swap(true, Ordering::AcqRel) {
-            if let Some(arc) = self.me.lock().upgrade() { register(&arc); }
+            if let Some(arc) = self.me.lock().upgrade() { dirty::register(&arc); }
         }
     }
 
@@ -412,7 +417,8 @@ impl Ext4FrameStore {
     }
 
     /// Flush the given (already-cleared) dirty page indices to disk. Block I/O
-    /// runs WITHOUT the `pages` lock held. A failed page is re-marked dirty.
+    /// runs WITHOUT the `pages` lock held. Any failure aborts the journal batch
+    /// and re-marks the whole planned set dirty.
     fn writeback_idxs(&self, idxs: Vec<u64>) -> Result<(), ()> {
         if idxs.is_empty() { return Ok(()); }
         // Clamp to the authoritative in-memory size (a buffered write grows this
@@ -433,7 +439,7 @@ impl Ext4FrameStore {
                 }
             }
         }
-        let mut err = false;
+        let mut failed = false;
         // Batch every dirty page of this writeback into ONE journal transaction
         // (Linux jbd2 model). `run_journaled` is re-entrant: the outer scope
         // opens the shadow, each inner `write_at` joins it and stages into the
@@ -442,22 +448,25 @@ impl Ext4FrameStore {
         // all pages once. Without this, an N-page flush = N synchronous journal
         // commits — the systemd-hwdb-update sysinit stall (~1358 commits for a
         // 13.5MB file). Verified by tests/writeback_amp_image + writeback_ryw.
-        let _ = self.st.mount.run_journaled(|_m| {
-            for (idx, page_start, len, pa) in &plan {
-                let base = match pmm::setup::frame_ptr(*pa) { Some(b) => b, None => { err = true; continue; } };
+        let rv = self.st.mount.run_journaled(|_m| {
+            for (_idx, page_start, len, pa) in &plan {
+                let base = match pmm::setup::frame_ptr(*pa) { Some(b) => b, None => { failed = true; continue; } };
                 // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
                 // read-only view handed to the block layer for the duration.
                 let slice = unsafe { core::slice::from_raw_parts(base, *len) };
                 if self.st.mount.write_at(self.ino, *page_start, slice).is_err() {
-                    self.dirty.lock().insert(*idx); // re-dirty for a later retry
-                    err = true;
+                    failed = true;
                 }
             }
-            Ok::<(), crate::mount::MountError>(())
+            if failed { Err(crate::mount::MountError::BlockIo) } else { Ok(()) }
         });
+        if failed || rv.is_err() {
+            let mut d = self.dirty.lock();
+            for (idx, _, _, _) in &plan { d.insert(*idx); }
+        }
         // Drop the legacy Vec page-cache view so the metadata path re-reads.
         self.st.page_cache.invalidate(InodeId(self.ino as u64));
-        if err { Err(()) } else { Ok(()) }
+        if failed || rv.is_err() { Err(()) } else { Ok(()) }
     }
 }
 
@@ -473,95 +482,5 @@ impl Drop for Ext4FrameStore {
             // when no mapper holds one.
             unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
         }
-    }
-}
-
-// ── global dirty registry (for msync, which has no fd) ───────────────────────
-
-/// Frame stores that have ever gone dirty (`MAP_SHARED` writable mappings).
-/// `msync(2)` carries only an address, not an fd, and this crate must not walk
-/// the VMA tree (mm-vmm owns that); so `sys_msync` flushes via this list. A
-/// store registers itself on its FIRST dirty transition; dead `Weak`s are
-/// pruned on flush. Flushing a superset of the requested range is POSIX-legal.
-static DIRTY_STORES: Spinlock<Vec<Weak<Ext4FrameStore>>, TaskListClass> = Spinlock::new(Vec::new());
-
-fn register(s: &Arc<Ext4FrameStore>) {
-    DIRTY_STORES.lock().push(Arc::downgrade(s));
-}
-
-/// Flush every registered (ever-dirtied) ext4 frame store. The `msync(2)`
-/// durability path. Snapshots the list, releases the lock, then flushes
-/// (block I/O outside the lock), and prunes dead entries. Returns `Err(())` if
-/// ANY store's writeback failed — every store is still attempted (POSIX msync
-/// flushes what it can), but the caller must surface `EIO` like `fsync`, not
-/// silently swallow the loss. # C: O(N_stores · N_dirty)
-pub fn flush_all_dirty() -> Result<(), ()> {
-    let snapshot: Vec<Weak<Ext4FrameStore>> = { DIRTY_STORES.lock().iter().cloned().collect() };
-    let mut failed = false;
-    let mut mount: Option<alloc::sync::Arc<crate::Mount>> = None;
-    for w in &snapshot {
-        if let Some(s) = w.upgrade() {
-            if mount.is_none() { mount = Some(s.st.mount.clone()); }
-            if s.writeback().is_err() { failed = true; }
-        }
-    }
-    DIRTY_STORES.lock().retain(|w| w.strong_count() > 0);
-    // Durability point (sync/syncfs/msync): drain the running batch to disk so
-    // the metadata the writebacks just staged is actually committed. In batch
-    // mode `write_at` only joins the running transaction — without this the
-    // flush would return "durable" while the metadata sat un-committed. No-op
-    // when batching is off. (Plain inode-Drop writeback does NOT reach here —
-    // close is not fsync, so those stay in the running txn per Linux.)
-    if let Some(m) = mount { if m.commit_batch().is_err() { failed = true; } }
-    if failed { Err(()) } else { Ok(()) }
-}
-
-#[cfg(test)]
-mod logic_tests {
-    // Pure index/range arithmetic for invalidate_range/writeback_range — the
-    // page-coverage math, exercised without PMM (frame data paths are covered
-    // by the hosted ext4-image fixture test `frame_coherency_image.rs`).
-    const PG: u64 = 4096;
-
-    // invalidate_range: page i dropped iff i*PG >= start && (i+1)*PG <= end.
-    fn inv_bounds(start: u64, end: u64) -> (u64, u64) {
-        let lo = (start + PG - 1) / PG;
-        let hi = if end == u64::MAX { u64::MAX } else { end / PG };
-        (lo, hi)
-    }
-
-    #[test]
-    fn invalidate_drops_only_fully_covered_pages() {
-        // [0, 2*PG): pages 0,1 fully covered.
-        assert_eq!(inv_bounds(0, 2 * PG), (0, 2));
-        // [1, 2*PG): page 0 partial (start=1) → not covered; page 1 covered.
-        assert_eq!(inv_bounds(1, 2 * PG), (1, 2));
-        // [0, 2*PG - 1): page 1 straddles end → not covered.
-        assert_eq!(inv_bounds(0, 2 * PG - 1), (0, 1));
-        // truncate floors start to a page → partial page IS dropped.
-        let len = 3 * PG + 100;
-        let floored = len & !(PG - 1);
-        let (lo, hi) = inv_bounds(floored, u64::MAX);
-        assert_eq!(lo, 3);            // page 3 (holding byte len) dropped
-        assert_eq!(hi, u64::MAX);
-    }
-
-    // writeback_range: pages intersecting [start, end).
-    fn wb_bounds(start: u64, end: u64) -> (u64, u64) {
-        let lo = start / PG;
-        let hi = if end == u64::MAX { u64::MAX } else { (end + PG - 1) / PG };
-        (lo, hi)
-    }
-
-    #[test]
-    fn writeback_range_covers_intersecting_pages() {
-        // A single byte in page 0 → page 0.
-        assert_eq!(wb_bounds(0, 1), (0, 1));
-        // [PG, PG+1) → page 1 only.
-        assert_eq!(wb_bounds(PG, PG + 1), (1, 2));
-        // [100, 2*PG+50) → pages 0,1,2.
-        assert_eq!(wb_bounds(100, 2 * PG + 50), (0, 3));
-        // to EOF.
-        assert_eq!(wb_bounds(PG, u64::MAX), (1, u64::MAX));
     }
 }
