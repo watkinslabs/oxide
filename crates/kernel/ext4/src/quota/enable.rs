@@ -20,9 +20,14 @@ pub fn quota_on_ext4(st: &Arc<RootfsState>, sb: &vfs::SuperBlock, kind: vfs::Quo
     };
     quota_on_inode(st, sb, kind, fmt, ino, path.is_none(), false)?;
     if let Some(p) = path {
-        if let Err(e) = mark_visible_quota_file(st, &p.inode, ino) {
-            if let Err(rb) = vfs::quota_off(sb, kind) { return Err(rb); }
-            return Err(e);
+        let ops = sb.s_dquot.operations(kind).ok_or(vfs::VfsError::Einval)?;
+        let ext4 = ops_as_ext4(ops.as_ref()).ok_or(vfs::VfsError::Einval)?;
+        match mark_visible_quota_file(st, &p.inode, ino) {
+            Ok(flags) => ext4.remember_visible_orig_flags(kind, flags),
+            Err(e) => {
+                if let Err(rb) = rollback_quota_on(sb, kind, ext4) { return Err(rb); }
+                return Err(e);
+            }
         }
     }
     Ok(())
