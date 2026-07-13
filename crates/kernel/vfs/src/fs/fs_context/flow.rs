@@ -1,7 +1,7 @@
 use crate::superblock::{SB_DIRSYNC, SB_LAZYTIME, SB_MANDLOCK, SB_RDONLY, SB_SYNCHRONOUS};
 use crate::types::VfsError;
 
-use super::context::{FsContext, apply_sb_flags};
+use super::context::FsContext;
 use super::ops::ParamResult;
 use super::types::{FsContextPhase, FsContextPurpose, FsParameter, FsValue, KResult};
 use crate::fs::FsFlags;
@@ -107,7 +107,12 @@ pub fn reconfigure_super(fc: &mut FsContext) -> KResult<()> {
         fc.phase = FsContextPhase::Failed;
         return Err(e);
     }
-    apply_sb_flags(&sb, fc.sb_flags, fc.sb_flags_mask);
+    let set = fc.sb_flags & fc.sb_flags_mask;
+    let clear = !fc.sb_flags & fc.sb_flags_mask;
+    if let Err(e) = sb.reconfigure_super(set, clear) {
+        fc.phase = FsContextPhase::Failed;
+        return Err(e);
+    }
     fc.phase = FsContextPhase::AwaitingReconf;
     Ok(())
 }

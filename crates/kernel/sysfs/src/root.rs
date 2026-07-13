@@ -89,7 +89,7 @@ mod tests {
         let path = "/sys/drop-cache-test/leaf";
         crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), 0x51dc_a001));
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(crate::SysfsFs);
-        let sb = vfs::fs::superblock_from_filesystem(Arc::new(SysfsType), fs, crate::SysfsFs.root(), String::from("sysfs-test"));
+        let sb = vfs::fs::superblock_from_filesystem(Arc::new(SysfsType), fs, crate::SysfsFs.root(), String::from("sysfs-test")).expect("realize sysfs");
         let root = sb.s_root().expect("sysfs root dentry");
         let (_, parent) = vfs::path_lookup(root.clone(), root.clone(), "/drop-cache-test", LookupFlags::default()).expect("parent cached");
         assert!(vfs::path_lookup(root.clone(), root, "/drop-cache-test/leaf", LookupFlags::default()).is_ok());

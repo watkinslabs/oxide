@@ -80,6 +80,12 @@ impl Mount {
     /// superblock + group descriptor table.
     /// # C: O(N_groups * desc_size + 1024)
     pub fn open(dev: alloc::sync::Arc<dyn block::BlockDevice>) -> Result<Self, MountError> {
+        Self::open_with_orphan_cleanup(dev, true)
+    }
+
+    /// Open the filesystem, optionally deferring orphan cleanup to the caller.
+    /// # C: O(N_groups * desc_size + 1024)
+    pub(crate) fn open_with_orphan_cleanup(dev: alloc::sync::Arc<dyn block::BlockDevice>, cleanup_orphans: bool) -> Result<Self, MountError> {
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
         // Feature gating (Linux EXT4_FEATURE_{INCOMPAT,RO_COMPAT}_SUPP): refuse a
@@ -123,12 +129,14 @@ impl Mount {
             batch: false,
             undo: Vec::new(),
         };
-        let m = Self { dev, sb, state: sync::Spinlock::new(state),
+        let m = Self { dev, sb, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()),
+                       #[cfg(not(target_os = "oxide-kernel"))]
+                       faults: super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
                        txn_depth: ::core::sync::atomic::AtomicU32::new(0),
                        creating: ::core::sync::atomic::AtomicBool::new(false) };
         let _ = m.recover_journal();
-        let _ = m.orphan_cleanup();
+        if cleanup_orphans { let _ = m.orphan_cleanup(); }
         Ok(m)
     }
 
@@ -153,6 +161,8 @@ impl Mount {
     /// scope, commits immediately as its own transaction.
     /// # C: O(N affected fs blocks) RMW + (in-scope: O(1) stage / out-of-scope: 1 journal txn)
     pub fn metadata_write(&self, byte_off: u64, data: &[u8]) -> Result<(), MountError> {
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.should_fail_metadata_write_for_tests() { return Err(MountError::BlockIo); }
         let bs = self.sb.block_size as u64;
         let first_blk = byte_off / bs;
         let last_byte = byte_off + data.len() as u64;
@@ -324,7 +334,13 @@ impl Mount {
             self.creating.store(false, ::core::sync::atomic::Ordering::Release);
             r
         };
-        let v = r?;
+        let v = match r {
+            Ok(v) => v,
+            Err(e) => {
+                self.refresh_cached_meta();
+                return Err(e);
+            }
+        };
         self.maybe_commit_batch()?;
         Ok(v)
     }
@@ -406,7 +422,7 @@ impl Mount {
     /// current metadata, used after a batch op rollback: those mirrors are
     /// mutated in place by alloc/free and persisted to the shadow, so restoring
     /// the shadow requires re-reading them to stay in step. # C: O(gdt size) I/O
-    fn refresh_cached_meta(&self) {
+    pub(crate) fn refresh_cached_meta(&self) {
         // ext4 superblock field offsets (bytes into the 1024-byte SB @ byte 1024).
         const SB_BYTE_OFF: u64 = 1024;
         const SB_FREE_BLOCKS_LO: usize = 0x0C;

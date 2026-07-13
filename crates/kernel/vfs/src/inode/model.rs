@@ -11,6 +11,7 @@ use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
 use crate::poll_subs::PollSubscribers;
+use crate::quota::InodeDquots;
 use crate::superblock::SuperBlock;
 use crate::types::Ino;
 
@@ -51,6 +52,7 @@ pub struct Inode {
     pub(super) i_nlink:        AtomicU32,
     pub(super) i_uid:          AtomicU32,
     pub(super) i_gid:          AtomicU32,
+    pub(super) i_projid:       AtomicU32,
     pub(super) i_flags:        AtomicU32,
     pub(super) i_rdev:         u32,
     pub(super) i_generation:   u32,
@@ -72,6 +74,7 @@ pub struct Inode {
     pub(super) owner_persist:  Option<Arc<dyn OwnerPersist>>,
     pub(super) i_link:         Option<Box<[u8]>>,
     pub(super) i_xattrs:       Option<crate::xattr::SimpleXattrs>,
+    pub(crate) i_dquot:        InodeDquots,
     pub(super) i_rwsem:        RwLock<(), InodeLockClass>,
 }
 

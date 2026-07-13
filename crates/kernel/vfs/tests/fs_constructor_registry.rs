@@ -35,7 +35,7 @@ fn register_get_construct_and_unknown_is_none() {
     register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
         Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str| -> vfs::fs::KResult<Arc<vfs::SuperBlock>> {
             let fs: Arc<dyn FileSystem> = Arc::new(T040Fs);
-            Ok(superblock_from_filesystem(ty, fs, None, String::from("t040ctor")))
+            superblock_from_filesystem(ty, fs, None, String::from("t040ctor"))
         }))).expect("register t040ctor");
 
     // get_fs_type returns the registered type (the D40 test contract).

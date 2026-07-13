@@ -1,11 +1,13 @@
 use crate::inode::{self, I_BLOCK_LEN};
 use crate::mount::{Mount, MountError};
 use alloc::vec::Vec;
+#[cfg(not(target_os = "oxide-kernel"))]
+use core::sync::atomic::Ordering;
 
 impl Mount {
     pub(super) fn persist_inode_after_append(
         &self, ino: u32, ino_bytes: &mut alloc::vec::Vec<u8>, _ino_byte_off: u64,
-        i_block: &[u8; I_BLOCK_LEN], new_size: u64, extra_meta_sectors: u32,
+        i_block: &[u8; I_BLOCK_LEN], new_size: u64, extra_meta_sectors: u32, precharged: bool,
     ) -> Result<(), MountError> {
         ino_bytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(i_block);
         ino_bytes[0x04..0x08].copy_from_slice(&((new_size & 0xFFFF_FFFF) as u32).to_le_bytes());
@@ -13,8 +15,12 @@ impl Mount {
         let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
         let added_sectors = (self.sb.block_size / 512) as u32 + extra_meta_sectors;
         let new_i_blocks = prev_i_blocks.saturating_add(added_sectors);
+        if !precharged { self.account_i_blocks_delta(ino, prev_i_blocks, new_i_blocks)?; }
         ino_bytes[0x1C..0x20].copy_from_slice(&new_i_blocks.to_le_bytes());
-        self.write_inode_bytes(ino, ino_bytes)
+        if let Err(e) = self.write_inode_bytes(ino, ino_bytes) {
+            return Err(self.rollback_i_blocks_delta(ino, new_i_blocks, prev_i_blocks, e));
+        }
+        Ok(())
     }
 
     /// Read the raw on-disk inode slot bytes for `ino`. Returns the
@@ -35,6 +41,19 @@ impl Mount {
     /// slot is valid for stock Linux/e2fsck (no-op without the feature).
     /// # C: O(inode_size) csum + O(1) I/O
     pub fn write_inode_bytes(&self, ino: u32, bytes: &[u8]) -> Result<(), MountError> {
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.faults.next_inode_write.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let n = self.faults.inode_write_after.load(Ordering::Acquire);
+            if n != 0 {
+                if n == 1 {
+                    self.faults.inode_write_after.store(0, Ordering::Release);
+                    return Err(MountError::BlockIo);
+                }
+                let _ = self.faults.inode_write_after.compare_exchange(n, n - 1, Ordering::AcqRel, Ordering::Acquire);
+            }
+        }
         let (group, idx) = crate::gdt::locate_inode(&self.sb, ino)?;
         let gd = self.group_desc(group)?;
         let off_in_table = (idx as u64) * (self.sb.inode_size as u64);
@@ -57,6 +76,15 @@ impl Mount {
         -> Result<(), MountError>
     {
         let _ = ino;
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.faults.next_extent_write.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let left = self.faults.extent_write_after.load(Ordering::Acquire);
+            if left != 0 && self.faults.extent_write_after.fetch_sub(1, Ordering::AcqRel) == 1 {
+                return Err(MountError::BlockIo);
+            }
+        }
         crate::csum::stamp_extent_block_csum(&self.sb, ino, gen, buf);
         let bs = self.sb.block_size as u64;
         self.metadata_write(lba * bs, buf)

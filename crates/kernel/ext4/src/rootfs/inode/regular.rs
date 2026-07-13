@@ -9,7 +9,7 @@ use vfs::inode_ops::{InodeOps, mk_mode};
 use vfs::mapping::AddressSpaceOps;
 use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
 
-use super::data::{Ext4FileData, persist_inode_xattrs};
+use super::data::{Ext4FileData, remove_inode_xattr, set_inode_xattr};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
 
@@ -28,6 +28,7 @@ pub(crate) fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
         crate::MountError::CorruptExtentTree => vfs::VfsError::Eio,
         crate::MountError::BadChecksum => vfs::VfsError::Eio,
         crate::MountError::UnsupportedFeature => vfs::VfsError::Einval,
+        crate::MountError::Quota(e) => e,
         _ => vfs::VfsError::Eio,
     }
 }
@@ -40,13 +41,14 @@ pub(crate) struct Ext4RegInodeOps;
 impl InodeOps for Ext4RegInodeOps {
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        d.st.mount.truncate_inode(d.ino, len).map_err(|_| VfsError::Eio)?;
+        d.st.mount.truncate_inode(d.ino, len).map_err(vfs_error_from_mount)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
         #[cfg(feature = "ext4-frame-cache")]
         d.frames.set_size(len);
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
+        d.refresh_inode_usage(inode);
         Ok(())
     }
 
@@ -79,6 +81,7 @@ impl InodeOps for Ext4RegInodeOps {
         if let Some(end) = off.checked_add(len) { d.frames.invalidate_range(off & !(4095u64), end); }
         d.refresh_size();
         inode.set_size(d.size_hint.load(Ordering::Acquire));
+        d.refresh_inode_usage(inode);
         #[cfg(feature = "ext4-frame-cache")]
         d.frames.set_size(d.size_hint.load(Ordering::Acquire));
         // ext4_fallocate stamps mtime + ctime (Linux) — the allocation mutates
@@ -164,17 +167,11 @@ impl InodeOps for Ext4RegInodeOps {
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
         -> Result<(), vfs::XattrError>
     {
-        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
-        store.set(name, value, create, replace)?;
-        persist_inode_xattrs(inode);
-        Ok(())
+        set_inode_xattr(inode, name, value, create, replace)
     }
 
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), vfs::XattrError> {
-        let store = inode.simple_xattrs().ok_or(vfs::XattrError::NotSup)?;
-        store.remove(name)?;
-        persist_inode_xattrs(inode);
-        Ok(())
+        remove_inode_xattr(inode, name)
     }
 }
 
@@ -240,12 +237,13 @@ impl FileOps for Ext4RegFileOps {
         { d.frames.write_buffered(off, buf).map_err(|_| VfsError::Eio)?; }
         #[cfg(not(feature = "ext4-frame-cache"))]
         {
-            d.st.mount.write_at(d.ino, off, buf).map_err(|_| VfsError::Eio)?;
+            d.st.mount.write_at(d.ino, off, buf).map_err(vfs_error_from_mount)?;
             d.st.page_cache.invalidate(InodeId(d.ino as u64));
         }
         let end = off.saturating_add(buf.len() as u64);
         d.size_hint.fetch_max(end, Ordering::AcqRel);
         inode.i_size_fetch_max(end);
+        d.refresh_inode_usage(inode);
         Ok(buf.len())
     }
 
@@ -342,7 +340,7 @@ impl AddressSpaceOps for Ext4FileMapping {
 /// the `iget` build closure). `times` = `(atime, mtime, ctime, crtime)` ns
 /// (crtime `0` → no STATX_BTIME). # C: O(1)
 pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32,
-    uid: u32, gid: u32, times: (u64, u64, u64, u64))
+    uid: u32, gid: u32, projid: u32, times: (u64, u64, u64, u64))
     -> InodeRef
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino, size);
@@ -351,12 +349,15 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
+    let blocks = data.st.mount.read_inode(ino).map(|i| i.i_blocks as u64).unwrap_or(0);
     InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(FileType::Regular, mode & 0o7777),
                       Arc::new(Ext4RegInodeOps), Arc::new(Ext4RegFileOps))
         .sb(weak_sb)
         .size(size)
+        .blocks(blocks)
         .nlink(nlink)
         .owner(uid, gid)
+        .projid(projid)
         .times(times.0, times.1, times.2)
         .btime(times.3)
         .mapping(mapping)
