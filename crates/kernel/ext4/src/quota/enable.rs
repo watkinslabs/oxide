@@ -67,8 +67,8 @@ fn quota_on_inode(st: &Arc<RootfsState>, sb: &vfs::SuperBlock, kind: vfs::QuotaT
         None => Arc::new(Ext4QuotaOps::new(st.clone())),
     };
     let ext4 = ops_as_ext4(ops.as_ref()).ok_or(vfs::VfsError::Einval)?;
-    ext4.set_file(kind, ino, fmt, hidden);
     vfs::quota_on(sb, kind, fmt, ops.clone())?;
+    ext4.set_file(kind, ino, fmt, hidden);
     sb.s_dquot.load_info(kind, info);
     for (qid, off, dqblk) in loaded {
         ext4.remember_offset(qid, off);
