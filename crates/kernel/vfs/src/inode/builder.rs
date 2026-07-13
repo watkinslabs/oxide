@@ -11,6 +11,7 @@ use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
 use crate::poll_subs::PollSubscribers;
+use crate::quota::InodeDquots;
 use crate::superblock::SuperBlock;
 use crate::types::{Ino, S_IFDIR};
 
@@ -29,6 +30,7 @@ pub struct InodeBuilder {
     nlink:        Option<u32>,
     uid:          u32,
     gid:          u32,
+    projid:       u32,
     flags:        u32,
     rdev:         u32,
     generation:   u32,
@@ -52,7 +54,7 @@ impl InodeBuilder {
     pub fn new(ino: Ino, mode: u32, i_op: Arc<dyn InodeOps>, i_fop: Arc<dyn FileOps>) -> Self {
         InodeBuilder {
             ino, mode, i_op, i_fop, sb: Weak::new(), size: 0, blocks: 0, nlink: None, uid: 0, gid: 0,
-            flags: 0, rdev: 0, generation: 0, fsid: 0, atime: 0, mtime: 0, ctime: 0, btime: 0,
+            projid: 0, flags: 0, rdev: 0, generation: 0, fsid: 0, atime: 0, mtime: 0, ctime: 0, btime: 0,
             version: 0, mapping: None, private: Arc::new(()), poll_subs: None, seal_carrier: None,
             owner_persist: None, link: None, xattrs: None,
         }
@@ -62,6 +64,7 @@ impl InodeBuilder {
     pub fn blocks(mut self, n: u64) -> Self { self.blocks = n; self }
     pub fn nlink(mut self, n: u32) -> Self { self.nlink = Some(n); self }
     pub fn owner(mut self, uid: u32, gid: u32) -> Self { self.uid = uid; self.gid = gid; self }
+    pub fn projid(mut self, projid: u32) -> Self { self.projid = projid; self }
     pub fn i_flags(mut self, f: u32) -> Self { self.flags = f; self }
     pub fn rdev(mut self, d: u32) -> Self { self.rdev = d; self }
     pub fn generation(mut self, g: u32) -> Self { self.generation = g; self }
@@ -91,6 +94,7 @@ impl InodeBuilder {
             i_nlink: AtomicU32::new(nlink),
             i_uid: AtomicU32::new(self.uid),
             i_gid: AtomicU32::new(self.gid),
+            i_projid: AtomicU32::new(self.projid),
             i_flags: AtomicU32::new(self.flags),
             i_rdev: self.rdev,
             i_generation: self.generation,
@@ -112,6 +116,7 @@ impl InodeBuilder {
             owner_persist: self.owner_persist,
             i_link: self.link,
             i_xattrs: self.xattrs,
+            i_dquot: InodeDquots::new(),
             i_rwsem: RwLock::new(()),
         })
     }

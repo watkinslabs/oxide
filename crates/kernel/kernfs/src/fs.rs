@@ -37,7 +37,8 @@ impl vfs::fs::FileSystem for PseudoFs {
         Some(self.root.as_inode())
     }
 
-    fn set_sb(&self, sb: Weak<SuperBlock>) {
+    fn set_sb(&self, sb: Weak<SuperBlock>) -> vfs::KResult<()> {
         self.root.set_sb(sb);
+        Ok(())
     }
 }

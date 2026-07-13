@@ -56,6 +56,8 @@ pub mod xattr;
 
 pub mod journal;
 
+pub mod quota;
+
 // Host-compilable so the verify-left resolution harness
 // (tests/walk_image.rs) can drive the real ext4 Inode impls via
 // `set_test_mount`. The boot path mounts a real virtio-blk disk via

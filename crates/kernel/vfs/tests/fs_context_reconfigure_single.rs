@@ -9,13 +9,14 @@
 //! WITHOUT applying the requested flags (no partial commit).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 mod common;
 
 use vfs::fs::fs_context::{vfs_get_tree, FsContext, FsParameter};
 use vfs::fs::{reconfigure_single, FileSystem};
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
-use vfs::{FileType, InodeBuilder, InodeRef, KResult, VfsError,
+use vfs::{FileType, InodeBuilder, InodeRef, KResult, SbStatFs, SuperOps, VfsError,
           default_file_ops, default_inode_ops, mk_mode};
 
 fn tdir() -> InodeRef {
@@ -26,6 +27,22 @@ struct TFs;
 impl FileSystem for TFs {
     fn name(&self) -> &str { "rsfs" }
     fn root(&self) -> Option<InodeRef> { Some(tdir()) }
+}
+
+struct CountOps { remounts: AtomicU32 }
+impl SuperOps for CountOps {
+    fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs::default()) }
+    fn remount_fs(&self, _sb_flags: u64) -> KResult<()> {
+        self.remounts.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+struct CountFs { ops: Arc<CountOps> }
+impl FileSystem for CountFs {
+    fn name(&self) -> &str { "countfs" }
+    fn root(&self) -> Option<InodeRef> { Some(tdir()) }
+    fn super_ops(&self) -> Option<Arc<dyn SuperOps>> { Some(self.ops.clone()) }
 }
 
 struct Ty;
@@ -43,6 +60,13 @@ fn live_sb() -> Arc<SuperBlock> {
     fc.sb().unwrap().clone()
 }
 
+fn counted_sb() -> (Arc<SuperBlock>, Arc<CountOps>) {
+    let ops = Arc::new(CountOps { remounts: AtomicU32::new(0) });
+    let fs = Arc::new(CountFs { ops: ops.clone() });
+    let sb = common::realize_sb(fs, Some(tdir()), next_anon_dev(), "countfs".to_string());
+    (sb, ops)
+}
+
 #[test]
 fn flag_only_remount_flips_live_sb_both_ways() {
     let sb = live_sb();
@@ -51,6 +75,14 @@ fn flag_only_remount_flips_live_sb_both_ways() {
     assert!(sb.is_readonly(), "reconfigure_single(SB_RDONLY) flips the live sb RO");
     reconfigure_single(sb.clone(), 0, &[]).unwrap();
     assert!(!sb.is_readonly(), "clearing SB_RDONLY re-admits writers");
+}
+
+#[test]
+fn reconfigure_single_calls_superblock_remount_hook() {
+    let (sb, ops) = counted_sb();
+    reconfigure_single(sb.clone(), SB_RDONLY, &[]).unwrap();
+    assert!(sb.is_readonly());
+    assert_eq!(ops.remounts.load(Ordering::Relaxed), 1, "reconfigure_single must route through remount_fs");
 }
 
 #[test]

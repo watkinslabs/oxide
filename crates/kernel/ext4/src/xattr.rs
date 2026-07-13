@@ -1,5 +1,3 @@
-// ext4 on-disk extended-attribute persistence (Linux `fs/ext4/xattr.c`).
-//
 // Two on-disk homes for an inode's xattrs:
 //   * IN-INODE (ibody): the space between the inode's `i_extra_isize` end and
 //     the inode record end holds `ext4_xattr_ibody_header` (4-byte magic
@@ -10,16 +8,9 @@
 //     the block start.
 //
 // This module is the bridge between that disk format and the in-core
-// `vfs::SimpleXattrs` store attached to every ext4 inode (D45). IBODY is the
-// full read+write authority; the EXTERNAL block is READ on load so pre-existing
-// large xattrs stay visible, but WRITE to the external block is the residual
-// (see `store_ibody_xattrs` — overflow returns `NoSpace`).
+// `vfs::SimpleXattrs` store attached to every ext4 inode (D45). IBODY and the
+// single EXTERNAL block are both read on load and rewritten by `store_xattrs`.
 //
-// CONSERVATIVE: an inode with ZERO xattrs is never written by this module, so
-// the no-xattr on-disk inode layout is byte-identical to today. Only
-// `store_ibody_xattrs` (reached from setxattr/removexattr) mutates an inode,
-// and only inodes that actually carry an xattr ever reach it.
-
 extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -255,9 +246,9 @@ impl Mount {
     }
 
     /// Re-encode the full xattr set into the inode's IBODY area and write the
-    /// inode back (journaled). `NoSpace` if the entries do not fit ibody — the
-    /// external-block spill is the residual (not implemented for write). # C:
-    /// O(N) encode + O(1) journaled I/O
+    /// inode back (journaled). `NoSpace` if the entries do not fit ibody; callers
+    /// needing Linux placement should use `store_xattrs`. # C: O(N) encode +
+    /// O(1) journaled I/O
     pub fn store_ibody_xattrs(&self, ino: u32, entries: &[(String, Vec<u8>)]) -> Result<(), MountError> {
         let isize = self.sb.inode_size as usize;
         if isize <= EXT4_GOOD_OLD_INODE_SIZE { return Err(MountError::NoSpace); }
@@ -310,25 +301,63 @@ impl Mount {
             // Try IBODY-only. Encode into the live buffer; on overflow the buffer
             // is discarded (re-read) before the external path.
             if encode_ibody(&mut bytes, hdr_off, isize, entries).is_ok() {
+                let old_sectors = Self::i_blocks_of(&bytes);
                 if old_facl != 0 { Self::detach_external_block(&mut bytes, bs); }
-                m.write_inode_bytes(ino, &bytes)?;
-                if old_facl != 0 { m.free_block(old_facl)?; }
+                let new_sectors = Self::i_blocks_of(&bytes);
+                if old_facl != 0 {
+                    m.account_i_blocks_delta(ino, old_sectors, new_sectors)?;
+                }
+                if let Err(e) = m.write_inode_bytes(ino, &bytes) {
+                    if old_facl != 0 { return Err(m.rollback_i_blocks_delta(ino, new_sectors, old_sectors, e)); }
+                    return Err(e)
+                }
+                if old_facl != 0 {
+                    if let Err(e) = m.free_block(old_facl) {
+                        return Err(m.rollback_i_blocks_delta(ino, new_sectors, old_sectors, e));
+                    }
+                }
                 return Ok(());
             }
             // IBODY overflow → external block. Re-read to drop the partial encode.
             let (mut bytes, _off) = m.read_inode_bytes(ino)?;
             encode_ibody(&mut bytes, hdr_off, isize, &[]).map_err(|_| MountError::NoSpace)?;
             let mut blk = encode_block(entries, bs).map_err(|_| MountError::NoSpace)?;
+            let old_sectors = Self::i_blocks_of(&bytes);
+            let mut charged_sectors = old_sectors;
             let block_nr = if old_facl != 0 { old_facl } else {
-                let b = m.alloc_block(0)?;
+                charged_sectors = old_sectors.saturating_add((bs / 512) as u32);
+                m.account_i_blocks_delta(ino, old_sectors, charged_sectors)?;
+                let b = match m.alloc_block(0) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e));
+                    }
+                };
                 Self::attach_external_block(&mut bytes, b, bs);
                 b
             };
             crate::csum::stamp_xattr_block_csum(&m.sb, block_nr, &mut blk);
-            m.metadata_write(block_nr * bs as u64, &blk)?;
-            m.write_inode_bytes(ino, &bytes)?;
+            if let Err(e) = m.metadata_write(block_nr * bs as u64, &blk) {
+                if old_facl == 0 {
+                    let _ = m.free_block(block_nr);
+                    return Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e));
+                }
+                return Err(e);
+            }
+            if let Err(e) = m.write_inode_bytes(ino, &bytes) {
+                if old_facl == 0 {
+                    let _ = m.free_block(block_nr);
+                    return Err(m.rollback_i_blocks_delta(ino, charged_sectors, old_sectors, e));
+                }
+                return Err(e);
+            }
             Ok(())
         })
+    }
+
+    /// Low 32 bits of ext4 `i_blocks`. # C: O(1)
+    fn i_blocks_of(bytes: &[u8]) -> u32 {
+        u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]])
     }
 
     /// Point `i_file_acl` at `block_nr` and add its one fs-block to `i_blocks`.

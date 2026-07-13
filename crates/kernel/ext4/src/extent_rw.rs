@@ -35,4 +35,5 @@ struct ExtentInsertResult {
     first_block: u32,
     split: Option<crate::inode::ExtentIdx>,
     extra_meta_sectors: u32,
+    allocated_meta_blocks: alloc::vec::Vec<u64>,
 }

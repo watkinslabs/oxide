@@ -7,8 +7,9 @@
 // - io: raw byte-range block-device helpers shared by sibling modules.
 // - lifecycle: superblock state/mount-count/time writeback (mount = dirty,
 //   unmount = clean), the Linux ext4_setup_super / ext4_put_super half.
+// - quota: VFS quota backref and exact i_blocks delta charging.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
 use block::BlockDevice;
@@ -28,8 +29,11 @@ pub use core::set_ctx_id_hook;
 #[cfg(target_os = "oxide-kernel")]
 pub use core::set_yield_hook;
 mod dirs;
+#[cfg(not(target_os = "oxide-kernel"))]
+mod faults;
 mod io;
 mod lifecycle;
+mod quota;
 
 pub(crate) use io::{read_byte_range_pub, write_byte_range};
 
@@ -77,6 +81,8 @@ pub enum MountError {
     /// inline_data, encrypt, …). Refused at `Mount::open` (Linux
     /// `EXT4_FEATURE_*_SUPP` check). Surfaces as EINVAL.
     UnsupportedFeature,
+    /// VFS quota layer rejected or failed accounting.
+    Quota(vfs::VfsError),
 }
 
 impl From<SuperblockError> for MountError { fn from(e: SuperblockError) -> Self { MountError::Superblock(e) } }
@@ -127,6 +133,9 @@ pub struct Mount {
     pub(crate) dev: Arc<dyn BlockDevice>,
     pub sb: Superblock,
     pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
+    pub(crate) quota_sb: Spinlock<Weak<vfs::SuperBlock>, SuperblockLockClass>,
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub(crate) faults: faults::HostedFaults,
     /// Reentrant transaction gate — serializes EVERY top-level mutating op
     /// (create/write/unlink/truncate/alloc_block/…), not just creates, so
     /// concurrent tasks/CPUs cannot (a) read the same group bitmap and
