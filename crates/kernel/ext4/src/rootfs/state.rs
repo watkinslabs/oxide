@@ -85,13 +85,20 @@ impl RootfsState {
             } else {
                 crate::quota::quota_on_hidden(self, sb, kind, vfs::QFMT_VFS_V1)
             };
+            let had_suspended_limits = allow_readonly && sb.s_dquot.has_suspended_limits(kind);
             if let Err(e) = r.and_then(|_| {
-                if sb.s_dquot.take_suspended_limits(kind) { Ok(()) } else { vfs::quota_disable_limits(sb, kind) }
+                if had_suspended_limits { Ok(()) } else { vfs::quota_disable_limits(sb, kind) }
             }) {
-                if let Err(rb) = rollback_mount_quotas(sb, done) { return Err(rb); }
+                let rb = if allow_readonly { rollback_remount_quotas(sb, done) } else { rollback_mount_quotas(sb, done) };
+                if let Err(rb) = rb { return Err(rb); }
                 return Err(e);
             }
             done[kind.slot()] = true;
+        }
+        if allow_readonly {
+            for kind in [vfs::QuotaType::User, vfs::QuotaType::Group, vfs::QuotaType::Project] {
+                if done[kind.slot()] { let _ = sb.s_dquot.take_suspended_limits(kind); }
+            }
         }
         Ok(())
     }
@@ -311,4 +318,8 @@ fn rollback_mount_quotas(sb: &vfs::SuperBlock, done: [bool; vfs::MAXQUOTAS]) -> 
         }
     }
     first
+}
+
+fn rollback_remount_quotas(sb: &vfs::SuperBlock, done: [bool; vfs::MAXQUOTAS]) -> vfs::KResult<()> {
+    if done.iter().any(|done| *done) { vfs::quota_suspend_sysfiles(sb) } else { Ok(()) }
 }
