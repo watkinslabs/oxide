@@ -157,12 +157,15 @@ pub fn quota_setquota(sb: &SuperBlock, qid: Kqid, dqblk: MemDqblk) -> KResult<()
     if !sb.s_dquot.is_enabled(qid.kind) { return Err(VfsError::Esrch); }
     dqblk.validate_limits_for_format(sb.s_dquot.format(qid.kind))?;
     let dq = sb.s_dquot.dqget(qid)?;
+    let old = dq.dqblk();
+    let old_dirty = dq.is_dirty();
     dq.set_dqblk(dqblk);
     dq.mark_dirty();
     let ret = match sb.s_dquot.operations(qid.kind) {
         Some(ops) => ops.mark_dirty(dq.as_ref()),
         None => Ok(()),
     };
+    if ret.is_err() { restore_dqblk(dq.as_ref(), old, old_dirty); }
     sb.s_dquot.dqput(dq);
     ret?;
     Ok(())
@@ -174,11 +177,14 @@ pub fn quota_setquota_masked(sb: &SuperBlock, qid: Kqid, dqblk: MemDqblk, fieldm
     dqblk.validate_masked_limits_for_format(sb.s_dquot.format(qid.kind), fieldmask)?;
     let dq = sb.s_dquot.dqget(qid)?;
     let info = sb.s_dquot.info(qid.kind);
+    let old = dq.dqblk();
+    let old_dirty = dq.is_dirty();
     let ret = dq.set_dqblk_masked(dqblk, fieldmask, info, now_sec);
     if ret.is_ok() {
         dq.mark_dirty();
         if let Some(ops) = sb.s_dquot.operations(qid.kind) {
             if let Err(e) = ops.mark_dirty(dq.as_ref()) {
+                restore_dqblk(dq.as_ref(), old, old_dirty);
                 sb.s_dquot.dqput(dq);
                 return Err(e);
             }
@@ -186,6 +192,11 @@ pub fn quota_setquota_masked(sb: &SuperBlock, qid: Kqid, dqblk: MemDqblk, fieldm
     }
     sb.s_dquot.dqput(dq);
     ret
+}
+
+fn restore_dqblk(dq: &super::dquot::Dquot, old: MemDqblk, old_dirty: bool) {
+    dq.set_dqblk(old);
+    if old_dirty { dq.mark_dirty(); } else { dq.clear_dirty(); }
 }
 
 /// Persist every cached dquot for one active quota class. # C: O(N_dq)+FS
