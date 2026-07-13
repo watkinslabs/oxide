@@ -148,7 +148,7 @@ fn depth_two_parent_right_metadata_failure_cleanup_free_failure_preserves_quota_
     let err = m.state().mount.write_at(ino, 18 * bs, &[0xB3]).expect_err("depth-two parent right metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);

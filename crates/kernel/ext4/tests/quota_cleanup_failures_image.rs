@@ -113,11 +113,11 @@ fn pin_tree_maxes(disk: &Arc<dyn BlockDevice>, sb: &ext4::Superblock,
     }
 }
 
-fn assert_inode_quota_unchanged_after_cleanup_leak(
+fn assert_inode_quota_unchanged_after_cleanup_abort(
     m: &ext4::rootfs::Ext4Mount, sb: &SuperBlock, qid: Kqid,
     ino: u32, before_free: u64, before_raw: &ext4::Inode, before_q: u64,
 ) {
-    assert_eq!(m.state().mount.state_free_blocks(), before_free - 1);
+    assert_eq!(m.state().mount.state_free_blocks(), before_free);
     let after_raw = m.state().mount.read_inode(ino).expect("raw after");
     assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
     assert_eq!(after_raw.size, before_raw.size);
@@ -155,7 +155,7 @@ fn inline_write_cleanup_free_failure_preserves_original_error_and_quota() {
     let err = m.state().mount.write_at(ino, 0, &vec![0xA6; bs as usize]).expect_err("data write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn append_inline_cleanup_free_failure_preserves_original_error_and_quota() {
     let err = m.state().mount.append_block(ino, &vec![0xB1; bs]).expect_err("append data write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn append_external_cleanup_free_failure_preserves_original_error_and_quota() {
     let err = m.state().mount.append_block(ino, &vec![0xC2; bs as usize]).expect_err("append data write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn append_inline_inode_failure_cleanup_free_failure_preserves_quota() {
     let err = m.state().mount.append_block(ino, &vec![0xD1; bs]).expect_err("inode write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn append_inline_promotion_inode_failure_cleanup_free_failure_preserves_quota() 
     let err = m.state().mount.append_block(ino, &vec![0xD3; bs as usize]).expect_err("inode write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
     assert_eq!(ext4::parse_extent_header(&m.state().mount.read_inode(ino).expect("raw after").i_block).expect("extent header").depth, 0);
 }
 
@@ -278,7 +278,7 @@ fn append_external_inode_failure_cleanup_free_failure_preserves_quota_and_tree()
     let err = m.state().mount.append_block(ino, &vec![0xD5; bs as usize]).expect_err("inode write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
     assert_eq!(m.state().mount.extent_map(ino).expect("extent map after"), before_map);
 }
 
@@ -308,7 +308,7 @@ fn external_leaf_split_inode_failure_cleanup_free_failure_preserves_quota_and_tr
     let err = m.state().mount.write_at(ino, 10 * bs, &[0xD7]).expect_err("inode write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
     assert_eq!(m.state().mount.extent_map(ino).expect("extent map after"), before_map);
 }
 
@@ -334,7 +334,7 @@ fn inline_promotion_metadata_failure_cleanup_free_failure_preserves_quota() {
     let err = m.state().mount.write_at(ino, 8 * bs, &[0xE2]).expect_err("metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
     assert_eq!(ext4::parse_extent_header(&m.state().mount.read_inode(ino).expect("raw after").i_block).expect("extent header").depth, 0);
 }
 
@@ -356,7 +356,7 @@ fn fallocate_partial_alloc_failure_cleanup_free_failure_preserves_quota() {
     let err = m.state().mount.fallocate_inode(ino, 0, bs * 2, false).expect_err("second allocation fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
 }
 
 #[test]
@@ -386,7 +386,7 @@ fn external_leaf_split_metadata_failure_cleanup_free_failure_preserves_quota_and
     let err = m.state().mount.write_at(ino, 10 * bs, &[0xF2]).expect_err("left metadata rewrite fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &before_raw, before_q.dqb_curspace);
     assert_eq!(m.state().mount.extent_map(ino).expect("extent map after"), before_map);
 }
 
@@ -413,7 +413,7 @@ fn depth_two_metadata_failure_cleanup_free_failure_preserves_quota_and_tree() {
     let err = m.state().mount.write_at(ino, 18 * bs, &[0xA3]).expect_err("depth-two metadata write fails");
 
     assert!(matches!(err, ext4::MountError::BlockIo));
-    assert_inode_quota_unchanged_after_cleanup_leak(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
+    assert_inode_quota_unchanged_after_cleanup_abort(&m, &sb, qid, ino, before_free, &seeded, before_q.dqb_curspace);
     assert_eq!(m.state().mount.extent_map(ino).expect("extent map after"), before_map);
 }
 
