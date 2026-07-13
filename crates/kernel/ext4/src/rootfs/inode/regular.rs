@@ -243,7 +243,7 @@ impl FileOps for Ext4RegFileOps {
         let end = off.saturating_add(buf.len() as u64);
         d.size_hint.fetch_max(end, Ordering::AcqRel);
         inode.i_size_fetch_max(end);
-        d.refresh_inode_usage(inode);
+        if let Ok(i) = d.st.mount.read_inode(d.ino) { inode.set_blocks(i.i_blocks as u64); }
         Ok(buf.len())
     }
 
