@@ -146,6 +146,7 @@ pub fn quota_getnextquota(sb: &SuperBlock, qid: Kqid) -> KResult<(Kqid, MemDqblk
     if !sb.s_dquot.is_enabled(qid.kind) { return Err(VfsError::Esrch); }
     let ops = sb.s_dquot.operations(qid.kind).ok_or(VfsError::Enosys)?;
     let next = ops.get_next_id(qid)?.ok_or(VfsError::Enoent)?;
+    if next.kind != qid.kind { return Err(VfsError::Einval); }
     let dq = sb.s_dquot.dqget(next)?;
     let dqblk = dq.dqblk();
     sb.s_dquot.dqput(dq);
