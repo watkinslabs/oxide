@@ -85,6 +85,14 @@ pub(crate) fn transfer_project_inode(st: &RootfsState, inode: &vfs::Inode, raw: 
     vfs::dquot_transfer_inode(inode, usage, vfs::DquotTransferIds { uid: None, gid: None, projid: Some(projid) })
 }
 
+/// Roll back a project-id transfer, retrying once if quota dirtying failed. # C: O(MAXQUOTAS log N)+FS
+pub(crate) fn rollback_project_inode_transfer(st: &RootfsState, inode: &vfs::Inode, raw: &crate::Inode, projid: u32) -> vfs::KResult<()> {
+    match transfer_project_inode(st, inode, raw, projid) {
+        Ok(()) => Ok(()),
+        Err(_) => transfer_project_inode(st, inode, raw, projid),
+    }
+}
+
 fn inherited_projid(mount: &Mount, parent_ino: u32, _mode: u16) -> vfs::KResult<u32> {
     if !mount.sb.has_project() { return Ok(0); }
     let parent = mount.read_inode(parent_ino).map_err(|_| vfs::VfsError::Eio)?;

@@ -335,3 +335,72 @@ fn chown_dirty_failure_after_project_transfer_rolls_back_owner_only() {
     assert_eq!(quota(&sb, Kqid::project(88)).dqb_curspace, project_after.dqb_curspace);
     assert_eq!(quota(&sb, Kqid::project(88)).dqb_curinodes, project_after.dqb_curinodes);
 }
+
+#[test]
+fn project_persist_failure_retries_quota_transfer_rollback() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_all_quota_disk()).expect("rw mount with all hidden quotas");
+    let inode = m.state().create_at(b"/project-persist-rollback-retry.txt", 0o644).expect("create file");
+    let ino = inode.ino() as u32;
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(ino, 0, &vec![0xA7; (bs * 4) as usize]).expect("write file");
+    let charged = m.state().mount.read_inode(ino).expect("raw before project persist failure").i_blocks as u64 * 512;
+    let old_p = quota(&sb, Kqid::project(0));
+    let new_p = quota(&sb, Kqid::project(77));
+    assert_eq!(old_p.dqb_curspace, charged);
+    assert_eq!(new_p.dqb_curspace, 0);
+
+    m.state().mount.fail_next_inode_write_for_tests();
+    m.state().mount.fail_quota_mark_dirty_after_for_tests(3);
+    assert_eq!(
+        inode.fileattr_set(&FileAttr { flags: inode.fileattr_get().unwrap().flags, fsx_projid: 77, ..Default::default() }),
+        Err(VfsError::Eio)
+    );
+
+    let raw = m.state().mount.read_inode(ino).expect("raw after project persist failure");
+    assert_eq!(raw.i_projid, 0);
+    assert_eq!(inode.fileattr_get().expect("attrs after project rollback retry").fsx_projid, 0);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curspace, old_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(0)).dqb_curinodes, old_p.dqb_curinodes);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curspace, new_p.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::project(77)).dqb_curinodes, new_p.dqb_curinodes);
+}
+
+#[test]
+fn chown_persist_failure_retries_quota_transfer_rollback() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_all_quota_disk()).expect("rw mount with all hidden quotas");
+    let inode = m.state().create_at(b"/chown-persist-rollback-retry.txt", 0o644).expect("create file");
+    let ino = inode.ino() as u32;
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(ino, 0, &vec![0xB8; (bs * 4) as usize]).expect("write file");
+    let charged = m.state().mount.read_inode(ino).expect("raw before chown persist failure").i_blocks as u64 * 512;
+    let old_u = quota(&sb, Kqid::user(0));
+    let old_g = quota(&sb, Kqid::group(0));
+    let new_u = quota(&sb, Kqid::user(2000));
+    let new_g = quota(&sb, Kqid::group(2001));
+    assert_eq!(old_u.dqb_curspace, charged);
+    assert_eq!(old_g.dqb_curspace, charged);
+
+    m.state().mount.fail_next_inode_write_for_tests();
+    m.state().mount.fail_quota_mark_dirty_after_for_tests(5);
+    let mut ia = vfs::Iattr { valid: vfs::ATTR_UID | vfs::ATTR_GID, uid: 2000, gid: 2001, ..Default::default() };
+    assert_eq!(
+        vfs::notify_change(&vfs::IDENTITY, &inode, &mut ia, &vfs::Cred::root()),
+        Err(VfsError::Eio)
+    );
+
+    let raw = m.state().mount.read_inode(ino).expect("raw after chown persist failure");
+    assert_eq!(raw.uid, 0);
+    assert_eq!(raw.gid, 0);
+    assert_eq!(inode.uid().expect("uid after chown rollback retry"), 0);
+    assert_eq!(inode.gid().expect("gid after chown rollback retry"), 0);
+    assert_eq!(quota(&sb, Kqid::user(0)).dqb_curspace, old_u.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::user(0)).dqb_curinodes, old_u.dqb_curinodes);
+    assert_eq!(quota(&sb, Kqid::group(0)).dqb_curspace, old_g.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::group(0)).dqb_curinodes, old_g.dqb_curinodes);
+    assert_eq!(quota(&sb, Kqid::user(2000)).dqb_curspace, new_u.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::user(2000)).dqb_curinodes, new_u.dqb_curinodes);
+    assert_eq!(quota(&sb, Kqid::group(2001)).dqb_curspace, new_g.dqb_curspace);
+    assert_eq!(quota(&sb, Kqid::group(2001)).dqb_curinodes, new_g.dqb_curinodes);
+}
