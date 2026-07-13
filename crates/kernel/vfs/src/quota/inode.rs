@@ -135,14 +135,15 @@ pub fn dquot_transfer_inode(inode: &Inode, usage: DquotUsage, ids: DquotTransfer
     let sb = inode.i_sb().ok_or(VfsError::Einval)?;
     let old = inode.i_dquot.snapshot();
     let mut new = old.clone();
+    let mut acquired: [Option<DquotRef>; MAXQUOTAS] = core::array::from_fn(|_| None);
     if let Some(uid) = ids.uid {
-        if sb.s_dquot.is_enabled(QuotaType::User) { new[QuotaType::User.slot()] = Some(sb.s_dquot.dqget(Kqid::user(uid))?); }
+        acquire_transfer_slot(&sb, &old, &mut new, &mut acquired, QuotaType::User, Kqid::user(uid))?;
     }
     if let Some(gid) = ids.gid {
-        if sb.s_dquot.is_enabled(QuotaType::Group) { new[QuotaType::Group.slot()] = Some(sb.s_dquot.dqget(Kqid::group(gid))?); }
+        acquire_transfer_slot(&sb, &old, &mut new, &mut acquired, QuotaType::Group, Kqid::group(gid))?;
     }
     if let Some(projid) = ids.projid {
-        if sb.s_dquot.is_enabled(QuotaType::Project) { new[QuotaType::Project.slot()] = Some(sb.s_dquot.dqget(Kqid::project(projid))?); }
+        acquire_transfer_slot(&sb, &old, &mut new, &mut acquired, QuotaType::Project, Kqid::project(projid))?;
     }
     let slots = [
         slot_ref(&old, &new, QuotaType::User),
@@ -180,6 +181,30 @@ pub fn dquot_transfer_inode(inode: &Inode, usage: DquotUsage, ids: DquotTransfer
     }
     inode.i_dquot.replace(new);
     Ok(())
+}
+
+fn acquire_transfer_slot(
+    sb: &SuperBlock,
+    old: &[Option<DquotRef>; MAXQUOTAS],
+    new: &mut [Option<DquotRef>; MAXQUOTAS],
+    acquired: &mut [Option<DquotRef>; MAXQUOTAS],
+    kind: QuotaType,
+    qid: Kqid,
+) -> KResult<()> {
+    if !sb.s_dquot.is_enabled(kind) { return Ok(()); }
+    let idx = kind.slot();
+    if old[idx].as_ref().is_some_and(|dq| dq.id() == qid) { return Ok(()); }
+    match sb.s_dquot.dqget(qid) {
+        Ok(dq) => {
+            acquired[idx] = Some(dq.clone());
+            new[idx] = Some(dq);
+            Ok(())
+        }
+        Err(e) => {
+            for dq in acquired.iter_mut().filter_map(Option::take) { sb.s_dquot.dqput(dq); }
+            Err(e)
+        }
+    }
 }
 
 fn dirty_transfer_slot(sb: &SuperBlock, slot: DquotTransferSlot<'_>) -> KResult<()> {
