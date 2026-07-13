@@ -92,22 +92,22 @@ fn args(subcmd: u64) -> SyscallArgs {
 }
 
 #[test]
-fn block_readonly_setinfo_returns_erofs_before_current_task_and_usercopy_hosted() {
+fn block_readonly_setinfo_reaches_current_task_before_usercopy_hosted() {
     let _guard = begin_test();
     let _target_sb = install_readonly_target("block-readonly-setinfo-target-sb", 0x5155_2A11,
         "block-readonly-setinfo-special-sb", 0x5155_2A12);
 
-    assert_eq!(sys::sys_quotactl(&args(cmd::Q_SETINFO)), eno(Errno::Erofs));
+    assert_eq!(sys::sys_quotactl(&args(cmd::Q_SETINFO)), eno(Errno::Esrch));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
 }
 
 #[test]
-fn block_readonly_setquota_returns_erofs_before_current_task_and_usercopy_hosted() {
+fn block_readonly_setquota_reaches_current_task_before_usercopy_hosted() {
     let _guard = begin_test();
     let _target_sb = install_readonly_target("block-readonly-setquota-target-sb", 0x5155_2A13,
         "block-readonly-setquota-special-sb", 0x5155_2A14);
 
-    assert_eq!(sys::sys_quotactl(&args(cmd::Q_SETQUOTA)), eno(Errno::Erofs));
+    assert_eq!(sys::sys_quotactl(&args(cmd::Q_SETQUOTA)), eno(Errno::Esrch));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
 }
 
