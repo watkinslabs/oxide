@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{
-    Dquot, DquotOperations, DquotUsage, Kqid, KResult, MemDqblk, QuotaType, VfsError,
+    DQB_SPACE, Dquot, DquotOperations, DquotUsage, Kqid, KResult, MemDqblk, QuotaType, VfsError,
     dquot_charge_usage, dquot_release_usage, quota_getnextquota, quota_getquota, quota_off, quota_on,
-    quota_setquota, quota_sync,
+    quota_setquota, quota_setquota_masked, quota_sync,
 };
 
 struct TType;
@@ -228,6 +228,46 @@ fn dquot_charge_usage_returns_rollback_dirty_failure() {
     assert_eq!(quota_getquota(&sb, Kqid::user(10)).unwrap().dqb_curspace, 0);
     assert_eq!(quota_getquota(&sb, Kqid::group(20)).unwrap().dqb_curspace, 0);
     assert_eq!(ops.calls.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn quota_setquota_dirty_failure_restores_old_record() {
+    let sb = sb();
+    let ops = Arc::new(DirtySeqOps::default());
+    let qid = Kqid::user(10);
+    quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, ops.clone()).unwrap();
+    quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 100, dqb_curinodes: 1, ..MemDqblk::new() }).unwrap();
+    ops.fail_a.store(2, Ordering::SeqCst);
+
+    assert_eq!(
+        quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 900, dqb_curinodes: 9, ..MemDqblk::new() }),
+        Err(VfsError::Eio)
+    );
+
+    let got = quota_getquota(&sb, qid).unwrap();
+    assert_eq!(got.dqb_curspace, 100);
+    assert_eq!(got.dqb_curinodes, 1);
+    assert_eq!(ops.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn quota_setquota_masked_dirty_failure_restores_old_record() {
+    let sb = sb();
+    let ops = Arc::new(DirtySeqOps::default());
+    let qid = Kqid::user(11);
+    quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, ops.clone()).unwrap();
+    quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 100, dqb_curinodes: 1, ..MemDqblk::new() }).unwrap();
+    ops.fail_a.store(2, Ordering::SeqCst);
+
+    assert_eq!(
+        quota_setquota_masked(&sb, qid, MemDqblk { dqb_curspace: 900, ..MemDqblk::new() }, DQB_SPACE, 0),
+        Err(VfsError::Eio)
+    );
+
+    let got = quota_getquota(&sb, qid).unwrap();
+    assert_eq!(got.dqb_curspace, 100);
+    assert_eq!(got.dqb_curinodes, 1);
+    assert_eq!(ops.calls.load(Ordering::SeqCst), 2);
 }
 
 #[test]
