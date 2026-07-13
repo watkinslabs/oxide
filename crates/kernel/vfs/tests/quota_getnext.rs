@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{Dquot, DquotOperations, Kqid, KResult, MemDqblk, QuotaType, VfsError, quota_getnextquota, quota_on, quota_setquota};
+use vfs::{Dquot, DquotOperations, Kqid, KResult, MemDqblk, QuotaType, VfsError, quota_getnextquota, quota_off, quota_on, quota_setquota};
 
 struct TType;
 impl FileSystemType for TType {
@@ -13,11 +13,6 @@ impl FileSystemType for TType {
 struct TOps;
 impl SuperOps for TOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs::default()) }
-}
-
-struct NoNextOps;
-impl DquotOperations for NoNextOps {
-    fn as_any(&self) -> &dyn core::any::Any { self }
 }
 
 #[derive(Default)]
@@ -38,6 +33,17 @@ impl DquotOperations for IterOps {
         let id = self.next.load(Ordering::SeqCst) as u32;
         if id == 0 { Ok(None) } else { Ok(Some(Kqid { kind: qid.kind, id })) }
     }
+}
+
+struct NoNextOps;
+impl DquotOperations for NoNextOps {
+    fn as_any(&self) -> &dyn core::any::Any { self }
+}
+
+struct WrongKindOps;
+impl DquotOperations for WrongKindOps {
+    fn as_any(&self) -> &dyn core::any::Any { self }
+    fn get_next_id(&self, _qid: Kqid) -> KResult<Option<Kqid>> { Ok(Some(Kqid::group(77))) }
 }
 
 fn sb() -> Arc<SuperBlock> {
@@ -77,4 +83,17 @@ fn getnext_backend_no_next_is_enoent() {
 
     assert_eq!(quota_getnextquota(&sb, Kqid::user(1)), Err(VfsError::Enoent));
     assert_eq!(ops.hits.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn getnext_rejects_backend_kind_mismatch() {
+    let sb = sb();
+    quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, Arc::new(WrongKindOps)).unwrap();
+    let group = Arc::new(IterOps::default());
+    quota_on(&sb, QuotaType::Group, vfs::QFMT_VFS_V1, group.clone()).unwrap();
+
+    assert_eq!(quota_getnextquota(&sb, Kqid::user(1)), Err(VfsError::Einval));
+    assert_eq!(group.acquires.load(Ordering::SeqCst), 0);
+    quota_off(&sb, QuotaType::User).unwrap();
+    quota_off(&sb, QuotaType::Group).unwrap();
 }
