@@ -1,7 +1,33 @@
 use crate::inode;
-use crate::mount::{Mount, MountError, write_byte_range};
+use crate::extent_rw::meta::InodeMetaUpdate;
+use crate::mount::{Mount, MountError};
 
 impl Mount {
+    fn rollback_allocated_logical_blocks(&self, ino: u32, old_size: u64, blocks: &[u32])
+        -> Result<(), MountError>
+    {
+        let bs = self.sb.block_size as u64;
+        let mut first_err = None;
+        for &lb in blocks.iter().rev() {
+            let before_sectors = self.read_inode(ino).map(|i| i.i_blocks).ok();
+            if let Err(e) = self.punch_hole_inode(ino, lb as u64 * bs, bs) {
+                let mut err = e;
+                if let (Some(before), Ok(after)) = (before_sectors, self.read_inode(ino)) {
+                    if before <= u32::MAX as u64 && after.i_blocks <= u32::MAX as u64 {
+                        if let Err(qe) = self.account_i_blocks_delta(ino, before as u32, after.i_blocks as u32) { err = qe; }
+                    }
+                }
+                if first_err.is_none() { first_err = Some(err); }
+            }
+        }
+        if let Err(e) = self.set_inode_size(ino, old_size) {
+            if first_err.is_none() { first_err = Some(e); }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
     /// Write a list of `(physical_block, block_bytes)` in COALESCED runs: sort
     /// by physical block, then issue ONE `write_byte_range` per maximal run of
     /// contiguous physical blocks (capped at the device's max request so the
@@ -30,7 +56,7 @@ impl Mount {
                 next += 1;
                 j += 1;
             }
-            write_byte_range(&*self.dev, start * bs, &buf)?;
+            self.write_data_byte_range(start * bs, &buf)?;
             i = j;
         }
         Ok(())
@@ -39,9 +65,16 @@ impl Mount {
     /// Patch the on-disk inode `i_size` field directly.
     /// # C: O(1) I/O
     pub fn set_inode_size(&self, ino: u32, size: u64) -> Result<(), MountError> {
+        self.set_inode_size_with_meta(ino, size, None)
+    }
+
+    pub(crate) fn set_inode_size_with_meta(&self, ino: u32, size: u64, meta: Option<InodeMetaUpdate>)
+        -> Result<(), MountError>
+    {
         let (mut bytes, _off) = self.read_inode_bytes(ino)?;
         bytes[0x04..0x08].copy_from_slice(&((size & 0xFFFF_FFFF) as u32).to_le_bytes());
         bytes[0x6C..0x70].copy_from_slice(&((size >> 32) as u32).to_le_bytes());
+        if let Some(meta) = meta { self.stamp_inode_meta_fields(&mut bytes, meta); }
         self.write_inode_bytes(ino, &bytes)
     }
 
@@ -53,7 +86,7 @@ impl Mount {
     /// Caller invalidates any page cache.
     /// # C: O(file growth + N_blocks_in_range) I/O
     pub fn write_at(&self, ino: u32, off: u64, data: &[u8]) -> Result<(), MountError> {
-        self.run_journaled(|m| m.write_at_inner(ino, off, data))
+        self.run_journaled(|m| m.write_at_inner(ino, off, data, None))
     }
 
     /// Allocate backing blocks through `offset + len`. With `keep_size`, the
@@ -79,17 +112,30 @@ impl Mount {
             // flag; a later write converts the touched subrange). This replaces
             // the O(range) eager zero-write that made journald's multi-MB journal
             // preallocation a per-block alloc+write storm.
+            let mut allocated = alloc::vec::Vec::new();
             for lb in first_lb..=last_lb {
                 let inode = m.read_inode(ino)?;
+                let was_mapped = m.collect_phys_extents(&inode.i_block)?
+                    .iter()
+                    .any(|r| lb >= r.logical && lb < r.logical + r.len);
                 let visible_size = core::cmp::max(inode.size, (lb as u64 + 1) * bs);
-                m.map_unwritten_block_inner(ino, lb, visible_size)?;
+                if let Err(e) = m.map_unwritten_block_inner(ino, lb, visible_size) {
+                    let _ = m.rollback_allocated_logical_blocks(ino, old_size, &allocated);
+                    return Err(e);
+                }
+                if !was_mapped { allocated.push(lb); }
             }
-            m.set_inode_size(ino, final_size)?;
+            if let Err(e) = m.set_inode_size(ino, final_size) {
+                let _ = m.rollback_allocated_logical_blocks(ino, old_size, &allocated);
+                return Err(e);
+            }
             Ok(())
         })
     }
 
-    pub(super) fn write_at_inner(&self, ino: u32, off: u64, data: &[u8]) -> Result<(), MountError> {
+    pub(super) fn write_at_inner(&self, ino: u32, off: u64, data: &[u8], meta: Option<InodeMetaUpdate>)
+        -> Result<(), MountError>
+    {
         let bs = self.sb.block_size as u64;
         let bs_us = bs as usize;
         if data.is_empty() { return Ok(()); }
@@ -137,6 +183,7 @@ impl Mount {
         let last_lb  = ((end - 1) / bs) as u32;
         // (phys_block, assembled block bytes) in logical order.
         let mut pending: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
+        let mut allocated = alloc::vec::Vec::new();
         let mut written = 0usize;
         for lb in first_lb..=last_lb {
             // An UNWRITTEN (fallocate-preallocated) extent must be converted to a
@@ -177,14 +224,21 @@ impl Mount {
                 let (mut ib, ioff) = self.read_inode_bytes(ino)?;
                 self.alloc_written_block_defer(ino, &mut ib, ioff, lb, vis)?;
                 let inode3 = self.read_inode(ino)?;
+                allocated.push(lb);
                 self.resolve_pblock(&inode3, lb)?
             };
             pending.push((phys, blk));
             written += copy_len;
         }
-        self.flush_pending_data_writes(pending)?;
+        if let Err(e) = self.flush_pending_data_writes(pending) {
+            let _ = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+            return Err(e);
+        }
         // Persist the (potentially partial-block) i_size.
-        self.set_inode_size(ino, new_size)?;
+        if let Err(e) = self.set_inode_size_with_meta(ino, new_size, meta) {
+            let _ = self.rollback_allocated_logical_blocks(ino, cur_size, &allocated);
+            return Err(e);
+        }
         Ok(())
     }
 }

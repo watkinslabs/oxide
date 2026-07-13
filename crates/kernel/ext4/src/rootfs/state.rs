@@ -56,7 +56,45 @@ impl RootfsState {
     }
 
     /// Back-stamp the owning VFS `SuperBlock` (`FileSystem::set_sb`). # C: O(1)
-    pub fn set_sb(&self, sb: Weak<vfs::SuperBlock>) { *self.sb.lock() = sb; }
+    pub fn set_sb(self: &Arc<Self>, sb: Weak<vfs::SuperBlock>) -> vfs::KResult<()> {
+        self.mount.set_vfs_superblock(sb.clone());
+        let live = sb.upgrade().ok_or(vfs::VfsError::Enodev)?;
+        *self.sb.lock() = sb;
+        if let Err(e) = self.enable_mount_quotas(&live, false) {
+            self.mount.set_vfs_superblock(Weak::new());
+            *self.sb.lock() = Weak::new();
+            return Err(e);
+        }
+        let _ = self.mount.orphan_cleanup();
+        Ok(())
+    }
+
+    pub(crate) fn enable_mount_quotas(self: &Arc<Self>, sb: &Arc<vfs::SuperBlock>, allow_readonly: bool) -> vfs::KResult<()> {
+        if !self.mount.sb.has_quota() || (sb.sb_rdonly() && !allow_readonly) { return Ok(()); }
+        let mut done = [false; vfs::MAXQUOTAS];
+        for kind in [vfs::QuotaType::User, vfs::QuotaType::Group, vfs::QuotaType::Project] {
+            let ino = match kind {
+                vfs::QuotaType::User    => self.mount.sb.usr_quota_inum,
+                vfs::QuotaType::Group   => self.mount.sb.grp_quota_inum,
+                vfs::QuotaType::Project => self.mount.sb.prj_quota_inum,
+            };
+            if ino == 0 { continue; }
+            if sb.s_dquot.is_enabled(kind) { continue; }
+            let r = if allow_readonly {
+                crate::quota::quota_on_hidden_remount(self, sb, kind, vfs::QFMT_VFS_V1)
+            } else {
+                crate::quota::quota_on_hidden(self, sb, kind, vfs::QFMT_VFS_V1)
+            };
+            if let Err(e) = r.and_then(|_| {
+                if sb.s_dquot.take_suspended_limits(kind) { Ok(()) } else { vfs::quota_disable_limits(sb, kind) }
+            }) {
+                if let Err(rb) = rollback_mount_quotas(sb, done) { return Err(rb); }
+                return Err(e);
+            }
+            done[kind.slot()] = true;
+        }
+        Ok(())
+    }
 
     /// Owning `SuperBlock` (`i_sb`), if the SB is built and live. # C: O(1)
     pub fn i_sb(&self) -> Option<Arc<vfs::SuperBlock>> { self.sb.lock().upgrade() }
@@ -64,7 +102,7 @@ impl RootfsState {
     /// Open `dev` as a fresh ext4 mount + state.
     /// # C: O(N_groups + 1024)
     pub fn open(dev: Arc<dyn BlockDevice>) -> KResult<Arc<Self>> {
-        let mount = Mount::open(dev).map_err(|_| BlockError::Eio)?;
+        let mount = Mount::open_with_orphan_cleanup(dev, false).map_err(|_| BlockError::Eio)?;
         Ok(Self::new(Arc::new(mount)))
     }
 
@@ -262,4 +300,15 @@ impl RootfsState {
         self.page_cache.invalidate(InodeId(ino as u64));
         Some(())
     }
+}
+
+fn rollback_mount_quotas(sb: &vfs::SuperBlock, done: [bool; vfs::MAXQUOTAS]) -> vfs::KResult<()> {
+    let mut first = Ok(());
+    for old in [vfs::QuotaType::User, vfs::QuotaType::Group, vfs::QuotaType::Project] {
+        if !done[old.slot()] { continue; }
+        if let Err(e) = vfs::quota_off(sb, old) {
+            if first.is_ok() { first = Err(e); }
+        }
+    }
+    first
 }

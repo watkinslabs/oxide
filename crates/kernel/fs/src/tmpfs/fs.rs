@@ -113,9 +113,10 @@ impl vfs::fs::FileSystem for TmpfsFs {
 
     /// `fill_super` back-stamp: record the SB so the root + every child
     /// derives `fsid` from `s_dev` (per-instance, not a constant). # C: O(1)
-    fn set_sb(&self, sb: Weak<SuperBlock>) {
+    fn set_sb(&self, sb: Weak<SuperBlock>) -> vfs::KResult<()> {
         *self.sb.lock() = sb.clone();
         if let Some(d) = as_dir(&self.root) { d.set_sb(sb); }
+        Ok(())
     }
 
 }

@@ -37,6 +37,8 @@ impl Inode {
     pub fn uid(&self) -> Option<u32> { Some(self.i_uid.load(Ordering::Relaxed)) }
     /// `i_gid`. # C: O(1)
     pub fn gid(&self) -> Option<u32> { Some(self.i_gid.load(Ordering::Relaxed)) }
+    /// `i_projid`. # C: O(1)
+    pub fn projid(&self) -> u32 { self.i_projid.load(Ordering::Relaxed) }
     /// `i_atime` (ns). # C: O(1)
     pub fn atime(&self) -> Option<u64> { Some(self.i_atime.load(Ordering::Relaxed)) }
     /// `i_mtime` (ns). # C: O(1)
@@ -133,6 +135,8 @@ impl Inode {
         if let Some(h) = &self.owner_persist { h.persist_owner(uid, gid); }
         Ok(())
     }
+    /// Project-id field write. # C: O(1)
+    pub fn set_projid(&self, projid: u32) { self.i_projid.store(projid, Ordering::Relaxed); }
     /// utimes field write. # C: O(1)
     pub fn set_times(&self, atime: Option<u64>, mtime: Option<u64>, ctime: u64) -> KResult<()> {
         if let Some(a) = atime { self.i_atime.store(a, Ordering::Relaxed); }

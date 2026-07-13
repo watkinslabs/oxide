@@ -144,6 +144,7 @@ pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     if ia.valid & (ATTR_UID | ATTR_GID) != 0 {
         let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { inode.uid().unwrap_or(0) };
         let gid = if ia.valid & ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { inode.gid().unwrap_or(0) };
+        crate::quota::dquot_transfer_owner(inode, uid, gid)?;
         inode.set_owner(uid, gid)?;
     }
     let mut mode = ia.mode;

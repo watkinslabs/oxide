@@ -23,6 +23,7 @@ pub enum Errno {
     Enomem  = 12,
     Eacces  = 13,
     Efault  = 14,
+    Enotblk = 15,
     Ebusy   = 16,
     Eexist  = 17,
     Enodev  = 19,
@@ -71,6 +72,8 @@ pub enum Errno {
     Einprogress       = 115,
     Econnreset        = 104,
     Estale            = 116,
+    Euclean           = 117,
+    Edquot            = 122,
     Ecanceled         = 125,
     Eftype            = 134,
 }

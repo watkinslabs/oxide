@@ -2,7 +2,7 @@
 /// native `FileSystemType::mount` implementation. It returns a realized SB and
 /// never crosses into namespace state with the backend object. # C: O(depth)
 fn realize_compat_sb(s_type: Arc<dyn FileSystemType>, mp: Option<&Arc<Dentry>>,
-    fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> Arc<SuperBlock> {
+    fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<Arc<SuperBlock>> {
     let s_id = match mp { Some(d) => abs_string(d), None => String::from("/") };
     superblock_from_filesystem(s_type, fs, root, s_id)
 }
@@ -122,7 +122,7 @@ pub fn register_typed(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
 pub fn register_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
     fs: Arc<dyn FileSystem>, parent_hint: Option<u64>) -> KResult<()> {
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
-    let sb = realize_compat_sb(s_type, mp.as_ref(), fs, None);
+    let sb = realize_compat_sb(s_type, mp.as_ref(), fs, None)?;
     graft_realized(mp, sb, 0, parent_hint)
 }
 
@@ -161,7 +161,7 @@ pub fn register_bind_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<De
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("register_bind", 0, 0, mp.as_ref(), None, None);
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
-    let sb = realize_compat_sb(s_type, mp.as_ref(), fs, Some(root));
+    let sb = realize_compat_sb(s_type, mp.as_ref(), fs, Some(root))?;
     graft_realized(mp, sb, 0, parent_hint)
 }
 
@@ -185,7 +185,7 @@ pub fn register_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, r
     let ns = current_ns();
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     mntns::count_mounts(ns, 1)?;
-    let sb = realize_compat_sb(ty, mp.as_ref(), fs, Some(root));
+    let sb = realize_compat_sb(ty, mp.as_ref(), fs, Some(root))?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);
@@ -260,7 +260,7 @@ pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone());
+    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone())?;
     let root_dentry = sb.s_root().ok_or(VfsError::Enoent)?;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
@@ -274,7 +274,7 @@ pub fn register_bind_path_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: St
     mntns::count_mounts(ns, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone());
+    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone())?;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
 }
 

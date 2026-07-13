@@ -38,7 +38,7 @@ fn realize_tree_builds_target_independent_cgroup2_sb() {
     let ty: Arc<dyn vfs::FileSystemType> =
         FsType::new("cgroup2", CGROUP2_MAGIC, FsFlags::empty(), alloc::boxed::Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
     let sb = SuperBlock::from_ops(ty, s_op, Some(root), CGROUP2_MAGIC, next_anon_dev(), fs_for_sb.block_size(), "cgroup2".to_string(), Arc::new(()));
-    fs_for_sb.set_sb(Arc::downgrade(&sb));
+    fs_for_sb.set_sb(Arc::downgrade(&sb)).expect("cgroup2 set_sb");
     assert_eq!(sb.s_magic, CGROUP2_MAGIC, "SB s_magic == CGROUP2_SUPER_MAGIC");
     let sroot = sb.s_root_inode().expect("SB has a root inode (d_make_root)");
     assert_eq!(sroot.ino(), ROOT_CGDIR_INO, "SB root inode = root CgDir");

@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileType, Inode};
+use vfs::xattr::XattrError;
 
 use super::super::state::RootfsState;
 
@@ -27,6 +28,14 @@ impl Ext4FileData {
     pub(crate) fn refresh_size(&self) {
         if let Ok(i) = self.st.mount.read_inode(self.ino) {
             self.size_hint.store(i.size, Ordering::Release);
+        }
+    }
+    /// Re-read on-disk size and i_blocks into the VFS inode. # C: O(1)
+    pub(crate) fn refresh_inode_usage(&self, inode: &Inode) {
+        if let Ok(i) = self.st.mount.read_inode(self.ino) {
+            self.size_hint.store(i.size, Ordering::Release);
+            inode.set_size(i.size);
+            inode.set_blocks(i.i_blocks as u64);
         }
     }
 }
@@ -55,20 +64,48 @@ pub(crate) fn ext4_file_ino(inode: &Inode) -> Option<u32> {
     inode.private::<Ext4FileData>().map(|f| f.ino)
 }
 
-/// Write-back-on-modify: re-encode the inode's full in-core xattr set into its
-/// on-disk IBODY area (journaled). Called after a successful in-core
-/// set/remove so disk stays the authority across eviction/remount. Best-effort:
-/// a set that overflows the ibody area (external-block residual) stays in-core
-/// only. # C: O(N_xattr) + 1 journaled inode write
-pub(crate) fn persist_inode_xattrs(inode: &Inode) {
+fn xattr_error_from_mount(e: crate::MountError) -> XattrError {
+    XattrError::Fs(super::regular::vfs_error_from_mount(e))
+}
+
+fn persist_xattr_entries(inode: &Inode, entries: &[(alloc::string::String, Vec<u8>)])
+    -> Result<(), XattrError>
+{
     if let Some((st, ino)) = ext4_state_of(inode) {
-        if let Some(store) = inode.simple_xattrs() {
-            let entries: Vec<(alloc::string::String, Vec<u8>)> = store
-                .list_names()
-                .into_iter()
-                .filter_map(|n| store.get(&n).map(|v| (n, v)))
-                .collect();
-            let _ = st.mount.store_xattrs(ino, &entries);
-        }
+        st.mount.store_xattrs(ino, entries).map_err(xattr_error_from_mount)?;
     }
+    Ok(())
+}
+
+/// `ext4_xattr_set`: validate flags against the inode cache, commit the full
+/// new xattr set to disk, then publish it in-core. # C: O(N_xattr)+journal I/O
+pub(crate) fn set_inode_xattr(inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
+    -> Result<(), XattrError>
+{
+    let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
+    let mut entries = store.entries();
+    let pos = entries.iter().position(|(n, _)| n == name);
+    if create && pos.is_some() { return Err(XattrError::Exists); }
+    if replace && pos.is_none() { return Err(XattrError::NotFound); }
+    match pos {
+        Some(idx) => entries[idx].1 = value,
+        None => entries.push((alloc::string::String::from(name), value)),
+    }
+    persist_xattr_entries(inode, &entries)?;
+    store.replace_all(&entries);
+    Ok(())
+}
+
+/// `ext4_xattr_set` remove path: commit removal before updating the cache.
+/// # C: O(N_xattr)+journal I/O
+pub(crate) fn remove_inode_xattr(inode: &Inode, name: &str) -> Result<(), XattrError> {
+    let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
+    let mut entries = store.entries();
+    let Some(pos) = entries.iter().position(|(n, _)| n == name) else {
+        return Err(XattrError::NotFound);
+    };
+    entries.remove(pos);
+    persist_xattr_entries(inode, &entries)?;
+    store.replace_all(&entries);
+    Ok(())
 }
