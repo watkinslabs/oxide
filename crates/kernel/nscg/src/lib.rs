@@ -21,7 +21,7 @@ pub mod uts_ns;
 pub use proc_ns::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
     CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
-    NsInode, NsKind, has_cap_for, has_net_admin_for, net_ns_owner,
+    NsInode, NsKind, has_cap_for, has_net_admin_for, has_net_raw_for, net_ns_owner,
     net_ns_record_owner, ns_inode_for, setns_apply,
 };
 
