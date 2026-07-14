@@ -140,6 +140,14 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             let i = core::ptr::read_volatile((addr_p + 4) as *const i32);
             (p, i)
         };
+        if ifindex < 0 { return -(Errno::Enodev.as_i32() as i64); }
+        if ifindex != 0 {
+            let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+            let iface = net::NetIfaceId::from_raw(ifindex as u32);
+            if net::sock::stack().ifaces.lookup_in_ns(iface, net_ns).is_none() {
+                return -(Errno::Enodev.as_i32() as i64);
+            }
+        }
         let registered = {
             let k = sock.kind.lock();
             if let net::sock::SockKind::Packet { ifindex: ifi, protocol, .. } = &*k {
