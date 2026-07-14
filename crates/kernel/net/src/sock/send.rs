@@ -1,0 +1,94 @@
+use super::*;
+
+/// `sendto`/`send` typed work function for supported socket families. # C: O(payload bytes)
+pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds)
+    -> Result<usize, NetError>
+{
+    if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
+        if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
+        let dst = match dest {
+            Some(RemoteAddr::Inet { ip, .. }) => ip,
+            None => endpoint.snapshot().remote.ok_or(NetError::Edestaddrreq)?,
+            _ => return Err(NetError::Eafnosupport),
+        };
+        let options = crate::raw4::Raw4TxOptions {
+            source: None, iface: bound_iface(sock)?,
+            tos: sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8,
+            ttl: sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) as u8,
+            pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
+            broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
+        };
+        stack().send_raw4(endpoint, dst, payload, options)?;
+        drain_loopback();
+        return Ok(payload.len());
+    }
+    if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
+        if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
+        let (dst, protocol, scope_id) = match dest {
+            Some(RemoteAddr::Inet6 { ip, port, scope_id }) => (ip, Some(port), scope_id),
+            None => {
+                let peer = endpoint.peer().ok_or(NetError::Edestaddrreq)?;
+                (peer.addr, None, peer.scope_id)
+            }
+            _ => return Err(NetError::Eafnosupport),
+        };
+        return crate::sock_v6::sendto_raw6(sock, endpoint, dst, protocol, scope_id, payload);
+    }
+    if matches!(*sock.kind.lock(), SockKind::Udp) {
+        let pending = sock.take_pending_recv_error();
+        if pending != 0 { return Err(crate::sock_io::pending_net_error(pending)); }
+    }
+    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
+    if let SockKind::UnixMsgPair(pair, end) = &*sock.kind.lock() {
+        return pair.clone().send(*end, payload).map_err(|e| match e {
+            crate::UnixMsgError::PeerClosed => NetError::Epipe,
+            crate::UnixMsgError::PeerRefused => NetError::Econnrefused,
+        });
+    }
+    if let SockKind::Unix(pair, end) = &*sock.kind.lock() {
+        return pair.clone().write(*end, payload).map_err(|_| NetError::Epipe);
+    }
+    if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
+        let sender = q.bound();
+        let path = match dest.clone() {
+            Some(RemoteAddr::Unix(p)) => p,
+            Some(RemoteAddr::Unspec) => return Err(NetError::Einval),
+            _ => q.peer().ok_or(NetError::Edestaddrreq)?,
+        };
+        let q = crate::net_ns::unix_registry_for_addr(&path).dgram_lookup_addr(&path)
+            .ok_or(NetError::Econnrefused)?;
+        crate::trace_dgram_journal(&path.display, payload);
+        q.try_push_from(crate::UnixDgram {
+            payload: payload.to_vec(), creds: (creds.pid, creds.uid, creds.gid),
+            fds: alloc::vec::Vec::new(),
+        }, sender)?;
+        return Ok(payload.len());
+    }
+    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        let entry = entry.clone();
+        let eno = sock.take_pending_recv_error();
+        if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
+        let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+            .max(TCP_SNDBUF_DEFAULT) as usize;
+        let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let cork = sock.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let n = stack().tcp_send(&entry, payload, cap, nodelay, cork)?;
+        drain_loopback();
+        return Ok(n);
+    }
+    if let Some(RemoteAddr::Inet6 { ip, port, scope_id }) = dest {
+        return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);
+    }
+    if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
+        let (ip, port) = sock.peer6.lock().ok_or(NetError::Edestaddrreq)?;
+        let scope_id = sock.peer6_scope.load(core::sync::atomic::Ordering::Acquire);
+        return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);
+    }
+    let (dst_ip, dst_port) = match dest {
+        Some(RemoteAddr::Inet { ip, port }) => (ip, port),
+        Some(RemoteAddr::Unspec) | Some(RemoteAddr::Unix(_)) => return Err(NetError::Einval),
+        Some(RemoteAddr::Inet6 { .. }) => unreachable!(),
+        None => sock.peer.lock().ok_or(NetError::Edestaddrreq)?,
+    };
+    socket_sendto(sock, dst_ip, dst_port, payload)
+}
