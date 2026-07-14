@@ -1,7 +1,7 @@
 use crate::addr::{Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::mcast_filter::{FilterMode, SourceFilter, SourceFilter6, SourceOp};
 use crate::netdev::{NetError, NetResult};
-use crate::sock::{iface_primary_ip, stack, InetSocket, SockKind};
+use crate::sock::{iface_primary_ip, stack, InetSocket};
 
 fn iface_for_addr(net_ns: u64, addr: Ipv4Addr) -> Option<NetIfaceId> {
     stack().routes.snapshot_in(net_ns).into_iter()
@@ -103,7 +103,6 @@ impl InetSocket {
         use core::sync::atomic::Ordering;
         let guard = self.local_port.lock();
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
-        if !matches!(*self.kind.lock(), SockKind::Udp) { return Err(NetError::Einval); }
         Ok(guard)
     }
 
@@ -111,12 +110,15 @@ impl InetSocket {
     pub fn set_v4_mcast_iface(&self, addr: Ipv4Addr, ifindex: u32) -> NetResult<()> {
         use core::sync::atomic::Ordering;
         let net_ns = self.net_ns.load(Ordering::Acquire);
+        let bound = self.opts.bound_ifindex.load(Ordering::Acquire);
         if ifindex != 0 && stack().ifaces.lookup_in_ns(NetIfaceId::from_raw(ifindex), net_ns).is_none() {
             return Err(NetError::Enodev);
         }
-        if ifindex == 0 && !addr.is_unspecified() && iface_for_addr(net_ns, addr).is_none() {
-            return Err(NetError::Enodev);
-        }
+        let addr_iface = if ifindex == 0 && !addr.is_unspecified() {
+            Some(iface_for_addr(net_ns, addr).ok_or(NetError::Enodev)?.raw())
+        } else { None };
+        let selected = if ifindex != 0 { Some(ifindex) } else { addr_iface };
+        if bound != 0 && selected.is_some_and(|iface| iface != bound) { return Err(NetError::Einval); }
         self.opts.ip_mcast_ifaddr.store(addr.as_u32(), Ordering::Release);
         self.opts.ip_mcast_ifindex.store(ifindex, Ordering::Release);
         Ok(())
@@ -126,9 +128,11 @@ impl InetSocket {
     pub fn set_v6_mcast_iface(&self, ifindex: u32) -> NetResult<()> {
         use core::sync::atomic::Ordering;
         let net_ns = self.net_ns.load(Ordering::Acquire);
+        let bound = self.opts.bound_ifindex.load(Ordering::Acquire);
         if ifindex != 0 && stack().ifaces.lookup_in_ns(NetIfaceId::from_raw(ifindex), net_ns).is_none() {
             return Err(NetError::Enodev);
         }
+        if bound != 0 && ifindex != 0 && ifindex != bound { return Err(NetError::Einval); }
         self.opts.ipv6_mcast_ifindex.store(ifindex, Ordering::Release);
         Ok(())
     }
