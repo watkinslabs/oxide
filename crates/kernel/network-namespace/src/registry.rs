@@ -17,9 +17,49 @@ struct Registry {
     by_id: BTreeMap<NetworkNamespaceId, RegistryEntry>,
 }
 
-enum RegistryEntry {
-    Live(Weak<NetworkNamespace>),
+pub(crate) trait WeakOwner {
+    type Strong;
+
+    fn upgrade(&self) -> Option<Self::Strong>;
+    fn strong_count(&self) -> usize;
+}
+
+impl<T> WeakOwner for Weak<T> {
+    type Strong = Arc<T>;
+
+    fn upgrade(&self) -> Option<Self::Strong> { Weak::upgrade(self) }
+    fn strong_count(&self) -> usize { Weak::strong_count(self) }
+}
+
+pub(crate) enum RegistryEntry<W = Weak<NetworkNamespace>> {
+    Live(W),
     TeardownClaimed,
+}
+
+impl<W: WeakOwner> RegistryEntry<W> {
+    /// Pin a live owner unless teardown already claimed it. # C: O(1)
+    pub(crate) fn lookup(&self) -> Option<W::Strong> {
+        match self {
+            Self::Live(owner) => owner.upgrade(),
+            Self::TeardownClaimed => None,
+        }
+    }
+
+    /// Atomically transition a dead entry into teardown ownership. # C: O(1)
+    pub(crate) fn claim_if_dead(&mut self) -> bool {
+        match self {
+            Self::Live(owner) if owner.strong_count() == 0 => {
+                *self = Self::TeardownClaimed;
+                true
+            }
+            Self::Live(_) | Self::TeardownClaimed => false,
+        }
+    }
+
+    /// Test whether teardown owns the registry entry. # C: O(1)
+    pub(crate) fn is_claimed(&self) -> bool {
+        matches!(self, Self::TeardownClaimed)
+    }
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -84,10 +124,7 @@ pub fn allocate(owner_user_ns: u64) -> Result<NetworkNamespaceRef, AllocError> {
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
 pub fn lookup(id: NetworkNamespaceId) -> Option<NetworkNamespaceRef> {
-    match REGISTRY.lock().by_id.get(&id) {
-        Some(RegistryEntry::Live(namespace)) => namespace.upgrade(),
-        Some(RegistryEntry::TeardownClaimed) | None => None,
-    }
+    REGISTRY.lock().by_id.get(&id).and_then(RegistryEntry::lookup)
 }
 
 /// Pin a live namespace from a subsystem's stored numeric key. This never
@@ -105,10 +142,7 @@ pub fn lookup_u64(id: u64) -> Option<NetworkNamespaceRef> {
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
 pub fn live_snapshot() -> Vec<NetworkNamespaceRef> {
-    REGISTRY.lock().by_id.values().filter_map(|entry| match entry {
-        RegistryEntry::Live(namespace) => namespace.upgrade(),
-        RegistryEntry::TeardownClaimed => None,
-    }).collect()
+    REGISTRY.lock().by_id.values().filter_map(RegistryEntry::lookup).collect()
 }
 
 /// Claim dead namespace IDs exactly once for deferred process-context teardown.
@@ -118,16 +152,12 @@ pub fn live_snapshot() -> Vec<NetworkNamespaceRef> {
 /// # Sleeps: no
 pub fn take_dead_namespace_ids() -> Vec<NetworkNamespaceId> {
     let mut registry = REGISTRY.lock();
-    let dead: Vec<_> = registry.by_id.iter()
+    let dead: Vec<_> = registry.by_id.iter_mut()
         .filter_map(|(id, entry)| {
             if *id == INIT_ID { return None; }
-            match entry {
-                RegistryEntry::Live(namespace) if namespace.strong_count() == 0 => Some(*id),
-                RegistryEntry::Live(_) | RegistryEntry::TeardownClaimed => None,
-            }
+            if entry.claim_if_dead() { Some(*id) } else { None }
         })
         .collect();
-    for id in &dead { registry.by_id.insert(*id, RegistryEntry::TeardownClaimed); }
     dead
 }
 
@@ -137,7 +167,7 @@ pub fn take_dead_namespace_ids() -> Vec<NetworkNamespaceId> {
 /// # Sleeps: no
 pub fn finish_teardown(id: NetworkNamespaceId) -> bool {
     let mut registry = REGISTRY.lock();
-    if !matches!(registry.by_id.get(&id), Some(RegistryEntry::TeardownClaimed)) {
+    if !registry.by_id.get(&id).is_some_and(RegistryEntry::is_claimed) {
         return false;
     }
     registry.by_id.remove(&id);

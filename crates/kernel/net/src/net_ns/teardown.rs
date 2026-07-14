@@ -1,16 +1,17 @@
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::NET_NS;
+use super::reaper_protocol::PendingSignal;
 use crate::NetStack;
 
-static FINAL_DROP_PENDING: AtomicBool = AtomicBool::new(false);
+static FINAL_DROP_PENDING: PendingSignal<AtomicU64> = PendingSignal::new();
 #[cfg(target_os = "oxide-kernel")]
 static REAPER_READY: AtomicBool = AtomicBool::new(false);
 
 fn signal_final_drop_pending() {
-    FINAL_DROP_PENDING.store(true, Ordering::Release);
+    FINAL_DROP_PENDING.publish();
     #[cfg(target_os = "oxide-kernel")]
     softirq::raise_process(softirq::Slot::NetNsReap);
 }
@@ -27,7 +28,7 @@ pub fn install_final_drop_pending_notifier() -> Result<(), network_namespace::In
 /// # Ctx: process
 /// # Sleeps: no
 pub fn take_final_drop_pending() -> bool {
-    FINAL_DROP_PENDING.swap(false, Ordering::AcqRel)
+    FINAL_DROP_PENDING.harvest()
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -74,7 +75,7 @@ extern "C" fn namespace_reaper(_arg: usize) -> ! {
         // SAFETY: this dedicated kthread holds no subsystem lock while parking;
         // the post-arm pending check closes publication before sleep.
         unsafe { REAPER_WAIT.park(); }
-        if FINAL_DROP_PENDING.load(Ordering::Acquire) {
+        if FINAL_DROP_PENDING.published_after_arm() {
             REAPER_WAIT.cancel_current_park();
             continue;
         }
