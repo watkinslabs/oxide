@@ -4,6 +4,7 @@
 
 extern crate alloc;
 use alloc::sync::{Arc, Weak};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// # C: O(1) monotonic clock read
 #[inline]
@@ -22,6 +23,7 @@ pub(crate) fn monotonic_ns() -> u64 {
 /// — targeted, no global broadcast. The calling task parks on `wq`.
 pub(crate) struct PollWaiter {
     wq: Arc<sched::live::WaitList>,
+    generation: AtomicU64,
     /// Subscription id (the caller's tid, high-bit-tagged to never collide
     /// with epoll instance ids in a shared `PollSubscribers`). A task is in
     /// at most one poll/select at a time, so the tid is a stable key.
@@ -32,7 +34,11 @@ impl PollWaiter {
     /// # C: O(1)
     pub(crate) fn new() -> Arc<Self> {
         let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
-        Arc::new(Self { wq: Arc::new(sched::live::WaitList::new()), id: 0x8000_0000 | tid })
+        Arc::new(Self {
+            wq: Arc::new(sched::live::WaitList::new()),
+            generation: AtomicU64::new(0),
+            id: 0x8000_0000 | tid,
+        })
     }
 
     /// Register on `subs` (one polled fd's wait queue). # C: O(N_subs)
@@ -47,18 +53,32 @@ impl PollWaiter {
         subs.unsubscribe(self.id);
     }
 
+    /// Snapshot the notification sequence before a readiness scan. # C: O(1)
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
     /// Park the current task until a subscribed fd notifies us or
-    /// `deadline_ns` passes (the latter only matters for polled fds with no
-    /// event source — e.g. timerfd — and for the caller's timeout).
+    /// `deadline_ns` passes. The caller snapshots `generation` before its
+    /// readiness scan; a notification in the scan-to-park window is observed
+    /// after Sleeping is installed and immediately wakes the task.
     /// # SAFETY: process ctx; preempt-off across the syscall; park marks
     /// Sleeping + stamps the deadline; park_yield yields into the scheduler.
     /// # C: O(1) + ctxsw
-    pub(crate) unsafe fn park_until(&self, deadline_ns: u64) {
-        // SAFETY: caller (sys_poll/sys_select) is the running task on this CPU in process context, preempt-off; park_with_deadline marks it Sleeping + stamps the deadline; park_yield yields WITHOUT halting (this task is Sleeping — idle provides the IRQ-window; avoids the one-task-per-tick wake-latency stall).
-        unsafe { self.wq.park_with_deadline(deadline_ns); sched::live::park_yield(); }
+    pub(crate) unsafe fn park_until(&self, observed: u64, deadline_ns: u64) {
+        // SAFETY: caller (sys_poll/sys_select) is the running task on this CPU in process context, preempt-off; park_with_deadline publishes Sleeping on this wait list before the generation recheck.
+        unsafe { self.wq.park_with_deadline(deadline_ns); }
+        if self.generation.load(Ordering::Acquire) != observed {
+            self.wq.wake_all();
+        }
+        // SAFETY: current is Sleeping or was made Runnable by a racing source; the scheduler completes the handoff in either case.
+        unsafe { sched::live::park_yield(); }
     }
 }
 
 impl vfs::EpollNotify for PollWaiter {
-    fn notify(&self) { self.wq.wake_all(); }
+    fn notify(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.wq.wake_all();
+    }
 }

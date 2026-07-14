@@ -46,6 +46,7 @@ pub fn inet_from_inode(inode: &vfs::Inode) -> Option<&InetSocket> {
 /// carries it on the queue. Unbound/connected sockets return `None`.
 /// # C: O(1)
 pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::vec::Vec<u8>> {
+    if let Some(l) = sock.unix_bound.lock().as_ref() { return Some(l.path.clone()); }
     match &*sock.kind.lock() {
         SockKind::UnixListener(l) => Some(l.path.clone()),
         // Accepted server socket (end A) inherits the listener's path;
@@ -106,5 +107,8 @@ impl vfs::FileOps for InetFileOps {
     fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
         file.set_fasync_state(on);
         Ok(())
+    }
+    fn on_release_file(&self, file: &vfs::File) {
+        if let Some(sock) = file.inode().private::<InetSocket>() { sock.release_file(); }
     }
 }

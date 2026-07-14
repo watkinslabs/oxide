@@ -61,6 +61,7 @@ pub fn sys_clone_dispatch(
     ptid: u64,
     ctid: u64,
     tls: u64,
+    into_cgid: Option<u64>,
 ) -> i64 {
     use core::sync::atomic::Ordering;
     if let Err(e) = validate_clone_core(flags) { return errno(e); }
@@ -83,7 +84,11 @@ pub fn sys_clone_dispatch(
     // CLONE_THREAD as well, resolved against the process's cgroup (tgid).
     {
         let proc_pid = cur.tgid.load(core::sync::atomic::Ordering::Relaxed) as u64;
-        if cgroup::fork_would_exceed_pids(proc_pid) {
+        let exceeds = match into_cgid {
+            Some(cg) if (flags & CLONE_THREAD) == 0 => cgroup::fork_would_exceed_cgroup(cg),
+            _ => cgroup::fork_would_exceed_pids(proc_pid),
+        };
+        if exceeds {
             return errno(Errno::Eagain);
         }
     }
@@ -178,7 +183,8 @@ pub fn sys_clone_dispatch(
     // (Linux cgroup_post_fork); a new thread charges the process's cgroup
     // so pids.current counts it.
     if (flags & CLONE_THREAD) == 0 {
-        cgroup::inherit(child_tid as u64, cur.tid as u64);
+        if let Some(cg) = into_cgid { cgroup::attach_tid_into(cg, child_tid as u64); }
+        else { cgroup::inherit(child_tid as u64, cur.tid as u64); }
     } else {
         let proc_pid = cur.tgid.load(core::sync::atomic::Ordering::Relaxed) as u64;
         cgroup::charge_thread(proc_pid, child_tid as u64);
@@ -456,8 +462,9 @@ fn clone_spawn_arch(
     child_stack: u64,
     child_mm: alloc::sync::Arc<vmm::AddressSpace>,
 ) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
-    // SAFETY: caller is `oxide_syscall_dispatch` running on the parent's per-task kernel stack; current_svc_frame() points at the saved 208-byte frame whose layout matches `hal_aarch64::SvcFrame`; we read but do not write here.
-    let svc = unsafe { &*hal_aarch64::current_svc_frame() };
+    // SAFETY: the task-owned pointer remains tied to this parent even if clone
+    // blocked and another task entered SVC on the same CPU.
+    let svc = unsafe { &*crate::arch_frame::current_svc_frame() };
     let mut pregs = hal_aarch64::ForkRegs::default();
     // SvcFrame.gp = [u64; 18]   (x0..x17)
     // SvcFrame.x18_x29 = [u64; 2]  ([x18, x29] packed via stp)

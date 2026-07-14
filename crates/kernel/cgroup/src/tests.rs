@@ -209,8 +209,8 @@ fn freeze_and_remove_semantics() {
     let (b, _) = t.create(a, "b").unwrap();
     t.set_frozen(a, true);
     assert_eq!(s(&t.read_file(a, "cgroup.events").unwrap()), "populated 0\nfrozen 1\n");
-    // a has a child → ENOTEMPTY; root → EBUSY.
-    assert_eq!(t.remove(a), Err(vfs::VfsError::Enotempty));
+    // a has an online child; cgroup v2 reports EBUSY. Root is also busy.
+    assert_eq!(t.remove(a), Err(vfs::VfsError::Ebusy));
     assert_eq!(t.remove(ROOT), Err(vfs::VfsError::Ebusy));
     assert!(t.remove(b).is_ok());
     assert!(t.remove(a).is_ok());
@@ -482,4 +482,12 @@ fn delegated_cgroup_procs_writable_by_uid_after_chown() {
     let dir = crate::inode::make_cg_dir(svc);
     assert_eq!(dir.uid(), Some(979));
     assert_eq!(vfs::inode_permission(&dir, vfs::MAY_WRITE, &u979), Ok(()));
+}
+
+#[test]
+fn cgroup_control_file_truncate_zero_is_noop() {
+    let _ = crate::realize_tree();
+    let f = crate::inode::make_cg_file(ROOT, "cgroup.subtree_control");
+    assert_eq!(f.truncate(0), Ok(()), "kernfs control-file O_TRUNC is admitted");
+    assert_eq!(crate::write_file(ROOT, "cgroup.subtree_control", "+pids"), Ok(()));
 }

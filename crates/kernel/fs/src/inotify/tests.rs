@@ -1,7 +1,7 @@
 use super::*;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use crate::inotify::syscalls::resolve_watch_path_at;
+use crate::inotify::path::resolve_watch_path_at;
 use vfs::{CreateCtx, Cred, Dentry, FileType, Inode, InodeBuilder, InodeOps,
     InodeRef, KResult, VfsError, default_file_ops, mk_mode};
 
@@ -311,7 +311,9 @@ fn empty_inotify_is_eagain_and_not_pollable() {
 #[test]
 fn queued_event_is_readable_then_drains_to_eagain() {
     let ino = InotifyData::new(0);
-    ino.events.lock().push_back(Event { wd: 1, mask: IN_MODIFY, cookie: 0, len: 0, obj: None, pid: 0 });
+    let before = ino.poll_subs.generation();
+    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, len: 0, obj: None, pid: 0 });
+    assert!(ino.poll_subs.generation() > before, "queued inotify event wakes epoll subscribers");
     assert_eq!(ino.poll(), vfs::POLL_IN);
     let mut buf = [0u8; 64];
     assert_eq!(ino.read(0, &mut buf), Ok(16));

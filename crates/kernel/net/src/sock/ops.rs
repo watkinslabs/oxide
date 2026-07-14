@@ -1,8 +1,8 @@
 use super::*;
 
 pub enum BoundAddr {
-    /// `bind` on an AF_UNIX SOCK_STREAM/SOCK_SEQPACKET socket —
-    /// register a listener at `path`.
+    /// `bind` on an AF_UNIX SOCK_STREAM/SOCK_SEQPACKET socket reserves `path`;
+    /// `listen(2)` performs the listener state transition.
     UnixListener(crate::UnixAddr),
     /// `bind` on an AF_UNIX SOCK_DGRAM socket — register the
     /// already-allocated queue at `path`.
@@ -19,6 +19,10 @@ pub enum BoundAddr {
 pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), NetError> {
     match addr {
         BoundAddr::UnixListener(addr) => {
+            let kind = sock.kind.lock();
+            if !matches!(*kind, SockKind::TcpInit) { return Err(NetError::Einval); }
+            let mut bound = sock.unix_bound.lock();
+            if bound.is_some() { return Err(NetError::Einval); }
             // B518/SC1: bind into the registry that OWNS this address —
             // pathname sockets are filesystem-global (ns 0), abstract ones
             // are private to the caller's net_ns (see unix_ns_for_path).
@@ -27,10 +31,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             let listener = crate::net_ns::ns_unix_registry(ns)
                 .bind_addr(addr).map_err(|_| NetError::Eaddrinuse)?;
             sock.unix_ns.store(ns, core::sync::atomic::Ordering::Release);
-            // Link the listener socket's epoll subscribers so connect() can wake an
-            // epoll_wait-blocked accept loop (dbus-broker) on a new connection.
-            listener.register_subs(&sock.poll_subs);
-            *sock.kind.lock() = SockKind::UnixListener(listener);
+            *bound = Some(listener);
+            drop(kind);
             Ok(())
         }
         BoundAddr::UnixDgram { addr, queue } => {
@@ -163,6 +165,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                 match &*kind {
                     SockKind::Udp => {
                         drop(kind);
+                        sock.ensure_bound()?;
                         *sock.peer.lock() = Some((dst_ip, port));
                         return Ok(());
                     }
@@ -240,16 +243,25 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
 }
 
 
-/// `listen` per `listen(2)`. AF_UNIX listeners bind(2) does the
-/// work; listen is a no-op. F176: SO_REUSEADDR forwarded.
+/// `listen` per `listen(2)`. AF_UNIX bind reserves the local address and this
+/// call publishes it as connectable. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
     // AF_UNIX listener (incl. socket-activated /run/udev/control passed to
     // udevd): register the listener's epoll subscribers against the socket's
     // `poll_subs` so `UnixRegistry::connect`'s `notify_subs` targets the epoll
     // that ADD'd this fd — not just the global rescan fallback (60§R22).
-    if let SockKind::UnixListener(l) = &*sock.kind.lock() {
-        l.register_subs(&sock.poll_subs);
+    if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
+        let mut kind = sock.kind.lock();
+        if let SockKind::UnixListener(l) = &*kind {
+            l.register_subs(&sock.poll_subs);
+            return Ok(());
+        }
+        if !matches!(*kind, SockKind::TcpInit) { return Err(NetError::Einval); }
+        let listener = sock.unix_bound.lock().clone().ok_or(NetError::Einval)?;
+        listener.register_subs(&sock.poll_subs);
+        listener.listen();
+        *kind = SockKind::UnixListener(listener);
         return Ok(());
     }
     let port = sock.local_port.lock().ok_or(NetError::Einval)?;

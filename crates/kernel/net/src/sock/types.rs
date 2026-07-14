@@ -116,6 +116,10 @@ pub struct InetSocket {
     pub opts: SockOpts,
     /// F166: SHUT_RD/RDWR latch — subsequent read returns Ok(0).
     pub read_shut: core::sync::atomic::AtomicBool,
+    /// Final open-file-description release has run. Socket inodes and transient
+    /// kernel references may outlive the fd, so endpoint teardown cannot ride
+    /// `InetSocket::drop` alone.
+    pub released: core::sync::atomic::AtomicBool,
     /// F180a: AF_INET6 address slots; IPv4 uses local_ip / peer.
     pub local_ip6: Spinlock<crate::Ipv6Addr, SockLockClass>,
     pub peer6:     Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>,
@@ -128,6 +132,9 @@ pub struct InetSocket {
     /// per-ns registry regardless of the closing task's ns. Untouched
     /// (0) for every non-AF_UNIX-bound socket → global semantics.
     pub unix_ns: core::sync::atomic::AtomicU64,
+    /// AF_UNIX stream address reserved by `bind(2)`, independent of whether
+    /// this socket later listens or actively connects.
+    pub unix_bound: Spinlock<Option<Arc<crate::UnixListener>>, SockLockClass>,
 }
 
 /// SOL_SOCKET options — Linux `int`-shaped cells. SO_LINGER pair.
@@ -246,12 +253,14 @@ impl InetSocket {
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
+            released:   core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
+            unix_bound: Spinlock::new(None),
         };
         _s
     }
@@ -269,12 +278,14 @@ impl InetSocket {
             kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
+            released:   core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
+            unix_bound: Spinlock::new(None),
         };
         _s
     }
@@ -348,6 +359,9 @@ impl InetSocket {
         )?;
         stack().set_udp_bound_iface(p, iface);
         *g = Some(p);
+        if let Some(q) = stack().udp_queue_arc(p) {
+            q.register_poll_subs(&self.poll_subs);
+        }
         Ok(p)
     }
 }

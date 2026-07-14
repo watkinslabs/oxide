@@ -49,17 +49,11 @@ fn packed_image(repo: &Path, arch: &str) -> Result<PathBuf, u8> {
 }
 
 /// Copy the pre-packed image to the boot disk path, reflinking where the
-/// filesystem supports CoW (instant, no data copy). Skips the copy when the
-/// boot disk is already newer than the source (kernel-only rebuilds don't
-/// touch it). Each boot gets its OWN copy so the rw root mount never mutates
-/// the shared images-repo output.
+/// filesystem supports CoW (instant, no data copy). Every boot starts from a
+/// fresh copy: QEMU writes this image and the smoke harness terminates the VM
+/// without a guest unmount, so reusing yesterday's newer destination can feed
+/// partially committed filesystem metadata into the next boot.
 fn copy_image(src: &Path, dst: &Path) -> Result<(), u8> {
-    if let (Ok(dm), Ok(sm)) = (mtime(dst), mtime(src)) {
-        if dm >= sm {
-            eprintln!("xtask rootfs: {} newer than {} — reusing (skip copy)", dst.display(), src.display());
-            return Ok(());
-        }
-    }
     eprintln!("xtask rootfs: cp --reflink=auto {} -> {}", src.display(), dst.display());
     let mut c = Command::new("cp");
     c.arg("--reflink=auto").arg("-f").arg(src).arg(dst);
@@ -67,8 +61,4 @@ fn copy_image(src: &Path, dst: &Path) -> Result<(), u8> {
     eprintln!("xtask rootfs: built {} ({} bytes) [glibc, images profile]",
         dst.display(), std::fs::metadata(dst).map(|m| m.len()).unwrap_or(0));
     Ok(())
-}
-
-fn mtime(p: &Path) -> std::io::Result<std::time::SystemTime> {
-    std::fs::metadata(p)?.modified()
 }

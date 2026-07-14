@@ -28,6 +28,7 @@ pub unsafe fn init(info: &BootInfo) {
     unsafe { syscalls::vvar::init(); }
     procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
     procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
+    procfs::hooks::set_domainname_hooks(syscalls::hostname::domain_snapshot_current, syscalls::hostname::domain_set_current);
     procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
     fs::coredump::register_core_hooks();
     hal::zerotrap::set_tid_hook(zerotrap_tid);
@@ -72,6 +73,11 @@ fn init_boot_percpu() {
 
 #[cfg(target_os = "oxide-kernel")]
 fn log_boot_info(info: &BootInfo) {
+    // Boot CPU identity is part of the handoff, not an ACPI side effect. DT-only
+    // arm boots have no RSDP; leaving BOOT_CPU_ID unset makes every timer IRQ
+    // fail the BSP gate, so deadline, watchdog, and device tick work never run.
+    // SAFETY: single boot CPU before AP bring-up; this is the sole writer.
+    unsafe { cpu::smp::set_boot_cpu_id(info.bsp_lapic_id); }
     debug_boot! { klog::kinfo!("init started"); }
     debug_boot! {
         if info.hhdm_offset != 0 { klog::kinfo!("hhdm: present"); }
@@ -88,10 +94,6 @@ fn log_boot_info(info: &BootInfo) {
         // for the RSDP (HHDM-mapped); the bootloader keeps the
         // backing memory alive past kernel handoff per `36§3`.
         unsafe { firmware::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
-        if let Some((id, _flags)) = cpu::get(0) {
-            // SAFETY: kernel_main runs single-CPU pre-init per fn contract; sole writer for BOOT_CPU_ID before any AP observes it.
-            unsafe { cpu::smp::set_boot_cpu_id(id); }
-        }
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }

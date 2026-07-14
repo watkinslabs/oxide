@@ -18,7 +18,6 @@ use crate::net_trace::trace_enotsock_at;
 /// Blocking unless O_NONBLOCK or MSG_DONTWAIT; honors SO_RCVTIMEO.
 /// # C: O(payload bytes)
 pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
-    use hal::TimerOps;
     use core::sync::atomic::Ordering;
     let fd     = args.a0;
     let bufp   = args.a1;
@@ -51,15 +50,14 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
     let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
-    #[cfg(target_arch = "x86_64")]
-    let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
-    #[cfg(target_arch = "aarch64")]
-    let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
-    let rcv = loop {
-        // F174: surface any pending UDP per-port error (ICMP unreach)
-        // before the recv attempt. POSIX: error takes precedence over
-        // queued data; libc's recvfrom returns -errno and clears.
+    let deadline = net::sock::compute_deadline_ns(timeo);
+    let opts = net::sock::RecvOptions { peek: (flags & MSG_PEEK) != 0 };
+    let rcv = if nonblock {
+        match net::sock::recvfrom_opts(&sock, len, opts) {
+            Ok(r) => r,
+            Err(e) => return errno_from_neterr(e),
+        }
+    } else {
         let is_v6 = sock.family.load(Ordering::Acquire) == net::sock::AF_INET6;
         if matches!(*sock.kind.lock(), SockKind::Udp) && !is_v6 {
             if let Some(p) = *sock.local_port.lock() {
@@ -69,44 +67,8 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
                 }
             }
         }
-        match net::sock::recvfrom_opts(&sock, len, net::sock::RecvOptions {
-            peek: (flags & MSG_PEEK) != 0,
-        }) {
-            Ok(r)  => break r,
-            Err(net::NetError::Eagain) => {
-                if nonblock { return -(Errno::Eagain.as_i32() as i64); }
-                if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
-                // F162: park on UDP queue's waitlist; tick_yield for AF_PACKET / AF_UNIX (separate PRs).
-                let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
-                let dl = deadline.unwrap_or(0);
-                // AF_INET6 dgram sockets park on the v6 queue's waiters —
-                // deliver_rx_ipv6 wakes them; the v4 udp_queue_arc below
-                // would never match a v6-bound port.
-                let v6_q = if is_udp && is_v6 {
-                    sock.local_port.lock().and_then(|p| net::sock::stack().udp6_queue_arc(p))
-                } else { None };
-                let udp_q = if is_udp && !is_v6 {
-                    sock.local_port.lock().and_then(|p| net::sock::stack().udp_queue_arc(p))
-                } else { None };
-                if let Some(q) = v6_q {
-                    // SAFETY: process ctx (sys_recvfrom UDP6); runqueue installed; preempt-off owned by syscall stub; deliver_rx_ipv6 wakes after push; timer scanner wakes on deadline.
-                    unsafe { q.waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
-                } else if let Some(q) = udp_q {
-                    // F169: park with SO_RCVTIMEO deadline; timer
-                    // scanner wakes us on expiry → next iter exits via
-                    // the deadline check above.
-                    // SAFETY: process ctx (sys_recvfrom UDP); runqueue installed; preempt-off owned by syscall stub; deliver_rx wakes after push; timer scanner wakes on deadline.
-                    unsafe { q.waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
-                } else if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
-                    // F172: per-socket waitq for AF_PACKET; deliver_packet_rx wakes.
-                    // SAFETY: process ctx (sys_recvfrom AF_PACKET); runqueue installed; preempt-off; deliver_packet_rx wakes after rx push; timer scanner wakes on deadline.
-                    unsafe { sock.recv_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
-                } else {
-                    // SAFETY: process ctx; preempt-off; tick_yield reschedules.
-                    unsafe { sched::live::tick_yield(); }
-                }
-                continue;
-            }
+        match net::sock_recv::recv_blocking(&sock, len, opts, deadline) {
+            Ok(r) => r,
             Err(e) => return errno_from_neterr(e),
         }
     };

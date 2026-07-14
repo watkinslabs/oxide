@@ -114,6 +114,22 @@ fn registry_tasks_in_pgrp_filters_by_pgid() {
 }
 
 #[test]
+fn registry_tasks_in_pgrp_skips_reaped_pidfd_pinned_tasks() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let live = Arc::new(Task::new(20, "live", SchedClass::Normal { weight: 1024 }));
+    let reaped = Arc::new(Task::new(21, "reaped", SchedClass::Normal { weight: 1024 }));
+    live.pgid.store(90, Ordering::Release);
+    reaped.pgid.store(90, Ordering::Release);
+    reaped.reaped.store(true, Ordering::Release);
+    crate::registry::insert(&live);
+    crate::registry::insert(&reaped);
+    let tasks = crate::registry::tasks_in_pgrp(90);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].tid, live.tid);
+}
+
+#[test]
 fn display_vpid_resolves_vtgid_not_internal_tid() {
     crate::registry::clear_for_tests();
     let init = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
@@ -138,4 +154,57 @@ fn parent_vpid_resolves_parent_vtgid() {
     crate::registry::insert(&child);
     assert_eq!(crate::registry::parent_vpid(0xC0DE_0050), 1);
     assert_eq!(crate::registry::parent_vpid(0xC0DE_0002), 0);
+}
+
+#[test]
+fn reaped_pidfd_pinned_task_is_not_wait_child() {
+    crate::registry::clear_for_tests();
+    let parent = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
+    parent.tgid.store(0xC0DE_0002, Ordering::Release);
+    parent.vtgid.store(1, Ordering::Release);
+    parent.vtid.store(1, Ordering::Release);
+    parent.pgid.store(1, Ordering::Release);
+    crate::registry::insert(&parent);
+
+    let child = Arc::new(Task::new(0xC0DE_0050, "svc", SchedClass::Normal { weight: 1024 }));
+    child.parent_tid.store(parent.tid, Ordering::Release);
+    child.vtgid.store(50, Ordering::Release);
+    child.vtid.store(50, Ordering::Release);
+    child.pgid.store(1, Ordering::Release);
+    child.exit_signal.store(crate::signum::Signum::Sigchld as u8, Ordering::Release);
+    crate::registry::insert(&child);
+
+    assert!(crate::registry::has_wait_children(parent.tid, parent.tid, -1, 1, 0));
+    child.reaped.store(true, Ordering::Release);
+    assert!(!crate::registry::has_wait_children(parent.tid, parent.tid, -1, 1, 0),
+            "Linux release_task children pinned by pidfds are no longer waitable");
+}
+
+#[test]
+fn reaped_task_is_not_resolved_by_visible_pid() {
+    crate::registry::clear_for_tests();
+    let t = Arc::new(Task::new(0xC0DE_0050, "svc", SchedClass::Normal { weight: 1024 }));
+    t.vtgid.store(50, Ordering::Release);
+    t.vtid.store(50, Ordering::Release);
+    crate::registry::insert(&t);
+
+    assert!(crate::registry::lookup_by_vpid(50).is_some());
+    assert_eq!(crate::registry::display_vpid(t.tid), 50);
+    t.reaped.store(true, Ordering::Release);
+    assert!(crate::registry::lookup_by_vpid(50).is_none());
+    assert_eq!(crate::registry::display_vpid(t.tid), t.tid as u64);
+}
+
+#[test]
+fn reaped_task_is_not_resolved_by_user_pid_lookup() {
+    crate::registry::clear_for_tests();
+    let t = Arc::new(Task::new(0xC0DE_0060, "svc", SchedClass::Normal { weight: 1024 }));
+    t.vtgid.store(60, Ordering::Release);
+    t.vtid.store(60, Ordering::Release);
+    crate::registry::insert(&t);
+    assert!(crate::registry::lookup_in_ns(0, 60).is_some());
+    assert!(crate::registry::lookup_in_ns(0, t.tid).is_some());
+    t.reaped.store(true, Ordering::Release);
+    assert!(crate::registry::lookup_in_ns(0, 60).is_none());
+    assert!(crate::registry::lookup_in_ns(0, t.tid).is_none());
 }

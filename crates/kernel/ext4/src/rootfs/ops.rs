@@ -86,8 +86,7 @@ impl RootfsState {
         let perm = inode.mode & 0o7777;
         // `st_rdev` is only meaningful for CHR/BLK; ext4 stores it inline.
         let rdev = if matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { inode.rdev() } else { 0 };
-        let nlink = if inode.links_count != 0 { inode.links_count as u32 }
-                    else if matches!(ft, vfs::FileType::Directory) { 2 } else { 1 };
+        let nlink = inode.links_count as u32;
         let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
         let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns, inode.crtime_ns);
         let st = self.clone();
@@ -110,7 +109,7 @@ impl RootfsState {
         let mode = inode.mode;
         let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
         let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns, inode.crtime_ns);
-        let nlink = if inode.links_count != 0 { inode.links_count as u32 } else { 1 };
+        let nlink = inode.links_count as u32;
         let st = self.clone();
         let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times);
         // Shared identity via the SB inode cache (Linux `iget`).

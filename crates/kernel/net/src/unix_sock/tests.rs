@@ -48,12 +48,26 @@ fn abstract_path_display_uses_procfs_at_prefix() {
 }
 
 #[test]
+fn stream_bind_reserves_before_listen() {
+    let registry = UnixRegistry::new();
+    let addr = UnixAddr::from_sockaddr_path(b"\0bound-client".to_vec());
+    let listener = registry.bind_addr(addr.clone()).unwrap();
+
+    assert!(registry.is_bound_addr(&addr), "bind reserves the address");
+    assert!(registry.connect_addr(&addr).is_none(), "bind alone is not listening");
+
+    listener.listen();
+    assert!(registry.connect_addr(&addr).is_some(), "listen publishes the endpoint");
+}
+
+#[test]
 fn abstract_names_are_byte_identity_not_utf8_strings() {
     let registry = UnixRegistry::new();
     let raw = b"\0svc\xff".to_vec();
     let addr = UnixAddr::from_sockaddr_path(raw.clone());
 
-    registry.bind_addr(addr.clone()).unwrap();
+    let listener = registry.bind_addr(addr.clone()).unwrap();
+    listener.listen();
 
     assert!(registry.lookup_listener_addr(&addr).is_some());
     assert_eq!(unix_path_display(raw), b"@svc\xff".to_vec());
@@ -63,6 +77,7 @@ fn abstract_names_are_byte_identity_not_utf8_strings() {
 fn udev_control_path_connect_wakes_accept_and_round_trips() {
     let registry = UnixRegistry::new();
     let listener = registry.bind(String::from("/run/udev/control")).unwrap();
+    listener.listen();
     let subs = Arc::new(vfs::PollSubscribers::new());
     let waiter = WakeCounter::new();
     subs.subscribe(1, wake_ref(&waiter));
@@ -95,8 +110,8 @@ fn pathname_registry_key_is_inode_identity_not_display_path() {
         display: b"/run/a.sock".to_vec(),
     };
 
-    registry.bind_addr(a.clone()).unwrap();
-    registry.bind_addr(b.clone()).unwrap();
+    registry.bind_addr(a.clone()).unwrap().listen();
+    registry.bind_addr(b.clone()).unwrap().listen();
 
     assert!(registry.connect_addr(&a).is_some());
     assert!(registry.connect_addr(&b).is_some());
@@ -115,7 +130,7 @@ fn symlinked_pathname_connect_hits_same_inode_key() {
         display: b"/dev/log".to_vec(),
     };
 
-    registry.bind_addr(bound).unwrap();
+    registry.bind_addr(bound).unwrap().listen();
     let pair = registry.connect_addr(&via_link).expect("same inode key must connect");
 
     assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some(&b"/run/systemd/journal/dev-log"[..]));
@@ -134,7 +149,7 @@ fn pathname_addr_preserves_non_utf8_display_bytes() {
     let raw = b"/run/raw-\xff.sock".to_vec();
     let addr = UnixAddr::from_inode_bytes(raw.clone(), &ino);
 
-    registry.bind_addr(addr.clone()).unwrap();
+    registry.bind_addr(addr.clone()).unwrap().listen();
 
     let pair = registry.connect_addr(&addr).expect("raw pathname socket address must connect");
     assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some(&raw[..]));

@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 
 use crate::file::File;
 use crate::inode::{Inode, no_data_op_errno, POLL_IN, POLL_OUT};
+use crate::poll_subs::PollSubscribers;
 use crate::types::{FileType, KResult, VfsError};
 
 /// `SEEK_HOLE`/`SEEK_DATA` selector for [`FileOps::seek_hole_data`] (Linux
@@ -190,6 +191,21 @@ pub trait FileOps: Send + Sync {
     fn poll_open_file(&self, file: &File) -> u32 {
         self.poll_file(file.inode(), file.pos())
     }
+
+    /// Wait source selected while a poll consumer registers this open file.
+    /// Most backends use the inode's fixed source; task-relative backends such
+    /// as signalfd override this to select the current caller's source.
+    /// # C: O(1)
+    fn poll_subscribers(&self, file: &File) -> Option<Arc<PollSubscribers>> {
+        file.inode().poll_subscribers_arc()
+    }
+
+    /// Earliest monotonic deadline at which `poll_open_file` can become ready
+    /// without a source notification. Timer-backed files override this so a
+    /// poll consumer can arm the scheduler deadline instead of periodically
+    /// rescanning. `None` means readiness changes only through notifications.
+    /// # C: O(1)
+    fn poll_deadline_ns(&self, _file: &File) -> Option<u64> { None }
 
     /// `f_op->fasync` — backend admission for `FIOASYNC`/`F_SETFL(O_ASYNC)`.
     /// Default means no fasync op installed; async-capable stream backends call

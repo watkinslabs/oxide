@@ -180,12 +180,19 @@ pub fn register_bind_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: 
 /// # C: O(depth)
 pub fn register_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root_dentry: Arc<Dentry>,
     parent_hint: Option<u64>) -> KResult<()> {
-    let root = root_dentry.inode().ok_or(VfsError::Enoent)?;
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
+    register_bind_path_typed_at(ty, mp, fs, root_dentry, parent_hint)
+}
+
+/// Bind clone preserving source dentry with an explicit filesystem type.
+/// # C: O(depth)
+pub fn register_bind_path_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
+    fs: Arc<dyn FileSystem>, root_dentry: Arc<Dentry>, parent_hint: Option<u64>) -> KResult<()> {
+    let root = root_dentry.inode().ok_or(VfsError::Enoent)?;
     let ns = current_ns();
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     mntns::count_mounts(ns, 1)?;
-    let sb = realize_compat_sb(ty, mp.as_ref(), fs, Some(root))?;
+    let sb = realize_compat_sb(s_type, mp.as_ref(), fs, Some(root))?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let Some(d) = mp else {
         let m = new_mount(sb, String::from("/"), None, mnt_id, mnt_id, ns);

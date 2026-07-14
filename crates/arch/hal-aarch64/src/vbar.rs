@@ -135,8 +135,8 @@ fn percpu_base() -> u64 {
 ///   [24]      SP_EL0 at offset 0xc0
 ///   [25]      retval (x0 after dispatch) at offset 0xc8
 ///
-/// Note: the actual frame is 26 × 8 = 208 bytes per the asm. Only
-/// the slots syscall handlers need to overwrite are exposed here.
+/// The frame is 36 x 8 = 288 bytes. Every field offset is pinned below because
+/// the assembly addresses these slots directly.
 #[repr(C)]
 pub struct SvcFrame {
     pub gp:        [u64; 18],   // x0..x17                     (offsets 0x00..0x90)
@@ -150,8 +150,18 @@ pub struct SvcFrame {
     pub x19_x28:   [u64; 10],   // x19..x28                     (offset 0xd0..0x120)
 }
 
-const _: () = assert!(core::mem::size_of::<SvcFrame>() == 288,
-    "SvcFrame must match the 288 B asm frame in oxide_lower_el_sync_handler");
+const _: () = {
+    assert!(core::mem::offset_of!(SvcFrame, gp) == 0x00);
+    assert!(core::mem::offset_of!(SvcFrame, x18_x29) == 0x90);
+    assert!(core::mem::offset_of!(SvcFrame, x30) == 0xa0);
+    assert!(core::mem::offset_of!(SvcFrame, _pad_x30) == 0xa8);
+    assert!(core::mem::offset_of!(SvcFrame, elr_el1) == 0xb0);
+    assert!(core::mem::offset_of!(SvcFrame, spsr_el1) == 0xb8);
+    assert!(core::mem::offset_of!(SvcFrame, sp_el0) == 0xc0);
+    assert!(core::mem::offset_of!(SvcFrame, retval) == 0xc8);
+    assert!(core::mem::offset_of!(SvcFrame, x19_x28) == 0xd0);
+    assert!(core::mem::size_of::<SvcFrame>() == 0x120);
+};
 
 /// Pointer to the active task's saved SVC frame, or null pre-first-syscall.
 /// # SAFETY: caller is `oxide_syscall_dispatch` running on the active

@@ -99,6 +99,7 @@ pub fn make_timerfd_inode(clockid: u64) -> InodeRef {
     InodeBuilder::new(TIMERFD_INO_BASE | (id as Ino & TIMERFD_INO_MASK),
         mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(TimerfdFileOps))
         .private(data)
+        .poll_subs(vfs::PollSubscribers::new())
         .build()
 }
 
@@ -115,6 +116,11 @@ impl FileOps for TimerfdFileOps {
         if cg != 0 && cg != sched::clock::realtime_change_generation() { return vfs::POLL_IN; }
         let expiry = d.expiry_ns.load(Ordering::Acquire);
         if expiry != 0 && monotonic_ns() >= expiry { vfs::POLL_IN } else { 0 }
+    }
+    fn poll_deadline_ns(&self, file: &vfs::File) -> Option<u64> {
+        let d = file.inode().private::<TimerfdData>()?;
+        let expiry = d.expiry_ns.load(Ordering::Acquire);
+        if expiry == 0 { None } else { Some(expiry) }
     }
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(VfsError::Einval); }
@@ -268,6 +274,7 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     { sched::clock::realtime_change_generation() } else { 0 };
     inode.cancel_gen.store(cancel_gen, Ordering::Release);
     inode.expiry_ns.store(expiry, Ordering::Release);
+    if let Some(subs) = file.poll_subscribers() { subs.notify_mask(vfs::POLL_IN); }
     0
 }
 

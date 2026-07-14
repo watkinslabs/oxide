@@ -9,6 +9,31 @@ use crate::types::{FileType, KResult, OpenFlags, VfsError};
 use super::{fire_read_hook, fire_write_hook, File, Fmode, SeekFrom, PAGE_SIZE};
 
 impl File {
+    #[cfg(feature = "debug-mnt")]
+    fn trace_write_erofs(&self, op: &'static [u8]) {
+        klog::write_raw(b"[VFS-WRITE-EROFS] op=");
+        klog::write_raw(op);
+        klog::write_raw(b" mnt_id=");
+        klog::write_dec_u64(self.mnt_id);
+        if let Some(m) = self.vfsmount() {
+            klog::write_raw(b" mnt_ns=");
+            klog::write_dec_u64(m.ns);
+            klog::write_raw(b" mnt_flags=0x");
+            klog::write_hex_u64(m.flags());
+            klog::write_raw(b" sb_ro=");
+            klog::write_dec_u64(if m.sb().is_readonly() { 1 } else { 0 });
+            klog::write_raw(b" mp=");
+            let mp = m.mount_point_str();
+            klog::write_raw(mp.as_bytes());
+        } else {
+            klog::write_raw(b" mnt_ns=0 mnt_flags=0x0 sb_ro=0 mp=<none>");
+        }
+        klog::write_raw(b" dentry=");
+        let path = self.dentry.absolute_path();
+        klog::write_raw(&path);
+        klog::write_raw(b"\n");
+    }
+
     /// `read(2)` — advances the cursor by the byte count returned by
     /// the inode's `read`. Rejects writes-only opens with `Ebadf`.
     /// O_NONBLOCK routes through `Inode::read_nonblock`, which the
@@ -108,6 +133,8 @@ impl File {
             return Err(VfsError::Ebadf);
         }
         if self.mnt_readonly() {
+            #[cfg(feature = "debug-mnt")]
+            self.trace_write_erofs(b"write");
             return Err(VfsError::Erofs);
         }
         // D27: admit as a sb-freeze in-flight writer (Linux `file_start_write`).
@@ -271,6 +298,8 @@ impl File {
             return Err(VfsError::Ebadf);
         }
         if self.mnt_readonly() {
+            #[cfg(feature = "debug-mnt")]
+            self.trace_write_erofs(b"pwrite");
             return Err(VfsError::Erofs);
         }
         // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
@@ -360,6 +389,8 @@ impl File {
             return Err(VfsError::Ebadf);
         }
         if self.mnt_readonly() {
+            #[cfg(feature = "debug-mnt")]
+            self.trace_write_erofs(b"write_iter");
             return Err(VfsError::Erofs);
         }
         // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);

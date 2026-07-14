@@ -18,6 +18,8 @@ pub struct NetlinkSocket {
     pub groups: AtomicU32,
     pub rx_queue: Spinlock<VecDeque<(Vec<u8>, u32)>, SockLockClass>,
     pub poll_subs: Arc<vfs::PollSubscribers>,
+    #[cfg(target_os = "oxide-kernel")]
+    pub waiters: sched::live::WaitList,
 }
 
 impl NetlinkSocket {
@@ -29,6 +31,8 @@ impl NetlinkSocket {
             groups: AtomicU32::new(0),
             rx_queue: Spinlock::new(VecDeque::new()),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
+            #[cfg(target_os = "oxide-kernel")]
+            waiters: sched::live::WaitList::new(),
         }
     }
 
@@ -54,6 +58,8 @@ impl NetlinkSocket {
     /// # C: O(1) under rx_queue.lock()
     pub fn enqueue_from(&self, msg: Vec<u8>, src_port: u32) {
         self.rx_queue.lock().push_back((msg, src_port));
+        #[cfg(target_os = "oxide-kernel")]
+        self.waiters.wake_all();
         self.poll_subs.notify();
     }
 

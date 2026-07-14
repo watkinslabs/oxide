@@ -75,6 +75,7 @@ fn post_broadcast(cur: &sched::Task, bit: u64, sig: i32) -> usize {
     let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return 0 };
     let mut n = 0usize;
     for t in &tasks {
+        if t.reaped.load(Ordering::Acquire) { continue; }
         let vtgid = t.vtgid.load(Ordering::Acquire);
         if vtgid == 0 || vtgid == 1 { continue; } // skip kthreads + init(pid 1)
         if t.tid == cur.tid { continue; }          // skip self

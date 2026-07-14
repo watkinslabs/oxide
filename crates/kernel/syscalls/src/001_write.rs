@@ -194,6 +194,21 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
                 klog::write_raw(b" path=\"");
                 let path = file.dentry().absolute_path();
                 klog::write_raw(&path);
+                klog::write_raw(b"\" mnt_id=");
+                klog::write_dec_u64(file.mnt_id());
+                if let Some(m) = file.vfsmount() {
+                    klog::write_raw(b" mnt_ns=");
+                    klog::write_dec_u64(m.ns);
+                    klog::write_raw(b" mnt_flags=0x");
+                    klog::write_hex_u64(m.flags());
+                    klog::write_raw(b" sb_ro=");
+                    klog::write_dec_u64(if m.sb().is_readonly() { 1 } else { 0 });
+                    klog::write_raw(b" mp=\"");
+                    let mp = m.mount_point_str();
+                    klog::write_raw(mp.as_bytes());
+                } else {
+                    klog::write_raw(b" mnt_ns=0 mnt_flags=0x0 sb_ro=0 mp=\"<none>");
+                }
                 klog::write_raw(b"\" ino=");
                 klog::write_dec_u64(file.inode().ino());
                 klog::write_raw(b" type=");

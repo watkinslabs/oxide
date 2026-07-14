@@ -19,13 +19,15 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::dentry::Dentry;
 use crate::fs::KResult;
 use crate::inode::{POLL_ERR, POLL_IN, POLL_PRI};
+use crate::poll_subs::PollSubscribers;
 use crate::types::VfsError;
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ use crate::types::VfsError;
 // ---------------------------------------------------------------------------
 
 static MOUNT_GEN: AtomicU64 = AtomicU64::new(1);
+static MOUNTINFO_SUBS: Spinlock<Vec<Weak<PollSubscribers>>, MountClass> = Spinlock::new(Vec::new());
 
 /// Current mount-table generation (advances on every tree mutation). # C: O(1)
 pub fn mount_generation() -> u64 { MOUNT_GEN.load(Ordering::Acquire) }
@@ -45,7 +48,22 @@ pub fn mount_generation() -> u64 { MOUNT_GEN.load(Ordering::Acquire) }
 /// `mount.rs` tree mutation. # C: O(log N)
 pub fn bump_gen(ns: u64) -> u64 {
     if let Some(n) = ns_by_id(ns) { n.seq.fetch_add(1, Ordering::AcqRel); }
-    MOUNT_GEN.fetch_add(1, Ordering::AcqRel) + 1
+    let next = MOUNT_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+    let wake = {
+        let mut g = MOUNTINFO_SUBS.lock();
+        g.retain(|w| w.upgrade().is_some());
+        g.iter().filter_map(|w| w.upgrade()).collect::<Vec<_>>()
+    };
+    for subs in wake { subs.notify_mask(POLL_PRI | POLL_ERR); }
+    next
+}
+
+/// Register one `/proc/.../mountinfo` inode's poll wait queue. # C: O(N_watchers)
+pub fn attach_mountinfo_poll(subs: Arc<PollSubscribers>) {
+    let weak = Arc::downgrade(&subs);
+    let mut g = MOUNTINFO_SUBS.lock();
+    g.retain(|w| w.upgrade().is_some());
+    g.push(weak);
 }
 
 /// `/proc/.../mountinfo` poll mask given a reader's last-seen generation cell.
@@ -281,6 +299,10 @@ pub fn mnt_ns_exit(ns: u64) -> bool {
             continue;
         }
         if prev == 1 {
+            // The initial mount namespace has a kernel lifetime pin. Early
+            // transient user tasks can exit before PID 1, but that must not
+            // tear down the root mount tree Linux keeps as init_mnt_ns.
+            if ns == 0 { return false; }
             crate::mount::reap_ns(ns);
             ns_forget(ns);
             return true;

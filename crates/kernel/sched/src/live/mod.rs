@@ -62,7 +62,7 @@ pub use sigpend::{
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,
 };
 pub use tick_deadline::tick_wake_expired;
-pub use zombies::{enqueue_zombie, has_wait_zombies, has_zombies, park_for_wait4, park_zombie, peek_one, reap_one, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4};
+pub use zombies::{enqueue_zombie, has_wait_zombies, has_zombies, park_for_wait4, peek_one, reap_one, reap_orphans, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4};
 
 pub mod preempt;
 
@@ -186,10 +186,9 @@ pub fn set_epoll_gen_bump_hook(f: fn()) {
 /// Robust-futex exit walk (`ipc::live::futex::exit_robust_list`), installed at
 /// boot by kmain. Lives here as a hook because the walk body is in `ipc`, and
 /// `ipc` already depends on `sched` — a direct `sched -> ipc` dep would cycle.
-/// Both non-syscall exit paths (`zombies::terminate_current_with_signal` here,
-/// and `pmm::user_as::signal`'s SIGSEGV terminate) drive it through
-/// `run_robust_exit` so a thread killed by a fatal fault while holding a robust
-/// mutex still marks it FUTEX_OWNER_DIED and wakes a waiter (Linux
+/// The scheduler-owned fatal-exit path drives it through `run_robust_exit` so a
+/// thread killed by a fatal fault while holding a robust mutex still marks it
+/// FUTEX_OWNER_DIED and wakes a waiter (Linux
 /// `do_exit -> exit_robust_list`; the syscall exit path calls the body directly
 /// from `060_exit.rs`). `(head_uaddr, owner_tid)`.
 pub type RobustExitFn = fn(u64, u32);

@@ -8,6 +8,7 @@
 extern crate alloc;
 mod common;
 use alloc::sync::Arc;
+use alloc::string::String;
 
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
@@ -267,4 +268,50 @@ fn real_run_udev_mkdir() {
         }
         Err(e) => eprintln!("/run lookup: {e:?}"),
     }
+}
+
+#[test]
+#[ignore]
+fn real_hwdb_tmpfile_publish() {
+    common::boot_hosted_pmm();
+    let path = match std::env::var("OXIDE_ROOTFS_IMG") { Ok(p) => p, Err(_) => { eprintln!("SKIP: set OXIDE_ROOTFS_IMG"); return; } };
+    let bytes = match std::fs::read(&path) { Ok(b) => b, Err(_) => { eprintln!("SKIP: image unreadable"); return; } };
+    let cap = (bytes.len() as u64) / (SECTOR as u64);
+    let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    disk.submit_sync(&mut req).unwrap();
+    let m = ext4::rootfs::Ext4Mount::open(disk).expect("open real rootfs");
+    m.state().mount.begin_batch();
+    let fs: Arc<dyn vfs::fs::FileSystem> = m.clone();
+    let root = fs.root();
+    let sb = common::realize_sb(fs, root, 0xE471_0DB0, String::from("ext4"));
+    let udev = m.state().lookup_inode_any(b"/etc/udev").expect("lookup /etc/udev");
+    let old = udev.lookup("hwdb.bin").expect("existing hwdb.bin");
+    let tmp = udev.tmpfile(0o640, &vfs::CreateCtx::root()).expect("create hwdb tmpfile");
+    tmp.set_state(vfs::I_LINKABLE, 0);
+    let mut newer = alloc::vec::Vec::new();
+    for _ in 0..8 {
+        newer.push(udev.tmpfile(0o600, &vfs::CreateCtx::root()).expect("create newer orphan"));
+    }
+    tmp.setattr(&vfs::IDENTITY, &vfs::Iattr {
+        valid: vfs::ATTR_MODE,
+        mode: 0o444,
+        ..Default::default()
+    }).expect("chmod anonymous hwdb");
+    let payload = alloc::vec![0x48; 13_635_836];
+    let dentry = vfs::Dentry::new(None, String::from("(hwdb)"), tmp.clone());
+    let file = vfs::File::new(tmp.clone(), dentry, vfs::OpenFlags::O_WRONLY);
+    assert_eq!(file.write(&payload).expect("buffer hwdb payload"), payload.len());
+    tmp.i_mapping().expect("hwdb mapping").writeback().expect("write back hwdb payload");
+    sb.sync_fs(true).expect("sync hwdb payload");
+
+    assert_eq!(tmp.nlink(), 0, "anonymous hwdb starts unlinked");
+    assert_eq!(udev.link_child(&tmp, "hwdb.bin", &vfs::CreateCtx::root()), Err(vfs::VfsError::Eexist));
+    udev.link_child(&tmp, ".#hwdb.tmp", &vfs::CreateCtx::root()).expect("link temporary hwdb name");
+    udev.rename_child(".#hwdb.tmp", &udev, "hwdb.bin", 0, &vfs::CreateCtx::root()).expect("replace hwdb.bin");
+    assert_eq!(old.nlink(), 0);
+    assert_eq!(udev.lookup("hwdb.bin").expect("published hwdb").ino(), tmp.ino());
+    drop(newer);
+    drop(file);
+    drop(sb);
 }

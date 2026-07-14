@@ -9,14 +9,14 @@ use super::{UnixEnd, UnixMsgPair, UnixPair};
 /// Falls back to global epoll broadcast when peer's subs slot is
 /// empty (binding race) so no events get silently swallowed.
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn wake_peer_subs(pair: &UnixPair, end: UnixEnd) {
+pub(crate) fn wake_peer_subs(pair: &UnixPair, end: UnixEnd, events: u32) {
     let slot = match end {
         UnixEnd::A => pair.end_b_subs.lock().clone(),
         UnixEnd::B => pair.end_a_subs.lock().clone(),
     };
     if let Some(weak) = slot {
         if let Some(subs) = weak.upgrade() {
-            subs.notify();
+            subs.notify_mask(events);
             return;
         }
     }
@@ -25,14 +25,14 @@ pub(crate) fn wake_peer_subs(pair: &UnixPair, end: UnixEnd) {
 
 /// F181a: msgpair sibling of `wake_peer_subs`.
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn wake_msgpair_peer_subs(pair: &UnixMsgPair, end: UnixEnd) {
+pub(crate) fn wake_msgpair_peer_subs(pair: &UnixMsgPair, end: UnixEnd, events: u32) {
     let slot = match end {
         UnixEnd::A => pair.end_b_subs.lock().clone(),
         UnixEnd::B => pair.end_a_subs.lock().clone(),
     };
     if let Some(weak) = slot {
         if let Some(subs) = weak.upgrade() {
-            subs.notify();
+            subs.notify_mask(events);
             return;
         }
     }

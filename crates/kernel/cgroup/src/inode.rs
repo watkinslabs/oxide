@@ -175,6 +175,15 @@ impl FileOps for CgFileFileOps {
     }
 }
 
+/// `inode_operations` for cgroup control files. Linux cgroupfs is kernfs-backed:
+/// O_TRUNC/ftruncate(0) on a writable control file is admitted by VFS readonly
+/// gates and does not mean "mutate persistent file length". # C: O(1)
+struct CgFileInodeOps;
+impl InodeOps for CgFileInodeOps {
+    /// # C: O(1)
+    fn truncate(&self, _inode: &Inode, _len: u64) -> KResult<()> { Ok(()) }
+}
+
 /// `chown(2)` write-through for a cgroup DIRECTORY inode — persists the owner to
 /// the hierarchy so it survives the inode being re-synthesized on the next
 /// lookup (systemd cgroup delegation). Bound into the inode via
@@ -223,7 +232,7 @@ pub fn make_cg_file(cgid: u64, file: &str) -> InodeRef {
     let size = crate::read_file(cgid, file).map(|d| d.len()).unwrap_or(0) as u64;
     let (uid, gid) = crate::node_file_owner(cgid, file);
     InodeBuilder::new(file_ino(cgid, file), mk_mode(FileType::Regular, file_perm(file)),
-                      vfs::inode_ops::default_inode_ops(), Arc::new(CgFileFileOps))
+                      Arc::new(CgFileInodeOps), Arc::new(CgFileFileOps))
         .fsid(CGROUP2_FSID)
         .owner(uid, gid)
         .owner_persist(Arc::new(CgFileOwner { cgid, file: file.to_string() }))

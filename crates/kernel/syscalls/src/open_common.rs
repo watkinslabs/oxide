@@ -51,6 +51,35 @@ const VALID_OPENAT2_FLAGS: u64 = VALID_OPEN_FLAGS | OPENAT2_REGULAR;
 const O_PATH_FLAGS: u64 = O_DIRECTORY as u64 | O_NOFOLLOW as u64 | O_PATH as u64
     | O_CLOEXEC as u64 | O_EMPTYPATH;
 
+#[cfg(feature = "debug-mount")]
+fn trace_open_erofs(inode: &vfs::InodeRef, mnt_id: u64, flags: u32, mnt_flags: u64, mp: &str) {
+    use core::sync::atomic::Ordering;
+    klog::write_raw(b"[OPEN-EROFS] tid=");
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b" tgid="); klog::write_dec_u64(c.tgid.load(Ordering::Acquire) as u64);
+        klog::write_raw(b" ns="); klog::write_dec_u64(c.mount_ns.load(Ordering::Acquire));
+        klog::write_raw(b" name="); klog::write_raw(c.name.as_bytes());
+    } else {
+        klog::write_raw(b"0 tgid=0 ns=0 name=<none>");
+    }
+    klog::write_raw(b" mnt_id="); klog::write_dec_u64(mnt_id);
+    klog::write_raw(b" mnt_flags=0x"); klog::write_hex_u64(mnt_flags);
+    klog::write_raw(b" open_flags=0x"); klog::write_hex_u64(flags as u64);
+    klog::write_raw(b" mp="); klog::write_raw(mp.as_bytes());
+    klog::write_raw(b" ftype=");
+    match inode.file_type() {
+        vfs::types::FileType::Regular => klog::write_raw(b"regular"),
+        vfs::types::FileType::Directory => klog::write_raw(b"dir"),
+        vfs::types::FileType::Symlink => klog::write_raw(b"symlink"),
+        vfs::types::FileType::CharDev => klog::write_raw(b"char"),
+        vfs::types::FileType::BlockDev => klog::write_raw(b"block"),
+        vfs::types::FileType::Fifo => klog::write_raw(b"fifo"),
+        vfs::types::FileType::Socket => klog::write_raw(b"socket"),
+    }
+    klog::write_raw(b"\n");
+}
+
 /// Linux `build_open_how` / `build_open_flags` validation needed before path
 /// mutation. Legacy open/openat mask unsupported bits and let `O_PATH` strip
 /// every non-path flag; openat2 keeps the full 64-bit flags word for unknown-bit
@@ -123,7 +152,10 @@ pub(crate) fn enforce_open_perm(
     );
     if want_write && mnt_id != 0 && !special {
         if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
-            if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
+            let mnt_flags = m.flags.load(Ordering::Acquire);
+            if (mnt_flags & vfs::mount::MNT_RDONLY) != 0 {
+                #[cfg(feature = "debug-mount")]
+                trace_open_erofs(inode, mnt_id, flags, mnt_flags, &m.mount_point_str());
                 return Some(-(Errno::Erofs.as_i32() as i64));
             }
         }

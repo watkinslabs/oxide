@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
+use vfs::PollSubscribers;
 use vmm::AddressSpace;
 
 use super::Task;
@@ -24,6 +25,39 @@ const UNBLOCKABLE_MASK: u64 = Signum::Sigkill.bit() | Signum::Sigstop.bit();
 pub const SIG_BLOCK:   u64 = 0;
 pub const SIG_UNBLOCK: u64 = 1;
 pub const SIG_SETMASK: u64 = 2;
+
+/// Pending-signal bitmap plus the wait source shared with signalfd inodes.
+pub struct SignalPending {
+    bits: AtomicU64,
+    poll: Arc<PollSubscribers>,
+}
+
+impl SignalPending {
+    /// Empty pending set with a fresh signal wait source. # C: O(1)
+    pub fn new() -> Self {
+        Self { bits: AtomicU64::new(0), poll: Arc::new(PollSubscribers::new()) }
+    }
+
+    /// Atomic pending-set snapshot. # C: O(1)
+    pub fn load(&self, order: Ordering) -> u64 { self.bits.load(order) }
+
+    /// Post pending bits and notify signalfd pollers on a real 0-to-1 transition. # C: O(N_subscribers)
+    pub fn fetch_or(&self, bits: u64, order: Ordering) -> u64 {
+        let prior = self.bits.fetch_or(bits, order);
+        if bits & !prior != 0 { self.poll.notify_mask(vfs::POLL_IN); }
+        prior
+    }
+
+    /// Clear pending bits without producing a readiness event. # C: O(1)
+    pub fn fetch_and(&self, bits: u64, order: Ordering) -> u64 { self.bits.fetch_and(bits, order) }
+
+    /// Clone the source signalfd inodes expose to epoll. # C: O(1)
+    pub fn poll_subscribers(&self) -> Arc<PollSubscribers> { Arc::clone(&self.poll) }
+}
+
+impl Default for SignalPending {
+    fn default() -> Self { Self::new() }
+}
 
 /// Linux `struct sigaction` core fields per `27§3`.
 #[repr(C, align(8))]
