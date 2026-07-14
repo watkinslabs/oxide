@@ -42,7 +42,11 @@ fn next_identity() -> Result<NamespaceIdentity, AllocError> {
     }
 }
 
-/// Return the immortal initial network namespace. # C: O(log N)
+/// Return the immortal initial network namespace.
+/// # C: O(log N)
+/// # Ctx: process; caller holds no lock ranked `Namespace` or higher
+/// # Lk: takes `Namespace` (rank 75)
+/// # Sleeps: no
 pub fn initial() -> NetworkNamespaceRef {
     let mut registry = REGISTRY.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
@@ -55,7 +59,11 @@ pub fn initial() -> NetworkNamespaceRef {
     namespace
 }
 
-/// Allocate and publish a network namespace owned by `owner_user_ns`. # C: O(log N)
+/// Allocate and publish a network namespace owned by `owner_user_ns`.
+/// # C: O(log N)
+/// # Ctx: process; caller holds no lock ranked `Namespace` or higher
+/// # Lk: takes `Namespace` (rank 75)
+/// # Sleeps: no
 pub fn allocate(owner_user_ns: u64) -> Result<NetworkNamespaceRef, AllocError> {
     if !callback::installed() { return Err(AllocError::FinalDropCallbackMissing); }
     let identity = next_identity()?;
@@ -64,17 +72,29 @@ pub fn allocate(owner_user_ns: u64) -> Result<NetworkNamespaceRef, AllocError> {
     Ok(namespace)
 }
 
-/// Pin a live namespace by stable ID without reconstructing dead owners. # C: O(log N)
+/// Pin a live namespace by stable ID without reconstructing dead owners.
+/// # C: O(log N)
+/// # Ctx: process; caller holds no lock ranked `Namespace` or higher
+/// # Lk: takes `Namespace` (rank 75)
+/// # Sleeps: no
 pub fn lookup(id: NetworkNamespaceId) -> Option<NetworkNamespaceRef> {
     REGISTRY.lock().by_id.get(&id).and_then(Weak::upgrade)
 }
 
-/// Snapshot every currently live namespace as owned references. # C: O(N)
+/// Snapshot every currently live namespace as owned references.
+/// # C: O(N)
+/// # Ctx: process; caller holds no lock ranked `Namespace` or higher
+/// # Lk: takes `Namespace` (rank 75)
+/// # Sleeps: no
 pub fn live_snapshot() -> Vec<NetworkNamespaceRef> {
     REGISTRY.lock().by_id.values().filter_map(Weak::upgrade).collect()
 }
 
-/// Claim dead namespace IDs exactly once for deferred process-context teardown. # C: O(N)
+/// Claim dead namespace IDs exactly once for deferred process-context teardown.
+/// # C: O(N)
+/// # Ctx: process; caller holds no lock ranked `Namespace` or higher
+/// # Lk: takes `Namespace` (rank 75)
+/// # Sleeps: no
 pub fn take_dead_namespace_ids() -> Vec<NetworkNamespaceId> {
     let mut registry = REGISTRY.lock();
     let dead: Vec<_> = registry.by_id.iter()
