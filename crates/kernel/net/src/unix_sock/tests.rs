@@ -99,6 +99,28 @@ fn udev_control_path_connect_wakes_accept_and_round_trips() {
 }
 
 #[test]
+fn listener_readiness_tracks_accept_queue_only() {
+    let registry = UnixRegistry::new();
+    let listener = registry.bind(String::from("\0listener-poll")).unwrap();
+    listener.listen();
+    let subs = Arc::new(vfs::PollSubscribers::new());
+    let readable = WakeCounter::new();
+    let writable = WakeCounter::new();
+    subs.subscribe_mask(1, wake_ref(&readable), vfs::POLL_IN);
+    subs.subscribe_mask(2, wake_ref(&writable), vfs::POLL_OUT);
+    listener.register_subs(&subs);
+    assert_eq!(listener.poll_mask(), 0, "empty listener is not writable or readable");
+
+    let client = registry.connect("\0listener-poll").expect("queued client");
+    assert_eq!(hits(&readable), 1, "connection arrival wakes readable interest");
+    assert_eq!(hits(&writable), 0, "connection arrival is not a writable edge");
+    assert_eq!(listener.poll_mask(), vfs::POLL_IN, "queued connection makes accept readable");
+    let accepted = listener.accept_q.lock().pop_front().expect("accept queued client");
+    assert!(Arc::ptr_eq(&accepted, &client));
+    assert_eq!(listener.poll_mask(), 0, "draining accept queue clears readiness");
+}
+
+#[test]
 fn pathname_registry_key_is_inode_identity_not_display_path() {
     let registry = UnixRegistry::new();
     let a = UnixAddr {
