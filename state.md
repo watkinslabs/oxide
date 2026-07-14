@@ -1,14 +1,19 @@
-# state - B831 packet socket namespace and filter semantics
+# state - B832 raw IP socket semantics
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B831-network-raw-packet-socket-semantics`
-- Branch: `B831-network-raw-packet-socket-semantics`
-- Base: `478bc037` (`origin/main`, merged B830)
-- Scope: complete AF_PACKET receive, namespace, capability, metadata, and
-  socket-filter semantics.
+- Worktree: `/home/nd/oxide-wt/B832-network-raw-ip-sockets`
+- Branch: `B832-network-raw-ip-sockets`
+- Base: `1134fbff` (`origin/main`, merged B831)
+- Scope: replace AF_INET/AF_INET6 raw sockets' UDP shell with protocol-owned
+  raw-IP bind, connect, send, receive, namespace, filter, and error semantics.
+
+## B831 publication
+
+- PR: `#3091`, merged as `1134fbff` on 2026-07-14.
+- Hosted net suite: 431 passed; x86 and ARM target builds passed.
 
 ## B831 implemented
 
