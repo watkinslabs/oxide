@@ -4,7 +4,7 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `origin/main`: `e87ee0cd`; merged into the active lane at `02110d8f`.
+- `main`: `16132232`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
@@ -12,8 +12,8 @@ Update: 2026-07-14.
 - B835 adds strict per-architecture vDSO ABI validation.
 - N03.1 owner foundation merged in PR #3100 at `0d26f077`.
 - B837 owner contracts and race hardening merged in PR #3102 at `50ce37e4`.
-- N03.2-N03.6 atomic owner migration is active on
-  `B838-netns-task-ownership`.
+- N03.2-N03.6 owner migration merged in PR #3105 at `16132232`.
+- N03.7 final-drop teardown is the next network lane.
 
 ## Implemented
 
@@ -70,7 +70,7 @@ Update: 2026-07-14.
 
 ## Remaining network work
 
-- B838 N03.2-N03.6 commit, PR, merge, and closure.
+- D218 closure merge.
 - N03.7 final-drop teardown and N03.8 lifecycle/race proof, then N04-N22.
 
 ## First resume command
