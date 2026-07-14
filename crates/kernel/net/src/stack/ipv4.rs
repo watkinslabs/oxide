@@ -103,7 +103,8 @@ impl NetStack {
             }
         };
         let probe = mode >= crate::uapi::IP_PMTUDISC_PROBE;
-        let mtu = self.path_mtu(IpAddr::V4(dst), Some(iface_id), probe)? as usize;
+        let net_ns = self.ifaces.namespace(iface_id).ok_or(NetError::Enodev)?;
+        let mtu = self.path_mtu_in(net_ns, IpAddr::V4(dst), Some(iface_id), probe)? as usize;
         let may_fragment = mode != crate::uapi::IP_PMTUDISC_DO
             && mode != crate::uapi::IP_PMTUDISC_PROBE
             && mode != crate::uapi::IP_PMTUDISC_INTERFACE;
@@ -125,6 +126,7 @@ impl NetStack {
 
     /// Demux IPv4 → ICMP/UDP/TCP. # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enodev)?;
         // PRE_ROUTING fires on every received packet before the routing
         // decision. Non-local destinations are forwarded only when
         // `net.ipv4.ip_forward` enables router mode.
@@ -171,7 +173,7 @@ impl NetStack {
                 } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH
                     || echo.typ == icmp::ICMP_TYPE_TIME_EXC || echo.typ == 12
                 {
-                    self.handle_icmp_error(iface, hdr.src, echo.typ, echo.code, payload);
+                    self.handle_icmp_error(net_ns, iface, hdr.src, echo.typ, echo.code, payload);
                 }
             }
             p if p == IpProto::Udp as u8 => {
@@ -181,7 +183,7 @@ impl NetStack {
                 // map lock before touching the queue itself. wake_all
                 // takes the waitlist lock + runqueue inner; we must
                 // not hold the udp-map lock across either.
-                let endpoints = self.udp_demux(hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface);
+                let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface);
                 let has_v4 = !endpoints.is_empty();
                 for q in endpoints {
                     if hdr.dst.is_multicast() {
@@ -197,7 +199,7 @@ impl NetStack {
                     ));
                 }
                 let endpoints6 = if !has_v4 || hdr.dst.is_multicast() || hdr.dst.is_broadcast() {
-                    self.udp6_demux_v4(hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface)
+                    self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface)
                 } else { Vec::new() };
                 for q in endpoints6 {
                     let packet = &payload[..udp.length as usize];
@@ -212,7 +214,7 @@ impl NetStack {
                 }
             }
             p if p == IpProto::Tcp as u8 =>
-                self.deliver_tcp(iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst), payload)?,
+                self.deliver_tcp(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst), payload)?,
             p if p == IpProto::Igmp as u8 => self.handle_igmp(iface, hdr.src, hdr.dst, payload)?,
             _ => {}
         }

@@ -119,6 +119,8 @@ mod tests_socket_filter;
 mod tests_ipv6_local;
 #[cfg(test)]
 mod tests_ipv4_udp_errors;
+#[cfg(test)]
+mod tests_inet_netns;
 
 // Real bring-up runs through the module functions (stack init in kmain,
 // loopback/iface registration, the timer-driven TCP RTO below); there is

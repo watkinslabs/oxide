@@ -36,9 +36,6 @@ pub fn drain_loopback() {
     }
 }
 
-static EPHEM_NEXT: core::sync::atomic::AtomicU32
-    = core::sync::atomic::AtomicU32::new(crate::ephemeral::DEFAULT_START as u32);
-
 /// Allocate an unused ephemeral src port + bind it under
 /// `Ipv4Addr::ANY` so reply datagrams can be received.
 /// # C: O(N tries)
@@ -72,11 +69,12 @@ pub fn alloc_ephemeral_udp4(net_ns: u64, bind_ip: Ipv4Addr,
 {
     use core::sync::atomic::Ordering;
     let range = crate::ephemeral::range_in(net_ns);
+    let tables = STACK.inet_tables(net_ns);
     for _ in 0..range.count() {
-        let seq = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
+        let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);
         let p = range.port(seq);
-        if let Ok(endpoint) = STACK.bind_udp_socket(
-            bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
+        if let Ok(endpoint) = STACK.bind_udp_socket_in(
+            net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
             ip_mtu_discover.clone(), owner_uid,
             peer.clone(), bpf_filter.clone(), mcast.clone(),
         ) {
@@ -122,11 +120,12 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
 {
     use core::sync::atomic::Ordering;
     let range = crate::ephemeral::range_in(net_ns);
+    let tables = STACK.inet_tables(net_ns);
     for _ in 0..range.count() {
-        let seq = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
+        let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);
         let p = range.port(seq);
-        if let Ok(endpoint) = STACK.bind_udp6_socket(
-            bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(), owner_uid,
+        if let Ok(endpoint) = STACK.bind_udp6_socket_in(
+            net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(), owner_uid,
             v6only.clone(),
             peer.clone(), ipv6_mtu_discover.clone(), bpf_filter.clone(), mcast.clone(),
         ) {

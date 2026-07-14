@@ -13,7 +13,7 @@ fn net_dev_body() -> alloc::vec::Vec<u8> {
     let _ = writeln!(s, "Inter-|   Receive                                                |  Transmit");
     let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
     let stack = net::sock::stack();
-    let snap = stack.ifaces.snapshot();
+    let snap = stack.ifaces.snapshot_in_ns(net::netdev::current_net_ns());
     for iface in snap {
         let stats = iface.stats;
         let _ = writeln!(s, "{:>6}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0  # mtu={}",
@@ -36,27 +36,14 @@ fn net_tcp_body() -> alloc::vec::Vec<u8> {
     );
     let stack = net::sock::stack();
     let mut sl: u32 = 0;
-    // LISTEN rows from the v4 listener table.
-    let listens = stack.tcp_listens_map().lock();
-    for (key, _) in listens.iter() {
-        if let IpAddr::V4(ip) = key.local_ip {
+    for row in stack.inet_diag_snapshot_in(net::netdev::current_net_ns(), 6) {
+        if let (IpAddr::V4(ip), IpAddr::V4(remote)) = (row.local_ip, row.remote_ip) {
             let ip_be = ip.as_u32().to_be();
-            let _ = writeln!(s, "{:5}: {:08X}:{:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-                sl, ip_be, key.local_port);
+            let _ = writeln!(s, "{:5}: {:08X}:{:04X} {:08X}:{:04X} {:02X} 00000000:{:08X} 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                sl, ip_be, row.local_port, remote.as_u32().to_be(), row.remote_port,
+                row.state, row.rqueue);
             sl += 1;
         }
-    }
-    drop(listens);
-    // Established / other states from the conn table.
-    let conns = stack.tcp_conns_map().lock();
-    for (key, entry) in conns.iter() {
-        let (IpAddr::V4(lip), IpAddr::V4(rip)) = (key.local_ip, key.remote_ip)
-            else { continue };
-        let st = linux_tcp_state(entry.conn.lock().state);
-        let _ = writeln!(s, "{:5}: {:08X}:{:04X} {:08X}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-            sl, lip.as_u32().to_be(), key.local_port,
-            rip.as_u32().to_be(), key.remote_port, st);
-        sl += 1;
     }
     s.into_bytes()
 }
@@ -66,31 +53,20 @@ pub fn make_proc_net_tcp() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0
 /// `/proc/net/tcp6` — IPv6 TCP table matching Linux tcp6 column shape.
 fn net_tcp6_body() -> alloc::vec::Vec<u8> {
     use core::fmt::Write as _;
-    use net::addr::{IpAddr, Ipv6Addr};
+    use net::addr::IpAddr;
 
     let mut s = String::from(
         "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
     );
     let stack = net::sock::stack();
     let mut sl: u32 = 0;
-    let listens = stack.tcp_listens_map().lock();
-    for (key, _) in listens.iter() {
-        if let IpAddr::V6(ip) = key.local_ip {
-            let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-                sl, proc_ipv6_hex(ip), key.local_port, proc_ipv6_hex(Ipv6Addr::ANY));
+    for row in stack.inet_diag_snapshot_in(net::netdev::current_net_ns(), 6) {
+        if let (IpAddr::V6(local), IpAddr::V6(remote)) = (row.local_ip, row.remote_ip) {
+            let _ = writeln!(s, "{:5}: {}:{:04X} {}:{:04X} {:02X} 00000000:{:08X} 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                sl, proc_ipv6_hex(local), row.local_port, proc_ipv6_hex(remote),
+                row.remote_port, row.state, row.rqueue);
             sl += 1;
         }
-    }
-    drop(listens);
-    let conns = stack.tcp_conns_map().lock();
-    for (key, entry) in conns.iter() {
-        let (IpAddr::V6(lip), IpAddr::V6(rip)) = (key.local_ip, key.remote_ip)
-            else { continue };
-        let st = linux_tcp_state(entry.conn.lock().state);
-        let _ = writeln!(s, "{:5}: {}:{:04X} {}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
-            sl, proc_ipv6_hex(lip), key.local_port,
-            proc_ipv6_hex(rip), key.remote_port, st);
-        sl += 1;
     }
     s.into_bytes()
 }
@@ -99,23 +75,6 @@ pub fn make_proc_net_tcp6() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_
 
 /// Translate our internal TcpState to Linux's /proc/net/tcp values
 /// (uapi/linux/tcp.h `enum tcp_state`). `ss`/`netstat` decode this.
-fn linux_tcp_state(s: net::tcp_state::TcpState) -> u8 {
-    use net::tcp_state::TcpState::*;
-    match s {
-        Established => 1,
-        SynSent     => 2,
-        SynRecv     => 3,
-        FinWait1    => 4,
-        FinWait2    => 5,
-        TimeWait    => 6,
-        Closed      => 7,
-        CloseWait   => 8,
-        LastAck     => 9,
-        Listen      => 10,
-        Closing     => 11,
-    }
-}
-
 fn proc_ipv6_hex(ip: net::addr::Ipv6Addr) -> alloc::string::String {
     use alloc::format;
     let o = ip.0;
@@ -133,14 +92,11 @@ fn net_udp_body() -> alloc::vec::Vec<u8> {
         "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
     );
     let stack = net::sock::stack();
-    let map = stack.udp_map().lock();
     let mut sl: u32 = 0;
-    for group in map.values() {
-        for q in group {
-            let rx_len = q.queued_bytes();
-            let ip = u32::from_be_bytes(q.bound_ip.octets()).to_be();
+    for row in stack.inet_diag_snapshot_in(net::netdev::current_net_ns(), 17) {
+        if let net::addr::IpAddr::V4(ip) = row.local_ip {
             let _ = writeln!(s, "{:5}: {:08X}:{:04X} 00000000:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-                sl, ip, q.bound_port, rx_len);
+                sl, ip.as_u32().to_be(), row.local_port, row.rqueue);
             sl += 1;
         }
     }
@@ -157,13 +113,11 @@ fn net_udp6_body() -> alloc::vec::Vec<u8> {
         "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
     );
     let stack = net::sock::stack();
-    let map = stack.udp6_map().lock();
     let mut sl: u32 = 0;
-    for group in map.values() {
-        for q in group {
-            let rx_len = q.queued_bytes();
+    for row in stack.inet_diag_snapshot_in(net::netdev::current_net_ns(), 17) {
+        if let net::addr::IpAddr::V6(ip) = row.local_ip {
             let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-                sl, proc_ipv6_hex(q.bound_ip), q.bound_port, proc_ipv6_hex(Ipv6Addr::ANY), rx_len);
+                sl, proc_ipv6_hex(ip), row.local_port, proc_ipv6_hex(Ipv6Addr::ANY), row.rqueue);
             sl += 1;
         }
     }
