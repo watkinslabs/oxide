@@ -4,13 +4,14 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `a79fcb5f`, synchronized with `origin/main`.
+- `main`: `0d26f077`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
 - B834 uses the GNU aarch64 target for reproducible vDSO generation.
 - B835 adds strict per-architecture vDSO ABI validation.
-- N03.1 owner foundation is active on `B836-netns-owner-foundation`.
+- N03.1 owner foundation merged in PR #3100 at `0d26f077`.
+- N03.2 task ownership and exit release is the next network lane.
 
 ## Implemented
 
@@ -51,7 +52,7 @@ Update: 2026-07-14.
 
 ## Remaining network work
 
-- N03 through N22 remain in `network-plan.md`.
+- N03.2 through N22 remain in `network-plan.md`.
 - Integrated ARM smoke remains blocked by unrelated glibc-service traps and
   the `upower.service` restart loop captured in `/tmp/B832-smoke-arm.log`.
 

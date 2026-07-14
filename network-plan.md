@@ -109,10 +109,11 @@ Merged network foundation:
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at
   final owner drop and remove ID-scan/task-table cleanup heuristics. Cover
   clone/unshare/setns/fd/socket lifetime and state destruction races.
-  - [~] N03.1 introduce a dependency-neutral network-namespace owner with
+  - [x] N03.1 introduce a dependency-neutral network-namespace owner with
     immutable monotonic ID, owning user namespace, stable nsfs identity, weak
-    live registry, init owner, and install-once final-drop callback. Claimed by
-    `B836-netns-owner-foundation`.
+    live registry, init owner, and install-once final-drop callback. B836,
+    PR #3100, merge `0d26f077`; lifecycle tests 2, package checks and touched
+    spec-lint gates passed.
   - [ ] N03.2 replace task `AtomicU64` storage with an owned namespace handle;
     clone atomically, swap under one lock, and release explicitly on task exit
     so pidfds retaining reaped tasks cannot retain namespace membership.
