@@ -56,7 +56,7 @@ impl UnixMsgPair {
         })
     }
 
-    /// Stamp `end`'s creds (socketpair creation + each send).
+    /// Stamp `end`'s stable socketpair credentials.
     /// # C: O(1)
     pub fn set_end_cred(&self, end: crate::UnixEnd, pid: u32, uid: u32, gid: u32) {
         match end {
@@ -116,8 +116,8 @@ impl UnixMsgPair {
         let creds = sched::live::current()
             .map(|c| (
                 c.visible_pid(),
-                c.creds.euid.load(core::sync::atomic::Ordering::Relaxed),
-                c.creds.egid.load(core::sync::atomic::Ordering::Relaxed),
+                c.creds.ruid.load(core::sync::atomic::Ordering::Relaxed),
+                c.creds.rgid.load(core::sync::atomic::Ordering::Relaxed),
             ))
             .unwrap_or((0, 0, 0));
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -127,16 +127,6 @@ impl UnixMsgPair {
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
         {
-            // SCM_CREDENTIALS: stamp writing end with live creds.
-            if let Some(c) = sched::live::current() {
-                use core::sync::atomic::Ordering::Relaxed;
-                self.set_end_cred(
-                    end,
-                    c.visible_pid(),
-                    c.creds.euid.load(Relaxed),
-                    c.creds.egid.load(Relaxed),
-                );
-            }
             let waiters = match end {
                 UnixEnd::A => &self.a_to_b_waiters,
                 UnixEnd::B => &self.b_to_a_waiters,

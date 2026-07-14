@@ -239,6 +239,11 @@ impl InetSocket {
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
+        let unix_listener = {
+            let kind = self.kind.lock();
+            if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
+        };
+        if let Some(l) = unix_listener { return l.poll_mask(); }
         match &*self.kind.lock() {
             SockKind::Udp => {
                 let mut mask = POLL_OUT;
@@ -270,12 +275,13 @@ impl InetSocket {
                 };
                 if !read_q.lock().buf.is_empty() { mask |= POLL_IN; }
                 if pair.peer_gone(*end) {
-                    mask |= POLL_IN | vfs::POLL_ERR | POLL_HUP | vfs::POLL_RDHUP;
+                    mask |= POLL_IN | POLL_HUP | vfs::POLL_RDHUP;
                 }
+                if pair.reset_pending(*end) { mask |= vfs::POLL_ERR; }
                 if pair.is_eof(*end) { mask |= POLL_HUP; }
                 mask
             }
-            SockKind::UnixListener(l) => l.poll_mask(),
+            SockKind::UnixListener(_) => 0,
             SockKind::UnixDgram(q) => {
                 let mut mask = POLL_OUT;
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
@@ -295,7 +301,11 @@ impl InetSocket {
                 if !rx.lock().is_empty() { mask |= POLL_IN; }
                 mask
             }
-            SockKind::TcpInit => POLL_OUT,
+            SockKind::TcpInit => {
+                if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
+                    POLL_OUT | POLL_HUP
+                } else { POLL_OUT }
+            }
         }
     }
 
@@ -340,7 +350,8 @@ impl InetSocket {
                 c.send_buf.len() + c.retx_q.iter().map(|s| s.payload.len()).sum::<usize>()
             }
             SockKind::Udp | SockKind::Unix(..) | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
-            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
+            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_)
+            | SockKind::UnixListener(_) => 0,
         }
     }
 }

@@ -383,18 +383,18 @@ fn stream_fds_bind_to_their_write_not_an_earlier_one() {
 
     // First recvmsg reads msg1's bytes: must NOT carry the fd, and must
     // stop at the fd boundary (only "AAAA", even though 64 was asked).
-    let (b1, f1) = p.read_stream(UnixEnd::B, 64);
+    let (b1, f1, _) = p.read_stream(UnixEnd::B, 64);
     assert_eq!(&b1[..], b"AAAA", "read capped at the fd boundary");
     assert!(f1.is_empty(), "fd must not ride the earlier fd-less message");
 
     // Second recvmsg reaches the boundary: delivers msg2's bytes + the fd.
-    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
     assert_eq!(&b2[..], b"BBBB");
     assert_eq!(f2.len(), 1, "fd delivered with its own message");
     assert!(alloc::sync::Arc::ptr_eq(&f2[0], &fd));
 
     // No fds left over.
-    let (_b3, f3) = p.read_stream(UnixEnd::B, 64);
+    let (_b3, f3, _) = p.read_stream(UnixEnd::B, 64);
     assert!(f3.is_empty());
 }
 
@@ -403,7 +403,7 @@ fn stream_fd_on_first_byte_delivers_immediately() {
     let p = UnixPair::new();
     let fd = anon_file();
     p.write_with_fds(UnixEnd::A, b"HELLO", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
-    let (b, f) = p.read_stream(UnixEnd::B, 64);
+    let (b, f, _) = p.read_stream(UnixEnd::B, 64);
     assert_eq!(&b[..], b"HELLO");
     assert_eq!(f.len(), 1);
     assert!(alloc::sync::Arc::ptr_eq(&f[0], &fd));
@@ -414,10 +414,10 @@ fn stream_partial_read_delivers_fd_once_with_first_chunk() {
     let p = UnixPair::new();
     let fd = anon_file();
     p.write_with_fds(UnixEnd::A, b"XYZW", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
-    let (b1, f1) = p.read_stream(UnixEnd::B, 2); // partial
+    let (b1, f1, _) = p.read_stream(UnixEnd::B, 2); // partial
     assert_eq!(&b1[..], b"XY");
     assert_eq!(f1.len(), 1, "fd rides the first byte of its write");
-    let (b2, f2) = p.read_stream(UnixEnd::B, 2);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 2);
     assert_eq!(&b2[..], b"ZW");
     assert!(f2.is_empty(), "fd not re-delivered on the rest of the same write");
 }
@@ -430,7 +430,7 @@ fn stream_fd_only_message_delivers_without_looping() {
     let p = UnixPair::new();
     let fd = anon_file();
     p.write_with_fds(UnixEnd::A, b"", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
-    let (b, f) = p.read_stream(UnixEnd::B, 64);
+    let (b, f, _) = p.read_stream(UnixEnd::B, 64);
     assert!(b.is_empty());
     assert_eq!(f.len(), 1, "fd-only message delivered, not re-queued");
     assert!(alloc::sync::Arc::ptr_eq(&f[0], &fd));
@@ -452,7 +452,7 @@ fn stream_read_with_fds_never_returns_empty_when_bytes_present() {
     assert_eq!(&got[..], b"PAYLOAD", "read() must return bytes, never park with data buffered");
     // fd was dropped (no cmsg buffer on a plain read) and NOT left dangling
     // for a stale later delivery.
-    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
     assert!(b2.is_empty());
     assert!(f2.is_empty(), "read() dropped the fd; nothing stale re-delivered");
 }
@@ -470,7 +470,7 @@ fn stream_read_drops_only_passed_fds_keeps_future_ones() {
     // AND fd2 (rode "BBBB") since both are now behind the cursor.
     let got = p.read(UnixEnd::B, 8);
     assert_eq!(&got[..], b"AAAABBBB");
-    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
     assert!(b2.is_empty() && f2.is_empty(), "all fds consumed/dropped, nothing desynced");
 }
 

@@ -407,7 +407,7 @@ pub(crate) fn unlink_unix_socket_addr(addr: &net::UnixAddr) -> bool {
     if !addr.is_pathname() || !net::sock::UNIX_REGISTRY.is_bound_addr(addr) {
         return false;
     }
-    net::sock::UNIX_REGISTRY.unbind_addr(addr);
+    net::sock::UNIX_REGISTRY.unlink_addr(addr);
     net::sock::UNIX_REGISTRY.dgram_unbind_addr(addr);
     true
 }

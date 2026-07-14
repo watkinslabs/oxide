@@ -128,11 +128,11 @@ fn f192_set_backlog_clamps_to_somaxconn() {
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     let le = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7101, true).unwrap();
-    le.set_backlog(99999);
+    le.set_backlog(99999, crate::sysctl::DEFAULT_SOMAXCONN);
     assert_eq!(le.backlog.load(core::sync::atomic::Ordering::Acquire), crate::sysctl::DEFAULT_SOMAXCONN);
-    le.set_backlog(0);
+    le.set_backlog(0, crate::sysctl::DEFAULT_SOMAXCONN);
     assert_eq!(le.backlog.load(core::sync::atomic::Ordering::Acquire), 0);
-    le.set_backlog(-5);
+    le.set_backlog(-5, crate::sysctl::DEFAULT_SOMAXCONN);
     assert_eq!(le.backlog.load(core::sync::atomic::Ordering::Acquire), crate::sysctl::DEFAULT_SOMAXCONN);
 }
 

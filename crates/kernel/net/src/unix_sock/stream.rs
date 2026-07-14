@@ -12,6 +12,8 @@ use super::{EndCred, UnixEnd};
 #[cfg(feature = "debug-dbus")]
 mod trace;
 mod lifecycle;
+#[cfg(target_os = "oxide-kernel")]
+pub use lifecycle::ArmStreamRead;
 #[cfg(feature = "debug-dbus")]
 use trace::trace_dbus_stream;
 
@@ -85,9 +87,9 @@ pub struct UnixRing {
     pub produced: u64,
     /// Total bytes ever drained from `buf` (monotonic).
     pub consumed: u64,
-    /// SCM_RIGHTS bursts, each tagged with the absolute stream offset of
-    /// the first byte they ride with. FIFO / ascending by offset.
-    pub fds: VecDeque<(u64, Vec<Arc<vfs::File>>)>,
+    /// Per-write SCM_RIGHTS and sender credentials tagged with the absolute
+    /// stream offset of their first byte. FIFO / ascending by offset.
+    pub ancillary: VecDeque<(u64, Vec<Arc<vfs::File>>, (u32, u32, u32))>,
 }
 
 impl UnixRing {
@@ -98,7 +100,7 @@ impl UnixRing {
             closed_writer: false,
             produced: 0,
             consumed: 0,
-            fds: VecDeque::new(),
+            ancillary: VecDeque::new(),
         }
     }
 }
@@ -225,6 +227,14 @@ impl UnixPair {
         // session"). Default-off; zero bytes on the hot path.
         #[cfg(feature = "debug-dbus")]
         trace_dbus_stream(data);
+        let stable_cred = match end { UnixEnd::A => self.cred_a.get(), UnixEnd::B => self.cred_b.get() };
+        #[cfg(target_os = "oxide-kernel")]
+        let sender_cred = sched::live::current().map(|c| {
+            use core::sync::atomic::Ordering::Relaxed;
+            (c.visible_pid(), c.creds.ruid.load(Relaxed), c.creds.rgid.load(Relaxed))
+        }).unwrap_or(stable_cred);
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let sender_cred = stable_cred;
         if self.peer_gone(end) { return Err(UnixStreamError::PeerClosed); }
         let mut g = match end {
             UnixEnd::A => self.a_to_b.lock(),
@@ -252,8 +262,10 @@ impl UnixPair {
                 klog::write_dec_u64(fds.len() as u64);
                 klog::write_raw(b"]\n");
             }
+        }
+        if !data.is_empty() || !fds.is_empty() {
             let off = g.produced;
-            g.fds.push_back((off, fds));
+            g.ancillary.push_back((off, fds, sender_cred));
         }
         g.buf.extend(data.iter().copied());
         let n = data.len();
@@ -261,20 +273,6 @@ impl UnixPair {
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
         {
-            // SCM_CREDENTIALS: stamp the writing end with the live
-            // sender creds so the peer's SO_PASSCRED recvmsg delivers
-            // the real sender {pid,uid,gid}. Socketpair() seeds both
-            // ends with creator creds; after fork the child's
-            // write must re-stamp its end.
-            if let Some(c) = sched::live::current() {
-                use core::sync::atomic::Ordering::Relaxed;
-                self.set_end_cred(
-                    end,
-                    c.visible_pid(),
-                    c.creds.euid.load(Relaxed),
-                    c.creds.egid.load(Relaxed),
-                );
-            }
             // debug-syscost DIAG: log dbus-broker's / polkit's connected-socket
             // writes (pair ptr + end + nbytes) to trace the polkit↔broker reply
             // path. dbus-broker writing end A → a_to_b IS the reply polkit waits
@@ -331,9 +329,9 @@ impl UnixPair {
             // Discard every burst whose first byte is now behind the
             // cursor (it rode bytes we just handed over without a cmsg).
             loop {
-                match g.fds.front() {
-                    Some((off, _)) if *off < g.consumed => {
-                        let (_, f) = g.fds.pop_front().unwrap();
+                match g.ancillary.front() {
+                    Some((off, _, _)) if *off < g.consumed => {
+                        let (_, f, _) = g.ancillary.pop_front().unwrap();
                         drop_later.extend(f);
                     }
                     _ => break,
@@ -395,12 +393,10 @@ impl UnixPair {
     ///
     /// Unlike [`read`], this NEVER re-queues fds and never parks: fds at
     /// or behind the cursor are returned to the caller immediately (even
-    /// with an empty payload — an fd-only message), so recvmsg's yield
-    /// loop always makes progress and can never wedge. It is only reached
-    /// from recvmsg (which busy-yields, not parks), so it cannot lose a
-    /// WaitList wakeup.
+    /// with an empty payload — an fd-only message), so recvmsg always makes
+    /// progress. Empty open streams are parked through `arm_stream_read`.
     /// # C: O(min(max, queue))
-    pub fn read_stream(&self, end: UnixEnd, max: usize) -> (Vec<u8>, Vec<Arc<vfs::File>>) {
+    pub fn read_stream(&self, end: UnixEnd, max: usize) -> (Vec<u8>, Vec<Arc<vfs::File>>, Option<(u32, u32, u32)>) {
         let mut g = match end {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
@@ -409,14 +405,16 @@ impl UnixPair {
         // read at the NEXT burst strictly ahead so its fds cannot ride an
         // earlier message's bytes.
         let mut fds_out: Vec<Arc<vfs::File>> = Vec::new();
+        let mut cred_out = None;
         let mut cap = max;
         loop {
-            match g.fds.front() {
-                Some((off, _)) if *off <= g.consumed => {
-                    let (_, f) = g.fds.pop_front().unwrap();
+            match g.ancillary.front() {
+                Some((off, _, _)) if *off <= g.consumed => {
+                    let (_, f, cred) = g.ancillary.pop_front().unwrap();
                     fds_out.extend(f);
+                    cred_out = Some(cred);
                 }
-                Some((off, _)) => {
+                Some((off, _, _)) => {
                     let dist = (*off - g.consumed) as usize;
                     cap = core::cmp::min(cap, dist);
                     break;
@@ -445,7 +443,7 @@ impl UnixPair {
                 klog::write_raw(b"]\n");
             }
         }
-        (out, fds_out)
+        (out, fds_out, cred_out)
     }
 
     /// MSG_PEEK variant of `read`: copy without draining.

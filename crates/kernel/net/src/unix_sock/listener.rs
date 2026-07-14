@@ -4,7 +4,7 @@ use sync::{Socket as UnixLockClass, Spinlock};
 use sched;
 
 use super::UnixDgramQueue;
-use super::UnixPair;
+use super::{UnixEnd, UnixPair};
 use vfs;
 
 /// AF_UNIX path-bound stream endpoint. `bind(path)` reserves it in the
@@ -16,9 +16,6 @@ pub struct UnixListener {
     /// F170: per-listener waitlist for `sys_accept`.
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
-    /// Connectors parked while the accept queue is at its backlog limit.
-    #[cfg(target_os = "oxide-kernel")]
-    pub connect_waiters: sched::live::WaitList,
     /// The listener socket's epoll subscribers.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
 }
@@ -28,6 +25,16 @@ struct UnixListenerState {
     closed: bool,
     backlog: usize,
     accept_q: alloc::collections::VecDeque<Arc<UnixPair>>,
+    owner_cred: (u32, u32, u32),
+    #[cfg(target_os = "oxide-kernel")]
+    connect_sockets: Vec<alloc::sync::Weak<crate::sock::InetSocket>>,
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn wake_connect_sockets(waiters: Vec<alloc::sync::Weak<crate::sock::InetSocket>>) {
+    for waiter in waiters {
+        if let Some(sock) = waiter.upgrade() { sock.connect_waiters.wake_all(); }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -88,11 +95,12 @@ impl UnixListener {
                 closed: false,
                 backlog: 0,
                 accept_q: alloc::collections::VecDeque::new(),
+                owner_cred: (0, 0, 0),
+                #[cfg(target_os = "oxide-kernel")]
+                connect_sockets: Vec::new(),
             }),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            connect_waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
         })
     }
@@ -101,12 +109,21 @@ impl UnixListener {
     /// Queue capacity is `backlog + 1`, matching AF_UNIX connect accounting.
     /// # C: O(1)
     pub fn listen(&self, backlog: i32, somaxconn: usize) {
+        self.listen_with_cred(backlog, somaxconn, None);
+    }
+
+    /// Publish a listener and atomically replace its peer credential snapshot.
+    /// # C: O(1)
+    pub(crate) fn listen_with_cred(&self, backlog: i32, somaxconn: usize, cred: Option<(u32, u32, u32)>) {
         let mut st = self.state.lock();
+        if let Some(cred) = cred { st.owner_cred = cred; }
         st.backlog = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
         st.listening = !st.closed;
+        #[cfg(target_os = "oxide-kernel")]
+        let waiters = core::mem::take(&mut st.connect_sockets);
         drop(st);
         #[cfg(target_os = "oxide-kernel")]
-        self.connect_waiters.wake_all();
+        wake_connect_sockets(waiters);
     }
 
     /// Whether `listen(2)` completed for this bound address. # C: O(1)
@@ -121,6 +138,10 @@ impl UnixListener {
     /// Number of connected clients awaiting accept. # C: O(1)
     pub fn pending_len(&self) -> usize { self.state.lock().accept_q.len() }
 
+    /// Credentials published by the latest successful `listen(2)`.
+    /// # C: O(1)
+    pub fn owner_cred(&self) -> (u32, u32, u32) { self.state.lock().owner_cred }
+
     /// Linux listener readiness: readable only while accept can succeed.
     /// Listening sockets are not writable data endpoints. # C: O(1)
     pub fn poll_mask(&self) -> u32 {
@@ -129,27 +150,58 @@ impl UnixListener {
 
     /// Pop one pending connection and release one backlog-space waiter.
     /// # C: O(1)
-    pub fn accept(&self) -> Option<Arc<UnixPair>> {
-        let pair = self.state.lock().accept_q.pop_front();
+    pub fn accept(&self) -> Result<Arc<UnixPair>, crate::NetError> {
+        let mut st = self.state.lock();
+        let pair = st.accept_q.pop_front();
+        if pair.is_none() && st.closed { return Err(crate::NetError::Einval); }
         #[cfg(target_os = "oxide-kernel")]
-        if pair.is_some() { self.connect_waiters.wake_one(); }
-        pair
+        let waiters = if pair.is_some() { core::mem::take(&mut st.connect_sockets) } else { Vec::new() };
+        drop(st);
+        #[cfg(target_os = "oxide-kernel")]
+        wake_connect_sockets(waiters);
+        pair.ok_or(crate::NetError::Eagain)
     }
 
     /// Queue a connection unless close or backlog state forbids it.
     /// # C: O(1)
-    fn connect(&self) -> Result<Arc<UnixPair>, UnixConnectError> {
-        let pair = UnixPair::new();
-        pair.set_bind_path(self.path.clone());
+    pub(crate) fn connect_pair(&self, pair: Arc<UnixPair>) -> Result<Arc<UnixPair>, UnixConnectError> {
         let mut st = self.state.lock();
         if st.closed || !st.listening { return Err(UnixConnectError::Refused); }
         if st.accept_q.len() > st.backlog { return Err(UnixConnectError::Full); }
+        let (pid, uid, gid) = st.owner_cred;
+        pair.set_end_cred(UnixEnd::A, pid, uid, gid);
         st.accept_q.push_back(pair.clone());
         drop(st);
         #[cfg(target_os = "oxide-kernel")]
         self.accept_waiters.wake_all();
         self.notify_subs();
         Ok(pair)
+    }
+
+    /// Atomically queue `pair` and commit the connecting socket state.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub(crate) fn connect_socket(&self, pair: Arc<UnixPair>, sock: &Arc<crate::sock::InetSocket>) -> Result<(), crate::NetError> {
+        let mut st = self.state.lock();
+        let mut kind = sock.kind.lock();
+        match &*kind {
+            crate::sock::SockKind::Unix(_, _) => return Err(crate::NetError::Eisconn),
+            crate::sock::SockKind::UnixListener(_) => return Err(crate::NetError::Einval),
+            crate::sock::SockKind::TcpInit => {}
+            _ => return Err(crate::NetError::Einval),
+        }
+        if st.closed || !st.listening { return Err(crate::NetError::Econnrefused); }
+        if st.accept_q.len() > st.backlog { return Err(crate::NetError::Eagain); }
+        let (pid, uid, gid) = st.owner_cred;
+        pair.set_end_cred(UnixEnd::A, pid, uid, gid);
+        st.accept_q.push_back(pair.clone());
+        *kind = crate::sock::SockKind::Unix(pair, UnixEnd::B);
+        drop(kind);
+        drop(st);
+        self.accept_waiters.wake_all();
+        sock.connect_waiters.wake_all();
+        self.notify_subs();
+        Ok(())
     }
 
     /// Stop new connects and reset every connected-but-unaccepted client.
@@ -160,13 +212,18 @@ impl UnixListener {
             if st.closed { return; }
             st.closed = true;
             st.listening = false;
-            core::mem::take(&mut st.accept_q)
+            let pending = core::mem::take(&mut st.accept_q);
+            #[cfg(target_os = "oxide-kernel")]
+            let waiters = core::mem::take(&mut st.connect_sockets);
+            drop(st);
+            #[cfg(target_os = "oxide-kernel")]
+            wake_connect_sockets(waiters);
+            pending
         };
         for pair in pending { pair.abort_unaccepted(); }
         #[cfg(target_os = "oxide-kernel")]
         {
             self.accept_waiters.wake_all();
-            self.connect_waiters.wake_all();
         }
     }
 
@@ -194,22 +251,39 @@ impl UnixListener {
         // while we hold accept_q — connect() must take accept_q to push, so it
         // cannot wake us before we are enqueued. Lock dropped below; caller
         // owns the schedule().
-        unsafe { self.accept_waiters.park_with_deadline(deadline_ns); }
+        unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
         drop(st);
         true
     }
 
-    /// Race-free backlog-space park under the listener state lock.
+    /// Race-free backlog wait that also rechecks the connecting socket state.
     /// # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
-    pub fn arm_connect_wait(&self, deadline_ns: u64) -> bool {
-        let st = self.state.lock();
-        if st.closed || !st.listening || st.accept_q.len() <= st.backlog { return false; }
-        // SAFETY: process context; connect_waiters and queue capacity are
-        // serialized by state, and accept/close wake only after mutation.
-        unsafe { self.connect_waiters.park_with_deadline(deadline_ns); }
+    pub fn arm_socket_connect_wait(&self, sock: &Arc<crate::sock::InetSocket>, deadline_ns: u64) -> bool {
+        let mut st = self.state.lock();
+        let kind = sock.kind.lock();
+        if !matches!(*kind, crate::sock::SockKind::TcpInit)
+            || st.closed || !st.listening || st.accept_q.len() <= st.backlog
+        {
+            return false;
+        }
+        st.connect_sockets.push(Arc::downgrade(sock));
+        // SAFETY: listener state then socket state is the same order used by
+        // connect_socket; capacity changes wake the registered socket queue.
+        unsafe { sock.connect_waiters.park_interruptible_with_deadline(deadline_ns); }
+        drop(kind);
         drop(st);
         true
+    }
+
+    /// Remove one connect-call registration after wake, signal, or timeout.
+    /// # C: O(waiters)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn unregister_socket_connect_wait(&self, sock: &Arc<crate::sock::InetSocket>) {
+        let mut st = self.state.lock();
+        if let Some(i) = st.connect_sockets.iter().position(|w| w.as_ptr() == Arc::as_ptr(sock)) {
+            st.connect_sockets.remove(i);
+        }
     }
 
     /// Wake epoll waiters on a new pending connection.
@@ -311,6 +385,12 @@ impl UnixRegistry {
         if let Some(listener) = listener { listener.close(); }
     }
 
+    /// Remove a pathname rendezvous while leaving an open listener alive.
+    /// # C: O(log N)
+    pub fn unlink_addr(&self, addr: &UnixAddr) {
+        self.inner.lock().remove(&addr.key);
+    }
+
     /// Release a bound stream-listener path.
     pub fn unbind(&self, path: &str) {
         self.unbind_addr(&UnixAddr::from_abstract_or_test_path(String::from(path)));
@@ -367,6 +447,14 @@ impl UnixRegistry {
 
     /// Connect to `path`: allocate a new UnixPair and queue.
     pub fn connect_addr(&self, addr: &UnixAddr) -> Result<Arc<UnixPair>, UnixConnectError> {
+        let pair = UnixPair::new();
+        self.connect_pair_addr(addr, pair)
+    }
+
+    /// Queue a caller-initialized pair only after credentials/subscriptions
+    /// are complete, so `accept(2)` cannot observe a partial endpoint.
+    /// # C: O(log N)
+    pub fn connect_pair_addr(&self, addr: &UnixAddr, pair: Arc<UnixPair>) -> Result<Arc<UnixPair>, UnixConnectError> {
         // DIAG (debug-dbus): log every AF_UNIX connect to a bus socket + whether a
         // listener was found. If mutter (uid 979) can't connect to the system bus
         // (/run/dbus/system_bus_socket), get_session_proxy() returns NULL with no
@@ -385,7 +473,8 @@ impl UnixRegistry {
             klog::write_raw(b"\n");
         }
         let listener = self.lookup_listener_addr(addr).ok_or(UnixConnectError::Refused)?;
-        let pair = listener.connect()?;
+        pair.set_bind_path(listener.path.clone());
+        let pair = listener.connect_pair(pair)?;
         #[cfg(feature = "debug-dbus")]
         {
             let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
