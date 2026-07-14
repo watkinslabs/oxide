@@ -42,26 +42,3 @@ PHDRS
     dynamic     PT_DYNAMIC  FLAGS(4);                /* R */
     note        PT_NOTE     FLAGS(4);                /* R */
 }
-
-VERSION
-{
-    LINUX_2.6 {
-    global:
-        clock_gettime;
-        __vdso_clock_gettime;
-        gettimeofday;
-        __vdso_gettimeofday;
-        getcpu;
-        __vdso_getcpu;
-        time;
-        __vdso_time;
-        clock_getres;
-        __vdso_clock_getres;
-        __kernel_clock_gettime;
-        __kernel_gettimeofday;
-        __kernel_getcpu;
-        __kernel_clock_getres;
-        __kernel_rt_sigreturn;
-    local: *;
-    };
-}
