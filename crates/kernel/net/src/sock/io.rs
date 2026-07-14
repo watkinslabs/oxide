@@ -262,9 +262,7 @@ impl InetSocket {
                 if pair.is_eof(*end) { mask |= POLL_HUP; }
                 mask
             }
-            SockKind::UnixListener(l) => {
-                if l.accept_q.lock().is_empty() { POLL_OUT } else { POLL_IN | POLL_OUT }
-            }
+            SockKind::UnixListener(l) => l.poll_mask(),
             SockKind::UnixDgram(q) => {
                 let mut mask = POLL_OUT;
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }

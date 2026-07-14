@@ -83,6 +83,12 @@ impl UnixListener {
     /// Whether `listen(2)` completed for this bound address. # C: O(1)
     pub fn is_listening(&self) -> bool { self.listening.load(core::sync::atomic::Ordering::Acquire) }
 
+    /// Linux listener readiness: readable only while accept can succeed.
+    /// Listening sockets are not writable data endpoints. # C: O(1)
+    pub fn poll_mask(&self) -> u32 {
+        if self.accept_q.lock().is_empty() { 0 } else { vfs::POLL_IN }
+    }
+
     /// Register the listener socket's epoll subscribers (called at listen()).
     /// # C: O(1)
     pub fn register_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
@@ -117,7 +123,7 @@ impl UnixListener {
     pub fn notify_subs(&self) {
         if let Some(w) = self.subs.lock().as_ref() {
             if let Some(s) = w.upgrade() {
-                s.notify();
+                s.notify_mask(vfs::POLL_IN);
             }
         }
     }
