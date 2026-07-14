@@ -12,6 +12,21 @@ impl NetDev for DummyDev {
     fn stats(&self) -> NetStats { self.stats }
 }
 
+struct PersistentDev;
+impl NetDev for PersistentDev {
+    fn name(&self) -> &str { "persist0" }
+    fn mac(&self) -> MacAddr { MacAddr::ZERO }
+    fn mtu(&self) -> u32 { 1500 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::MoveToInitial }
+    fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
+}
+
+fn owner() -> network_namespace::NetworkNamespaceRef {
+    crate::net_ns::install_final_drop_pending_notifier().unwrap();
+    network_namespace::allocate(0).unwrap()
+}
+
 #[test]
 fn register_assigns_increasing_ids() {
     let r = IfaceRegistry::new();
@@ -91,6 +106,78 @@ fn stat_fields_match_linux_names_and_count() {
     assert!(STAT_FIELDS.contains(&"collisions"));
     assert!(STAT_FIELDS.contains(&"rx_nohandler"));
     assert_eq!(STAT_FIELDS.len(), 24);
+}
+
+#[test]
+fn held_ingress_lease_closes_admission_and_blocks_move_until_release() {
+    let stack = Arc::new(crate::NetStack::new());
+    let owner = owner();
+    let net_ns = owner.id().as_u64();
+    let iface = stack.ifaces.register_in_ns(Arc::new(PersistentDev), net_ns);
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+    assert_eq!(lease.iface(), iface);
+    assert_eq!(lease.net_ns(), net_ns);
+    assert_eq!(lease.generation(), 1);
+
+    let worker = stack.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let teardown = std::thread::spawn(move || {
+        done_tx.send(worker.teardown_iface_in(net_ns, iface)).unwrap();
+    });
+    loop {
+        match stack.ifaces.acquire_ingress(iface) {
+            Some(probe) => drop(probe),
+            None => break,
+        }
+        std::thread::yield_now();
+    }
+    assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+    assert_eq!(stack.ifaces.namespace(iface), None);
+
+    drop(lease);
+    assert!(done_rx.recv().unwrap());
+    teardown.join().unwrap();
+    let moved = stack.ifaces.acquire_ingress(iface).unwrap();
+    assert_eq!(moved.net_ns(), 0);
+    assert_eq!(moved.generation(), 2);
+}
+
+#[test]
+fn stale_ingress_generation_cannot_acquire_after_move() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let net_ns = owner.id().as_u64();
+    let iface = stack.ifaces.register_in_ns(Arc::new(PersistentDev), net_ns);
+    let generation = stack.ifaces.acquire_ingress(iface).unwrap().generation();
+    assert!(stack.teardown_iface_in(net_ns, iface));
+    assert!(stack.ifaces.acquire_ingress_generation(iface, generation).is_none());
+    assert_eq!(stack.ifaces.acquire_ingress(iface).unwrap().generation(), generation + 1);
+}
+
+#[test]
+fn destroyed_ingress_gate_does_not_reopen() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let net_ns = owner.id().as_u64();
+    let iface = stack.ifaces.register_in_ns(Arc::new(DummyDev {
+        name: "drop0", mtu: 1500, stats: NetStats::default(),
+    }), net_ns);
+    assert!(stack.teardown_iface_in(net_ns, iface));
+    assert!(stack.ifaces.acquire_ingress(iface).is_none());
+}
+
+#[test]
+fn ingress_lease_retains_concrete_namespace_owner() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let net_ns = owner.id().as_u64();
+    let iface = stack.ifaces.register_in_ns(Arc::new(PersistentDev), net_ns);
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+
+    drop(owner);
+    assert!(network_namespace::lookup_u64(net_ns).is_some());
+    drop(lease);
+    assert!(network_namespace::lookup_u64(net_ns).is_none());
 }
 
 #[allow(dead_code)]

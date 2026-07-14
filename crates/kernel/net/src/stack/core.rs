@@ -122,12 +122,12 @@ impl NetStack {
     }
 
     fn quiesce_iface_in(&self, net_ns: u64, iface: NetIfaceId)
-        -> Option<Arc<dyn crate::NetDev>>
+        -> Option<crate::netdev::IfaceTeardown>
     {
-        let dev = self.ifaces.lookup_in_ns(iface, net_ns)?;
-        let report = self.ifaces.mcast_report_in_ns(iface, net_ns)?;
-        report.retire();
-        dev.retire_namespace();
+        let teardown = self.ifaces.begin_teardown(iface, net_ns)?;
+        teardown.wait();
+        teardown.mcast_report.retire();
+        teardown.dev.retire_namespace();
         let _ = crate::iface_addr::remove_iface(net_ns, iface);
         self.v6_addrs.lock().remove(&iface);
         self.ndp.lock().retain(|(id, _), _| *id != iface);
@@ -135,38 +135,26 @@ impl NetStack {
         self.v4_mcast.lock().remove(&iface);
         self.routes.retain_in(net_ns, |e| e.iface != iface);
         self.routes6.retain_in(net_ns, |e| e.iface != iface);
-        Some(dev)
+        Some(teardown)
     }
 
     /// Remove one namespace-owned interface and all attached network state. # C: O(N)
     pub fn unregister_iface_in(&self, net_ns: u64, iface: NetIfaceId) -> bool {
-        if self.quiesce_iface_in(net_ns, iface).is_none() { return false; }
-        self.ifaces.unregister(iface).is_some()
+        let Some(teardown) = self.quiesce_iface_in(net_ns, iface) else { return false };
+        self.ifaces.finish_destroy(&teardown).is_some()
     }
 
     /// Apply Linux namespace-exit disposition after quiescing interface state. # C: O(N)
     pub fn teardown_iface_in(&self, net_ns: u64, iface: NetIfaceId) -> bool {
-        let Some(dev) = self.quiesce_iface_in(net_ns, iface) else { return false };
-        match dev.namespace_drop_action() {
-            crate::NamespaceDropAction::Destroy => self.ifaces.unregister(iface).is_some(),
+        let Some(teardown) = self.quiesce_iface_in(net_ns, iface) else { return false };
+        match teardown.dev.namespace_drop_action() {
+            crate::NamespaceDropAction::Destroy => self.ifaces.finish_destroy(&teardown).is_some(),
             crate::NamespaceDropAction::MoveToInitial => {
-                self.ifaces.move_to_initial(iface, net_ns)
+                let moved = self.ifaces.finish_move_to_initial(&teardown);
+                if moved { teardown.dev.resume_namespace(); }
+                moved
             }
         }
-    }
-
-    /// Pin the live namespace that owns an ingress interface. # C: O(N + log N)
-    #[cfg(target_os = "oxide-kernel")]
-    pub fn ingress_namespace(&self, iface: NetIfaceId)
-        -> Option<(u64, network_namespace::NetworkNamespaceRef)>
-    {
-        let net_ns = self.ifaces.namespace(iface)?;
-        let owner = if net_ns == 0 {
-            network_namespace::initial()
-        } else {
-            network_namespace::lookup_u64(net_ns)?
-        };
-        Some((net_ns, owner))
     }
 
     /// UDP bind. Eaddrinuse if taken. # C: O(log N)

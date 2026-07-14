@@ -137,10 +137,14 @@ impl NetStack {
 
     /// Demux IPv4 → ICMP/UDP/TCP. # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        #[cfg(not(target_os = "oxide-kernel"))]
-        let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enodev)?;
-        #[cfg(target_os = "oxide-kernel")]
-        let (net_ns, _namespace) = self.ingress_namespace(iface).ok_or(NetError::Enodev)?;
+        let lease = self.ifaces.acquire_ingress(iface).ok_or(NetError::Enodev)?;
+        self.deliver_rx_in(&lease, l3)
+    }
+
+    /// Demux IPv4 under one immutable ingress ownership lease. # C: O(payload)
+    pub fn deliver_rx_in(&self, lease: &crate::IngressLease, l3: &[u8]) -> NetResult<()> {
+        let net_ns = lease.net_ns();
+        let iface = lease.iface();
         // PRE_ROUTING fires on every received packet before the routing
         // decision. Non-local destinations are forwarded only when
         // `net.ipv4.ip_forward` enables router mode.

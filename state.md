@@ -4,10 +4,12 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `7d6c2abb`, synchronized with `origin/main`.
+- `main`: `e0012173`, synchronized with `origin/main` when B842 branched.
 - N01-N02 and N03.1-N03.8.1 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
+- N03.8.2 Virtio ingress owner lease is active on
+  `B842-netns-ingress-owner-lease`.
 
 ## Implemented
 
@@ -33,8 +35,9 @@ Update: 2026-07-14.
 
 ## Remaining network work
 
-- N03.8.2-N03.8.5: ingress lease, loopback owner pin, atomic SIOCGSKNS fd
-  install, and full retained-owner schedule matrix.
+- N03.8.2-N03.8.7: ingress lease, loopback owner pin, atomic SIOCGSKNS fd
+  install, retained-owner schedule matrix, namespace-aware physical-device
+  uninstall, and control-plane mutation/teardown serialization.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 

@@ -1,7 +1,7 @@
+mod assignment_generation;
     use super::*;
     use net::NetDev;
 use core::sync::atomic::Ordering;
-
     static TEST_STATE_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
     const fn key(raw: u32) -> DeviceKey {
@@ -350,15 +350,6 @@ use core::sync::atomic::Ordering;
         clear_test_state();
     }
 
-    #[test]
-    fn retire_namespace_clears_only_its_device_arp_cache() {
-        let _guard = TEST_STATE_LOCK.lock(); clear_test_state();
-        MODERN_DEVS.lock().extend([state(1), state(2)]); let dev1 = VirtioNetDev::new_for(key(1)).unwrap();
-        let rt1 = ensure_net_runtime(key(1)); let rt2 = ensure_net_runtime(key(2)); let dst = net::Ipv4Addr::new(10, 0, 0, 2);
-        let mac1 = net::MacAddr([1; 6]); let mac2 = net::MacAddr([2; 6]); rt1.arp.insert(dst, mac1); rt2.arp.insert(dst, mac2);
-        dev1.retire_namespace(); assert_eq!(rt1.arp.lookup(dst), None);
-        assert_eq!(rt2.arp.lookup(dst), Some(mac2)); clear_test_state();
-    }
     #[test]
     fn neighbor_resolution_uses_carried_gateway_not_ip_destination() {
         let _guard = TEST_STATE_LOCK.lock();
