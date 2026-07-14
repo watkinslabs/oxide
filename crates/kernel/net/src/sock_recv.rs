@@ -36,6 +36,8 @@ pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize
         SockKind::UnixMsgPair(pair, end) => WaitKind::UnixMsgPair(pair.clone(), *end),
         SockKind::UnixDgram(q)           => WaitKind::UnixDgram(q.clone()),
         SockKind::Packet { .. }          => WaitKind::Packet,
+        SockKind::Raw4(endpoint)          => WaitKind::Raw4(endpoint.clone()),
+        SockKind::Raw6(endpoint)          => WaitKind::Raw6(endpoint.clone()),
         SockKind::TcpConn(entry)         => WaitKind::Tcp(entry.clone()),
         SockKind::Udp                    => WaitKind::Udp,
         _                                => WaitKind::Yield,
@@ -73,6 +75,22 @@ pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize
                 && q.msgs.lock().is_empty()
         }
         WaitKind::Packet => { wait_packet(sock, deadline_ns); false }
+        WaitKind::Raw4(endpoint) => {
+            if endpoint.arm_recv_wait(deadline_ns) {
+                // SAFETY: endpoint armed current while receive admission was locked.
+                unsafe { sched::live::schedule::schedule(); }
+                endpoint.waiters.remove_current();
+            }
+            false
+        }
+        WaitKind::Raw6(endpoint) => {
+            if endpoint.arm_recv_wait(deadline_ns) {
+                // SAFETY: endpoint armed current while receive admission was locked.
+                unsafe { sched::live::schedule::schedule(); }
+                endpoint.waiters.remove_current();
+            }
+            false
+        }
         WaitKind::Tcp(entry) => {
             if crate::sock_io::arm_tcp_read_after(sock, &entry, offset, deadline_ns) {
                 // SAFETY: arm_tcp_read published current under entry.conn.
@@ -114,6 +132,8 @@ enum WaitKind {
     UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
     UnixDgram(Arc<crate::UnixDgramQueue>),
     Packet,
+    Raw4(Arc<crate::raw4::Raw4Endpoint>),
+    Raw6(Arc<crate::raw6::Raw6Endpoint>),
     Tcp(Arc<crate::stack::TcpEntry>),
     Udp,
     Yield,

@@ -50,6 +50,11 @@ impl InetSocket {
             stk.tcp_release_bind(&bind);
         }
         self.mcast.release(stk);
+        match &*self.kind.lock() {
+            SockKind::Raw4(endpoint) => stk.unregister_raw4(endpoint),
+            SockKind::Raw6(endpoint) => stk.unregister_raw6(endpoint),
+            _ => {}
+        }
         if matches!(*self.kind.lock(), SockKind::Udp) {
             self.read_shut.store(true, Ordering::Release);
             if let Some(endpoint) = self.udp4.lock().take() {

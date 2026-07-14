@@ -59,6 +59,8 @@ pub mod iface_addr;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod mcast_filter;
+pub mod raw4;
+pub mod raw6;
 mod mcast_state;
 pub mod stack;
 pub mod stack_binddev;

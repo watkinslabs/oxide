@@ -18,6 +18,8 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
         UnixListener(alloc::sync::Arc<crate::UnixListener>),
         UnixUnconnected,
         Udp,
+        Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),
+        Raw6(alloc::sync::Arc<crate::raw6::Raw6Endpoint>),
         Unconnected,
     }
     let target = match &*sock.kind.lock() {
@@ -25,6 +27,8 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
         SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
         SockKind::TcpConn(entry) => Target::Tcp(entry.clone()),
         SockKind::Udp => Target::Udp,
+        SockKind::Raw4(endpoint) => Target::Raw4(endpoint.clone()),
+        SockKind::Raw6(endpoint) => Target::Raw6(endpoint.clone()),
         SockKind::UnixDgram(q) => Target::UnixDgram(q.clone()),
         SockKind::UnixListener(listener) => Target::UnixListener(listener.clone()),
         SockKind::TcpInit if sock.family.load(core::sync::atomic::Ordering::Acquire) == super::AF_UNIX => Target::UnixUnconnected,
@@ -100,6 +104,22 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
                 }
             }
             if how.write() { sock.write_shut.store(true, Release); }
+            sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
+        }
+        Target::Raw4(endpoint) => {
+            if endpoint.snapshot().remote.is_none() { return Err(NetError::Enotconn); }
+            if how.read() { sock.read_shut.store(true, Release); }
+            if how.write() { sock.write_shut.store(true, Release); }
+            #[cfg(target_os = "oxide-kernel")]
+            endpoint.waiters.wake_all();
+            sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
+        }
+        Target::Raw6(endpoint) => {
+            if endpoint.peer().is_none() { return Err(NetError::Enotconn); }
+            if how.read() { sock.read_shut.store(true, Release); }
+            if how.write() { sock.write_shut.store(true, Release); }
+            #[cfg(target_os = "oxide-kernel")]
+            endpoint.waiters.wake_all();
             sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
         Target::Unconnected => return Err(NetError::Enotconn),
