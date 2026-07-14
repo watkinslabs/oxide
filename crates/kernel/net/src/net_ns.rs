@@ -2,12 +2,14 @@
 //
 // Module manifest:
 // - lifecycle: current namespace, creation, and loopback materialization.
+// - reaper_protocol: final-drop publication and sleep-race transitions.
 // - state: namespace overlay state and AF_UNIX registry resolution.
 // - teardown: final-drop notification and process-context destruction.
 // - tests: namespace state, AF_UNIX isolation, and teardown coverage.
 // - lifetime_tests: retained-owner lifetime coverage.
 
 mod lifecycle;
+mod reaper_protocol;
 mod state;
 mod teardown;
 
