@@ -1,7 +1,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use hal::USER_VA_END;
@@ -347,23 +346,16 @@ fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
 
 /// Copy and verify native `struct sock_fprog` for SO_ATTACH_FILTER. # C: O(insns)
 fn classic_filter(optval: u64, optlen: u32) -> Result<net::bpf_filter::FilterProgram, Errno> {
-    if optlen != SOCK_FPROG_SIZE || optval.checked_add(SOCK_FPROG_SIZE as u64)
-        .map_or(true, |end| end > USER_VA_END)
-    { return Err(Errno::Einval); }
-    // SAFETY: native sock_fprog range was validated above.
-    let len = unsafe { core::ptr::read_volatile(optval as *const u16) } as usize;
-    // SAFETY: native sock_fprog pointer field lies inside the validated structure.
-    let ptr = unsafe { core::ptr::read_volatile((optval + SOCK_FPROG_FILTER_OFFSET) as *const u64) };
+    if optlen != SOCK_FPROG_SIZE { return Err(Errno::Einval); }
+    let mut fprog = [0u8; SOCK_FPROG_SIZE as usize];
+    uaccess::copy_from_user(&mut fprog, optval).map_err(|_| Errno::Efault)?;
+    let len = u16::from_ne_bytes(fprog[..2].try_into().unwrap()) as usize;
+    let ptr = u64::from_ne_bytes(fprog[SOCK_FPROG_FILTER_OFFSET as usize..
+        SOCK_FPROG_FILTER_OFFSET as usize + core::mem::size_of::<u64>()].try_into().unwrap());
     if len == 0 || len > BPF_MAXINSNS { return Err(Errno::Einval); }
     let bytes = len.checked_mul(BPF_INSN_SIZE).ok_or(Errno::Einval)?;
-    if ptr == 0 || ptr.checked_add(bytes as u64).map_or(true, |end| end > USER_VA_END) {
-        return Err(Errno::Efault);
-    }
-    let mut insns = Vec::with_capacity(bytes);
-    for offset in 0..bytes {
-        // SAFETY: complete instruction array was validated in user range above.
-        insns.push(unsafe { core::ptr::read_volatile((ptr + offset as u64) as *const u8) });
-    }
+    let mut insns = alloc::vec![0u8; bytes];
+    uaccess::copy_from_user(&mut insns, ptr).map_err(|_| Errno::Efault)?;
     security::socket_filter::verify(&insns).map_err(|_| Errno::Einval)?;
     Ok(net::bpf_filter::FilterProgram {
         kind: net::bpf_filter::FilterKind::Classic, insns,
