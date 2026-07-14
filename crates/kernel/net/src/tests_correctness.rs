@@ -23,6 +23,10 @@ mod tests_perf;
 mod tests_mld;
 #[path = "tests_igmp.rs"]
 mod tests_igmp;
+#[path = "tests_mcast_order.rs"]
+mod tests_mcast_order;
+#[path = "tests_mcast_qrv.rs"]
+mod tests_mcast_qrv;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "tests_ipv6_ext.rs"]
 mod tests_ipv6_ext;
