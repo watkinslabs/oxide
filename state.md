@@ -1,13 +1,12 @@
-# state - B832 real raw IP sockets
+# state - network completion
 
 Update: 2026-07-14.
 
 ## Current lane
 
-- Worktree: `/home/nd/oxide-wt/B832-network-raw-ip-sockets`
-- Branch: `B832-network-raw-ip-sockets`
-- Draft PR: `#3093`
-- Tracker: `network-plan.md` N01; N02 starts only after N01 merge.
+- `main`: `4d08b5a1`, synchronized with `origin/main`.
+- N01 merged in PR #3093; branch and worktree deleted.
+- Next item: N02 multicast robustness accounting, currently unclaimed.
 
 ## Implemented
 
@@ -32,13 +31,14 @@ Update: 2026-07-14.
 - `make arm`: passed.
 - `git diff --check`: passed; changed Rust files remain below 500 lines.
 
-## Remaining N01 closure
+## Remaining network work
 
-- Commit and push the ancillary tranche.
-- Refresh against `origin/main`, mark PR #3093 ready, and pass PR checks.
-- Run required dual-architecture smoke, merge, update main, and clean worktree.
-- Record merged N01 evidence, then create the N02 branch.
+- N02 through N22 remain in `network-plan.md`.
+- N02 must preserve successful membership across report-output failure and
+  consume a bounded Linux robustness count without retry-forever behavior.
+- Integrated ARM smoke remains blocked by unrelated glibc-service traps and
+  the `upower.service` restart loop captured in `/tmp/B832-smoke-arm.log`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B832-network-raw-ip-sockets && git status --short && gh pr view 3093 --json isDraft,mergeStateStatus,statusCheckRollup,url`
+`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n "N02|robust" network-plan.md crates/kernel/net/src`
