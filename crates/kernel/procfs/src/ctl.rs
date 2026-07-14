@@ -48,7 +48,9 @@ const INT_MAX: i64 = i32::MAX as i64;
 
 fn net_somaxconn() -> i64 { net::sysctl::somaxconn() as i64 }
 fn set_net_somaxconn(value: i64) { net::sysctl::set_somaxconn(value as usize); }
-fn current_net_ns() -> u64 { net::netdev::current_net_ns() }
+fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
+    net::net_ns::current_namespace()
+}
 fn local_port_range(ns: u64) -> (u16, u16) {
     let range = net::ephemeral::range_in(ns);
     (range.start, range.end)

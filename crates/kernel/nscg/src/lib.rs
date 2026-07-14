@@ -8,7 +8,7 @@
 //
 // cgroup v2 hierarchy walker is a follow-up once the cgroup tree+
 // controllers (cpu/memory/pids/io) get wired. v1 ships pid_ns plus
-// user_ns parent and net_ns owner registries.
+// user_ns parent registry; network ownership lives in `network-namespace`.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -21,8 +21,8 @@ pub mod uts_ns;
 pub use proc_ns::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
     CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
-    NsInode, NsKind, has_cap_for, has_net_admin_for, has_net_raw_for, net_ns_owner,
-    net_ns_record_owner, ns_inode_for, setns_apply,
+    NsInode, NsKind, has_cap_for, has_net_admin_for, has_net_raw_for,
+    net_ns_inode, ns_inode_for, setns_apply,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

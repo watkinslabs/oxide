@@ -5,9 +5,14 @@ use super::{stack, InetSocket, SockKind, AF_INET6};
 impl InetSocket {
     /// Create and publish one socket-owned raw IPv4 endpoint. # C: O(N)
     pub fn new_raw4(protocol: u8) -> Self {
-        let sock = Self::new_udp();
+        Self::new_raw4_in(protocol, crate::net_ns::current_namespace())
+    }
+
+    /// Build a raw IPv4 socket retaining an explicit owner. # C: O(N)
+    pub fn new_raw4_in(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
+        let sock = Self::new_udp_in(net_namespace);
         let endpoint = crate::raw4::Raw4Endpoint::new(
-            protocol, sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+            protocol, sock.net_namespace.clone(),
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
         );
         endpoint.register_poll_subs(&sock.poll_subs);
@@ -19,10 +24,15 @@ impl InetSocket {
 
     /// Create and publish one socket-owned raw IPv6 endpoint. # C: O(N)
     pub fn new_raw6(protocol: u8) -> Self {
-        let sock = Self::new_udp();
+        Self::new_raw6_in(protocol, crate::net_ns::current_namespace())
+    }
+
+    /// Build a raw IPv6 socket retaining an explicit owner. # C: O(N)
+    pub fn new_raw6_in(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
+        let sock = Self::new_udp_in(net_namespace);
         sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
         let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new(
-            sock.net_ns.load(core::sync::atomic::Ordering::Acquire), protocol,
+            sock.net_namespace.clone(), protocol,
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
         ));
         endpoint.register_poll_subs(&sock.poll_subs);

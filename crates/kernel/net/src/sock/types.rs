@@ -87,7 +87,7 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
         registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
     };
     for sock in sockets {
-        if sock.net_ns.load(Ordering::Acquire) != net_ns { continue; }
+        if sock.net_ns() != net_ns { continue; }
         let k = sock.kind.lock();
         if let SockKind::Packet { ifindex, protocol, sock_type, rx } = &*k {
             let want_if = ifindex.load(Ordering::Acquire);
@@ -203,14 +203,9 @@ pub struct InetSocket {
     pub connect_waiters: sched::live::WaitList,
     /// F181: per-fd epoll subscribers.
     pub poll_subs: Arc<vfs::PollSubscribers>,
-    /// B518: net_ns id this socket bound its AF_UNIX path in (0 = the
-    /// global registry). Captured at bind so Drop unbinds from the SAME
-    /// per-ns registry regardless of the closing task's ns. Untouched
-    /// (0) for every non-AF_UNIX-bound socket → global semantics.
-    pub unix_ns: core::sync::atomic::AtomicU64,
-    /// Network namespace that owned this socket at creation. Unlike
-    /// `unix_ns`, pathname AF_UNIX rendezvous never rewrites this value.
-    pub net_ns: core::sync::atomic::AtomicU64,
+    /// Concrete network namespace owner snapshotted at socket creation.
+    /// Numeric IDs are derived only while accessing namespace-keyed tables.
+    pub net_namespace: network_namespace::NetworkNamespaceRef,
     /// Effective UID captured when Linux creates the socket.
     pub owner_uid: u32,
     /// AF_UNIX stream address reserved by `bind(2)`, independent of whether
@@ -325,155 +320,3 @@ pub const AF_INET:  u16 = 2;
 pub const AF_INET6: u16 = 10;
 pub const AF_UNIX:  u16 = 1;
 pub const AF_PACKET: u16 = 17;
-
-#[cfg(target_os = "oxide-kernel")]
-fn current_socket_uid() -> u32 {
-    sched::live::current().map(|task| {
-        task.creds.euid.load(core::sync::atomic::Ordering::Acquire)
-    }).unwrap_or(0)
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
-fn current_socket_uid() -> u32 { 0 }
-
-impl InetSocket {
-    /// # C: O(1)
-    pub fn new_udp() -> Self {
-        let _s = Self {
-            family:     core::sync::atomic::AtomicU16::new(AF_INET),
-            local_port: Spinlock::new(None),
-            local_ip:   Spinlock::new(Ipv4Addr::ANY),
-            peer:       Arc::new(Spinlock::new(None)),
-            udp4:       Spinlock::new(None),
-            udp6:       Spinlock::new(None),
-            tcp_bind:   Spinlock::new(None),
-            bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
-            mcast: Arc::new(crate::mcast_filter::SocketMcast::new()),
-            kind:       Spinlock::new(SockKind::Udp),
-            opts:       SockOpts::default(),
-            error: Arc::new(crate::SocketError::new()),
-            read_shut:  core::sync::atomic::AtomicBool::new(false),
-            write_shut: core::sync::atomic::AtomicBool::new(false),
-            released:   core::sync::atomic::AtomicBool::new(false),
-            #[cfg(target_os = "oxide-kernel")]
-            recv_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            connect_waiters: sched::live::WaitList::new(),
-            poll_subs:    Arc::new(vfs::PollSubscribers::new()),
-            local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
-            peer6:     Arc::new(Spinlock::new(None)),
-            peer6_scope: core::sync::atomic::AtomicU32::new(0),
-            unix_ns:   core::sync::atomic::AtomicU64::new(0),
-            net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
-            owner_uid: current_socket_uid(),
-            unix_bound: Spinlock::new(None),
-        };
-        _s
-    }
-    /// # C: O(1)
-    pub fn new_tcp() -> Self { Self::new_tcp_with_error(Arc::new(crate::SocketError::new())) }
-
-    /// Build a TCP socket around transport state allocated before accept. # C: O(1)
-    pub fn new_tcp_with_error(error: Arc<crate::SocketError>) -> Self {
-        Self::new_tcp_with_filter(error, Arc::new(crate::bpf_filter::SocketFilter::new()))
-    }
-
-    /// Build a TCP socket sharing a pre-existing transport filter. # C: O(1)
-    pub fn new_tcp_with_filter(error: Arc<crate::SocketError>,
-                               bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
-        let _s = Self {
-            family:     core::sync::atomic::AtomicU16::new(AF_INET),
-            local_port: Spinlock::new(None),
-            local_ip:   Spinlock::new(Ipv4Addr::ANY),
-            peer:       Arc::new(Spinlock::new(None)),
-            udp4:       Spinlock::new(None),
-            udp6:       Spinlock::new(None),
-            tcp_bind:   Spinlock::new(None),
-            bpf_filter,
-            mcast: Arc::new(crate::mcast_filter::SocketMcast::new()),
-            // TcpInit makes connect() route SOCK_STREAM through the 3WHS path.
-            // the UDP store-peer-and-return-Ok short-circuit.
-            // listen()/connect()/accept() transition to TcpListener
-            // or TcpConn.
-            kind:       Spinlock::new(SockKind::TcpInit),
-            opts:       SockOpts::default(),
-            error,
-            read_shut:  core::sync::atomic::AtomicBool::new(false),
-            write_shut: core::sync::atomic::AtomicBool::new(false),
-            released:   core::sync::atomic::AtomicBool::new(false),
-            #[cfg(target_os = "oxide-kernel")]
-            recv_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            connect_waiters: sched::live::WaitList::new(),
-            poll_subs:    Arc::new(vfs::PollSubscribers::new()),
-            local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
-            peer6:     Arc::new(Spinlock::new(None)),
-            peer6_scope: core::sync::atomic::AtomicU32::new(0),
-            unix_ns:   core::sync::atomic::AtomicU64::new(0),
-            net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
-            owner_uid: current_socket_uid(),
-            unix_bound: Spinlock::new(None),
-        };
-        _s
-    }
-    /// `socket(AF_INET6, SOCK_DGRAM, …)`. V4 transport substrate;
-    /// `family = AF_INET6` flips the ABI to the 28-byte sockaddr_in6.
-    /// # C: O(1)
-    pub fn new_udp6() -> Self {
-        let s = Self::new_udp();
-        s.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
-        s
-    }
-    /// `socket(AF_INET6, SOCK_STREAM, …)`. # C: O(1)
-    pub fn new_tcp6() -> Self {
-        let s = Self::new_tcp();
-        s.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
-        s
-    }
-
-    /// `socket(AF_UNIX, SOCK_STREAM, …)`. F114: InetSocket shell
-    /// tagged AF_UNIX, kind set by bind/connect/accept transition
-    /// to `SockKind::Unix(pair, end)`.
-    /// # C: O(1)
-    pub fn new_unix() -> Self {
-        let s = Self::new_tcp();
-        s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        s
-    }
-
-    /// `socket(AF_UNIX, SOCK_DGRAM, …)` per F120 / `24§R01`. Allocates
-    /// a fresh `UnixDgramQueue` so sendto from a peer can push
-    /// payloads. v1 sends are EOPNOTSUPP until the path-keyed dgram
-    /// registry lands in F121; the queue alone lets feature-probing
-    /// programs succeed at socket() + close().
-    /// # C: O(1)
-    pub fn new_unix_dgram() -> Self {
-        let s = Self::new_tcp();
-        s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        let q = crate::UnixDgramQueue::new();
-        // F181a: queue wakes the owning socket's subscribers.
-        q.register_subs(&s.poll_subs);
-        *s.kind.lock() = SockKind::UnixDgram(q);
-        s
-    }
-
-    /// F131: `socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))` —
-    /// raw L2 packet socket dhcpcd uses for DHCPDISCOVER before
-    /// it owns an IPv4. `proto` is the wire byte-order protocol
-    /// the caller passed; we store host-order.
-    /// # C: O(1)
-    pub fn new_packet(proto: u16, sock_type: u8) -> Self {
-        let s = Self::new_tcp();
-        s.family.store(AF_PACKET, core::sync::atomic::Ordering::Release);
-        *s.kind.lock() = SockKind::Packet {
-            ifindex:   core::sync::atomic::AtomicU32::new(0),
-            protocol:  core::sync::atomic::AtomicU16::new(proto),
-            sock_type: core::sync::atomic::AtomicU8::new(sock_type),
-            rx:        Spinlock::new(alloc::collections::VecDeque::new()),
-        };
-        s
-    }
-
-}
-
-impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }

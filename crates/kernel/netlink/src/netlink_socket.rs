@@ -5,6 +5,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use network_namespace::NetworkNamespaceRef;
 use sync::{Socket as SockLockClass, Spinlock};
 
 use crate::{flags, genetlink, invoke_netfilter, listeners, proto, rtnetlink, rtnetlink_rule, sock_diag, Nlmsghdr, nlmsg_align};
@@ -14,7 +15,7 @@ use crate::wire::alloc_port_id;
 /// reply buffers.
 pub struct NetlinkSocket {
     pub protocol: u16,
-    pub net_ns: u64,
+    pub net_ns: NetworkNamespaceRef,
     pub port_id: AtomicU32,
     pub groups: AtomicU32,
     /// Canonical Linux `sk_err`.
@@ -36,21 +37,16 @@ impl NetlinkSocket {
 
     fn may_mutate_rtnl(&self) -> bool {
         #[cfg(target_os = "oxide-kernel")]
-        { sched::current().is_some_and(|cur| nscg::has_net_admin_for(cur, self.net_ns)) }
+        { sched::current().is_some_and(|cur| nscg::has_net_admin_for(cur, &self.net_ns)) }
         #[cfg(not(target_os = "oxide-kernel"))]
         { true }
     }
 
-    /// # C: O(1)
-    pub fn new(protocol: u16) -> Self {
-        Self::new_in(protocol, net::netdev::current_net_ns())
-    }
-
-    /// Create a socket owned by one network namespace. # C: O(1)
-    pub fn new_in(protocol: u16, net_ns: u64) -> Self {
+    /// Create a socket retaining its concrete network namespace owner. # C: O(1)
+    pub fn new(protocol: u16, net_ns: &NetworkNamespaceRef) -> Self {
         Self {
             protocol,
-            net_ns,
+            net_ns: Arc::clone(net_ns),
             port_id: AtomicU32::new(alloc_port_id()),
             groups: AtomicU32::new(0),
             error: net::SocketError::new(),
@@ -128,28 +124,29 @@ impl NetlinkSocket {
     /// Dispatch a single parsed request header.
     /// # C: O(reply build)
     fn handle_one(&self, hdr: &Nlmsghdr, msg: &[u8]) {
+        let net_ns = self.net_ns.id().as_u64();
         let reply = if self.protocol == proto::NETLINK_ROUTE && Self::rtnl_mutation(hdr.nlmsg_type)
             && !self.may_mutate_rtnl() {
             rtnetlink::nlmsg_ack_pub(hdr, -1)
         } else { match (self.protocol, hdr.nlmsg_type) {
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(self.net_ns, hdr),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr_in(self.net_ns, hdr),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => rtnetlink::handle_newaddr_in(self.net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(self.net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => rtnetlink::handle_getroute_in(self.net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETRULE) => rtnetlink_rule::handle_getrule_in(self.net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWRULE) => rtnetlink_rule::handle_newrule_in(self.net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELRULE) => rtnetlink_rule::handle_delrule_in(self.net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWROUTE) => rtnetlink::handle_newroute_in(self.net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELROUTE) => rtnetlink::handle_delroute_in(self.net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr_in(net_ns, hdr),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => rtnetlink::handle_newaddr_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => rtnetlink::handle_getroute_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETRULE) => rtnetlink_rule::handle_getrule_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWRULE) => rtnetlink_rule::handle_newrule_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELRULE) => rtnetlink_rule::handle_delrule_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWROUTE) => rtnetlink::handle_newroute_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELROUTE) => rtnetlink::handle_delroute_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWLINK)
-            | (proto::NETLINK_ROUTE, rtnetlink::RTM_SETLINK) => rtnetlink::handle_setlink_in(self.net_ns, hdr, msg),
+            | (proto::NETLINK_ROUTE, rtnetlink::RTM_SETLINK) => rtnetlink::handle_setlink_in(net_ns, hdr, msg),
             (proto::NETLINK_GENERIC, _) => genetlink::handle(msg),
             (proto::NETLINK_AUDIT, _) => crate::audit::handle(hdr, msg),
             (proto::NETLINK_NETFILTER, _) => invoke_netfilter(msg),
             (proto::NETLINK_SOCK_DIAG, sock_diag::SOCK_DIAG_BY_FAMILY)
             | (proto::NETLINK_SOCK_DIAG, sock_diag::TCPDIAG_GETSOCK) =>
-                sock_diag::handle_in(self.net_ns, hdr, msg),
+                sock_diag::handle_in(net_ns, hdr, msg),
             _ => {
                 if (hdr.nlmsg_flags & flags::NLM_F_ACK) != 0 {
                     rtnetlink::nlmsg_ack_pub(hdr, 0)
@@ -233,6 +230,7 @@ mod tests {
 
     use super::NetlinkSocket;
     use crate::{flags, proto, rtnetlink, Nlmsghdr};
+    use crate::netlink_tests::test_namespace;
 
     fn request(ty: u16, body: &[u8]) -> alloc::vec::Vec<u8> {
         let hdr = Nlmsghdr {
@@ -270,7 +268,8 @@ mod tests {
 
     #[test]
     fn pending_recv_error_overwrites_with_latest_positive_errno() {
-        let sock = NetlinkSocket::new(0);
+        let namespace = network_namespace::initial();
+        let sock = NetlinkSocket::new(0, &namespace);
         assert_eq!(sock.take_pending_recv_error(), 0);
         assert!(!sock.set_pending_recv_error(0));
         assert!(!sock.set_pending_recv_error(-5));
@@ -282,22 +281,24 @@ mod tests {
 
     #[test]
     fn explicit_namespace_is_captured_by_socket() {
-        let sock = NetlinkSocket::new_in(0, 8123);
-        assert_eq!(sock.net_ns, 8123);
+        let namespace = test_namespace();
+        let sock = NetlinkSocket::new(0, &namespace);
+        assert!(Arc::ptr_eq(&sock.net_ns, &namespace));
     }
 
     #[test]
     fn route_dump_uses_socket_namespace() {
-        const NS: u64 = 9231;
+        let namespace = test_namespace();
+        let ns = namespace.id().as_u64();
         let row = rtnetlink::RouteRow {
-            ns: NS, table: rtnetlink::RT_TABLE_MAIN as u32,
+            ns, table: rtnetlink::RT_TABLE_MAIN as u32,
             protocol: rtnetlink::RTPROT_STATIC, scope: rtnetlink::RT_SCOPE_LINK,
             kind: rtnetlink::RTN_UNICAST, dst: Some(([198, 18, 23, 0], 24)),
             gateway: None, oif_ifindex: 5511, prefsrc: None,
             metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
         };
         rtnetlink::route_insert(row);
-        let sock = NetlinkSocket::new_in(proto::NETLINK_ROUTE, NS);
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
         let hdr = Nlmsghdr {
             nlmsg_len: (Nlmsghdr::SIZE + rtnetlink::Rtmsg::SIZE) as u32,
             nlmsg_type: rtnetlink::RTM_GETROUTE,
@@ -310,17 +311,19 @@ mod tests {
         sock.write(&msg).unwrap();
         let (reply, _) = sock.dequeue().unwrap();
         assert!(reply.windows(4).any(|bytes| bytes == [198, 18, 23, 0]));
-        assert_eq!(rtnetlink::route_remove(NS, row.table, row.dst, row.oif_ifindex, row.gateway), 1);
+        assert_eq!(rtnetlink::route_remove(ns, row.table, row.dst, row.oif_ifindex, row.gateway), 1);
     }
 
     #[test]
     fn passed_socket_keeps_captured_namespace_for_link_dump_and_mutation() {
-        const OWNER_NS: u64 = 9241;
-        const RECEIVER_NS: u64 = 9242;
+        let owner_namespace = test_namespace();
+        let receiver_namespace = test_namespace();
+        let owner_ns = owner_namespace.id().as_u64();
+        let receiver_ns = receiver_namespace.id().as_u64();
         let stack = net::global_stack();
-        let owner = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), OWNER_NS);
-        let receiver = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), RECEIVER_NS);
-        let passed = Arc::new(NetlinkSocket::new_in(proto::NETLINK_ROUTE, OWNER_NS));
+        let owner = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), owner_ns);
+        let receiver = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), receiver_ns);
+        let passed = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &owner_namespace));
         let received_fd = Arc::clone(&passed);
 
         received_fd.write(&request(rtnetlink::RTM_GETLINK, &[])).unwrap();
@@ -351,13 +354,15 @@ mod tests {
 
     #[test]
     fn passed_socket_keeps_captured_namespace_for_addr_mutation_and_dump() {
-        const OWNER_NS: u64 = 9251;
-        const RECEIVER_NS: u64 = 9252;
+        let owner_namespace = test_namespace();
+        let receiver_namespace = test_namespace();
+        let owner_ns = owner_namespace.id().as_u64();
+        let receiver_ns = receiver_namespace.id().as_u64();
         let stack = net::global_stack();
-        let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), OWNER_NS);
-        let passed = Arc::new(NetlinkSocket::new_in(proto::NETLINK_ROUTE, OWNER_NS));
+        let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), owner_ns);
+        let passed = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &owner_namespace));
         let received_fd = Arc::clone(&passed);
-        let receiver = NetlinkSocket::new_in(proto::NETLINK_ROUTE, RECEIVER_NS);
+        let receiver = NetlinkSocket::new(proto::NETLINK_ROUTE, &receiver_namespace);
         let addr = [198, 18, 25, 1];
         let mut ifa = rtnetlink::Ifaddrmsg::default();
         ifa.ifa_family = rtnetlink::AF_INET;
@@ -371,8 +376,8 @@ mod tests {
         received_fd.write(&request(rtnetlink::RTM_NEWADDR, &body)).unwrap();
         let (reply, _) = received_fd.dequeue().unwrap();
         assert_eq!(ack_errno(&reply), 0);
-        assert!(rtnetlink::addr_snapshot_ns(OWNER_NS).iter().any(|row| row.ifindex == iface.raw() && row.addr == addr));
-        assert!(rtnetlink::addr_snapshot_ns(RECEIVER_NS).is_empty());
+        assert!(rtnetlink::addr_snapshot_ns(owner_ns).iter().any(|row| row.ifindex == iface.raw() && row.addr == addr));
+        assert!(rtnetlink::addr_snapshot_ns(receiver_ns).is_empty());
 
         received_fd.write(&request(rtnetlink::RTM_GETADDR, &[])).unwrap();
         let (owner_dump, _) = received_fd.dequeue().unwrap();
@@ -384,11 +389,11 @@ mod tests {
         receiver.write(&request(rtnetlink::RTM_DELADDR, &body)).unwrap();
         let (reply, _) = receiver.dequeue().unwrap();
         assert_eq!(ack_errno(&reply), -19);
-        assert_eq!(rtnetlink::addr_snapshot_ns(OWNER_NS).len(), 1);
+        assert_eq!(rtnetlink::addr_snapshot_ns(owner_ns).len(), 1);
         received_fd.write(&request(rtnetlink::RTM_DELADDR, &body)).unwrap();
         let (reply, _) = received_fd.dequeue().unwrap();
         assert_eq!(ack_errno(&reply), 0);
-        assert!(rtnetlink::addr_snapshot_ns(OWNER_NS).is_empty());
+        assert!(rtnetlink::addr_snapshot_ns(owner_ns).is_empty());
         let _ = stack.ifaces.unregister(iface);
     }
 }

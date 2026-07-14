@@ -371,8 +371,8 @@ impl IfaceRegistry {
 /// scheduler → init ns (0). # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn current_net_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.net_ns.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().and_then(|task| task.network_namespace_id())
+        .map(network_namespace::NetworkNamespaceId::as_u64).unwrap_or(0)
 }
 /// Host/test stub: init ns. # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]

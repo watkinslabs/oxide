@@ -20,7 +20,7 @@ fn has_entry(msg: &[u8], needle: &[u8]) -> bool {
 
 #[test]
 fn net_uevent_replay_includes_interface_and_ifindex() {
-    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
     listener.set_group_mask(1);
     netlink::register_uevent_listener(&listener);
 

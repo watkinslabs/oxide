@@ -26,6 +26,7 @@ pub enum VsockKind {
 
 /// AF_VSOCK socket VFS state. # C: O(1)
 pub struct VsockSocket {
+    pub net_namespace: network_namespace::NetworkNamespaceRef,
     pub kind: Spinlock<VsockKind, SockLockClass>,
     pub so_type: core::sync::atomic::AtomicU8,
     /// Canonical Linux `sk_err`.
@@ -43,7 +44,13 @@ impl VsockSocket {
 
     /// `socket(AF_VSOCK, type, protocol)`. # C: O(1)
     pub fn new_type(typ: u32) -> Self {
+        Self::new_type_in(typ, crate::net_ns::current_namespace())
+    }
+
+    /// Build a socket retaining an explicit namespace owner. # C: O(1)
+    pub fn new_type_in(typ: u32, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
         VsockSocket {
+            net_namespace,
             kind: Spinlock::new(VsockKind::Init),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
             error: crate::SocketError::new(),
@@ -51,6 +58,15 @@ impl VsockSocket {
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
         }
     }
+
+    /// Build an accepted socket by cloning the listener's owner. # C: O(1)
+    pub fn new_accepted(listener: &Self) -> Self {
+        Self::new_type_in(listener.so_type.load(core::sync::atomic::Ordering::Acquire) as u32,
+            listener.net_namespace.clone())
+    }
+
+    /// Derive the short-lived namespace table key. # C: O(1)
+    pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
 
     /// Snapshot the live connection Arc if this socket is connected.
     /// # C: O(1)
@@ -166,6 +182,32 @@ mod tests {
 
     fn owner(raw: u32) -> vsock::VsockOwner {
         vsock::VsockOwner::from_raw(raw).expect("test owner is nonzero")
+    }
+
+    fn namespace() -> network_namespace::NetworkNamespaceRef {
+        crate::net_ns::install_final_drop_pending_notifier().expect("install notifier");
+        network_namespace::allocate(0).expect("allocate namespace")
+    }
+
+    #[test]
+    fn socket_retains_concrete_namespace_owner() {
+        let namespace = namespace();
+        let id = namespace.id();
+        let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
+        drop(namespace);
+        assert!(network_namespace::lookup(id).is_some(), "socket pins namespace lifetime");
+        drop(sock);
+        assert!(network_namespace::lookup(id).is_none(), "last socket drop releases namespace");
+    }
+
+    #[test]
+    fn accepted_socket_clones_listener_namespace_owner() {
+        let namespace = namespace();
+        let listener = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
+        let accepted = VsockSocket::new_accepted(&listener);
+        assert!(Arc::ptr_eq(&listener.net_namespace, &accepted.net_namespace));
+        drop(namespace); drop(listener);
+        assert!(network_namespace::lookup(accepted.net_namespace.id()).is_some());
     }
 
     #[test]

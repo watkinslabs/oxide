@@ -130,8 +130,10 @@ Merged network foundation:
     concrete owner; accepted sockets clone the listener owner directly.
     Claimed with N03.2 by `B838-netns-task-ownership`; passed sockets can
     outlive the last task and therefore must migrate in the same owner cutover.
-  - [ ] N03.6 make `SIOCGSKNS` return the resolved socket's namespace and make
+  - [~] N03.6 make `SIOCGSKNS` return the resolved socket's namespace and make
     listns enumerate the live registry, including fd-only and socket-only owners.
+    Claimed with N03.2 by `B838-netns-task-ownership`; both operations now
+    consume concrete owners instead of task-table reconstruction.
   - [ ] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces
     before removing addresses, neighbors, multicast, fragments, routes/rules,
     transport tables, UNIX state, sysctls, and registry metadata.

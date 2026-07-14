@@ -80,7 +80,7 @@ fn misc_class_uevent_uses_model_devname() {
 #[test]
 fn class_uevent_write_reemits_model_event() {
     let dev = add_char("sound", "controlC12", "snd/controlC12", (116, 322));
-    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
     listener.set_group_mask(1);
     netlink::register_uevent_listener(&listener);
 
@@ -127,7 +127,7 @@ fn misc_class_autofs_is_model_backed_with_linux_dev_t() {
 fn misc_and_mem_uevent_writes_reemit_model_events() {
     let mem = add_char("mem", "random-test", "random-test", (MEM_MAJOR, MEM_TEST_MINOR));
     let misc = add_char("misc", "autofs-trigger", "autofs-trigger", (MISC_MAJOR, MISC_TEST_MINOR));
-    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
     listener.set_group_mask(1);
     netlink::register_uevent_listener(&listener);
 
@@ -224,7 +224,7 @@ fn graphics_class_resolves_fbdev_nodes() {
 fn graphics_uevent_write_reemits_fbdev_model_event() {
     let dev = add_char_env(
         "graphics", "fb9", "fb9", (GRAPHICS_MAJOR, FBDEV_TEST_MINOR), "DEVTYPE=fb");
-    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
     listener.set_group_mask(1);
     netlink::register_uevent_listener(&listener);
 

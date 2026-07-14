@@ -220,7 +220,7 @@ impl Task {
             root:           UnsafeCell::new(alloc::string::String::from("/")),
             root_vfs:       UnsafeCell::new(None),
             ipc_ns:         AtomicU64::new(0),
-            net_ns:         AtomicU64::new(0),
+            net_namespace:  Spinlock::new(Some(network_namespace::initial())),
             pid_ns:         AtomicU64::new(0),
             vtgid:          AtomicU32::new(0),
             vtid:           AtomicU32::new(0),

@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use hal::Context;
-use crate::{SchedClass, Task, TaskState};
+use crate::{SchedClass, Task};
 
 use super::hooks::RunStats;
 use super::switch::schedule;
@@ -113,7 +113,7 @@ pub fn current_chroot_root() -> Option<String> {
 /// becomes false.
 /// # C: O(1)
 pub fn mark_done(task: &Task) {
-    task.set_state(TaskState::Zombie);
+    task.mark_done();
 }
 
 /// Tear down the global runqueue and return run stats. Used by

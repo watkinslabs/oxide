@@ -83,8 +83,8 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     if let Some(ipv6) = raw_family {
         let dest = match parse_dest(&sock, &user.name) { Ok(dest) => dest, Err(e) => return e };
         if let Err(e) = crate::cmsg_parse::validate_non_unix_control(&user.control) { return e; }
-        let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
-        let cap = sched::live::current().is_some_and(|cur| nscg::proc_ns::has_net_raw_for(cur, net_ns));
+        let cap = sched::live::current()
+            .is_some_and(|cur| nscg::proc_ns::has_net_raw_for(cur, &sock.net_namespace));
         let mut control = match crate::cmsg_parse::parse_raw_control(&user.control, ipv6, cap) {
             Ok(control) => control, Err(e) => return e,
         };
