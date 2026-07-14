@@ -11,8 +11,8 @@ pub(super) fn raw_setsockopt(sock: &Arc<net::sock::InetSocket>, level: u64,
     let kind = sock.kind.lock();
     match (&*kind, level, optname) {
         (net::sock::SockKind::Raw4(endpoint), IPPROTO_IP, IP_HDRINCL) => {
-            let value = match super::main::read_u8_or_i32(optval, optlen) {
-                Some(value) => value, None => return Some(errno(Errno::Einval)),
+            let value = match copy_u8_or_i32(optval, optlen) {
+                Ok(value) => value, Err(error) => return Some(errno(error)),
             };
             endpoint.set_hdrincl(value != 0);
             Some(0)
@@ -58,6 +58,16 @@ fn copy_i32(optval: u64, optlen: u32) -> Result<i32, Errno> {
     let mut bytes = [0u8; core::mem::size_of::<i32>()];
     uaccess::copy_from_user(&mut bytes, optval).map_err(|_| Errno::Efault)?;
     Ok(i32::from_ne_bytes(bytes))
+}
+
+fn copy_u8_or_i32(optval: u64, optlen: u32) -> Result<i32, Errno> {
+    if optlen == 0 { return Ok(0); }
+    if optlen < core::mem::size_of::<i32>() as u32 {
+        let mut value = [0u8; 1];
+        uaccess::copy_from_user(&mut value, optval).map_err(|_| Errno::Efault)?;
+        return Ok(i32::from(value[0]));
+    }
+    copy_i32(optval, optlen)
 }
 
 fn words_to_bytes(words: [u32; 8]) -> [u8; 32] {
