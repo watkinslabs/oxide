@@ -10,7 +10,7 @@ use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
 use crate::net_common::{
     errno_from_neterr, file_is_nonblock, socket_from_fd,
 };
-use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_for_socket, encoded_sockaddr_in6_peer};
+use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::net_trace::trace_enotsock_at;
 
 fn copy_payload(dst: u64, payload: &[u8]) -> Result<(usize, bool), i64> {
@@ -89,11 +89,13 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
             let Some(meta) = rcv.packet else { return -(Errno::Einval.as_i32() as i64); };
             let rv = crate::af_packet::copy_sockaddr_ll_to_user(src_p, src_len, meta);
             if rv < 0 { return rv; }
-        } else if let Some((ip6, port)) = rcv.peer6 {
-            let sa = encoded_sockaddr_in6_peer(ip6, port);
+        } else if let Some((ip6, port, scope_id)) = rcv.peer6 {
+            let port = if matches!(*sock.kind.lock(), SockKind::Raw6(_)) { 0 } else { port };
+            let sa = encoded_sockaddr_in6(ip6.0, port.to_be(), scope_id);
             let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
             if rv < 0 { return rv; }
         } else if let Some((ip, port)) = rcv.peer {
+            let port = if matches!(*sock.kind.lock(), SockKind::Raw4(_)) { 0 } else { port };
             let sa = encoded_sockaddr_for_socket(&sock, ip, port);
             let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
             if rv < 0 { return rv; }

@@ -7,7 +7,7 @@ use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
 use crate::net_common::{errno_from_neterr, file_is_nonblock};
-use crate::net_sockaddr::{encoded_sockaddr_for_socket, encoded_sockaddr_in6_peer};
+use crate::net_sockaddr::{encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::recv_user::RecvUser;
 use crate::recv_control::Control;
 
@@ -132,8 +132,14 @@ fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
         return match rcv.packet { Some(meta) => copy_packet_name(user, meta), None => user.copy_name(&[]) };
     }
-    if let Some((ip, port)) = rcv.peer6 { return user.copy_name(encoded_sockaddr_in6_peer(ip, port).as_bytes()); }
-    if let Some((ip, port)) = rcv.peer { return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes()); }
+    if let Some((ip, port, scope_id)) = rcv.peer6 {
+        let port = if matches!(*sock.kind.lock(), SockKind::Raw6(_)) { 0 } else { port };
+        return user.copy_name(encoded_sockaddr_in6(ip.0, port.to_be(), scope_id).as_bytes());
+    }
+    if let Some((ip, port)) = rcv.peer {
+        let port = if matches!(*sock.kind.lock(), SockKind::Raw4(_)) { 0 } else { port };
+        return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes());
+    }
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
         let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
         return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes());
