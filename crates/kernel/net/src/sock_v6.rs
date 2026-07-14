@@ -96,7 +96,7 @@ fn resolve_v6_hop_limit(sock: &InetSocket, dst_ip: crate::Ipv6Addr) -> u8 {
 /// Raw IPv6 send with socket scope, PMTU, and protocol-override state. # C: O(payload + N)
 pub(crate) fn sendto_raw6(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint,
     dst_ip: crate::Ipv6Addr, dst_protocol: Option<u16>, scope_id: u32,
-    payload: &[u8]) -> Result<usize, NetError>
+    payload: &[u8], control: &crate::send_control::Raw6Control) -> Result<usize, NetError>
 {
     let protocol_override = if endpoint.protocol() == crate::addr::IpProto::Raw as u8
         && !endpoint.header_included()
@@ -109,8 +109,16 @@ pub(crate) fn sendto_raw6(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoin
     } else { None };
     let hop = resolve_v6_hop_limit(sock, dst_ip);
     let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
-    stack().send_raw6(endpoint, dst_ip, scoped_iface(sock, dst_ip, scope_id)?,
-        protocol_override, payload, hop, pmtudisc)?;
+    let mut effective = control.clone();
+    if effective.multicast_loop.is_none() {
+        effective.multicast_loop = Some(
+            sock.opts.ipv6_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0);
+    }
+    let scoped = if control.iface.is_some() && scope_id == 0 {
+        crate::sock::bound_iface(sock)?
+    } else { scoped_iface(sock, dst_ip, scope_id)? };
+    stack().send_raw6(endpoint, dst_ip, scoped,
+        protocol_override, payload, hop, pmtudisc, &effective)?;
     drain_loopback();
     Ok(payload.len())
 }

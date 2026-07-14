@@ -242,7 +242,8 @@ fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
     let options = Raw4TxOptions { pmtudisc: crate::uapi::IP_PMTUDISC_DONT,
         ..Raw4TxOptions::default() };
 
-    stack.send_raw4(&raw, dst, &[0x5a; 100], options).unwrap();
+    stack.send_raw4(&raw, dst, &[0x5a; 100], options,
+        &crate::send_control::Raw4Control::default()).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 3);
@@ -260,10 +261,10 @@ fn broadcast_transmit_requires_permission() {
     let (_iface, dev) = routed_capture(&stack, 1_500, Ipv4Addr::BROADCAST);
     let raw = endpoint(PROTOCOL, 0);
     assert_eq!(stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x",
-        Raw4TxOptions::default()), Err(NetError::Eacces));
+        Raw4TxOptions::default(), &crate::send_control::Raw4Control::default()), Err(NetError::Eacces));
     stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x", Raw4TxOptions {
         broadcast: true, ..Raw4TxOptions::default()
-    }).unwrap();
+    }, &crate::send_control::Raw4Control::default()).unwrap();
     assert_eq!(dev.packets.lock().len(), 1);
 }
 
@@ -280,7 +281,8 @@ fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
     user[2..4].copy_from_slice(&0u16.to_be_bytes());
     user[10..12].copy_from_slice(&0xdead_u16.to_be_bytes());
 
-    stack.send_raw4(&raw, dst, &user, Raw4TxOptions::default()).unwrap();
+    stack.send_raw4(&raw, dst, &user, Raw4TxOptions::default(),
+        &crate::send_control::Raw4Control::default()).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 1);
@@ -294,10 +296,12 @@ fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
     drop(packets);
 
     let oversized = alloc::vec![0u8; 81];
-    assert_eq!(stack.send_raw4(&raw, dst, &oversized, Raw4TxOptions::default()),
+    assert_eq!(stack.send_raw4(&raw, dst, &oversized, Raw4TxOptions::default(),
+        &crate::send_control::Raw4Control::default()),
         Err(NetError::Einval));
     let valid_oversized = packet(PROTOCOL, Ipv4Addr::ANY, dst, 0, 0, &[], &[0; 61]);
-    assert_eq!(stack.send_raw4(&raw, dst, &valid_oversized, Raw4TxOptions::default()),
+    assert_eq!(stack.send_raw4(&raw, dst, &valid_oversized, Raw4TxOptions::default(),
+        &crate::send_control::Raw4Control::default()),
         Err(NetError::Emsgsize));
     assert_eq!(dev.packets.lock().len(), 1);
 }
