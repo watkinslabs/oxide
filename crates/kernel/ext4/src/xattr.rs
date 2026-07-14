@@ -12,6 +12,7 @@
 // single EXTERNAL block are both read on load and rewritten by `store_xattrs`.
 //
 extern crate alloc;
+mod lifecycle;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 

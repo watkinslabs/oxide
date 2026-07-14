@@ -367,7 +367,8 @@ impl Mount {
             // Free EVERY data + interior-node block at ANY tree depth (see the
             // matching note in `unlink`); the old depth==0-only walk leaked a
             // deep-tree file's blocks + interior nodes.
-            m.truncate_inode(ino, 0)?;
+            m.truncate_inode_for_deletion(ino)?;
+            m.free_external_xattr_for_deletion(ino)?;
             // Re-read after orphan_del + truncate rewrote the slot.
             let (mut bytes, off) = m.read_inode_bytes(ino)?;
             bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
@@ -406,7 +407,9 @@ impl Mount {
                 // (depth==0) walk leaked all blocks AND interior nodes of a
                 // deep-tree (large) file. truncate_inode walks the full extent
                 // tree — the same path rmdir already uses.
-                m.truncate_inode(target_ino, 0)?;
+                m.truncate_inode_for_deletion(target_ino)?;
+                m.free_external_xattr_for_deletion(target_ino)?;
+                let (mut bytes, _) = m.read_inode_bytes(target_ino)?;
                 bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
                 bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
                 bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
@@ -433,7 +436,8 @@ impl Mount {
         self.run_journaled(|m| {
             let target = m.dir_unlink(parent_ino, name)?;
             // Free every data block of the directory (all extents, any depth).
-            m.truncate_inode(target, 0)?;
+            m.truncate_inode_for_deletion(target)?;
+            m.free_external_xattr_for_deletion(target)?;
             // No longer a directory in its block group.
             let g = (target - 1) / m.sb.inodes_per_group;
             { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
