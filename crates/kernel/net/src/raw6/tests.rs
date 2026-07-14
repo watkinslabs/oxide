@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::bpf_filter::{install_bpf_filter_context_runner, FilterContext, FilterKind, FilterProgram};
@@ -23,6 +24,45 @@ fn packet<'a>(protocol: u8, src: Ipv6Addr, dst: Ipv6Addr, payload: &'a [u8]) -> 
         net_ns: NET_NS, protocol, src, dst, iface: IFACE, hop_limit: 63,
         traffic_class: 0x2e, flow_label: 0x12345, hatype: 1, payload,
     }
+}
+
+fn checksum(bytes: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut chunks = bytes.chunks_exact(2);
+    for word in &mut chunks {
+        sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
+    }
+    if let Some(byte) = chunks.remainder().first() { sum += u32::from(*byte) << 8; }
+    while sum >> 16 != 0 { sum = (sum & 0xffff) + (sum >> 16); }
+    !(sum as u16)
+}
+
+fn ipv6_packet(protocol: u8, src: Ipv6Addr, dst: Ipv6Addr, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0u8; crate::ipv6::IPV6_HDR_LEN + payload.len()];
+    crate::ipv6::Ipv6Hdr {
+        flow_label: 0, traffic_class: 0, payload_length: payload.len() as u16,
+        next_header: protocol, hop_limit: 64, src, dst,
+    }.write_to(&mut bytes);
+    bytes[crate::ipv6::IPV6_HDR_LEN..].copy_from_slice(payload);
+    bytes
+}
+
+fn raw6_icmp_error(local: Ipv6Addr, remote: Ipv6Addr, protocol: u8,
+                   kind: u8, code: u8, info: u32) -> Vec<u8> {
+    let invoking = ipv6_packet(protocol, local, remote, &[0; 8]);
+    let mut message = vec![0u8; crate::icmpv6::ICMPV6_HDR_LEN + invoking.len()];
+    message[0] = kind;
+    message[1] = code;
+    message[4..8].copy_from_slice(&info.to_be_bytes());
+    message[crate::icmpv6::ICMPV6_HDR_LEN..].copy_from_slice(&invoking);
+    let mut pseudo = vec![0u8; 40 + message.len()];
+    pseudo[..16].copy_from_slice(&remote.0);
+    pseudo[16..32].copy_from_slice(&local.0);
+    pseudo[32..36].copy_from_slice(&(message.len() as u32).to_be_bytes());
+    pseudo[39] = crate::addr::IpProto::Icmpv6 as u8;
+    pseudo[40..].copy_from_slice(&message);
+    message[2..4].copy_from_slice(&checksum(&pseudo).to_be_bytes());
+    ipv6_packet(crate::icmpv6::IPPROTO_ICMPV6, remote, local, &message)
 }
 
 #[test]
@@ -143,4 +183,61 @@ fn registry_is_exact_protocol_idempotent_and_weak() {
     assert_eq!(table.endpoint_count(PROTOCOL - 1), 0);
     table.unregister(&endpoint);
     assert_eq!(table.endpoint_count(PROTOCOL), 0);
+}
+
+#[test]
+fn raw6_hardness_matching_and_recverr_follow_linux() {
+    let stack = crate::NetStack::new();
+    let (iface, _) = stack.register_loopback_in(NET_NS);
+    let (other_iface, _) = stack.register_loopback_in(NET_NS);
+    let local = Ipv6Addr::LOOPBACK;
+    let remote = REMOTE;
+    let matching_a = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    let matching_b = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    for raw in [&matching_a, &matching_b] {
+        raw.bind(Raw6Address::new(local, 0), Some(iface));
+        raw.connect(Raw6Address::new(remote, 0));
+        stack.register_raw6(raw);
+    }
+    let wrong_protocol = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL - 1));
+    wrong_protocol.bind(Raw6Address::new(local, 0), Some(iface));
+    wrong_protocol.connect(Raw6Address::new(remote, 0));
+    stack.register_raw6(&wrong_protocol);
+    let wrong_peer = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    wrong_peer.bind(Raw6Address::new(local, 0), Some(iface));
+    wrong_peer.connect(Raw6Address::new(LINK_LOCAL, iface.raw()));
+    stack.register_raw6(&wrong_peer);
+    let wrong_iface = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    wrong_iface.bind(Raw6Address::new(local, 0), Some(other_iface));
+    wrong_iface.connect(Raw6Address::new(remote, 0));
+    stack.register_raw6(&wrong_iface);
+    let unconnected = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    unconnected.bind(Raw6Address::new(local, 0), Some(iface));
+    stack.register_raw6(&unconnected);
+
+    stack.deliver_rx_ipv6(iface, &raw6_icmp_error(local, remote, PROTOCOL, 1, 0, 0)).unwrap();
+    assert_eq!(matching_a.error.take(), 0);
+    assert_eq!(matching_b.error.take(), 0);
+    stack.deliver_rx_ipv6(iface, &raw6_icmp_error(local, remote, PROTOCOL, 2, 0, 1_280)).unwrap();
+    assert_eq!(matching_a.error.take(), 0);
+    assert_eq!(matching_b.error.take(), 0);
+    matching_a.error.set_recverr6(true);
+    stack.deliver_rx_ipv6(iface, &raw6_icmp_error(local, remote, PROTOCOL, 2, 0, 1_280)).unwrap();
+    assert_eq!(matching_a.error.take(), syscall::errno::Errno::Emsgsize as i32);
+    assert_eq!(matching_a.error.take_extended().unwrap().info, 1_280);
+    matching_a.error.set_recverr6(false);
+    stack.deliver_rx_ipv6(iface, &raw6_icmp_error(local, remote, PROTOCOL, 1, 4, 0)).unwrap();
+
+    let expected = syscall::errno::Errno::Econnrefused as i32;
+    assert_eq!(matching_a.error.take(), expected);
+    assert_eq!(matching_b.error.take(), expected);
+    assert_eq!(wrong_protocol.error.take(), 0);
+    assert_eq!(wrong_peer.error.take(), 0);
+    assert_eq!(wrong_iface.error.take(), 0);
+    assert_eq!(unconnected.error.take(), 0);
+
+    unconnected.error.set_recverr6(true);
+    stack.deliver_rx_ipv6(iface, &raw6_icmp_error(local, remote, PROTOCOL, 1, 0, 0)).unwrap();
+    assert_eq!(unconnected.error.take(), syscall::errno::Errno::Enetunreach as i32);
+    assert_eq!(unconnected.error.take_extended().unwrap().destination_port, 0);
 }

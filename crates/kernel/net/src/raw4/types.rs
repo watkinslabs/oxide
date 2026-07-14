@@ -8,6 +8,7 @@ use crate::addr::{Ipv4Addr, NetIfaceId};
 use crate::bpf_filter::SocketFilter;
 use crate::mcast_filter::SocketMcast;
 use crate::netdev::{NetError, NetResult};
+use crate::socket_error::SocketError;
 
 const RAW4_RX_MAX_DATAGRAMS: usize = 1_024;
 
@@ -25,6 +26,7 @@ pub struct Raw4StateSnapshot {
     pub local: Ipv4Addr,
     pub remote: Option<Ipv4Addr>,
     pub bound_iface: Option<NetIfaceId>,
+    pub queued_bytes: usize,
     pub hdrincl: bool,
     pub accepting: bool,
 }
@@ -67,15 +69,16 @@ pub struct Raw4Endpoint {
     state: Spinlock<EndpointState, LockClass>,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
+    pub error: Arc<SocketError>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
-    poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
+    pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
 }
 
 impl Raw4Endpoint {
     /// Build one unpublished raw IPv4 endpoint. # C: O(1)
     pub fn new(protocol: u8, net_ns: u64, bpf: Arc<SocketFilter>,
-               mcast: Arc<SocketMcast>) -> Arc<Self> {
+               mcast: Arc<SocketMcast>, error: Arc<SocketError>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
             net_ns,
@@ -91,6 +94,7 @@ impl Raw4Endpoint {
             }),
             bpf_filter: bpf,
             mcast,
+            error,
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
@@ -161,6 +165,7 @@ impl Raw4Endpoint {
             local: state.local,
             remote: state.remote,
             bound_iface: state.bound_iface,
+            queued_bytes: state.datagrams.iter().map(|datagram| datagram.packet.len()).sum(),
             hdrincl: state.hdrincl,
             accepting: state.accepting,
         }

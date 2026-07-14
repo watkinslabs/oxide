@@ -21,7 +21,7 @@ const NET_B: u64 = 8_320_002;
 
 fn endpoint(protocol: u8, net_ns: u64) -> Arc<Raw4Endpoint> {
     Raw4Endpoint::new(protocol, net_ns, Arc::new(SocketFilter::new()),
-        Arc::new(SocketMcast::new()))
+        Arc::new(SocketMcast::new()), Arc::new(crate::SocketError::new()))
 }
 
 fn packet(protocol: u8, src: Ipv4Addr, dst: Ipv4Addr, id: u16, flags: u16,
@@ -43,6 +43,12 @@ fn packet(protocol: u8, src: Ipv4Addr, dst: Ipv4Addr, id: u16, flags: u16,
     let checksum = ip_checksum(&bytes[..ihl]);
     bytes[10..12].copy_from_slice(&checksum.to_be_bytes());
     bytes
+}
+
+fn error_quote(protocol: u8, local: Ipv4Addr, remote: Ipv4Addr) -> Vec<u8> {
+    let mut quote = alloc::vec![0u8; crate::icmp::ICMP_HDR_LEN];
+    quote.extend_from_slice(&packet(protocol, local, remote, 1, 0, &[], &[0; 8]));
+    quote
 }
 
 fn filter_runner(_kind: FilterKind, insns: &[u8], _ctx: FilterContext<'_>) -> u32 {
@@ -285,4 +291,66 @@ fn unregister_is_exact_and_close_blocks_late_receive_publication() {
     assert!(removed.recv(false).is_none());
     assert!(live.recv(false).is_some());
     assert_eq!(stack.inet_tables(0).raw4.endpoint_count(PROTOCOL), 1);
+}
+
+#[test]
+fn connected_raw4_publishes_hard_not_soft_matching_errors() {
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let (other_iface, _) = stack.register_loopback();
+    let local = Ipv4Addr::LOOPBACK;
+    let remote = Ipv4Addr::new(192, 0, 2, 44);
+    let matching_a = endpoint(PROTOCOL, 0);
+    let matching_b = endpoint(PROTOCOL, 0);
+    for raw in [&matching_a, &matching_b] {
+        raw.bind(local, Some(iface)).unwrap();
+        raw.connect(remote, None).unwrap();
+        stack.register_raw4(raw);
+    }
+    let wrong_protocol = endpoint(OTHER_PROTOCOL, 0);
+    wrong_protocol.bind(local, Some(iface)).unwrap();
+    wrong_protocol.connect(remote, None).unwrap();
+    stack.register_raw4(&wrong_protocol);
+    let wrong_peer = endpoint(PROTOCOL, 0);
+    wrong_peer.bind(local, Some(iface)).unwrap();
+    wrong_peer.connect(Ipv4Addr::new(192, 0, 2, 45), None).unwrap();
+    stack.register_raw4(&wrong_peer);
+    let wrong_iface = endpoint(PROTOCOL, 0);
+    wrong_iface.bind(local, Some(other_iface)).unwrap();
+    wrong_iface.connect(remote, None).unwrap();
+    stack.register_raw4(&wrong_iface);
+
+    crate::stack_icmp::handle_error(&stack, iface, remote,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, 0, &error_quote(PROTOCOL, local, remote));
+    assert_eq!(matching_a.error.take(), 0);
+    assert_eq!(matching_b.error.take(), 0);
+    crate::stack_icmp::handle_error(&stack, iface, remote,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, 3, &error_quote(PROTOCOL, local, remote));
+
+    let expected = syscall::errno::Errno::Econnrefused as i32;
+    assert_eq!(matching_a.error.take(), expected);
+    assert_eq!(matching_b.error.take(), expected);
+    assert_eq!(wrong_protocol.error.take(), 0);
+    assert_eq!(wrong_peer.error.take(), 0);
+    assert_eq!(wrong_iface.error.take(), 0);
+}
+
+#[test]
+fn unconnected_raw4_error_requires_recverr() {
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let remote = Ipv4Addr::new(198, 51, 100, 9);
+    let raw = endpoint(PROTOCOL, 0);
+    raw.bind(Ipv4Addr::LOOPBACK, Some(iface)).unwrap();
+    stack.register_raw4(&raw);
+    let quote = error_quote(PROTOCOL, Ipv4Addr::LOOPBACK, remote);
+
+    crate::stack_icmp::handle_error(&stack, iface, remote,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, 3, &quote);
+    assert_eq!(raw.error.take(), 0);
+    raw.error.set_recverr4(true);
+    crate::stack_icmp::handle_error(&stack, iface, remote,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, 3, &quote);
+    assert_eq!(raw.error.take(), syscall::errno::Errno::Econnrefused as i32);
+    assert_eq!(raw.error.take_extended().unwrap().destination_port, 0);
 }
