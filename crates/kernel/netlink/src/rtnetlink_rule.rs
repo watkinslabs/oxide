@@ -166,16 +166,18 @@ pub fn handle_newrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8
         || row.action != FR_ACT_TO_TBL {
         return crate::rtnetlink::nlmsg_ack_pub(req, -95);
     }
-    if explicit_priority.is_none() { row.priority = policy_rule::next_priority(row.ns, row.family); }
-    let exists = policy_rule::exists(row);
-    if exists && (req.nlmsg_flags & flags::NLM_F_EXCL) != 0 {
-        return crate::rtnetlink::nlmsg_ack_pub(req, -17);
-    }
-    if !exists && (req.nlmsg_flags & flags::NLM_F_REPLACE) != 0 {
-        return crate::rtnetlink::nlmsg_ack_pub(req, -2);
-    }
-    policy_rule::insert(row);
-    crate::rtnetlink::nlmsg_ack_pub(req, 0)
+    let errno = {
+        let stack = net::global_stack();
+        let rtnl = stack.rtnl_lock();
+        if explicit_priority.is_none() {
+            row.priority = policy_rule::next_priority_rtnl(&rtnl, row.ns, row.family);
+        }
+        let exists = policy_rule::exists_rtnl(&rtnl, row);
+        if exists && (req.nlmsg_flags & flags::NLM_F_EXCL) != 0 { -17 }
+        else if !exists && (req.nlmsg_flags & flags::NLM_F_REPLACE) != 0 { -2 }
+        else { policy_rule::insert_rtnl(&rtnl, row); 0 }
+    };
+    crate::rtnetlink::nlmsg_ack_pub(req, errno)
 }
 
 /// RTM_DELRULE removes custom policy rules. # C: O(N rules + attrs)
@@ -193,7 +195,11 @@ pub fn handle_delrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8
     if explicit_priority.is_none() && table.is_none() {
         return crate::rtnetlink::nlmsg_ack_pub(req, -22);
     }
-    let n = policy_rule::remove(row.ns, row.family, explicit_priority, table);
+    let n = {
+        let stack = net::global_stack();
+        let rtnl = stack.rtnl_lock();
+        policy_rule::remove_rtnl(&rtnl, row.ns, row.family, explicit_priority, table)
+    };
     crate::rtnetlink::nlmsg_ack_pub(req, if n > 0 { 0 } else { -3 })
 }
 

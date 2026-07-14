@@ -66,6 +66,9 @@ pub fn exists(row: PolicyRule) -> bool {
     })
 }
 
+/// Check custom-rule identity. # Lk: stack RTNL held. # C: O(N)
+pub fn exists_rtnl(_rtnl: &crate::RtnlGuard<'_>, row: PolicyRule) -> bool { exists(row) }
+
 /// Insert or replace by `(ns, family, priority)`. # C: O(N)
 pub fn insert(row: PolicyRule) {
     let mut g = RULE_TABLE.lock();
@@ -77,6 +80,9 @@ pub fn insert(row: PolicyRule) {
         g.push(row);
     }
 }
+
+/// Insert or replace. # Lk: stack RTNL held. # C: O(N)
+pub fn insert_rtnl(_rtnl: &crate::RtnlGuard<'_>, row: PolicyRule) { insert(row); }
 
 /// Remove custom rules matching optional key fields. # C: O(N)
 pub fn remove(ns: u64, family: u8, priority: Option<u32>, table: Option<u32>) -> usize {
@@ -91,6 +97,12 @@ pub fn remove(ns: u64, family: u8, priority: Option<u32>, table: Option<u32>) ->
     before - g.len()
 }
 
+/// Remove matching rules. # Lk: stack RTNL held. # C: O(N)
+pub fn remove_rtnl(_rtnl: &crate::RtnlGuard<'_>, ns: u64, family: u8,
+    priority: Option<u32>, table: Option<u32>) -> usize {
+    remove(ns, family, priority, table)
+}
+
 /// Remove every custom policy rule owned by one destroyed namespace. # C: O(N)
 pub fn remove_namespace(ns: u64) -> usize {
     if ns == 0 { return 0; }
@@ -100,6 +112,11 @@ pub fn remove_namespace(ns: u64) -> usize {
     before - g.len()
 }
 
+/// Remove namespace rules. # Lk: stack RTNL held. # C: O(N)
+pub fn remove_namespace_rtnl(_rtnl: &crate::RtnlGuard<'_>, ns: u64) -> usize {
+    remove_namespace(ns)
+}
+
 /// Pick a free priority before the built-in main/default rules. # C: O(N * 32765)
 pub fn next_priority(ns: u64, family: u8) -> u32 {
     let used = snapshot_custom_ns(ns);
@@ -107,4 +124,9 @@ pub fn next_priority(ns: u64, family: u8) -> u32 {
         .rev()
         .find(|p| !used.iter().any(|r| r.family == family && r.priority == *p))
         .unwrap_or(1)
+}
+
+/// Pick a free priority. # Lk: stack RTNL held. # C: O(N * 32765)
+pub fn next_priority_rtnl(_rtnl: &crate::RtnlGuard<'_>, ns: u64, family: u8) -> u32 {
+    next_priority(ns, family)
 }

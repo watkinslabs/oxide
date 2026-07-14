@@ -1,3 +1,4 @@
+use alloc::string::String;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 
@@ -89,12 +90,18 @@ fn parse(arg: u64) -> Result<Request, i64> {
     })
 }
 
-fn explicit_iface(net_ns: u64, dev_ptr: u64) -> Result<Option<net::NetIfaceId>, i64> {
+fn explicit_iface_name(dev_ptr: u64) -> Result<Option<String>, i64> {
     if dev_ptr == 0 { return Ok(None); }
     let name = crate::mount_common::read_user_cstr_owned(dev_ptr, super::IFNAMSIZ)?;
     let base = name.split(':').next().unwrap_or("");
     if base.is_empty() { return Err(errno(Errno::Enodev)); }
-    net::sock::stack().ifaces.lookup_name_in_ns(base, net_ns).map(|(id, _)| Some(id))
+    Ok(Some(String::from(base)))
+}
+
+fn explicit_iface(stack: &net::NetStack, rtnl: &net::RtnlGuard<'_>, net_ns: u64,
+                  name: Option<&str>) -> Result<Option<net::NetIfaceId>, i64> {
+    let Some(name) = name else { return Ok(None); };
+    stack.ifaces.control_ready_name_in_ns(rtnl, name, net_ns).map(|(id, _)| Some(id))
         .ok_or_else(|| errno(Errno::Enodev))
 }
 
@@ -139,9 +146,18 @@ fn record(req: Request, iface: net::NetIfaceId) -> net::RouteRecord {
 /// Add an IPv4 route from Linux `struct rtentry`. # C: O(N_routes + N_ifaces)
 pub(super) fn add(net_ns: u64, arg: u64) -> i64 {
     let req = match parse(arg) { Ok(req) => req, Err(rv) => return rv };
-    let explicit = match explicit_iface(net_ns, req.dev_ptr) { Ok(id) => id, Err(rv) => return rv };
+    let name = match explicit_iface_name(req.dev_ptr) { Ok(name) => name, Err(rv) => return rv };
+    let stack = net::sock::stack();
+    let rtnl = stack.rtnl_lock();
+    let explicit = match explicit_iface(stack, &rtnl, net_ns, name.as_deref()) {
+        Ok(id) => id, Err(rv) => return rv,
+    };
     let iface = match resolve_iface(net_ns, req, explicit) { Ok(id) => id, Err(rv) => return rv };
-    match net::sock::stack().routes.replace_group_in(net_ns, &[record(req, iface)], true, true, false, false) {
+    if iface.raw() != 0 && stack.ifaces.control_ready_in_ns(&rtnl, iface, net_ns).is_none() {
+        return errno(Errno::Enodev);
+    }
+    match stack.routes.replace_group_rtnl(&rtnl, net_ns, &[record(req, iface)],
+                                           true, true, false, false) {
         Ok(()) => 0,
         Err(net::route::RouteChangeError::Exists) => errno(Errno::Eexist),
         Err(net::route::RouteChangeError::NotFound) => errno(Errno::Esrch),
@@ -152,8 +168,13 @@ pub(super) fn add(net_ns: u64, arg: u64) -> i64 {
 /// Delete the lowest-priority matching IPv4 route alias group. # C: O(N_routes + N_ifaces)
 pub(super) fn delete(net_ns: u64, arg: u64) -> i64 {
     let req = match parse(arg) { Ok(req) => req, Err(rv) => return rv };
-    let explicit = match explicit_iface(net_ns, req.dev_ptr) { Ok(id) => id, Err(rv) => return rv };
-    let removed = net::sock::stack().routes.take_lowest_metric_group_in(net_ns, |old| {
+    let name = match explicit_iface_name(req.dev_ptr) { Ok(name) => name, Err(rv) => return rv };
+    let stack = net::sock::stack();
+    let rtnl = stack.rtnl_lock();
+    let explicit = match explicit_iface(stack, &rtnl, net_ns, name.as_deref()) {
+        Ok(id) => id, Err(rv) => return rv,
+    };
+    let removed = stack.routes.take_lowest_metric_group_rtnl(&rtnl, net_ns, |old| {
         old.route.table == net::policy_rule::RT_TABLE_MAIN && old.route.dst == req.dst
             && old.route.prefix_len == req.prefix_len
             && req.gateway.is_none_or(|gateway| old.route.gateway == Some(gateway))

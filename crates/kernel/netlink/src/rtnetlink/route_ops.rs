@@ -19,6 +19,11 @@ fn route_kind_supported(kind: u8) -> bool {
 
 fn route_kind_needs_oif(kind: u8) -> bool { matches!(kind, RTN_UNICAST | RTN_LOCAL) }
 
+fn oif_control_ready(stack: &net::NetStack, rtnl: &net::RtnlGuard<'_>,
+                     net_ns: u64, oif: u32) -> bool {
+    stack.ifaces.control_ready_in_ns(rtnl, net::NetIfaceId::from_raw(oif), net_ns).is_some()
+}
+
 /// Build one RTM_NEWROUTE reply.
 /// # C: O(N attrs)
 #[allow(clippy::too_many_arguments)]
@@ -135,7 +140,6 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let table = parsed.table.unwrap_or(header_table);
     if table == 0 || (dst_len != 0 && parsed.dst.is_none()) { return build_ack(req, -22); }
     let dst = parsed.dst.map(|a| (a, dst_len));
-    let valid_oif = |oif| net::global_stack().ifaces.lookup_in_ns(net::NetIfaceId::from_raw(oif), net_ns).is_some();
     let mut rows = Vec::new();
     if parsed.multipath.is_empty() {
         let oif = match (parsed.oif, route_kind_needs_oif(kind)) {
@@ -143,7 +147,6 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
             (None, true) => return build_ack(req, -22),
             (None, false) => 0,
         };
-        if oif != 0 && !valid_oif(oif) { return build_ack(req, -19); }
         if !route_kind_needs_oif(kind) && (parsed.gateway.is_some() || parsed.prefsrc.is_some()) {
             return build_ack(req, -22);
         }
@@ -155,9 +158,6 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     } else {
         if !route_kind_needs_oif(kind) { return build_ack(req, -22); }
         if parsed.gateway.is_some() { return build_ack(req, -22); }
-        if parsed.multipath.iter().any(|nh| !valid_oif(nh.oif)) {
-            return build_ack(req, -19);
-        }
         for nh in parsed.multipath {
             rows.push(RouteRow {
                 ns: net_ns, table, protocol, scope, kind, dst,
@@ -172,7 +172,16 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let replace = req.nlmsg_flags & flags::NLM_F_REPLACE != 0;
     let append = req.nlmsg_flags & flags::NLM_F_APPEND != 0;
     if (exclusive && replace) || (append && replace) { return build_ack(req, -22); }
-    if let Err(err) = route_change(&rows, create, exclusive, replace, append) {
+    let changed = {
+        let stack = net::global_stack();
+        let rtnl = stack.rtnl_lock();
+        if rows.iter().any(|row| row.oif_ifindex != 0
+            && !oif_control_ready(stack, &rtnl, net_ns, row.oif_ifindex)) {
+            return build_ack(req, -19);
+        }
+        route_change(&rtnl, &rows, create, exclusive, replace, append)
+    };
+    if let Err(err) = changed {
         let errno = match err {
             net::route::RouteChangeError::Exists => -17,
             net::route::RouteChangeError::NotFound => -2,
@@ -215,24 +224,32 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let dst = parsed.dst.map(|a| (a, dst_len));
     let (dst_addr, prefix_len) = route_key(dst);
     let multipath = parsed.multipath;
-    let removed = route_take_lowest(net_ns, |record| {
-        let route = record.route;
-        (table == 0 || route.table == table) && route.dst == dst_addr && route.prefix_len == prefix_len
-            && parsed.oif.is_none_or(|oif| route.iface.raw() == oif)
-            && parsed.gateway.is_none_or(|gateway| route.gateway
-                == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(gateway))))
-            && parsed.prefsrc.is_none_or(|src| route.src_hint
-                == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(src))))
-            && parsed.metric.is_none_or(|metric| record.metric == metric)
-            && (protocol == 0 || record.protocol == protocol)
-            && (scope == 0 || record.scope == scope)
-            && (kind == 0 || record.kind == kind)
-            && (multipath.is_empty() || multipath.iter().any(|nh| {
-                route.iface.raw() == nh.oif && nh.gateway.is_none_or(|gateway| route.gateway
+    let removed = {
+        let stack = net::global_stack();
+        let rtnl = stack.rtnl_lock();
+        if parsed.oif.is_some_and(|oif| !oif_control_ready(stack, &rtnl, net_ns, oif))
+            || multipath.iter().any(|nh| !oif_control_ready(stack, &rtnl, net_ns, nh.oif)) {
+            return build_ack(req, -19);
+        }
+        route_take_lowest(&rtnl, net_ns, |record| {
+            let route = record.route;
+            (table == 0 || route.table == table) && route.dst == dst_addr && route.prefix_len == prefix_len
+                && parsed.oif.is_none_or(|oif| route.iface.raw() == oif)
+                && parsed.gateway.is_none_or(|gateway| route.gateway
                     == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(gateway))))
-                    && record.nh_flags == nh.flags && record.weight == nh.hops as u16 + 1
-            }))
-    });
+                && parsed.prefsrc.is_none_or(|src| route.src_hint
+                    == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(src))))
+                && parsed.metric.is_none_or(|metric| record.metric == metric)
+                && (protocol == 0 || record.protocol == protocol)
+                && (scope == 0 || record.scope == scope)
+                && (kind == 0 || record.kind == kind)
+                && (multipath.is_empty() || multipath.iter().any(|nh| {
+                    route.iface.raw() == nh.oif && nh.gateway.is_none_or(|gateway| route.gateway
+                        == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(gateway))))
+                        && record.nh_flags == nh.flags && record.weight == nh.hops as u16 + 1
+                }))
+        })
+    };
     if removed.is_empty() { return build_ack(req, -3); }
     for row in removed { crate::mcast::notify_route(net_ns, true, row); }
     build_ack(req, 0)

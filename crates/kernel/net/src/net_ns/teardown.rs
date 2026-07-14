@@ -43,9 +43,12 @@ pub(super) fn destroy_namespace_into(stack: &NetStack, ns: u64) -> bool {
     }
     removed |= stack.ipv4_reasm.remove_namespace(ns) != 0;
     removed |= stack.ipv6_reasm.remove_namespace(ns) != 0;
-    removed |= stack.routes.remove_namespace(ns);
-    removed |= stack.routes6.remove_namespace(ns);
-    removed |= crate::policy_rule::remove_namespace(ns) != 0;
+    {
+        let rtnl = stack.rtnl_lock();
+        removed |= stack.routes.remove_namespace_rtnl(&rtnl, ns);
+        removed |= stack.routes6.remove_namespace_rtnl(&rtnl, ns);
+        removed |= crate::policy_rule::remove_namespace_rtnl(&rtnl, ns) != 0;
+    }
     removed |= stack.remove_inet_namespace(ns);
     removed |= NET_NS.lock().remove(&ns).is_some();
     removed
