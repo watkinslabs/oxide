@@ -9,6 +9,8 @@ const LOCAL_PORT: u16 = 43_000;
 const REMOTE_PORT: u16 = 53;
 const OWNER_UID: u32 = 1_000;
 const ICMPV6_DEST_UNREACHABLE: u8 = 1;
+const ICMPV6_TIME_EXCEEDED: u8 = 3;
+const ICMPV6_PARAMETER_PROBLEM: u8 = 4;
 const ICMPV6_DEST_PORT_UNREACHABLE: u8 = 4;
 
 struct Pmtu6Dev { tx: AtomicUsize, fragments: AtomicUsize }
@@ -71,8 +73,13 @@ fn ipv6_packet(src: Ipv6Addr, dst: Ipv6Addr, proto: IpProto, payload: &[u8]) -> 
 
 fn dest_unreachable(src: Ipv6Addr, dst: Ipv6Addr, code: u8,
                     invoking: &[u8]) -> alloc::vec::Vec<u8> {
+    icmp_error(src, dst, ICMPV6_DEST_UNREACHABLE, code, invoking)
+}
+
+fn icmp_error(src: Ipv6Addr, dst: Ipv6Addr, kind: u8, code: u8,
+              invoking: &[u8]) -> alloc::vec::Vec<u8> {
     let mut message = alloc::vec![0u8; crate::icmpv6::ICMPV6_HDR_LEN + invoking.len()];
-    message[0] = ICMPV6_DEST_UNREACHABLE;
+    message[0] = kind;
     message[1] = code;
     message[crate::icmpv6::ICMPV6_HDR_LEN..].copy_from_slice(invoking);
     set_icmpv6_checksum(&mut message, src, dst);
@@ -81,11 +88,16 @@ fn dest_unreachable(src: Ipv6Addr, dst: Ipv6Addr, code: u8,
 
 fn bind_connected(stack: &NetStack, iface: NetIfaceId, local: Ipv6Addr,
                   remote: Ipv6Addr, error: Arc<SocketError>) {
+    bind_connected_mode(stack, iface, local, remote, error, crate::uapi::IPV6_PMTUDISC_WANT);
+}
+
+fn bind_connected_mode(stack: &NetStack, iface: NetIfaceId, local: Ipv6Addr,
+                       remote: Ipv6Addr, error: Arc<SocketError>, mode: i32) {
     stack.bind_udp6_socket(
         local, LOCAL_PORT, Some(iface), error, flag(0), flag(1), OWNER_UID, flag(0),
         Arc::new(Spinlock::<Option<(Ipv6Addr, u16)>, StackLockClass>::new(
             Some((remote, REMOTE_PORT)),
-        )), flag(crate::uapi::IPV6_PMTUDISC_WANT),
+        )), flag(mode),
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(crate::mcast_filter::SocketMcast::new()),
     ).unwrap();
@@ -167,6 +179,105 @@ fn address_unreachable_maps_to_ehostunreach() {
 }
 
 #[test]
+fn icmpv6_error_conversion_matches_linux_table() {
+    use syscall::errno::Errno;
+    let cases = [
+        (ICMPV6_DEST_UNREACHABLE, 0, Errno::Enetunreach),
+        (ICMPV6_DEST_UNREACHABLE, 1, Errno::Eacces),
+        (ICMPV6_DEST_UNREACHABLE, 2, Errno::Ehostunreach),
+        (ICMPV6_DEST_UNREACHABLE, 3, Errno::Ehostunreach),
+        (ICMPV6_DEST_UNREACHABLE, 4, Errno::Econnrefused),
+        (ICMPV6_DEST_UNREACHABLE, 5, Errno::Eacces),
+        (ICMPV6_DEST_UNREACHABLE, 6, Errno::Eacces),
+        (ICMPV6_DEST_UNREACHABLE, 255, Errno::Eproto),
+        (ICMPV6_TIME_EXCEEDED, 0, Errno::Ehostunreach),
+        (ICMPV6_TIME_EXCEEDED, 1, Errno::Ehostunreach),
+        (ICMPV6_PARAMETER_PROBLEM, 0, Errno::Eproto),
+        (ICMPV6_PARAMETER_PROBLEM, 2, Errno::Eproto),
+    ];
+    for (kind, code, expected) in cases {
+        let stack = NetStack::new();
+        let (iface, _) = stack.register_loopback();
+        let local = Ipv6Addr::LOOPBACK;
+        let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, kind as u16, code as u16, 0, 0, 0, 1]);
+        let error = Arc::new(SocketError::new());
+        error.set_recverr6(true);
+        bind_connected(&stack, iface, local, remote, error.clone());
+
+        let packet = icmp_error(remote, local, kind, code, &quoted_udp(local, remote));
+        stack.deliver_rx_ipv6(iface, &packet).unwrap();
+
+        assert_eq!(error.take(), expected as i32, "kind={kind} code={code}");
+        let extended = error.take_extended().expect("RECVERR must queue converted error");
+        assert_eq!((extended.kind, extended.code, extended.errno),
+                   (kind, code, expected as i32));
+    }
+}
+
+#[test]
+fn icmpv6_hardness_controls_connected_error_without_recverr() {
+    use syscall::errno::Errno;
+    let cases = [
+        (ICMPV6_DEST_UNREACHABLE, 0, 0),
+        (ICMPV6_DEST_UNREACHABLE, 1, Errno::Eacces as i32),
+        (ICMPV6_DEST_UNREACHABLE, 4, Errno::Econnrefused as i32),
+        (ICMPV6_DEST_UNREACHABLE, 255, Errno::Eproto as i32),
+        (ICMPV6_TIME_EXCEEDED, 0, 0),
+        (ICMPV6_PARAMETER_PROBLEM, 0, Errno::Eproto as i32),
+    ];
+    for (kind, code, expected) in cases {
+        let stack = NetStack::new();
+        let (iface, _) = stack.register_loopback();
+        let local = Ipv6Addr::LOOPBACK;
+        let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, kind as u16, code as u16, 0, 0, 0, 2]);
+        let error = Arc::new(SocketError::new());
+        bind_connected(&stack, iface, local, remote, error.clone());
+
+        let packet = icmp_error(remote, local, kind, code, &quoted_udp(local, remote));
+        stack.deliver_rx_ipv6(iface, &packet).unwrap();
+
+        assert_eq!(error.take(), expected, "kind={kind} code={code}");
+    }
+}
+
+#[test]
+fn packet_too_big_respects_all_linux_pmtudisc_modes() {
+    use syscall::errno::Errno;
+    const PATH_MTU: u32 = 1_280;
+    for (mode, accepted, hard) in [
+        (crate::uapi::IPV6_PMTUDISC_DONT, true, false),
+        (crate::uapi::IPV6_PMTUDISC_WANT, true, true),
+        (crate::uapi::IPV6_PMTUDISC_DO, true, true),
+        (crate::uapi::IPV6_PMTUDISC_PROBE, true, true),
+        (crate::uapi::IPV6_PMTUDISC_INTERFACE, false, false),
+        (crate::uapi::IPV6_PMTUDISC_OMIT, false, false),
+    ] {
+        let stack = NetStack::new();
+        let dev = Arc::new(Pmtu6Dev {
+            tx: AtomicUsize::new(0), fragments: AtomicUsize::new(0),
+        });
+        let iface = stack.ifaces.register(dev);
+        let local = Ipv6Addr::LOOPBACK;
+        stack.add_v6_addr(iface, local);
+        let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, 8, mode as u16, 0, 0, 0, 1]);
+        let error = Arc::new(SocketError::new());
+        bind_connected_mode(&stack, iface, local, remote, error.clone(), mode);
+        let packet = packet_too_big(remote, local, PATH_MTU, &quoted_udp(local, remote));
+
+        stack.deliver_rx_ipv6(iface, &packet).unwrap();
+        assert_eq!(error.take(), if hard { Errno::Emsgsize as i32 } else { 0 }, "mode={mode}");
+        assert_eq!(stack.path_mtu(IpAddr::V6(remote), Some(iface), false),
+                   Ok(if accepted { PATH_MTU } else { 1_500 }), "mode={mode}");
+
+        error.set_recverr6(true);
+        stack.deliver_rx_ipv6(iface, &packet).unwrap();
+        assert_eq!(error.take(), if accepted { Errno::Emsgsize as i32 } else { 0 }, "mode={mode}");
+        assert_eq!(error.take_extended().map(|entry| entry.errno),
+                   accepted.then_some(Errno::Emsgsize as i32), "mode={mode}");
+    }
+}
+
+#[test]
 fn packet_too_big_clamps_ipv6_tcp_mss_without_socket_error() {
     const PATH_MTU: u32 = 1_280;
     const IPV6_TCP_OVERHEAD: u16 = 60;
@@ -218,34 +329,6 @@ fn packet_too_big_publishes_emsgsize_to_exact_udp6_endpoint() {
         local, LOCAL_PORT, remote, REMOTE_PORT, &oversized, Some(iface),
         crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, crate::uapi::IPV6_PMTUDISC_DO,
     ), Err(crate::NetError::Emsgsize));
-}
-
-#[test]
-fn interface_and_omit_report_packet_too_big_without_updating_cache() {
-    const PATH_MTU: u32 = 1_280;
-    for mode in [crate::uapi::IPV6_PMTUDISC_INTERFACE, crate::uapi::IPV6_PMTUDISC_OMIT] {
-        let stack = NetStack::new();
-        let dev = Arc::new(Pmtu6Dev {
-            tx: AtomicUsize::new(0), fragments: AtomicUsize::new(0),
-        });
-        let iface = stack.ifaces.register(dev);
-        let local = Ipv6Addr::LOOPBACK;
-        stack.add_v6_addr(iface, local);
-        let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, 6, 0, 0, 0, 0, mode as u16]);
-        let error = Arc::new(SocketError::new());
-        stack.bind_udp6_socket(
-            local, LOCAL_PORT, Some(iface), error.clone(), flag(0), flag(1), OWNER_UID,
-            flag(0), Arc::new(Spinlock::new(Some((remote, REMOTE_PORT)))), flag(mode),
-            Arc::new(crate::bpf_filter::SocketFilter::new()),
-            Arc::new(crate::mcast_filter::SocketMcast::new()),
-        ).unwrap();
-        let packet = packet_too_big(remote, local, PATH_MTU, &quoted_udp(local, remote));
-
-        stack.deliver_rx_ipv6(iface, &packet).unwrap();
-
-        assert_eq!(error.take(), syscall::errno::Errno::Emsgsize as i32);
-        assert_eq!(stack.path_mtu(IpAddr::V6(remote), Some(iface), false), Ok(1_500));
-    }
 }
 
 #[test]
