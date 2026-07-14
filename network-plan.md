@@ -58,6 +58,26 @@ Merged network foundation:
   bind/connect/disconnect, device scope, send/sendto/sendmsg, receive and
   source addresses, IPv4 `IP_HDRINCL`, IPv6 checksum handling, filters,
   poll/wakeup, pending errors, close, diagnostics, and hosted tests.
+  - [~] N01.1 socket-owned raw4/raw6 endpoints, namespace protocol tables,
+    exact receive demux, reassembly, filtering, queueing, poll, and close.
+  - [~] N01.2 IPv4/IPv6 arbitrary-protocol transmit, PMTU, fragmentation,
+    checksum, and caller-header modes.
+  - [~] N01.3 raw socket options, signed/zero `optlen`, fault-recoverable
+    import, ICMP filters, and readback.
+  - [~] N01.4 ICMP/ICMPv6 pending and extended errors with Linux hardness,
+    tuple, namespace, device, wakeup, and queue semantics.
+  - [~] N01.5 namespace-scoped immutable `/proc/net/raw` and `raw6` snapshots.
+  - [ ] N01.6 reject nonlocal/device-inconsistent IPv4 binds and IPv4-mapped
+    IPv6 raw binds; preserve namespace-local address ownership.
+  - [ ] N01.7 implement raw `sendmsg` IP/IPv6 ancillary controls and Linux
+    `MSG_OOB`/`MSG_DONTROUTE` behavior instead of accepting ignored input.
+  - [ ] N01.8 make IPv6 `IPV6_HDRINCL` transmit caller bytes under Linux's
+    minimum-length/MTU contract without rewriting or overvalidating headers.
+  - [ ] N01.9 install route-selected local addresses on connect and enforce
+    `SO_BROADCAST` for IPv4 raw connect/send.
+  - [ ] N01.10 account raw4 receive bytes against `SO_RCVBUF` and report drops.
+  - [ ] N01.11 encode an enabled IPv6 raw UDP zero checksum as `0xffff`.
+  - [ ] N01.12 close the raw receive arm versus `SHUT_RD` lost-wakeup race.
 - [ ] **N02 multicast robustness accounting**.
   Preserve successful membership when IGMP/MLD report output fails. Roll back
   only synchronous validation/allocation/filter-setup failures. Consume a
