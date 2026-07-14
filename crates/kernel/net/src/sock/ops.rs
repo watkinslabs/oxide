@@ -46,7 +46,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             Ok(())
         }
         BoundAddr::Inet { ip, port } => {
-            stack().bind_udp_with_iface(ip, port, bound_iface(sock)?)?;
+            stack().bind_udp_with_iface_error(ip, port, bound_iface(sock)?, sock.error.clone())?;
             *sock.local_port.lock() = Some(port);
             *sock.local_ip.lock() = ip;
             // F181a: register subscribers on the just-bound queue.
@@ -57,7 +57,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
         }
         BoundAddr::Inet6 { ip, port } => {
             // F180a: AF_INET6 UDP bind routes through udp6 map.
-            stack().bind_udp6_with_iface(ip, port, bound_iface(sock)?)?;
+            stack().bind_udp6_with_iface_error(ip, port, bound_iface(sock)?, sock.error.clone())?;
             *sock.local_port.lock() = Some(port);
             *sock.local_ip6.lock() = ip;
             if let Some(q) = stack().udp6_queue_arc(port) {
@@ -189,6 +189,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                 crate::addr::IpAddr::V4(local_ip), local_port,
                 crate::addr::IpAddr::V4(dst_ip), port,
                 bound_iface(sock)?,
+                sock.error.clone(),
             )?;
             // F181a: bind owning fd's subscribers so deliver_tcp can
             // wake epoll without broadcasting.
@@ -205,7 +206,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
             // flips state to Closed on retry-exhaustion. Race-safe:
             // we re-check state under entry.conn.lock() each iter;
             // wakes are issued post-mutation.
-            crate::sock_io::connect_wait_established(&entry)
+            crate::sock_io::connect_wait_established(sock, &entry)
         }
         RemoteAddr::Inet6 { ip, port } => crate::sock_v6::connect_v6(sock, ip, port, nonblock),
     }
@@ -289,7 +290,9 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
             klog::write_raw(b" pair="); klog::write_hex_u64(alloc::sync::Arc::as_ptr(&pair) as u64);
             klog::write_raw(b"]\n");
         }
-        let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp());
+        let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_error(
+            pair.end_error(crate::UnixEnd::A),
+        ));
         new_sock.net_ns.store(
             sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
             core::sync::atomic::Ordering::Release,
@@ -319,9 +322,10 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         (c.remote.ip, c.remote.port)
     };
     let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    let new_sock = alloc::sync::Arc::new(
-        if listener_fam == AF_INET6 { InetSocket::new_tcp6() } else { InetSocket::new_tcp() }
-    );
+    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_error(entry.error.clone()));
+    if listener_fam == AF_INET6 {
+        new_sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
+    }
     new_sock.net_ns.store(
         sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
         core::sync::atomic::Ordering::Release,
@@ -399,6 +403,8 @@ pub fn sendto(
     // TCP: send into the existing connection.
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let entry = entry.clone();
+        let eno = sock.take_pending_recv_error();
+        if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
         let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
             .max(TCP_SNDBUF_DEFAULT) as usize;
         let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;

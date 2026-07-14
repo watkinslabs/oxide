@@ -20,6 +20,8 @@ impl UnixPair {
             b_to_a_waiters: sched::live::WaitList::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
+            error_a: Spinlock::new(alloc::sync::Arc::new(crate::SocketError::new())),
+            error_b: Spinlock::new(alloc::sync::Arc::new(crate::SocketError::new())),
             peer_gone_a: core::sync::atomic::AtomicBool::new(false),
             peer_gone_b: core::sync::atomic::AtomicBool::new(false),
             reset_pending_a: core::sync::atomic::AtomicBool::new(false),
@@ -96,6 +98,21 @@ impl UnixPair {
             UnixEnd::B => &self.end_b_subs,
         };
         *slot.lock() = Some(alloc::sync::Arc::downgrade(subs));
+    }
+
+    /// Share the bound InetSocket's canonical error state with this endpoint. # C: O(1)
+    pub fn attach_end_error(&self, end: UnixEnd, error: &alloc::sync::Arc<crate::SocketError>) {
+        *self.error_slot(end).lock() = error.clone();
+    }
+
+    /// Canonical error state allocated for an endpoint not yet bound to a socket. # C: O(1)
+    pub fn end_error(&self, end: UnixEnd) -> alloc::sync::Arc<crate::SocketError> {
+        self.error_slot(end).lock().clone()
+    }
+
+    /// Return one endpoint's canonical error slot. # C: O(1)
+    pub(super) fn error_slot(&self, end: UnixEnd) -> &Spinlock<alloc::sync::Arc<crate::SocketError>, sync::Socket> {
+        match end { UnixEnd::A => &self.error_a, UnixEnd::B => &self.error_b }
     }
 
     /// Returns the WaitList the reader of `end` should park on.

@@ -23,6 +23,7 @@ fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
         crate::NetError::Enetunreach   => vfs::VfsError::Enetunreach,
         crate::NetError::Econnrefused  => vfs::VfsError::Econnrefused,
         crate::NetError::Econnreset    => vfs::VfsError::Econnreset,
+        crate::NetError::Etimedout     => vfs::VfsError::Etimedout,
         crate::NetError::Epipe         => vfs::VfsError::Epipe,
         crate::NetError::Enotconn      => vfs::VfsError::Enotconn,
         _                              => vfs::VfsError::Eio,
@@ -61,12 +62,6 @@ impl InetSocket {
                 crate::sock_io::read_unix_msg_blocking(&pair, end, buf, deadline_ns)
             }
             K::Tcp(entry) => {
-                if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-                    let got = stack().tcp_recv(&entry, buf.len());
-                    let n = got.len();
-                    if n != 0 { buf[..n].copy_from_slice(&got); }
-                    return Ok(n);
-                }
                 // F169: convert SO_RCVTIMEO (ns) into an absolute
                 // monotonic deadline; 0 = no timeout (indefinite).
                 crate::sock_io::read_tcp_blocking(self, &entry, buf, deadline_ns)
@@ -108,6 +103,8 @@ impl InetSocket {
                     buf[..n].copy_from_slice(&got);
                     return Ok(n);
                 }
+                let eno = self.take_pending_recv_error();
+                if eno != 0 { return Err(crate::sock_io::tcp_vfs_error(eno)); }
                 if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
                 let st = entry.conn.lock().state;
                 if st == crate::tcp_state::TcpState::Closed
@@ -202,7 +199,7 @@ impl InetSocket {
                 let deadline_ns = compute_deadline_ns(timeo);
                 let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
-                crate::sock_io::write_tcp_blocking(&entry, buf, cap, deadline_ns, nodelay, cork)
+                crate::sock_io::write_tcp_blocking(self, &entry, buf, cap, deadline_ns, nodelay, cork)
             }
             K::Other => crate::sock::sendto(self, buf, None, current_sender_creds()).map_err(vfs_from_neterr),
         }
@@ -223,6 +220,8 @@ impl InetSocket {
             let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                 .max(TCP_SNDBUF_DEFAULT) as usize;
             let entry = entry.clone();
+            let eno = self.take_pending_recv_error();
+            if eno != 0 { return Err(crate::sock_io::tcp_vfs_error(eno)); }
             // F166/F167: closing/closed send side → SIGPIPE + EPIPE
             // before tcp_send so we don't queue bytes into a corpse.
             let st = entry.conn.lock().state;
@@ -252,11 +251,12 @@ impl InetSocket {
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
+        let pending = if self.has_pending_recv_error() { vfs::POLL_ERR } else { 0 };
         let unix_listener = {
             let kind = self.kind.lock();
             if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
         };
-        if let Some(l) = unix_listener { return l.poll_mask(); }
+        if let Some(l) = unix_listener { return l.poll_mask() | pending; }
         match &*self.kind.lock() {
             SockKind::Udp => {
                 let mut mask = POLL_OUT;
@@ -270,28 +270,24 @@ impl InetSocket {
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
                 if rd && wr { mask |= POLL_HUP; }
-                mask
+                mask | pending
             }
             SockKind::TcpListener(l) => {
-                if l.accept_q.lock().is_empty() { POLL_OUT } else { POLL_IN | POLL_OUT }
+                (if l.accept_q.lock().is_empty() { POLL_OUT } else { POLL_IN | POLL_OUT }) | pending
             }
             SockKind::TcpConn(entry) => {
                 drain_loopback();
-                let c = entry.conn.lock();
-                let mut mask = POLL_OUT;
-                if !c.recv_buf.is_empty() { mask |= POLL_IN; }
-                if c.state == crate::tcp_state::TcpState::Closed
-                    || c.state.is_closing() { mask |= POLL_HUP; }
+                let mut mask = entry.poll_mask();
                 let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
                 if rd && wr { mask |= POLL_HUP; }
-                mask
+                mask | pending
             }
             SockKind::Unix(pair, end) => {
-                pair.poll_mask(*end)
+                pair.poll_mask(*end) | pending
             }
-            SockKind::UnixListener(_) => 0,
+            SockKind::UnixListener(_) => pending,
             SockKind::UnixDgram(q) => {
                 let mut mask = POLL_OUT;
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
@@ -299,10 +295,10 @@ impl InetSocket {
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
                 if rd && wr { mask |= POLL_HUP; }
-                mask
+                mask | pending
             }
             SockKind::UnixMsgPair(pair, end) => {
-                pair.poll_mask(*end)
+                pair.poll_mask(*end) | pending
             }
             SockKind::Packet { rx, .. } => {
                 // F131: tx always ready; rx readable when rx queue
@@ -310,12 +306,12 @@ impl InetSocket {
                 // virtio-net rx-deliver path lands.
                 let mut mask = POLL_OUT;
                 if !rx.lock().is_empty() { mask |= POLL_IN; }
-                mask
+                mask | pending
             }
             SockKind::TcpInit => {
                 if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
-                    POLL_OUT | POLL_HUP
-                } else { POLL_OUT }
+                    POLL_OUT | POLL_HUP | pending
+                } else { POLL_OUT | pending }
             }
         }
     }

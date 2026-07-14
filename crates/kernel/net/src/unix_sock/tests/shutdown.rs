@@ -58,6 +58,36 @@ fn stream_release_discards_unread_rights_after_peer_data_then_resets() {
 }
 
 #[test]
+fn stream_reset_is_published_and_consumed_through_canonical_error() {
+    let pair = UnixPair::new();
+    let error = Arc::new(crate::SocketError::new());
+    pair.attach_end_error(UnixEnd::B, &error);
+    pair.write(UnixEnd::A, b"reply").unwrap();
+    pair.write(UnixEnd::B, b"unread").unwrap();
+
+    pair.release_end(UnixEnd::A);
+
+    assert!(error.has(), "peer close publishes canonical socket error");
+    assert_eq!(pair.read(UnixEnd::B, 64), b"reply", "queued data precedes error");
+    assert!(pair.take_reset(UnixEnd::B));
+    assert!(!error.has(), "receive consumes the same canonical error as SO_ERROR");
+}
+
+#[test]
+fn so_error_consumption_clears_stream_reset_readiness() {
+    let pair = UnixPair::new();
+    let error = pair.end_error(UnixEnd::B);
+    pair.write(UnixEnd::B, b"unread").unwrap();
+    pair.release_end(UnixEnd::A);
+
+    assert_ne!(pair.poll_mask(UnixEnd::B) & vfs::POLL_ERR, 0);
+    assert_eq!(error.take(), syscall::errno::Errno::Econnreset as i32);
+    assert_eq!(pair.poll_mask(UnixEnd::B) & vfs::POLL_ERR, 0);
+    assert!(!pair.take_reset(UnixEnd::B), "lifecycle marker cannot redeliver consumed SO_ERROR");
+    assert!(pair.is_eof(UnixEnd::B));
+}
+
+#[test]
 fn message_pair_shutdown_and_release_match_stream_lifecycle() {
     let pair = UnixMsgPair::new();
     pair.send(UnixEnd::A, b"queued").unwrap();
@@ -73,6 +103,22 @@ fn message_pair_shutdown_and_release_match_stream_lifecycle() {
     assert!(pair.take_reset(UnixEnd::B));
     assert_eq!(pair.recv(UnixEnd::B, 64).unwrap(), b"reply");
     assert!(pair.is_eof(UnixEnd::B));
+}
+
+#[test]
+fn seqpacket_reset_uses_endpoint_canonical_error() {
+    let pair = UnixMsgPair::new();
+    let error = Arc::new(crate::SocketError::new());
+    pair.attach_end_error(UnixEnd::B, &error);
+    pair.send(UnixEnd::A, b"reply").unwrap();
+    pair.send(UnixEnd::B, b"unread").unwrap();
+
+    pair.release_end(UnixEnd::A);
+
+    assert!(error.has());
+    assert_eq!(pair.recv(UnixEnd::B, 64).unwrap(), b"reply");
+    assert!(pair.take_reset(UnixEnd::B));
+    assert!(!error.has());
 }
 
 #[test]

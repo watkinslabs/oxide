@@ -202,7 +202,7 @@ impl UnixListener {
         if sock.read_shut.load(Acquire) { pair.shutdown_reader(UnixEnd::B); }
         if sock.write_shut.load(Acquire) { pair.close_writer(UnixEnd::B); }
         st.accept_q.push_back((pair.clone(), link));
-        *kind = crate::sock::SockKind::Unix(pair, UnixEnd::B);
+        pair.attach_end_error(UnixEnd::B, &sock.error); *kind = crate::sock::SockKind::Unix(pair, UnixEnd::B);
         drop(kind);
         drop(st);
         self.accept_waiters.wake_all();

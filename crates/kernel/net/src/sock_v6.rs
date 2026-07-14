@@ -5,8 +5,8 @@
 
 use crate::netdev::NetError;
 use crate::sock::{
-    InetSocket, SockKind, alloc_ephemeral_port, alloc_ephemeral_port6,
-    bound_iface, drain_loopback, stack,
+    InetSocket, SockKind, alloc_ephemeral_port,
+    alloc_ephemeral_port6_with_error, bound_iface, drain_loopback, stack,
 };
 use crate::sock_opts::apply_tcp_keepalive_opts;
 
@@ -23,7 +23,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
                     match cur {
                         Some(p) => p,
                         None    => {
-                            let p = alloc_ephemeral_port6()?;
+                            let p = alloc_ephemeral_port6_with_error(sock.error.clone())?;
                             stack().set_udp6_bound_iface(p, bound_iface(sock)?);
                             *sock.local_port.lock() = Some(p);
                             p
@@ -66,13 +66,14 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
         crate::addr::IpAddr::V6(local_ip), local_port,
         crate::addr::IpAddr::V6(dst_ip),   port,
         bound,
+        sock.error.clone(),
     )?;
     entry.register_poll_subs(&sock.poll_subs);
     apply_tcp_keepalive_opts(sock, &entry);
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     *sock.peer6.lock() = Some((dst_ip, port));
     if nonblock { return Err(NetError::Einprogress); }
-    crate::sock_io::connect_wait_established(&entry)
+    crate::sock_io::connect_wait_established(sock, &entry)
 }
 
 /// Resolve the outbound hop limit for a v6 datagram from the socket's
@@ -107,7 +108,7 @@ pub fn sendto_v6(sock: &InetSocket,
         match cur {
             Some(p) => p,
             None    => {
-                let p = alloc_ephemeral_port6()?;
+                let p = alloc_ephemeral_port6_with_error(sock.error.clone())?;
                 stack().set_udp6_bound_iface(p, bound_iface(sock)?);
                 *sock.local_port.lock() = Some(p);
                 p
