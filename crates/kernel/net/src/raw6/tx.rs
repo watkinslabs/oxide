@@ -1,10 +1,12 @@
 use alloc::vec::Vec;
 
 use crate::addr::{IpProto, Ipv6Addr, NetIfaceId};
-use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+use crate::ipv6::IPV6_HDR_LEN;
 use crate::netdev::{NetError, NetResult};
 
 use super::{Raw6Checksum, Raw6Endpoint};
+
+const CSUM_MANGLED_0: u16 = 0xffff;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Raw6SendMode { KernelHeader, CallerHeader }
@@ -19,15 +21,19 @@ pub struct PreparedRaw6Send {
 }
 
 impl Raw6Endpoint {
-    /// Prepare payload/checksum or validate one caller-supplied IPv6 packet. # C: O(bytes)
-    pub fn prepare_send(&self, route_src: Ipv6Addr, route_dst: Ipv6Addr,
+    /// Prepare payload/checksum or preserve one caller-supplied IPv6 packet. # C: O(bytes)
+    pub(crate) fn prepare_send(&self, route_src: Ipv6Addr, route_dst: Ipv6Addr,
                         protocol_override: Option<u8>, bytes: &[u8])
         -> NetResult<PreparedRaw6Send>
     {
         let state = self.state.lock();
         if !state.accepting { return Err(NetError::Enotconn); }
         if state.header_included {
-            return prepare_caller_header(bytes);
+            if bytes.len() < IPV6_HDR_LEN { return Err(NetError::Einval); }
+            return Ok(PreparedRaw6Send {
+                mode: Raw6SendMode::CallerHeader, src: route_src, dst: route_dst,
+                next_header: bytes[6], bytes: bytes.to_vec(),
+            });
         }
         let next_header = if self.protocol() == IpProto::Raw as u8 {
             protocol_override.ok_or(NetError::Einval)?
@@ -49,16 +55,6 @@ impl Raw6Endpoint {
     }
 }
 
-fn prepare_caller_header(bytes: &[u8]) -> NetResult<PreparedRaw6Send> {
-    let header = Ipv6Hdr::parse(bytes).map_err(|_| NetError::Einval)?;
-    let end = IPV6_HDR_LEN.checked_add(header.payload_length as usize).ok_or(NetError::Einval)?;
-    if end != bytes.len() || header.dst.is_unspecified() { return Err(NetError::Einval); }
-    Ok(PreparedRaw6Send {
-        mode: Raw6SendMode::CallerHeader, src: header.src, dst: header.dst,
-        next_header: header.next_header, bytes: bytes.to_vec(),
-    })
-}
-
 fn apply_checksum(config: Raw6Checksum, src: Ipv6Addr, dst: Ipv6Addr, protocol: u8,
                   payload: &mut [u8]) -> NetResult<()> {
     let Raw6Checksum::Offset(offset) = config else { return Ok(()) };
@@ -67,7 +63,10 @@ fn apply_checksum(config: Raw6Checksum, src: Ipv6Addr, dst: Ipv6Addr, protocol: 
     if end > payload.len() { return Err(NetError::Einval); }
     payload[offset] = 0;
     payload[offset + 1] = 0;
-    let checksum = upper_layer_checksum(src, dst, protocol, payload);
+    let checksum = match upper_layer_checksum(src, dst, protocol, payload) {
+        0 => CSUM_MANGLED_0,
+        checksum => checksum,
+    };
     payload[offset..end].copy_from_slice(&checksum.to_be_bytes());
     Ok(())
 }

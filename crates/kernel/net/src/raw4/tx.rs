@@ -20,6 +20,7 @@ impl NetStack {
         let state = endpoint.snapshot();
         if !state.accepting { return Err(NetError::Enoent); }
         if dst.is_unspecified() { return Err(NetError::Edestaddrreq); }
+        if dst.is_broadcast() && !options.broadcast { return Err(NetError::Eacces); }
         let bound = options.iface.or(state.bound_iface);
         let (iface_id, iface, next_hop) = self.route_v4_iface_in(endpoint.net_ns(), dst, bound)?;
         let route_source = self.routes.lookup_in(endpoint.net_ns(), dst).and_then(|r| r.src_hint)

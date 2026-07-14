@@ -18,3 +18,5 @@ pub(crate) use registry::Raw6Table;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tx_tests;

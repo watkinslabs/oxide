@@ -10,7 +10,7 @@ use crate::mcast_filter::SocketMcast;
 use crate::netdev::{NetError, NetResult};
 use crate::socket_error::SocketError;
 
-const RAW4_RX_MAX_DATAGRAMS: usize = 1_024;
+pub const DEFAULT_RAW4_RCVBUF: usize = 212_992;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Raw4Datagram {
@@ -27,6 +27,7 @@ pub struct Raw4StateSnapshot {
     pub remote: Option<Ipv4Addr>,
     pub bound_iface: Option<NetIfaceId>,
     pub queued_bytes: usize,
+    pub drops: u32,
     pub hdrincl: bool,
     pub accepting: bool,
 }
@@ -40,6 +41,9 @@ struct EndpointState {
     icmp_filter: u32,
     accepting: bool,
     datagrams: VecDeque<Raw4Datagram>,
+    queued_bytes: usize,
+    rcvbuf: usize,
+    drops: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -49,6 +53,7 @@ pub struct Raw4TxOptions {
     pub tos: u8,
     pub ttl: u8,
     pub pmtudisc: i32,
+    pub broadcast: bool,
 }
 
 impl Default for Raw4TxOptions {
@@ -59,6 +64,7 @@ impl Default for Raw4TxOptions {
             tos: 0,
             ttl: crate::ipv4::IPV4_DEFAULT_TTL,
             pmtudisc: crate::uapi::IP_PMTUDISC_WANT,
+            broadcast: false,
         }
     }
 }
@@ -91,6 +97,9 @@ impl Raw4Endpoint {
                 icmp_filter: 0,
                 accepting: true,
                 datagrams: VecDeque::new(),
+                queued_bytes: 0,
+                rcvbuf: DEFAULT_RAW4_RCVBUF,
+                drops: 0,
             }),
             bpf_filter: bpf,
             mcast,
@@ -117,12 +126,43 @@ impl Raw4Endpoint {
         Ok(())
     }
 
+    /// Validate namespace/device ownership before publishing a local bind. # C: O(N)
+    pub fn bind_checked(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
+        if !local.is_unspecified() {
+            let owned = crate::iface_addr::snapshot_ns(self.net_ns).into_iter()
+                .any(|row| row.addr == local && iface.is_none_or(|id| id == row.iface))
+                || crate::global_stack().routes.lookup_in(self.net_ns, local).is_some_and(|route| {
+                    route.table == crate::policy_rule::RT_TABLE_LOCAL && route.src_hint == Some(local)
+                        && iface.is_none_or(|id| id == route.iface)
+                });
+            if !owned { return Err(NetError::Eaddrnotavail); }
+        }
+        self.bind(local, iface)
+    }
+
     /// Connect receive/error matching to one peer without allocating a port. # C: O(1)
     pub fn connect(&self, remote: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
         if remote.is_unspecified() { return Err(NetError::Eaddrnotavail); }
         let mut state = self.state.lock();
         if !state.accepting { return Err(NetError::Enoent); }
         state.remote = Some(remote);
+        if iface.is_some() { state.bound_iface = iface; }
+        Ok(())
+    }
+
+    /// Connect and install the route-selected local address when unbound. # C: O(N)
+    pub fn connect_routed(&self, remote: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
+        if remote.is_unspecified() { return Err(NetError::Eaddrnotavail); }
+        let stack = crate::global_stack();
+        let (route_iface, _, _) = stack.route_v4_iface_in(self.net_ns, remote, iface)?;
+        let local = stack.routes.lookup_in(self.net_ns, remote)
+            .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint)
+            .or_else(|| crate::iface_addr::primary(self.net_ns, route_iface).map(|row| row.0))
+            .ok_or(NetError::Eaddrnotavail)?;
+        let mut state = self.state.lock();
+        if !state.accepting { return Err(NetError::Enoent); }
+        state.remote = Some(remote);
+        if !state.explicit_local { state.local = local; }
         if iface.is_some() { state.bound_iface = iface; }
         Ok(())
     }
@@ -165,7 +205,8 @@ impl Raw4Endpoint {
             local: state.local,
             remote: state.remote,
             bound_iface: state.bound_iface,
-            queued_bytes: state.datagrams.iter().map(|datagram| datagram.packet.len()).sum(),
+            queued_bytes: state.queued_bytes,
+            drops: state.drops,
             hdrincl: state.hdrincl,
             accepting: state.accepting,
         }
@@ -174,14 +215,23 @@ impl Raw4Endpoint {
     /// Pop or peek one complete IPv4 datagram. # C: O(packet when peeking)
     pub fn recv(&self, peek: bool) -> Option<Raw4Datagram> {
         let mut state = self.state.lock();
-        if peek { state.datagrams.front().cloned() } else { state.datagrams.pop_front() }
+        if peek { return state.datagrams.front().cloned(); }
+        let datagram = state.datagrams.pop_front()?;
+        state.queued_bytes -= datagram.packet.len();
+        Some(datagram)
     }
 
     /// Publish one receive datagram unless close won publication. # C: O(packet)
     pub(crate) fn enqueue(&self, datagram: Raw4Datagram) -> bool {
         let mut state = self.state.lock();
-        if !state.accepting || state.datagrams.len() >= RAW4_RX_MAX_DATAGRAMS { return false; }
+        if !state.accepting { return false; }
+        let bytes = datagram.packet.len();
+        if state.queued_bytes.saturating_add(bytes) > state.rcvbuf {
+            state.drops = state.drops.saturating_add(1);
+            return false;
+        }
         state.datagrams.push_back(datagram);
+        state.queued_bytes += bytes;
         drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
@@ -197,6 +247,9 @@ impl Raw4Endpoint {
     pub fn next_len(&self) -> usize {
         self.state.lock().datagrams.front().map_or(0, |d| d.packet.len())
     }
+
+    /// Set the receive-byte admission limit used by raw4 queueing. # C: O(1)
+    pub fn set_rcvbuf(&self, bytes: usize) { self.state.lock().rcvbuf = bytes; }
 
     /// Register epoll subscribers for receive/close notification. # C: O(1)
     pub fn register_poll_subs(&self, subs: &Arc<vfs::PollSubscribers>) {

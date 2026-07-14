@@ -16,12 +16,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
                    nonblock: bool) -> Result<(), NetError> {
     if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
         let iface = scoped_iface(sock, dst_ip, scope_id)?;
-        let _ = stack().routes6.lookup_in(
-            sock.net_ns.load(core::sync::atomic::Ordering::Acquire), dst_ip,
-        ).ok_or(NetError::Enetunreach)?;
-        endpoint.connect(crate::raw6::Raw6Address::new(dst_ip, scope_id));
-        if iface.is_some() { endpoint.set_bound_iface(iface); }
-        return Ok(());
+        return endpoint.connect_routed(crate::raw6::Raw6Address::new(dst_ip, scope_id), iface);
     }
     {
         let kind = sock.kind.lock();

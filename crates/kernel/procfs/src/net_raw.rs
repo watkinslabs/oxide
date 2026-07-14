@@ -25,8 +25,8 @@ fn raw_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     let mut sl: u32 = 0;
     for row in net::global_stack().raw_diag_snapshot_in(net_ns, AF_INET) {
         if let (IpAddr::V4(local), IpAddr::V4(remote)) = (row.local_ip, row.remote_ip) {
-            let _ = writeln!(out, "{:5}: {:08X}:{:04X} {:08X}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-                sl, local.as_u32().to_be(), row.protocol, remote.as_u32().to_be(), row.rqueue);
+            let _ = writeln!(out, "{:5}: {:08X}:{:04X} {:08X}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 {}",
+                sl, local.as_u32().to_be(), row.protocol, remote.as_u32().to_be(), row.rqueue, row.drops);
             sl += 1;
         }
     }
@@ -40,8 +40,8 @@ fn raw6_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     let mut sl: u32 = 0;
     for row in net::global_stack().raw_diag_snapshot_in(net_ns, AF_INET6) {
         if let (IpAddr::V6(local), IpAddr::V6(remote)) = (row.local_ip, row.remote_ip) {
-            let _ = writeln!(out, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-                sl, ipv6_hex(local), row.protocol, ipv6_hex(remote), row.rqueue);
+            let _ = writeln!(out, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 {}",
+                sl, ipv6_hex(local), row.protocol, ipv6_hex(remote), row.rqueue, row.drops);
             sl += 1;
         }
     }

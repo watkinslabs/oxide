@@ -46,7 +46,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
         }
         BoundAddr::Inet { ip, port } => {
             if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
-                return endpoint.bind(ip, bound_iface(sock)?);
+                return endpoint.bind_checked(ip, bound_iface(sock)?);
             }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
@@ -83,8 +83,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
         BoundAddr::Inet6 { ip, port, scope_id } => {
             if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
                 let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
-                endpoint.bind(crate::raw6::Raw6Address::new(ip, scope_id), iface);
-                return Ok(());
+                return endpoint.bind_checked(crate::raw6::Raw6Address::new(ip, scope_id), iface);
             }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
@@ -194,10 +193,9 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
         RemoteAddr::Inet { ip: dst_ip, port } => {
             if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
                 let iface = bound_iface(sock)?;
-                let _ = stack().routes.lookup_in(
-                    sock.net_ns.load(core::sync::atomic::Ordering::Acquire), dst_ip,
-                ).ok_or(NetError::Enetunreach)?;
-                return endpoint.connect(dst_ip, iface);
+                if dst_ip.is_broadcast() && sock.opts.broadcast.load(
+                    core::sync::atomic::Ordering::Acquire) == 0 { return Err(NetError::Eacces); }
+                return endpoint.connect_routed(dst_ip, iface);
             }
             {
                 let kind = sock.kind.lock();
@@ -359,6 +357,7 @@ pub fn sendto(
             tos: sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8,
             ttl: sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) as u8,
             pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
+            broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
         };
         stack().send_raw4(endpoint, dst, payload, options)?;
         drain_loopback();

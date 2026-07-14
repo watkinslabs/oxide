@@ -57,6 +57,7 @@ pub struct Raw6StateSnapshot {
 pub(super) struct Raw6State {
     pub accepting: bool,
     pub local: Raw6Address,
+    pub explicit_local: bool,
     pub peer: Option<Raw6Address>,
     pub bound_iface: Option<NetIfaceId>,
     pub datagrams: VecDeque<Raw6Datagram>,
@@ -87,7 +88,7 @@ impl Raw6Endpoint {
         Self {
             net_ns, protocol, bpf_filter, mcast, error,
             state: Spinlock::new(Raw6State {
-                accepting: true, local: Raw6Address::UNSPECIFIED, peer: None,
+                accepting: true, local: Raw6Address::UNSPECIFIED, explicit_local: false, peer: None,
                 bound_iface: None, datagrams: VecDeque::new(), queued_bytes: 0,
                 rcvbuf: DEFAULT_RAW6_RCVBUF, icmp_filter: Icmp6Filter::PASS_ALL,
                 checksum: Raw6Checksum::for_protocol(protocol),
@@ -115,7 +116,20 @@ impl Raw6Endpoint {
     pub fn bind(&self, local: Raw6Address, iface: Option<NetIfaceId>) {
         let mut state = self.state.lock();
         state.local = local;
+        state.explicit_local = !local.addr.is_unspecified();
         state.bound_iface = iface;
+    }
+
+    /// Validate native IPv6 namespace/device ownership before binding. # C: O(N)
+    pub fn bind_checked(&self, local: Raw6Address, iface: Option<NetIfaceId>) -> crate::netdev::NetResult<()> {
+        if local.addr.to_v4_mapped().is_some() { return Err(crate::netdev::NetError::Eaddrnotavail); }
+        if !local.addr.is_unspecified() && !crate::global_stack().v6_addr_snapshot_in(self.net_ns)
+            .into_iter().any(|(id, row)| row.addr == local.addr && iface.is_none_or(|want| want == id))
+        {
+            return Err(crate::netdev::NetError::Eaddrnotavail);
+        }
+        self.bind(local, iface);
+        Ok(())
     }
 
     /// Atomically update SO_BINDTODEVICE state against receive admission. # C: O(1)
@@ -126,8 +140,33 @@ impl Raw6Endpoint {
     /// Connect receive/error matching to one peer and its zone. # C: O(1)
     pub fn connect(&self, peer: Raw6Address) { self.state.lock().peer = Some(peer); }
 
+    /// Connect and install the route-selected local address when unbound. # C: O(N)
+    pub fn connect_routed(&self, peer: Raw6Address, iface: Option<NetIfaceId>)
+        -> crate::netdev::NetResult<()>
+    {
+        if peer.addr.is_unspecified() { return Err(crate::netdev::NetError::Eaddrnotavail); }
+        let stack = crate::global_stack();
+        let (route_iface, _, _) = stack.route_v6_iface_in(self.net_ns, peer.addr, iface)?;
+        let local = stack.routes6.lookup_in(self.net_ns, peer.addr)
+            .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint)
+            .or_else(|| stack.v6_addr_snapshot_in(self.net_ns).into_iter()
+                .find(|(id, _)| *id == route_iface).map(|(_, row)| row.addr))
+            .ok_or(crate::netdev::NetError::Eaddrnotavail)?;
+        let scope = if local.is_link_local() { route_iface.raw() } else { 0 };
+        let mut state = self.state.lock();
+        if !state.accepting { return Err(crate::netdev::NetError::Enoent); }
+        state.peer = Some(peer);
+        if !state.explicit_local { state.local = Raw6Address::new(local, scope); }
+        if iface.is_some() { state.bound_iface = iface; }
+        Ok(())
+    }
+
     /// Apply Linux AF_UNSPEC disconnect without changing explicit bind state. # C: O(1)
-    pub fn disconnect(&self) { self.state.lock().peer = None; }
+    pub fn disconnect(&self) {
+        let mut state = self.state.lock();
+        state.peer = None;
+        if !state.explicit_local { state.local = Raw6Address::UNSPECIFIED; }
+    }
 
     /// Snapshot the local raw address. # C: O(1)
     pub fn local(&self) -> Raw6Address { self.state.lock().local }
