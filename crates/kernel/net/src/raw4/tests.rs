@@ -129,6 +129,21 @@ fn full_packet_bpf_drops_zero_and_truncates_positive_verdict() {
 }
 
 #[test]
+fn receive_limit_accounts_bytes_and_reports_drops() {
+    let raw = endpoint(PROTOCOL, 0);
+    raw.set_rcvbuf(3);
+    assert!(raw.enqueue(super::Raw4Datagram { packet: b"abc".to_vec(),
+        source: Ipv4Addr::LOOPBACK, destination: Ipv4Addr::LOOPBACK,
+        iface: crate::NetIfaceId::from_raw(1), ttl: 64 }));
+    assert!(!raw.enqueue(super::Raw4Datagram { packet: b"d".to_vec(),
+        source: Ipv4Addr::LOOPBACK, destination: Ipv4Addr::LOOPBACK,
+        iface: crate::NetIfaceId::from_raw(1), ttl: 64 }));
+    assert_eq!((raw.snapshot().queued_bytes, raw.snapshot().drops), (3, 1));
+    assert_eq!(raw.recv(false).unwrap().packet, b"abc");
+    assert_eq!(raw.snapshot().queued_bytes, 0);
+}
+
+#[test]
 fn raw_udp_clone_does_not_interfere_with_transport_delivery() {
     const PORT: u16 = 43_210;
     let stack = NetStack::new();
@@ -237,6 +252,19 @@ fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
     assert_eq!(headers[1].flags_frag & 0x1fff, 6);
     assert_eq!(headers[2].flags_frag & 0x1fff, 12);
     assert_eq!(headers[2].flags_frag & 0x2000, 0);
+}
+
+#[test]
+fn broadcast_transmit_requires_permission() {
+    let stack = NetStack::new();
+    let (_iface, dev) = routed_capture(&stack, 1_500, Ipv4Addr::BROADCAST);
+    let raw = endpoint(PROTOCOL, 0);
+    assert_eq!(stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x",
+        Raw4TxOptions::default()), Err(NetError::Eacces));
+    stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x", Raw4TxOptions {
+        broadcast: true, ..Raw4TxOptions::default()
+    }).unwrap();
+    assert_eq!(dev.packets.lock().len(), 1);
 }
 
 #[test]

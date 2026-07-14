@@ -29,6 +29,7 @@ pub struct RawDiagSnapshot {
     pub remote_ip: IpAddr,
     pub ifindex: u32,
     pub rqueue: u32,
+    pub drops: u32,
 }
 
 const AF_INET: u8 = 2;
@@ -86,6 +87,7 @@ impl NetStack {
                     remote_ip: IpAddr::V4(state.remote.unwrap_or(Ipv4Addr::ANY)),
                     ifindex: state.bound_iface.map(|id| id.raw()).unwrap_or(0),
                     rqueue: state.queued_bytes.min(u32::MAX as usize) as u32,
+                    drops: state.drops,
                 });
             },
             AF_INET6 => for endpoint in tables.raw6.all_endpoints() {
@@ -96,6 +98,7 @@ impl NetStack {
                     remote_ip: IpAddr::V6(state.peer.map(|peer| peer.addr).unwrap_or(Ipv6Addr::ANY)),
                     ifindex: state.bound_iface.map(|id| id.raw()).unwrap_or(0),
                     rqueue: state.queued_bytes.min(u32::MAX as usize) as u32,
+                    drops: 0,
                 });
             },
             _ => {}
@@ -222,7 +225,7 @@ mod tests {
             family: AF_INET, protocol: 143,
             local_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
             remote_ip: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
-            ifindex: 7, rqueue: 0,
+            ifindex: 7, rqueue: 0, drops: 0,
         }]);
         assert_eq!(stack.raw_diag_snapshot_in(NS_B, AF_INET).len(), 1);
 
@@ -239,7 +242,7 @@ mod tests {
         stack.register_raw6(&raw6);
         assert_eq!(stack.raw_diag_snapshot_in(NS_A, AF_INET6), alloc::vec![RawDiagSnapshot {
             family: AF_INET6, protocol: 253, local_ip: IpAddr::V6(local6),
-            remote_ip: IpAddr::V6(remote6), ifindex: 8, rqueue: 5,
+            remote_ip: IpAddr::V6(remote6), ifindex: 8, rqueue: 5, drops: 0,
         }]);
         assert!(stack.raw_diag_snapshot_in(NS_B, AF_INET6).is_empty());
 

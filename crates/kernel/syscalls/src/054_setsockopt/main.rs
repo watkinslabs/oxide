@@ -329,8 +329,10 @@ fn refresh_tcp_keepalive(sock: &Arc<net::sock::InetSocket>) {
 }
 
 fn sync_raw_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
-    if let net::sock::SockKind::Raw6(endpoint) = &*sock.kind.lock() {
-        endpoint.set_rcvbuf(value.max(0) as usize);
+    match &*sock.kind.lock() {
+        net::sock::SockKind::Raw4(endpoint) => endpoint.set_rcvbuf(value.max(0) as usize),
+        net::sock::SockKind::Raw6(endpoint) => endpoint.set_rcvbuf(value.max(0) as usize),
+        _ => {}
     }
 }
 

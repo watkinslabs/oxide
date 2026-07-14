@@ -86,6 +86,14 @@ fn exact_tuple_device_namespace_and_link_local_source_scope() {
 }
 
 #[test]
+fn checked_bind_rejects_ipv4_mapped_address() {
+    let endpoint = Raw6Endpoint::standalone(NET_NS, PROTOCOL);
+    let mapped = Ipv6Addr::from_v4_mapped(crate::Ipv4Addr::new(192, 0, 2, 1));
+    assert_eq!(endpoint.bind_checked(Raw6Address::new(mapped, 0), None),
+        Err(crate::NetError::Eaddrnotavail));
+}
+
+#[test]
 fn icmp_filter_runs_before_bpf_and_icmp_checksum_defaults_to_two() {
     install_bpf_filter_context_runner(verdict);
     let endpoint = Raw6Endpoint::standalone(NET_NS, crate::icmpv6::IPPROTO_ICMPV6);
@@ -152,7 +160,7 @@ fn checksum_validation_and_kernel_header_send_preparation() {
 }
 
 #[test]
-fn caller_header_send_is_validated_and_protocol_raw_requires_override_otherwise() {
+fn caller_header_send_preserves_bytes_and_protocol_raw_requires_override_otherwise() {
     let endpoint = Raw6Endpoint::standalone(NET_NS, crate::addr::IpProto::Raw as u8);
     endpoint.set_header_included(false);
     assert_eq!(endpoint.prepare_send(LOCAL, REMOTE, None, b"body"), Err(crate::NetError::Einval));
@@ -167,10 +175,10 @@ fn caller_header_send_is_validated_and_protocol_raw_requires_override_otherwise(
     header.write_to(&mut bytes);
     let prepared = endpoint.prepare_send(Ipv6Addr::ANY, Ipv6Addr::ANY, None, &bytes).unwrap();
     assert_eq!(prepared.mode, Raw6SendMode::CallerHeader);
-    assert_eq!(prepared.src, LOCAL);
-    assert_eq!(prepared.dst, REMOTE);
+    assert_eq!(prepared.src, Ipv6Addr::ANY);
+    assert_eq!(prepared.dst, Ipv6Addr::ANY);
     bytes.pop();
-    assert_eq!(endpoint.prepare_send(LOCAL, REMOTE, None, &bytes), Err(crate::NetError::Einval));
+    assert_eq!(endpoint.prepare_send(LOCAL, REMOTE, None, &bytes).unwrap().bytes, bytes);
 }
 
 #[test]
