@@ -32,7 +32,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
                         Some(p) => p,
                         None    => {
                             let (p, endpoint) = alloc_ephemeral_udp6(
-                                sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                                sock.net_ns(),
                                 crate::Ipv6Addr::ANY, sock.error.clone(),
                                 scoped_iface(sock, dst_ip, scope_id)?,
                                 sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
@@ -71,7 +71,7 @@ pub(crate) fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u3
 {
     if scope_id == 0 { return crate::sock_mcast::bound_iface6(sock, dst); }
     let iface = crate::NetIfaceId::from_raw(scope_id);
-    let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+    let net_ns = sock.net_ns();
     if stack().ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
     let bound = sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
     if bound != 0 && bound != scope_id { return Err(NetError::Enodev); }
@@ -147,7 +147,7 @@ pub fn sendto_v6(sock: &InetSocket,
             Some(p) => p,
             None    => {
                 let (p, endpoint) = alloc_ephemeral_udp6(
-                    sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                    sock.net_ns(),
                     crate::Ipv6Addr::ANY, sock.error.clone(),
                     scoped_iface(sock, dst_ip, scope_id)?,
                     sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
@@ -167,7 +167,7 @@ pub fn sendto_v6(sock: &InetSocket,
     let hop = resolve_v6_hop_limit(sock, dst_ip);
     let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
     stack().send_udp6_pmtu_to_bound_opts_in(
-        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+        sock.net_ns(),
         src_ip, src_port, dst_ip, dst_port, payload,
         scoped_iface(sock, dst_ip, scope_id)?, hop, pmtudisc,
     )?;

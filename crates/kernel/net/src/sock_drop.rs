@@ -92,16 +92,14 @@ impl InetSocket {
         // rebind → "Could not set up manager: Address in use".
         let unix_bound = { self.unix_bound.lock().clone() };
         if let Some(l) = unix_bound {
-            // B518: unbind from the SAME net_ns registry the bind used
-            // (recorded at bind time), not the closer's current ns.
-            let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
+            let ns = crate::net_ns::unix_ns_for_addr_in(self.net_ns(), &l.addr);
             crate::net_ns::ns_unix_registry(ns).unbind_addr(&l.addr);
             l.close();
         }
         if let SockKind::UnixDgram(q) = &*self.kind.lock() {
             q.release();
             if let Some(addr) = q.bound() {
-                let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
+                let ns = crate::net_ns::unix_ns_for_addr_in(self.net_ns(), &addr);
                 crate::net_ns::ns_unix_registry(ns).dgram_unbind_addr(&addr);
             }
         }

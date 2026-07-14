@@ -17,7 +17,7 @@ const SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 44);
 const DST: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 8);
 
 fn endpoint(protocol: u8) -> Arc<Raw4Endpoint> {
-    Raw4Endpoint::new(protocol, 0, Arc::new(SocketFilter::new()),
+    Raw4Endpoint::new(protocol, network_namespace::initial(), Arc::new(SocketFilter::new()),
         Arc::new(SocketMcast::new()), Arc::new(crate::SocketError::new()))
 }
 

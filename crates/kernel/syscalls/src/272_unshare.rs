@@ -75,9 +75,11 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let bits = ns_bits_from_flags(flags);
     if bits == 0 { return 0; }
-    cur.ns_membership.fetch_or(bits, Ordering::Release);
     let old_mnt_ns = cur.mount_ns.load(Ordering::Acquire);
-    apply_new_namespaces(cur, bits);
+    if let Err(e) = apply_new_namespaces(cur, bits) {
+        return -(e.as_i32() as i64);
+    }
+    cur.ns_membership.fetch_or(bits, Ordering::Release);
     if (bits & (1u64 << 0)) != 0 {
         let new_mnt_ns = cur.mount_ns.load(Ordering::Acquire);
         if new_mnt_ns != old_mnt_ns {
@@ -94,8 +96,28 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
 /// namespaces) so clone-time CLONE_NEW* creates new namespaces just like
 /// Linux `create_new_namespaces`. Reads `task`'s current (inherited) ids as
 /// the parent ids, then overwrites them. # C: O(snapshotted entries)
-pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) {
+pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) -> Result<(), syscall::errno::Errno> {
     use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    static NEXT_USER_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+    let new_user = if (bits & (1u64 << 3)) != 0 {
+        Some((NEXT_USER_NS.fetch_add(1, Ordering::AcqRel), task.user_ns.load(Ordering::Acquire)))
+    } else { None };
+    let new_net = if (bits & (1u64 << 5)) != 0 {
+        let owner = new_user.map(|(id, _)| id)
+            .unwrap_or_else(|| task.user_ns.load(Ordering::Acquire));
+        Some(net::net_ns::create_namespace(owner).map_err(|error| match error {
+            net::net_ns::CreateError::CallbackConflict => Errno::Eio,
+            net::net_ns::CreateError::Allocation(network_namespace::AllocError::IdExhausted) =>
+                Errno::Enospc,
+            net::net_ns::CreateError::Allocation(
+                network_namespace::AllocError::FinalDropCallbackMissing) => Errno::Eio,
+        })?)
+    } else { None };
+    if let Some(namespace) = new_net.as_ref() {
+        task.replace_network_namespace(namespace.clone()).map_err(|_| Errno::Esrch)?;
+    }
     if (bits & (1u64 << 1)) != 0 {
         // CLONE_NEWUTS — allocate a fresh shared uts_namespace seeded with a
         // COPY of the task's current ns names (UTS ns isolates both), then
@@ -112,26 +134,13 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) {
         let id = NEXT_IPC_NS.fetch_add(1, Ordering::AcqRel);
         task.ipc_ns.store(id, Ordering::Release);
     }
-    if (bits & (1u64 << 3)) != 0 {
+    if let Some((new_id, parent)) = new_user {
         // CLONE_NEWUSER — fresh user_ns id (F106 substrate).
         // F118: also record (new, parent) so has_cap_for can walk
         // ancestors per `27§R01`.
-        static NEXT_USER_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        let new_id = NEXT_USER_NS.fetch_add(1, Ordering::AcqRel);
-        let parent = task.user_ns.load(Ordering::Acquire);
         nscg::proc_ns::user_ns_record(new_id, parent);
         task.parent_user_ns.store(parent, Ordering::Release);
         task.user_ns.store(new_id, Ordering::Release);
-    }
-    if (bits & (1u64 << 5)) != 0 {
-        // CLONE_NEWNET — create after CLONE_NEWUSER so a combined request
-        // makes the new user_ns the owner of the new network namespace.
-        static NEXT_NET_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        let id = NEXT_NET_NS.fetch_add(1, Ordering::AcqRel);
-        let owner = task.user_ns.load(Ordering::Acquire);
-        nscg::net_ns_record_owner(id, owner);
-        task.net_ns.store(id, Ordering::Release);
-        net::net_ns::materialize_loopback(id);
     }
     if (bits & (1u64 << 4)) != 0 {
         // CLONE_NEWPID — pending bit; fork dispatcher allocates ns (F105).
@@ -155,6 +164,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) {
         remap_task_fs_paths(task, &mount_map);
         task.mount_ns.store(new_id, Ordering::Release);
     }
+    Ok(())
 }
 
 fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {

@@ -15,7 +15,9 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use network_namespace::NetworkNamespaceRef;
 
 use sync::{Socket as SockLockClass, Spinlock};
 
@@ -25,6 +27,48 @@ use crate::Ipv6Addr;
 
 /// Linux `RT_SCOPE_HOST` — loopback addresses are host-scoped.
 const RT_SCOPE_HOST: u8 = 254;
+
+static FINAL_DROP_PENDING: AtomicBool = AtomicBool::new(false);
+
+fn signal_final_drop_pending() { FINAL_DROP_PENDING.store(true, Ordering::Release); }
+
+/// Install the lockless final-owner-drop pending signal used by boot/unshare.
+/// The callback only publishes work; namespace teardown remains process-context work.
+/// # C: O(1)
+/// # Ctx: process initialization
+/// # Sleeps: no
+pub fn install_final_drop_pending_notifier() -> Result<(), network_namespace::InstallError> {
+    network_namespace::install_final_drop_callback(signal_final_drop_pending)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CreateError {
+    /// A different subsystem attempted to own final-drop notification.
+    CallbackConflict,
+    /// Canonical namespace identity allocation failed.
+    Allocation(network_namespace::AllocError),
+}
+
+/// Consume the final-owner-drop pending signal. # C: O(1)
+/// # Ctx: process
+/// # Sleeps: no
+pub fn take_final_drop_pending() -> bool {
+    FINAL_DROP_PENDING.swap(false, Ordering::AcqRel)
+}
+
+/// Clone the calling task's concrete network namespace owner. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn current_namespace() -> NetworkNamespaceRef {
+    sched::live::current().and_then(|task| task.network_namespace_snapshot())
+        .unwrap_or_else(network_namespace::initial)
+}
+
+/// Hosted callers execute in the initial network namespace. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn current_namespace() -> NetworkNamespaceRef { network_namespace::initial() }
+
+/// Derive the short-lived table key for a retained namespace owner. # C: O(1)
+pub fn namespace_id(namespace: &NetworkNamespaceRef) -> u64 { namespace.id().as_u64() }
 
 /// Non-transport state for one non-zero net_ns. Materialized lazily on first
 /// access; transport ownership lives in `NetStack::inet` for every namespace.
@@ -93,6 +137,15 @@ pub fn materialize_loopback_into(stack: &NetStack, ns: u64) {
 #[cfg(target_os = "oxide-kernel")]
 pub fn materialize_loopback(ns: u64) {
     materialize_loopback_into(crate::global_stack(), ns);
+}
+
+/// Create a fully materialized namespace before task publication. # C: O(N ifaces)
+#[cfg(target_os = "oxide-kernel")]
+pub fn create_namespace(owner_user_ns: u64) -> Result<NetworkNamespaceRef, CreateError> {
+    install_final_drop_pending_notifier().map_err(|_| CreateError::CallbackConflict)?;
+    let namespace = network_namespace::allocate(owner_user_ns).map_err(CreateError::Allocation)?;
+    materialize_loopback(namespace.id().as_u64());
+    Ok(namespace)
 }
 
 /// Destroy all network state owned by one non-init namespace. # C: O(N)
@@ -176,11 +229,13 @@ pub fn current_unix_registry() -> UnixRegRef {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn unix_ns_for_addr(addr: &crate::UnixAddr) -> u64 {
-    if addr.is_pathname() {
-        0
-    } else {
-        crate::netdev::current_net_ns()
-    }
+    unix_ns_for_addr_in(crate::netdev::current_net_ns(), addr)
+}
+
+/// Resolve an AF_UNIX registry key from a retained socket owner. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn unix_ns_for_addr_in(net_ns: u64, addr: &crate::UnixAddr) -> u64 {
+    if addr.is_pathname() { 0 } else { net_ns }
 }
 
 /// # C: O(1)
@@ -411,3 +466,7 @@ mod tests {
         assert!(!destroy_namespace_into(&stack, 0));
     }
 }
+
+#[cfg(test)]
+#[path = "net_ns/lifetime_tests.rs"]
+mod lifetime_tests;

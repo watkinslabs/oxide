@@ -2,6 +2,13 @@ use core::sync::atomic::Ordering;
 
 use crate::*;
 
+fn namespace_dropped() {}
+
+pub(crate) fn test_namespace() -> network_namespace::NetworkNamespaceRef {
+    network_namespace::install_final_drop_callback(namespace_dropped).unwrap();
+    network_namespace::allocate(0).unwrap()
+}
+
 #[test]
 fn nlmsghdr_roundtrip() {
     let h = Nlmsghdr {
@@ -34,7 +41,7 @@ fn nlmsg_align_rounds_up_to_4() {
 #[test]
 fn vfs_write_dispatches_netlink_request_and_queues_reply() {
     use alloc::sync::Arc;
-    let sock = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE));
+    let sock = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial()));
     let inode = make_netlink_socket_inode(Arc::clone(&sock));
     let dentry = vfs::Dentry::new(None, "nl".into(), Arc::clone(&inode));
     let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
@@ -70,7 +77,7 @@ fn port_ids_are_unique() {
 
 #[test]
 fn membership_bits_map_group_minus_one() {
-    let s = NetlinkSocket::new(proto::NETLINK_ROUTE);
+    let s = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
     s.add_membership(1);
     s.add_membership(5);
     assert_eq!(s.groups.load(Ordering::Acquire), (1 << 0) | (1 << 4));
@@ -83,10 +90,29 @@ fn membership_bits_map_group_minus_one() {
 }
 
 #[test]
+fn socket_retains_concrete_namespace_owner_until_close() {
+    use alloc::sync::{Arc, Weak};
+
+    let namespace = test_namespace();
+    let id = namespace.id();
+    let weak: Weak<network_namespace::NetworkNamespace> = Arc::downgrade(&namespace);
+    let socket = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+    assert!(Arc::ptr_eq(&socket.net_ns, &namespace));
+    assert_eq!(Arc::strong_count(&namespace), 2);
+
+    drop(namespace);
+    assert!(network_namespace::lookup(id).is_some(), "socket must pin namespace after task owner drops");
+    drop(socket);
+    assert!(weak.upgrade().is_none(), "socket close releases final namespace owner");
+    assert!(network_namespace::lookup(id).is_none());
+}
+
+#[test]
 fn rtnl_multicast_delivers_only_to_subscribers() {
     use alloc::sync::Arc;
-    let a = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE));
-    let b = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE));
+    let namespace = network_namespace::initial();
+    let a = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
+    let b = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
     a.add_membership(1);
     b.add_membership(5);
     register_rtnl_listener(&a);
@@ -109,12 +135,13 @@ fn rtnl_multicast_delivers_only_to_subscribers() {
 #[test]
 fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
     use alloc::sync::Arc;
-    const NS_A: u64 = 10_861;
-    const NS_B: u64 = 10_862;
+    let namespace_a = test_namespace();
+    let namespace_b = test_namespace();
+    let ns_a = namespace_a.id().as_u64();
     let iface = net::global_stack().ifaces
-        .register_in_ns(Arc::new(net::LoopbackDev::new()), NS_A);
-    let a = Arc::new(NetlinkSocket::new_in(proto::NETLINK_ROUTE, NS_A));
-    let b = Arc::new(NetlinkSocket::new_in(proto::NETLINK_ROUTE, NS_B));
+        .register_in_ns(Arc::new(net::LoopbackDev::new()), ns_a);
+    let a = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace_a));
+    let b = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace_b));
     for group in [
         mcast::grp::RTNLGRP_LINK,
         mcast::grp::RTNLGRP_IPV4_IFADDR,
@@ -128,8 +155,8 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
 
     mcast::notify_link(iface.raw() as i32);
     mcast::notify_addr(false, iface.raw(), [198, 18, 61, 1], 24, rtnetlink::RT_SCOPE_UNIVERSE);
-    mcast::notify_route(NS_A, false, rtnetlink::RouteRow {
-        ns: NS_A, table: rtnetlink::RT_TABLE_MAIN as u32,
+    mcast::notify_route(ns_a, false, rtnetlink::RouteRow {
+        ns: ns_a, table: rtnetlink::RT_TABLE_MAIN as u32,
         protocol: rtnetlink::RTPROT_STATIC, scope: rtnetlink::RT_SCOPE_LINK,
         kind: rtnetlink::RTN_UNICAST, dst: Some(([198, 18, 61, 0], 24)),
         gateway: None, oif_ifindex: iface.raw(), prefsrc: None,
@@ -152,8 +179,9 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
 #[test]
 fn raw_uevent_delivers_only_to_kernel_group() {
     use alloc::sync::Arc;
-    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
-    let monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let namespace = network_namespace::initial();
+    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
+    let monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     udevd.set_group_mask(1);
     monitor.set_group_mask(0);
     register_uevent_listener(&udevd);
@@ -168,7 +196,7 @@ fn raw_uevent_delivers_only_to_kernel_group() {
 #[test]
 fn raw_uevent_stays_level_ready_until_consumed() {
     use alloc::sync::Arc;
-    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
     udevd.set_group_mask(1);
     register_uevent_listener(&udevd);
 
@@ -194,10 +222,11 @@ fn raw_uevent_stays_level_ready_until_consumed() {
 #[test]
 fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
     use alloc::sync::Arc;
-    let sender = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
-    let kernel_listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
-    let worker_none = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
-    let udev_monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let namespace = network_namespace::initial();
+    let sender = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
+    let kernel_listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
+    let worker_none = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
+    let udev_monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     sender.set_group_mask(2);
     kernel_listener.set_group_mask(1);
     worker_none.set_group_mask(0);
@@ -219,9 +248,10 @@ fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
 #[test]
 fn unicast_reaches_only_target_port_with_sender_stamped() {
     use alloc::sync::Arc;
-    let manager = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
-    let worker_a = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
-    let worker_b = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let namespace = network_namespace::initial();
+    let manager = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
+    let worker_a = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
+    let worker_b = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     worker_a.set_group_mask(0);
     worker_b.set_group_mask(0);
     register_uevent_listener(&manager);

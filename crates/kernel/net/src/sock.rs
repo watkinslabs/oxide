@@ -3,6 +3,7 @@
 // Module manifest:
 // - globals: process-global stack, loopback drain, ephemeral ports.
 // - types: socket kind/state structs, packet registry, constructors.
+// - construct: family constructors and namespace-owner snapshots.
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
 // - udp: datagram receive/send helpers and iface source hook.
@@ -23,6 +24,7 @@ pub use crate::sock_io::compute_deadline_ns;
 
 mod globals;
 mod types;
+mod construct;
 mod inode;
 mod io;
 mod udp;

@@ -21,7 +21,7 @@ impl InodeOps for ProcPidNsDirOps {
             Some(t) => t,
             None => return Err(VfsError::Enoent),
         };
-        Ok(nscg::proc_ns::ns_inode_for(&task, kind))
+        nscg::proc_ns::ns_inode_for(&task, kind)
     }
 }
 

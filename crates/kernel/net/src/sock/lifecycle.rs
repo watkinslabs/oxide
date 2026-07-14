@@ -69,7 +69,7 @@ impl InetSocket {
         let mut local_port = self.local_port.lock();
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
         if let Some(port) = *local_port { return Ok(port); }
-        let net_ns = self.net_ns.load(Ordering::Acquire);
+        let net_ns = self.net_ns();
         let iface = stack().bound_iface_in(net_ns, self.opts.bound_ifindex.load(Ordering::Acquire))?;
         let (port, endpoint) = alloc_ephemeral_udp4(
             net_ns, Ipv4Addr::ANY, self.error.clone(), iface,

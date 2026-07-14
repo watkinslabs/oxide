@@ -24,12 +24,10 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             if bound.is_some() { return Err(NetError::Einval); }
             // B518/SC1: bind into the registry that OWNS this address —
             // pathname sockets are filesystem-global (ns 0), abstract ones
-            // are private to the caller's net_ns (see unix_ns_for_path).
-            // Record that ns so Drop unbinds from the SAME registry.
-            let ns = crate::net_ns::unix_ns_for_addr(&addr);
+            // are private to the socket's retained namespace owner.
+            let ns = crate::net_ns::unix_ns_for_addr_in(sock.net_ns(), &addr);
             let listener = crate::net_ns::ns_unix_registry(ns)
                 .bind_addr(addr).map_err(|_| NetError::Eaddrinuse)?;
-            sock.unix_ns.store(ns, core::sync::atomic::Ordering::Release);
             *bound = Some(listener);
             drop(kind);
             Ok(())
@@ -37,11 +35,10 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
         BoundAddr::UnixDgram { addr, queue } => {
             // SC1: same pathname-global / abstract-per-ns split as the
             // stream listener above.
-            let ns = crate::net_ns::unix_ns_for_addr(&addr);
+            let ns = crate::net_ns::unix_ns_for_addr_in(sock.net_ns(), &addr);
             crate::net_ns::ns_unix_registry(ns)
                 .dgram_bind_addr(addr.clone(), queue.clone()).map_err(|_| NetError::Eaddrinuse)?;
             queue.set_bound(addr);
-            sock.unix_ns.store(ns, core::sync::atomic::Ordering::Release);
             Ok(())
         }
         BoundAddr::Inet { ip, port } => {
@@ -56,7 +53,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 if local_port.is_some() || sock.udp4.lock().is_some() { return Err(NetError::Einval); }
                 let iface = bound_iface(sock)?;
                 let (port, endpoint) = if port == 0 {
-                    alloc_ephemeral_udp4(sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                    alloc_ephemeral_udp4(sock.net_ns(),
                                          ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                                          sock.opts.ip_mtu_discover.clone(),
@@ -64,7 +61,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                                          sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
                     (port, stack().bind_udp_socket_in(
-                        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                        sock.net_ns(),
                         ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                         sock.opts.ip_mtu_discover.clone(),
@@ -93,7 +90,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 if local_port.is_some() || sock.udp6.lock().is_some() { return Err(NetError::Einval); }
                 let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
                 let (port, endpoint) = if port == 0 {
-                    alloc_ephemeral_udp6(sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                    alloc_ephemeral_udp6(sock.net_ns(),
                                          ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                                          sock.owner_uid,
@@ -102,7 +99,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                                          sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
                     (port, stack().bind_udp6_socket_in(
-                        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                        sock.net_ns(),
                         ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                         sock.owner_uid,
@@ -227,7 +224,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
 /// call publishes it as connectable. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
-    let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+    let net_ns = sock.net_ns();
     let somaxconn = crate::sysctl::somaxconn_in(net_ns);
     // AF_UNIX listener (incl. socket-activated /run/udev/control passed to
     // udevd): register the listener's epoll subscribers against the socket's
@@ -286,13 +283,11 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
             klog::write_raw(b" pair="); klog::write_hex_u64(alloc::sync::Arc::as_ptr(&pair) as u64);
             klog::write_raw(b"]\n");
         }
-        let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_error(
+        let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_state_in(
             pair.end_error(crate::UnixEnd::A),
+            alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()),
+            sock.net_namespace.clone(),
         ));
-        new_sock.net_ns.store(
-            sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
-            core::sync::atomic::Ordering::Release,
-        );
         // Accepted AF_UNIX sockets must not retain new_tcp's AF_INET default.
         new_sock.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         // F181a: server end is A. Register subscribers before
@@ -312,15 +307,11 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         (c.remote.ip, c.remote.port)
     };
     let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_filter(
-        entry.error.clone(), entry.bpf_filter.clone()));
+    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_state_in(
+        entry.error.clone(), entry.bpf_filter.clone(), sock.net_namespace.clone()));
     if listener_fam == AF_INET6 {
         new_sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
     }
-    new_sock.net_ns.store(
-        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
-        core::sync::atomic::Ordering::Release,
-    );
     inherit_tcp_keepalive_opts(&new_sock, sock);
     entry.register_poll_subs(&new_sock.poll_subs);
     apply_tcp_keepalive_opts(&new_sock, &entry);

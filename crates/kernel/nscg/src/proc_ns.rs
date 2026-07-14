@@ -2,8 +2,7 @@
 //
 // open(/proc/self/ns/uts) yields a fd whose inode is an NsInode;
 // setns(fd, nstype) downcasts via Inode::as_any, validates kind
-// matches nstype, and writes the captured ns id into the calling
-// task's matching slot.
+// matches nstype, and installs the captured namespace in the caller.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -14,6 +13,7 @@ use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{default_inode_ops, mk_mode};
 use vfs::file_ops::default_file_ops;
 use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, LinkTarget, VfsError, VfsPath};
+use network_namespace::NetworkNamespaceRef;
 
 /// Linux CLONE_NEW* bits — match clone(2) for setns(fd, nstype) checks.
 pub const CLONE_NEWNS:    u64 = 0x00020000;
@@ -131,13 +131,29 @@ fn ns_ino(kind: NsKind, id: u64) -> Ino {
     NS_INO_MARKER | ((id & 0x00FF_FFFF) << 8) | (kind as Ino)
 }
 
-/// Per-NS id snapshot. Backend-private state (`i_private`) of the
+/// Per-NS ownership snapshot. Backend-private state (`i_private`) of the
 /// `/proc/<pid>/ns/<type>` inode: captured at lookup time, stable for the
-/// lifetime of the open fd. `setns` recovers it via `inode.private::<NsInode>()`,
-/// reading this id + kind to update the caller's per-task slot.
+/// lifetime of the open fd. Network namespace inodes retain the concrete owner
+/// so an nsfd can outlive the last task member without reconstructing dead IDs.
 pub struct NsInode {
     pub kind: NsKind,
     pub id:   u64,
+    net: Option<NetworkNamespaceRef>,
+}
+
+impl NsInode {
+    fn new(kind: NsKind, id: u64, net: Option<NetworkNamespaceRef>) -> Self {
+        Self { kind, id, net }
+    }
+
+    fn ino(&self) -> Ino {
+        self.net.as_ref().map(|owner| owner.identity().nsfs_ino)
+            .unwrap_or_else(|| ns_ino(self.kind, self.id))
+    }
+
+    fn clone_for_node(&self) -> Self {
+        Self { kind: self.kind, id: self.id, net: self.net.as_ref().map(Arc::clone) }
+    }
 }
 
 /// `i_op` for the `/proc/<pid>/ns/<type>` MAGIC symlink (Linux nsfs). A walk
@@ -156,7 +172,7 @@ impl InodeOps for NsLinkOps {
         use core::fmt::Write as _;
         let d = inode.private::<NsInode>().ok_or(VfsError::Einval)?;
         let mut s = String::new();
-        let _ = write!(s, "{}:[{}]", d.kind.proc_name(), ns_ino(d.kind, d.id));
+        let _ = write!(s, "{}:[{}]", d.kind.proc_name(), d.ino());
         Ok(s.into_bytes())
     }
 
@@ -166,7 +182,7 @@ impl InodeOps for NsLinkOps {
     /// # C: O(1)
     fn get_link(&self, inode: &Inode) -> KResult<LinkTarget> {
         let d = inode.private::<NsInode>().ok_or(VfsError::Einval)?;
-        let target = ns_node(d.kind, d.id);
+        let target = ns_node(d);
         let dentry = vfs::d_obtain_alias(target.clone());
         Ok(LinkTarget::Jump(VfsPath { mnt_id: 0, dentry, inode: target, last_component: None }))
     }
@@ -176,43 +192,49 @@ impl InodeOps for NsLinkOps {
 /// inode whose `i_private` carries `(kind, id)` for `setns(2)` to downcast. Not
 /// a symlink (Linux nsfs files aren't links; only the `/proc/.../ns/<t>` entry
 /// is), so the walk terminates here instead of re-following. # C: O(1)
-fn ns_node(kind: NsKind, id: u64) -> InodeRef {
-    InodeBuilder::new(ns_ino(kind, id), mk_mode(FileType::Regular, 0o444), default_inode_ops(), default_file_ops())
-        .private(Arc::new(NsInode { kind, id }))
+fn ns_node(ns: &NsInode) -> InodeRef {
+    InodeBuilder::new(ns.ino(), mk_mode(FileType::Regular, 0o444), default_inode_ops(), default_file_ops())
+        .private(Arc::new(ns.clone_for_node()))
         .build()
+}
+
+/// Build an nsfs node retaining a concrete network namespace owner. # C: O(1)
+pub fn net_ns_inode(namespace: NetworkNamespaceRef) -> InodeRef {
+    let id = namespace.id().as_u64();
+    let ns = NsInode::new(NsKind::Net, id, Some(namespace));
+    ns_node(&ns)
 }
 
 /// Construct the `/proc/<pid>/ns/<type>` inode capturing `task`'s current id for
 /// `kind`. A `S_IFLNK` magic node (Linux nsfs): a walk through it jumps to
 /// [`ns_node`]; `readlink` yields the "<type>:[<ino>]" text; the captured
 /// `(kind, id)` lives in `i_private` for an `O_NOFOLLOW`/`O_PATH` `setns`.
-/// # C: O(1)
-pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
+/// Returns `ENOENT` when a network-namespace lookup races task exit after the
+/// task released membership. # C: O(1)
+pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
     use core::sync::atomic::Ordering;
-    let id = match kind {
-        NsKind::Uts    => task.uts_ns.load(Ordering::Acquire),
-        NsKind::Ipc    => task.ipc_ns.load(Ordering::Acquire),
-        NsKind::Pid    => task.pid_ns.load(Ordering::Acquire),
-        NsKind::Net    => task.net_ns.load(Ordering::Acquire),
-        NsKind::User   => task.user_ns.load(Ordering::Acquire),
-        NsKind::Cgroup => task.cgroup_ns.load(Ordering::Acquire),
-        NsKind::Mnt    => task.mount_ns.load(Ordering::Acquire),
+    let (id, net) = match kind {
+        NsKind::Uts    => (task.uts_ns.load(Ordering::Acquire), None),
+        NsKind::Ipc    => (task.ipc_ns.load(Ordering::Acquire), None),
+        NsKind::Pid    => (task.pid_ns.load(Ordering::Acquire), None),
+        NsKind::Net    => {
+            let owner = task.network_namespace_snapshot().ok_or(VfsError::Enoent)?;
+            (owner.id().as_u64(), Some(owner))
+        }
+        NsKind::User   => (task.user_ns.load(Ordering::Acquire), None),
+        NsKind::Cgroup => (task.cgroup_ns.load(Ordering::Acquire), None),
+        NsKind::Mnt    => (task.mount_ns.load(Ordering::Acquire), None),
     };
-    InodeBuilder::new(ns_ino(kind, id), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
-        .private(Arc::new(NsInode { kind, id }))
-        .build()
+    let ns = NsInode::new(kind, id, net);
+    Ok(InodeBuilder::new(ns.ino(), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
+        .private(Arc::new(ns))
+        .build())
 }
 
 /// Global registry mapping `user_ns id → parent_user_ns id` so the
 /// `has_cap_for` ancestor walk works without scanning every task.
 /// Init NS (id 0) has parent 0 (self-loop terminator).
 static USER_NS_PARENT: sync::Spinlock<alloc::collections::BTreeMap<u64, u64>, sync::TaskList> =
-    sync::Spinlock::new(alloc::collections::BTreeMap::new());
-
-/// Global registry mapping `net_ns id -> owning user_ns id`. Linux assigns
-/// ownership when the network namespace is created; init net_ns is owned by
-/// init user_ns and is represented by the implicit `(0, 0)` default.
-static NET_NS_OWNER: sync::Spinlock<alloc::collections::BTreeMap<u64, u64>, sync::TaskList> =
     sync::Spinlock::new(alloc::collections::BTreeMap::new());
 
 /// Record `(child_id, parent_id)` at unshare(CLONE_NEWUSER) time.
@@ -228,22 +250,6 @@ pub fn user_ns_parent(id: u64) -> u64 {
     if id == 0 { return 0; }
     let g = USER_NS_PARENT.lock();
     g.get(&id).copied().unwrap_or(0)
-}
-
-/// Record the user namespace that owns a newly created network namespace.
-/// # C: O(log N)
-pub fn net_ns_record_owner(net_ns: u64, user_ns: u64) {
-    let mut g = NET_NS_OWNER.lock();
-    g.insert(net_ns, user_ns);
-}
-
-/// Return the user namespace that owns `net_ns`. Init and legacy unrecorded
-/// namespaces are owned by init user_ns.
-/// # C: O(log N)
-pub fn net_ns_owner(net_ns: u64) -> u64 {
-    if net_ns == 0 { return 0; }
-    let g = NET_NS_OWNER.lock();
-    g.get(&net_ns).copied().unwrap_or(0)
 }
 
 /// True if `ancestor` is `descendant` itself or any ancestor up the
@@ -274,16 +280,16 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: u64, cap: u32) -> bool {
 }
 
 /// True when `cur` has CAP_NET_ADMIN in the user namespace that owns
-/// `net_ns`, or in one of that owner's ancestors.
-/// # C: O(log N + depth)
-pub fn has_net_admin_for(cur: &sched::Task, net_ns: u64) -> bool {
-    has_cap_for(cur, net_ns_owner(net_ns), sched::cap::NET_ADMIN)
+/// `namespace`, or in one of that owner's ancestors.
+/// # C: O(depth)
+pub fn has_net_admin_for(cur: &sched::Task, namespace: &NetworkNamespaceRef) -> bool {
+    has_cap_for(cur, namespace.owner_user_ns(), sched::cap::NET_ADMIN)
 }
 
-/// True when `cur` has CAP_NET_RAW in the user namespace owning `net_ns`.
-/// # C: O(log N + depth)
-pub fn has_net_raw_for(cur: &sched::Task, net_ns: u64) -> bool {
-    has_cap_for(cur, net_ns_owner(net_ns), sched::cap::NET_RAW)
+/// True when `cur` has CAP_NET_RAW in the user namespace owning `namespace`.
+/// # C: O(depth)
+pub fn has_net_raw_for(cur: &sched::Task, namespace: &NetworkNamespaceRef) -> bool {
+    has_cap_for(cur, namespace.owner_user_ns(), sched::cap::NET_RAW)
 }
 
 /// Apply an NsInode (resolved from setns's fd arg) to the calling
@@ -305,7 +311,18 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
         }
         NsKind::Ipc    => cur.ipc_ns.store(ns.id, Ordering::Release),
         NsKind::Pid    => cur.pid_ns.store(ns.id, Ordering::Release),
-        NsKind::Net    => cur.net_ns.store(ns.id, Ordering::Release),
+        NsKind::Net    => {
+            let owner = match ns.net.as_ref() {
+                Some(owner) => Arc::clone(owner),
+                None => return -(Errno::Einval.as_i32() as i64),
+            };
+            if owner.id().as_u64() != ns.id {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            if cur.replace_network_namespace(owner).is_err() {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
+        }
         NsKind::User   => cur.user_ns.store(ns.id, Ordering::Release),
         NsKind::Cgroup => cur.cgroup_ns.store(ns.id, Ordering::Release),
         NsKind::Mnt    => {
@@ -324,12 +341,14 @@ mod ns_link_tests {
     use super::*;
     use alloc::format;
 
+    fn final_drop_notify() {}
+
     /// Build the `/proc/<pid>/ns/<t>` magic symlink WITHOUT a Task (the only
     /// Task-independent difference from `ns_inode_for`), so the nsfs link
     /// behaviour is provable in a hosted unit test.
     fn ns_symlink(kind: NsKind, id: u64) -> InodeRef {
         InodeBuilder::new(ns_ino(kind, id), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
-            .private(Arc::new(NsInode { kind, id }))
+            .private(Arc::new(NsInode::new(kind, id, None)))
             .build()
     }
 
@@ -369,7 +388,7 @@ mod ns_link_tests {
     fn setns_rejects_nonexact_type_mask_for_namespace_fd() {
         use core::sync::atomic::Ordering;
         let t = sched::Task::new(77, "t", sched::SchedClass::Normal { weight: 1024 });
-        let ns = NsInode { kind: NsKind::Uts, id: 9 };
+        let ns = NsInode::new(NsKind::Uts, 9, None);
         let mixed = CLONE_NEWUTS | CLONE_NEWNET;
         assert_eq!(setns_apply(&ns, mixed, &t), -(syscall::errno::Errno::Einval.as_i32() as i64));
         assert_eq!(t.uts_ns.load(Ordering::Acquire), 0);
@@ -386,28 +405,59 @@ mod ns_link_tests {
 
 
     #[test]
+    fn network_namespace_inode_retains_owner_across_task_exit_and_follow() {
+        let source = sched::Task::new(78, "source", sched::SchedClass::Normal { weight: 1024 });
+        let retained = source.network_namespace_snapshot().unwrap();
+        let link = ns_inode_for(&source, NsKind::Net).unwrap();
+        source.release_network_namespace();
+        assert!(matches!(ns_inode_for(&source, NsKind::Net), Err(VfsError::Enoent)));
+
+        let node = match link.follow_link().unwrap() {
+            LinkTarget::Jump(vp) => vp.inode,
+            LinkTarget::Path(_) => panic!("nsfs magic link must Jump, not splice a Path"),
+        };
+        let ns = node.private::<NsInode>().unwrap();
+        assert!(Arc::ptr_eq(ns.net.as_ref().unwrap(), &retained));
+
+        let destination = sched::Task::new(79, "destination", sched::SchedClass::Normal { weight: 1024 });
+        assert_eq!(setns_apply(ns, CLONE_NEWNET, &destination), 0);
+        assert!(Arc::ptr_eq(&destination.network_namespace_snapshot().unwrap(), &retained));
+    }
+
+    #[test]
+    fn network_setns_rejects_absent_owner_and_exited_destination() {
+        let owner = network_namespace::initial();
+        let absent = NsInode::new(NsKind::Net, owner.id().as_u64(), None);
+        let destination = sched::Task::new(80, "destination", sched::SchedClass::Normal { weight: 1024 });
+        assert_eq!(setns_apply(&absent, CLONE_NEWNET, &destination),
+            -(syscall::errno::Errno::Einval.as_i32() as i64));
+
+        let retained = NsInode::new(NsKind::Net, owner.id().as_u64(), Some(owner));
+        destination.release_network_namespace();
+        assert_eq!(setns_apply(&retained, CLONE_NEWNET, &destination),
+            -(syscall::errno::Errno::Esrch.as_i32() as i64));
+    }
+
+    #[test]
     fn network_namespace_owner_scopes_network_capabilities() {
         use core::sync::atomic::Ordering;
         const OWNER_PARENT: u64 = 0x8250;
         const OWNER: u64 = 0x8251;
         const SIBLING: u64 = 0x8252;
-        const NET_NS: u64 = 0x8253;
         user_ns_record(OWNER_PARENT, 0);
         user_ns_record(OWNER, OWNER_PARENT);
         user_ns_record(SIBLING, 0);
-        net_ns_record_owner(NET_NS, OWNER);
+        network_namespace::install_final_drop_callback(final_drop_notify).unwrap();
+        let namespace = network_namespace::allocate(OWNER).unwrap();
 
-        let parent = sched::Task::new(78, "parent", sched::SchedClass::Normal { weight: 1024 });
+        let parent = sched::Task::new(81, "parent", sched::SchedClass::Normal { weight: 1024 });
         parent.user_ns.store(OWNER_PARENT, Ordering::Release);
-        assert!(has_net_admin_for(&parent, NET_NS));
-        assert!(has_net_raw_for(&parent, NET_NS));
+        assert!(has_net_admin_for(&parent, &namespace));
+        assert!(has_net_raw_for(&parent, &namespace));
 
-        let sibling = sched::Task::new(79, "sibling", sched::SchedClass::Normal { weight: 1024 });
+        let sibling = sched::Task::new(82, "sibling", sched::SchedClass::Normal { weight: 1024 });
         sibling.user_ns.store(SIBLING, Ordering::Release);
-        assert!(!has_net_admin_for(&sibling, NET_NS));
-        assert!(!has_net_raw_for(&sibling, NET_NS));
-        sibling.creds.cap_effective.store(0, Ordering::Release);
-        assert!(!has_net_admin_for(&sibling, 0));
-        assert!(!has_net_raw_for(&sibling, 0));
+        assert!(!has_net_admin_for(&sibling, &namespace));
+        assert!(!has_net_raw_for(&sibling, &namespace));
     }
 }

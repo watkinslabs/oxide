@@ -16,12 +16,25 @@ use crate::stack::NetStack;
 
 const PROTOCOL: u8 = 143;
 const OTHER_PROTOCOL: u8 = 144;
-const NET_A: u64 = 8_320_001;
-const NET_B: u64 = 8_320_002;
-
-fn endpoint(protocol: u8, net_ns: u64) -> Arc<Raw4Endpoint> {
-    Raw4Endpoint::new(protocol, net_ns, Arc::new(SocketFilter::new()),
+fn endpoint(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Arc<Raw4Endpoint> {
+    Raw4Endpoint::new(protocol, net_namespace, Arc::new(SocketFilter::new()),
         Arc::new(SocketMcast::new()), Arc::new(crate::SocketError::new()))
+}
+
+fn initial_endpoint(protocol: u8) -> Arc<Raw4Endpoint> {
+    endpoint(protocol, network_namespace::initial())
+}
+
+#[test]
+fn endpoint_retains_concrete_namespace_owner() {
+    crate::net_ns::install_final_drop_pending_notifier().unwrap();
+    let owner = network_namespace::allocate(0).unwrap();
+    let id = owner.id();
+    let endpoint = endpoint(PROTOCOL, owner.clone());
+    drop(owner);
+    assert!(network_namespace::lookup(id).is_some(), "raw endpoint pins namespace lifetime");
+    drop(endpoint);
+    assert!(network_namespace::lookup(id).is_none(), "last endpoint drop releases namespace");
 }
 
 fn packet(protocol: u8, src: Ipv4Addr, dst: Ipv4Addr, id: u16, flags: u16,
@@ -58,11 +71,16 @@ fn filter_runner(_kind: FilterKind, insns: &[u8], _ctx: FilterContext<'_>) -> u3
 #[test]
 fn exact_protocol_fanout_is_namespace_local() {
     let stack = NetStack::new();
-    let (iface_a, _) = stack.register_loopback_in(NET_A);
-    let (_iface_b, _) = stack.register_loopback_in(NET_B);
-    let exact_a = endpoint(PROTOCOL, NET_A);
-    let exact_b = endpoint(PROTOCOL, NET_B);
-    let wrong = endpoint(OTHER_PROTOCOL, NET_A);
+    crate::net_ns::install_final_drop_pending_notifier().unwrap();
+    let owner_a = network_namespace::allocate(0).unwrap();
+    let owner_b = network_namespace::allocate(0).unwrap();
+    let net_a = owner_a.id().as_u64();
+    let net_b = owner_b.id().as_u64();
+    let (iface_a, _) = stack.register_loopback_in(net_a);
+    let (_iface_b, _) = stack.register_loopback_in(net_b);
+    let exact_a = endpoint(PROTOCOL, owner_a.clone());
+    let exact_b = endpoint(PROTOCOL, owner_b);
+    let wrong = endpoint(OTHER_PROTOCOL, owner_a);
     stack.register_raw4(&exact_a);
     stack.register_raw4(&exact_b);
     stack.register_raw4(&wrong);
@@ -82,7 +100,7 @@ fn local_peer_and_bound_device_are_all_required_for_receive_match() {
     let (wrong_iface, _) = stack.register_loopback();
     let (right_iface, _) = stack.register_loopback();
     let expected_peer = Ipv4Addr::new(127, 0, 0, 2);
-    let raw = endpoint(PROTOCOL, 0);
+    let raw = initial_endpoint(PROTOCOL);
     raw.bind(Ipv4Addr::LOOPBACK, Some(right_iface)).unwrap();
     raw.connect(expected_peer, None).unwrap();
     stack.register_raw4(&raw);
@@ -106,11 +124,11 @@ fn full_packet_bpf_drops_zero_and_truncates_positive_verdict() {
     install_bpf_filter_context_runner(filter_runner);
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
-    let dropped = endpoint(PROTOCOL, 0);
+    let dropped = initial_endpoint(PROTOCOL);
     dropped.bpf_filter.attach(FilterProgram {
         kind: FilterKind::Ebpf, insns: 0u32.to_ne_bytes().to_vec(),
     }).unwrap();
-    let truncated = endpoint(PROTOCOL, 0);
+    let truncated = initial_endpoint(PROTOCOL);
     truncated.bpf_filter.attach(FilterProgram {
         kind: FilterKind::Classic, insns: 22u32.to_ne_bytes().to_vec(),
     }).unwrap();
@@ -130,7 +148,7 @@ fn full_packet_bpf_drops_zero_and_truncates_positive_verdict() {
 
 #[test]
 fn receive_limit_accounts_bytes_and_reports_drops() {
-    let raw = endpoint(PROTOCOL, 0);
+    let raw = initial_endpoint(PROTOCOL);
     raw.set_rcvbuf(3);
     assert!(raw.enqueue(super::Raw4Datagram { packet: b"abc".to_vec(),
         source: Ipv4Addr::LOOPBACK, destination: Ipv4Addr::LOOPBACK,
@@ -148,7 +166,7 @@ fn raw_udp_clone_does_not_interfere_with_transport_delivery() {
     const PORT: u16 = 43_210;
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
-    let raw = endpoint(IpProto::Udp as u8, 0);
+    let raw = initial_endpoint(IpProto::Udp as u8);
     stack.register_raw4(&raw);
     let udp = stack.bind_udp(Ipv4Addr::LOOPBACK, PORT).unwrap();
 
@@ -164,7 +182,7 @@ fn raw_udp_clone_does_not_interfere_with_transport_delivery() {
 fn reassembly_preserves_first_header_options_and_normalizes_fragment_fields() {
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
-    let raw = endpoint(PROTOCOL, 0);
+    let raw = initial_endpoint(PROTOCOL);
     stack.register_raw4(&raw);
     let src = Ipv4Addr::new(127, 0, 0, 2);
     let options = [0x94, 4, 0, 0];
@@ -190,8 +208,8 @@ fn reassembly_preserves_first_header_options_and_normalizes_fragment_fields() {
 fn multicast_membership_filters_each_raw_endpoint() {
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
-    let joined = endpoint(PROTOCOL, 0);
-    let unjoined = endpoint(PROTOCOL, 0);
+    let joined = initial_endpoint(PROTOCOL);
+    let unjoined = initial_endpoint(PROTOCOL);
     stack.register_raw4(&joined);
     stack.register_raw4(&unjoined);
     let group = Ipv4Addr::new(239, 1, 2, 3);
@@ -238,7 +256,7 @@ fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
     let stack = NetStack::new();
     let dst = Ipv4Addr::new(198, 51, 100, 20);
     let (_iface, dev) = routed_capture(&stack, 68, dst);
-    let raw = endpoint(PROTOCOL, 0);
+    let raw = initial_endpoint(PROTOCOL);
     let options = Raw4TxOptions { pmtudisc: crate::uapi::IP_PMTUDISC_DONT,
         ..Raw4TxOptions::default() };
 
@@ -259,7 +277,7 @@ fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
 fn broadcast_transmit_requires_permission() {
     let stack = NetStack::new();
     let (_iface, dev) = routed_capture(&stack, 1_500, Ipv4Addr::BROADCAST);
-    let raw = endpoint(PROTOCOL, 0);
+    let raw = initial_endpoint(PROTOCOL);
     assert_eq!(stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x",
         Raw4TxOptions::default(), &crate::send_control::Raw4Control::default()), Err(NetError::Eacces));
     stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x", Raw4TxOptions {
@@ -273,7 +291,7 @@ fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
     let stack = NetStack::new();
     let dst = Ipv4Addr::new(203, 0, 113, 9);
     let (_iface, dev) = routed_capture(&stack, 80, dst);
-    let raw = endpoint(PROTOCOL, 0);
+    let raw = initial_endpoint(PROTOCOL);
     raw.set_hdrincl(true);
     let mut user = packet(OTHER_PROTOCOL, Ipv4Addr::ANY, dst, 0, 0, &[], b"body");
     user[1] = 0x2e;
@@ -310,8 +328,8 @@ fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
 fn unregister_is_exact_and_close_blocks_late_receive_publication() {
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
-    let removed = endpoint(PROTOCOL, 0);
-    let live = endpoint(PROTOCOL, 0);
+    let removed = initial_endpoint(PROTOCOL);
+    let live = initial_endpoint(PROTOCOL);
     stack.register_raw4(&removed);
     stack.register_raw4(&live);
     stack.unregister_raw4(&removed);
@@ -332,22 +350,22 @@ fn connected_raw4_publishes_hard_not_soft_matching_errors() {
     let (other_iface, _) = stack.register_loopback();
     let local = Ipv4Addr::LOOPBACK;
     let remote = Ipv4Addr::new(192, 0, 2, 44);
-    let matching_a = endpoint(PROTOCOL, 0);
-    let matching_b = endpoint(PROTOCOL, 0);
+    let matching_a = initial_endpoint(PROTOCOL);
+    let matching_b = initial_endpoint(PROTOCOL);
     for raw in [&matching_a, &matching_b] {
         raw.bind(local, Some(iface)).unwrap();
         raw.connect(remote, None).unwrap();
         stack.register_raw4(raw);
     }
-    let wrong_protocol = endpoint(OTHER_PROTOCOL, 0);
+    let wrong_protocol = initial_endpoint(OTHER_PROTOCOL);
     wrong_protocol.bind(local, Some(iface)).unwrap();
     wrong_protocol.connect(remote, None).unwrap();
     stack.register_raw4(&wrong_protocol);
-    let wrong_peer = endpoint(PROTOCOL, 0);
+    let wrong_peer = initial_endpoint(PROTOCOL);
     wrong_peer.bind(local, Some(iface)).unwrap();
     wrong_peer.connect(Ipv4Addr::new(192, 0, 2, 45), None).unwrap();
     stack.register_raw4(&wrong_peer);
-    let wrong_iface = endpoint(PROTOCOL, 0);
+    let wrong_iface = initial_endpoint(PROTOCOL);
     wrong_iface.bind(local, Some(other_iface)).unwrap();
     wrong_iface.connect(remote, None).unwrap();
     stack.register_raw4(&wrong_iface);
@@ -372,7 +390,7 @@ fn unconnected_raw4_error_requires_recverr() {
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let remote = Ipv4Addr::new(198, 51, 100, 9);
-    let raw = endpoint(PROTOCOL, 0);
+    let raw = initial_endpoint(PROTOCOL);
     raw.bind(Ipv4Addr::LOOPBACK, Some(iface)).unwrap();
     stack.register_raw4(&raw);
     let quote = error_quote(PROTOCOL, Ipv4Addr::LOOPBACK, remote);

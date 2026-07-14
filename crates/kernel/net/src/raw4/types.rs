@@ -71,7 +71,7 @@ impl Default for Raw4TxOptions {
 
 pub struct Raw4Endpoint {
     protocol: u8,
-    net_ns: u64,
+    net_namespace: network_namespace::NetworkNamespaceRef,
     state: Spinlock<EndpointState, LockClass>,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
@@ -83,11 +83,11 @@ pub struct Raw4Endpoint {
 
 impl Raw4Endpoint {
     /// Build one unpublished raw IPv4 endpoint. # C: O(1)
-    pub fn new(protocol: u8, net_ns: u64, bpf: Arc<SocketFilter>,
+    pub fn new(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef, bpf: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
-            net_ns,
+            net_namespace,
             state: Spinlock::new(EndpointState {
                 local: Ipv4Addr::ANY,
                 explicit_local: false,
@@ -114,7 +114,12 @@ impl Raw4Endpoint {
     pub fn protocol(&self) -> u8 { self.protocol }
 
     /// Network namespace owning this endpoint and its registry entry. # C: O(1)
-    pub fn net_ns(&self) -> u64 { self.net_ns }
+    pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
+
+    /// Clone the concrete namespace owner retained by this endpoint. # C: O(1)
+    pub fn network_namespace(&self) -> network_namespace::NetworkNamespaceRef {
+        self.net_namespace.clone()
+    }
 
     /// Atomically publish local-address and optional device binding. # C: O(1)
     pub fn bind(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
@@ -129,9 +134,10 @@ impl Raw4Endpoint {
     /// Validate namespace/device ownership before publishing a local bind. # C: O(N)
     pub fn bind_checked(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
         if !local.is_unspecified() {
-            let owned = crate::iface_addr::snapshot_ns(self.net_ns).into_iter()
+            let net_ns = self.net_ns();
+            let owned = crate::iface_addr::snapshot_ns(net_ns).into_iter()
                 .any(|row| row.addr == local && iface.is_none_or(|id| id == row.iface))
-                || crate::global_stack().routes.lookup_in(self.net_ns, local).is_some_and(|route| {
+                || crate::global_stack().routes.lookup_in(net_ns, local).is_some_and(|route| {
                     route.table == crate::policy_rule::RT_TABLE_LOCAL && route.src_hint == Some(local)
                         && iface.is_none_or(|id| id == route.iface)
                 });
@@ -154,10 +160,11 @@ impl Raw4Endpoint {
     pub fn connect_routed(&self, remote: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
         if remote.is_unspecified() { return Err(NetError::Eaddrnotavail); }
         let stack = crate::global_stack();
-        let (route_iface, _, _) = stack.route_v4_iface_in(self.net_ns, remote, iface)?;
-        let local = stack.routes.lookup_in(self.net_ns, remote)
+        let net_ns = self.net_ns();
+        let (route_iface, _, _) = stack.route_v4_iface_in(net_ns, remote, iface)?;
+        let local = stack.routes.lookup_in(net_ns, remote)
             .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint)
-            .or_else(|| crate::iface_addr::primary(self.net_ns, route_iface).map(|row| row.0))
+            .or_else(|| crate::iface_addr::primary(net_ns, route_iface).map(|row| row.0))
             .ok_or(NetError::Eaddrnotavail)?;
         let mut state = self.state.lock();
         if !state.accepting { return Err(NetError::Enoent); }

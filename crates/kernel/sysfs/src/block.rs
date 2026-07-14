@@ -389,7 +389,7 @@ mod tests {
         let dev: Arc<dyn block::BlockDevice> = block::MemDisk::<TaskList>::new(512, 8);
         let index = block::registry::register("sysfsblk0", dev);
         assert_ne!(index, 0);
-        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
         listener.set_group_mask(1);
         netlink::register_uevent_listener(&listener);
 

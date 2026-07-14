@@ -47,6 +47,7 @@ vmm     = { path = "../mm-vmm" }
 power    = { path = "../power" }
 firmware = { path = "../firmware" }
 nscg     = { path = "../nscg" }
+network-namespace = { path = "../network-namespace" }
 cgroup   = { path = "../cgroup" }
 security = { path = "../security" }
 drv             = { path = "../../drivers/drv" }

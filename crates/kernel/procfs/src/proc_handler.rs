@@ -27,6 +27,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use network_namespace::NetworkNamespaceRef;
 
 /// One `/proc/sys` leaf's `proc_handler`: format the live value on read, and
 /// parse+validate+store it on write. `Err(())` → `EINVAL` (Linux rejects a
@@ -48,32 +49,32 @@ pub trait ProcHandler: Send + Sync {
 /// Per-network-namespace fallible integer binding. `current_ns` runs once at
 /// open; the returned handler carries that namespace for its lifetime.
 pub struct PerNetIntHook {
-    pub current_ns: fn() -> u64,
+    pub current_ns: fn() -> NetworkNamespaceRef,
     pub get: fn(u64) -> i64,
     pub set: fn(u64, i64) -> Result<(), ()>,
     pub bounds: Option<(i64, i64)>,
 }
 struct BoundPerNetIntHook {
-    ns: u64,
+    namespace: NetworkNamespaceRef,
     get: fn(u64) -> i64,
     set: fn(u64, i64) -> Result<(), ()>,
     bounds: Option<(i64, i64)>,
 }
 impl ProcHandler for PerNetIntHook {
-    fn format(&self) -> Vec<u8> { fmt_i64((self.get)((self.current_ns)())) }
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)(namespace_id(&(self.current_ns)()))) }
     fn store(&self, src: &[u8]) -> Result<(), ()> {
-        store_bound_i64((self.current_ns)(), self.set, self.bounds, src)
+        store_bound_i64(namespace_id(&(self.current_ns)()), self.set, self.bounds, src)
     }
     fn bind(&self) -> Option<Arc<dyn ProcHandler>> {
         Some(Arc::new(BoundPerNetIntHook {
-            ns: (self.current_ns)(), get: self.get, set: self.set, bounds: self.bounds,
+            namespace: (self.current_ns)(), get: self.get, set: self.set, bounds: self.bounds,
         }))
     }
 }
 impl ProcHandler for BoundPerNetIntHook {
-    fn format(&self) -> Vec<u8> { fmt_i64((self.get)(self.ns)) }
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)(namespace_id(&self.namespace))) }
     fn store(&self, src: &[u8]) -> Result<(), ()> {
-        store_bound_i64(self.ns, self.set, self.bounds, src)
+        store_bound_i64(namespace_id(&self.namespace), self.set, self.bounds, src)
     }
 }
 
@@ -88,32 +89,34 @@ fn store_bound_i64(ns: u64, set: fn(u64, i64) -> Result<(), ()>,
 /// Per-network-namespace two-u16 vector binding. One-field writes preserve the
 /// captured namespace's second field, matching `proc_dointvec` partial writes.
 pub struct PerNetU16PairHook {
-    pub current_ns: fn() -> u64,
+    pub current_ns: fn() -> NetworkNamespaceRef,
     pub get: fn(u64) -> (u16, u16),
     pub set: fn(u64, u16, u16) -> Result<(), ()>,
 }
 struct BoundPerNetU16PairHook {
-    ns: u64,
+    namespace: NetworkNamespaceRef,
     get: fn(u64) -> (u16, u16),
     set: fn(u64, u16, u16) -> Result<(), ()>,
 }
 impl ProcHandler for PerNetU16PairHook {
-    fn format(&self) -> Vec<u8> { format_u16_pair((self.get)((self.current_ns)())) }
+    fn format(&self) -> Vec<u8> { format_u16_pair((self.get)(namespace_id(&(self.current_ns)()))) }
     fn store(&self, src: &[u8]) -> Result<(), ()> {
-        store_u16_pair((self.current_ns)(), self.get, self.set, src)
+        store_u16_pair(namespace_id(&(self.current_ns)()), self.get, self.set, src)
     }
     fn bind(&self) -> Option<Arc<dyn ProcHandler>> {
         Some(Arc::new(BoundPerNetU16PairHook {
-            ns: (self.current_ns)(), get: self.get, set: self.set,
+            namespace: (self.current_ns)(), get: self.get, set: self.set,
         }))
     }
 }
 impl ProcHandler for BoundPerNetU16PairHook {
-    fn format(&self) -> Vec<u8> { format_u16_pair((self.get)(self.ns)) }
+    fn format(&self) -> Vec<u8> { format_u16_pair((self.get)(namespace_id(&self.namespace))) }
     fn store(&self, src: &[u8]) -> Result<(), ()> {
-        store_u16_pair(self.ns, self.get, self.set, src)
+        store_u16_pair(namespace_id(&self.namespace), self.get, self.set, src)
     }
 }
+
+fn namespace_id(namespace: &NetworkNamespaceRef) -> u64 { namespace.id().as_u64() }
 
 fn format_u16_pair(pair: (u16, u16)) -> Vec<u8> {
     alloc::format!("{}\t{}\n", pair.0, pair.1).into_bytes()
@@ -383,12 +386,15 @@ mod tests {
         const fn pack(start: u16, end: u16, floor: u16) -> u64 {
             (start as u64) << 32 | (end as u64) << 16 | floor as u64
         }
-        static CURRENT: AtomicU64 = AtomicU64::new(0);
+        static CURRENT: std::sync::Mutex<Option<NetworkNamespaceRef>> =
+            std::sync::Mutex::new(None);
         static STATE: [AtomicU64; 2] = [
             AtomicU64::new(pack(32_768, 60_999, 1_024)),
             AtomicU64::new(pack(40_000, 40_009, 2_048)),
         ];
-        fn current() -> u64 { CURRENT.load(Ordering::Relaxed) }
+        fn current() -> NetworkNamespaceRef {
+            Arc::clone(CURRENT.lock().unwrap().as_ref().unwrap())
+        }
         fn pair(ns: u64) -> (u16, u16) {
             let raw = STATE[ns as usize].load(Ordering::Relaxed);
             ((raw >> 32) as u16, (raw >> 16) as u16)
@@ -411,13 +417,14 @@ mod tests {
             Ok(())
         }
 
-        CURRENT.store(0, Ordering::Relaxed);
+        *CURRENT.lock().unwrap() = Some(network_namespace::initial());
         let pair_open = PerNetU16PairHook { current_ns: current, get: pair, set: set_pair }
             .bind().unwrap();
         let floor_open = PerNetIntHook {
             current_ns: current, get: floor, set: set_floor, bounds: Some((0, u16::MAX as i64)),
         }.bind().unwrap();
-        CURRENT.store(1, Ordering::Relaxed);
+        let _ = net::net_ns::install_final_drop_pending_notifier();
+        *CURRENT.lock().unwrap() = Some(network_namespace::allocate(0).unwrap());
 
         assert_eq!(pair_open.format(), b"32768\t60999\n".to_vec());
         assert_eq!(floor_open.format(), b"1024\n".to_vec());
