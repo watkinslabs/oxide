@@ -50,9 +50,15 @@ pub fn tcp_recv_eof(st: crate::tcp_state::TcpState) -> bool {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn arm_tcp_read(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, deadline_ns: u64) -> bool {
+    arm_tcp_read_after(sock, entry, 0, deadline_ns)
+}
+
+/// Atomically park until bytes exist beyond a non-consuming peek offset. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn arm_tcp_read_after(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, offset: usize, deadline_ns: u64) -> bool {
     let c = entry.conn.lock();
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
-        || !c.recv_buf.is_empty() || tcp_recv_eof(c.state)
+        || c.recv_buf.len() > offset || tcp_recv_eof(c.state)
     {
         return false;
     }

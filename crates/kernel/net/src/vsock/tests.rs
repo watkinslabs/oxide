@@ -358,6 +358,22 @@ fn recv_with_fault_rolls_back_and_peek_preserves_stream() {
 }
 
 #[test]
+fn recv_peek_offset_reads_waitall_suffix_without_consuming() {
+    with_driver(owner(35), 3, || {
+        let c = alloc::sync::Arc::new(
+            VsockConn::new(owner(35), 3, 2004, 2, 1234, VsockState::Connected));
+        c.rx.lock().extend(b"abcdef".iter().copied());
+        let first = recv_with_offset(&c, 3, true, 0,
+            |bytes| Ok::<_, ()>((bytes.to_vec(), 0))).unwrap();
+        let second = recv_with_offset(&c, 3, true, 3,
+            |bytes| Ok::<_, ()>((bytes.to_vec(), 0))).unwrap();
+        assert!(matches!(first, RecvWith::Data(ref bytes) if bytes == b"abc"));
+        assert!(matches!(second, RecvWith::Data(ref bytes) if bytes == b"def"));
+        assert_eq!(c.rx.lock().iter().copied().collect::<alloc::vec::Vec<_>>(), b"abcdef");
+    });
+}
+
+#[test]
 fn shutdown_then_eof() {
     with_driver(owner(33), 3, || {
         let c = alloc::sync::Arc::new(

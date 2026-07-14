@@ -59,6 +59,19 @@ fn stream_partial_copy_commits_only_copied_prefix() {
 }
 
 #[test]
+fn stream_peek_offset_reads_waitall_suffix_without_consuming() {
+    let pair = UnixPair::new();
+    pair.write(UnixEnd::A, b"abcdef").unwrap();
+    let first = pair.read_stream_with_offset(UnixEnd::B, 3, true, 0,
+        |data, _, _| Ok::<_, ()>((data.to_vec(), 0))).unwrap().unwrap().0;
+    let second = pair.read_stream_with_offset(UnixEnd::B, 3, true, 3,
+        |data, _, _| Ok::<_, ()>((data.to_vec(), 0))).unwrap().unwrap().0;
+    assert_eq!(first, b"abc");
+    assert_eq!(second, b"def");
+    assert_eq!(pair.read(UnixEnd::B, 6), b"abcdef");
+}
+
+#[test]
 fn msgpair_callback_error_consumes_record() {
     let pair = UnixMsgPair::new();
     pair.send(UnixEnd::A, b"first").unwrap();

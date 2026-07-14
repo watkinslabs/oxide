@@ -16,13 +16,24 @@ impl UnixPair {
     /// # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
     pub fn arm_stream_read(&self, end: UnixEnd, deadline_ns: u64) -> ArmStreamRead {
+        self.arm_stream_read_after(end, 0, deadline_ns)
+    }
+
+    /// Atomically park until bytes exist beyond a non-consuming peek offset. # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_stream_read_after(&self, end: UnixEnd, offset: usize, deadline_ns: u64) -> ArmStreamRead {
         let read_ring = match end {
             UnixEnd::A => &self.b_to_a,
             UnixEnd::B => &self.a_to_b,
         };
         let g = read_ring.lock();
-        let ancillary_ready = g.ancillary.front().map(|(off, _, _)| *off <= g.consumed).unwrap_or(false);
-        if !g.buf.is_empty() || ancillary_ready { return ArmStreamRead::Retry; }
+        let logical = g.consumed.saturating_add(offset as u64);
+        let ancillary_ready = if offset == 0 {
+            g.ancillary.front().map(|(off, _, _)| *off <= g.consumed).unwrap_or(false)
+        } else {
+            g.ancillary.iter().any(|(off, _, _)| *off <= logical && *off > g.consumed)
+        };
+        if g.buf.len() > offset || ancillary_ready { return ArmStreamRead::Retry; }
         if self.reset_pending(end) { return ArmStreamRead::Reset; }
         if g.closed_writer || g.reader_shutdown { return ArmStreamRead::Eof; }
         // SAFETY: caller is a running syscall task; registration occurs under

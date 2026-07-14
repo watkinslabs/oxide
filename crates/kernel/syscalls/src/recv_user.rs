@@ -74,13 +74,22 @@ pub(crate) fn import_iov(iovp: u64, iovlen: usize) -> Result<RecvUser, i64> {
 impl RecvUser {
     /// Scatter payload, returning copied prefix or EFAULT when no byte lands. # C: O(iov + bytes)
     pub fn copy_payload(&self, payload: &[u8]) -> Result<usize, i64> {
+        self.copy_payload_at(0, payload)
+    }
+
+    /// Scatter payload after `offset` bytes already copied by this receive. # C: O(iov + bytes)
+    pub fn copy_payload_at(&self, offset: usize, payload: &[u8]) -> Result<usize, i64> {
         let mut copied = 0usize;
+        let mut skip = offset;
         for iov in &self.iov {
+            if skip >= iov.len { skip -= iov.len; continue; }
             if copied == payload.len() { break; }
-            let take = core::cmp::min(iov.len, payload.len() - copied);
+            let at = skip;
+            skip = 0;
+            let take = core::cmp::min(iov.len - at, payload.len() - copied);
             if take == 0 { continue; }
             // SAFETY: payload suffix is readable; raw usercopy recovers destination faults.
-            let left = unsafe { uaccess::raw_copy_to_user(iov.base, payload[copied..].as_ptr(), take) };
+            let left = unsafe { uaccess::raw_copy_to_user(iov.base + at as u64, payload[copied..].as_ptr(), take) };
             copied += take - left;
             if left != 0 { return if copied != 0 { Ok(copied) } else { Err(errno(Errno::Efault)) }; }
         }
@@ -135,6 +144,19 @@ mod tests {
         assert_eq!(imported.copy_payload(b"abcde"), Ok(5));
         assert_eq!(&a, b"abc");
         assert_eq!(&b, b"de");
+    }
+
+    #[test]
+    fn copies_waitall_suffix_across_iovec_boundary() {
+        let mut a = [0u8; 3];
+        let mut b = [0u8; 3];
+        let imported = RecvUser { msgp: 0, name: 0, namelen: 0, control: 0,
+            controllen: 0, iov: vec![IoVec { base: a.as_mut_ptr() as u64, len: 3 },
+                IoVec { base: b.as_mut_ptr() as u64, len: 3 }], capacity: 6 };
+        assert_eq!(imported.copy_payload_at(0, b"ab"), Ok(2));
+        assert_eq!(imported.copy_payload_at(2, b"cdef"), Ok(4));
+        assert_eq!(&a, b"abc");
+        assert_eq!(&b, b"def");
     }
 
     #[test]
