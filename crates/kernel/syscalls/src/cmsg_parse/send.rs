@@ -62,28 +62,35 @@ pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u6
         // SAFETY: src is validated user iov range; dst is owned Vec capacity.
         unsafe { core::ptr::copy_nonoverlapping(base as *const u8, payload.as_mut_ptr().add(start), len as usize); }
     }
-    let g = sock.kind.lock();
-    let signal = matches!(&*g, SockKind::Unix(_, _));
-    let result = match &*g {
-        SockKind::Unix(pair, end) => {
+    enum Target {
+        Stream(Arc<net::UnixPair>, net::UnixEnd),
+        Msg(Arc<net::UnixMsgPair>, net::UnixEnd),
+    }
+    let target = match &*sock.kind.lock() {
+        SockKind::Unix(pair, end) => Target::Stream(pair.clone(), *end),
+        SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
+    let rights = net::classify_files(fds);
+    let signal = matches!(target, Target::Stream(_, _));
+    let result = match target {
+        Target::Stream(pair, end) => {
             // Tie the fds to `payload`'s first stream byte so the peer's
             // recvmsg delivers them with THIS message, not an earlier
             // fd-less one (the desync that lost logind's CreateSession /
             // Inhibit reply fifo fd → pam_systemd got no runtime_path).
-            let result = match pair.write_with_fds(*end, &payload, fds) {
+            let result = match pair.write_with_rights(end, &payload, rights) {
                 Ok(n) => n as i64,
                 Err(net::UnixStreamError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
             };
             result
         }
-        SockKind::UnixMsgPair(pair, end) => match pair.send_with_fds(*end, &payload, fds) {
+        Target::Msg(pair, end) => match pair.send_with_rights(end, &payload, rights) {
             Ok(n) => n as i64,
             Err(net::UnixMsgError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
             Err(net::UnixMsgError::PeerRefused) => -(Errno::Econnrefused.as_i32() as i64),
         },
-        _ => -(Errno::Einval.as_i32() as i64),
     };
-    drop(g);
     if signal { crate::s044_sendto::finish_stream_send(flags, result) } else { result }
 }
 
@@ -145,7 +152,8 @@ pub fn sendmsg_unix_dgram_with_fds(
     };
     let n = payload.len();
     net::trace_dgram_journal(&addr.display, &payload);
-    match q.try_push(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds }) {
+    let rights = net::classify_files(fds);
+    match q.try_push_with_rights(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() }, rights) {
         Ok(()) => n as i64,
         Err(e) => crate::net_common::errno_from_neterr(e),
     }

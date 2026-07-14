@@ -72,12 +72,16 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
         let inode = mk(net::UnixEnd::A);
         let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
         let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+        let sock = crate::net_common::inode_as_inet_socket(f.inode()).expect("socketpair inode");
+        net::bind_file(&f, &sock);
         match fdt.alloc_limit(f, cur.nofile_soft()) { Ok(fd) => fd, Err(e) => return -(e as i64) }
     };
     let b = {
         let inode = mk(net::UnixEnd::B);
         let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
         let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+        let sock = crate::net_common::inode_as_inet_socket(f.inode()).expect("socketpair inode");
+        net::bind_file(&f, &sock);
         match fdt.alloc_limit(f, cur.nofile_soft()) { Ok(fd) => fd, Err(e) => return -(e as i64) }
     };
     // Write both fds back to user[]int sv[2].

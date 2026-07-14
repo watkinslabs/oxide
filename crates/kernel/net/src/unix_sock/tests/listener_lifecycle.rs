@@ -40,7 +40,7 @@ fn relisten_backlog_growth_preserves_queue_and_adds_capacity() {
     assert_eq!(listener.pending_len(), 3, "refused overflow does not consume capacity");
 
     for expected in [&first, &second, &third] {
-        let accepted = listener.accept().expect("queued connection");
+        let (accepted, _pin) = listener.accept().expect("queued connection");
         assert!(Arc::ptr_eq(&accepted, expected), "relisten preserves FIFO order");
     }
     assert_eq!(listener.pending_len(), 0);
@@ -56,7 +56,7 @@ fn listener_queue_and_refusal_invariants_hold_across_close() {
 
     listener.listen(0, crate::sysctl::DEFAULT_SOMAXCONN);
     let accepted = registry.connect(path).unwrap();
-    assert!(Arc::ptr_eq(&listener.accept().unwrap(), &accepted));
+    assert!(Arc::ptr_eq(&listener.accept().unwrap().0, &accepted));
     let pending = registry.connect(path).unwrap();
     assert_eq!(listener.pending_len(), 1);
 
@@ -83,7 +83,7 @@ fn pathname_unlink_removes_name_without_closing_listener() {
     assert!(matches!(registry.connect_addr(&addr), Err(UnixConnectError::Refused)));
     assert!(listener.is_listening());
     assert_eq!(listener.pending_len(), 1);
-    assert!(Arc::ptr_eq(&listener.accept().unwrap(), &pending));
+    assert!(Arc::ptr_eq(&listener.accept().unwrap().0, &pending));
     assert!(!pending.peer_gone(UnixEnd::B));
 }
 
@@ -128,7 +128,7 @@ fn listener_publishes_only_fully_initialized_pairs() {
     client.set_end_cred(UnixEnd::B, 40, 50, 60);
 
     registry.connect_pair_addr(&addr, client.clone()).unwrap();
-    let accepted = listener.accept().unwrap();
+    let (accepted, _pin) = listener.accept().unwrap();
 
     assert!(Arc::ptr_eq(&accepted, &client));
     assert_eq!(accepted.peer_cred(UnixEnd::A), (40, 50, 60));
@@ -138,7 +138,7 @@ fn listener_publishes_only_fully_initialized_pairs() {
     let next = UnixPair::new();
     next.set_end_cred(UnixEnd::B, 41, 51, 61);
     registry.connect_pair_addr(&addr, next).unwrap();
-    let accepted = listener.accept().unwrap();
+    let (accepted, _pin) = listener.accept().unwrap();
     assert_eq!(accepted.peer_cred(UnixEnd::A), (41, 51, 61));
     assert_eq!(accepted.peer_cred(UnixEnd::B), (11, 21, 31));
     accepted.write(UnixEnd::B, b"cred").unwrap();

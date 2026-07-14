@@ -5,22 +5,19 @@ use sync::{Socket as UnixLockClass, Spinlock};
 use sched;
 use vfs;
 
-use super::UnixAddr;
+use super::{GcNode, GcRights, UnixAddr};
 
 pub struct UnixDgram {
     pub payload: Vec<u8>,
     /// Sender's (pid, uid, gid) at sendmsg time.
     pub creds: (u32, u32, u32),
     /// F189: SCM_RIGHTS — files carried alongside the payload.
-    #[cfg(target_os = "oxide-kernel")]
     pub fds: Vec<Arc<vfs::File>>,
-    /// Hosted-test stub for the same slot.
-    #[cfg(not(target_os = "oxide-kernel"))]
-    pub fds: Vec<u32>,
 }
 
 pub struct UnixDgramQueue {
     pub msgs: Spinlock<VecDeque<UnixDgram>, UnixLockClass>,
+    rights: Spinlock<VecDeque<GcRights>, UnixLockClass>,
     /// Bound local address for pathname/abstract datagram sockets.
     pub bound: Spinlock<Option<UnixAddr>, UnixLockClass>,
     /// Connected peer address for AF_UNIX SOCK_DGRAM.
@@ -31,6 +28,7 @@ pub struct UnixDgramQueue {
     pub waiters: sched::live::WaitList,
     /// F181a: epoll subscribers of the owning InetSocket.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    gc: GcNode,
 }
 
 impl UnixDgramQueue {
@@ -38,6 +36,7 @@ impl UnixDgramQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             msgs: Spinlock::new(VecDeque::new()),
+            rights: Spinlock::new(VecDeque::new()),
             bound: Spinlock::new(None),
             peer: Spinlock::new(None),
             reader_shutdown: core::sync::atomic::AtomicBool::new(false),
@@ -45,8 +44,12 @@ impl UnixDgramQueue {
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
+            gc: GcNode::new(),
         })
     }
+
+    /// Stable identity of this datagram receive queue. # C: O(1)
+    pub fn gc_node(&self) -> GcNode { self.gc.clone() }
 
     /// Store the local bind address.
     /// # C: O(1)
@@ -85,12 +88,22 @@ impl UnixDgramQueue {
 
     /// Enqueue unless the owning socket shut down its receive half.
     /// # C: O(1)
-    pub fn try_push(&self, msg: UnixDgram) -> Result<(), crate::NetError> {
+    pub fn try_push(&self, mut msg: UnixDgram) -> Result<(), crate::NetError> {
+        let rights = GcRights::from_files(core::mem::take(&mut msg.fds));
+        self.try_push_with_rights(msg, rights)
+    }
+
+    /// Enqueue a datagram with a classified canonical rights batch. # C: O(1)
+    pub fn try_push_with_rights(&self, msg: UnixDgram, rights: GcRights) -> Result<(), crate::NetError> {
+        let transition = self.gc.pin();
+        rights.register(&self.gc);
         let mut q = self.msgs.lock();
         if self.released.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Econnrefused); }
         if self.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Epipe); }
         q.push_back(msg);
+        self.rights.lock().push_back(rights);
         drop(q);
+        drop(transition);
         #[cfg(target_os = "oxide-kernel")]
         {
             self.waiters.wake_all();
@@ -116,9 +129,10 @@ impl UnixDgramQueue {
     pub fn release(&self) {
         let dropped = {
             let mut q = self.msgs.lock();
+            let mut rights = self.rights.lock();
             self.released.store(true, core::sync::atomic::Ordering::Release);
             self.reader_shutdown.store(true, core::sync::atomic::Ordering::Release);
-            core::mem::take(&mut *q)
+            (core::mem::take(&mut *q), core::mem::take(&mut *rights))
         };
         drop(dropped);
         #[cfg(target_os = "oxide-kernel")]
@@ -128,6 +142,13 @@ impl UnixDgramQueue {
     /// Pop one dgram if any.
     /// # C: O(1)
     pub fn pop(&self) -> Option<UnixDgram> {
-        self.msgs.lock().pop_front()
+        let mut q = self.msgs.lock();
+        let mut rights = self.rights.lock();
+        let mut msg = q.pop_front()?;
+        let batch = rights.pop_front();
+        drop(rights);
+        drop(q);
+        if let Some(batch) = batch { msg.fds = batch.take_files(); }
+        Some(msg)
     }
 }

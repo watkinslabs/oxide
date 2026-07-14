@@ -3,7 +3,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
-use crate::net_common::{errno_from_neterr, socket_from_fd};
+use crate::net_common::{errno_from_neterr, fd_file, inode_as_inet_socket};
 
 /// `listen(fd, backlog)` slot 50.
 /// # C: O(1)
@@ -27,11 +27,14 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
         }
         return -(Errno::Einval.as_i32() as i64);
     }
-    let sock = match socket_from_fd(fd) {
+    let file = match fd_file(fd) {
+        Some(f) => f, None => { trace_enotsock_at(fd, b"listen"); return -(Errno::Enotsock.as_i32() as i64); }
+    };
+    let sock = match inode_as_inet_socket(file.inode()) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"listen"); return -(Errno::Enotsock.as_i32() as i64); }
     };
     match net::sock::listen(&sock, backlog) {
-        Ok(())  => 0,
+        Ok(())  => { net::bind_file(&file, &sock); 0 }
         Err(e)  => errno_from_neterr(e),
     }
 }

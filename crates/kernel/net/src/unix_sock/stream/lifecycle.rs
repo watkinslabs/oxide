@@ -1,5 +1,6 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use super::{UnixEnd, UnixPair};
+use super::GcRights;
 use vfs;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -93,7 +94,7 @@ impl UnixPair {
         let released = match end { UnixEnd::A => &self.released_a, UnixEnd::B => &self.released_b };
         if released.swap(true, AcqRel) { return; }
         let incoming = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
-        let (unread, fds): (bool, Vec<(u64, Vec<Arc<vfs::File>>, (u32, u32, u32))>) = {
+        let (unread, fds): (bool, Vec<(u64, GcRights, (u32, u32, u32))>) = {
             let mut g = incoming.lock();
             let unread = !g.buf.is_empty() || !g.ancillary.is_empty();
             g.buf.clear();

@@ -16,6 +16,7 @@ use super::parse::{SCM_RIGHTS, SOL_SOCKET};
 /// recvmsg(2) for AF_UNIX SOCK_STREAM (socketpair).
 /// # C: O(iov + payload + nfds)
 pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) -> i64 {
+    let _gc_transfer = net::transfer_guard();
     let (iov, iovlen, control, controllen) = unsafe {
         (
             core::ptr::read_volatile((msgp + 16) as *const u64),
@@ -219,6 +220,7 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
 /// recvmsg(2) for AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET socketpair.
 /// # C: O(iov + payload + nfds)
 pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &SyscallArgs) -> i64 {
+    let _gc_transfer = net::transfer_guard();
     use hal::TimerOps;
     let (_name, iov, iovlen, control, controllen) = unsafe {
         (
@@ -289,9 +291,7 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
                 let _ = pair.take_reset(end);
                 return -(Errno::Econnreset.as_i32() as i64);
             }
-            net::unix_sock::msg_pair::ArmMsgRead::Eof => break net::unix_sock::UnixMsg {
-                payload: alloc::vec::Vec::new(), fds: alloc::vec::Vec::new(), creds: (0, 0, 0),
-            },
+            net::unix_sock::msg_pair::ArmMsgRead::Eof => break net::unix_sock::UnixMsg::empty(),
             net::unix_sock::msg_pair::ArmMsgRead::Parked { reader_shutdown } => {
                 // SAFETY: arm_read published current under the incoming queue lock.
                 unsafe { sched::live::schedule::schedule(); }
@@ -299,9 +299,7 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
                 if !reader_shutdown && pair.kind == net::UnixMsgKind::Datagram
                     && pair.reader_shutdown(end) && !pair.has_msg(end)
                 {
-                    break net::unix_sock::UnixMsg {
-                        payload: alloc::vec::Vec::new(), fds: alloc::vec::Vec::new(), creds: (0, 0, 0),
-                    };
+                    break net::unix_sock::UnixMsg::empty();
                 }
             }
         }

@@ -107,7 +107,6 @@ fn datagram_shutdown_read_drains_queue_then_rejects_senders() {
     let queue = UnixDgramQueue::new();
     queue.try_push(UnixDgram {
         payload: b"queued".to_vec(), creds: (1, 2, 3),
-        #[cfg(not(target_os = "oxide-kernel"))]
         fds: alloc::vec::Vec::new(),
     }).unwrap();
     queue.shutdown_reader();
@@ -116,7 +115,6 @@ fn datagram_shutdown_read_drains_queue_then_rejects_senders() {
     assert!(queue.pop().is_none());
     assert!(matches!(queue.try_push(UnixDgram {
         payload: b"late".to_vec(), creds: (1, 2, 3),
-        #[cfg(not(target_os = "oxide-kernel"))]
         fds: alloc::vec::Vec::new(),
     }), Err(crate::NetError::Epipe)));
 }
