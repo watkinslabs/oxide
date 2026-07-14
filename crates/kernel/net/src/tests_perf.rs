@@ -19,7 +19,7 @@ fn f195_two_fragments_reassemble_to_udp_payload() {
     use crate::udp::{UDP_HDR_LEN, UdpHdr};
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
-    stack.bind_udp(Ipv4Addr::LOOPBACK, 12345).unwrap();
+    let endpoint = stack.bind_udp(Ipv4Addr::LOOPBACK, 12345).unwrap();
     // Build a complete UDP datagram with 1000-byte payload.
     let payload = alloc::vec![0x42u8; 1000];
     let l4_len = UDP_HDR_LEN + payload.len();
@@ -56,7 +56,7 @@ fn f195_two_fragments_reassemble_to_udp_payload() {
     stack.deliver_rx(id, &f1).unwrap();
     stack.deliver_rx(id, &f2).unwrap();
     // Receiver should see the full reassembled datagram.
-    let (_src, _sp, body) = stack.recv_udp(12345).expect("reassembled UDP delivered");
+    let (_src, _sp, _, _, _, body) = endpoint.recv(false).expect("reassembled UDP delivered");
     assert_eq!(body.len(), 1000);
     assert_eq!(body, payload);
 }

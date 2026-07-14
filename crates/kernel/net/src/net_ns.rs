@@ -47,6 +47,8 @@ pub struct NsNet {
     pub unix: UnixRegistry,
     /// Namespace-local `net.core.somaxconn` value.
     pub(crate) somaxconn: AtomicUsize,
+    /// Namespace-local ephemeral range and privileged-port boundary.
+    pub(crate) ports: crate::ephemeral::State,
 }
 
 impl NsNet {
@@ -55,6 +57,7 @@ impl NsNet {
         Arc::new(Self {
             unix: UnixRegistry::new(),
             somaxconn: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN),
+            ports: crate::ephemeral::State::new(),
         })
     }
 }

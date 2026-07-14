@@ -5,10 +5,12 @@
 // - udp.rs:   IPv6 UDP bind/queue/send/recv operations.
 // - rx.rs:    IPv6 receive path and protocol demux (ICMPv6/TCP/UDP/NDP).
 // - tx.rs:    IPv6 L4 transmit helpers and fragmentation/MTU helpers.
+// - mld.rs:   MLD interface policy, reporting, and retry lifecycle.
 
 mod types;
 mod udp;
 mod rx;
 mod tx;
+mod mld;
 
 pub use types::{Ipv6IfaceAddr, Udp6Datagram, Udp6RxQueue};

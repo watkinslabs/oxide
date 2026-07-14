@@ -213,6 +213,7 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Edestaddrreq => Errno::Edestaddrreq as i32,
         vfs::VfsError::Eaddrnotavail => Errno::Eaddrnotavail as i32,
         vfs::VfsError::Enetunreach => Errno::Enetunreach as i32,
+        vfs::VfsError::Ehostunreach => Errno::Ehostunreach as i32,
         vfs::VfsError::Enobufs => Errno::Enobufs as i32,
         vfs::VfsError::Enametoolong => Errno::Enametoolong as i32,
         vfs::VfsError::Enotconn => Errno::Enotconn as i32,
@@ -222,6 +223,10 @@ pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Euclean => Errno::Euclean as i32,
         vfs::VfsError::Edquot => Errno::Edquot as i32,
         vfs::VfsError::Ecanceled => Errno::Ecanceled as i32,
+        vfs::VfsError::Enonet => Errno::Enonet as i32,
+        vfs::VfsError::Enoprotoopt => Errno::Enoprotoopt as i32,
+        vfs::VfsError::Eproto => Errno::Eproto as i32,
+        vfs::VfsError::Ehostdown => Errno::Ehostdown as i32,
     } as i64)
 }
 

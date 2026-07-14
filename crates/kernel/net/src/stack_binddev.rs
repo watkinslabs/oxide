@@ -4,8 +4,7 @@ use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::ipv4::IPV4_HDR_LEN;
 use crate::netdev::{NetDev, NetError, NetResult};
 use crate::pkt::Pkt;
-use crate::stack::{NetStack, TcpEntry, TcpKey};
-use crate::tcp_conn::{Endpoint, TcpConn};
+use crate::stack::{NetStack, TcpEntry};
 
 impl NetStack {
     /// Resolve a raw SO_BINDTODEVICE ifindex. 0 means unbound. # C: O(N)
@@ -93,27 +92,9 @@ impl NetStack {
         error: Arc<crate::SocketError>)
         -> NetResult<Arc<TcpEntry>>
     {
-        let isn = self.next_isn_value();
-        let mut conn = TcpConn::new_client(
-            Endpoint { ip: local_ip, port: local_port },
-            Endpoint { ip: remote_ip, port: remote_port },
-            isn,
-        );
-        conn.own_mss = self.mss_for_dst_on_iface(remote_ip, bound);
-        let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry::new_with_error(conn, error));
-        entry.set_bound_iface(bound);
-        let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
-        self.tcp_conns.lock().insert(key, entry.clone());
-        if let Err(e) = self.send_l4_over_ip_bound(local_ip, remote_ip, IpProto::Tcp, &syn, bound) {
-            let mut conns = self.tcp_conns.lock();
-            if conns.get(&key).is_some_and(|current| Arc::ptr_eq(current, &entry)) {
-                conns.remove(&key);
-            }
-            return Err(e);
-        }
-        crate::stack::stamp_last_sent_public(&entry, 1);
-        Ok(entry)
+        let bind = self.tcp_reserve(local_ip, local_port, bound, false, false, 0,
+            matches!(local_ip, IpAddr::V6(_)))?;
+        self.tcp_connect_reserved(&bind, local_ip, remote_ip, remote_port, error)
     }
 
     /// Family-dispatched L4 transmit, optionally pinned to an iface. # C: O(payload + N)
@@ -175,7 +156,7 @@ impl NetStack {
         *s
     }
 
-    fn next_isn_value(&self) -> u32 {
+    pub(crate) fn next_isn_value(&self) -> u32 {
         let mut s = self.next_isn.lock();
         *s = s.wrapping_add(0x1000);
         *s

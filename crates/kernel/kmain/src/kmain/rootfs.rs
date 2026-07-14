@@ -116,17 +116,21 @@ fn debug_boot_rootfs() {
         }
         netlink::install_netfilter_handler(netfilter::handle);
         net::stack::install_nf_hook(|h, p, fam| netfilter::eval(h, p, fam).as_u32());
-        net::stack::install_bpf_filter_runner(
-            |insns, pkt| security::bpf_interp::run(insns, pkt).map_or(false, |r| r != 0));
+        net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
+            net::bpf_filter::FilterKind::Ebpf =>
+                security::bpf_interp::run(insns, packet).map_or(0, |r| r as u32),
+            net::bpf_filter::FilterKind::Classic =>
+                security::socket_filter::run(insns, packet),
+        });
         let s = net::sock::stack();
-        let _ = s.bind_udp(net::Ipv4Addr::LOOPBACK, 7777);
+        let endpoint = s.bind_udp(net::Ipv4Addr::LOOPBACK, 7777).ok();
         let _ = s.send_udp_to(
             net::Ipv4Addr::LOOPBACK, 5555,
             net::Ipv4Addr::LOOPBACK, 7777,
             b"oxide-boot-smoke",
         );
         net::sock::drain_loopback();
-        if let Some((_, _, payload)) = s.recv_udp(7777) {
+        if let Some((_, _, _, _, _, payload)) = endpoint.and_then(|endpoint| endpoint.recv(false)) {
             klog::write_raw(b"[INFO]  net udp lo round-trip: ");
             klog::write_raw(&payload);
             klog::write_raw(b"\n");

@@ -4,7 +4,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
-use crate::net_common::{peercred_for_fd, socket_from_fd};
+use crate::net_common::{errno_from_neterr, peercred_for_fd, socket_from_fd};
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
 ///
@@ -115,6 +115,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IP_TOS: u64 = 1;
     const IP_TTL: u64 = 2;
     const IP_PKTINFO: u64 = 8;
+    const IP_RECVERR: u64 = 11;
+    const IP_MTU_DISCOVER: u64 = 10;
+    const IP_MTU: u64 = 14;
     const IP_MULTICAST_TTL: u64 = 33;
     const IP_MULTICAST_LOOP: u64 = 34;
     const IP_MSFILTER: u64 = 41;
@@ -123,6 +126,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IPV6_MULTICAST_IF: u64 = 17;
     const IPV6_MULTICAST_HOPS: u64 = 18;
     const IPV6_MULTICAST_LOOP: u64 = 19;
+    const IPV6_MTU: u64 = 24;
+    const IPV6_MTU_DISCOVER: u64 = 23;
+    const IPV6_RECVERR: u64 = 25;
     const IPV6_V6ONLY: u64 = 26;
     const IPV6_RECVPKTINFO: u64 = 49;
     const IPV6_RECVHOPLIMIT: u64 = 51;
@@ -157,6 +163,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_TTL) => return i32_back(s.opts.ip_ttl.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_PKTINFO) => return i32_back(s.opts.ip_pktinfo.load(Ordering::Acquire)),
+            (IPPROTO_IP, IP_MTU_DISCOVER) => return i32_back(s.opts.ip_mtu_discover.load(Ordering::Acquire)),
+            (IPPROTO_IP, IP_MTU) => return socket_path_mtu(&s, false, &i32_back),
+            (IPPROTO_IP, IP_RECVERR) => return i32_back(i32::from(s.error.recverr4())),
             (IPPROTO_IP, IP_MULTICAST_TTL) => return i32_back(s.opts.ip_mcast_ttl.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_MULTICAST_LOOP) => return i32_back(s.opts.ip_mcast_loop.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_MSFILTER) => return ipv4_msfilter_get(&s, optval, optlen_p),
@@ -165,9 +174,14 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => return i32_back(s.opts.ipv6_ucast_hops.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => return i32_back(s.opts.ipv6_mcast_hops.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => return i32_back(s.opts.ipv6_mcast_loop.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_MTU) => return socket_path_mtu(&s, true, &i32_back),
+            (IPPROTO_IPV6, IPV6_MTU_DISCOVER) =>
+                return i32_back(s.opts.ipv6_mtu_discover.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_RECVERR) => return i32_back(i32::from(s.error.recverr6())),
             (IPPROTO_IPV6, IPV6_MULTICAST_IF) => return i32_back(s.opts.ipv6_mcast_ifindex.load(Ordering::Acquire) as i32),
             (IPPROTO_IPV6, IPV6_RECVPKTINFO) => return i32_back(s.opts.ipv6_recvpktinfo.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => return i32_back(s.opts.ipv6_recvhoplimit.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter_get(&s, optval, optlen_p),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
@@ -179,6 +193,29 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         }
     } else {
         return -(Errno::Enotsock.as_i32() as i64);
+    }
+}
+
+fn socket_path_mtu(s: &alloc::sync::Arc<net::sock::InetSocket>, ipv6: bool,
+                   back: &impl Fn(i32) -> i64) -> i64 {
+    use core::sync::atomic::Ordering;
+    let dst = {
+        let kind = s.kind.lock();
+        match &*kind {
+            SockKind::TcpConn(entry) => Some(entry.conn.lock().remote.ip),
+            _ if ipv6 => s.peer6.lock().map(|(ip, _)| net::IpAddr::V6(ip)),
+            _ => s.peer.lock().map(|(ip, _)| net::IpAddr::V4(ip)),
+        }
+    };
+    let Some(dst) = dst else { return -(Errno::Enotconn.as_i32() as i64); };
+    if ipv6 != matches!(dst, net::IpAddr::V6(_)) {
+        return -(Errno::Enotconn.as_i32() as i64);
+    }
+    let raw = s.opts.bound_ifindex.load(Ordering::Acquire);
+    let bound = if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) };
+    match net::sock::stack().path_mtu(dst, bound, false) {
+        Ok(mtu) => back(mtu.min(i32::MAX as u32) as i32),
+        Err(error) => errno_from_neterr(error),
     }
 }
 
@@ -259,50 +296,36 @@ fn write_sockaddr_storage_v4(ptr: u64, addr: net::Ipv4Addr) {
     write_ipv4_at(ptr + 4, addr);
 }
 
-fn iface_for_v4_addr(addr: net::Ipv4Addr) -> Option<net::NetIfaceId> {
-    net::sock::stack().routes.snapshot().into_iter()
-        .find(|r| r.src_hint == Some(addr))
-        .map(|r| r.iface)
-}
-
-fn default_v4_mcast_iface(s: &alloc::sync::Arc<net::sock::InetSocket>, group: net::Ipv4Addr)
-    -> Option<net::NetIfaceId>
-{
-    use core::sync::atomic::Ordering;
-    let raw = s.opts.ip_mcast_ifindex.load(Ordering::Acquire);
-    if raw != 0 { return Some(net::NetIfaceId::from_raw(raw)); }
-    let addr = net::Ipv4Addr::from_u32(s.opts.ip_mcast_ifaddr.load(Ordering::Acquire));
-    if !addr.is_unspecified() { return iface_for_v4_addr(addr); }
-    let bound = s.opts.bound_ifindex.load(Ordering::Acquire);
-    if bound != 0 { return Some(net::NetIfaceId::from_raw(bound)); }
-    if let Some(r) = net::sock::stack().routes.lookup(group) { return Some(r.iface); }
-    let routes = net::sock::stack().routes.snapshot();
-    if routes.len() == 1 { Some(routes[0].iface) } else { None }
-}
-
-fn resolve_v4_mcast_iface(
-    s: &alloc::sync::Arc<net::sock::InetSocket>,
-    group: net::Ipv4Addr,
-    ifindex: u32,
-    ifaddr: net::Ipv4Addr,
-) -> Result<net::NetIfaceId, i64> {
-    let iface = if ifindex != 0 {
-        net::NetIfaceId::from_raw(ifindex)
-    } else if !ifaddr.is_unspecified() {
-        iface_for_v4_addr(ifaddr).ok_or(-(Errno::Enodev.as_i32() as i64))?
-    } else {
-        default_v4_mcast_iface(s, group).ok_or(-(Errno::Enodev.as_i32() as i64))?
-    };
-    if net::sock::stack().ifaces.lookup(iface).is_none() {
-        return Err(-(Errno::Enodev.as_i32() as i64));
+fn read_ipv6_at(ptr: u64) -> Option<net::Ipv6Addr> {
+    if ptr + 16 > USER_VA_END { return None; }
+    let mut addr = [0u8; 16];
+    for (index, byte) in addr.iter_mut().enumerate() {
+        // SAFETY: ptr + sizeof(in6_addr) was validated in user range.
+        *byte = unsafe { core::ptr::read_volatile((ptr + index as u64) as *const u8) };
     }
-    Ok(iface)
+    Some(net::Ipv6Addr(addr))
 }
 
-fn udp_port(s: &alloc::sync::Arc<net::sock::InetSocket>) -> Result<u16, i64> {
-    match *s.local_port.lock() {
-        Some(p) => Ok(p),
-        None => Err(-(Errno::Einval.as_i32() as i64)),
+fn read_sockaddr_storage_v6(ptr: u64) -> Option<net::Ipv6Addr> {
+    const AF_INET6: u16 = 10;
+    if ptr + 28 > USER_VA_END { return None; }
+    // SAFETY: sockaddr_storage starts with a native-endian address family.
+    let family = unsafe { core::ptr::read_volatile(ptr as *const u16) };
+    if family != AF_INET6 { return None; }
+    read_ipv6_at(ptr + 8)
+}
+
+fn write_sockaddr_storage_v6(ptr: u64, addr: net::Ipv6Addr) {
+    const AF_INET6: u16 = 10;
+    for index in 0..128u64 {
+        // SAFETY: caller validated the complete sockaddr_storage slot.
+        unsafe { core::ptr::write_volatile((ptr + index) as *mut u8, 0); }
+    }
+    // SAFETY: caller validated sockaddr_in6 family and address fields.
+    unsafe { core::ptr::write_volatile(ptr as *mut u16, AF_INET6); }
+    for (index, byte) in addr.0.iter().enumerate() {
+        // SAFETY: sockaddr_in6 address occupies bytes 8 through 23.
+        unsafe { core::ptr::write_volatile((ptr + 8 + index as u64) as *mut u8, *byte); }
     }
 }
 
@@ -316,9 +339,9 @@ fn ipv4_msfilter_get(s: &alloc::sync::Arc<net::sock::InetSocket>, optval: u64, o
     let Some(ifaddr) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(requested) = read_u32_at(optval + 12) else { return -(Errno::Efault.as_i32() as i64); };
     if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
-    let iface = match resolve_v4_mcast_iface(s, group, 0, ifaddr) { Ok(i) => i, Err(e) => return e };
-    let port = match udp_port(s) { Ok(p) => p, Err(e) => return e };
-    let f = net::mcast_filter::get(port, iface, group);
+    let f = match s.get_v4_mcast_filter_req(0, ifaddr, group) {
+        Ok(filter) => filter, Err(error) => return errno_from_neterr(error),
+    };
     let n = core::cmp::min(requested as usize, f.sources.len());
     if 16u64 + n as u64 * 4 > cap { return -(Errno::Erange.as_i32() as i64); }
     write_u32_at(optval + 8, f.mode.as_u32());
@@ -338,15 +361,42 @@ fn ipv4_group_filter_get(s: &alloc::sync::Arc<net::sock::InetSocket>, optval: u6
     let Some(group) = read_sockaddr_storage_v4(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
     let Some(requested) = read_u32_at(optval + 140) else { return -(Errno::Efault.as_i32() as i64); };
     if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
-    let iface = match resolve_v4_mcast_iface(s, group, ifindex, net::Ipv4Addr::ANY) { Ok(i) => i, Err(e) => return e };
-    let port = match udp_port(s) { Ok(p) => p, Err(e) => return e };
-    let f = net::mcast_filter::get(port, iface, group);
+    let f = match s.get_v4_mcast_filter_req(ifindex, net::Ipv4Addr::ANY, group) {
+        Ok(filter) => filter, Err(error) => return errno_from_neterr(error),
+    };
     let n = core::cmp::min(requested as usize, f.sources.len());
     if 144u64 + n as u64 * 128 > cap { return -(Errno::Erange.as_i32() as i64); }
     write_u32_at(optval + 136, f.mode.as_u32());
     write_u32_at(optval + 140, f.sources.len() as u32);
     for i in 0..n { write_sockaddr_storage_v4(optval + 144 + i as u64 * 128, f.sources[i]); }
     write_u32_at(optlen_p, (144 + n * 128) as u32);
+    0
+}
+
+fn ipv6_group_filter_get(s: &alloc::sync::Arc<net::sock::InetSocket>, optval: u64,
+                         optlen_p: u64) -> i64 {
+    if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cap = match read_u32_at(optlen_p) {
+        Some(value) => value as u64, None => return -(Errno::Efault.as_i32() as i64),
+    };
+    if cap < 144 || optval + cap > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    let Some(group) = read_sockaddr_storage_v6(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
+    let Some(requested) = read_u32_at(optval + 140) else { return -(Errno::Efault.as_i32() as i64); };
+    if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
+    let filter = match s.get_v6_mcast_filter(ifindex, group) {
+        Ok(filter) => filter, Err(error) => return errno_from_neterr(error),
+    };
+    let count = core::cmp::min(requested as usize, filter.sources.len());
+    if 144u64 + count as u64 * 128 > cap { return -(Errno::Erange.as_i32() as i64); }
+    write_u32_at(optval + 136, filter.mode.as_u32());
+    write_u32_at(optval + 140, filter.sources.len() as u32);
+    for index in 0..count {
+        write_sockaddr_storage_v6(optval + 144 + index as u64 * 128, filter.sources[index]);
+    }
+    write_u32_at(optlen_p, (144 + count * 128) as u32);
     0
 }
 

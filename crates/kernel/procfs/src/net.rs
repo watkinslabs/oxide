@@ -135,13 +135,14 @@ fn net_udp_body() -> alloc::vec::Vec<u8> {
     let stack = net::sock::stack();
     let map = stack.udp_map().lock();
     let mut sl: u32 = 0;
-    // UDP local-bind table — Linux reports 0.0.0.0 for INADDR_ANY,
-    // and our table is port-keyed (no per-bind IP), so we honour
-    // the wildcard convention.
-    for (port, _) in map.iter() {
-        let _ = writeln!(s, "{:5}: 00000000:{:04X} 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-            sl, port);
-        sl += 1;
+    for group in map.values() {
+        for q in group {
+            let rx_len = q.queued_bytes();
+            let ip = u32::from_be_bytes(q.bound_ip.octets()).to_be();
+            let _ = writeln!(s, "{:5}: {:08X}:{:04X} 00000000:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
+                sl, ip, q.bound_port, rx_len);
+            sl += 1;
+        }
     }
     s.into_bytes()
 }
@@ -158,11 +159,13 @@ fn net_udp6_body() -> alloc::vec::Vec<u8> {
     let stack = net::sock::stack();
     let map = stack.udp6_map().lock();
     let mut sl: u32 = 0;
-    for q in map.values() {
-        let rx_len: usize = q.q.lock().iter().map(|(.., p)| p.len()).sum();
-        let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
-            sl, proc_ipv6_hex(q.bound_ip), q.bound_port, proc_ipv6_hex(Ipv6Addr::ANY), rx_len);
-        sl += 1;
+    for group in map.values() {
+        for q in group {
+            let rx_len = q.queued_bytes();
+            let _ = writeln!(s, "{:5}: {}:{:04X} {}:0000 07 00000000:{:08X} 00:00000000 00000000     0        0 0 2 0000000000000000 0",
+                sl, proc_ipv6_hex(q.bound_ip), q.bound_port, proc_ipv6_hex(Ipv6Addr::ANY), rx_len);
+            sl += 1;
+        }
     }
     s.into_bytes()
 }

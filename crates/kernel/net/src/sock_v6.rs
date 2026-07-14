@@ -5,8 +5,8 @@
 
 use crate::netdev::NetError;
 use crate::sock::{
-    InetSocket, SockKind, alloc_ephemeral_port,
-    alloc_ephemeral_port6_with_error, bound_iface, drain_loopback, stack,
+    InetSocket, SockKind,
+    alloc_ephemeral_udp6, drain_loopback, stack,
 };
 use crate::sock_opts::apply_tcp_keepalive_opts;
 
@@ -19,20 +19,30 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
             SockKind::Udp => {
                 drop(kind);
                 let local_port = {
-                    let cur = *sock.local_port.lock();
-                    match cur {
+                    let mut slot = sock.local_port.lock();
+                    if sock.released.load(core::sync::atomic::Ordering::Acquire) {
+                        return Err(NetError::Einval);
+                    }
+                    match *slot {
                         Some(p) => p,
                         None    => {
-                            let p = alloc_ephemeral_port6_with_error(sock.error.clone())?;
-                            stack().set_udp6_bound_iface(p, bound_iface(sock)?);
-                            *sock.local_port.lock() = Some(p);
+                            let (p, endpoint) = alloc_ephemeral_udp6(
+                                sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                                crate::Ipv6Addr::ANY, sock.error.clone(),
+                                crate::sock_mcast::bound_iface6(sock, dst_ip)?,
+                                sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
+                                sock.owner_uid,
+                                sock.opts.ipv6_v6only.clone(),
+                                sock.peer6.clone(), sock.opts.ipv6_mtu_discover.clone(),
+                                sock.bpf_filter.clone(), sock.mcast.clone(),
+                            ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
+                            endpoint.register_poll_subs(&sock.poll_subs);
+                            *sock.udp6.lock() = Some(endpoint);
+                            *slot = Some(p);
                             p
                         }
                     }
                 };
-                if let Some(q) = stack().udp6_queue_arc(local_port) {
-                    q.register_poll_subs(&sock.poll_subs);
-                }
                 *sock.peer6.lock() = Some((dst_ip, port));
                 return Ok(());
             }
@@ -45,35 +55,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
             _ => {}
         }
     }
-    let local_port = {
-        let cur = *sock.local_port.lock();
-        match cur {
-            Some(p) => p,
-            None    => { let p = alloc_ephemeral_port()?; *sock.local_port.lock() = Some(p); p }
-        }
-    };
-    let bound6 = *sock.local_ip6.lock();
-    let any6 = crate::Ipv6Addr::ANY;
-    let local_ip = if bound6 != any6 {
-        bound6
-    } else if dst_ip == crate::Ipv6Addr::LOOPBACK {
-        crate::Ipv6Addr::LOOPBACK
-    } else {
-        any6
-    };
-    let bound = bound_iface(sock)?;
-    let entry = stack().tcp_connect_ip_bound(
-        crate::addr::IpAddr::V6(local_ip), local_port,
-        crate::addr::IpAddr::V6(dst_ip),   port,
-        bound,
-        sock.error.clone(),
-    )?;
-    entry.register_poll_subs(&sock.poll_subs);
-    apply_tcp_keepalive_opts(sock, &entry);
-    *sock.kind.lock() = SockKind::TcpConn(entry.clone());
-    *sock.peer6.lock() = Some((dst_ip, port));
-    if nonblock { return Err(NetError::Einprogress); }
-    crate::sock_io::connect_wait_established(sock, &entry)
+    crate::sock::tcp_lifecycle::connect_tcp6(sock, dst_ip, port, nonblock)
 }
 
 /// Resolve the outbound hop limit for a v6 datagram from the socket's
@@ -97,6 +79,8 @@ fn resolve_v6_hop_limit(sock: &InetSocket, dst_ip: crate::Ipv6Addr) -> u8 {
 pub fn sendto_v6(sock: &InetSocket,
                   dst_ip: crate::Ipv6Addr, dst_port: u16,
                   payload: &[u8]) -> Result<usize, NetError> {
+    let eno = sock.take_pending_recv_error();
+    if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
     if crate::udp::udp6_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
     // Lock-across-match hazard (see connect_v6): read the slot into a
     // temporary so the guard drops before the None arm re-locks to
@@ -104,20 +88,37 @@ pub fn sendto_v6(sock: &InetSocket,
     // scrutinee guard. An unbound v6 sendto hits the None arm every
     // call, so this deadlocked every first v6 send.
     let src_port = {
-        let cur = *sock.local_port.lock();
-        match cur {
+        let mut slot = sock.local_port.lock();
+        if sock.released.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(NetError::Einval);
+        }
+        match *slot {
             Some(p) => p,
             None    => {
-                let p = alloc_ephemeral_port6_with_error(sock.error.clone())?;
-                stack().set_udp6_bound_iface(p, bound_iface(sock)?);
-                *sock.local_port.lock() = Some(p);
+                let (p, endpoint) = alloc_ephemeral_udp6(
+                    sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+                    crate::Ipv6Addr::ANY, sock.error.clone(),
+                    crate::sock_mcast::bound_iface6(sock, dst_ip)?,
+                    sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
+                    sock.owner_uid,
+                    sock.opts.ipv6_v6only.clone(),
+                    sock.peer6.clone(), sock.opts.ipv6_mtu_discover.clone(),
+                    sock.bpf_filter.clone(), sock.mcast.clone(),
+                ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
+                endpoint.register_poll_subs(&sock.poll_subs);
+                *sock.udp6.lock() = Some(endpoint);
+                *slot = Some(p);
                 p
             }
         }
     };
     let src_ip = *sock.local_ip6.lock();
     let hop = resolve_v6_hop_limit(sock, dst_ip);
-    stack().send_udp6_to_bound_opts(src_ip, src_port, dst_ip, dst_port, payload, bound_iface(sock)?, hop)?;
+    let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    stack().send_udp6_pmtu_to_bound_opts(
+        src_ip, src_port, dst_ip, dst_port, payload,
+        crate::sock_mcast::bound_iface6(sock, dst_ip)?, hop, pmtudisc,
+    )?;
     drain_loopback();
     Ok(payload.len())
 }

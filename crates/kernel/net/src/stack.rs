@@ -4,6 +4,8 @@
 // Module manifest:
 // - types: queue/key/entry structs, timers, NetStack storage.
 // - core: constructor, iface, UDP, and listener setup helpers.
+// - udp_endpoint: IPv4 UDP endpoint queue, errors, and close linearization.
+// - tcp_bind: TCP local bind reservations and lifecycle transitions.
 // - tcp: TCP active/passive open, send/recv/close, retry, demux.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
 
@@ -34,10 +36,11 @@ pub use crate::netfilter_hook::{NfHookFn, install_nf_hook, NFPROTO_IPV4,
 use crate::netfilter_hook::{nf_hook_eval, nf_output};
 
 pub use crate::bpf_filter::{install_bpf_filter_runner, BpfFilterFn}; // bridge in bpf_filter.rs
-use crate::bpf_filter::bpf_accept;
 
 mod types;
 mod core;
+mod udp_endpoint;
+mod tcp_bind;
 mod tcp;
 mod ipv4;
 
