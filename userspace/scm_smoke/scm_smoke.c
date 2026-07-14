@@ -11,6 +11,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 
 #ifndef AF_UNIX
@@ -39,6 +42,105 @@ static int fail(const char *why) {
     char b[96]; int n = snprintf(b, sizeof b, "scm_smoke: FAIL %s errno=%d\n", why, errno);
     write(1, b, n);
     return 1;
+}
+
+static int send_fds(int sock, const int *fds, size_t count) {
+    char payload = 'f';
+    struct iovec iov = { &payload, 1 };
+    char control[CMSG_SPACE(2 * sizeof(int))];
+    struct msghdr msg = {0};
+    memset(control, 0, sizeof control);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = CMSG_SPACE(count * sizeof(int));
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(count * sizeof(int));
+    memcpy(CMSG_DATA(cmsg), fds, count * sizeof(int));
+    return sendmsg(sock, &msg, 0) == 1 ? 0 : -1;
+}
+
+static int test_cloexec(void) {
+    int sv[2], pfd[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0 || pipe(pfd) < 0) return fail("cloexec setup");
+    if (send_fds(sv[0], &pfd[1], 1) < 0) return fail("cloexec send");
+    char byte, control[CMSG_SPACE(sizeof(int))];
+    struct iovec iov = { &byte, 1 };
+    struct msghdr msg = {0};
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = control; msg.msg_controllen = sizeof control;
+    if (recvmsg(sv[1], &msg, MSG_CMSG_CLOEXEC) != 1) return fail("cloexec recv");
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    int fd = -1;
+    if (!cmsg || cmsg->cmsg_type != SCM_RIGHTS) return fail("cloexec cmsg");
+    memcpy(&fd, CMSG_DATA(cmsg), sizeof fd);
+    int fdflags = fcntl(fd, F_GETFD);
+    if (!(msg.msg_flags & MSG_CMSG_CLOEXEC) || fdflags < 0 || !(fdflags & FD_CLOEXEC)) return fail("cloexec flags");
+    close(fd); close(pfd[0]); close(pfd[1]); close(sv[0]); close(sv[1]);
+    return 0;
+}
+
+static int test_cred_exact_len(void) {
+    int sv[2], one = 1;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) return fail("cred-len socketpair");
+    if (setsockopt(sv[1], SOL_SOCKET, SO_PASSCRED, &one, sizeof one) < 0) return fail("cred-len passcred");
+    if (write(sv[0], "c", 1) != 1) return fail("cred-len write");
+    char byte;
+    struct iovec iov = { &byte, 1 };
+    union { char bytes[CMSG_LEN(sizeof(struct ucred_x))]; struct cmsghdr align; } control;
+    struct msghdr msg = {0};
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = control.bytes; msg.msg_controllen = sizeof control.bytes;
+    if (recvmsg(sv[1], &msg, 0) != 1) return fail("cred-len recv");
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg || cmsg->cmsg_len != CMSG_LEN(sizeof(struct ucred_x)) || (msg.msg_flags & MSG_CTRUNC))
+        return fail("cred-len result");
+    close(sv[0]); close(sv[1]);
+    return 0;
+}
+
+static int test_seqpacket_no_eor(void) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) < 0) return fail("seqpacket socketpair");
+    if (write(sv[0], "s", 1) != 1) return fail("seqpacket write");
+    char byte;
+    struct iovec iov = { &byte, 1 };
+    struct msghdr msg = {0};
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    if (recvmsg(sv[1], &msg, 0) != 1 || (msg.msg_flags & MSG_EOR)) return fail("seqpacket eor");
+    close(sv[0]); close(sv[1]);
+    return 0;
+}
+
+static int test_fault_keeps_fd_prefix(void) {
+    int sv[2], a[2], b[2], fds[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0 || pipe(a) < 0 || pipe(b) < 0) return fail("fault setup");
+    fds[0] = a[1]; fds[1] = b[1];
+    if (send_fds(sv[0], fds, 2) < 0) return fail("fault send");
+    long page = sysconf(_SC_PAGESIZE);
+    char *map = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (map == MAP_FAILED || mprotect(map + page, page, PROT_NONE) < 0) return fail("fault map");
+    char *control = map + page - 20;
+    char byte;
+    struct iovec iov = { &byte, 1 };
+    struct msghdr msg = {0};
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = control; msg.msg_controllen = CMSG_SPACE(2 * sizeof(int));
+    if (recvmsg(sv[1], &msg, 0) != 1) return fail("fault recv");
+    int fd = -1;
+    memcpy(&fd, control + CMSG_LEN(0), sizeof fd);
+    if (fd < 0 || fcntl(fd, F_GETFD) < 0 || !(msg.msg_flags & MSG_CTRUNC)) return fail("fault prefix");
+    if (write(fd, "P", 1) != 1) return fail("fault fd write");
+    char got;
+    if (read(a[0], &got, 1) != 1 || got != 'P') return fail("fault fd identity");
+    int reused = open("/dev/null", O_RDONLY);
+    if (reused != fd + 1) return fail("fault fd rollback");
+    mprotect(map + page, page, PROT_READ | PROT_WRITE);
+    munmap(map, (size_t)page * 2);
+    close(reused); close(fd); close(a[0]); close(a[1]); close(b[0]); close(b[1]); close(sv[0]); close(sv[1]);
+    return 0;
 }
 
 int main(void) {
@@ -132,6 +234,8 @@ int main(void) {
     if (!got_cred) return fail("no-cred");
     if (cred.pid != (unsigned)getpid() || cred.uid != (unsigned)getuid())
         return fail("cred-mismatch");
+
+    if (test_cloexec() || test_cred_exact_len() || test_seqpacket_no_eor() || test_fault_keeps_fd_prefix()) return 1;
 
     write(1, PASS, sizeof(PASS) - 1);
     return 0;
