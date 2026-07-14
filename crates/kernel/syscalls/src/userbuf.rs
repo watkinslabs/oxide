@@ -94,6 +94,14 @@ pub(crate) fn write_i32_pair(ptr: u64, a: i32, b: i32) -> Result<(), i64> {
     Ok(())
 }
 
+/// Write one possibly unaligned userspace `int`, matching Linux `put_user`. # C: O(1)
+pub(crate) fn write_user_i32(ptr: u64, value: i32) -> Result<(), i64> {
+    validate_user_buf_writable(ptr, 4, 1)?;
+    // SAFETY: the four-byte destination was validated writable; unaligned is permitted.
+    unsafe { core::ptr::write_unaligned(ptr as *mut i32, value); }
+    Ok(())
+}
+
 /// Same as `validate_user_buf` but confirms every page in the range belongs to
 /// a readable VMA before the kernel copies from it. # C: O(N_pages * log N_vmas)
 pub(crate) fn validate_user_buf_readable(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
