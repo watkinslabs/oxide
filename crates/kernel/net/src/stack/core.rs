@@ -7,12 +7,7 @@ impl NetStack {
             ifaces: IfaceRegistry::new(),
             routes: RouteTable::new(),
             routes6: Route6Table::new(),
-            udp:    Spinlock::new(BTreeMap::new()),
-            udp6:   Spinlock::new(BTreeMap::new()),
-            tcp_conns:   Spinlock::new(BTreeMap::new()),
-            tcp_listens: Spinlock::new(BTreeMap::new()),
-            tcp_binds: Spinlock::new(BTreeMap::new()),
-            next_tcp_ephemeral: ::core::sync::atomic::AtomicU32::new(crate::ephemeral::DEFAULT_START as u32),
+            inet: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(0x1000_0000),
             ndp:        Spinlock::new(BTreeMap::new()),
@@ -142,9 +137,25 @@ impl NetStack {
                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                            mcast: Arc<crate::mcast_filter::SocketMcast>)
         -> NetResult<Arc<UdpRxQueue>> {
+        self.bind_udp_socket_in(0, bind_ip, port, iface, error, reuseaddr, reuseport,
+            ip_mtu_discover, owner_uid, peer, bpf_filter, mcast)
+    }
+
+    /// Bind an IPv4 UDP endpoint in its owning network namespace. # C: O(N_port)
+    pub fn bind_udp_socket_in(&self, net_ns: u64, bind_ip: Ipv4Addr, port: u16,
+                           iface: Option<NetIfaceId>, error: Arc<crate::SocketError>,
+                           reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
+                           reuseport: Arc<::core::sync::atomic::AtomicI32>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           owner_uid: u32,
+                           peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           mcast: Arc<crate::mcast_filter::SocketMcast>)
+        -> NetResult<Arc<UdpRxQueue>> {
         let reuseport_member = reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0;
-        let mut g = self.udp.lock();
-        let udp6 = self.udp6.lock();
+        let tables = self.inet_tables(net_ns);
+        let mut g = tables.udp.lock();
+        let udp6 = tables.udp6.lock();
         if let Some(v6_group) = udp6.get(&port) {
             let iface_raw = iface.map(|i| i.raw()).unwrap_or(0);
             for old in v6_group {
@@ -178,7 +189,7 @@ impl NetStack {
             if iface_overlap && addr_overlap && !shared { return Err(NetError::Eaddrinuse); }
         }
         let q = Arc::new(UdpRxQueue::new_socket(
-            bind_ip, port, error, reuseaddr,
+            net_ns, bind_ip, port, error, reuseaddr,
             Arc::new(::core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
             ip_mtu_discover,
             owner_uid, peer, bpf_filter, mcast,
@@ -189,9 +200,17 @@ impl NetStack {
     }
 
     /// Select socket-owned endpoints for one received IPv4 datagram. # C: O(N_port)
+    #[cfg(test)]
     pub(crate) fn udp_demux(&self, src: Ipv4Addr, sport: u16, dst: Ipv4Addr,
                             dport: u16, iface: NetIfaceId) -> Vec<Arc<UdpRxQueue>> {
-        let group = self.udp.lock().get(&dport).cloned().unwrap_or_default();
+        self.udp_demux_in(0, src, sport, dst, dport, iface)
+    }
+
+    /// Select endpoints in the ingress interface's network namespace. # C: O(N_port)
+    pub(crate) fn udp_demux_in(&self, net_ns: u64, src: Ipv4Addr, sport: u16, dst: Ipv4Addr,
+                            dport: u16, iface: NetIfaceId) -> Vec<Arc<UdpRxQueue>> {
+        let tables = self.inet_tables(net_ns);
+        let group = tables.udp.lock().get(&dport).cloned().unwrap_or_default();
         let mut matched = Vec::new();
         let mut best = 0u8;
         let fanout = dst.is_multicast() || dst.is_broadcast();
@@ -226,15 +245,16 @@ impl NetStack {
     }
 
     /// Find the exact IPv4 UDP sender named by an ICMP-echoed tuple. # C: O(N_port)
-    pub(crate) fn udp_error_endpoint(&self, iface: NetIfaceId, src: Ipv4Addr, sport: u16,
+    pub(crate) fn udp_error_endpoint(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr, sport: u16,
                                      dst: Ipv4Addr, dport: u16) -> Option<Arc<UdpRxQueue>> {
-        self.udp_demux(dst, dport, src, sport, iface).pop()
+        self.udp_demux_in(net_ns, dst, dport, src, sport, iface).pop()
     }
 
     /// Remove exactly one IPv4 UDP endpoint, preserving port peers. # C: O(N_port)
     pub fn unbind_udp_endpoint(&self, endpoint: &Arc<UdpRxQueue>) {
         let port = endpoint.bound_port;
-        let mut map = self.udp.lock();
+        let tables = self.inet_tables(endpoint.net_ns);
+        let mut map = tables.udp.lock();
         if let Some(group) = map.get_mut(&port) {
             group.retain(|q| !Arc::ptr_eq(q, endpoint));
             if group.is_empty() { map.remove(&port); }
@@ -245,8 +265,9 @@ impl NetStack {
     /// Atomically change one endpoint's device scope after conflict validation. # C: O(N_port)
     pub fn rebind_udp_endpoint_iface(&self, endpoint: &Arc<UdpRxQueue>, iface: Option<NetIfaceId>)
         -> NetResult<()> {
-        let map = self.udp.lock();
-        let map6 = self.udp6.lock();
+        let tables = self.inet_tables(endpoint.net_ns);
+        let map = tables.udp.lock();
+        let map6 = tables.udp6.lock();
         let group = map.get(&endpoint.bound_port).ok_or(NetError::Einval)?;
         let new_iface = iface.map(|i| i.raw()).unwrap_or(0);
         if let Some(group6) = map6.get(&endpoint.bound_port) {
@@ -282,16 +303,20 @@ impl NetStack {
         Ok(())
     }
 
-    /// F180a: v6 UDP map accessor. # C: O(1)
-    pub fn udp6_map(&self) -> &Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass> {
-        &self.udp6
+    #[cfg(test)]
+    pub(crate) fn udp_map(&self) -> Arc<Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass>> {
+        self.inet_tables(0).udp.clone()
     }
-    /// F174: expose udp v4 map for stack_icmp. # C: O(1)
-    pub fn udp_map(&self) -> &Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass> { &self.udp }
-    /// F174: expose tcp conn map for stack_icmp. # C: O(1)
-    pub fn tcp_conns_map(&self) -> &Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass> { &self.tcp_conns }
-    /// # C: O(1) — caller locks before iterating
-    pub fn tcp_listens_map(&self) -> &Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass> { &self.tcp_listens }
+
+    #[cfg(test)]
+    pub(crate) fn udp6_map(&self) -> Arc<Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass>> {
+        self.inet_tables(0).udp6.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tcp_conns_map(&self) -> Arc<Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>> {
+        self.inet_tables(0).tcp_conns.clone()
+    }
 
     /// F161: pub send_l4_over_ipv4 wrapper. # C: O(payload + route)
     pub fn send_l4_over_ipv4_pub(&self, src: Ipv4Addr, dst: Ipv4Addr, l4: &[u8])

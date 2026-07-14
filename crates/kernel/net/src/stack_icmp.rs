@@ -3,32 +3,24 @@
 // original 4-tuple from the echoed IPv4 header + first 8 bytes
 // of L4 and surfaces ECONNREFUSED on the originating socket.
 
-use alloc::collections::BTreeMap;
-
 use crate::addr::{IpAddr, IpProto, NetIfaceId};
 use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN};
 use crate::netdev::{NetError, NetResult};
 use crate::stack::{NetStack, TcpKey};
 
-type PmtuKey = (usize, NetIfaceId, IpAddr);
-
-static PMTU_CACHE: sync::Spinlock<BTreeMap<PmtuKey, u32>, sync::Socket> =
-    sync::Spinlock::new(BTreeMap::new());
-
 const IPV4_MIN_MTU: u32 = 68;
 const IPV6_MIN_MTU: u32 = 1_280;
 const IPV4_PLATEAUS: [u32; 10] = [65_535, 32_000, 17_914, 8_166, 4_352, 2_002, 1_492, 1_006, 508, 296];
 
-fn stack_id(stack: &NetStack) -> usize { stack as *const NetStack as usize }
-
-fn cached_pmtu(stack: &NetStack, iface: NetIfaceId, dst: IpAddr, link_mtu: u32) -> u32 {
-    PMTU_CACHE.lock().get(&(stack_id(stack), iface, dst)).copied()
+fn cached_pmtu(stack: &NetStack, net_ns: u64, iface: NetIfaceId, dst: IpAddr, link_mtu: u32) -> u32 {
+    stack.inet_tables(net_ns).pmtu.lock().get(&(iface, dst)).copied()
         .unwrap_or(link_mtu).min(link_mtu)
 }
 
-fn update_pmtu(stack: &NetStack, iface: NetIfaceId, dst: IpAddr, mtu: u32) {
-    let key = (stack_id(stack), iface, dst);
-    let mut cache = PMTU_CACHE.lock();
+fn update_pmtu(stack: &NetStack, net_ns: u64, iface: NetIfaceId, dst: IpAddr, mtu: u32) {
+    let key = (iface, dst);
+    let tables = stack.inet_tables(net_ns);
+    let mut cache = tables.pmtu.lock();
     match cache.get_mut(&key) {
         Some(old) if mtu < *old => *old = mtu,
         None => { cache.insert(key, mtu); }
@@ -45,8 +37,14 @@ fn ipv4_frag_needed_mtu(hdr: &Ipv4Hdr, reported: u16) -> u32 {
 impl NetStack {
     /// Effective path MTU for a routed destination. `probe` bypasses learned PMTU. # C: O(N)
     pub fn path_mtu(&self, dst: IpAddr, bound: Option<NetIfaceId>, probe: bool) -> NetResult<u32> {
+        self.path_mtu_in(0, dst, bound, probe)
+    }
+
+    /// Effective path MTU in one network namespace. # C: O(N)
+    pub fn path_mtu_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>, probe: bool) -> NetResult<u32> {
         let (iface, link_mtu) = match (dst, bound) {
-            (_, Some(iface)) => (iface, self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?.mtu()),
+            (_, Some(iface)) => (iface, self.ifaces.lookup_in_ns(iface, net_ns)
+                .ok_or(NetError::Enetunreach)?.mtu()),
             (IpAddr::V4(dst), None) => {
                 let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
                 let mtu = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?.mtu();
@@ -58,12 +56,18 @@ impl NetStack {
             }
         };
         if probe { return Ok(link_mtu); }
-        Ok(cached_pmtu(self, iface, dst, link_mtu))
+        Ok(cached_pmtu(self, net_ns, iface, dst, link_mtu))
     }
 
-    /// Record a validated ICMPv6 Packet Too Big result in the canonical path cache. # C: O(log N)
+    /// Init-namespace PMTU update for hosted tests. # C: O(log N)
+    #[cfg(test)]
     pub(crate) fn update_pmtu_v6(&self, iface: NetIfaceId, dst: crate::Ipv6Addr, mtu: u32) {
-        update_pmtu(self, iface, IpAddr::V6(dst), mtu.max(IPV6_MIN_MTU));
+        self.update_pmtu_v6_in(0, iface, dst, mtu)
+    }
+
+    /// Record validated ICMPv6 PMTU in one network namespace. # C: O(log N)
+    pub(crate) fn update_pmtu_v6_in(&self, net_ns: u64, iface: NetIfaceId, dst: crate::Ipv6Addr, mtu: u32) {
+        update_pmtu(self, net_ns, iface, IpAddr::V6(dst), mtu.max(IPV6_MIN_MTU));
     }
 }
 
@@ -118,12 +122,13 @@ impl UdpErrorTarget {
     }
 }
 
-fn udp_error_target(stack: &NetStack, iface: crate::NetIfaceId,
+fn udp_error_target(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId,
                     local: crate::Ipv4Addr, local_port: u16,
                     remote: crate::Ipv4Addr, remote_port: u16) -> Option<UdpErrorTarget> {
     use core::sync::atomic::Ordering;
     let mut candidates = alloc::vec::Vec::new();
-    for endpoint in stack.udp_map().lock().get(&local_port).cloned().unwrap_or_default() {
+    let tables = stack.inet_tables(net_ns);
+    for endpoint in tables.udp.lock().get(&local_port).cloned().unwrap_or_default() {
         let bound_iface = endpoint.bound_ifindex.load(Ordering::Acquire);
         if bound_iface != 0 && bound_iface != iface.raw() { continue; }
         if !endpoint.bound_ip.is_unspecified() && endpoint.bound_ip != local { continue; }
@@ -134,7 +139,7 @@ fn udp_error_target(stack: &NetStack, iface: crate::NetIfaceId,
         candidates.push((score, UdpErrorTarget::V4(endpoint)));
     }
     let remote6 = crate::Ipv6Addr::from_v4_mapped(remote);
-    for endpoint in stack.udp6_map().lock().get(&local_port).cloned().unwrap_or_default() {
+    for endpoint in tables.udp6.lock().get(&local_port).cloned().unwrap_or_default() {
         if endpoint.v6only.load(Ordering::Acquire) != 0 { continue; }
         let bound_iface = endpoint.bound_ifindex.load(Ordering::Acquire);
         if bound_iface != 0 && bound_iface != iface.raw() { continue; }
@@ -160,8 +165,15 @@ fn udp_error_target(stack: &NetStack, iface: crate::NetIfaceId,
     candidates.pop().map(|(_, endpoint)| endpoint)
 }
 
-/// # C: O(log N) demux lookups.
+/// Init-namespace hosted-test entry point. # C: O(log N)
+#[cfg(test)]
 pub fn handle_error(stack: &NetStack, iface: crate::NetIfaceId, offender: crate::Ipv4Addr,
+                    kind: u8, code: u8, payload: &[u8]) {
+    handle_error_in(stack, 0, iface, offender, kind, code, payload)
+}
+
+/// Handle an IPv4 ICMP error in the ingress network namespace. # C: O(log N)
+pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, offender: crate::Ipv4Addr,
                     kind: u8, code: u8, payload: &[u8]) {
     const ICMP_HDR: usize = 8;
     if payload.len() < ICMP_HDR + IPV4_HDR_LEN + 8 { return; }
@@ -175,7 +187,7 @@ pub fn handle_error(stack: &NetStack, iface: crate::NetIfaceId, offender: crate:
     let reported_mtu = u16::from_be_bytes([payload[6], payload[7]]);
     let frag_mtu = if kind == crate::icmp::ICMP_TYPE_DEST_UNREACH && code == 4 {
         let mtu = ipv4_frag_needed_mtu(&orig_hdr, reported_mtu);
-        update_pmtu(stack, iface, IpAddr::V4(orig_hdr.dst), mtu);
+        update_pmtu(stack, net_ns, iface, IpAddr::V4(orig_hdr.dst), mtu);
         Some(mtu)
     } else { None };
     // F191: ICMP code 4 (fragmentation needed) carries the next-hop
@@ -193,7 +205,7 @@ pub fn handle_error(stack: &NetStack, iface: crate::NetIfaceId, offender: crate:
             remote_ip:   IpAddr::V4(orig_hdr.dst),
             remote_port: dst_port,
         };
-        if let Some(entry) = stack.tcp_conns_map().lock().get(&key).cloned() {
+        if let Some(entry) = stack.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned() {
             let mut c = entry.conn.lock();
             if new_mss >= 536 && (c.peer_mss == 0 || new_mss < c.peer_mss) {
                 c.peer_mss = new_mss;
@@ -238,7 +250,7 @@ pub fn handle_error(stack: &NetStack, iface: crate::NetIfaceId, offender: crate:
                     payload: orig_ip[orig_l4_off + 8..].to_vec(),
                 };
             if let Some(target) = udp_error_target(
-                stack, iface, orig_hdr.src, src_port, orig_hdr.dst, dst_port,
+                stack, net_ns, iface, orig_hdr.src, src_port, orig_hdr.dst, dst_port,
             ) {
                 if kind == crate::icmp::ICMP_TYPE_DEST_UNREACH && code == 4
                     && target.suppress_frag_needed() { return; }
@@ -252,7 +264,7 @@ pub fn handle_error(stack: &NetStack, iface: crate::NetIfaceId, offender: crate:
                 remote_ip:   IpAddr::V4(orig_hdr.dst),
                 remote_port: dst_port,
             };
-            if let Some(entry) = stack.tcp_conns_map().lock().get(&key).cloned() {
+            if let Some(entry) = stack.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned() {
                 let mut c = entry.conn.lock();
                 c.state = crate::tcp_state::TcpState::Closed;
                 drop(c);

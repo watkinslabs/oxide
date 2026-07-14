@@ -8,6 +8,7 @@ pub(super) struct UdpRxState {
 }
 
 pub struct UdpRxQueue {
+    pub net_ns: u64,
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
     /// Datagrams waiting for a reader: (src, sport, dst, iface, ttl, payload).
@@ -61,6 +62,7 @@ pub const TCP_BIND_CONNECT: u8 = 2;
 
 /// One socket's canonical TCP local-name reservation.
 pub struct TcpBindReservation {
+    pub net_ns: u64,
     pub local: Endpoint,
     pub(crate) bound_ifindex: ::core::sync::atomic::AtomicU32,
     pub(crate) reuseaddr: bool,
@@ -72,9 +74,10 @@ pub struct TcpBindReservation {
 
 impl TcpBindReservation {
     /// Build a reservation before registry publication. # C: O(1)
-    pub(crate) fn new(local: Endpoint, iface: Option<NetIfaceId>, reuseaddr: bool,
+    pub(crate) fn new(net_ns: u64, local: Endpoint, iface: Option<NetIfaceId>, reuseaddr: bool,
                       reuseport: bool, owner_uid: u32, v6only: bool) -> Self {
         Self {
+            net_ns,
             local,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(
                 iface.map(|id| id.raw()).unwrap_or(0),
@@ -282,14 +285,8 @@ pub struct NetStack {
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
     pub routes6: Route6Table,
-    pub(crate) udp: Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass>,
-    /// F180a: IPv6 UDP socket map. Accessor `udp6_map()` exposed to
-    /// `stack_ipv6` impls without making the field pub.
-    pub(crate) udp6: Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass>,
-    pub(crate) tcp_conns: Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
-    pub(crate) tcp_listens: Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass>,
-    pub(crate) tcp_binds: Spinlock<BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>, StackLockClass>,
-    pub(crate) next_tcp_ephemeral: ::core::sync::atomic::AtomicU32,
+    /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
+    pub(crate) inet: Spinlock<BTreeMap<u64, Arc<super::inet_tables::InetTables>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
@@ -348,7 +345,7 @@ mod socket_error_tests {
         );
 
         assert!(result.is_err());
-        assert!(stack.tcp_conns.lock().is_empty());
+        assert!(stack.inet_tables(0).tcp_conns.lock().is_empty());
         assert!(!error.has());
     }
 

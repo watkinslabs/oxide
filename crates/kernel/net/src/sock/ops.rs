@@ -52,8 +52,6 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
                 if local_port.is_some() || sock.udp4.lock().is_some() { return Err(NetError::Einval); }
                 let iface = bound_iface(sock)?;
-                let reuseaddr = sock.opts.reuseaddr.load(core::sync::atomic::Ordering::Acquire) != 0;
-                let reuseport = sock.opts.reuseport.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp4(sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
                                          ip, sock.error.clone(), iface,
@@ -62,7 +60,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                                          sock.owner_uid,
                                          sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
-                    (port, stack().bind_udp_socket(
+                    (port, stack().bind_udp_socket_in(
+                        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
                         ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                         sock.opts.ip_mtu_discover.clone(),
@@ -86,8 +85,6 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
                 if local_port.is_some() || sock.udp6.lock().is_some() { return Err(NetError::Einval); }
                 let iface = bound_iface(sock)?;
-                let reuseaddr = sock.opts.reuseaddr.load(core::sync::atomic::Ordering::Acquire) != 0;
-                let reuseport = sock.opts.reuseport.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp6(sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
                                          ip, sock.error.clone(), iface,
@@ -97,7 +94,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                                          sock.peer6.clone(), sock.opts.ipv6_mtu_discover.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
-                    (port, stack().bind_udp6_socket(
+                    (port, stack().bind_udp6_socket_in(
+                        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
                         ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                         sock.owner_uid,

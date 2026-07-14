@@ -8,7 +8,7 @@ impl UdpRxQueue {
 
     /// Queue bound to one socket's canonical error state. # C: O(1)
     pub fn new_with_error(bound_ip: Ipv4Addr, bound_port: u16, error: Arc<crate::SocketError>) -> Self {
-        Self::new_socket(bound_ip, bound_port, error,
+        Self::new_socket(0, bound_ip, bound_port, error,
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 0,
@@ -17,7 +17,7 @@ impl UdpRxQueue {
     }
 
     /// Build one socket-owned endpoint for a grouped UDP port binding. # C: O(1)
-    pub fn new_socket(bound_ip: Ipv4Addr, bound_port: u16, error: Arc<crate::SocketError>,
+    pub fn new_socket(net_ns: u64, bound_ip: Ipv4Addr, bound_port: u16, error: Arc<crate::SocketError>,
                       reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
                       reuseport: Arc<::core::sync::atomic::AtomicI32>,
                       ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
@@ -26,7 +26,7 @@ impl UdpRxQueue {
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
-            bound_ip, bound_port,
+            net_ns, bound_ip, bound_port,
             state: Spinlock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
