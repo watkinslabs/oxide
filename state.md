@@ -1,13 +1,19 @@
-# state - B826 IPv6 multicast local admission
+# state - B827 classic socket-filter uaccess
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B826-network-ipv6-mcast-local`
-- Branch: `B826-network-ipv6-mcast-local`
-- Base: `4505f665` (`origin/main`, merged B825)
-- Scope: require interface multicast membership before IPv6 local-input delivery, while retaining mandatory all-nodes reception.
+- Worktree: `/home/nd/oxide-wt/B827-network-classic-filter-uaccess`
+- Branch: `B827-network-classic-filter-uaccess`
+- Base: `094dedb6` (`origin/main`, merged B826)
+- Scope: import classic socket filters through fault-recoverable uaccess with Linux errno semantics.
+
+## B826 publication
+
+- PR: `#3086`, merged as `094dedb6` on 2026-07-14.
+- Hosted net suite: 425 passed.
+- x86 and ARM smoke reached `basic.target`.
 
 ## B825 implemented
 
