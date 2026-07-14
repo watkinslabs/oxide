@@ -1,14 +1,13 @@
-# state - B825 network namespace routes
+# state - B826 IPv6 multicast local admission
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B825-network-netns-route-tables`
-- Branch: `B825-network-netns-route-tables`
-- Base: `62b47845` (`origin/main`, merged B824)
-- Published branch tip: `7db08041` claim commit; implementation remains uncommitted pending final audit and lockstep verification.
-- Quota and B810 mount work are already contained by merged main; B825 did not start from stale main.
+- Worktree: `/home/nd/oxide-wt/B826-network-ipv6-mcast-local`
+- Branch: `B826-network-ipv6-mcast-local`
+- Base: `4505f665` (`origin/main`, merged B825)
+- Scope: require interface multicast membership before IPv6 local-input delivery, while retaining mandatory all-nodes reception.
 
 ## B825 implemented
 
@@ -23,7 +22,13 @@ Update: 2026-07-14.
 - Combined `CLONE_NEWUSER|CLONE_NEWNET` establishes the user namespace before recording network-namespace ownership.
 - Namespace cleanup primitives remove interfaces, addresses, FIB/rules, neighbors, multicast, fragments, and INET transport state.
 
-## Verification
+## B825 publication
+
+- Implementation commit: `071e0f35`.
+- PR: `#3085`, merged as `4505f665` on 2026-07-14.
+- `main` and `origin/main` both advanced to the merge commit before B826 was created.
+
+## B825 verification
 
 Passed:
 
@@ -34,7 +39,8 @@ RUSTFLAGS='-Awarnings' cargo check -q -p net -p netlink -p procfs -p nscg -p sys
 git diff --check
 ```
 
-Final dual-target builds and x86/ARM smoke remain before push.
+- x86 smoke reached login in 42 seconds.
+- ARM smoke reached login in 79 seconds.
 
 ## Honest follow-up
 

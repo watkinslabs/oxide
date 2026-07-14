@@ -53,9 +53,15 @@ impl NetStack {
 
     /// F180c: is `ip` bound on `iface`? # C: O(N addrs)
     pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool { self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| a.addr == ip)).unwrap_or(false) }
+    /// True when an interface has active ownership of an IPv6 multicast group. # C: O(N groups)
+    fn v6_mcast_owned_by(&self, iface: NetIfaceId, group: crate::addr::Ipv6Addr) -> bool {
+        if group == crate::ndp::IPV6_ALL_NODES { return true; }
+        self.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
+            .any(|state| state.group == group && !state.is_empty()))
+    }
     /// IPv6 local-input decision with link-local interface scoping. # C: O(N addrs)
     pub(crate) fn v6_dst_is_local(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
-        if ip.is_multicast() { return true; }
+        if ip.is_multicast() { return self.v6_mcast_owned_by(iface, ip); }
         if ip.is_link_local() { return self.v6_addr_owned_by(iface, ip); }
         let Some(net_ns) = self.ifaces.namespace(iface) else { return false };
         self.v6_addrs.lock().iter().any(|(id, addrs)| {
