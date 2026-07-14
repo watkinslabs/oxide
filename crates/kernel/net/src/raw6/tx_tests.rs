@@ -35,8 +35,12 @@ fn routed_capture(mtu: u32) -> (NetStack, Arc<CaptureDev>) {
     let stack = NetStack::new();
     let dev = Arc::new(CaptureDev { mtu, packets: Spinlock::new(Vec::new()) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
+    stack.add_v6_addr(iface, LOCAL);
     stack.routes6.add(Route6Entry {
         dst: ROUTE_DST, prefix_len: 128, iface, gateway: None, src_hint: Some(LOCAL),
+    });
+    stack.routes6.add(Route6Entry {
+        dst: HEADER_DST, prefix_len: 128, iface, gateway: None, src_hint: Some(LOCAL),
     });
     (stack, dev)
 }
@@ -60,7 +64,7 @@ fn hdrincl_transmits_caller_bytes_without_header_validation_or_rewriting() {
     let bytes = caller_packet(64);
 
     stack.send_raw6(&endpoint, ROUTE_DST, None, None, &bytes, 64,
-        crate::uapi::IPV6_PMTUDISC_WANT).unwrap();
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()).unwrap();
 
     assert_eq!(&*dev.packets.lock(), &[bytes]);
 }
@@ -72,9 +76,10 @@ fn hdrincl_enforces_only_base_header_minimum_and_route_mtu() {
 
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None,
         &caller_packet(crate::ipv6::IPV6_HDR_LEN - 1), 64,
-        crate::uapi::IPV6_PMTUDISC_WANT), Err(NetError::Einval));
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()), Err(NetError::Einval));
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None,
-        &caller_packet(65), 64, crate::uapi::IPV6_PMTUDISC_WANT), Err(NetError::Emsgsize));
+        &caller_packet(65), 64, crate::uapi::IPV6_PMTUDISC_WANT,
+        &crate::send_control::Raw6Control::default()), Err(NetError::Emsgsize));
     assert!(dev.packets.lock().is_empty());
 }
 
@@ -88,4 +93,153 @@ fn enabled_udp_checksum_zero_is_transmitted_as_ffff() {
 
     assert_eq!(prepared.mode, Raw6SendMode::KernelHeader);
     assert_eq!(&prepared.bytes[6..8], &[0xff, 0xff]);
+}
+
+#[test]
+fn one_message_controls_drive_route_and_extension_header_construction() {
+    let (stack, dev) = routed_capture(256);
+    let endpoint = Raw6Endpoint::standalone(0, IpProto::Udp as u8);
+    let hop = vec![0, 0, 1, 0, 0, 0, 0, 0];
+    let dst0 = vec![0, 0, 2, 0, 0, 0, 0, 0];
+    let dst1 = vec![0, 0, 3, 0, 0, 0, 0, 0];
+    let mut route = vec![0, 2, 2, 1, 0, 0, 0, 0];
+    route.extend_from_slice(&HEADER_DST.0);
+    let control = crate::send_control::Raw6Control { source: Some(LOCAL), hop_limit: Some(9),
+        traffic_class: Some(0xab), flowinfo: Some(0x54321), hop_options: Some(hop),
+        dst_before_routing: Some(dst0), routing: Some(route), dst_after_routing: Some(dst1),
+        ..crate::send_control::Raw6Control::default() };
+
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"data", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control).unwrap();
+
+    let packet = &dev.packets.lock()[0];
+    let header = crate::ipv6::Ipv6Hdr::parse(packet).unwrap();
+    assert_eq!(header.dst, HEADER_DST);
+    assert_eq!(header.traffic_class, 0xab);
+    assert_eq!(header.flow_label, 0x54321);
+    assert_eq!(header.hop_limit, 9);
+    assert_eq!(header.next_header, 0);
+    assert_eq!(packet[40], 60);
+    assert_eq!(packet[48], 43);
+    assert_eq!(packet[56], 60);
+    assert_eq!(&packet[64..80], &ROUTE_DST.0);
+    assert_eq!(packet[80], IpProto::Udp as u8);
+    assert_eq!(&packet[88..], b"data");
+}
+
+#[test]
+fn per_message_dontfrag_rejects_packet_over_route_mtu() {
+    let (stack, dev) = routed_capture(64);
+    let endpoint = Raw6Endpoint::standalone(0, IpProto::Udp as u8);
+    let control = crate::send_control::Raw6Control {
+        dontfrag: Some(true), ..crate::send_control::Raw6Control::default()
+    };
+    assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 40], 64,
+        crate::uapi::IPV6_PMTUDISC_DONT, &control), Err(NetError::Emsgsize));
+    assert!(dev.packets.lock().is_empty());
+}
+
+#[test]
+fn pktinfo_iface_without_matching_route_returns_unreachable() {
+    let (stack, dev) = routed_capture(256);
+    let other = stack.ifaces.register(Arc::new(CaptureDev {
+        mtu: 256, packets: Spinlock::new(Vec::new()),
+    }) as Arc<dyn NetDev>);
+    let endpoint = Raw6Endpoint::standalone(0, IpProto::Udp as u8);
+    let control = crate::send_control::Raw6Control {
+        iface: Some(other), ..crate::send_control::Raw6Control::default()
+    };
+
+    assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 8], 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control), Err(NetError::Enetunreach));
+    assert!(dev.packets.lock().is_empty());
+}
+
+#[test]
+fn fragmented_chain_keeps_headers_and_udp_header_in_fragment_zero() {
+    let (stack, dev) = routed_capture(104);
+    let endpoint = Raw6Endpoint::standalone(0, IpProto::Udp as u8);
+    let mut route = vec![0, 2, 2, 1, 0, 0, 0, 0];
+    route.extend_from_slice(&HEADER_DST.0);
+    let control = crate::send_control::Raw6Control {
+        hop_options: Some(vec![0; 8]), dst_before_routing: Some(vec![0; 8]),
+        routing: Some(route), dst_after_routing: Some(vec![0; 8]),
+        ..crate::send_control::Raw6Control::default()
+    };
+    let mut udp = vec![0; 48];
+    let udp_len = udp.len() as u16;
+    udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
+
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, &udp, 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control).unwrap();
+
+    let packets = dev.packets.lock();
+    assert!(packets.len() > 1);
+    let first = &packets[0];
+    let header = crate::ipv6::Ipv6Hdr::parse(first).unwrap();
+    assert_eq!(header.dst, HEADER_DST);
+    assert_eq!(header.next_header, 0);
+    assert_eq!(first[40], 60);
+    assert_eq!(first[48], 43);
+    assert_eq!(first[56], 44);
+    assert_eq!(&first[64..80], &ROUTE_DST.0);
+    assert_eq!(first[80], 60);
+    assert_eq!(first[88], IpProto::Udp as u8);
+    assert_eq!(first.len(), 104);
+}
+
+#[test]
+fn oversized_post_fragment_header_chain_returns_emsgsize() {
+    let (stack, dev) = routed_capture(96);
+    let endpoint = Raw6Endpoint::standalone(0, IpProto::Udp as u8);
+    let mut destination_options = vec![0; 48];
+    destination_options[1] = 5;
+    let control = crate::send_control::Raw6Control {
+        dst_after_routing: Some(destination_options),
+        ..crate::send_control::Raw6Control::default()
+    };
+
+    assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 24], 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control), Err(NetError::Emsgsize));
+    assert!(dev.packets.lock().is_empty());
+}
+
+#[test]
+fn arbitrary_protocol_payload_can_fragment() {
+    let (stack, dev) = routed_capture(96);
+    let endpoint = Raw6Endpoint::standalone(0, 253);
+
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0x5a; 96], 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()).unwrap();
+
+    assert!(dev.packets.lock().len() > 1);
+}
+
+#[test]
+fn oversized_reassembled_payload_returns_emsgsize() {
+    let (stack, dev) = routed_capture(1500);
+    let endpoint = Raw6Endpoint::standalone(0, 253);
+
+    assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 65_536], 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()),
+        Err(NetError::Emsgsize));
+    assert!(dev.packets.lock().is_empty());
+}
+
+#[test]
+fn multicast_loop_disabled_never_enqueues_on_loopback() {
+    const GROUP: Ipv6Addr = Ipv6Addr([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let stack = NetStack::new();
+    let (iface, lo) = stack.register_loopback();
+    stack.routes6.add(Route6Entry {
+        dst: GROUP, prefix_len: 128, iface, gateway: None, src_hint: Some(Ipv6Addr::LOOPBACK),
+    });
+    let endpoint = Raw6Endpoint::standalone(0, IpProto::Udp as u8);
+    let control = crate::send_control::Raw6Control {
+        multicast_loop: Some(false), ..crate::send_control::Raw6Control::default()
+    };
+
+    stack.send_raw6(&endpoint, GROUP, None, None, &[0; 8], 1,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control).unwrap();
+    assert_eq!(lo.rx_len(), 0);
 }

@@ -23,6 +23,7 @@ pub mod tcp_state;
 pub mod netdev;
 pub mod sysctl;
 pub mod uapi;
+pub mod send_control;
 pub mod socket_args;
 pub mod socket_error;
 pub mod ephemeral;

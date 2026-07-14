@@ -1,7 +1,8 @@
 use super::*;
 
 /// `sendto`/`send` typed work function for supported socket families. # C: O(payload bytes)
-pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds)
+pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds,
+    control: &crate::send_control::SendControl)
     -> Result<usize, NetError>
 {
     if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
@@ -11,15 +12,31 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             None => endpoint.snapshot().remote.ok_or(NetError::Edestaddrreq)?,
             _ => return Err(NetError::Eafnosupport),
         };
+        let multicast = dst.is_multicast();
+        let iface = if control.raw4.iface.is_some() { control.raw4.iface } else if multicast {
+            crate::sock_mcast::bound_iface(sock, dst)?
+        } else { bound_iface(sock)? };
+        let socket_source = if multicast { crate::sock_mcast::src_ip(sock, dst, iface) }
+            else { crate::Ipv4Addr::ANY };
         let options = crate::raw4::Raw4TxOptions {
-            source: None, iface: bound_iface(sock)?,
-            tos: sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8,
-            ttl: sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) as u8,
+            source: control.raw4.source.or((!socket_source.is_unspecified()).then_some(socket_source)),
+            iface,
+            tos: control.raw4.tos.unwrap_or(sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8),
+            ttl: control.raw4.ttl.unwrap_or(if multicast {
+                sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) as u8
+            } else { sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) as u8 }),
             pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
             broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
         };
-        stack().send_raw4(endpoint, dst, payload, options)?;
-        drain_loopback();
+        let mut raw_control = control.raw4.clone();
+        if raw_control.multicast_loop.is_none() {
+            raw_control.multicast_loop = Some(
+                sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0);
+        }
+        stack().send_raw4(endpoint, dst, payload, options, &raw_control)?;
+        if crate::send_control::should_drain_loopback(multicast, raw_control.multicast_loop,
+            sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0)
+        { drain_loopback(); }
         return Ok(payload.len());
     }
     if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
@@ -32,7 +49,8 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             }
             _ => return Err(NetError::Eafnosupport),
         };
-        return crate::sock_v6::sendto_raw6(sock, endpoint, dst, protocol, scope_id, payload);
+        return crate::sock_v6::sendto_raw6(sock, endpoint, dst, protocol, scope_id, payload,
+            &control.raw6);
     }
     if matches!(*sock.kind.lock(), SockKind::Udp) {
         let pending = sock.take_pending_recv_error();

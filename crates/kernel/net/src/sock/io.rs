@@ -210,7 +210,8 @@ impl InetSocket {
                 let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
                 crate::sock_io::write_tcp_blocking(self, &entry, buf, cap, deadline_ns, nodelay, cork)
             }
-            K::Other => crate::sock::sendto(self, buf, None, current_sender_creds()).map_err(vfs_from_neterr),
+            K::Other => crate::sock::sendto(self, buf, None, current_sender_creds(),
+                &crate::send_control::SendControl::default()).map_err(vfs_from_neterr),
         }
     }
 

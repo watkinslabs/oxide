@@ -89,6 +89,8 @@ Merged network foundation:
     per-message interface routing, and true multicast-loop suppression.
   - [~] N01.18 match Linux ancillary length, capability, option-validation,
     and per-message-over-socket precedence rules.
+  - Evidence pending merge: hosted net 484, procfs 46, syscalls 53; focused
+    raw4 7, raw6 11, raw cmsg 5; x86 and ARM release builds passed.
 - [ ] **N02 multicast robustness accounting**.
   Preserve successful membership when IGMP/MLD report output fails. Roll back
   only synchronous validation/allocation/filter-setup failures. Consume a

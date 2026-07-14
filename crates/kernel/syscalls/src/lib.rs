@@ -20,6 +20,12 @@ mod recv_control;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod send_user;
 
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod cmsg_parse {
+    mod raw;
+    mod raw_tests;
+}
+
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod namei_common {

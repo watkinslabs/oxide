@@ -172,44 +172,6 @@ impl NetStack {
         Ok(())
     }
 
-    /// Route, checksum, and transmit one raw IPv6 message. # C: O(payload + N)
-    pub fn send_raw6(&self, endpoint: &crate::raw6::Raw6Endpoint, route_dst: Ipv6Addr,
-        scoped: Option<NetIfaceId>, protocol_override: Option<u8>, payload: &[u8],
-        hop_limit: u8, pmtudisc: i32) -> NetResult<()>
-    {
-        if route_dst.is_unspecified() { return Err(NetError::Edestaddrreq); }
-        let (local, endpoint_iface) = endpoint.tx_binding();
-        let local_iface = (local.scope_id != 0).then(|| NetIfaceId::from_raw(local.scope_id));
-        let bound = merge_raw6_iface(scoped, endpoint_iface, local_iface)?;
-        let (iface_id, iface, next_hop) = self.route_v6_iface_in(endpoint.net_ns(), route_dst, bound)?;
-        let source = if !local.addr.is_unspecified() { local.addr } else {
-            self.routes6.lookup_in(endpoint.net_ns(), route_dst)
-                .filter(|route| route.iface == iface_id).and_then(|route| route.src_hint)
-                .or_else(|| self.v6_src_on_iface(iface_id))
-                .unwrap_or(Ipv6Addr::ANY)
-        };
-        let prepared = endpoint.prepare_send(source, route_dst, protocol_override, payload)?;
-        let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(pmtudisc);
-        let mtu = self.path_mtu_in(endpoint.net_ns(), IpAddr::V6(route_dst),
-            Some(iface_id), use_iface)? as usize;
-        match prepared.mode {
-            crate::raw6::Raw6SendMode::KernelHeader => self.xmit_ipv6_payload_with_policy(
-                iface_id, iface, next_hop, prepared.src, prepared.dst, prepared.next_header,
-                &prepared.bytes, hop_limit, mtu,
-                crate::uapi::ipv6_pmtudisc_allows_fragmentation(pmtudisc),
-            ),
-            crate::raw6::Raw6SendMode::CallerHeader => {
-                if prepared.bytes.len() > core::cmp::min(iface.mtu() as usize, mtu) {
-                    return Err(NetError::Emsgsize);
-                }
-                let mut p = crate::pkt::Pkt::with_capacity(0, prepared.bytes.len());
-                p.put(prepared.bytes.len()).map_err(|_| NetError::Enobufs)?
-                    .copy_from_slice(&prepared.bytes);
-                emit_ipv6(iface_id, iface, next_hop, prepared.src, p)
-            }
-        }
-    }
-
     pub(crate) fn next_ipv6_frag_id(&self) -> u32 {
         let mut s = self.next_ip_id.lock();
         *s = s.wrapping_add(1);
@@ -372,17 +334,7 @@ impl NetStack {
 
 }
 
-fn merge_raw6_iface(a: Option<NetIfaceId>, b: Option<NetIfaceId>, c: Option<NetIfaceId>)
-    -> NetResult<Option<NetIfaceId>>
-{
-    let selected = a.or(b).or(c);
-    if [a, b, c].iter().flatten().any(|iface| Some(*iface) != selected) {
-        return Err(NetError::Enodev);
-    }
-    Ok(selected)
-}
-
-fn push_ipv6_raw_header(p: &mut crate::pkt::Pkt, src: Ipv6Addr, dst: Ipv6Addr,
+pub(super) fn push_ipv6_raw_header(p: &mut crate::pkt::Pkt, src: Ipv6Addr, dst: Ipv6Addr,
                         next_header: u8, hop_limit: u8) -> NetResult<()> {
     if p.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
     let header = Ipv6Hdr { flow_label: 0, traffic_class: 0, payload_length: p.len() as u16,
@@ -392,7 +344,7 @@ fn push_ipv6_raw_header(p: &mut crate::pkt::Pkt, src: Ipv6Addr, dst: Ipv6Addr,
     Ok(())
 }
 
-fn emit_ipv6(iface_id: NetIfaceId, iface: Arc<dyn NetDev>, next_hop: Ipv6Addr,
+pub(super) fn emit_ipv6(iface_id: NetIfaceId, iface: Arc<dyn NetDev>, next_hop: Ipv6Addr,
              src: Ipv6Addr, mut p: crate::pkt::Pkt) -> NetResult<()> {
     p.proto = crate::addr::eth_p::IPV6;
     p.iface = Some(iface_id);
