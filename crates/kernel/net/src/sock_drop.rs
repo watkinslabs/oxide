@@ -74,6 +74,7 @@ impl InetSocket {
             l.close();
         }
         if let SockKind::UnixDgram(q) = &*self.kind.lock() {
+            q.release();
             if let Some(addr) = q.bound() {
                 let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
                 crate::net_ns::ns_unix_registry(ns).dgram_unbind_addr(&addr);

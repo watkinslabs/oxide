@@ -1,7 +1,7 @@
 // VFS read(2) helpers for non-stream socket kinds.
 
 use crate::NetError;
-use crate::sock::{InetSocket, SockKind, AF_INET6};
+use crate::sock::InetSocket;
 use crate::sock_io::{monotonic_ns_safe, recvfrom_opts, RecvOptions};
 
 /// Map socket receive errors into VFS read errors. # C: O(1)
@@ -38,34 +38,6 @@ pub(crate) fn read_msg_socket_blocking(sock: &InetSocket, buf: &mut [u8], deadli
         }
         if sched::live::deliverable_signals_self() != 0 { return Err(vfs::VfsError::Eintr); }
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns { return Err(vfs::VfsError::Eagain); }
-        park_msg_socket(sock, deadline_ns);
-    }
-}
-
-/// Park on the receive wait source matching `recvfrom` for the same socket kind. # C: O(1)
-fn park_msg_socket(sock: &InetSocket, deadline_ns: u64) {
-    let is_v6 = sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6;
-    let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
-    let v6_q = if is_udp && is_v6 {
-        sock.local_port.lock().and_then(|p| crate::sock::stack().udp6_queue_arc(p))
-    } else { None };
-    let udp_q = if is_udp && !is_v6 {
-        sock.local_port.lock().and_then(|p| crate::sock::stack().udp_queue_arc(p))
-    } else { None };
-    // SAFETY: process ctx; preempt-off owned by syscall stub; selected waiters
-    // are woken by the same RX paths used by recvfrom, or by timer expiry.
-    unsafe {
-        if let Some(q) = v6_q {
-            q.waiters.park_with_deadline(deadline_ns);
-        } else if let Some(q) = udp_q {
-            q.waiters.park_with_deadline(deadline_ns);
-        } else {
-            match &*sock.kind.lock() {
-                SockKind::UnixDgram(q) => q.waiters.park_with_deadline(deadline_ns),
-                SockKind::Packet { .. } => sock.recv_waiters.park_with_deadline(deadline_ns),
-                _ => sched::live::tick_yield(),
-            }
-        }
-        sched::live::schedule::schedule();
+        if crate::sock_recv::wait_recv_source(sock, deadline_ns) { return Ok(0); }
     }
 }

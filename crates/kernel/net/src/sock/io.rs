@@ -69,7 +69,7 @@ impl InetSocket {
                 }
                 // F169: convert SO_RCVTIMEO (ns) into an absolute
                 // monotonic deadline; 0 = no timeout (indefinite).
-                crate::sock_io::read_tcp_blocking(&entry, buf, deadline_ns)
+                crate::sock_io::read_tcp_blocking(self, &entry, buf, deadline_ns)
             }
             K::Msg => crate::sock_vfs_read::read_msg_socket_blocking(self, buf, deadline_ns),
             K::NotConnected => Err(vfs::VfsError::Enotconn),
@@ -187,7 +187,8 @@ impl InetSocket {
             },
             K::UnixMsgPair(pair, end) => match pair.send(end, buf) {
                 Ok(n) => Ok(n),
-                Err(crate::UnixStreamError::PeerClosed) => Err(vfs::VfsError::Epipe),
+                Err(crate::UnixMsgError::PeerClosed) => Err(vfs::VfsError::Epipe),
+                Err(crate::UnixMsgError::PeerRefused) => Err(vfs::VfsError::Econnrefused),
             },
             K::Tcp(entry) => {
                 if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {

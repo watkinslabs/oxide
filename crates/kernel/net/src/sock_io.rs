@@ -9,6 +9,9 @@ use crate::netdev::NetError;
 use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
 use crate::Ipv4Addr;
 
+mod tcp_read;
+pub(crate) use tcp_read::{arm_tcp_read, read_tcp_blocking, tcp_recv_eof};
+
 /// F159: blocking wait for TCP connect's SYN-ACK. Park on
 /// `entry.rx_waiters`; `deliver_tcp` wakes after any input (state
 /// transition to Established for normal path, to Closed on RST);
@@ -128,60 +131,6 @@ pub(crate) fn write_tcp_blocking(
     Ok(total)
 }
 
-/// F158: blocking TCP recv. Park on `entry.rx_waiters` until data
-/// arrives in recv_buf or the connection reaches a terminal data
-/// state (peer FIN'd → return Ok(0) for EOF, RST → Closed). Used
-/// from `Inode::read` for SockKind::TcpConn. The non-blocking shim
-/// `Inode::read_nonblock` does the immediate-Eagain version inline.
-///
-/// Drain loopback every iteration so the lo-path's TCP traffic
-/// (test harness side) makes progress too — virtio-net's MSI-driven
-/// softirq handles the off-host path and wakes us via wake_all.
-/// # C: blocks until recv_buf non-empty or terminal state
-/// # Lk: takes entry.conn briefly between yields; entry.rx_waiters during park
-/// # Ctx: process; preempt-off; runqueue installed
-pub(crate) fn read_tcp_blocking(
-    entry: &alloc::sync::Arc<TcpEntry>,
-    buf: &mut [u8],
-    deadline_ns: u64,
-) -> vfs::KResult<usize> {
-    loop {
-        drain_loopback();
-        let got = stack().tcp_recv(entry, buf.len());
-        if !got.is_empty() {
-            let n = got.len();
-            buf[..n].copy_from_slice(&got);
-            return Ok(n);
-        }
-        let st = entry.conn.lock().state;
-        if st == crate::tcp_state::TcpState::Closed
-            || st == crate::tcp_state::TcpState::CloseWait
-            || st == crate::tcp_state::TcpState::LastAck
-        {
-            return Ok(0);
-        }
-        // F168: any non-blocked pending signal aborts the wait with
-        // -EINTR before parking — Linux semantic for slow syscalls.
-        #[cfg(target_os = "oxide-kernel")]
-        if sched::live::deliverable_signals_self() != 0 {
-            return Err(vfs::VfsError::Eintr);
-        }
-        // F169: SO_RCVTIMEO expiry → Eagain (POSIX).
-        #[cfg(target_os = "oxide-kernel")]
-        if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
-            return Err(vfs::VfsError::Eagain);
-        }
-        // SAFETY: process ctx (sys_read); runqueue installed; preempt-off owned by syscall stub; park_with_deadline + schedule resume on deliver_tcp / signal / timer wake.
-        #[cfg(target_os = "oxide-kernel")]
-        unsafe {
-            entry.rx_waiters.park_with_deadline(deadline_ns);
-            sched::live::schedule::schedule();
-        }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(vfs::VfsError::Eagain);
-    }
-}
-
 /// F171: blocking read on an AF_UNIX SOCK_STREAM pair. Park on
 /// the per-ring read waitq until the writer pushes or closes;
 /// return EOF (Ok(0)) when peer closed AND ring is empty. Honors
@@ -283,9 +232,14 @@ pub(crate) fn read_unix_msg_blocking(
                 return Err(vfs::VfsError::Econnreset);
             }
             crate::unix_sock::msg_pair::ArmMsgRead::Eof => return Ok(0),
-            crate::unix_sock::msg_pair::ArmMsgRead::Parked => unsafe {
+            crate::unix_sock::msg_pair::ArmMsgRead::Parked { reader_shutdown } => unsafe {
                 sched::live::schedule::schedule();
                 pair.reader_waiters(end).remove_current();
+                if !reader_shutdown && pair.kind == crate::UnixMsgKind::Datagram
+                    && pair.reader_shutdown(end) && !pair.has_msg(end)
+                {
+                    return Ok(0);
+                }
             },
         }
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -367,9 +321,6 @@ pub fn recvfrom_opts(
             q.pop().map(|msg| msg.payload)
         };
         let Some(msg) = msg else {
-            if q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) {
-                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
-            }
             return Err(NetError::Eagain);
         };
         let full_len = msg.len();
@@ -438,7 +389,9 @@ pub fn recvfrom_opts(
         drain_loopback();
         let payload = stack().tcp_recv(&entry, max_len);
         if payload.is_empty() {
-            if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+            if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
+                || tcp_recv_eof(entry.conn.lock().state)
+            {
                 return Ok(Received { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
             }
             return Err(NetError::Eagain);
