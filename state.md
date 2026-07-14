@@ -49,6 +49,8 @@ Update: 2026-07-14.
 - B836 `cargo check -p network-namespace -p sync`: passed.
 - B836 touched code, docs, and length spec-lint gates: clean.
 - B836 `git diff --check`: passed; all new Rust files are below 100 lines.
+- B837 deterministic publication/drop/harvest tests: 3 passed, zero failures.
+- B837 package checks, touched code/length lint, and `git diff --check`: passed.
 
 ## Remaining network work
 
