@@ -144,18 +144,22 @@ impl NetStack {
                         ) {
                             let mode = endpoint.ipv6_mtu_discover
                                 .load(core::sync::atomic::Ordering::Acquire);
-                            update_cache = mode != crate::uapi::IPV6_PMTUDISC_INTERFACE
+                            let accept_pmtu = mode != crate::uapi::IPV6_PMTUDISC_INTERFACE
                                 && mode != crate::uapi::IPV6_PMTUDISC_OMIT;
-                            endpoint.publish_error(crate::SocketErrorEntry {
-                                errno: syscall::errno::Errno::Emsgsize as i32,
-                                origin: crate::socket_error::SO_EE_ORIGIN_ICMP6,
-                                kind: crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG,
-                                code: 0, info: mtu, data: 0,
-                                offender: IpAddr::V6(src),
-                                destination: IpAddr::V6(remote), destination_port: rport,
-                                ifindex: iface.raw(),
-                                payload: body.to_vec(),
-                            }, true);
+                            update_cache = accept_pmtu;
+                            if accept_pmtu {
+                                let (errno, _) = icmpv6_error(crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG, 0);
+                                endpoint.publish_error(crate::SocketErrorEntry {
+                                    errno,
+                                    origin: crate::socket_error::SO_EE_ORIGIN_ICMP6,
+                                    kind: crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG,
+                                    code: 0, info: mtu, data: 0,
+                                    offender: IpAddr::V6(src),
+                                    destination: IpAddr::V6(remote), destination_port: rport,
+                                    ifindex: iface.raw(),
+                                    payload: body.to_vec(),
+                                }, mode != crate::uapi::IPV6_PMTUDISC_DONT);
+                            }
                         }
                     } else {
                         self.handle_v6_packet_too_big(net_ns, mtu, invoking);
@@ -222,15 +226,7 @@ impl NetStack {
 
     fn handle_v6_dest_unreachable(&self, net_ns: u64, iface: NetIfaceId, offender: Ipv6Addr,
                                   code: u8, invoking: &[u8]) {
-        let (errno, hard) = match code {
-            ICMPV6_DEST_NO_ROUTE => (syscall::errno::Errno::Enetunreach as i32, false),
-            ICMPV6_DEST_BEYOND_SCOPE | ICMPV6_DEST_ADDR_UNREACHABLE =>
-                (syscall::errno::Errno::Ehostunreach as i32, false),
-            ICMPV6_DEST_ADMIN_PROHIBITED | ICMPV6_DEST_POLICY_FAIL | ICMPV6_DEST_REJECT_ROUTE =>
-                (syscall::errno::Errno::Eacces as i32, true),
-            ICMPV6_DEST_PORT_UNREACHABLE => (syscall::errno::Errno::Econnrefused as i32, true),
-            _ => return,
-        };
+        let (errno, hard) = icmpv6_error(ICMPV6_TYPE_DEST_UNREACHABLE, code);
         let (src, sport, dst, dport, body) = match quoted_udp6(invoking) {
             Some(tuple) => tuple,
             None => return,
@@ -247,9 +243,7 @@ impl NetStack {
 
     fn handle_v6_simple_error(&self, net_ns: u64, iface: NetIfaceId, offender: Ipv6Addr,
                               kind: u8, code: u8, invoking: &[u8]) {
-        let (errno, hard) = if kind == ICMPV6_TYPE_PARAMETER_PROBLEM {
-            (syscall::errno::Errno::Eproto as i32, true)
-        } else { (syscall::errno::Errno::Ehostunreach as i32, false) };
+        let (errno, hard) = icmpv6_error(kind, code);
         let Some((src, sport, dst, dport, body)) = quoted_udp6(invoking) else { return; };
         if let Some(endpoint) = self.udp6_error_endpoint(net_ns, iface, src, sport, dst, dport) {
             endpoint.publish_error(crate::SocketErrorEntry {
@@ -296,6 +290,27 @@ const ICMPV6_DEST_ADDR_UNREACHABLE: u8 = 3;
 const ICMPV6_DEST_PORT_UNREACHABLE: u8 = 4;
 const ICMPV6_DEST_POLICY_FAIL: u8 = 5;
 const ICMPV6_DEST_REJECT_ROUTE: u8 = 6;
+
+fn icmpv6_error(kind: u8, code: u8) -> (i32, bool) {
+    use syscall::errno::Errno;
+    match (kind, code) {
+        (ICMPV6_TYPE_DEST_UNREACHABLE, ICMPV6_DEST_NO_ROUTE) =>
+            (Errno::Enetunreach as i32, false),
+        (ICMPV6_TYPE_DEST_UNREACHABLE, ICMPV6_DEST_BEYOND_SCOPE)
+        | (ICMPV6_TYPE_DEST_UNREACHABLE, ICMPV6_DEST_ADDR_UNREACHABLE) =>
+            (Errno::Ehostunreach as i32, false),
+        (ICMPV6_TYPE_DEST_UNREACHABLE, ICMPV6_DEST_ADMIN_PROHIBITED)
+        | (ICMPV6_TYPE_DEST_UNREACHABLE, ICMPV6_DEST_POLICY_FAIL)
+        | (ICMPV6_TYPE_DEST_UNREACHABLE, ICMPV6_DEST_REJECT_ROUTE) =>
+            (Errno::Eacces as i32, true),
+        (ICMPV6_TYPE_DEST_UNREACHABLE, ICMPV6_DEST_PORT_UNREACHABLE) =>
+            (Errno::Econnrefused as i32, true),
+        (ICMPV6_TYPE_TIME_EXCEEDED, _) => (Errno::Ehostunreach as i32, false),
+        (ICMPV6_TYPE_PARAMETER_PROBLEM, _) => (Errno::Eproto as i32, true),
+        (crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG, _) => (Errno::Emsgsize as i32, false),
+        _ => (Errno::Eproto as i32, true),
+    }
+}
 
 fn quoted_udp6(invoking: &[u8]) -> Option<(Ipv6Addr, u16, Ipv6Addr, u16, &[u8])> {
     let hdr = Ipv6Hdr::parse(invoking).ok()?;
