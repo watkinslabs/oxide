@@ -342,6 +342,7 @@ impl TcpListenEntry {
 }
 
 pub struct NetStack {
+    pub(crate) rtnl: crate::rtnl::Rtnl,
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
     pub routes6: Route6Table,

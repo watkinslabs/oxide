@@ -4,6 +4,7 @@ impl NetStack {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self {
+            rtnl: crate::rtnl::Rtnl::new(),
             ifaces: IfaceRegistry::new(),
             routes: RouteTable::new(),
             routes6: Route6Table::new(),
@@ -17,6 +18,13 @@ impl NetStack {
             v6_mcast:   Spinlock::new(BTreeMap::new()), v4_mcast: Spinlock::new(BTreeMap::new()),
         }
     }
+
+    /// Acquire process-context serialization for RTNL control-plane mutations.
+    /// # C: O(contention)
+    /// # Ctx: schedulable process context
+    /// # Lk: stack RTNL lock acquired
+    /// # Sleeps: never
+    pub fn rtnl_lock(&self) -> crate::RtnlGuard<'_> { self.rtnl.lock(self) }
 
     /// F184: MSS for `dst` = egress iface MTU − (v4:40, v6:60). 0 if
     /// no iface — caller falls back to OWN_MSS_DEFAULT. # C: O(log N).
@@ -113,87 +121,6 @@ impl NetStack {
         });
         self.add_v6_addr(id, Ipv6Addr::LOOPBACK);
         (id, lo)
-    }
-
-    /// Remove per-interface network state and unregister the netdev.
-    /// # C: O(N routes + N addrs + N groups + N ndp)
-    pub fn unregister_iface(&self, iface: NetIfaceId) -> bool {
-        self.unregister_iface_in(0, iface)
-    }
-
-    fn quiesce_teardown(&self, iface: NetIfaceId,
-                        teardown: crate::netdev::IfaceTeardown)
-        -> crate::netdev::IfaceTeardown {
-        let net_ns = teardown.net_ns();
-        teardown.wait();
-        teardown.mcast_report.retire();
-        teardown.dev.retire_namespace();
-        let _ = crate::iface_addr::remove_iface(net_ns, iface);
-        self.v6_addrs.lock().remove(&iface);
-        self.ndp.lock().retain(|(id, _), _| *id != iface);
-        self.v6_mcast.lock().remove(&iface);
-        self.v4_mcast.lock().remove(&iface);
-        self.routes.retain_in(net_ns, |e| e.iface != iface);
-        self.routes6.retain_in(net_ns, |e| e.iface != iface);
-        teardown
-    }
-
-    fn quiesce_iface_in(&self, net_ns: u64, iface: NetIfaceId)
-        -> Option<crate::netdev::IfaceTeardown>
-    {
-        loop {
-            match self.ifaces.claim_unregister_in(iface, Some(net_ns)) {
-                crate::netdev::IfaceUnregisterClaim::Gone => return None,
-                crate::netdev::IfaceUnregisterClaim::WaitComplete(gate) => {
-                    crate::netdev::IfaceRegistry::wait_unregister(&gate);
-                }
-                crate::netdev::IfaceUnregisterClaim::WaitResume(gate) => {
-                    crate::netdev::IfaceRegistry::wait_resume(&gate);
-                }
-                crate::netdev::IfaceUnregisterClaim::Teardown(teardown) => {
-                    return Some(self.quiesce_teardown(iface, teardown));
-                }
-            }
-        }
-    }
-
-    /// Remove one namespace-owned interface and all attached network state. # C: O(N)
-    pub fn unregister_iface_in(&self, net_ns: u64, iface: NetIfaceId) -> bool {
-        let Some(teardown) = self.quiesce_iface_in(net_ns, iface) else { return false };
-        self.ifaces.finish_destroy(&teardown).is_some()
-    }
-
-    /// Synchronously remove an interface from its canonical namespace generation. # C: O(N)
-    /// # Ctx: schedulable process context; caller holds no ingress lease for `iface`.
-    pub fn unregister_iface_current(&self, iface: NetIfaceId) -> bool {
-        loop {
-            match self.ifaces.claim_unregister(iface) {
-                crate::netdev::IfaceUnregisterClaim::Gone => return true,
-                crate::netdev::IfaceUnregisterClaim::WaitComplete(gate) => {
-                    crate::netdev::IfaceRegistry::wait_unregister(&gate);
-                }
-                crate::netdev::IfaceUnregisterClaim::WaitResume(gate) => {
-                    crate::netdev::IfaceRegistry::wait_resume(&gate);
-                }
-                crate::netdev::IfaceUnregisterClaim::Teardown(teardown) => {
-                    let teardown = self.quiesce_teardown(iface, teardown);
-                    if self.ifaces.finish_destroy(&teardown).is_some() { return true; }
-                }
-            }
-        }
-    }
-
-    /// Apply Linux namespace-exit disposition after quiescing interface state. # C: O(N)
-    pub fn teardown_iface_in(&self, net_ns: u64, iface: NetIfaceId) -> bool {
-        let Some(teardown) = self.quiesce_iface_in(net_ns, iface) else { return false };
-        match teardown.dev.namespace_drop_action() {
-            crate::NamespaceDropAction::Destroy => self.ifaces.finish_destroy(&teardown).is_some(),
-            crate::NamespaceDropAction::MoveToInitial => {
-                let Some(next) = self.ifaces.begin_move_to_initial(&teardown) else { return false };
-                teardown.dev.resume_namespace();
-                self.ifaces.finish_move_to_initial(&teardown, &next)
-            }
-        }
     }
 
     /// UDP bind. Eaddrinuse if taken. # C: O(log N)
