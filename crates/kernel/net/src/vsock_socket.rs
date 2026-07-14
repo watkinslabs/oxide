@@ -28,6 +28,8 @@ pub enum VsockKind {
 pub struct VsockSocket {
     pub kind: Spinlock<VsockKind, SockLockClass>,
     pub so_type: core::sync::atomic::AtomicU8,
+    /// Socket-owned pending receive error, stored as a positive Linux errno.
+    pending_recv_error: core::sync::atomic::AtomicI32,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
     pub poll_subs: Arc<vfs::PollSubscribers>,
@@ -44,6 +46,7 @@ impl VsockSocket {
         VsockSocket {
             kind: Spinlock::new(VsockKind::Init),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
+            pending_recv_error: core::sync::atomic::AtomicI32::new(0),
             read_shut: core::sync::atomic::AtomicBool::new(false),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
         }
@@ -56,6 +59,23 @@ impl VsockSocket {
             VsockKind::Conn(c) => Some(c.clone()),
             _ => None,
         }
+    }
+
+    /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
+    pub fn set_pending_recv_error(&self, errno: i32) -> bool {
+        if errno <= 0 { return false; }
+        self.pending_recv_error.store(errno, core::sync::atomic::Ordering::Release);
+        true
+    }
+
+    /// Consume the pending positive Linux receive errno, or zero. # C: O(1)
+    pub fn take_pending_recv_error(&self) -> i32 {
+        self.pending_recv_error.swap(0, core::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Observe whether a receive error is pending without consuming it. # C: O(1)
+    pub fn has_pending_recv_error(&self) -> bool {
+        self.pending_recv_error.load(core::sync::atomic::Ordering::Acquire) != 0
     }
 }
 
@@ -207,6 +227,18 @@ mod tests {
 
         assert_eq!(*conn.st.lock(), VsockState::Closed);
         assert!(vsock::TABLE.find(key).is_none());
+    }
+
+    #[test]
+    fn pending_recv_error_overwrites_with_latest_positive_errno() {
+        let sock = VsockSocket::new();
+        assert_eq!(sock.take_pending_recv_error(), 0);
+        assert!(!sock.set_pending_recv_error(0));
+        assert!(!sock.set_pending_recv_error(-5));
+        assert!(sock.set_pending_recv_error(111));
+        assert!(sock.set_pending_recv_error(104));
+        assert_eq!(sock.take_pending_recv_error(), 104);
+        assert_eq!(sock.take_pending_recv_error(), 0);
     }
 }
 

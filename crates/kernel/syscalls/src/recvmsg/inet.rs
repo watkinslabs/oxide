@@ -75,10 +75,17 @@ fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i
     user.copy_name(&[])
 }
 
-fn receive(fd: u64, sock: &Arc<InetSocket>, len: usize, flags: u64) -> Result<Received, i64> {
-    let nonblock = flags & MSG_DONTWAIT != 0 || file_is_nonblock(fd);
+fn receive(sock: &Arc<InetSocket>, len: usize, flags: u64, file_nonblock: bool) -> Result<Received, i64> {
+    let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let opts = net::sock::RecvOptions { peek: flags & MSG_PEEK != 0 };
-    if nonblock { return net::sock::recvfrom_opts(sock, len, opts).map_err(errno_from_neterr); }
+    match net::sock::recvfrom_opts(sock, len, opts) {
+        Ok(rcv) => return Ok(rcv),
+        Err(net::NetError::Eagain) => {}
+        Err(e) => return Err(errno_from_neterr(e)),
+    }
+    let pending = sock.take_pending_recv_error();
+    if pending != 0 { return Err(-(pending as i64)); }
+    if nonblock { return Err(err(Errno::Eagain)); }
     let is_v6 = sock.family.load(Ordering::Acquire) == net::sock::AF_INET6;
     if matches!(*sock.kind.lock(), SockKind::Udp) && !is_v6 {
         if let Some(port) = *sock.local_port.lock() {
@@ -92,7 +99,7 @@ fn receive(fd: u64, sock: &Arc<InetSocket>, len: usize, flags: u64) -> Result<Re
     net::sock_recv::recv_blocking(sock, len, opts, deadline).map_err(errno_from_neterr)
 }
 
-pub(crate) fn tcp_with_copy<F>(fd: u64, sock: &Arc<InetSocket>, capacity: usize, flags: u64, mut copy: F) -> Result<usize, i64>
+pub(crate) fn tcp_with_copy_pinned<F>(sock: &Arc<InetSocket>, capacity: usize, flags: u64, file_nonblock: bool, mut copy: F) -> Result<usize, i64>
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 {
     if capacity == 0 { return Ok(0); }
@@ -100,7 +107,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
         SockKind::TcpConn(entry) => entry.clone(),
         _ => return Err(err(Errno::Einval)),
     };
-    let nonblock = flags & MSG_DONTWAIT != 0 || file_is_nonblock(fd);
+    let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let peek = flags & MSG_PEEK != 0;
     let waitall = flags & MSG_WAITALL != 0;
     let mut total = 0usize;
@@ -115,6 +122,12 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
                 if !waitall || total == capacity { return Ok(total); }
             }
             Ok(None) => {
+                if total == 0 {
+                    let pending = sock.take_pending_recv_error();
+                    if pending != 0 { return Err(-(pending as i64)); }
+                } else if sock.has_pending_recv_error() {
+                    return Ok(total);
+                }
                 if sock.read_shut.load(Ordering::Acquire) || net::sock_io::tcp_recv_eof(entry.conn.lock().state) { return Ok(total); }
             }
             Err(e) => return if total != 0 { Ok(total) } else { Err(e) },
@@ -126,10 +139,16 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
     }
 }
 
+pub(crate) fn tcp_with_copy<F>(fd: u64, sock: &Arc<InetSocket>, capacity: usize, flags: u64, copy: F) -> Result<usize, i64>
+where F: FnMut(usize, &[u8]) -> Result<usize, i64>
+{
+    tcp_with_copy_pinned(sock, capacity, flags, file_is_nonblock(fd), copy)
+}
+
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
-pub(crate) fn recv(fd: u64, sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
+pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
-        let copied = match tcp_with_copy(fd, sock, user.capacity, flags, |offset, bytes| user.copy_payload_at(offset, bytes)) {
+        let copied = match tcp_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
             Ok(copied) => copied,
             Err(e) => return e,
         };
@@ -140,7 +159,7 @@ pub(crate) fn recv(fd: u64, sock: &Arc<InetSocket>, user: &RecvUser, flags: u64)
         if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
         return copied as i64;
     }
-    let rcv = match receive(fd, sock, user.capacity, flags) { Ok(rcv) => rcv, Err(e) => return e };
+    let rcv = match receive(sock, user.capacity, flags, file_nonblock) { Ok(rcv) => rcv, Err(e) => return e };
     let copied = match user.copy_payload(&rcv.payload) { Ok(n) => n, Err(e) => return e };
     let mut ctrl = control(sock, &rcv, if user.control == 0 { 0 } else { user.controllen });
     let ctrl_len = ctrl.copy_to(user);
@@ -149,4 +168,9 @@ pub(crate) fn recv(fd: u64, sock: &Arc<InetSocket>, user: &RecvUser, flags: u64)
     if rcv.full_len > copied { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
     if flags & MSG_TRUNC != 0 { rcv.full_len as i64 } else { copied as i64 }
+}
+
+/// Internet and packet recvmsg after fd resolution. # C: O(payload + control)
+pub(crate) fn recv(fd: u64, sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
+    recv_pinned(sock, file_is_nonblock(fd), user, flags)
 }

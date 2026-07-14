@@ -1,46 +1,99 @@
-// `sys_recvmmsg` — slot 299. Walks the mmsghdr vector calling the
-// per-message `recvmsg` variant. Error reported only if zero
-// messages completed (Linux semantics). Split per `08§7` / `53§0`.
+// `sys_recvmmsg` — slot 299. Native mmsghdr import, pinned socket batch,
+// pending-error publication, WAITFORONE, and relative timeout copyback.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_WAITFORONE};
 
-use crate::s047_recvmsg::sys_recvmsg;
+use crate::recvmsg::layout::{MMSGHDR_LEN_OFFSET, MMSGHDR_SIZE, TIMESPEC_SIZE};
 
-/// `recvmmsg(fd, mmsghdr*, vlen, flags, timeout)` — slot 299.
-/// Calls recvmsg per entry; same Linux semantics as sendmmsg.
-/// Timeout currently ignored (recvfrom path already polls via
-/// internal yield-loop on blocking sockets).
-/// # C: O(vlen)
-pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
-    let fd       = args.a0;
-    let mmsg_ptr = args.a1;
-    let vlen     = args.a2;
-    let flags    = args.a3;
-    let _timeout = args.a4;
-    if mmsg_ptr == 0 || vlen == 0 { return 0; }
-    if vlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let mut got: i64 = 0;
-    for i in 0..vlen {
-        let Some(entry) = mmsg_ptr.checked_add(i.saturating_mul(64)) else {
-            return -(Errno::Efault.as_i32() as i64);
-        };
-        let Some(len_ptr) = entry.checked_add(56) else {
-            return -(Errno::Efault.as_i32() as i64);
-        };
-        if let Err(rv) = crate::userbuf::validate_user_buf_writable(len_ptr, 4, 1) { return rv; }
-        let mut sa = *args;
-        sa.a0 = fd; sa.a1 = entry; sa.a2 = flags;
-        let r = sys_recvmsg(&sa);
-        if r < 0 {
-            return if got > 0 { got } else { r };
-        }
-        if r == 0 { break; }
-        // SAFETY: msg_len was validated as the writable 4-byte user slot for this mmsghdr entry.
-        unsafe { core::ptr::write_unaligned(len_ptr as *mut u32, r as u32); }
-        got += 1;
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+struct BatchTimeout {
+    user: u64,
+    deadline: u64,
+    remaining: u64,
+}
+
+fn timeout_import(user: u64) -> Result<Option<BatchTimeout>, i64> {
+    if user == 0 { return Ok(None); }
+    let mut raw = [0u8; TIMESPEC_SIZE];
+    uaccess::copy_from_user(&mut raw, user).map_err(|_| err(Errno::Efault))?;
+    let sec = i64::from_ne_bytes(raw[..8].try_into().unwrap());
+    let nsec = i64::from_ne_bytes(raw[8..].try_into().unwrap());
+    if sec < 0 || nsec < 0 || nsec >= crate::time_common::NS_PER_SEC as i64 { return Err(err(Errno::Einval)); }
+    let total = (sec as u64).saturating_mul(crate::time_common::NS_PER_SEC).saturating_add(nsec as u64);
+    Ok(Some(BatchTimeout { user, deadline: crate::time_common::monotonic_ns().saturating_add(total), remaining: total }))
+}
+
+fn timeout_update(timeout: &mut Option<BatchTimeout>) -> bool {
+    let Some(timeout) = timeout else { return false };
+    timeout.remaining = timeout.deadline.saturating_sub(crate::time_common::monotonic_ns());
+    timeout.remaining == 0
+}
+
+fn timeout_copyback(timeout: &Option<BatchTimeout>) -> Result<(), i64> {
+    let Some(timeout) = timeout else { return Ok(()) };
+    let sec = timeout.remaining / crate::time_common::NS_PER_SEC;
+    let nsec = timeout.remaining % crate::time_common::NS_PER_SEC;
+    let mut raw = [0u8; TIMESPEC_SIZE];
+    raw[..8].copy_from_slice(&(sec as i64).to_ne_bytes());
+    raw[8..].copy_from_slice(&(nsec as i64).to_ne_bytes());
+    uaccess::copy_to_user(timeout.user, &raw).map_err(|_| err(Errno::Efault))
+}
+
+fn partial(target: &crate::recvmsg::dispatch::RecvTarget, got: i64, failure: i64) -> i64 {
+    if got == 0 { return failure; }
+    if failure != err(Errno::Eagain) {
+        let errno = i32::try_from(-failure).unwrap_or(Errno::Eio.as_i32());
+        target.set_pending_error(errno);
     }
     got
+}
+
+/// `recvmmsg(fd, mmsghdr*, vlen, flags, timeout)` — slot 299.
+/// # C: O(vlen)
+pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
+    let mmsg_ptr = args.a1;
+    let vlen     = args.a2 as u32 as u64;
+    let mut flags = args.a3;
+    if flags & MSG_CMSG_COMPAT != 0 { return err(Errno::Einval); }
+    let mut timeout = match timeout_import(args.a4) { Ok(timeout) => timeout, Err(e) => return e };
+    let target = match crate::recvmsg::lookup(args.a0) { Ok(target) => target, Err(e) => return e };
+    if flags & MSG_ERRQUEUE == 0 {
+        let pending = target.take_error();
+        if pending != 0 { return -(pending as i64); }
+    }
+    if vlen == 0 { return 0; }
+    flags &= !MSG_WAITFORONE;
+    let mut got: i64 = 0;
+    let result = 'batch: {
+    for i in 0..vlen {
+        let entry = match i.checked_mul(MMSGHDR_SIZE).and_then(|offset| mmsg_ptr.checked_add(offset)) {
+            Some(entry) => entry,
+            None => break 'batch partial(&target, got, err(Errno::Efault)),
+        };
+        let user = match crate::recv_user::import(entry) { Ok(user) => user, Err(e) => break 'batch partial(&target, got, e) };
+        let r = crate::recvmsg::recv(&target, &user, flags);
+        if r < 0 { break 'batch partial(&target, got, r); }
+        let len_ptr = match entry.checked_add(MMSGHDR_LEN_OFFSET) {
+            Some(len_ptr) => len_ptr,
+            None => break 'batch partial(&target, got, err(Errno::Efault)),
+        };
+        if uaccess::copy_to_user(len_ptr, &(r as u32).to_ne_bytes()).is_err() {
+            break 'batch partial(&target, got, err(Errno::Efault));
+        }
+        got += 1;
+        if args.a3 & MSG_WAITFORONE != 0 { flags |= MSG_DONTWAIT; }
+        let expired = timeout_update(&mut timeout);
+        if expired { break; }
+    }
+    got
+    };
+    if result > 0 {
+        if let Err(e) = timeout_copyback(&timeout) { return e; }
+    }
+    result
 }
