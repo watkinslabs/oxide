@@ -30,6 +30,10 @@ impl NetStack {
             .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 });
         for endpoint in endpoints {
             if !raw4_matches(&endpoint, iface, normalized.src, normalized.dst) { continue; }
+            if normalized.proto == crate::addr::IpProto::Icmp as u8 {
+                let Some(typ) = full.get(normalized.ihl_bytes()) else { continue };
+                if !endpoint.accepts_icmp_type(*typ) { continue; }
+            }
             let verdict = endpoint.bpf_filter.verdict_with_context(FilterContext {
                 packet: full,
                 protocol: eth_p::IPV4,
@@ -60,4 +64,3 @@ fn raw4_matches(endpoint: &Raw4Endpoint, iface: NetIfaceId, src: Ipv4Addr,
     if dst.is_multicast() && !endpoint.mcast.accept_v4(iface, dst, src) { return false; }
     true
 }
-
