@@ -90,6 +90,7 @@ decl_lock_class! {
     Superblock   = 60,
     Modules      = 65,
     MountTable   = 70,
+    Namespace    = 75,
     FdTable      = 80,
     SignalQueue  = 90,
     TaskList     = 100,
