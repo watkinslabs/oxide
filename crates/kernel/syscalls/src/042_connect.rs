@@ -142,7 +142,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
     match net::sock::connect(&sock, addr, file_is_nonblock(fd)) {
-        Ok(()) => 0,
+        Ok(()) => { net::bind_file(&file, &sock); 0 }
         Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
         Err(e) => errno_from_neterr(e),
     }

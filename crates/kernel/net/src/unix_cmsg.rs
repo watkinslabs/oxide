@@ -25,6 +25,7 @@ use crate::sock::{InetSocket, SockKind};
 
 /// # C: O(iov)
 pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64 {
+    let _gc_transfer = crate::transfer_guard();
     let q = match &*sock.kind.lock() {
         SockKind::UnixDgram(q) => q.clone(),
         _ => return -(Errno::Einval.as_i32() as i64),

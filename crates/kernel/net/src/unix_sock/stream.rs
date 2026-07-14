@@ -7,7 +7,7 @@ use vfs;
 
 #[cfg(target_os = "oxide-kernel")]
 use super::wake_peer_subs;
-use super::{EndCred, UnixEnd};
+use super::{EndCred, GcNode, GcRights, UnixEnd};
 
 #[cfg(feature = "debug-dbus")]
 mod trace;
@@ -69,6 +69,8 @@ pub struct UnixPair {
     /// an unbound listener (abstract-autobind not yet retained). Used by
     /// `getsockname`/`getpeername` to report the real path.
     pub bind_path: Spinlock<Option<Vec<u8>>, UnixLockClass>,
+    gc_a: GcNode,
+    gc_b: GcNode,
 }
 
 /// One directional byte queue plus its in-band SCM_RIGHTS bursts.
@@ -92,7 +94,7 @@ pub struct UnixRing {
     pub consumed: u64,
     /// Per-write SCM_RIGHTS and sender credentials tagged with the absolute
     /// stream offset of their first byte. FIFO / ascending by offset.
-    pub ancillary: VecDeque<(u64, Vec<Arc<vfs::File>>, (u32, u32, u32))>,
+    pub ancillary: VecDeque<(u64, GcRights, (u32, u32, u32))>,
 }
 
 impl UnixRing {
@@ -131,7 +133,14 @@ impl UnixPair {
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
             bind_path: Spinlock::new(None),
+            gc_a: GcNode::new(),
+            gc_b: GcNode::new(),
         })
+    }
+
+    /// Stable receive-queue identity for one endpoint. # C: O(1)
+    pub fn gc_node(&self, end: UnixEnd) -> GcNode {
+        match end { UnixEnd::A => self.gc_a.clone(), UnixEnd::B => self.gc_b.clone() }
     }
 
     /// Record the listener's bound `sun_path` this pair was connected to.
@@ -208,7 +217,7 @@ impl UnixPair {
     /// Returns the number of bytes accepted (full byte count for v1).
     /// # C: O(data.len())
     pub fn write(&self, end: UnixEnd, data: &[u8]) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, Vec::new())
+        self.write_inner(end, data, GcRights::from_files(Vec::new()))
     }
 
     /// Append `data` plus a SCM_RIGHTS burst, tagging the fds to the
@@ -217,11 +226,16 @@ impl UnixPair {
     /// rather than popping them ahead of their D-Bus message.
     /// # C: O(data.len() + fds)
     pub fn write_with_fds(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, fds)
+        self.write_with_rights(end, data, GcRights::from_files(fds))
     }
 
-    /// # C: O(data.len() + fds)
-    fn write_inner(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> Result<usize, UnixStreamError> {
+    /// Enqueue a classified canonical SCM_RIGHTS batch. # C: O(data.len() + rights)
+    pub fn write_with_rights(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> {
+        self.write_inner(end, data, rights)
+    }
+
+    /// # C: O(data.len() + rights)
+    fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> {
         // DIAG (debug-dbus): dump AF_UNIX SOCK_STREAM messages that mention the
         // login1 session interface or carry a D-Bus error reply. dbus-broker
         // relays every method call/reply through these streams, so this captures
@@ -242,6 +256,9 @@ impl UnixPair {
         #[cfg(not(target_os = "oxide-kernel"))]
         let sender_cred = stable_cred;
         if self.peer_gone(end) { return Err(UnixStreamError::PeerClosed); }
+        let receiver = self.gc_node(end.other());
+        let transition = receiver.pin();
+        rights.register(&receiver);
         let mut g = match end {
             UnixEnd::A => self.a_to_b.lock(),
             UnixEnd::B => self.b_to_a.lock(),
@@ -251,7 +268,7 @@ impl UnixPair {
         }
         // Tag the burst to the offset of the first byte of THIS write so a
         // reader delivers it with (never before) that byte.
-        if !fds.is_empty() {
+        if !rights.is_empty() {
             // [SCMW] AF_UNIX SOCK_STREAM SCM_RIGHTS send probe: logs the
             // sender vpid + fd count of every fd-carrying write. On the
             // D-Bus system bus the only fd-carrying stream messages are
@@ -265,18 +282,19 @@ impl UnixPair {
                 klog::write_raw(b"[SCMW pid=");
                 klog::write_dec_u64(vpid as u64);
                 klog::write_raw(b" nfds=");
-                klog::write_dec_u64(fds.len() as u64);
+                klog::write_dec_u64(rights.len() as u64);
                 klog::write_raw(b"]\n");
             }
         }
-        if !data.is_empty() || !fds.is_empty() {
+        if !data.is_empty() || !rights.is_empty() {
             let off = g.produced;
-            g.ancillary.push_back((off, fds, sender_cred));
+            g.ancillary.push_back((off, rights, sender_cred));
         }
         g.buf.extend(data.iter().copied());
         let n = data.len();
         g.produced += n as u64;
         drop(g);
+        drop(transition);
         #[cfg(target_os = "oxide-kernel")]
         {
             // debug-syscost DIAG: log dbus-broker's / polkit's connected-socket
@@ -320,7 +338,7 @@ impl UnixPair {
     /// other locks — never under the ring spinlock).
     /// # C: O(min(max, queue))
     pub fn read(&self, end: UnixEnd, max: usize) -> Vec<u8> {
-        let mut drop_later: Vec<Arc<vfs::File>> = Vec::new();
+        let mut rights_later: Vec<GcRights> = Vec::new();
         let out = {
             let mut g = match end {
                 UnixEnd::A => self.b_to_a.lock(),
@@ -338,14 +356,17 @@ impl UnixPair {
                 match g.ancillary.front() {
                     Some((off, _, _)) if *off < g.consumed => {
                         let (_, f, _) = g.ancillary.pop_front().unwrap();
-                        drop_later.extend(f);
+                        rights_later.push(f);
                     }
                     _ => break,
                 }
             }
             out
         };
+        let mut drop_later: Vec<Arc<vfs::File>> = Vec::new();
+        for rights in rights_later { drop_later.extend(rights.take_files()); }
         drop(drop_later);
+        super::collect_scm_rights();
         out
     }
 
@@ -410,14 +431,14 @@ impl UnixPair {
         // Collect every burst tagged at or behind the cursor; cap the
         // read at the NEXT burst strictly ahead so its fds cannot ride an
         // earlier message's bytes.
-        let mut fds_out: Vec<Arc<vfs::File>> = Vec::new();
+        let mut rights_out: Vec<GcRights> = Vec::new();
         let mut cred_out = None;
         let mut cap = max;
         loop {
             match g.ancillary.front() {
                 Some((off, _, _)) if *off <= g.consumed => {
                     let (_, f, cred) = g.ancillary.pop_front().unwrap();
-                    fds_out.extend(f);
+                    rights_out.push(f);
                     cred_out = Some(cred);
                 }
                 Some((off, _, _)) => {
@@ -435,6 +456,8 @@ impl UnixPair {
         }
         g.consumed += take as u64;
         drop(g);
+        let mut fds_out: Vec<Arc<vfs::File>> = Vec::new();
+        for rights in rights_out { fds_out.extend(rights.take_files()); }
         // debug-syscost DIAG: log dbus-broker/polkit connected-socket READS (pair +
         // end + bytes). Distinguishes blocker #2: does dbus-broker READ polkit's
         // AUTH (n>0 → AUTH/creds processing issue) or NEVER (n=0/absent → read edge)?
