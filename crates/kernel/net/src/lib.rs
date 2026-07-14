@@ -24,6 +24,8 @@ pub mod netdev;
 pub mod sysctl;
 pub mod uapi;
 pub mod socket_args;
+pub mod socket_error;
+pub use socket_error::SocketError;
 pub mod loopback;
 pub mod ipv4;
 pub mod ipv6;
