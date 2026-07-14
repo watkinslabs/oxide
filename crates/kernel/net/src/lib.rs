@@ -75,7 +75,7 @@ pub use route6::{Route6Entry, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
 pub use netdev::{
-    IfaceEntry, IfaceRegistry, NamespaceDropAction, NetDev, NetError, NetResult,
+    IfaceEntry, IfaceRegistry, IngressLease, NamespaceDropAction, NetDev, NetError, NetResult,
     NetStats, STAT_FIELDS,
 };
 

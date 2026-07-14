@@ -1,4 +1,5 @@
 use super::*;
+use super::rx::assignment::RxAssignments;
 
 // -------- F59-11: NetDev iface registration ---------------------------
 //
@@ -33,6 +34,7 @@ pub(super) struct NetRuntime {
     pub(super) rx_bytes:   AtomicU64,
     pub(super) rx_dropped: AtomicU64,
     pub(super) rx_errors:  AtomicU64,
+    pub(super) rx_assignments: RxAssignments,
 }
 
 pub(super) static NET_RUNTIMES: Spinlock<alloc::vec::Vec<alloc::sync::Arc<NetRuntime>>, DriverLockClass> =
@@ -66,6 +68,12 @@ fn allocate_net_name(runtimes: &[alloc::sync::Arc<NetRuntime>]) -> alloc::string
 }
 
 pub(super) fn ensure_net_runtime(device_key: DeviceKey) -> alloc::sync::Arc<NetRuntime> {
+    let rx_descriptor_count = MODERN_DEVS
+        .lock()
+        .iter()
+        .find(|state| state.device_key == device_key)
+        .map(|state| state.rxq.size as usize)
+        .unwrap_or(0);
     let mut runtimes = NET_RUNTIMES.lock();
     if let Some(runtime) = runtimes
         .iter()
@@ -83,6 +91,7 @@ pub(super) fn ensure_net_runtime(device_key: DeviceKey) -> alloc::sync::Arc<NetR
         rx_bytes:   AtomicU64::new(0),
         rx_dropped: AtomicU64::new(0),
         rx_errors:  AtomicU64::new(0),
+        rx_assignments: RxAssignments::new(rx_descriptor_count),
     });
     runtimes.push(alloc::sync::Arc::clone(&runtime));
     runtime
@@ -160,7 +169,12 @@ impl net::NetDev for VirtioNetDev {
     fn name(&self) -> &str { self.runtime.name.as_str() }
     fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
     fn mtu(&self)  -> u32 { 1500 }
-    fn retire_namespace(&self) { self.runtime.arp.clear(); }
+    fn retire_namespace(&self) {
+        self.runtime.arp.clear();
+        clear_softirq_ip_for_device(self.device_key);
+        self.runtime.rx_assignments.retire();
+    }
+    fn resume_namespace(&self) { raise_rx(); }
     fn namespace_drop_action(&self) -> net::NamespaceDropAction {
         net::NamespaceDropAction::MoveToInitial
     }

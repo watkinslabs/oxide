@@ -7,17 +7,22 @@ use crate::ndp;
 use crate::netfilter_hook::{nf_hook_eval, NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INET_PRE_ROUTING};
 
 impl NetStack {
+    /// Demux IPv6 after resolving the ingress interface owner. # C: O(payload)
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        #[cfg(not(target_os = "oxide-kernel"))]
-        let net_ns = self.ifaces.namespace(iface).ok_or(crate::netdev::NetError::Enodev)?;
-        #[cfg(target_os = "oxide-kernel")]
-        let (net_ns, _namespace) = self.ingress_namespace(iface)
+        let lease = self.ifaces.acquire_ingress(iface)
             .ok_or(crate::netdev::NetError::Enodev)?;
+        self.deliver_rx_ipv6_in(&lease, l3)
+    }
+
+    /// Demux IPv6 under one immutable ingress ownership lease. # C: O(payload)
+    pub fn deliver_rx_ipv6_in(&self, lease: &crate::IngressLease, l3: &[u8]) -> NetResult<()> {
+        let net_ns = lease.net_ns();
+        let iface = lease.iface();
         if nf_hook_eval(NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6) == 0 {
             return Ok(());
         }
         let hdr = Ipv6Hdr::parse(l3).map_err(|_| crate::netdev::NetError::Einval)?;
-        if !self.v6_dst_is_local(iface, hdr.dst) { return Ok(()); }
+        if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) { return Ok(()); }
         if nf_hook_eval(NF_INET_LOCAL_IN, l3, NFPROTO_IPV6) == 0 { return Ok(()); }
         let payload_end = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() {
@@ -66,6 +71,14 @@ impl NetStack {
             net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
             hdr.flow_label, mld_router_alert, next_header, payload,
         )
+    }
+
+    fn v6_dst_is_local_in(&self, net_ns: u64, iface: NetIfaceId, ip: Ipv6Addr) -> bool {
+        if ip.is_multicast() || ip.is_link_local() { return self.v6_dst_is_local(iface, ip); }
+        self.v6_addrs.lock().iter().any(|(id, addrs)| {
+            self.ifaces.lookup_in_ns(*id, net_ns).is_some()
+                && addrs.iter().any(|addr| addr.addr == ip)
+        })
     }
 
     fn deliver_rx_ipv6_payload(

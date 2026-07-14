@@ -35,8 +35,9 @@ Update: 2026-07-14.
 
 ## Remaining network work
 
-- N03.8.2-N03.8.5: ingress lease, loopback owner pin, atomic SIOCGSKNS fd
-  install, and full retained-owner schedule matrix.
+- N03.8.2-N03.8.7: ingress lease, loopback owner pin, atomic SIOCGSKNS fd
+  install, retained-owner schedule matrix, namespace-aware physical-device
+  uninstall, and control-plane mutation/teardown serialization.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 

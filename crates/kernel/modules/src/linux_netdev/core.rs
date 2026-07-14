@@ -101,14 +101,16 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
     let iface = NetIfaceId::from_raw(ifindex);
     #[cfg(target_os = "oxide-kernel")]
     {
+        let stack = net::sock::stack();
+        let Some(lease) = stack.ifaces.acquire_ingress(iface) else { return NET_RX_DROP };
         if let Some(l2) = l2_frame(&frame, proto) {
-            net::sock::deliver_packet_rx(iface, l2);
+            net::sock::deliver_packet_rx_in(&lease, l2);
         }
         let actual_proto = resolved_protocol(&frame, proto);
         let l3 = l3_payload(&frame, actual_proto);
         let r = match actual_proto {
-            net::addr::eth_p::IPV4 => net::sock::stack().deliver_rx(iface, l3),
-            net::addr::eth_p::IPV6 => net::sock::stack().deliver_rx_ipv6(iface, l3),
+            net::addr::eth_p::IPV4 => stack.deliver_rx_in(&lease, l3),
+            net::addr::eth_p::IPV6 => stack.deliver_rx_ipv6_in(&lease, l3),
             net::addr::eth_p::ARP => Ok(()),
             _ => Ok(()),
         };

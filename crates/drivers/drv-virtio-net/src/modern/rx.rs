@@ -8,6 +8,9 @@ use super::{
 };
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+pub(super) mod assignment;
+use assignment::completion;
+
 const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
 const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
 const VIRTQ_USED_HEADER_BYTES: usize = 4;
@@ -89,6 +92,14 @@ pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
     true
 }
 
+pub(super) fn clear_softirq_ip_for_device(device_key: DeviceKey) {
+    if let Some(runtime) = RX_RUNTIMES.lock().iter_mut()
+        .find(|runtime| runtime.device_key == device_key)
+    {
+        runtime.ip = [0, 0, 0, 0];
+    }
+}
+
 pub(super) fn clear_rx_runtime() {
     RX_RUNTIMES.lock().clear();
 }
@@ -138,15 +149,16 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
     let our_mac = match super::mac_for(device_key) { Some(m) => m, None => return 0 };
     let stack = net::sock::stack();
-    rx_poll_for(device_key, |f: &[u8]| {
-        let Some((_net_ns, _namespace)) = stack.ingress_namespace(iface) else { return };
+    let Some(lease) = stack.ifaces.acquire_ingress(iface) else { return 0 };
+    let generation = lease.generation();
+    rx_poll_for(device_key, generation, |f: &[u8]| {
         if f.len() < 14 { return; }
         let et = ((f[12] as u16) << 8) | (f[13] as u16);
         // F137: tap full L2 frame to AF_PACKET sockets bound on this
         // iface. Done before ARP/IP demux so dhcpcd (ETH_P_ALL) sees
         // every frame regardless of whether the kernel stack also
         // consumes it.
-        net::sock::deliver_packet_rx(iface, f);
+        net::sock::deliver_packet_rx_in(&lease, f);
         match et {
             0x0806 => {
                 if f.len() < 14 + 28 { return; }
@@ -187,13 +199,13 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId, our_ip
                         );
                     }
                 }
-                let _ = stack.deliver_rx(iface, &f[14..]);
+                let _ = stack.deliver_rx_in(&lease, &f[14..]);
             }
             0x86dd => {
                 // F180: IPv6. Hand the L3 payload to the stack's
                 // IPv6 path; minimum-viable demux handles ICMPv6
                 // echo + graceful drop for unbound L4 destinations.
-                let _ = stack.deliver_rx_ipv6(iface, &f[14..]);
+                let _ = stack.deliver_rx_ipv6_in(&lease, &f[14..]);
             }
             _ => {}
         }
@@ -219,10 +231,11 @@ pub(super) fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr>
 // Cursors live in the per-device runtime record and are incremented only inside
 // rx_poll while holding the virtio-net device-table lock.
 
-/// Drain pending RX completions for the named transport and invoke `cb` for each frame body
-/// (Ethernet header + payload, virtio_net_hdr stripped). Re-publishes
-/// the same descriptor on each pass and kicks the device once if any
-/// frame was delivered.
+/// Drain pending RX completions for the named transport and assignment
+/// generation, invoking `cb` for each current frame body (Ethernet header +
+/// payload, virtio_net_hdr stripped). Re-publishes the same descriptor tagged
+/// with the current generation and kicks the device once if any descriptor
+/// completed.
 ///
 /// Returns frames delivered. Returns 0 if the device isn't initialized
 /// or the device hasn't advanced its used.idx since the last call.
@@ -233,8 +246,11 @@ pub(super) fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr>
 ///       stack emitting an ACK via tx_frame_for) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
 ///       so the device can safely overwrite RX buffers once republished.
-pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
-    let runtime = super::netdev::net_runtime_for(device_key);
+pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, expected_generation: u64,
+                                    mut cb: F) -> usize {
+    let Some(runtime) = super::netdev::net_runtime_for(device_key) else { return 0 };
+    let current_generation = runtime.rx_assignments.current();
+    if expected_generation != current_generation { return 0; }
     let mut g = super::MODERN_DEVS.lock();
     let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {
         return 0;
@@ -293,7 +309,14 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
         if let Some(rx_buf) = rx_buf {
             repost_ids.push(rx_buf.desc_id);
         }
-        if rx_buf
+        let descriptor_generation = rx_buf
+            .and_then(|buf| runtime.rx_assignments.descriptor(buf.desc_id))
+            .map(|generation| generation.load(Ordering::Acquire));
+        let assignment_valid = descriptor_generation
+            .is_some_and(|posted| completion(
+                posted, expected_generation, current_generation,
+            ).0);
+        if assignment_valid && rx_buf
             .map(|buf| {
                 (frame_total as usize) >= VIRTIO_NET_HDR_LEN
                     && (frame_total as usize) <= buf.len as usize
@@ -319,14 +342,10 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
             // than a minimum ethernet header is a runt → rx_errors; the
             // (id!=0 / oversized) else-branch below is a dropped frame.
             if body_len >= 14 {
-                if let Some(runtime) = runtime.as_ref() {
-                    runtime.rx_packets.fetch_add(1, Ordering::Relaxed);
-                    runtime.rx_bytes.fetch_add(body_len as u64, Ordering::Relaxed);
-                }
+                runtime.rx_packets.fetch_add(1, Ordering::Relaxed);
+                runtime.rx_bytes.fetch_add(body_len as u64, Ordering::Relaxed);
             } else {
-                if let Some(runtime) = runtime.as_ref() {
-                    runtime.rx_errors.fetch_add(1, Ordering::Relaxed);
-                }
+                runtime.rx_errors.fetch_add(1, Ordering::Relaxed);
             }
             frames.push(body.to_vec());
             delivered += 1;
@@ -334,9 +353,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
             // Device wrote a slot we didn't publish, or a frame too
             // short to even hold the virtio_net_hdr, or one larger than
             // the buffer — dropped, not delivered upward.
-            if let Some(runtime) = runtime.as_ref() {
-                runtime.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            }
+            runtime.rx_dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
     s.rx_last_used = last;
@@ -347,6 +364,12 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, mut cb: F) -> usize {
     let mut reposted = false;
     for id in repost_ids {
         let pub_slot = (next_avail as usize) % rxq_size;
+        let (_, repost_generation) = completion(
+            0, expected_generation, current_generation,
+        );
+        if let Some(generation) = runtime.rx_assignments.descriptor(id) {
+            generation.store(repost_generation, Ordering::Release);
+        }
         if let Some(rx_buf) = s.rx_bufs.iter().find(|buf| buf.desc_id == id) {
             virtio::dma::invalidate_from_device(
                 hhdm.wrapping_add(rx_buf.pa),
