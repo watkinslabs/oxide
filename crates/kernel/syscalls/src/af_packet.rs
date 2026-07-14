@@ -15,39 +15,24 @@ use hal::USER_VA_END;
 use syscall::errno::Errno;
 use net::sock::{InetSocket, SockKind};
 
-/// F139: write `sockaddr_ll` (20 bytes) into `src_p` for a frame
-/// just popped from an AF_PACKET socket's rx queue. `frame` is the
-/// full L2 frame so src MAC + pkttype (broadcast vs unicast) can
-/// be parsed inline. Bounds-checks `src_p..src_p+20 < USER_VA_END`.
-/// # SAFETY: caller verified bufp..bufp+len fit; src_p is the
-/// caller-supplied source-address output. We write exactly 20 B.
-/// # C: O(1)
-pub fn write_sockaddr_ll(src_p: u64, sock: &Arc<InetSocket>, frame: &[u8]) {
-    if src_p == 0 || src_p + 20 > USER_VA_END { return; }
-    let (ifi, proto_host) = {
-        let g = sock.kind.lock();
-        if let SockKind::Packet { ifindex, protocol, .. } = &*g {
-            (ifindex.load(Ordering::Acquire),
-             protocol.load(Ordering::Acquire))
-        } else { return; }
-    };
-    let src_mac: [u8; 6] = if frame.len() >= 12 {
-        [frame[6], frame[7], frame[8], frame[9], frame[10], frame[11]]
-    } else { [0; 6] };
-    let is_bcast = frame.len() >= 6 && frame[..6] == [0xff; 6];
-    let pkttype: u8 = if is_bcast { 1 } else { 0 };
-    // SAFETY: src_p bounds-checked above; sockaddr_ll spans 20 bytes; volatile writes prevent the compiler from coalescing past the user copy.
-    unsafe {
-        let p = src_p as *mut u8;
-        core::ptr::write_volatile(p as *mut u16, 17u16);
-        core::ptr::write_volatile(p.add(2) as *mut u16, proto_host.swap_bytes());
-        core::ptr::write_volatile(p.add(4) as *mut i32, ifi as i32);
-        core::ptr::write_volatile(p.add(8) as *mut u16, 1u16);
-        core::ptr::write_volatile(p.add(10), pkttype);
-        core::ptr::write_volatile(p.add(11), 6u8);
-        for i in 0..6 { core::ptr::write_volatile(p.add(12 + i), src_mac[i]); }
-        for i in 6..8 { core::ptr::write_volatile(p.add(12 + i), 0); }
-    }
+/// Copy a Linux `sockaddr_ll` using value-result `addrlen` semantics. # C: O(1)
+pub fn copy_sockaddr_ll_to_user(src_p: u64, src_len: u64, meta: net::sock::PacketAddr) -> i64 {
+    let mut sa = [0u8; 20];
+    sa[0..2].copy_from_slice(&17u16.to_ne_bytes());
+    sa[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
+    sa[4..8].copy_from_slice(&(meta.ifindex as i32).to_ne_bytes());
+    sa[8..10].copy_from_slice(&meta.hatype.to_ne_bytes());
+    sa[10] = meta.pkttype;
+    sa[11] = meta.halen;
+    sa[12..20].copy_from_slice(&meta.addr);
+    let mut raw_len = [0u8; 4];
+    if uaccess::copy_from_user(&mut raw_len, src_len).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let user_len = i32::from_ne_bytes(raw_len);
+    if user_len < 0 { return -(Errno::Einval.as_i32() as i64); }
+    if uaccess::copy_to_user(src_len, &(sa.len() as u32).to_ne_bytes()).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let take = core::cmp::min(user_len as usize, sa.len());
+    if uaccess::copy_to_user(src_p, &sa[..take]).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    0
 }
 
 /// AF_PACKET sendto path. Returns Some(rv) when `sock` is a

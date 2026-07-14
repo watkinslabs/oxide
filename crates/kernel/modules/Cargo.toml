@@ -20,6 +20,7 @@ ext4 = { path = "../ext4" }
 pmm  = { path = "../mm-pmm" }
 sched = { path = "../sched" }
 vmm = { path = "../mm-vmm" }
+uaccess = { path = "../uaccess" }
 timer = { path = "../timer" }
 mmio-map = { path = "../mmio-map" }
 arch-irq = { path = "../arch-irq" }

@@ -15,9 +15,19 @@ pub struct UnixDgram {
     pub fds: Vec<Arc<vfs::File>>,
 }
 
+pub struct UnixDgramRecord {
+    pub msg: UnixDgram,
+    pub sender: Option<UnixAddr>,
+    rights: GcRights,
+}
+
+impl core::ops::Deref for UnixDgramRecord {
+    type Target = UnixDgram;
+    fn deref(&self) -> &Self::Target { &self.msg }
+}
+
 pub struct UnixDgramQueue {
-    pub msgs: Spinlock<VecDeque<UnixDgram>, UnixLockClass>,
-    rights: Spinlock<VecDeque<GcRights>, UnixLockClass>,
+    pub msgs: Spinlock<VecDeque<UnixDgramRecord>, UnixLockClass>,
     /// Bound local address for pathname/abstract datagram sockets.
     pub bound: Spinlock<Option<UnixAddr>, UnixLockClass>,
     /// Connected peer address for AF_UNIX SOCK_DGRAM.
@@ -36,7 +46,6 @@ impl UnixDgramQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             msgs: Spinlock::new(VecDeque::new()),
-            rights: Spinlock::new(VecDeque::new()),
             bound: Spinlock::new(None),
             peer: Spinlock::new(None),
             reader_shutdown: core::sync::atomic::AtomicBool::new(false),
@@ -90,18 +99,28 @@ impl UnixDgramQueue {
     /// # C: O(1)
     pub fn try_push(&self, mut msg: UnixDgram) -> Result<(), crate::NetError> {
         let rights = GcRights::from_files(core::mem::take(&mut msg.fds));
-        self.try_push_with_rights(msg, rights)
+        self.try_push_from_with_rights(msg, None, rights)
+    }
+
+    /// Enqueue a datagram with its sender address and embedded file batch. # C: O(rights)
+    pub fn try_push_from(&self, mut msg: UnixDgram, sender: Option<UnixAddr>) -> Result<(), crate::NetError> {
+        let rights = GcRights::from_files(core::mem::take(&mut msg.fds));
+        self.try_push_from_with_rights(msg, sender, rights)
     }
 
     /// Enqueue a datagram with a classified canonical rights batch. # C: O(1)
     pub fn try_push_with_rights(&self, msg: UnixDgram, rights: GcRights) -> Result<(), crate::NetError> {
+        self.try_push_from_with_rights(msg, None, rights)
+    }
+
+    /// Enqueue one canonical record with its optional sender address. # C: O(1)
+    pub fn try_push_from_with_rights(&self, msg: UnixDgram, sender: Option<UnixAddr>, rights: GcRights) -> Result<(), crate::NetError> {
         let transition = self.gc.pin();
         rights.register(&self.gc);
         let mut q = self.msgs.lock();
         if self.released.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Econnrefused); }
         if self.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Epipe); }
-        q.push_back(msg);
-        self.rights.lock().push_back(rights);
+        q.push_back(UnixDgramRecord { msg, sender, rights });
         drop(q);
         drop(transition);
         #[cfg(target_os = "oxide-kernel")]
@@ -129,10 +148,9 @@ impl UnixDgramQueue {
     pub fn release(&self) {
         let dropped = {
             let mut q = self.msgs.lock();
-            let mut rights = self.rights.lock();
             self.released.store(true, core::sync::atomic::Ordering::Release);
             self.reader_shutdown.store(true, core::sync::atomic::Ordering::Release);
-            (core::mem::take(&mut *q), core::mem::take(&mut *rights))
+            core::mem::take(&mut *q)
         };
         drop(dropped);
         #[cfg(target_os = "oxide-kernel")]
@@ -142,13 +160,35 @@ impl UnixDgramQueue {
     /// Pop one dgram if any.
     /// # C: O(1)
     pub fn pop(&self) -> Option<UnixDgram> {
+        self.recv_with(false, |_, _, _| Ok::<(), core::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {}).map(|(_, msg, _)| msg)
+    }
+
+    /// Inspect one datagram under the queue lock. Callback failure consumes a
+    /// normal receive and preserves a peeked record. # C: O(payload + rights)
+    pub fn recv_with<R, E>(&self, peek: bool,
+        copy: impl FnOnce(&UnixDgram, Option<&UnixAddr>, usize) -> Result<R, E>)
+        -> Result<Option<(R, UnixDgram, Option<UnixAddr>)>, E>
+    {
         let mut q = self.msgs.lock();
-        let mut rights = self.rights.lock();
-        let mut msg = q.pop_front()?;
-        let batch = rights.pop_front();
-        drop(rights);
+        let Some(front) = q.front() else { return Ok(None); };
+        let copied = match copy(&front.msg, front.sender.as_ref(), front.rights.len()) {
+            Ok(copied) => copied,
+            Err(err) => {
+                let dropped = if peek { None } else { q.pop_front() };
+                drop(q);
+                drop(dropped);
+                if !peek { super::collect_scm_rights(); }
+                return Err(err);
+            }
+        };
+        if peek {
+            let msg = UnixDgram { payload: front.payload.clone(), creds: front.creds, fds: front.rights.clone_files() };
+            return Ok(Some((copied, msg, front.sender.clone())));
+        }
+        let mut record = q.pop_front().unwrap();
         drop(q);
-        if let Some(batch) = batch { msg.fds = batch.take_files(); }
-        Some(msg)
+        record.msg.fds = record.rights.take_files();
+        Ok(Some((copied, record.msg, record.sender)))
     }
 }

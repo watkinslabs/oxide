@@ -5,14 +5,21 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
 use net::sock::SockKind;
 use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
 use crate::net_common::{
     errno_from_neterr, file_is_nonblock, socket_from_fd,
 };
-use crate::net_sockaddr::{write_sockaddr_for_socket, write_sockaddr_in6_peer};
+use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_for_socket, encoded_sockaddr_in6_peer};
 use crate::net_trace::trace_enotsock_at;
+
+fn copy_payload(dst: u64, payload: &[u8]) -> Result<(usize, bool), i64> {
+    // SAFETY: payload is kernel-owned; raw usercopy reports the uncopied suffix.
+    let left = unsafe { uaccess::raw_copy_to_user(dst, payload.as_ptr(), payload.len()) };
+    let copied = payload.len() - left;
+    if copied != 0 || payload.is_empty() { Ok((copied, left != 0)) }
+    else { Err(-(Errno::Efault.as_i32() as i64)) }
+}
 
 /// `recvfrom(fd, buf, len, flags, src, srclen)` slot 45.
 /// Blocking unless O_NONBLOCK or MSG_DONTWAIT; honors SO_RCVTIMEO.
@@ -21,30 +28,46 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let fd     = args.a0;
     let bufp   = args.a1;
-    let len    = args.a2 as usize;
+    let len    = core::cmp::min(args.a2 as usize, uaccess::MAX_RW_COUNT);
     let flags  = args.a3;
     let src_p  = args.a4;
+    let src_len = args.a5;
     if crate::netlink_fd::is_netlink(fd) {
-        return crate::netlink_fd::recvfrom(fd, bufp, len, src_p, flags);
+        return crate::netlink_fd::recvfrom(fd, bufp, len, src_p, src_len, flags);
     }
     // D3.3: AF_VSOCK recv/recvfrom → OP_RW delivery via the socket
     // inode read path (STREAM, src not filled — single peer).
     if crate::net_common::vsock_from_fd(fd).is_some() {
-        if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        let nb = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
-        // SAFETY: bufp validated; user page mapped under caller's AS.
-        let dst = unsafe { core::slice::from_raw_parts_mut(bufp as *mut u8, len) };
-        // Post-KEYSTONE: the data path is the inode's `i_fop` (vsock FileOps).
-        let file = match crate::net_common::fd_file(fd) {
-            Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
+        if !uaccess::access_ok(bufp, len) { return -(Errno::Efault.as_i32() as i64); }
+        return match crate::recvmsg::vsock::recv_with_copy(fd, len, flags, |bytes| {
+            copy_payload(bufp, bytes).map(|(copied, _)| copied)
+        }) {
+            Ok(n) => n as i64,
+            Err(e) => e,
         };
-        let r = if nb { file.inode().read_nonblock(0, dst) } else { file.inode().read(0, dst) };
-        return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
     }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"recvfrom"); return -(Errno::Enotsock.as_i32() as i64); }
     };
-    if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    if !uaccess::access_ok(bufp, len) { return -(Errno::Efault.as_i32() as i64); }
+    if matches!(*sock.kind.lock(), SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)) {
+        return crate::unix_recv::recvfrom(&sock, fd, bufp, len, flags, src_p, src_len);
+    }
+    if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
+        let copied = match crate::recvmsg::inet::tcp_with_copy(fd, &sock, len, flags, |bytes| {
+            copy_payload(bufp, bytes).map(|(copied, _)| copied)
+        }) {
+            Ok(copied) => copied,
+            Err(e) => return e,
+        };
+        if src_p != 0 {
+            let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
+            let sa = encoded_sockaddr_for_socket(&sock, ip, port);
+            let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
+            if rv < 0 { return rv; }
+        }
+        return copied as i64;
+    }
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
     let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
     let deadline = net::sock::compute_deadline_ns(timeo);
@@ -69,20 +92,26 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
             Err(e) => return errno_from_neterr(e),
         }
     };
-    let take = rcv.payload.len();
-    // SAFETY: bufp+take validated < USER_VA_END; user page mapped under caller's AS.
-    unsafe { core::ptr::copy_nonoverlapping(rcv.payload.as_ptr(), bufp as *mut u8, take); }
+    let (take, faulted) = match copy_payload(bufp, &rcv.payload) { Ok(result) => result, Err(e) => return e };
     if src_p != 0 {
         if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
-            crate::af_packet::write_sockaddr_ll(src_p, &sock, &rcv.payload);
+            let Some(meta) = rcv.packet else { return -(Errno::Einval.as_i32() as i64); };
+            let rv = crate::af_packet::copy_sockaddr_ll_to_user(src_p, src_len, meta);
+            if rv < 0 { return rv; }
         } else if let Some((ip6, port)) = rcv.peer6 {
-            write_sockaddr_in6_peer(src_p, ip6, port);
+            let sa = encoded_sockaddr_in6_peer(ip6, port);
+            let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
+            if rv < 0 { return rv; }
         } else if let Some((ip, port)) = rcv.peer {
-            write_sockaddr_for_socket(src_p, &sock, ip, port);
+            let sa = encoded_sockaddr_for_socket(&sock, ip, port);
+            let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
+            if rv < 0 { return rv; }
         } else if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
             let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-            write_sockaddr_for_socket(src_p, &sock, ip, port);
+            let sa = encoded_sockaddr_for_socket(&sock, ip, port);
+            let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
+            if rv < 0 { return rv; }
         }
     }
-    if (flags & MSG_TRUNC) != 0 { rcv.full_len as i64 } else { take as i64 }
+    if !faulted && (flags & MSG_TRUNC) != 0 { rcv.full_len as i64 } else { take as i64 }
 }

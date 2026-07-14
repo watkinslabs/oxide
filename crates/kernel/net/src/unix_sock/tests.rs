@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
 mod listener_lifecycle;
+mod recv_transactions;
 mod scm_gc;
 mod shutdown;
 

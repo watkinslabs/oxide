@@ -38,7 +38,7 @@ pub(crate) fn read_tcp_blocking(
     }
 }
 
-pub(crate) fn tcp_recv_eof(st: crate::tcp_state::TcpState) -> bool {
+pub fn tcp_recv_eof(st: crate::tcp_state::TcpState) -> bool {
     st == crate::tcp_state::TcpState::Closed
         || st == crate::tcp_state::TcpState::CloseWait
         || st == crate::tcp_state::TcpState::LastAck

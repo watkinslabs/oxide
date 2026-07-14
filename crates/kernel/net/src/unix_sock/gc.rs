@@ -119,6 +119,9 @@ impl GcRights {
         files
     }
 
+    /// Clone file references without consuming this queued rights batch. # C: O(files)
+    pub fn clone_files(&self) -> Vec<Arc<vfs::File>> { self.0.files.lock().clone() }
+
     /// Whether this batch has already been consumed or collected. # C: O(1)
     pub fn is_empty(&self) -> bool { self.0.files.lock().is_empty() }
 
