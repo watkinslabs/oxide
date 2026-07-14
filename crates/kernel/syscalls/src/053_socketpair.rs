@@ -4,48 +4,18 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use net::sock::{InetSocket, SockKind};
-use crate::net_common::{SOCK_STREAM, SOCK_DGRAM};
-use crate::userbuf::validate_user_buf_writable;
+use net::socket_args::{parse_socket_args, AF_UNIX, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK, SOCK_SEQPACKET, SOCK_STREAM, SOCK_TYPE_MASK};
+use crate::userbuf::write_user_i32;
 
 /// `socketpair` slot 53. AF_UNIX STREAM / SEQPACKET / DGRAM (F125).
 /// # C: O(1)
 pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
-    const AF_UNIX: u32 = 1;
-    const SOCK_TYPE_MASK: u32 = 0xF;
-    const SOCK_SEQPACKET: u32 = 5;
     let domain = args.a0 as u32;
-    let typ    = args.a1 as u32 & SOCK_TYPE_MASK;
+    let raw_type = args.a1 as u32;
+    let protocol = args.a2 as u32;
     let svp    = args.a3;
-    if domain != AF_UNIX { return -(Errno::Eafnosupport.as_i32() as i64); }
-    if typ != SOCK_STREAM && typ != SOCK_SEQPACKET && typ != SOCK_DGRAM {
-        return -(Errno::Esocktnosupport.as_i32() as i64);
-    }
-    if let Err(rv) = validate_user_buf_writable(svp, 8, 4) { return rv; }
-    let stream = if typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
-    let msg = match typ {
-        SOCK_DGRAM => Some(net::UnixMsgPair::new_datagram()),
-        SOCK_SEQPACKET => Some(net::UnixMsgPair::new()),
-        _ => None,
-    };
-    let mk = |end: net::UnixEnd| -> vfs::InodeRef {
-        let s = InetSocket::new_tcp();
-        // socketpair(2) is AF_UNIX: SO_DOMAIN must report AF_UNIX, not the
-        // `new_tcp` default of AF_INET. dbus-broker rejects its controller fd
-        // (getsockopt SO_DOMAIN != AF_UNIX → "socket type of controller
-        // file-descriptor not supported"), which downed the system bus and timed
-        // out every dbus-dependent service (gdm, polkit, upower, NetworkManager…).
-        s.family.store(net::sock::AF_UNIX, core::sync::atomic::Ordering::Release);
-        if let Some(p) = &stream {
-            *s.kind.lock() = SockKind::Unix(p.clone(), end);
-            // F181a: tell the pair which subscribers wake on
-            // peer-end writes/close.
-            p.register_end_subs(end, &s.poll_subs);
-        } else if let Some(p) = &msg {
-            *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
-            p.register_end_subs(end, &s.poll_subs);
-        }
-        net::sock::make_inet_socket_inode(Arc::new(s))
-    };
+    let extra = raw_type & !SOCK_TYPE_MASK;
+    if extra & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -53,7 +23,21 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    // SO_PEERCRED: both ends of a socketpair belong to the caller.
+    let reserve_flags = if extra & SOCK_CLOEXEC != 0 { vfs::OpenFlags::O_CLOEXEC } else { vfs::OpenFlags::empty() };
+    crate::fd_pair::install_fd_pair(&fdt, cur.nofile_soft(), reserve_flags,
+        |index, fd| write_user_i32(svp + index as u64 * 4, fd),
+        || create_files(domain, raw_type, protocol, cur))
+}
+
+fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task) -> Result<(Arc<vfs::File>, Arc<vfs::File>), i64> {
+    let spec = parse_socket_args(domain, raw_type, protocol, true).map_err(|e| -(e.as_i32() as i64))?;
+    if spec.family != AF_UNIX { return Err(-(Errno::Eafnosupport.as_i32() as i64)); }
+    let stream = if spec.typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
+    let msg = match spec.typ {
+        SOCK_DGRAM => Some(net::UnixMsgPair::new_datagram()),
+        SOCK_SEQPACKET => Some(net::UnixMsgPair::new()),
+        _ => None,
+    };
     if let Some(p) = &stream {
         use core::sync::atomic::Ordering;
         let (pid, uid, gid) = (cur.visible_pid(),
@@ -68,27 +52,25 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
         p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
         p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
     }
-    let a = {
-        let inode = mk(net::UnixEnd::A);
+    let make_file = |end: net::UnixEnd| {
+        let s = InetSocket::new_tcp();
+        s.family.store(net::sock::AF_UNIX, core::sync::atomic::Ordering::Release);
+        s.opts.so_type.store(spec.typ as u8, core::sync::atomic::Ordering::Release);
+        if let Some(p) = &stream {
+            *s.kind.lock() = SockKind::Unix(p.clone(), end);
+            p.register_end_subs(end, &s.poll_subs);
+        } else if let Some(p) = &msg {
+            *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
+            p.register_end_subs(end, &s.poll_subs);
+        }
+        let inode = net::sock::make_inet_socket_inode(Arc::new(s));
         let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
-        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+        let mut flags = vfs::OpenFlags::O_RDWR;
+        if spec.nonblock { flags |= vfs::OpenFlags::O_NONBLOCK; }
+        let f = vfs::File::new(inode, dentry, flags);
         let sock = crate::net_common::inode_as_inet_socket(f.inode()).expect("socketpair inode");
         net::bind_file(&f, &sock);
-        match fdt.alloc_limit(f, cur.nofile_soft()) { Ok(fd) => fd, Err(e) => return -(e as i64) }
+        f
     };
-    let b = {
-        let inode = mk(net::UnixEnd::B);
-        let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
-        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
-        let sock = crate::net_common::inode_as_inet_socket(f.inode()).expect("socketpair inode");
-        net::bind_file(&f, &sock);
-        match fdt.alloc_limit(f, cur.nofile_soft()) { Ok(fd) => fd, Err(e) => return -(e as i64) }
-    };
-    // Write both fds back to user[]int sv[2].
-    // SAFETY: svp validated writable for the full int[2] output array.
-    unsafe {
-        core::ptr::write_volatile( svp           as *mut i32, a as i32);
-        core::ptr::write_volatile((svp + 4)      as *mut i32, b as i32);
-    }
-    0
+    Ok((make_file(net::UnixEnd::A), make_file(net::UnixEnd::B)))
 }
