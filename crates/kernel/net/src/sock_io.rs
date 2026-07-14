@@ -197,13 +197,13 @@ pub(crate) fn read_unix_stream_blocking(
     loop {
         // Fast path + interruption checks BEFORE arming the wait, matching
         // Linux (signal/timeout observed before prepare_to_wait).
-        if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         let got = pair.read(end, buf.len());
         if !got.is_empty() {
             let n = got.len();
             buf[..n].copy_from_slice(&got);
             return Ok(n);
         }
+        if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         if pair.is_eof(end) { return Ok(0); }
         #[cfg(target_os = "oxide-kernel")]
         if sched::live::deliverable_signals_self() != 0 {
@@ -235,7 +235,10 @@ pub(crate) fn read_unix_stream_blocking(
                 ReadOutcome::Eof => return Ok(0),
                 // SAFETY: process ctx; preempt-off owned by syscall stub; we
                 // are on the reader wait list (armed under the ring lock).
-                ReadOutcome::Parked => unsafe { sched::live::schedule::schedule(); }
+                ReadOutcome::Parked => unsafe {
+                    sched::live::schedule::schedule();
+                    pair.reader_waiters(end).remove_current();
+                }
             }
         }
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -261,6 +264,7 @@ pub(crate) fn read_unix_msg_blocking(
             buf[..n].copy_from_slice(&msg);
             return Ok(n);
         }
+        if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         // recv returns None only when nothing pending AND not EOF
         // (EOF returns Some(empty)). So fall through to park.
         #[cfg(target_os = "oxide-kernel")]
@@ -271,11 +275,18 @@ pub(crate) fn read_unix_msg_blocking(
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
             return Err(vfs::VfsError::Eagain);
         }
-        // SAFETY: process ctx; preempt-off; sender wakes us via pair.reader_waiters(end).wake_all.
         #[cfg(target_os = "oxide-kernel")]
-        unsafe {
-            pair.reader_waiters(end).park_with_deadline(deadline_ns);
-            sched::live::schedule::schedule();
+        match pair.arm_read(end, deadline_ns) {
+            crate::unix_sock::msg_pair::ArmMsgRead::Retry => continue,
+            crate::unix_sock::msg_pair::ArmMsgRead::Reset => {
+                let _ = pair.take_reset(end);
+                return Err(vfs::VfsError::Econnreset);
+            }
+            crate::unix_sock::msg_pair::ArmMsgRead::Eof => return Ok(0),
+            crate::unix_sock::msg_pair::ArmMsgRead::Parked => unsafe {
+                sched::live::schedule::schedule();
+                pair.reader_waiters(end).remove_current();
+            },
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(vfs::VfsError::Eagain);
@@ -354,7 +365,13 @@ pub fn recvfrom_opts(
             q.msgs.lock().front().map(|msg| msg.payload.clone())
         } else {
             q.pop().map(|msg| msg.payload)
-        }.ok_or(NetError::Eagain)?;
+        };
+        let Some(msg) = msg else {
+            if q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) {
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            }
+            return Err(NetError::Eagain);
+        };
         let full_len = msg.len();
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
@@ -372,12 +389,12 @@ pub fn recvfrom_opts(
         _ => None,
     };
     if let Some((pair, end)) = stream {
-        if pair.take_reset(end) { return Err(NetError::Econnreset); }
         let got = if opts.peek { pair.peek(end, max_len) } else { pair.read(end, max_len) };
         if !got.is_empty() {
             let full_len = got.len();
             return Ok(Received { payload: got, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
         }
+        if pair.take_reset(end) { return Err(NetError::Econnreset); }
         // Empty: EOF (peer closed + drained) → 0-byte read; else EAGAIN so the
         // caller blocks/retries rather than seeing a false EOF.
         if pair.is_eof(end) {
@@ -399,7 +416,7 @@ pub fn recvfrom_opts(
     if let Some((pair, end)) = msgpair {
         return match pair.recv_payload(end, max_len, opts.peek) {
             Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None }),
-            None => Err(NetError::Eagain),
+            None => if pair.take_reset(end) { Err(NetError::Econnreset) } else { Err(NetError::Eagain) },
         };
     }
     // F137: AF_PACKET. Pop one queued frame; peer = None for now
@@ -420,7 +437,12 @@ pub fn recvfrom_opts(
         let entry = entry.clone();
         drain_loopback();
         let payload = stack().tcp_recv(&entry, max_len);
-        if payload.is_empty() { return Err(NetError::Eagain); }
+        if payload.is_empty() {
+            if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+                return Ok(Received { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            }
+            return Err(NetError::Eagain);
+        }
         let full_len = payload.len();
         let peer = *sock.peer.lock();
         return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
@@ -429,9 +451,20 @@ pub fn recvfrom_opts(
     // recv must consult recv_udp6_opts; the v4 map would always miss.
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
         drain_loopback();
-        let port = (*sock.local_port.lock()).ok_or(NetError::Eagain)?;
-        let (src_ip6, src_port, dst_ip6, iface, hop, full) =
-            stack().recv_udp6_meta_opts(port, opts.peek).ok_or(NetError::Eagain)?;
+        let port = match *sock.local_port.lock() {
+            Some(port) => port,
+            None if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) => {
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            }
+            None => return Err(NetError::Eagain),
+        };
+        let got = stack().recv_udp6_meta_opts(port, opts.peek);
+        let Some((src_ip6, src_port, dst_ip6, iface, hop, full)) = got else {
+            if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            }
+            return Err(NetError::Eagain);
+        };
         let full_len = full.len();
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
@@ -443,8 +476,20 @@ pub fn recvfrom_opts(
     }
     // UDP / others (AF_INET).
     drain_loopback();
-    let port = (*sock.local_port.lock()).ok_or(NetError::Eagain)?;
-    let (src_ip, src_port, dst_ip, iface, ttl, full) = stack().recv_udp_meta_opts(port, opts.peek).ok_or(NetError::Eagain)?;
+    let port = match *sock.local_port.lock() {
+        Some(port) => port,
+        None if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) => {
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+        }
+        None => return Err(NetError::Eagain),
+    };
+    let got = stack().recv_udp_meta_opts(port, opts.peek);
+    let Some((src_ip, src_port, dst_ip, iface, ttl, full)) = got else {
+        if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+        }
+        return Err(NetError::Eagain);
+    };
     let full_len = full.len();
     let take = core::cmp::min(max_len, full_len);
     let mut out = alloc::vec::Vec::with_capacity(take);

@@ -32,24 +32,18 @@ fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) {
     };
     match kind {
         WaitKind::Unix(pair, end) => {
-            let ring = match end { crate::UnixEnd::A => &pair.b_to_a, crate::UnixEnd::B => &pair.a_to_b };
-            let g = ring.lock();
-            if !g.buf.is_empty() || g.closed_writer { return; }
-            // SAFETY: process ctx; ring lock serializes writers before wake.
-            unsafe { pair.reader_waiters(end).park_with_deadline(deadline_ns); }
-            drop(g);
-            // SAFETY: process ctx; current task is parked on the read wait list.
-            unsafe { sched::live::schedule::schedule(); }
+            if let crate::unix_sock::stream::ArmStreamRead::Parked = pair.arm_stream_read(end, deadline_ns) {
+                // SAFETY: pair armed current under its incoming-ring lock.
+                unsafe { sched::live::schedule::schedule(); }
+                pair.reader_waiters(end).remove_current();
+            }
         }
         WaitKind::UnixMsgPair(pair, end) => {
-            let ring = match end { crate::UnixEnd::A => &pair.b_to_a, crate::UnixEnd::B => &pair.a_to_b };
-            let g = ring.lock();
-            if !g.msgs.is_empty() || g.closed_writer { return; }
-            // SAFETY: process ctx; ring lock serializes senders before wake.
-            unsafe { pair.reader_waiters(end).park_with_deadline(deadline_ns); }
-            drop(g);
-            // SAFETY: process ctx; current task is parked on the read wait list.
-            unsafe { sched::live::schedule::schedule(); }
+            if let crate::unix_sock::msg_pair::ArmMsgRead::Parked = pair.arm_read(end, deadline_ns) {
+                // SAFETY: pair armed current under its incoming-queue lock.
+                unsafe { sched::live::schedule::schedule(); }
+                pair.reader_waiters(end).remove_current();
+            }
         }
         WaitKind::UnixDgram(q) => {
             let g = q.msgs.lock();

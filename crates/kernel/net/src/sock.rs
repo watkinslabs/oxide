@@ -7,6 +7,7 @@
 // - io: socket read/write/poll methods.
 // - udp: datagram receive/send helpers and iface source hook.
 // - unix: AF_UNIX connect lifecycle and backlog waiting.
+// - shutdown: protocol-owned shutdown transitions.
 // - ops: bind/connect/listen/accept/sendto work functions.
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -23,11 +24,13 @@ mod inode;
 mod io;
 mod udp;
 mod unix;
+mod shutdown;
 mod ops;
 
 pub use globals::*;
 pub use types::*;
 pub use inode::*;
 pub use udp::*;
+pub use shutdown::*;
 pub use ops::*;
 pub use crate::sock_io::{recvfrom, recvfrom_opts, Received, RecvOptions};

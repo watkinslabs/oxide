@@ -1,4 +1,6 @@
+use alloc::{sync::Arc, vec::Vec};
 use super::{UnixEnd, UnixPair};
+use vfs;
 
 #[cfg(target_os = "oxide-kernel")]
 pub enum ArmStreamRead {
@@ -20,11 +22,11 @@ impl UnixPair {
         let g = read_ring.lock();
         let ancillary_ready = g.ancillary.front().map(|(off, _, _)| *off <= g.consumed).unwrap_or(false);
         if !g.buf.is_empty() || ancillary_ready { return ArmStreamRead::Retry; }
-        if self.take_reset(end) { return ArmStreamRead::Reset; }
-        if g.closed_writer { return ArmStreamRead::Eof; }
+        if self.reset_pending(end) { return ArmStreamRead::Reset; }
+        if g.closed_writer || g.reader_shutdown { return ArmStreamRead::Eof; }
         // SAFETY: caller is a running syscall task; registration occurs under
         // the read-ring lock also taken by writers before their wake operation.
-        unsafe { self.reader_waiters(end).park_with_deadline(deadline_ns); }
+        unsafe { self.reader_waiters(end).park_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ArmStreamRead::Parked
     }
@@ -57,6 +59,96 @@ impl UnixPair {
             UnixEnd::A => self.reset_pending_a.load(Acquire),
             UnixEnd::B => self.reset_pending_b.load(Acquire),
         }
+    }
+
+    /// Shut down `end`'s receive half while preserving bytes already queued.
+    /// # C: O(1)
+    pub fn shutdown_reader(&self, end: UnixEnd) {
+        let incoming = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
+        incoming.lock().reader_shutdown = true;
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            self.reader_waiters(end).wake_all();
+            super::wake_peer_subs(self, end.other(), vfs::POLL_IN | vfs::POLL_RDHUP);
+            super::wake_peer_subs(self, end, vfs::POLL_OUT);
+        }
+    }
+
+    /// Shut down `end`'s send half and publish EOF after queued bytes drain.
+    /// # C: O(1)
+    pub fn close_writer(&self, end: UnixEnd) {
+        let outgoing = match end { UnixEnd::A => &self.a_to_b, UnixEnd::B => &self.b_to_a };
+        outgoing.lock().closed_writer = true;
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            self.reader_waiters(end.other()).wake_all();
+            super::wake_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_RDHUP);
+        }
+    }
+
+    /// Destroy one endpoint at final file release.
+    /// # C: O(unread bytes + descriptors)
+    pub fn release_end(&self, end: UnixEnd) {
+        use core::sync::atomic::Ordering::{AcqRel, Release};
+        let released = match end { UnixEnd::A => &self.released_a, UnixEnd::B => &self.released_b };
+        if released.swap(true, AcqRel) { return; }
+        self.close_writer(end);
+        let incoming = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
+        let (unread, fds): (bool, Vec<(u64, Vec<Arc<vfs::File>>, (u32, u32, u32))>) = {
+            let mut g = incoming.lock();
+            let unread = !g.buf.is_empty() || !g.ancillary.is_empty();
+            g.buf.clear();
+            g.consumed = g.produced;
+            g.reader_shutdown = true;
+            (unread, g.ancillary.drain(..).collect())
+        };
+        let (peer_gone, reset) = match end {
+            UnixEnd::A => (&self.peer_gone_b, &self.reset_pending_b),
+            UnixEnd::B => (&self.peer_gone_a, &self.reset_pending_a),
+        };
+        peer_gone.store(true, Release);
+        if unread { reset.store(true, Release); }
+        drop(fds);
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            self.reader_waiters(end).wake_all();
+            self.reader_waiters(end.other()).wake_all();
+            let mut mask = vfs::POLL_IN | vfs::POLL_HUP | vfs::POLL_RDHUP;
+            if unread { mask |= vfs::POLL_ERR; }
+            super::wake_peer_subs(self, end, mask);
+        }
+    }
+
+    /// True when reads from `end` have drained all data before EOF.
+    /// # C: O(1)
+    pub fn is_eof(&self, end: UnixEnd) -> bool {
+        let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
+        (g.closed_writer || g.reader_shutdown) && g.buf.is_empty() && !self.reset_pending(end)
+    }
+
+    /// Linux AF_UNIX stream readiness derived from both directional halves.
+    /// # C: O(1)
+    pub fn poll_mask(&self, end: UnixEnd) -> u32 {
+        let (has_data, peer_send_shut, local_recv_shut) = {
+            let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
+            (!g.buf.is_empty(), g.closed_writer, g.reader_shutdown)
+        };
+        let (local_send_shut, peer_recv_shut) = {
+            let g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
+            (g.closed_writer, g.reader_shutdown)
+        };
+        let gone = self.peer_gone(end);
+        let reset = self.reset_pending(end);
+        let mut mask = vfs::POLL_OUT;
+        if has_data || peer_send_shut || local_recv_shut || gone || reset {
+            mask |= vfs::POLL_IN;
+        }
+        if peer_send_shut || local_recv_shut || gone { mask |= vfs::POLL_RDHUP; }
+        if (local_recv_shut && local_send_shut) || (peer_send_shut && peer_recv_shut) || gone {
+            mask |= vfs::POLL_HUP;
+        }
+        if reset { mask |= vfs::POLL_ERR; }
+        mask
     }
 
     /// Abort a connection that was queued but never accepted by its listener.

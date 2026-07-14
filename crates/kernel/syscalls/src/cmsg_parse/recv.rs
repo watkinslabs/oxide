@@ -98,12 +98,16 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
             }
             match pair.arm_stream_read(end, deadline_ns) {
                 net::unix_sock::stream::ArmStreamRead::Retry => continue,
-                net::unix_sock::stream::ArmStreamRead::Reset => return -(Errno::Econnreset.as_i32() as i64),
+                net::unix_sock::stream::ArmStreamRead::Reset => {
+                    let _ = pair.take_reset(end);
+                    return -(Errno::Econnreset.as_i32() as i64);
+                }
                 net::unix_sock::stream::ArmStreamRead::Eof => break 'iovloop,
                 // SAFETY: arm_stream_read registered current under the ring
                 // lock; writers and close wake only after changing that ring.
                 net::unix_sock::stream::ArmStreamRead::Parked => unsafe {
                     sched::live::schedule::schedule();
+                    pair.reader_waiters(end).remove_current();
                 },
             }
         }
@@ -262,11 +266,37 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
             }
             break m;
         }
+        let reset = {
+            let g = sock.kind.lock();
+            matches!(&*g, SockKind::UnixMsgPair(p, e) if p.take_reset(*e))
+        };
+        if reset { return -(Errno::Econnreset.as_i32() as i64); }
         if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+        if sched::live::deliverable_signals_self() != 0 { return -(Errno::Eintr.as_i32() as i64); }
         if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
         #[cfg(feature = "debug-wakelat")]
         if wl_yield_start == 0 { wl_yield_start = now().max(1); }
-        unsafe { sched::live::tick_yield(); }
+        let (pair, end) = {
+            let g = sock.kind.lock();
+            match &*g {
+                SockKind::UnixMsgPair(pair, end) => (pair.clone(), *end),
+                _ => return -(Errno::Einval.as_i32() as i64),
+            }
+        };
+        match pair.arm_read(end, deadline.unwrap_or(0)) {
+            net::unix_sock::msg_pair::ArmMsgRead::Retry => continue,
+            net::unix_sock::msg_pair::ArmMsgRead::Reset => {
+                let _ = pair.take_reset(end);
+                return -(Errno::Econnreset.as_i32() as i64);
+            }
+            net::unix_sock::msg_pair::ArmMsgRead::Eof => break net::unix_sock::UnixMsg {
+                payload: alloc::vec::Vec::new(), fds: alloc::vec::Vec::new(), creds: (0, 0, 0),
+            },
+            net::unix_sock::msg_pair::ArmMsgRead::Parked => unsafe {
+                sched::live::schedule::schedule();
+                pair.reader_waiters(end).remove_current();
+            },
+        }
     };
     let mut total: usize = 0;
     for i in 0..iovlen {
