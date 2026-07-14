@@ -63,29 +63,7 @@ impl RecvTarget {
     /// Consume the socket's first pending receive error. # C: O(1)
     pub(crate) fn take_error(&self) -> i32 {
         match &self.kind {
-            RecvKind::Inet(sock) => {
-                let pending = sock.take_pending_recv_error();
-                if pending != 0 { return pending; }
-                match &*sock.kind.lock() {
-                    SockKind::TcpConn(entry) => {
-                        let mut conn = entry.conn.lock();
-                        let errno = conn.error_eno;
-                        conn.error_eno = 0;
-                        errno
-                    }
-                    SockKind::Udp => {
-                        let Some(port) = *sock.local_port.lock() else { return 0 };
-                        if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_INET6 {
-                            net::sock::stack().udp6_queue_arc(port).map(|q| q.take_error()).unwrap_or(0)
-                        } else {
-                            net::sock::stack().udp_queue_arc(port).map(|q| q.take_error()).unwrap_or(0)
-                        }
-                    }
-                    SockKind::Unix(pair, end) => if pair.take_reset(*end) { Errno::Econnreset.as_i32() } else { 0 },
-                    SockKind::UnixMsgPair(pair, end) => if pair.take_reset(*end) { Errno::Econnreset.as_i32() } else { 0 },
-                    _ => 0,
-                }
-            }
+            RecvKind::Inet(sock) => sock.take_pending_recv_error(),
             RecvKind::Netlink(sock) => sock.take_pending_recv_error(),
             RecvKind::Vsock(sock) => sock.take_pending_recv_error(),
         }

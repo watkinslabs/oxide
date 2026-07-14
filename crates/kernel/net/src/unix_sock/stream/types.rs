@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
@@ -32,7 +32,10 @@ pub struct UnixPair {
     /// is woken when end B writes (write(end=B) advances b_to_a).
     pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
-    /// Persistent peer-loss state plus one-shot ECONNRESET delivery per end.
+    /// Canonical endpoint `sk_err`; the bound InetSocket shares this Arc.
+    pub(super) error_a: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
+    pub(super) error_b: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
+    /// Persistent peer-loss state plus reset ordering markers per end.
     pub(super) peer_gone_a: core::sync::atomic::AtomicBool,
     pub(super) peer_gone_b: core::sync::atomic::AtomicBool,
     pub(super) reset_pending_a: core::sync::atomic::AtomicBool,

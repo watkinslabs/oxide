@@ -57,11 +57,22 @@ impl NetStack {
         port: u16,
         iface: Option<NetIfaceId>,
     ) -> NetResult<()> {
+        self.bind_udp6_with_iface_error(bind_ip, port, iface, Arc::new(crate::SocketError::new()))
+    }
+
+    /// Bind an IPv6 UDP queue to one socket's canonical error state. # C: O(log N)
+    pub fn bind_udp6_with_iface_error(
+        &self,
+        bind_ip: Ipv6Addr,
+        port: u16,
+        iface: Option<NetIfaceId>,
+        error: Arc<crate::SocketError>,
+    ) -> NetResult<()> {
         let mut g = self.udp6_map().lock();
         if g.contains_key(&port) {
             return Err(NetError::Eaddrinuse);
         }
-        let q = Arc::new(Udp6RxQueue::new(bind_ip, port));
+        let q = Arc::new(Udp6RxQueue::new_with_error(bind_ip, port, error));
         q.bound_ifindex
             .store(iface.map(|i| i.raw()).unwrap_or(0), core::sync::atomic::Ordering::Release);
         g.insert(port, q);

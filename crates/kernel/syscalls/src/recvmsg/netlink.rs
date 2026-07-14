@@ -25,7 +25,7 @@ fn groups(protocol: u16, dgram: &[u8]) -> u32 {
 
 fn wait(sock: &::netlink::NetlinkSocket) {
     let queue = sock.rx_queue.lock();
-    if !queue.is_empty() { return; }
+    if !queue.is_empty() || sock.has_pending_recv_error() { return; }
     // SAFETY: queue lock closes enqueue-before-park lost wake window.
     unsafe { sock.waiters.park(); }
     drop(queue);

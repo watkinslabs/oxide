@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use crate::tcp_conn::{TcpConn, TcpConnError};
 use crate::tcp_state::{TcpEvent, TcpState};
 use crate::tcp_hdr::flags;
-use syscall::errno::Errno;
 
 impl TcpConn {
     /// Client active open: emit a SYN with MSS + WindowScale,
@@ -38,15 +37,8 @@ impl TcpConn {
         self.last_rx_ns = crate::tcp_conn::ka_now_ns();
         self.ka_count = 0;
         if (hdr.flags & flags::RST) != 0 {
-            if self.error_eno == 0 {
-                self.error_eno = if self.state == TcpState::SynSent {
-                    Errno::Econnrefused as i32
-                } else {
-                    Errno::Econnreset as i32
-                };
-            }
             self.state = TcpState::Closed;
-            return Ok(None);
+            return Err(TcpConnError::Reset);
         }
         match self.state {
             TcpState::Listen if (hdr.flags & flags::SYN) != 0 => {

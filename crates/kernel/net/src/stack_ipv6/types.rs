@@ -17,7 +17,7 @@ pub struct Udp6RxQueue {
     pub q: Spinlock<VecDeque<Udp6Datagram>, StackLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
-    pub error_eno: core::sync::atomic::AtomicI32,
+    pub error: Arc<crate::SocketError>,
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
@@ -35,23 +35,39 @@ impl Ipv6IfaceAddr {
 }
 
 impl Udp6RxQueue {
+    /// Build a standalone IPv6 UDP queue for hosted stack users. # C: O(1)
     pub fn new(bound_ip: Ipv6Addr, bound_port: u16) -> Self {
+        Self::new_with_error(bound_ip, bound_port, Arc::new(crate::SocketError::new()))
+    }
+
+    /// Build a queue sharing one socket's canonical error state. # C: O(1)
+    pub fn new_with_error(bound_ip: Ipv6Addr, bound_port: u16, error: Arc<crate::SocketError>) -> Self {
         Self {
             bound_ip,
             bound_port,
             q: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
-            error_eno: core::sync::atomic::AtomicI32::new(0),
+            error,
             bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
         }
     }
 
-    pub fn take_error(&self) -> i32 {
-        self.error_eno.swap(0, core::sync::atomic::Ordering::AcqRel)
+    /// Publish an asynchronous socket error and wake all endpoint observers. # C: O(1)
+    pub fn set_error(&self, errno: i32) -> bool {
+        let _queue = self.q.lock();
+        if !self.error.set(errno) { return false; }
+        #[cfg(target_os = "oxide-kernel")]
+        self.waiters.wake_all();
+        let slot = self.poll_subs.lock().clone();
+        if let Some(weak) = slot {
+            if let Some(s) = weak.upgrade() { s.notify_mask(vfs::POLL_ERR); }
+        }
+        true
     }
 
+    /// Register the owning socket's poll subscribers. # C: O(1)
     pub fn register_poll_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
         *self.poll_subs.lock() = Some(Arc::downgrade(subs));
     }

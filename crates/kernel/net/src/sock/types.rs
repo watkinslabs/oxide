@@ -114,8 +114,8 @@ pub struct InetSocket {
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
     pub opts: SockOpts,
-    /// Canonical Linux `sk_err`; transport tables retain this socket owner.
-    pub error: crate::SocketError,
+    /// Canonical Linux `sk_err`, shared with the active transport owner.
+    pub error: Arc<crate::SocketError>,
     /// F166: SHUT_RD/RDWR latch — subsequent read returns Ok(0).
     pub read_shut: core::sync::atomic::AtomicBool,
     /// Generic send-half shutdown for connected datagram/TCP sockets.
@@ -262,7 +262,7 @@ impl InetSocket {
             peer:       Spinlock::new(None),
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
-            error: crate::SocketError::new(),
+            error: Arc::new(crate::SocketError::new()),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
@@ -280,7 +280,10 @@ impl InetSocket {
         _s
     }
     /// # C: O(1)
-    pub fn new_tcp() -> Self {
+    pub fn new_tcp() -> Self { Self::new_tcp_with_error(Arc::new(crate::SocketError::new())) }
+
+    /// Build a TCP socket around transport state allocated before accept. # C: O(1)
+    pub fn new_tcp_with_error(error: Arc<crate::SocketError>) -> Self {
         let _s = Self {
             family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
@@ -292,7 +295,7 @@ impl InetSocket {
             // or TcpConn.
             kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
-            error: crate::SocketError::new(),
+            error,
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
@@ -369,6 +372,26 @@ impl InetSocket {
 
     /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
     pub fn set_pending_recv_error(&self, errno: i32) -> bool {
+        let kind = self.kind.lock();
+        if let SockKind::TcpConn(entry) = &*kind {
+            let entry = entry.clone();
+            drop(kind);
+            return entry.set_error(errno);
+        }
+        if matches!(*kind, SockKind::Udp) {
+            let port = *self.local_port.lock();
+            if let Some(port) = port {
+                if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
+                    if let Some(q) = stack().udp6_queue_arc(port) {
+                        drop(kind);
+                        return q.set_error(errno);
+                    }
+                } else if let Some(q) = stack().udp_queue_arc(port) {
+                    drop(kind);
+                    return q.set_error(errno);
+                }
+            }
+        }
         let changed = self.error.set(errno);
         if changed {
             #[cfg(target_os = "oxide-kernel")]
@@ -394,7 +417,7 @@ impl InetSocket {
     pub fn ensure_bound(&self) -> Result<u16, NetError> {
         let mut g = self.local_port.lock();
         if let Some(p) = *g { return Ok(p); }
-        let p = alloc_ephemeral_port()?;
+        let p = alloc_ephemeral_port_with_error(self.error.clone())?;
         let iface = stack().bound_iface(
             self.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire),
         )?;
@@ -412,6 +435,7 @@ impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
 #[cfg(test)]
 mod tests {
     use super::InetSocket;
+    use syscall::errno::Errno;
 
     #[test]
     fn pending_recv_error_overwrites_with_latest_positive_errno() {
@@ -419,11 +443,11 @@ mod tests {
         assert_eq!(sock.take_pending_recv_error(), 0);
         assert!(!sock.set_pending_recv_error(0));
         assert!(!sock.set_pending_recv_error(-5));
-        assert!(sock.set_pending_recv_error(111));
-        assert!(sock.set_pending_recv_error(104));
-        assert_eq!(sock.take_pending_recv_error(), 104);
+        assert!(sock.set_pending_recv_error(Errno::Econnrefused as i32));
+        assert!(sock.set_pending_recv_error(Errno::Econnreset as i32));
+        assert_eq!(sock.take_pending_recv_error(), Errno::Econnreset as i32);
         assert_eq!(sock.take_pending_recv_error(), 0);
-        assert!(sock.set_pending_recv_error(104));
+        assert!(sock.set_pending_recv_error(Errno::Econnreset as i32));
     }
 }
 

@@ -1,7 +1,5 @@
-// F164: blocking-I/O helpers for AF_INET TCP sockets — extracted
-// from sock.rs to stay under the 1000-line per-file cap (docs/08§7).
-// Each helper parks the current task on `entry.rx_waiters`;
-// `deliver_tcp.wake_all` and `tcp_retx_tick` are the wake sites.
+// Socket I/O coordination. `error` owns canonical errno translation;
+// `tcp_read` owns TCP read waiting and EOF/error ordering.
 
 use crate::stack::TcpEntry;
 use crate::addr::NetIfaceId;
@@ -10,19 +8,22 @@ use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
 use crate::Ipv4Addr;
 
 mod tcp_read;
+mod error;
+pub(crate) use error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
-pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, read_tcp_blocking};
+pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, read_tcp_blocking, tcp_vfs_error};
 
 /// F159: blocking wait for TCP connect's SYN-ACK. Park on
 /// `entry.rx_waiters`; `deliver_tcp` wakes after any input (state
 /// transition to Established for normal path, to Closed on RST);
 /// `tcp_retx_tick` wakes after flipping state to Closed for
-/// retry-exhaustion. Returns Eio (ABI Etimedout) on abort, Ok on
+/// retry-exhaustion. Returns the canonical abort error, Ok on
 /// Established. drain_loopback every iter so a self-loopback
 /// connect doesn't depend on virtio's softirq.
 /// # C: blocks until Established or Closed
 /// # Ctx: process; preempt-off; runqueue installed
 pub(crate) fn connect_wait_established(
+    sock: &InetSocket,
     entry: &alloc::sync::Arc<TcpEntry>,
 ) -> Result<(), NetError> {
     loop {
@@ -30,7 +31,7 @@ pub(crate) fn connect_wait_established(
         let st = entry.conn.lock().state;
         if st.is_established() { return Ok(()); }
         if st == crate::tcp_state::TcpState::Closed {
-            return Err(NetError::Eio);
+            return Err(pending_net_error(sock.take_pending_recv_error()));
         }
         // F168: surface -EINTR if a non-blocked signal arrived between
         // our last wake and now.
@@ -58,6 +59,7 @@ pub(crate) fn connect_wait_established(
 /// # C: blocks until buf drained or peer dies
 /// # Ctx: process; preempt-off; runqueue installed
 pub(crate) fn write_tcp_blocking(
+    sock: &InetSocket,
     entry: &alloc::sync::Arc<TcpEntry>,
     buf: &[u8],
     sndbuf_cap: usize,
@@ -67,6 +69,11 @@ pub(crate) fn write_tcp_blocking(
 ) -> vfs::KResult<usize> {
     let mut total = 0usize;
     while total < buf.len() {
+        let eno = sock.take_pending_recv_error();
+        if eno != 0 {
+            if total > 0 { return Ok(total); }
+            return Err(tcp_vfs_error(eno));
+        }
         match stack().tcp_send(entry, &buf[total..], sndbuf_cap, nodelay, cork) {
             Ok(n) if n > 0 => {
                 total += n;
@@ -413,6 +420,8 @@ pub fn recvfrom_opts(
         drain_loopback();
         let payload = stack().tcp_recv(&entry, max_len);
         if payload.is_empty() {
+            let eno = sock.take_pending_recv_error();
+            if eno != 0 { return Err(pending_net_error(eno)); }
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
                 || tcp_recv_eof(entry.conn.lock().state)
             {
@@ -430,13 +439,19 @@ pub fn recvfrom_opts(
         drain_loopback();
         let port = match *sock.local_port.lock() {
             Some(port) => port,
-            None if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) => {
-                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+            None => {
+                let eno = sock.take_pending_recv_error();
+                if eno != 0 { return Err(pending_net_error(eno)); }
+                if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+                    return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+                }
+                return Err(NetError::Eagain);
             }
-            None => return Err(NetError::Eagain),
         };
         let got = stack().recv_udp6_meta_opts(port, opts.peek);
         let Some((src_ip6, src_port, dst_ip6, iface, hop, full)) = got else {
+            let eno = sock.take_pending_recv_error();
+            if eno != 0 { return Err(pending_net_error(eno)); }
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
                 return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
             }
@@ -455,13 +470,19 @@ pub fn recvfrom_opts(
     drain_loopback();
     let port = match *sock.local_port.lock() {
         Some(port) => port,
-        None if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) => {
-            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+        None => {
+            let eno = sock.take_pending_recv_error();
+            if eno != 0 { return Err(pending_net_error(eno)); }
+            if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+            }
+            return Err(NetError::Eagain);
         }
-        None => return Err(NetError::Eagain),
     };
     let got = stack().recv_udp_meta_opts(port, opts.peek);
     let Some((src_ip, src_port, dst_ip, iface, ttl, full)) = got else {
+        let eno = sock.take_pending_recv_error();
+        if eno != 0 { return Err(pending_net_error(eno)); }
         if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
             return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
         }

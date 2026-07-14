@@ -89,7 +89,8 @@ impl NetStack {
 
     /// Active TCP open with a socket-bound egress interface. # C: O(log N + payload)
     pub fn tcp_connect_ip_bound(&self, local_ip: IpAddr, local_port: u16,
-        remote_ip: IpAddr, remote_port: u16, bound: Option<NetIfaceId>)
+        remote_ip: IpAddr, remote_port: u16, bound: Option<NetIfaceId>,
+        error: Arc<crate::SocketError>)
         -> NetResult<Arc<TcpEntry>>
     {
         let isn = self.next_isn_value();
@@ -100,11 +101,17 @@ impl NetStack {
         );
         conn.own_mss = self.mss_for_dst_on_iface(remote_ip, bound);
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry::new(conn));
+        let entry = Arc::new(TcpEntry::new_with_error(conn, error));
         entry.set_bound_iface(bound);
         let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
         self.tcp_conns.lock().insert(key, entry.clone());
-        self.send_l4_over_ip_bound(local_ip, remote_ip, IpProto::Tcp, &syn, bound)?;
+        if let Err(e) = self.send_l4_over_ip_bound(local_ip, remote_ip, IpProto::Tcp, &syn, bound) {
+            let mut conns = self.tcp_conns.lock();
+            if conns.get(&key).is_some_and(|current| Arc::ptr_eq(current, &entry)) {
+                conns.remove(&key);
+            }
+            return Err(e);
+        }
         crate::stack::stamp_last_sent_public(&entry, 1);
         Ok(entry)
     }

@@ -58,9 +58,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     if level == SOL_SOCKET && optname == SO_ERROR {
         let target = match crate::recvmsg::lookup(_fd) { Ok(target) => target, Err(e) => return e };
         let pending = target.take_error();
-        let result = i32_back(pending);
-        if result < 0 && pending != 0 { target.set_pending_error(pending); }
-        return result;
+        return i32_back(pending);
     }
     if crate::netlink_fd::is_netlink(_fd) {
         return crate::netlink_fd::getsockopt(_fd, level, optname, optval, optlen_p);

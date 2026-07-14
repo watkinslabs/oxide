@@ -19,6 +19,8 @@ pub(crate) fn read_tcp_blocking(
             buf[..n].copy_from_slice(&got);
             return Ok(n);
         }
+        let eno = sock.take_pending_recv_error();
+        if eno != 0 { return Err(tcp_vfs_error(eno)); }
         if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         if tcp_recv_eof(entry.conn.lock().state) { return Ok(0); }
         #[cfg(target_os = "oxide-kernel")]
@@ -36,6 +38,14 @@ pub(crate) fn read_tcp_blocking(
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(vfs::VfsError::Eagain);
     }
+}
+
+/// Map canonical TCP errno after queued data has been drained. # C: O(1)
+pub(crate) fn tcp_vfs_error(errno: i32) -> vfs::VfsError {
+    if errno == syscall::errno::Errno::Econnreset as i32 { vfs::VfsError::Econnreset }
+    else if errno == syscall::errno::Errno::Econnrefused as i32 { vfs::VfsError::Econnrefused }
+    else if errno == syscall::errno::Errno::Etimedout as i32 { vfs::VfsError::Etimedout }
+    else { vfs::VfsError::Eio }
 }
 
 pub fn tcp_recv_eof(st: crate::tcp_state::TcpState) -> bool {
@@ -58,7 +68,7 @@ pub(crate) fn arm_tcp_read(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>
 pub(crate) fn arm_tcp_read_after(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, offset: usize, deadline_ns: u64) -> bool {
     let c = entry.conn.lock();
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
-        || c.recv_buf.len() > offset || tcp_recv_eof(c.state)
+        || sock.has_pending_recv_error() || c.recv_buf.len() > offset || tcp_recv_eof(c.state)
     {
         return false;
     }

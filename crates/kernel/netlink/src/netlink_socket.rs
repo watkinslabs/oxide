@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Socket as SockLockClass, Spinlock};
 
@@ -16,8 +16,8 @@ pub struct NetlinkSocket {
     pub protocol: u16,
     pub port_id: AtomicU32,
     pub groups: AtomicU32,
-    /// Socket-owned pending receive error, stored as a positive Linux errno.
-    pending_recv_error: AtomicI32,
+    /// Canonical Linux `sk_err`.
+    pub error: net::SocketError,
     pub rx_queue: Spinlock<VecDeque<(Vec<u8>, u32)>, SockLockClass>,
     pub poll_subs: Arc<vfs::PollSubscribers>,
     #[cfg(target_os = "oxide-kernel")]
@@ -31,7 +31,7 @@ impl NetlinkSocket {
             protocol,
             port_id: AtomicU32::new(alloc_port_id()),
             groups: AtomicU32::new(0),
-            pending_recv_error: AtomicI32::new(0),
+            error: net::SocketError::new(),
             rx_queue: Spinlock::new(VecDeque::new()),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             #[cfg(target_os = "oxide-kernel")]
@@ -45,15 +45,23 @@ impl NetlinkSocket {
 
     /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
     pub fn set_pending_recv_error(&self, errno: i32) -> bool {
-        if errno <= 0 { return false; }
-        self.pending_recv_error.store(errno, Ordering::Release);
-        true
+        let _queue = self.rx_queue.lock();
+        let changed = self.error.set(errno);
+        if changed {
+            #[cfg(target_os = "oxide-kernel")]
+            self.waiters.wake_all();
+            self.poll_subs.notify_mask(vfs::POLL_ERR);
+        }
+        changed
     }
 
     /// Consume the pending positive Linux receive errno, or zero. # C: O(1)
     pub fn take_pending_recv_error(&self) -> i32 {
-        self.pending_recv_error.swap(0, Ordering::AcqRel)
+        self.error.take()
     }
+
+    /// Observe whether a socket error is pending without consuming it. # C: O(1)
+    pub fn has_pending_recv_error(&self) -> bool { self.error.has() }
 
     /// `NETLINK_ADD_MEMBERSHIP`: subscribe to one `RTNLGRP_*` group. # C: O(1)
     pub fn add_membership(&self, group: u32) {
@@ -185,9 +193,10 @@ impl NetlinkSocket {
     /// `f_op->poll` readiness: always writable, readable when the rx queue is
     /// non-empty. # C: O(1)
     pub fn poll(&self) -> u32 {
-        use vfs::{POLL_IN, POLL_OUT};
+        use vfs::{POLL_ERR, POLL_IN, POLL_OUT};
         let mut mask = POLL_OUT;
         if !self.rx_queue.lock().is_empty() { mask |= POLL_IN; }
+        if self.has_pending_recv_error() { mask |= POLL_ERR; }
         mask
     }
 }
