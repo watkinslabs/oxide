@@ -1,5 +1,7 @@
 mod assignment_generation;
+mod uninstall;
     use super::*;
+    use super::netdev::set_test_unregister_netdev;
     use net::NetDev;
 use core::sync::atomic::Ordering;
     static TEST_STATE_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
@@ -53,6 +55,7 @@ use core::sync::atomic::Ordering;
         state::clear_test_released_frames();
         uninstall_rx_softirq_handler();
         unregister_timers();
+        set_test_unregister_netdev(true);
     }
 
     fn resources_with_mac(mac: &'static [u8; 6]) -> virtio::VirtioResources {

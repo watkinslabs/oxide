@@ -152,18 +152,28 @@ pub fn unregister_netdev(device_key: DeviceKey) -> bool {
     let Some(id) = registered_iface_for(device_key) else {
         return false;
     };
-    let removed = net::sock::stack().unregister_iface(id);
-    if removed {
-        let _ = remove_registered_iface(device_key);
-        let _ = remove_net_runtime(device_key);
-    }
-    removed
+    net::sock::stack().unregister_iface_current(id)
 }
 
 /// Hosted tests do not build the kernel socket stack.
 /// # C: O(1)
-#[cfg(not(target_os = "oxide-kernel"))]
+#[cfg(all(not(target_os = "oxide-kernel"), not(test)))]
 pub fn unregister_netdev(_device_key: DeviceKey) -> bool { false }
+
+#[cfg(test)]
+static TEST_UNREGISTER_NETDEV: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(true);
+
+#[cfg(test)]
+pub fn unregister_netdev(device_key: DeviceKey) -> bool {
+    registered_iface_for(device_key).is_some()
+        && TEST_UNREGISTER_NETDEV.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_unregister_netdev(result: bool) {
+    TEST_UNREGISTER_NETDEV.store(result, Ordering::Release);
+}
 
 impl net::NetDev for VirtioNetDev {
     fn name(&self) -> &str { self.runtime.name.as_str() }
