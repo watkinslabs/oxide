@@ -193,6 +193,7 @@ pub struct InetSocket {
     /// F180a: AF_INET6 address slots; IPv4 uses local_ip / peer.
     pub local_ip6: Spinlock<crate::Ipv6Addr, SockLockClass>,
     pub peer6:     Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
+    pub peer6_scope: core::sync::atomic::AtomicU32,
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
     /// Calls waiting to connect this socket, independent of target listener.
@@ -359,6 +360,7 @@ impl InetSocket {
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Arc::new(Spinlock::new(None)),
+            peer6_scope: core::sync::atomic::AtomicU32::new(0),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
             net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
             owner_uid: current_socket_uid(),
@@ -404,6 +406,7 @@ impl InetSocket {
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Arc::new(Spinlock::new(None)),
+            peer6_scope: core::sync::atomic::AtomicU32::new(0),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
             net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
             owner_uid: current_socket_uid(),

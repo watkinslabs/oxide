@@ -90,7 +90,7 @@ fn validate_inet(typ: u32, protocol: u32, has_net_raw: bool) -> Result<(), Errno
         }
         SOCK_RAW => {
             if !has_net_raw { return Err(Errno::Eperm); }
-            Ok(())
+            if protocol == IPPROTO_IP { Err(Errno::Eprotonosupport) } else { Ok(()) }
         }
         _ => Err(Errno::Esocktnosupport),
     }
@@ -177,6 +177,8 @@ mod tests {
     #[test]
     fn gates_raw_sockets_on_net_raw_capability() {
         assert_eq!(parse_socket_args(AF_INET, SOCK_RAW, IPPROTO_RAW, false), Err(Errno::Eperm));
+        assert_eq!(parse_socket_args(AF_INET, SOCK_RAW, IPPROTO_IP, true), Err(Errno::Eprotonosupport));
+        assert_eq!(parse_socket_args(AF_INET6, SOCK_RAW, IPPROTO_IP, true), Err(Errno::Eprotonosupport));
         assert_eq!(parse_socket_args(AF_PACKET, SOCK_RAW, 0, false), Err(Errno::Eperm));
     }
 
