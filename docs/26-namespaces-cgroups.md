@@ -2,6 +2,18 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
 
+## Revision 2026-07-14 (R83)
+
+- Changed: §2 live tasks belong to one namespace of each kind; exit releases
+  namespace membership before zombie publication, so pidfds may retain process
+  identity without retaining namespace membership.
+- Changed: §2 namespace lifetime includes every durable owner: live tasks,
+  namespace fds, sockets, and subsystem objects with asynchronous work.
+- Affected code: `crates/kernel/network-namespace`, `sched`, `nscg`, `net`,
+  `netlink`, `procfs`, and namespace syscall work functions.
+- Test contract change: exit/pidfd, nsfd, passed-socket, clone, setns, and final
+  owner-drop races must prove no resurrection or premature teardown.
+
 ## Revision 2026-06-03 (R79)
 
 - Added: §4.1 cgroup-v2 directory lifecycle + the mandatory
@@ -93,8 +105,8 @@ Namespaces (mnt, pid, net, uts, ipc, user, cgroup, time) and cgroup v2 unified h
 
 ## 2 Invariants (frozen)
 
-1. Every task belongs to exactly one of each namespace kind. Inheritance: `clone3` without `CLONE_NEW*` shares parent's; with → new instance under parent's user-ns ownership.
-2. Namespace lifetime: `Arc`-counted; freed when last task and last `/proc/<pid>/ns/<kind>` fd both gone.
+1. Every live task belongs to exactly one of each namespace kind. Inheritance: `clone3` without `CLONE_NEW*` shares parent's; with → new instance under parent's user-ns ownership. Exit releases membership before zombie publication; a retained dead task has no namespace set.
+2. Namespace lifetime: `Arc`-counted; freed after the last durable owner, including live tasks, `/proc/<pid>/ns/<kind>` fds, sockets, and asynchronous subsystem work, is gone.
 3. Cgroup v2: every task in exactly one cgroup. Move via writing tid to `cgroup.procs`/`cgroup.threads`.
 4. Cgroup v2 single hierarchy mounted at `/sys/fs/cgroup`. No v1 mounted, ever.
 5. Cgroup controllers attached to a cgroup ⇒ all descendants must enable subset.
@@ -229,4 +241,3 @@ pub fn cg_get(path:&str, file:&str) -> KR<String>;
 ## 11 Cross-spec
 
 `13` (CFS+RT honor cpu.weight, cpu.max), `27` (capabilities scoped to user-ns), `15` (syscalls), `19` (sysfs `/sys/fs/cgroup/`).
-
