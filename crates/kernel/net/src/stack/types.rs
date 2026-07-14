@@ -10,8 +10,8 @@ pub struct UdpRxQueue {
     /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
-    /// F174: per-port pending async error (Linux errno).
-    pub error_eno: ::core::sync::atomic::AtomicI32,
+    /// Canonical owning socket error state.
+    pub error: Arc<crate::SocketError>,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
@@ -23,20 +23,35 @@ pub use crate::bpf_filter::{install_bpf_filter_runner, BpfFilterFn}; // bridge i
 use crate::bpf_filter::bpf_accept;
 // F180a Udp6RxQueue + IPv6 methods in stack_ipv6.rs.
 impl UdpRxQueue {
-    /// F174: read+clear pending per-port errno. # C: O(1)
-    pub fn take_error(&self) -> i32 { self.error_eno.swap(0, ::core::sync::atomic::Ordering::AcqRel) }
     /// # C: O(1)
     pub fn new(bound_ip: Ipv4Addr, bound_port: u16) -> Self {
+        Self::new_with_error(bound_ip, bound_port, Arc::new(crate::SocketError::new()))
+    }
+    /// Queue bound to one socket's canonical error state. # C: O(1)
+    pub fn new_with_error(bound_ip: Ipv4Addr, bound_port: u16, error: Arc<crate::SocketError>) -> Self {
         Self {
             bound_ip, bound_port,
             q: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
-            error_eno: ::core::sync::atomic::AtomicI32::new(0),
+            error,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
             bpf_filter: Spinlock::new(None),
         }
+    }
+
+    /// Publish an asynchronous socket error and wake all endpoint observers. # C: O(1)
+    pub fn set_error(&self, errno: i32) -> bool {
+        let _queue = self.q.lock();
+        if !self.error.set(errno) { return false; }
+        #[cfg(target_os = "oxide-kernel")]
+        self.waiters.wake_all();
+        let slot = self.poll_subs.lock().clone();
+        if let Some(weak) = slot {
+            if let Some(s) = weak.upgrade() { s.notify_mask(vfs::POLL_ERR); }
+        }
+        true
     }
 
     /// F181a: register bound socket's subscribers. # C: O(1)
@@ -64,6 +79,8 @@ pub struct TcpListenKey { pub local_ip: IpAddr, pub local_port: u16 }
 /// listener table lock. Cheap to clone the Arc.
 pub struct TcpEntry {
     pub conn: Spinlock<TcpConn, StackLockClass>,
+    /// Canonical Linux `sk_err`, shared with the owning socket.
+    pub error: Arc<crate::SocketError>,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
     /// F158: blocking-read waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
@@ -75,13 +92,44 @@ pub struct TcpEntry {
 impl TcpEntry {
     /// # C: O(1)
     pub fn new(conn: TcpConn) -> Self {
+        Self::new_with_error(conn, Arc::new(crate::SocketError::new()))
+    }
+
+    /// Build an entry sharing the socket's canonical error cell. # C: O(1)
+    pub fn new_with_error(conn: TcpConn, error: Arc<crate::SocketError>) -> Self {
         Self {
             conn: Spinlock::new(conn),
+            error,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
         }
+    }
+
+    /// Publish a transport error and wake all socket observers. # C: O(1)
+    pub fn set_error(&self, errno: i32) -> bool {
+        let _conn = self.conn.lock();
+        if !self.error.set(errno) { return false; }
+        #[cfg(target_os = "oxide-kernel")]
+        self.rx_waiters.wake_all();
+        let slot = self.poll_subs.lock().clone();
+        if let Some(weak) = slot {
+            if let Some(s) = weak.upgrade() { s.notify_mask(vfs::POLL_ERR); }
+        }
+        true
+    }
+
+    /// Transport readiness before socket-level shutdown overlays. # C: O(1)
+    pub fn poll_mask(&self) -> u32 {
+        let c = self.conn.lock();
+        let mut mask = if c.state == crate::tcp_state::TcpState::SynSent { 0 } else { vfs::POLL_OUT };
+        if self.error.has() { mask |= vfs::POLL_ERR; }
+        if !c.recv_buf.is_empty() { mask |= vfs::POLL_IN; }
+        if c.state == crate::tcp_state::TcpState::Closed || c.state.is_closing() {
+            mask |= vfs::POLL_HUP;
+        }
+        mask
     }
 
     /// F181a: register owning InetSocket's epoll subscribers. Call
@@ -253,3 +301,64 @@ pub struct NetStack {
 }
 
 impl Default for NetStack { fn default() -> Self { Self::new() } }
+
+#[cfg(test)]
+mod socket_error_tests {
+    use alloc::sync::Arc;
+
+    use super::{NetStack, TcpEntry, UdpRxQueue};
+    use crate::addr::{IpAddr, Ipv4Addr};
+    use crate::tcp_conn::{Endpoint, TcpConn};
+
+    #[test]
+    fn entry_and_socket_owner_share_canonical_error() {
+        let error = Arc::new(crate::SocketError::new());
+        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40000 };
+        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
+        let entry = TcpEntry::new_with_error(TcpConn::new_client(local, remote, 1), error.clone());
+
+        assert!(Arc::ptr_eq(&entry.error, &error));
+        entry.set_error(syscall::errno::Errno::Econnreset as i32);
+        assert_eq!(error.take(), syscall::errno::Errno::Econnreset as i32);
+    }
+
+    #[test]
+    fn udp_queue_and_socket_owner_share_canonical_error() {
+        let error = Arc::new(crate::SocketError::new());
+        let queue = UdpRxQueue::new_with_error(Ipv4Addr::ANY, 40001, error.clone());
+
+        assert!(Arc::ptr_eq(&queue.error, &error));
+        queue.set_error(syscall::errno::Errno::Econnrefused as i32);
+        assert_eq!(error.take(), syscall::errno::Errno::Econnrefused as i32);
+        assert!(!queue.error.has());
+    }
+
+    #[test]
+    fn failed_initial_syn_drops_canonical_error_owner() {
+        let stack = NetStack::new();
+        let error = Arc::new(crate::SocketError::new());
+        let result = stack.tcp_connect_ip_bound(
+            IpAddr::V4(Ipv4Addr::LOOPBACK), 40003,
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 80,
+            None, error.clone(),
+        );
+
+        assert!(result.is_err());
+        assert!(stack.tcp_conns.lock().is_empty());
+        assert!(!error.has());
+    }
+
+    #[test]
+    fn syn_sent_is_not_writable_until_connect_completes() {
+        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40002 };
+        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
+        let mut conn = TcpConn::new_client(local, remote, 2);
+        conn.active_open().unwrap();
+        let entry = TcpEntry::new(conn);
+
+        assert_eq!(entry.poll_mask() & vfs::POLL_OUT, 0);
+        entry.conn.lock().state = crate::tcp_state::TcpState::Established;
+        assert_ne!(entry.poll_mask() & vfs::POLL_OUT, 0);
+    }
+
+}

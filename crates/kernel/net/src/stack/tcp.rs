@@ -66,7 +66,8 @@ impl NetStack {
                            remote_ip: IpAddr, remote_port: u16)
         -> NetResult<Arc<TcpEntry>>
     {
-        self.tcp_connect_ip_bound(local_ip, local_port, remote_ip, remote_port, None)
+        self.tcp_connect_ip_bound(local_ip, local_port, remote_ip, remote_port, None,
+            Arc::new(crate::SocketError::new()))
     }
 
     /// Pop one accepted connection from listener's backlog. # C: O(1)
@@ -206,12 +207,12 @@ impl NetStack {
                         // Give up on this connection. F163: surface as
                         // SO_ERROR = ETIMEDOUT so a getsockopt after
                         // async-connect's EPOLLOUT can report the cause.
-                        if c.error_eno == 0 {
-                            c.error_eno = syscall::errno::Errno::Etimedout as i32;
-                        }
                         c.state = crate::tcp_state::TcpState::Closed;
                         c.retx_q.clear();
-                        (Vec::new(), true, c.local.ip, c.remote.ip)
+                        let src = c.local.ip; let dst = c.remote.ip;
+                        drop(c);
+                        entry.set_error(syscall::errno::Errno::Etimedout as i32);
+                        (Vec::new(), true, src, dst)
                     } else {
                         let segs = c.retransmit_due(now_ns);
                         (segs, false, c.local.ip, c.remote.ip)
@@ -227,11 +228,13 @@ impl NetStack {
                 let mut c = entry.conn.lock();
                 let probe = c.keepalive_due(now_ns);
                 let abort_ka = c.ka_count > c.ka_cnt_max;
-                if abort_ka && c.error_eno == 0 {
-                    c.error_eno = syscall::errno::Errno::Etimedout as i32;
+                if abort_ka {
                     c.state = crate::tcp_state::TcpState::Closed;
                 }
-                (probe, abort_ka, c.local.ip, c.remote.ip)
+                let src = c.local.ip; let dst = c.remote.ip;
+                drop(c);
+                if abort_ka { entry.set_error(syscall::errno::Errno::Etimedout as i32); }
+                (probe, abort_ka, src, dst)
             };
             if let Some(s) = &ka_seg {
                 let _ = self.send_l4_over_ip_bound(ka_src, ka_dst, IpProto::Tcp, s, entry.bound_iface());
@@ -289,8 +292,18 @@ impl NetStack {
                 let c = entry.conn.lock();
                 (c.recv_buf.len(), c.state)
             };
-            let resp = entry.conn.lock().input(src_ip, dst_ip, seg)
-                .map_err(|_| NetError::Einval)?;
+            let pre_syn = entry.conn.lock().state == crate::tcp_state::TcpState::SynSent;
+            let input = { entry.conn.lock().input(src_ip, dst_ip, seg) };
+            let resp = match input {
+                Ok(resp) => resp,
+                Err(crate::tcp_conn::TcpConnError::Reset) => {
+                    let eno = if pre_syn { syscall::errno::Errno::Econnrefused }
+                        else { syscall::errno::Errno::Econnreset };
+                    entry.set_error(eno as i32);
+                    None
+                }
+                Err(_) => return Err(NetError::Einval),
+            };
             let (_post_len, _post_state) = {
                 let c = entry.conn.lock();
                 (c.recv_buf.len(), c.state)

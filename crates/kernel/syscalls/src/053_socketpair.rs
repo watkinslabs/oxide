@@ -53,7 +53,10 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task) ->
         p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
     }
     let make_file = |end: net::UnixEnd| {
-        let s = InetSocket::new_tcp();
+        let error = if let Some(p) = &stream { p.end_error(end) }
+            else if let Some(p) = &msg { p.end_error(end) }
+            else { Arc::new(net::SocketError::new()) };
+        let s = InetSocket::new_tcp_with_error(error);
         s.family.store(net::sock::AF_UNIX, core::sync::atomic::Ordering::Release);
         s.opts.so_type.store(spec.typ as u8, core::sync::atomic::Ordering::Release);
         if let Some(p) = &stream {

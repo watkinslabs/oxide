@@ -45,7 +45,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
         if sched::live::deliverable_signals_self() != 0 { return if total != 0 { Ok(total) } else { Err(err(Errno::Eintr)) }; }
         let rx = conn.rx.lock();
-        if rx.len() > if peek { total } else { 0 } { continue; }
+        if rx.len() > if peek { total } else { 0 } || sock.has_pending_recv_error() { continue; }
         // SAFETY: RX lock closes the enqueue-before-park lost-wake window;
         // interruptible sleep lets WAITALL return a copied prefix on signal.
         unsafe { conn.waiters.park_interruptible_with_deadline(0); }

@@ -86,15 +86,6 @@ fn receive(sock: &Arc<InetSocket>, len: usize, flags: u64, file_nonblock: bool) 
     let pending = sock.take_pending_recv_error();
     if pending != 0 { return Err(-(pending as i64)); }
     if nonblock { return Err(err(Errno::Eagain)); }
-    let is_v6 = sock.family.load(Ordering::Acquire) == net::sock::AF_INET6;
-    if matches!(*sock.kind.lock(), SockKind::Udp) && !is_v6 {
-        if let Some(port) = *sock.local_port.lock() {
-            if let Some(q) = net::sock::stack().udp_queue_arc(port) {
-                let queued = q.take_error();
-                if queued != 0 { return Err(-(queued as i64)); }
-            }
-        }
-    }
     let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
     net::sock_recv::recv_blocking(sock, len, opts, deadline).map_err(errno_from_neterr)
 }

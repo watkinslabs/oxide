@@ -9,6 +9,8 @@ use vfs;
 use super::wake_msgpair_peer_subs;
 use super::{EndCred, GcNode, GcRights, UnixEnd};
 
+const ECONNRESET: i32 = syscall::errno::Errno::Econnreset as i32;
+
 #[cfg(target_os = "oxide-kernel")]
 pub enum ArmMsgRead { Retry, Reset, Eof, Parked { reader_shutdown: bool } }
 
@@ -35,6 +37,8 @@ pub struct UnixMsgPair {
     /// F181a: per-end epoll subscribers — see `UnixPair`.
     pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    error_a: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
+    error_b: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
     /// Per-end creds for SO_PEERCRED / SCM_CREDENTIALS
     pub cred_a: EndCred,
     pub cred_b: EndCred,
@@ -87,6 +91,8 @@ impl UnixMsgPair {
             b_to_a_waiters: sched::live::WaitList::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
+            error_a: Spinlock::new(Arc::new(crate::SocketError::new())),
+            error_b: Spinlock::new(Arc::new(crate::SocketError::new())),
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
             peer_gone_a: core::sync::atomic::AtomicBool::new(false),
@@ -131,6 +137,20 @@ impl UnixMsgPair {
             UnixEnd::B => &self.end_b_subs,
         };
         *slot.lock() = Some(Arc::downgrade(subs));
+    }
+
+    /// Share the bound InetSocket's canonical error state with this endpoint. # C: O(1)
+    pub fn attach_end_error(&self, end: UnixEnd, error: &Arc<crate::SocketError>) {
+        *self.error_slot(end).lock() = error.clone();
+    }
+
+    /// Canonical error state allocated for an endpoint not yet bound to a socket. # C: O(1)
+    pub fn end_error(&self, end: UnixEnd) -> Arc<crate::SocketError> {
+        self.error_slot(end).lock().clone()
+    }
+
+    fn error_slot(&self, end: UnixEnd) -> &Spinlock<Arc<crate::SocketError>, UnixLockClass> {
+        match end { UnixEnd::A => &self.error_a, UnixEnd::B => &self.error_b }
     }
 
     /// WaitList the reader of `end` should park on.
@@ -244,8 +264,8 @@ impl UnixMsgPair {
         -> Result<Option<(R, UnixMsg, usize)>, E>
     {
         let mut g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
-        if self.kind == UnixMsgKind::SeqPacket && self.reset_pending(end) { return Ok(None); }
         let Some(front) = g.msgs.front() else {
+            if self.kind == UnixMsgKind::SeqPacket && self.reset_pending(end) { return Ok(None); }
             if self.kind == UnixMsgKind::SeqPacket && (g.closed_writer || g.reader_shutdown) {
                 let copied = copy(&[], 0, (0, 0, 0), 0)?;
                 return Ok(Some((copied, UnixMsg::empty(), 0)));
@@ -346,7 +366,10 @@ impl UnixMsgPair {
             UnixEnd::B => (&self.peer_gone_a, &self.reset_pending_a),
         };
         gone.store(true, Release);
-        if self.kind == UnixMsgKind::SeqPacket && dropped.0 { reset.store(true, Release); }
+        if self.kind == UnixMsgKind::SeqPacket && dropped.0 {
+            self.end_error(end.other()).set(ECONNRESET);
+            reset.store(true, Release);
+        }
         if self.kind == UnixMsgKind::SeqPacket {
             let outgoing = match end { UnixEnd::A => &self.a_to_b, UnixEnd::B => &self.b_to_a };
             outgoing.lock().closed_writer = true;
@@ -365,17 +388,19 @@ impl UnixMsgPair {
         }
     }
 
-    /// Consume one close-with-unread reset after queued records drain.
+    /// Consume one close-with-unread marker and canonical reset after records drain.
     /// # C: O(1)
     pub fn take_reset(&self, end: UnixEnd) -> bool {
         use core::sync::atomic::Ordering::AcqRel;
-        match end { UnixEnd::A => self.reset_pending_a.swap(false, AcqRel), UnixEnd::B => self.reset_pending_b.swap(false, AcqRel) }
+        let marked = match end { UnixEnd::A => self.reset_pending_a.swap(false, AcqRel), UnixEnd::B => self.reset_pending_b.swap(false, AcqRel) };
+        marked && self.end_error(end).take() == ECONNRESET
     }
 
     /// Whether a reset remains pending for `end`. # C: O(1)
     pub fn reset_pending(&self, end: UnixEnd) -> bool {
         use core::sync::atomic::Ordering::Acquire;
-        match end { UnixEnd::A => self.reset_pending_a.load(Acquire), UnixEnd::B => self.reset_pending_b.load(Acquire) }
+        let marked = match end { UnixEnd::A => self.reset_pending_a.load(Acquire), UnixEnd::B => self.reset_pending_b.load(Acquire) };
+        marked && self.end_error(end).has()
     }
 
     /// Whether this endpoint's receive half was shut down. # C: O(1)

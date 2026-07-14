@@ -3,8 +3,6 @@
 // original 4-tuple from the echoed IPv4 header + first 8 bytes
 // of L4 and surfaces ECONNREFUSED on the originating socket.
 
-use core::sync::atomic::Ordering;
-
 use crate::addr::{IpAddr, IpProto};
 use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN};
 use crate::stack::{NetStack, TcpKey};
@@ -45,9 +43,7 @@ pub fn handle_dest_unreach(stack: &NetStack, code: u8, payload: &[u8]) {
     match orig_hdr.proto {
         p if p == IpProto::Udp as u8 => {
             if let Some(q) = stack.udp_map().lock().get(&src_port).cloned() {
-                q.error_eno.store(eno, Ordering::Release);
-                #[cfg(target_os = "oxide-kernel")]
-                q.waiters.wake_all();
+                q.set_error(eno);
             }
         }
         p if p == IpProto::Tcp as u8 => {
@@ -59,9 +55,9 @@ pub fn handle_dest_unreach(stack: &NetStack, code: u8, payload: &[u8]) {
             };
             if let Some(entry) = stack.tcp_conns_map().lock().get(&key).cloned() {
                 let mut c = entry.conn.lock();
-                if c.error_eno == 0 { c.error_eno = eno; }
                 c.state = crate::tcp_state::TcpState::Closed;
                 drop(c);
+                entry.set_error(eno);
                 #[cfg(target_os = "oxide-kernel")]
                 entry.rx_waiters.wake_all();
             }

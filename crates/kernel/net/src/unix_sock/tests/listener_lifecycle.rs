@@ -118,6 +118,23 @@ fn unaccepted_reset_stays_pending_until_consumed_once() {
 }
 
 #[test]
+fn unaccepted_reset_is_consumed_by_canonical_socket_error() {
+    let registry = UnixRegistry::new();
+    let path = "\0listener-reset-so-error";
+    let listener = registry.bind(String::from(path)).unwrap();
+    listener.listen(0, crate::sysctl::DEFAULT_SOMAXCONN);
+    let client = registry.connect(path).unwrap();
+    let error = client.end_error(UnixEnd::B);
+
+    registry.unbind(path);
+
+    assert_eq!(error.take(), syscall::errno::Errno::Econnreset as i32);
+    assert!(!client.reset_pending(UnixEnd::B));
+    assert!(!client.take_reset(UnixEnd::B), "receive cannot redeliver consumed SO_ERROR");
+    assert!(client.is_eof(UnixEnd::B));
+}
+
+#[test]
 fn listener_publishes_only_fully_initialized_pairs() {
     let registry = UnixRegistry::new();
     let path = "\0listener-initialized-pair";

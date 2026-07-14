@@ -38,7 +38,6 @@ pub struct TcpConn {
     pub rttvar_ns:  u64,
     pub rto_ns:     u64,
     pub tw_start_ns: u64,
-    pub error_eno: i32,
     pub peer_mss: u16,
     pub snd_wscale: u8,
     pub rcv_wscale: u8,

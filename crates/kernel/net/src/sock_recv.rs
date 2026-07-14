@@ -129,7 +129,8 @@ fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
     } else { None };
     if let Some(q) = v6_q {
         let g = q.q.lock();
-        if !g.is_empty() || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
+        if !g.is_empty() || sock.has_pending_recv_error()
+            || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
         // SAFETY: process ctx; UDP6 receive delivery wakes this queue.
         unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
         drop(g);
@@ -138,7 +139,8 @@ fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
         q.waiters.remove_current();
     } else if let Some(q) = udp_q {
         let g = q.q.lock();
-        if !g.is_empty() || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
+        if !g.is_empty() || sock.has_pending_recv_error()
+            || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
         // SAFETY: process ctx; UDP receive delivery wakes this queue.
         unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
         drop(g);
@@ -147,7 +149,8 @@ fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
         q.waiters.remove_current();
     } else {
         let kind = sock.kind.lock();
-        if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
+        if sock.has_pending_recv_error()
+            || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
         // SAFETY: process ctx; kind lock serializes unbound shutdown publication.
         unsafe { sock.recv_waiters.park_interruptible_with_deadline(deadline_ns); }
         drop(kind);

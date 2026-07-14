@@ -200,6 +200,7 @@ pub enum VfsError {
     /// ENOTCONN — read/write on a stream socket with no connection.
     Enotconn = 107,
     Econnreset = 104,
+    Etimedout = 110,
     Econnrefused = 111,
     /// EUCLEAN — filesystem metadata is structurally corrupt.
     Euclean = 117,
