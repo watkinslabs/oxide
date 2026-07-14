@@ -145,10 +145,12 @@ Merged network foundation:
   - [~] N03.8 prove final-drop, pidfd, nsfd, passed-socket, blocked-I/O, ingress,
     teardown, SIOCGSKNS, listns, and task-owner swap races in hosted and loom
     tests; run full network/namespace/syscall suites and dual target builds.
-    Active on `B841-netns-lifecycle-race-proof`.
-    - [~] N03.8.1 add real Loom infrastructure and model callback publication,
+    B841 proves the core lifecycle protocol; N03.8.2-N03.8.5 remain separate fixes.
+    - [x] N03.8.1 add real Loom infrastructure and model callback publication,
       lookup/drop/claim, coalesced pending work, reaper park/wake, and task-owner
-      swap; add deterministic linearization tests. B841.
+      swap; add deterministic linearization tests. B841. Loom exposed the
+      destructive pending-bit lost-wakeup race; monotonic publication/consumption
+      generations now preserve concurrent notification across harvest and park.
     - [ ] N03.8.2 capture an ingress generation/owner lease before Virtio RX
       dequeue and invalidate/wait old generations before interface return to init.
     - [ ] N03.8.3 retain the concrete namespace owner in private-loopback drain

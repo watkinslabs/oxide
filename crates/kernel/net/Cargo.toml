@@ -21,6 +21,12 @@ sched    = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
 softirq  = { path = "../softirq" }
 
+[dev-dependencies]
+loom = "0.7.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
 # F159: TCP retx scanner needs monotonic_ns. Per-arch HAL only links
 # in for the matching kernel target; hosted tests skip the call site
 # via `target_os = "oxide-kernel"`.
