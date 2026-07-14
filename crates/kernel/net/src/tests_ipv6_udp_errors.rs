@@ -19,6 +19,10 @@ impl crate::NetDev for Pmtu6Dev {
     fn name(&self) -> &str { "pmtu6" }
     fn mac(&self) -> crate::MacAddr { crate::MacAddr::ZERO }
     fn mtu(&self) -> u32 { 1_500 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
+        crate::NamespaceDropAction::Destroy
+    }
     fn xmit(&self, packet: crate::Pkt) -> crate::NetResult<()> {
         let hdr = crate::ipv6::Ipv6Hdr::parse(packet.data()).unwrap();
         if hdr.next_header == IpProto::Fragment as u8 {

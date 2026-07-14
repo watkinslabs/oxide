@@ -94,6 +94,14 @@ impl ReasmTable {
         let mut g = self.flows.lock();
         g.retain(|_, f| now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS);
     }
+
+    /// Remove every incomplete flow owned by one network namespace. # C: O(N flows)
+    pub fn remove_namespace(&self, net_ns: u64) -> usize {
+        let mut g = self.flows.lock();
+        let before = g.len();
+        g.retain(|key, _| key.net_ns != net_ns);
+        before - g.len()
+    }
 }
 
 impl Default for ReasmTable { fn default() -> Self { Self::new() } }
@@ -141,5 +149,17 @@ mod tests {
         assert!(t.push(b, 1, 8, b"BBBB", false).is_none());
         assert_eq!(t.push(a, 1, 8, b"AAAA", false).unwrap(), b"aaaaaaaaAAAA");
         assert_eq!(t.push(b, 1, 0, b"bbbbbbbb", true).unwrap(), b"bbbbbbbbBBBB");
+    }
+
+    #[test]
+    fn namespace_removal_preserves_foreign_flows() {
+        let t = ReasmTable::new();
+        let a = ReasmKey { net_ns: 41, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 5 };
+        let b = ReasmKey { net_ns: 42, ..a };
+        assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
+        assert!(t.push(b, 1, 0, b"bbbbbbbb", true).is_none());
+        assert_eq!(t.remove_namespace(41), 1);
+        assert!(t.push(a, 2, 8, b"AAAA", false).is_none());
+        assert_eq!(t.push(b, 2, 8, b"BBBB", false).unwrap(), b"bbbbbbbbBBBB");
     }
 }

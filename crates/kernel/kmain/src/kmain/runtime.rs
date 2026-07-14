@@ -88,6 +88,9 @@ fn init_smp(info: &BootInfo) {
     }
     #[cfg(target_arch = "aarch64")]
     {
+        // SAFETY: BSP boot path is the sole writer before scheduler workers
+        // are spawned; APs install their own runqueues in the AP init hook.
+        unsafe { sched::live::install_default_runqueue(); }
         arch_irq::smp_arm::install_hooks();
         arch_irq::smp_arm::publish_madt_mpidrs();
         let started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };

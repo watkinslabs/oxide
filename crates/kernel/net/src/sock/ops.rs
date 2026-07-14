@@ -25,8 +25,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             // B518/SC1: bind into the registry that OWNS this address —
             // pathname sockets are filesystem-global (ns 0), abstract ones
             // are private to the socket's retained namespace owner.
-            let ns = crate::net_ns::unix_ns_for_addr_in(sock.net_ns(), &addr);
-            let listener = crate::net_ns::ns_unix_registry(ns)
+            let listener = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
                 .bind_addr(addr).map_err(|_| NetError::Eaddrinuse)?;
             *bound = Some(listener);
             drop(kind);
@@ -35,8 +34,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
         BoundAddr::UnixDgram { addr, queue } => {
             // SC1: same pathname-global / abstract-per-ns split as the
             // stream listener above.
-            let ns = crate::net_ns::unix_ns_for_addr_in(sock.net_ns(), &addr);
-            crate::net_ns::ns_unix_registry(ns)
+            crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
                 .dgram_bind_addr(addr.clone(), queue.clone()).map_err(|_| NetError::Eaddrinuse)?;
             queue.set_bound(addr);
             Ok(())
@@ -225,7 +223,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
     let net_ns = sock.net_ns();
-    let somaxconn = crate::sysctl::somaxconn_in(net_ns);
+    let somaxconn = crate::sysctl::somaxconn_in(net_ns).ok_or(NetError::Enodev)?;
     // AF_UNIX listener (incl. socket-activated /run/udev/control passed to
     // udevd): register the listener's epoll subscribers against the socket's
     // `poll_subs` so `UnixRegistry::connect`'s `notify_subs` targets the epoll

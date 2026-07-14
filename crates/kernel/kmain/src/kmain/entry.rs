@@ -10,8 +10,19 @@ use crate::BootInfo;
 pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     unsafe { super::early::init(info); }
     unsafe { super::runtime::init(info); }
+    if sched::live::spawn_timer_driver().is_err() {
+        klog::kerror!("fatal: timer driver spawn failed");
+        sched::halt_forever();
+    }
+    if sched::live::spawn_ksoftirqd().is_err() {
+        klog::kerror!("fatal: ksoftirqd spawn failed");
+        sched::halt_forever();
+    }
+    let netns_reaper = net::net_ns::spawn_namespace_reaper();
+    if netns_reaper.is_err() {
+        klog::kerror!("fatal: netns reaper spawn failed");
+        sched::halt_forever();
+    }
     unsafe { super::rootfs::init(info); }
-    sched::live::spawn_timer_driver();
-    sched::live::spawn_ksoftirqd();
     sched::halt_forever()
 }

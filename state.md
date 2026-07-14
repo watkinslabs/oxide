@@ -4,7 +4,7 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `16132232`, synchronized with `origin/main`.
+- `main`: `9d271d3e`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
@@ -12,8 +12,9 @@ Update: 2026-07-14.
 - B835 adds strict per-architecture vDSO ABI validation.
 - N03.1 owner foundation merged in PR #3100 at `0d26f077`.
 - B837 owner contracts and race hardening merged in PR #3102 at `50ce37e4`.
-- N03.2-N03.6 owner migration merged in PR #3105 at `16132232`.
-- N03.7 final-drop teardown is the next network lane.
+- N03.2-N03.6 owner migration merged in PR #3105 at `16132232`; closure
+  tracking merged in PR #3106 at `9d271d3e`.
+- N03.7 final-drop teardown is active on `B840-netns-final-drop-teardown`.
 
 ## Implemented
 
@@ -67,12 +68,19 @@ Update: 2026-07-14.
 - B838 integrated package check and `git diff --check` passed.
 - B838 `make x86` and `make arm` passed.
 - B838 smoke reached `basic.target` on first real attempt: x86 74s, ARM 108s.
+- B840 hosted: net 513, procfs 47, sched 137, syscalls 53, softirq 6,
+  network-namespace 3, drv-virtio-net 19, sysfs 48; zero failures.
+- B840 final `make x86` and `make arm`: passed.
+- B840 smoke: x86 reached `basic.target` in 70s before the final ARM-only
+  startup barrier; final x86 retry reached GDM but missed the serial marker,
+  then exposed the existing VFS name-walk lock flake. Final ARM reached
+  `basic.target` in 129s after the AP-ready publication race was removed.
 
 ## Remaining network work
 
-- D218 closure merge.
-- N03.7 final-drop teardown and N03.8 lifecycle/race proof, then N04-N22.
+- B840 N03.7 final-drop teardown commit, PR, merge, and closure.
+- N03.8 lifecycle/race proof, then N04-N22.
 
 ## First resume command
 
-`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n 'N03' network-plan.md`
+`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n 'N03' scratch/network-plan.md`

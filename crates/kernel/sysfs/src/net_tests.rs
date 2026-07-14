@@ -1,7 +1,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use net::{MacAddr, NetDev, NetResult, Pkt};
+use net::{MacAddr, NamespaceDropAction, NetDev, NetResult, Pkt};
 use netlink::{proto, NetlinkSocket};
 
 use super::*;
@@ -11,6 +11,10 @@ impl NetDev for TestNetDev {
     fn name(&self) -> &str { "testnet0" }
     fn mac(&self) -> MacAddr { MacAddr::ZERO }
     fn mtu(&self) -> u32 { 1500 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> NamespaceDropAction {
+        NamespaceDropAction::MoveToInitial
+    }
     fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
 }
 

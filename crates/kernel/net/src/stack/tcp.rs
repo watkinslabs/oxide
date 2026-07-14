@@ -159,13 +159,22 @@ impl NetStack {
     /// retry ceilings (SYN=6, data=15). # C: O(N_conns·retx_q).
     pub fn tcp_retx_tick(&self, now_ns: u64) {
         // Snapshot the conn list to keep the tcp_conns lock short.
-        let table_sets: Vec<Arc<super::inet_tables::InetTables>> =
-            self.inet.lock().values().cloned().collect();
-        let mut entries: Vec<(Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)> = Vec::new();
-        for tables in table_sets {
+        let table_sets: Vec<(u64, Arc<super::inet_tables::InetTables>)> = self.inet.lock().iter()
+            .map(|(&net_ns, tables)| (net_ns, tables.clone())).collect();
+        let table_sets: Vec<(network_namespace::NetworkNamespaceRef,
+                             Arc<super::inet_tables::InetTables>)> = table_sets.into_iter()
+            .filter_map(|(net_ns, tables)| {
+                let owner = if net_ns == 0 { network_namespace::initial() }
+                    else { network_namespace::lookup_u64(net_ns)? };
+                Some((owner, tables))
+            }).collect();
+        let mut entries: Vec<(network_namespace::NetworkNamespaceRef,
+                              Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)> = Vec::new();
+        for (owner, tables) in table_sets {
             let snapshot: Vec<(TcpKey, Arc<TcpEntry>)> = tables.tcp_conns.lock().iter()
                 .map(|(key, entry)| (*key, entry.clone())).collect();
-            entries.extend(snapshot.into_iter().map(|(key, entry)| (tables.clone(), key, entry)));
+            entries.extend(snapshot.into_iter()
+                .map(|(key, entry)| (owner.clone(), tables.clone(), key, entry)));
         }
         let mut to_drop: Vec<(Arc<super::inet_tables::InetTables>, TcpKey)> = Vec::new();
         // F161: 2*MSL linger before reclaiming a TIME_WAIT 4-tuple
@@ -173,7 +182,7 @@ impl NetStack {
         // dropped immediately — no 4-tuple reservation needed once
         // both sides agree the connection is gone.
         const TW_TIMEOUT_NS: u64 = 60_000_000_000;
-        for (tables, key, entry) in entries.iter() {
+        for (_owner, tables, key, entry) in entries.iter() {
             // Per-entry: decide retx + drop under the conn lock,
             // collect segments to emit after dropping it.
             let (segs, abort, src, dst) = {
@@ -454,3 +463,7 @@ impl NetStack {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "tcp_timer_tests.rs"]
+mod timer_tests;

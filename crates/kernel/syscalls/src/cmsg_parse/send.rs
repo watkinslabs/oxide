@@ -83,7 +83,8 @@ pub fn sendmsg_unix_dgram_with_fds(sock: &Arc<InetSocket>, name: &[u8], payload:
             _ => return err(Errno::Einval),
         }
     };
-    let q = match net::net_ns::unix_registry_for_addr(&addr).dgram_lookup_addr(&addr) {
+    let q = match net::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
+        .dgram_lookup_addr(&addr) {
         Some(q) => q, None => return err(Errno::Econnrefused),
     };
     let creds = supplied_creds.unwrap_or_else(|| match sched::live::current() {

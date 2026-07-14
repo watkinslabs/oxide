@@ -56,6 +56,10 @@ impl NetDev for LoopbackDev {
     fn name(&self) -> &str { "lo" }
     fn mac(&self)  -> MacAddr { MacAddr::ZERO }
     fn mtu(&self)  -> u32 { 65535 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> crate::netdev::NamespaceDropAction {
+        crate::netdev::NamespaceDropAction::Destroy
+    }
     fn xmit(&self, pkt: Pkt) -> NetResult<()> {
         // Loopback: tx → rx with no L2 frame. Caller already
         // populated `pkt.proto` (ETH_P_*) so the IP demux can

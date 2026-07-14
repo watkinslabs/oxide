@@ -62,6 +62,17 @@ pub unsafe fn do_softirq() {
     preempt::preempt_count_sub(SOFTIRQ_OFFSET);
 }
 
+/// Drain softirqs from ksoftirqd, including process-only slots. # C: O(pending work)
+/// # SAFETY: process-context kthread, IRQs enabled, no handler-owned lock held.
+pub unsafe fn do_softirq_process() {
+    if preempt::in_interrupt() { return; }
+    if !softirq::pending() { return; }
+    preempt::preempt_count_add(SOFTIRQ_OFFSET);
+    // SAFETY: process-context bh-accounted drain.
+    unsafe { softirq::run_pending_process(); }
+    preempt::preempt_count_sub(SOFTIRQ_OFFSET);
+}
+
 /// RAII `spin_lock_bh` building block (Linux `local_bh_disable` + lock). Hold
 /// across a `Spinlock` guard to exclude this CPU's softirqs; drop re-enables
 /// bottom halves (draining any that arrived) after the lock is released.

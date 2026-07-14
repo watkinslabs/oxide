@@ -1,15 +1,40 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use network_namespace::NetworkNamespaceRef;
 
-static IPV4_FORWARDING: AtomicBool = AtomicBool::new(false);
+use crate::net_ns::NetSysctlKey;
 
-/// Current `net.ipv4.ip_forward` value. # C: O(1)
-pub fn ipv4_enabled() -> bool {
-    IPV4_FORWARDING.load(Ordering::Acquire)
+const FORWARDING: NetSysctlKey = NetSysctlKey::Ipv4Conf(
+    crate::net_ns::Ipv4ConfDev::All, crate::net_ns::Ipv4ConfKey::Forwarding);
+
+/// `net.ipv4.ip_forward` for a retained namespace owner. # C: O(log N)
+pub fn ipv4_enabled_for(namespace: &NetworkNamespaceRef) -> Option<bool> {
+    crate::sysctl::value(namespace, FORWARDING).map(|value| value != 0)
 }
 
-/// Set `net.ipv4.ip_forward`. # C: O(1)
+/// Set `net.ipv4.ip_forward` for a retained namespace owner. # C: O(log N)
+pub fn set_ipv4_enabled_for(namespace: &NetworkNamespaceRef, enabled: bool) -> Result<(), ()> {
+    crate::sysctl::set_value(namespace, FORWARDING, i64::from(enabled))
+}
+
+/// `net.ipv4.ip_forward` for a live numeric namespace key. # C: O(log N)
+pub fn ipv4_enabled_in(ns: u64) -> Option<bool> {
+    crate::sysctl::value_in(ns, FORWARDING).map(|value| value != 0)
+}
+
+/// Set `net.ipv4.ip_forward` for a live numeric namespace key. # C: O(log N)
+pub fn set_ipv4_enabled_in(ns: u64, enabled: bool) -> Result<(), ()> {
+    crate::sysctl::set_value_in(ns, FORWARDING, i64::from(enabled))
+}
+
+/// Current task's `net.ipv4.ip_forward`. # C: O(log N)
+pub fn ipv4_enabled() -> bool {
+    let namespace = crate::net_ns::current_namespace();
+    crate::net_ns::materialize_state(&namespace).sysctls.get(FORWARDING) != 0
+}
+
+/// Set current task's `net.ipv4.ip_forward`. # C: O(log N)
 pub fn set_ipv4_enabled(enabled: bool) {
-    IPV4_FORWARDING.store(enabled, Ordering::Release);
+    let namespace = crate::net_ns::current_namespace();
+    crate::net_ns::materialize_state(&namespace).sysctls.set(FORWARDING, i64::from(enabled));
 }
 
 /// Parse a Linux-style boolean sysctl write. # C: O(N)
@@ -18,11 +43,7 @@ pub fn parse_bool_sysctl(src: &[u8]) -> Option<bool> {
     let mut end = src.len();
     while start < end && src[start].is_ascii_whitespace() { start += 1; }
     while end > start && src[end - 1].is_ascii_whitespace() { end -= 1; }
-    match &src[start..end] {
-        b"0" => Some(false),
-        b"1" => Some(true),
-        _ => None,
-    }
+    match &src[start..end] { b"0" => Some(false), b"1" => Some(true), _ => None }
 }
 
 #[cfg(test)]
@@ -35,5 +56,17 @@ mod tests {
         assert_eq!(parse_bool_sysctl(b"1"), Some(true));
         assert_eq!(parse_bool_sysctl(b" 1\t\n"), Some(true));
         assert_eq!(parse_bool_sysctl(b"2\n"), None);
+    }
+
+    #[test]
+    fn forwarding_is_isolated_per_owner() {
+        let _ = crate::net_ns::install_final_drop_pending_notifier();
+        let first = network_namespace::allocate(0).unwrap();
+        let second = network_namespace::allocate(0).unwrap();
+        crate::net_ns::materialize_state(&first);
+        crate::net_ns::materialize_state(&second);
+        set_ipv4_enabled_for(&first, true).unwrap();
+        assert_eq!(ipv4_enabled_for(&first), Some(true));
+        assert_eq!(ipv4_enabled_for(&second), Some(false));
     }
 }

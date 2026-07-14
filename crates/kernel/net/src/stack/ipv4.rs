@@ -137,7 +137,10 @@ impl NetStack {
 
     /// Demux IPv4 → ICMP/UDP/TCP. # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        #[cfg(not(target_os = "oxide-kernel"))]
         let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enodev)?;
+        #[cfg(target_os = "oxide-kernel")]
+        let (net_ns, _namespace) = self.ingress_namespace(iface).ok_or(NetError::Enodev)?;
         // PRE_ROUTING fires on every received packet before the routing
         // decision. Non-local destinations are forwarded only when
         // `net.ipv4.ip_forward` enables router mode.

@@ -10,6 +10,11 @@ use crate::stack::NetStack;
 
 const IGMP_TYPE_V1_REPORT: u8 = 0x12;
 
+fn report_owner(net_ns: u64) -> Option<network_namespace::NetworkNamespaceRef> {
+    if net_ns == 0 { Some(network_namespace::initial()) }
+    else { network_namespace::lookup_u64(net_ns) }
+}
+
 impl NetStack {
     fn v4_src_on_iface(&self, net_ns: u64, iface: NetIfaceId) -> Option<Ipv4Addr> {
         self.routes.snapshot_in(net_ns).into_iter().find(|r| r.iface == iface).and_then(|r| r.src_hint)
@@ -64,20 +69,20 @@ impl NetStack {
         true
     }
 
-    fn transmit_v4_change(&self, net_ns: Option<u64>, iface: NetIfaceId, src: Ipv4Addr,
+    fn transmit_v4_change(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr,
                           group: Ipv4Addr, generation: u64,
                           change: &crate::mcast_state::V4Change, now_ns: u64) {
         let current = self.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
             .any(|state| state.group == group && state.generation == generation
                 && state.change.is_some()));
         if !current { return; }
-        let delivered = net_ns.is_some_and(|net_ns| {
-            self.emit_v4_change(net_ns, iface, src, group, change).is_ok()
-        });
+        let delivered = self.emit_v4_change(net_ns, iface, src, group, change).is_ok();
         self.advance_v4_change(iface, group, generation, change, delivered, now_ns);
     }
 
-    fn drive_v4_reports(&self, net_ns: Option<u64>, iface: NetIfaceId, now_ns: u64) {
+    fn drive_v4_reports(&self, owner: &network_namespace::NetworkNamespaceRef,
+                        iface: NetIfaceId, now_ns: u64) {
+        let net_ns = owner.id().as_u64();
         let Some(driver) = self.ifaces.mcast_report(iface) else {
             self.v4_mcast.lock().remove(&iface); return;
         };
@@ -159,7 +164,7 @@ impl NetStack {
             self.discard_v4_change(iface, group, generation);
             return Ok(());
         }
-        self.drive_v4_reports(Some(net_ns), iface, now_ns);
+        if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
         Ok(())
     }
 
@@ -189,7 +194,7 @@ impl NetStack {
         let Some(generation) = snapshot else { return };
         if group == IPV4_ALL_HOSTS { self.discard_v4_change(iface, group, generation); return; }
         if report.as_ref().is_some_and(|report| report.live()) {
-            self.drive_v4_reports(Some(net_ns), iface, now_ns);
+            if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
         } else { self.v4_mcast.lock().remove(&iface); }
     }
 
@@ -270,7 +275,7 @@ impl NetStack {
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
-        self.drive_v4_reports(Some(net_ns), iface, now_ns);
+        if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
         Ok(())
     }
 
@@ -303,7 +308,7 @@ impl NetStack {
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
-        self.drive_v4_reports(Some(net_ns), iface, now_ns);
+        if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
         Ok(())
     }
 
@@ -322,7 +327,9 @@ impl NetStack {
             pending
         };
         for (iface, _, _, _, _) in pending {
-            self.drive_v4_reports(self.ifaces.namespace(iface), iface, now_ns);
+            let Some(net_ns) = self.ifaces.namespace(iface) else { continue };
+            let Some(owner) = report_owner(net_ns) else { continue };
+            self.drive_v4_reports(&owner, iface, now_ns);
         }
         self.retry_mld_reports(now_ns);
     }

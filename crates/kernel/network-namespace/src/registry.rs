@@ -14,7 +14,12 @@ const MAX_ID: u64 = (u64::MAX - INIT_NSFS_INO) / NSFS_INO_STRIDE;
 
 struct Registry {
     init: Option<NetworkNamespaceRef>,
-    by_id: BTreeMap<NetworkNamespaceId, Weak<NetworkNamespace>>,
+    by_id: BTreeMap<NetworkNamespaceId, RegistryEntry>,
+}
+
+enum RegistryEntry {
+    Live(Weak<NetworkNamespace>),
+    TeardownClaimed,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -54,7 +59,7 @@ pub fn initial() -> NetworkNamespaceRef {
         identity: NamespaceIdentity { id: INIT_ID, nsfs_ino: INIT_NSFS_INO },
         owner_user_ns: 0,
     });
-    registry.by_id.insert(INIT_ID, Arc::downgrade(&namespace));
+    registry.by_id.insert(INIT_ID, RegistryEntry::Live(Arc::downgrade(&namespace)));
     registry.init = Some(Arc::clone(&namespace));
     namespace
 }
@@ -68,7 +73,8 @@ pub fn allocate(owner_user_ns: u64) -> Result<NetworkNamespaceRef, AllocError> {
     if !callback::installed() { return Err(AllocError::FinalDropCallbackMissing); }
     let identity = next_identity()?;
     let namespace = Arc::new(NetworkNamespace { identity, owner_user_ns });
-    REGISTRY.lock().by_id.insert(identity.id, Arc::downgrade(&namespace));
+    REGISTRY.lock().by_id.insert(identity.id,
+        RegistryEntry::Live(Arc::downgrade(&namespace)));
     Ok(namespace)
 }
 
@@ -78,7 +84,19 @@ pub fn allocate(owner_user_ns: u64) -> Result<NetworkNamespaceRef, AllocError> {
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
 pub fn lookup(id: NetworkNamespaceId) -> Option<NetworkNamespaceRef> {
-    REGISTRY.lock().by_id.get(&id).and_then(Weak::upgrade)
+    match REGISTRY.lock().by_id.get(&id) {
+        Some(RegistryEntry::Live(namespace)) => namespace.upgrade(),
+        Some(RegistryEntry::TeardownClaimed) | None => None,
+    }
+}
+
+/// Pin a live namespace from a subsystem's stored numeric key. This never
+/// reconstructs an owner after final drop. # C: O(log N)
+/// # Ctx: process; caller holds no lock ranked `Namespace` or higher
+/// # Lk: takes `Namespace` (rank 75)
+/// # Sleeps: no
+pub fn lookup_u64(id: u64) -> Option<NetworkNamespaceRef> {
+    lookup(NetworkNamespaceId(id))
 }
 
 /// Snapshot every currently live namespace as owned references.
@@ -87,7 +105,10 @@ pub fn lookup(id: NetworkNamespaceId) -> Option<NetworkNamespaceRef> {
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
 pub fn live_snapshot() -> Vec<NetworkNamespaceRef> {
-    REGISTRY.lock().by_id.values().filter_map(Weak::upgrade).collect()
+    REGISTRY.lock().by_id.values().filter_map(|entry| match entry {
+        RegistryEntry::Live(namespace) => namespace.upgrade(),
+        RegistryEntry::TeardownClaimed => None,
+    }).collect()
 }
 
 /// Claim dead namespace IDs exactly once for deferred process-context teardown.
@@ -98,10 +119,27 @@ pub fn live_snapshot() -> Vec<NetworkNamespaceRef> {
 pub fn take_dead_namespace_ids() -> Vec<NetworkNamespaceId> {
     let mut registry = REGISTRY.lock();
     let dead: Vec<_> = registry.by_id.iter()
-        .filter_map(|(id, namespace)| {
-            if *id != INIT_ID && namespace.strong_count() == 0 { Some(*id) } else { None }
+        .filter_map(|(id, entry)| {
+            if *id == INIT_ID { return None; }
+            match entry {
+                RegistryEntry::Live(namespace) if namespace.strong_count() == 0 => Some(*id),
+                RegistryEntry::Live(_) | RegistryEntry::TeardownClaimed => None,
+            }
         })
         .collect();
-    for id in &dead { registry.by_id.remove(id); }
+    for id in &dead { registry.by_id.insert(*id, RegistryEntry::TeardownClaimed); }
     dead
+}
+
+/// Remove registry metadata after namespace-owned subsystem teardown. # C: O(log N)
+/// # Ctx: process; caller holds no lock ranked `Namespace` or higher
+/// # Lk: takes `Namespace` (rank 75)
+/// # Sleeps: no
+pub fn finish_teardown(id: NetworkNamespaceId) -> bool {
+    let mut registry = REGISTRY.lock();
+    if !matches!(registry.by_id.get(&id), Some(RegistryEntry::TeardownClaimed)) {
+        return false;
+    }
+    registry.by_id.remove(&id);
+    true
 }
