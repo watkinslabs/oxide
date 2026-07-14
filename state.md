@@ -9,6 +9,7 @@ Update: 2026-07-14.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
 - B834 uses the GNU aarch64 target for reproducible vDSO generation.
+- B835 adds strict per-architecture vDSO ABI validation.
 - N03 canonical network-namespace lifetime is the next network lane.
 
 ## Implemented
@@ -39,6 +40,10 @@ Update: 2026-07-14.
 - N02 `make x86`: passed.
 - B834 vDSO ELF/type/export checks: passed.
 - B834 `make x86` and `make arm`: passed.
+- B835 exact versioned-export, ELF layout, relocation, and tool-isolation
+  checks: passed.
+- B835 hosted HAL tests: shared 12, ARM 47, x86 74; zero failures.
+- B835 `make x86` and `make arm`: passed.
 
 ## Remaining network work
 

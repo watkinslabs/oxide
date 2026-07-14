@@ -42,8 +42,12 @@ __kernel_clock_gettime:
     mrs     x2, cntvct_el0            // raw virtual counter
     movz    x5, #0x4240              // 1_000_000 = 0x000F4240
     movk    x5, #0xF, lsl #16
-    mul     x2, x2, x5                // cnt * 1e6
-    udiv    x2, x2, x3                // ns = cnt*1e6 / khz
+    udiv    x6, x2, x3                // whole milliseconds
+    msub    x7, x6, x3, x2            // remaining counter ticks
+    mul     x6, x6, x5
+    mul     x7, x7, x5
+    udiv    x7, x7, x3
+    add     x2, x6, x7                // ns without overflowing cnt*1e6
     // ts->tv_sec = ns / 1e9 ; ts->tv_nsec = ns % 1e9
     movz    x3, #0xCA00
     movk    x3, #0x3B9A, lsl #16      // 1_000_000_000
@@ -71,11 +75,6 @@ __kernel_clock_gettime:
     ret
 .size __kernel_clock_gettime, .-__kernel_clock_gettime
 
-.global clock_gettime
-.type clock_gettime, %function
-clock_gettime: b __kernel_clock_gettime
-.size clock_gettime, .-clock_gettime
-
 .global __kernel_gettimeofday
 .type __kernel_gettimeofday, %function
 __kernel_gettimeofday:
@@ -83,19 +82,6 @@ __kernel_gettimeofday:
     svc     #0
     ret
 .size __kernel_gettimeofday, .-__kernel_gettimeofday
-
-.global gettimeofday
-.type gettimeofday, %function
-gettimeofday: b __kernel_gettimeofday
-.size gettimeofday, .-gettimeofday
-
-.global __kernel_getcpu
-.type __kernel_getcpu, %function
-__kernel_getcpu:
-    mov     x8, #168
-    svc     #0
-    ret
-.size __kernel_getcpu, .-__kernel_getcpu
 
 .global __kernel_clock_getres
 .type __kernel_clock_getres, %function
