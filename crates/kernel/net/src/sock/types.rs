@@ -237,6 +237,8 @@ pub struct InetSocket {
     pub write_shut: core::sync::atomic::AtomicBool,
     /// Final open-file-description release has run.
     pub released: core::sync::atomic::AtomicBool,
+    /// Multicast mutation admission: high bit closes, low bits count active calls.
+    pub(crate) mcast_ops: crate::mcast_filter::SocketMcastGate,
     /// F180a: AF_INET6 address slots; IPv4 uses local_ip / peer.
     pub local_ip6: Spinlock<crate::Ipv6Addr, SockLockClass>,
     pub peer6:     Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,

@@ -11,6 +11,13 @@ fn report_owner(net_ns: u64) -> Option<network_namespace::NetworkNamespaceRef> {
 }
 
 impl NetStack {
+    pub(crate) fn finish_v6_multicast(&self, work: Option<(u64, NetIfaceId, u64)>) {
+        let Some((net_ns, iface, now_ns)) = work else { return };
+        if let Some(owner) = report_owner(net_ns) {
+            self.drive_mld_reports(&owner, iface, now_ns);
+        }
+    }
+
     /// Prefer the interface link-local address required for MLD reports. # C: O(N)
     pub(crate) fn mld_src_on_iface(&self, iface: NetIfaceId) -> Option<Ipv6Addr> {
         let addrs = self.v6_addrs.lock();
@@ -124,7 +131,24 @@ impl NetStack {
     pub(crate) fn set_ipv6_multicast_in(&self, net_ns: u64, owner: usize,
                                         iface: NetIfaceId, group: Ipv6Addr,
                                         src: Ipv6Addr, filter: Option<&SourceFilter6>) -> NetResult<()> {
+        let rtnl = self.rtnl_lock();
+        let generation = self.multicast_generation_in(&rtnl, net_ns, iface)?;
+        let work = self.set_ipv6_multicast_rtnl(&rtnl, net_ns, generation, owner, iface,
+            group, src, filter)?;
+        drop(rtnl);
+        self.finish_v6_multicast(work);
+        Ok(())
+    }
+
+    pub(crate) fn set_ipv6_multicast_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+                                          expected_generation: u64, owner: usize,
+                                          iface: NetIfaceId, group: Ipv6Addr, src: Ipv6Addr,
+                                          filter: Option<&SourceFilter6>)
+        -> NetResult<Option<(u64, NetIfaceId, u64)>>
+    {
         if !group.is_multicast() { return Err(NetError::Einval); }
+        let generation = self.multicast_generation_in(rtnl, net_ns, iface)?;
+        if generation != expected_generation { return Err(NetError::Enodev); }
         let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
         if !report.live() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.mld_src_on_iface(iface).unwrap_or(src) } else { src };
@@ -155,39 +179,52 @@ impl NetStack {
                 Some((report_src, generation))
             }
         };
-        if !report.live() { self.v6_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
-        let Some((_report_src, generation)) = staged else { return Ok(()) };
+        let Some((_report_src, generation)) = staged else { return Ok(None) };
         if group == crate::ndp::IPV6_ALL_NODES {
-            self.discard_mld_change(iface, group, generation); return Ok(());
+            self.discard_mld_change(iface, group, generation); return Ok(None);
         }
-        if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
-        Ok(())
+        Ok(Some((net_ns, iface, now_ns)))
     }
 
     /// Remove dead socket policy and retain only a compact failed report. # C: O(N)
     pub(crate) fn release_ipv6_multicast(&self, owner: usize, iface: NetIfaceId,
                                          group: Ipv6Addr, _src: Ipv6Addr) {
-        let report = self.ifaces.mcast_report(iface);
+        let Some(net_ns) = self.ifaces.namespace(iface) else { return };
+        let rtnl = self.rtnl_lock();
+        let Ok(generation) = self.multicast_generation_in(&rtnl, net_ns, iface) else { return };
+        let work = self.release_ipv6_multicast_rtnl(&rtnl, net_ns, generation, owner, iface, group);
+        drop(rtnl);
+        self.finish_v6_multicast(work);
+    }
+
+    pub(crate) fn release_ipv6_multicast_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+                                               expected_generation: u64, owner: usize,
+                                               iface: NetIfaceId, group: Ipv6Addr)
+        -> Option<(u64, NetIfaceId, u64)>
+    {
+        if self.multicast_generation_in(rtnl, net_ns, iface).ok() != Some(expected_generation) {
+            return None;
+        }
+        let report = self.ifaces.mcast_report_in_ns(iface, net_ns);
         let now_ns = crate::stack::net_now_ns();
         let snapshot = {
             let mut all = self.v6_mcast.lock();
-            let Some(groups) = all.get_mut(&iface) else { return };
-            let Some(state) = groups.iter_mut().find(|state| state.group == group) else { return };
+            let Some(groups) = all.get_mut(&iface) else { return None };
+            let Some(state) = groups.iter_mut().find(|state| state.group == group) else { return None };
             let prior = state.aggregate();
-            if state.members.remove(&owner).is_none() { return; }
+            if state.members.remove(&owner).is_none() { return None; }
             if state.aggregate() == prior { None } else {
                 let (generation, _) = state.stage(Some(&prior), now_ns);
                 Some(generation)
             }
         };
-        let Some(generation) = snapshot else { return };
-        if group == crate::ndp::IPV6_ALL_NODES { self.discard_mld_change(iface, group, generation); return; }
+        let Some(generation) = snapshot else { return None };
+        if group == crate::ndp::IPV6_ALL_NODES {
+            self.discard_mld_change(iface, group, generation); return None;
+        }
         if report.as_ref().is_some_and(|report| report.live()) {
-            let Some(net_ns) = self.ifaces.namespace(iface) else {
-                self.v6_mcast.lock().remove(&iface); return;
-            };
-            if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
-        } else { self.v6_mcast.lock().remove(&iface); }
+            Some((net_ns, iface, now_ns))
+        } else { self.v6_mcast.lock().remove(&iface); None }
     }
 
     fn emit_mldv2(&self, iface: NetIfaceId, src: Ipv6Addr,
@@ -227,7 +264,9 @@ impl NetStack {
     /// Join an IPv6 multicast group in one network namespace. # C: O(N)
     pub fn join_ipv6_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
                                   group: Ipv6Addr, src: Ipv6Addr) -> NetResult<()> {
+        let rtnl = self.rtnl_lock();
         if !group.is_multicast() { return Err(NetError::Einval); }
+        let _ = self.multicast_generation_in(&rtnl, net_ns, iface)?;
         let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
         if !report.live() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.mld_src_on_iface(iface).unwrap_or(src) } else { src };
@@ -250,11 +289,11 @@ impl NetStack {
                 Some((report_src, generation))
             }
         };
-        if !report.live() { self.v6_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
         let Some((_report_src, generation)) = staged else { return Ok(()) };
         if group == crate::ndp::IPV6_ALL_NODES {
             self.discard_mld_change(iface, group, generation); return Ok(());
         }
+        drop(rtnl);
         if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
         Ok(())
     }
@@ -266,6 +305,8 @@ impl NetStack {
     /// Leave an IPv6 multicast group in one network namespace. # C: O(N)
     pub fn leave_ipv6_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
                                    group: Ipv6Addr, _src: Ipv6Addr) -> NetResult<()> {
+        let rtnl = self.rtnl_lock();
+        let _ = self.multicast_generation_in(&rtnl, net_ns, iface)?;
         let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
         if !report.live() { return Err(NetError::Enodev); }
         let now_ns = crate::stack::net_now_ns();
@@ -282,11 +323,11 @@ impl NetStack {
                 Some(generation)
             }
         };
-        if !report.live() { self.v6_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
         let Some(generation) = staged else { return Ok(()) };
         if group == crate::ndp::IPV6_ALL_NODES {
             self.discard_mld_change(iface, group, generation); return Ok(());
         }
+        drop(rtnl);
         if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
         Ok(())
     }

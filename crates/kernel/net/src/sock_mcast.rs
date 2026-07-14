@@ -99,11 +99,12 @@ pub(crate) fn src_ip(sock: &InetSocket, dst: Ipv4Addr, bound: Option<NetIfaceId>
 }
 
 impl InetSocket {
-    fn mcast_guard(&self) -> NetResult<sync::Guard<'_, Option<u16>, sync::Socket>> {
-        use core::sync::atomic::Ordering;
-        let guard = self.local_port.lock();
-        if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
-        Ok(guard)
+    pub(crate) fn close_mcast_ops(&self) {
+        self.mcast_ops.close_wait();
+    }
+
+    fn mcast_guard(&self) -> NetResult<crate::mcast_filter::SocketMcastLease<'_>> {
+        self.mcast_ops.enter(&self.released)
     }
 
     /// Set IPv4 multicast interface after resolving address/index ownership. # C: O(N)
@@ -275,4 +276,5 @@ mod tests {
         assert_eq!(sock.ensure_bound(), Err(NetError::Enodev));
         assert!(stack.unregister_iface_in(FOREIGN_NS, foreign));
     }
+
 }

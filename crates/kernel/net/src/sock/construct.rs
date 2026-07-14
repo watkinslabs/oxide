@@ -41,6 +41,7 @@ impl InetSocket {
             read_shut: core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released: core::sync::atomic::AtomicBool::new(false),
+            mcast_ops: crate::mcast_filter::SocketMcastGate::new(),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]

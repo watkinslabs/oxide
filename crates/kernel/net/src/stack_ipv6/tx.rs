@@ -256,7 +256,8 @@ impl NetStack {
         router: Ipv6Addr,
         ra: &crate::ndp::RouterAdvertisement,
     ) {
-        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return; }
+        let rtnl = self.rtnl_lock();
+        if self.multicast_generation_in(&rtnl, net_ns, iface).is_err() { return; }
         if let Some(mac) = ra.source_lladdr {
             self.ndp_insert(iface, router, mac);
         }
