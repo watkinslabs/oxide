@@ -36,3 +36,27 @@ fn ipv6_owned_unicast_reaches_wildcard_udp() {
 
     assert_eq!(endpoint.recv(false).unwrap().5, alloc::vec![1]);
 }
+
+#[test]
+fn ipv6_multicast_locality_tracks_ingress_interface_membership() {
+    let stack = NetStack::new();
+    let (joined_iface, _) = stack.register_loopback();
+    let other_iface = stack.ifaces.register(alloc::sync::Arc::new(crate::LoopbackDev::new()));
+    let group = Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0, 0, 0x1234]);
+
+    assert!(!stack.v6_dst_is_local(joined_iface, group));
+    stack.join_ipv6_multicast(joined_iface, group, Ipv6Addr::LOOPBACK).unwrap();
+    assert!(stack.v6_dst_is_local(joined_iface, group));
+    assert!(!stack.v6_dst_is_local(other_iface, group));
+
+    stack.leave_ipv6_multicast(joined_iface, group, Ipv6Addr::LOOPBACK).unwrap();
+    assert!(!stack.v6_dst_is_local(joined_iface, group));
+}
+
+#[test]
+fn ipv6_all_nodes_is_always_local_on_a_registered_interface() {
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+
+    assert!(stack.v6_dst_is_local(iface, crate::ndp::IPV6_ALL_NODES));
+}
