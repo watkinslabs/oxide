@@ -4,9 +4,11 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `4d08b5a1`, synchronized with `origin/main`.
+- `main`: `fbae0579`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
-- Next item: N02 multicast robustness accounting, currently unclaimed.
+- N01 closure tracking merged in PR #3094.
+- N02 multicast robustness accounting is active on
+  `B833-multicast-robustness` from claim `9630e644`.
 
 ## Implemented
 
@@ -30,15 +32,20 @@ Update: 2026-07-14.
 - `make x86`: passed.
 - `make arm`: passed.
 - `git diff --check`: passed; changed Rust files remain below 500 lines.
+- N02 hosted network suite: 497 passed, zero failures.
+- N02 focused ordering/lifecycle races: 9 passed; learned QRV exhaustion: 2 passed.
+- N02 `cargo check -p net -p procfs -p syscalls`: passed.
+- N02 `make x86`: passed.
 
 ## Remaining network work
 
 - N02 through N22 remain in `network-plan.md`.
-- N02 must preserve successful membership across report-output failure and
-  consume a bounded Linux robustness count without retry-forever behavior.
+- N02 implementation is complete on B833 pending PR review/merge.
 - Integrated ARM smoke remains blocked by unrelated glibc-service traps and
   the `upower.service` restart loop captured in `/tmp/B832-smoke-arm.log`.
+- N02 ARM build reaches `syscalls`, then fails because `vdso/build.sh` still
+  skips `vdso-aarch64.so` unless an obsolete musl cross-toolchain path exists.
 
 ## First resume command
 
-`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n "N02|robust" network-plan.md crates/kernel/net/src`
+`cd /home/nd/oxide-wt/B833-multicast-robustness && git status --short --branch`

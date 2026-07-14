@@ -95,7 +95,7 @@ Merged network foundation:
     glibc userspace reached systemd, then unrelated services trapped/segfaulted
     and `upower.service` restart-looped until the 600-second timeout.
 - [~] **N02 multicast robustness accounting** - branch
-  `B833-multicast-robustness`, claim `2e7ee8c9`.
+  `B833-multicast-robustness`, claim `9630e644`.
   Preserve successful membership when IGMP/MLD report output fails. Roll back
   only synchronous validation/allocation/filter-setup failures. Consume a
   bounded Linux robustness transmission count regardless of individual xmit
