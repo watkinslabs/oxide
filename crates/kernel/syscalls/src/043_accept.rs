@@ -97,6 +97,7 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
         let rv = copy_sockaddr_to_user(addr_p, len_p, &sa);
         if rv < 0 { return rv; }
     }
+    let unix_gc_pin = accepted.unix_gc_pin;
     let inode: vfs::InodeRef = net::sock::make_inet_socket_inode(accepted.new_sock);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task; sole reader of fd_table slot.
@@ -105,6 +106,10 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
     let mut fl = vfs::OpenFlags::O_RDWR;
     if acc_flags.nonblock { fl |= vfs::OpenFlags::O_NONBLOCK; }
     let file = vfs::File::new(inode, dentry, fl);
+    if let Some(sock) = inode_as_inet_socket(file.inode()) {
+        net::bind_file(&file, &sock);
+    }
+    drop(unix_gc_pin);
     match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if acc_flags.cloexec { let _ = fdt.set_cloexec(fd, true); }

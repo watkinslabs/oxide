@@ -7,7 +7,7 @@ use vfs;
 
 #[cfg(target_os = "oxide-kernel")]
 use super::wake_msgpair_peer_subs;
-use super::{EndCred, UnixEnd};
+use super::{EndCred, GcNode, GcRights, UnixEnd};
 
 #[cfg(target_os = "oxide-kernel")]
 pub enum ArmMsgRead { Retry, Reset, Eof, Parked { reader_shutdown: bool } }
@@ -44,16 +44,24 @@ pub struct UnixMsgPair {
     reset_pending_b: core::sync::atomic::AtomicBool,
     released_a: core::sync::atomic::AtomicBool,
     released_b: core::sync::atomic::AtomicBool,
+    gc_a: GcNode,
+    gc_b: GcNode,
 }
 
 pub struct UnixMsg {
     pub payload: Vec<u8>,
     pub fds: Vec<Arc<vfs::File>>,
+    pub(crate) rights: Option<GcRights>,
     /// Sender (pid, uid, gid) captured at send time for SO_PASSCRED /
     /// SCM_CREDENTIALS. Per-MESSAGE (not the shared per-end cred slot) so a
     /// socketpair shared by many senders (systemd-udevd's worker_watch: all
     /// workers write one end) attributes each message to its true sender.
     pub creds: (u32, u32, u32),
+}
+
+impl UnixMsg {
+    /// Empty EOF/shutdown sentinel for syscall receive paths. # C: O(1)
+    pub fn empty() -> Self { Self { payload: Vec::new(), fds: Vec::new(), rights: None, creds: (0, 0, 0) } }
 }
 
 impl UnixMsgPair {
@@ -87,7 +95,14 @@ impl UnixMsgPair {
             reset_pending_b: core::sync::atomic::AtomicBool::new(false),
             released_a: core::sync::atomic::AtomicBool::new(false),
             released_b: core::sync::atomic::AtomicBool::new(false),
+            gc_a: GcNode::new(),
+            gc_b: GcNode::new(),
         })
+    }
+
+    /// Stable receive-queue identity for one endpoint. # C: O(1)
+    pub fn gc_node(&self, end: UnixEnd) -> GcNode {
+        match end { UnixEnd::A => self.gc_a.clone(), UnixEnd::B => self.gc_b.clone() }
     }
 
     /// Stamp `end`'s stable socketpair credentials.
@@ -153,6 +168,14 @@ impl UnixMsgPair {
     /// Enqueue one message plus SCM_RIGHTS files from `end`.
     /// # C: O(payload.len())
     pub fn send_with_fds(&self, end: UnixEnd, payload: &[u8], fds: Vec<Arc<vfs::File>>) -> Result<usize, UnixMsgError> {
+        self.send_with_rights(end, payload, GcRights::from_files(fds))
+    }
+
+    /// Enqueue one message with a classified canonical rights batch. # C: O(payload + rights)
+    pub fn send_with_rights(&self, end: UnixEnd, payload: &[u8], rights: GcRights) -> Result<usize, UnixMsgError> {
+        let receiver = self.gc_node(end.other());
+        let transition = receiver.pin();
+        rights.register(&receiver);
         let mut g = match end {
             UnixEnd::A => self.a_to_b.lock(),
             UnixEnd::B => self.b_to_a.lock(),
@@ -173,9 +196,10 @@ impl UnixMsgPair {
             .unwrap_or((0, 0, 0));
         #[cfg(not(target_os = "oxide-kernel"))]
         let creds = (0u32, 0u32, 0u32);
-        g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds, creds });
+        g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds: Vec::new(), rights: Some(rights), creds });
         let n = payload.len();
         drop(g);
+        drop(transition);
         #[cfg(target_os = "oxide-kernel")]
         {
             let waiters = match end {
@@ -192,7 +216,12 @@ impl UnixMsgPair {
     /// `Some(bytes)` truncated to `max`; `None` if empty.
     /// # C: O(min(max, payload.len()))
     pub fn recv(&self, end: UnixEnd, max: usize) -> Option<Vec<u8>> {
-        self.recv_msg(end, max).map(|m| m.payload)
+        self.recv_msg(end, max).map(|msg| {
+            let UnixMsg { payload, fds, .. } = msg;
+            drop(fds);
+            super::collect_scm_rights();
+            payload
+        })
     }
 
     /// Dequeue or peek one message payload from the ring `end` reads
@@ -209,8 +238,13 @@ impl UnixMsgPair {
             let take = core::cmp::min(max, full_len);
             let mut out = Vec::with_capacity(take);
             out.extend_from_slice(&msg.payload[..take]);
-            if !peek {
-                g.msgs.pop_front();
+            let dropped = if peek { None } else { g.msgs.pop_front() };
+            drop(g);
+            if let Some(mut msg) = dropped {
+                let files = msg.rights.take().map(|r| r.take_files()).unwrap_or_default();
+                drop(msg);
+                drop(files);
+                super::collect_scm_rights();
             }
             Some((out, full_len))
         } else if self.kind == UnixMsgKind::SeqPacket && (g.closed_writer || g.reader_shutdown) {
@@ -229,12 +263,14 @@ impl UnixMsgPair {
         };
         if self.kind == UnixMsgKind::SeqPacket && self.reset_pending(end) { return None; }
         if let Some(mut msg) = g.msgs.pop_front() {
+            drop(g);
+            if let Some(rights) = msg.rights.take() { msg.fds = rights.take_files(); }
             if msg.payload.len() > max {
                 msg.payload.truncate(max);
             }
             Some(msg)
         } else if self.kind == UnixMsgKind::SeqPacket && (g.closed_writer || g.reader_shutdown) {
-            Some(UnixMsg { payload: Vec::new(), fds: Vec::new(), creds: (0, 0, 0) })
+            Some(UnixMsg::empty())
         } else {
             None
         }

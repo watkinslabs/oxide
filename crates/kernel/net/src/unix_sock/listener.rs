@@ -4,7 +4,7 @@ use sync::{Socket as UnixLockClass, Spinlock};
 use sched;
 
 use super::UnixDgramQueue;
-use super::{UnixEnd, UnixPair};
+use super::{GcLink, GcNode, GcPin, UnixEnd, UnixPair};
 use vfs;
 
 /// AF_UNIX path-bound stream endpoint. `bind(path)` reserves it in the
@@ -18,13 +18,14 @@ pub struct UnixListener {
     pub accept_waiters: sched::live::WaitList,
     /// The listener socket's epoll subscribers.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    gc: GcNode,
 }
 
 struct UnixListenerState {
     listening: bool,
     closed: bool,
     backlog: usize,
-    accept_q: alloc::collections::VecDeque<Arc<UnixPair>>,
+    accept_q: alloc::collections::VecDeque<(Arc<UnixPair>, GcLink)>,
     owner_cred: (u32, u32, u32),
     #[cfg(target_os = "oxide-kernel")]
     connect_sockets: Vec<alloc::sync::Weak<crate::sock::InetSocket>>,
@@ -61,12 +62,10 @@ impl UnixAddr {
         let path = path.into_bytes();
         Self { key: UnixAddrKey::Abstract(path.clone()), display: path }
     }
-
     /// # C: O(1)
     pub fn from_inode(display: String, inode: &vfs::InodeRef) -> Self {
         Self { key: UnixAddrKey::Path { fsid: inode.fsid(), ino: inode.ino() as u64 }, display: display.into_bytes() }
     }
-
     /// # C: O(1)
     pub fn from_inode_bytes(display: Vec<u8>, inode: &vfs::InodeRef) -> Self {
         Self { key: UnixAddrKey::Path { fsid: inode.fsid(), ino: inode.ino() as u64 }, display }
@@ -102,8 +101,12 @@ impl UnixListener {
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
+            gc: GcNode::new(),
         })
     }
+
+    /// Stable listening-socket identity. # C: O(1)
+    pub fn gc_node(&self) -> GcNode { self.gc.clone() }
 
     /// Publish this bound stream socket and apply Linux backlog normalization.
     /// Queue capacity is `backlog + 1`, matching AF_UNIX connect accounting.
@@ -148,9 +151,8 @@ impl UnixListener {
         if self.state.lock().accept_q.is_empty() { 0 } else { vfs::POLL_IN }
     }
 
-    /// Pop one pending connection and release one backlog-space waiter.
-    /// # C: O(1)
-    pub fn accept(&self) -> Result<Arc<UnixPair>, crate::NetError> {
+    /// Pop one pending connection and transfer its GC pin. # C: O(1)
+    pub fn accept(&self) -> Result<(Arc<UnixPair>, GcPin), crate::NetError> {
         let mut st = self.state.lock();
         let pair = st.accept_q.pop_front();
         if pair.is_none() && st.closed { return Err(crate::NetError::Einval); }
@@ -159,18 +161,19 @@ impl UnixListener {
         drop(st);
         #[cfg(target_os = "oxide-kernel")]
         wake_connect_sockets(waiters);
-        pair.ok_or(crate::NetError::Eagain)
+        pair.map(|(pair, link)| { let pin = pair.gc_node(UnixEnd::A).pin(); drop(link); (pair, pin) }).ok_or(crate::NetError::Eagain)
     }
 
     /// Queue a connection unless close or backlog state forbids it.
     /// # C: O(1)
     pub(crate) fn connect_pair(&self, pair: Arc<UnixPair>) -> Result<Arc<UnixPair>, UnixConnectError> {
+        let link = self.gc.link(&pair.gc_node(UnixEnd::A));
         let mut st = self.state.lock();
         if st.closed || !st.listening { return Err(UnixConnectError::Refused); }
         if st.accept_q.len() > st.backlog { return Err(UnixConnectError::Full); }
         let (pid, uid, gid) = st.owner_cred;
         pair.set_end_cred(UnixEnd::A, pid, uid, gid);
-        st.accept_q.push_back(pair.clone());
+        st.accept_q.push_back((pair.clone(), link));
         drop(st);
         #[cfg(target_os = "oxide-kernel")]
         self.accept_waiters.wake_all();
@@ -182,6 +185,7 @@ impl UnixListener {
     /// # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
     pub(crate) fn connect_socket(&self, pair: Arc<UnixPair>, sock: &Arc<crate::sock::InetSocket>) -> Result<(), crate::NetError> {
+        let link = self.gc.link(&pair.gc_node(UnixEnd::A));
         let mut st = self.state.lock();
         let mut kind = sock.kind.lock();
         match &*kind {
@@ -197,7 +201,7 @@ impl UnixListener {
         use core::sync::atomic::Ordering::Acquire;
         if sock.read_shut.load(Acquire) { pair.shutdown_reader(UnixEnd::B); }
         if sock.write_shut.load(Acquire) { pair.close_writer(UnixEnd::B); }
-        st.accept_q.push_back(pair.clone());
+        st.accept_q.push_back((pair.clone(), link));
         *kind = crate::sock::SockKind::Unix(pair, UnixEnd::B);
         drop(kind);
         drop(st);
@@ -223,7 +227,7 @@ impl UnixListener {
             wake_connect_sockets(waiters);
             pending
         };
-        for pair in pending { pair.abort_unaccepted(); }
+        for (pair, pin) in pending { pair.abort_unaccepted(); drop(pin); }
         #[cfg(target_os = "oxide-kernel")]
         {
             self.accept_waiters.wake_all();
@@ -237,7 +241,6 @@ impl UnixListener {
     }
 
     /// Race-free accept park (Linux `prepare_to_wait`): under the `accept_q`
-    /// lock, either observe a queued connection (return `false`, caller retries
     /// `accept`) or arm the caller on `accept_waiters` and return `true`
     /// (caller MUST `schedule()`). `UnixRegistry::connect` pushes to `accept_q`
     /// UNDER this same lock and only `wake_all`s after dropping it, so a

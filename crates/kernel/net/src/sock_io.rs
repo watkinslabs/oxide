@@ -318,7 +318,12 @@ pub fn recvfrom_opts(
         let msg = if opts.peek {
             q.msgs.lock().front().map(|msg| msg.payload.clone())
         } else {
-            q.pop().map(|msg| msg.payload)
+            q.pop().map(|msg| {
+                let crate::UnixDgram { payload, fds, .. } = msg;
+                drop(fds);
+                crate::unix_sock::collect_scm_rights();
+                payload
+            })
         };
         let Some(msg) = msg else {
             return Err(NetError::Eagain);

@@ -41,9 +41,12 @@ pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
 
 pub mod unix_sock;
 pub use unix_sock::{
-    UnixAddr, UnixAddrKey, UnixConnectError, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixPair, UnixRegistry, UnixStreamError,
+    GcPin, GcRights, GcTransferGuard, UnixAddr, UnixAddrKey, UnixConnectError, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixPair, UnixRegistry, UnixStreamError,
+    classify_files, transfer_guard,
     unix_path_display, unix_path_is_abstract,
 };
+#[cfg(target_os = "oxide-kernel")]
+pub use unix_sock::bind_file;
 pub mod net_ns;
 pub mod route;
 pub mod route6;
