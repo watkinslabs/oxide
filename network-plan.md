@@ -51,46 +51,49 @@ Merged network foundation:
 
 ## A. Active Foundation Track
 
-- [~] **N01 real raw IP sockets** - branch `B832-network-raw-ip-sockets`, claim
-  `eabc3d03`.
+- [x] **N01 real raw IP sockets** - branch `B832-network-raw-ip-sockets`, PR
+  #3093, merge `4d08b5a1`.
   Replace AF_INET/AF_INET6 UDP shells with socket-owned raw endpoints in the
   network namespace's canonical INET tables. Implement protocol demux,
   bind/connect/disconnect, device scope, send/sendto/sendmsg, receive and
   source addresses, IPv4 `IP_HDRINCL`, IPv6 checksum handling, filters,
   poll/wakeup, pending errors, close, diagnostics, and hosted tests.
-  - [~] N01.1 socket-owned raw4/raw6 endpoints, namespace protocol tables,
+  - [x] N01.1 socket-owned raw4/raw6 endpoints, namespace protocol tables,
     exact receive demux, reassembly, filtering, queueing, poll, and close.
-  - [~] N01.2 IPv4/IPv6 arbitrary-protocol transmit, PMTU, fragmentation,
+  - [x] N01.2 IPv4/IPv6 arbitrary-protocol transmit, PMTU, fragmentation,
     checksum, and caller-header modes.
-  - [~] N01.3 raw socket options, signed/zero `optlen`, fault-recoverable
+  - [x] N01.3 raw socket options, signed/zero `optlen`, fault-recoverable
     import, ICMP filters, and readback.
-  - [~] N01.4 ICMP/ICMPv6 pending and extended errors with Linux hardness,
+  - [x] N01.4 ICMP/ICMPv6 pending and extended errors with Linux hardness,
     tuple, namespace, device, wakeup, and queue semantics.
-  - [~] N01.5 namespace-scoped immutable `/proc/net/raw` and `raw6` snapshots.
-  - [~] N01.6 reject nonlocal/device-inconsistent IPv4 binds and IPv4-mapped
+  - [x] N01.5 namespace-scoped immutable `/proc/net/raw` and `raw6` snapshots.
+  - [x] N01.6 reject nonlocal/device-inconsistent IPv4 binds and IPv4-mapped
     IPv6 raw binds; preserve namespace-local address ownership.
-  - [~] N01.7 implement raw `sendmsg` IP/IPv6 ancillary controls and Linux
+  - [x] N01.7 implement raw `sendmsg` IP/IPv6 ancillary controls and Linux
     `MSG_OOB`/`MSG_DONTROUTE` behavior instead of accepting ignored input.
-  - [~] N01.8 make IPv6 `IPV6_HDRINCL` transmit caller bytes under Linux's
+  - [x] N01.8 make IPv6 `IPV6_HDRINCL` transmit caller bytes under Linux's
     minimum-length/MTU contract without rewriting or overvalidating headers.
-  - [~] N01.9 install route-selected local addresses on connect and enforce
+  - [x] N01.9 install route-selected local addresses on connect and enforce
     `SO_BROADCAST` for IPv4 raw connect/send.
-  - [~] N01.10 account raw4 receive bytes against `SO_RCVBUF` and report drops.
-  - [~] N01.11 encode an enabled IPv6 raw UDP zero checksum as `0xffff`.
-  - [~] N01.12 close the raw receive arm versus `SHUT_RD` lost-wakeup race.
-  - [~] N01.13 reject overlapping or terminal-shortened IPv4/IPv6 fragment
+  - [x] N01.10 account raw4 receive bytes against `SO_RCVBUF` and report drops.
+  - [x] N01.11 encode an enabled IPv6 raw UDP zero checksum as `0xffff`.
+  - [x] N01.12 close the raw receive arm versus `SHUT_RD` lost-wakeup race.
+  - [x] N01.13 reject overlapping or terminal-shortened IPv4/IPv6 fragment
     queues without panic, stale assembly, or partial packet publication.
-  - [~] N01.14 reject raw IPv4/IPv6 receive `MSG_OOB` before queue consumption.
-  - [~] N01.15 apply raw IPv4/IPv6 multicast interface, source, hop/TTL, and
+  - [x] N01.14 reject raw IPv4/IPv6 receive `MSG_OOB` before queue consumption.
+  - [x] N01.15 apply raw IPv4/IPv6 multicast interface, source, hop/TTL, and
     loopback options through the canonical transmit path.
-  - [~] N01.16 compile and fragment IPv4 options like Linux, keep socket
+  - [x] N01.16 compile and fragment IPv4 options like Linux, keep socket
     protocol immutable without `IP_HDRINCL`, and route source options by hop.
-  - [~] N01.17 enforce complete IPv6 fragment-zero header chains, strict
+  - [x] N01.17 enforce complete IPv6 fragment-zero header chains, strict
     per-message interface routing, and true multicast-loop suppression.
-  - [~] N01.18 match Linux ancillary length, capability, option-validation,
+  - [x] N01.18 match Linux ancillary length, capability, option-validation,
     and per-message-over-socket precedence rules.
-  - Evidence pending merge: hosted net 484, procfs 46, syscalls 53; focused
-    raw4 7, raw6 11, raw cmsg 5; x86 and ARM release builds passed.
+  - Evidence: hosted net 484, procfs 46, syscalls 53; focused raw4 7, raw6 11,
+    raw cmsg 5; x86 and ARM release builds passed. x86 smoke reached
+    `multi-user.target` and `graphical.target`. User-authorized ARM smoke skip:
+    glibc userspace reached systemd, then unrelated services trapped/segfaulted
+    and `upower.service` restart-looped until the 600-second timeout.
 - [ ] **N02 multicast robustness accounting**.
   Preserve successful membership when IGMP/MLD report output fails. Roll back
   only synchronous validation/allocation/filter-setup failures. Consume a
