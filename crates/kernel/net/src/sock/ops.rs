@@ -127,38 +127,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                 Disc::Bad => Err(NetError::Einval),
             }
         }
-        RemoteAddr::Unix(addr) => {
-            if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
-                if crate::net_ns::unix_registry_for_addr(&addr).dgram_lookup_addr(&addr).is_none() {
-                    return Err(NetError::Econnrefused);
-                }
-                q.set_peer(addr);
-                return Ok(());
-            }
-            match &*sock.kind.lock() {
-                SockKind::Unix(_, _) => return Err(NetError::Eisconn),
-                SockKind::UnixListener(_) => return Err(NetError::Einval),
-                _ => {}
-            }
-            // B47: connect to a non-existent AF_UNIX path returns
-            // ECONNREFUSED on Linux (no listener) — used to return
-            // ENOBUFS which dhcpcd treated as fatal "out of buffer
-            // memory" instead of "nobody home, I'll create my own
-            // socket and listen".
-            let pair = crate::net_ns::unix_registry_for_addr(&addr).connect_addr(&addr)
-                .ok_or(NetError::Econnrefused)?;
-            // F181a: client end is B; register subscribers before
-            // setting kind so peer-A writes find live subs.
-            pair.register_end_subs(crate::UnixEnd::B, &sock.poll_subs);
-            // SO_PEERCRED: the connecting task owns end B.
-            if let Some(c) = sched::live::current() {
-                use core::sync::atomic::Ordering;
-                pair.set_end_cred(crate::UnixEnd::B, c.visible_pid(),
-                    c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
-            }
-            *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::B);
-            Ok(())
-        }
+        RemoteAddr::Unix(addr) => super::unix::connect(sock, addr, nonblock),
         RemoteAddr::Inet { ip: dst_ip, port } => {
             {
                 let kind = sock.kind.lock();
@@ -255,12 +224,13 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         let mut kind = sock.kind.lock();
         if let SockKind::UnixListener(l) = &*kind {
             l.register_subs(&sock.poll_subs);
+            l.listen(backlog, crate::sysctl::somaxconn());
             return Ok(());
         }
         if !matches!(*kind, SockKind::TcpInit) { return Err(NetError::Einval); }
         let listener = sock.unix_bound.lock().clone().ok_or(NetError::Einval)?;
         listener.register_subs(&sock.poll_subs);
-        listener.listen();
+        listener.listen(backlog, crate::sysctl::somaxconn());
         *kind = SockKind::UnixListener(listener);
         return Ok(());
     }
@@ -297,7 +267,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     // AF_UNIX listener: pop one queued UnixPair.
     if let SockKind::UnixListener(l) = &*sock.kind.lock() {
         let l = l.clone();
-        let pair = l.accept_q.lock().pop_front().ok_or(NetError::Eagain)?;
+        let pair = l.accept().ok_or(NetError::Eagain)?;
         #[cfg(feature = "debug-dbus")]
         {
             let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
@@ -386,7 +356,7 @@ pub fn sendto(
     if let SockKind::Unix(pair, end) = &*sock.kind.lock() {
         let pair = pair.clone();
         let end = *end;
-        return Ok(pair.write(end, payload));
+        return pair.write(end, payload).map_err(|_| NetError::Epipe);
     }
     // AF_UNIX SOCK_DGRAM: explicit dest or connected peer.
     if let SockKind::UnixDgram(q) = &*sock.kind.lock() {

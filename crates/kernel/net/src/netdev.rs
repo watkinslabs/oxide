@@ -52,6 +52,8 @@ pub enum NetError {
     Enotconn,
     Erange,
     Econnrefused,
+    Econnreset,
+    Epipe,
     Enoent,
     /// F168: blocking op interrupted by a signal (EINTR).
     Eintr,

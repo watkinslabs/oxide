@@ -15,6 +15,7 @@
 //     (`hooks::hostname`/`set_hostname`) — the backing variable EXISTS in-tree.
 //   * `net.ipv4.ip_forward` is `proc_dobool` bound to `net::forwarding` — also
 //     a real in-tree backing variable.
+//   * `net.core.somaxconn` is bound to `net::sysctl`, shared by TCP + AF_UNIX.
 //   * Genuine read-only constants (ostype/osrelease/version, cap_last_cap, …)
 //     stay `StaticFileInode` (mode 0444 — Linux rejects writes to those too).
 //   * Multi-field free slots (printk = 4 ints, file-nr = 3 fields) stay a
@@ -37,17 +38,22 @@ use vfs::InodeRef;
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    BoolHook as HBoolHook, BoolVar, IntVar, StrHook as HStrHook, ULongVar,
+    BoolHook as HBoolHook, BoolVar, IntHook as HIntHook, IntVar, StrHook as HStrHook, ULongVar,
 };
 
 /// `proc_dointvec_minmax` window upper bound for a 32-bit-int knob.
 const INT_MAX: i64 = i32::MAX as i64;
+
+fn net_somaxconn() -> i64 { net::sysctl::somaxconn() as i64 }
+fn set_net_somaxconn(value: i64) { net::sysctl::set_somaxconn(value as usize); }
 
 /// One `ctl_table` leaf's `proc_handler` class + default value. # C: n/a
 enum Leaf {
     /// `proc_dointvec` (bounds `None`) / `proc_dointvec_minmax` (bounds
     /// `Some((min,max))`) over a live `AtomicI64`.
     Int(i64, Option<(i64, i64)>),
+    /// `proc_dointvec_minmax` bound to a subsystem accessor pair.
+    IntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
     /// `proc_doulongvec_minmax` over a live `AtomicU64`.
     ULong(u64, Option<(u64, u64)>),
     /// `proc_dobool` over a live `AtomicBool`.
@@ -133,7 +139,7 @@ const SYSCTL_TREE: &[Node] = &[
     ]),
     Dir("net", &[
         Dir("core", &[
-            File("somaxconn",          Int(4096, Some((0, INT_MAX)))),
+            File("somaxconn",          IntHook(net_somaxconn, set_net_somaxconn, Some((0, INT_MAX)))),
             File("rmem_default",       Const(b"212992\n")),
             File("rmem_max",           Const(b"212992\n")),
             File("wmem_default",       Const(b"212992\n")),
@@ -192,6 +198,7 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             let cell: &'static AtomicI64 = Box::leak(Box::new(AtomicI64::new(def)));
             bound_sysctl_inode(Arc::new(IntVar { cell, bounds }))
         }
+        Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
         ULong(def, bounds) => {
             let cell: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(def)));
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))

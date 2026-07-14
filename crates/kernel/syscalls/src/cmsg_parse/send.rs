@@ -69,8 +69,10 @@ pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u6
             // recvmsg delivers them with THIS message, not an earlier
             // fd-less one (the desync that lost logind's CreateSession /
             // Inhibit reply fifo fd → pam_systemd got no runtime_path).
-            pair.write_with_fds(*end, &payload, fds);
-            payload.len() as i64
+            match pair.write_with_fds(*end, &payload, fds) {
+                Ok(n) => n as i64,
+                Err(net::UnixStreamError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
+            }
         }
         SockKind::UnixMsgPair(pair, end) => pair.send_with_fds(*end, &payload, fds) as i64,
         _ => -(Errno::Einval.as_i32() as i64),

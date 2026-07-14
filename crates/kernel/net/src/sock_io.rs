@@ -197,6 +197,7 @@ pub(crate) fn read_unix_stream_blocking(
     loop {
         // Fast path + interruption checks BEFORE arming the wait, matching
         // Linux (signal/timeout observed before prepare_to_wait).
+        if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         let got = pair.read(end, buf.len());
         if !got.is_empty() {
             let n = got.len();
@@ -230,6 +231,7 @@ pub(crate) fn read_unix_stream_blocking(
                     }
                     // empty (raced to another reader) — retry
                 }
+                ReadOutcome::Reset => return Err(vfs::VfsError::Econnreset),
                 ReadOutcome::Eof => return Ok(0),
                 // SAFETY: process ctx; preempt-off owned by syscall stub; we
                 // are on the reader wait list (armed under the ring lock).
@@ -370,6 +372,7 @@ pub fn recvfrom_opts(
         _ => None,
     };
     if let Some((pair, end)) = stream {
+        if pair.take_reset(end) { return Err(NetError::Econnreset); }
         let got = if opts.peek { pair.peek(end, max_len) } else { pair.read(end, max_len) };
         if !got.is_empty() {
             let full_len = got.len();
