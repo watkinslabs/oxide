@@ -4,11 +4,10 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `c8c7180a`, synchronized with `origin/main` when B841 branched.
-- N01-N02 and N03.1-N03.7 are merged.
+- `main`: `7d6c2abb`, synchronized with `origin/main`.
+- N01-N02 and N03.1-N03.8.1 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
-- N03.8.1 lifecycle and teardown race proof is implemented on
-  `B841-netns-lifecycle-race-proof`; commit/PR/merge remains.
+- N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
 
 ## Implemented
 
@@ -34,7 +33,6 @@ Update: 2026-07-14.
 
 ## Remaining network work
 
-- B841 N03.8.1 commit, PR, merge, and closure.
 - N03.8.2-N03.8.5: ingress lease, loopback owner pin, atomic SIOCGSKNS fd
   install, and full retained-owner schedule matrix.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
