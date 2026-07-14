@@ -83,6 +83,12 @@ Merged network foundation:
   - [~] N01.14 reject raw IPv4/IPv6 receive `MSG_OOB` before queue consumption.
   - [~] N01.15 apply raw IPv4/IPv6 multicast interface, source, hop/TTL, and
     loopback options through the canonical transmit path.
+  - [~] N01.16 compile and fragment IPv4 options like Linux, keep socket
+    protocol immutable without `IP_HDRINCL`, and route source options by hop.
+  - [~] N01.17 enforce complete IPv6 fragment-zero header chains, strict
+    per-message interface routing, and true multicast-loop suppression.
+  - [~] N01.18 match Linux ancillary length, capability, option-validation,
+    and per-message-over-socket precedence rules.
 - [ ] **N02 multicast robustness accounting**.
   Preserve successful membership when IGMP/MLD report output fails. Roll back
   only synchronous validation/allocation/filter-setup failures. Consume a
