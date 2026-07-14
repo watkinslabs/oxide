@@ -63,6 +63,9 @@ must use grouped paths from day one.
    logic.
 4. Device behavior belongs in driver/domain crates, not in ad-hoc
    `kernel/src/dev_*` files, except temporary shims tracked in §9.
+5. Network-namespace identity and lifetime ownership lives in
+   `crates/kernel/network-namespace`; it cannot depend on tasks, networking,
+   nsfs, or syscall crates.
 
 ## 6 Naming rules (frozen)
 
@@ -91,6 +94,8 @@ Constraints:
 3. `tools/*` cannot be required by runtime kernel crates.
 4. Userspace libs under `crates/user/*` cannot be imported by kernel
    runtime crates.
+5. `crates/kernel/network-namespace` is a leaf over shared synchronization;
+   tasks, networking, nsfs, and syscall layers depend on it, never vice versa.
 
 ## 8 Change policy
 
@@ -136,7 +141,7 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
-(none)
+- 2026-07-14: Added dependency-neutral network-namespace ownership boundary.
 
 ## 13 OQ
 
