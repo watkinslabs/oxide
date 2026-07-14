@@ -217,6 +217,22 @@ impl Raw6Endpoint {
         *self.poll_subs.lock() = Some(Arc::downgrade(subs));
     }
 
+    /// Atomically publish read shutdown against receive wait registration. # C: O(1)
+    pub fn shutdown_read(&self, read_shut: &core::sync::atomic::AtomicBool) {
+        self.shutdown_read_with(read_shut, || {
+            #[cfg(target_os = "oxide-kernel")]
+            self.waiters.wake_all();
+        });
+    }
+
+    fn shutdown_read_with(&self, read_shut: &core::sync::atomic::AtomicBool,
+                          wake: impl FnOnce()) {
+        let state = self.state.lock();
+        read_shut.store(true, core::sync::atomic::Ordering::Release);
+        drop(state);
+        wake();
+    }
+
     /// Linearize close against admission and wake endpoint observers. # C: O(1)
     pub fn close(&self) {
         let mut state = self.state.lock();
@@ -233,11 +249,20 @@ impl Raw6Endpoint {
 
     /// Park a kernel reader only while the queue is empty and live. # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
-    pub fn arm_recv_wait(&self, deadline_ns: u64) -> bool {
+    pub fn arm_recv_wait(&self, read_shut: &core::sync::atomic::AtomicBool,
+                         deadline_ns: u64) -> bool {
+        self.arm_recv_wait_with(read_shut, || {
+            // SAFETY: endpoint lock closes receive/shutdown publication before registration.
+            unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+        })
+    }
+
+    fn arm_recv_wait_with(&self, read_shut: &core::sync::atomic::AtomicBool,
+                          arm: impl FnOnce()) -> bool {
         let state = self.state.lock();
-        if !state.accepting || !state.datagrams.is_empty() { return false; }
-        // SAFETY: endpoint lock closes receive/close publication before sleep registration.
-        unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+        if !state.accepting || !state.datagrams.is_empty() || self.error.has()
+            || read_shut.load(core::sync::atomic::Ordering::Acquire) { return false; }
+        arm();
         drop(state);
         true
     }
@@ -270,3 +295,7 @@ impl Raw6Endpoint {
         if let Some(subs) = poll.and_then(|weak| weak.upgrade()) { subs.notify(); }
     }
 }
+
+#[cfg(test)]
+#[path = "shutdown_tests.rs"]
+mod shutdown_tests;

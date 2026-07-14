@@ -108,18 +108,14 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
         }
         Target::Raw4(endpoint) => {
             if endpoint.snapshot().remote.is_none() { return Err(NetError::Enotconn); }
-            if how.read() { sock.read_shut.store(true, Release); }
+            if how.read() { endpoint.shutdown_read(&sock.read_shut); }
             if how.write() { sock.write_shut.store(true, Release); }
-            #[cfg(target_os = "oxide-kernel")]
-            endpoint.waiters.wake_all();
             sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
         Target::Raw6(endpoint) => {
             if endpoint.peer().is_none() { return Err(NetError::Enotconn); }
-            if how.read() { sock.read_shut.store(true, Release); }
+            if how.read() { endpoint.shutdown_read(&sock.read_shut); }
             if how.write() { sock.write_shut.store(true, Release); }
-            #[cfg(target_os = "oxide-kernel")]
-            endpoint.waiters.wake_all();
             sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
         Target::Unconnected => return Err(NetError::Enotconn),
