@@ -114,8 +114,8 @@ pub struct InetSocket {
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
     pub opts: SockOpts,
-    /// Socket-owned pending receive error, stored as a positive Linux errno.
-    pending_recv_error: core::sync::atomic::AtomicI32,
+    /// Canonical Linux `sk_err`; transport tables retain this socket owner.
+    pub error: crate::SocketError,
     /// F166: SHUT_RD/RDWR latch — subsequent read returns Ok(0).
     pub read_shut: core::sync::atomic::AtomicBool,
     /// Generic send-half shutdown for connected datagram/TCP sockets.
@@ -262,7 +262,7 @@ impl InetSocket {
             peer:       Spinlock::new(None),
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
-            pending_recv_error: core::sync::atomic::AtomicI32::new(0),
+            error: crate::SocketError::new(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
@@ -292,7 +292,7 @@ impl InetSocket {
             // or TcpConn.
             kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
-            pending_recv_error: core::sync::atomic::AtomicI32::new(0),
+            error: crate::SocketError::new(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
@@ -369,19 +369,23 @@ impl InetSocket {
 
     /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
     pub fn set_pending_recv_error(&self, errno: i32) -> bool {
-        if errno <= 0 { return false; }
-        self.pending_recv_error.store(errno, core::sync::atomic::Ordering::Release);
-        true
+        let changed = self.error.set(errno);
+        if changed {
+            #[cfg(target_os = "oxide-kernel")]
+            { self.recv_waiters.wake_all(); self.connect_waiters.wake_all(); }
+            self.poll_subs.notify_mask(vfs::POLL_ERR);
+        }
+        changed
     }
 
     /// Consume the pending positive Linux receive errno, or zero. # C: O(1)
     pub fn take_pending_recv_error(&self) -> i32 {
-        self.pending_recv_error.swap(0, core::sync::atomic::Ordering::AcqRel)
+        self.error.take()
     }
 
     /// Observe whether a receive error is pending without consuming it. # C: O(1)
     pub fn has_pending_recv_error(&self) -> bool {
-        self.pending_recv_error.load(core::sync::atomic::Ordering::Acquire) != 0
+        self.error.has()
     }
 
     /// Ensure a local port is bound (auto-bind to an ephemeral
