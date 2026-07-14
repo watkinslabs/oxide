@@ -1,6 +1,9 @@
 use super::*;
 use sync::TaskList;
 
+#[path = "netdev_tests/uninstall.rs"]
+mod uninstall;
+
 struct DummyDev { name: &'static str, mtu: u32, stats: NetStats }
 impl NetDev for DummyDev {
     fn name(&self) -> &str { self.name }
