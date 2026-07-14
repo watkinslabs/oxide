@@ -26,6 +26,11 @@ fn empty_received() -> Received {
 
 /// Park on the receive wait source matching the socket kind. # C: O(1)
 pub fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
+    wait_recv_source_after(sock, deadline_ns, 0)
+}
+
+/// Park until receive data exists beyond a non-consuming stream offset. # C: O(1)
+pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize) -> bool {
     let kind = match &*sock.kind.lock() {
         SockKind::Unix(pair, end)        => WaitKind::Unix(pair.clone(), *end),
         SockKind::UnixMsgPair(pair, end) => WaitKind::UnixMsgPair(pair.clone(), *end),
@@ -37,7 +42,7 @@ pub fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
     };
     match kind {
         WaitKind::Unix(pair, end) => {
-            if let crate::unix_sock::stream::ArmStreamRead::Parked = pair.arm_stream_read(end, deadline_ns) {
+            if let crate::unix_sock::stream::ArmStreamRead::Parked = pair.arm_stream_read_after(end, offset, deadline_ns) {
                 // SAFETY: pair armed current under its incoming-ring lock.
                 unsafe { sched::live::schedule::schedule(); }
                 pair.reader_waiters(end).remove_current();
@@ -69,7 +74,7 @@ pub fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
         }
         WaitKind::Packet => { wait_packet(sock, deadline_ns); false }
         WaitKind::Tcp(entry) => {
-            if crate::sock_io::arm_tcp_read(sock, &entry, deadline_ns) {
+            if crate::sock_io::arm_tcp_read_after(sock, &entry, offset, deadline_ns) {
                 // SAFETY: arm_tcp_read published current under entry.conn.
                 unsafe { sched::live::schedule::schedule(); }
                 entry.rx_waiters.remove_current();

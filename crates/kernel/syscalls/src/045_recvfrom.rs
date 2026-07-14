@@ -39,8 +39,8 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     // inode read path (STREAM, src not filled — single peer).
     if crate::net_common::vsock_from_fd(fd).is_some() {
         if !uaccess::access_ok(bufp, len) { return -(Errno::Efault.as_i32() as i64); }
-        return match crate::recvmsg::vsock::recv_with_copy(fd, len, flags, |bytes| {
-            copy_payload(bufp, bytes).map(|(copied, _)| copied)
+        return match crate::recvmsg::vsock::recv_with_copy(fd, len, flags, |offset, bytes| {
+            copy_payload(bufp + offset as u64, bytes).map(|(copied, _)| copied)
         }) {
             Ok(n) => n as i64,
             Err(e) => e,
@@ -54,8 +54,8 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
         return crate::unix_recv::recvfrom(&sock, fd, bufp, len, flags, src_p, src_len);
     }
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
-        let copied = match crate::recvmsg::inet::tcp_with_copy(fd, &sock, len, flags, |bytes| {
-            copy_payload(bufp, bytes).map(|(copied, _)| copied)
+        let copied = match crate::recvmsg::inet::tcp_with_copy(fd, &sock, len, flags, |offset, bytes| {
+            copy_payload(bufp + offset as u64, bytes).map(|(copied, _)| copied)
         }) {
             Ok(copied) => copied,
             Err(e) => return e,
