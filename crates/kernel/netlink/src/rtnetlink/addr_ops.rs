@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::{nlmsg_align, Nlmsghdr};
 
 use super::ack::build_ack;
-use super::rtnetlink_addr::{addr_remove, cache_to_net, IfaCacheInfo};
+use super::rtnetlink_addr::{cache_to_net, IfaCacheInfo};
 use super::uapi::{ifa, Ifaddrmsg, AF_INET};
 
 #[derive(Copy, Clone)]
@@ -71,10 +71,7 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let flags = parsed.flags.unwrap_or_else(|| {
         if parsed.cacheinfo.is_some() { ifa_flags } else { ifa_flags | net::iface_addr::IFA_F_PERMANENT }
     });
-    if net::global_stack().ifaces.lookup_in_ns(net::NetIfaceId::from_raw(ifindex), ns).is_none() {
-        return build_ack(req, -19);
-    }
-    net::iface_addr::set_prefix_meta(
+    if !net::global_stack().set_ipv4_prefix_meta_in(
         ns,
         net::NetIfaceId::from_raw(ifindex),
         net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)),
@@ -82,7 +79,7 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         scope,
         flags,
         cache_to_net(parsed.cacheinfo.unwrap_or(IfaCacheInfo::PERMANENT)),
-    );
+    ) { return build_ack(req, -19); }
     crate::mcast::notify_addr(false, ifindex, addr, prefixlen, scope);
     build_ack(req, 0)
 }
@@ -107,10 +104,13 @@ pub fn handle_deladdr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         Some(a) => a,
         None => return build_ack(req, -22),
     }.addr;
-    if net::global_stack().ifaces.lookup_in_ns(net::NetIfaceId::from_raw(ifindex), ns).is_none() {
-        return build_ack(req, -19);
-    }
-    let n = addr_remove(ns, ifindex, addr, prefixlen);
+    let n = match net::global_stack().remove_ipv4_prefix_in(
+        ns, net::NetIfaceId::from_raw(ifindex),
+        net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)), prefixlen,
+    ) {
+        Some(n) => n,
+        None => return build_ack(req, -19),
+    };
     if n > 0 { crate::mcast::notify_addr(true, ifindex, addr, prefixlen, 0); }
     build_ack(req, if n > 0 { 0 } else { -2 })
 }
