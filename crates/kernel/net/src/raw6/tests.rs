@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 use alloc::vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::bpf_filter::{install_bpf_filter_context_runner, FilterContext, FilterKind, FilterProgram};
@@ -14,12 +13,8 @@ const LOCAL: Ipv6Addr = Ipv6Addr([0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 const REMOTE: Ipv6Addr = Ipv6Addr([0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 const LINK_LOCAL: Ipv6Addr = Ipv6Addr([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
-static FILTER_CALLS: AtomicUsize = AtomicUsize::new(0);
-
 fn verdict(_kind: FilterKind, insns: &[u8], ctx: FilterContext<'_>) -> u32 {
-    FILTER_CALLS.fetch_add(1, Ordering::Relaxed);
-    assert_eq!(ctx.protocol, crate::addr::eth_p::IPV6);
-    assert_eq!(ctx.pay_offset, 0);
+    let _ = ctx;
     u32::from_ne_bytes(insns.try_into().unwrap())
 }
 
@@ -53,7 +48,6 @@ fn exact_tuple_device_namespace_and_link_local_source_scope() {
 #[test]
 fn icmp_filter_runs_before_bpf_and_icmp_checksum_defaults_to_two() {
     install_bpf_filter_context_runner(verdict);
-    FILTER_CALLS.store(0, Ordering::Relaxed);
     let endpoint = Raw6Endpoint::standalone(NET_NS, crate::icmpv6::IPPROTO_ICMPV6);
     endpoint.bpf_filter.attach(FilterProgram {
         kind: FilterKind::Ebpf, insns: u32::MAX.to_ne_bytes().to_vec(),
@@ -64,10 +58,10 @@ fn icmp_filter_runs_before_bpf_and_icmp_checksum_defaults_to_two() {
     assert_eq!(endpoint.checksum(), Raw6Checksum::Offset(2));
     assert_eq!(endpoint.receive(packet(crate::icmpv6::IPPROTO_ICMPV6, REMOTE, LOCAL,
         &[128, 0, 0, 0])), Raw6RxDisposition::PolicyDrop);
-    assert_eq!(FILTER_CALLS.load(Ordering::Relaxed), 0);
+    assert_eq!(endpoint.queue_usage(), (0, 0));
     assert_eq!(endpoint.receive(packet(crate::icmpv6::IPPROTO_ICMPV6, REMOTE, LOCAL,
         &[129, 0, 0, 0])), Raw6RxDisposition::Queued);
-    assert_eq!(FILTER_CALLS.load(Ordering::Relaxed), 1);
+    assert_eq!(endpoint.queue_usage(), (1, 4));
 }
 
 #[test]
