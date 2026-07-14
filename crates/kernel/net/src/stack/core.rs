@@ -21,11 +21,16 @@ impl NetStack {
     /// F184: MSS for `dst` = egress iface MTU − (v4:40, v6:60). 0 if
     /// no iface — caller falls back to OWN_MSS_DEFAULT. # C: O(log N).
     pub fn mss_for_dst(&self, dst: IpAddr) -> u16 {
+        self.mss_for_dst_in(0, dst)
+    }
+
+    /// MSS for a destination in one network namespace. # C: O(N routes)
+    pub fn mss_for_dst_in(&self, net_ns: u64, dst: IpAddr) -> u16 {
         let mtu = match dst {
-            IpAddr::V4(d) => self.routes.lookup(d)
-                .and_then(|r| self.ifaces.lookup(r.iface))
+            IpAddr::V4(d) => self.routes.lookup_in(net_ns, d)
+                .and_then(|r| self.ifaces.lookup_in_ns(r.iface, net_ns))
                 .map(|i| i.mtu()),
-            IpAddr::V6(d) => self.route6_iface(d).map(|(_, i)| i.mtu()),
+            IpAddr::V6(d) => self.route6_iface_in(net_ns, d).map(|(_, i)| i.mtu()),
         };
         let overhead = if matches!(dst, IpAddr::V6(_)) { 60 } else { 40 };
         mtu.map(|m| (m.saturating_sub(overhead)).min(0xFFFF) as u16).unwrap_or(0)
@@ -34,8 +39,15 @@ impl NetStack {
     /// Resolve the IPv6 egress interface using longest-prefix match.
     /// # C: O(N routes)
     pub(crate) fn route6_iface(&self, dst: Ipv6Addr) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
-        let route = self.routes6.lookup(dst)?;
-        let iface = self.ifaces.lookup(route.iface)?;
+        self.route6_iface_in(0, dst)
+    }
+
+    /// Resolve IPv6 egress within one network namespace. # C: O(N routes + N ifaces)
+    pub(crate) fn route6_iface_in(&self, net_ns: u64, dst: Ipv6Addr)
+        -> Option<(NetIfaceId, Arc<dyn NetDev>)>
+    {
+        let route = self.routes6.lookup_in(net_ns, dst)?;
+        let iface = self.ifaces.lookup_in_ns(route.iface, net_ns)?;
         Some((route.iface, iface))
     }
 
@@ -45,7 +57,11 @@ impl NetStack {
     pub(crate) fn v6_dst_is_local(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
         if ip.is_multicast() { return true; }
         if ip.is_link_local() { return self.v6_addr_owned_by(iface, ip); }
-        self.v6_addrs.lock().values().any(|addrs| addrs.iter().any(|addr| addr.addr == ip))
+        let Some(net_ns) = self.ifaces.namespace(iface) else { return false };
+        self.v6_addrs.lock().iter().any(|(id, addrs)| {
+            self.ifaces.namespace(*id) == Some(net_ns)
+                && addrs.iter().any(|addr| addr.addr == ip)
+        })
     }
     /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)
     pub(crate) fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> { self.v6_addrs.lock().get(&iface).and_then(|v| v.first().map(|a| a.addr)) }
@@ -67,9 +83,14 @@ impl NetStack {
     /// the assigned iface id.
     /// # C: O(1)
     pub fn register_loopback(&self) -> (NetIfaceId, Arc<LoopbackDev>) {
+        self.register_loopback_in(0)
+    }
+
+    /// Register canonical loopback device, addresses, and routes in one namespace. # C: O(N)
+    pub fn register_loopback_in(&self, net_ns: u64) -> (NetIfaceId, Arc<LoopbackDev>) {
         let lo = Arc::new(LoopbackDev::new());
-        let id = self.ifaces.register(lo.clone() as Arc<dyn NetDev>);
-        self.routes.add(crate::route::RouteEntry {
+        let id = self.ifaces.register_in_ns(lo.clone() as Arc<dyn NetDev>, net_ns);
+        self.routes.add_in(net_ns, crate::route::RouteEntry {
             table:      crate::policy_rule::RT_TABLE_LOCAL,
             dst:        Ipv4Addr::new(127, 0, 0, 0),
             prefix_len: 8,
@@ -77,7 +98,7 @@ impl NetStack {
             gateway:    None,
             src_hint:   Some(Ipv4Addr::LOOPBACK),
         });
-        self.routes6.add(crate::route6::Route6Entry {
+        self.routes6.add_in(net_ns, crate::route6::Route6Entry {
             dst:        Ipv6Addr::LOOPBACK,
             prefix_len: 128,
             iface:      id,
@@ -91,10 +112,15 @@ impl NetStack {
     /// Remove per-interface network state and unregister the netdev.
     /// # C: O(N routes + N addrs + N groups + N ndp)
     pub fn unregister_iface(&self, iface: NetIfaceId) -> bool {
-        let ns = crate::netdev::current_net_ns();
-        self.routes.retain(|e| e.iface != iface);
-        self.routes6.retain(|e| e.iface != iface);
-        let _ = crate::iface_addr::remove_iface(ns, iface);
+        self.unregister_iface_in(0, iface)
+    }
+
+    /// Remove one namespace-owned interface and all attached network state. # C: O(N)
+    pub fn unregister_iface_in(&self, net_ns: u64, iface: NetIfaceId) -> bool {
+        if self.ifaces.namespace(iface) != Some(net_ns) { return false; }
+        self.routes.retain_in(net_ns, |e| e.iface != iface);
+        self.routes6.retain_in(net_ns, |e| e.iface != iface);
+        let _ = crate::iface_addr::remove_iface(net_ns, iface);
         self.v6_addrs.lock().remove(&iface);
         self.v6_mcast.lock().remove(&iface);
         self.v4_mcast.lock().remove(&iface);
@@ -335,17 +361,18 @@ impl NetStack {
         // to the first non-loopback iface so the broadcast lands.
         // Once route tables track scope (LOCAL_BROADCAST etc.), the
         // fallback retires.
-        let (iface_id, iface) = match self.routes.lookup(dst_ip) {
-            Some(r) => (r.iface, self.ifaces.lookup(r.iface)
-                            .ok_or(NetError::Enetunreach)?),
-            None if dst_ip.is_broadcast() => {
+        let (iface_id, iface, next_hop) = match self.routes.lookup_result_in(0, dst_ip) {
+            Ok(r) => (r.iface, self.ifaces.lookup(r.iface)
+                            .ok_or(NetError::Enetunreach)?, r.gateway.unwrap_or(dst_ip)),
+            Err(NetError::Enetunreach) if dst_ip.is_broadcast()
+                && self.routes.lookup_record_in(0, dst_ip).is_none() => {
                 let devs = self.ifaces.snapshot_devs();
                 let pick = devs.iter()
                     .find(|(_, d)| d.name() != "lo")
                     .ok_or(NetError::Enetunreach)?;
-                (pick.0, pick.1.clone())
+                (pick.0, pick.1.clone(), dst_ip)
             }
-            None => return Err(NetError::Enetunreach),
+            Err(error) => return Err(error),
         };
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
@@ -357,6 +384,8 @@ impl NetStack {
             *s = s.wrapping_add(1);
             *s
         };
-        self.xmit_ipv4_l4_on_iface(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(), 0, id)
+        self.xmit_ipv4_l4_on_iface(
+            iface_id, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), 0, id,
+        )
     }
 }

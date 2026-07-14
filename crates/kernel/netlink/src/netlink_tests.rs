@@ -107,6 +107,49 @@ fn rtnl_multicast_delivers_only_to_subscribers() {
 }
 
 #[test]
+fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
+    use alloc::sync::Arc;
+    const NS_A: u64 = 10_861;
+    const NS_B: u64 = 10_862;
+    let iface = net::global_stack().ifaces
+        .register_in_ns(Arc::new(net::LoopbackDev::new()), NS_A);
+    let a = Arc::new(NetlinkSocket::new_in(proto::NETLINK_ROUTE, NS_A));
+    let b = Arc::new(NetlinkSocket::new_in(proto::NETLINK_ROUTE, NS_B));
+    for group in [
+        mcast::grp::RTNLGRP_LINK,
+        mcast::grp::RTNLGRP_IPV4_IFADDR,
+        mcast::grp::RTNLGRP_IPV4_ROUTE,
+    ] {
+        a.add_membership(group);
+        b.add_membership(group);
+    }
+    register_rtnl_listener(&a);
+    register_rtnl_listener(&b);
+
+    mcast::notify_link(iface.raw() as i32);
+    mcast::notify_addr(false, iface.raw(), [198, 18, 61, 1], 24, rtnetlink::RT_SCOPE_UNIVERSE);
+    mcast::notify_route(NS_A, false, rtnetlink::RouteRow {
+        ns: NS_A, table: rtnetlink::RT_TABLE_MAIN as u32,
+        protocol: rtnetlink::RTPROT_STATIC, scope: rtnetlink::RT_SCOPE_LINK,
+        kind: rtnetlink::RTN_UNICAST, dst: Some(([198, 18, 61, 0], 24)),
+        gateway: None, oif_ifindex: iface.raw(), prefsrc: None,
+        metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+    });
+
+    for ty in [
+        rtnetlink::RTM_NEWLINK,
+        rtnetlink::RTM_NEWADDR,
+        rtnetlink::RTM_NEWROUTE,
+    ] {
+        let (msg, src) = a.dequeue().expect("mutation namespace listener receives notification");
+        assert_eq!(src, 0);
+        assert_eq!(Nlmsghdr::parse(&msg).unwrap().nlmsg_type, ty);
+    }
+    assert!(b.dequeue().is_none(), "other network namespace must not receive rtnetlink multicast");
+    let _ = net::global_stack().ifaces.unregister(iface);
+}
+
+#[test]
 fn raw_uevent_delivers_only_to_kernel_group() {
     use alloc::sync::Arc;
     let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));

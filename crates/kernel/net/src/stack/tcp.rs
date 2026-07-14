@@ -107,7 +107,7 @@ impl NetStack {
         };
         let n = segs.len();
         for s in &segs {
-            self.send_l4_over_ip_tos_bound(src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
+            self.send_l4_over_ip_tos_bound_in(entry.net_ns(), src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
         }
         // F159: stamp the last N retx_q entries (one per emitted segment)
         // with the actual xmit time.
@@ -142,7 +142,7 @@ impl NetStack {
             let s = c.local_close().map_err(|_| NetError::Eio)?;
             (s, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
-        self.send_l4_over_ip_tos_bound(src, dst, IpProto::Tcp, &seg, tos, entry.bound_iface())
+        self.send_l4_over_ip_tos_bound_in(entry.net_ns(), src, dst, IpProto::Tcp, &seg, tos, entry.bound_iface())
     }
 
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
@@ -214,7 +214,7 @@ impl NetStack {
                 }
             };
             for s in &segs {
-                let _ = self.send_l4_over_ip_bound(src, dst, IpProto::Tcp, s, entry.bound_iface());
+                let _ = self.send_l4_over_ip_bound_in(entry.net_ns(), src, dst, IpProto::Tcp, s, entry.bound_iface());
             }
             // F193: keepalive probe scheduling. Idle for ka_idle_ns →
             // fire probes at ka_intvl_ns cadence; abort after ka_cnt_max.
@@ -231,7 +231,7 @@ impl NetStack {
                 (probe, abort_ka, src, dst)
             };
             if let Some(s) = &ka_seg {
-                let _ = self.send_l4_over_ip_bound(ka_src, ka_dst, IpProto::Tcp, s, entry.bound_iface());
+                let _ = self.send_l4_over_ip_bound_in(entry.net_ns(), ka_src, ka_dst, IpProto::Tcp, s, entry.bound_iface());
             }
             if ka_abort {
                 to_drop.push((tables.clone(), *key));
@@ -303,7 +303,7 @@ impl NetStack {
                 (c.recv_buf.len(), c.state)
             };
             if let Some(r) = resp {
-                self.send_l4_over_ip_bound(dst_ip, src_ip, IpProto::Tcp, &r, entry.bound_iface())?;
+                self.send_l4_over_ip_bound_in(net_ns, dst_ip, src_ip, IpProto::Tcp, &r, entry.bound_iface())?;
             }
             // F175: post-input output drain. ACK that clears retx_q
             // unblocks Nagle-held sends; pump them out now. Use
@@ -318,7 +318,7 @@ impl NetStack {
             };
             let (segs, src, dst, tos) = drain_segs;
             for s in &segs {
-                self.send_l4_over_ip_tos_bound(src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
+                self.send_l4_over_ip_tos_bound_in(net_ns, src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
             }
             stamp_last_sent(&entry, segs.len());
             // F159+F181a: wake conn rx + targeted epoll.
@@ -387,7 +387,7 @@ impl NetStack {
         let mut new_conn = TcpConn::new_listener(local_ep);
         // F184: SYN-ACK we're about to build advertises our MSS too.
         let bound = listener.bound_iface();
-        new_conn.own_mss = self.mss_for_dst_on_iface(src_ip, bound);
+        new_conn.own_mss = self.mss_for_dst_on_iface_in(net_ns, src_ip, bound);
         let resp = new_conn.input(src_ip, dst_ip, seg)
             .map_err(|_| NetError::Einval)?;
         let new_entry = Arc::new(TcpEntry::new_bound_with_error(
@@ -396,7 +396,7 @@ impl NetStack {
         tables.tcp_conns.lock().insert(key, new_entry.clone());
         listener.accept_q.lock().push_back(new_entry);
         if let Some(r) = resp {
-            self.send_l4_over_ip_bound(dst_ip, src_ip, IpProto::Tcp, &r, bound)?;
+            self.send_l4_over_ip_bound_in(net_ns, dst_ip, src_ip, IpProto::Tcp, &r, bound)?;
         }
         // F160: wake any blocking accept() parked on this listener.
         #[cfg(target_os = "oxide-kernel")]

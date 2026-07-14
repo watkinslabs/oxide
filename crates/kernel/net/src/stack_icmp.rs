@@ -46,12 +46,12 @@ impl NetStack {
             (_, Some(iface)) => (iface, self.ifaces.lookup_in_ns(iface, net_ns)
                 .ok_or(NetError::Enetunreach)?.mtu()),
             (IpAddr::V4(dst), None) => {
-                let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
-                let mtu = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?.mtu();
+                let route = self.routes.lookup_result_in(net_ns, dst)?;
+                let mtu = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?.mtu();
                 (route.iface, mtu)
             }
             (IpAddr::V6(dst), None) => {
-                let (iface, dev) = self.route6_iface(dst).ok_or(NetError::Enetunreach)?;
+                let (iface, dev) = self.route6_iface_in(net_ns, dst).ok_or(NetError::Enetunreach)?;
                 (iface, dev.mtu())
             }
         };

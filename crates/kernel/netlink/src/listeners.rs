@@ -124,10 +124,16 @@ pub fn register_rtnl_listener(sock: &Arc<NetlinkSocket>) {
     g.push(Arc::downgrade(sock));
 }
 
-/// Broadcast `msg` (kernel-originated nlmsg(s): seq 0, pid 0) to every
-/// `NETLINK_ROUTE` socket subscribed to `group`.
+/// Broadcast `msg` in the calling task's network namespace.
 /// Returns the number of sockets reached. # C: O(N_listeners)
 pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
+    rtnl_multicast_in(net::netdev::current_net_ns(), group, msg)
+}
+
+/// Broadcast `msg` (kernel-originated nlmsg(s): seq 0, pid 0) to every
+/// `NETLINK_ROUTE` socket in `net_ns` subscribed to `group`.
+/// Returns the number of sockets reached. # C: O(N_listeners)
+pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
     if group == 0 || group > 32 { return 0; }
     let bit = 1u32 << (group - 1);
     let mut g = RTNL_LISTENERS.lock();
@@ -135,7 +141,7 @@ pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
     let mut n = 0;
     for w in g.iter() {
         if let Some(s) = w.upgrade() {
-            if (s.groups.load(Ordering::Acquire) & bit) != 0 {
+            if s.net_ns == net_ns && (s.groups.load(Ordering::Acquire) & bit) != 0 {
                 s.enqueue(msg.to_vec());
                 n += 1;
             }

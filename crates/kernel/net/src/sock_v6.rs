@@ -115,7 +115,8 @@ pub fn sendto_v6(sock: &InetSocket,
     let src_ip = *sock.local_ip6.lock();
     let hop = resolve_v6_hop_limit(sock, dst_ip);
     let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
-    stack().send_udp6_pmtu_to_bound_opts(
+    stack().send_udp6_pmtu_to_bound_opts_in(
+        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
         src_ip, src_port, dst_ip, dst_port, payload,
         crate::sock_mcast::bound_iface6(sock, dst_ip)?, hop, pmtudisc,
     )?;

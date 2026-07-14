@@ -13,37 +13,45 @@ impl NetStack {
     pub(crate) fn send_l4_over_ipv4_tos(&self, src: Ipv4Addr, dst: Ipv4Addr,
                           proto: IpProto, l4: &[u8], tos: u8) -> NetResult<()>
     {
-        let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
-        let iface = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?;
+        self.send_l4_over_ipv4_tos_in(0, src, dst, proto, l4, tos)
+    }
+
+    /// Wrap an L4 segment in IPv4 using one namespace's route table. # C: O(payload + N)
+    pub(crate) fn send_l4_over_ipv4_tos_in(&self, net_ns: u64, src: Ipv4Addr, dst: Ipv4Addr,
+                          proto: IpProto, l4: &[u8], tos: u8) -> NetResult<()> {
+        let route = self.routes.lookup_result_in(net_ns, dst)?;
+        let iface = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
-        self.xmit_ipv4_l4_on_iface(route.iface, iface, src, dst, proto, l4, tos, id)
+        self.xmit_ipv4_l4_on_iface(
+            route.iface, iface, route.gateway.unwrap_or(dst), src, dst, proto, l4, tos, id,
+        )
     }
 
     /// Emit one IPv4 L4 payload on a selected iface, fragmenting when
     /// `IP header + payload` exceeds the iface MTU. # C: O(payload)
     pub(crate) fn xmit_ipv4_l4_on_iface(&self, iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        iface: Arc<dyn NetDev>, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, id: u16) -> NetResult<()>
     {
         self.xmit_ipv4_l4_on_iface_opts(
-            iface_id, iface, src, dst, proto, l4, tos, crate::ipv4::IPV4_DEFAULT_TTL, id,
+            iface_id, iface, next_hop, src, dst, proto, l4, tos, crate::ipv4::IPV4_DEFAULT_TTL, id,
         )
     }
 
     /// Emit one IPv4 L4 payload with explicit TOS and TTL on a selected iface,
     /// fragmenting when `IP header + payload` exceeds the iface MTU. # C: O(payload)
     pub(crate) fn xmit_ipv4_l4_on_iface_opts(&self, iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        iface: Arc<dyn NetDev>, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16) -> NetResult<()>
     {
         let mtu = iface.mtu() as usize;
         self.xmit_ipv4_l4_with_policy(
-            iface_id, iface, src, dst, proto, l4, tos, ttl, id, mtu, false, true,
+            iface_id, iface, next_hop, src, dst, proto, l4, tos, ttl, id, mtu, false, true,
         )
     }
 
     fn xmit_ipv4_l4_with_policy(&self, iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        iface: Arc<dyn NetDev>, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize, df: bool,
         may_fragment: bool) -> NetResult<()>
     {
@@ -62,6 +70,7 @@ impl NetStack {
             }
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);
+            p.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
             if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
             return iface.xmit(p);
         }
@@ -82,6 +91,7 @@ impl NetStack {
                 .map_err(|_| NetError::Enobufs)?;
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);
+            p.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
             if nf_output(&p, NFPROTO_IPV4) {
                 iface.xmit(p)?;
             }
@@ -95,15 +105,16 @@ impl NetStack {
         dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8, mode: i32) -> NetResult<()>
     {
-        let (iface_id, iface) = match bound {
-            Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
-            None => {
-                let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
-                (route.iface, self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?)
-            }
-        };
+        self.send_udp_pmtu_to_bound_opts_in(0, src, src_port, dst, dst_port, payload,
+            bound, tos, ttl, mode)
+    }
+
+    /// Build and transmit UDP/IPv4 using one namespace's PMTU and routes. # C: O(payload + N)
+    pub fn send_udp_pmtu_to_bound_opts_in(&self, net_ns: u64, src: Ipv4Addr, src_port: u16,
+        dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
+        tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
+        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
         let probe = mode >= crate::uapi::IP_PMTUDISC_PROBE;
-        let net_ns = self.ifaces.namespace(iface_id).ok_or(NetError::Enodev)?;
         let mtu = self.path_mtu_in(net_ns, IpAddr::V4(dst), Some(iface_id), probe)? as usize;
         let may_fragment = mode != crate::uapi::IP_PMTUDISC_DO
             && mode != crate::uapi::IP_PMTUDISC_PROBE
@@ -117,7 +128,7 @@ impl NetStack {
         UdpHdr::build_into(src_port, dst_port, src, dst, payload, udp);
         let id = { let mut next = self.next_ip_id.lock(); *next = next.wrapping_add(1); *next };
         self.xmit_ipv4_l4_with_policy(
-            iface_id, iface, src, dst, IpProto::Udp, packet.data(), tos, ttl, id,
+            iface_id, iface, next_hop, src, dst, IpProto::Udp, packet.data(), tos, ttl, id,
             mtu, df, may_fragment,
         )
     }
@@ -132,8 +143,8 @@ impl NetStack {
         // `net.ipv4.ip_forward` enables router mode.
         if nf_hook_eval(NF_INET_PRE_ROUTING, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
         let hdr = Ipv4Hdr::parse(l3).map_err(|_| NetError::Einval)?;
-        if !self.ipv4_dst_is_local(hdr.dst) {
-            return self.forward_ipv4(iface, l3);
+        if !self.ipv4_dst_is_local_in(net_ns, hdr.dst) {
+            return self.forward_ipv4_in(net_ns, iface, l3);
         }
         if nf_hook_eval(NF_INET_LOCAL_IN, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
         let total = hdr.total_len as usize;
@@ -143,7 +154,9 @@ impl NetStack {
         let mf = (hdr.flags_frag & 0x2000) != 0;
         let off8 = (hdr.flags_frag & 0x1FFF) as usize;
         let payload: &[u8] = if mf || off8 != 0 {
-            let k = crate::ipv4_reasm::ReasmKey { src: hdr.src, dst: hdr.dst, proto: hdr.proto, id: hdr.id };
+            let k = crate::ipv4_reasm::ReasmKey {
+                net_ns, src: hdr.src, dst: hdr.dst, proto: hdr.proto, id: hdr.id,
+            };
             match self.ipv4_reasm.push(k, net_now_ns(), off8 * 8, frag_payload, mf) {
                 Some(b) => { assembled = b; &assembled[..] }
                 None    => return Ok(()),
@@ -167,7 +180,8 @@ impl NetStack {
                         .map_err(|_| NetError::Enobufs)?;
                     p.proto = crate::addr::eth_p::IPV4;
                     p.iface = Some(iface);
-                    let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
+                    p.next_hop = Some(crate::pkt::TxNextHop::V4(hdr.src));
+                    let dev = self.ifaces.lookup_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
                     // ICMP echo reply is kernel-generated → LOCAL_OUT + POST_ROUTING.
                     if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
                 } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH

@@ -9,19 +9,26 @@ use crate::netfilter_hook::{
 use crate::pkt::Pkt;
 use crate::stack::NetStack;
 
+const ICMP_DEST_UNREACH_ADMIN_PROHIBITED: u8 = 13;
+
 impl NetStack {
     /// True when this IPv4 destination belongs to the host. # C: O(N addrs)
     pub(crate) fn ipv4_dst_is_local(&self, dst: Ipv4Addr) -> bool {
+        self.ipv4_dst_is_local_in(0, dst)
+    }
+
+    /// True when `dst` belongs to one network namespace. # C: O(N addrs)
+    pub(crate) fn ipv4_dst_is_local_in(&self, net_ns: u64, dst: Ipv4Addr) -> bool {
         if dst.is_loopback() || dst.is_broadcast() || dst.is_multicast() {
             return true;
         }
-        crate::iface_addr::snapshot_ns(crate::netdev::current_net_ns())
+        crate::iface_addr::snapshot_ns(net_ns)
             .iter()
             .any(|row| row.addr == dst)
     }
 
-    fn ipv4_iface_addr(&self, iface: NetIfaceId) -> Option<Ipv4Addr> {
-        crate::iface_addr::primary(crate::netdev::current_net_ns(), iface).map(|(addr, _)| addr)
+    fn ipv4_iface_addr(&self, net_ns: u64, iface: NetIfaceId) -> Option<Ipv4Addr> {
+        crate::iface_addr::primary(net_ns, iface).map(|(addr, _)| addr)
     }
 
     fn should_emit_icmp_error(&self, l3: &[u8]) -> bool {
@@ -46,38 +53,59 @@ impl NetStack {
             Ok(b) => b,
             Err(_) => return Ok(()),
         };
-        let dev = self.ifaces.lookup(ingress).ok_or(NetError::Enetunreach)?;
+        let net_ns = self.ifaces.namespace(ingress).ok_or(NetError::Enodev)?;
+        let dev = self.ifaces.lookup_in_ns(ingress, net_ns).ok_or(NetError::Enetunreach)?;
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, IPV4_HDR_LEN + body.len());
         p.put(body.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(&body);
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
         push_ipv4_header(&mut p, src, dst, IpProto::Icmp, id).map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(ingress);
+        p.next_hop = Some(crate::pkt::TxNextHop::V4(dst));
         if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
         Ok(())
     }
 
     /// Forward one IPv4 packet after PRE_ROUTING has accepted it. # C: O(N routes + len)
     pub(crate) fn forward_ipv4(&self, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        let net_ns = self.ifaces.namespace(ingress).ok_or(NetError::Enodev)?;
+        self.forward_ipv4_in(net_ns, ingress, l3)
+    }
+
+    /// Forward one IPv4 packet within the ingress namespace. # C: O(N routes + len)
+    pub(crate) fn forward_ipv4_in(&self, net_ns: u64, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
         if !crate::forwarding::ipv4_enabled() { return Ok(()); }
         if l3.len() < IPV4_HDR_LEN { return Ok(()); }
         let src = Ipv4Addr::from_u32(u32::from_be_bytes([l3[12], l3[13], l3[14], l3[15]]));
         let dst = Ipv4Addr::from_u32(u32::from_be_bytes([l3[16], l3[17], l3[18], l3[19]]));
-        let error_src = self.ipv4_iface_addr(ingress).unwrap_or(dst);
+        let error_src = self.ipv4_iface_addr(net_ns, ingress).unwrap_or(dst);
         if l3[8] <= 1 {
             return self.send_ipv4_forward_error(
                 ingress, error_src, src, icmp::ICMP_TYPE_TIME_EXC, time_exceeded_code::TTL, l3,
             );
         }
-        let route = match self.routes.lookup(dst) {
-            Some(r) => r,
-            None => {
+        let route = match self.routes.lookup_result_in(net_ns, dst) {
+            Ok(route) => route,
+            Err(NetError::Einval) => return Ok(()),
+            Err(NetError::Ehostunreach) => {
+                return self.send_ipv4_forward_error(
+                    ingress, error_src, src, icmp::ICMP_TYPE_DEST_UNREACH, unreach_code::HOST, l3,
+                );
+            }
+            Err(NetError::Eacces) => {
+                return self.send_ipv4_forward_error(
+                    ingress, error_src, src, icmp::ICMP_TYPE_DEST_UNREACH,
+                    ICMP_DEST_UNREACH_ADMIN_PROHIBITED, l3,
+                );
+            }
+            Err(NetError::Enetunreach) => {
                 return self.send_ipv4_forward_error(
                     ingress, error_src, src, icmp::ICMP_TYPE_DEST_UNREACH, unreach_code::NET, l3,
                 );
             }
+            Err(error) => return Err(error),
         };
-        let dev = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?;
+        let dev = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         let total = u16::from_be_bytes([l3[2], l3[3]]) as usize;
         if total < IPV4_HDR_LEN || total > l3.len() { return Err(NetError::Einval); }
         let mut p = Pkt::with_capacity(crate::pkt::DEFAULT_HEADROOM, crate::pkt::DEFAULT_HEADROOM + total);
@@ -92,6 +120,7 @@ impl NetStack {
         }
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(route.iface);
+        p.next_hop = Some(crate::pkt::TxNextHop::V4(route.gateway.unwrap_or(dst)));
         if nf_hook_eval(NF_INET_FORWARD, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
         if nf_hook_eval(NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
         dev.xmit(p)

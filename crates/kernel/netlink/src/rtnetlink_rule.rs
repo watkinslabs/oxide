@@ -107,7 +107,7 @@ fn parse_rule_attrs(attrs: &[u8]) -> (Option<u32>, Option<u32>) {
     (priority, table)
 }
 
-fn parse_rule(full_msg: &[u8]) -> Option<(RuleRow, Option<u32>)> {
+fn parse_rule(net_ns: u64, full_msg: &[u8]) -> Option<(RuleRow, Option<u32>)> {
     let off = Nlmsghdr::SIZE;
     if full_msg.len() < off + FibRuleHdr::SIZE { return None; }
     let family = match full_msg[off] {
@@ -118,7 +118,7 @@ fn parse_rule(full_msg: &[u8]) -> Option<(RuleRow, Option<u32>)> {
     let (priority, attr_table) = parse_rule_attrs(attrs);
     let table = attr_table.unwrap_or(full_msg[off + 4] as u32);
     Some((RuleRow {
-        ns: net::netdev::current_net_ns(),
+        ns: net_ns,
         family,
         dst_len: full_msg[off + 1],
         src_len: full_msg[off + 2],
@@ -133,13 +133,17 @@ fn parse_rule(full_msg: &[u8]) -> Option<(RuleRow, Option<u32>)> {
 /// RTM_GETRULE dump of built-in plus custom IPv4/IPv6 policy rules.
 /// # C: O(N rules)
 pub fn handle_getrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    handle_getrule_in(net::netdev::current_net_ns(), req, full_msg)
+}
+
+/// Dump rules from the namespace captured by the netlink socket. # C: O(N rules)
+pub fn handle_getrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let family = match full_msg.get(Nlmsghdr::SIZE).copied().unwrap_or(AF_INET) {
         AF_INET6 => AF_INET6,
         _ => AF_INET,
     };
     let mut reply: Vec<u8> = Vec::with_capacity(128);
-    let ns = net::netdev::current_net_ns();
-    for row in policy_rule::snapshot_effective(ns, family) {
+    for row in policy_rule::snapshot_effective(net_ns, family) {
         reply.extend_from_slice(&build_newrule_reply(req.nlmsg_seq, req.nlmsg_pid, row, true));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
@@ -148,11 +152,20 @@ pub fn handle_getrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 
 /// RTM_NEWRULE creates or replaces a custom policy rule. # C: O(N rules + attrs)
 pub fn handle_newrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
-    let (mut row, explicit_priority) = match parse_rule(full_msg) {
+    handle_newrule_in(net::netdev::current_net_ns(), req, full_msg)
+}
+
+/// Create a rule in the namespace captured by the netlink socket. # C: O(N)
+pub fn handle_newrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let (mut row, explicit_priority) = match parse_rule(net_ns, full_msg) {
         Some(v) => v,
         None => return crate::rtnetlink::nlmsg_ack_pub(req, -22),
     };
     if row.table == 0 { return crate::rtnetlink::nlmsg_ack_pub(req, -22); }
+    if row.dst_len != 0 || row.src_len != 0 || row.tos != 0 || row.flags != 0
+        || row.action != FR_ACT_TO_TBL {
+        return crate::rtnetlink::nlmsg_ack_pub(req, -95);
+    }
     if explicit_priority.is_none() { row.priority = policy_rule::next_priority(row.ns, row.family); }
     let exists = policy_rule::exists(row);
     if exists && (req.nlmsg_flags & flags::NLM_F_EXCL) != 0 {
@@ -167,7 +180,12 @@ pub fn handle_newrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 
 /// RTM_DELRULE removes custom policy rules. # C: O(N rules + attrs)
 pub fn handle_delrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
-    let (row, explicit_priority) = match parse_rule(full_msg) {
+    handle_delrule_in(net::netdev::current_net_ns(), req, full_msg)
+}
+
+/// Delete a rule in the namespace captured by the netlink socket. # C: O(N)
+pub fn handle_delrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let (row, explicit_priority) = match parse_rule(net_ns, full_msg) {
         Some(v) => v,
         None => return crate::rtnetlink::nlmsg_ack_pub(req, -22),
     };
@@ -300,5 +318,27 @@ mod tests {
         hdr.nlmsg_flags |= flags::NLM_F_EXCL;
         assert_eq!(ack_errno(&handle_newrule(&hdr, &msg)), -17);
         assert_eq!(policy_rule::remove(0, AF_INET6, Some(22345), Some(200)), 1);
+    }
+
+    #[test]
+    fn explicit_handlers_keep_rules_in_socket_namespace() {
+        const NS: u64 = 9232;
+        let (new_hdr, new_msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 24321, 1200);
+        assert_eq!(ack_errno(&handle_newrule_in(NS, &new_hdr, &new_msg)), 0);
+        assert!(policy_rule::snapshot_custom_ns(NS).iter().any(|row|
+            row.priority == 24321 && row.table == 1200));
+        assert!(!policy_rule::snapshot_custom_ns(0).iter().any(|row|
+            row.priority == 24321 && row.table == 1200));
+        let (del_hdr, del_msg) = rule_req(crate::rtnetlink::RTM_DELRULE, AF_INET, 24321, 1200);
+        assert_eq!(ack_errno(&handle_delrule_in(NS, &del_hdr, &del_msg)), 0);
+    }
+
+    #[test]
+    fn unsupported_rule_selectors_are_rejected_not_published() {
+        const NS: u64 = 9235;
+        let (hdr, mut msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 25321, 1300);
+        msg[Nlmsghdr::SIZE + 1] = 24;
+        assert_eq!(ack_errno(&handle_newrule_in(NS, &hdr, &msg)), -95);
+        assert!(!policy_rule::snapshot_custom_ns(NS).iter().any(|row| row.priority == 25321));
     }
 }

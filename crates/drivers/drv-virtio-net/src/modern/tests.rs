@@ -334,20 +334,38 @@ use core::sync::atomic::Ordering;
         rt1.arp.insert(dst, mac1);
         rt2.arp.insert(dst, mac2);
 
-        let mut body = [0u8; 20];
-        body[16..20].copy_from_slice(&dst.octets());
         assert_eq!(
-            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV4, &body),
+            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1], net::pkt::TxNextHop::V4(dst)),
             Some(mac1)
         );
         assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::pkt::TxNextHop::V4(dst)),
             Some(mac2)
         );
         let _ = remove_net_runtime(key(1));
         assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV4, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::pkt::TxNextHop::V4(dst)),
             Some(mac2)
+        );
+        clear_test_state();
+    }
+
+    #[test]
+    fn neighbor_resolution_uses_carried_gateway_not_ip_destination() {
+        let _guard = TEST_STATE_LOCK.lock();
+        clear_test_state();
+        let runtime = ensure_net_runtime(key(1));
+        let dst = net::Ipv4Addr::new(203, 0, 113, 9);
+        let gateway = net::Ipv4Addr::new(10, 0, 0, 1);
+        let dst_mac = net::MacAddr([3, 3, 3, 3, 3, 3]);
+        let gateway_mac = net::MacAddr([4, 4, 4, 4, 4, 4]);
+        runtime.arp.insert(dst, dst_mac);
+        runtime.arp.insert(gateway, gateway_mac);
+
+        assert_eq!(
+            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
+                net::pkt::TxNextHop::V4(gateway)),
+            Some(gateway_mac),
         );
         clear_test_state();
     }
@@ -365,19 +383,20 @@ use core::sync::atomic::Ordering;
         rt1.ndp.insert(dst, mac1);
         rt2.ndp.insert(dst, mac2);
 
-        let mut body = [0u8; net::ipv6::IPV6_HDR_LEN];
-        net::ipv6::Ipv6Hdr::build(src, dst, net::IpProto::Udp, 0).write_to(&mut body);
         assert_eq!(
-            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1], net::eth_p::IPV6, &body),
+            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
+                net::pkt::TxNextHop::V6 { addr: dst, src }),
             Some(mac1)
         );
         assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2],
+                net::pkt::TxNextHop::V6 { addr: dst, src }),
             Some(mac2)
         );
         let _ = remove_net_runtime(key(1));
         assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::eth_p::IPV6, &body),
+            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2],
+                net::pkt::TxNextHop::V6 { addr: dst, src }),
             Some(mac2)
         );
         clear_test_state();

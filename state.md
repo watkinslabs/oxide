@@ -1,85 +1,43 @@
-# state - B810 mountfix handoff
+# state - B825 network namespace routes
 
-Update: 2026-07-13.
+Update: 2026-07-14.
 
 ## Current tree
 
-- Checkout: `/home/nd/oxide/kernel`
-- Branch: `B810-mountinfo-namespace-visibility`
-- Base: `08a55c5f` (`main`/locally cached `origin/main`, PR #3068)
-- Status: quota is merged; B810 implementation is committed, the ARM tmpfiles blocker is fixed, and final lockstep smoke/push/PR remains.
-- History audit: old `quota-complete-20260712` tip is fully contained by current main; no quota commit was lost.
+- Worktree: `/home/nd/oxide-wt/B825-network-netns-route-tables`
+- Branch: `B825-network-netns-route-tables`
+- Base: `62b47845` (`origin/main`, merged B824)
+- Published branch tip: `7db08041` claim commit; implementation remains uncommitted pending final audit and lockstep verification.
+- Quota and B810 mount work are already contained by merged main; B825 did not start from stale main.
 
-## B810 completed work
+## B825 implemented
 
-- `/proc/self/{mounts,mountinfo}` is caller-namespace-relative with per-open snapshots; concrete `/proc/<pid>` remains task-relative.
-- Mount generation wakes mountinfo poll subscribers; `statmount`/`listmount` use caller namespace state and validate base ABI shape.
-- Init mount namespace/root mount identity is pinned and preserved through absolute lookup.
-- Cgroup control truncation, task placement, stale pid rejection, and populated-tree rmdir behavior are Linux-shaped.
-- Reaped pidfd-pinned tasks are excluded from child, pid, process-group, and pidfd signal predicates; orphan repair reparents consistently.
-- AF_UNIX, packet, TCP, UDP, and netlink blocking receive uses object-specific wait sources.
-- AF_UNIX bound sockets remain reservations until `listen(2)`; dbus-broker now binds and starts normally.
-- Final socket-file release tears down AF_UNIX endpoints immediately, independent of inode lifetime; Varlink workers no longer wait their 15-second idle timeout before accepting the next request.
-- AF_UNIX readiness notifications carry the actual event mask, so inbound data cannot manufacture repeated edge-triggered `POLLOUT` events.
-- Ext4 initializes uninitialized block bitmaps correctly and truncate reads transaction-shadow extent nodes; ARM image regression fsck is clean.
-- Ext4 preserves Linux O_TMPFILE `st_nlink == 0`, propagates backend lookup errors through hardlink preflight, and keeps dirty batch metadata shadow-visible until journal/home writeback completes. Batch commit holds the transaction gate for its full lifetime, so readers never observe a partially committed metadata generation.
-- Every quick boot starts from a fresh packed root image; forced smoke termination can no longer poison later boots by reusing a dirty root disk.
-- AArch64 IRQ frames save/restore x19-x28 and all SVC-frame offsets have compile-time layout assertions.
-- AArch64 restores each incoming task's canonical SVC frame pointer; clone/exec use task-owned syscall frames.
-- Scheduler wake placement has exclusive Sleeping->Runnable ownership and handles wake-before-schedule current tasks without deferred duplicate placement.
-- Fatal user faults converge through canonical group exit/zombie publication; PID1 child cleanup no longer waits for cgroup timeout.
-- signalfd uses the caller task's signal source; child zombie publication precedes SIGCHLD/signalfd wake.
-- epoll uses Linux-style interest/ready lists, exact per-epitem source callbacks, ET/LT/ONESHOT behavior, nested-cycle rejection, and weak watched-file backlinks released at final fput.
-- poll/select use dynamic per-file sources and generation-checked prepare-to-sleep; the 20 ms correctness rescan is removed.
-- timerfd publishes its source and exact monotonic poll deadline; poll/select/epoll arm scheduler deadlines rather than periodic rescans.
-- Mount matrix rows 155/165/166/428-433/442/457/458/467 are honestly `PARTIAL`; stale ioctl quota wording is removed.
+- One canonical global `NetStack`; rtnetlink no longer owns a shadow route table.
+- IPv4/IPv6 routes, policy rules, interfaces, addresses, INET transport state, multicast state, fragments, diagnostics, procfs views, and notifications are network-namespace scoped.
+- Netlink route/link/address/rule operations and inet-diag use the socket-captured namespace; rtnetlink multicast is filtered by listener namespace.
+- `/proc/net/{dev,route,tcp,tcp6,udp,udp6,unix,arp,if_inet6,snmp}` captures an immutable namespace-relative snapshot at open.
+- IPv4 route lookup honors longest prefix, metric, weighted ECMP, exact next hop, terminal route errors, and `RTN_THROW` policy continuation.
+- Virtio-net consumes the route-selected IPv4/IPv6 next hop instead of performing a second FIB lookup.
+- `RTM_NEWROUTE` implements atomic create/exclusive/replace/append groups, strict route parsing, weighted multipath, terminal route types, and namespace-owned output-interface validation; `RTM_DELROUTE` supports selector deletion without mandatory OIF.
+- SIOC route mutation validates Linux `rtentry`, resolves devices in the socket namespace, uses canonical route mutation, and reports collision/miss errors. SIOC mutation requires owner-user-namespace `CAP_NET_ADMIN` and a supported socket fd.
+- Combined `CLONE_NEWUSER|CLONE_NEWNET` establishes the user namespace before recording network-namespace ownership.
+- Namespace cleanup primitives remove interfaces, addresses, FIB/rules, neighbors, multicast, fragments, and INET transport state.
 
-## Latest verification
+## Verification
 
 Passed:
 
-```
-RUSTFLAGS='-Awarnings' cargo test -q -p fs --test sys_epoll_file_identity -- --test-threads=1  # 9/9
-RUSTFLAGS='-Awarnings' cargo test -q -p sched -- --test-threads=1                              # 134/134
-RUSTFLAGS='-Awarnings' cargo test -q -p hal-aarch64 --lib -- --test-threads=1                  # 46/46
-RUSTFLAGS='-Awarnings' cargo test -q -p vfs --test mount_proc_domainname_namespace -- --test-threads=1 # 5/5
-RUSTFLAGS='-Awarnings' cargo test -q -p syscalls --test mount_api_namespace_hosted -- --test-threads=1 # 3/3
-RUSTFLAGS='-Awarnings' cargo check -q -p pmm -p sched -p fs -p kmain --target targets/aarch64-unknown-oxide-kernel.json -Zjson-target-spec -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem --features kmain/debug-boot
-RUSTFLAGS='-Awarnings' cargo check -q -p pmm -p sched -p fs -p kmain --target targets/x86_64-unknown-oxide-kernel.json -Zjson-target-spec -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem --features kmain/debug-boot
-RUSTFLAGS='-Awarnings' cargo test -q -p ext4 --test batch_commit_serialization_image -- --test-threads=1 # 1/1
-RUSTFLAGS='-Awarnings' cargo test -q -p ext4 --lib -- --test-threads=1                              # 100/100
-RUSTFLAGS='-Awarnings' cargo test -q -p ext4 --test rename_overwrite_image -- --test-threads=1      # 8/8
-RUSTFLAGS='-Awarnings' cargo test -q -p net --lib -- --test-threads=1                               # 265/265
-OXIDE_EXT4_REAL_ROOT_IMG=/home/nd/oxide/images/out/gnome-x86_64-root.img RUSTFLAGS='-Awarnings' cargo test -q -p ext4 --test real_rootfs_mkdir_repro real_hwdb_tmpfile_publish -- --ignored --exact --test-threads=1 # 1/1
-SMOKE_KEEP_LOG_DIR=target/B810-final-shadow-x86 OXIDE_SMOKE_ATTEMPTS=1 ./tools/boot-smoke.sh x86 180 # basic.target in 83s; hwdb + dbus passed
-OXIDE_QUICKBOOT_PROFILE=gnome OXIDE_SMOKE_ATTEMPTS=1 ./tools/boot-smoke.sh x86 180 # final basic.target in 70s
-OXIDE_QUICKBOOT_PROFILE=gnome OXIDE_SMOKE_ATTEMPTS=1 ./tools/boot-smoke.sh arm # final basic.target in 74s; stock 600s default
-e2fsck -fn /home/nd/oxide/images/out/gnome-x86_64-root.img     # clean
-e2fsck -fn /home/nd/oxide/images/out/lite-aarch64-root.img    # clean
+```text
+RUSTFLAGS='-Awarnings' cargo test -q -p net -p netlink -p procfs -p nscg -p syscalls -- --test-threads=1
+net 423; netlink 59; nscg 10; procfs 44; all syscalls test binaries passed
+RUSTFLAGS='-Awarnings' cargo check -q -p net -p netlink -p procfs -p nscg -p syscalls
+git diff --check
 ```
 
-ARM GNOME artifact: `/home/nd/oxide/images/out/gnome-aarch64-root.img` was built with `./build.sh rootfs gnome aarch64`. The prior delay was not slow TCG or a stretched scheduler deadline: final fd close did not release the AF_UNIX endpoint, so each `systemd-userwork` process waited its 15-second Varlink connection idle timeout before accepting queued work. Moving endpoint teardown to final `File` release and using mask-specific AF_UNIX notifications made the early tmpfiles marker pass in 68 seconds with the stock one-attempt harness and no timeout extension.
+Final dual-target builds and x86/ARM smoke remain before push.
 
-Known unrelated hosted failure:
+## Honest follow-up
 
-```
-RUSTFLAGS='-Awarnings' cargo test -q -p vfs --lib tests_d4b::t1b_idmap_chown_in
-# existing notify_change/idmap test returns Einval
-```
-
-## Final gate
-
-1. Commit every intentional tracked/untracked file on B810.
-2. Push, open PR, merge, and update main.
-
-## Follow-up mount compliance
-
-- `pivot_root`: lookup errno/order/directory checks and direct ABI coverage.
-- `mount`/`umount2`: fresh mount flags, unsupported-fs false success, recursive/remount combinations, MNT_EXPIRE two-pass, MNT_FORCE.
-- New mount API: complete flags, dirfd/empty-path, binary/FD fsconfig parameters, namespace permissions, idmap/propagation, detached recursion.
-- `statmount`/`listmount`: requested masks, BY_FD/ns modes, topology-derived ancestry/cursor semantics.
-- `open_tree_attr`: apply requested attributes rather than validation-only delegation.
-
-## Separate known bug
-
-- `ext4::e2fsck_image::htree_leaf_split_stays_e2fsck_clean` overcounts inode `i_blocks` after extent insertion/merge.
+- Network namespace lifetime is not complete: tasks, every socket family, netlink sockets, and namespace fds still carry raw namespace ids rather than one refcounted canonical `NetNamespace`. Production cannot trigger cleanup exactly at the final owner drop. This requires the next fresh architecture branch, not an id scan or task-table heuristic.
+- SIOC mutable MTU, hardware address, broadcast address, and transmit queue state remain unsupported rather than false-success; raw `rtentry` user reads still need migration to the shared fault-recoverable ABI import path.
+- Existing syscall-matrix row-specific ABI, security-hook, protocol-family, and differential gaps remain `PARTIAL`.
