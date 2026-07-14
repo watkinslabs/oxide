@@ -119,10 +119,12 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         if family == AF_INET6 {
             if let Err(e) = require_sockaddr_in6(copied_len) { return e; }
             if sock_fam != AF_INET6 { return -(Errno::Eafnosupport.as_i32() as i64); }
-            if let Some((_, port, bytes, _)) = read_sockaddr_in6(addr_p) {
+            if let Some((_, port, bytes, scope_id)) = read_sockaddr_in6(addr_p) {
                 let v4_mapped = ipv4_from_v6_mapped(&bytes).is_some();
                 if !v4_mapped {
-                    return match net::sock::connect(&sock, net::sock::RemoteAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }, file_is_nonblock(fd)) {
+                    return match net::sock::connect(&sock, net::sock::RemoteAddr::Inet6 {
+                        ip: net::Ipv6Addr(bytes), port, scope_id,
+                    }, file_is_nonblock(fd)) {
                         Ok(()) => 0,
                         Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
                         Err(e) => errno_from_neterr(e),

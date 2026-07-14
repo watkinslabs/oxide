@@ -10,7 +10,7 @@ pub enum BoundAddr {
     /// `bind` on an AF_INET socket — UDP-style port reservation.
     Inet { ip: Ipv4Addr, port: u16 },
     /// F180a: `bind` on an AF_INET6 socket — IPv6 UDP port slot.
-    Inet6 { ip: crate::Ipv6Addr, port: u16 },
+    Inet6 { ip: crate::Ipv6Addr, port: u16, scope_id: u32 },
 }
 
 /// Bind a socket to a typed address per `bind(2)`.
@@ -77,14 +77,14 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             }
             super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port)
         }
-        BoundAddr::Inet6 { ip, port } => {
+        BoundAddr::Inet6 { ip, port, scope_id } => {
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {
                 let mut local_port = sock.local_port.lock();
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
                 if local_port.is_some() || sock.udp6.lock().is_some() { return Err(NetError::Einval); }
-                let iface = bound_iface(sock)?;
+                let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp6(sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
                                          ip, sock.error.clone(), iface,
@@ -124,7 +124,7 @@ pub enum RemoteAddr {
     /// `connect`/`sendto` on AF_INET — IPv4 destination.
     Inet { ip: Ipv4Addr, port: u16 },
     /// F180b: `connect`/`sendto` on AF_INET6 — IPv6 destination.
-    Inet6 { ip: crate::Ipv6Addr, port: u16 },
+    Inet6 { ip: crate::Ipv6Addr, port: u16, scope_id: u32 },
 }
 
 /// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
@@ -152,6 +152,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                 Disc::Udp => {
                     *sock.peer.lock() = None;
                     *sock.peer6.lock() = None;
+                    sock.peer6_scope.store(0, core::sync::atomic::Ordering::Release);
                     Ok(())
                 }
                 Disc::UnixDgram(q) => {
@@ -163,6 +164,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                     *sock.peer.lock() = None;
                     *sock.peer6.lock() = None;
+                    sock.peer6_scope.store(0, core::sync::atomic::Ordering::Release);
                     *sock.kind.lock() = SockKind::TcpInit;
                     Ok(())
                 }
@@ -196,7 +198,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
             }
             super::tcp_lifecycle::connect_tcp4(sock, dst_ip, port, nonblock)
         }
-        RemoteAddr::Inet6 { ip, port } => crate::sock_v6::connect_v6(sock, ip, port, nonblock),
+        RemoteAddr::Inet6 { ip, port, scope_id } =>
+            crate::sock_v6::connect_v6(sock, ip, port, scope_id, nonblock),
     }
 }
 
@@ -373,12 +376,13 @@ pub fn sendto(
         return Ok(n);
     }
     // UDP/other: dest or stored peer.
-    if let Some(RemoteAddr::Inet6 { ip, port }) = dest {
-        return crate::sock_v6::sendto_v6(sock, ip, port, payload);
+    if let Some(RemoteAddr::Inet6 { ip, port, scope_id }) = dest {
+        return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);
     }
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
         let (ip, port) = sock.peer6.lock().ok_or(NetError::Edestaddrreq)?;
-        return crate::sock_v6::sendto_v6(sock, ip, port, payload);
+        let scope_id = sock.peer6_scope.load(core::sync::atomic::Ordering::Acquire);
+        return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);
     }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),

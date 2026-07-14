@@ -29,7 +29,8 @@ fn parse_dest(sock: &net::sock::InetSocket, name: &[u8]) -> Result<Option<Remote
             if name.len() < 28 { return Err(err(Errno::Einval)); }
             let port = u16::from_be_bytes(name[2..4].try_into().unwrap());
             let mut ip = [0u8; 16]; ip.copy_from_slice(&name[8..24]);
-            Ok(Some(RemoteAddr::Inet6 { ip: net::Ipv6Addr(ip), port }))
+            let scope_id = u32::from_ne_bytes(name[24..28].try_into().unwrap());
+            Ok(Some(RemoteAddr::Inet6 { ip: net::Ipv6Addr(ip), port, scope_id }))
         }
         _ => Err(err(Errno::Eafnosupport)),
     }

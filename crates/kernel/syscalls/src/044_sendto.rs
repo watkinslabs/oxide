@@ -31,7 +31,9 @@ pub(crate) fn parse_send_dest(sock: &net::sock::InetSocket, dest_p: u64, dest_le
     if fam == AF_INET6 as u16 {
         require_sockaddr_in6(len)?;
         return match read_sockaddr_in6(dest_p) {
-            Some((_fam, port, bytes, _scope)) => Ok((Some(net::sock::RemoteAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }), len)),
+            Some((_fam, port, bytes, scope_id)) => Ok((Some(net::sock::RemoteAddr::Inet6 {
+                ip: net::Ipv6Addr(bytes), port, scope_id,
+            }), len)),
             None => Err(-(Errno::Efault.as_i32() as i64)),
         };
     }
