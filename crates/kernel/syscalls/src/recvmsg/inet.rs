@@ -3,15 +3,14 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use net::sock::{InetSocket, Received, SockKind};
-use net::uapi::{MSG_CTRUNC, MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
+use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
 use crate::net_common::{errno_from_neterr, file_is_nonblock};
 use crate::net_sockaddr::{encoded_sockaddr_for_socket, encoded_sockaddr_in6_peer};
 use crate::recv_user::RecvUser;
+use crate::recv_control::Control;
 
-const CMSG_HDR: usize = 16;
-const CMSG_ALIGN: usize = 8;
 const IPPROTO_IP: i32 = 0;
 const IP_TTL: i32 = 2;
 const IP_PKTINFO: i32 = 8;
@@ -20,37 +19,6 @@ const IPV6_PKTINFO: i32 = 50;
 const IPV6_HOPLIMIT: i32 = 52;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
-fn aligned(n: usize) -> usize { (n + CMSG_ALIGN - 1) & !(CMSG_ALIGN - 1) }
-
-struct Control {
-    bytes: Vec<u8>,
-    flags: u32,
-    cap: usize,
-}
-
-impl Control {
-    fn new(cap: usize) -> Self { Self { bytes: Vec::new(), flags: 0, cap } }
-
-    fn push(&mut self, level: i32, ty: i32, data: &[u8]) {
-        let len = CMSG_HDR + data.len();
-        let space = aligned(len);
-        let remaining = self.cap.saturating_sub(self.bytes.len());
-        if remaining < CMSG_HDR {
-            self.flags |= MSG_CTRUNC as u32;
-            return;
-        }
-        let at = self.bytes.len();
-        let write = core::cmp::min(space, remaining);
-        if write < space { self.flags |= MSG_CTRUNC as u32; }
-        self.bytes.resize(at + write, 0);
-        self.bytes[at..at + 8].copy_from_slice(&(len as u64).to_ne_bytes());
-        self.bytes[at + 8..at + 12].copy_from_slice(&level.to_ne_bytes());
-        self.bytes[at + 12..at + 16].copy_from_slice(&ty.to_ne_bytes());
-        let data_len = core::cmp::min(data.len(), write - CMSG_HDR);
-        self.bytes[at + CMSG_HDR..at + CMSG_HDR + data_len].copy_from_slice(&data[..data_len]);
-    }
-}
-
 fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
     let mut out = Control::new(cap);
     if sock.opts.ip_pktinfo.load(Ordering::Acquire) != 0 {
@@ -80,7 +48,7 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
 }
 
 fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), i64> {
-    if user.name == 0 { return user.write_namelen(0); }
+    if user.name == 0 { return Ok(()); }
     let mut sa = [0u8; 20];
     sa[0..2].copy_from_slice(&17u16.to_ne_bytes());
     sa[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
@@ -90,13 +58,13 @@ fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), 
     sa[11] = meta.halen;
     sa[12..20].copy_from_slice(&meta.addr);
     let take = core::cmp::min(user.namelen as usize, sa.len());
-    uaccess::copy_to_user(user.name, &sa[..take]).map_err(|_| err(Errno::Efault))?;
-    user.write_namelen(sa.len() as u32)
+    user.write_namelen(sa.len() as u32)?;
+    uaccess::copy_to_user(user.name, &sa[..take]).map_err(|_| err(Errno::Efault))
 }
 
 fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i64> {
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
-        return match rcv.packet { Some(meta) => copy_packet_name(user, meta), None => user.write_namelen(0) };
+        return match rcv.packet { Some(meta) => copy_packet_name(user, meta), None => user.copy_name(&[]) };
     }
     if let Some((ip, port)) = rcv.peer6 { return user.copy_name(encoded_sockaddr_in6_peer(ip, port).as_bytes()); }
     if let Some((ip, port)) = rcv.peer { return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes()); }
@@ -104,7 +72,7 @@ fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i
         let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
         return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes());
     }
-    user.write_namelen(0)
+    user.copy_name(&[])
 }
 
 fn receive(fd: u64, sock: &Arc<InetSocket>, len: usize, flags: u64) -> Result<Received, i64> {
@@ -169,16 +137,16 @@ pub(crate) fn recv(fd: u64, sock: &Arc<InetSocket>, user: &RecvUser, flags: u64)
             payload: Vec::new(), full_len: copied, peer: None, peer6: None,
             pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None,
         }) { return e; }
-        if let Err(e) = user.finish(0, 0) { return e; }
+        if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
         return copied as i64;
     }
     let rcv = match receive(fd, sock, user.capacity, flags) { Ok(rcv) => rcv, Err(e) => return e };
     let copied = match user.copy_payload(&rcv.payload) { Ok(n) => n, Err(e) => return e };
+    let mut ctrl = control(sock, &rcv, if user.control == 0 { 0 } else { user.controllen });
+    let ctrl_len = ctrl.copy_to(user);
     if let Err(e) = copy_name(user, sock, &rcv) { return e; }
-    let ctrl = control(sock, &rcv, user.controllen);
-    if !ctrl.bytes.is_empty() && uaccess::copy_to_user(user.control, &ctrl.bytes).is_err() { return err(Errno::Efault); }
-    let mut out_flags = ctrl.flags;
+    let mut out_flags = ctrl.flags | crate::recv_control::output_flags(flags);
     if rcv.full_len > copied { out_flags |= MSG_TRUNC as u32; }
-    if let Err(e) = user.finish(ctrl.bytes.len(), out_flags) { return e; }
+    if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
     if flags & MSG_TRUNC != 0 { rcv.full_len as i64 } else { copied as i64 }
 }

@@ -16,6 +16,8 @@ mod fd_pair;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod recv_user;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod recv_control;
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod send_user;
 
 

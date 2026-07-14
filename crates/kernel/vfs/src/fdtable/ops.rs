@@ -37,6 +37,18 @@ impl FdTable {
         let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
         self.inner.lock().reserve_fd_below(0, max, cloexec)
     }
+    /// Reserve, copy out, then publish one received file descriptor. # C: O(fd-table words + copyout)
+    pub fn scm_install_fd<F>(&self, file: Arc<File>, flags: OpenFlags, limit: usize, copyout: F) -> KResult<i32>
+    where F: FnOnce(i32) -> KResult<()> {
+        let fd = self.get_unused_fd_flags(flags, limit)?;
+        if let Err(e) = copyout(fd) {
+            self.put_unused_fd(fd);
+            return Err(e);
+        }
+        crate::file::fire_clone_hook(&file);
+        self.fd_install(fd, file);
+        Ok(fd)
+    }
     pub fn fd_install(&self, fd: i32, file: Arc<File>) {
         hal::kassert!(fd >= 0, "fd_install: fd from get_unused_fd_flags is never negative");
         let i = fd as usize;
@@ -49,7 +61,7 @@ impl FdTable {
         if fd < 0 { return; }
         let i = fd as usize;
         let mut g = self.inner.lock();
-        if g.is_open(i) {
+        if g.is_open(i) && g.files.get(i).is_some_and(|slot| slot.is_none()) {
             g.set_open(i, false);
             g.set_cloexec_bit(i, false);
         }

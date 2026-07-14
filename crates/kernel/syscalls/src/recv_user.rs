@@ -98,17 +98,17 @@ impl RecvUser {
 
     /// Copy a source sockaddr using imported msg_namelen and publish its true length. # C: O(bytes + faults)
     pub fn copy_name(&self, sa: &[u8]) -> Result<(), i64> {
-        if self.name == 0 { return self.write_namelen(0); }
+        if self.name == 0 { return Ok(()); }
         let take = core::cmp::min(self.namelen as usize, sa.len());
-        uaccess::copy_to_user(self.name, &sa[..take]).map_err(errno)?;
-        self.write_namelen(sa.len() as u32)
+        self.write_namelen(sa.len() as u32)?;
+        uaccess::copy_to_user(self.name, &sa[..take]).map_err(errno)
     }
 
     /// Publish output controllen and flags after payload/address/ancillary handling. # C: O(faults)
     pub fn finish(&self, controllen: usize, flags: u32) -> Result<(), i64> {
         if self.msgp == 0 { return Ok(()); }
-        uaccess::copy_to_user(self.msgp + 40, &(controllen as u64).to_ne_bytes()).map_err(errno)?;
-        uaccess::copy_to_user(self.msgp + 48, &flags.to_ne_bytes()).map_err(errno)
+        uaccess::copy_to_user(self.msgp + 48, &flags.to_ne_bytes()).map_err(errno)?;
+        uaccess::copy_to_user(self.msgp + 40, &(controllen as u64).to_ne_bytes()).map_err(errno)
     }
 
     /// Publish the true source address length. # C: O(faults)
@@ -163,5 +163,15 @@ mod tests {
     fn rejects_iov_count_with_linux_emsgsize() {
         let h = hdr(0, (UIO_MAXIOV + 1) as u64);
         assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Emsgsize)));
+    }
+
+    #[test]
+    fn null_name_leaves_namelen_untouched() {
+        let mut h = [0u8; MSGHDR_LEN];
+        h[8..12].copy_from_slice(&77u32.to_ne_bytes());
+        let user = RecvUser { msgp: h.as_mut_ptr() as u64, name: 0, namelen: 77,
+            control: 0, controllen: 0, iov: Vec::new(), capacity: 0 };
+        assert_eq!(user.copy_name(b"ignored"), Ok(()));
+        assert_eq!(u32_at(&h, 8), 77);
     }
 }

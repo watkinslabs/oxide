@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
-use super::{UnixEnd, UnixPair};
-use super::GcRights;
+use super::UnixPair;
+use super::super::{GcRights, UnixEnd};
 use vfs;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -81,8 +81,8 @@ impl UnixPair {
         #[cfg(target_os = "oxide-kernel")]
         {
             self.reader_waiters(end).wake_all();
-            super::wake_peer_subs(self, end.other(), vfs::POLL_IN | vfs::POLL_RDHUP);
-            super::wake_peer_subs(self, end, vfs::POLL_OUT);
+            super::super::wake_peer_subs(self, end.other(), vfs::POLL_IN | vfs::POLL_RDHUP);
+            super::super::wake_peer_subs(self, end, vfs::POLL_OUT);
         }
     }
 
@@ -94,7 +94,7 @@ impl UnixPair {
         #[cfg(target_os = "oxide-kernel")]
         {
             self.reader_waiters(end.other()).wake_all();
-            super::wake_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_RDHUP);
+            super::super::wake_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_RDHUP);
         }
     }
 
@@ -128,7 +128,7 @@ impl UnixPair {
             self.reader_waiters(end.other()).wake_all();
             let mut mask = vfs::POLL_IN | vfs::POLL_HUP | vfs::POLL_RDHUP;
             if unread { mask |= vfs::POLL_ERR; }
-            super::wake_peer_subs(self, end, mask);
+            super::super::wake_peer_subs(self, end, mask);
         }
     }
 
@@ -183,7 +183,7 @@ impl UnixPair {
         #[cfg(target_os = "oxide-kernel")]
         {
             self.a_to_b_waiters.wake_all();
-            super::wake_peer_subs(self, UnixEnd::A,
+            super::super::wake_peer_subs(self, UnixEnd::A,
                 vfs::POLL_IN | vfs::POLL_ERR | vfs::POLL_HUP | vfs::POLL_RDHUP);
         }
     }
