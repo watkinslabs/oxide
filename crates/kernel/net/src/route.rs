@@ -124,6 +124,12 @@ impl RouteTable {
         }
     }
 
+    /// Guarded replacement by canonical route key. # Lk: matching stack RTNL held. # C: O(N)
+    pub fn replace_record_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+        record: RouteRecord) {
+        if core::ptr::eq(self, &rtnl.stack().routes) { self.replace_record_in(net_ns, record); }
+    }
+
     fn lookup_record_in_table_locked(g: &[RouteRecord], table: u32, addr: Ipv4Addr) -> Option<RouteRecord> {
         let mut best_prefix: Option<u8> = None;
         let mut best_metric: Option<u32> = None;
@@ -248,6 +254,13 @@ impl RouteTable {
         removed
     }
 
+    /// Guarded matching-route removal. # Lk: matching stack RTNL held. # C: O(N)
+    pub fn remove_matching_rtnl<F: FnMut(&RouteEntry) -> bool>(&self,
+        rtnl: &crate::RtnlGuard<'_>, net_ns: u64, matches: F) -> usize {
+        if !core::ptr::eq(self, &rtnl.stack().routes) { return 0; }
+        self.remove_matching_in(net_ns, matches)
+    }
+
     /// Remove canonical records matching `f` atomically. # C: O(N)
     pub fn remove_records_in<F: FnMut(&RouteRecord) -> bool>(&self, net_ns: u64, mut matches: F) -> usize {
         self.take_records_in(net_ns, |record| matches(record)).len()
@@ -285,6 +298,13 @@ impl RouteTable {
         removed
     }
 
+    /// Guarded lowest-metric alias-group removal. # Lk: matching stack RTNL held. # C: O(N)
+    pub fn take_lowest_metric_group_rtnl<F: FnMut(&RouteRecord) -> bool>(&self,
+        rtnl: &crate::RtnlGuard<'_>, net_ns: u64, matches: F) -> Vec<RouteRecord> {
+        if !core::ptr::eq(self, &rtnl.stack().routes) { return Vec::new(); }
+        self.take_lowest_metric_group_in(net_ns, matches)
+    }
+
     /// Atomically replace one FIB alias group selected by table/prefix/metric. # C: O(N + records)
     pub fn replace_group_in(&self, net_ns: u64, records: &[RouteRecord], create: bool,
         exclusive: bool, replace: bool, append: bool) -> Result<(), RouteChangeError> {
@@ -318,10 +338,23 @@ impl RouteTable {
         Ok(())
     }
 
+    /// Guarded atomic FIB alias-group mutation. # Lk: matching stack RTNL held. # C: O(N + records)
+    pub fn replace_group_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+        records: &[RouteRecord], create: bool, exclusive: bool, replace: bool, append: bool)
+        -> Result<(), RouteChangeError> {
+        if !core::ptr::eq(self, &rtnl.stack().routes) { return Err(RouteChangeError::Invalid); }
+        self.replace_group_in(net_ns, records, create, exclusive, replace, append)
+    }
+
     /// Drop all routes owned by a destroyed namespace. # C: O(log N_ns)
     pub fn remove_namespace(&self, net_ns: u64) -> bool {
         if net_ns == 0 { return false; }
         self.inner.lock().remove(&net_ns).is_some()
+    }
+    /// Guarded namespace-route removal. # Lk: matching stack RTNL held. # C: O(log N_ns)
+    pub fn remove_namespace_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64) -> bool {
+        if !core::ptr::eq(self, &rtnl.stack().routes) { return false; }
+        self.remove_namespace(net_ns)
     }
 }
 

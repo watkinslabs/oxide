@@ -69,32 +69,30 @@ fn from_record(ns: u64, record: net::RouteRecord) -> RouteRow {
 }
 
 /// Apply one atomic route-group mutation. # C: O(N + rows)
-pub(crate) fn route_change(rows: &[RouteRow], create: bool, exclusive: bool,
+pub(crate) fn route_change(rtnl: &net::RtnlGuard<'_>, rows: &[RouteRow], create: bool, exclusive: bool,
     replace: bool, append: bool) -> Result<(), net::route::RouteChangeError> {
     let Some(first) = rows.first() else { return Err(net::route::RouteChangeError::Invalid); };
     if rows.iter().any(|row| row.ns != first.ns) {
         return Err(net::route::RouteChangeError::Invalid);
     }
     let records: Vec<net::RouteRecord> = rows.iter().copied().map(to_record).collect();
-    net::global_stack().routes.replace_group_in(first.ns, &records, create, exclusive, replace, append)
-}
-
-/// Remove and return canonical rows selected by `matches`. # C: O(N)
-pub(crate) fn route_take<F: FnMut(&net::RouteRecord) -> bool>(ns: u64, matches: F) -> Vec<RouteRow> {
-    net::global_stack().routes.take_records_in(ns, matches).into_iter()
-        .map(|record| from_record(ns, record)).collect()
+    net::global_stack().routes.replace_group_rtnl(rtnl, first.ns, &records,
+        create, exclusive, replace, append)
 }
 
 /// Remove the lowest-metric matching alias group. # C: O(N)
-pub(crate) fn route_take_lowest<F: FnMut(&net::RouteRecord) -> bool>(ns: u64, matches: F) -> Vec<RouteRow> {
-    net::global_stack().routes.take_lowest_metric_group_in(ns, matches).into_iter()
+pub(crate) fn route_take_lowest(rtnl: &net::RtnlGuard<'_>, ns: u64,
+    matches: impl FnMut(&net::RouteRecord) -> bool) -> Vec<RouteRow> {
+    net::global_stack().routes.take_lowest_metric_group_rtnl(rtnl, ns, matches).into_iter()
         .map(|record| from_record(ns, record)).collect()
 }
 
 /// Insert (or replace by key=`(ns, table, dst, oif)`).
 /// # C: O(N)
 pub fn route_insert(row: RouteRow) {
-    net::global_stack().routes.replace_record_in(row.ns, to_record(row));
+    let stack = net::global_stack();
+    let rtnl = stack.rtnl_lock();
+    stack.routes.replace_record_rtnl(&rtnl, row.ns, to_record(row));
 }
 
 /// Remove rows matching `(ns, table, dst, oif)`. Returns count removed.
@@ -104,7 +102,9 @@ pub fn route_remove(
 ) -> usize {
     let (dst, prefix_len) = super::route_ops::route_key(dst);
     let gateway = gateway.map(|g| net::Ipv4Addr::from_u32(u32::from_be_bytes(g)));
-    net::global_stack().routes.remove_matching_in(ns, |route| {
+    let stack = net::global_stack();
+    let rtnl = stack.rtnl_lock();
+    stack.routes.remove_matching_rtnl(&rtnl, ns, |route| {
         route.table == table && route.dst == dst && route.prefix_len == prefix_len
             && route.iface.raw() == oif
             && gateway.map(|expected| route.gateway == Some(expected)).unwrap_or(true)

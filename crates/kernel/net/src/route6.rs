@@ -108,6 +108,12 @@ impl Route6Table {
         if net_ns == 0 { return false; }
         self.inner.lock().remove(&net_ns).is_some()
     }
+
+    /// Guarded namespace-route removal. # Lk: matching stack RTNL held. # C: O(log N_ns)
+    pub fn remove_namespace_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64) -> bool {
+        if !core::ptr::eq(self, &rtnl.stack().routes6) { return false; }
+        self.remove_namespace(net_ns)
+    }
 }
 
 impl Default for Route6Table { fn default() -> Self { Self::new() } }
