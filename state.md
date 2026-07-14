@@ -9,6 +9,7 @@ Update: 2026-07-14.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
 - B834 uses the GNU aarch64 target for reproducible vDSO generation.
+- B835 strict per-architecture vDSO ABI validation is active.
 - N03 canonical network-namespace lifetime is the next network lane.
 
 ## Implemented
