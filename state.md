@@ -7,7 +7,8 @@ Update: 2026-07-14.
 - `main`: `71457583`, synchronized with `origin/main`.
 - N01-N02 and N03.1-N03.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
-- N03.8 lifecycle and teardown race proof is the next unclaimed lane.
+- N03.8 lifecycle and teardown race proof is active on
+  `B841-netns-lifecycle-race-proof`.
 
 ## Implemented
 
@@ -31,7 +32,7 @@ Update: 2026-07-14.
 
 ## Remaining network work
 
-- N03.8 lifecycle/teardown race proof.
+- B841 N03.8 lifecycle/teardown race proof, PR, merge, and closure.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 

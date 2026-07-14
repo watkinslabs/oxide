@@ -142,9 +142,10 @@ Merged network foundation:
     syscalls 53, softirq 6, namespace 3, Virtio net 19, and sysfs 48 pass;
     x86 and ARM target builds pass. Smoke reached `basic.target` on x86 in
     70s and ARM in 129s; ARM includes the final AP-ready publication barrier.
-  - [ ] N03.8 prove final-drop, pidfd, nsfd, passed-socket, blocked-I/O, ingress,
+  - [~] N03.8 prove final-drop, pidfd, nsfd, passed-socket, blocked-I/O, ingress,
     teardown, SIOCGSKNS, listns, and task-owner swap races in hosted and loom
     tests; run full network/namespace/syscall suites and dual target builds.
+    Active on `B841-netns-lifecycle-race-proof`.
 - [ ] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
