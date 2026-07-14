@@ -1,13 +1,19 @@
-# state - B828 ICMPv6 error conversion
+# state - B829 multicast socket-kind errors
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B828-network-icmpv6-error-map`
-- Branch: `B828-network-icmpv6-error-map`
-- Base: `7bef233a` (`origin/main`, merged B827)
-- Scope: match Linux ICMPv6 errno/fatal conversion and Packet Too Big PMTU hardness.
+- Worktree: `/home/nd/oxide-wt/B829-network-mcast-socket-kind`
+- Branch: `B829-network-mcast-socket-kind`
+- Base: `9259ac24` (`origin/main`, merged B828)
+- Scope: match Linux multicast option errors for unsupported INET socket kinds.
+
+## B828 publication
+
+- PR: `#3088`, merged as `9259ac24` on 2026-07-14.
+- Hosted net suite: 427 passed.
+- x86 and ARM target checks and smoke passed.
 
 ## B827 publication
 
