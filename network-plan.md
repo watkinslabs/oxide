@@ -94,12 +94,16 @@ Merged network foundation:
     `multi-user.target` and `graphical.target`. User-authorized ARM smoke skip:
     glibc userspace reached systemd, then unrelated services trapped/segfaulted
     and `upower.service` restart-looped until the 600-second timeout.
-- [~] **N02 multicast robustness accounting** - branch
-  `B833-multicast-robustness`, claim `9630e644`.
+- [x] **N02 multicast robustness accounting** - branch
+  `B833-multicast-robustness`, PR #3095, merge `85be212d`.
   Preserve successful membership when IGMP/MLD report output fails. Roll back
   only synchronous validation/allocation/filter-setup failures. Consume a
   bounded Linux robustness transmission count regardless of individual xmit
   success; remove the current retry-forever behavior and update tests.
+  Evidence: hosted net 497; focused ordering/lifecycle 9 and learned QRV 2;
+  net/procfs/syscalls checks and x86 release build passed. ARM compiled through
+  net and remains blocked in syscalls by the separately tracked missing GNU
+  aarch64 vDSO artifact/toolchain path.
 - [ ] **N03 canonical network-namespace lifetime**.
   Replace raw namespace IDs held by tasks, sockets, netlink sockets, and
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at
