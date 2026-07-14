@@ -142,12 +142,28 @@ pub(crate) fn cmd_test(rest: &[String]) -> Result<(), u8> {
             c.args(["test", "--workspace"]);
             run(c)
         }
-        "--kernel" | "--loom" | "--miri" | "--proptest" => {
+        "--loom" => cmd_test_loom(rest),
+        "--kernel" | "--miri" | "--proptest" => {
             eprintln!("xtask test {mode}: not yet implemented (awaiting `42` freeze + first kernel crate)");
             Err(64)
         }
         other => { eprintln!("xtask test: unknown mode `{other}`"); Err(2) }
     }
+}
+
+fn cmd_test_loom(rest: &[String]) -> Result<(), u8> {
+    let mut c = Command::new("cargo");
+    c.args(["test", "-p", "network-namespace", "-p", "net"]);
+    for a in rest { if a != "--loom" { c.arg(a); } }
+
+    let flags = std::env::var("RUSTFLAGS").unwrap_or_default();
+    let flags = if flags.is_empty() { "--cfg loom".into() }
+                else { format!("{flags} --cfg loom") };
+    c.env("RUSTFLAGS", flags);
+    if std::env::var_os("LOOM_MAX_PREEMPTIONS").is_none() {
+        c.env("LOOM_MAX_PREEMPTIONS", "6");
+    }
+    run(c)
 }
 
 // ---------------------------------------------------------------------------

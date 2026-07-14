@@ -23,3 +23,6 @@ pub type NetworkNamespaceRef = alloc::sync::Arc<NetworkNamespace>;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, loom))]
+mod loom_tests;
