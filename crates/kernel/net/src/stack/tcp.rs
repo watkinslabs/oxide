@@ -138,6 +138,13 @@ impl NetStack {
         entry.conn.lock().recv_with(max, peek, copy)
     }
 
+    /// Transactional application receive after a non-consuming logical offset. # C: O(offset + max)
+    pub fn tcp_recv_with_offset<R, E>(&self, entry: &TcpEntry, max: usize, peek: bool, offset: usize, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
+        -> Result<Option<R>, E>
+    {
+        entry.conn.lock().recv_with_offset(max, peek, offset, copy)
+    }
+
     /// Graceful close: emit FIN; demux drives the rest. # C: O(1)
     pub fn tcp_close(&self, entry: &TcpEntry) -> NetResult<()> {
         let (seg, src, dst, tos) = {

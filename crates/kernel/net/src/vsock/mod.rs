@@ -14,7 +14,7 @@ mod tests;
 
 pub use hdr::*;
 pub use conn::*;
-pub use transaction::{recv_with, RecvWith};
+pub use transaction::{recv_with, recv_with_offset, RecvWith};
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};

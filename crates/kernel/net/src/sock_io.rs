@@ -11,7 +11,7 @@ use crate::Ipv4Addr;
 
 mod tcp_read;
 pub use tcp_read::tcp_recv_eof;
-pub(crate) use tcp_read::{arm_tcp_read, read_tcp_blocking};
+pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, read_tcp_blocking};
 
 /// F159: blocking wait for TCP connect's SYN-ACK. Park on
 /// `entry.rx_waiters`; `deliver_tcp` wakes after any input (state

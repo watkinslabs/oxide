@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use net::sock::{InetSocket, SockKind};
-use net::uapi::{MSG_DONTWAIT, MSG_EOR, MSG_PEEK, MSG_TRUNC};
+use net::uapi::{MSG_DONTWAIT, MSG_EOR, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
 use crate::net_common::file_is_nonblock;
@@ -13,10 +13,14 @@ use crate::recv_user::RecvUser;
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 fn wait(sock: &Arc<InetSocket>, fd: u64, flags: u64, deadline: u64) -> Result<(), i64> {
+    wait_after(sock, fd, flags, deadline, 0)
+}
+
+fn wait_after(sock: &Arc<InetSocket>, fd: u64, flags: u64, deadline: u64, offset: usize) -> Result<(), i64> {
     if flags & MSG_DONTWAIT != 0 || file_is_nonblock(fd) { return Err(err(Errno::Eagain)); }
     if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
     if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
-    let _ = net::sock_recv::wait_recv_source(sock, deadline);
+    let _ = net::sock_recv::wait_recv_source_after(sock, deadline, offset);
     Ok(())
 }
 
@@ -46,30 +50,61 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, fd: u64, user: &RecvUser, flags: u
         Target::Stream(pair, end) => {
             let path = net::sock::unix_peer_path(sock).unwrap_or(None);
             let sa = encoded_sockaddr_un(path.as_deref());
+            let waitall = flags & MSG_WAITALL != 0;
+            let mut total = 0usize;
+            let mut all_files = alloc::vec::Vec::new();
+            let mut last_cred = None;
             loop {
-                match pair.read_stream_with_opts(end, user.capacity, peek, |data, _, _| {
-                    let copied = user.copy_payload(data)?;
+                let offset = if peek { total } else { 0 };
+                match pair.read_stream_with_offset(end, user.capacity - total, peek, offset, |data, _, _| {
+                    let copied = user.copy_payload_at(total, data)?;
                     Ok::<_, i64>((copied, copied))
                 }) {
-                    Err(e) => return e,
-                    Ok(Some((copied, files, cred))) => {
+                    Err(e) => {
+                        if total == 0 { return e; }
                         if let Err(e) = user.copy_name(sa.as_bytes()) { return e; }
-                        if let Err(e) = finish(user, files, if passcred { cred } else { None }, flags, 0) { return e; }
-                        return copied as i64;
+                        if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0) { return e; }
+                        return total as i64;
+                    }
+                    Ok(Some((copied, files, cred))) => {
+                        total += copied;
+                        let got_control = !files.is_empty();
+                        all_files.extend(files);
+                        if cred.is_some() { last_cred = cred; }
+                        if !waitall || total == user.capacity || got_control {
+                            if let Err(e) = user.copy_name(sa.as_bytes()) { return e; }
+                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0) { return e; }
+                            return total as i64;
+                        }
                     }
                     Ok(None) => {
                         if user.capacity == 0 {
                             if let Err(e) = user.write_namelen(0).and_then(|_| user.finish(0, 0)) { return e; }
                             return 0;
                         }
-                        if pair.take_reset(end) { return err(Errno::Econnreset); }
+                        if pair.take_reset(end) {
+                            if total == 0 { return err(Errno::Econnreset); }
+                            if let Err(e) = user.copy_name(sa.as_bytes()) { return e; }
+                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0) { return e; }
+                            return total as i64;
+                        }
                         if pair.is_eof(end) {
-                            if let Err(e) = user.write_namelen(0).and_then(|_| user.finish(0, 0)) { return e; }
-                            return 0;
+                            if total == 0 {
+                                if let Err(e) = user.write_namelen(0).and_then(|_| user.finish(0, 0)) { return e; }
+                                return 0;
+                            }
+                            if let Err(e) = user.copy_name(sa.as_bytes()) { return e; }
+                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0) { return e; }
+                            return total as i64;
                         }
                     }
                 }
-                if let Err(e) = wait(sock, fd, flags, deadline) { return e; }
+                if let Err(e) = wait_after(sock, fd, flags, deadline, if peek { total } else { 0 }) {
+                    if total == 0 { return e; }
+                    if let Err(e) = user.copy_name(sa.as_bytes()) { return e; }
+                    if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0) { return e; }
+                    return total as i64;
+                }
             }
         }
         Target::Msg(pair, end) => {
@@ -128,6 +163,14 @@ fn copy_one(dst: u64, payload: &[u8]) -> Result<usize, i64> {
     if copied != 0 || payload.is_empty() { Ok(copied) } else { Err(err(Errno::Efault)) }
 }
 
+fn copy_stream_source(sock: &InetSocket, src: u64, src_len: u64) -> Result<(), i64> {
+    if src == 0 { return Ok(()); }
+    let path = net::sock::unix_peer_path(sock).unwrap_or(None);
+    let sa = encoded_sockaddr_un(path.as_deref());
+    let rv = copy_sockaddr_to_user(src, src_len, &sa);
+    if rv < 0 { Err(rv) } else { Ok(()) }
+}
+
 /// AF_UNIX `recvfrom` with queue-owned payload-copy commit semantics. # C: O(payload + faults)
 pub(crate) fn recvfrom(sock: &Arc<InetSocket>, fd: u64, dst: u64, len: usize, flags: u64, src: u64, src_len: u64) -> i64 {
     enum Target {
@@ -147,25 +190,49 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, fd: u64, dst: u64, len: usize, fl
     match target {
         Target::Stream(pair, end) => {
             if len == 0 { return 0; }
+            let waitall = flags & MSG_WAITALL != 0;
+            let mut total = 0usize;
             loop {
-                match pair.read_stream_with_opts(end, len, peek, |data, _, _| copy_one(dst, data).map(|n| (n, n))) {
-                    Err(e) => return e,
+                let offset = if peek { total } else { 0 };
+                match pair.read_stream_with_offset(end, len - total, peek, offset,
+                    |data, _, _| copy_one(dst + total as u64, data).map(|n| (n, n))) {
+                    Err(e) => {
+                        if total == 0 { return e; }
+                        if let Err(e) = copy_stream_source(sock, src, src_len) { return e; }
+                        return total as i64;
+                    }
                     Ok(Some((copied, files, _))) => {
+                        total += copied;
+                        let got_control = !files.is_empty();
                         drop(files);
-                        if src != 0 {
-                            let path = net::sock::unix_peer_path(sock).unwrap_or(None);
-                            let sa = encoded_sockaddr_un(path.as_deref());
-                            let rv = copy_sockaddr_to_user(src, src_len, &sa);
-                            if rv < 0 { return rv; }
+                        if !waitall || total == len || got_control {
+                            if let Err(e) = copy_stream_source(sock, src, src_len) { return e; }
+                            return total as i64;
                         }
-                        return copied as i64;
                     }
                     Ok(None) => {
-                        if pair.take_reset(end) { return err(Errno::Econnreset); }
-                        if pair.is_eof(end) { return 0; }
+                        if pair.take_reset(end) {
+                            if total != 0 {
+                                if let Err(e) = copy_stream_source(sock, src, src_len) { return e; }
+                                return total as i64;
+                            }
+                            return err(Errno::Econnreset);
+                        }
+                        if pair.is_eof(end) {
+                            if total != 0 {
+                                if let Err(e) = copy_stream_source(sock, src, src_len) { return e; }
+                            }
+                            return total as i64;
+                        }
                     }
                 }
-                if let Err(e) = wait(sock, fd, flags, deadline) { return e; }
+                if let Err(e) = wait_after(sock, fd, flags, deadline, if peek { total } else { 0 }) {
+                    if total != 0 {
+                        if let Err(e) = copy_stream_source(sock, src, src_len) { return e; }
+                        return total as i64;
+                    }
+                    return e;
+                }
             }
         }
         Target::Msg(pair, end) => loop {

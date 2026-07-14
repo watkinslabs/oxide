@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use net::sock::{InetSocket, Received, SockKind};
-use net::uapi::{MSG_CTRUNC, MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
+use net::uapi::{MSG_CTRUNC, MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
 use crate::net_common::{errno_from_neterr, file_is_nonblock};
@@ -125,7 +125,7 @@ fn receive(fd: u64, sock: &Arc<InetSocket>, len: usize, flags: u64) -> Result<Re
 }
 
 pub(crate) fn tcp_with_copy<F>(fd: u64, sock: &Arc<InetSocket>, capacity: usize, flags: u64, mut copy: F) -> Result<usize, i64>
-where F: FnMut(&[u8]) -> Result<usize, i64>
+where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 {
     if capacity == 0 { return Ok(0); }
     let entry = match &*sock.kind.lock() {
@@ -134,27 +134,34 @@ where F: FnMut(&[u8]) -> Result<usize, i64>
     };
     let nonblock = flags & MSG_DONTWAIT != 0 || file_is_nonblock(fd);
     let peek = flags & MSG_PEEK != 0;
+    let waitall = flags & MSG_WAITALL != 0;
+    let mut total = 0usize;
     let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
     loop {
         net::sock::drain_loopback();
-        match net::sock::stack().tcp_recv_with(&entry, capacity, peek, |bytes| copy(bytes).map(|n| (n, n))) {
-            Ok(Some(copied)) => return Ok(copied),
-            Ok(None) => {
-                if sock.read_shut.load(Ordering::Acquire) || net::sock_io::tcp_recv_eof(entry.conn.lock().state) { return Ok(0); }
+        let offset = if peek { total } else { 0 };
+        match net::sock::stack().tcp_recv_with_offset(&entry, capacity - total, peek, offset,
+            |bytes| copy(total, bytes).map(|n| (n, n))) {
+            Ok(Some(copied)) => {
+                total += copied;
+                if !waitall || total == capacity { return Ok(total); }
             }
-            Err(e) => return Err(e),
+            Ok(None) => {
+                if sock.read_shut.load(Ordering::Acquire) || net::sock_io::tcp_recv_eof(entry.conn.lock().state) { return Ok(total); }
+            }
+            Err(e) => return if total != 0 { Ok(total) } else { Err(e) },
         }
-        if nonblock { return Err(err(Errno::Eagain)); }
-        if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
-        if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
-        let _ = net::sock_recv::wait_recv_source(sock, deadline);
+        if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
+        if sched::live::deliverable_signals_self() != 0 { return if total != 0 { Ok(total) } else { Err(err(Errno::Eintr)) }; }
+        if net::sock_recv::deadline_expired(deadline) { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
+        let _ = net::sock_recv::wait_recv_source_after(sock, deadline, offset);
     }
 }
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv(fd: u64, sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
-        let copied = match tcp_with_copy(fd, sock, user.capacity, flags, |bytes| user.copy_payload(bytes)) {
+        let copied = match tcp_with_copy(fd, sock, user.capacity, flags, |offset, bytes| user.copy_payload_at(offset, bytes)) {
             Ok(copied) => copied,
             Err(e) => return e,
         };

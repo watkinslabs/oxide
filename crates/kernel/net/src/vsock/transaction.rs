@@ -8,14 +8,19 @@ pub enum RecvWith<R> { Data(R), Eof, Retry }
 /// Copy one RX prefix under its queue lock and consume only on callback success. # C: O(max)
 pub fn recv_with<R, E>(c: &VsockConn, max: usize, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
     -> Result<RecvWith<R>, E>
+{ recv_with_offset(c, max, peek, 0, copy) }
+
+/// Copy an RX range after a non-consuming logical offset. # C: O(offset + max)
+pub fn recv_with_offset<R, E>(c: &VsockConn, max: usize, peek: bool, offset: usize, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
+    -> Result<RecvWith<R>, E>
 {
     let mut rx = c.rx.lock();
-    if rx.is_empty() {
+    if offset >= rx.len() {
         let eof = matches!(*c.st.lock(), VsockState::RcvShutdown | VsockState::Closed);
         return Ok(if eof { RecvWith::Eof } else { RecvWith::Retry });
     }
-    let take = core::cmp::min(max, rx.len());
-    let bytes: Vec<u8> = rx.iter().take(take).copied().collect();
+    let take = core::cmp::min(max, rx.len() - offset);
+    let bytes: Vec<u8> = rx.iter().skip(offset).take(take).copied().collect();
     let (copied, commit) = copy(&bytes)?;
     if peek { return Ok(RecvWith::Data(copied)); }
     let commit = core::cmp::min(commit, take);
