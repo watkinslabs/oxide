@@ -7,16 +7,22 @@ impl Mount {
     /// Truncate `ino` to `new_len`, freeing trailing data and extent metadata.
     /// # C: O(N_extents) + N_blocks_freed I/O
     pub fn truncate_inode(&self, ino: u32, new_len: u64) -> Result<(), MountError> {
-        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len, None))
+        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len, None, true))
     }
 
     pub(crate) fn truncate_inode_with_meta(&self, ino: u32, new_len: u64, meta: InodeMetaUpdate)
         -> Result<(), MountError>
     {
-        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len, Some(meta)))
+        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len, Some(meta), true))
     }
 
-    pub(super) fn truncate_inode_inner(&self, ino: u32, new_len: u64, meta: Option<InodeMetaUpdate>)
+    /// Final-deletion truncate. The namespace layer releases the inode's full
+    /// pre-deletion usage atomically, so block teardown must not release it again.
+    pub(crate) fn truncate_inode_for_deletion(&self, ino: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| m.truncate_inode_inner(ino, 0, None, false))
+    }
+
+    pub(super) fn truncate_inode_inner(&self, ino: u32, new_len: u64, meta: Option<InodeMetaUpdate>, account_quota: bool)
         -> Result<(), MountError>
     {
         let bs = self.sb.block_size as u64;
@@ -69,7 +75,7 @@ impl Mount {
         let sectors = self.count_all_sectors_planned(&i_block, &node_writes)?
             .saturating_add(super::external_xattr_sectors(&self.sb, &bytes));
         let old_sectors = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
-        self.account_i_blocks_delta(ino, old_sectors, sectors)?;
+        if account_quota { self.account_i_blocks_delta(ino, old_sectors, sectors)?; }
         bytes[0x1C..0x20].copy_from_slice(&sectors.to_le_bytes());
         bytes[0x28..0x28 + I_BLOCK_LEN].copy_from_slice(&i_block);
         bytes[0x04..0x08].copy_from_slice(&((new_len & 0xFFFF_FFFF) as u32).to_le_bytes());
@@ -77,18 +83,24 @@ impl Mount {
         if let Some(meta) = meta { self.stamp_inode_meta_fields(&mut bytes, meta); }
         for (lba, mut buf) in node_writes {
             if let Err(e) = self.write_extent_block(ino, gen, lba, &mut buf) {
-                return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
+                return Err(self.rollback_truncate_quota(ino, sectors, old_sectors, account_quota, e));
             }
         }
         if let Err(e) = self.write_inode_bytes(ino, &bytes) {
-            return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
+            return Err(self.rollback_truncate_quota(ino, sectors, old_sectors, account_quota, e));
         }
         for b in blocks_to_free {
             if let Err(e) = self.free_block(b) {
-                return Err(self.rollback_i_blocks_delta(ino, sectors, old_sectors, e));
+                return Err(self.rollback_truncate_quota(ino, sectors, old_sectors, account_quota, e));
             }
         }
         Ok(())
+    }
+
+    fn rollback_truncate_quota(&self, ino: u32, sectors: u32, old_sectors: u32,
+        account_quota: bool, error: MountError) -> MountError
+    {
+        if account_quota { self.rollback_i_blocks_delta(ino, sectors, old_sectors, error) } else { error }
     }
 
     /// Truncate a depth>=1 tree rooted in the inline i_block: keep only
