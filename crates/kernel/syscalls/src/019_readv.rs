@@ -54,15 +54,12 @@ pub fn sys_readv(args: &SyscallArgs) -> i64 {
         cur.account_read_result(ret);
         return ret;
     }
-    if crate::netlink_fd::is_netlink(fd as u64)
-        || crate::net_common::vsock_from_fd(fd as u64).is_some()
-        || crate::net_common::socket_from_fd(fd as u64).is_some()
-    {
+    if let Ok(target) = crate::recvmsg::from_file(file.clone()) {
         let user = match crate::recv_user::import_iov(iov, iovcnt as usize) {
             Ok(user) => user,
             Err(e) => { cur.account_read_result(e); return e; }
         };
-        let ret = crate::recvmsg::recv(fd as u64, &user, 0);
+        let ret = crate::recvmsg::recv(&target, &user, 0);
         cur.account_read_result(ret);
         return ret;
     }

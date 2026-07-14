@@ -12,16 +12,25 @@ use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+fn wait_nonblock(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64) -> Result<(), i64> {
+    wait_nonblock_after(sock, nonblock, flags, deadline, 0)
+}
+
+fn wait_nonblock_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64, offset: usize) -> Result<(), i64> {
+    if flags & MSG_DONTWAIT != 0 || nonblock { return Err(err(Errno::Eagain)); }
+    if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
+    if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
+    let _ = net::sock_recv::wait_recv_source_after(sock, deadline, offset);
+    Ok(())
+}
+
 fn wait(sock: &Arc<InetSocket>, fd: u64, flags: u64, deadline: u64) -> Result<(), i64> {
     wait_after(sock, fd, flags, deadline, 0)
 }
 
 fn wait_after(sock: &Arc<InetSocket>, fd: u64, flags: u64, deadline: u64, offset: usize) -> Result<(), i64> {
-    if flags & MSG_DONTWAIT != 0 || file_is_nonblock(fd) { return Err(err(Errno::Eagain)); }
-    if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
-    if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
-    let _ = net::sock_recv::wait_recv_source_after(sock, deadline, offset);
-    Ok(())
+    if flags & MSG_DONTWAIT != 0 { return Err(err(Errno::Eagain)); }
+    wait_nonblock_after(sock, file_is_nonblock(fd), flags, deadline, offset)
 }
 
 fn finish(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<(u32, u32, u32)>, flags: u64, out_flags: u32, name: &[u8]) -> Result<(), i64> {
@@ -31,7 +40,7 @@ fn finish(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<
 }
 
 /// Receive from one AF_UNIX socket using queue-owned copy transactions. # C: O(payload + rights + faults)
-pub(crate) fn recvmsg(sock: &Arc<InetSocket>, fd: u64, user: &RecvUser, flags: u64) -> i64 {
+pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
     enum Target {
         Stream(Arc<net::UnixPair>, net::UnixEnd),
         Msg(Arc<net::UnixMsgPair>, net::UnixEnd),
@@ -81,6 +90,13 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, fd: u64, user: &RecvUser, flags: u
                             if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0, recv_control::output_flags(flags))) { return e; }
                             return 0;
                         }
+                        if total == 0 {
+                            let pending = sock.take_pending_recv_error();
+                            if pending != 0 { return -(pending as i64); }
+                        } else if sock.has_pending_recv_error() {
+                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
+                            return total as i64;
+                        }
                         if pair.take_reset(end) {
                             if total == 0 { return err(Errno::Econnreset); }
                             if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
@@ -96,7 +112,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, fd: u64, user: &RecvUser, flags: u
                         }
                     }
                 }
-                if let Err(e) = wait_after(sock, fd, flags, deadline, if peek { total } else { 0 }) {
+                if let Err(e) = wait_nonblock_after(sock, nonblock, flags, deadline, if peek { total } else { 0 }) {
                     if total == 0 { return e; }
                     if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
                     return total as i64;
@@ -118,6 +134,8 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, fd: u64, user: &RecvUser, flags: u
                     return if flags & MSG_TRUNC != 0 { full as i64 } else { copied as i64 };
                 }
                 Ok(None) => {
+                    let pending = sock.take_pending_recv_error();
+                    if pending != 0 { return -(pending as i64); }
                     if pair.take_reset(end) { return err(Errno::Econnreset); }
                     if pair.is_eof(end) {
                         if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0, recv_control::output_flags(flags))) { return e; }
@@ -125,7 +143,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, fd: u64, user: &RecvUser, flags: u
                     }
                 }
             }
-            if let Err(e) = wait(sock, fd, flags, deadline) { return e; }
+            if let Err(e) = wait_nonblock(sock, nonblock, flags, deadline) { return e; }
         }},
         Target::Dgram(q) => loop {
             match q.recv_with(peek, |msg, sender, _| {
@@ -143,7 +161,9 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, fd: u64, user: &RecvUser, flags: u
                 }
                 Ok(None) => {}
             }
-            if let Err(e) = wait(sock, fd, flags, deadline) { return e; }
+            let pending = sock.take_pending_recv_error();
+            if pending != 0 { return -(pending as i64); }
+            if let Err(e) = wait_nonblock(sock, nonblock, flags, deadline) { return e; }
         },
     }
 }

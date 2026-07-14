@@ -34,16 +34,17 @@ fn wait(sock: &::netlink::NetlinkSocket) {
 }
 
 /// Netlink datagram recvmsg using one imported msghdr snapshot. # C: O(payload)
-pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
-    let file = match file(fd) { Ok(file) => file, Err(e) => return e };
+pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
     let inode = file.inode();
-    let sock = inode.private::<::netlink::NetlinkSocket>().unwrap();
+    let sock = match inode.private::<::netlink::NetlinkSocket>() { Some(sock) => sock, None => return err(Errno::Enotsock) };
     let peek = flags & MSG_PEEK != 0;
-    let nonblock = flags & MSG_DONTWAIT != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
+    let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let (dgram, copied, src_pid) = loop {
         let mut queue = sock.rx_queue.lock();
         let Some((dgram, src_pid)) = queue.front() else {
             drop(queue);
+            let pending = sock.take_pending_recv_error();
+            if pending != 0 { return -(pending as i64); }
             if nonblock { return err(Errno::Eagain); }
             if sched::live::deliverable_signals_self() != 0 { return err(Errno::Eintr); }
             wait(&sock);
@@ -69,4 +70,11 @@ pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
     if copied < dgram.len() { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(delivered.len, out_flags) { return e; }
     if flags & MSG_TRUNC != 0 { dgram.len() as i64 } else { copied as i64 }
+}
+
+/// Netlink recvmsg after resolving and pinning its file. # C: O(payload)
+pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
+    let file = match file(fd) { Ok(file) => file, Err(e) => return e };
+    let nonblock = file.flags().contains(OpenFlags::O_NONBLOCK);
+    recv_pinned(&file, nonblock, user, flags)
 }
