@@ -15,12 +15,17 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
         }
         if sched::live::deliverable_signals_self() != 0 { return Err(NetError::Eintr); }
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns { return Err(NetError::Eagain); }
-        wait_recv_source(sock, deadline_ns);
+        if wait_recv_source(sock, deadline_ns) { return Ok(empty_received()); }
     }
 }
 
+fn empty_received() -> Received {
+    Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None,
+        pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None }
+}
+
 /// Park on the receive wait source matching the socket kind. # C: O(1)
-fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) {
+pub(crate) fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
     let kind = match &*sock.kind.lock() {
         SockKind::Unix(pair, end)        => WaitKind::Unix(pair.clone(), *end),
         SockKind::UnixMsgPair(pair, end) => WaitKind::UnixMsgPair(pair.clone(), *end),
@@ -32,48 +37,66 @@ fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) {
     };
     match kind {
         WaitKind::Unix(pair, end) => {
-            let ring = match end { crate::UnixEnd::A => &pair.b_to_a, crate::UnixEnd::B => &pair.a_to_b };
-            let g = ring.lock();
-            if !g.buf.is_empty() || g.closed_writer { return; }
-            // SAFETY: process ctx; ring lock serializes writers before wake.
-            unsafe { pair.reader_waiters(end).park_with_deadline(deadline_ns); }
-            drop(g);
-            // SAFETY: process ctx; current task is parked on the read wait list.
-            unsafe { sched::live::schedule::schedule(); }
+            if let crate::unix_sock::stream::ArmStreamRead::Parked = pair.arm_stream_read(end, deadline_ns) {
+                // SAFETY: pair armed current under its incoming-ring lock.
+                unsafe { sched::live::schedule::schedule(); }
+                pair.reader_waiters(end).remove_current();
+            }
+            false
         }
         WaitKind::UnixMsgPair(pair, end) => {
-            let ring = match end { crate::UnixEnd::A => &pair.b_to_a, crate::UnixEnd::B => &pair.a_to_b };
-            let g = ring.lock();
-            if !g.msgs.is_empty() || g.closed_writer { return; }
-            // SAFETY: process ctx; ring lock serializes senders before wake.
-            unsafe { pair.reader_waiters(end).park_with_deadline(deadline_ns); }
-            drop(g);
-            // SAFETY: process ctx; current task is parked on the read wait list.
-            unsafe { sched::live::schedule::schedule(); }
+            if let crate::unix_sock::msg_pair::ArmMsgRead::Parked { reader_shutdown } = pair.arm_read(end, deadline_ns) {
+                // SAFETY: pair armed current under its incoming-queue lock.
+                unsafe { sched::live::schedule::schedule(); }
+                pair.reader_waiters(end).remove_current();
+                return !reader_shutdown && pair.kind == crate::UnixMsgKind::Datagram
+                    && pair.reader_shutdown(end) && !pair.has_msg(end);
+            }
+            false
         }
         WaitKind::UnixDgram(q) => {
             let g = q.msgs.lock();
-            if !g.is_empty() { return; }
+            if !g.is_empty() { return false; }
+            let shut_before = q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: process ctx; queue lock serializes datagram push before wake.
-            unsafe { q.waiters.park_with_deadline(deadline_ns); }
+            unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
             drop(g);
             // SAFETY: process ctx; current task is parked on the read wait list.
             unsafe { sched::live::schedule::schedule(); }
+            q.waiters.remove_current();
+            !shut_before && q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire)
+                && q.msgs.lock().is_empty()
         }
-        WaitKind::Packet => {
-            // SAFETY: process ctx; packet RX delivery wakes sock.recv_waiters.
-            unsafe { sock.recv_waiters.park_with_deadline(deadline_ns); sched::live::schedule::schedule(); }
-        }
+        WaitKind::Packet => { wait_packet(sock, deadline_ns); false }
         WaitKind::Tcp(entry) => {
-            // SAFETY: process ctx; TCP input/timeout wakes entry.rx_waiters.
-            unsafe { entry.rx_waiters.park_with_deadline(deadline_ns); sched::live::schedule::schedule(); }
+            if crate::sock_io::arm_tcp_read(sock, &entry, deadline_ns) {
+                // SAFETY: arm_tcp_read published current under entry.conn.
+                unsafe { sched::live::schedule::schedule(); }
+                entry.rx_waiters.remove_current();
+            }
+            false
         }
-        WaitKind::Udp => wait_udp(sock, deadline_ns),
+        WaitKind::Udp => { wait_udp(sock, deadline_ns); false }
         WaitKind::Yield => {
             // SAFETY: process ctx; no receive wait source exists for this kind.
             unsafe { sched::live::tick_yield(); }
+            false
         }
     }
+}
+
+fn wait_packet(sock: &InetSocket, deadline_ns: u64) {
+    let kind = sock.kind.lock();
+    let SockKind::Packet { rx, .. } = &*kind else { return; };
+    let q = rx.lock();
+    if !q.is_empty() { return; }
+    // SAFETY: kind+RX locks serialize packet delivery before its wake.
+    unsafe { sock.recv_waiters.park_interruptible_with_deadline(deadline_ns); }
+    drop(q);
+    drop(kind);
+    // SAFETY: current task is parked on the packet receive wait list.
+    unsafe { sched::live::schedule::schedule(); }
+    sock.recv_waiters.remove_current();
 }
 
 enum WaitKind {
@@ -96,22 +119,30 @@ fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
     } else { None };
     if let Some(q) = v6_q {
         let g = q.q.lock();
-        if !g.is_empty() { return; }
+        if !g.is_empty() || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
         // SAFETY: process ctx; UDP6 receive delivery wakes this queue.
-        unsafe { q.waiters.park_with_deadline(deadline_ns); }
+        unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
         drop(g);
         // SAFETY: process ctx; current task is parked on the UDP6 read wait list.
         unsafe { sched::live::schedule::schedule(); }
+        q.waiters.remove_current();
     } else if let Some(q) = udp_q {
         let g = q.q.lock();
-        if !g.is_empty() { return; }
+        if !g.is_empty() || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
         // SAFETY: process ctx; UDP receive delivery wakes this queue.
-        unsafe { q.waiters.park_with_deadline(deadline_ns); }
+        unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
         drop(g);
         // SAFETY: process ctx; current task is parked on the UDP read wait list.
         unsafe { sched::live::schedule::schedule(); }
+        q.waiters.remove_current();
     } else {
-        // SAFETY: process ctx; unbound UDP has no packet queue, but blocking recv must sleep.
-        unsafe { sock.recv_waiters.park_with_deadline(deadline_ns); sched::live::schedule::schedule(); }
+        let kind = sock.kind.lock();
+        if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
+        // SAFETY: process ctx; kind lock serializes unbound shutdown publication.
+        unsafe { sock.recv_waiters.park_interruptible_with_deadline(deadline_ns); }
+        drop(kind);
+        // SAFETY: current task is parked on the fallback receive wait list.
+        unsafe { sched::live::schedule::schedule(); }
+        sock.recv_waiters.remove_current();
     }
 }

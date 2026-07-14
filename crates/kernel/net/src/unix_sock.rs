@@ -24,7 +24,7 @@ pub(crate) use events::{wake_msgpair_peer_subs, wake_peer_subs};
 pub use types::{EndCred, UnixEnd};
 
 pub use stream::{UnixPair, UnixRing, UnixStreamError};
-pub use msg_pair::{UnixMsg, UnixMsgPair, UnixMsgRing};
+pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing};
 pub use dgram::{UnixDgram, UnixDgramQueue};
 pub use listener::{unix_path_display, unix_path_is_abstract, UnixAddr, UnixAddrKey, UnixConnectError, UnixListener, UnixRegistry};
 

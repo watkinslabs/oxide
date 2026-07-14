@@ -25,6 +25,8 @@ pub struct UnixDgramQueue {
     pub bound: Spinlock<Option<UnixAddr>, UnixLockClass>,
     /// Connected peer address for AF_UNIX SOCK_DGRAM.
     pub peer: Spinlock<Option<UnixAddr>, UnixLockClass>,
+    pub reader_shutdown: core::sync::atomic::AtomicBool,
+    released: core::sync::atomic::AtomicBool,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
     /// F181a: epoll subscribers of the owning InetSocket.
@@ -38,6 +40,8 @@ impl UnixDgramQueue {
             msgs: Spinlock::new(VecDeque::new()),
             bound: Spinlock::new(None),
             peer: Spinlock::new(None),
+            reader_shutdown: core::sync::atomic::AtomicBool::new(false),
+            released: core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
@@ -79,24 +83,46 @@ impl UnixDgramQueue {
         self.peer.lock().clone()
     }
 
-    /// Push a complete dgram onto the queue.
+    /// Enqueue unless the owning socket shut down its receive half.
     /// # C: O(1)
-    pub fn push(&self, msg: UnixDgram) {
-        self.msgs.lock().push_back(msg);
+    pub fn try_push(&self, msg: UnixDgram) -> Result<(), crate::NetError> {
+        let mut q = self.msgs.lock();
+        if self.released.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Econnrefused); }
+        if self.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Epipe); }
+        q.push_back(msg);
+        drop(q);
         #[cfg(target_os = "oxide-kernel")]
         {
             self.waiters.wake_all();
-            // F181a: wake owning socket's epoll subscribers; fall
-            // back to global broadcast if subs not yet registered.
-            let slot = self.subs.lock().clone();
-            if let Some(weak) = slot {
-                if let Some(s) = weak.upgrade() {
-                    s.notify();
-                    return;
-                }
-            }
-            sched::live::notify_epoll_waiters();
+            if let Some(subs) = self.subs.lock().as_ref().and_then(|weak| weak.upgrade()) {
+                subs.notify_mask(vfs::POLL_IN);
+            } else { sched::live::notify_epoll_waiters(); }
         }
+        Ok(())
+    }
+
+    /// Preserve queued datagrams, then expose EOF and reject later sends.
+    /// # C: O(1)
+    pub fn shutdown_reader(&self) {
+        let q = self.msgs.lock();
+        self.reader_shutdown.store(true, core::sync::atomic::Ordering::Release);
+        drop(q);
+        #[cfg(target_os = "oxide-kernel")]
+        self.waiters.wake_all();
+    }
+
+    /// Close the queue at final fput and release all unread messages.
+    /// # C: O(unread messages + descriptors)
+    pub fn release(&self) {
+        let dropped = {
+            let mut q = self.msgs.lock();
+            self.released.store(true, core::sync::atomic::Ordering::Release);
+            self.reader_shutdown.store(true, core::sync::atomic::Ordering::Release);
+            core::mem::take(&mut *q)
+        };
+        drop(dropped);
+        #[cfg(target_os = "oxide-kernel")]
+        self.waiters.wake_all();
     }
 
     /// Pop one dgram if any.

@@ -117,10 +117,7 @@ pub fn send_over_socket(
     use hal::TimerOps;
     use core::sync::atomic::Ordering;
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
-    let is_unix = matches!(
-        &*sock.kind.lock(),
-        SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)
-    );
+    let signals_pipe = matches!(&*sock.kind.lock(), SockKind::Unix(_, _) | SockKind::TcpConn(_));
     let timeo = sock.opts.sndtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
     let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
@@ -147,15 +144,15 @@ pub fn send_over_socket(
             }
             Err(e) => {
                 let result = errno_from_neterr(e);
-                return if is_unix { finish_unix_send(flags, result) } else { result };
+                return if signals_pipe { finish_stream_send(flags, result) } else { result };
             }
         }
     }
 }
 
-/// Apply AF_UNIX send-side SIGPIPE semantics to a completed send result.
+/// Apply stream send-side SIGPIPE semantics to a completed send result.
 /// # C: O(1)
-pub(crate) fn finish_unix_send(flags: u64, result: i64) -> i64 {
+pub(crate) fn finish_stream_send(flags: u64, result: i64) -> i64 {
     if result != -(Errno::Epipe.as_i32() as i64) || (flags & MSG_NOSIGNAL) != 0 { return result; }
     sched::live::send_signal_self(sched::live::Signum::Sigpipe);
     result

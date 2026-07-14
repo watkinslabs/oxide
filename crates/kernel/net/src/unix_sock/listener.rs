@@ -194,6 +194,9 @@ impl UnixListener {
         if st.accept_q.len() > st.backlog { return Err(crate::NetError::Eagain); }
         let (pid, uid, gid) = st.owner_cred;
         pair.set_end_cred(UnixEnd::A, pid, uid, gid);
+        use core::sync::atomic::Ordering::Acquire;
+        if sock.read_shut.load(Acquire) { pair.shutdown_reader(UnixEnd::B); }
+        if sock.write_shut.load(Acquire) { pair.close_writer(UnixEnd::B); }
         st.accept_q.push_back(pair.clone());
         *kind = crate::sock::SockKind::Unix(pair, UnixEnd::B);
         drop(kind);

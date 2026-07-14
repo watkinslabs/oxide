@@ -3,7 +3,6 @@
 // All helper fns (socket_from_fd, file_is_nonblock, etc.) live in
 // net.rs and are imported here.
 
-use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
@@ -42,7 +41,7 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
         let r = if nb { file.inode().read_nonblock(0, dst) } else { file.inode().read(0, dst) };
         return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
     }
-    let sock: Arc<net::sock::InetSocket> = match socket_from_fd(fd) {
+    let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"recvfrom"); return -(Errno::Enotsock.as_i32() as i64); }
     };
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }

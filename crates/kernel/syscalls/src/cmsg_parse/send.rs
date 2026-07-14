@@ -63,6 +63,7 @@ pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u6
         unsafe { core::ptr::copy_nonoverlapping(base as *const u8, payload.as_mut_ptr().add(start), len as usize); }
     }
     let g = sock.kind.lock();
+    let signal = matches!(&*g, SockKind::Unix(_, _));
     let result = match &*g {
         SockKind::Unix(pair, end) => {
             // Tie the fds to `payload`'s first stream byte so the peer's
@@ -75,11 +76,15 @@ pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u6
             };
             result
         }
-        SockKind::UnixMsgPair(pair, end) => pair.send_with_fds(*end, &payload, fds) as i64,
+        SockKind::UnixMsgPair(pair, end) => match pair.send_with_fds(*end, &payload, fds) {
+            Ok(n) => n as i64,
+            Err(net::UnixMsgError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
+            Err(net::UnixMsgError::PeerRefused) => -(Errno::Econnrefused.as_i32() as i64),
+        },
         _ => -(Errno::Einval.as_i32() as i64),
     };
     drop(g);
-    crate::s044_sendto::finish_unix_send(flags, result)
+    if signal { crate::s044_sendto::finish_stream_send(flags, result) } else { result }
 }
 
 /// Send a unix-dgram message with fds attached.
@@ -88,6 +93,9 @@ pub fn sendmsg_unix_dgram_with_fds(
     sock: &Arc<InetSocket>, name: u64, namelen: u64, iov: u64, iovlen: u64,
     fds: Vec<Arc<File>>,
 ) -> i64 {
+    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+        return -(Errno::Epipe.as_i32() as i64);
+    }
     let addr: net::UnixAddr = if name != 0 {
         match crate::net_sockaddr::read_sockaddr_un_path_len(name, namelen) {
             Some(p) => match crate::namei_common::resolve_unix_addr(p) {
@@ -137,6 +145,8 @@ pub fn sendmsg_unix_dgram_with_fds(
     };
     let n = payload.len();
     net::trace_dgram_journal(&addr.display, &payload);
-    q.push(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds });
-    n as i64
+    match q.try_push(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds }) {
+        Ok(()) => n as i64,
+        Err(e) => crate::net_common::errno_from_neterr(e),
+    }
 }
