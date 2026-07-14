@@ -34,6 +34,7 @@ impl NetStack {
                 payload,
             } => {
                 let k = crate::ipv6_reasm::ReasmKey {
+                    net_ns,
                     src: hdr.src,
                     dst: hdr.dst,
                     next_header,
@@ -188,7 +189,7 @@ impl NetStack {
                     if self.v6_addr_owned_by(iface, msg.target) {
                         let our_mac = self
                             .ifaces
-                            .lookup(iface)
+                            .lookup_in_ns(iface, net_ns)
                             .map(|d| d.mac())
                             .unwrap_or(crate::addr::MacAddr::ZERO);
                         let na = ndp::NdpMsg::build_na(
@@ -211,7 +212,7 @@ impl NetStack {
             }
             t if t == ndp::NDP_RA => {
                 if let Ok(ra) = ndp::RouterAdvertisement::parse(payload, src, dst) {
-                    self.apply_router_advertisement(iface, src, &ra);
+                    self.apply_router_advertisement(net_ns, iface, src, &ra);
                 }
             }
             _ => {}

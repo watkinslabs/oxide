@@ -91,6 +91,15 @@ pub fn remove(ns: u64, family: u8, priority: Option<u32>, table: Option<u32>) ->
     before - g.len()
 }
 
+/// Remove every custom policy rule owned by one destroyed namespace. # C: O(N)
+pub fn remove_namespace(ns: u64) -> usize {
+    if ns == 0 { return 0; }
+    let mut g = RULE_TABLE.lock();
+    let before = g.len();
+    g.retain(|r| r.ns != ns);
+    before - g.len()
+}
+
 /// Pick a free priority before the built-in main/default rules. # C: O(N * 32765)
 pub fn next_priority(ns: u64, family: u8) -> u32 {
     let used = snapshot_custom_ns(ns);

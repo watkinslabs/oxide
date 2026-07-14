@@ -235,13 +235,13 @@ impl NetStack {
             Endpoint { ip: local_ip, port: bind.local.port },
             Endpoint { ip: remote_ip, port: remote_port }, isn,
         );
-        conn.own_mss = self.mss_for_dst_on_iface(remote_ip, bind.bound_iface());
+        conn.own_mss = self.mss_for_dst_on_iface_in(bind.net_ns, remote_ip, bind.bound_iface());
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
         let entry = Arc::new(TcpEntry::new_bound_with_error(conn, error, Some(bind.clone())));
         conns.insert(key, entry.clone());
         drop(conns);
-        if let Err(error) = self.send_l4_over_ip_bound(
-            local_ip, remote_ip, IpProto::Tcp, &syn, bind.bound_iface(),
+        if let Err(error) = self.send_l4_over_ip_bound_in(
+            bind.net_ns, local_ip, remote_ip, IpProto::Tcp, &syn, bind.bound_iface(),
         ) {
             tables.tcp_conns.lock().remove(&key);
             return Err(error);

@@ -29,16 +29,19 @@ mod rtnetlink_link;
 pub(crate) mod rtnetlink_route;
 
 pub use ack::nlmsg_ack_pub;
-pub use addr_ops::{handle_deladdr, handle_newaddr};
+pub use addr_ops::{handle_deladdr, handle_deladdr_in, handle_newaddr, handle_newaddr_in};
 pub use attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
-pub use dumps::{done_multi, handle_getaddr, handle_getlink};
-pub(crate) use iface::ifaces_snapshot;
-pub use iface::handle_setlink;
-pub(crate) use route_ops::build_newroute_reply;
-pub use route_ops::{handle_delroute, handle_getroute, handle_newroute};
+pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in, handle_getlink, handle_getlink_in};
+pub(crate) use iface::ifaces_snapshot_in;
+pub use iface::{handle_setlink, handle_setlink_in};
+pub(crate) use route_ops::{build_newroute_reply, build_newroute_row_reply};
+pub use route_ops::{
+    handle_delroute, handle_delroute_in, handle_getroute, handle_getroute_in,
+    handle_newroute, handle_newroute_in,
+};
 pub use route_state::{
-    route_insert, route_remove, route_snapshot, route_snapshot_ns, seed_default_routes,
+    route_insert, route_lookup_ns, route_remove, route_snapshot, route_snapshot_ns, seed_default_routes,
     seed_default_routes_lo, RouteRow,
 };
 pub use rtnetlink_addr::{

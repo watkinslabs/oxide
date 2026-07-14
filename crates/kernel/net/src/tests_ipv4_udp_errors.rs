@@ -174,6 +174,9 @@ fn pmtudisc_dont_suppresses_frag_needed_pending_and_extended_errors() {
 fn frag_needed_zero_mtu_uses_plateau_and_later_send_uses_cache() {
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
+    stack.routes.add(crate::RouteEntry::main(
+        REMOTE, 32, iface, None, Some(LOCAL),
+    ));
     crate::stack_icmp::handle_error(
         &stack, iface, REMOTE, crate::icmp::ICMP_TYPE_DEST_UNREACH, 4,
         &frag_needed_quote(1_500, 0),

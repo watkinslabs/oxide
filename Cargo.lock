@@ -910,6 +910,7 @@ name = "netlink"
 version = "0.1.0"
 dependencies = [
  "net",
+ "nscg",
  "sched",
  "sync",
  "vfs",

@@ -84,6 +84,11 @@ fn append_diag_msg(out: &mut Vec<u8>, req: &Nlmsghdr, row: net::stack_diag::Inet
 /// Handle SOCK_DIAG_BY_FAMILY / TCPDIAG_GETSOCK inet_diag requests.
 /// # C: O(open inet sockets)
 pub fn handle(req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
+    handle_in(net::netdev::current_net_ns(), req, msg)
+}
+
+/// Handle an inet-diag request in the namespace captured by its netlink socket. # C: O(N)
+pub fn handle_in(net_ns: u64, req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
     let Some(diag_req) = parse_req(msg) else {
         return crate::rtnetlink::done_multi(req.nlmsg_seq, req.nlmsg_pid);
     };
@@ -95,7 +100,7 @@ pub fn handle(req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
     let mut reply = Vec::new();
     #[cfg(target_os = "oxide-kernel")]
     {
-        for row in net::sock::stack().inet_diag_snapshot_in(net::netdev::current_net_ns(), protocol) {
+        for row in net::sock::stack().inet_diag_snapshot_in(net_ns, protocol) {
             if family_matches(diag_req.family, row.family) && state_matches(diag_req.states, row.state) {
                 append_diag_msg(&mut reply, req, row);
             }
@@ -103,7 +108,8 @@ pub fn handle(req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     {
-        let _ = (diag_req, protocol, family_matches as fn(u8, u8) -> bool, state_matches as fn(u32, u8) -> bool);
+        let _ = (net_ns, diag_req, protocol, family_matches as fn(u8, u8) -> bool,
+            state_matches as fn(u32, u8) -> bool);
     }
     reply.extend_from_slice(&crate::rtnetlink::done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply

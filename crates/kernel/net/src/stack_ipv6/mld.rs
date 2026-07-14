@@ -80,8 +80,15 @@ impl NetStack {
     /// Publish one socket's full MLDv2 filter and emit resulting interface state. # C: O(N * S)
     pub(crate) fn set_ipv6_multicast(&self, owner: usize, iface: NetIfaceId, group: Ipv6Addr,
                                      src: Ipv6Addr, filter: Option<&SourceFilter6>) -> NetResult<()> {
+        self.set_ipv6_multicast_in(0, owner, iface, group, src, filter)
+    }
+
+    /// Publish socket MLD policy in one network namespace. # C: O(N * S)
+    pub(crate) fn set_ipv6_multicast_in(&self, net_ns: u64, owner: usize,
+                                        iface: NetIfaceId, group: Ipv6Addr,
+                                        src: Ipv6Addr, filter: Option<&SourceFilter6>) -> NetResult<()> {
         if !group.is_multicast() { return Err(NetError::Einval); }
-        if self.ifaces.lookup(iface).is_none() { return Err(NetError::Enodev); }
+        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.mld_src_on_iface(iface).unwrap_or(src) } else { src };
         let now_ns = crate::stack::net_now_ns();
         let staged = {
@@ -147,7 +154,8 @@ impl NetStack {
 
     fn emit_mld_body(&self, iface: NetIfaceId, src: Ipv6Addr, dst: Ipv6Addr,
                      body: &[u8]) -> NetResult<()> {
-        let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
+        let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enetunreach)?;
+        let dev = self.ifaces.lookup_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
         let extension_len = 8usize;
         let payload_len = extension_len + body.len();
         let total = crate::ipv6::IPV6_HDR_LEN + payload_len;
@@ -169,8 +177,14 @@ impl NetStack {
     }
 
     pub fn join_ipv6_multicast(&self, iface: NetIfaceId, group: Ipv6Addr, src: Ipv6Addr) -> NetResult<()> {
+        self.join_ipv6_multicast_in(0, iface, group, src)
+    }
+
+    /// Join an IPv6 multicast group in one network namespace. # C: O(N)
+    pub fn join_ipv6_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
+                                  group: Ipv6Addr, src: Ipv6Addr) -> NetResult<()> {
         if !group.is_multicast() { return Err(NetError::Einval); }
-        if self.ifaces.lookup(iface).is_none() { return Err(NetError::Enodev); }
+        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.mld_src_on_iface(iface).unwrap_or(src) } else { src };
         let now_ns = crate::stack::net_now_ns();
         let staged = {
@@ -202,6 +216,13 @@ impl NetStack {
     }
 
     pub fn leave_ipv6_multicast(&self, iface: NetIfaceId, group: Ipv6Addr, _src: Ipv6Addr) -> NetResult<()> {
+        self.leave_ipv6_multicast_in(0, iface, group, _src)
+    }
+
+    /// Leave an IPv6 multicast group in one network namespace. # C: O(N)
+    pub fn leave_ipv6_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
+                                   group: Ipv6Addr, _src: Ipv6Addr) -> NetResult<()> {
+        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
         let now_ns = crate::stack::net_now_ns();
         let staged = {
             let mut all = self.v6_mcast.lock();

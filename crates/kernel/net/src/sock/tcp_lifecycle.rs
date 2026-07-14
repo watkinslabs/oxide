@@ -93,6 +93,7 @@ fn connect_tcp(sock: &alloc::sync::Arc<InetSocket>, local_ip: crate::IpAddr,
 /// Select IPv4 source and perform one reservation-backed active open. # C: O(N + RTT)
 pub(super) fn connect_tcp4(sock: &alloc::sync::Arc<InetSocket>, dst_ip: Ipv4Addr,
                            remote_port: u16, nonblock: bool) -> Result<(), NetError> {
+    let net_ns = sock.net_ns.load(Ordering::Acquire);
     let configured = *sock.local_ip.lock();
     let local_ip = if configured != Ipv4Addr::ANY {
         configured
@@ -100,8 +101,8 @@ pub(super) fn connect_tcp4(sock: &alloc::sync::Arc<InetSocket>, dst_ip: Ipv4Addr
         Ipv4Addr::LOOPBACK
     } else {
         let iface = bound_iface(sock)?;
-        stack().routes.lookup(dst_ip).and_then(|route| route.src_hint)
-            .or_else(|| iface_primary_ip(iface.or_else(|| stack().routes.lookup(dst_ip).map(|r| r.iface))))
+        stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint)
+            .or_else(|| iface_primary_ip(iface.or_else(|| stack().routes.lookup_in(net_ns, dst_ip).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
     connect_tcp(sock, crate::IpAddr::V4(local_ip), crate::IpAddr::V4(dst_ip), remote_port, nonblock)

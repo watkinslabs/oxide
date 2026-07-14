@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::{flags, Nlmsghdr};
 
 use super::attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
-use super::iface::ifaces_snapshot;
+use super::iface::ifaces_snapshot_in;
 use super::rtnetlink_addr::IfaCacheInfo;
 use super::rtnetlink_link::{put_link_stats64, LinkStats64};
 use super::uapi::{
@@ -76,8 +76,14 @@ pub fn done_multi(seq: u32, pid: u32) -> Vec<u8> {
 /// Handle a single RTM_GETLINK request.
 /// # C: O(N_ifaces)
 pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
+    handle_getlink_in(net::netdev::current_net_ns(), req)
+}
+
+/// Handle RTM_GETLINK in the socket's captured network namespace.
+/// # C: O(N_ifaces)
+pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
-    let entries = ifaces_snapshot();
+    let entries = ifaces_snapshot_in(ns);
     for (id, name, mac, mtu, is_lo, flags, stats) in entries.iter() {
         let one = build_newlink_reply(
             req.nlmsg_seq, req.nlmsg_pid, *id as i32, name, *mac, *mtu, *is_lo, *flags, *stats, true,
@@ -183,9 +189,15 @@ pub(crate) fn build_newaddr6_reply(
 /// RTM_GETADDR dump.
 /// # C: O(N_ifaces)
 pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
+    handle_getaddr_in(net::netdev::current_net_ns(), req)
+}
+
+/// Handle RTM_GETADDR in the socket's captured network namespace.
+/// # C: O(N_ifaces)
+pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
-    let ifaces = ifaces_snapshot();
-    for row in super::rtnetlink_addr::addr_snapshot_ns(net::netdev::current_net_ns()).iter() {
+    let ifaces = ifaces_snapshot_in(ns);
+    for row in super::rtnetlink_addr::addr_snapshot_ns(ns).iter() {
         let name = match ifaces.iter().find(|(id, _, _, _, _, _, _)| *id == row.ifindex) {
             Some((_, n, _, _, _, _, _)) => n.as_str(),
             None => continue,
@@ -197,7 +209,7 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
         reply.extend_from_slice(&one);
     }
     #[cfg(target_os = "oxide-kernel")]
-    for (iface, row) in net::sock::stack().v6_addr_snapshot() {
+    for (iface, row) in net::sock::stack().v6_addr_snapshot_in(ns) {
         let name = match ifaces.iter().find(|(id, _, _, _, _, _, _)| *id == iface.raw()) {
             Some((_, n, _, _, _, _, _)) => n.as_str(),
             None => continue,
