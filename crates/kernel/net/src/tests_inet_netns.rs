@@ -3,12 +3,14 @@ use core::sync::atomic::AtomicI32;
 
 use sync::{Socket as StackLockClass, Spinlock};
 
-use crate::addr::{IpAddr, Ipv4Addr, Ipv6Addr};
+use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr};
 use crate::netdev::{NetDev, NetResult};
 use crate::stack::{NetStack, UdpRxQueue};
+use crate::stack_ipv6::Udp6RxQueue;
 use crate::{LoopbackDev, NetIfaceId, SocketError};
 
 const PORT: u16 = 42_824;
+const V6_PORT: u16 = 42_825;
 
 fn owners() -> (network_namespace::NetworkNamespaceRef,
     network_namespace::NetworkNamespaceRef)
@@ -27,6 +29,38 @@ fn bind_udp(stack: &NetStack, ns: u64, ip: Ipv4Addr, port: u16) -> NetResult<Arc
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(crate::mcast_filter::SocketMcast::new()),
     )
+}
+
+fn bind_udp6(stack: &NetStack, ns: u64, port: u16) -> NetResult<Arc<Udp6RxQueue>> {
+    stack.bind_udp6_socket_in(
+        ns, Ipv6Addr::ANY, port, None, Arc::new(SocketError::new()), flag(0), flag(0),
+        1_000, flag(0), Arc::new(Spinlock::new(None)),
+        flag(crate::uapi::IPV6_PMTUDISC_WANT),
+        Arc::new(crate::bpf_filter::SocketFilter::new()),
+        Arc::new(crate::mcast_filter::SocketMcast::new()),
+    )
+}
+
+fn udp4_packet(src: Ipv4Addr, dst: Ipv4Addr, sport: u16, dport: u16) -> alloc::vec::Vec<u8> {
+    let udp_len = crate::udp::UDP_HDR_LEN + 1;
+    let mut packet = alloc::vec![0u8; crate::ipv4::IPV4_HDR_LEN + udp_len];
+    crate::udp::UdpHdr::build_into(
+        sport, dport, src, dst, &[4], &mut packet[crate::ipv4::IPV4_HDR_LEN..],
+    );
+    crate::ipv4::Ipv4Hdr::build(src, dst, IpProto::Udp, udp_len as u16, 1)
+        .write_to(&mut packet[..crate::ipv4::IPV4_HDR_LEN]);
+    packet
+}
+
+fn udp6_packet(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> alloc::vec::Vec<u8> {
+    let udp_len = crate::udp::UDP_HDR_LEN + 1;
+    let mut packet = alloc::vec![0u8; crate::ipv6::IPV6_HDR_LEN + udp_len];
+    crate::ipv6::Ipv6Hdr::build(src, dst, IpProto::Udp, udp_len as u16)
+        .write_to(&mut packet[..crate::ipv6::IPV6_HDR_LEN]);
+    crate::udp::build_into_v6(
+        sport, dport, src, dst, &[6], &mut packet[crate::ipv6::IPV6_HDR_LEN..],
+    );
+    packet
 }
 
 fn iface_in(stack: &NetStack, ns: u64) -> NetIfaceId {
@@ -74,6 +108,33 @@ fn ingress_interface_selects_only_its_namespace_udp_endpoint() {
     assert_eq!(selected_b.len(), 1);
     assert!(Arc::ptr_eq(&selected_a[0], &a));
     assert!(Arc::ptr_eq(&selected_b[0], &b));
+}
+
+#[test]
+fn ingress_lease_selects_only_its_namespace() {
+    let stack = NetStack::new();
+    let (owner_a, owner_b) = owners();
+    let (ns_a, ns_b) = (owner_a.id().as_u64(), owner_b.id().as_u64());
+    let (_iface_a, _) = stack.register_loopback_in(ns_a);
+    let (iface_b, _) = stack.register_loopback_in(ns_b);
+    let v4_a = bind_udp(&stack, ns_a, Ipv4Addr::ANY, PORT).unwrap();
+    let v4_b = bind_udp(&stack, ns_b, Ipv4Addr::ANY, PORT).unwrap();
+    let v6_a = bind_udp6(&stack, ns_a, V6_PORT).unwrap();
+    let v6_b = bind_udp6(&stack, ns_b, V6_PORT).unwrap();
+
+    let lease = stack.ifaces.acquire_ingress(iface_b).unwrap();
+    stack.deliver_rx_in(&lease, &udp4_packet(
+        Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::LOOPBACK, 50_000, PORT,
+    )).unwrap();
+    stack.deliver_rx_ipv6_in(&lease, &udp6_packet(
+        Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]),
+        Ipv6Addr::LOOPBACK, 50_001, V6_PORT,
+    )).unwrap();
+
+    assert!(v4_a.recv(false).is_none());
+    assert_eq!(v4_b.recv(false).unwrap().5, alloc::vec![4]);
+    assert!(v6_a.recv(false).is_none());
+    assert_eq!(v6_b.recv(false).unwrap().5, alloc::vec![6]);
 }
 
 #[test]
