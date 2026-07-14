@@ -10,6 +10,8 @@ Update: 2026-07-14.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
 - N03.8.2 physical ingress owner lease merged in PR #3111 at `f8d5c20a`.
 - N03.8.6 namespace-aware Virtio uninstall merged in PR #3113 at `8c077249`.
+- N03.8.7 control-plane/lifecycle serialization is active on
+  `B844-netns-control-plane-lifecycle`.
 
 ## Implemented
 
