@@ -136,6 +136,9 @@ impl ArpCache {
         self.insert_at(ip, mac, now_ns_safe())
     }
 
+    /// Remove all neighbor state when the owning interface leaves a namespace. # C: O(N)
+    pub fn clear(&self) { self.inner.lock().clear(); }
+
     /// Lookup with stale check: drops + returns None when the
     /// entry is older than `ARP_STALE_NS`. `now_ns == 0` disables
     /// the stale check (hosted tests, pre-clock callers).

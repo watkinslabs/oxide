@@ -1,4 +1,5 @@
 use core::sync::atomic::{AtomicU64, Ordering};
+use network_namespace::NetworkNamespaceRef;
 
 /// Linux default `net.ipv4.ip_local_port_range`.
 pub const DEFAULT_START: u16 = 32_768;
@@ -54,8 +55,6 @@ impl State {
 
 impl Default for State { fn default() -> Self { Self::new() } }
 
-static INIT_STATE: State = State::new();
-
 /// One coherent allocator range snapshot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Range { pub start: u16, pub end: u16 }
@@ -76,7 +75,7 @@ impl Range {
 }
 
 /// Snapshot the live `ip_local_port_range` atomically. # C: O(1)
-pub fn range() -> Range {
+pub fn range() -> Option<Range> {
     range_in(crate::netdev::current_net_ns())
 }
 
@@ -85,22 +84,35 @@ pub fn set_range(start: u16, end: u16) -> Result<(), ()> {
     set_range_in(crate::netdev::current_net_ns(), start, end)
 }
 
-pub fn range_in(ns: u64) -> Range {
-    if ns == 0 { INIT_STATE.range() } else { crate::net_ns::ns_net(ns).ports.range() }
+/// Snapshot a retained namespace's local-port range. # C: O(log N)
+pub fn range_for(namespace: &NetworkNamespaceRef) -> Option<Range> {
+    crate::net_ns::state_for(namespace).map(|state| state.ports.range())
+}
+
+pub fn range_in(ns: u64) -> Option<Range> {
+    crate::net_ns::state_by_id(ns).map(|state| state.ports.range())
 }
 
 pub fn set_range_in(ns: u64, start: u16, end: u16) -> Result<(), ()> {
-    if ns == 0 { INIT_STATE.set_range(start, end) }
-    else { crate::net_ns::ns_net(ns).ports.set_range(start, end) }
+    crate::net_ns::state_by_id(ns).ok_or(())?.ports.set_range(start, end)
 }
 
-pub fn unprivileged_start() -> u16 {
+/// Replace a retained namespace's local-port range. # C: O(log N)
+pub fn set_range_for(namespace: &NetworkNamespaceRef, start: u16, end: u16) -> Result<(), ()> {
+    crate::net_ns::state_for(namespace).ok_or(())?.ports.set_range(start, end)
+}
+
+pub fn unprivileged_start() -> Option<u16> {
     unprivileged_start_in(crate::netdev::current_net_ns())
 }
 
-pub fn unprivileged_start_in(ns: u64) -> u16 {
-    if ns == 0 { INIT_STATE.unprivileged_start() }
-    else { crate::net_ns::ns_net(ns).ports.unprivileged_start() }
+pub fn unprivileged_start_in(ns: u64) -> Option<u16> {
+    crate::net_ns::state_by_id(ns).map(|state| state.ports.unprivileged_start())
+}
+
+/// Read a retained namespace's privileged-port boundary. # C: O(log N)
+pub fn unprivileged_start_for(namespace: &NetworkNamespaceRef) -> Option<u16> {
+    crate::net_ns::state_for(namespace).map(|state| state.ports.unprivileged_start())
 }
 
 pub fn set_unprivileged_start(floor: u16) -> Result<(), ()> {
@@ -108,8 +120,12 @@ pub fn set_unprivileged_start(floor: u16) -> Result<(), ()> {
 }
 
 pub fn set_unprivileged_start_in(ns: u64, floor: u16) -> Result<(), ()> {
-    if ns == 0 { INIT_STATE.set_unprivileged_start(floor) }
-    else { crate::net_ns::ns_net(ns).ports.set_unprivileged_start(floor) }
+    crate::net_ns::state_by_id(ns).ok_or(())?.ports.set_unprivileged_start(floor)
+}
+
+/// Update a retained namespace's privileged-port boundary. # C: O(log N)
+pub fn set_unprivileged_start_for(namespace: &NetworkNamespaceRef, floor: u16) -> Result<(), ()> {
+    crate::net_ns::state_for(namespace).ok_or(())?.ports.set_unprivileged_start(floor)
 }
 
 #[cfg(test)]
@@ -141,11 +157,15 @@ mod tests {
 
     #[test]
     fn non_init_namespace_ranges_are_isolated() {
-        let first = 0x8230_0001;
-        let second = 0x8230_0002;
-        super::set_range_in(first, 45_000, 45_009).unwrap();
-        assert_eq!(super::range_in(first), Range { start: 45_000, end: 45_009 });
-        assert_eq!(super::range_in(second),
-            Range { start: super::DEFAULT_START, end: super::DEFAULT_END });
+        let _ = crate::net_ns::install_final_drop_pending_notifier();
+        let first = network_namespace::allocate(0).unwrap();
+        let second = network_namespace::allocate(0).unwrap();
+        crate::net_ns::materialize_state(&first);
+        crate::net_ns::materialize_state(&second);
+        super::set_range_for(&first, 45_000, 45_009).unwrap();
+        assert_eq!(super::range_for(&first), Some(Range { start: 45_000, end: 45_009 }));
+        assert_eq!(super::range_for(&second),
+            Some(Range { start: super::DEFAULT_START, end: super::DEFAULT_END }));
+        assert_eq!(super::range_in(u64::MAX), None);
     }
 }

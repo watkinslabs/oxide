@@ -71,7 +71,7 @@ pub fn alloc_ephemeral_udp4(net_ns: u64, bind_ip: Ipv4Addr,
     -> Result<(u16, Arc<UdpRxQueue>), NetError>
 {
     use core::sync::atomic::Ordering;
-    let range = crate::ephemeral::range_in(net_ns);
+    let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
     let tables = crate::global_stack().inet_tables(net_ns);
     for _ in 0..range.count() {
         let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);
@@ -122,7 +122,7 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
     -> Result<(u16, Arc<crate::stack_ipv6::Udp6RxQueue>), NetError>
 {
     use core::sync::atomic::Ordering;
-    let range = crate::ephemeral::range_in(net_ns);
+    let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
     let tables = crate::global_stack().inet_tables(net_ns);
     for _ in 0..range.count() {
         let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);

@@ -10,6 +10,10 @@ impl crate::NetDev for ToggleXmitDev {
     fn name(&self) -> &str { "mld-fail" }
     fn mac(&self) -> crate::MacAddr { crate::MacAddr::ZERO }
     fn mtu(&self) -> u32 { 1500 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
+        crate::NamespaceDropAction::Destroy
+    }
     fn xmit(&self, _pkt: crate::Pkt) -> crate::NetResult<()> {
         self.attempts.fetch_add(1, Ordering::AcqRel);
         if self.fail.load(Ordering::Acquire) { Err(crate::NetError::Eio) } else { Ok(()) }

@@ -73,7 +73,8 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             Some(RemoteAddr::Unspec) => return Err(NetError::Einval),
             _ => q.peer().ok_or(NetError::Edestaddrreq)?,
         };
-        let q = crate::net_ns::unix_registry_for_addr(&path).dgram_lookup_addr(&path)
+        let q = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &path)
+            .dgram_lookup_addr(&path)
             .ok_or(NetError::Econnrefused)?;
         crate::trace_dgram_journal(&path.display, payload);
         q.try_push_from(crate::UnixDgram {

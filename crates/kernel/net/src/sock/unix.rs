@@ -6,7 +6,8 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
     {
         let kind = sock.kind.lock();
         if let SockKind::UnixDgram(q) = &*kind {
-            if crate::net_ns::unix_registry_for_addr(&addr).dgram_lookup_addr(&addr).is_none() {
+            if crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
+                .dgram_lookup_addr(&addr).is_none() {
                 return Err(NetError::Econnrefused);
             }
             q.set_peer(addr);
@@ -19,7 +20,7 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
             _ => return Err(NetError::Einval),
         }
     }
-    let registry = crate::net_ns::unix_registry_for_addr(&addr);
+    let registry = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr);
     let candidate = crate::UnixPair::new();
     candidate.register_end_subs(crate::UnixEnd::B, &sock.poll_subs);
     if let Some(c) = sched::live::current() {
