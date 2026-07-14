@@ -52,9 +52,12 @@ pub fn handle_setlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     ]);
     if ifindex <= 0 { return build_ack(req, -19); }
     let id = net::addr::NetIfaceId::from_raw(ifindex as u32);
-    let ifaces = &net::global_stack().ifaces;
-    if ifaces.lookup_in_ns(id, ns).is_none() { return build_ack(req, -19); }
-    match ifaces.set_iface_flags(id, ifi_flags, ifi_change) {
+    let stack = net::global_stack();
+    let changed = {
+        let rtnl = stack.rtnl_lock();
+        stack.ifaces.set_iface_flags_in_ns(&rtnl, id, ns, ifi_flags, ifi_change)
+    };
+    match changed {
         Some(_) => { crate::mcast::notify_link(ifindex); build_ack(req, 0) }
         None => build_ack(req, -19),
     }

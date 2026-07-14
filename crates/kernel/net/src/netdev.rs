@@ -312,12 +312,52 @@ impl IfaceRegistry {
             .map(|e| e.flags.load(Ordering::Acquire))
     }
 
-    /// Apply an RTM_SETLINK flag change: `flags = (flags & !change) |
-    /// (new & change)`. Returns the post-change flags, or None if no
-    /// such iface. Linux ifinfomsg semantics. # C: O(N)
-    pub fn set_iface_flags(&self, id: NetIfaceId, new: u32, change: u32) -> Option<u32> {
+    fn guard_matches(&self, rtnl: &crate::RtnlGuard<'_>) -> bool {
+        core::ptr::eq(self, &rtnl.stack().ifaces)
+    }
+
+    /// Lookup control-ready interface in captured namespace. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn control_ready_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64)
+        -> Option<Arc<dyn NetDev>>
+    {
+        if !self.guard_matches(rtnl) { return None; }
         let g = self.inner.lock();
-        let e = g.entries.iter().find(|e| e.id == id && e.ingress.live())?;
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| e.dev.clone())
+    }
+
+    /// Control-ready namespace generation under matching stack RTNL. # C: O(N)
+    pub(crate) fn control_generation_in_ns(&self, rtnl: &crate::RtnlGuard<'_>,
+                                            id: NetIfaceId, ns: u64) -> Option<u64> {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| e.ingress.generation)
+    }
+
+    /// Lookup control-ready interface name in captured namespace. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn control_ready_name_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, name: &str, ns: u64)
+        -> Option<(NetIfaceId, Arc<dyn NetDev>)>
+    {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.dev.name() == name && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| (e.id, e.dev.clone()))
+    }
+
+    /// Apply namespace-qualified Linux ifinfomsg flag mutation. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn set_iface_flags_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
+                                 new: u32, change: u32) -> Option<u32> {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        let e = g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())?;
         let cur = e.flags.load(Ordering::Acquire);
         let next = (cur & !change) | (new & change);
         e.flags.store(next, Ordering::Release);

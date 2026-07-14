@@ -82,13 +82,17 @@ pub fn ipv4_addr_change_hook(id: net::NetIfaceId, ip: net::Ipv4Addr) {
     let _ = drv_virtio_net::modern::set_softirq_ip_for_iface(id, ip.octets());
 }
 
-fn set_ifaddr_in(ns: u64, id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool) {
+fn set_ifaddr_in(ns: u64, id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool)
+    -> bool
+{
+    let stack = net::sock::stack();
     if set_ip {
-        net::iface_addr::set_primary_addr(ns, id, net::Ipv4Addr::from_u32(ip), 0);
+        return stack.set_primary_ipv4_in(ns, id, net::Ipv4Addr::from_u32(ip), 0);
     }
     if set_mask {
-        net::iface_addr::set_primary_mask(ns, id, mask);
+        return stack.set_primary_ipv4_mask_in(ns, id, mask);
     }
+    true
 }
 
 /// Dispatch a SIOC* ioctl. Returns Some(rv) when recognised;
@@ -167,9 +171,13 @@ fn siocgifflags(net_ns: u64, arg: u64) -> i64 {
 
 fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let id = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
-        Some((id, _)) => id,
-        None => return -(Errno::Enodev.as_i32() as i64),
+    let stack = net::sock::stack();
+    let id = {
+        let rtnl = stack.rtnl_lock();
+        match stack.ifaces.control_ready_name_in_ns(&rtnl, &name, net_ns) {
+            Some((id, _)) => id,
+            None => return -(Errno::Enodev.as_i32() as i64),
+        }
     };
     // SAFETY: handle_sioc_in validated the ifreq base; ifr_flags occupies bytes 16..18.
     let requested = unsafe { core::ptr::read_volatile((arg + 16) as *const u16) } as u32;
@@ -177,7 +185,12 @@ fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
     if (current ^ requested) & !net::netdev::iff::IFF_UP != 0 {
         return -(Errno::Eopnotsupp.as_i32() as i64);
     }
-    match net::sock::stack().ifaces.set_iface_flags(id, requested, net::netdev::iff::IFF_UP) {
+    let changed = {
+        let rtnl = stack.rtnl_lock();
+        stack.ifaces.set_iface_flags_in_ns(
+            &rtnl, id, net_ns, requested, net::netdev::iff::IFF_UP)
+    };
+    match changed {
         Some(_) => 0,
         None => -(Errno::Enodev.as_i32() as i64),
     }
@@ -240,14 +253,19 @@ fn siocgifaddr(net_ns: u64, arg: u64) -> i64 {
 
 fn siocsifaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let (id, _) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
-        Some(t) => t, None => return -(Errno::Enoent.as_i32() as i64),
+    let stack = net::sock::stack();
+    let id = {
+        let rtnl = stack.rtnl_lock();
+        match stack.ifaces.control_ready_name_in_ns(&rtnl, &name, net_ns) {
+            Some((id, _)) => id,
+            None => return -(Errno::Enoent.as_i32() as i64),
+        }
     };
     // SAFETY: arg + 24 within user range; sa_family at +16, addr at +20.
     let ip_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
     let ip_host = u32::from_be(ip_be);
-    set_ifaddr_in(net_ns, id, ip_host, 0, true, false);
-    0
+    if set_ifaddr_in(net_ns, id, ip_host, 0, true, false) { 0 }
+    else { -(Errno::Enoent.as_i32() as i64) }
 }
 
 fn siocgifnetmask(net_ns: u64, arg: u64) -> i64 {
@@ -265,13 +283,18 @@ fn siocgifnetmask(net_ns: u64, arg: u64) -> i64 {
 
 fn siocsifnetmask(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let (id, _) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
-        Some(t) => t, None => return -(Errno::Enoent.as_i32() as i64),
+    let stack = net::sock::stack();
+    let id = {
+        let rtnl = stack.rtnl_lock();
+        match stack.ifaces.control_ready_name_in_ns(&rtnl, &name, net_ns) {
+            Some((id, _)) => id,
+            None => return -(Errno::Enoent.as_i32() as i64),
+        }
     };
     // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifr_addr's sin_addr at +20 within the 32-byte ifreq.
     let mask_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
-    set_ifaddr_in(net_ns, id, 0, u32::from_be(mask_be), false, true);
-    0
+    if set_ifaddr_in(net_ns, id, 0, u32::from_be(mask_be), false, true) { 0 }
+    else { -(Errno::Enoent.as_i32() as i64) }
 }
 
 fn siocgifbrdaddr(net_ns: u64, arg: u64) -> i64 {
