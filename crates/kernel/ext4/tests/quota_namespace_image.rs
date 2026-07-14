@@ -305,6 +305,7 @@ fn project_inherit_write_append_and_xattr_account_project_space() {
 
     let file = m.state().create_at(b"/space/file", 0o644).expect("create project file");
     let ino = file.ino() as u32;
+    let free_blocks_before_file_data = m.state().mount.state_free_blocks();
     assert_eq!(vfs::quota_getquota(&sb, qid).expect("quota after create").dqb_curspace, base.dqb_curspace);
 
     let bs = m.state().mount.sb.block_size as usize;
@@ -324,6 +325,7 @@ fn project_inherit_write_append_and_xattr_account_project_space() {
     let after = vfs::quota_getquota(&sb, qid).expect("quota after unlink");
     assert_eq!(after.dqb_curspace, base.dqb_curspace);
     assert_eq!(after.dqb_curinodes, base.dqb_curinodes);
+    assert_eq!(m.state().mount.state_free_blocks(), free_blocks_before_file_data);
 }
 
 #[test]
