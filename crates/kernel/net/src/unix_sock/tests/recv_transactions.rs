@@ -21,13 +21,41 @@ fn stream_callback_error_rolls_back_payload_and_rights() {
     let failed = pair.read_stream_with(UnixEnd::B, 64, |data, rights, _| {
         assert_eq!(data, b"stream");
         assert_eq!(rights, 1);
-        Err::<(), _>(7u8)
+        Err::<((), usize), _>(7u8)
     });
     assert!(matches!(failed, Err(7)));
     let (data, files, _) = pair.read_stream(UnixEnd::B, 64);
     assert_eq!(data, b"stream");
     assert_eq!(files.len(), 1);
     assert!(alloc::sync::Arc::ptr_eq(&files[0], &file));
+}
+
+#[test]
+fn stream_peek_clones_rights_without_consuming_queue() {
+    let pair = UnixPair::new();
+    let file = anon_file();
+    pair.write_with_fds(UnixEnd::A, b"peek", alloc::vec![file.clone()]).unwrap();
+    let (_, peeked, _) = pair.read_stream_with_opts(UnixEnd::B, 64, true, |data, rights, _| {
+        assert_eq!(data, b"peek");
+        assert_eq!(rights, 1);
+        Ok::<_, ()>((data.len(), data.len()))
+    }).unwrap().unwrap();
+    assert_eq!(peeked.len(), 1);
+    assert!(alloc::sync::Arc::ptr_eq(&peeked[0], &file));
+    let (data, consumed, _) = pair.read_stream(UnixEnd::B, 64);
+    assert_eq!(data, b"peek");
+    assert_eq!(consumed.len(), 1);
+}
+
+#[test]
+fn stream_partial_copy_commits_only_copied_prefix() {
+    let pair = UnixPair::new();
+    pair.write(UnixEnd::A, b"transaction").unwrap();
+    let copied = pair.read_stream_with(UnixEnd::B, 64, |data, _, _| {
+        Ok::<_, ()>((data[..4].to_vec(), 4))
+    }).unwrap().unwrap().0;
+    assert_eq!(copied, b"tran");
+    assert_eq!(pair.read(UnixEnd::B, 64), b"saction");
 }
 
 #[test]
@@ -69,4 +97,18 @@ fn dgram_record_keeps_rights_and_sender_in_one_queue_entry() {
     assert_eq!(msg.fds.len(), 1);
     assert!(alloc::sync::Arc::ptr_eq(&msg.fds[0], &file));
     assert!(queue.pop().is_none());
+}
+
+
+#[test]
+fn dgram_peek_returns_rights_without_consuming_record() {
+    let queue = UnixDgramQueue::new();
+    let file = anon_file();
+    let msg = UnixDgram { payload: b"peek".to_vec(), creds: (1, 2, 3), fds: alloc::vec![file.clone()] };
+    queue.try_push(msg).unwrap();
+    let (_, peeked, _) = queue.recv_with(true, |_, _, rights| Ok::<_, ()>(rights)).unwrap().unwrap();
+    assert_eq!(peeked.fds.len(), 1);
+    assert!(alloc::sync::Arc::ptr_eq(&peeked.fds[0], &file));
+    let (_, consumed, _) = queue.recv_with(false, |_, _, rights| Ok::<_, ()>(rights)).unwrap().unwrap();
+    assert_eq!(consumed.fds.len(), 1);
 }

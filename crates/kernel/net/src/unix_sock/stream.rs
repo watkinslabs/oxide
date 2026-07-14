@@ -412,7 +412,12 @@ impl UnixPair {
 
     /// Inspect one boundary-limited stream segment and commit it only when
     /// `copy` succeeds. Callback runs under the receive-ring lock. # C: O(max + rights)
-    pub fn read_stream_with<R, E>(&self, end: UnixEnd, max: usize, copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<R, E>)
+    pub fn read_stream_with<R, E>(&self, end: UnixEnd, max: usize, copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<(R, usize), E>)
+        -> Result<Option<(R, Vec<Arc<vfs::File>>, Option<(u32, u32, u32)>)>, E>
+    { self.read_stream_with_opts(end, max, false, copy) }
+
+    /// Transactional stream receive with optional non-consuming peek. # C: O(max + rights)
+    pub fn read_stream_with_opts<R, E>(&self, end: UnixEnd, max: usize, peek: bool, copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<(R, usize), E>)
         -> Result<Option<(R, Vec<Arc<vfs::File>>, Option<(u32, u32, u32)>)>, E>
     {
         let mut g = match end {
@@ -436,14 +441,20 @@ impl UnixPair {
         let take = core::cmp::min(cap, g.buf.len());
         if take == 0 && eligible == 0 { return Ok(None); }
         let out: Vec<u8> = g.buf.iter().take(take).copied().collect();
-        let copied = copy(&out, rights_len, cred_out)?;
+        let (copied, commit) = copy(&out, rights_len, cred_out)?;
+        let commit = core::cmp::min(commit, take);
+        if peek {
+            let mut files = Vec::with_capacity(rights_len);
+            for (_, rights, _) in g.ancillary.iter().take(eligible) { files.extend(rights.clone_files()); }
+            return Ok(Some((copied, files, cred_out)));
+        }
         let mut rights_out = Vec::with_capacity(eligible);
         for _ in 0..eligible {
             let (_, rights, _) = g.ancillary.pop_front().unwrap();
             rights_out.push(rights);
         }
-        for _ in 0..take { g.buf.pop_front(); }
-        g.consumed += take as u64;
+        for _ in 0..commit { g.buf.pop_front(); }
+        g.consumed += commit as u64;
         drop(g);
         let mut fds_out: Vec<Arc<vfs::File>> = Vec::new();
         for rights in rights_out { fds_out.extend(rights.take_files()); }
@@ -452,7 +463,7 @@ impl UnixPair {
 
     /// Boundary-aware infallible stream drain used by legacy receive paths. # C: O(max + rights)
     pub fn read_stream(&self, end: UnixEnd, max: usize) -> (Vec<u8>, Vec<Arc<vfs::File>>, Option<(u32, u32, u32)>) {
-        self.read_stream_with(end, max, |data, _, _| Ok::<Vec<u8>, core::convert::Infallible>(data.to_vec()))
+        self.read_stream_with(end, max, |data, _, _| Ok::<_, core::convert::Infallible>((data.to_vec(), data.len())))
             .unwrap_or_else(|never| match never {})
             .map(|(data, files, cred)| (data, files, cred))
             .unwrap_or_else(|| (Vec::new(), Vec::new(), None))

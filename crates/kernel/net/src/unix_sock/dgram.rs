@@ -102,6 +102,12 @@ impl UnixDgramQueue {
         self.try_push_from_with_rights(msg, None, rights)
     }
 
+    /// Enqueue a datagram with its sender address and embedded file batch. # C: O(rights)
+    pub fn try_push_from(&self, mut msg: UnixDgram, sender: Option<UnixAddr>) -> Result<(), crate::NetError> {
+        let rights = GcRights::from_files(core::mem::take(&mut msg.fds));
+        self.try_push_from_with_rights(msg, sender, rights)
+    }
+
     /// Enqueue a datagram with a classified canonical rights batch. # C: O(1)
     pub fn try_push_with_rights(&self, msg: UnixDgram, rights: GcRights) -> Result<(), crate::NetError> {
         self.try_push_from_with_rights(msg, None, rights)
@@ -177,7 +183,7 @@ impl UnixDgramQueue {
             }
         };
         if peek {
-            let msg = UnixDgram { payload: front.payload.clone(), creds: front.creds, fds: Vec::new() };
+            let msg = UnixDgram { payload: front.payload.clone(), creds: front.creds, fds: front.rights.clone_files() };
             return Ok(Some((copied, msg, front.sender.clone())));
         }
         let mut record = q.pop_front().unwrap();

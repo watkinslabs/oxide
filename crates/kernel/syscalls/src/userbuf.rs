@@ -7,7 +7,7 @@ use hal::USER_VA_END;
 /// Linux `MAX_RW_COUNT`: cap one read/write transfer below `INT_MAX` and on a
 /// page boundary (`include/linux/fs.h`). Applied after access_ok/rw_verify_area
 /// and before the file op sees the userspace buffer. # C: O(1)
-pub(crate) const MAX_RW_COUNT: usize = 0x7ffff000;
+pub(crate) use uaccess::MAX_RW_COUNT;
 
 /// Clamp a single read/write byte count to Linux `MAX_RW_COUNT`. # C: O(1)
 pub(crate) fn clamp_rw_count(n: usize) -> usize {

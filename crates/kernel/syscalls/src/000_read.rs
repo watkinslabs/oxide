@@ -19,23 +19,21 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-    // netlink sockets support read() (Linux): pop one datagram from the
-    // socket recv queue (same path as recvfrom, no peer addr).
-    if crate::netlink_fd::is_netlink(fd as u64) {
-        let ret = crate::netlink_fd::read(fd as u64, buf, cnt);
-        cur.account_read_result(ret);
-        return ret;
-    }
     if !file.f_mode().contains(vfs::Fmode::READ) { return -(Errno::Ebadf.as_i32() as i64); }
     // fanotify FAN_ACCESS_PERM: blocks until a daemon allows/denies (fast
     // no-op when no perm marks exist). Deny → EACCES.
     if !::fs::inotify::check_access_perm(&file.inode()) { return -(Errno::Eacces.as_i32() as i64); }
     if cnt == 0 {
-        let mut empty: [u8; 0] = [];
-        let ret = match file.read(&mut empty) {
-            Ok(n)  => n as i64,
-            Err(e) => -(e as i64),
-        };
+        let ret = 0;
+        cur.account_read_result(ret);
+        return ret;
+    }
+    if crate::netlink_fd::is_netlink(fd as u64)
+        || crate::net_common::vsock_from_fd(fd as u64).is_some()
+        || crate::net_common::socket_from_fd(fd as u64).is_some()
+    {
+        let recv = SyscallArgs { a0: fd as u64, a1: buf, a2: cnt as u64, a3: 0, a4: 0, a5: 0 };
+        let ret = crate::net_recv::sys_recvfrom(&recv);
         cur.account_read_result(ret);
         return ret;
     }

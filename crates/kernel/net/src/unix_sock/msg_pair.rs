@@ -254,7 +254,8 @@ impl UnixMsgPair {
             }
         };
         let mut msg = if peek {
-            UnixMsg { payload, fds: Vec::new(), rights: None, creds }
+            let fds = front.rights.as_ref().map(GcRights::clone_files).unwrap_or_else(|| front.fds.clone());
+            UnixMsg { payload, fds, rights: None, creds }
         } else {
             g.msgs.pop_front().unwrap()
         };

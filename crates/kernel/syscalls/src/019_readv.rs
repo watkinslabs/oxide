@@ -45,15 +45,24 @@ pub fn sys_readv(args: &SyscallArgs) -> i64 {
         return ret;
     }
     if iovcnt == 0 {
-        let ret = match file.read_iter(&mut []) {
-            Ok(n)  => n as i64,
-            Err(e) => -(e as i64),
-        };
+        let ret = 0;
         cur.account_read_result(ret);
         return ret;
     }
     if iovcnt > IOV_MAX {
         let ret = -(Errno::Einval.as_i32() as i64);
+        cur.account_read_result(ret);
+        return ret;
+    }
+    if crate::netlink_fd::is_netlink(fd as u64)
+        || crate::net_common::vsock_from_fd(fd as u64).is_some()
+        || crate::net_common::socket_from_fd(fd as u64).is_some()
+    {
+        let user = match crate::recv_user::import_iov(iov, iovcnt as usize) {
+            Ok(user) => user,
+            Err(e) => { cur.account_read_result(e); return e; }
+        };
+        let ret = crate::recvmsg::recv(fd as u64, &user, 0);
         cur.account_read_result(ret);
         return ret;
     }

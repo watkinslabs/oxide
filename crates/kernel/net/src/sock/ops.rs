@@ -380,6 +380,7 @@ pub fn sendto(
     }
     // AF_UNIX SOCK_DGRAM: explicit dest or connected peer.
     if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
+        let sender = q.bound();
         let path = match dest.clone() {
             Some(RemoteAddr::Unix(p)) => p,
             Some(RemoteAddr::Unspec) => return Err(NetError::Einval),
@@ -388,11 +389,11 @@ pub fn sendto(
         let q = crate::net_ns::unix_registry_for_addr(&path).dgram_lookup_addr(&path)
             .ok_or(NetError::Econnrefused)?;
         crate::trace_dgram_journal(&path.display, payload);
-        q.try_push(crate::UnixDgram {
+        q.try_push_from(crate::UnixDgram {
             payload: payload.to_vec(),
             creds: (creds.pid, creds.uid, creds.gid),
             fds: alloc::vec::Vec::new(),
-        })?;
+        }, sender)?;
         return Ok(payload.len());
     }
     // TCP: send into the existing connection.

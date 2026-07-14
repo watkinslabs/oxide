@@ -1,5 +1,8 @@
 use hal::USER_VA_END;
 
+/// Linux maximum byte count for one read/write-family transfer.
+pub const MAX_RW_COUNT: usize = 0x7fff_f000;
+
 /// Linux access_ok range check; zero length permits any user boundary address. # C: O(1)
 pub fn access_ok(addr: u64, len: usize) -> bool {
     if len == 0 { return addr <= USER_VA_END; }
