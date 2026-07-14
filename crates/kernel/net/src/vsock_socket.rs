@@ -28,8 +28,8 @@ pub enum VsockKind {
 pub struct VsockSocket {
     pub kind: Spinlock<VsockKind, SockLockClass>,
     pub so_type: core::sync::atomic::AtomicU8,
-    /// Socket-owned pending receive error, stored as a positive Linux errno.
-    pending_recv_error: core::sync::atomic::AtomicI32,
+    /// Canonical Linux `sk_err`.
+    pub error: crate::SocketError,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
     pub poll_subs: Arc<vfs::PollSubscribers>,
@@ -46,7 +46,7 @@ impl VsockSocket {
         VsockSocket {
             kind: Spinlock::new(VsockKind::Init),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
-            pending_recv_error: core::sync::atomic::AtomicI32::new(0),
+            error: crate::SocketError::new(),
             read_shut: core::sync::atomic::AtomicBool::new(false),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
         }
@@ -63,19 +63,27 @@ impl VsockSocket {
 
     /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
     pub fn set_pending_recv_error(&self, errno: i32) -> bool {
-        if errno <= 0 { return false; }
-        self.pending_recv_error.store(errno, core::sync::atomic::Ordering::Release);
-        true
+        let conn = self.conn();
+        let _rx = conn.as_ref().map(|c| c.rx.lock());
+        let changed = self.error.set(errno);
+        if changed {
+            #[cfg(target_os = "oxide-kernel")]
+            if let Some(c) = conn.as_ref() {
+                c.waiters.wake_all();
+            }
+            self.poll_subs.notify_mask(vfs::POLL_ERR);
+        }
+        changed
     }
 
     /// Consume the pending positive Linux receive errno, or zero. # C: O(1)
     pub fn take_pending_recv_error(&self) -> i32 {
-        self.pending_recv_error.swap(0, core::sync::atomic::Ordering::AcqRel)
+        self.error.take()
     }
 
     /// Observe whether a receive error is pending without consuming it. # C: O(1)
     pub fn has_pending_recv_error(&self) -> bool {
-        self.pending_recv_error.load(core::sync::atomic::Ordering::Acquire) != 0
+        self.error.has()
     }
 }
 
@@ -255,15 +263,22 @@ impl VsockSocket {
             match vsock::recv(&c, buf) {
                 Ok(n)  => return Ok(n),
                 Err(crate::NetError::Eagain) => {
+                    let eno = self.take_pending_recv_error();
+                    if eno != 0 { return Err(vsock_vfs_error(eno)); }
                     #[cfg(target_os = "oxide-kernel")]
                     {
                         if sched::live::deliverable_signals_self() != 0 {
                             return Err(vfs::VfsError::Eintr);
                         }
+                        let rx = c.rx.lock();
+                        if !rx.is_empty() || self.has_pending_recv_error() { continue; }
                         // SAFETY: process ctx (VsockSocket::read); runqueue
                         // installed; preempt-off owned by the read syscall stub;
-                        // the driver RX drain wakes c.waiters after pushing data.
-                        unsafe { c.waiters.park(); sched::live::schedule::schedule(); }
+                        // RX lock closes data/error publication before park.
+                        unsafe { c.waiters.park(); }
+                        drop(rx);
+                        // SAFETY: current is parked on this connection's wait list.
+                        unsafe { sched::live::schedule::schedule(); }
                     }
                     #[cfg(not(target_os = "oxide-kernel"))]
                     return Err(vfs::VfsError::Eagain);
@@ -278,7 +293,10 @@ impl VsockSocket {
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::recv(&c, buf) {
             Ok(n)  => Ok(n),
-            Err(crate::NetError::Eagain) => Err(vfs::VfsError::Eagain),
+            Err(crate::NetError::Eagain) => {
+                let eno = self.take_pending_recv_error();
+                if eno != 0 { Err(vsock_vfs_error(eno)) } else { Err(vfs::VfsError::Eagain) }
+            }
             Err(_) => Err(vfs::VfsError::Eio),
         }
     }
@@ -327,7 +345,8 @@ impl VsockSocket {
     }
 
     pub fn poll(&self) -> u32 {
-        use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
+        use vfs::{POLL_ERR, POLL_IN, POLL_OUT, POLL_HUP};
+        let pending = if self.has_pending_recv_error() { POLL_ERR } else { 0 };
         match &*self.kind.lock() {
             VsockKind::Conn(c) => {
                 let mut mask = 0;
@@ -340,12 +359,18 @@ impl VsockSocket {
                     VsockState::Closed => { mask |= POLL_HUP; }
                     VsockState::Connecting => {}
                 }
-                mask
+                mask | pending
             }
             VsockKind::Listener { port, owner } => {
-                if vsock::TABLE.pop_accept_peek(*owner, *port) { POLL_IN } else { 0 }
+                (if vsock::TABLE.pop_accept_peek(*owner, *port) { POLL_IN } else { 0 }) | pending
             }
-            VsockKind::Init | VsockKind::Bound { .. } => POLL_OUT,
+            VsockKind::Init | VsockKind::Bound { .. } => POLL_OUT | pending,
         }
     }
+}
+
+fn vsock_vfs_error(errno: i32) -> vfs::VfsError {
+    if errno == syscall::errno::Errno::Econnreset as i32 { vfs::VfsError::Econnreset }
+    else if errno == syscall::errno::Errno::Econnrefused as i32 { vfs::VfsError::Econnrefused }
+    else { vfs::VfsError::Eio }
 }

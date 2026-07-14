@@ -3,6 +3,8 @@ use super::UnixPair;
 use super::super::{GcRights, UnixEnd};
 use vfs;
 
+const ECONNRESET: i32 = syscall::errno::Errno::Econnreset as i32;
+
 #[cfg(target_os = "oxide-kernel")]
 pub enum ArmStreamRead {
     Retry,
@@ -53,24 +55,26 @@ impl UnixPair {
         }
     }
 
-    /// Consume the endpoint's one-shot connection-reset error.
+    /// Consume the endpoint's reset marker and canonical connection error.
     /// # C: O(1)
     pub fn take_reset(&self, end: UnixEnd) -> bool {
         use core::sync::atomic::Ordering::AcqRel;
-        match end {
+        let marked = match end {
             UnixEnd::A => self.reset_pending_a.swap(false, AcqRel),
             UnixEnd::B => self.reset_pending_b.swap(false, AcqRel),
-        }
+        };
+        marked && self.end_error(end).take() == ECONNRESET
     }
 
     /// Whether this endpoint still has a connection-reset error to consume.
     /// # C: O(1)
     pub fn reset_pending(&self, end: UnixEnd) -> bool {
         use core::sync::atomic::Ordering::Acquire;
-        match end {
+        let marked = match end {
             UnixEnd::A => self.reset_pending_a.load(Acquire),
             UnixEnd::B => self.reset_pending_b.load(Acquire),
-        }
+        };
+        marked && self.end_error(end).has()
     }
 
     /// Shut down `end`'s receive half while preserving bytes already queued.
@@ -118,7 +122,10 @@ impl UnixPair {
             UnixEnd::B => (&self.peer_gone_a, &self.reset_pending_a),
         };
         peer_gone.store(true, Release);
-        if unread { reset.store(true, Release); }
+        if unread {
+            self.end_error(end.other()).set(ECONNRESET);
+            reset.store(true, Release);
+        }
         let outgoing = match end { UnixEnd::A => &self.a_to_b, UnixEnd::B => &self.b_to_a };
         outgoing.lock().closed_writer = true;
         drop(fds);
@@ -171,6 +178,7 @@ impl UnixPair {
         if self.peer_gone_b.swap(true, AcqRel) { return; }
         {
             let mut incoming = self.a_to_b.lock();
+            self.end_error(UnixEnd::B).set(ECONNRESET);
             self.reset_pending_b.store(true, Release);
             incoming.closed_writer = true;
         }

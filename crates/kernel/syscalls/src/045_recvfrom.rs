@@ -78,15 +78,6 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
             Err(e) => return errno_from_neterr(e),
         }
     } else {
-        let is_v6 = sock.family.load(Ordering::Acquire) == net::sock::AF_INET6;
-        if matches!(*sock.kind.lock(), SockKind::Udp) && !is_v6 {
-            if let Some(p) = *sock.local_port.lock() {
-                if let Some(q) = net::sock::stack().udp_queue_arc(p) {
-                    let e = q.take_error();
-                    if e != 0 { return -(e as i64); }
-                }
-            }
-        }
         match net::sock_recv::recv_blocking(&sock, len, opts, deadline) {
             Ok(r) => r,
             Err(e) => return errno_from_neterr(e),

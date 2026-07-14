@@ -17,6 +17,7 @@ pub(crate) fn recv_vfs_err(e: NetError) -> vfs::VfsError {
         NetError::Enetunreach   => vfs::VfsError::Enetunreach,
         NetError::Econnrefused  => vfs::VfsError::Econnrefused,
         NetError::Econnreset    => vfs::VfsError::Econnreset,
+        NetError::Etimedout     => vfs::VfsError::Etimedout,
         NetError::Epipe         => vfs::VfsError::Epipe,
         NetError::Enotconn      => vfs::VfsError::Enotconn,
         _                       => vfs::VfsError::Eio,

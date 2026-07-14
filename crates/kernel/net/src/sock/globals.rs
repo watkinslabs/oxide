@@ -43,11 +43,17 @@ static EPHEM_NEXT: core::sync::atomic::AtomicU16
 /// `Ipv4Addr::ANY` so reply datagrams can be received.
 /// # C: O(N tries)
 pub fn alloc_ephemeral_port() -> Result<u16, NetError> {
+    alloc_ephemeral_port_with_error(Arc::new(crate::SocketError::new()))
+}
+
+/// Allocate and bind an IPv4 ephemeral UDP port to one socket's canonical
+/// error state. # C: O(N tries)
+pub fn alloc_ephemeral_port_with_error(error: Arc<crate::SocketError>) -> Result<u16, NetError> {
     use core::sync::atomic::Ordering;
     for _ in 0..(65535 - 49152) {
         let p = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
         let p = if p < 49152 { 49152 } else if p == 0 { 49152 } else { p };
-        if STACK.bind_udp(Ipv4Addr::ANY, p).is_ok() {
+        if STACK.bind_udp_with_iface_error(Ipv4Addr::ANY, p, None, error.clone()).is_ok() {
             return Ok(p);
         }
     }
@@ -60,11 +66,17 @@ pub fn alloc_ephemeral_port() -> Result<u16, NetError> {
 /// and replies via `deliver_rx_ipv6` would miss).
 /// # C: O(N tries)
 pub fn alloc_ephemeral_port6() -> Result<u16, NetError> {
+    alloc_ephemeral_port6_with_error(Arc::new(crate::SocketError::new()))
+}
+
+/// Allocate and bind an IPv6 ephemeral UDP port to one socket's canonical
+/// error state. # C: O(N tries)
+pub fn alloc_ephemeral_port6_with_error(error: Arc<crate::SocketError>) -> Result<u16, NetError> {
     use core::sync::atomic::Ordering;
     for _ in 0..(65535 - 49152) {
         let p = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
         let p = if p < 49152 { 49152 } else if p == 0 { 49152 } else { p };
-        if STACK.bind_udp6(crate::Ipv6Addr::ANY, p).is_ok() {
+        if STACK.bind_udp6_with_iface_error(crate::Ipv6Addr::ANY, p, None, error.clone()).is_ok() {
             return Ok(p);
         }
     }

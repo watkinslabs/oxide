@@ -28,15 +28,16 @@ impl Default for SocketError { fn default() -> Self { Self::new() } }
 #[cfg(test)]
 mod tests {
     use super::SocketError;
+    use syscall::errno::Errno;
 
     #[test]
     fn latest_positive_error_is_canonical() {
         let error = SocketError::new();
         assert!(!error.set(0));
         assert!(!error.set(-1));
-        assert!(error.set(111));
-        assert!(error.set(104));
-        assert_eq!(error.take(), 104);
+        assert!(error.set(Errno::Econnrefused as i32));
+        assert!(error.set(Errno::Econnreset as i32));
+        assert_eq!(error.take(), Errno::Econnreset as i32);
         assert_eq!(error.take(), 0);
     }
 }
