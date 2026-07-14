@@ -10,6 +10,10 @@ impl crate::NetDev for PmtuDev {
     fn name(&self) -> &str { "pmtu0" }
     fn mac(&self) -> crate::MacAddr { crate::MacAddr::ZERO }
     fn mtu(&self) -> u32 { 1_500 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
+        crate::NamespaceDropAction::Destroy
+    }
     fn xmit(&self, packet: crate::Pkt) -> crate::NetResult<()> {
         let hdr = crate::Ipv4Hdr::parse(packet.data()).unwrap();
         self.flags.store(hdr.flags_frag as usize, Ordering::Relaxed);

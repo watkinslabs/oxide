@@ -241,6 +241,12 @@ impl NetDev for LinuxNetAdapter {
         unsafe { (*dev).mtu }
     }
 
+    fn retire_namespace(&self) {}
+
+    fn namespace_drop_action(&self) -> net::NamespaceDropAction {
+        net::NamespaceDropAction::MoveToInitial
+    }
+
     fn xmit(&self, pkt: Pkt) -> Result<(), NetError> {
         self.xmit_raw(pkt.data())
     }

@@ -38,29 +38,45 @@ use vfs::InodeRef;
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    BoolHook as HBoolHook, BoolVar, IntHook as HIntHook, IntVar,
-    PerNetIntHook as HPerNetIntHook, PerNetU16PairHook as HPerNetU16PairHook,
+    BoolVar, IntVar, PerNetIntHook as HPerNetIntHook,
+    PerNetU16PairHook as HPerNetU16PairHook,
     StrHook as HStrHook, ULongVar,
 };
 
 /// `proc_dointvec_minmax` window upper bound for a 32-bit-int knob.
 const INT_MAX: i64 = i32::MAX as i64;
 
-fn net_somaxconn() -> i64 { net::sysctl::somaxconn() as i64 }
-fn set_net_somaxconn(value: i64) { net::sysctl::set_somaxconn(value as usize); }
 fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
     net::net_ns::current_namespace()
 }
-fn local_port_range(ns: u64) -> (u16, u16) {
-    let range = net::ephemeral::range_in(ns);
-    (range.start, range.end)
+fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
+    let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
+    net::sysctl::value(namespace, key).ok_or(())
 }
-fn set_local_port_range(ns: u64, start: u16, end: u16) -> Result<(), ()> {
-    net::ephemeral::set_range_in(ns, start, end)
+fn set_net_int(namespace: &network_namespace::NetworkNamespaceRef,
+    key: usize, value: i64) -> Result<(), ()>
+{
+    let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
+    net::sysctl::set_value(namespace, key, value)
 }
-fn unprivileged_port_start(ns: u64) -> i64 { net::ephemeral::unprivileged_start_in(ns) as i64 }
-fn set_unprivileged_port_start(ns: u64, value: i64) -> Result<(), ()> {
-    net::ephemeral::set_unprivileged_start_in(ns, value as u16)
+fn local_port_range(namespace: &network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()> {
+    let range = net::ephemeral::range_for(namespace).ok_or(())?;
+    Ok((range.start, range.end))
+}
+fn set_local_port_range(namespace: &network_namespace::NetworkNamespaceRef,
+    start: u16, end: u16) -> Result<(), ()>
+{
+    net::ephemeral::set_range_for(namespace, start, end)
+}
+fn unprivileged_port_start(namespace: &network_namespace::NetworkNamespaceRef,
+    _key: usize) -> Result<i64, ()>
+{
+    net::ephemeral::unprivileged_start_for(namespace).map(i64::from).ok_or(())
+}
+fn set_unprivileged_port_start(namespace: &network_namespace::NetworkNamespaceRef,
+    _key: usize, value: i64) -> Result<(), ()>
+{
+    net::ephemeral::set_unprivileged_start_for(namespace, value as u16)
 }
 
 /// One `ctl_table` leaf's `proc_handler` class + default value. # C: n/a
@@ -69,19 +85,21 @@ enum Leaf {
     /// `Some((min,max))`) over a live `AtomicI64`.
     Int(i64, Option<(i64, i64)>),
     /// `proc_dointvec_minmax` bound to a subsystem accessor pair.
-    IntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
+    NetInt(net::net_ns::NetSysctlKey, Option<(i64, i64)>),
     /// Fallible hook for values constrained by another live field.
-    PerNetIntHook(fn(u64) -> i64, fn(u64, i64) -> Result<(), ()>, Option<(i64, i64)>),
+    PerNetIntHook(fn(&network_namespace::NetworkNamespaceRef, usize) -> Result<i64, ()>,
+        fn(&network_namespace::NetworkNamespaceRef, usize, i64) -> Result<(), ()>,
+        Option<(i64, i64)>),
     /// `proc_doulongvec_minmax` over a live `AtomicU64`.
     ULong(u64, Option<(u64, u64)>),
     /// `proc_dobool` over a live `AtomicBool`.
     Bool(bool),
     /// `proc_dobool` bound to a subsystem accessor pair.
-    BoolHook(fn() -> bool, fn(bool)),
     /// `proc_dostring` bound to a subsystem accessor pair.
     StrHook(fn() -> alloc::vec::Vec<u8>, fn(&[u8])),
     /// Two-u16 `proc_dointvec` bound to subsystem accessors.
-    PerNetU16PairHook(fn(u64) -> (u16, u16), fn(u64, u16, u16) -> Result<(), ()>),
+    PerNetU16PairHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()>,
+        fn(&network_namespace::NetworkNamespaceRef, u16, u16) -> Result<(), ()>),
     /// `proc_dointvec` free byte slot (multi-field / not a single int).
     Bytes(&'static [u8]),
     /// Read-only constant (`StaticFileInode`, mode 0444).
@@ -159,7 +177,8 @@ const SYSCTL_TREE: &[Node] = &[
     ]),
     Dir("net", &[
         Dir("core", &[
-            File("somaxconn",          IntHook(net_somaxconn, set_net_somaxconn, Some((0, INT_MAX)))),
+            File("somaxconn",          NetInt(net::net_ns::NetSysctlKey::Somaxconn, Some((0, INT_MAX)))),
+            File("optmem_max",         NetInt(net::net_ns::NetSysctlKey::OptmemMax, Some((0, INT_MAX)))),
             File("rmem_default",       Const(b"212992\n")),
             File("rmem_max",           Const(b"212992\n")),
             File("wmem_default",       Const(b"212992\n")),
@@ -167,20 +186,21 @@ const SYSCTL_TREE: &[Node] = &[
             File("netdev_max_backlog", Const(b"1000\n")),
         ]),
         Dir("ipv4", &[
-            File("ip_forward",         BoolHook(net::forwarding::ipv4_enabled, net::forwarding::set_ipv4_enabled)),
-            File("tcp_syncookies",     Int(1, Some((0, 2)))),
-            File("tcp_tw_reuse",       Int(2, Some((0, 2)))),
-            File("tcp_fin_timeout",    Int(60, Some((0, INT_MAX)))),
-            File("tcp_keepalive_time", Int(7200, Some((0, INT_MAX)))),
+            File("ip_forward",         NetInt(net::net_ns::NetSysctlKey::Ipv4Conf(
+                net::net_ns::Ipv4ConfDev::All, net::net_ns::Ipv4ConfKey::Forwarding), Some((0, 1)))),
+            File("tcp_syncookies",     NetInt(net::net_ns::NetSysctlKey::TcpSyncookies, Some((0, 2)))),
+            File("tcp_tw_reuse",       NetInt(net::net_ns::NetSysctlKey::TcpTwReuse, Some((0, 2)))),
+            File("tcp_fin_timeout",    NetInt(net::net_ns::NetSysctlKey::TcpFinTimeout, Some((0, INT_MAX)))),
+            File("tcp_keepalive_time", NetInt(net::net_ns::NetSysctlKey::TcpKeepaliveTime, Some((0, INT_MAX)))),
             File("ip_local_port_range", PerNetU16PairHook(local_port_range, set_local_port_range)),
             File("ip_unprivileged_port_start", PerNetIntHook(unprivileged_port_start,
                 set_unprivileged_port_start, Some((0, 65_535)))),
-            File("icmp_echo_ignore_all", Int(0, Some((0, 1)))),
+            File("icmp_echo_ignore_all", NetInt(net::net_ns::NetSysctlKey::IcmpEchoIgnoreAll, Some((0, 1)))),
         ]),
         Dir("ipv6", &[
             Dir("conf", &[
-                Dir("all",     &[ File("disable_ipv6", Int(0, Some((0, 1)))) ]),
-                Dir("default", &[ File("disable_ipv6", Int(0, Some((0, 1)))) ]),
+                Dir("all",     &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableAll, Some((0, 1)))) ]),
+                Dir("default", &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableDefault, Some((0, 1)))) ]),
             ]),
         ]),
     ]),
@@ -189,25 +209,46 @@ const SYSCTL_TREE: &[Node] = &[
 /// The Linux `net/ipv4/conf/<dev>/*` per-interface knob set (net/ipv4/
 /// devinet.c `devinet_conf_ctl_table`). Each `<dev>` (all/default/lo/eth0)
 /// gets the same writable leaves. # C: n/a
-const IPV4_CONF_LEAVES: &[&str] = &[
-    "accept_local", "accept_redirects", "accept_source_route",
-    "arp_accept", "arp_announce", "arp_filter", "arp_ignore", "arp_notify",
-    "bootp_relay", "disable_policy", "disable_xfrm", "drop_gratuitous_arp",
-    "drop_unicast_in_l2_multicast", "force_igmp_version", "forwarding",
-    "ignore_routes_with_linkdown", "log_martians", "promote_secondaries",
-    "proxy_arp", "proxy_arp_pvlan", "route_localnet", "rp_filter",
-    "secure_redirects", "send_redirects", "shared_media", "src_valid_mark",
+const IPV4_CONF_LEAVES: &[(&str, net::net_ns::Ipv4ConfKey)] = &[
+    ("accept_local", net::net_ns::Ipv4ConfKey::AcceptLocal),
+    ("accept_redirects", net::net_ns::Ipv4ConfKey::AcceptRedirects),
+    ("accept_source_route", net::net_ns::Ipv4ConfKey::AcceptSourceRoute),
+    ("arp_accept", net::net_ns::Ipv4ConfKey::ArpAccept),
+    ("arp_announce", net::net_ns::Ipv4ConfKey::ArpAnnounce),
+    ("arp_filter", net::net_ns::Ipv4ConfKey::ArpFilter),
+    ("arp_ignore", net::net_ns::Ipv4ConfKey::ArpIgnore),
+    ("arp_notify", net::net_ns::Ipv4ConfKey::ArpNotify),
+    ("bootp_relay", net::net_ns::Ipv4ConfKey::BootpRelay),
+    ("disable_policy", net::net_ns::Ipv4ConfKey::DisablePolicy),
+    ("disable_xfrm", net::net_ns::Ipv4ConfKey::DisableXfrm),
+    ("drop_gratuitous_arp", net::net_ns::Ipv4ConfKey::DropGratuitousArp),
+    ("drop_unicast_in_l2_multicast", net::net_ns::Ipv4ConfKey::DropUnicastInL2Multicast),
+    ("force_igmp_version", net::net_ns::Ipv4ConfKey::ForceIgmpVersion),
+    ("forwarding", net::net_ns::Ipv4ConfKey::Forwarding),
+    ("ignore_routes_with_linkdown", net::net_ns::Ipv4ConfKey::IgnoreRoutesWithLinkdown),
+    ("log_martians", net::net_ns::Ipv4ConfKey::LogMartians),
+    ("promote_secondaries", net::net_ns::Ipv4ConfKey::PromoteSecondaries),
+    ("proxy_arp", net::net_ns::Ipv4ConfKey::ProxyArp),
+    ("proxy_arp_pvlan", net::net_ns::Ipv4ConfKey::ProxyArpPvlan),
+    ("route_localnet", net::net_ns::Ipv4ConfKey::RouteLocalnet),
+    ("rp_filter", net::net_ns::Ipv4ConfKey::RpFilter),
+    ("secure_redirects", net::net_ns::Ipv4ConfKey::SecureRedirects),
+    ("send_redirects", net::net_ns::Ipv4ConfKey::SendRedirects),
+    ("shared_media", net::net_ns::Ipv4ConfKey::SharedMedia),
+    ("src_valid_mark", net::net_ns::Ipv4ConfKey::SrcValidMark),
 ];
 
 /// Linux `ipv4_devconf` compiled defaults: the knobs seeded to `1`; every
 /// other `net/ipv4/conf/<dev>/*` leaf defaults to `0`. # C: n/a
-const IPV4_CONF_DEFAULT_ONE: &[&str] =
-    &["accept_redirects", "secure_redirects", "send_redirects", "shared_media"];
-
 /// The interfaces that get a `net/ipv4/conf/<dev>` subtree at boot: the two
 /// pseudo-devices Linux always exposes (`all`, `default`) plus the loopback
 /// and the first ethernet device. # C: n/a
-const IPV4_CONF_DEVS: &[&str] = &["all", "default", "lo", "eth0"];
+const IPV4_CONF_DEVS: &[(&str, net::net_ns::Ipv4ConfDev)] = &[
+    ("all", net::net_ns::Ipv4ConfDev::All),
+    ("default", net::net_ns::Ipv4ConfDev::Default),
+    ("lo", net::net_ns::Ipv4ConfDev::Lo),
+    ("eth0", net::net_ns::Ipv4ConfDev::Eth0),
+];
 
 /// Build the leaf inode for a ctl_table handler class. Integer / long / bool
 /// leaves get a freshly `Box::leak`ed live cell seeded with the default; the
@@ -220,9 +261,12 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             let cell: &'static AtomicI64 = Box::leak(Box::new(AtomicI64::new(def)));
             bound_sysctl_inode(Arc::new(IntVar { cell, bounds }))
         }
-        Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
+        NetInt(key, bounds) => bound_sysctl_inode(Arc::new(HPerNetIntHook {
+            current_ns: current_net_ns, key: key.as_usize(), get: net_int,
+            set: set_net_int, bounds,
+        })),
         Leaf::PerNetIntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HPerNetIntHook {
-            current_ns: current_net_ns, get, set, bounds,
+            current_ns: current_net_ns, key: 0, get, set, bounds,
         })),
         ULong(def, bounds) => {
             let cell: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(def)));
@@ -232,7 +276,6 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             let cell: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(def)));
             bound_sysctl_inode(Arc::new(BoolVar { cell }))
         }
-        Leaf::BoolHook(get, set) => bound_sysctl_inode(Arc::new(HBoolHook { get, set })),
         Leaf::StrHook(get, set) => bound_sysctl_inode(Arc::new(HStrHook { get, set })),
         Leaf::PerNetU16PairHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetU16PairHook {
             current_ns: current_net_ns, get, set,
@@ -265,6 +308,7 @@ fn register_tree(prefix: &str, nodes: &[Node]) {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N leaves)
 pub fn register_sysctl_table(boot_id: &'static [u8], random_uuid: &'static [u8]) {
+    net::net_ns::materialize_state(&network_namespace::initial());
     // Per-boot random-valued leaves (not const-table material).
     crate::reg::register("/proc/sys/kernel/random/boot_id", StaticFileInode::new(boot_id) as InodeRef);
     crate::reg::register("/proc/sys/kernel/random/uuid", StaticFileInode::new(random_uuid) as InodeRef);
@@ -276,12 +320,11 @@ pub fn register_sysctl_table(boot_id: &'static [u8], random_uuid: &'static [u8])
     // The nested ctl_table tree (live-bound leaves).
     register_tree("/proc/sys", SYSCTL_TREE);
     // net/ipv4/conf/<dev>/* writable per-iface knobs (all/default/lo/eth0).
-    for dev in IPV4_CONF_DEVS.iter().copied() {
-        for leaf in IPV4_CONF_LEAVES.iter().copied() {
+    for (dev, dev_key) in IPV4_CONF_DEVS.iter().copied() {
+        for (leaf, leaf_key) in IPV4_CONF_LEAVES.iter().copied() {
             let path = alloc::format!("/proc/sys/net/ipv4/conf/{dev}/{leaf}");
-            let default: &[u8] =
-                if IPV4_CONF_DEFAULT_ONE.contains(&leaf) { b"1\n" } else { b"0\n" };
-            crate::reg::register(&path, SysctlInode::new(default) as InodeRef);
+            let key = net::net_ns::NetSysctlKey::Ipv4Conf(dev_key, leaf_key);
+            crate::reg::register(&path, make_leaf(&NetInt(key, Some((0, INT_MAX)))));
         }
     }
 }

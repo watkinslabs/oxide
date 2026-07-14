@@ -8,7 +8,11 @@ use crate::netfilter_hook::{nf_hook_eval, NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INE
 
 impl NetStack {
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        #[cfg(not(target_os = "oxide-kernel"))]
         let net_ns = self.ifaces.namespace(iface).ok_or(crate::netdev::NetError::Enodev)?;
+        #[cfg(target_os = "oxide-kernel")]
+        let (net_ns, _namespace) = self.ingress_namespace(iface)
+            .ok_or(crate::netdev::NetError::Enodev)?;
         if nf_hook_eval(NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6) == 0 {
             return Ok(());
         }

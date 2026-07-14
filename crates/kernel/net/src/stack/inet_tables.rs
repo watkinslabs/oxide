@@ -14,6 +14,17 @@ pub(crate) struct InetTables {
     pub(crate) pmtu: Spinlock<BTreeMap<(NetIfaceId, IpAddr), u32>, StackLockClass>,
 }
 
+pub(crate) struct InetTablesRef {
+    _owner: network_namespace::NetworkNamespaceRef,
+    tables: Arc<InetTables>,
+}
+
+impl ::core::ops::Deref for InetTablesRef {
+    type Target = InetTables;
+    /// # C: O(1)
+    fn deref(&self) -> &InetTables { &self.tables }
+}
+
 impl InetTables {
     /// Create empty transport state for one network namespace. # C: O(1)
     pub(crate) fn new() -> Self {
@@ -38,12 +49,22 @@ impl InetTables {
 
 impl NetStack {
     /// Resolve the sole transport-table owner for `net_ns`. # C: O(log N)
-    pub(crate) fn inet_tables(&self, net_ns: u64) -> Arc<InetTables> {
+    pub(crate) fn try_inet_tables(&self, net_ns: u64) -> Option<InetTablesRef> {
+        let owner = network_namespace::lookup_u64(net_ns)?;
         let mut all = self.inet.lock();
-        if let Some(tables) = all.get(&net_ns) { return tables.clone(); }
-        let tables = Arc::new(InetTables::new());
-        all.insert(net_ns, tables.clone());
-        tables
+        let tables = if let Some(tables) = all.get(&net_ns) { tables.clone() }
+        else {
+            let tables = Arc::new(InetTables::new());
+            all.insert(net_ns, tables.clone());
+            tables
+        };
+        Some(InetTablesRef { _owner: owner, tables })
+    }
+
+    /// Resolve tables for a numeric key whose live owner is retained elsewhere. # C: O(log N)
+    pub(crate) fn inet_tables(&self, net_ns: u64) -> InetTablesRef {
+        self.try_inet_tables(net_ns)
+            .expect("network namespace transport owner must remain live")
     }
 
     /// Drop the stack's ownership of a destroyed namespace's transport state. # C: O(log N)

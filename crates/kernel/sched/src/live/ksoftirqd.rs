@@ -56,7 +56,7 @@ extern "C" fn ksoftirqd(arg: usize) -> ! {
             // Linux run_ksoftirqd: drain in process context via the bh-accounted
             // entry (in_serving_softirq marked, in_interrupt re-entry guard).
             // SAFETY: process-context kthread, IRQs enabled, no lock held.
-            unsafe { crate::bh::do_softirq(); }
+            unsafe { crate::bh::do_softirq_process(); }
             // cond_resched(): yield so draining a flood stays preemptible.
             // SAFETY: running kthread, preempt-off, no lock held; schedule
             // re-enqueues this still-Runnable task.
@@ -80,23 +80,30 @@ fn wake() {
     if c < MAX_CPUS { WAIT[c].wake_one(); }
 }
 
+/// Lock-free publication kick: interrupt this CPU so IRQ tail transfers the
+/// global process-only bit to ksoftirqd through the IRQ-save wait-list path.
+fn kick() {
+    let c = this_cpu() as u32;
+    // SAFETY: boot installed the architecture's non-blocking reschedule IPI hook.
+    unsafe { let _ = super::send_resched_ipi(c); }
+}
+
 /// Spawn one pinned ksoftirqd per online CPU and install the `wakeup_softirqd`
 /// hook. Boot, once, after AP bring-up + per-CPU runqueue install (same site
 /// as `spawn_timer_driver`). A CPU whose runqueue isn't installed is skipped;
 /// its softirqs still drain from its IRQ-tail (the gate's backstop).
 /// # C: O(N_cpus)
-pub fn spawn_ksoftirqd() {
+pub fn spawn_ksoftirqd() -> Result<(), super::SpawnError> {
     softirq::set_wakeup_hook(wake);
-    for n in 0..MAX_CPUS {
+    softirq::set_process_kick_hook(kick);
+    let online = (cpu::smp::online_count() as usize).min(MAX_CPUS);
+    for n in 0..online {
         // Only CPUs with an installed runqueue can host a pinned thread.
         // SAFETY: global_for is sound for any index; None unless CPU n is online + scheduling.
         if unsafe { super::runqueue::global_for(n as u32) }.is_none() { continue; }
         let tid = super::next_tid();
         // SAFETY: boot path after install_default_runqueue + AP bring-up; entry is a 'static extern "C" fn ptr; arg = the CPU to pin to.
-        let arc = match unsafe { super::spawn_kernel_thread(tid, "ksoftirqd", ksoftirqd, n) } {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
+        let arc = unsafe { super::spawn_kernel_thread(tid, "ksoftirqd", ksoftirqd, n) }?;
         // Pin to CPU n (Linux per-CPU ksoftirqd is bound to its CPU): set the
         // affinity mask then relocate off the spawn CPU onto n's runqueue.
         if n < 64 {
@@ -104,4 +111,5 @@ pub fn spawn_ksoftirqd() {
             super::relocate_for_affinity(&arc, 1u64 << n);
         }
     }
+    Ok(())
 }
