@@ -12,14 +12,28 @@ use vfs;
 pub struct UnixListener {
     pub addr: UnixAddr,
     pub path: Vec<u8>,
-    /// `bind(2)` reserves the address; only `listen(2)` makes it connectable.
-    pub listening: core::sync::atomic::AtomicBool,
-    pub accept_q: Spinlock<alloc::collections::VecDeque<Arc<UnixPair>>, UnixLockClass>,
+    state: Spinlock<UnixListenerState, UnixLockClass>,
     /// F170: per-listener waitlist for `sys_accept`.
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
+    /// Connectors parked while the accept queue is at its backlog limit.
+    #[cfg(target_os = "oxide-kernel")]
+    pub connect_waiters: sched::live::WaitList,
     /// The listener socket's epoll subscribers.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
+}
+
+struct UnixListenerState {
+    listening: bool,
+    closed: bool,
+    backlog: usize,
+    accept_q: alloc::collections::VecDeque<Arc<UnixPair>>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnixConnectError {
+    Refused,
+    Full,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -69,24 +83,91 @@ impl UnixListener {
         Arc::new(Self {
             addr,
             path,
-            listening: core::sync::atomic::AtomicBool::new(false),
-            accept_q: Spinlock::new(alloc::collections::VecDeque::new()),
+            state: Spinlock::new(UnixListenerState {
+                listening: false,
+                closed: false,
+                backlog: 0,
+                accept_q: alloc::collections::VecDeque::new(),
+            }),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            connect_waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
         })
     }
 
-    /// Publish this bound stream socket as a listener. # C: O(1)
-    pub fn listen(&self) { self.listening.store(true, core::sync::atomic::Ordering::Release); }
+    /// Publish this bound stream socket and apply Linux backlog normalization.
+    /// Queue capacity is `backlog + 1`, matching AF_UNIX connect accounting.
+    /// # C: O(1)
+    pub fn listen(&self, backlog: i32, somaxconn: usize) {
+        let mut st = self.state.lock();
+        st.backlog = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
+        st.listening = !st.closed;
+        drop(st);
+        #[cfg(target_os = "oxide-kernel")]
+        self.connect_waiters.wake_all();
+    }
 
     /// Whether `listen(2)` completed for this bound address. # C: O(1)
-    pub fn is_listening(&self) -> bool { self.listening.load(core::sync::atomic::Ordering::Acquire) }
+    pub fn is_listening(&self) -> bool {
+        let st = self.state.lock();
+        st.listening && !st.closed
+    }
+
+    /// Normalized listen backlog. # C: O(1)
+    pub fn backlog(&self) -> usize { self.state.lock().backlog }
+
+    /// Number of connected clients awaiting accept. # C: O(1)
+    pub fn pending_len(&self) -> usize { self.state.lock().accept_q.len() }
 
     /// Linux listener readiness: readable only while accept can succeed.
     /// Listening sockets are not writable data endpoints. # C: O(1)
     pub fn poll_mask(&self) -> u32 {
-        if self.accept_q.lock().is_empty() { 0 } else { vfs::POLL_IN }
+        if self.state.lock().accept_q.is_empty() { 0 } else { vfs::POLL_IN }
+    }
+
+    /// Pop one pending connection and release one backlog-space waiter.
+    /// # C: O(1)
+    pub fn accept(&self) -> Option<Arc<UnixPair>> {
+        let pair = self.state.lock().accept_q.pop_front();
+        #[cfg(target_os = "oxide-kernel")]
+        if pair.is_some() { self.connect_waiters.wake_one(); }
+        pair
+    }
+
+    /// Queue a connection unless close or backlog state forbids it.
+    /// # C: O(1)
+    fn connect(&self) -> Result<Arc<UnixPair>, UnixConnectError> {
+        let pair = UnixPair::new();
+        pair.set_bind_path(self.path.clone());
+        let mut st = self.state.lock();
+        if st.closed || !st.listening { return Err(UnixConnectError::Refused); }
+        if st.accept_q.len() > st.backlog { return Err(UnixConnectError::Full); }
+        st.accept_q.push_back(pair.clone());
+        drop(st);
+        #[cfg(target_os = "oxide-kernel")]
+        self.accept_waiters.wake_all();
+        self.notify_subs();
+        Ok(pair)
+    }
+
+    /// Stop new connects and reset every connected-but-unaccepted client.
+    /// # C: O(pending)
+    pub fn close(&self) {
+        let pending = {
+            let mut st = self.state.lock();
+            if st.closed { return; }
+            st.closed = true;
+            st.listening = false;
+            core::mem::take(&mut st.accept_q)
+        };
+        for pair in pending { pair.abort_unaccepted(); }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            self.accept_waiters.wake_all();
+            self.connect_waiters.wake_all();
+        }
     }
 
     /// Register the listener socket's epoll subscribers (called at listen()).
@@ -106,15 +187,28 @@ impl UnixListener {
     /// # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
     pub fn arm_accept_wait(&self, deadline_ns: u64) -> bool {
-        let q = self.accept_q.lock();
-        if !q.is_empty() { return false; }
+        let st = self.state.lock();
+        if !st.accept_q.is_empty() || st.closed { return false; }
         // SAFETY: process ctx (sys_accept); preempt-off owned by the syscall
         // stub; park_with_deadline marks Sleeping + enqueues on accept_waiters
         // while we hold accept_q — connect() must take accept_q to push, so it
         // cannot wake us before we are enqueued. Lock dropped below; caller
         // owns the schedule().
         unsafe { self.accept_waiters.park_with_deadline(deadline_ns); }
-        drop(q);
+        drop(st);
+        true
+    }
+
+    /// Race-free backlog-space park under the listener state lock.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_connect_wait(&self, deadline_ns: u64) -> bool {
+        let st = self.state.lock();
+        if st.closed || !st.listening || st.accept_q.len() <= st.backlog { return false; }
+        // SAFETY: process context; connect_waiters and queue capacity are
+        // serialized by state, and accept/close wake only after mutation.
+        unsafe { self.connect_waiters.park_with_deadline(deadline_ns); }
+        drop(st);
         true
     }
 
@@ -213,7 +307,8 @@ impl UnixRegistry {
 
     /// Release a bound stream-listener path.
     pub fn unbind_addr(&self, addr: &UnixAddr) {
-        self.inner.lock().remove(&addr.key);
+        let listener = self.inner.lock().remove(&addr.key);
+        if let Some(listener) = listener { listener.close(); }
     }
 
     /// Release a bound stream-listener path.
@@ -271,7 +366,7 @@ impl UnixRegistry {
     }
 
     /// Connect to `path`: allocate a new UnixPair and queue.
-    pub fn connect_addr(&self, addr: &UnixAddr) -> Option<Arc<UnixPair>> {
+    pub fn connect_addr(&self, addr: &UnixAddr) -> Result<Arc<UnixPair>, UnixConnectError> {
         // DIAG (debug-dbus): log every AF_UNIX connect to a bus socket + whether a
         // listener was found. If mutter (uid 979) can't connect to the system bus
         // (/run/dbus/system_bus_socket), get_session_proxy() returns NULL with no
@@ -289,9 +384,8 @@ impl UnixRegistry {
             klog::write_raw(&addr.display);
             klog::write_raw(b"\n");
         }
-        let listener = self.lookup_listener_addr(addr)?;
-        if !listener.is_listening() { return None; }
-        let pair = UnixPair::new();
+        let listener = self.lookup_listener_addr(addr).ok_or(UnixConnectError::Refused)?;
+        let pair = listener.connect()?;
         #[cfg(feature = "debug-dbus")]
         {
             let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
@@ -300,21 +394,11 @@ impl UnixRegistry {
             klog::write_raw(b" path="); klog::write_raw(&addr.display);
             klog::write_raw(b"]\n");
         }
-        // Retain the listener's canonical bound path so getsockname (end A,
-        // the accepted server socket) and getpeername (end B, the client)
-        // report the real sun_path — e.g. "/run/systemd/private".
-        pair.set_bind_path(listener.path.clone());
-        listener.accept_q.lock().push_back(pair.clone());
-        // F170: wake any blocking accept() parked on this listener.
-        #[cfg(target_os = "oxide-kernel")]
-        listener.accept_waiters.wake_all();
-        // Also wake an epoll_wait-blocked server.
-        listener.notify_subs();
-        Some(pair)
+        Ok(pair)
     }
 
     /// Connect to `path`: allocate a new UnixPair and queue.
-    pub fn connect(&self, path: &str) -> Option<Arc<UnixPair>> {
+    pub fn connect(&self, path: &str) -> Result<Arc<UnixPair>, UnixConnectError> {
         self.connect_addr(&UnixAddr::from_abstract_or_test_path(String::from(path)))
     }
 }

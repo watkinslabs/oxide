@@ -67,6 +67,7 @@ impl InetSocket {
             // (recorded at bind time), not the closer's current ns.
             let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
             crate::net_ns::ns_unix_registry(ns).unbind_addr(&l.addr);
+            l.close();
         }
         if let SockKind::UnixDgram(q) = &*self.kind.lock() {
             if let Some(addr) = q.bound() {

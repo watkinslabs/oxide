@@ -20,6 +20,7 @@ pub mod addr;
 pub mod pkt;
 pub mod tcp_state;
 pub mod netdev;
+pub mod sysctl;
 pub mod socket_args;
 pub mod loopback;
 pub mod ipv4;
@@ -38,7 +39,7 @@ pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
 
 pub mod unix_sock;
 pub use unix_sock::{
-    UnixAddr, UnixAddrKey, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
+    UnixAddr, UnixAddrKey, UnixConnectError, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry, UnixStreamError,
     unix_path_display, unix_path_is_abstract,
 };
 pub mod net_ns;

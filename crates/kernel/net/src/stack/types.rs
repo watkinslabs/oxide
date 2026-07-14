@@ -163,7 +163,7 @@ pub(crate) fn stamp_last_sent_public(entry: &TcpEntry, n: usize) {
 pub struct TcpListenEntry {
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
-    /// F192: backlog cap (listen(2), clamped somaxconn=4096).
+    /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
     pub backlog: ::core::sync::atomic::AtomicUsize,
     pub local: Endpoint,
     /// F160: blocking-accept waiters.
@@ -186,9 +186,9 @@ impl TcpListenEntry {
             poll_subs: Spinlock::new(None),
         }
     }
-    /// F192: set listen(2) backlog (clamped 1..=somaxconn). # C: O(1)
+    /// F192: apply Linux unsigned backlog normalization. # C: O(1)
     pub fn set_backlog(&self, b: i32) {
-        let n = if b <= 0 { 128 } else { ::core::cmp::min(b as usize, 4096) };
+        let n = crate::sysctl::normalize_listen_backlog(b, crate::sysctl::somaxconn());
         self.backlog.store(n, ::core::sync::atomic::Ordering::Release);
     }
 

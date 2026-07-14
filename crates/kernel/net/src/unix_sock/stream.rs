@@ -9,73 +9,25 @@ use vfs;
 use super::wake_peer_subs;
 use super::{EndCred, UnixEnd};
 
+#[cfg(feature = "debug-dbus")]
+mod trace;
+mod lifecycle;
+#[cfg(feature = "debug-dbus")]
+use trace::trace_dbus_stream;
+
 /// Outcome of [`UnixPair::read_or_park`]: data drained, peer-closed EOF, or the
 /// caller was registered on the reader wait list and must now `schedule()`.
 #[cfg(target_os = "oxide-kernel")]
 pub enum ReadOutcome {
     Data(Vec<u8>),
+    Reset,
     Eof,
     Parked,
 }
 
-/// DIAG (debug-dbus): scan an AF_UNIX SOCK_STREAM write for the login1 session
-/// interface or a D-Bus error name; dump a capped hex-free ASCII view tagged
-/// with the writer tid so the failing method call / error reply is visible.
-#[cfg(feature = "debug-dbus")]
-fn trace_dbus_stream(data: &[u8]) {
-    fn has(h: &[u8], n: &[u8]) -> bool { h.windows(n.len()).any(|w| w == n) }
-    // GetSessionByPID/GetSessionByPIDFD carry a trailing uint32 pid in the body;
-    // decode the last 4 bytes (LE) so a pid/vpid-namespace mismatch is visible
-    // (the arg is the final aligned body field of these single-`u` calls).
-    if has(data, b"GetSessionByPID") && data.len() >= 4 {
-        let n = data.len();
-        let pid = u32::from_le_bytes([data[n-4], data[n-3], data[n-2], data[n-1]]);
-        klog::write_raw(b"[GETSESSBYPID arg_pid=");
-        klog::write_dec_u64(pid as u64);
-        klog::write_raw(b" caller=");
-        if let Some(c) = sched::live::current() {
-            klog::write_dec_u64(c.tid as u64);
-            klog::write_raw(b"/");
-            klog::write_raw(c.name.as_bytes());
-        }
-        klog::write_raw(b"]\n");
-    }
-    // Widen to the gdm private connection: dump EVERY D-Bus frame written by a
-    // gdm process (daemon or session-worker) so the Hello handshake + any
-    // reentrant call/reply that stalls the greeter is visible in-order.
-    let is_tgt = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
-            s.contains("gdm") || s.contains("polkit") || s.contains("dbus-broker")
-            || s.contains("upower") || s.contains("switcheroo") || s.contains("accounts")) })
-        .unwrap_or(false);
-    let hit = is_tgt
-        || has(data, b"login1")
-        || has(data, b"PolicyKit1")        // polkit name-acquisition / activation
-        || has(data, b"RequestName")
-        || has(data, b"StartServiceByName")
-        || has(data, b"NameAcquired")
-        || has(data, b"io.systemd")        // Varlink userdb queries (from any proc)
-        || has(data, b"UserRecord")        // Varlink userdb replies
-        || has(data, b"GroupRecord")
-        || has(data, b"groupMembers")
-        || has(data, b"org.freedesktop.DBus.Error");
-    if !hit { return; }
-    let n = core::cmp::min(data.len(), 384);
-    klog::write_raw(b"[DBUS t=");
-    if let Some(c) = sched::live::current() {
-        klog::write_dec_u64(c.tid as u64);
-        klog::write_raw(b" ");
-        klog::write_raw(c.name.as_bytes());
-    }
-    klog::write_raw(b"] ");
-    // Replace non-printable bytes with '.' so the D-Bus binary header doesn't
-    // corrupt the serial stream; the ASCII strings (paths/interfaces/errors)
-    // remain legible.
-    for &b in &data[..n] {
-        let c = if (0x20..0x7f).contains(&b) { b } else { b'.' };
-        klog::write_raw(&[c]);
-    }
-    klog::write_raw(b"\n");
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnixStreamError {
+    PeerClosed,
 }
 
 /// One stream-pair in-kernel: two unidirectional byte queues.
@@ -98,6 +50,11 @@ pub struct UnixPair {
     /// is woken when end B writes (write(end=B) advances b_to_a).
     pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    /// Persistent peer-loss state plus one-shot ECONNRESET delivery per end.
+    peer_gone_a: core::sync::atomic::AtomicBool,
+    peer_gone_b: core::sync::atomic::AtomicBool,
+    reset_pending_a: core::sync::atomic::AtomicBool,
+    reset_pending_b: core::sync::atomic::AtomicBool,
     /// Peer credentials per end (`SO_PEERCRED`).
     pub cred_a: EndCred,
     pub cred_b: EndCred,
@@ -159,6 +116,10 @@ impl UnixPair {
             b_to_a_waiters: sched::live::WaitList::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
+            peer_gone_a: core::sync::atomic::AtomicBool::new(false),
+            peer_gone_b: core::sync::atomic::AtomicBool::new(false),
+            reset_pending_a: core::sync::atomic::AtomicBool::new(false),
+            reset_pending_b: core::sync::atomic::AtomicBool::new(false),
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
             bind_path: Spinlock::new(None),
@@ -238,7 +199,7 @@ impl UnixPair {
     /// Append `data` from `end` into the ring it writes to.
     /// Returns the number of bytes accepted (full byte count for v1).
     /// # C: O(data.len())
-    pub fn write(&self, end: UnixEnd, data: &[u8]) -> usize {
+    pub fn write(&self, end: UnixEnd, data: &[u8]) -> Result<usize, UnixStreamError> {
         self.write_inner(end, data, Vec::new())
     }
 
@@ -247,12 +208,12 @@ impl UnixPair {
     /// delivers them exactly with that byte (Linux skb-`fp` semantics)
     /// rather than popping them ahead of their D-Bus message.
     /// # C: O(data.len() + fds)
-    pub fn write_with_fds(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> usize {
+    pub fn write_with_fds(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> Result<usize, UnixStreamError> {
         self.write_inner(end, data, fds)
     }
 
     /// # C: O(data.len() + fds)
-    fn write_inner(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> usize {
+    fn write_inner(&self, end: UnixEnd, data: &[u8], fds: Vec<Arc<vfs::File>>) -> Result<usize, UnixStreamError> {
         // DIAG (debug-dbus): dump AF_UNIX SOCK_STREAM messages that mention the
         // login1 session interface or carry a D-Bus error reply. dbus-broker
         // relays every method call/reply through these streams, so this captures
@@ -264,12 +225,13 @@ impl UnixPair {
         // session"). Default-off; zero bytes on the hot path.
         #[cfg(feature = "debug-dbus")]
         trace_dbus_stream(data);
+        if self.peer_gone(end) { return Err(UnixStreamError::PeerClosed); }
         let mut g = match end {
             UnixEnd::A => self.a_to_b.lock(),
             UnixEnd::B => self.b_to_a.lock(),
         };
-        if g.closed_writer {
-            return 0;
+        if self.peer_gone(end) || g.closed_writer {
+            return Err(UnixStreamError::PeerClosed);
         }
         // Tag the burst to the offset of the first byte of THIS write so a
         // reader delivers it with (never before) that byte.
@@ -337,7 +299,7 @@ impl UnixPair {
             // F181a: targeted epoll wake
             wake_peer_subs(self, end, vfs::POLL_IN);
         }
-        n
+        Ok(n)
     }
 
     /// Drain up to `max` bytes from the ring `end` reads from, as a
@@ -403,6 +365,10 @@ impl UnixPair {
         if !g.buf.is_empty() {
             drop(g);
             return ReadOutcome::Data(self.read(end, max));
+        }
+        if self.take_reset(end) {
+            drop(g);
+            return ReadOutcome::Reset;
         }
         if g.closed_writer {
             drop(g);
@@ -520,6 +486,12 @@ impl UnixPair {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
         };
+        let reset_pending = match end {
+            UnixEnd::A => &self.reset_pending_a,
+            UnixEnd::B => &self.reset_pending_b,
+        };
         g.closed_writer && g.buf.is_empty()
+            && !reset_pending.load(core::sync::atomic::Ordering::Acquire)
     }
+
 }
