@@ -306,6 +306,23 @@ pub fn parse_ip(buf: &[u8], src: IpAddr, dst: IpAddr) -> Result<TcpHdr, TcpHdrEr
     }
 }
 
+/// Parse a segment whose original full-length checksum already passed. # C: O(1)
+pub fn parse_prevalidated(buf: &[u8]) -> Result<TcpHdr, TcpHdrError> {
+    if buf.len() < TCP_HDR_MIN_LEN { return Err(TcpHdrError::Short); }
+    let data_offset = buf[12] >> 4;
+    if data_offset < 5 { return Err(TcpHdrError::BadDataOffset); }
+    if buf.len() < data_offset as usize * 4 { return Err(TcpHdrError::BadLen); }
+    Ok(TcpHdr {
+        src_port: u16::from_be_bytes([buf[0], buf[1]]),
+        dst_port: u16::from_be_bytes([buf[2], buf[3]]),
+        seq: u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]),
+        ack: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
+        data_offset, flags: buf[13], window: u16::from_be_bytes([buf[14], buf[15]]),
+        checksum: u16::from_be_bytes([buf[16], buf[17]]),
+        urg_ptr: u16::from_be_bytes([buf[18], buf[19]]),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

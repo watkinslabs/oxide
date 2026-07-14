@@ -311,6 +311,12 @@ impl InetSocket {
 
     /// Build a TCP socket around transport state allocated before accept. # C: O(1)
     pub fn new_tcp_with_error(error: Arc<crate::SocketError>) -> Self {
+        Self::new_tcp_with_filter(error, Arc::new(crate::bpf_filter::SocketFilter::new()))
+    }
+
+    /// Build a TCP socket sharing a pre-existing transport filter. # C: O(1)
+    pub fn new_tcp_with_filter(error: Arc<crate::SocketError>,
+                               bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         let _s = Self {
             family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
@@ -319,7 +325,7 @@ impl InetSocket {
             udp4:       Spinlock::new(None),
             udp6:       Spinlock::new(None),
             tcp_bind:   Spinlock::new(None),
-            bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
+            bpf_filter,
             mcast: Arc::new(crate::mcast_filter::SocketMcast::new()),
             // TcpInit makes connect() route SOCK_STREAM through the 3WHS path.
             // the UDP store-peer-and-return-Ok short-circuit.
