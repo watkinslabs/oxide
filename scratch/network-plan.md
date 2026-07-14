@@ -146,6 +146,17 @@ Merged network foundation:
     teardown, SIOCGSKNS, listns, and task-owner swap races in hosted and loom
     tests; run full network/namespace/syscall suites and dual target builds.
     Active on `B841-netns-lifecycle-race-proof`.
+    - [~] N03.8.1 add real Loom infrastructure and model callback publication,
+      lookup/drop/claim, coalesced pending work, reaper park/wake, and task-owner
+      swap; add deterministic linearization tests. B841.
+    - [ ] N03.8.2 capture an ingress generation/owner lease before Virtio RX
+      dequeue and invalidate/wait old generations before interface return to init.
+    - [ ] N03.8.3 retain the concrete namespace owner in private-loopback drain
+      snapshots until every queued packet finishes dispatch.
+    - [ ] N03.8.4 install `SIOCGSKNS` namespace fds with `FD_CLOEXEC` atomically
+      through fd reservation/install; prove no exec leak or close/reuse race.
+    - [ ] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
+      materialization, and ingress owner retention with controlled schedules.
 - [ ] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
@@ -244,6 +255,15 @@ Merged network foundation:
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
   uaccess/error ordering, compat ABI, and differential tests.
+- [ ] **N25 TCP blocking-wait linearization**.
+  Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
+  close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
+- [ ] **N26 VSOCK blocking-wait linearization**.
+  Serialize receive terminal-state and send credit/close publication against
+  wait arming; prove retry-to-park transitions cannot lose the final wake.
+- [ ] **N27 NETLINK pending-error receive parity**.
+  Route read, recvfrom, and recvmsg through one queue/error decision so queued
+  datagrams precede pending errors and empty blocking readers wake on errors.
 
 ## H. Completion Gate
 
