@@ -4,11 +4,11 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `fbae0579`, synchronized with `origin/main`.
+- `main`: `85be212d`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
-- N02 multicast robustness accounting is active on
-  `B833-multicast-robustness` from claim `9630e644`.
+- N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
+- N03 canonical network-namespace lifetime is the next network lane.
 
 ## Implemented
 
@@ -39,8 +39,7 @@ Update: 2026-07-14.
 
 ## Remaining network work
 
-- N02 through N22 remain in `network-plan.md`.
-- N02 implementation is complete on B833 pending PR review/merge.
+- N03 through N22 remain in `network-plan.md`.
 - Integrated ARM smoke remains blocked by unrelated glibc-service traps and
   the `upower.service` restart loop captured in `/tmp/B832-smoke-arm.log`.
 - N02 ARM build reaches `syscalls`, then fails because `vdso/build.sh` still
@@ -48,4 +47,4 @@ Update: 2026-07-14.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B833-multicast-robustness && git status --short --branch`
+`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n 'N03' network-plan.md`
