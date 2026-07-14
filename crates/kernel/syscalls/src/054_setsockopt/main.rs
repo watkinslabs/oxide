@@ -34,6 +34,46 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             return -(Errno::Enotsock.as_i32() as i64);
         }
     };
+    match (level, optname) {
+        (IPPROTO_IP, IP_ADD_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, true),
+        (IPPROTO_IP, IP_DROP_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, false),
+        (IPPROTO_IPV6, IPV6_JOIN_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, true),
+        (IPPROTO_IPV6, IPV6_LEAVE_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, false),
+        _ => {}
+    }
+    if sock.family.load(Ordering::Acquire) != net::sock::AF_INET6 && level == IPPROTO_IPV6
+        && matches!(optname, IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP
+            | MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP | MCAST_JOIN_SOURCE_GROUP
+            | MCAST_LEAVE_SOURCE_GROUP | MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE
+            | MCAST_MSFILTER)
+    {
+        return -(Errno::Enoprotoopt.as_i32() as i64);
+    }
+    if level == IPPROTO_IPV6 && optname == IPV6_MULTICAST_LOOP {
+        if optlen < 4 { return -(Errno::Einval.as_i32() as i64); }
+        if optval == 0 {
+            sock.opts.ipv6_mcast_loop.store(0, Ordering::Release);
+            return 0;
+        }
+    }
+    if is_tcp(&sock) {
+        match (level, optname) {
+            (IPPROTO_IP, IP_MULTICAST_IF) =>
+                return -(Errno::Einval.as_i32() as i64),
+            (IPPROTO_IPV6, IPV6_MULTICAST_IF) | (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) =>
+                return -(Errno::Enoprotoopt.as_i32() as i64),
+            _ => {}
+        }
+    }
+    match (level, optname) {
+        (IPPROTO_IP, IP_MULTICAST_IF) if optlen < 4 =>
+            return -(Errno::Einval.as_i32() as i64),
+        (IPPROTO_IP, IP_MULTICAST_TTL | IP_MULTICAST_LOOP) if optlen == 0 =>
+            return -(Errno::Einval.as_i32() as i64),
+        (IPPROTO_IPV6, IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP)
+            if optlen < 4 => return -(Errno::Einval.as_i32() as i64),
+        _ => {}
+    }
     if optval == 0 || optval >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let read_i32 = |o: u64| -> Option<i32> {
         if optlen < 4 || o + 4 > USER_VA_END { return None; }
@@ -113,17 +153,19 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             sock.error.set_recverr4(v != 0);
         }
         (IPPROTO_IP, IP_MULTICAST_TTL) => {
+            if is_tcp(&sock) { return -(Errno::Einval.as_i32() as i64); }
             let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
-            if !(0..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ip_mcast_ttl.store(v, Ordering::Release);
+            if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.ip_mcast_ttl.store(if v == -1 { 1 } else { v }, Ordering::Release);
         }
         (IPPROTO_IP, IP_MULTICAST_LOOP) => {
             let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
             sock.opts.ip_mcast_loop.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
-        (IPPROTO_IP, IP_MULTICAST_IF) => return ipv4_mcast_if(&sock, optval, optlen),
-        (IPPROTO_IP, IP_ADD_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, true),
-        (IPPROTO_IP, IP_DROP_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, false),
+        (IPPROTO_IP, IP_MULTICAST_IF) => {
+            if is_tcp(&sock) { return -(Errno::Einval.as_i32() as i64); }
+            return ipv4_mcast_if(&sock, optval, optlen);
+        }
         (IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP) => return ipv4_mcast_source_req(&sock, optval, optlen, SourceOp::Join),
         (IPPROTO_IP, IP_DROP_SOURCE_MEMBERSHIP) => return ipv4_mcast_source_req(&sock, optval, optlen, SourceOp::Leave),
         (IPPROTO_IP, IP_BLOCK_SOURCE) => return ipv4_mcast_source_req(&sock, optval, optlen, SourceOp::Block),
@@ -161,6 +203,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         }
         (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => {
             if let Err(e) = require_v6(&sock) { return e; }
+            if is_tcp(&sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ipv6_mcast_hops.store(v, Ordering::Release);
@@ -172,8 +215,8 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         }
         (IPPROTO_IPV6, IPV6_MULTICAST_IF) => {
             if let Err(e) = require_v6(&sock) { return e; }
+            if is_tcp(&sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
             let Some(idx) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
-            if idx < 0 { return -(Errno::Einval.as_i32() as i64); }
             if let Err(error) = sock.set_v6_mcast_iface(idx as u32) { return errno_from_neterr(error); }
         }
         (IPPROTO_IPV6, IPV6_RECVPKTINFO) => {
@@ -186,8 +229,6 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             sock.opts.ipv6_recvhoplimit.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
-        (IPPROTO_IPV6, IPV6_JOIN_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, true),
-        (IPPROTO_IPV6, IPV6_LEAVE_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, false),
         (IPPROTO_IPV6, MCAST_JOIN_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, true),
         (IPPROTO_IPV6, MCAST_LEAVE_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, false),
         (IPPROTO_IPV6, MCAST_JOIN_SOURCE_GROUP) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Join),
@@ -260,6 +301,11 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     0
 }
 
+pub(super) fn is_tcp(sock: &net::sock::InetSocket) -> bool {
+    matches!(*sock.kind.lock(), net::sock::SockKind::TcpInit
+        | net::sock::SockKind::TcpListener(_) | net::sock::SockKind::TcpConn(_))
+}
+
 fn ipv4_mcast_membership_result(rv: i64) -> i64 {
     rv
 }
@@ -274,8 +320,8 @@ fn require_v6(sock: &Arc<net::sock::InetSocket>) -> Result<(), i64> {
 }
 
 pub(super) fn read_u8_or_i32(optval: u64, optlen: u32) -> Option<i32> {
-    if optlen == 1 && optval < USER_VA_END {
-        // SAFETY: caller supplied a one-byte integer option in user range.
+    if (1..4).contains(&optlen) && optval < USER_VA_END {
+        // SAFETY: Linux reads the first byte for scalar options shorter than int.
         return Some(unsafe { core::ptr::read_volatile(optval as *const u8) } as i32);
     }
     if optlen >= 4 && optval + 4 <= USER_VA_END {
