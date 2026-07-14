@@ -9,6 +9,7 @@ Update: 2026-07-14.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
 - N03 canonical network-namespace lifetime is the next network lane.
+- ARM verification blocker is claimed on `B834-glibc-aarch64-vdso`.
 
 ## Implemented
 
