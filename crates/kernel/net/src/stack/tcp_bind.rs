@@ -183,6 +183,14 @@ impl NetStack {
     pub fn tcp_listen_reserved(&self, bind: &Arc<TcpBindReservation>)
         -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_reserved_filter(bind,
+            Arc::new(crate::bpf_filter::SocketFilter::new()))
+    }
+
+    /// Publish a listener sharing the owning socket's live filter. # C: O(N)
+    pub fn tcp_listen_reserved_filter(&self, bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> NetResult<Arc<TcpListenEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns);
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -211,7 +219,7 @@ impl NetStack {
             });
             if conflict { return Err(NetError::Eaddrinuse); }
         }
-        let entry = Arc::new(TcpListenEntry::new(bind.clone()));
+        let entry = Arc::new(TcpListenEntry::new_with_filter(bind.clone(), bpf_filter));
         let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
         listeners.entry(key).or_default().push(entry.clone());
         bind.role.store(TCP_BIND_LISTEN, Ordering::Release);
@@ -222,6 +230,15 @@ impl NetStack {
     pub fn tcp_connect_reserved(&self, bind: &Arc<TcpBindReservation>, local_ip: IpAddr,
         remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>)
         -> NetResult<Arc<TcpEntry>>
+    {
+        self.tcp_connect_reserved_filter(bind, local_ip, remote_ip, remote_port, error,
+            Arc::new(crate::bpf_filter::SocketFilter::new()))
+    }
+
+    /// Active-open while sharing the owning socket's live filter. # C: O(log N + xmit)
+    pub fn tcp_connect_reserved_filter(&self, bind: &Arc<TcpBindReservation>, local_ip: IpAddr,
+        remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> NetResult<Arc<TcpEntry>>
     {
         let tables = self.inet_tables(bind.net_ns);
         let mut binds = tables.tcp_binds.lock();
@@ -237,7 +254,8 @@ impl NetStack {
         );
         conn.own_mss = self.mss_for_dst_on_iface_in(bind.net_ns, remote_ip, bind.bound_iface());
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry::new_bound_with_error(conn, error, Some(bind.clone())));
+        let entry = Arc::new(TcpEntry::new_bound_with_filter(
+            conn, error, Some(bind.clone()), bpf_filter));
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_l4_over_ip_bound_in(

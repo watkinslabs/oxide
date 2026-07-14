@@ -34,6 +34,11 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             return -(Errno::Enotsock.as_i32() as i64);
         }
     };
+    if level == SOL_SOCKET && matches!(optname, SO_ATTACH_BPF | SO_ATTACH_FILTER
+        | SO_DETACH_FILTER | SO_LOCK_FILTER)
+    {
+        return socket_filter_option(&sock, optname, optval, optlen);
+    }
     match (level, optname) {
         (IPPROTO_IP, IP_ADD_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, true),
         (IPPROTO_IP, IP_DROP_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, false),
@@ -271,31 +276,6 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             sock.opts.tcp_keepcnt.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
         }
-        (SOL_SOCKET, SO_ATTACH_BPF) => {
-            if optlen != core::mem::size_of::<i32>() as u32 {
-                return errno(Errno::Einval);
-            }
-            let prog_fd = read_i32(optval).ok_or(Errno::Einval);
-            let program = match prog_fd.and_then(bpf_prog) {
-                Ok(program) => program,
-                Err(error) => return errno(error),
-            };
-            if let Err(error) = sock.bpf_filter.attach(program) { return filter_change_errno(error); }
-        }
-        (SOL_SOCKET, SO_ATTACH_FILTER) => {
-            let program = match classic_filter(optval, optlen) {
-                Ok(program) => program,
-                Err(error) => return errno(error),
-            };
-            if let Err(error) = sock.bpf_filter.attach(program) { return filter_change_errno(error); }
-        }
-        (SOL_SOCKET, SO_DETACH_FILTER) => {
-            if let Err(error) = sock.bpf_filter.detach() { return filter_change_errno(error); }
-        }
-        (SOL_SOCKET, SO_LOCK_FILTER) => {
-            let Some(value) = read_i32(optval) else { return errno(Errno::Einval); };
-            if value != 0 { sock.bpf_filter.lock(); }
-        }
         _ => return -(Errno::Enoprotoopt.as_i32() as i64),
     }
     0
@@ -367,10 +347,55 @@ fn bind_to_device(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -
 
 fn errno(error: Errno) -> i64 { -(error.as_i32() as i64) }
 
-fn filter_change_errno(error: net::bpf_filter::FilterChangeError) -> i64 {
+fn copy_filter_i32(optval: u64, optlen: u32) -> Result<i32, Errno> {
+    if optlen < core::mem::size_of::<i32>() as u32 { return Err(Errno::Einval); }
+    let mut bytes = [0u8; core::mem::size_of::<i32>()];
+    uaccess::copy_from_user(&mut bytes, optval).map_err(|_| Errno::Efault)?;
+    Ok(i32::from_ne_bytes(bytes))
+}
+
+fn require_tcp_filter_admin(sock: &net::sock::InetSocket) -> Result<(), Errno> {
+    if !is_tcp(sock) { return Ok(()); }
+    let cur = sched::live::current().ok_or(Errno::Eperm)?;
+    let net_ns = sock.net_ns.load(Ordering::Acquire);
+    if nscg::has_net_admin_for(cur, net_ns) { Ok(()) } else { Err(Errno::Eperm) }
+}
+
+fn socket_filter_option(sock: &Arc<net::sock::InetSocket>, optname: u64,
+                        optval: u64, optlen: u32) -> i64 {
+    let value = match copy_filter_i32(optval, optlen) {
+        Ok(value) => value,
+        Err(error) => return errno(error),
+    };
+    let result = match optname {
+        SO_ATTACH_BPF => (|| {
+            if optlen != core::mem::size_of::<i32>() as u32 { return Err(Errno::Einval); }
+            sock.bpf_filter.ensure_mutable().map_err(filter_errno)?;
+            let program = bpf_prog(value)?;
+            sock.bpf_filter.attach(program).map_err(filter_errno)
+        })(),
+        SO_ATTACH_FILTER => (|| {
+            require_tcp_filter_admin(sock)?;
+            let header = classic_filter_header(optval, optlen)?;
+            sock.bpf_filter.ensure_mutable().map_err(filter_errno)?;
+            let program = classic_filter_program(header)?;
+            sock.bpf_filter.attach(program).map_err(filter_errno)
+        })(),
+        SO_DETACH_FILTER => (|| {
+            sock.bpf_filter.detach().map_err(filter_errno)
+        })(),
+        SO_LOCK_FILTER => (|| {
+            sock.bpf_filter.set_lock(value != 0).map_err(filter_errno)
+        })(),
+        _ => Err(Errno::Enoprotoopt),
+    };
+    match result { Ok(()) => 0, Err(error) => errno(error) }
+}
+
+fn filter_errno(error: net::bpf_filter::FilterChangeError) -> Errno {
     match error {
-        net::bpf_filter::FilterChangeError::Locked => errno(Errno::Eperm),
-        net::bpf_filter::FilterChangeError::NotAttached => errno(Errno::Enoent),
+        net::bpf_filter::FilterChangeError::Locked => Errno::Eperm,
+        net::bpf_filter::FilterChangeError::NotAttached => Errno::Enoent,
     }
 }
 
@@ -390,14 +415,19 @@ fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
     })
 }
 
-/// Copy and verify native `struct sock_fprog` for SO_ATTACH_FILTER. # C: O(insns)
-fn classic_filter(optval: u64, optlen: u32) -> Result<net::bpf_filter::FilterProgram, Errno> {
+/// Copy native `struct sock_fprog` for SO_ATTACH_FILTER. # C: O(1)
+fn classic_filter_header(optval: u64, optlen: u32) -> Result<(usize, u64), Errno> {
     if optlen != SOCK_FPROG_SIZE { return Err(Errno::Einval); }
     let mut fprog = [0u8; SOCK_FPROG_SIZE as usize];
     uaccess::copy_from_user(&mut fprog, optval).map_err(|_| Errno::Efault)?;
     let len = u16::from_ne_bytes(fprog[..2].try_into().unwrap()) as usize;
     let ptr = u64::from_ne_bytes(fprog[SOCK_FPROG_FILTER_OFFSET as usize..
         SOCK_FPROG_FILTER_OFFSET as usize + core::mem::size_of::<u64>()].try_into().unwrap());
+    Ok((len, ptr))
+}
+
+fn classic_filter_program(header: (usize, u64)) -> Result<net::bpf_filter::FilterProgram, Errno> {
+    let (len, ptr) = header;
     if len == 0 || len > BPF_MAXINSNS { return Err(Errno::Einval); }
     let bytes = len.checked_mul(BPF_INSN_SIZE).ok_or(Errno::Einval)?;
     let mut insns = alloc::vec![0u8; bytes];

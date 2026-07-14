@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::AtomicI32;
 use sync::{Spinlock, Socket as StackLockClass};
 
@@ -36,6 +35,11 @@ fn endpoint(stack: &NetStack, port: u16, filter: Arc<SocketFilter>)
     ).unwrap()
 }
 
+fn deliver_one(stack: &NetStack, iface: crate::NetIfaceId, loopback: &crate::LoopbackDev) {
+    let packet = loopback.rx_pop().expect("queued loopback packet");
+    stack.deliver_rx(iface, packet.data()).unwrap();
+}
+
 #[test]
 fn udp_socket_filter_sees_header_drops_zero_and_truncates_positive_verdict() {
     install_bpf_filter_runner(verdict_runner);
@@ -56,4 +60,81 @@ fn udp_socket_filter_sees_header_drops_zero_and_truncates_positive_verdict() {
     ).unwrap();
     stack.drain_loopback(iface, &loopback);
     assert!(dropped.recv(false).is_none());
+}
+
+#[test]
+fn tcp_listener_filter_drops_syn_before_passive_open() {
+    install_bpf_filter_runner(verdict_runner);
+    let stack = NetStack::new();
+    let (iface, loopback) = stack.register_loopback();
+    let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, PORT, true).unwrap();
+    listener.bpf_filter.attach(FilterProgram {
+        kind: FilterKind::Ebpf, insns: 0u32.to_ne_bytes().to_vec(),
+    }).unwrap();
+    stack.tcp_connect(Ipv4Addr::LOOPBACK, SOURCE_PORT, Ipv4Addr::LOOPBACK, PORT).unwrap();
+    stack.drain_loopback(iface, &loopback);
+    assert!(stack.tcp_accept(&listener).is_none());
+}
+
+#[test]
+fn tcp_filter_truncates_to_header_without_delivering_payload() {
+    install_bpf_filter_runner(verdict_runner);
+    let stack = NetStack::new();
+    let (iface, loopback) = stack.register_loopback();
+    let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, PORT, true).unwrap();
+    let client = stack.tcp_connect(
+        Ipv4Addr::LOOPBACK, SOURCE_PORT, Ipv4Addr::LOOPBACK, PORT,
+    ).unwrap();
+    for _ in 0..3 { stack.drain_loopback(iface, &loopback); }
+    let server = stack.tcp_accept(&listener).unwrap();
+    server.bpf_filter.attach(FilterProgram {
+        kind: FilterKind::Ebpf,
+        insns: (crate::tcp_hdr::TCP_HDR_MIN_LEN as u32).to_ne_bytes().to_vec(),
+    }).unwrap();
+    stack.tcp_send(&client, b"filtered", 65_536, true, false).unwrap();
+    for _ in 0..3 { stack.drain_loopback(iface, &loopback); }
+    assert!(stack.tcp_recv(&server, 64).is_empty());
+}
+
+#[test]
+fn tcp_passive_filter_is_live_until_final_ack_and_partial_payload_progresses() {
+    install_bpf_filter_runner(verdict_runner);
+    let stack = NetStack::new();
+    let (iface, loopback) = stack.register_loopback();
+    let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, PORT, true).unwrap();
+    let client = stack.tcp_connect(
+        Ipv4Addr::LOOPBACK, SOURCE_PORT, Ipv4Addr::LOOPBACK, PORT,
+    ).unwrap();
+
+    deliver_one(&stack, iface, &loopback);
+    assert!(stack.tcp_accept(&listener).is_none());
+    listener.bpf_filter.attach(FilterProgram {
+        kind: FilterKind::Ebpf, insns: 0u32.to_ne_bytes().to_vec(),
+    }).unwrap();
+    deliver_one(&stack, iface, &loopback);
+    let final_ack = loopback.rx_pop().expect("final ACK");
+    stack.deliver_rx(iface, final_ack.data()).unwrap();
+    assert!(stack.tcp_accept(&listener).is_none());
+
+    let partial = crate::tcp_hdr::TCP_HDR_MIN_LEN as u32 + 12 + 3;
+    listener.bpf_filter.attach(FilterProgram {
+        kind: FilterKind::Ebpf, insns: partial.to_ne_bytes().to_vec(),
+    }).unwrap();
+    stack.deliver_rx(iface, final_ack.data()).unwrap();
+    let server = stack.tcp_accept(&listener).expect("completed passive child");
+    listener.bpf_filter.attach(FilterProgram {
+        kind: FilterKind::Ebpf, insns: u32::MAX.to_ne_bytes().to_vec(),
+    }).unwrap();
+
+    stack.tcp_send(&client, b"abcdefgh", 65_536, true, false).unwrap();
+    stack.drain_loopback(iface, &loopback);
+    assert_eq!(stack.tcp_recv(&server, 64), b"abc");
+    assert_eq!(client.conn.lock().retx_q.front().unwrap().payload, b"defgh");
+
+    stack.tcp_retx_tick(60_000_000_000);
+    assert_eq!(client.conn.lock().retx_q.front().unwrap().retries, 1);
+    assert_eq!(loopback.rx_len(), 1);
+    stack.drain_loopback(iface, &loopback);
+    assert_eq!(stack.tcp_recv(&server, 64), b"defgh");
+    assert!(client.conn.lock().retx_q.is_empty());
 }

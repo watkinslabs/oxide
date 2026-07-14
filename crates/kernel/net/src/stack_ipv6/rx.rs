@@ -90,7 +90,13 @@ impl NetStack {
                     let packet = &payload[..udp.length as usize];
                     let body = &packet[crate::udp::UDP_HDR_LEN..];
                     let Some(keep) = crate::bpf_filter::retained_payload_len(
-                        q.bpf_filter.verdict(packet), body.len(),
+                        q.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
+                            packet, protocol: crate::addr::eth_p::IPV6,
+                            ifindex: Some(iface.raw()),
+                            pay_offset: crate::udp::UDP_HDR_LEN as u32,
+                            hatype: self.ifaces.lookup_in_ns(iface, net_ns)
+                                .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 }),
+                        }), body.len(),
                     ) else { continue; };
                     let _ = q.enqueue((
                         src, udp.src_port, dst, iface, hop_limit, body[..keep].to_vec(),

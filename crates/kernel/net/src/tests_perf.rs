@@ -137,6 +137,18 @@ fn f192_set_backlog_clamps_to_somaxconn() {
 }
 
 #[test]
+fn f192_backlog_reservation_counts_half_open_children() {
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    let le = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7103, true).unwrap();
+    le.set_backlog(1, crate::sysctl::DEFAULT_SOMAXCONN);
+    assert!(le.reserve_backlog());
+    assert!(!le.reserve_backlog());
+    le.backlog_used.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+    assert!(le.reserve_backlog());
+}
+
+#[test]
 fn f192_reuseport_allows_duplicate_listeners() {
     let stack = NetStack::new();
     let _ = stack.register_loopback();

@@ -290,7 +290,8 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         (c.remote.ip, c.remote.port)
     };
     let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_error(entry.error.clone()));
+    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_filter(
+        entry.error.clone(), entry.bpf_filter.clone()));
     if listener_fam == AF_INET6 {
         new_sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
     }
