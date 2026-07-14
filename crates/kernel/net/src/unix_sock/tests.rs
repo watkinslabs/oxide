@@ -5,6 +5,7 @@ use std::sync::{Arc, Weak};
 
 mod listener_lifecycle;
 mod recv_transactions;
+mod scm_creds;
 mod scm_gc;
 mod shutdown;
 
@@ -426,17 +427,13 @@ fn stream_partial_read_delivers_fd_once_with_first_chunk() {
 }
 
 #[test]
-fn stream_fd_only_message_delivers_without_looping() {
-    // An empty-payload message that carries only fds must hand the fds to
-    // read_stream immediately (empty bytes, non-empty fds) so recvmsg's
-    // yield loop delivers them and does NOT spin/park waiting for bytes.
+fn stream_fd_only_message_transfers_nothing() {
     let p = UnixPair::new();
     let fd = anon_file();
-    p.write_with_fds(UnixEnd::A, b"", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
+    assert_eq!(p.write_with_fds(UnixEnd::A, b"", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap(), 0);
     let (b, f, _) = p.read_stream(UnixEnd::B, 64);
     assert!(b.is_empty());
-    assert_eq!(f.len(), 1, "fd-only message delivered, not re-queued");
-    assert!(alloc::sync::Arc::ptr_eq(&f[0], &fd));
+    assert!(f.is_empty(), "Linux stream SCM requires at least one payload byte");
 }
 
 #[test]
