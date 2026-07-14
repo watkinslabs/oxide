@@ -98,6 +98,28 @@ fn resolve_v6_hop_limit(sock: &InetSocket, dst_ip: crate::Ipv6Addr) -> u8 {
     }
 }
 
+/// Raw IPv6 send with socket scope, PMTU, and protocol-override state. # C: O(payload + N)
+pub(crate) fn sendto_raw6(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint,
+    dst_ip: crate::Ipv6Addr, dst_protocol: Option<u16>, scope_id: u32,
+    payload: &[u8]) -> Result<usize, NetError>
+{
+    let protocol_override = if endpoint.protocol() == crate::addr::IpProto::Raw as u8
+        && !endpoint.header_included()
+    {
+        match dst_protocol {
+            Some(protocol) if protocol <= u8::MAX as u16 => Some(protocol as u8),
+            Some(_) => return Err(NetError::Einval),
+            None => None,
+        }
+    } else { None };
+    let hop = resolve_v6_hop_limit(sock, dst_ip);
+    let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    stack().send_raw6(endpoint, dst_ip, scoped_iface(sock, dst_ip, scope_id)?,
+        protocol_override, payload, hop, pmtudisc)?;
+    drain_loopback();
+    Ok(payload.len())
+}
+
 /// F180b: AF_INET6 datagram sendto. Allocates an ephemeral src port
 /// on demand; routes via stack().send_udp6_to.
 /// # C: O(payload)

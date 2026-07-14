@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::addr::{Ipv6Addr, IpProto};
+use crate::addr::{IpProto, Ipv6Addr, NetIfaceId};
 use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
 use crate::netdev::{NetError, NetResult};
 
@@ -41,12 +41,18 @@ impl Raw6Endpoint {
             next_header, bytes: payload,
         })
     }
+
+    /// Snapshot address and interface constraints used by transmit routing. # C: O(1)
+    pub(crate) fn tx_binding(&self) -> (super::Raw6Address, Option<NetIfaceId>) {
+        let state = self.state.lock();
+        (state.local, state.bound_iface)
+    }
 }
 
 fn prepare_caller_header(bytes: &[u8]) -> NetResult<PreparedRaw6Send> {
     let header = Ipv6Hdr::parse(bytes).map_err(|_| NetError::Einval)?;
     let end = IPV6_HDR_LEN.checked_add(header.payload_length as usize).ok_or(NetError::Einval)?;
-    if end != bytes.len() { return Err(NetError::Einval); }
+    if end != bytes.len() || header.dst.is_unspecified() { return Err(NetError::Einval); }
     Ok(PreparedRaw6Send {
         mode: Raw6SendMode::CallerHeader, src: header.src, dst: header.dst,
         next_header: header.next_header, bytes: bytes.to_vec(),

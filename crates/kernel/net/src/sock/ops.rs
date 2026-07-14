@@ -364,6 +364,20 @@ pub fn sendto(
         drain_loopback();
         return Ok(payload.len());
     }
+    if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
+        if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(NetError::Epipe);
+        }
+        let (dst, protocol, scope_id) = match dest {
+            Some(RemoteAddr::Inet6 { ip, port, scope_id }) => (ip, Some(port), scope_id),
+            None => {
+                let peer = endpoint.peer().ok_or(NetError::Edestaddrreq)?;
+                (peer.addr, None, peer.scope_id)
+            }
+            _ => return Err(NetError::Eafnosupport),
+        };
+        return crate::sock_v6::sendto_raw6(sock, endpoint, dst, protocol, scope_id, payload);
+    }
     if matches!(*sock.kind.lock(), SockKind::Udp) {
         let pending = sock.take_pending_recv_error();
         if pending != 0 { return Err(crate::sock_io::pending_net_error(pending)); }
