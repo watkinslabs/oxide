@@ -40,7 +40,7 @@ pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
     let sock = inode.private::<::netlink::NetlinkSocket>().unwrap();
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
-    let (dgram, copied) = loop {
+    let (dgram, copied, src_pid) = loop {
         let mut queue = sock.rx_queue.lock();
         let Some((dgram, src_pid)) = queue.front() else {
             drop(queue);
@@ -52,19 +52,19 @@ pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
         let dgram = dgram.clone();
         let src_pid = *src_pid;
         let copied = user.copy_payload(&dgram[..core::cmp::min(user.capacity, dgram.len())]);
-        let named = copied.and_then(|n| user.copy_name(encoded_sockaddr_nl(src_pid, groups(sock.protocol, &dgram)).as_bytes()).map(|()| n));
         if !peek { queue.pop_front(); }
         drop(queue);
-        match named {
-            Ok(copied) => break (dgram, copied),
+        match copied {
+            Ok(copied) => break (dgram, copied, src_pid),
             Err(e) => return e,
         }
     };
     let delivered = if sock.protocol == NETLINK_KOBJECT_UEVENT {
         crate::recv_control::deliver(user, Vec::new(), Some((0, 0, 0)), flags)
     } else {
-        crate::recv_control::DeliveredControl { len: 0, flags: 0 }
+        crate::recv_control::DeliveredControl { len: 0, flags: crate::recv_control::output_flags(flags) }
     };
+    if let Err(e) = user.copy_name(encoded_sockaddr_nl(src_pid, groups(sock.protocol, &dgram)).as_bytes()) { return e; }
     let mut out_flags = delivered.flags;
     if copied < dgram.len() { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(delivered.len, out_flags) { return e; }
