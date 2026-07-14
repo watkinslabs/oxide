@@ -410,69 +410,52 @@ impl UnixPair {
         ReadOutcome::Parked
     }
 
-    /// Boundary-aware stream drain for recvmsg-with-control: return up to
-    /// `max` bytes AND the SCM_RIGHTS burst attached to the first byte
-    /// returned. A read never crosses an fd boundary, so fds are handed
-    /// over with (and only with) the bytes of the write that carried
-    /// them — matching Linux `unix_stream_read_generic`, where an skb's
-    /// `fp` fds ride that skb's first byte and the read stops at the next
-    /// `fp` skb.
-    ///
-    /// Unlike [`read`], this NEVER re-queues fds and never parks: fds at
-    /// or behind the cursor are returned to the caller immediately (even
-    /// with an empty payload — an fd-only message), so recvmsg always makes
-    /// progress. Empty open streams are parked through `arm_stream_read`.
-    /// # C: O(min(max, queue))
-    pub fn read_stream(&self, end: UnixEnd, max: usize) -> (Vec<u8>, Vec<Arc<vfs::File>>, Option<(u32, u32, u32)>) {
+    /// Inspect one boundary-limited stream segment and commit it only when
+    /// `copy` succeeds. Callback runs under the receive-ring lock. # C: O(max + rights)
+    pub fn read_stream_with<R, E>(&self, end: UnixEnd, max: usize, copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<R, E>)
+        -> Result<Option<(R, Vec<Arc<vfs::File>>, Option<(u32, u32, u32)>)>, E>
+    {
         let mut g = match end {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
         };
-        // Collect every burst tagged at or behind the cursor; cap the
-        // read at the NEXT burst strictly ahead so its fds cannot ride an
-        // earlier message's bytes.
-        let mut rights_out: Vec<GcRights> = Vec::new();
+        let mut eligible = 0usize;
+        let mut rights_len = 0usize;
         let mut cred_out = None;
         let mut cap = max;
-        loop {
-            match g.ancillary.front() {
-                Some((off, _, _)) if *off <= g.consumed => {
-                    let (_, f, cred) = g.ancillary.pop_front().unwrap();
-                    rights_out.push(f);
-                    cred_out = Some(cred);
-                }
-                Some((off, _, _)) => {
-                    let dist = (*off - g.consumed) as usize;
-                    cap = core::cmp::min(cap, dist);
-                    break;
-                }
-                None => break,
+        for (off, rights, cred) in &g.ancillary {
+            if *off <= g.consumed {
+                eligible += 1;
+                rights_len += rights.len();
+                cred_out = Some(*cred);
+            } else {
+                cap = core::cmp::min(cap, (*off - g.consumed) as usize);
+                break;
             }
         }
         let take = core::cmp::min(cap, g.buf.len());
-        let mut out = Vec::with_capacity(take);
-        for _ in 0..take {
-            out.push(g.buf.pop_front().unwrap());
+        if take == 0 && eligible == 0 { return Ok(None); }
+        let out: Vec<u8> = g.buf.iter().take(take).copied().collect();
+        let copied = copy(&out, rights_len, cred_out)?;
+        let mut rights_out = Vec::with_capacity(eligible);
+        for _ in 0..eligible {
+            let (_, rights, _) = g.ancillary.pop_front().unwrap();
+            rights_out.push(rights);
         }
+        for _ in 0..take { g.buf.pop_front(); }
         g.consumed += take as u64;
         drop(g);
         let mut fds_out: Vec<Arc<vfs::File>> = Vec::new();
         for rights in rights_out { fds_out.extend(rights.take_files()); }
-        // debug-syscost DIAG: log dbus-broker/polkit connected-socket READS (pair +
-        // end + bytes). Distinguishes blocker #2: does dbus-broker READ polkit's
-        // AUTH (n>0 → AUTH/creds processing issue) or NEVER (n=0/absent → read edge)?
-        #[cfg(feature = "debug-syscost")]
-        {
-            let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
-            if nm.contains("dbus-broker") || nm.contains("polkit") {
-                klog::write_raw(b"[UXREAD comm="); klog::write_raw(nm.as_bytes());
-                klog::write_raw(b" pair="); klog::write_hex_u64(self as *const _ as u64);
-                klog::write_raw(if matches!(end, UnixEnd::A) { b" end=A" } else { b" end=B" });
-                klog::write_raw(b" n="); klog::write_dec_u64(out.len() as u64);
-                klog::write_raw(b"]\n");
-            }
-        }
-        (out, fds_out, cred_out)
+        Ok(Some((copied, fds_out, cred_out)))
+    }
+
+    /// Boundary-aware infallible stream drain used by legacy receive paths. # C: O(max + rights)
+    pub fn read_stream(&self, end: UnixEnd, max: usize) -> (Vec<u8>, Vec<Arc<vfs::File>>, Option<(u32, u32, u32)>) {
+        self.read_stream_with(end, max, |data, _, _| Ok::<Vec<u8>, core::convert::Infallible>(data.to_vec()))
+            .unwrap_or_else(|never| match never {})
+            .map(|(data, files, cred)| (data, files, cred))
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), None))
     }
 
     /// MSG_PEEK variant of `read`: copy without draining.
