@@ -109,6 +109,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) -> Result<(), 
             .unwrap_or_else(|| task.user_ns.load(Ordering::Acquire));
         Some(net::net_ns::create_namespace(owner).map_err(|error| match error {
             net::net_ns::CreateError::CallbackConflict => Errno::Eio,
+            net::net_ns::CreateError::ReaperUnavailable => Errno::Eio,
             net::net_ns::CreateError::Allocation(network_namespace::AllocError::IdExhausted) =>
                 Errno::Enospc,
             net::net_ns::CreateError::Allocation(

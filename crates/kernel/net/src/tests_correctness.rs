@@ -23,6 +23,8 @@ mod tests_perf;
 mod tests_mld;
 #[path = "tests_igmp.rs"]
 mod tests_igmp;
+#[path = "tests_mcast_namespace_owner.rs"]
+mod tests_mcast_namespace_owner;
 #[path = "tests_mcast_order.rs"]
 mod tests_mcast_order;
 #[path = "tests_mcast_qrv.rs"]

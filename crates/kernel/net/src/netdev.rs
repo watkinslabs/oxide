@@ -7,7 +7,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::string::String;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use sync::{Spinlock, Socket as SocketLockClass};
 
@@ -132,6 +132,9 @@ impl NetStats {
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NamespaceDropAction { Destroy, MoveToInitial }
+
 /// `25§3` driver trait.
 pub trait NetDev: Send + Sync {
     /// Stable interface name (`lo`, `eth0`, …).
@@ -158,6 +161,12 @@ pub trait NetDev: Send + Sync {
         slot.copy_from_slice(frame);
         self.xmit(pkt)
     }
+    /// Drop device-private state owned by a departing network namespace.
+    /// # C: O(device namespace state)
+    fn retire_namespace(&self);
+    /// Device disposition when its current network namespace is destroyed.
+    /// # C: O(1)
+    fn namespace_drop_action(&self) -> NamespaceDropAction;
     /// Snapshot the per-iface running counters. Default returns
     /// zeros for devices that don't track them yet.
     /// # C: O(1)
@@ -166,22 +175,41 @@ pub trait NetDev: Send + Sync {
 
 /// Registered iface — the registry assigns the `NetIfaceId`.
 pub(crate) struct McastReportState {
-    live: AtomicBool,
-    v4_driving: AtomicBool,
-    v6_driving: AtomicBool,
+    state: AtomicU8,
 }
 
 impl McastReportState {
-    fn new() -> Self { Self { live: AtomicBool::new(true), v4_driving: AtomicBool::new(false),
-        v6_driving: AtomicBool::new(false) } }
-    pub(crate) fn live(&self) -> bool { self.live.load(Ordering::Acquire) }
-    pub(crate) fn retire(&self) { self.live.store(false, Ordering::Release); }
-    pub(crate) fn try_v4(&self) -> bool { self.v4_driving.compare_exchange(false, true,
-        Ordering::AcqRel, Ordering::Acquire).is_ok() }
-    pub(crate) fn release_v4(&self) { self.v4_driving.store(false, Ordering::Release); }
-    pub(crate) fn try_v6(&self) -> bool { self.v6_driving.compare_exchange(false, true,
-        Ordering::AcqRel, Ordering::Acquire).is_ok() }
-    pub(crate) fn release_v6(&self) { self.v6_driving.store(false, Ordering::Release); }
+    const LIVE: u8 = 1 << 0;
+    const V4: u8 = 1 << 1;
+    const V6: u8 = 1 << 2;
+
+    fn new() -> Self { Self { state: AtomicU8::new(Self::LIVE) } }
+    pub(crate) fn live(&self) -> bool {
+        self.state.load(Ordering::Acquire) & Self::LIVE != 0
+    }
+    pub(crate) fn retire(&self) {
+        self.state.fetch_and(!Self::LIVE, Ordering::AcqRel);
+        while self.state.load(Ordering::Acquire) & (Self::V4 | Self::V6) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+    pub(crate) fn try_v4(&self) -> bool { self.try_drive(Self::V4) }
+    pub(crate) fn release_v4(&self) { self.state.fetch_and(!Self::V4, Ordering::Release); }
+    pub(crate) fn try_v6(&self) -> bool { self.try_drive(Self::V6) }
+    pub(crate) fn release_v6(&self) { self.state.fetch_and(!Self::V6, Ordering::Release); }
+
+    fn try_drive(&self, bit: u8) -> bool {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & Self::LIVE == 0 || state & bit != 0 { return false; }
+            match self.state.compare_exchange_weak(state, state | bit,
+                Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(next) => state = next,
+            }
+        }
+    }
 }
 
 pub struct IfaceEntry {
@@ -256,6 +284,17 @@ impl IfaceRegistry {
         Some(dev)
     }
 
+    /// Reopen a quiesced persistent interface in the initial namespace.
+    /// # C: O(N)
+    pub fn move_to_initial(&self, id: NetIfaceId, old_ns: u64) -> bool {
+        let mut g = self.inner.lock();
+        let Some(entry) = g.entries.iter_mut().find(|entry| entry.id == id
+            && entry.ns == old_ns && !entry.mcast_report.live()) else { return false };
+        entry.ns = 0;
+        entry.mcast_report = Arc::new(McastReportState::new());
+        true
+    }
+
     /// Current IFF_* flags for `id` (init NS). # C: O(N)
     pub fn iface_flags(&self, id: NetIfaceId) -> Option<u32> {
         let g = self.inner.lock();
@@ -285,7 +324,8 @@ impl IfaceRegistry {
     /// Network namespace that canonically owns `id`. # C: O(N)
     pub fn namespace(&self, id: NetIfaceId) -> Option<u64> {
         let g = self.inner.lock();
-        g.entries.iter().find(|entry| entry.id == id).map(|entry| entry.ns)
+        g.entries.iter().find(|entry| entry.id == id && entry.mcast_report.live())
+            .map(|entry| entry.ns)
     }
 
     /// Interface-owned multicast transition ordering in one namespace. # C: O(N)
@@ -379,107 +419,5 @@ pub fn current_net_ns() -> u64 {
 pub fn current_net_ns() -> u64 { 0 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sync::TaskList;
-
-    struct DummyDev { name: &'static str, mtu: u32, stats: NetStats }
-    impl NetDev for DummyDev {
-        fn name(&self) -> &str { self.name }
-        fn mac(&self) -> MacAddr { MacAddr::ZERO }
-        fn mtu(&self) -> u32 { self.mtu }
-        fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
-        fn stats(&self) -> NetStats { self.stats }
-    }
-
-    #[test]
-    fn register_assigns_increasing_ids() {
-        let r = IfaceRegistry::new();
-        let a = r.register(Arc::new(DummyDev { name: "lo", mtu: 65535, stats: NetStats::default() }));
-        let b = r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats: NetStats::default() }));
-        assert_ne!(a, b);
-        assert!(r.lookup(a).is_some());
-        assert_eq!(r.lookup_name("lo").unwrap().0, a);
-        assert_eq!(r.lookup_name("eth0").unwrap().0, b);
-    }
-
-    #[test]
-    fn lookup_missing_returns_none() {
-        let r = IfaceRegistry::new();
-        assert!(r.lookup(NetIfaceId::from_raw(99)).is_none());
-        assert!(r.lookup_name("nope").is_none());
-    }
-
-    #[test]
-    fn snapshot_lists_all() {
-        let r = IfaceRegistry::new();
-        r.register(Arc::new(DummyDev { name: "lo", mtu: 65535, stats: NetStats::default() }));
-        r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats: NetStats::default() }));
-        let s = r.snapshot();
-        assert_eq!(s.len(), 2);
-        assert!(s.iter().any(|t| t.name == "lo"));
-        assert!(s.iter().any(|t| t.name == "eth0"));
-    }
-
-    #[test]
-    fn snapshot_carries_live_stats_without_second_lookup() {
-        let r = IfaceRegistry::new();
-        let stats = NetStats {
-            rx_packets: 11, rx_bytes: 1100, rx_errors: 1, rx_dropped: 2,
-            tx_packets: 13, tx_bytes: 1300, tx_errors: 3, tx_dropped: 4,
-        };
-        let id = r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats }));
-        let s = r.snapshot();
-        let row = s.iter().find(|t| t.id == id).unwrap();
-        assert_eq!(row.name, "eth0");
-        assert_eq!(row.mtu, 1500);
-        assert_eq!(row.stats.rx_packets, 11);
-        assert_eq!(row.stats.tx_dropped, 4);
-    }
-
-    #[test]
-    fn netstats_field_maps_known_counters() {
-        let st = NetStats {
-            rx_packets: 7, rx_bytes: 700, rx_errors: 1, rx_dropped: 2,
-            tx_packets: 9, tx_bytes: 900, tx_errors: 4, tx_dropped: 3,
-        };
-        assert_eq!(st.field("rx_packets"), Some(7));
-        assert_eq!(st.field("tx_packets"), Some(9));
-        assert_eq!(st.field("rx_bytes"),   Some(700));
-        assert_eq!(st.field("tx_bytes"),   Some(900));
-        assert_eq!(st.field("rx_errors"),  Some(1));
-        assert_eq!(st.field("tx_errors"),  Some(4));
-        assert_eq!(st.field("rx_dropped"), Some(2));
-        assert_eq!(st.field("tx_dropped"), Some(3));
-    }
-
-    #[test]
-    fn netstats_field_unbacked_is_zero_known_is_none() {
-        let st = NetStats::default();
-        // In STAT_FIELDS but no backing counter → 0.
-        assert_eq!(st.field("multicast"),      Some(0));
-        assert_eq!(st.field("collisions"),     Some(0));
-        assert_eq!(st.field("rx_over_errors"), Some(0));
-        assert_eq!(st.field("rx_nohandler"),   Some(0));
-        // Not a Linux statistics field → None (ENOENT).
-        assert_eq!(st.field("bogus"), None);
-        assert_eq!(st.field(""),      None);
-    }
-
-    #[test]
-    fn stat_fields_match_linux_names_and_count() {
-        // Sanity: the canonical first eight are present and ordered as
-        // net-sysfs.c registers them.
-        assert_eq!(STAT_FIELDS[0], "rx_packets");
-        assert_eq!(STAT_FIELDS[1], "tx_packets");
-        assert!(STAT_FIELDS.contains(&"collisions"));
-        assert!(STAT_FIELDS.contains(&"rx_nohandler"));
-        assert_eq!(STAT_FIELDS.len(), 24);
-    }
-
-    /// Suppress the unused-import lint when the cfg(test) block is
-    /// the only consumer of TaskList (currently isn't, but the
-    /// future Spinlock-class swap path will be).
-    #[allow(dead_code)]
-    fn _lock_class_marker() -> TaskList { TaskList }
-}
+#[path = "netdev_tests.rs"]
+mod tests;

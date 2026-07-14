@@ -160,6 +160,10 @@ impl net::NetDev for VirtioNetDev {
     fn name(&self) -> &str { self.runtime.name.as_str() }
     fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
     fn mtu(&self)  -> u32 { 1500 }
+    fn retire_namespace(&self) { self.runtime.arp.clear(); }
+    fn namespace_drop_action(&self) -> net::NamespaceDropAction {
+        net::NamespaceDropAction::MoveToInitial
+    }
     fn xmit(&self, pkt: net::Pkt) -> net::NetResult<()> {
         let body = pkt.data();
         if body.len() + 14 > 1518 {

@@ -79,12 +79,17 @@ fn release_clears_socket_before_interface_reporting() {
 fn v4_membership_and_release_use_captured_namespace() {
     let state = SocketMcast::new();
     let stack = NetStack::new();
-    let (local, lo) = stack.register_loopback_in(61);
-    let (foreign, _) = stack.register_loopback_in(62);
+    crate::net_ns::install_final_drop_pending_notifier().unwrap();
+    let local_owner = network_namespace::allocate(61).unwrap();
+    let foreign_owner = network_namespace::allocate(62).unwrap();
+    let local_ns = local_owner.id().as_u64();
+    let foreign_ns = foreign_owner.id().as_u64();
+    let (local, lo) = stack.register_loopback_in(local_ns);
+    let (foreign, _) = stack.register_loopback_in(foreign_ns);
     let group = Ipv4Addr::new(239, 1, 2, 7);
-    assert_eq!(state.change_v4_in(&stack, 61, foreign, group, Ipv4Addr::LOOPBACK, true),
+    assert_eq!(state.change_v4_in(&stack, local_ns, foreign, group, Ipv4Addr::LOOPBACK, true),
         Err(NetError::Enodev));
-    state.change_v4_in(&stack, 61, local, group, Ipv4Addr::LOOPBACK, true).unwrap();
+    state.change_v4_in(&stack, local_ns, local, group, Ipv4Addr::LOOPBACK, true).unwrap();
     let _ = lo.rx_pop().expect("namespace join report");
     state.release(&stack);
     assert!(lo.rx_pop().is_some());

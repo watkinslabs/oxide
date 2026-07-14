@@ -74,7 +74,7 @@ impl NetStack {
 
     /// Forward one IPv4 packet within the ingress namespace. # C: O(N routes + len)
     pub(crate) fn forward_ipv4_in(&self, net_ns: u64, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        if !crate::forwarding::ipv4_enabled() { return Ok(()); }
+        if crate::forwarding::ipv4_enabled_in(net_ns) != Some(true) { return Ok(()); }
         if l3.len() < IPV4_HDR_LEN { return Ok(()); }
         let src = Ipv4Addr::from_u32(u32::from_be_bytes([l3[12], l3[13], l3[14], l3[15]]));
         let dst = Ipv4Addr::from_u32(u32::from_be_bytes([l3[16], l3[17], l3[18], l3[19]]));

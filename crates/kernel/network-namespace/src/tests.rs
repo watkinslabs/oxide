@@ -32,6 +32,7 @@ fn owner_registry_lifecycle_contract() {
     assert!(first.id() < second.id());
     assert_ne!(first.identity().nsfs_ino, second.identity().nsfs_ino);
     assert_eq!(lookup(first.id()).unwrap().owner_user_ns(), 41);
+    assert_eq!(lookup_u64(first.id().as_u64()).unwrap().id(), first.id());
     assert!(live_snapshot().iter().any(|namespace| namespace.id() == second.id()));
 
     let first_id = first.id();
@@ -44,6 +45,9 @@ fn owner_registry_lifecycle_contract() {
     assert!(lookup(first_id).is_none());
     assert_eq!(take_dead_namespace_ids().iter().filter(|id| **id == first_id).count(), 1);
     assert!(!take_dead_namespace_ids().contains(&first_id));
+    assert!(finish_teardown(first_id));
+    assert!(!finish_teardown(first_id));
+    assert!(lookup(first_id).is_none(), "finished ID cannot be resurrected");
 
     let mut threads = alloc::vec::Vec::new();
     for owner in 0..16 {
@@ -95,6 +99,10 @@ fn owner_registry_lifecycle_contract() {
         .filter(|id| *id == harvested_id).count();
     assert_eq!(claimed, 1);
     assert!(!take_dead_namespace_ids().contains(&harvested_id));
+    assert!(lookup(harvested_id).is_none(), "claimed ID cannot be resurrected");
+    assert!(finish_teardown(harvested_id));
+    assert!(!finish_teardown(harvested_id));
+    assert!(lookup(harvested_id).is_none(), "finished ID cannot be resurrected");
 }
 
 #[test]

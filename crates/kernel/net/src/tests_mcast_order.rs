@@ -80,6 +80,10 @@ impl crate::NetDev for OrderedXmitDev {
     fn name(&self) -> &str { "mcast-order" }
     fn mac(&self) -> crate::MacAddr { crate::MacAddr::ZERO }
     fn mtu(&self) -> u32 { 1500 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
+        crate::NamespaceDropAction::Destroy
+    }
     fn xmit(&self, pkt: crate::Pkt) -> crate::NetResult<()> {
         let data = pkt.data();
         let record = match data[0] >> 4 {
@@ -204,9 +208,10 @@ fn teardown_during_blocked_xmit_removes_v4_and_v6_state() {
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let removing = stack.clone();
     std::thread::spawn(move || { let _ = done_tx.send(removing.unregister_iface(iface)); });
-    let removed = done_rx.recv_timeout(WAIT);
+    assert_eq!(done_rx.recv_timeout(Duration::from_millis(20)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout));
     dev.release();
-    assert_eq!(removed, Ok(true));
+    assert_eq!(done_rx.recv_timeout(WAIT), Ok(true));
     leave.join().unwrap().unwrap();
     assert!(!stack.v4_mcast.lock().contains_key(&iface));
     assert!(!stack.v6_mcast.lock().contains_key(&iface));

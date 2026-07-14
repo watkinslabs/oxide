@@ -30,6 +30,19 @@ use core::sync::atomic::Ordering;
 use crate::{Task, TaskState};
 use sync::{Spinlock, TaskList as WaitClass};
 
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+macro_rules! waiters_lock {
+    ($list:expr) => { $list.waiters.lock_irqsave::<hal_x86_64::X86IrqGate>() };
+}
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+macro_rules! waiters_lock {
+    ($list:expr) => { $list.waiters.lock_irqsave::<hal_aarch64::ArmIrqGate>() };
+}
+#[cfg(not(target_os = "oxide-kernel"))]
+macro_rules! waiters_lock {
+    ($list:expr) => { $list.waiters.lock() };
+}
+
 /// FIFO wait list. Holds strong refs to parked tasks; drops them
 /// on wake (after enqueueing on the runqueue).
 pub struct WaitList {
@@ -80,7 +93,7 @@ impl WaitList {
         // lets it consume an already-expired deadline while claim_wake still
         // sees Runnable, after which this task can sleep with no armed wake.
         arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
-        let mut g = self.waiters.lock();
+        let mut g = waiters_lock!(self);
         // Dedup: drop any prior entry for this task before re-pushing.
         // A signal wake / deadline scanner rouses a parked task WITHOUT
         // popping it from the list; if the task then re-parks (its
@@ -120,7 +133,7 @@ impl WaitList {
         // the single wake — else a real sleeper could be skipped.
         loop {
             let popped: Option<Arc<Task>> = {
-                let mut g = self.waiters.lock();
+                let mut g = waiters_lock!(self);
                 if g.is_empty() { None } else { Some(g.remove(0)) }
             };
             match popped {
@@ -138,7 +151,7 @@ impl WaitList {
     /// # Lk: WaitList.waiters then runqueue.inner (per task)
     pub fn wake_all(&self) {
         let drained: Vec<Arc<Task>> = {
-            let mut g = self.waiters.lock();
+            let mut g = waiters_lock!(self);
             if g.is_empty() { return; }
             g.drain(..).collect()
         };
@@ -148,7 +161,7 @@ impl WaitList {
     /// True if any task is currently parked.
     /// # C: O(1)
     pub fn has_waiters(&self) -> bool {
-        !self.waiters.lock().is_empty()
+        !waiters_lock!(self).is_empty()
     }
 
     /// Remove a stale registration for the currently running task.
@@ -156,7 +169,17 @@ impl WaitList {
     pub fn remove_current(&self) {
         let Some(cur) = super::schedule::current() else { return };
         let ptr = cur as *const Task;
-        self.waiters.lock().retain(|task| Arc::as_ptr(task) != ptr);
+        waiters_lock!(self).retain(|task| Arc::as_ptr(task) != ptr);
+    }
+
+    /// Cancel the current task's published park before it calls `schedule`.
+    /// # C: O(N_waiters)
+    pub fn cancel_current_park(&self) {
+        let Some(cur) = super::schedule::current() else { return };
+        let ptr = cur as *const Task;
+        waiters_lock!(self).retain(|task| Arc::as_ptr(task) != ptr);
+        cur.wakeup_deadline_ns.store(0, Ordering::Release);
+        if cur.state() == TaskState::Sleeping { cur.set_state(TaskState::Runnable); }
     }
 
     /// Internal helper: transition a popped task to Runnable and

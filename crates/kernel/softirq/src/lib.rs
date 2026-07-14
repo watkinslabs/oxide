@@ -49,9 +49,12 @@ pub enum Slot {
     /// virtio-snd: drain EVENTQ used-ring entries. Raised by the
     /// virtio-snd queue-1 MSI callback.
     SndEvent = 4,
+    /// Network namespace final-owner drop: wake the process-context reaper.
+    NetNsReap = 5,
 }
 
 const N_SLOTS: usize = 32;
+const PROCESS_ONLY: u32 = 1u32 << (Slot::NetNsReap as u32);
 /// Per-CPU array width (Linux `irq_stat[NR_CPUS]`).
 const MAX_CPUS: usize = cpu::MAX_CPUS;
 
@@ -61,6 +64,9 @@ const MAX_CPUS: usize = cpu::MAX_CPUS;
 /// table (`HANDLERS`) stays global — Linux `softirq_vec[]` is shared; only the
 /// pending mask + drain state are per-CPU.
 static PENDING: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+/// Migration-safe publication for process-only work raised outside a pinned
+/// CPU context. Any ksoftirqd may claim these idempotent slot bits.
+static PROCESS_PENDING: AtomicU32 = AtomicU32::new(0);
 
 /// Current logical CPU id (kernel) / 0 (host tests). Same arch glue as
 /// `sched::diag::percpu::this_cpu_id`. Clamped to `MAX_CPUS` so a bogus id
@@ -119,6 +125,7 @@ const MAX_SOFTIRQ_TIME: u64 = 2;
 static RESCHED_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static JIFFIES_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static WAKEUP_HOOK:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static PROCESS_KICK_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Install the `need_resched()` peek (non-consuming). # C: O(1)
 pub fn set_resched_hook(f: fn() -> bool) { RESCHED_HOOK.store(f as *mut (), Ordering::Release); }
@@ -127,6 +134,11 @@ pub fn set_jiffies_hook(f: fn() -> u64) { JIFFIES_HOOK.store(f as *mut (), Order
 /// Install `wakeup_softirqd` — the deferral target run when the restart gate
 /// trips with work still pending. # C: O(1)
 pub fn set_wakeup_hook(f: fn()) { WAKEUP_HOOK.store(f as *mut (), Ordering::Release); }
+/// Install the lock-free IRQ kick used when process-only work is published.
+/// # C: O(1)
+pub fn set_process_kick_hook(f: fn()) {
+    PROCESS_KICK_HOOK.store(f as *mut (), Ordering::Release);
+}
 
 /// Peek `need_resched` via the installed hook. False (don't yield) if unset.
 fn need_resched() -> bool {
@@ -149,6 +161,14 @@ fn wakeup_softirqd() {
     let p = WAKEUP_HOOK.load(Ordering::Acquire);
     if p.is_null() { return; }
     // SAFETY: p stored from a `fn()` by set_wakeup_hook; reverse-transmute to that exact ABI before call.
+    let f: fn() = unsafe { core::mem::transmute(p) };
+    f();
+}
+
+fn kick_process_drainer() {
+    let p = PROCESS_KICK_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: p was installed from a `fn()` and remains immutable after boot.
     let f: fn() = unsafe { core::mem::transmute(p) };
     f();
 }
@@ -178,6 +198,7 @@ pub fn clear_handler(slot: Slot) -> *mut () {
     for pending in PENDING.iter() {
         pending.fetch_and(!bit, Ordering::AcqRel);
     }
+    PROCESS_PENDING.fetch_and(!bit, Ordering::AcqRel);
     HANDLERS[slot as usize].swap(core::ptr::null_mut(), Ordering::AcqRel)
 }
 
@@ -192,9 +213,22 @@ pub fn raise(slot: Slot) {
     RAISES.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Raise a process-only slot without requiring CPU pinning. # C: O(1)
+/// # Ctx: any; lock-free, allocation-free, IRQ-safe
+pub fn raise_process(slot: Slot) {
+    let bit = 1u32 << (slot as u32);
+    debug_assert!((bit & PROCESS_ONLY) != 0, "raise_process requires process-only slot");
+    let old = PROCESS_PENDING.fetch_or(bit, Ordering::AcqRel);
+    RAISES.fetch_add(1, Ordering::Relaxed);
+    if old & bit == 0 { kick_process_drainer(); }
+}
+
 /// True iff this CPU has a slot pending (Linux `local_softirq_pending()`).
 /// # C: O(1)
-pub fn pending() -> bool { PENDING[this_cpu()].load(Ordering::Acquire) != 0 }
+pub fn pending() -> bool {
+    PENDING[this_cpu()].load(Ordering::Acquire) != 0
+        || PROCESS_PENDING.load(Ordering::Acquire) != 0
+}
 
 /// `__do_softirq` core: drain THIS CPU's pending mask with Linux's restart
 /// gate. NOT a public entry point — call `sched::bh::do_softirq` (or
@@ -210,7 +244,7 @@ pub fn pending() -> bool { PENDING[this_cpu()].load(Ordering::Acquire) != 0 }
 /// is excluded and `this_cpu` is stable) with IRQs locally enabled.
 ///
 /// # C: O(N_handlers_with_work) per drain pass; bounded by the restart gate.
-pub unsafe fn run_pending() {
+unsafe fn run_pending_mode(process_context: bool) {
     // This CPU's slot. Stable for the drain: callers (`sched::bh::do_softirq`)
     // run with `in_serving_softirq` set, so preemption/migration is off and
     // `this_cpu` can't change under us. Re-entry is already excluded by the
@@ -229,11 +263,28 @@ pub unsafe fn run_pending() {
     let mut max_restart = MAX_SOFTIRQ_RESTART;
     loop {
         // `set_softirq_pending(0)` — claim this CPU's set, run each handler.
-        let bits = PENDING[c].swap(0, Ordering::AcqRel);
-        if bits == 0 {
+        let local_bits = PENDING[c].swap(0, Ordering::AcqRel);
+        let process_bits = if process_context {
+            PROCESS_PENDING.swap(0, Ordering::AcqRel)
+        } else {
+            PROCESS_PENDING.load(Ordering::Acquire)
+        };
+        if local_bits == 0 && process_bits == 0 {
             break;
         }
-        let mut b = bits;
+        let local_deferred = if process_context { 0 } else { local_bits & PROCESS_ONLY };
+        let process_deferred = !process_context && process_bits != 0;
+        if local_deferred != 0 {
+            PENDING[c].fetch_or(local_deferred, Ordering::Release);
+        }
+        if local_deferred != 0 || process_deferred {
+            wakeup_softirqd();
+        }
+        let mut b = if process_context {
+            local_bits | process_bits
+        } else {
+            local_bits & !local_deferred
+        };
         while b != 0 {
             let idx = b.trailing_zeros() as usize;
             b &= !(1u32 << idx);
@@ -245,8 +296,12 @@ pub unsafe fn run_pending() {
                 f();
             }
         }
+        // Process-only work must leave IRQ-tail immediately for ksoftirqd.
+        if local_deferred != 0 || process_deferred { break; }
         // Re-raised on this CPU during the pass? Apply the three-way gate.
-        if PENDING[c].load(Ordering::Acquire) == 0 {
+        if PENDING[c].load(Ordering::Acquire) == 0
+            && PROCESS_PENDING.load(Ordering::Acquire) == 0
+        {
             break;
         }
         // `time_before(jiffies, end)` — wrapping-safe signed compare.
@@ -265,6 +320,20 @@ pub unsafe fn run_pending() {
     }
 }
 
+/// Drain IRQ-tail-safe handlers, deferring process-only slots to ksoftirqd.
+/// # SAFETY: caller holds the softirq accounting bracket. # C: O(pending work)
+pub unsafe fn run_pending() {
+    // SAFETY: caller provides the accounting contract for this IRQ-tail mode.
+    unsafe { run_pending_mode(false); }
+}
+
+/// Drain all handlers from ksoftirqd process context. # C: O(pending work)
+/// # SAFETY: caller holds the softirq accounting bracket in process context.
+pub unsafe fn run_pending_process() {
+    // SAFETY: caller provides process context and the accounting contract.
+    unsafe { run_pending_mode(true); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +350,8 @@ mod tests {
         raise(Slot::NetRx);
     }
     fn noop_handler() {}
+    static PROCESS_HITS: AtomicU32 = AtomicU32::new(0);
+    fn process_handler() { PROCESS_HITS.fetch_add(1, Ordering::Relaxed); }
 
     #[test]
     fn raise_then_run_invokes_handler() {
@@ -293,6 +364,23 @@ mod tests {
         unsafe { run_pending(); }
         assert!(!pending());
         assert_eq!(T_HITS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn process_only_slot_waits_for_process_drain() {
+        PROCESS_HITS.store(0, Ordering::Relaxed);
+        PENDING[0].store(0, Ordering::Relaxed);
+        PROCESS_PENDING.store(0, Ordering::Relaxed);
+        set_handler(Slot::NetNsReap, process_handler);
+        raise_process(Slot::NetNsReap);
+        // SAFETY: hosted test models an IRQ-tail accounting bracket.
+        unsafe { run_pending(); }
+        assert_eq!(PROCESS_HITS.load(Ordering::Relaxed), 0);
+        assert!(pending());
+        // SAFETY: hosted test models the ksoftirqd accounting bracket.
+        unsafe { run_pending_process(); }
+        assert_eq!(PROCESS_HITS.load(Ordering::Relaxed), 1);
+        assert!(!pending());
     }
 
     #[test]

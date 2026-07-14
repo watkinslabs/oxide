@@ -74,7 +74,10 @@ pub use route::{RouteEntry, RouteRecord, RouteTable};
 pub use route6::{Route6Entry, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
-pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry, NetStats, STAT_FIELDS};
+pub use netdev::{
+    IfaceEntry, IfaceRegistry, NamespaceDropAction, NetDev, NetError, NetResult,
+    NetStats, STAT_FIELDS,
+};
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock;
@@ -114,6 +117,8 @@ mod tests;
 mod tests_correctness;
 #[cfg(test)]
 mod stack_tests;
+#[cfg(test)]
+mod stack_slaac_tests;
 #[cfg(test)]
 mod tests_udp_endpoint_groups;
 #[cfg(test)]

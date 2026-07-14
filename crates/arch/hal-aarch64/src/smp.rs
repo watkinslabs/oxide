@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 const AP_STACK_BYTES: usize = 16 * 1024;
 const AP_PERCPU_BYTES: usize = 4096;
+const AP_ONLINE_SPINS: u32 = 50_000_000;
 
 /// Per-AP context. The AP receives a pointer to this in x0
 /// when PSCI CPU_ON jumps it into `oxide_ap_entry_arm`. Layout
@@ -438,6 +439,7 @@ pub unsafe fn bring_up_aps_psci() -> usize {
         // through the identity map.
         // SAFETY: bb_va is a live mapped kernel VA; AT s1e1r reads PAR_EL1 only.
         let bb_pa = unsafe { va_to_pa(bb_va) };
+        let before = cpu::smp::online_count();
         // SAFETY: PSCI conduit configured (HVC on QEMU virt); entry_pa is the
         // trampoline's load-time phys; bb_pa is cleaned and identity-mapped.
         let st = unsafe { crate::psci::cpu_on(mpidr, entry_pa, bb_pa) };
@@ -453,9 +455,15 @@ pub unsafe fn bring_up_aps_psci() -> usize {
             klog::write_dec_u64(st as i32 as u64);
             klog::write_raw(b"\n");
         }
-        match st {
-            crate::psci::PsciStatus::Success | crate::psci::PsciStatus::AlreadyOn => started += 1,
-            _ => {}
+        if matches!(st, crate::psci::PsciStatus::Success | crate::psci::PsciStatus::AlreadyOn) {
+            let mut spins = 0u32;
+            while cpu::smp::online_count() == before && spins < AP_ONLINE_SPINS {
+                spins = spins.wrapping_add(1);
+                core::hint::spin_loop();
+            }
+            // `ap_arrived` publishes the completed per-CPU runqueue with
+            // release ordering; do not expose an AP until acquire observes it.
+            if cpu::smp::online_count() > before { started += 1; }
         }
     }
     started

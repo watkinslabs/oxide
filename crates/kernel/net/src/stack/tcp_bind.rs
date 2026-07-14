@@ -117,7 +117,7 @@ impl NetStack {
             return self.tcp_try_reserve_locked(&tables, net_ns, &mut binds, local_ip, requested_port, iface,
                 reuseaddr, reuseport, owner_uid, v6only).ok_or(NetError::Eaddrinuse);
         }
-        let range = crate::ephemeral::range_in(net_ns);
+        let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
         for _ in 0..range.count() {
             let seq = tables.next_tcp_ephemeral.fetch_add(1, Ordering::Relaxed);
             let port = range.port(seq);
@@ -319,7 +319,10 @@ mod tests {
     #[test]
     fn ephemeral_range_is_selected_by_socket_namespace() {
         let stack = NetStack::new();
-        let net_ns = 0x8230_1001;
+        crate::net_ns::install_final_drop_pending_notifier().unwrap();
+        let owner = network_namespace::allocate(0).unwrap();
+        crate::net_ns::materialize_state(&owner);
+        let net_ns = owner.id().as_u64();
         crate::ephemeral::set_range_in(net_ns, 45_100, 45_101).unwrap();
         let first = stack.tcp_reserve_in(net_ns, IpAddr::V4(Ipv4Addr::ANY), 0,
             None, false, false, UID, false).unwrap();
@@ -333,7 +336,7 @@ mod tests {
     #[test]
     fn ephemeral_exhaustion_scans_each_canonical_port_once() {
         let stack = NetStack::new();
-        let range = crate::ephemeral::range();
+        let range = crate::ephemeral::range().unwrap();
         let mut held = Vec::with_capacity(range.count() as usize);
         for port in range.start..=range.end {
             held.push(reserve(

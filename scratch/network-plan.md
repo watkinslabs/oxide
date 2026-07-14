@@ -104,7 +104,7 @@ Merged network foundation:
   net/procfs/syscalls checks and x86 release build passed. B834 replaced the
   obsolete musl vDSO toolchain path; B835 enforces each architecture's Linux
   symbol versions and ELF contract. x86 and ARM release builds pass.
-- [ ] **N03 canonical network-namespace lifetime**.
+- [~] **N03 canonical network-namespace lifetime**.
   Replace raw namespace IDs held by tasks, sockets, netlink sockets, and
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at
   final owner drop and remove ID-scan/task-table cleanup heuristics. Cover
@@ -135,9 +135,13 @@ Merged network foundation:
     listns enumerate the live registry, including fd-only and socket-only owners.
     B838, PR #3105, merge `16132232`; both operations consume concrete owners
     instead of task-table reconstruction.
-  - [ ] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces
+  - [~] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces
     before removing addresses, neighbors, multicast, fragments, routes/rules,
     transport tables, UNIX state, sysctls, and registry metadata.
+    Active on `B840-netns-final-drop-teardown`; hosted net 513, procfs 47, sched 137,
+    syscalls 53, softirq 6, namespace 3, Virtio net 19, and sysfs 48 pass;
+    x86 and ARM target builds pass. Smoke reached `basic.target` on x86 in
+    70s and ARM in 129s; ARM includes the final AP-ready publication barrier.
   - [ ] N03.8 prove final-drop, pidfd, nsfd, passed-socket, blocked-I/O, ingress,
     teardown, SIOCGSKNS, listns, and task-owner swap races in hosted and loom
     tests; run full network/namespace/syscall suites and dual target builds.
@@ -213,8 +217,9 @@ Merged network foundation:
 ## F. Cross-Cutting Correctness
 
 - [ ] **N19 network security hooks**.
-  Install Linux-shaped create/bind/connect/listen/send/receive/option hooks in
-  one canonical security boundary. Do not duplicate checks in syscall shims.
+  Install Linux-shaped create/bind/connect/listen/accept/send/receive/shutdown,
+  name-query, socketpair, option, and ioctl hooks in one canonical security
+  boundary. Do not duplicate checks in syscall shims.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
@@ -228,9 +233,20 @@ Merged network foundation:
   checking return values, errno precedence, output bytes/lengths, flags,
   ancillary data, blocking, and side effects on both architectures.
 
-## G. Completion Gate
+## G. Remaining Network Syscalls
 
-- [ ] All rows 41-55 and 299 have honest `IMPL` evidence in
+- [ ] **N23 sendmmsg row 307**.
+  Complete Linux vector validation, partial-batch/error ordering, timeout and
+  blocking behavior, compat `mmsghdr`, control-message handling, security
+  hooks, and differential tests. Null vectors must not report false success.
+- [ ] **N24 network ioctl rows 16 and 288**.
+  Complete socket and interface ioctl command coverage, mutable interface
+  properties, namespace/device ownership, capability and security checks,
+  uaccess/error ordering, compat ABI, and differential tests.
+
+## H. Completion Gate
+
+- [ ] All network rows 16, 41-55, 288, 299, and 307 have honest `IMPL` evidence in
   `syscall-compliance-matrix.md`; no known gap is hidden in prose.
 - [ ] Full hosted network, netlink, security, namespace, procfs, and syscall
   suites pass with no ignored failure relevant to this plan.

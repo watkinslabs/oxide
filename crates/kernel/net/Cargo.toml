@@ -19,6 +19,7 @@ syscall  = { path = "../syscall" }
 # UnixPair/UnixDgram state change so epoll_wait parkers wake.
 sched    = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
+softirq  = { path = "../softirq" }
 
 # F159: TCP retx scanner needs monotonic_ns. Per-arch HAL only links
 # in for the matching kernel target; hosted tests skip the call site

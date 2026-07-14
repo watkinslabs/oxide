@@ -139,6 +139,7 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId, our_ip
     let our_mac = match super::mac_for(device_key) { Some(m) => m, None => return 0 };
     let stack = net::sock::stack();
     rx_poll_for(device_key, |f: &[u8]| {
+        let Some((_net_ns, _namespace)) = stack.ingress_namespace(iface) else { return };
         if f.len() < 14 { return; }
         let et = ((f[12] as u16) << 8) | (f[13] as u16);
         // F137: tap full L2 frame to AF_PACKET sockets bound on this

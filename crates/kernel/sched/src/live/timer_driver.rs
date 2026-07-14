@@ -25,8 +25,8 @@ extern "C" fn driver(_arg: usize) -> ! {
 
 /// Spawn the timer-driver kthread. Boot, once, after the runqueue installs.
 /// # C: O(1)
-pub fn spawn_timer_driver() {
+pub fn spawn_timer_driver() -> Result<(), super::SpawnError> {
     let tid = super::next_tid();
     // SAFETY: boot path after install_default_runqueue; entry is a 'static extern "C" fn ptr; arg unused.
-    let _ = unsafe { super::spawn_kernel_thread(tid, "ktimers", driver, 0) };
+    unsafe { super::spawn_kernel_thread(tid, "ktimers", driver, 0) }.map(|_| ())
 }

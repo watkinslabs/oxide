@@ -5,6 +5,11 @@ use crate::mcast_state::{V6Change, V6IfaceGroup};
 use crate::netdev::{NetError, NetResult};
 use crate::stack::NetStack;
 
+fn report_owner(net_ns: u64) -> Option<network_namespace::NetworkNamespaceRef> {
+    if net_ns == 0 { Some(network_namespace::initial()) }
+    else { network_namespace::lookup_u64(net_ns) }
+}
+
 impl NetStack {
     /// Prefer the interface link-local address required for MLD reports. # C: O(N)
     pub(crate) fn mld_src_on_iface(&self, iface: NetIfaceId) -> Option<Ipv6Addr> {
@@ -73,7 +78,8 @@ impl NetStack {
         self.advance_mld_change(iface, group, generation, change, delivered, now_ns);
     }
 
-    fn drive_mld_reports(&self, iface: NetIfaceId, now_ns: u64) {
+    fn drive_mld_reports(&self, _owner: &network_namespace::NetworkNamespaceRef,
+                         iface: NetIfaceId, now_ns: u64) {
         let Some(driver) = self.ifaces.mcast_report(iface) else {
             self.v6_mcast.lock().remove(&iface); return;
         };
@@ -154,7 +160,7 @@ impl NetStack {
         if group == crate::ndp::IPV6_ALL_NODES {
             self.discard_mld_change(iface, group, generation); return Ok(());
         }
-        self.drive_mld_reports(iface, now_ns);
+        if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
         Ok(())
     }
 
@@ -177,7 +183,10 @@ impl NetStack {
         let Some(generation) = snapshot else { return };
         if group == crate::ndp::IPV6_ALL_NODES { self.discard_mld_change(iface, group, generation); return; }
         if report.as_ref().is_some_and(|report| report.live()) {
-            self.drive_mld_reports(iface, now_ns);
+            let Some(net_ns) = self.ifaces.namespace(iface) else {
+                self.v6_mcast.lock().remove(&iface); return;
+            };
+            if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
         } else { self.v6_mcast.lock().remove(&iface); }
     }
 
@@ -246,7 +255,7 @@ impl NetStack {
         if group == crate::ndp::IPV6_ALL_NODES {
             self.discard_mld_change(iface, group, generation); return Ok(());
         }
-        self.drive_mld_reports(iface, now_ns);
+        if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
         Ok(())
     }
 
@@ -278,7 +287,7 @@ impl NetStack {
         if group == crate::ndp::IPV6_ALL_NODES {
             self.discard_mld_change(iface, group, generation); return Ok(());
         }
-        self.drive_mld_reports(iface, now_ns);
+        if let Some(owner) = report_owner(net_ns) { self.drive_mld_reports(&owner, iface, now_ns); }
         Ok(())
     }
 
@@ -296,7 +305,9 @@ impl NetStack {
             pending
         };
         for (iface, _, _, _, _) in pending {
-            self.drive_mld_reports(iface, now_ns);
+            let Some(net_ns) = self.ifaces.namespace(iface) else { continue };
+            let Some(owner) = report_owner(net_ns) else { continue };
+            self.drive_mld_reports(&owner, iface, now_ns);
         }
     }
 

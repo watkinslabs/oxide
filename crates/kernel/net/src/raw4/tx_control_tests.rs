@@ -26,6 +26,10 @@ impl NetDev for Capture {
     fn name(&self) -> &str { "raw4ctl0" }
     fn mac(&self) -> MacAddr { MacAddr::ZERO }
     fn mtu(&self) -> u32 { self.mtu }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
+        crate::NamespaceDropAction::Destroy
+    }
     fn xmit(&self, packet: Pkt) -> NetResult<()> { self.packets.lock().push(packet.data().to_vec()); Ok(()) }
 }
 
