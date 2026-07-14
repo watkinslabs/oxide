@@ -67,11 +67,6 @@ __vdso_clock_gettime:
     ret
 .size __vdso_clock_gettime, .-__vdso_clock_gettime
 
-.global clock_gettime
-.type clock_gettime, @function
-clock_gettime: jmp __vdso_clock_gettime
-.size clock_gettime, .-clock_gettime
-
 .global __vdso_gettimeofday
 .type __vdso_gettimeofday, @function
 __vdso_gettimeofday:
@@ -80,11 +75,6 @@ __vdso_gettimeofday:
     ret
 .size __vdso_gettimeofday, .-__vdso_gettimeofday
 
-.global gettimeofday
-.type gettimeofday, @function
-gettimeofday: jmp __vdso_gettimeofday
-.size gettimeofday, .-gettimeofday
-
 .global __vdso_time
 .type __vdso_time, @function
 __vdso_time:
@@ -92,11 +82,6 @@ __vdso_time:
     syscall
     ret
 .size __vdso_time, .-__vdso_time
-
-.global time
-.type time, @function
-time: jmp __vdso_time
-.size time, .-time
 
 .global __vdso_getcpu
 .type __vdso_getcpu, @function

@@ -266,10 +266,9 @@ pub struct ArmTimerOps;
 impl TimerOps for ArmTimerOps {
     /// # C: O(1)
     fn monotonic_ns() -> Nanos {
-        let khz = CNTFRQ_KHZ.load(Ordering::Relaxed) as u64;
+        let khz = CNTFRQ_KHZ.load(Ordering::Relaxed);
         if khz == 0 { return Nanos(0); }
-        let cnt = read_cntvct();
-        Nanos(cnt.saturating_mul(1_000_000) / khz)
+        Nanos(hal::time::counter_ns(read_cntvct(), khz))
     }
 
     /// # SAFETY: writes `CNTV_CVAL_EL0` (compare value); caller owns

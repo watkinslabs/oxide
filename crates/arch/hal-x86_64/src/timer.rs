@@ -160,12 +160,9 @@ pub struct X86TimerOps;
 impl TimerOps for X86TimerOps {
     /// # C: O(1)
     fn monotonic_ns() -> Nanos {
-        let khz = TSC_KHZ.load(Ordering::Relaxed) as u64;
+        let khz = TSC_KHZ.load(Ordering::Relaxed);
         if khz == 0 { return Nanos(0); }
-        // tsc * 1_000_000 / khz — keeps the multiply within u64 for
-        // any TSC < 2^44 cycles (~488 days at 4 GHz).
-        let tsc = rdtsc();
-        Nanos(tsc.saturating_mul(1_000_000) / khz)
+        Nanos(hal::time::counter_ns(rdtsc(), khz))
     }
 
     /// # SAFETY: writes `IA32_TSC_DEADLINE` MSR via `wrmsr`; caller
