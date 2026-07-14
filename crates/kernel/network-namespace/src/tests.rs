@@ -54,22 +54,47 @@ fn owner_registry_lifecycle_contract() {
     namespaces.sort_by_key(|namespace| namespace.id());
     for pair in namespaces.windows(2) { assert!(pair[0].id() < pair[1].id()); }
 
-    let raced = allocate(88).unwrap();
-    let raced_id = raced.id();
-    let barrier = Arc::new(Barrier::new(2));
-    let peer_barrier = Arc::clone(&barrier);
+    let lookup_first = allocate(88).unwrap();
+    let lookup_first_id = lookup_first.id();
+    let pinned_barrier = Arc::new(Barrier::new(2));
+    let release_barrier = Arc::new(Barrier::new(2));
+    let peer_pinned = Arc::clone(&pinned_barrier);
+    let peer_release = Arc::clone(&release_barrier);
     let lookup_thread = std::thread::spawn(move || {
-        peer_barrier.wait();
-        lookup(raced_id)
+        let pinned = lookup(lookup_first_id).unwrap();
+        peer_pinned.wait();
+        peer_release.wait();
+        pinned
     });
-    barrier.wait();
-    drop(raced);
-    if let Some(pinned) = lookup_thread.join().unwrap() {
-        assert_eq!(pinned.id(), raced_id);
-        drop(pinned);
+    pinned_barrier.wait();
+    drop(lookup_first);
+    assert_eq!(lookup(lookup_first_id).unwrap().id(), lookup_first_id);
+    release_barrier.wait();
+    let pinned = lookup_thread.join().unwrap();
+    drop(pinned);
+    assert!(lookup(lookup_first_id).is_none());
+
+    let drop_first = allocate(89).unwrap();
+    let drop_first_id = drop_first.id();
+    drop(drop_first);
+    assert!(lookup(drop_first_id).is_none());
+
+    let harvested = allocate(90).unwrap();
+    let harvested_id = harvested.id();
+    drop(harvested);
+    let barrier = Arc::new(Barrier::new(8));
+    let mut harvesters = alloc::vec::Vec::new();
+    for _ in 0..8 {
+        let peer_barrier = Arc::clone(&barrier);
+        harvesters.push(std::thread::spawn(move || {
+            peer_barrier.wait();
+            take_dead_namespace_ids()
+        }));
     }
-    assert!(lookup(raced_id).is_none());
-    assert_eq!(take_dead_namespace_ids().iter().filter(|id| **id == raced_id).count(), 1);
+    let claimed = harvesters.into_iter().flat_map(|thread| thread.join().unwrap())
+        .filter(|id| *id == harvested_id).count();
+    assert_eq!(claimed, 1);
+    assert!(!take_dead_namespace_ids().contains(&harvested_id));
 }
 
 #[test]
@@ -79,4 +104,19 @@ fn callback_slot_is_idempotent_but_immutable() {
     assert_eq!(slot.install(notify), Ok(()));
     assert_eq!(slot.install(notify), Ok(()));
     assert_eq!(slot.install(other_notify), Err(InstallError::AlreadyInstalled));
+}
+
+#[test]
+fn callback_install_publication_is_atomic() {
+    let slot = Arc::new(CallbackSlot::new());
+    let barrier = Arc::new(Barrier::new(2));
+    let install_slot = Arc::clone(&slot);
+    let install_barrier = Arc::clone(&barrier);
+    let installer = std::thread::spawn(move || {
+        install_barrier.wait();
+        install_slot.install(notify).unwrap();
+    });
+    barrier.wait();
+    while !slot.installed() { core::hint::spin_loop(); }
+    installer.join().unwrap();
 }

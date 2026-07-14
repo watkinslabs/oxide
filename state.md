@@ -11,7 +11,7 @@ Update: 2026-07-14.
 - B834 uses the GNU aarch64 target for reproducible vDSO generation.
 - B835 adds strict per-architecture vDSO ABI validation.
 - N03.1 owner foundation merged in PR #3100 at `0d26f077`.
-- N03.2 task ownership and exit release is the next network lane.
+- B837 owner context contracts and race hardening is active before N03.2.
 
 ## Implemented
 
@@ -49,6 +49,8 @@ Update: 2026-07-14.
 - B836 `cargo check -p network-namespace -p sync`: passed.
 - B836 touched code, docs, and length spec-lint gates: clean.
 - B836 `git diff --check`: passed; all new Rust files are below 100 lines.
+- B837 deterministic publication/drop/harvest tests: 3 passed, zero failures.
+- B837 package checks, touched code/length lint, and `git diff --check`: passed.
 
 ## Remaining network work
 

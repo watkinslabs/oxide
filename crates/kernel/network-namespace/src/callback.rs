@@ -1,6 +1,10 @@
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+/// Atomic-wakeup-only notifier invoked synchronously by the final owner drop.
+/// Implementations must be reentrant, allocation-free, lock-free, and IRQ-safe.
+/// # Ctx: any, including IRQ-off and while unrelated locks are held
+/// # Sleeps: no
 pub type FinalDropCallback = fn();
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -38,7 +42,10 @@ impl CallbackSlot {
 
 static FINAL_DROP: CallbackSlot = CallbackSlot::new();
 
-/// Install the nonblocking final-drop notifier; identical reinstall is idempotent. # C: O(1)
+/// Install the final-drop notifier; identical reinstall is idempotent.
+/// # C: O(1)
+/// # Ctx: process initialization; installed callback must satisfy `FinalDropCallback`
+/// # Sleeps: no
 pub fn install_final_drop_callback(callback: FinalDropCallback) -> Result<(), InstallError> {
     FINAL_DROP.install(callback)
 }

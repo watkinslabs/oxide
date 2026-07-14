@@ -113,7 +113,8 @@ Merged network foundation:
     immutable monotonic ID, owning user namespace, stable nsfs identity, weak
     live registry, init owner, and install-once final-drop callback. B836,
     PR #3100, merge `0d26f077`; lifecycle tests 2, package checks and touched
-    spec-lint gates passed.
+    spec-lint gates passed. Callback/registry context contracts and deterministic
+    final-drop race coverage claimed by `B837-netns-owner-contracts`.
   - [ ] N03.2 replace task `AtomicU64` storage with an owned namespace handle;
     clone atomically, swap under one lock, and release explicitly on task exit
     so pidfds retaining reaped tasks cannot retain namespace membership.
