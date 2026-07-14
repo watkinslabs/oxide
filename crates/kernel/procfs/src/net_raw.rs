@@ -66,24 +66,30 @@ mod tests {
     use net::mcast_filter::SocketMcast;
     use vfs::{Dentry, File, OpenFlags};
 
-    fn raw4(protocol: u8, net_ns: u64) -> Arc<net::raw4::Raw4Endpoint> {
-        net::raw4::Raw4Endpoint::new(protocol, net_ns, Arc::new(SocketFilter::new()),
+    fn raw4(protocol: u8, namespace: network_namespace::NetworkNamespaceRef) -> Arc<net::raw4::Raw4Endpoint> {
+        net::raw4::Raw4Endpoint::new(protocol, namespace, Arc::new(SocketFilter::new()),
             Arc::new(SocketMcast::new()), Arc::new(net::SocketError::new()))
+    }
+
+    fn new_namespace() -> network_namespace::NetworkNamespaceRef {
+        let _ = net::net_ns::install_final_drop_pending_notifier();
+        network_namespace::allocate(0).unwrap()
     }
 
     #[test]
     fn canonical_rows_are_namespace_scoped() {
-        const NS: u64 = 8_320_101;
-        const OTHER_NS: u64 = 8_320_102;
+        let namespace = new_namespace();
+        let other_namespace = new_namespace();
+        let ns = namespace.id().as_u64();
         let stack = net::global_stack();
-        let raw = raw4(143, NS);
+        let raw = raw4(143, namespace.clone());
         raw.bind(net::Ipv4Addr::new(192, 0, 2, 1), Some(net::NetIfaceId::from_raw(9))).unwrap();
         raw.connect(net::Ipv4Addr::new(198, 51, 100, 2), None).unwrap();
-        let hidden = raw4(144, OTHER_NS);
+        let hidden = raw4(144, other_namespace);
         stack.register_raw4(&raw);
         stack.register_raw4(&hidden);
 
-        let bytes = raw_body(NS);
+        let bytes = raw_body(ns);
         let body = core::str::from_utf8(&bytes).unwrap();
         assert!(body.starts_with("  sl  local_address rem_address   st tx_queue rx_queue"));
         assert!(body.contains("010200C0:008F 026433C6:0000 07 00000000:00000000"));
@@ -91,11 +97,11 @@ mod tests {
 
         let local6 = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 1]);
         let remote6 = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 2]);
-        let raw6 = Arc::new(net::raw6::Raw6Endpoint::standalone(NS, 58));
+        let raw6 = Arc::new(net::raw6::Raw6Endpoint::standalone(namespace, 58));
         raw6.bind(net::raw6::Raw6Address::new(local6, 0), Some(net::NetIfaceId::from_raw(10)));
         raw6.connect(net::raw6::Raw6Address::new(remote6, 0));
         stack.register_raw6(&raw6);
-        let bytes6 = raw6_body(NS);
+        let bytes6 = raw6_body(ns);
         let body6 = core::str::from_utf8(&bytes6).unwrap();
         assert!(body6.contains(&format!("{}:003A {}:0000 07 00000000:00000000",
             ipv6_hex(local6), ipv6_hex(remote6))));
@@ -108,13 +114,13 @@ mod tests {
     #[test]
     fn open_keeps_immutable_raw_body() {
         let stack = net::global_stack();
-        let first_endpoint = raw4(241, 0);
+        let first_endpoint = raw4(241, network_namespace::initial());
         stack.register_raw4(&first_endpoint);
         let inode = make_proc_net_raw();
         let first = File::new(Arc::clone(&inode), Dentry::new_root(Arc::clone(&inode)), OpenFlags::O_RDONLY);
         first.open_hook().unwrap();
 
-        let second_endpoint = raw4(242, 0);
+        let second_endpoint = raw4(242, network_namespace::initial());
         stack.register_raw4(&second_endpoint);
         let mut first_buf = [0u8; 512];
         let first_n = first.read(&mut first_buf).unwrap();

@@ -70,7 +70,7 @@ pub(super) struct Raw6State {
 
 /// Protocol-owned raw IPv6 endpoint; canonical tables retain weak references.
 pub struct Raw6Endpoint {
-    net_ns: u64,
+    net_namespace: network_namespace::NetworkNamespaceRef,
     protocol: u8,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
@@ -83,10 +83,10 @@ pub struct Raw6Endpoint {
 
 impl Raw6Endpoint {
     /// Build an endpoint sharing its owning socket's common state. # C: O(1)
-    pub fn new(net_ns: u64, protocol: u8, bpf_filter: Arc<SocketFilter>,
+    pub fn new(net_namespace: network_namespace::NetworkNamespaceRef, protocol: u8, bpf_filter: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>) -> Self {
         Self {
-            net_ns, protocol, bpf_filter, mcast, error,
+            net_namespace, protocol, bpf_filter, mcast, error,
             state: Spinlock::new(Raw6State {
                 accepting: true, local: Raw6Address::UNSPECIFIED, explicit_local: false, peer: None,
                 bound_iface: None, datagrams: VecDeque::new(), queued_bytes: 0,
@@ -104,11 +104,16 @@ impl Raw6Endpoint {
     pub const fn protocol(&self) -> u8 { self.protocol }
 
     /// Network namespace owning this endpoint and its table entry. # C: O(1)
-    pub const fn net_ns(&self) -> u64 { self.net_ns }
+    pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
+
+    /// Clone the concrete namespace owner retained by this endpoint. # C: O(1)
+    pub fn network_namespace(&self) -> network_namespace::NetworkNamespaceRef {
+        self.net_namespace.clone()
+    }
 
     /// Build a self-contained endpoint for hosted stack users. # C: O(1)
-    pub fn standalone(net_ns: u64, protocol: u8) -> Self {
-        Self::new(net_ns, protocol, Arc::new(SocketFilter::new()),
+    pub fn standalone(net_namespace: network_namespace::NetworkNamespaceRef, protocol: u8) -> Self {
+        Self::new(net_namespace, protocol, Arc::new(SocketFilter::new()),
             Arc::new(SocketMcast::new()), Arc::new(SocketError::new()))
     }
 
@@ -123,7 +128,8 @@ impl Raw6Endpoint {
     /// Validate native IPv6 namespace/device ownership before binding. # C: O(N)
     pub fn bind_checked(&self, local: Raw6Address, iface: Option<NetIfaceId>) -> crate::netdev::NetResult<()> {
         if local.addr.to_v4_mapped().is_some() { return Err(crate::netdev::NetError::Eaddrnotavail); }
-        if !local.addr.is_unspecified() && !crate::global_stack().v6_addr_snapshot_in(self.net_ns)
+        let net_ns = self.net_ns();
+        if !local.addr.is_unspecified() && !crate::global_stack().v6_addr_snapshot_in(net_ns)
             .into_iter().any(|(id, row)| row.addr == local.addr && iface.is_none_or(|want| want == id))
         {
             return Err(crate::netdev::NetError::Eaddrnotavail);
@@ -146,10 +152,11 @@ impl Raw6Endpoint {
     {
         if peer.addr.is_unspecified() { return Err(crate::netdev::NetError::Eaddrnotavail); }
         let stack = crate::global_stack();
-        let (route_iface, _, _) = stack.route_v6_iface_in(self.net_ns, peer.addr, iface)?;
-        let local = stack.routes6.lookup_in(self.net_ns, peer.addr)
+        let net_ns = self.net_ns();
+        let (route_iface, _, _) = stack.route_v6_iface_in(net_ns, peer.addr, iface)?;
+        let local = stack.routes6.lookup_in(net_ns, peer.addr)
             .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint)
-            .or_else(|| stack.v6_addr_snapshot_in(self.net_ns).into_iter()
+            .or_else(|| stack.v6_addr_snapshot_in(net_ns).into_iter()
                 .find(|(id, _)| *id == route_iface).map(|(_, row)| row.addr))
             .ok_or(crate::netdev::NetError::Eaddrnotavail)?;
         let scope = if local.is_link_local() { route_iface.raw() } else { 0 };

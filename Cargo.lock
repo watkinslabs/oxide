@@ -890,6 +890,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "network-namespace",
  "sched",
  "sync",
  "syscall",
@@ -910,6 +911,7 @@ name = "netlink"
 version = "0.1.0"
 dependencies = [
  "net",
+ "network-namespace",
  "nscg",
  "sched",
  "sync",
@@ -929,6 +931,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "network-namespace",
  "sched",
  "sync",
  "syscall",
@@ -1093,6 +1096,7 @@ dependencies = [
  "kmacros",
  "modules",
  "net",
+ "network-namespace",
  "nscg",
  "pmm",
  "sched",
@@ -1231,6 +1235,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "network-namespace",
  "softirq",
  "sync",
  "syscall",
@@ -1437,6 +1442,7 @@ dependencies = [
  "net",
  "netfilter",
  "netlink",
+ "network-namespace",
  "nscg",
  "pci",
  "pmm",
@@ -1471,6 +1477,7 @@ dependencies = [
  "modules",
  "net",
  "netlink",
+ "network-namespace",
  "sync",
  "vfs",
 ]

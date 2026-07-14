@@ -4,7 +4,7 @@ use super::*;
 fn device_uevent_replay_uses_nested_canonical_devpath() {
     use netlink::{proto, NetlinkSocket};
 
-    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
     listener.set_group_mask(1);
     netlink::register_uevent_listener(&listener);
 
@@ -44,7 +44,7 @@ fn device_uevent_replay_uses_nested_canonical_devpath() {
 fn parented_drm_card_uevent_replay_matches_udev_seat_rules() {
     use netlink::{proto, NetlinkSocket};
 
-    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
     listener.set_group_mask(1);
     netlink::register_uevent_listener(&listener);
 

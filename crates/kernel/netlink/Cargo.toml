@@ -12,4 +12,7 @@ sync = { path = "../../shared/sync" }
 vfs  = { path = "../vfs" }
 net  = { path = "../net" }
 sched = { path = "../sched" }
+network-namespace = { path = "../network-namespace" }
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
 nscg = { path = "../nscg" }

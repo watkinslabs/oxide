@@ -43,7 +43,7 @@ pub(crate) fn iface_primary_ip(id: Option<NetIfaceId>) -> Option<Ipv4Addr> {
 /// # C: O(N_ifaces)
 pub(crate) fn bound_iface(sock: &InetSocket) -> Result<Option<NetIfaceId>, NetError> {
     stack().bound_iface_in(
-        sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
+        sock.net_ns(),
         sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire),
     )
 }
@@ -55,7 +55,7 @@ pub(crate) fn bound_iface(sock: &InetSocket) -> Result<Option<NetIfaceId>, NetEr
 pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
     -> Result<usize, NetError>
 {
-    let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+    let net_ns = sock.net_ns();
     let eno = sock.take_pending_recv_error();
     if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
     if crate::udp::udp4_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }

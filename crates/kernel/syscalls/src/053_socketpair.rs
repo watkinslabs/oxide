@@ -23,13 +23,20 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    let net_namespace = match cur.network_namespace_snapshot() {
+        Some(namespace) => namespace,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
     let reserve_flags = if extra & SOCK_CLOEXEC != 0 { vfs::OpenFlags::O_CLOEXEC } else { vfs::OpenFlags::empty() };
     crate::fd_pair::install_fd_pair(&fdt, cur.nofile_soft(), reserve_flags,
         |index, fd| write_user_i32(svp + index as u64 * 4, fd),
-        || create_files(domain, raw_type, protocol, cur))
+        || create_files(domain, raw_type, protocol, cur, net_namespace))
 }
 
-fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task) -> Result<(Arc<vfs::File>, Arc<vfs::File>), i64> {
+fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
+                net_namespace: network_namespace::NetworkNamespaceRef)
+    -> Result<(Arc<vfs::File>, Arc<vfs::File>), i64>
+{
     let spec = parse_socket_args(domain, raw_type, protocol, true).map_err(|e| -(e.as_i32() as i64))?;
     if spec.family != AF_UNIX { return Err(-(Errno::Eafnosupport.as_i32() as i64)); }
     let stream = if spec.typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
@@ -56,8 +63,8 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task) ->
         let error = if let Some(p) = &stream { p.end_error(end) }
             else if let Some(p) = &msg { p.end_error(end) }
             else { Arc::new(net::SocketError::new()) };
-        let s = InetSocket::new_tcp_with_error(error);
-        s.family.store(net::sock::AF_UNIX, core::sync::atomic::Ordering::Release);
+        let mut s = InetSocket::new_unix_in(net_namespace.clone());
+        s.error = error;
         s.opts.so_type.store(spec.typ as u8, core::sync::atomic::Ordering::Release);
         if let Some(p) = &stream {
             *s.kind.lock() = SockKind::Unix(p.clone(), end);

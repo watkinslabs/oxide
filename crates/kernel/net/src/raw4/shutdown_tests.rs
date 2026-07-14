@@ -9,7 +9,7 @@ use crate::bpf_filter::SocketFilter;
 use crate::mcast_filter::SocketMcast;
 
 fn endpoint() -> Arc<Raw4Endpoint> {
-    Raw4Endpoint::new(143, 0, Arc::new(SocketFilter::new()),
+    Raw4Endpoint::new(143, network_namespace::initial(), Arc::new(SocketFilter::new()),
         Arc::new(SocketMcast::new()), Arc::new(crate::SocketError::new()))
 }
 

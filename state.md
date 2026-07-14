@@ -4,7 +4,7 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `ea099a18`, synchronized with `origin/main`.
+- `origin/main`: `e87ee0cd`; merged into the active lane at `02110d8f`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
@@ -12,7 +12,7 @@ Update: 2026-07-14.
 - B835 adds strict per-architecture vDSO ABI validation.
 - N03.1 owner foundation merged in PR #3100 at `0d26f077`.
 - B837 owner contracts and race hardening merged in PR #3102 at `50ce37e4`.
-- N03.2-N03.5 atomic owner migration is active on
+- N03.2-N03.6 atomic owner migration is active on
   `B838-netns-task-ownership`.
 
 ## Implemented
@@ -28,6 +28,14 @@ Update: 2026-07-14.
   IPv4 option compilation, source-route wire destinations, direct on-link
   `MSG_DONTROUTE`, weak-host source selection, IPv6 fragment-zero completeness,
   arbitrary-protocol fragmentation, and 65,535-byte payload enforcement.
+- Tasks, proc namespace links, nsfs nodes, INET/UNIX/PACKET/NETLINK/VSOCK
+  sockets, and accepted sockets retain concrete network namespace owners.
+- Task exit releases membership before zombie publication; pidfds cannot keep
+  namespace membership alive, while nsfds and passed sockets retain it.
+- clone/unshare/setns stage owned-handle publication; new namespaces publish
+  loopback before task membership and capability checks use the retained owner.
+- `SIOCGSKNS` returns the socket owner and listns includes fd-only/socket-only
+  owners from the canonical live registry.
 
 ## Verification
 
@@ -53,12 +61,17 @@ Update: 2026-07-14.
 - B836 `git diff --check`: passed; all new Rust files are below 100 lines.
 - B837 deterministic publication/drop/harvest tests: 3 passed, zero failures.
 - B837 package checks, touched code/length lint, and `git diff --check`: passed.
+- B838 serial hosted: net 502, sched 137, syscalls 53, sysfs 48, netlink 60,
+  nscg 12, procfs 46; zero failures.
+- B838 x86_64 and aarch64 syscall target checks passed.
+- B838 integrated package check and `git diff --check` passed.
+- B838 `make x86` and `make arm` passed.
+- B838 smoke reached `basic.target` on first real attempt: x86 74s, ARM 108s.
 
 ## Remaining network work
 
-- N03.2 through N22 remain in `network-plan.md`.
-- Integrated ARM smoke remains blocked by unrelated glibc-service traps and
-  the `upower.service` restart loop captured in `/tmp/B832-smoke-arm.log`.
+- B838 N03.2-N03.6 commit, PR, merge, and closure.
+- N03.7 final-drop teardown and N03.8 lifecycle/race proof, then N04-N22.
 
 ## First resume command
 

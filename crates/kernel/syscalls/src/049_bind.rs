@@ -53,7 +53,7 @@ fn remove_unix_sock_node(n: &UnixSockNode) {
 
 /// Linux privileged-port admission for explicit INET binds. # C: O(1)
 fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool {
-    let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+    let net_ns = sock.net_ns();
     if port == 0 || port >= net::ephemeral::unprivileged_start_in(net_ns) { return false; }
     let transport = matches!(*sock.kind.lock(),
         net::sock::SockKind::Udp | net::sock::SockKind::TcpInit);
@@ -142,7 +142,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         };
         if ifindex < 0 { return -(Errno::Enodev.as_i32() as i64); }
         if ifindex != 0 {
-            let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+            let net_ns = sock.net_ns();
             let iface = net::NetIfaceId::from_raw(ifindex as u32);
             if net::sock::stack().ifaces.lookup_in_ns(iface, net_ns).is_none() {
                 return -(Errno::Enodev.as_i32() as i64);

@@ -355,7 +355,7 @@ fn bind_to_device(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -
             Ok(s) => s,
             Err(_) => return -(Errno::Einval.as_i32() as i64),
         };
-        let net_ns = sock.net_ns.load(Ordering::Acquire);
+        let net_ns = sock.net_ns();
         match net::sock::stack().ifaces.lookup_name_in_ns(s, net_ns) {
             Some((id, _)) => Some(id),
             None => return -(Errno::Enodev.as_i32() as i64),
@@ -376,8 +376,7 @@ fn copy_filter_i32(optval: u64, optlen: u32) -> Result<i32, Errno> {
 fn require_tcp_filter_admin(sock: &net::sock::InetSocket) -> Result<(), Errno> {
     if !is_tcp(sock) { return Ok(()); }
     let cur = sched::live::current().ok_or(Errno::Eperm)?;
-    let net_ns = sock.net_ns.load(Ordering::Acquire);
-    if nscg::has_net_admin_for(cur, net_ns) { Ok(()) } else { Err(Errno::Eperm) }
+    if nscg::has_net_admin_for(cur, &sock.net_namespace) { Ok(()) } else { Err(Errno::Eperm) }
 }
 
 fn socket_filter_option(sock: &Arc<net::sock::InetSocket>, optname: u64,

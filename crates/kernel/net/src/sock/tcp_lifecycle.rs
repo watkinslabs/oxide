@@ -16,7 +16,7 @@ pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
     let iface = bound_iface(sock)?;
     let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
     let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
-    let bind = stack().tcp_reserve_in(sock.net_ns.load(Ordering::Acquire),
+    let bind = stack().tcp_reserve_in(sock.net_ns(),
         ip, requested_port, iface, reuseaddr, reuseport,
         sock.owner_uid, tcp_v6only(sock, ip))?;
     *local_port = Some(bind.local.port);
@@ -33,7 +33,7 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
     -> Result<Arc<crate::stack::TcpBindReservation>, NetError> {
     if let Some(bind) = sock.tcp_bind.lock().as_ref().cloned() { return Ok(bind); }
     let iface = bound_iface(sock)?;
-    let bind = stack().tcp_reserve_in(sock.net_ns.load(Ordering::Acquire), local_ip, 0, iface,
+    let bind = stack().tcp_reserve_in(sock.net_ns(), local_ip, 0, iface,
         sock.opts.reuseaddr.load(Ordering::Acquire) != 0,
         sock.opts.reuseport.load(Ordering::Acquire) != 0,
         sock.owner_uid, tcp_v6only(sock, local_ip))?;
@@ -93,7 +93,7 @@ fn connect_tcp(sock: &alloc::sync::Arc<InetSocket>, local_ip: crate::IpAddr,
 /// Select IPv4 source and perform one reservation-backed active open. # C: O(N + RTT)
 pub(super) fn connect_tcp4(sock: &alloc::sync::Arc<InetSocket>, dst_ip: Ipv4Addr,
                            remote_port: u16, nonblock: bool) -> Result<(), NetError> {
-    let net_ns = sock.net_ns.load(Ordering::Acquire);
+    let net_ns = sock.net_ns();
     let configured = *sock.local_ip.lock();
     let local_ip = if configured != Ipv4Addr::ANY {
         configured

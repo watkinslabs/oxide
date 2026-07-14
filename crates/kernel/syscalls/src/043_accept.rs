@@ -160,7 +160,7 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
         let rv = copy_sockaddr_to_user(addr_p, len_p, &sa);
         if rv < 0 { return rv; }
     }
-    let new_sock = Arc::new(net::vsock_socket::VsockSocket::new());
+    let new_sock = Arc::new(net::vsock_socket::VsockSocket::new_accepted(vs));
     *new_sock.kind.lock() = net::vsock_socket::VsockKind::Conn(conn);
     let inode: vfs::InodeRef = net::vsock_socket::make_vsock_socket_inode(new_sock);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };

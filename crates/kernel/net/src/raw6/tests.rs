@@ -7,7 +7,7 @@ use crate::bpf_filter::{install_bpf_filter_context_runner, FilterContext, Filter
 
 use super::*;
 
-const NET_NS: u64 = 19;
+const NET_NS: u64 = 0;
 const PROTOCOL: u8 = 253;
 const IFACE: NetIfaceId = NetIfaceId(7);
 const LOCAL: Ipv6Addr = Ipv6Addr([0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
@@ -67,7 +67,7 @@ fn raw6_icmp_error(local: Ipv6Addr, remote: Ipv6Addr, protocol: u8,
 
 #[test]
 fn exact_tuple_device_namespace_and_link_local_source_scope() {
-    let endpoint = Raw6Endpoint::standalone(NET_NS, PROTOCOL);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL);
     endpoint.bind(Raw6Address::new(LOCAL, IFACE.raw()), Some(IFACE));
     endpoint.connect(Raw6Address::new(LINK_LOCAL, IFACE.raw()));
     assert_eq!(endpoint.receive(packet(PROTOCOL, LINK_LOCAL, LOCAL, b"payload")), Raw6RxDisposition::Queued);
@@ -87,7 +87,7 @@ fn exact_tuple_device_namespace_and_link_local_source_scope() {
 
 #[test]
 fn checked_bind_rejects_ipv4_mapped_address() {
-    let endpoint = Raw6Endpoint::standalone(NET_NS, PROTOCOL);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL);
     let mapped = Ipv6Addr::from_v4_mapped(crate::Ipv4Addr::new(192, 0, 2, 1));
     assert_eq!(endpoint.bind_checked(Raw6Address::new(mapped, 0), None),
         Err(crate::NetError::Eaddrnotavail));
@@ -96,7 +96,7 @@ fn checked_bind_rejects_ipv4_mapped_address() {
 #[test]
 fn icmp_filter_runs_before_bpf_and_icmp_checksum_defaults_to_two() {
     install_bpf_filter_context_runner(verdict);
-    let endpoint = Raw6Endpoint::standalone(NET_NS, crate::icmpv6::IPPROTO_ICMPV6);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), crate::icmpv6::IPPROTO_ICMPV6);
     endpoint.bpf_filter.attach(FilterProgram {
         kind: FilterKind::Ebpf, insns: u32::MAX.to_ne_bytes().to_vec(),
     }).unwrap();
@@ -117,7 +117,7 @@ fn bpf_positive_verdict_truncates_upper_layer_packet_and_zero_drops() {
     install_bpf_filter_context_runner(verdict);
     let filter = Arc::new(crate::bpf_filter::SocketFilter::new());
     filter.attach(FilterProgram { kind: FilterKind::Classic, insns: 3u32.to_ne_bytes().to_vec() }).unwrap();
-    let endpoint = Raw6Endpoint::new(NET_NS, PROTOCOL, filter.clone(),
+    let endpoint = Raw6Endpoint::new(network_namespace::initial(), PROTOCOL, filter.clone(),
         Arc::new(crate::mcast_filter::SocketMcast::new()), Arc::new(crate::SocketError::new()));
     assert_eq!(endpoint.receive(packet(PROTOCOL, REMOTE, LOCAL, b"abcdef")), Raw6RxDisposition::Queued);
     assert_eq!(endpoint.recv(false).unwrap().payload, b"abc");
@@ -127,7 +127,7 @@ fn bpf_positive_verdict_truncates_upper_layer_packet_and_zero_drops() {
 
 #[test]
 fn queue_limit_and_close_are_admission_boundaries() {
-    let endpoint = Raw6Endpoint::standalone(NET_NS, PROTOCOL);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL);
     endpoint.set_rcvbuf(3);
     assert_eq!(endpoint.receive(packet(PROTOCOL, REMOTE, LOCAL, b"abc")), Raw6RxDisposition::Queued);
     assert_eq!(endpoint.receive(packet(PROTOCOL, REMOTE, LOCAL, b"d")), Raw6RxDisposition::QueueFull);
@@ -139,7 +139,7 @@ fn queue_limit_and_close_are_admission_boundaries() {
 
 #[test]
 fn multicast_requires_socket_membership_before_queue_admission() {
-    let endpoint = Raw6Endpoint::standalone(NET_NS, PROTOCOL);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL);
     let group = Ipv6Addr([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
     assert_eq!(endpoint.receive(packet(PROTOCOL, LINK_LOCAL, group, b"group")),
         Raw6RxDisposition::PolicyDrop);
@@ -148,7 +148,7 @@ fn multicast_requires_socket_membership_before_queue_admission() {
 
 #[test]
 fn checksum_validation_and_kernel_header_send_preparation() {
-    let endpoint = Raw6Endpoint::standalone(NET_NS, crate::icmpv6::IPPROTO_ICMPV6);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), crate::icmpv6::IPPROTO_ICMPV6);
     assert_eq!(endpoint.set_checksum(3), Err(crate::NetError::Einval));
     endpoint.set_checksum(2).unwrap();
     let prepared = endpoint.prepare_send(LOCAL, REMOTE, None, &[128, 0, 0, 0, 1, 2, 3, 4]).unwrap();
@@ -161,7 +161,7 @@ fn checksum_validation_and_kernel_header_send_preparation() {
 
 #[test]
 fn caller_header_send_preserves_bytes_and_protocol_raw_requires_override_otherwise() {
-    let endpoint = Raw6Endpoint::standalone(NET_NS, crate::addr::IpProto::Raw as u8);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), crate::addr::IpProto::Raw as u8);
     endpoint.set_header_included(false);
     assert_eq!(endpoint.prepare_send(LOCAL, REMOTE, None, b"body"), Err(crate::NetError::Einval));
     assert_eq!(endpoint.prepare_send(LOCAL, REMOTE, Some(PROTOCOL), b"body").unwrap().next_header, PROTOCOL);
@@ -184,7 +184,7 @@ fn caller_header_send_preserves_bytes_and_protocol_raw_requires_override_otherwi
 #[test]
 fn registry_is_exact_protocol_idempotent_and_weak() {
     let table = Raw6Table::new();
-    let endpoint = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    let endpoint = Arc::new(Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL));
     table.register(&endpoint);
     table.register(&endpoint);
     assert_eq!(table.endpoint_count(PROTOCOL), 1);
@@ -200,26 +200,26 @@ fn raw6_hardness_matching_and_recverr_follow_linux() {
     let (other_iface, _) = stack.register_loopback_in(NET_NS);
     let local = Ipv6Addr::LOOPBACK;
     let remote = REMOTE;
-    let matching_a = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
-    let matching_b = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    let matching_a = Arc::new(Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL));
+    let matching_b = Arc::new(Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL));
     for raw in [&matching_a, &matching_b] {
         raw.bind(Raw6Address::new(local, 0), Some(iface));
         raw.connect(Raw6Address::new(remote, 0));
         stack.register_raw6(raw);
     }
-    let wrong_protocol = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL - 1));
+    let wrong_protocol = Arc::new(Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL - 1));
     wrong_protocol.bind(Raw6Address::new(local, 0), Some(iface));
     wrong_protocol.connect(Raw6Address::new(remote, 0));
     stack.register_raw6(&wrong_protocol);
-    let wrong_peer = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    let wrong_peer = Arc::new(Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL));
     wrong_peer.bind(Raw6Address::new(local, 0), Some(iface));
     wrong_peer.connect(Raw6Address::new(LINK_LOCAL, iface.raw()));
     stack.register_raw6(&wrong_peer);
-    let wrong_iface = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    let wrong_iface = Arc::new(Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL));
     wrong_iface.bind(Raw6Address::new(local, 0), Some(other_iface));
     wrong_iface.connect(Raw6Address::new(remote, 0));
     stack.register_raw6(&wrong_iface);
-    let unconnected = Arc::new(Raw6Endpoint::standalone(NET_NS, PROTOCOL));
+    let unconnected = Arc::new(Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL));
     unconnected.bind(Raw6Address::new(local, 0), Some(iface));
     stack.register_raw6(&unconnected);
 

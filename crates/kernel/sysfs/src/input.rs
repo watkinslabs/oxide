@@ -296,7 +296,7 @@ mod tests {
                 ]),
         );
         drv::try_device_add(Arc::clone(&input)).expect("test input registration");
-        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
         listener.set_group_mask(1);
         netlink::register_uevent_listener(&listener);
 
