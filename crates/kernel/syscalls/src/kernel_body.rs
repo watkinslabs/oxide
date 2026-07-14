@@ -110,6 +110,7 @@ mod fd_pair;
 #[path = "038_setitimer.rs"] pub mod s038_setitimer; #[path = "036_getitimer.rs"] pub mod s036_getitimer;
 mod userbuf;
 mod recv_user;
+mod send_user;
 mod recv_control;
 mod unix_recv;
 mod recvmsg;

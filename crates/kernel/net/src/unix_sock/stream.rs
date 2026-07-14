@@ -216,9 +216,7 @@ impl UnixPair {
     /// Append `data` from `end` into the ring it writes to.
     /// Returns the number of bytes accepted (full byte count for v1).
     /// # C: O(data.len())
-    pub fn write(&self, end: UnixEnd, data: &[u8]) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, GcRights::from_files(Vec::new()))
-    }
+    pub fn write(&self, end: UnixEnd, data: &[u8]) -> Result<usize, UnixStreamError> { self.write_inner(end, data, GcRights::from_files(Vec::new()), None) }
 
     /// Append `data` plus a SCM_RIGHTS burst, tagging the fds to the
     /// stream offset of `data`'s first byte so the peer's recvmsg
@@ -230,12 +228,14 @@ impl UnixPair {
     }
 
     /// Enqueue a classified canonical SCM_RIGHTS batch. # C: O(data.len() + rights)
-    pub fn write_with_rights(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, rights)
-    }
+    pub fn write_with_rights(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> { self.write_inner(end, data, rights, None) }
+
+    /// Enqueue rights with an explicitly validated SCM_CREDENTIALS record. # C: O(data.len() + rights)
+    pub fn write_with_rights_and_creds(&self, end: UnixEnd, data: &[u8], rights: GcRights, creds: (u32, u32, u32)) -> Result<usize, UnixStreamError> { self.write_inner(end, data, rights, Some(creds)) }
 
     /// # C: O(data.len() + rights)
-    fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> {
+    fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights, supplied_creds: Option<(u32, u32, u32)>) -> Result<usize, UnixStreamError> {
+        if data.is_empty() { return Ok(0); }
         // DIAG (debug-dbus): dump AF_UNIX SOCK_STREAM messages that mention the
         // login1 session interface or carry a D-Bus error reply. dbus-broker
         // relays every method call/reply through these streams, so this captures
@@ -249,12 +249,12 @@ impl UnixPair {
         trace_dbus_stream(data);
         let stable_cred = match end { UnixEnd::A => self.cred_a.get(), UnixEnd::B => self.cred_b.get() };
         #[cfg(target_os = "oxide-kernel")]
-        let sender_cred = sched::live::current().map(|c| {
+        let sender_cred = supplied_creds.unwrap_or_else(|| sched::live::current().map(|c| {
             use core::sync::atomic::Ordering::Relaxed;
             (c.visible_pid(), c.creds.ruid.load(Relaxed), c.creds.rgid.load(Relaxed))
-        }).unwrap_or(stable_cred);
+        }).unwrap_or(stable_cred));
         #[cfg(not(target_os = "oxide-kernel"))]
-        let sender_cred = stable_cred;
+        let sender_cred = supplied_creds.unwrap_or(stable_cred);
         if self.peer_gone(end) { return Err(UnixStreamError::PeerClosed); }
         let receiver = self.gc_node(end.other());
         let transition = receiver.pin();

@@ -173,6 +173,19 @@ impl UnixMsgPair {
 
     /// Enqueue one message with a classified canonical rights batch. # C: O(payload + rights)
     pub fn send_with_rights(&self, end: UnixEnd, payload: &[u8], rights: GcRights) -> Result<usize, UnixMsgError> {
+        self.send_with_rights_inner(end, payload, rights, None)
+    }
+
+    /// Enqueue rights with an explicitly validated SCM_CREDENTIALS record. # C: O(payload + rights)
+    pub fn send_with_rights_and_creds(&self, end: UnixEnd, payload: &[u8], rights: GcRights,
+        creds: (u32, u32, u32)) -> Result<usize, UnixMsgError>
+    {
+        self.send_with_rights_inner(end, payload, rights, Some(creds))
+    }
+
+    fn send_with_rights_inner(&self, end: UnixEnd, payload: &[u8], rights: GcRights,
+        supplied_creds: Option<(u32, u32, u32)>) -> Result<usize, UnixMsgError>
+    {
         let receiver = self.gc_node(end.other());
         let transition = receiver.pin();
         rights.register(&receiver);
@@ -187,15 +200,15 @@ impl UnixMsgPair {
         // Capture the SENDER's creds per-message (SO_PASSCRED). Hosted tests
         // have no `current()`; default to zero there.
         #[cfg(target_os = "oxide-kernel")]
-        let creds = sched::live::current()
+        let creds = supplied_creds.unwrap_or_else(|| sched::live::current()
             .map(|c| (
                 c.visible_pid(),
                 c.creds.ruid.load(core::sync::atomic::Ordering::Relaxed),
                 c.creds.rgid.load(core::sync::atomic::Ordering::Relaxed),
             ))
-            .unwrap_or((0, 0, 0));
+            .unwrap_or((0, 0, 0)));
         #[cfg(not(target_os = "oxide-kernel"))]
-        let creds = (0u32, 0u32, 0u32);
+        let creds = supplied_creds.unwrap_or((0u32, 0u32, 0u32));
         g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds: Vec::new(), rights: Some(rights), creds });
         let n = payload.len();
         drop(g);

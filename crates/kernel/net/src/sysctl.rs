@@ -1,8 +1,16 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub const DEFAULT_SOMAXCONN: usize = 4096;
+pub const DEFAULT_OPTMEM_MAX: usize = 131_072;
 
 static SOMAXCONN: AtomicUsize = AtomicUsize::new(DEFAULT_SOMAXCONN);
+static OPTMEM_MAX: AtomicUsize = AtomicUsize::new(DEFAULT_OPTMEM_MAX);
+
+/// Current `net.core.optmem_max` ancillary-memory ceiling. # C: O(1)
+pub fn optmem_max() -> usize { OPTMEM_MAX.load(Ordering::Acquire) }
+
+/// Update `net.core.optmem_max`. # C: O(1)
+pub fn set_optmem_max(value: usize) { OPTMEM_MAX.store(value, Ordering::Release); }
 
 /// `net.core.somaxconn` value in `ns`. # C: O(log N)
 pub fn somaxconn_in(ns: u64) -> usize {
