@@ -19,8 +19,9 @@ use core::sync::atomic::AtomicUsize;
 
 use sync::{Socket as SockLockClass, Spinlock};
 
-use crate::netdev::{IfaceRegistry, NetDev};
-use crate::{Ipv4Addr, LoopbackDev, UnixRegistry};
+use crate::{Ipv4Addr, LoopbackDev, NetStack, UnixRegistry};
+#[cfg(test)]
+use crate::Ipv6Addr;
 
 /// Linux `RT_SCOPE_HOST` — loopback addresses are host-scoped.
 const RT_SCOPE_HOST: u8 = 254;
@@ -35,6 +36,8 @@ pub struct NsNet {
     pub(crate) somaxconn: AtomicUsize,
     /// Namespace-local ephemeral range and privileged-port boundary.
     pub(crate) ports: crate::ephemeral::State,
+    /// Private loopback queue retained for softirq-style draining.
+    pub(crate) loopback: Spinlock<Option<(crate::NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>,
 }
 
 impl NsNet {
@@ -44,6 +47,7 @@ impl NsNet {
             unix: UnixRegistry::new(),
             somaxconn: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN),
             ports: crate::ephemeral::State::new(),
+            loopback: Spinlock::new(None),
         })
     }
 }
@@ -69,17 +73,17 @@ pub fn ns_net(ns: u64) -> Arc<NsNet> {
 /// Register `lo` (UP, 127.0.0.1/8) into `ifaces` under `ns` — the ONLY
 /// iface a `CLONE_NEWNET` task sees, matching Linux's empty-but-for-lo
 /// fresh netns. Idempotent; a no-op for id 0. Target-agnostic seam so
-/// the hosted tests can drive it against a private `IfaceRegistry`.
+/// hosted tests can drive every address and route owner in a private stack.
 /// # C: O(N ifaces)
-pub fn materialize_loopback_into(ifaces: &IfaceRegistry, ns: u64) {
+pub fn materialize_loopback_into(stack: &NetStack, ns: u64) {
     if ns == 0 {
         return;
     }
-    if ifaces.lookup_name_in_ns("lo", ns).is_some() {
+    if stack.ifaces.lookup_name_in_ns("lo", ns).is_some() {
         return;
     }
-    let lo = Arc::new(LoopbackDev::new());
-    let id = ifaces.register_in_ns(lo as Arc<dyn NetDev>, ns);
+    let (id, lo) = stack.register_loopback_in(ns);
+    *ns_net(ns).loopback.lock() = Some((id, lo));
     crate::iface_addr::set_prefix(ns, id, Ipv4Addr::LOOPBACK, 8, RT_SCOPE_HOST);
 }
 
@@ -88,7 +92,32 @@ pub fn materialize_loopback_into(ifaces: &IfaceRegistry, ns: u64) {
 /// over `materialize_loopback_into`. # C: O(N ifaces)
 #[cfg(target_os = "oxide-kernel")]
 pub fn materialize_loopback(ns: u64) {
-    materialize_loopback_into(&crate::sock::stack().ifaces, ns);
+    materialize_loopback_into(crate::global_stack(), ns);
+}
+
+/// Destroy all network state owned by one non-init namespace. # C: O(N)
+pub fn destroy_namespace_into(stack: &NetStack, ns: u64) -> bool {
+    if ns == 0 { return false; }
+    let mut removed = false;
+    for (iface, _) in stack.ifaces.snapshot_devs_in_ns(ns) {
+        removed |= stack.unregister_iface_in(ns, iface);
+    }
+    removed |= stack.routes.remove_namespace(ns);
+    removed |= stack.routes6.remove_namespace(ns);
+    removed |= crate::policy_rule::remove_namespace(ns) != 0;
+    removed |= stack.remove_inet_namespace(ns);
+    removed |= NET_NS.lock().remove(&ns).is_some();
+    removed
+}
+
+/// Destroy one namespace in the process-wide network stack. # C: O(N)
+pub fn destroy_namespace(ns: u64) -> bool {
+    destroy_namespace_into(crate::global_stack(), ns)
+}
+
+/// Snapshot retained private loopback queues for network RX draining. # C: O(N_ns)
+pub(crate) fn private_loopbacks() -> alloc::vec::Vec<(crate::NetIfaceId, Arc<LoopbackDev>)> {
+    NET_NS.lock().values().filter_map(|state| state.loopback.lock().clone()).collect()
 }
 
 /// Resolved AF_UNIX registry for a net_ns: the global static for id 0
@@ -331,17 +360,54 @@ mod tests {
     #[test]
     fn fresh_ns_sees_loopback_only() {
         let ns = 0x5181_000au64;
-        let ifaces = IfaceRegistry::new();
-        assert!(ifaces.snapshot_devs_in_ns(ns).is_empty(), "ns starts empty");
-        materialize_loopback_into(&ifaces, ns);
-        let devs = ifaces.snapshot_devs_in_ns(ns);
+        let stack = NetStack::new();
+        assert!(stack.ifaces.snapshot_devs_in_ns(ns).is_empty(), "ns starts empty");
+        materialize_loopback_into(&stack, ns);
+        let devs = stack.ifaces.snapshot_devs_in_ns(ns);
         assert_eq!(devs.len(), 1, "loopback only");
         assert_eq!(devs[0].1.name(), "lo");
         // Idempotent — a second call does not duplicate lo.
-        materialize_loopback_into(&ifaces, ns);
-        assert_eq!(ifaces.snapshot_devs_in_ns(ns).len(), 1);
+        materialize_loopback_into(&stack, ns);
+        assert_eq!(stack.ifaces.snapshot_devs_in_ns(ns).len(), 1);
         // And it carries the 127.0.0.1/8 host address, privately.
         let addrs = crate::iface_addr::snapshot_ns(ns);
         assert!(addrs.iter().any(|a| a.addr == Ipv4Addr::LOOPBACK && a.prefixlen == 8));
+        let id = devs[0].0;
+        assert!(stack.v6_addr_owned_by(id, Ipv6Addr::LOOPBACK));
+        assert_eq!(stack.routes6.lookup_in(ns, Ipv6Addr::LOOPBACK).map(|r| r.iface), Some(id));
+        assert!(stack.routes6.lookup(Ipv6Addr::LOOPBACK).is_none());
+    }
+
+    #[test]
+    fn namespace_teardown_removes_owned_state_only() {
+        let stack = NetStack::new();
+        let a = 0x5181_0011;
+        let b = 0x5181_0012;
+        materialize_loopback_into(&stack, a);
+        materialize_loopback_into(&stack, b);
+        let a_iface = stack.ifaces.lookup_name_in_ns("lo", a).unwrap().0;
+        let b_iface = stack.ifaces.lookup_name_in_ns("lo", b).unwrap().0;
+        stack.ndp_insert(a_iface, Ipv6Addr::LOOPBACK, crate::MacAddr::ZERO);
+        stack.v6_mcast.lock().entry(a_iface).or_default();
+        crate::policy_rule::insert(crate::policy_rule::PolicyRule {
+            ns: a, family: crate::policy_rule::AF_INET6, dst_len: 0, src_len: 0,
+            tos: 0, table: crate::policy_rule::RT_TABLE_MAIN,
+            action: crate::policy_rule::FR_ACT_TO_TBL, flags: 0, priority: 100,
+        });
+        let _ = ns_net(a);
+        let _ = stack.inet_tables(a);
+        assert!(destroy_namespace_into(&stack, a));
+        assert!(stack.ifaces.snapshot_devs_in_ns(a).is_empty());
+        assert!(crate::iface_addr::snapshot_ns(a).is_empty());
+        assert!(stack.routes6.snapshot_in(a).is_empty());
+        assert!(stack.routes.snapshot_in(a).is_empty());
+        assert!(!stack.inet.lock().contains_key(&a));
+        assert!(stack.ndp_lookup(a_iface, Ipv6Addr::LOOPBACK).is_none());
+        assert!(!stack.v6_mcast.lock().contains_key(&a_iface));
+        assert!(crate::policy_rule::snapshot_custom_ns(a).is_empty());
+        assert!(!NET_NS.lock().contains_key(&a));
+        assert_eq!(stack.ifaces.lookup_name_in_ns("lo", b).map(|v| v.0), Some(b_iface));
+        assert!(stack.routes6.lookup_in(b, Ipv6Addr::LOOPBACK).is_some());
+        assert!(!destroy_namespace_into(&stack, 0));
     }
 }

@@ -35,8 +35,8 @@ impl InetSocket {
                 (s, c.local.ip, c.remote.ip)
             };
             if let Some(seg_bytes) = seg {
-                let _ = stk.send_l4_over_ip_bound(
-                    src, dst, crate::addr::IpProto::Tcp, &seg_bytes, entry.bound_iface(),
+                let _ = stk.send_l4_over_ip_bound_in(
+                    entry.net_ns(), src, dst, crate::addr::IpProto::Tcp, &seg_bytes, entry.bound_iface(),
                 );
                 drain_loopback();
             }

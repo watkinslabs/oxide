@@ -1,9 +1,6 @@
 use super::*;
 use crate::UdpRxQueue;
 
-/// Process-global stack; AF_INET ops take a `&'static` via `stack()`.
-static STACK: NetStack = NetStack::new();
-
 /// Cached lo iface id + Arc<LoopbackDev> after `init()`. None before.
 static LO: Spinlock<Option<(NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>
     = Spinlock::new(None);
@@ -16,23 +13,28 @@ static LO: Spinlock<Option<(NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>
 pub unsafe fn init() {
     let mut g = LO.lock();
     if g.is_some() { return; }
-    let (id, lo) = STACK.register_loopback();
+    let (id, lo) = crate::global_stack().register_loopback();
     *g = Some((id, lo));
     crate::register_timers(); // net self-registers its periodic timers
 }
 
 /// `&'static` ref to the global stack; lookups miss until `init()`.
 /// # C: O(1)
-pub fn stack() -> &'static NetStack { &STACK }
+pub fn stack() -> &'static NetStack { crate::global_stack() }
 
 /// Drain lo's xmit queue back through deliver_rx; synchronous on
 /// every UDP send + after deliver_rx (so ICMP echo replies the
 /// path itself xmit'd land). Replaces a real soft-IRQ NET_RX.
 /// # C: O(N pending)
 pub fn drain_loopback() {
-    let g = LO.lock();
-    if let Some((id, lo)) = g.as_ref() {
-        STACK.drain_loopback(*id, lo);
+    {
+        let g = LO.lock();
+        if let Some((id, lo)) = g.as_ref() {
+            crate::global_stack().drain_loopback(*id, lo);
+        }
+    }
+    for (id, lo) in crate::net_ns::private_loopbacks() {
+        crate::global_stack().drain_loopback(id, &lo);
     }
 }
 
@@ -69,11 +71,11 @@ pub fn alloc_ephemeral_udp4(net_ns: u64, bind_ip: Ipv4Addr,
 {
     use core::sync::atomic::Ordering;
     let range = crate::ephemeral::range_in(net_ns);
-    let tables = STACK.inet_tables(net_ns);
+    let tables = crate::global_stack().inet_tables(net_ns);
     for _ in 0..range.count() {
         let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);
         let p = range.port(seq);
-        if let Ok(endpoint) = STACK.bind_udp_socket_in(
+        if let Ok(endpoint) = crate::global_stack().bind_udp_socket_in(
             net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
             ip_mtu_discover.clone(), owner_uid,
             peer.clone(), bpf_filter.clone(), mcast.clone(),
@@ -120,11 +122,11 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
 {
     use core::sync::atomic::Ordering;
     let range = crate::ephemeral::range_in(net_ns);
-    let tables = STACK.inet_tables(net_ns);
+    let tables = crate::global_stack().inet_tables(net_ns);
     for _ in 0..range.count() {
         let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);
         let p = range.port(seq);
-        if let Ok(endpoint) = STACK.bind_udp6_socket_in(
+        if let Ok(endpoint) = crate::global_stack().bind_udp6_socket_in(
             net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(), owner_uid,
             v6only.clone(),
             peer.clone(), ipv6_mtu_discover.clone(), bpf_filter.clone(), mcast.clone(),

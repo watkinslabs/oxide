@@ -209,6 +209,12 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
 static USER_NS_PARENT: sync::Spinlock<alloc::collections::BTreeMap<u64, u64>, sync::TaskList> =
     sync::Spinlock::new(alloc::collections::BTreeMap::new());
 
+/// Global registry mapping `net_ns id -> owning user_ns id`. Linux assigns
+/// ownership when the network namespace is created; init net_ns is owned by
+/// init user_ns and is represented by the implicit `(0, 0)` default.
+static NET_NS_OWNER: sync::Spinlock<alloc::collections::BTreeMap<u64, u64>, sync::TaskList> =
+    sync::Spinlock::new(alloc::collections::BTreeMap::new());
+
 /// Record `(child_id, parent_id)` at unshare(CLONE_NEWUSER) time.
 /// # C: O(log N)
 pub fn user_ns_record(child_id: u64, parent_id: u64) {
@@ -222,6 +228,22 @@ pub fn user_ns_parent(id: u64) -> u64 {
     if id == 0 { return 0; }
     let g = USER_NS_PARENT.lock();
     g.get(&id).copied().unwrap_or(0)
+}
+
+/// Record the user namespace that owns a newly created network namespace.
+/// # C: O(log N)
+pub fn net_ns_record_owner(net_ns: u64, user_ns: u64) {
+    let mut g = NET_NS_OWNER.lock();
+    g.insert(net_ns, user_ns);
+}
+
+/// Return the user namespace that owns `net_ns`. Init and legacy unrecorded
+/// namespaces are owned by init user_ns.
+/// # C: O(log N)
+pub fn net_ns_owner(net_ns: u64) -> u64 {
+    if net_ns == 0 { return 0; }
+    let g = NET_NS_OWNER.lock();
+    g.get(&net_ns).copied().unwrap_or(0)
 }
 
 /// True if `ancestor` is `descendant` itself or any ancestor up the
@@ -249,6 +271,13 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: u64, cap: u32) -> bool {
     if !cur.has_cap(cap) { return false; }
     let cur_ns = cur.user_ns.load(Ordering::Acquire);
     user_ns_is_ancestor(cur_ns, target_user_ns)
+}
+
+/// True when `cur` has CAP_NET_ADMIN in the user namespace that owns
+/// `net_ns`, or in one of that owner's ancestors.
+/// # C: O(log N + depth)
+pub fn has_net_admin_for(cur: &sched::Task, net_ns: u64) -> bool {
+    has_cap_for(cur, net_ns_owner(net_ns), sched::cap::NET_ADMIN)
 }
 
 /// Apply an NsInode (resolved from setns's fd arg) to the calling
@@ -347,5 +376,29 @@ mod ns_link_tests {
         assert_eq!(ns_global_id(NsKind::User, 0), 3);
         assert_eq!(ns_global_id(NsKind::Mnt, 0), 8);
         assert_ne!(ns_global_id(NsKind::User, 4), ns_global_id(NsKind::Mnt, 4));
+    }
+
+
+    #[test]
+    fn network_namespace_owner_scopes_net_admin() {
+        use core::sync::atomic::Ordering;
+        const OWNER_PARENT: u64 = 0x8250;
+        const OWNER: u64 = 0x8251;
+        const SIBLING: u64 = 0x8252;
+        const NET_NS: u64 = 0x8253;
+        user_ns_record(OWNER_PARENT, 0);
+        user_ns_record(OWNER, OWNER_PARENT);
+        user_ns_record(SIBLING, 0);
+        net_ns_record_owner(NET_NS, OWNER);
+
+        let parent = sched::Task::new(78, "parent", sched::SchedClass::Normal { weight: 1024 });
+        parent.user_ns.store(OWNER_PARENT, Ordering::Release);
+        assert!(has_net_admin_for(&parent, NET_NS));
+
+        let sibling = sched::Task::new(79, "sibling", sched::SchedClass::Normal { weight: 1024 });
+        sibling.user_ns.store(SIBLING, Ordering::Release);
+        assert!(!has_net_admin_for(&sibling, NET_NS));
+        sibling.creds.cap_effective.store(0, Ordering::Release);
+        assert!(!has_net_admin_for(&sibling, 0));
     }
 }

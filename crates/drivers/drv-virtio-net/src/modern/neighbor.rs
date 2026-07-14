@@ -27,28 +27,28 @@ fn solicited_node_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
     net::MacAddr([0x33, 0x33, 0xff, ip.0[13], ip.0[14], ip.0[15]])
 }
 
-/// F149/F180c: resolve next-hop MAC for an outbound IP frame body.
+fn ipv6_multicast_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
+    net::MacAddr([0x33, 0x33, ip.0[12], ip.0[13], ip.0[14], ip.0[15]])
+}
+
+/// F149/F180c: resolve the route-selected next-hop MAC for an outbound packet.
 /// Returns Some(mac) when the neighbor cache has the next-hop, else
 /// None after firing ARP/NDP so a subsequent attempt can resolve.
-/// # C: O(1) cache hit; O(route lookup + request xmit) on miss.
+/// # C: O(1) cache hit or request xmit.
 pub(super) fn resolve_next_hop_mac(
     device_key: DeviceKey,
     src_mac: [u8; 6],
-    proto: u16,
-    body: &[u8],
+    next_hop: net::pkt::TxNextHop,
 ) -> Option<net::MacAddr> {
-    if proto == net::eth_p::IPV6 {
-        return resolve_ipv6_next_hop_mac(device_key, src_mac, body);
-    }
-    if proto != net::eth_p::IPV4 || body.len() < 20 { return None; }
-    let dst_ip = net::Ipv4Addr::new(body[16], body[17], body[18], body[19]);
-    #[cfg(target_os = "oxide-kernel")]
-    let next_hop_ip = match net::sock::stack().routes.lookup(dst_ip) {
-        Some(r) => r.gateway.unwrap_or(dst_ip),
-        None    => dst_ip,
+    let next_hop_ip = match next_hop {
+        net::pkt::TxNextHop::V4(ip) => ip,
+        net::pkt::TxNextHop::V6 { addr, src } => {
+            return resolve_ipv6_next_hop_mac(device_key, src_mac, addr, src);
+        }
     };
-    #[cfg(not(target_os = "oxide-kernel"))]
-    let next_hop_ip = dst_ip;
+    if next_hop_ip.is_broadcast() {
+        return Some(net::MacAddr([0xff; 6]));
+    }
     let runtime = super::netdev::net_runtime_for(device_key);
     if let Some(m) = runtime.as_ref().and_then(|runtime| runtime.arp.lookup(next_hop_ip)) {
         return Some(m);
@@ -72,24 +72,10 @@ pub(super) fn resolve_next_hop_mac(
 fn resolve_ipv6_next_hop_mac(
     device_key: DeviceKey,
     src_mac: [u8; 6],
-    body: &[u8],
+    next_hop: net::Ipv6Addr,
+    src_ip: net::Ipv6Addr,
 ) -> Option<net::MacAddr> {
-    let hdr = match net::ipv6::Ipv6Hdr::parse(body) {
-        Ok(h) => h,
-        Err(_) => return None,
-    };
-
-    #[cfg(target_os = "oxide-kernel")]
-    let (next_hop, src_ip) = {
-        let stack = net::sock::stack();
-        let route = stack.routes6.lookup(hdr.dst);
-        match route {
-            Some(r) => (r.gateway.unwrap_or(hdr.dst), r.src_hint),
-            None => (hdr.dst, Some(hdr.src)),
-        }
-    };
-    #[cfg(not(target_os = "oxide-kernel"))]
-    let (next_hop, src_ip) = (hdr.dst, Some(hdr.src));
+    if next_hop.is_multicast() { return Some(ipv6_multicast_ethernet(next_hop)); }
 
     if let Some(m) = ndp_lookup_for_device(device_key, next_hop) {
         return Some(m);
@@ -104,7 +90,6 @@ fn resolve_ipv6_next_hop_mac(
 
     #[cfg(target_os = "oxide-kernel")]
     {
-        let src_ip = src_ip?;
         if src_ip == net::Ipv6Addr::ANY { return None; }
         let ns_dst = solicited_node_multicast(next_hop);
         let ns_eth = solicited_node_ethernet(next_hop);

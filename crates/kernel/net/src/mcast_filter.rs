@@ -46,7 +46,7 @@ pub struct SourceFilter { pub mode: FilterMode, pub sources: Vec<Ipv4Addr> }
 pub struct SourceFilter6 { pub mode: FilterMode, pub sources: Vec<Ipv6Addr> }
 
 #[derive(Clone, Debug)]
-struct V4Membership { report_src: Ipv4Addr, filter: SourceFilter }
+struct V4Membership { net_ns: u64, report_src: Ipv4Addr, filter: SourceFilter }
 
 #[derive(Clone, Debug)]
 struct V6Membership { report_src: Ipv6Addr, filter: SourceFilter6 }
@@ -69,18 +69,25 @@ impl SocketMcast {
     /// Join or leave one IPv4 group and its interface-level refcount atomically. # C: O(N)
     pub fn change_v4(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv4Addr,
                      report_src: Ipv4Addr, join: bool) -> NetResult<()> {
+        self.change_v4_in(stack, 0, iface, group, report_src, join)
+    }
+
+    /// Join or leave one IPv4 group in an explicit network namespace. # C: O(N)
+    pub fn change_v4_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
+                        group: Ipv4Addr, report_src: Ipv4Addr, join: bool) -> NetResult<()> {
         let key = v4_key(iface, group);
         let mut inner = self.inner.lock();
         if join {
             if inner.v4.contains_key(&key) { return Err(NetError::Eaddrinuse); }
             let membership = V4Membership {
-                report_src, filter: SourceFilter { mode: FilterMode::Exclude, sources: Vec::new() },
+                net_ns, report_src, filter: SourceFilter { mode: FilterMode::Exclude, sources: Vec::new() },
             };
-            stack.set_ipv4_multicast(self.owner_key(), iface, group, report_src, Some(&membership.filter))?;
+            stack.set_ipv4_multicast_in(net_ns, self.owner_key(), iface, group, report_src, Some(&membership.filter))?;
             inner.v4.insert(key, membership);
         } else {
             let membership = inner.v4.get(&key).ok_or(NetError::Eaddrnotavail)?;
-            stack.set_ipv4_multicast(self.owner_key(), iface, group, membership.report_src, None)?;
+            if membership.net_ns != net_ns { return Err(NetError::Enodev); }
+            stack.set_ipv4_multicast_in(net_ns, self.owner_key(), iface, group, membership.report_src, None)?;
             inner.v4.remove(&key);
         }
         Ok(())
@@ -89,6 +96,13 @@ impl SocketMcast {
     /// Apply one IPv4 source-membership operation. # C: O(N + S)
     pub fn source_v4(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv4Addr,
                      report_src: Ipv4Addr, source: Ipv4Addr, op: SourceOp) -> NetResult<()> {
+        self.source_v4_in(stack, 0, iface, group, report_src, source, op)
+    }
+
+    /// Apply one IPv4 source operation in an explicit network namespace. # C: O(N + S)
+    pub fn source_v4_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
+                        group: Ipv4Addr, report_src: Ipv4Addr, source: Ipv4Addr,
+                        op: SourceOp) -> NetResult<()> {
         let key = v4_key(iface, group);
         let mut inner = self.inner.lock();
         match op {
@@ -97,26 +111,29 @@ impl SocketMcast {
                     Some(current) if current.filter.mode != FilterMode::Include => return Err(NetError::Eaddrinuse),
                     Some(current) => current.clone(),
                     None => V4Membership {
-                        report_src, filter: SourceFilter { mode: FilterMode::Include, sources: Vec::new() },
+                        net_ns, report_src, filter: SourceFilter { mode: FilterMode::Include, sources: Vec::new() },
                     },
                 };
+                if next.net_ns != net_ns { return Err(NetError::Enodev); }
                 if next.filter.sources.contains(&source) { return Err(NetError::Eaddrinuse); }
                 next.filter.sources.push(source);
-                stack.set_ipv4_multicast(self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
+                stack.set_ipv4_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
                 inner.v4.insert(key, next);
             }
             SourceOp::Leave => {
                 let mut next = inner.v4.get(&key).cloned().ok_or(NetError::Eaddrnotavail)?;
+                if next.net_ns != net_ns { return Err(NetError::Enodev); }
                 if next.filter.mode != FilterMode::Include { return Err(NetError::Einval); }
                 let index = next.filter.sources.iter().position(|addr| *addr == source)
                     .ok_or(NetError::Eaddrnotavail)?;
                 next.filter.sources.remove(index);
                 let policy = if next.filter.sources.is_empty() { None } else { Some(&next.filter) };
-                stack.set_ipv4_multicast(self.owner_key(), iface, group, next.report_src, policy)?;
+                stack.set_ipv4_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, policy)?;
                 if policy.is_none() { inner.v4.remove(&key); } else { inner.v4.insert(key, next); }
             }
             SourceOp::Block | SourceOp::Unblock => {
                 let mut next = inner.v4.get(&key).cloned().ok_or(NetError::Eaddrnotavail)?;
+                if next.net_ns != net_ns { return Err(NetError::Enodev); }
                 if next.filter.mode != FilterMode::Exclude { return Err(NetError::Einval); }
                 let found = next.filter.sources.iter().position(|addr| *addr == source);
                 if op == SourceOp::Block {
@@ -126,7 +143,7 @@ impl SocketMcast {
                     let index = found.ok_or(NetError::Eaddrnotavail)?;
                     next.filter.sources.remove(index);
                 }
-                stack.set_ipv4_multicast(self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
+                stack.set_ipv4_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
                 inner.v4.insert(key, next);
             }
         }
@@ -136,20 +153,32 @@ impl SocketMcast {
     /// Replace one IPv4 full-state filter, joining the group if needed. # C: O(N + S)
     pub fn set_v4(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv4Addr,
                   report_src: Ipv4Addr, mode: FilterMode, sources: &[Ipv4Addr]) -> NetResult<()> {
+        self.set_v4_in(stack, 0, iface, group, report_src, mode, sources)
+    }
+
+    /// Replace one IPv4 filter in an explicit network namespace. # C: O(N + S)
+    pub fn set_v4_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
+                     group: Ipv4Addr, report_src: Ipv4Addr, mode: FilterMode,
+                     sources: &[Ipv4Addr]) -> NetResult<()> {
         let key = v4_key(iface, group);
         let mut dedup = Vec::new();
         for source in sources { if !dedup.contains(source) { dedup.push(*source); } }
         let mut inner = self.inner.lock();
         if mode == FilterMode::Include && dedup.is_empty() {
             let membership = inner.v4.get(&key).ok_or(NetError::Eaddrnotavail)?;
-            stack.set_ipv4_multicast(self.owner_key(), iface, group, membership.report_src, None)?;
+            if membership.net_ns != net_ns { return Err(NetError::Enodev); }
+            stack.set_ipv4_multicast_in(net_ns, self.owner_key(), iface, group, membership.report_src, None)?;
             inner.v4.remove(&key);
         } else {
             let next = V4Membership {
+                net_ns,
                 report_src: inner.v4.get(&key).map(|current| current.report_src).unwrap_or(report_src),
                 filter: SourceFilter { mode, sources: dedup },
             };
-            stack.set_ipv4_multicast(self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
+            if inner.v4.get(&key).is_some_and(|current| current.net_ns != net_ns) {
+                return Err(NetError::Enodev);
+            }
+            stack.set_ipv4_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
             inner.v4.insert(key, next);
         }
         Ok(())
@@ -158,6 +187,12 @@ impl SocketMcast {
     /// Join or leave one IPv6 group and interface-level refcount atomically. # C: O(N)
     pub fn change_v6(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv6Addr,
                      report_src: Ipv6Addr, join: bool) -> NetResult<()> {
+        self.change_v6_in(stack, 0, iface, group, report_src, join)
+    }
+
+    /// Join or leave one IPv6 group in an explicit network namespace. # C: O(N)
+    pub fn change_v6_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
+                        group: Ipv6Addr, report_src: Ipv6Addr, join: bool) -> NetResult<()> {
         let key = v6_key(iface, group);
         let mut inner = self.inner.lock();
         if join {
@@ -165,11 +200,11 @@ impl SocketMcast {
             let membership = V6Membership {
                 report_src, filter: SourceFilter6 { mode: FilterMode::Exclude, sources: Vec::new() },
             };
-            stack.set_ipv6_multicast(self.owner_key(), iface, group, report_src, Some(&membership.filter))?;
+            stack.set_ipv6_multicast_in(net_ns, self.owner_key(), iface, group, report_src, Some(&membership.filter))?;
             inner.v6.insert(key, membership);
         } else {
             let membership = inner.v6.get(&key).ok_or(NetError::Eaddrnotavail)?;
-            stack.set_ipv6_multicast(self.owner_key(), iface, group, membership.report_src, None)?;
+            stack.set_ipv6_multicast_in(net_ns, self.owner_key(), iface, group, membership.report_src, None)?;
             inner.v6.remove(&key);
         }
         Ok(())
@@ -178,6 +213,13 @@ impl SocketMcast {
     /// Apply one IPv6 source-membership operation. # C: O(N + S)
     pub fn source_v6(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv6Addr,
                      report_src: Ipv6Addr, source: Ipv6Addr, op: SourceOp) -> NetResult<()> {
+        self.source_v6_in(stack, 0, iface, group, report_src, source, op)
+    }
+
+    /// Apply one IPv6 source operation in an explicit network namespace. # C: O(N + S)
+    pub fn source_v6_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
+                        group: Ipv6Addr, report_src: Ipv6Addr, source: Ipv6Addr,
+                        op: SourceOp) -> NetResult<()> {
         let key = v6_key(iface, group);
         let mut inner = self.inner.lock();
         match op {
@@ -191,7 +233,7 @@ impl SocketMcast {
                 };
                 if next.filter.sources.contains(&source) { return Err(NetError::Eaddrinuse); }
                 next.filter.sources.push(source);
-                stack.set_ipv6_multicast(self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
+                stack.set_ipv6_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
                 inner.v6.insert(key, next);
             }
             SourceOp::Leave => {
@@ -201,7 +243,7 @@ impl SocketMcast {
                     .ok_or(NetError::Eaddrnotavail)?;
                 next.filter.sources.remove(index);
                 let policy = if next.filter.sources.is_empty() { None } else { Some(&next.filter) };
-                stack.set_ipv6_multicast(self.owner_key(), iface, group, next.report_src, policy)?;
+                stack.set_ipv6_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, policy)?;
                 if policy.is_none() { inner.v6.remove(&key); } else { inner.v6.insert(key, next); }
             }
             SourceOp::Block | SourceOp::Unblock => {
@@ -215,7 +257,7 @@ impl SocketMcast {
                     let index = found.ok_or(NetError::Eaddrnotavail)?;
                     next.filter.sources.remove(index);
                 }
-                stack.set_ipv6_multicast(self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
+                stack.set_ipv6_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
                 inner.v6.insert(key, next);
             }
         }
@@ -225,20 +267,27 @@ impl SocketMcast {
     /// Replace one IPv6 full-state filter, joining the group if needed. # C: O(N + S)
     pub fn set_v6(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv6Addr,
                   report_src: Ipv6Addr, mode: FilterMode, sources: &[Ipv6Addr]) -> NetResult<()> {
+        self.set_v6_in(stack, 0, iface, group, report_src, mode, sources)
+    }
+
+    /// Replace one IPv6 filter in an explicit network namespace. # C: O(N + S)
+    pub fn set_v6_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
+                     group: Ipv6Addr, report_src: Ipv6Addr, mode: FilterMode,
+                     sources: &[Ipv6Addr]) -> NetResult<()> {
         let key = v6_key(iface, group);
         let mut dedup = Vec::new();
         for source in sources { if !dedup.contains(source) { dedup.push(*source); } }
         let mut inner = self.inner.lock();
         if mode == FilterMode::Include && dedup.is_empty() {
             let membership = inner.v6.get(&key).ok_or(NetError::Eaddrnotavail)?;
-            stack.set_ipv6_multicast(self.owner_key(), iface, group, membership.report_src, None)?;
+            stack.set_ipv6_multicast_in(net_ns, self.owner_key(), iface, group, membership.report_src, None)?;
             inner.v6.remove(&key);
         } else {
             let next = V6Membership {
                 report_src: inner.v6.get(&key).map(|current| current.report_src).unwrap_or(report_src),
                 filter: SourceFilter6 { mode, sources: dedup },
             };
-            stack.set_ipv6_multicast(self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
+            stack.set_ipv6_multicast_in(net_ns, self.owner_key(), iface, group, next.report_src, Some(&next.filter))?;
             inner.v6.insert(key, next);
         }
         Ok(())
@@ -279,8 +328,8 @@ impl SocketMcast {
         let v6 = core::mem::take(&mut inner.v6);
         drop(inner);
         for (key, membership) in v4 {
-            stack.release_ipv4_multicast(self.owner_key(), NetIfaceId::from_raw(key.iface),
-                key.group, membership.report_src);
+            stack.release_ipv4_multicast_in(membership.net_ns, self.owner_key(),
+                NetIfaceId::from_raw(key.iface), key.group, membership.report_src);
         }
         for (key, membership) in v6 {
             stack.release_ipv6_multicast(self.owner_key(), NetIfaceId::from_raw(key.iface),
@@ -298,13 +347,13 @@ fn v6_key(iface: NetIfaceId, group: Ipv6Addr) -> V6Key { V6Key { iface: iface.ra
 
 
 /// Resolve IPv6 multicast interface precedence for an ipv6_mreq. # C: O(N routes)
-pub fn resolve_v6_iface(stack: &NetStack, requested: u32, bound: u32,
+pub fn resolve_v6_iface(stack: &NetStack, net_ns: u64, requested: u32, bound: u32,
                         mcast: u32, group: Ipv6Addr) -> NetResult<NetIfaceId> {
     let raw = if requested != 0 { requested } else if bound != 0 { bound } else if mcast != 0 { mcast }
-        else { stack.routes6.lookup(group).map(|route| route.iface.raw()).unwrap_or(0) };
+        else { stack.routes6.lookup_in(net_ns, group).map(|route| route.iface.raw()).unwrap_or(0) };
     if raw == 0 { return Err(NetError::Enodev); }
     let iface = NetIfaceId::from_raw(raw);
-    stack.ifaces.lookup(iface).map(|_| iface).ok_or(NetError::Enodev)
+    stack.ifaces.lookup_in_ns(iface, net_ns).map(|_| iface).ok_or(NetError::Enodev)
 }
 
 #[cfg(test)]
@@ -387,6 +436,22 @@ mod tests {
     }
 
     #[test]
+    fn v4_membership_and_release_use_captured_namespace() {
+        let state = SocketMcast::new();
+        let stack = NetStack::new();
+        let (local, lo) = stack.register_loopback_in(61);
+        let (foreign, _) = stack.register_loopback_in(62);
+        let group = Ipv4Addr::new(239, 1, 2, 7);
+        assert_eq!(state.change_v4_in(&stack, 61, foreign, group, Ipv4Addr::LOOPBACK, true),
+            Err(NetError::Enodev));
+        state.change_v4_in(&stack, 61, local, group, Ipv4Addr::LOOPBACK, true).unwrap();
+        let _ = lo.rx_pop().expect("namespace join report");
+        state.release(&stack);
+        assert!(lo.rx_pop().is_some());
+        assert!(!state.accept_v4(local, group, Ipv4Addr::new(10, 0, 0, 3)));
+    }
+
+    #[test]
     fn v6_zero_ifindex_uses_bound_mcast_then_route() {
         use crate::route6::Route6Entry;
         let stack = NetStack::new();
@@ -396,9 +461,23 @@ mod tests {
         stack.routes6.add(Route6Entry {
             dst: Ipv6Addr::ANY, prefix_len: 0, iface: route_iface, gateway: None, src_hint: None,
         });
-        assert_eq!(resolve_v6_iface(&stack, 0, 0, 0, group), Ok(route_iface));
-        assert_eq!(resolve_v6_iface(&stack, 0, 0, selected_iface.raw(), group), Ok(selected_iface));
-        assert_eq!(resolve_v6_iface(&stack, 0, selected_iface.raw(), route_iface.raw(), group), Ok(selected_iface));
-        assert_eq!(resolve_v6_iface(&stack, route_iface.raw(), selected_iface.raw(), 0, group), Ok(route_iface));
+        assert_eq!(resolve_v6_iface(&stack, 0, 0, 0, 0, group), Ok(route_iface));
+        assert_eq!(resolve_v6_iface(&stack, 0, 0, 0, selected_iface.raw(), group), Ok(selected_iface));
+        assert_eq!(resolve_v6_iface(&stack, 0, 0, selected_iface.raw(), route_iface.raw(), group), Ok(selected_iface));
+        assert_eq!(resolve_v6_iface(&stack, 0, route_iface.raw(), selected_iface.raw(), 0, group), Ok(route_iface));
+    }
+
+    #[test]
+    fn v6_resolution_rejects_foreign_iface_and_uses_namespace_route() {
+        use crate::route6::Route6Entry;
+        let stack = NetStack::new();
+        let (a, _) = stack.register_loopback_in(51);
+        let (b, _) = stack.register_loopback_in(52);
+        let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x4321]);
+        stack.routes6.add_in(51, Route6Entry {
+            dst: Ipv6Addr::ANY, prefix_len: 0, iface: a, gateway: None, src_hint: None,
+        });
+        assert_eq!(resolve_v6_iface(&stack, 51, 0, 0, 0, group), Ok(a));
+        assert_eq!(resolve_v6_iface(&stack, 51, b.raw(), 0, 0, group), Err(NetError::Enodev));
     }
 }

@@ -170,7 +170,8 @@ impl net::NetDev for VirtioNetDev {
         // ARP; IPv6 misses send NDP NS. The current frame falls back
         // to broadcast, matching the older one-shot behavior until the
         // upper layer retries after the neighbor cache is warm.
-        let dst = resolve_next_hop_mac(self.device_key, self.mac, pkt.proto, body)
+        let dst = pkt.next_hop
+            .and_then(|next_hop| resolve_next_hop_mac(self.device_key, self.mac, next_hop))
             .unwrap_or(net::MacAddr([0xFF; 6]));
         let mut frame = alloc::vec![0u8; 14 + body.len()];
         net::ethernet::EthHdr::write_to(

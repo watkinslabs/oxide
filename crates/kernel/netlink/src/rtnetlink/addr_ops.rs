@@ -46,6 +46,12 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<NewAddrAttrs> {
 /// Handle RTM_NEWADDR.
 /// # C: O(N attrs + addr_table size)
 pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    handle_newaddr_in(net::netdev::current_net_ns(), req, full_msg)
+}
+
+/// Handle RTM_NEWADDR in the socket's captured network namespace.
+/// # C: O(N attrs + addr_table size)
+pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let ifa_off = Nlmsghdr::SIZE;
     if full_msg.len() < ifa_off + Ifaddrmsg::SIZE { return build_ack(req, -22); }
     let family = full_msg[ifa_off];
@@ -65,7 +71,9 @@ pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let flags = parsed.flags.unwrap_or_else(|| {
         if parsed.cacheinfo.is_some() { ifa_flags } else { ifa_flags | net::iface_addr::IFA_F_PERMANENT }
     });
-    let ns = net::netdev::current_net_ns();
+    if net::global_stack().ifaces.lookup_in_ns(net::NetIfaceId::from_raw(ifindex), ns).is_none() {
+        return build_ack(req, -19);
+    }
     net::iface_addr::set_prefix_meta(
         ns,
         net::NetIfaceId::from_raw(ifindex),
@@ -82,6 +90,12 @@ pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 /// Handle RTM_DELADDR.
 /// # C: O(N attrs + addr_table size)
 pub fn handle_deladdr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    handle_deladdr_in(net::netdev::current_net_ns(), req, full_msg)
+}
+
+/// Handle RTM_DELADDR in the socket's captured network namespace.
+/// # C: O(N attrs + addr_table size)
+pub fn handle_deladdr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let ifa_off = Nlmsghdr::SIZE;
     if full_msg.len() < ifa_off + Ifaddrmsg::SIZE { return build_ack(req, -22); }
     let prefixlen = full_msg[ifa_off + 1];
@@ -93,7 +107,10 @@ pub fn handle_deladdr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         Some(a) => a,
         None => return build_ack(req, -22),
     }.addr;
-    let n = addr_remove(net::netdev::current_net_ns(), ifindex, addr, prefixlen);
+    if net::global_stack().ifaces.lookup_in_ns(net::NetIfaceId::from_raw(ifindex), ns).is_none() {
+        return build_ack(req, -19);
+    }
+    let n = addr_remove(ns, ifindex, addr, prefixlen);
     if n > 0 { crate::mcast::notify_addr(true, ifindex, addr, prefixlen, 0); }
     build_ack(req, if n > 0 { 0 } else { -2 })
 }

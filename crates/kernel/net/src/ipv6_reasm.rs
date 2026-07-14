@@ -1,5 +1,5 @@
 // IPv6 Fragment extension reassembly per RFC 8200. Per-flow
-// (src, dst, next_header, identification) state; finalize when the last
+// (namespace, src, dst, next_header, identification) state; finalize when the last
 // fragment lands and the fragmentable payload has contiguous coverage.
 
 extern crate alloc;
@@ -12,6 +12,7 @@ use crate::addr::Ipv6Addr;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ReasmKey {
+    pub net_ns:     u64,
     pub src:         Ipv6Addr,
     pub dst:         Ipv6Addr,
     pub next_header: u8,
@@ -104,6 +105,7 @@ mod tests {
 
     fn key(id: u32) -> ReasmKey {
         ReasmKey {
+            net_ns: 0,
             src: Ipv6Addr::LOOPBACK,
             dst: Ipv6Addr::LOOPBACK,
             next_header: 17,
@@ -124,5 +126,16 @@ mod tests {
         let t = ReasmTable::new();
         assert!(t.push(key(2), 1, 0, b"short", true).is_none());
         assert!(t.push(key(2), 1, 5, b"tail", false).is_none());
+    }
+
+    #[test]
+    fn identical_fragment_tuples_are_namespace_isolated() {
+        let t = ReasmTable::new();
+        let a = ReasmKey { net_ns: 41, ..key(3) };
+        let b = ReasmKey { net_ns: 42, ..a };
+        assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
+        assert!(t.push(b, 1, 8, b"BBBB", false).is_none());
+        assert_eq!(t.push(a, 1, 8, b"AAAA", false).unwrap(), b"aaaaaaaaAAAA");
+        assert_eq!(t.push(b, 1, 0, b"bbbbbbbb", true).unwrap(), b"bbbbbbbbBBBB");
     }
 }

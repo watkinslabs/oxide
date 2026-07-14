@@ -11,17 +11,17 @@ use crate::stack::NetStack;
 const IGMP_TYPE_V1_REPORT: u8 = 0x12;
 
 impl NetStack {
-    fn v4_src_on_iface(&self, iface: NetIfaceId) -> Option<Ipv4Addr> {
-        self.routes.snapshot().into_iter().find(|r| r.iface == iface).and_then(|r| r.src_hint)
+    fn v4_src_on_iface(&self, net_ns: u64, iface: NetIfaceId) -> Option<Ipv4Addr> {
+        self.routes.snapshot_in(net_ns).into_iter().find(|r| r.iface == iface).and_then(|r| r.src_hint)
     }
 
-    fn emit_v4_policy(&self, iface: NetIfaceId, src: Ipv4Addr, record_include: u8,
+    fn emit_v4_policy(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr, record_include: u8,
                       record_exclude: u8, group: Ipv4Addr, filter: &SourceFilter) -> NetResult<()> {
         let record = match filter.mode { FilterMode::Include => record_include, FilterMode::Exclude => record_exclude };
-        self.emit_igmpv3(iface, src, &[(record, group, filter.sources.as_slice())])
+        self.emit_igmpv3(net_ns, iface, src, &[(record, group, filter.sources.as_slice())])
     }
 
-    fn emit_v4_change(&self, iface: NetIfaceId, src: Ipv4Addr, group: Ipv4Addr,
+    fn emit_v4_change(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr, group: Ipv4Addr,
                       change: &V4Change) -> NetResult<()> {
         if change.records.is_empty() { return Ok(()); }
         let version = self.v4_mcast.lock().get(&iface).and_then(|groups| groups.iter()
@@ -30,18 +30,18 @@ impl NetStack {
         if version < 3 {
             return match &change.report {
                 crate::mcast_state::V4Report::Active(_) => self.emit_igmp_legacy(
-                    iface, src, group, if version == 1 { IGMP_TYPE_V1_REPORT }
+                    net_ns, iface, src, group, if version == 1 { IGMP_TYPE_V1_REPORT }
                         else { crate::igmp::IGMP_TYPE_V2_REPORT }, group,
                 ),
                 crate::mcast_state::V4Report::Tomb if version == 2 => self.emit_igmp_legacy(
-                    iface, src, IPV4_ALL_ROUTERS, crate::igmp::IGMP_TYPE_LEAVE, group,
+                    net_ns, iface, src, IPV4_ALL_ROUTERS, crate::igmp::IGMP_TYPE_LEAVE, group,
                 ),
                 crate::mcast_state::V4Report::Tomb => Ok(()),
             };
         }
         let records: alloc::vec::Vec<_> = change.records.iter()
             .map(|record| (record.record_type, group, record.sources.as_slice())).collect();
-        self.emit_igmpv3(iface, src, &records)
+        self.emit_igmpv3(net_ns, iface, src, &records)
     }
 
     fn complete_v4_change(&self, iface: NetIfaceId, group: Ipv4Addr, generation: u64,
@@ -82,9 +82,16 @@ impl NetStack {
     /// Publish one socket's full filter and emit the resulting interface state. # C: O(N * S)
     pub(crate) fn set_ipv4_multicast(&self, owner: usize, iface: NetIfaceId, group: Ipv4Addr,
                                      src: Ipv4Addr, filter: Option<&SourceFilter>) -> NetResult<()> {
+        self.set_ipv4_multicast_in(0, owner, iface, group, src, filter)
+    }
+
+    /// Publish socket IGMP policy in one network namespace. # C: O(N * S)
+    pub(crate) fn set_ipv4_multicast_in(&self, net_ns: u64, owner: usize,
+                                        iface: NetIfaceId, group: Ipv4Addr,
+                                        src: Ipv4Addr, filter: Option<&SourceFilter>) -> NetResult<()> {
         if !group.is_multicast() { return Err(NetError::Einval); }
-        if self.ifaces.lookup(iface).is_none() { return Err(NetError::Enodev); }
-        let src = if src.is_unspecified() { self.v4_src_on_iface(iface).unwrap_or(src) } else { src };
+        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
+        let src = if src.is_unspecified() { self.v4_src_on_iface(net_ns, iface).unwrap_or(src) } else { src };
         let now_ns = crate::stack::net_now_ns();
         let staged = {
             let mut all = self.v4_mcast.lock();
@@ -114,7 +121,7 @@ impl NetStack {
             self.discard_v4_change(iface, group, generation);
             return Ok(());
         }
-        match self.emit_v4_change(iface, report_src, group, &change) {
+        match self.emit_v4_change(net_ns, iface, report_src, group, &change) {
             Ok(()) => { self.complete_v4_change(iface, group, generation, now_ns); Ok(()) }
             Err(_) => { self.rearm_v4_change(iface, group, generation, now_ns); Ok(()) }
         }
@@ -123,6 +130,13 @@ impl NetStack {
     /// Remove one dead socket's policy and retain only a compact failed report. # C: O(N)
     pub(crate) fn release_ipv4_multicast(&self, owner: usize, iface: NetIfaceId,
                                          group: Ipv4Addr, _src: Ipv4Addr) {
+        self.release_ipv4_multicast_in(0, owner, iface, group, _src)
+    }
+
+    /// Remove dead socket policy in one network namespace. # C: O(N)
+    pub(crate) fn release_ipv4_multicast_in(&self, net_ns: u64, owner: usize,
+                                            iface: NetIfaceId, group: Ipv4Addr,
+                                            _src: Ipv4Addr) {
         let now_ns = crate::stack::net_now_ns();
         let snapshot = {
             let mut all = self.v4_mcast.lock();
@@ -137,28 +151,28 @@ impl NetStack {
         };
         let Some((src, generation, change)) = snapshot else { return };
         if group == IPV4_ALL_HOSTS { self.discard_v4_change(iface, group, generation); return; }
-        if self.emit_v4_change(iface, src, group, &change).is_ok() {
+        if self.emit_v4_change(net_ns, iface, src, group, &change).is_ok() {
             self.complete_v4_change(iface, group, generation, now_ns);
         } else {
             self.rearm_v4_change(iface, group, generation, now_ns);
         }
     }
 
-    fn emit_igmpv3(&self, iface: NetIfaceId, src: Ipv4Addr,
+    fn emit_igmpv3(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr,
                    records: &[(u8, Ipv4Addr, &[Ipv4Addr])]) -> NetResult<()> {
         let body = crate::igmp::build_igmpv3_records(records);
-        self.emit_igmp_body(iface, src, IPV4_IGMPV3_ROUTERS, &body)
+        self.emit_igmp_body(net_ns, iface, src, IPV4_IGMPV3_ROUTERS, &body)
     }
 
-    fn emit_igmp_legacy(&self, iface: NetIfaceId, src: Ipv4Addr, dst: Ipv4Addr,
+    fn emit_igmp_legacy(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr, dst: Ipv4Addr,
                         typ: u8, group: Ipv4Addr) -> NetResult<()> {
         let body = crate::igmp::build_igmp_msg(typ, group);
-        self.emit_igmp_body(iface, src, dst, &body)
+        self.emit_igmp_body(net_ns, iface, src, dst, &body)
     }
 
-    fn emit_igmp_body(&self, iface: NetIfaceId, src: Ipv4Addr, dst: Ipv4Addr,
+    fn emit_igmp_body(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr, dst: Ipv4Addr,
                       body: &[u8]) -> NetResult<()> {
-        let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
+        let dev = self.ifaces.lookup_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
         let header_len = 24usize;
         let total = header_len + body.len();
@@ -187,9 +201,15 @@ impl NetStack {
 
     /// Join an IPv4 multicast group and emit a state-change report. # C: O(N groups + routes)
     pub fn join_ipv4_multicast(&self, iface: NetIfaceId, group: Ipv4Addr, src: Ipv4Addr) -> NetResult<()> {
+        self.join_ipv4_multicast_in(0, iface, group, src)
+    }
+
+    /// Join an IPv4 multicast group in one network namespace. # C: O(N groups + routes)
+    pub fn join_ipv4_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
+                                  group: Ipv4Addr, src: Ipv4Addr) -> NetResult<()> {
         if !group.is_multicast() { return Err(NetError::Einval); }
-        if self.ifaces.lookup(iface).is_none() { return Err(NetError::Enodev); }
-        let src = if src.is_unspecified() { self.v4_src_on_iface(iface).unwrap_or(src) } else { src };
+        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
+        let src = if src.is_unspecified() { self.v4_src_on_iface(net_ns, iface).unwrap_or(src) } else { src };
         let now_ns = crate::stack::net_now_ns();
         let staged = {
             let mut all = self.v4_mcast.lock();
@@ -213,7 +233,7 @@ impl NetStack {
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
-        match self.emit_v4_change(iface, report_src, group, &change) {
+        match self.emit_v4_change(net_ns, iface, report_src, group, &change) {
             Ok(()) => { self.complete_v4_change(iface, group, generation, now_ns); Ok(()) }
             Err(_) => { self.rearm_v4_change(iface, group, generation, now_ns); Ok(()) }
         }
@@ -221,6 +241,13 @@ impl NetStack {
 
     /// Leave an IPv4 multicast group and emit a state-change report. # C: O(N groups)
     pub fn leave_ipv4_multicast(&self, iface: NetIfaceId, group: Ipv4Addr, _src: Ipv4Addr) -> NetResult<()> {
+        self.leave_ipv4_multicast_in(0, iface, group, _src)
+    }
+
+    /// Leave an IPv4 multicast group in one network namespace. # C: O(N groups)
+    pub fn leave_ipv4_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
+                                   group: Ipv4Addr, _src: Ipv4Addr) -> NetResult<()> {
+        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
         let now_ns = crate::stack::net_now_ns();
         let staged = {
             let mut all = self.v4_mcast.lock();
@@ -239,7 +266,7 @@ impl NetStack {
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
-        match self.emit_v4_change(iface, report_src, group, &change) {
+        match self.emit_v4_change(net_ns, iface, report_src, group, &change) {
             Ok(()) => { self.complete_v4_change(iface, group, generation, now_ns); Ok(()) }
             Err(_) => { self.rearm_v4_change(iface, group, generation, now_ns); Ok(()) }
         }
@@ -260,7 +287,11 @@ impl NetStack {
             pending
         };
         for (iface, group, src, generation, change) in pending {
-            if self.emit_v4_change(iface, src, group, &change).is_ok() {
+            let Some(net_ns) = self.ifaces.namespace(iface) else {
+                self.rearm_v4_change(iface, group, generation, now_ns);
+                continue;
+            };
+            if self.emit_v4_change(net_ns, iface, src, group, &change).is_ok() {
                 self.complete_v4_change(iface, group, generation, now_ns);
             } else { self.rearm_v4_change(iface, group, generation, now_ns); }
         }
@@ -270,6 +301,7 @@ impl NetStack {
     /// Handle IGMP general/group-specific queries. # C: O(N groups)
     pub(crate) fn handle_igmp(&self, iface: NetIfaceId, _src: Ipv4Addr, _dst: Ipv4Addr,
                               payload: &[u8]) -> NetResult<()> {
+        let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enodev)?;
         let q = match IgmpQuery::parse(payload) { Ok(q) => q, Err(_) => return Ok(()) };
         let version = if payload.len() >= 12 { 3 } else if q.max_resp_time == 0 { 1 } else { 2 };
         let now_ns = crate::stack::net_now_ns();
@@ -287,13 +319,13 @@ impl NetStack {
             if !q.group.is_unspecified() && q.group != state.group { continue; }
             let aggregate = state.aggregate();
             if version < 3 {
-                self.emit_igmp_legacy(iface, state.report_src, state.group,
+                self.emit_igmp_legacy(net_ns, iface, state.report_src, state.group,
                     if version == 1 { IGMP_TYPE_V1_REPORT } else { crate::igmp::IGMP_TYPE_V2_REPORT },
                     state.group)?;
                 continue;
             }
             if q.sources.is_empty() {
-                self.emit_v4_policy(iface, state.report_src, IGMP_V3_RECORD_MODE_IS_INCLUDE,
+                self.emit_v4_policy(net_ns, iface, state.report_src, IGMP_V3_RECORD_MODE_IS_INCLUDE,
                     IGMP_V3_RECORD_MODE_IS_EXCLUDE, state.group, &aggregate)?;
             } else {
                 let mut wanted = alloc::vec::Vec::new();
@@ -303,7 +335,7 @@ impl NetStack {
                     if accepted && !wanted.contains(queried) { wanted.push(*queried); }
                 }
                 if wanted.is_empty() { continue; }
-                self.emit_igmpv3(iface, state.report_src,
+                self.emit_igmpv3(net_ns, iface, state.report_src,
                     &[(IGMP_V3_RECORD_MODE_IS_INCLUDE, state.group, wanted.as_slice())])?;
             }
         }

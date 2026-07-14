@@ -38,8 +38,14 @@ impl NetStack {
     }
 
     pub fn v6_addr_snapshot(&self) -> Vec<(NetIfaceId, Ipv6IfaceAddr)> {
+        self.v6_addr_snapshot_in(0)
+    }
+
+    /// Snapshot IPv6 interface addresses owned by one network namespace. # C: O(N)
+    pub fn v6_addr_snapshot_in(&self, net_ns: u64) -> Vec<(NetIfaceId, Ipv6IfaceAddr)> {
         let mut out = Vec::new();
         for (iface, addrs) in self.v6_addrs.lock().iter() {
+            if self.ifaces.namespace(*iface) != Some(net_ns) { continue; }
             for addr in addrs {
                 out.push((*iface, *addr));
             }
@@ -323,12 +329,19 @@ impl NetStack {
         dst_port: u16,
         payload: &[u8],
     ) -> NetResult<()> {
+        self.send_udp6_to_in(0, src_ip, src_port, dst_ip, dst_port, payload)
+    }
+
+    /// Send UDP/IPv6 through one network namespace. # C: O(payload + N)
+    pub fn send_udp6_to_in(&self, net_ns: u64, src_ip: Ipv6Addr, src_port: u16,
+        dst_ip: Ipv6Addr, dst_port: u16, payload: &[u8]) -> NetResult<()>
+    {
         let src_ip = if src_ip == Ipv6Addr::ANY && dst_ip == Ipv6Addr::LOOPBACK {
             Ipv6Addr::LOOPBACK
         } else {
             src_ip
         };
-        let (iface_id, iface) = self.route6_iface(dst_ip).ok_or(NetError::Enetunreach)?;
+        let (iface_id, iface) = self.route6_iface_in(net_ns, dst_ip).ok_or(NetError::Enetunreach)?;
         let l4_len = 8 + payload.len();
         let total = IPV6_HDR_LEN + l4_len;
         let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);

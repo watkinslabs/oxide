@@ -4,25 +4,48 @@ use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::ipv4::IPV4_HDR_LEN;
 use crate::netdev::{NetDev, NetError, NetResult};
 use crate::pkt::Pkt;
+use crate::route::{RouteEntry, RouteRecord, RTN_BLACKHOLE, RTN_LOCAL, RTN_PROHIBIT,
+    RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE};
 use crate::stack::{NetStack, TcpEntry};
+
+fn usable_route(record: RouteRecord) -> NetResult<RouteEntry> {
+    match record.kind {
+        RTN_UNICAST | RTN_LOCAL => Ok(record.route),
+        RTN_BLACKHOLE => Err(NetError::Einval),
+        RTN_UNREACHABLE => Err(NetError::Ehostunreach),
+        RTN_PROHIBIT => Err(NetError::Eacces),
+        RTN_THROW => Err(NetError::Enetunreach),
+        _ => Err(NetError::Eopnotsupp),
+    }
+}
 
 impl NetStack {
     /// Resolve a raw SO_BINDTODEVICE ifindex. 0 means unbound. # C: O(N)
     pub fn bound_iface(&self, raw: u32) -> NetResult<Option<NetIfaceId>> {
+        self.bound_iface_in(0, raw)
+    }
+
+    /// Resolve SO_BINDTODEVICE in one network namespace. # C: O(N)
+    pub fn bound_iface_in(&self, net_ns: u64, raw: u32) -> NetResult<Option<NetIfaceId>> {
         if raw == 0 { return Ok(None); }
         let id = NetIfaceId::from_raw(raw);
-        self.ifaces.lookup(id).map(|_| Some(id)).ok_or(NetError::Enodev)
+        self.ifaces.lookup_in_ns(id, net_ns).map(|_| Some(id)).ok_or(NetError::Enodev)
     }
 
     /// TCP MSS for `dst`, honoring a socket-bound egress interface. # C: O(N)
     pub fn mss_for_dst_on_iface(&self, dst: IpAddr, bound: Option<NetIfaceId>) -> u16 {
+        self.mss_for_dst_on_iface_in(0, dst, bound)
+    }
+
+    /// TCP MSS in one network namespace, honoring a bound interface. # C: O(N)
+    pub fn mss_for_dst_on_iface_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>) -> u16 {
         let mtu = match bound {
-            Some(id) => self.ifaces.lookup(id).map(|i| i.mtu()),
+            Some(id) => self.ifaces.lookup_in_ns(id, net_ns).map(|i| i.mtu()),
             None => match dst {
-                IpAddr::V4(d) => self.routes.lookup(d)
-                    .and_then(|r| self.ifaces.lookup(r.iface))
+                IpAddr::V4(d) => self.routes.lookup_in(net_ns, d)
+                    .and_then(|r| self.ifaces.lookup_in_ns(r.iface, net_ns))
                     .map(|i| i.mtu()),
-                IpAddr::V6(d) => self.route6_iface(d).map(|(_, i)| i.mtu()),
+                IpAddr::V6(d) => self.route6_iface_in(net_ns, d).map(|(_, i)| i.mtu()),
             },
         };
         let overhead = if matches!(dst, IpAddr::V6(_)) { 60 } else { 40 };
@@ -43,14 +66,24 @@ impl NetStack {
         tos: u8, ttl: u8)
         -> NetResult<()>
     {
-        let (iface_id, iface) = self.route_v4_iface(dst_ip, bound)?;
+        self.send_udp_to_bound_opts_in(0, src_ip, src_port, dst_ip, dst_port, payload, bound, tos, ttl)
+    }
+
+    /// Build and transmit UDP/IPv4 in one network namespace. # C: O(payload + N)
+    pub fn send_udp_to_bound_opts_in(&self, net_ns: u64, src_ip: Ipv4Addr, src_port: u16,
+        dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
+        tos: u8, ttl: u8) -> NetResult<()>
+    {
+        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst_ip, bound)?;
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
         let slot = p.put(udp_total).map_err(|_| NetError::Enobufs)?;
         crate::udp::UdpHdr::build_into(src_port, dst_port, src_ip, dst_ip, payload, slot);
         let id = self.next_ipv4_id();
-        self.xmit_ipv4_l4_on_iface_opts(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(), tos, ttl, id)
+        self.xmit_ipv4_l4_on_iface_opts(
+            iface_id, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), tos, ttl, id,
+        )
     }
 
     /// Build + transmit UDP/IPv6, optionally pinned to an iface. # C: O(payload + N)
@@ -69,21 +102,27 @@ impl NetStack {
         hop_limit: u8)
         -> NetResult<()>
     {
+        self.send_udp6_to_bound_opts_in(0, src_ip, src_port, dst_ip, dst_port, payload, bound, hop_limit)
+    }
+
+    /// Build and transmit UDP/IPv6 in one network namespace. # C: O(payload + N)
+    pub fn send_udp6_to_bound_opts_in(&self, net_ns: u64, src_ip: Ipv6Addr, src_port: u16,
+        dst_ip: Ipv6Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
+        hop_limit: u8) -> NetResult<()>
+    {
         let src_ip = if src_ip == Ipv6Addr::ANY && dst_ip == Ipv6Addr::LOOPBACK {
             Ipv6Addr::LOOPBACK
         } else {
             src_ip
         };
-        let (iface_id, iface) = match bound {
-            Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
-            None => self.route6_iface(dst_ip).ok_or(NetError::Enetunreach)?,
-        };
+        let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst_ip, bound)?;
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(0, l4_len);
         let body = p.put(l4_len).map_err(|_| NetError::Enobufs)?;
         crate::udp::build_into_v6(src_port, dst_port, src_ip, dst_ip, payload, body);
-        self.xmit_ipv6_l4_on_iface_opts(iface_id, iface, src_ip, dst_ip, IpProto::Udp, p.data(),
-            hop_limit)
+        self.xmit_ipv6_l4_on_iface_opts(
+            iface_id, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), hop_limit,
+        )
     }
 
     /// Active TCP open with a socket-bound egress interface. # C: O(log N + payload)
@@ -101,53 +140,112 @@ impl NetStack {
     pub fn send_l4_over_ip_bound(&self, src: IpAddr, dst: IpAddr,
         proto: IpProto, l4: &[u8], bound: Option<NetIfaceId>) -> NetResult<()>
     {
-        self.send_l4_over_ip_tos_bound(src, dst, proto, l4, 0, bound)
+        self.send_l4_over_ip_bound_in(0, src, dst, proto, l4, bound)
+    }
+
+    /// Family-dispatched L4 transmit in one network namespace. # C: O(payload + N)
+    pub fn send_l4_over_ip_bound_in(&self, net_ns: u64, src: IpAddr, dst: IpAddr,
+        proto: IpProto, l4: &[u8], bound: Option<NetIfaceId>) -> NetResult<()> {
+        self.send_l4_over_ip_tos_bound_in(net_ns, src, dst, proto, l4, 0, bound)
     }
 
     /// TOS/traffic-class L4 transmit, optionally pinned to an iface. # C: O(payload + N)
     pub fn send_l4_over_ip_tos_bound(&self, src: IpAddr, dst: IpAddr,
         proto: IpProto, l4: &[u8], tos: u8, bound: Option<NetIfaceId>) -> NetResult<()>
     {
+        self.send_l4_over_ip_tos_bound_in(0, src, dst, proto, l4, tos, bound)
+    }
+
+    /// TOS-aware L4 transmit in one network namespace. # C: O(payload + N)
+    pub fn send_l4_over_ip_tos_bound_in(&self, net_ns: u64, src: IpAddr, dst: IpAddr,
+        proto: IpProto, l4: &[u8], tos: u8, bound: Option<NetIfaceId>) -> NetResult<()> {
         match (src, dst) {
-            (IpAddr::V4(s), IpAddr::V4(d)) => self.send_l4_over_ipv4_bound(s, d, proto, l4, tos, bound),
-            (IpAddr::V6(s), IpAddr::V6(d)) => self.send_l4_over_ipv6_bound(s, d, proto, l4, bound),
+            (IpAddr::V4(s), IpAddr::V4(d)) => self.send_l4_over_ipv4_bound(net_ns, s, d, proto, l4, tos, bound),
+            (IpAddr::V6(s), IpAddr::V6(d)) => self.send_l4_over_ipv6_bound(net_ns, s, d, proto, l4, bound),
             _ => Err(NetError::Einval),
         }
     }
 
-    fn send_l4_over_ipv4_bound(&self, src: Ipv4Addr, dst: Ipv4Addr,
+    fn send_l4_over_ipv4_bound(&self, net_ns: u64, src: Ipv4Addr, dst: Ipv4Addr,
         proto: IpProto, l4: &[u8], tos: u8, bound: Option<NetIfaceId>) -> NetResult<()>
     {
-        let (iface_id, iface) = self.route_v4_iface(dst, bound)?;
-        self.xmit_ipv4_l4_on_iface(iface_id, iface, src, dst, proto, l4, tos, self.next_ipv4_id())
+        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        self.xmit_ipv4_l4_on_iface(
+            iface_id, iface, next_hop, src, dst, proto, l4, tos, self.next_ipv4_id(),
+        )
     }
 
-    fn send_l4_over_ipv6_bound(&self, src: Ipv6Addr, dst: Ipv6Addr,
+    fn send_l4_over_ipv6_bound(&self, net_ns: u64, src: Ipv6Addr, dst: Ipv6Addr,
         proto: IpProto, l4: &[u8], bound: Option<NetIfaceId>) -> NetResult<()>
     {
-        let (iface_id, iface) = match bound {
-            Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
-            None => self.route6_iface(dst).ok_or(NetError::Enetunreach)?,
-        };
-        self.xmit_ipv6_l4_on_iface(iface_id, iface, src, dst, proto, l4)
+        let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound)?;
+        self.xmit_ipv6_l4_on_iface(iface_id, iface, next_hop, src, dst, proto, l4)
     }
 
-    fn route_v4_iface(&self, dst: Ipv4Addr, bound: Option<NetIfaceId>)
-        -> NetResult<(NetIfaceId, Arc<dyn NetDev>)>
+    /// Resolve IPv4 egress and capture its route-selected next hop. # C: O(N)
+    pub(crate) fn route_v4_iface_in(&self, net_ns: u64, dst: Ipv4Addr, bound: Option<NetIfaceId>)
+        -> NetResult<(NetIfaceId, Arc<dyn NetDev>, Ipv4Addr)>
     {
         if let Some(id) = bound {
-            let iface = self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?;
-            return Ok((id, iface));
+            let iface = self.ifaces.lookup_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
+            let next_hop = match self.route_v4_on_iface_in(net_ns, dst, id)? {
+                Some(route) => route.gateway.unwrap_or(dst),
+                None if dst.is_broadcast() => dst,
+                None => return Err(NetError::Enetunreach),
+            };
+            return Ok((id, iface, next_hop));
         }
-        match self.routes.lookup(dst) {
-            Some(r) => Ok((r.iface, self.ifaces.lookup(r.iface).ok_or(NetError::Enetunreach)?)),
-            None if dst.is_broadcast() => {
-                let devs = self.ifaces.snapshot_devs();
+        match self.routes.lookup_result_in(net_ns, dst) {
+            Ok(r) => Ok((r.iface, self.ifaces.lookup_in_ns(r.iface, net_ns)
+                .ok_or(NetError::Enetunreach)?, r.gateway.unwrap_or(dst))),
+            Err(NetError::Enetunreach) if dst.is_broadcast()
+                && self.routes.lookup_record_in(net_ns, dst).is_none() => {
+                let devs = self.ifaces.snapshot_devs_in_ns(net_ns);
                 let pick = devs.iter().find(|(_, d)| d.name() != "lo").ok_or(NetError::Enetunreach)?;
-                Ok((pick.0, pick.1.clone()))
+                Ok((pick.0, pick.1.clone(), dst))
             }
-            None => Err(NetError::Enetunreach),
+            Err(error) => Err(error),
         }
+    }
+
+    fn route_v4_on_iface_in(&self, net_ns: u64, dst: Ipv4Addr, iface: NetIfaceId)
+        -> NetResult<Option<RouteEntry>>
+    {
+        match self.routes.lookup_result_in(net_ns, dst) {
+            Ok(route) if route.iface == iface => return Ok(Some(route)),
+            Err(NetError::Enetunreach) if self.routes.lookup_record_in(net_ns, dst).is_none() => {}
+            Err(error) => return Err(error),
+            _ => {}
+        }
+        let records = self.routes.snapshot_records_in(net_ns);
+        for rule in crate::policy_rule::snapshot_effective(net_ns, crate::policy_rule::AF_INET) {
+            let best = records.iter().filter(|record| {
+                let route = record.route;
+                route.table == rule.table && route.iface == iface && route.matches(dst)
+            }).min_by_key(|record| (core::cmp::Reverse(record.route.prefix_len), record.metric));
+            if let Some(record) = best {
+                if record.kind == RTN_THROW { continue; }
+                return usable_route(*record).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Resolve IPv6 egress and capture its route-selected next hop. # C: O(N)
+    pub(crate) fn route_v6_iface_in(&self, net_ns: u64, dst: Ipv6Addr, bound: Option<NetIfaceId>)
+        -> NetResult<(NetIfaceId, Arc<dyn NetDev>, Ipv6Addr)>
+    {
+        if let Some(id) = bound {
+            let iface = self.ifaces.lookup_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
+            let next_hop = self.routes6.snapshot_in(net_ns).into_iter()
+                .filter(|route| route.iface == id && route.matches(dst))
+                .reduce(|best, route| if route.prefix_len > best.prefix_len { route } else { best })
+                .and_then(|route| route.gateway).unwrap_or(dst);
+            return Ok((id, iface, next_hop));
+        }
+        let route = self.routes6.lookup_in(net_ns, dst).ok_or(NetError::Enetunreach)?;
+        let iface = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
+        Ok((route.iface, iface, route.gateway.unwrap_or(dst)))
     }
 
     fn next_ipv4_id(&self) -> u16 {
@@ -160,5 +258,123 @@ impl NetStack {
         let mut s = self.next_isn.lock();
         *s = s.wrapping_add(0x1000);
         *s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_send_surfaces_terminal_route_errors() {
+        const NET_NS: u64 = 0x8250_2001;
+        let cases = [
+            (RTN_BLACKHOLE, NetError::Einval),
+            (RTN_UNREACHABLE, NetError::Ehostunreach),
+            (RTN_PROHIBIT, NetError::Eacces),
+            (RTN_THROW, NetError::Enetunreach),
+        ];
+        for (index, (kind, expected)) in cases.into_iter().enumerate() {
+            let stack = NetStack::new();
+            let net_ns = NET_NS + index as u64;
+            let (iface, lo) = stack.register_loopback_in(net_ns);
+            let dst = Ipv4Addr::new(198, 51, 100, index as u8 + 1);
+            let route = RouteEntry::main(dst, 32, iface, None, None);
+            stack.routes.add_record_in(net_ns, RouteRecord {
+                kind, ..RouteRecord::kernel(route)
+            });
+
+            assert_eq!(stack.send_udp_to_bound_opts_in(
+                net_ns, Ipv4Addr::LOOPBACK, 1000, dst, 2000, b"x", None,
+                0, crate::ipv4::IPV4_DEFAULT_TTL,
+            ), Err(expected));
+            assert_eq!(lo.rx_len(), 0);
+        }
+    }
+
+    #[test]
+    fn bound_ipv4_send_does_not_bypass_terminal_route() {
+        const NET_NS: u64 = 0x8250_2005;
+        let stack = NetStack::new();
+        let (iface, lo) = stack.register_loopback_in(NET_NS);
+        let dst = Ipv4Addr::new(203, 0, 113, 7);
+        let route = RouteEntry::main(dst, 32, iface, None, None);
+        stack.routes.add_record_in(NET_NS, RouteRecord {
+            kind: RTN_PROHIBIT, ..RouteRecord::kernel(route)
+        });
+
+        assert_eq!(stack.send_udp_to_bound_opts_in(
+            NET_NS, Ipv4Addr::LOOPBACK, 1000, dst, 2000, b"x", Some(iface),
+            0, crate::ipv4::IPV4_DEFAULT_TTL,
+        ), Err(NetError::Eacces));
+        assert_eq!(lo.rx_len(), 0);
+    }
+
+    #[test]
+    fn bound_ipv4_packet_keeps_iface_gateway_after_route_mutation() {
+        let stack = NetStack::new();
+        let net_ns = 825;
+        let (iface_a, lo_a) = stack.register_loopback_in(net_ns);
+        let (iface_b, lo_b) = stack.register_loopback_in(net_ns);
+        let gateway_a = Ipv4Addr::new(10, 0, 0, 1);
+        let gateway_b = Ipv4Addr::new(10, 1, 0, 1);
+        let changed = Ipv4Addr::new(10, 1, 0, 254);
+        let dst = Ipv4Addr::new(203, 0, 113, 9);
+        stack.routes.add_in(net_ns, crate::route::RouteEntry::main(
+            Ipv4Addr::ANY, 0, iface_a, Some(gateway_a), None,
+        ));
+        stack.routes.add_in(net_ns, crate::route::RouteEntry::main(
+            Ipv4Addr::ANY, 0, iface_b, Some(gateway_b), None,
+        ));
+
+        stack.send_udp_to_bound_opts_in(
+            net_ns, Ipv4Addr::new(10, 1, 0, 2), 1000, dst, 2000, b"x",
+            Some(iface_b), 0, crate::ipv4::IPV4_DEFAULT_TTL,
+        ).unwrap();
+        stack.routes.retain_in(net_ns, |route| route.iface != iface_b || route.prefix_len != 0);
+        stack.routes.add_in(net_ns, crate::route::RouteEntry::main(
+            Ipv4Addr::ANY, 0, iface_b, Some(changed), None,
+        ));
+
+        assert_eq!(lo_a.rx_len(), 0);
+        let packet = lo_b.rx_pop().unwrap();
+        assert_eq!(packet.next_hop, Some(crate::pkt::TxNextHop::V4(gateway_b)));
+    }
+
+    #[test]
+    fn bound_ipv6_packet_keeps_iface_gateway_and_ndp_source() {
+        let stack = NetStack::new();
+        let net_ns = 826;
+        let (iface_a, lo_a) = stack.register_loopback_in(net_ns);
+        let (iface_b, lo_b) = stack.register_loopback_in(net_ns);
+        let gateway_a = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+        let gateway_b = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,2]);
+        let changed = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,3]);
+        let src = Ipv6Addr::from_segments([0x2001,0xdb8,1,0,0,0,0,2]);
+        let dst = Ipv6Addr::from_segments([0x2001,0xdb8,2,0,0,0,0,9]);
+        stack.routes6.add_in(net_ns, crate::route6::Route6Entry {
+            dst: Ipv6Addr::ANY, prefix_len: 0, iface: iface_a,
+            gateway: Some(gateway_a), src_hint: None,
+        });
+        stack.routes6.add_in(net_ns, crate::route6::Route6Entry {
+            dst: Ipv6Addr::ANY, prefix_len: 0, iface: iface_b,
+            gateway: Some(gateway_b), src_hint: Some(src),
+        });
+
+        stack.send_udp6_to_bound_opts_in(
+            net_ns, src, 1000, dst, 2000, b"x", Some(iface_b),
+            crate::ipv6::IPV6_DEFAULT_HOP_LIMIT,
+        ).unwrap();
+        stack.routes6.retain_in(net_ns, |route| route.iface != iface_b || route.prefix_len != 0);
+        stack.routes6.add_in(net_ns, crate::route6::Route6Entry {
+            dst: Ipv6Addr::ANY, prefix_len: 0, iface: iface_b,
+            gateway: Some(changed), src_hint: None,
+        });
+
+        assert_eq!(lo_a.rx_len(), 0);
+        let packet = lo_b.rx_pop().unwrap();
+        assert_eq!(packet.next_hop, Some(crate::pkt::TxNextHop::V6 {
+            addr: gateway_b, src,
+        }));
     }
 }
