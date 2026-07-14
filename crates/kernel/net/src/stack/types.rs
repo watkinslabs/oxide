@@ -187,8 +187,8 @@ impl TcpListenEntry {
         }
     }
     /// F192: apply Linux unsigned backlog normalization. # C: O(1)
-    pub fn set_backlog(&self, b: i32) {
-        let n = crate::sysctl::normalize_listen_backlog(b, crate::sysctl::somaxconn());
+    pub fn set_backlog(&self, b: i32, limit: usize) {
+        let n = crate::sysctl::normalize_listen_backlog(b, limit);
         self.backlog.store(n, ::core::sync::atomic::Ordering::Release);
     }
 
@@ -196,6 +196,19 @@ impl TcpListenEntry {
     /// # C: O(1)
     pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
+    }
+
+    /// Atomically recheck the accept queue and park an interruptible caller.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_accept_wait(&self, deadline_ns: u64) -> bool {
+        let q = self.accept_q.lock();
+        if !q.is_empty() { return false; }
+        // SAFETY: queue lock serializes enqueue with wait registration; the
+        // interruptible primitive closes signal publication before sleep.
+        unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
+        drop(q);
+        true
     }
 
     /// # C: O(1)

@@ -93,6 +93,21 @@ impl WaitList {
         g.push(arc);
     }
 
+    /// Park with a deadline while closing the signal-before-sleep race.
+    /// # C: O(1)
+    pub unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: caller provides the same process-context contract required by
+        // park_with_deadline; this wrapper only performs the post-publish check.
+        unsafe { self.park_with_deadline(deadline_ns); }
+        if super::sigpend::deliverable_signals_self() != 0 {
+            if let Some(cur) = super::schedule::current() {
+                if let Some(task) = crate::registry::lookup(cur.tid) {
+                    super::sigpend::wake_if_sleeping(&task);
+                }
+            }
+        }
+    }
+
     /// Wake the longest-waiting task on this list (FIFO). No-op
     /// if empty. Sets state Runnable, lifts vruntime to the CFS
     /// minimum, enqueues on the runqueue, sets need_resched.
@@ -134,6 +149,14 @@ impl WaitList {
     /// # C: O(1)
     pub fn has_waiters(&self) -> bool {
         !self.waiters.lock().is_empty()
+    }
+
+    /// Remove a stale registration for the currently running task.
+    /// # C: O(N_waiters)
+    pub fn remove_current(&self) {
+        let Some(cur) = super::schedule::current() else { return };
+        let ptr = cur as *const Task;
+        self.waiters.lock().retain(|task| Arc::as_ptr(task) != ptr);
     }
 
     /// Internal helper: transition a popped task to Runnable and

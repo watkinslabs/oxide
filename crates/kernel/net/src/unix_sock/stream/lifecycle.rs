@@ -1,6 +1,34 @@
 use super::{UnixEnd, UnixPair};
 
+#[cfg(target_os = "oxide-kernel")]
+pub enum ArmStreamRead {
+    Retry,
+    Reset,
+    Eof,
+    Parked,
+}
+
 impl UnixPair {
+    /// Atomically recheck a boundary-aware stream read and park its caller.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_stream_read(&self, end: UnixEnd, deadline_ns: u64) -> ArmStreamRead {
+        let read_ring = match end {
+            UnixEnd::A => &self.b_to_a,
+            UnixEnd::B => &self.a_to_b,
+        };
+        let g = read_ring.lock();
+        let ancillary_ready = g.ancillary.front().map(|(off, _, _)| *off <= g.consumed).unwrap_or(false);
+        if !g.buf.is_empty() || ancillary_ready { return ArmStreamRead::Retry; }
+        if self.take_reset(end) { return ArmStreamRead::Reset; }
+        if g.closed_writer { return ArmStreamRead::Eof; }
+        // SAFETY: caller is a running syscall task; registration occurs under
+        // the read-ring lock also taken by writers before their wake operation.
+        unsafe { self.reader_waiters(end).park_with_deadline(deadline_ns); }
+        drop(g);
+        ArmStreamRead::Parked
+    }
+
     /// Whether the opposite endpoint was destroyed rather than half-closed.
     /// # C: O(1)
     pub fn peer_gone(&self, end: UnixEnd) -> bool {
@@ -21,6 +49,16 @@ impl UnixPair {
         }
     }
 
+    /// Whether this endpoint still has a connection-reset error to consume.
+    /// # C: O(1)
+    pub fn reset_pending(&self, end: UnixEnd) -> bool {
+        use core::sync::atomic::Ordering::Acquire;
+        match end {
+            UnixEnd::A => self.reset_pending_a.load(Acquire),
+            UnixEnd::B => self.reset_pending_b.load(Acquire),
+        }
+    }
+
     /// Abort a connection that was queued but never accepted by its listener.
     /// # C: O(buffered bytes + descriptors)
     pub fn abort_unaccepted(&self) {
@@ -34,7 +72,7 @@ impl UnixPair {
         let fds = {
             let mut outgoing = self.b_to_a.lock();
             outgoing.buf.clear();
-            core::mem::take(&mut outgoing.fds)
+            core::mem::take(&mut outgoing.ancillary)
         };
         drop(fds);
         #[cfg(target_os = "oxide-kernel")]

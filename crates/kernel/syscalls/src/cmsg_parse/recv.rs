@@ -4,6 +4,7 @@ use core::sync::atomic::Ordering;
 
 use hal::USER_VA_END;
 use net::sock::{InetSocket, SockKind};
+use net::uapi::{MSG_CTRUNC, MSG_DONTWAIT};
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::File;
@@ -24,6 +25,9 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
         )
     };
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
+    let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
+    let deadline_ns = net::sock::compute_deadline_ns(timeo);
+    let want_cred = sock.opts.passcred.load(Ordering::Acquire) != 0;
     let mut total: i64 = 0;
     // SCM_RIGHTS fds delivered by `read_stream`, bound to the exact bytes
     // of the write that carried them. `read_stream` stops a read at the
@@ -32,10 +36,8 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
     // recvmsg (Linux returns at the ancillary-data boundary). read_stream
     // never re-queues or parks, so this yield loop always progresses.
     let mut pending_fds: Vec<Arc<File>> = Vec::new();
-    // debug-wakelat: when the stream is empty this loop busy-yields
-    // (`tick_yield`) instead of parking Sleeping, so it posts no ttwu. Time
-    // the first-yield→data-ready span directly to catch a Runnable-but-
-    // starved stall (H2 on the busy-wait path).
+    let mut pending_cred: Option<(u32, u32, u32)> = None;
+    // debug-wakelat: time the first park to the read that makes progress.
     #[cfg(feature = "debug-wakelat")]
     let mut wl_yield_start: u64 = 0;
     'iovloop: for i in 0..iovlen {
@@ -51,39 +53,59 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
         if len == 0 { continue; }
         if base + len > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         loop {
-            let (chunk, fds) = {
+            let (chunk, fds, cred) = {
                 let g = sock.kind.lock();
                 if let SockKind::Unix(pair, end) = &*g { pair.read_stream(*end, len as usize) }
                 else { return -(Errno::Einval.as_i32() as i64); }
             };
             if !fds.is_empty() { pending_fds.extend(fds); }
+            if cred.is_some() { pending_cred = cred; }
             if !chunk.is_empty() {
                 unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), base as *mut u8, chunk.len()); }
                 total += chunk.len() as i64;
                 // Stop at the ancillary boundary: fds ride the chunk we
                 // just delivered, so return rather than coalescing the
                 // next (differently-tagged) message onto this recvmsg.
-                if !pending_fds.is_empty() { break 'iovloop; }
+                if !pending_fds.is_empty() || (want_cred && pending_cred.is_some()) { break 'iovloop; }
                 if (chunk.len() as u64) < len { break 'iovloop; }
                 continue 'iovloop;
             }
             // Empty payload but fds present (fd-only message): deliver the
             // fds now — don't loop waiting for bytes that aren't coming.
-            if !pending_fds.is_empty() { break 'iovloop; }
+            if !pending_fds.is_empty() || (want_cred && pending_cred.is_some()) { break 'iovloop; }
             if total > 0 { break 'iovloop; }
-            let eof = {
+            let (pair, end) = {
                 let g = sock.kind.lock();
-                if let SockKind::Unix(pair, end) = &*g { pair.is_eof(*end) } else { false }
+                if let SockKind::Unix(pair, end) = &*g { (pair.clone(), *end) }
+                else { return -(Errno::Einval.as_i32() as i64); }
             };
-            if eof { break 'iovloop; }
-            if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+            if nonblock {
+                if pair.take_reset(end) { return -(Errno::Econnreset.as_i32() as i64); }
+                if pair.is_eof(end) { break 'iovloop; }
+                return -(Errno::Eagain.as_i32() as i64);
+            }
+            if sched::live::deliverable_signals_self() != 0 {
+                return -(Errno::Eintr.as_i32() as i64);
+            }
+            if deadline_ns != 0 && crate::poll::poll_common::monotonic_ns() >= deadline_ns {
+                return -(Errno::Eagain.as_i32() as i64);
+            }
             #[cfg(feature = "debug-wakelat")]
             if wl_yield_start == 0 {
                 use hal::TimerOps;
                 #[cfg(target_arch = "x86_64")] { wl_yield_start = hal_x86_64::X86TimerOps::monotonic_ns().0.max(1); }
                 #[cfg(target_arch = "aarch64")] { wl_yield_start = hal_aarch64::ArmTimerOps::monotonic_ns().0.max(1); }
             }
-            unsafe { sched::live::tick_yield(); }
+            match pair.arm_stream_read(end, deadline_ns) {
+                net::unix_sock::stream::ArmStreamRead::Retry => continue,
+                net::unix_sock::stream::ArmStreamRead::Reset => return -(Errno::Econnreset.as_i32() as i64),
+                net::unix_sock::stream::ArmStreamRead::Eof => break 'iovloop,
+                // SAFETY: arm_stream_read registered current under the ring
+                // lock; writers and close wake only after changing that ring.
+                net::unix_sock::stream::ArmStreamRead::Parked => unsafe {
+                    sched::live::schedule::schedule();
+                },
+            }
         }
     }
     // debug-wakelat: report a busy-yield recvmsg that finally got data.
@@ -158,14 +180,14 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
             }
         }
     }
-    if sock.opts.passcred.load(Ordering::Acquire) != 0 {
+    if want_cred {
         let off = (ctrl_written + 7) & !7u64;
         let creds_total = 28u64;
         if control != 0 && control < USER_VA_END && off + creds_total <= controllen {
-            let (pid, uid, gid) = {
+            let (pid, uid, gid) = pending_cred.unwrap_or_else(|| {
                 let g = sock.kind.lock();
                 match &*g { SockKind::Unix(pair, end) => pair.peer_cred(*end), _ => (0, 0, 0) }
-            };
+            });
             const SCM_CREDENTIALS: i32 = 2;
             let base = control + off;
             unsafe {
@@ -183,10 +205,9 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64, nonblock: bool) ->
     }
     unsafe {
         core::ptr::write_volatile((msgp + 40) as *mut u64, ctrl_written);
-        const MSG_CTRUNC: i32 = 0x08;
         let flags_at = (msgp + 48) as *mut i32;
         let cur = core::ptr::read_volatile(flags_at);
-        core::ptr::write_volatile(flags_at, if ctrunc { cur | MSG_CTRUNC } else { cur });
+        core::ptr::write_volatile(flags_at, if ctrunc { cur | MSG_CTRUNC as i32 } else { cur });
     }
     total
 }
@@ -205,7 +226,6 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
         )
     };
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    const MSG_DONTWAIT: u64 = 0x40;
     let nonblock = (args.a2 & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
     let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")] let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
@@ -332,10 +352,9 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
     }
     unsafe {
         core::ptr::write_volatile((msgp + 40) as *mut u64, ctrl_written);
-        const MSG_CTRUNC: i32 = 0x08;
         let flags_at = (msgp + 48) as *mut i32;
         let cur = core::ptr::read_volatile(flags_at);
-        core::ptr::write_volatile(flags_at, if ctrunc { cur | MSG_CTRUNC } else { cur });
+        core::ptr::write_volatile(flags_at, if ctrunc { cur | MSG_CTRUNC as i32 } else { cur });
     }
     total as i64
 }

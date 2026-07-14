@@ -74,6 +74,8 @@ pub(crate) fn peercred_for_fd(fd: i32) -> Option<(u32, u32, u32)> {
     let kind = sock.kind.lock();
     match &*kind {
         SockKind::Unix(pair, end) => Some(pair.peer_cred(*end)),
+        SockKind::UnixMsgPair(pair, end) => Some(pair.peer_cred(*end)),
+        SockKind::UnixListener(listener) => Some(listener.owner_cred()),
         _ => None,
     }
 }

@@ -5,6 +5,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
+use net::uapi::{MSG_CTRUNC, MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
 use crate::net_common::{errno_from_neterr, file_is_nonblock, socket_from_fd};
 use crate::net_sockaddr::{write_sockaddr_for_socket, write_sockaddr_in6_peer};
 
@@ -115,9 +116,6 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     if (flags & MSG_TRUNC) != 0 { rcv.full_len as i64 } else { off as i64 }
 }
 
-const MSG_PEEK: u64 = 0x02;
-const MSG_TRUNC: u64 = 0x20;
-const MSG_DONTWAIT: u64 = 0x40;
 
 fn recvmsg_blocking(
     fd: u64,
@@ -144,7 +142,6 @@ fn recvmsg_blocking(
     net::sock_recv::recv_blocking(sock, len, opts, deadline).map_err(errno_from_neterr)
 }
 
-const MSG_CTRUNC: u32 = 0x08;
 const IPPROTO_IP: i32 = 0;
 const IPPROTO_IPV6: i32 = 41;
 const IP_PKTINFO: i32 = 8;
@@ -178,7 +175,7 @@ impl CmsgWriter {
             || self.off + step > self.cap
             || start.saturating_add(cmsg_len) > USER_VA_END
         {
-            *msg_flags |= MSG_CTRUNC;
+            *msg_flags |= MSG_CTRUNC as u32;
             return;
         }
         // SAFETY: [start, start+cmsg_len) validated within the user control

@@ -29,6 +29,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::sync::atomic::AtomicUsize;
 
 use sync::{Socket as SockLockClass, Spinlock};
 
@@ -44,12 +45,17 @@ pub struct NsNet {
     /// Private AF_UNIX path registry. A bind/connect keyed into this
     /// registry is invisible to every other net_ns and to id 0.
     pub unix: UnixRegistry,
+    /// Namespace-local `net.core.somaxconn` value.
+    pub(crate) somaxconn: AtomicUsize,
 }
 
 impl NsNet {
     /// # C: O(1)
     fn new() -> Arc<Self> {
-        Arc::new(Self { unix: UnixRegistry::new() })
+        Arc::new(Self {
+            unix: UnixRegistry::new(),
+            somaxconn: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN),
+        })
     }
 }
 

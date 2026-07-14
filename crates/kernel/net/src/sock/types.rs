@@ -125,6 +125,9 @@ pub struct InetSocket {
     pub peer6:     Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
+    /// Calls waiting to connect this socket, independent of target listener.
+    #[cfg(target_os = "oxide-kernel")]
+    pub connect_waiters: sched::live::WaitList,
     /// F181: per-fd epoll subscribers.
     pub poll_subs: Arc<vfs::PollSubscribers>,
     /// B518: net_ns id this socket bound its AF_UNIX path in (0 = the
@@ -132,6 +135,9 @@ pub struct InetSocket {
     /// per-ns registry regardless of the closing task's ns. Untouched
     /// (0) for every non-AF_UNIX-bound socket → global semantics.
     pub unix_ns: core::sync::atomic::AtomicU64,
+    /// Network namespace that owned this socket at creation. Unlike
+    /// `unix_ns`, pathname AF_UNIX rendezvous never rewrites this value.
+    pub net_ns: core::sync::atomic::AtomicU64,
     /// AF_UNIX stream address reserved by `bind(2)`, independent of whether
     /// this socket later listens or actively connects.
     pub unix_bound: Spinlock<Option<Arc<crate::UnixListener>>, SockLockClass>,
@@ -256,10 +262,13 @@ impl InetSocket {
             released:   core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            connect_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
+            net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
             unix_bound: Spinlock::new(None),
         };
         _s
@@ -281,10 +290,13 @@ impl InetSocket {
             released:   core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            connect_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
+            net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
             unix_bound: Spinlock::new(None),
         };
         _s

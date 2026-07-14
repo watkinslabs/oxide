@@ -51,6 +51,9 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
             Ok(a)  => break a,
             Err(net::NetError::Eagain) => {
                 if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+                if sched::live::deliverable_signals_self() != 0 {
+                    return -(Errno::Eintr.as_i32() as i64);
+                }
                 if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
                 // F160/F170: per-listener waitq park — TCP or AF_UNIX.
                 enum LW { Tcp(Arc<net::stack::TcpListenEntry>), Unix(Arc<net::UnixListener>), None }
@@ -59,20 +62,15 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                     net::sock::SockKind::UnixListener(l) => LW::Unix(l.clone()),
                     _                                     => LW::None,
                 };
-                // Safety-net re-scan bound (matches epoll_wait's 20 ms net):
-                // even if a connection-arrival wake is ever missed, the parked
-                // accept re-polls within RESCAN_NS instead of stalling until the
-                // next connect. The real timeout (SO_RCVTIMEO) is enforced by
-                // the top-of-loop deadline check; this only caps park latency.
-                const RESCAN_NS: u64 = 20_000_000;
-                let park_dl = {
-                    let rescan_at = now().saturating_add(RESCAN_NS);
-                    match deadline { Some(d) => core::cmp::min(d, rescan_at), None => rescan_at }
-                };
+                let park_dl = deadline.unwrap_or(0);
                 match lw {
                     LW::Tcp(l)  => {
-                        // SAFETY: process ctx (sys_accept TCP); deliver_tcp wakes on accept_q push; timer scanner wakes on deadline / safety-net rescan.
-                        unsafe { l.accept_waiters.park_with_deadline(park_dl); sched::live::schedule::schedule(); }
+                        // SAFETY: arm_accept_wait registered current under the
+                        // accept queue lock; enqueue, signal, and timeout wake it.
+                        if l.arm_accept_wait(park_dl) {
+                            unsafe { sched::live::schedule::schedule(); }
+                            l.accept_waiters.remove_current();
+                        }
                     }
                     LW::Unix(l) => {
                         // Race-free: arm on accept_waiters UNDER the accept_q lock
@@ -80,13 +78,14 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                         // cannot be lost. Only schedule() if we actually parked;
                         // a connection that arrived in the window skips the park
                         // and the loop retries accept() immediately.
-                        // SAFETY: process ctx (sys_accept AF_UNIX); park armed under accept_q lock; connect wakes after push; timer scanner wakes on the safety-net deadline.
-                        if l.arm_accept_wait(park_dl) { unsafe { sched::live::schedule::schedule(); } }
+                        // SAFETY: process ctx; park armed under listener state;
+                        // connect, signal, and timeout wake the task.
+                        if l.arm_accept_wait(park_dl) {
+                            unsafe { sched::live::schedule::schedule(); }
+                            l.accept_waiters.remove_current();
+                        }
                     }
-                    LW::None    => {
-                        // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules.
-                        unsafe { sched::live::tick_yield(); }
-                    }
+                    LW::None    => return -(Errno::Einval.as_i32() as i64),
                 }
                 continue;
             }
