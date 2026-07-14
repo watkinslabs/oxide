@@ -78,6 +78,11 @@ Merged network foundation:
   - [~] N01.10 account raw4 receive bytes against `SO_RCVBUF` and report drops.
   - [~] N01.11 encode an enabled IPv6 raw UDP zero checksum as `0xffff`.
   - [~] N01.12 close the raw receive arm versus `SHUT_RD` lost-wakeup race.
+  - [~] N01.13 reject overlapping or terminal-shortened IPv4/IPv6 fragment
+    queues without panic, stale assembly, or partial packet publication.
+  - [~] N01.14 reject raw IPv4/IPv6 receive `MSG_OOB` before queue consumption.
+  - [~] N01.15 apply raw IPv4/IPv6 multicast interface, source, hop/TTL, and
+    loopback options through the canonical transmit path.
 - [ ] **N02 multicast robustness accounting**.
   Preserve successful membership when IGMP/MLD report output fails. Roll back
   only synchronous validation/allocation/filter-setup failures. Consume a
