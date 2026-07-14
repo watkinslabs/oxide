@@ -135,10 +135,10 @@ Merged network foundation:
     listns enumerate the live registry, including fd-only and socket-only owners.
     B838, PR #3105, merge `16132232`; both operations consume concrete owners
     instead of task-table reconstruction.
-  - [~] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces
+  - [x] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces
     before removing addresses, neighbors, multicast, fragments, routes/rules,
     transport tables, UNIX state, sysctls, and registry metadata.
-    Active on `B840-netns-final-drop-teardown`; hosted net 513, procfs 47, sched 137,
+    B840, PR #3107, merge `71457583`; hosted net 513, procfs 47, sched 137,
     syscalls 53, softirq 6, namespace 3, Virtio net 19, and sysfs 48 pass;
     x86 and ARM target builds pass. Smoke reached `basic.target` on x86 in
     70s and ARM in 129s; ARM includes the final AP-ready publication barrier.
