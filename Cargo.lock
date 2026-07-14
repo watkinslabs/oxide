@@ -876,6 +876,7 @@ dependencies = [
  "sync",
  "timer",
  "tracefs",
+ "uaccess",
  "vfs",
  "vmm",
 ]
@@ -1443,6 +1444,7 @@ dependencies = [
  "sysfs",
  "tracefs",
  "tty",
+ "uaccess",
  "vfs",
  "virtio",
  "vmm",
@@ -1522,6 +1524,16 @@ dependencies = [
  "tty",
  "vtconsole",
  "vtdata",
+]
+
+[[package]]
+name = "uaccess"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "syscall",
 ]
 
 [[package]]

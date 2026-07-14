@@ -1,19 +1,9 @@
 // Linux uaccess KPI exports for loadable drivers.
 
-use core::ptr;
-
-use hal::{UserVirtAddr, PAGE_SIZE_BYTES, USER_VA_END};
-use vmm::VmaProt;
+use hal::USER_VA_END;
 
 const LINUX_OK: i64 = 0;
 const LINUX_EFAULT: i64 = 14;
-const PAGE_MASK: u64 = !(PAGE_SIZE_BYTES - 1);
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum UserAccess {
-    Read,
-    Write,
-}
 
 /// Register Linux usercopy KPI symbols.
 /// # C: O(1)
@@ -36,30 +26,36 @@ pub fn export_symbols() {
 }
 
 extern "C" fn access_ok(addr: *const u8, size: usize) -> bool {
-    validate_user_range(addr as u64, size as u64).is_some()
+    uaccess::access_ok(addr as u64, size)
 }
 
 extern "C" fn copy_from_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
-    if n == 0 { return 0; }
-    if dst.is_null() || !user_range_permits(src as u64, n, UserAccess::Read) { return n; }
-    // SAFETY: dst is a non-null kernel buffer; src range is validated as readable user memory.
-    unsafe { ptr::copy_nonoverlapping(src, dst, n); }
-    0
+    if dst.is_null() { return n; }
+    #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: Linux KPI caller supplies a kernel destination valid for n bytes.
+    unsafe { uaccess::raw_copy_from_user(dst, src as u64, n) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { n }
 }
 
 extern "C" fn copy_to_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
-    if n == 0 { return 0; }
-    if src.is_null() || !user_range_permits(dst as u64, n, UserAccess::Write) { return n; }
-    // SAFETY: src is a non-null kernel buffer; dst range is validated as writable user memory.
-    unsafe { ptr::copy_nonoverlapping(src, dst, n); }
-    0
+    if src.is_null() { return n; }
+    #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: Linux KPI caller supplies a kernel source valid for n bytes.
+    unsafe { uaccess::raw_copy_to_user(dst as u64, src, n) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { n }
 }
 
 extern "C" fn clear_user(dst: *mut u8, n: usize) -> usize {
-    if n == 0 { return 0; }
-    if !user_range_permits(dst as u64, n, UserAccess::Write) { return n; }
-    // SAFETY: dst range is validated as writable user memory.
-    unsafe { ptr::write_bytes(dst, 0, n); }
+    const ZERO: [u8; 64] = [0; 64];
+    let mut off = 0usize;
+    while off < n {
+        let take = core::cmp::min(ZERO.len(), n - off);
+        let left = copy_to_user(dst.wrapping_add(off), ZERO.as_ptr(), take);
+        if left != 0 { return n - off - take + left; }
+        off += take;
+    }
     0
 }
 
@@ -102,38 +98,6 @@ fn get_user_bytes(src: *const u8, out: *mut u8, n: usize) -> i64 {
 
 fn put_user_bytes(dst: *mut u8, src: *const u8, n: usize) -> i64 {
     if copy_to_user(dst, src, n) == 0 { LINUX_OK } else { -LINUX_EFAULT }
-}
-
-fn user_range_permits(ptr: u64, len: usize, access: UserAccess) -> bool {
-    let Some((start, end_inclusive)) = validate_user_range(ptr, len as u64) else { return false; };
-    let Some(cur) = sched::current() else { return false; };
-    // SAFETY: running task owns its mm slot during syscall/module callback context.
-    let Some(mm) = unsafe { cur.mm_ref() }.cloned() else { return false; };
-    let mut page = start & PAGE_MASK;
-    let last_page = end_inclusive & PAGE_MASK;
-    loop {
-        let Some(uva) = UserVirtAddr::new(page) else { return false; };
-        let Some(vma) = mm.find_vma(uva) else { return false; };
-        if !permits(vma.prot, access) { return false; }
-        if page == last_page { return true; }
-        let Some(next) = page.checked_add(PAGE_SIZE_BYTES) else { return false; };
-        page = next;
-    }
-}
-
-fn validate_user_range(ptr: u64, len: u64) -> Option<(u64, u64)> {
-    if len == 0 { return Some((ptr, ptr)); }
-    if ptr == 0 { return None; }
-    let end = ptr.checked_add(len)?;
-    if end > USER_VA_END { return None; }
-    Some((ptr, end - 1))
-}
-
-fn permits(prot: VmaProt, access: UserAccess) -> bool {
-    match access {
-        UserAccess::Read  => prot.contains(VmaProt::READ),
-        UserAccess::Write => prot.contains(VmaProt::WRITE),
-    }
 }
 
 #[cfg(test)]

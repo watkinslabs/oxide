@@ -54,6 +54,12 @@ SECTIONS {
         __rodata_end = .;
     }
 
+    .ex_table ALIGN(8) : AT(ADDR(.ex_table) - KERNEL_BASE + KERNEL_PHYS) {
+        __ex_table_start = .;
+        KEEP(*(__ex_table __ex_table.*))
+        __ex_table_end = .;
+    }
+
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_BASE + KERNEL_PHYS) {
         __data_start = .;
         *(.data .data.*)

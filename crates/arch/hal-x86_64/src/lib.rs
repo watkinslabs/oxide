@@ -10,6 +10,7 @@ mod context;
 mod cpu;
 mod cpuid;
 mod fault;
+mod exception_table;
 mod fpu;
 mod gdt;
 mod idt;
@@ -27,6 +28,7 @@ mod signal;
 mod syscall;
 mod timer;
 mod tss;
+mod uaccess;
 pub mod vmm;
 
 pub use context::{ContextX86_64, ForkRegs};
@@ -72,6 +74,7 @@ pub use tss::{
     install_tss, install_tss_for_cpu, set_rsp0, setup_ist_stacks, tss_base_addr, Tss64,
     TSS_SEL, IST_STACK_BYTES,
 };
+pub use uaccess::{raw_copy_from_user, raw_copy_to_user};
 
 #[cfg(test)]
 mod tests;

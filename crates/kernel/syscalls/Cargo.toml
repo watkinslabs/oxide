@@ -39,6 +39,7 @@ netlink = { path = "../netlink" }
 netfilter = { path = "../netfilter" }
 sync    = { path = "../../shared/sync" }
 syscall = { path = "../syscall" }
+uaccess = { path = "../uaccess" }
 tty     = { path = "../tty" }
 vfs     = { path = "../vfs" }
 fs      = { path = "../fs" }
