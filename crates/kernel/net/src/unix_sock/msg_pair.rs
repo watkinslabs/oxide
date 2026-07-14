@@ -224,56 +224,61 @@ impl UnixMsgPair {
         })
     }
 
+    /// Inspect one record under its queue lock. Non-peek callbacks consume the
+    /// record on success or failure; peek callbacks never consume it. # C: O(max + rights)
+    pub fn recv_msg_with<R, E>(&self, end: UnixEnd, max: usize, peek: bool,
+        copy: impl FnOnce(&[u8], usize, (u32, u32, u32), usize) -> Result<R, E>)
+        -> Result<Option<(R, UnixMsg, usize)>, E>
+    {
+        let mut g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
+        if self.kind == UnixMsgKind::SeqPacket && self.reset_pending(end) { return Ok(None); }
+        let Some(front) = g.msgs.front() else {
+            if self.kind == UnixMsgKind::SeqPacket && (g.closed_writer || g.reader_shutdown) {
+                let copied = copy(&[], 0, (0, 0, 0), 0)?;
+                return Ok(Some((copied, UnixMsg::empty(), 0)));
+            }
+            return Ok(None);
+        };
+        let full_len = front.payload.len();
+        let payload = front.payload[..core::cmp::min(max, full_len)].to_vec();
+        let rights_len = front.rights.as_ref().map(GcRights::len).unwrap_or(front.fds.len());
+        let creds = front.creds;
+        let copied = match copy(&payload, rights_len, creds, full_len) {
+            Ok(copied) => copied,
+            Err(err) => {
+                let dropped = if peek { None } else { g.msgs.pop_front() };
+                drop(g);
+                drop(dropped);
+                if !peek { super::collect_scm_rights(); }
+                return Err(err);
+            }
+        };
+        let mut msg = if peek {
+            UnixMsg { payload, fds: Vec::new(), rights: None, creds }
+        } else {
+            g.msgs.pop_front().unwrap()
+        };
+        drop(g);
+        if let Some(rights) = msg.rights.take() { msg.fds = rights.take_files(); }
+        if msg.payload.len() > max { msg.payload.truncate(max); }
+        Ok(Some((copied, msg, full_len)))
+    }
+
     /// Dequeue or peek one message payload from the ring `end` reads
     /// from. Returns copied/truncated bytes plus the full message length.
     /// # C: O(min(max, payload.len()))
     pub fn recv_payload(&self, end: UnixEnd, max: usize, peek: bool) -> Option<(Vec<u8>, usize)> {
-        let mut g = match end {
-            UnixEnd::A => self.b_to_a.lock(),
-            UnixEnd::B => self.a_to_b.lock(),
-        };
-        if self.kind == UnixMsgKind::SeqPacket && self.reset_pending(end) { return None; }
-        if let Some(msg) = g.msgs.front() {
-            let full_len = msg.payload.len();
-            let take = core::cmp::min(max, full_len);
-            let mut out = Vec::with_capacity(take);
-            out.extend_from_slice(&msg.payload[..take]);
-            let dropped = if peek { None } else { g.msgs.pop_front() };
-            drop(g);
-            if let Some(mut msg) = dropped {
-                let files = msg.rights.take().map(|r| r.take_files()).unwrap_or_default();
-                drop(msg);
-                drop(files);
-                super::collect_scm_rights();
-            }
-            Some((out, full_len))
-        } else if self.kind == UnixMsgKind::SeqPacket && (g.closed_writer || g.reader_shutdown) {
-            Some((Vec::new(), 0))
-        } else {
-            None
-        }
+        let out = self.recv_msg_with(end, max, peek, |payload, _, _, full| Ok::<_, core::convert::Infallible>((payload.to_vec(), full)))
+            .unwrap_or_else(|never| match never {}).map(|(out, _, _)| out);
+        if !peek { super::collect_scm_rights(); }
+        out
     }
 
     /// Dequeue one message plus any SCM_RIGHTS files from ring `end` reads.
     /// # C: O(min(max, payload.len()))
     pub fn recv_msg(&self, end: UnixEnd, max: usize) -> Option<UnixMsg> {
-        let mut g = match end {
-            UnixEnd::A => self.b_to_a.lock(),
-            UnixEnd::B => self.a_to_b.lock(),
-        };
-        if self.kind == UnixMsgKind::SeqPacket && self.reset_pending(end) { return None; }
-        if let Some(mut msg) = g.msgs.pop_front() {
-            drop(g);
-            if let Some(rights) = msg.rights.take() { msg.fds = rights.take_files(); }
-            if msg.payload.len() > max {
-                msg.payload.truncate(max);
-            }
-            Some(msg)
-        } else if self.kind == UnixMsgKind::SeqPacket && (g.closed_writer || g.reader_shutdown) {
-            Some(UnixMsg::empty())
-        } else {
-            None
-        }
+        self.recv_msg_with(end, max, false, |_, _, _, _| Ok::<(), core::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {}).map(|(_, msg, _)| msg)
     }
 
     /// Mark this end's writer side closed.
