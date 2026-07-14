@@ -12,3 +12,4 @@ sync = { path = "../../shared/sync" }
 vfs  = { path = "../vfs" }
 net  = { path = "../net" }
 sched = { path = "../sched" }
+nscg = { path = "../nscg" }

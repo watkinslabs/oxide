@@ -1,5 +1,5 @@
-// F195: IPv4 reassembly per RFC 791 §3.2. Per-flow (src, dst,
-// proto, id) hole-list state; finalize when MF=0 lands AND all
+// F195: IPv4 reassembly per RFC 791 §3.2. Per-flow (namespace,
+// src, dst, proto, id) hole-list state; finalize when MF=0 lands AND all
 // preceding fragments have arrived. Timeout drops half-assembled
 // state after REASM_TIMEOUT_NS (30s; Linux default 30s).
 
@@ -11,9 +11,10 @@ use sync::{Spinlock, Socket as LockClass};
 
 use crate::addr::Ipv4Addr;
 
-/// Key: (src_ip, dst_ip, proto, id). One flow's reassembly state.
+/// Key: (network namespace, src_ip, dst_ip, proto, id).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ReasmKey {
+    pub net_ns: u64,
     pub src:   Ipv4Addr,
     pub dst:   Ipv4Addr,
     pub proto: u8,
@@ -104,7 +105,7 @@ mod tests {
     #[test]
     fn in_order_two_fragments() {
         let t = ReasmTable::new();
-        let key = ReasmKey { src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 1 };
+        let key = ReasmKey { net_ns: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 1 };
         assert!(t.push(key, 1, 0,    b"hello", true).is_none());
         let r = t.push(key, 1, 5, b"world", false).unwrap();
         assert_eq!(r, b"helloworld");
@@ -113,7 +114,7 @@ mod tests {
     #[test]
     fn ooo_two_fragments() {
         let t = ReasmTable::new();
-        let key = ReasmKey { src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 2 };
+        let key = ReasmKey { net_ns: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 2 };
         assert!(t.push(key, 1, 5, b"world", false).is_none());
         let r = t.push(key, 1, 0, b"hello", true).unwrap();
         assert_eq!(r, b"helloworld");
@@ -122,12 +123,23 @@ mod tests {
     #[test]
     fn stale_dropped() {
         let t = ReasmTable::new();
-        let key = ReasmKey { src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 3 };
+        let key = ReasmKey { net_ns: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 3 };
         let _ = t.push(key, 1, 0, b"a", true);
         // Time jumps past timeout; another push triggers retain GC.
         let r = t.push(key, 60_000_000_000, 1, b"b", false);
         // First frag was evicted, second has total=2 but only its own
         // 1 byte covered → no completion.
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn identical_fragment_tuples_are_namespace_isolated() {
+        let t = ReasmTable::new();
+        let a = ReasmKey { net_ns: 41, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 4 };
+        let b = ReasmKey { net_ns: 42, ..a };
+        assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
+        assert!(t.push(b, 1, 8, b"BBBB", false).is_none());
+        assert_eq!(t.push(a, 1, 8, b"AAAA", false).unwrap(), b"aaaaaaaaAAAA");
+        assert_eq!(t.push(b, 1, 0, b"bbbbbbbb", true).unwrap(), b"bbbbbbbbBBBB");
     }
 }

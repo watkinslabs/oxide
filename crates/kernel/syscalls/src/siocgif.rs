@@ -14,6 +14,9 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+// Module manifest: route_ioctl owns rtentry ABI parsing and canonical FIB mutation.
+mod route_ioctl;
+
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 
@@ -39,8 +42,28 @@ const SIOCDELRT:       u64 = 0x890C;
 
 const IFNAMSIZ: usize = 16;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SiocAccess { Get, Mutate }
+
+/// Classify supported network ioctls for socket-fd authorization. # C: O(1)
+pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
+    match req {
+        SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
+        | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMTU | SIOCGIFHWADDR
+        | SIOCGIFINDEX | SIOCGIFTXQLEN => Some(SiocAccess::Get),
+        SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
+        | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
+        | SIOCDELRT => Some(SiocAccess::Mutate),
+        _ => None,
+    }
+}
+
 fn get_ifaddr(id: net::NetIfaceId) -> (u32, u32) {
-    net::iface_addr::primary(net::netdev::current_net_ns(), id)
+    get_ifaddr_in(net::netdev::current_net_ns(), id)
+}
+
+fn get_ifaddr_in(net_ns: u64, id: net::NetIfaceId) -> (u32, u32) {
+    net::iface_addr::primary(net_ns, id)
         .map(|(ip, mask)| (ip.as_u32(), mask))
         .unwrap_or((0, 0))
 }
@@ -59,8 +82,7 @@ pub fn ipv4_addr_change_hook(id: net::NetIfaceId, ip: net::Ipv4Addr) {
     let _ = drv_virtio_net::modern::set_softirq_ip_for_iface(id, ip.octets());
 }
 
-fn set_ifaddr(id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool) {
-    let ns = net::netdev::current_net_ns();
+fn set_ifaddr_in(ns: u64, id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool) {
     if set_ip {
         net::iface_addr::set_primary_addr(ns, id, net::Ipv4Addr::from_u32(ip), 0);
     }
@@ -75,26 +97,31 @@ fn set_ifaddr(id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: b
 /// # SAFETY: `arg` validated against USER_VA_END for every read/write.
 /// # C: O(N_ifaces) name lookup
 pub fn handle_sioc(req: u64, arg: u64) -> Option<i64> {
+    handle_sioc_in(net::netdev::current_net_ns(), req, arg)
+}
+
+/// Dispatch an interface ioctl against the socket-captured network namespace. # C: O(N_ifaces)
+pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     if arg == 0 || arg >= USER_VA_END { return Some(-(Errno::Efault.as_i32() as i64)); }
     match req {
-        SIOCGIFCONF => Some(siocgifconf(arg)),
-        SIOCGIFNAME => Some(siocgifname(arg)),
-        SIOCGIFFLAGS => Some(siocgifflags(arg)),
-        SIOCSIFFLAGS => Some(0), // accept-and-ignore (we keep ifaces "up")
-        SIOCGIFADDR => Some(siocgifaddr(arg)),
-        SIOCSIFADDR => Some(siocsifaddr(arg)),
-        SIOCGIFBRDADDR => Some(siocgifbrdaddr(arg)),
-        SIOCSIFBRDADDR => Some(0),
-        SIOCGIFNETMASK => Some(siocgifnetmask(arg)),
-        SIOCSIFNETMASK => Some(siocsifnetmask(arg)),
-        SIOCGIFMTU => Some(siocgifmtu(arg)),
-        SIOCSIFMTU => Some(0),
-        SIOCGIFHWADDR => Some(siocgifhwaddr(arg)),
-        SIOCSIFHWADDR => Some(0),
-        SIOCGIFINDEX => Some(siocgifindex(arg)),
-        SIOCGIFTXQLEN | SIOCSIFTXQLEN => Some(0),
-        SIOCADDRT => Some(siocaddrt(arg)),
-        SIOCDELRT => Some(siocdelrt(arg)),
+        SIOCGIFCONF => Some(siocgifconf(net_ns, arg)),
+        SIOCGIFNAME => Some(siocgifname(net_ns, arg)),
+        SIOCGIFFLAGS => Some(siocgifflags(net_ns, arg)),
+        SIOCSIFFLAGS => Some(siocsifflags(net_ns, arg)),
+        SIOCGIFADDR => Some(siocgifaddr(net_ns, arg)),
+        SIOCSIFADDR => Some(siocsifaddr(net_ns, arg)),
+        SIOCGIFBRDADDR => Some(siocgifbrdaddr(net_ns, arg)),
+        SIOCSIFBRDADDR => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
+        SIOCGIFNETMASK => Some(siocgifnetmask(net_ns, arg)),
+        SIOCSIFNETMASK => Some(siocsifnetmask(net_ns, arg)),
+        SIOCGIFMTU => Some(siocgifmtu(net_ns, arg)),
+        SIOCSIFMTU => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
+        SIOCGIFHWADDR => Some(siocgifhwaddr(net_ns, arg)),
+        SIOCSIFHWADDR => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
+        SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
+        SIOCGIFTXQLEN | SIOCSIFTXQLEN => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
+        SIOCADDRT => Some(route_ioctl::add(net_ns, arg)),
+        SIOCDELRT => Some(route_ioctl::delete(net_ns, arg)),
         _ => None,
     }
 }
@@ -126,20 +153,39 @@ unsafe fn write_sockaddr_in(arg: u64, ip: u32) {
     }
 }
 
-fn siocgifflags(arg: u64) -> i64 {
+fn siocgifflags(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let exists = net::sock::stack().ifaces.lookup_name(&name).is_some();
-    if !exists { return -(Errno::Enoent.as_i32() as i64); }
-    let mut flags: u16 = 1 /* UP */ | 2 /* BROADCAST */ | 64 /* RUNNING */ | 0x1000 /* MULTICAST */;
-    if name == "lo" { flags = (flags & !2) | 8 /* LOOPBACK */; }
+    let id = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
+        Some((id, _)) => id,
+        None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    let flags = net::sock::stack().ifaces.iface_flags(id).unwrap_or(0) as u16;
     // SAFETY: arg + 16 within user range; ifr_flags at +16.
     unsafe { core::ptr::write_volatile((arg + 16) as *mut u16, flags); }
     0
 }
 
-fn siocgifindex(arg: u64) -> i64 {
+fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    match net::sock::stack().ifaces.lookup_name(&name) {
+    let id = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
+        Some((id, _)) => id,
+        None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    // SAFETY: handle_sioc_in validated the ifreq base; ifr_flags occupies bytes 16..18.
+    let requested = unsafe { core::ptr::read_volatile((arg + 16) as *const u16) } as u32;
+    let current = net::sock::stack().ifaces.iface_flags(id).unwrap_or(0);
+    if (current ^ requested) & !net::netdev::iff::IFF_UP != 0 {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
+    match net::sock::stack().ifaces.set_iface_flags(id, requested, net::netdev::iff::IFF_UP) {
+        Some(_) => 0,
+        None => -(Errno::Enodev.as_i32() as i64),
+    }
+}
+
+fn siocgifindex(net_ns: u64, arg: u64) -> i64 {
+    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((id, _)) => {
             // SAFETY: arg + 16 within user range; ifr_ifindex at +16.
             unsafe { core::ptr::write_volatile((arg + 16) as *mut i32, id.raw() as i32); }
@@ -149,9 +195,9 @@ fn siocgifindex(arg: u64) -> i64 {
     }
 }
 
-fn siocgifmtu(arg: u64) -> i64 {
+fn siocgifmtu(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    match net::sock::stack().ifaces.lookup_name(&name) {
+    match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((_, dev)) => {
             // SAFETY: arg + 16 within user range; ifr_mtu at +16.
             unsafe { core::ptr::write_volatile((arg + 16) as *mut i32, dev.mtu() as i32); }
@@ -161,9 +207,9 @@ fn siocgifmtu(arg: u64) -> i64 {
     }
 }
 
-fn siocgifhwaddr(arg: u64) -> i64 {
+fn siocgifhwaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    match net::sock::stack().ifaces.lookup_name(&name) {
+    match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((_, dev)) => {
             let mac = dev.mac();
             // SAFETY: arg validated < USER_VA_END at handle_sioc entry; the 32-byte ifreq's ifr_hwaddr/sa_data slot covers +16..+24.
@@ -179,11 +225,11 @@ fn siocgifhwaddr(arg: u64) -> i64 {
     }
 }
 
-fn siocgifaddr(arg: u64) -> i64 {
+fn siocgifaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    match net::sock::stack().ifaces.lookup_name(&name) {
+    match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((id, _)) => {
-            let (ip, _mask) = get_ifaddr(id);
+            let (ip, _mask) = get_ifaddr_in(net_ns, id);
             // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
             unsafe { write_sockaddr_in(arg, ip); }
             0
@@ -192,23 +238,23 @@ fn siocgifaddr(arg: u64) -> i64 {
     }
 }
 
-fn siocsifaddr(arg: u64) -> i64 {
+fn siocsifaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let (id, _) = match net::sock::stack().ifaces.lookup_name(&name) {
+    let (id, _) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some(t) => t, None => return -(Errno::Enoent.as_i32() as i64),
     };
     // SAFETY: arg + 24 within user range; sa_family at +16, addr at +20.
     let ip_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
     let ip_host = u32::from_be(ip_be);
-    set_ifaddr(id, ip_host, 0, true, false);
+    set_ifaddr_in(net_ns, id, ip_host, 0, true, false);
     0
 }
 
-fn siocgifnetmask(arg: u64) -> i64 {
+fn siocgifnetmask(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    match net::sock::stack().ifaces.lookup_name(&name) {
+    match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((id, _)) => {
-            let (_ip, mask) = get_ifaddr(id);
+            let (_ip, mask) = get_ifaddr_in(net_ns, id);
             // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
             unsafe { write_sockaddr_in(arg, mask); }
             0
@@ -217,35 +263,35 @@ fn siocgifnetmask(arg: u64) -> i64 {
     }
 }
 
-fn siocsifnetmask(arg: u64) -> i64 {
+fn siocsifnetmask(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let (id, _) = match net::sock::stack().ifaces.lookup_name(&name) {
+    let (id, _) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some(t) => t, None => return -(Errno::Enoent.as_i32() as i64),
     };
     // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifr_addr's sin_addr at +20 within the 32-byte ifreq.
     let mask_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
-    set_ifaddr(id, 0, u32::from_be(mask_be), false, true);
+    set_ifaddr_in(net_ns, id, 0, u32::from_be(mask_be), false, true);
     0
 }
 
-fn siocgifbrdaddr(arg: u64) -> i64 {
+fn siocgifbrdaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let (id, _) = match net::sock::stack().ifaces.lookup_name(&name) {
+    let (id, _) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some(t) => t, None => return -(Errno::Enoent.as_i32() as i64),
     };
-    let (ip, mask) = get_ifaddr(id);
+    let (ip, mask) = get_ifaddr_in(net_ns, id);
     let brd = ip | !mask;
     // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
     unsafe { write_sockaddr_in(arg, brd); }
     0
 }
 
-fn siocgifname(arg: u64) -> i64 {
+fn siocgifname(net_ns: u64, arg: u64) -> i64 {
     // SAFETY: arg + 20 within user range; ifr_ifindex at +16.
     let idx = unsafe { core::ptr::read_volatile((arg + 16) as *const i32) };
     if idx <= 0 { return -(Errno::Enoent.as_i32() as i64); }
     let id = net::NetIfaceId::from_raw(idx as u32);
-    let dev = match net::sock::stack().ifaces.lookup(id) {
+    let dev = match net::sock::stack().ifaces.lookup_in_ns(id, net_ns) {
         Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
     };
     let bytes = dev.name().as_bytes();
@@ -264,42 +310,42 @@ fn siocgifname(arg: u64) -> i64 {
 ///   char*   ifc_buf     // pointer to ifreq[]
 /// We fill ifc_req[] with one struct ifreq per iface and update
 /// ifc_len.
-fn siocgifconf(arg: u64) -> i64 {
+fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifc_len at +0 and ifc_buf at +8 of the 16-byte ifconf header.
     let (ifc_len, ifc_buf) = unsafe {
         let l = core::ptr::read_volatile(arg as *const i32);
         let b = core::ptr::read_volatile((arg + 8) as *const u64);
         (l, b)
     };
-    if ifc_buf == 0 || ifc_buf >= USER_VA_END {
+    let devices = net::sock::stack().ifaces.snapshot_devs_in_ns(net_ns);
+    let mut addresses = net::iface_addr::snapshot_ns(net_ns);
+    addresses.retain(|row| !row.addr.is_unspecified()
+        && devices.iter().any(|(id, _)| *id == row.iface));
+    let stride: usize = 16 /* name */ + 16 /* sockaddr */;
+    if ifc_buf == 0 {
+        let required = addresses.len().saturating_mul(stride).min(i32::MAX as usize) as i32;
+        // SAFETY: handle_sioc_in validated the ifconf header base; ifc_len is its first word.
+        unsafe { core::ptr::write_volatile(arg as *mut i32, required); }
+        return 0;
+    }
+    if ifc_buf >= USER_VA_END || ifc_len < 0 {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let stride: usize = 16 /* name */ + 16 /* sockaddr */;
     let cap = (ifc_len as usize) / stride;
     let mut written = 0usize;
-    // Snapshot known interface names. Probe ids 1..=8 — covers
-    // every iface our v1 ever registers (lo + virtio-net eth0 +
-    // a couple of spares).
-    let mut entries: alloc::vec::Vec<(net::NetIfaceId, alloc::string::String)> = alloc::vec::Vec::new();
-    for raw in 1u32..=8 {
-        let id = net::NetIfaceId::from_raw(raw);
-        if let Some(dev) = net::sock::stack().ifaces.lookup(id) {
-            entries.push((id, dev.name().into()));
-        }
-    }
-    for (id, name) in entries {
+    for row in addresses {
         if written >= cap { break; }
+        let Some((_, dev)) = devices.iter().find(|(id, _)| *id == row.iface) else { continue; };
         let slot = ifc_buf + (written * stride) as u64;
-        if slot + stride as u64 >= USER_VA_END { break; }
-        let name_bytes = name.as_bytes();
+        if slot + stride as u64 > USER_VA_END { break; }
+        let name_bytes = dev.name().as_bytes();
         // SAFETY: slot range validated < USER_VA_END.
         unsafe {
             for i in 0..IFNAMSIZ {
                 let b = if i < name_bytes.len() { name_bytes[i] } else { 0 };
                 core::ptr::write_volatile((slot + i as u64) as *mut u8, b);
             }
-            let (ip, _mask) = get_ifaddr(id);
-            write_sockaddr_in(slot, ip);
+            write_sockaddr_in(slot, row.addr.as_u32());
         }
         written += 1;
     }
@@ -309,72 +355,26 @@ fn siocgifconf(arg: u64) -> i64 {
     0
 }
 
-/// F148: SIOCADDRT — install a route into the kernel net stack's
-/// route table. `struct rtentry` layout per linux/route.h:
-///   u64 rt_pad1; struct sockaddr rt_dst (16); struct sockaddr
-///   rt_gateway (16); struct sockaddr rt_genmask (16); u16 rt_flags;
-///   u16 rt_pad2; u64 rt_pad3, rt_pad4; u16 rt_metric; ...
-/// sockaddr_in layout: u16 family + u16 port + u32 addr (big-endian)
-/// + 8 bytes zero pad. addr lives at +4 of each sockaddr_in.
-/// The iface is picked by gateway-on-subnet match across the shared
-/// per-iface address state populated by SIOCSIFADDR or RTM_NEWADDR.
-fn siocaddrt(arg: u64) -> i64 {
-    if arg + 56 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // SAFETY: arg + 56 bounds-checked above; rtentry's three sockaddrs
-    // start at offsets 8, 24, 40; each sockaddr_in's sin_addr is +4.
-    let (dst_be, gw_be, mask_be) = unsafe {
-        (
-            core::ptr::read_volatile((arg + 8  + 4) as *const u32),
-            core::ptr::read_volatile((arg + 24 + 4) as *const u32),
-            core::ptr::read_volatile((arg + 40 + 4) as *const u32),
-        )
-    };
-    let dst  = net::Ipv4Addr::from_u32(u32::from_be(dst_be));
-    let gw   = net::Ipv4Addr::from_u32(u32::from_be(gw_be));
-    let mask = u32::from_be(mask_be);
-    let prefix_len = if mask == 0 { 0 } else { 32 - mask.trailing_zeros() as u8 };
-    // Pick the iface whose connected subnet contains the gateway.
-    let mut iface_id: Option<net::NetIfaceId> = None;
-    for raw in 0..32u32 {
-        let id = net::NetIfaceId::from_raw(raw);
-        if net::sock::stack().ifaces.lookup(id).is_none() { continue; }
-        let (ip_host, m_host) = get_ifaddr(id);
-        if m_host == 0 { continue; }
-        let m_be = m_host.to_be();
-        if (gw_be & m_be) == (ip_host.to_be() & m_be) {
-            iface_id = Some(id);
-            break;
-        }
-    }
-    let iface_id = match iface_id { Some(i) => i, None => return -(Errno::Enetunreach.as_i32() as i64) };
-    net::sock::stack().routes.add(net::route::RouteEntry {
-        dst, prefix_len,
-        table: net::policy_rule::RT_TABLE_MAIN,
-        iface: iface_id,
-        gateway: if gw.as_u32() == 0 { None } else { Some(gw) },
-        src_hint: None,
-    });
-    0
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// F148: SIOCDELRT — drop matching routes from the kernel table.
-fn siocdelrt(arg: u64) -> i64 {
-    if arg + 56 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // SAFETY: arg + 56 bounds-checked above; sockaddr_in offsets per linux/route.h rtentry layout.
-    let (dst_be, gw_be) = unsafe {
-        (
-            core::ptr::read_volatile((arg + 8  + 4) as *const u32),
-            core::ptr::read_volatile((arg + 24 + 4) as *const u32),
-        )
-    };
-    let dst = net::Ipv4Addr::from_u32(u32::from_be(dst_be));
-    let gw  = net::Ipv4Addr::from_u32(u32::from_be(gw_be));
-    net::sock::stack().routes.retain(|e| {
-        let gw_match = match (e.gateway, gw.as_u32()) {
-            (Some(g), x) if x != 0 => g.as_u32() != x,
-            _ => true,
-        };
-        e.dst.as_u32() != dst.as_u32() || gw_match
-    });
-    0
+    #[test]
+    fn classifies_sioc_getters_and_mutators() {
+        const UNKNOWN_SIOC: u64 = 0x89ff;
+        for req in [
+            SIOCGIFNAME, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR,
+            SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMTU, SIOCGIFHWADDR,
+            SIOCGIFINDEX, SIOCGIFTXQLEN,
+        ] {
+            assert_eq!(sioc_access(req), Some(SiocAccess::Get));
+        }
+        for req in [
+            SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFNETMASK,
+            SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN, SIOCADDRT, SIOCDELRT,
+        ] {
+            assert_eq!(sioc_access(req), Some(SiocAccess::Mutate));
+        }
+        assert_eq!(sioc_access(UNKNOWN_SIOC), None);
+    }
 }

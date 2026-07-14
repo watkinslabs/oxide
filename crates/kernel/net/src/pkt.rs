@@ -11,7 +11,14 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::addr::NetIfaceId;
+use crate::addr::{Ipv4Addr, Ipv6Addr, NetIfaceId};
+
+/// Route result captured when an outbound packet selects its egress path.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TxNextHop {
+    V4(Ipv4Addr),
+    V6 { addr: Ipv6Addr, src: Ipv6Addr },
+}
 
 /// Packet buffer error type. Numeric reps Linux-aligned.
 #[repr(i32)]
@@ -39,6 +46,7 @@ pub struct Pkt {
     data: u32,
     tail: u32,
     pub iface:    Option<NetIfaceId>,
+    pub next_hop: Option<TxNextHop>,
     pub proto:    u16,
     pub timestamp_ns: u64,
 }
@@ -60,7 +68,7 @@ impl Pkt {
             buf,
             data: headroom as u32,
             tail: (headroom + payload_len) as u32,
-            iface: None, proto: 0, timestamp_ns: 0,
+            iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
         }
     }
 
@@ -77,7 +85,7 @@ impl Pkt {
             buf,
             data: headroom as u32,
             tail: headroom as u32,
-            iface: None, proto: 0, timestamp_ns: 0,
+            iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
         }
     }
 
@@ -87,7 +95,7 @@ impl Pkt {
     /// # C: O(1)
     pub fn from_owned(buf: Vec<u8>) -> Self {
         let len = buf.len() as u32;
-        Self { buf, data: 0, tail: len, iface: None, proto: 0, timestamp_ns: 0 }
+        Self { buf, data: 0, tail: len, iface: None, next_hop: None, proto: 0, timestamp_ns: 0 }
     }
 
     /// # C: O(1)
@@ -165,5 +173,6 @@ impl Pkt {
         let h = (headroom as u32).min(cap);
         self.data = h;
         self.tail = h;
+        self.next_hop = None;
     }
 }

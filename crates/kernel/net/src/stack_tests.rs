@@ -238,6 +238,8 @@ fn bound_udp_send_uses_requested_iface() {
     let (_lo_id, lo) = stack.register_loopback();
     let eth = Arc::new(CountDev::new());
     let eth_id = stack.ifaces.register(eth.clone());
+    stack.routes.add(RouteEntry::main(Ipv4Addr::LOOPBACK, 32, eth_id, None,
+        Some(Ipv4Addr::LOOPBACK)));
     stack.send_udp_to_bound(
         Ipv4Addr::LOOPBACK, 1, Ipv4Addr::LOOPBACK, 2, b"x", Some(eth_id),
     ).unwrap();

@@ -169,6 +169,10 @@ pub const RTN_UNSPEC: u8 = 0;
 pub const RTN_UNICAST: u8 = 1;
 pub const RTN_LOCAL: u8 = 2;
 pub const RTN_BROADCAST: u8 = 3;
+pub const RTN_BLACKHOLE: u8 = 6;
+pub const RTN_UNREACHABLE: u8 = 7;
+pub const RTN_PROHIBIT: u8 = 8;
+pub const RTN_THROW: u8 = 9;
 
 pub const RT_TABLE_UNSPEC: u8 = 0;
 pub const RT_TABLE_DEFAULT: u8 = 253;

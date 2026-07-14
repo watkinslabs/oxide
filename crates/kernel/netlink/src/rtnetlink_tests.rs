@@ -1,10 +1,13 @@
-    use alloc::vec::Vec;
+    use alloc::{sync::Arc, vec::Vec};
 
     use crate::{nlmsg_align, Nlmsghdr};
 
     use super::*;
     use super::route_ops::route_key;
     use super::rtnetlink_link::LinkStats64;
+
+    #[path = "rtnetlink_tests/route_semantics.rs"]
+    mod route_semantics;
 
     fn find_attr(attrs: &[u8], needle: u16) -> Option<&[u8]> {
         let mut off = 0;
@@ -84,13 +87,14 @@
         let before = route_snapshot().len();
         route_insert(RouteRow {
             ns: 0,
-            table: RT_TABLE_MAIN, protocol: RTPROT_STATIC,
+            table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
             dst: Some(([192, 168, 99, 0], 24)),
             gateway: None, oif_ifindex: 7777, prefsrc: None,
+            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
         });
         assert_eq!(route_snapshot().len(), before + 1);
-        let n = route_remove(0, RT_TABLE_MAIN, Some(([192, 168, 99, 0], 24)), 7777);
+        let n = route_remove(0, RT_TABLE_MAIN as u32, Some(([192, 168, 99, 0], 24)), 7777, None);
         assert_eq!(n, 1);
         assert_eq!(route_snapshot().len(), before);
     }
@@ -98,10 +102,11 @@
     #[test]
     fn routes_isolated_per_net_ns() {
         let row = |ns| RouteRow {
-            ns, table: RT_TABLE_MAIN, protocol: RTPROT_STATIC,
+            ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
             dst: Some(([10, 9, 8, 0], 24)), gateway: None,
-            oif_ifindex: 6543, prefsrc: None,
+            oif_ifindex: 6543, prefsrc: None, metric: 0, mtu: None, flags: 0,
+            weight: 1, nh_flags: 0,
         };
         let n0 = route_snapshot_ns(770).len();
         let n1 = route_snapshot_ns(771).len();
@@ -110,8 +115,8 @@
         assert_eq!(route_snapshot_ns(770).len(), n0 + 1);
         assert_eq!(route_snapshot_ns(771).len(), n1, "other netns unaffected");
         // Removing under the wrong ns is a no-op; under the right ns it works.
-        assert_eq!(route_remove(771, RT_TABLE_MAIN, Some(([10, 9, 8, 0], 24)), 6543), 0);
-        assert_eq!(route_remove(770, RT_TABLE_MAIN, Some(([10, 9, 8, 0], 24)), 6543), 1);
+        assert_eq!(route_remove(771, RT_TABLE_MAIN as u32, Some(([10, 9, 8, 0], 24)), 6543, None), 0);
+        assert_eq!(route_remove(770, RT_TABLE_MAIN as u32, Some(([10, 9, 8, 0], 24)), 6543, None), 1);
     }
 
     #[test]
@@ -129,9 +134,10 @@
             for _ in 0..pad { out.push(0); }
         }
 
+        let stack = net::global_stack();
+        let iface1 = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0).raw();
+        let iface2 = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0).raw();
         let dst = Some(([198, 51, 77, 0], 24));
-        let _ = route_remove(0, RT_TABLE_MAIN, dst, 7711);
-        let _ = route_remove(0, RT_TABLE_MAIN, dst, 7712);
         let mut body = alloc::vec![0u8; Rtmsg::SIZE];
         Rtmsg {
             rtm_family: AF_INET, rtm_dst_len: 24, rtm_table: RT_TABLE_MAIN,
@@ -140,23 +146,81 @@
         }.write_to(&mut body[..Rtmsg::SIZE]);
         put_nlattr(&mut body, rta::RTA_DST, &[198, 51, 77, 0]);
         let mut mp = Vec::new();
-        push_rtnh(&mut mp, 7711, [192, 0, 2, 1]);
-        push_rtnh(&mut mp, 7712, [192, 0, 2, 2]);
+        push_rtnh(&mut mp, iface1, [192, 0, 2, 1]);
+        push_rtnh(&mut mp, iface2, [192, 0, 2, 2]);
         put_nlattr(&mut body, rta::RTA_MULTIPATH, &mp);
         let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE];
         msg.extend_from_slice(&body);
         let req = Nlmsghdr {
             nlmsg_len: msg.len() as u32, nlmsg_type: RTM_NEWROUTE,
-            nlmsg_flags: crate::flags::NLM_F_REQUEST, nlmsg_seq: 44, nlmsg_pid: 9,
+            nlmsg_flags: crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_CREATE
+                | crate::flags::NLM_F_EXCL,
+            nlmsg_seq: 44, nlmsg_pid: 9,
         };
         req.write_to(&mut msg[..Nlmsghdr::SIZE]);
 
         let _ack = handle_newroute(&req, &msg);
         let rows = route_snapshot_ns(0);
-        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == 7711 && r.gateway == Some([192, 0, 2, 1])));
-        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == 7712 && r.gateway == Some([192, 0, 2, 2])));
-        assert_eq!(route_remove(0, RT_TABLE_MAIN, dst, 7711), 1);
-        assert_eq!(route_remove(0, RT_TABLE_MAIN, dst, 7712), 1);
+        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == iface1 && r.gateway == Some([192, 0, 2, 1])));
+        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == iface2 && r.gateway == Some([192, 0, 2, 2])));
+        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface1, Some([192, 0, 2, 1])), 1);
+        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface2, Some([192, 0, 2, 2])), 1);
+    }
+
+    #[test]
+    fn canonical_routes_and_netlink_rows_are_one_state() {
+        const NS: u64 = 9071;
+        let row = RouteRow {
+            ns: NS, table: 1001, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK,
+            kind: RTN_UNICAST, dst: Some(([172, 20, 0, 0], 16)),
+            gateway: Some([192, 0, 2, 9]), oif_ifindex: 4401,
+            prefsrc: Some([172, 20, 0, 1]), metric: 77, mtu: Some(1400), flags: 0x20,
+            weight: 1, nh_flags: 0,
+        };
+        route_insert(row);
+        let live = net::global_stack().routes
+            .lookup_in_table_in(NS, 1001, net::Ipv4Addr::new(172, 20, 4, 5)).unwrap();
+        assert_eq!(live.iface.raw(), 4401);
+        assert_eq!(route_snapshot_ns(NS), alloc::vec![row]);
+        assert_eq!(route_remove(NS, 1001, row.dst, 4401, row.gateway), 1);
+    }
+
+    #[test]
+    fn exact_remove_preserves_same_iface_ecmp_peer() {
+        const NS: u64 = 9072;
+        let make = |gateway| RouteRow {
+            ns: NS, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
+            scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([203, 0, 113, 0], 24)),
+            gateway: Some(gateway), oif_ifindex: 4402, prefsrc: None,
+            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        };
+        route_insert(make([192, 0, 2, 1]));
+        route_insert(make([192, 0, 2, 2]));
+        assert_eq!(route_remove(NS, RT_TABLE_MAIN as u32, Some(([203, 0, 113, 0], 24)), 4402, Some([192, 0, 2, 1])), 1);
+        let rows = route_snapshot_ns(NS);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].gateway, Some([192, 0, 2, 2]));
+        assert_eq!(route_remove(NS, RT_TABLE_MAIN as u32, rows[0].dst, 4402, rows[0].gateway), 1);
+    }
+
+    #[test]
+    fn policy_lookup_uses_requested_namespace() {
+        const NS: u64 = 9073;
+        let row = |table, iface| RouteRow {
+            ns: NS, table, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK,
+            kind: RTN_UNICAST, dst: None, gateway: None, oif_ifindex: iface,
+            prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        };
+        route_insert(row(RT_TABLE_MAIN as u32, 4403));
+        route_insert(row(1002, 4404));
+        net::policy_rule::insert(net::policy_rule::PolicyRule {
+            ns: NS, family: net::policy_rule::AF_INET, priority: 1000, table: 1002,
+            action: net::policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
+        });
+        assert_eq!(route_lookup_ns(NS, [8, 8, 8, 8]).unwrap().oif_ifindex, 4404);
+        assert_eq!(net::policy_rule::remove(NS, net::policy_rule::AF_INET, Some(1000), Some(1002)), 1);
+        assert_eq!(route_remove(NS, RT_TABLE_MAIN as u32, None, 4403, None), 1);
+        assert_eq!(route_remove(NS, 1002, None, 4404, None), 1);
     }
 
     #[test]
@@ -246,7 +310,8 @@
 
     #[test]
     fn rtm_newaddr_and_deladdr_mutate_table() {
-        let ifindex = 9996;
+        let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
+        let ifindex = iface.raw();
         let addr = [10, 9, 9, 6];
         let (new_hdr, new_msg) = addr_req(RTM_NEWADDR, ifindex, 32, addr);
         assert_eq!(ack_errno(&handle_newaddr(&new_hdr, &new_msg)), 0);
@@ -257,6 +322,7 @@
         assert_eq!(ack_errno(&handle_deladdr(&del_hdr, &del_msg)), 0);
         assert!(!addr_snapshot_ns(0).iter().any(|r|
             r.ifindex == ifindex && r.addr == addr && r.prefixlen == 32));
+        let _ = net::global_stack().ifaces.unregister(iface);
     }
 
     #[test]

@@ -83,9 +83,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // determine if we are in host netns, ignoring: Inappropriate ioctl for
     // device" warning. Linux `sock_ioctl` answers it for ANY socket fd (netlink,
     // inet, unix) — all of which are FileType::Socket here.
-    if req == super::netns::SIOCGSKNS
-        && file.inode().file_type() == vfs::FileType::Socket
-    {
+    if req == super::netns::SIOCGSKNS && sioc_socket_net_ns(&file).is_some() {
         return super::netns::handle_siocgskns();
     }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
@@ -93,10 +91,18 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // / SIOCGIFADDR / SIOCSIFADDR / SIOCGIFINDEX / SIOCGIFHWADDR
     // / SIOCGIFMTU / SIOCGIFNETMASK / SIOCADDRT to probe + configure
     // eth0 before sending the DHCPDISCOVER.
-    if (req & 0xFFFFFF00) == 0x00008900 {
-        if let Some(rv) = crate::siocgif::handle_sioc(req, arg) {
-            return rv;
+    if let Some(access) = crate::siocgif::sioc_access(req) {
+        let net_ns = match sioc_socket_net_ns(&file) {
+            Some(ns) => ns,
+            None => return -(Errno::Enotty.as_i32() as i64),
+        };
+        if access == crate::siocgif::SiocAccess::Mutate
+            && !nscg::has_net_admin_for(cur, net_ns)
+        {
+            return -(Errno::Eperm.as_i32() as i64);
         }
+        return crate::siocgif::handle_sioc_in(net_ns, req, arg)
+            .unwrap_or(-(Errno::Enotty.as_i32() as i64));
     }
     // FIFREEZE / FITHAW (Linux `ioctl_fsfreeze`/`ioctl_fsthaw`, fs/ioctl.c).
     // Issued on a regular file / directory / block-device fd; route BEFORE the
@@ -139,6 +145,15 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         return -(Errno::Enotty.as_i32() as i64);
     }
     handle_tty_ioctl(&file, fd, req, arg)
+}
+
+fn sioc_socket_net_ns(file: &vfs::File) -> Option<u64> {
+    if file.inode().file_type() != vfs::FileType::Socket { return None; }
+    if let Ok(sock) = file.inode().i_private().clone().downcast::<net::sock::InetSocket>() {
+        return Some(sock.net_ns.load(core::sync::atomic::Ordering::Acquire));
+    }
+    file.inode().i_private().clone().downcast::<::netlink::NetlinkSocket>()
+        .ok().map(|sock| sock.net_ns)
 }
 
 fn handle_file_ioctl(cur: &sched::Task, file: &vfs::File, req: u64, arg: u64) -> Option<i64> {

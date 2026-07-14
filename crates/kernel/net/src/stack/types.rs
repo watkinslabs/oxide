@@ -172,6 +172,9 @@ impl TcpEntry {
     pub fn bound_iface(&self) -> Option<NetIfaceId> {
         self.bind.as_ref().and_then(|bind| bind.bound_iface())
     }
+
+    /// Network namespace captured by the owning TCP bind. # C: O(1)
+    pub fn net_ns(&self) -> u64 { self.bind.as_ref().map(|bind| bind.net_ns).unwrap_or(0) }
 }
 
 /// F159: monotonic time source visible to net crate. On

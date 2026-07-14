@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B782-syscall-043-accept-complete`.
+Generated rows: 385. Current branch annotation: `B825-network-netns-route-tables`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -27,6 +27,13 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Semantic authority | Verify behavior against Linux implementation source named in `Linux refs`, not against local notes. |
 | Harness authority | A row is not complete until its required harness covers success, error ordering, permissions, ownership, namespace, symlink/hardlink, tmpfs/dev/proc/sysfs, and user-copy fault cases relevant to its systems. |
 | No fallback truth | Oxide route presence only means code is reachable; it is not evidence of Linux compatibility. |
+
+## B825 Cross-Cutting Evidence
+
+| Rows | Status | Evidence | Remaining |
+|---|---|---|---|
+| `16:ioctl` | `IN-PROGRESS` | Socket-fd SIOC dispatch uses the socket-captured network namespace and owner-user-namespace `CAP_NET_ADMIN`; `SIOCADDRT`/`SIOCDELRT` validate Linux `rtentry`, mutate the canonical FIB atomically, and return `EEXIST`/`ESRCH`; `SIOCGIFCONF` enumerates namespace-owned IPv4 addresses without fixed ifindex scans. | Complete mutable MTU, hardware-address, broadcast-address, and transmit-queue ioctl state; replace raw fixed-offset user reads with the shared fault-recoverable ABI import path; direct syscall-context fault/order coverage. |
+| `41-55` INET socket family | existing row status retained | Socket-owned IPv4/IPv6 UDP/TCP, multicast memberships, PMTU/errors, implicit bind, diagnostics, send routing, and receive demux carry the captured or ingress-derived network namespace. IPv4/IPv6 fragment keys include namespace identity. `/proc/net/*`, rtnetlink dumps/mutations/multicast, and inet-diag use per-open or socket-captured namespace state. Hosted evidence: `net` 423, `netlink` 59, `nscg` 10, `procfs` 44, complete `syscalls` test set. | Canonical refcounted network-namespace ownership and last-reference teardown remains a separate architecture change; existing per-namespace cleanup primitives alone are not completion evidence. Existing row-specific syscall ABI, protocol-family, security-hook, and differential gaps remain. |
 
 ## Reverse Lookup By System
 
