@@ -1,0 +1,59 @@
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::AtomicI32;
+use sync::{Spinlock, Socket as StackLockClass};
+
+use crate::bpf_filter::{FilterKind, FilterProgram, SocketFilter, install_bpf_filter_runner};
+use crate::{Ipv4Addr, NetStack, SocketError};
+
+const PORT: u16 = 49_071;
+const SOURCE_PORT: u16 = 41_000;
+
+fn verdict_runner(_kind: FilterKind, insns: &[u8], packet: &[u8]) -> u32 {
+    assert!(packet.len() >= crate::udp::UDP_HDR_LEN);
+    assert_eq!(u16::from_be_bytes([packet[0], packet[1]]), SOURCE_PORT);
+    assert_eq!(u16::from_be_bytes([packet[2], packet[3]]), PORT);
+    u32::from_ne_bytes(insns.try_into().unwrap())
+}
+
+fn filter(verdict: u32) -> Arc<SocketFilter> {
+    let filter = Arc::new(SocketFilter::new());
+    filter.attach(FilterProgram {
+        kind: FilterKind::Ebpf, insns: verdict.to_ne_bytes().to_vec(),
+    }).unwrap();
+    filter
+}
+
+fn endpoint(stack: &NetStack, port: u16, filter: Arc<SocketFilter>)
+    -> Arc<crate::UdpRxQueue>
+{
+    stack.bind_udp_socket(
+        Ipv4Addr::LOOPBACK, port, None, Arc::new(SocketError::new()),
+        Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0)),
+        Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 0,
+        Arc::new(Spinlock::<Option<(Ipv4Addr, u16)>, StackLockClass>::new(None)),
+        filter, Arc::new(crate::mcast_filter::SocketMcast::new()),
+    ).unwrap()
+}
+
+#[test]
+fn udp_socket_filter_sees_header_drops_zero_and_truncates_positive_verdict() {
+    install_bpf_filter_runner(verdict_runner);
+    let stack = NetStack::new();
+    let (iface, loopback) = stack.register_loopback();
+    let truncated = endpoint(&stack, PORT, filter(11));
+
+    stack.send_udp_to(
+        Ipv4Addr::LOOPBACK, SOURCE_PORT, Ipv4Addr::LOOPBACK, PORT, b"abcdef",
+    ).unwrap();
+    stack.drain_loopback(iface, &loopback);
+    assert_eq!(truncated.recv(false).unwrap().5, b"abc");
+
+    stack.unbind_udp_endpoint(&truncated);
+    let dropped = endpoint(&stack, PORT, filter(0));
+    stack.send_udp_to(
+        Ipv4Addr::LOOPBACK, SOURCE_PORT, Ipv4Addr::LOOPBACK, PORT, b"abcdef",
+    ).unwrap();
+    stack.drain_loopback(iface, &loopback);
+    assert!(dropped.recv(false).is_none());
+}

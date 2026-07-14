@@ -82,7 +82,7 @@ impl NetStack {
                                 IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::ANY),
                             },
                             remote_port: 0,
-                            ifindex: listener.bound_ifindex.load(Ordering::Acquire),
+                            ifindex: listener.bound_iface().map(|id| id.raw()).unwrap_or(0),
                             rqueue: listener.accept_q.lock().len() as u32,
                             wqueue: 0,
                         });
@@ -98,38 +98,40 @@ impl NetStack {
                         local_port: conn.local.port,
                         remote_ip: conn.remote.ip,
                         remote_port: conn.remote.port,
-                        ifindex: entry.bound_ifindex.load(Ordering::Acquire),
+                        ifindex: entry.bound_iface().map(|id| id.raw()).unwrap_or(0),
                         rqueue: conn.recv_buf.len() as u32,
                         wqueue: conn.send_buf.len() as u32,
                     });
                 }
             }
             IPPROTO_UDP => {
-                for q in self.udp_map().lock().values() {
+                for q in self.udp_map().lock().values().flatten() {
+                    let peer = *q.peer.lock();
                     out.push(InetDiagSnapshot {
                         family: AF_INET,
                         protocol,
-                        state: TCP_CLOSE,
+                        state: if peer.is_some() { TCP_ESTABLISHED } else { TCP_CLOSE },
                         local_ip: IpAddr::V4(q.bound_ip),
                         local_port: q.bound_port,
-                        remote_ip: IpAddr::V4(Ipv4Addr::ANY),
-                        remote_port: 0,
+                        remote_ip: IpAddr::V4(peer.map(|p| p.0).unwrap_or(Ipv4Addr::ANY)),
+                        remote_port: peer.map(|p| p.1).unwrap_or(0),
                         ifindex: q.bound_ifindex.load(Ordering::Acquire),
-                        rqueue: q.q.lock().iter().map(|(.., p)| p.len() as u32).sum(),
+                        rqueue: q.queued_bytes() as u32,
                         wqueue: 0,
                     });
                 }
-                for q in self.udp6_map().lock().values() {
+                for q in self.udp6_map().lock().values().flatten() {
+                    let peer = *q.peer.lock();
                     out.push(InetDiagSnapshot {
                         family: AF_INET6,
                         protocol,
-                        state: TCP_CLOSE,
+                        state: if peer.is_some() { TCP_ESTABLISHED } else { TCP_CLOSE },
                         local_ip: IpAddr::V6(q.bound_ip),
                         local_port: q.bound_port,
-                        remote_ip: IpAddr::V6(Ipv6Addr::ANY),
-                        remote_port: 0,
+                        remote_ip: IpAddr::V6(peer.map(|p| p.0).unwrap_or(Ipv6Addr::ANY)),
+                        remote_port: peer.map(|p| p.1).unwrap_or(0),
                         ifindex: q.bound_ifindex.load(Ordering::Acquire),
-                        rqueue: q.q.lock().iter().map(|(.., p)| p.len() as u32).sum(),
+                        rqueue: q.queued_bytes() as u32,
                         wqueue: 0,
                     });
                 }
@@ -137,5 +139,91 @@ impl NetStack {
             _ => {}
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::AtomicI32;
+    use sync::{Socket as StackLockClass, Spinlock};
+
+    use super::*;
+    use crate::addr::NetIfaceId;
+    use crate::SocketError;
+
+    fn reuse() -> Arc<AtomicI32> { Arc::new(AtomicI32::new(1)) }
+    fn dual_stack() -> Arc<AtomicI32> { Arc::new(AtomicI32::new(0)) }
+
+    #[test]
+    fn udp4_diag_reports_each_group_endpoint_state_tuple_queue_and_ifindex() {
+        let stack = NetStack::new();
+        let local = Ipv4Addr::new(192, 0, 2, 10);
+        let remote = Ipv4Addr::new(198, 51, 100, 20);
+        let open = stack.bind_udp_socket(local, 5300, Some(NetIfaceId::from_raw(11)),
+            Arc::new(SocketError::new()), reuse(), reuse(),
+            Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 1000,
+            Arc::new(Spinlock::new(None)), Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
+        let connected = stack.bind_udp_socket(local, 5300, Some(NetIfaceId::from_raw(12)),
+            Arc::new(SocketError::new()), reuse(), reuse(),
+            Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 1001,
+            Arc::new(Spinlock::<Option<(Ipv4Addr, u16)>, StackLockClass>::new(Some((remote, 5400)))),
+            Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
+        assert!(open.enqueue((remote, 5400, local, NetIfaceId::from_raw(11), 64, alloc::vec![0; 3])));
+        assert!(connected.enqueue((remote, 5400, local, NetIfaceId::from_raw(12), 64, alloc::vec![0; 5])));
+        assert!(connected.enqueue((remote, 5400, local, NetIfaceId::from_raw(12), 64, alloc::vec![0; 7])));
+
+        let rows = stack.inet_diag_snapshot(IPPROTO_UDP);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&InetDiagSnapshot {
+            family: AF_INET, protocol: IPPROTO_UDP, state: TCP_CLOSE,
+            local_ip: IpAddr::V4(local), local_port: 5300,
+            remote_ip: IpAddr::V4(Ipv4Addr::ANY), remote_port: 0,
+            ifindex: 11, rqueue: 3, wqueue: 0,
+        }));
+        assert!(rows.contains(&InetDiagSnapshot {
+            family: AF_INET, protocol: IPPROTO_UDP, state: TCP_ESTABLISHED,
+            local_ip: IpAddr::V4(local), local_port: 5300,
+            remote_ip: IpAddr::V4(remote), remote_port: 5400,
+            ifindex: 12, rqueue: 12, wqueue: 0,
+        }));
+    }
+
+    #[test]
+    fn udp6_diag_reports_each_group_endpoint_state_tuple_queue_and_ifindex() {
+        let stack = NetStack::new();
+        let local = Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 10]);
+        let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 20]);
+        let open = stack.bind_udp6_socket(local, 6300, Some(NetIfaceId::from_raw(21)),
+            Arc::new(SocketError::new()), reuse(), reuse(), 1000, dual_stack(),
+            Arc::new(Spinlock::new(None)),
+            Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
+            Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
+        let connected = stack.bind_udp6_socket(local, 6300, Some(NetIfaceId::from_raw(22)),
+            Arc::new(SocketError::new()), reuse(), reuse(), 1001,
+            dual_stack(),
+            Arc::new(Spinlock::<Option<(Ipv6Addr, u16)>, StackLockClass>::new(Some((remote, 6400)))),
+            Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
+            Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
+        assert!(open.enqueue((remote, 6400, local, NetIfaceId::from_raw(21), 64, alloc::vec![0; 4])));
+        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, alloc::vec![0; 6])));
+        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, alloc::vec![0; 8])));
+
+        let rows = stack.inet_diag_snapshot(IPPROTO_UDP);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&InetDiagSnapshot {
+            family: AF_INET6, protocol: IPPROTO_UDP, state: TCP_CLOSE,
+            local_ip: IpAddr::V6(local), local_port: 6300,
+            remote_ip: IpAddr::V6(Ipv6Addr::ANY), remote_port: 0,
+            ifindex: 21, rqueue: 4, wqueue: 0,
+        }));
+        assert!(rows.contains(&InetDiagSnapshot {
+            family: AF_INET6, protocol: IPPROTO_UDP, state: TCP_ESTABLISHED,
+            local_ip: IpAddr::V6(local), local_port: 6300,
+            remote_ip: IpAddr::V6(remote), remote_port: 6400,
+            ifindex: 22, rqueue: 14, wqueue: 0,
+        }));
     }
 }

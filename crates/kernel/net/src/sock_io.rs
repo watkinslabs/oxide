@@ -433,12 +433,14 @@ pub fn recvfrom_opts(
         let peer = *sock.peer.lock();
         return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
     }
-    // UDP. AF_INET6 dgram sockets bind into the v6 port map, so the
-    // recv must consult recv_udp6_opts; the v4 map would always miss.
+    // UDP. AF_INET6 datagram sockets retain their exact v6 endpoint;
+    // consulting the IPv4 endpoint would always miss.
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
         drain_loopback();
-        let port = match *sock.local_port.lock() {
-            Some(port) => port,
+        let eno = sock.take_pending_recv_error();
+        if eno != 0 { return Err(pending_net_error(eno)); }
+        let endpoint = match sock.udp6.lock().as_ref().cloned() {
+            Some(endpoint) => endpoint,
             None => {
                 let eno = sock.take_pending_recv_error();
                 if eno != 0 { return Err(pending_net_error(eno)); }
@@ -448,7 +450,7 @@ pub fn recvfrom_opts(
                 return Err(NetError::Eagain);
             }
         };
-        let got = stack().recv_udp6_meta_opts(port, opts.peek);
+        let got = endpoint.recv(opts.peek);
         let Some((src_ip6, src_port, dst_ip6, iface, hop, full)) = got else {
             let eno = sock.take_pending_recv_error();
             if eno != 0 { return Err(pending_net_error(eno)); }
@@ -468,8 +470,10 @@ pub fn recvfrom_opts(
     }
     // UDP / others (AF_INET).
     drain_loopback();
-    let port = match *sock.local_port.lock() {
-        Some(port) => port,
+    let eno = sock.take_pending_recv_error();
+    if eno != 0 { return Err(pending_net_error(eno)); }
+    let endpoint = match sock.udp4.lock().as_ref().cloned() {
+        Some(endpoint) => endpoint,
         None => {
             let eno = sock.take_pending_recv_error();
             if eno != 0 { return Err(pending_net_error(eno)); }
@@ -479,7 +483,7 @@ pub fn recvfrom_opts(
             return Err(NetError::Eagain);
         }
     };
-    let got = stack().recv_udp_meta_opts(port, opts.peek);
+    let got = endpoint.recv(opts.peek);
     let Some((src_ip, src_port, dst_ip, iface, ttl, full)) = got else {
         let eno = sock.take_pending_recv_error();
         if eno != 0 { return Err(pending_net_error(eno)); }

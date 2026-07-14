@@ -1,4 +1,5 @@
 use super::*;
+use crate::UdpRxQueue;
 
 /// Per-AF_INET-socket variant.
 pub enum SockKind {
@@ -105,13 +106,20 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     }
 }
 
-/// AF_INET/AF_INET6 socket VFS state — one Inode per fd. v1: V4
-/// slots only; AF_INET6 stores V4-mapped. Real V6 in F180.
+/// AF_INET/AF_INET6 socket VFS state.
 pub struct InetSocket {
     pub family:     core::sync::atomic::AtomicU16,
     pub local_port: Spinlock<Option<u16>, SockLockClass>,
     pub local_ip:   Spinlock<Ipv4Addr, SockLockClass>,
-    pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
+    pub peer:       Arc<Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>>,
+    /// Exact socket-owned UDP endpoints; registry lookup never identifies ownership.
+    pub udp4:       Spinlock<Option<Arc<UdpRxQueue>>, SockLockClass>,
+    pub udp6:       Spinlock<Option<Arc<crate::stack_ipv6::Udp6RxQueue>>, SockLockClass>,
+    /// Exact socket-owned TCP local reservation, retained across state transitions.
+    pub tcp_bind:   Spinlock<Option<Arc<crate::stack::TcpBindReservation>>, SockLockClass>,
+    /// Socket-owned filter exists before bind and is shared with its endpoint.
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+    pub mcast: Arc<crate::mcast_filter::SocketMcast>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
     pub opts: SockOpts,
     /// Canonical Linux `sk_err`, shared with the active transport owner.
@@ -120,13 +128,11 @@ pub struct InetSocket {
     pub read_shut: core::sync::atomic::AtomicBool,
     /// Generic send-half shutdown for connected datagram/TCP sockets.
     pub write_shut: core::sync::atomic::AtomicBool,
-    /// Final open-file-description release has run. Socket inodes and transient
-    /// kernel references may outlive the fd, so endpoint teardown cannot ride
-    /// `InetSocket::drop` alone.
+    /// Final open-file-description release has run.
     pub released: core::sync::atomic::AtomicBool,
     /// F180a: AF_INET6 address slots; IPv4 uses local_ip / peer.
     pub local_ip6: Spinlock<crate::Ipv6Addr, SockLockClass>,
-    pub peer6:     Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>,
+    pub peer6:     Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
     /// Calls waiting to connect this socket, independent of target listener.
@@ -142,6 +148,8 @@ pub struct InetSocket {
     /// Network namespace that owned this socket at creation. Unlike
     /// `unix_ns`, pathname AF_UNIX rendezvous never rewrites this value.
     pub net_ns: core::sync::atomic::AtomicU64,
+    /// Effective UID captured when Linux creates the socket.
+    pub owner_uid: u32,
     /// AF_UNIX stream address reserved by `bind(2)`, independent of whether
     /// this socket later listens or actively connects.
     pub unix_bound: Spinlock<Option<Arc<crate::UnixListener>>, SockLockClass>,
@@ -149,8 +157,8 @@ pub struct InetSocket {
 
 /// SOL_SOCKET options — Linux `int`-shaped cells. SO_LINGER pair.
 pub struct SockOpts {
-    pub reuseaddr: core::sync::atomic::AtomicI32,
-    pub reuseport: core::sync::atomic::AtomicI32,
+    pub reuseaddr: Arc<core::sync::atomic::AtomicI32>,
+    pub reuseport: Arc<core::sync::atomic::AtomicI32>,
     pub keepalive: core::sync::atomic::AtomicI32,
     pub broadcast: core::sync::atomic::AtomicI32,
     /// F164: SO_SNDBUF (bytes); enforced by tcp_send → backpressure.
@@ -166,12 +174,13 @@ pub struct SockOpts {
     pub ip_tos:    core::sync::atomic::AtomicI32,
     pub ip_pktinfo: core::sync::atomic::AtomicI32, pub ip_mcast_ttl: core::sync::atomic::AtomicI32, pub ip_mcast_loop: core::sync::atomic::AtomicI32, pub ip_mcast_ifaddr: core::sync::atomic::AtomicU32, pub ip_mcast_ifindex: core::sync::atomic::AtomicU32,
     /// IP_RECVTTL: deliver the received IPv4 header TTL as an IP_TTL cmsg on
-    /// recvmsg (systemd-resolved LLMNR/mDNS hop check). IP_MTU_DISCOVER:
-    /// per-socket PMTU mode — stored for getsockopt round-trip; we never
-    /// fragment/set DF on the loopback + local paths so it's advisory.
+    /// recvmsg (systemd-resolved LLMNR/mDNS hop check). IP_MTU_DISCOVER is
+    /// shared with the bound UDP endpoint because ICMP owns PMTU error input.
     pub ip_recvttl: core::sync::atomic::AtomicI32,
-    pub ip_mtu_discover: core::sync::atomic::AtomicI32,
-    pub ipv6_v6only: core::sync::atomic::AtomicI32,
+    pub ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+    pub ipv6_v6only: Arc<core::sync::atomic::AtomicI32>,
+    /// Canonical `IPV6_MTU_DISCOVER` mode used by IPv6 transmit policy.
+    pub ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
     /// IPV6_UNICAST_HOPS / IPV6_MULTICAST_HOPS: outbound hop limit for
     /// unicast / multicast IPv6 datagrams. Linux sentinel `-1` = derive the
     /// per-route/interface default (64 unicast, 1 multicast); an explicit
@@ -211,8 +220,8 @@ impl Default for SockOpts {
     fn default() -> Self {
         use core::sync::atomic::*;
         Self {
-            reuseaddr:   AtomicI32::new(0),
-            reuseport:   AtomicI32::new(0),
+            reuseaddr:   Arc::new(AtomicI32::new(0)),
+            reuseport:   Arc::new(AtomicI32::new(0)),
             keepalive:   AtomicI32::new(0),
             broadcast:   AtomicI32::new(0),
             sndbuf:      AtomicI32::new(TCP_SNDBUF_DEFAULT),
@@ -226,8 +235,10 @@ impl Default for SockOpts {
             ip_ttl:      AtomicI32::new(crate::ipv4::IPV4_DEFAULT_TTL as i32),
             ip_tos:      AtomicI32::new(0),
             ip_pktinfo:  AtomicI32::new(0), ip_mcast_ttl: AtomicI32::new(1), ip_mcast_loop: AtomicI32::new(1), ip_mcast_ifaddr: AtomicU32::new(0), ip_mcast_ifindex: AtomicU32::new(0),
-            ip_recvttl: AtomicI32::new(0), ip_mtu_discover: AtomicI32::new(0),
-            ipv6_v6only: AtomicI32::new(0),
+            ip_recvttl: AtomicI32::new(0),
+            ip_mtu_discover: Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            ipv6_v6only: Arc::new(AtomicI32::new(0)),
+            ipv6_mtu_discover: Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             ipv6_ucast_hops: AtomicI32::new(-1),
             ipv6_mcast_hops: AtomicI32::new(-1),
             ipv6_mcast_loop: AtomicI32::new(1),
@@ -252,6 +263,16 @@ pub const AF_INET6: u16 = 10;
 pub const AF_UNIX:  u16 = 1;
 pub const AF_PACKET: u16 = 17;
 
+#[cfg(target_os = "oxide-kernel")]
+fn current_socket_uid() -> u32 {
+    sched::live::current().map(|task| {
+        task.creds.euid.load(core::sync::atomic::Ordering::Acquire)
+    }).unwrap_or(0)
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_socket_uid() -> u32 { 0 }
+
 impl InetSocket {
     /// # C: O(1)
     pub fn new_udp() -> Self {
@@ -259,7 +280,12 @@ impl InetSocket {
             family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
-            peer:       Spinlock::new(None),
+            peer:       Arc::new(Spinlock::new(None)),
+            udp4:       Spinlock::new(None),
+            udp6:       Spinlock::new(None),
+            tcp_bind:   Spinlock::new(None),
+            bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
+            mcast: Arc::new(crate::mcast_filter::SocketMcast::new()),
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
             error: Arc::new(crate::SocketError::new()),
@@ -272,9 +298,10 @@ impl InetSocket {
             connect_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
-            peer6:     Spinlock::new(None),
+            peer6:     Arc::new(Spinlock::new(None)),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
             net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
+            owner_uid: current_socket_uid(),
             unix_bound: Spinlock::new(None),
         };
         _s
@@ -288,7 +315,12 @@ impl InetSocket {
             family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
-            peer:       Spinlock::new(None),
+            peer:       Arc::new(Spinlock::new(None)),
+            udp4:       Spinlock::new(None),
+            udp6:       Spinlock::new(None),
+            tcp_bind:   Spinlock::new(None),
+            bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
+            mcast: Arc::new(crate::mcast_filter::SocketMcast::new()),
             // TcpInit makes connect() route SOCK_STREAM through the 3WHS path.
             // the UDP store-peer-and-return-Ok short-circuit.
             // listen()/connect()/accept() transition to TcpListener
@@ -305,9 +337,10 @@ impl InetSocket {
             connect_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
-            peer6:     Spinlock::new(None),
+            peer6:     Arc::new(Spinlock::new(None)),
             unix_ns:   core::sync::atomic::AtomicU64::new(0),
             net_ns:    core::sync::atomic::AtomicU64::new(crate::netdev::current_net_ns()),
+            owner_uid: current_socket_uid(),
             unix_bound: Spinlock::new(None),
         };
         _s
@@ -370,85 +403,6 @@ impl InetSocket {
         s
     }
 
-    /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
-    pub fn set_pending_recv_error(&self, errno: i32) -> bool {
-        let kind = self.kind.lock();
-        if let SockKind::TcpConn(entry) = &*kind {
-            let entry = entry.clone();
-            drop(kind);
-            return entry.set_error(errno);
-        }
-        if matches!(*kind, SockKind::Udp) {
-            let port = *self.local_port.lock();
-            if let Some(port) = port {
-                if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
-                    if let Some(q) = stack().udp6_queue_arc(port) {
-                        drop(kind);
-                        return q.set_error(errno);
-                    }
-                } else if let Some(q) = stack().udp_queue_arc(port) {
-                    drop(kind);
-                    return q.set_error(errno);
-                }
-            }
-        }
-        let changed = self.error.set(errno);
-        if changed {
-            #[cfg(target_os = "oxide-kernel")]
-            { self.recv_waiters.wake_all(); self.connect_waiters.wake_all(); }
-            self.poll_subs.notify_mask(vfs::POLL_ERR);
-        }
-        changed
-    }
-
-    /// Consume the pending positive Linux receive errno, or zero. # C: O(1)
-    pub fn take_pending_recv_error(&self) -> i32 {
-        self.error.take()
-    }
-
-    /// Observe whether a receive error is pending without consuming it. # C: O(1)
-    pub fn has_pending_recv_error(&self) -> bool {
-        self.error.has()
-    }
-
-    /// Ensure a local port is bound (auto-bind to an ephemeral
-    /// port when sendto is called before bind).
-    /// # C: O(1) if already bound, else O(N) ephemeral scan
-    pub fn ensure_bound(&self) -> Result<u16, NetError> {
-        let mut g = self.local_port.lock();
-        if let Some(p) = *g { return Ok(p); }
-        let p = alloc_ephemeral_port_with_error(self.error.clone())?;
-        let iface = stack().bound_iface(
-            self.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire),
-        )?;
-        stack().set_udp_bound_iface(p, iface);
-        *g = Some(p);
-        if let Some(q) = stack().udp_queue_arc(p) {
-            q.register_poll_subs(&self.poll_subs);
-        }
-        Ok(p)
-    }
 }
 
 impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
-
-#[cfg(test)]
-mod tests {
-    use super::InetSocket;
-    use syscall::errno::Errno;
-
-    #[test]
-    fn pending_recv_error_overwrites_with_latest_positive_errno() {
-        let sock = InetSocket::new_udp();
-        assert_eq!(sock.take_pending_recv_error(), 0);
-        assert!(!sock.set_pending_recv_error(0));
-        assert!(!sock.set_pending_recv_error(-5));
-        assert!(sock.set_pending_recv_error(Errno::Econnrefused as i32));
-        assert!(sock.set_pending_recv_error(Errno::Econnreset as i32));
-        assert_eq!(sock.take_pending_recv_error(), Errno::Econnreset as i32);
-        assert_eq!(sock.take_pending_recv_error(), 0);
-        assert!(sock.set_pending_recv_error(Errno::Econnreset as i32));
-    }
-}
-
-// F161 InetSocket::Drop moved to sock_drop.rs (1000-line cap).

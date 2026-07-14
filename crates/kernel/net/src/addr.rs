@@ -79,6 +79,29 @@ impl Ipv6Addr {
         let mut a = [0u8; 16]; a[15] = 1; Ipv6Addr(a)
     };
 
+    /// IPv4-mapped IPv6 address (`::ffff:a.b.c.d`). # C: O(1)
+    pub const fn from_v4_mapped(v4: Ipv4Addr) -> Self {
+        let octets = v4.octets();
+        let mut out = [0u8; 16];
+        out[10] = 0xff;
+        out[11] = 0xff;
+        out[12] = octets[0];
+        out[13] = octets[1];
+        out[14] = octets[2];
+        out[15] = octets[3];
+        Self(out)
+    }
+
+    /// Extract the IPv4 payload from `::ffff:a.b.c.d`. # C: O(1)
+    pub const fn to_v4_mapped(self) -> Option<Ipv4Addr> {
+        let a = self.0;
+        if a[0] != 0 || a[1] != 0 || a[2] != 0 || a[3] != 0
+            || a[4] != 0 || a[5] != 0 || a[6] != 0 || a[7] != 0
+            || a[8] != 0 || a[9] != 0 || a[10] != 0xff || a[11] != 0xff
+        { return None; }
+        Some(Ipv4Addr::new(a[12], a[13], a[14], a[15]))
+    }
+
     /// # C: O(1)
     pub const fn from_segments(s: [u16; 8]) -> Self {
         let mut o = [0u8; 16];

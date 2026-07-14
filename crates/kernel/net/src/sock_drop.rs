@@ -13,6 +13,7 @@ impl InetSocket {
     pub fn release_file(&self) {
         use core::sync::atomic::Ordering;
         if self.released.swap(true, Ordering::AcqRel) { return; }
+        let _lifecycle = self.local_port.lock();
         let stk = stack();
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             let linger_on = self.opts.linger_on.load(Ordering::Acquire) != 0;
@@ -42,9 +43,28 @@ impl InetSocket {
             #[cfg(target_os = "oxide-kernel")]
             entry.rx_waiters.wake_all();
         }
+        if let SockKind::TcpListener(listener) = &*self.kind.lock() {
+            stk.tcp_unlisten_entry(listener);
+        }
+        if let Some(bind) = self.tcp_bind.lock().take() {
+            stk.tcp_release_bind(&bind);
+        }
+        self.mcast.release(stk);
         if matches!(*self.kind.lock(), SockKind::Udp) {
-            if let Some(p) = *self.local_port.lock() {
-                stk.unbind_udp(p);
+            self.read_shut.store(true, Ordering::Release);
+            if let Some(endpoint) = self.udp4.lock().take() {
+                stk.unbind_udp_endpoint(&endpoint);
+                #[cfg(target_os = "oxide-kernel")]
+                endpoint.waiters.wake_all();
+            }
+            if let Some(endpoint) = self.udp6.lock().take() {
+                stk.unbind_udp6_endpoint(&endpoint);
+                #[cfg(target_os = "oxide-kernel")]
+                endpoint.waiters.wake_all();
+            }
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                self.recv_waiters.wake_all();
             }
         }
         // B17 (T11): AF_UNIX peer-EOF. The original Drop comment claimed

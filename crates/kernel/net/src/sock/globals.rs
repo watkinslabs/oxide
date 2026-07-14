@@ -1,4 +1,5 @@
 use super::*;
+use crate::UdpRxQueue;
 
 /// Process-global stack; AF_INET ops take a `&'static` via `stack()`.
 static STACK: NetStack = NetStack::new();
@@ -35,9 +36,8 @@ pub fn drain_loopback() {
     }
 }
 
-/// AF_INET ephemeral-port allocator; rolls over within 49152..=65535.
-static EPHEM_NEXT: core::sync::atomic::AtomicU16
-    = core::sync::atomic::AtomicU16::new(49152);
+static EPHEM_NEXT: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(crate::ephemeral::DEFAULT_START as u32);
 
 /// Allocate an unused ephemeral src port + bind it under
 /// `Ipv4Addr::ANY` so reply datagrams can be received.
@@ -49,12 +49,38 @@ pub fn alloc_ephemeral_port() -> Result<u16, NetError> {
 /// Allocate and bind an IPv4 ephemeral UDP port to one socket's canonical
 /// error state. # C: O(N tries)
 pub fn alloc_ephemeral_port_with_error(error: Arc<crate::SocketError>) -> Result<u16, NetError> {
+    alloc_ephemeral_udp4(0, Ipv4Addr::ANY, error, None,
+        Arc::new(core::sync::atomic::AtomicI32::new(0)),
+        Arc::new(core::sync::atomic::AtomicI32::new(0)),
+        Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 0,
+        Arc::new(Spinlock::new(None)), Arc::new(crate::bpf_filter::SocketFilter::new()),
+        Arc::new(crate::mcast_filter::SocketMcast::new()))
+        .map(|(port, _)| port)
+}
+
+/// Allocate and bind one exact IPv4 UDP endpoint. # C: O(N tries * N_port)
+pub fn alloc_ephemeral_udp4(net_ns: u64, bind_ip: Ipv4Addr,
+                            error: Arc<crate::SocketError>, iface: Option<NetIfaceId>,
+                            reuseaddr: Arc<core::sync::atomic::AtomicI32>,
+                            reuseport: Arc<core::sync::atomic::AtomicI32>,
+                            ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            owner_uid: u32,
+                            peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>>,
+                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                            mcast: Arc<crate::mcast_filter::SocketMcast>)
+    -> Result<(u16, Arc<UdpRxQueue>), NetError>
+{
     use core::sync::atomic::Ordering;
-    for _ in 0..(65535 - 49152) {
-        let p = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
-        let p = if p < 49152 { 49152 } else if p == 0 { 49152 } else { p };
-        if STACK.bind_udp_with_iface_error(Ipv4Addr::ANY, p, None, error.clone()).is_ok() {
-            return Ok(p);
+    let range = crate::ephemeral::range_in(net_ns);
+    for _ in 0..range.count() {
+        let seq = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
+        let p = range.port(seq);
+        if let Ok(endpoint) = STACK.bind_udp_socket(
+            bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
+            ip_mtu_discover.clone(), owner_uid,
+            peer.clone(), bpf_filter.clone(), mcast.clone(),
+        ) {
+            return Ok((p, endpoint));
         }
     }
     Err(NetError::Eaddrinuse)
@@ -72,12 +98,39 @@ pub fn alloc_ephemeral_port6() -> Result<u16, NetError> {
 /// Allocate and bind an IPv6 ephemeral UDP port to one socket's canonical
 /// error state. # C: O(N tries)
 pub fn alloc_ephemeral_port6_with_error(error: Arc<crate::SocketError>) -> Result<u16, NetError> {
+    alloc_ephemeral_udp6(0, crate::Ipv6Addr::ANY, error, None,
+        Arc::new(core::sync::atomic::AtomicI32::new(0)),
+        Arc::new(core::sync::atomic::AtomicI32::new(0)), 0,
+        Arc::new(core::sync::atomic::AtomicI32::new(0)), Arc::new(Spinlock::new(None)),
+        Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
+        Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new()))
+        .map(|(port, _)| port)
+}
+
+/// Allocate and bind one exact IPv6 UDP endpoint. # C: O(N tries * N_port)
+pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
+                            error: Arc<crate::SocketError>, iface: Option<NetIfaceId>,
+                            reuseaddr: Arc<core::sync::atomic::AtomicI32>,
+                            reuseport: Arc<core::sync::atomic::AtomicI32>,
+                            owner_uid: u32,
+                            v6only: Arc<core::sync::atomic::AtomicI32>,
+                            peer: Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
+                            ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                            mcast: Arc<crate::mcast_filter::SocketMcast>)
+    -> Result<(u16, Arc<crate::stack_ipv6::Udp6RxQueue>), NetError>
+{
     use core::sync::atomic::Ordering;
-    for _ in 0..(65535 - 49152) {
-        let p = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
-        let p = if p < 49152 { 49152 } else if p == 0 { 49152 } else { p };
-        if STACK.bind_udp6_with_iface_error(crate::Ipv6Addr::ANY, p, None, error.clone()).is_ok() {
-            return Ok(p);
+    let range = crate::ephemeral::range_in(net_ns);
+    for _ in 0..range.count() {
+        let seq = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
+        let p = range.port(seq);
+        if let Ok(endpoint) = STACK.bind_udp6_socket(
+            bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(), owner_uid,
+            v6only.clone(),
+            peer.clone(), ipv6_mtu_discover.clone(), bpf_filter.clone(), mcast.clone(),
+        ) {
+            return Ok((p, endpoint));
         }
     }
     Err(NetError::Eaddrinuse)

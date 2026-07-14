@@ -38,7 +38,9 @@ use vfs::InodeRef;
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    BoolHook as HBoolHook, BoolVar, IntHook as HIntHook, IntVar, StrHook as HStrHook, ULongVar,
+    BoolHook as HBoolHook, BoolVar, IntHook as HIntHook, IntVar,
+    PerNetIntHook as HPerNetIntHook, PerNetU16PairHook as HPerNetU16PairHook,
+    StrHook as HStrHook, ULongVar,
 };
 
 /// `proc_dointvec_minmax` window upper bound for a 32-bit-int knob.
@@ -46,6 +48,18 @@ const INT_MAX: i64 = i32::MAX as i64;
 
 fn net_somaxconn() -> i64 { net::sysctl::somaxconn() as i64 }
 fn set_net_somaxconn(value: i64) { net::sysctl::set_somaxconn(value as usize); }
+fn current_net_ns() -> u64 { net::netdev::current_net_ns() }
+fn local_port_range(ns: u64) -> (u16, u16) {
+    let range = net::ephemeral::range_in(ns);
+    (range.start, range.end)
+}
+fn set_local_port_range(ns: u64, start: u16, end: u16) -> Result<(), ()> {
+    net::ephemeral::set_range_in(ns, start, end)
+}
+fn unprivileged_port_start(ns: u64) -> i64 { net::ephemeral::unprivileged_start_in(ns) as i64 }
+fn set_unprivileged_port_start(ns: u64, value: i64) -> Result<(), ()> {
+    net::ephemeral::set_unprivileged_start_in(ns, value as u16)
+}
 
 /// One `ctl_table` leaf's `proc_handler` class + default value. # C: n/a
 enum Leaf {
@@ -54,6 +68,8 @@ enum Leaf {
     Int(i64, Option<(i64, i64)>),
     /// `proc_dointvec_minmax` bound to a subsystem accessor pair.
     IntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
+    /// Fallible hook for values constrained by another live field.
+    PerNetIntHook(fn(u64) -> i64, fn(u64, i64) -> Result<(), ()>, Option<(i64, i64)>),
     /// `proc_doulongvec_minmax` over a live `AtomicU64`.
     ULong(u64, Option<(u64, u64)>),
     /// `proc_dobool` over a live `AtomicBool`.
@@ -62,6 +78,8 @@ enum Leaf {
     BoolHook(fn() -> bool, fn(bool)),
     /// `proc_dostring` bound to a subsystem accessor pair.
     StrHook(fn() -> alloc::vec::Vec<u8>, fn(&[u8])),
+    /// Two-u16 `proc_dointvec` bound to subsystem accessors.
+    PerNetU16PairHook(fn(u64) -> (u16, u16), fn(u64, u16, u16) -> Result<(), ()>),
     /// `proc_dointvec` free byte slot (multi-field / not a single int).
     Bytes(&'static [u8]),
     /// Read-only constant (`StaticFileInode`, mode 0444).
@@ -152,7 +170,9 @@ const SYSCTL_TREE: &[Node] = &[
             File("tcp_tw_reuse",       Int(2, Some((0, 2)))),
             File("tcp_fin_timeout",    Int(60, Some((0, INT_MAX)))),
             File("tcp_keepalive_time", Int(7200, Some((0, INT_MAX)))),
-            File("ip_local_port_range", Const(b"32768\t60999\n")),
+            File("ip_local_port_range", PerNetU16PairHook(local_port_range, set_local_port_range)),
+            File("ip_unprivileged_port_start", PerNetIntHook(unprivileged_port_start,
+                set_unprivileged_port_start, Some((0, 65_535)))),
             File("icmp_echo_ignore_all", Int(0, Some((0, 1)))),
         ]),
         Dir("ipv6", &[
@@ -199,6 +219,9 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             bound_sysctl_inode(Arc::new(IntVar { cell, bounds }))
         }
         Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
+        Leaf::PerNetIntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HPerNetIntHook {
+            current_ns: current_net_ns, get, set, bounds,
+        })),
         ULong(def, bounds) => {
             let cell: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(def)));
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))
@@ -209,6 +232,9 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
         }
         Leaf::BoolHook(get, set) => bound_sysctl_inode(Arc::new(HBoolHook { get, set })),
         Leaf::StrHook(get, set) => bound_sysctl_inode(Arc::new(HStrHook { get, set })),
+        Leaf::PerNetU16PairHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetU16PairHook {
+            current_ns: current_net_ns, get, set,
+        })),
         Bytes(default) => SysctlInode::new(default),
         Const(default) => StaticFileInode::new(default),
     }

@@ -21,6 +21,13 @@ fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
         crate::NetError::Eaddrnotavail => vfs::VfsError::Eaddrnotavail,
         crate::NetError::Edestaddrreq  => vfs::VfsError::Edestaddrreq,
         crate::NetError::Enetunreach   => vfs::VfsError::Enetunreach,
+        crate::NetError::Ehostunreach  => vfs::VfsError::Ehostunreach,
+        crate::NetError::Eacces        => vfs::VfsError::Eacces,
+        crate::NetError::Enonet        => vfs::VfsError::Enonet,
+        crate::NetError::Enoprotoopt   => vfs::VfsError::Enoprotoopt,
+        crate::NetError::Eopnotsupp    => vfs::VfsError::Eopnotsupp,
+        crate::NetError::Eproto        => vfs::VfsError::Eproto,
+        crate::NetError::Ehostdown     => vfs::VfsError::Ehostdown,
         crate::NetError::Econnrefused  => vfs::VfsError::Econnrefused,
         crate::NetError::Econnreset    => vfs::VfsError::Econnreset,
         crate::NetError::Etimedout     => vfs::VfsError::Etimedout,
@@ -251,7 +258,7 @@ impl InetSocket {
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
-        let pending = if self.has_pending_recv_error() { vfs::POLL_ERR } else { 0 };
+        let pending = if self.has_pending_recv_error() || self.has_extended_error() { vfs::POLL_ERR } else { 0 };
         let unix_listener = {
             let kind = self.kind.lock();
             if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
@@ -260,12 +267,10 @@ impl InetSocket {
         match &*self.kind.lock() {
             SockKind::Udp => {
                 let mut mask = POLL_OUT;
-                if let Some(p) = *self.local_port.lock() {
-                    drain_loopback();
-                    if stack().recv_udp_opts(p, true).is_some() {
-                        mask |= POLL_IN;
-                    }
-                }
+                drain_loopback();
+                let ready4 = self.udp4.lock().as_ref().is_some_and(|q| q.recv(true).is_some());
+                let ready6 = self.udp6.lock().as_ref().is_some_and(|q| q.recv(true).is_some());
+                if ready4 || ready6 { mask |= POLL_IN; }
                 let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
@@ -327,13 +332,12 @@ impl InetSocket {
     fn inq_len(&self) -> usize {
         match &*self.kind.lock() {
             SockKind::Udp => {
-                let Some(p) = *self.local_port.lock() else { return 0; };
                 drain_loopback();
-                if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
-                    stack().recv_udp6_meta_opts(p, true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
-                } else {
-                    stack().recv_udp_meta_opts(p, true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
-                }
+                if let Some(q) = self.udp6.lock().as_ref() {
+                    q.recv(true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
+                } else if let Some(q) = self.udp4.lock().as_ref() {
+                    q.recv(true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
+                } else { 0 }
             }
             SockKind::TcpConn(entry) => { drain_loopback(); entry.conn.lock().recv_buf.len() }
             SockKind::Unix(pair, end) => match end {

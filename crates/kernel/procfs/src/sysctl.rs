@@ -11,9 +11,10 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use sync::{Spinlock, TaskList as TaskListClass};
-use vfs::{mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 use core::sync::atomic::Ordering;
 use crate::dyn_file::read_at;
@@ -163,6 +164,60 @@ impl FileOps for BoundSysctlFileOps {
         }
         Ok(src.len())
     }
+    fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        read_bound_handler(open_handler(file)?, off, buf)
+    }
+    fn write_file(&self, file: &File, off: u64, src: &[u8]) -> KResult<usize> {
+        write_bound_handler(open_handler(file)?, off, src)
+    }
+    fn read_nonblock_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        read_bound_handler(open_handler(file)?, off, buf)
+    }
+    fn write_nonblock_file(&self, file: &File, off: u64, src: &[u8]) -> KResult<usize> {
+        write_bound_handler(open_handler(file)?, off, src)
+    }
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        let d = file.inode().private::<BoundSysctlInode>().ok_or(VfsError::Einval)?;
+        if let Some(h) = d.h.bind() {
+            let state = Box::into_raw(Box::new(h)) as u64;
+            file.set_private_data(state);
+        }
+        Ok(())
+    }
+    fn on_release_file(&self, file: &File) {
+        let state = file.private_data();
+        if state == 0 { return; }
+        file.set_private_data(0);
+        // SAFETY: on_open_file stored one Box<Arc<dyn ProcHandler>> pointer in
+        // this File, and final release consumes that exact allocation once.
+        unsafe { drop(Box::from_raw(state as *mut Arc<dyn crate::proc_handler::ProcHandler>)); }
+    }
+}
+
+fn open_handler(file: &File) -> KResult<&dyn crate::proc_handler::ProcHandler> {
+    let state = file.private_data();
+    if state == 0 {
+        let d = file.inode().private::<BoundSysctlInode>().ok_or(VfsError::Einval)?;
+        return Ok(d.h.as_ref());
+    }
+    // SAFETY: nonzero private_data was installed by on_open_file as a live
+    // Box<Arc<dyn ProcHandler>> and remains owned until this File's release.
+    let h = unsafe { &*(state as *const Arc<dyn crate::proc_handler::ProcHandler>) };
+    Ok(h.as_ref())
+}
+
+fn read_bound_handler(h: &dyn crate::proc_handler::ProcHandler, off: u64,
+    buf: &mut [u8]) -> KResult<usize>
+{
+    let body = h.format();
+    Ok(read_at(&body, off, buf))
+}
+
+fn write_bound_handler(h: &dyn crate::proc_handler::ProcHandler, off: u64,
+    src: &[u8]) -> KResult<usize>
+{
+    if off == 0 { h.store(src).map_err(|_| VfsError::Einval)?; }
+    Ok(src.len())
 }
 
 /// Build a `/proc/sys/*` leaf inode bound to a live kernel variable via the

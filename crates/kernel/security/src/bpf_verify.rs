@@ -55,6 +55,7 @@ pub enum VerifyError {
     JumpOutOfBounds,
     LastNotExit,
     TruncatedWideLoad,
+    UnsupportedOpcode,
 }
 
 const MAX_INSNS: usize = 4096;
@@ -125,6 +126,44 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
     // the structural proxy; path-walker upgrade comes later.
     let last = decoded[n - 1];
     if last.opcode != BPF_EXIT { return Err(VerifyError::LastNotExit); }
+    Ok(())
+}
+
+/// Verify the exact eBPF subset executable by the socket-filter runner. # C: O(insns)
+pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
+    verify(insns)?;
+    let n = insns.len() / BPF_INSN_SIZE;
+    let mut pc = 0usize;
+    while pc < n {
+        let insn = decode(&insns[pc * BPF_INSN_SIZE..(pc + 1) * BPF_INSN_SIZE]);
+        if insn.opcode == BPF_LD_IMM_DW {
+            if insn.src != 0 { return Err(VerifyError::UnsupportedOpcode); }
+            let pseudo = decode(&insns[(pc + 1) * BPF_INSN_SIZE..(pc + 2) * BPF_INSN_SIZE]);
+            if pseudo.opcode != 0 || pseudo.dst != 0 || pseudo.src != 0 || pseudo.off != 0 {
+                return Err(VerifyError::UnsupportedOpcode);
+            }
+            pc += 2;
+            continue;
+        }
+        let class = insn.opcode & BPF_CLASS_MASK;
+        let op = insn.opcode & 0xf0;
+        let src = insn.opcode & 0x08;
+        let supported = match class {
+            0x07 | 0x04 => matches!(op, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50
+                | 0x60 | 0x70 | 0x80 | 0x90 | 0xa0 | 0xb0 | 0xc0)
+                && (op != 0x80 || src == 0),
+            BPF_JMP | BPF_JMP32 => {
+                insn.opcode == BPF_OP_EXIT || (insn.opcode != BPF_OP_CALL
+                    && matches!(op, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50
+                        | 0x60 | 0x70 | 0xa0 | 0xb0 | 0xc0 | 0xd0)
+                    && (op != 0 || src == 0))
+            }
+            0x01 | 0x02 | 0x03 => insn.opcode & 0xe0 == 0x60,
+            _ => false,
+        };
+        if !supported { return Err(VerifyError::UnsupportedOpcode); }
+        pc += 1;
+    }
     Ok(())
 }
 
@@ -212,5 +251,13 @@ mod tests {
         // 0x18 in the last slot — no pseudo-insn following.
         let p = cat(&[raw(0x18, 0, 0, 0, 0)]);
         assert_eq!(verify(&p), Err(VerifyError::TruncatedWideLoad));
+    }
+
+    #[test]
+    fn socket_filter_rejects_helper_call_and_unsupported_load_at_load_time() {
+        let call = cat(&[raw(0x85, 0, 0, 0, 1), raw(0x95, 0, 0, 0, 0)]);
+        assert_eq!(verify_socket_filter(&call), Err(VerifyError::UnsupportedOpcode));
+        let abs = cat(&[raw(0x20, 0, 0, 0, 0), raw(0x95, 0, 0, 0, 0)]);
+        assert_eq!(verify_socket_filter(&abs), Err(VerifyError::UnsupportedOpcode));
     }
 }

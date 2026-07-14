@@ -8,6 +8,8 @@
 // - udp: datagram receive/send helpers and iface source hook.
 // - unix: AF_UNIX connect lifecycle and backlog waiting.
 // - shutdown: protocol-owned shutdown transitions.
+// - lifecycle: endpoint errors, filters, device binding, and autobind.
+// - tcp_lifecycle: TCP bind, listen, and active-open reservation transitions.
 // - ops: bind/connect/listen/accept/sendto work functions.
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -25,6 +27,8 @@ mod io;
 mod udp;
 mod unix;
 mod shutdown;
+mod lifecycle;
+pub(crate) mod tcp_lifecycle;
 mod ops;
 
 pub use globals::*;

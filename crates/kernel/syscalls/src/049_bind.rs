@@ -51,6 +51,17 @@ fn remove_unix_sock_node(n: &UnixSockNode) {
     vfs::fire_dirent_delete(&n.parent.inode, &n.name);
 }
 
+/// Linux privileged-port admission for explicit INET binds. # C: O(1)
+fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool {
+    let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+    if port == 0 || port >= net::ephemeral::unprivileged_start_in(net_ns) { return false; }
+    let transport = matches!(*sock.kind.lock(),
+        net::sock::SockKind::Udp | net::sock::SockKind::TcpInit);
+    if !transport { return false; }
+    !sched::live::current()
+        .is_some_and(|cur| cur.has_cap(sched::cap::NET_BIND_SERVICE))
+}
+
 /// `bind(fd, addr, addrlen)` slot 49.
 /// # C: O(1)
 pub fn sys_bind(args: &SyscallArgs) -> i64 {
@@ -106,6 +117,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
+        if privileged_inet_port_denied(&sock, port) {
+            return -(Errno::Eacces.as_i32() as i64);
+        }
         net::sock::BoundAddr::Inet { ip, port }
     } else if family == AF_INET6 as u16 {
         // F180a: AF_INET6 bind via v6 path with the 16-byte address.
@@ -114,6 +128,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         let (_fam, port, bytes, _scope) = match read_sockaddr_in6(addr_p) {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
+        if privileged_inet_port_denied(&sock, port) {
+            return -(Errno::Eacces.as_i32() as i64);
+        }
         net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }
     } else if family == 17 /* AF_PACKET */ {
         // F131: sockaddr_ll = u16 family + u16 proto_be + i32 ifindex + tail.

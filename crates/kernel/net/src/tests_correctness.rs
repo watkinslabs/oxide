@@ -19,10 +19,8 @@ use crate::netdev::NetError;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "tests_perf.rs"]
 mod tests_perf;
-#[cfg(target_os = "oxide-kernel")]
 #[path = "tests_mld.rs"]
 mod tests_mld;
-#[cfg(target_os = "oxide-kernel")]
 #[path = "tests_igmp.rs"]
 mod tests_igmp;
 #[cfg(target_os = "oxide-kernel")]

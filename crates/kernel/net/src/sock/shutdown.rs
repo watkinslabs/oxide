@@ -82,19 +82,13 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
             let connected_v4 = sock.peer.lock().is_some();
             let connected_v6 = sock.peer6.lock().is_some();
             if !connected_v4 && !connected_v6 { return Err(NetError::Enotconn); }
-            let v6 = sock.family.load(core::sync::atomic::Ordering::Acquire) == super::AF_INET6;
-            let port = *sock.local_port.lock();
             if how.read() {
-                if let Some(q) = port.and_then(|p| if v6 { None } else { stack().udp_queue_arc(p) }) {
-                    let g = q.q.lock();
-                    sock.read_shut.store(true, Release);
-                    drop(g);
+                if let Some(q) = sock.udp4.lock().as_ref().cloned() {
+                    q.shutdown_read(&sock.read_shut);
                     #[cfg(target_os = "oxide-kernel")]
                     q.waiters.wake_all();
-                } else if let Some(q) = port.and_then(|p| if v6 { stack().udp6_queue_arc(p) } else { None }) {
-                    let g = q.q.lock();
-                    sock.read_shut.store(true, Release);
-                    drop(g);
+                } else if let Some(q) = sock.udp6.lock().as_ref().cloned() {
+                    q.shutdown_read(&sock.read_shut);
                     #[cfg(target_os = "oxide-kernel")]
                     q.waiters.wake_all();
                 } else {
