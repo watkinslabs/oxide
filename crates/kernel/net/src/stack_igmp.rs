@@ -44,13 +44,18 @@ impl NetStack {
         self.emit_igmpv3(net_ns, iface, src, &records)
     }
 
-    fn complete_v4_change(&self, iface: NetIfaceId, group: Ipv4Addr, generation: u64,
-                          now_ns: u64) -> bool {
+    fn advance_v4_change(&self, iface: NetIfaceId, group: Ipv4Addr, generation: u64,
+                         attempted: &crate::mcast_state::V4Change,
+                         delivered: bool, now_ns: u64) -> bool {
         let mut all = self.v4_mcast.lock();
         let Some(groups) = all.get_mut(&iface) else { return false };
         let Some(index) = groups.iter().position(|state| state.group == group) else { return false };
-        if groups[index].generation != generation { return false; }
-        let complete = groups[index].change.as_mut().is_some_and(|change| change.succeeded(now_ns));
+        if groups[index].generation != generation {
+            groups[index].reconcile_superseded(attempted, delivered, now_ns);
+            return true;
+        }
+        let complete = groups[index].change.as_mut()
+            .is_some_and(|change| change.attempted(delivered, now_ns));
         if complete {
             groups[index].change = None;
             if groups[index].is_empty() { groups.remove(index); }
@@ -59,14 +64,42 @@ impl NetStack {
         true
     }
 
-    fn rearm_v4_change(&self, iface: NetIfaceId, group: Ipv4Addr, generation: u64,
-                       now_ns: u64) -> bool {
-        let mut all = self.v4_mcast.lock();
-        let Some(state) = all.get_mut(&iface).and_then(|groups| groups.iter_mut()
-            .find(|state| state.group == group && state.generation == generation)) else { return false };
-        let Some(change) = state.change.as_mut() else { return false };
-        change.failed(now_ns);
-        true
+    fn transmit_v4_change(&self, net_ns: Option<u64>, iface: NetIfaceId, src: Ipv4Addr,
+                          group: Ipv4Addr, generation: u64,
+                          change: &crate::mcast_state::V4Change, now_ns: u64) {
+        let current = self.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
+            .any(|state| state.group == group && state.generation == generation
+                && state.change.is_some()));
+        if !current { return; }
+        let delivered = net_ns.is_some_and(|net_ns| {
+            self.emit_v4_change(net_ns, iface, src, group, change).is_ok()
+        });
+        self.advance_v4_change(iface, group, generation, change, delivered, now_ns);
+    }
+
+    fn drive_v4_reports(&self, net_ns: Option<u64>, iface: NetIfaceId, now_ns: u64) {
+        let Some(driver) = self.ifaces.mcast_report(iface) else {
+            self.v4_mcast.lock().remove(&iface); return;
+        };
+        if !driver.live() { self.v4_mcast.lock().remove(&iface); return; }
+        if !driver.try_v4() { return; }
+        loop {
+            let drive_now = now_ns.max(crate::stack::net_now_ns());
+            if !driver.live() { self.v4_mcast.lock().remove(&iface); driver.release_v4(); return; }
+            let pending = self.v4_mcast.lock().get(&iface).and_then(|groups| groups.iter()
+                .find_map(|state| state.change.as_ref().filter(|change| change.due(drive_now))
+                    .map(|change| (state.group, state.report_src, state.generation, change.clone()))));
+            let Some((group, src, generation, change)) = pending else {
+                driver.release_v4();
+                let due = self.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
+                    .any(|state| state.change.as_ref().is_some_and(|change| {
+                        change.due(now_ns.max(crate::stack::net_now_ns()))
+                    })));
+                if !due || !driver.try_v4() { return; }
+                continue;
+            };
+            self.transmit_v4_change(net_ns, iface, src, group, generation, &change, drive_now);
+        }
     }
 
     fn discard_v4_change(&self, iface: NetIfaceId, group: Ipv4Addr, generation: u64) {
@@ -90,14 +123,18 @@ impl NetStack {
                                         iface: NetIfaceId, group: Ipv4Addr,
                                         src: Ipv4Addr, filter: Option<&SourceFilter>) -> NetResult<()> {
         if !group.is_multicast() { return Err(NetError::Einval); }
-        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
+        let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
+        if !report.live() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.v4_src_on_iface(net_ns, iface).unwrap_or(src) } else { src };
         let now_ns = crate::stack::net_now_ns();
         let staged = {
             let mut all = self.v4_mcast.lock();
-            let groups = all.entry(iface).or_default();
+            if filter.is_none() && !all.get(&iface).is_some_and(|groups| {
+                groups.iter().any(|state| state.group == group)
+            }) { return Err(NetError::Eaddrnotavail); }
+            let groups = if filter.is_some() { all.entry(iface).or_default() }
+                else { all.get_mut(&iface).ok_or(NetError::Eaddrnotavail)? };
             let index = groups.iter().position(|state| state.group == group);
-            if filter.is_none() && index.is_none() { return Err(NetError::Eaddrnotavail); }
             let index = match index {
                 Some(index) => index,
                 None => { groups.push(V4IfaceGroup::new(group, src)); groups.len() - 1 }
@@ -112,19 +149,18 @@ impl NetStack {
             let after = groups[index].aggregate();
             if prior.as_ref().is_some_and(|before| *before == after) { None } else {
                 let report_src = groups[index].report_src;
-                let (generation, change) = groups[index].stage(prior.as_ref(), now_ns);
-                Some((report_src, generation, change))
+                let (generation, _) = groups[index].stage(prior.as_ref(), now_ns);
+                Some((report_src, generation))
             }
         };
-        let Some((report_src, generation, change)) = staged else { return Ok(()) };
+        if !report.live() { self.v4_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
+        let Some((_report_src, generation)) = staged else { return Ok(()) };
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation);
             return Ok(());
         }
-        match self.emit_v4_change(net_ns, iface, report_src, group, &change) {
-            Ok(()) => { self.complete_v4_change(iface, group, generation, now_ns); Ok(()) }
-            Err(_) => { self.rearm_v4_change(iface, group, generation, now_ns); Ok(()) }
-        }
+        self.drive_v4_reports(Some(net_ns), iface, now_ns);
+        Ok(())
     }
 
     /// Remove one dead socket's policy and retain only a compact failed report. # C: O(N)
@@ -137,6 +173,7 @@ impl NetStack {
     pub(crate) fn release_ipv4_multicast_in(&self, net_ns: u64, owner: usize,
                                             iface: NetIfaceId, group: Ipv4Addr,
                                             _src: Ipv4Addr) {
+        let report = self.ifaces.mcast_report_in_ns(iface, net_ns);
         let now_ns = crate::stack::net_now_ns();
         let snapshot = {
             let mut all = self.v4_mcast.lock();
@@ -145,17 +182,15 @@ impl NetStack {
             let prior = state.aggregate();
             if state.members.remove(&owner).is_none() { return; }
             if state.aggregate() == prior { None } else {
-                let (generation, change) = state.stage(Some(&prior), now_ns);
-                Some((state.report_src, generation, change))
+                let (generation, _) = state.stage(Some(&prior), now_ns);
+                Some(generation)
             }
         };
-        let Some((src, generation, change)) = snapshot else { return };
+        let Some(generation) = snapshot else { return };
         if group == IPV4_ALL_HOSTS { self.discard_v4_change(iface, group, generation); return; }
-        if self.emit_v4_change(net_ns, iface, src, group, &change).is_ok() {
-            self.complete_v4_change(iface, group, generation, now_ns);
-        } else {
-            self.rearm_v4_change(iface, group, generation, now_ns);
-        }
+        if report.as_ref().is_some_and(|report| report.live()) {
+            self.drive_v4_reports(Some(net_ns), iface, now_ns);
+        } else { self.v4_mcast.lock().remove(&iface); }
     }
 
     fn emit_igmpv3(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr,
@@ -208,7 +243,8 @@ impl NetStack {
     pub fn join_ipv4_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
                                   group: Ipv4Addr, src: Ipv4Addr) -> NetResult<()> {
         if !group.is_multicast() { return Err(NetError::Einval); }
-        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
+        let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
+        if !report.live() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.v4_src_on_iface(net_ns, iface).unwrap_or(src) } else { src };
         let now_ns = crate::stack::net_now_ns();
         let staged = {
@@ -225,18 +261,17 @@ impl NetStack {
             if before == after && existed { None } else {
                 let report_src = groups[index].report_src;
                 let prior = if existed { Some(&before) } else { None };
-                let (generation, change) = groups[index].stage(prior, now_ns);
-                Some((report_src, generation, change))
+                let (generation, _) = groups[index].stage(prior, now_ns);
+                Some((report_src, generation))
             }
         };
-        let Some((report_src, generation, change)) = staged else { return Ok(()) };
+        if !report.live() { self.v4_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
+        let Some((_report_src, generation)) = staged else { return Ok(()) };
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
-        match self.emit_v4_change(net_ns, iface, report_src, group, &change) {
-            Ok(()) => { self.complete_v4_change(iface, group, generation, now_ns); Ok(()) }
-            Err(_) => { self.rearm_v4_change(iface, group, generation, now_ns); Ok(()) }
-        }
+        self.drive_v4_reports(Some(net_ns), iface, now_ns);
+        Ok(())
     }
 
     /// Leave an IPv4 multicast group and emit a state-change report. # C: O(N groups)
@@ -247,7 +282,8 @@ impl NetStack {
     /// Leave an IPv4 multicast group in one network namespace. # C: O(N groups)
     pub fn leave_ipv4_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
                                    group: Ipv4Addr, _src: Ipv4Addr) -> NetResult<()> {
-        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
+        let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
+        if !report.live() { return Err(NetError::Enodev); }
         let now_ns = crate::stack::net_now_ns();
         let staged = {
             let mut all = self.v4_mcast.lock();
@@ -258,18 +294,17 @@ impl NetStack {
             state.asm_refs -= 1;
             let after = state.aggregate();
             if before == after { None } else {
-                let (generation, change) = state.stage(Some(&before), now_ns);
-                Some((state.report_src, generation, change))
+                let (generation, _) = state.stage(Some(&before), now_ns);
+                Some(generation)
             }
         };
-        let Some((report_src, generation, change)) = staged else { return Ok(()) };
+        if !report.live() { self.v4_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
+        let Some(generation) = staged else { return Ok(()) };
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
-        match self.emit_v4_change(net_ns, iface, report_src, group, &change) {
-            Ok(()) => { self.complete_v4_change(iface, group, generation, now_ns); Ok(()) }
-            Err(_) => { self.rearm_v4_change(iface, group, generation, now_ns); Ok(()) }
-        }
+        self.drive_v4_reports(Some(net_ns), iface, now_ns);
+        Ok(())
     }
 
     /// Retry failed IGMP/MLD state-change reports. # C: O(N groups)
@@ -286,14 +321,8 @@ impl NetStack {
             }}
             pending
         };
-        for (iface, group, src, generation, change) in pending {
-            let Some(net_ns) = self.ifaces.namespace(iface) else {
-                self.rearm_v4_change(iface, group, generation, now_ns);
-                continue;
-            };
-            if self.emit_v4_change(net_ns, iface, src, group, &change).is_ok() {
-                self.complete_v4_change(iface, group, generation, now_ns);
-            } else { self.rearm_v4_change(iface, group, generation, now_ns); }
+        for (iface, _, _, _, _) in pending {
+            self.drive_v4_reports(self.ifaces.namespace(iface), iface, now_ns);
         }
         self.retry_mld_reports(now_ns);
     }

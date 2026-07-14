@@ -123,7 +123,8 @@ impl NetStack {
 
     /// Remove one namespace-owned interface and all attached network state. # C: O(N)
     pub fn unregister_iface_in(&self, net_ns: u64, iface: NetIfaceId) -> bool {
-        if self.ifaces.namespace(iface) != Some(net_ns) { return false; }
+        let Some(report) = self.ifaces.mcast_report_in_ns(iface, net_ns) else { return false };
+        report.retire();
         self.routes.retain_in(net_ns, |e| e.iface != iface);
         self.routes6.retain_in(net_ns, |e| e.iface != iface);
         let _ = crate::iface_addr::remove_iface(net_ns, iface);

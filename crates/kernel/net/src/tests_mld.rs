@@ -53,6 +53,17 @@ fn finish_mld_change(stack: &NetStack, lo: &crate::LoopbackDev) {
 }
 
 #[test]
+fn mld_failed_remove_does_not_publish_interface_state() {
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x3343]);
+    let source = Ipv6Addr::from_segments([0,0,0,0,0,0,0,1]);
+    assert_eq!(stack.set_ipv6_multicast_in(0, 7, iface, group, source, None),
+        Err(crate::NetError::Eaddrnotavail));
+    assert!(!stack.v6_mcast.lock().contains_key(&iface));
+}
+
+#[test]
 fn mld_general_query_reports_joined_group() {
     use crate::icmpv6::{
         build_mldv1_query, ICMPV6_TYPE_MLD_REPORT,
@@ -210,7 +221,7 @@ fn ipv6_multicast_device_state_is_reference_counted() {
 }
 
 #[test]
-fn mld_failed_close_report_retries_on_timer() {
+fn mld_failed_close_report_consumes_bounded_attempts() {
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -227,7 +238,7 @@ fn mld_failed_close_report_retries_on_timer() {
         groups.iter().any(|current| current.group == group && current.members.is_empty()
             && current.change.as_ref().is_some_and(|change| {
                 matches!(change.report, crate::mcast_state::V6Report::Tomb)
-                    && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS
+                    && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS - 1
                     && change.next_ns == crate::mcast_state::REPORT_INTERVAL_NS
             }))
     }));
@@ -238,22 +249,8 @@ fn mld_failed_close_report_retries_on_timer() {
     assert_eq!(dev.attempts.load(Ordering::Acquire), attempts);
     stack.retry_multicast_reports(interval);
     assert_eq!(dev.attempts.load(Ordering::Acquire), attempts + 1);
-    assert!(stack.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
-        entry.group == group && entry.change.as_ref().is_some_and(|change| {
-            change.remaining == crate::mcast_state::REPORT_ROBUSTNESS && change.next_ns == interval * 2
-        })
-    })));
-
-    dev.fail.store(false, Ordering::Release);
     stack.retry_multicast_reports(interval * 2);
-    assert!(stack.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
-        entry.group == group && entry.change.as_ref().is_some_and(|change| {
-            change.remaining == 1 && change.next_ns == interval * 3
-        })
-    })));
-    stack.retry_multicast_reports(interval * 3 - 1);
-    assert!(stack.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| entry.group == group)));
-    stack.retry_multicast_reports(interval * 3);
+    assert_eq!(dev.attempts.load(Ordering::Acquire), attempts + 1);
     assert!(!stack.v6_mcast.lock().get(&iface).is_some_and(|groups| {
         groups.iter().any(|current| current.group == group)
     }));
@@ -297,10 +294,19 @@ fn mld_failed_initial_report_commits_join_and_retries() {
     assert!(stack.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
         entry.group == group && entry.members.len() == 1 && entry.change.as_ref().is_some_and(|change| {
             matches!(change.report, crate::mcast_state::V6Report::Active(_))
-                && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS
+                && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS - 1
                 && change.next_ns == crate::mcast_state::REPORT_INTERVAL_NS
         })
     })));
+    let interval = crate::mcast_state::REPORT_INTERVAL_NS;
+    stack.retry_multicast_reports(interval);
+    assert_eq!(dev.attempts.load(Ordering::Acquire), crate::mcast_state::REPORT_ROBUSTNESS as usize);
+    assert!(state.accept_v6(iface, group, source));
+    assert!(stack.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
+        entry.group == group && entry.members.len() == 1 && entry.change.is_none()
+    })));
+    stack.retry_multicast_reports(interval * 2);
+    assert_eq!(dev.attempts.load(Ordering::Acquire), crate::mcast_state::REPORT_ROBUSTNESS as usize);
 }
 
 #[test]
