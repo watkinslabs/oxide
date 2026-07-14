@@ -1,13 +1,18 @@
-# state - B827 classic socket-filter uaccess
+# state - B828 ICMPv6 error conversion
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B827-network-classic-filter-uaccess`
-- Branch: `B827-network-classic-filter-uaccess`
-- Base: `094dedb6` (`origin/main`, merged B826)
-- Scope: import classic socket filters through fault-recoverable uaccess with Linux errno semantics.
+- Worktree: `/home/nd/oxide-wt/B828-network-icmpv6-error-map`
+- Branch: `B828-network-icmpv6-error-map`
+- Base: `7bef233a` (`origin/main`, merged B827)
+- Scope: match Linux ICMPv6 errno/fatal conversion and Packet Too Big PMTU hardness.
+
+## B827 publication
+
+- PR: `#3087`, merged as `7bef233a` on 2026-07-14.
+- x86 and ARM target checks and smoke passed.
 
 ## B826 publication
 
