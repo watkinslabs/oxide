@@ -153,9 +153,12 @@ Merged network foundation:
       destructive pending-bit lost-wakeup race; monotonic publication/consumption
       generations now preserve concurrent notification across harvest and park.
       PR #3109, merge `7d6c2abb`.
-    - [~] N03.8.2 capture an ingress generation/owner lease before Virtio RX
+    - [x] N03.8.2 capture an ingress generation/owner lease before physical RX
       dequeue and invalidate/wait old generations before interface return to init.
-      Active on `B842-netns-ingress-owner-lease`.
+      B842, PR #3111, merge `f8d5c20a`; Virtio and Linux-module RX hold one
+      concrete-owner lease across L2/L3 delivery, Virtio descriptors carry
+      assignment generations, stale completions drop and retag on repost,
+      departed address policy clears, and reassignment re-raises NetRx.
     - [ ] N03.8.3 retain the concrete namespace owner in private-loopback drain
       snapshots until every queued packet finishes dispatch.
     - [ ] N03.8.4 install `SIOCGSKNS` namespace fds with `FD_CLOEXEC` atomically

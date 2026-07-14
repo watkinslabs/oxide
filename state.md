@@ -4,12 +4,11 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `e0012173`, synchronized with `origin/main` when B842 branched.
-- N01-N02 and N03.1-N03.8.1 are merged.
+- `main`: `f8d5c20a`, synchronized with `origin/main` after B842 merged.
+- N01-N02 and N03.1-N03.8.2 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
-- N03.8.2 Virtio ingress owner lease is active on
-  `B842-netns-ingress-owner-lease`.
+- N03.8.2 physical ingress owner lease merged in PR #3111 at `f8d5c20a`.
 
 ## Implemented
 
@@ -24,19 +23,21 @@ Update: 2026-07-14.
 - Callback/registry/reaper transitions share production logic with Loom models.
 - Reaper notification uses monotonic publication/consumption generations; harvest
   cannot erase a concurrent final-drop notification before park.
+- Physical RX holds a concrete namespace-owner generation lease across AF_PACKET
+  and L3 delivery; Virtio drops old descriptor completions after reassignment.
 
 ## Verification
 
-- Loom runner: net 518 and network-namespace 6; zero failures.
-- Hosted: net 515, sched 140, network-namespace 3, xtask; zero failures.
+- Loom runner: net 523 and network-namespace 6; zero failures.
+- Hosted: net 520, Virtio net 23, network-namespace 3; zero failures.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- N03.8.2-N03.8.7: ingress lease, loopback owner pin, atomic SIOCGSKNS fd
-  install, retained-owner schedule matrix, namespace-aware physical-device
+- N03.8.3-N03.8.7: loopback owner pin, atomic SIOCGSKNS fd install,
+  retained-owner schedule matrix, namespace-aware physical-device
   uninstall, and control-plane mutation/teardown serialization.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
