@@ -4,13 +4,13 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `e6a97f8c`, synchronized with `origin/main`.
+- `main`: `9dda60c2`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
 - B834 uses the GNU aarch64 target for reproducible vDSO generation.
 - B835 adds strict per-architecture vDSO ABI validation.
-- N03 canonical network-namespace lifetime is the next network lane.
+- N03.1 canonical network-namespace owner foundation is the next network lane.
 
 ## Implemented
 

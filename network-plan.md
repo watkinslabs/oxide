@@ -109,6 +109,26 @@ Merged network foundation:
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at
   final owner drop and remove ID-scan/task-table cleanup heuristics. Cover
   clone/unshare/setns/fd/socket lifetime and state destruction races.
+  - [ ] N03.1 introduce a dependency-neutral network-namespace owner with
+    immutable monotonic ID, owning user namespace, stable nsfs identity, weak
+    live registry, init owner, and install-once final-drop callback.
+  - [ ] N03.2 replace task `AtomicU64` storage with an owned namespace handle;
+    clone atomically, swap under one lock, and release explicitly on task exit
+    so pidfds retaining reaped tasks cannot retain namespace membership.
+  - [ ] N03.3 make proc namespace links and nsfs inodes retain the concrete
+    network owner instead of reconstructing an owner from a numeric ID.
+  - [ ] N03.4 wire clone, `CLONE_NEWNET`, unshare, and setns publication and
+    rollback through owned handles; publish loopback before the new owner.
+  - [ ] N03.5 make INET/UNIX/PACKET, NETLINK, and VSOCK sockets retain the
+    concrete owner; accepted sockets clone the listener owner directly.
+  - [ ] N03.6 make `SIOCGSKNS` return the resolved socket's namespace and make
+    listns enumerate the live registry, including fd-only and socket-only owners.
+  - [ ] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces
+    before removing addresses, neighbors, multicast, fragments, routes/rules,
+    transport tables, UNIX state, sysctls, and registry metadata.
+  - [ ] N03.8 prove final-drop, pidfd, nsfd, passed-socket, blocked-I/O, ingress,
+    teardown, SIOCGSKNS, listns, and task-owner swap races in hosted and loom
+    tests; run full network/namespace/syscall suites and dual target builds.
 - [ ] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
