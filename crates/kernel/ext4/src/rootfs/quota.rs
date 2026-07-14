@@ -45,17 +45,17 @@ pub(crate) fn release_existing_inode_retry(st: &RootfsState, ino: u32, raw: &cra
     }
 }
 
-/// Release inode-count quota without detaching cached dquots. # C: O(1)+VFS quota
+/// Release complete inode quota usage without detaching cached dquots. # C: O(1)+VFS quota
 pub(crate) fn release_existing_inode_usage(st: &RootfsState, raw: &crate::Inode) -> vfs::KResult<()> {
     let Some(sb) = st.i_sb() else { return Ok(()); };
-    let usage = vfs::DquotUsage { space: 0, reserved_space: 0, inodes: 1 };
+    let usage = vfs::DquotUsage { space: raw.i_blocks.saturating_mul(512), reserved_space: 0, inodes: 1 };
     vfs::dquot_free_inode(&sb, raw.uid, raw.gid, raw.i_projid, usage)
 }
 
-/// Roll back a pre-release of existing inode-count quota. # C: O(1)+VFS quota
+/// Roll back a pre-release of complete existing inode usage. # C: O(1)+VFS quota
 pub(crate) fn recharge_existing_inode_usage(st: &RootfsState, raw: &crate::Inode) -> vfs::KResult<()> {
     let Some(sb) = st.i_sb() else { return Ok(()); };
-    let usage = vfs::DquotUsage { space: 0, reserved_space: 0, inodes: 1 };
+    let usage = vfs::DquotUsage { space: raw.i_blocks.saturating_mul(512), reserved_space: 0, inodes: 1 };
     vfs::dquot_alloc_inode(&sb, raw.uid, raw.gid, raw.i_projid, usage)
 }
 
