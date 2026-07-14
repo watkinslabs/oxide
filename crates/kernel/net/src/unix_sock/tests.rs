@@ -298,7 +298,7 @@ fn msgpair_eof_after_close() {
     assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"final");
     assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"");
     assert!(p.is_eof(UnixEnd::B));
-    assert!(matches!(p.send(UnixEnd::A, b"more"), Err(UnixStreamError::PeerClosed)));
+    assert!(matches!(p.send(UnixEnd::A, b"more"), Err(UnixMsgError::PeerClosed)));
 }
 
 #[test]

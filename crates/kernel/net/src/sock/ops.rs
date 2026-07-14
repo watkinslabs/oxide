@@ -366,7 +366,10 @@ pub fn sendto(
     if let SockKind::UnixMsgPair(pair, end) = &*sock.kind.lock() {
         let pair = pair.clone();
         let end = *end;
-        return pair.send(end, payload).map_err(|_| NetError::Epipe);
+        return pair.send(end, payload).map_err(|e| match e {
+            crate::UnixMsgError::PeerClosed => NetError::Epipe,
+            crate::UnixMsgError::PeerRefused => NetError::Econnrefused,
+        });
     }
     // AF_UNIX SOCK_STREAM socketpair: same shape, byte ring instead.
     if let SockKind::Unix(pair, end) = &*sock.kind.lock() {

@@ -78,7 +78,8 @@ pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u6
         }
         SockKind::UnixMsgPair(pair, end) => match pair.send_with_fds(*end, &payload, fds) {
             Ok(n) => n as i64,
-            Err(net::UnixStreamError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
+            Err(net::UnixMsgError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
+            Err(net::UnixMsgError::PeerRefused) => -(Errno::Econnrefused.as_i32() as i64),
         },
         _ => -(Errno::Einval.as_i32() as i64),
     };
@@ -92,6 +93,9 @@ pub fn sendmsg_unix_dgram_with_fds(
     sock: &Arc<InetSocket>, name: u64, namelen: u64, iov: u64, iovlen: u64,
     fds: Vec<Arc<File>>,
 ) -> i64 {
+    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+        return -(Errno::Epipe.as_i32() as i64);
+    }
     let addr: net::UnixAddr = if name != 0 {
         match crate::net_sockaddr::read_sockaddr_un_path_len(name, namelen) {
             Some(p) => match crate::namei_common::resolve_unix_addr(p) {

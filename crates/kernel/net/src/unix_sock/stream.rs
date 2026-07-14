@@ -374,7 +374,7 @@ impl UnixPair {
             drop(g);
             return ReadOutcome::Reset;
         }
-        if g.closed_writer {
+        if g.closed_writer || g.reader_shutdown {
             drop(g);
             return ReadOutcome::Eof;
         }

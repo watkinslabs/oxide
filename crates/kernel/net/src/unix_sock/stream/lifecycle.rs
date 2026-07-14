@@ -92,7 +92,6 @@ impl UnixPair {
         use core::sync::atomic::Ordering::{AcqRel, Release};
         let released = match end { UnixEnd::A => &self.released_a, UnixEnd::B => &self.released_b };
         if released.swap(true, AcqRel) { return; }
-        self.close_writer(end);
         let incoming = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
         let (unread, fds): (bool, Vec<(u64, Vec<Arc<vfs::File>>, (u32, u32, u32))>) = {
             let mut g = incoming.lock();
@@ -108,6 +107,8 @@ impl UnixPair {
         };
         peer_gone.store(true, Release);
         if unread { reset.store(true, Release); }
+        let outgoing = match end { UnixEnd::A => &self.a_to_b, UnixEnd::B => &self.b_to_a };
+        outgoing.lock().closed_writer = true;
         drop(fds);
         #[cfg(target_os = "oxide-kernel")]
         {

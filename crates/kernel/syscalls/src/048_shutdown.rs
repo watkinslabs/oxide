@@ -6,12 +6,10 @@ use crate::net_trace::trace_enotsock_at;
 use crate::net_common::{errno_from_neterr, fd_file, inode_as_inet_socket};
 
 /// `shutdown(fd, how)` slot 48. POSIX semantics:
-///   SHUT_RD   (0) — disable read side; future read()/recv* return EOF
-///   SHUT_WR   (1) — disable write side; send FIN to peer
+///   SHUT_RD   (0) — drain queued input, then apply protocol receive shutdown
+///   SHUT_WR   (1) — apply protocol send shutdown and notify the peer
 ///   SHUT_RDWR (2) — both
-/// AF_UNIX SHUT_WR maps to UnixPair::close_writer; TCP SHUT_WR maps
-/// to tcp_close (sends FIN). SHUT_RD sets the per-socket read_shut
-/// flag honored by Inode::read / read_nonblock.
+/// Protocol state and wakeup ordering are owned by `net::sock::shutdown`.
 /// # C: O(1)
 pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
     let fd  = args.a0;

@@ -292,10 +292,18 @@ pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &S
             net::unix_sock::msg_pair::ArmMsgRead::Eof => break net::unix_sock::UnixMsg {
                 payload: alloc::vec::Vec::new(), fds: alloc::vec::Vec::new(), creds: (0, 0, 0),
             },
-            net::unix_sock::msg_pair::ArmMsgRead::Parked => unsafe {
-                sched::live::schedule::schedule();
+            net::unix_sock::msg_pair::ArmMsgRead::Parked { reader_shutdown } => {
+                // SAFETY: arm_read published current under the incoming queue lock.
+                unsafe { sched::live::schedule::schedule(); }
                 pair.reader_waiters(end).remove_current();
-            },
+                if !reader_shutdown && pair.kind == net::UnixMsgKind::Datagram
+                    && pair.reader_shutdown(end) && !pair.has_msg(end)
+                {
+                    break net::unix_sock::UnixMsg {
+                        payload: alloc::vec::Vec::new(), fds: alloc::vec::Vec::new(), creds: (0, 0, 0),
+                    };
+                }
+            }
         }
     };
     let mut total: usize = 0;
