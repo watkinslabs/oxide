@@ -1,13 +1,20 @@
-# state - B830 BPF socket-filter semantics
+# state - B831 raw and packet socket semantics
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B830-network-bpf-filter-semantics`
-- Branch: `B830-network-bpf-filter-semantics`
-- Base: `0f400b2b` (`origin/main`, merged B829)
-- Scope: match Linux socket-filter authorization, mutation, execution, and inheritance semantics.
+- Worktree: `/home/nd/oxide-wt/B831-network-raw-packet-socket-semantics`
+- Branch: `B831-network-raw-packet-socket-semantics`
+- Base: `478bc037` (`origin/main`, merged B830)
+- Scope: replace raw-IP UDP-shell behavior and complete raw/AF_PACKET receive,
+  capability, namespace, and socket-filter semantics.
+
+## B830 publication
+
+- PR: `#3090`, merged as `478bc037` on 2026-07-14.
+- Hosted net suite: 431 passed; classic-BPF verifier suite: 5 passed.
+- x86 and ARM target builds passed; both smoke boots reached `basic.target`.
 
 ## B830 implemented
 
