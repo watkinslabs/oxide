@@ -3,5 +3,4 @@
 mod parse;
 mod send;
 
-pub use parse::parse_scm_rights;
-pub use send::{sendmsg_unix_dgram_with_fds, sendmsg_unix_stream_with_fds, try_sendmsg_with_fds};
+pub use send::{sendmsg_unix_dgram_with_fds, sendmsg_unix_stream_with_fds, try_sendmsg_with_control, validate_non_unix_control};

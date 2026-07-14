@@ -261,48 +261,27 @@ fn send_slice(file: &alloc::sync::Arc<vfs::File>, buf: &[u8], dest_groups: u32) 
     }
 }
 
-/// `sendmsg(fd, msghdr)` for netlink. Unlike the generic sendmsg fallback,
+/// Kernel-snapshot `sendmsg` for netlink. Unlike the generic fallback,
 /// this preserves datagram boundaries across iovecs and passes
 /// sockaddr_nl.nl_groups into the netlink layer so userspace-originated
 /// multicast, especially systemd-udevd's cooked kobject uevents, reaches
 /// monitor subscribers.
 /// # C: O(iov + payload bytes)
-pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
-    let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
+pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i64 {
     let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
         Some(s) => s,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let (groups, dest_pid) = if name != 0 {
-        if name >= USER_VA_END || namelen < 12 { return -(Errno::Einval.as_i32() as i64); }
-        // SAFETY: name validated in user range and namelen covers sockaddr_nl {nl_pid @ +4, nl_groups @ +8}.
-        unsafe { (core::ptr::read_volatile((name + 8) as *const u32),
-                  core::ptr::read_volatile((name + 4) as *const u32)) }
+    let (groups, dest_pid) = if !name.is_empty() {
+        if name.len() < 12 { return -(Errno::Einval.as_i32() as i64); }
+        if u16::from_ne_bytes(name[..2].try_into().unwrap()) != 16 {
+            return -(Errno::Eafnosupport.as_i32() as i64);
+        }
+        (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
+            u32::from_ne_bytes(name[4..8].try_into().unwrap()))
     } else {
         (0, 0)
     };
-
-    let mut payload = Vec::new();
-    for i in 0..iovlen {
-        let iov_i = iov + i * 16;
-        if iov_i == 0 || iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: iov_i validated in user range; iovec is {base@0,len@8}.
-        let (base, len) = unsafe {
-            (core::ptr::read_volatile(iov_i as *const u64),
-             core::ptr::read_volatile((iov_i + 8) as *const u64) as usize)
-        };
-        if len == 0 { continue; }
-        if base == 0 || base.saturating_add(len as u64) >= USER_VA_END {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        if payload.len().saturating_add(len) > 65507 {
-            return -(Errno::Emsgsize.as_i32() as i64);
-        }
-        // SAFETY: base..base+len validated < USER_VA_END.
-        let src = unsafe { core::slice::from_raw_parts(base as *const u8, len) };
-        payload.extend_from_slice(src);
-    }
     // UNICAST to a specific port (Linux `netlink_unicast`): systemd-udevd's
     // worker signals event COMPLETION to the manager by addressing the cooked
     // device to the manager's netlink port (nl_pid != 0, nl_groups = 0). Honour
@@ -311,7 +290,7 @@ pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
     // broadcasts (nl_pid = 0) keep the write_to_groups path.
     if sock.protocol == 15 && dest_pid != 0 && groups == 0 {
         let src = sock.port_id.load(core::sync::atomic::Ordering::Acquire);
-        let _reached = ::netlink::unicast_uevent_to_port(dest_pid, &payload, src);
+        let _reached = ::netlink::unicast_uevent_to_port(dest_pid, payload, src);
         #[cfg(feature = "debug-uevent")]
         { let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
           trace_uev_send(cooked, dest_pid, groups, &payload, b"uni", _reached); }
@@ -323,13 +302,13 @@ pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
     if sock.protocol == 15 {
         let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
         if cooked || groups != 0 {
-            let _reached = ::netlink::rebroadcast_cooked_uevent(&payload, groups, sock);
+            let _reached = ::netlink::rebroadcast_cooked_uevent(payload, groups, sock);
             #[cfg(feature = "debug-uevent")]
             trace_uev_send(cooked, dest_pid, groups, &payload, b"bcast", _reached);
             return payload.len() as i64;
         }
     }
-    match sock.write_to_groups(&payload, groups) {
+    match sock.write_to_groups(payload, groups) {
         Ok(n) => n as i64,
         Err(_) => -(Errno::Eio.as_i32() as i64),
     }

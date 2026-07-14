@@ -164,7 +164,6 @@ pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc:
             for i in 0..path_len {
                 bytes.push(core::ptr::read_volatile(p.add(i)));
             }
-            while bytes.len() > 1 && bytes.last().copied() == Some(0) { bytes.pop(); }
         } else {
             bytes.push(first);
             for i in 1..path_len {
@@ -175,6 +174,17 @@ pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc:
         }
         Some(bytes)
     }
+}
+
+/// Decode a snapshotted `sockaddr_un` with Linux pathname/abstract trimming. # C: O(108)
+pub(crate) fn unix_path_from_kernel_sockaddr(addr: &[u8]) -> Result<alloc::vec::Vec<u8>, i64> {
+    if addr.len() <= 2 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    let raw = &addr[2..core::cmp::min(addr.len(), 110)];
+    if raw[0] == 0 {
+        return Ok(raw.to_vec());
+    }
+    let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
+    Ok(raw[..end].to_vec())
 }
 
 /// Read sockaddr_in (v4): (family, port_host, addr_host). # C: O(1)
